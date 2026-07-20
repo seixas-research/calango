@@ -1,0 +1,47 @@
+#pragma once
+
+#include <string>
+
+namespace calango::core {
+
+/// ASE calculators exposed in the GUI. EMT and Lennard-Jones ship with ASE
+/// and run out of the box; the DFT entries generate script hooks that the
+/// user completes (pseudopotentials, parallel launch command, ...).
+enum class CalculatorKind {
+    EMT,
+    LennardJones,
+    QuantumEspresso,
+    Vasp,
+};
+
+enum class TaskKind {
+    SinglePoint,
+    GeometryOptimization,
+    MolecularDynamics,
+};
+
+/// Plain parameter bag filled in by CalculatorDialog and consumed by
+/// AseScriptGenerator. Deliberately UI-free so scripts can also be
+/// generated headlessly (e.g. future batch/CLI mode).
+struct CalculatorConfig {
+    CalculatorKind calculator = CalculatorKind::EMT;
+    TaskKind task = TaskKind::SinglePoint;
+
+    // Geometry optimization
+    double fmax = 0.05;      ///< eV/Å convergence criterion
+    int maxSteps = 200;
+
+    // Molecular dynamics
+    double temperatureK = 300.0;
+    double timestepFs = 1.0;
+    int mdSteps = 1000;
+
+    // DFT common knobs (used by the QE/VASP templates)
+    double planeWaveCutoffEv = 550.0;
+    int kpts[3] = {4, 4, 4};
+};
+
+std::string toString(CalculatorKind kind);
+std::string toString(TaskKind kind);
+
+} // namespace calango::core
