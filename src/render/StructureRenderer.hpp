@@ -5,6 +5,9 @@
 #include <QOpenGLShaderProgram>
 #include <QOpenGLVertexArrayObject>
 
+#include <set>
+#include <vector>
+
 namespace calango::core {
 class Structure;
 }
@@ -27,17 +30,25 @@ public:
         float atomScale = 0.4f;      ///< fraction of covalent radius
         float bondRadius = 0.12f;    ///< Å
         float bondTolerance = 1.15f; ///< bond-detection cutoff factor
+        bool showCell = true;
     };
+
+    /// Display radius of an atom (Å) — the single source of truth shared
+    /// by instance building and by ray-cast picking in the viewport.
+    static float displayRadius(int atomicNumber, const Style& style);
 
     /// Must be called once with a current GL context (from initializeGL).
     void initialize(QOpenGLFunctions_3_3_Core* gl);
 
     /// Rebuild instance buffers from the model. nullptr clears the scene.
-    void setStructure(const core::Structure* structure);
+    /// Atoms whose index is in `selection` are drawn highlighted.
+    void setStructure(const core::Structure* structure,
+                      const std::set<int>* selection = nullptr);
 
     void render(const QMatrix4x4& view, const QMatrix4x4& projection);
 
     Style& style() { return style_; }
+    const Style& style() const { return style_; }
 
 private:
     struct InstancedMesh {

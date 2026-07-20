@@ -2,6 +2,7 @@
 
 #include <pybind11/embed.h>
 
+#include <memory>
 #include <string>
 
 namespace calango::pybridge {
@@ -11,12 +12,19 @@ namespace calango::pybridge {
 /// Exactly one instance must exist; create it in main() before any Python
 /// use and let it outlive every consumer of Python objects.
 ///
-/// Threading policy (v0.1): all embedded-Python calls happen on the GUI
+/// Interpreter resolution: an embedded interpreter does NOT inherit a
+/// virtualenv by itself (sys.executable would be the Calango binary, so
+/// Python would fall back to the base installation without ASE). We
+/// therefore initialize with an explicit PyConfig.executable, resolved as:
+///   1. $CALANGO_PYTHON            (explicit interpreter path)
+///   2. $VIRTUAL_ENV/bin/python    (active virtualenv)
+///   3. the interpreter Calango was configured against at build time
+/// Python then performs normal venv activation via pyvenv.cfg.
+///
+/// Threading policy (v0.2): all embedded-Python calls happen on the GUI
 /// thread, so no explicit GIL juggling is needed. Simulation workloads never
 /// run in-process — they go through JobRunner as external `python script.py`
 /// subprocesses, which keeps the GUI responsive and crashes isolated.
-/// If in-process background Python is ever added, release the GIL on the
-/// main thread (py::gil_scoped_release) and acquire it in workers.
 class PythonEngine {
 public:
     PythonEngine();
@@ -32,15 +40,16 @@ public:
     const std::string& pythonVersion() const { return pythonVersion_; }
     const std::string& lastError() const { return lastError_; }
 
-    /// Path of the interpreter binary (sys.executable) — used by JobRunner
-    /// so subprocess jobs see the same environment (and thus the same ASE).
+    /// Path of the interpreter driving the embedded runtime — also used by
+    /// JobRunner so subprocess jobs see the same environment (same ASE).
     std::string executable() const;
 
     /// Append a directory to sys.path (e.g. for shipping helper modules).
     void addSysPath(const std::string& directory);
 
 private:
-    pybind11::scoped_interpreter interpreter_;
+    std::string resolvedExecutable_;
+    std::unique_ptr<pybind11::scoped_interpreter> interpreter_;
     bool aseAvailable_ = false;
     std::string aseVersion_;
     std::string pythonVersion_;

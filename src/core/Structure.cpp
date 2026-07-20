@@ -67,17 +67,34 @@ double Structure::boundingRadius(const Vec3& center) const
 
 std::vector<Bond> Structure::detectBonds(double tolerance) const
 {
+    const auto pbc = cell_.pbc();
+    const bool usePbc = cell_.isDefined() && (pbc[0] || pbc[1] || pbc[2]);
+
     std::vector<Bond> bonds;
     const auto n = static_cast<int>(atoms_.size());
     for (int i = 0; i < n; ++i) {
         for (int j = i + 1; j < n; ++j) {
             const auto& a = atoms_[static_cast<std::size_t>(i)];
             const auto& b = atoms_[static_cast<std::size_t>(j)];
+
+            Vec3 d = b.position - a.position;
+            Vec3 offset{};
+            if (usePbc) {
+                // Minimum-image convention along the periodic directions.
+                const Vec3 frac = cell_.cartesianToFractional(d);
+                const Vec3 shift{pbc[0] ? std::round(frac.x) : 0.0,
+                                 pbc[1] ? std::round(frac.y) : 0.0,
+                                 pbc[2] ? std::round(frac.z) : 0.0};
+                if (shift.dot(shift) > 0.0) {
+                    offset = cell_.fractionalToCartesian(shift) * -1.0;
+                    d += offset;
+                }
+            }
+
             const double cutoff = tolerance * (a.covalentRadius() + b.covalentRadius());
-            const Vec3 d = a.position - b.position;
             const double distSq = d.dot(d);
             if (distSq < cutoff * cutoff && distSq > 0.16) // 0.4 Å floor: overlapping atoms
-                bonds.push_back({i, j});
+                bonds.push_back({i, j, offset});
         }
     }
     return bonds;

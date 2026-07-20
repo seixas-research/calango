@@ -82,6 +82,11 @@ QMatrix4x4 bondTransform(const QVector3D& from, const QVector3D& direction,
 
 } // namespace
 
+float StructureRenderer::displayRadius(int atomicNumber, const Style& style)
+{
+    return std::max(0.2f, core::Elements::data(atomicNumber).covalentRadius * style.atomScale);
+}
+
 void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
 {
     gl_ = gl;
@@ -158,7 +163,8 @@ void StructureRenderer::createMesh(InstancedMesh& mesh,
     mesh.vao.release();
 }
 
-void StructureRenderer::setStructure(const core::Structure* structure)
+void StructureRenderer::setStructure(const core::Structure* structure,
+                                     const std::set<int>* selection)
 {
     if (!initialized_)
         return;
@@ -171,32 +177,51 @@ void StructureRenderer::setStructure(const core::Structure* structure)
         const auto& atoms = structure->atoms();
         atomInstances.reserve(atoms.size() * kFloatsPerInstance);
 
-        for (const core::Atom& atom : atoms) {
+        for (std::size_t index = 0; index < atoms.size(); ++index) {
+            const core::Atom& atom = atoms[index];
             const auto& element = core::Elements::data(atom.atomicNumber);
+            const bool selected =
+                selection && selection->count(static_cast<int>(index)) > 0;
+
             QMatrix4x4 model;
             model.translate(toQt(atom.position));
-            model.scale(std::max(0.2f, element.covalentRadius * style_.atomScale));
-            appendInstance(atomInstances, model,
-                           element.rgb[0] / 255.0f, element.rgb[1] / 255.0f,
-                           element.rgb[2] / 255.0f);
+            model.scale(displayRadius(atom.atomicNumber, style_) * (selected ? 1.2f : 1.0f));
+
+            float r = element.rgb[0] / 255.0f;
+            float g = element.rgb[1] / 255.0f;
+            float b = element.rgb[2] / 255.0f;
+            if (selected) { // tint toward highlight orange
+                r = 0.45f * r + 0.55f * 1.00f;
+                g = 0.45f * g + 0.55f * 0.62f;
+                b = 0.45f * b + 0.55f * 0.10f;
+            }
+            appendInstance(atomInstances, model, r, g, b);
         }
 
         for (const core::Bond& bond : structure->detectBonds(style_.bondTolerance)) {
             const auto& a = atoms[static_cast<std::size_t>(bond.i)];
             const auto& b = atoms[static_cast<std::size_t>(bond.j)];
             const QVector3D pa = toQt(a.position);
-            const QVector3D pb = toQt(b.position);
-            const QVector3D dir = (pb - pa).normalized();
-            const float half = pa.distanceToPoint(pb) * 0.5f;
+            const QVector3D pbImage = toQt(b.position + bond.imageOffset);
+            const QVector3D dir = (pbImage - pa).normalized();
+            const float half = pa.distanceToPoint(pbImage) * 0.5f;
 
             const auto& ea = core::Elements::data(a.atomicNumber);
             const auto& eb = core::Elements::data(b.atomicNumber);
             appendInstance(bondInstances,
                            bondTransform(pa, dir, half, style_.bondRadius),
                            ea.rgb[0] / 255.0f, ea.rgb[1] / 255.0f, ea.rgb[2] / 255.0f);
-            appendInstance(bondInstances,
-                           bondTransform(pa + dir * half, dir, half, style_.bondRadius),
-                           eb.rgb[0] / 255.0f, eb.rgb[1] / 255.0f, eb.rgb[2] / 255.0f);
+            if (!bond.crossesBoundary()) {
+                appendInstance(bondInstances,
+                               bondTransform(pa + dir * half, dir, half, style_.bondRadius),
+                               eb.rgb[0] / 255.0f, eb.rgb[1] / 255.0f, eb.rgb[2] / 255.0f);
+            } else {
+                // Wrapped bond: draw atom j's half as a stub pointing back
+                // toward its own periodic image of atom i.
+                appendInstance(bondInstances,
+                               bondTransform(toQt(b.position), -dir, half, style_.bondRadius),
+                               eb.rgb[0] / 255.0f, eb.rgb[1] / 255.0f, eb.rgb[2] / 255.0f);
+            }
         }
 
         if (structure->cell().isDefined()) {
@@ -250,7 +275,7 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
     }
     meshProgram_.release();
 
-    if (cellVertexCount_ > 0) {
+    if (style_.showCell && cellVertexCount_ > 0) {
         lineProgram_.bind();
         lineProgram_.setUniformValue("uMvp", projection * view);
         lineProgram_.setUniformValue("uColor", QVector4D(0.65f, 0.65f, 0.7f, 1.0f));

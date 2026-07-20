@@ -33,6 +33,8 @@ Q_SIGNALS:
     void outputLine(const QString& line);
     void errorLine(const QString& line);
     void progress(int step, int total);
+    /// One sample per "CALANGO_ENERGY <step> <energy_eV>" marker.
+    void energySample(int step, double energyEv);
     void finished(int exitCode, bool crashed);
 
 private:

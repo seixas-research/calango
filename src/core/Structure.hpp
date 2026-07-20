@@ -12,6 +12,11 @@ namespace calango::core {
 struct Bond {
     int i = 0;
     int j = 0;
+    /// Cartesian shift applied to atom j's position to get the periodic
+    /// image actually bonded to atom i. Zero for bonds inside the cell.
+    Vec3 imageOffset{};
+
+    bool crossesBoundary() const { return imageOffset.dot(imageOffset) > 1e-12; }
 };
 
 /// The central data model: a collection of atoms plus an optional periodic
@@ -44,9 +49,10 @@ public:
     /// Distance-based bond perception: a bond exists when
     /// d(i,j) < tolerance * (r_cov(i) + r_cov(j)).
     ///
-    /// O(N²) — fine for a few thousand atoms; switch to a cell-list /
-    /// k-d tree spatial index for large systems. Bonds across periodic
-    /// boundaries are not yet detected (TODO: minimum-image convention).
+    /// With a defined periodic cell, distances use the minimum-image
+    /// convention, so bonds across cell boundaries are found and carry
+    /// the image offset for rendering. O(N²) — fine for a few thousand
+    /// atoms; a cell-list spatial index is on the roadmap (Phase 3).
     std::vector<Bond> detectBonds(double tolerance = 1.15) const;
 
 private:

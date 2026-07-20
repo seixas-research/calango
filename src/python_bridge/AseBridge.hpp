@@ -5,6 +5,7 @@
 #include <pybind11/pybind11.h>
 
 #include <string>
+#include <vector>
 
 namespace calango::pybridge {
 
@@ -25,10 +26,18 @@ public:
                                const std::string& path,
                                const std::string& format = {});
 
+    /// All frames of a trajectory / multi-frame file (ase.io.read index=":").
+    static std::vector<core::Structure> readTrajectory(const std::string& path);
+
     /// (nx, ny, nz) repetition via ase.Atoms.repeat — requires a defined
     /// cell along the repeated directions.
     static core::Structure makeSupercell(const core::Structure& structure,
                                          int nx, int ny, int nz);
+
+    /// Cleave a surface slab via ase.build.surface: (h k l) Miller indices,
+    /// number of layers, vacuum padding in Å on each side.
+    static core::Structure makeSlab(const core::Structure& structure,
+                                    int h, int k, int l, int layers, double vacuum);
 
     /// core::Structure -> ase.Atoms (positions, symbols, cell, pbc).
     static pybind11::object toAtoms(const core::Structure& structure);

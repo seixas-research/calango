@@ -26,6 +26,7 @@ public:
     double volume() const;
 
     Vec3 fractionalToCartesian(const Vec3& frac) const;
+    Vec3 cartesianToFractional(const Vec3& cart) const;
 
     /// The 8 Cartesian corners of the parallelepiped (origin at 0,0,0).
     std::array<Vec3, 8> corners() const;

@@ -40,7 +40,8 @@ endif()
 #   cmake -B build -DPython3_EXECUTABLE=/path/to/.venv/bin/python
 find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter Development.Embed)
 
-find_package(pybind11 2.11 CONFIG QUIET)
+# 2.12+ is needed for scoped_interpreter(PyConfig*).
+find_package(pybind11 2.12 CONFIG QUIET)
 if(NOT pybind11_FOUND)
     message(STATUS "System pybind11 not found — fetching it")
     include(FetchContent)
@@ -98,6 +99,10 @@ qt_add_executable(calango
     src/gui/CalculatorDialog.cpp
     src/gui/JobLogWidget.hpp
     src/gui/JobLogWidget.cpp
+    src/gui/TrajectoryPlayerWidget.hpp
+    src/gui/TrajectoryPlayerWidget.cpp
+    src/gui/EnergyPlotWidget.hpp
+    src/gui/EnergyPlotWidget.cpp
 )
 
 qt_add_resources(calango "shaders"
@@ -113,9 +118,14 @@ target_include_directories(calango PRIVATE src)
 
 # QT_NO_KEYWORDS: pybind11/CPython headers and Qt's lowercase `slots`/`signals`
 # macros collide. We therefore use Q_SIGNALS / Q_SLOTS / Q_EMIT everywhere.
+# Bake in the configure-time interpreter as the fallback for the embedded
+# runtime (overridable at runtime via CALANGO_PYTHON or VIRTUAL_ENV).
+file(TO_CMAKE_PATH "${Python3_EXECUTABLE}" CALANGO_DEFAULT_PYTHON_PATH)
+
 target_compile_definitions(calango PRIVATE
     QT_NO_KEYWORDS
     CALANGO_VERSION="${PROJECT_VERSION}"
+    CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}"
 )
 
 target_link_libraries(calango PRIVATE

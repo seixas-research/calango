@@ -101,6 +101,37 @@ void AseBridge::writeStructure(const core::Structure& structure,
     }
 }
 
+std::vector<core::Structure> AseBridge::readTrajectory(const std::string& path)
+{
+    try {
+        const py::object images =
+            py::module_::import("ase.io").attr("read")(path, py::arg("index") = ":");
+        std::vector<core::Structure> frames;
+        if (py::isinstance<py::list>(images)) {
+            for (const auto& frame : images.cast<py::list>())
+                frames.push_back(fromAtoms(frame));
+        } else {
+            frames.push_back(fromAtoms(images));
+        }
+        return frames;
+    } catch (const py::error_already_set& e) {
+        rethrow(e, "Failed to read trajectory '" + path + "'");
+    }
+}
+
+core::Structure AseBridge::makeSlab(const core::Structure& structure,
+                                    int h, int k, int l, int layers, double vacuum)
+{
+    try {
+        const py::object slab = py::module_::import("ase.build").attr("surface")(
+            toAtoms(structure), py::make_tuple(h, k, l), layers,
+            py::arg("vacuum") = vacuum);
+        return fromAtoms(slab);
+    } catch (const py::error_already_set& e) {
+        rethrow(e, "Failed to cleave surface (is a bulk unit cell defined?)");
+    }
+}
+
 core::Structure AseBridge::makeSupercell(const core::Structure& structure,
                                          int nx, int ny, int nz)
 {

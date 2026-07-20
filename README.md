@@ -5,23 +5,33 @@ modeling — a Qt6/OpenGL front-end over the
 [Atomic Simulation Environment (ASE)](https://wiki.fysik.dtu.dk/ase/),
 in the spirit of QuantumATK and Schrödinger Maestro.
 
-## Features (v0.1 skeleton)
+Development follows [ROADMAP.md](ROADMAP.md).
+
+## Features (v0.2)
 
 - **3D visualizer** — atoms as instanced spheres (CPK colors), bonds as
-  per-atom-colored cylinders, unit-cell wireframe; orbit/pan/zoom camera
-  (OpenGL 3.3 core via `QOpenGLWidget`).
+  per-atom-colored cylinders (minimum-image bonds across periodic
+  boundaries), unit-cell wireframe; orbit/pan/zoom camera (OpenGL 3.3
+  core via `QOpenGLWidget`).
+- **Picking & editing** — click / Ctrl+click ray-cast selection with
+  highlight; add atoms, change element, translate or delete selections;
+  snapshot undo/redo (Ctrl+Z / Ctrl+Shift+Z).
 - **Structure I/O through ASE** — one embedded-Python code path reads and
   writes every format ASE knows: XYZ, extended XYZ, CIF, POSCAR/CONTCAR,
   trajectories, …
-- **Builder** — supercell creation via `ase.Atoms.repeat` (more editing
-  tools on the roadmap).
+- **Builder** — supercells via `ase.Atoms.repeat`; surface slabs via
+  `ase.build.surface` (Miller indices, layers, vacuum).
 - **ASE input generator** — a dialog that maps a form onto ASE calculators
   (EMT, Lennard-Jones out of the box; Quantum ESPRESSO / VASP templates)
-  and tasks (single point, BFGS optimization, Langevin MD), with a live
-  preview of the generated Python script.
+  and tasks (single point, BFGS optimization, Langevin NVT / Velocity-
+  Verlet NVE MD), with a live preview of the generated Python script.
 - **Local job runner** — generated scripts run as `python run.py`
-  subprocesses (`QProcess`); stdout/stderr stream into a dockable console
-  and `CALANGO_PROGRESS` markers drive a progress bar.
+  subprocesses (`QProcess`); stdout/stderr stream into a dockable console,
+  `CALANGO_PROGRESS` markers drive a progress bar, `CALANGO_ENERGY`
+  markers feed a live energy-vs-step plot, and finished jobs offer to
+  load their result structure.
+- **Trajectory playback** — File → Open Trajectory (`.traj`, multi-frame
+  XYZ) with play/pause and a frame slider.
 
 ## Building
 
@@ -47,8 +57,23 @@ cmake --build build -j
 ./build/calango assets/samples/Si_diamond.vasp
 ```
 
-The interpreter found at configure time is the one embedded at runtime and
-also the one used to launch simulation jobs — keep ASE installed there.
+## Python environment resolution
+
+An embedded interpreter does not inherit a virtualenv by itself, so
+Calango picks its interpreter explicitly, in this order:
+
+1. `CALANGO_PYTHON` — path to an interpreter (highest priority)
+2. `VIRTUAL_ENV` — an activated virtualenv
+3. the interpreter CMake found at configure time (baked into the binary)
+
+The same interpreter also launches simulation jobs, so ASE must be
+installed in it. If structure loading fails with an ASE import error,
+diagnose from a terminal:
+
+```bash
+./build/calango --probe-python   # prints interpreter, Python and ASE versions
+export CALANGO_PYTHON=/path/to/.venv/bin/python   # to override
+```
 
 ## Layout
 
@@ -73,12 +98,4 @@ introduced for the exported surface.
 
 ## Roadmap
 
-- Atom picking/selection and interactive editing (add/delete atoms, drag)
-- Bonds across periodic boundaries (minimum-image) and cell-list bond
-  detection for large systems
-- Polyhedra rendering and alternative representations (van der Waals,
-  wireframe, licorice)
-- Trajectory playback from `.traj` files; auto-load `optimized.extxyz`
-  after a job finishes
-- Job queue with multiple concurrent jobs and remote (SSH/SLURM) submission
-- Undo/redo via command pattern on the Structure model
+See [ROADMAP.md](ROADMAP.md) for the phase-by-phase plan and current status.

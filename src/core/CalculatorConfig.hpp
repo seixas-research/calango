@@ -20,6 +20,12 @@ enum class TaskKind {
     MolecularDynamics,
 };
 
+enum class MdEnsemble {
+    LangevinNVT,
+    VelocityVerletNVE,
+    // NPT (Parrinello-Rahman / Nose-Hoover) planned — see ROADMAP.md Phase 4.
+};
+
 /// Plain parameter bag filled in by CalculatorDialog and consumed by
 /// AseScriptGenerator. Deliberately UI-free so scripts can also be
 /// generated headlessly (e.g. future batch/CLI mode).
@@ -32,6 +38,7 @@ struct CalculatorConfig {
     int maxSteps = 200;
 
     // Molecular dynamics
+    MdEnsemble ensemble = MdEnsemble::LangevinNVT;
     double temperatureK = 300.0;
     double timestepFs = 1.0;
     int mdSteps = 1000;

@@ -15,8 +15,23 @@
 #include <QMessageBox>
 #include <QSurfaceFormat>
 
+#include <cstdio>
+#include <cstring>
+
 int main(int argc, char* argv[])
 {
+    // Headless environment check: `calango --probe-python`
+    if (argc > 1 && std::strcmp(argv[1], "--probe-python") == 0) {
+        calango::pybridge::PythonEngine python;
+        std::printf("interpreter: %s\n", python.executable().c_str());
+        std::printf("python:      %s\n", python.pythonVersion().c_str());
+        std::printf("ase:         %s\n",
+                    python.aseAvailable() ? python.aseVersion().c_str() : "NOT AVAILABLE");
+        if (!python.aseAvailable())
+            std::printf("\n%s\n", python.lastError().c_str());
+        return python.aseAvailable() ? 0 : 1;
+    }
+
     QSurfaceFormat format;
     format.setVersion(3, 3);
     format.setProfile(QSurfaceFormat::CoreProfile);
@@ -35,7 +50,10 @@ int main(int argc, char* argv[])
             nullptr, QStringLiteral("Calango"),
             QStringLiteral("Python started, but ASE could not be imported — "
                            "structure I/O and job features will be disabled.\n\n"
-                           "Install it with:  pip install ase\n\n%1")
+                           "Point Calango at an interpreter that has ASE, e.g.:\n"
+                           "    export CALANGO_PYTHON=/path/to/.venv/bin/python\n"
+                           "or activate that virtualenv before launching.\n"
+                           "Diagnose with:  calango --probe-python\n\n%1")
                 .arg(QString::fromStdString(python.lastError())));
     }
 

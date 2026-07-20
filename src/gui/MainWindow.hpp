@@ -2,7 +2,9 @@
 
 #include <QMainWindow>
 
+#include <deque>
 #include <memory>
+#include <vector>
 
 class QDockWidget;
 
@@ -15,13 +17,16 @@ class JobRunner;
 
 namespace calango::gui {
 
+class EnergyPlotWidget;
 class JobLogWidget;
 class StructureInfoWidget;
+class TrajectoryPlayerWidget;
 class ViewportWidget;
 
-/// Application shell and MVC "Controller": owns the Structure model and
-/// the JobRunner, wires user actions to model mutations (via AseBridge)
-/// and pushes the updated model into the views (viewport, info panel).
+/// Application shell and MVC "Controller": owns the Structure model, the
+/// trajectory frames, the undo history and the JobRunner. All mutations
+/// flow through here (via AseBridge or direct model edits) and are pushed
+/// into the views with notifyStructureChanged().
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
@@ -34,26 +39,51 @@ public:
 
 private Q_SLOTS:
     void openStructure();
+    void openTrajectory();
     void saveStructureAs();
+
     void createSupercell();
+    void cleaveSurface();
+    void addAtom();
+    void changeElementOfSelection();
+    void translateSelection();
+    void deleteSelectedAtoms();
+    void undo();
+    void redo();
+
     void newCalculation();
+    void onJobFinished(int exitCode, bool crashed);
+    void showFrame(int index);
+
     void about();
 
 private:
     void createMenusAndDocks();
+    /// Replace the model (clears any loaded trajectory).
     void setStructure(std::shared_ptr<core::Structure> structure, const QString& sourceName);
-    void notifyStructureChanged();
+    void notifyStructureChanged(bool frameCamera = true);
+    void pushUndo();
+    void updateUndoActions();
     void runScript(const QString& script);
     bool ensureAseAvailable();
 
     std::shared_ptr<core::Structure> structure_;
+    std::vector<std::shared_ptr<core::Structure>> frames_; ///< trajectory playback
+    std::deque<std::shared_ptr<core::Structure>> undoStack_;
+    std::deque<std::shared_ptr<core::Structure>> redoStack_;
     QString currentFileName_;
+    QString lastJobDir_;
 
     ViewportWidget* viewport_ = nullptr;
     StructureInfoWidget* infoWidget_ = nullptr;
     JobLogWidget* jobLogWidget_ = nullptr;
+    EnergyPlotWidget* energyPlot_ = nullptr;
+    TrajectoryPlayerWidget* player_ = nullptr;
     QDockWidget* jobDock_ = nullptr;
+    QDockWidget* trajectoryDock_ = nullptr;
     jobs::JobRunner* jobRunner_ = nullptr;
+    QAction* undoAction_ = nullptr;
+    QAction* redoAction_ = nullptr;
 };
 
 } // namespace calango::gui

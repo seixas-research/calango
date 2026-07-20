@@ -2,8 +2,10 @@
 
 #include "core/Structure.hpp"
 #include "gui/CalculatorDialog.hpp"
+#include "gui/EnergyPlotWidget.hpp"
 #include "gui/JobLogWidget.hpp"
 #include "gui/StructureInfoWidget.hpp"
+#include "gui/TrajectoryPlayerWidget.hpp"
 #include "gui/ViewportWidget.hpp"
 #include "jobs/JobRunner.hpp"
 #include "python_bridge/AseBridge.hpp"
@@ -15,22 +17,31 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDockWidget>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QTabWidget>
 #include <QTextStream>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace calango::gui {
+
+namespace {
+constexpr std::size_t kMaxUndoDepth = 50;
+} // namespace
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
@@ -46,16 +57,27 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(jobRunner_, &jobs::JobRunner::started,
             jobLogWidget_, &JobLogWidget::onJobStarted);
+    connect(jobRunner_, &jobs::JobRunner::started,
+            energyPlot_, &EnergyPlotWidget::clear);
     connect(jobRunner_, &jobs::JobRunner::outputLine,
             jobLogWidget_, &JobLogWidget::onOutputLine);
     connect(jobRunner_, &jobs::JobRunner::errorLine,
             jobLogWidget_, &JobLogWidget::onErrorLine);
     connect(jobRunner_, &jobs::JobRunner::progress,
             jobLogWidget_, &JobLogWidget::onProgress);
+    connect(jobRunner_, &jobs::JobRunner::energySample,
+            energyPlot_, &EnergyPlotWidget::addSample);
     connect(jobRunner_, &jobs::JobRunner::finished,
             jobLogWidget_, &JobLogWidget::onJobFinished);
+    connect(jobRunner_, &jobs::JobRunner::finished,
+            this, &MainWindow::onJobFinished);
     connect(jobLogWidget_, &JobLogWidget::terminateRequested,
             jobRunner_, &jobs::JobRunner::terminate);
+
+    connect(viewport_, &ViewportWidget::selectionChanged, this, [this](int count) {
+        if (count > 0)
+            statusBar()->showMessage(tr("%n atom(s) selected", nullptr, count));
+    });
 
     statusBar()->showMessage(tr("Ready — open a structure to begin (File → Open)"));
 }
@@ -67,14 +89,33 @@ void MainWindow::createMenusAndDocks()
     QMenu* fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(tr("&Open Structure…"), QKeySequence::Open,
                         this, &MainWindow::openStructure);
+    fileMenu->addAction(tr("Open &Trajectory…"), QKeySequence(tr("Ctrl+T")),
+                        this, &MainWindow::openTrajectory);
     fileMenu->addAction(tr("Save Structure &As…"), QKeySequence::SaveAs,
                         this, &MainWindow::saveStructureAs);
     fileMenu->addSeparator();
     fileMenu->addAction(tr("&Quit"), QKeySequence::Quit,
                         qApp, &QApplication::closeAllWindows);
 
+    QMenu* editMenu = menuBar()->addMenu(tr("&Edit"));
+    undoAction_ = editMenu->addAction(tr("&Undo"), QKeySequence::Undo,
+                                      this, &MainWindow::undo);
+    redoAction_ = editMenu->addAction(tr("&Redo"), QKeySequence::Redo,
+                                      this, &MainWindow::redo);
+    editMenu->addSeparator();
+    editMenu->addAction(tr("&Add Atom…"), QKeySequence(tr("Ctrl+Shift+A")),
+                        this, &MainWindow::addAtom);
+    editMenu->addAction(tr("&Change Element of Selection…"),
+                        this, &MainWindow::changeElementOfSelection);
+    editMenu->addAction(tr("&Translate Selection…"),
+                        this, &MainWindow::translateSelection);
+    editMenu->addAction(tr("&Delete Selected Atoms"), QKeySequence::Delete,
+                        this, &MainWindow::deleteSelectedAtoms);
+    updateUndoActions();
+
     QMenu* buildMenu = menuBar()->addMenu(tr("&Build"));
     buildMenu->addAction(tr("Create &Supercell…"), this, &MainWindow::createSupercell);
+    buildMenu->addAction(tr("Cleave S&urface (Slab)…"), this, &MainWindow::cleaveSurface);
 
     QMenu* simulationMenu = menuBar()->addMenu(tr("&Simulation"));
     simulationMenu->addAction(tr("&New Calculation…"), QKeySequence(tr("Ctrl+R")),
@@ -83,6 +124,10 @@ void MainWindow::createMenusAndDocks()
     QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(tr("&Frame Structure"), QKeySequence(tr("F")),
                         viewport_, &ViewportWidget::frameStructure);
+    QAction* cellAction = viewMenu->addAction(tr("Show Unit &Cell"));
+    cellAction->setCheckable(true);
+    cellAction->setChecked(true);
+    connect(cellAction, &QAction::toggled, viewport_, &ViewportWidget::setShowCell);
 
     QMenu* helpMenu = menuBar()->addMenu(tr("&Help"));
     helpMenu->addAction(tr("&About Calango"), this, &MainWindow::about);
@@ -93,15 +138,29 @@ void MainWindow::createMenusAndDocks()
     infoDock->setWidget(infoWidget_);
     addDockWidget(Qt::LeftDockWidgetArea, infoDock);
 
-    jobDock_ = new QDockWidget(tr("Job Output"), this);
+    jobDock_ = new QDockWidget(tr("Job"), this);
     jobDock_->setObjectName(QStringLiteral("jobDock"));
-    jobLogWidget_ = new JobLogWidget(jobDock_);
-    jobDock_->setWidget(jobLogWidget_);
+    auto* jobTabs = new QTabWidget(jobDock_);
+    jobLogWidget_ = new JobLogWidget(jobTabs);
+    energyPlot_ = new EnergyPlotWidget(jobTabs);
+    jobTabs->addTab(jobLogWidget_, tr("Log"));
+    jobTabs->addTab(energyPlot_, tr("Energy"));
+    jobDock_->setWidget(jobTabs);
     addDockWidget(Qt::BottomDockWidgetArea, jobDock_);
+
+    trajectoryDock_ = new QDockWidget(tr("Trajectory"), this);
+    trajectoryDock_->setObjectName(QStringLiteral("trajectoryDock"));
+    player_ = new TrajectoryPlayerWidget(trajectoryDock_);
+    trajectoryDock_->setWidget(player_);
+    addDockWidget(Qt::BottomDockWidgetArea, trajectoryDock_);
+    trajectoryDock_->hide();
+    connect(player_, &TrajectoryPlayerWidget::frameChanged,
+            this, &MainWindow::showFrame);
 
     viewMenu->addSeparator();
     viewMenu->addAction(infoDock->toggleViewAction());
     viewMenu->addAction(jobDock_->toggleViewAction());
+    viewMenu->addAction(trajectoryDock_->toggleViewAction());
 }
 
 bool MainWindow::ensureAseAvailable()
@@ -112,12 +171,83 @@ bool MainWindow::ensureAseAvailable()
     QMessageBox::warning(
         this, tr("ASE Not Available"),
         tr("The embedded Python interpreter cannot import ASE.\n\n"
-           "Install it into the interpreter Calango was built against:\n"
-           "    pip install ase\n\n"
+           "Point Calango at an interpreter that has ASE, e.g.:\n"
+           "    export CALANGO_PYTHON=/path/to/.venv/bin/python\n"
+           "then restart. Diagnose with:  calango --probe-python\n\n"
            "Details:\n%1")
             .arg(QString::fromStdString(python.lastError())));
     return false;
 }
+
+// ---------------------------------------------------------------------------
+// Model management
+// ---------------------------------------------------------------------------
+
+void MainWindow::setStructure(std::shared_ptr<core::Structure> structure,
+                              const QString& sourceName)
+{
+    structure_ = std::move(structure);
+    currentFileName_ = sourceName;
+    frames_.clear();
+    trajectoryDock_->hide();
+    player_->stop();
+    setWindowTitle(sourceName.isEmpty()
+                       ? QStringLiteral("Calango")
+                       : QStringLiteral("Calango — %1").arg(sourceName));
+    notifyStructureChanged();
+}
+
+void MainWindow::notifyStructureChanged(bool frameCamera)
+{
+    viewport_->setStructure(structure_, frameCamera);
+    infoWidget_->updateFromStructure(structure_.get());
+}
+
+void MainWindow::pushUndo()
+{
+    undoStack_.push_back(structure_ ? std::make_shared<core::Structure>(*structure_)
+                                    : nullptr);
+    if (undoStack_.size() > kMaxUndoDepth)
+        undoStack_.pop_front();
+    redoStack_.clear();
+    updateUndoActions();
+}
+
+void MainWindow::updateUndoActions()
+{
+    undoAction_->setEnabled(!undoStack_.empty());
+    redoAction_->setEnabled(!redoStack_.empty());
+}
+
+void MainWindow::undo()
+{
+    if (undoStack_.empty())
+        return;
+    redoStack_.push_back(structure_ ? std::make_shared<core::Structure>(*structure_)
+                                    : nullptr);
+    structure_ = undoStack_.back();
+    undoStack_.pop_back();
+    updateUndoActions();
+    notifyStructureChanged(false);
+    statusBar()->showMessage(tr("Undo"), 2000);
+}
+
+void MainWindow::redo()
+{
+    if (redoStack_.empty())
+        return;
+    undoStack_.push_back(structure_ ? std::make_shared<core::Structure>(*structure_)
+                                    : nullptr);
+    structure_ = redoStack_.back();
+    redoStack_.pop_back();
+    updateUndoActions();
+    notifyStructureChanged(false);
+    statusBar()->showMessage(tr("Redo"), 2000);
+}
+
+// ---------------------------------------------------------------------------
+// File I/O
+// ---------------------------------------------------------------------------
 
 void MainWindow::loadFile(const QString& path)
 {
@@ -126,6 +256,7 @@ void MainWindow::loadFile(const QString& path)
     try {
         auto structure = std::make_shared<core::Structure>(
             pybridge::AseBridge::readStructure(path.toStdString()));
+        pushUndo();
         setStructure(std::move(structure), QFileInfo(path).fileName());
         statusBar()->showMessage(tr("Loaded %1 (%2 atoms)")
                                      .arg(path)
@@ -136,23 +267,6 @@ void MainWindow::loadFile(const QString& path)
     }
 }
 
-void MainWindow::setStructure(std::shared_ptr<core::Structure> structure,
-                              const QString& sourceName)
-{
-    structure_ = std::move(structure);
-    currentFileName_ = sourceName;
-    setWindowTitle(sourceName.isEmpty()
-                       ? QStringLiteral("Calango")
-                       : QStringLiteral("Calango — %1").arg(sourceName));
-    notifyStructureChanged();
-}
-
-void MainWindow::notifyStructureChanged()
-{
-    viewport_->setStructure(structure_);
-    infoWidget_->updateFromStructure(structure_.get());
-}
-
 void MainWindow::openStructure()
 {
     const QString path = QFileDialog::getOpenFileName(
@@ -161,6 +275,48 @@ void MainWindow::openStructure()
            "All files (*)"));
     if (!path.isEmpty())
         loadFile(path);
+}
+
+void MainWindow::openTrajectory()
+{
+    if (!ensureAseAvailable())
+        return;
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Open Trajectory"), QString(),
+        tr("Trajectories (*.traj *.extxyz *.xyz);;All files (*)"));
+    if (path.isEmpty())
+        return;
+
+    try {
+        const auto rawFrames = pybridge::AseBridge::readTrajectory(path.toStdString());
+        if (rawFrames.empty())
+            throw std::runtime_error("Trajectory contains no frames");
+
+        pushUndo();
+        setStructure(std::make_shared<core::Structure>(rawFrames.front()),
+                     QFileInfo(path).fileName());
+
+        frames_.clear();
+        frames_.reserve(rawFrames.size());
+        for (const auto& frame : rawFrames)
+            frames_.push_back(std::make_shared<core::Structure>(frame));
+
+        player_->setFrameCount(static_cast<int>(frames_.size()));
+        trajectoryDock_->show();
+        statusBar()->showMessage(tr("Loaded trajectory %1 (%2 frames)")
+                                     .arg(path)
+                                     .arg(frames_.size()));
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, tr("Open Trajectory"), QString::fromUtf8(e.what()));
+    }
+}
+
+void MainWindow::showFrame(int index)
+{
+    if (index < 0 || index >= static_cast<int>(frames_.size()))
+        return;
+    structure_ = frames_[static_cast<std::size_t>(index)];
+    notifyStructureChanged(false);
 }
 
 void MainWindow::saveStructureAs()
@@ -179,6 +335,10 @@ void MainWindow::saveStructureAs()
         QMessageBox::critical(this, tr("Save Structure"), QString::fromUtf8(e.what()));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Builder tools
+// ---------------------------------------------------------------------------
 
 void MainWindow::createSupercell()
 {
@@ -212,13 +372,223 @@ void MainWindow::createSupercell()
     try {
         auto repeated = std::make_shared<core::Structure>(pybridge::AseBridge::makeSupercell(
             *structure_, repeats[0]->value(), repeats[1]->value(), repeats[2]->value()));
-        setStructure(std::move(repeated),
-                     tr("%1 (supercell)").arg(currentFileName_));
+        pushUndo();
+        setStructure(std::move(repeated), tr("%1 (supercell)").arg(currentFileName_));
         statusBar()->showMessage(tr("Supercell created: %1 atoms").arg(structure_->size()));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Create Supercell"), QString::fromUtf8(e.what()));
     }
 }
+
+void MainWindow::cleaveSurface()
+{
+    if (!structure_ || !structure_->cell().isDefined()) {
+        QMessageBox::information(this, tr("Cleave Surface"),
+                                 tr("Open a bulk structure with a unit cell first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Cleave Surface (Slab)"));
+    auto* form = new QFormLayout(&dialog);
+
+    QSpinBox* miller[3];
+    const char* names[3] = {"h", "k", "l"};
+    auto* millerRow = new QWidget(&dialog);
+    auto* millerLayout = new QFormLayout(millerRow);
+    millerLayout->setContentsMargins(0, 0, 0, 0);
+    for (int i = 0; i < 3; ++i) {
+        miller[i] = new QSpinBox(&dialog);
+        miller[i]->setRange(-9, 9);
+        miller[i]->setValue(i == 2 ? 1 : 0); // default (0 0 1)
+        millerLayout->addRow(QLatin1String(names[i]), miller[i]);
+    }
+    form->addRow(tr("Miller indices:"), millerRow);
+
+    auto* layersSpin = new QSpinBox(&dialog);
+    layersSpin->setRange(1, 40);
+    layersSpin->setValue(4);
+    form->addRow(tr("Layers:"), layersSpin);
+
+    auto* vacuumSpin = new QDoubleSpinBox(&dialog);
+    vacuumSpin->setRange(0.0, 60.0);
+    vacuumSpin->setValue(10.0);
+    vacuumSpin->setSuffix(tr(" Å"));
+    form->addRow(tr("Vacuum (each side):"), vacuumSpin);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                         &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    form->addRow(buttons);
+
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    if (miller[0]->value() == 0 && miller[1]->value() == 0 && miller[2]->value() == 0) {
+        QMessageBox::warning(this, tr("Cleave Surface"),
+                             tr("Miller indices (0 0 0) are not a valid plane."));
+        return;
+    }
+
+    try {
+        auto slab = std::make_shared<core::Structure>(pybridge::AseBridge::makeSlab(
+            *structure_, miller[0]->value(), miller[1]->value(), miller[2]->value(),
+            layersSpin->value(), vacuumSpin->value()));
+        pushUndo();
+        setStructure(std::move(slab),
+                     tr("%1 (%2%3%4) slab")
+                         .arg(currentFileName_)
+                         .arg(miller[0]->value())
+                         .arg(miller[1]->value())
+                         .arg(miller[2]->value()));
+        statusBar()->showMessage(tr("Slab created: %1 atoms").arg(structure_->size()));
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, tr("Cleave Surface"), QString::fromUtf8(e.what()));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Editing tools
+// ---------------------------------------------------------------------------
+
+void MainWindow::addAtom()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Add Atom"));
+    auto* form = new QFormLayout(&dialog);
+
+    auto* symbolEdit = new QLineEdit(QStringLiteral("C"), &dialog);
+    form->addRow(tr("Element symbol:"), symbolEdit);
+
+    QDoubleSpinBox* coords[3];
+    const char* names[3] = {"x", "y", "z"};
+    for (int i = 0; i < 3; ++i) {
+        coords[i] = new QDoubleSpinBox(&dialog);
+        coords[i]->setRange(-1000.0, 1000.0);
+        coords[i]->setDecimals(4);
+        coords[i]->setSuffix(tr(" Å"));
+        form->addRow(QStringLiteral("%1:").arg(QLatin1String(names[i])), coords[i]);
+    }
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                         &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    form->addRow(buttons);
+
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const int z = core::Elements::atomicNumber(symbolEdit->text().trimmed().toStdString());
+    if (z == 0) {
+        QMessageBox::warning(this, tr("Add Atom"),
+                             tr("Unknown element symbol '%1'.").arg(symbolEdit->text()));
+        return;
+    }
+
+    pushUndo();
+    const bool firstAtom = !structure_ || structure_->empty();
+    if (!structure_) {
+        structure_ = std::make_shared<core::Structure>();
+        currentFileName_ = tr("untitled");
+        setWindowTitle(QStringLiteral("Calango — %1").arg(currentFileName_));
+    }
+    structure_->addAtom(
+        {z, {coords[0]->value(), coords[1]->value(), coords[2]->value()}});
+    notifyStructureChanged(firstAtom);
+    statusBar()->showMessage(tr("Added %1 atom").arg(symbolEdit->text().trimmed()));
+}
+
+void MainWindow::changeElementOfSelection()
+{
+    const auto& selection = viewport_->selection();
+    if (!structure_ || selection.empty()) {
+        statusBar()->showMessage(tr("Select atoms first (click / Ctrl+click)."));
+        return;
+    }
+
+    bool ok = false;
+    const QString symbol = QInputDialog::getText(
+        this, tr("Change Element"),
+        tr("New element symbol for %n atom(s):", nullptr,
+           static_cast<int>(selection.size())),
+        QLineEdit::Normal, QString(), &ok);
+    if (!ok || symbol.trimmed().isEmpty())
+        return;
+
+    const int z = core::Elements::atomicNumber(symbol.trimmed().toStdString());
+    if (z == 0) {
+        QMessageBox::warning(this, tr("Change Element"),
+                             tr("Unknown element symbol '%1'.").arg(symbol));
+        return;
+    }
+
+    pushUndo();
+    for (const int index : selection)
+        structure_->atoms()[static_cast<std::size_t>(index)].atomicNumber = z;
+    notifyStructureChanged(false);
+}
+
+void MainWindow::translateSelection()
+{
+    const auto& selection = viewport_->selection();
+    if (!structure_ || selection.empty()) {
+        statusBar()->showMessage(tr("Select atoms first (click / Ctrl+click)."));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Translate Selection"));
+    auto* form = new QFormLayout(&dialog);
+    QDoubleSpinBox* delta[3];
+    const char* names[3] = {"Δx", "Δy", "Δz"};
+    for (int i = 0; i < 3; ++i) {
+        delta[i] = new QDoubleSpinBox(&dialog);
+        delta[i]->setRange(-100.0, 100.0);
+        delta[i]->setDecimals(4);
+        delta[i]->setSuffix(tr(" Å"));
+        form->addRow(QString::fromUtf8(names[i]) + QStringLiteral(":"), delta[i]);
+    }
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                         &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    form->addRow(buttons);
+
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    pushUndo();
+    const core::Vec3 shift{delta[0]->value(), delta[1]->value(), delta[2]->value()};
+    for (const int index : selection)
+        structure_->atoms()[static_cast<std::size_t>(index)].position += shift;
+    notifyStructureChanged(false);
+}
+
+void MainWindow::deleteSelectedAtoms()
+{
+    const auto& selection = viewport_->selection();
+    if (!structure_ || selection.empty()) {
+        statusBar()->showMessage(tr("Select atoms first (click / Ctrl+click)."));
+        return;
+    }
+
+    pushUndo();
+    // Remove in descending index order so indices stay valid.
+    std::vector<int> indices(selection.begin(), selection.end());
+    std::sort(indices.rbegin(), indices.rend());
+    for (const int index : indices)
+        structure_->removeAtom(static_cast<std::size_t>(index));
+    notifyStructureChanged(false);
+    statusBar()->showMessage(tr("Deleted %n atom(s)", nullptr,
+                                static_cast<int>(indices.size())));
+}
+
+// ---------------------------------------------------------------------------
+// Simulation
+// ---------------------------------------------------------------------------
 
 void MainWindow::newCalculation()
 {
@@ -267,6 +637,7 @@ void MainWindow::runScript(const QString& script)
         QTextStream(&scriptFile) << script;
         scriptFile.close();
 
+        lastJobDir_ = jobDir;
         jobDock_->show();
         jobDock_->raise();
         jobRunner_->start(
@@ -275,6 +646,27 @@ void MainWindow::runScript(const QString& script)
         statusBar()->showMessage(tr("Job running in %1").arg(jobDir));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Run Job"), QString::fromUtf8(e.what()));
+    }
+}
+
+void MainWindow::onJobFinished(int exitCode, bool crashed)
+{
+    if (crashed || exitCode != 0 || lastJobDir_.isEmpty())
+        return;
+
+    // Offer the relaxed / final structure produced by the job.
+    for (const auto* candidate : {"optimized.extxyz", "md_final.extxyz"}) {
+        const QString resultPath = lastJobDir_ + QLatin1Char('/')
+            + QLatin1String(candidate);
+        if (!QFile::exists(resultPath))
+            continue;
+        const auto answer = QMessageBox::question(
+            this, tr("Job Finished"),
+            tr("The job produced %1.\nLoad it into the viewport?")
+                .arg(QLatin1String(candidate)));
+        if (answer == QMessageBox::Yes)
+            loadFile(resultPath);
+        return;
     }
 }
 

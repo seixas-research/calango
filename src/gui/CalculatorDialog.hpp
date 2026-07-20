@@ -30,6 +30,7 @@ private Q_SLOTS:
 private:
     QComboBox* calculatorCombo_;
     QComboBox* taskCombo_;
+    QComboBox* ensembleCombo_;
     QDoubleSpinBox* fmaxSpin_;
     QSpinBox* maxStepsSpin_;
     QDoubleSpinBox* temperatureSpin_;

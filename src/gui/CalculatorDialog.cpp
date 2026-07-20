@@ -31,7 +31,11 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
     taskCombo_ = new QComboBox(this);
     taskCombo_->addItems({tr("Single-point energy"),
                           tr("Geometry optimization (BFGS)"),
-                          tr("Molecular dynamics (Langevin NVT)")});
+                          tr("Molecular dynamics")});
+
+    ensembleCombo_ = new QComboBox(this);
+    ensembleCombo_->addItems({tr("NVT — Langevin thermostat"),
+                              tr("NVE — Velocity Verlet")});
 
     fmaxSpin_ = new QDoubleSpinBox(this);
     fmaxSpin_->setRange(0.001, 1.0);
@@ -74,6 +78,7 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
     auto* form = new QFormLayout;
     form->addRow(tr("Calculator:"), calculatorCombo_);
     form->addRow(tr("Task:"), taskCombo_);
+    form->addRow(tr("MD ensemble:"), ensembleCombo_);
     form->addRow(tr("Force convergence (fmax):"), fmaxSpin_);
     form->addRow(tr("Max optimization steps:"), maxStepsSpin_);
     form->addRow(tr("Temperature:"), temperatureSpin_);
@@ -113,6 +118,7 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
     const auto refresh = [this] { refreshPreview(); };
     connect(calculatorCombo_, &QComboBox::currentIndexChanged, this, refresh);
     connect(taskCombo_, &QComboBox::currentIndexChanged, this, refresh);
+    connect(ensembleCombo_, &QComboBox::currentIndexChanged, this, refresh);
     connect(fmaxSpin_, &QDoubleSpinBox::valueChanged, this, refresh);
     connect(maxStepsSpin_, &QSpinBox::valueChanged, this, refresh);
     connect(temperatureSpin_, &QDoubleSpinBox::valueChanged, this, refresh);
@@ -130,6 +136,7 @@ core::CalculatorConfig CalculatorDialog::config() const
     core::CalculatorConfig c;
     c.calculator = static_cast<core::CalculatorKind>(calculatorCombo_->currentIndex());
     c.task = static_cast<core::TaskKind>(taskCombo_->currentIndex());
+    c.ensemble = static_cast<core::MdEnsemble>(ensembleCombo_->currentIndex());
     c.fmax = fmaxSpin_->value();
     c.maxSteps = maxStepsSpin_->value();
     c.temperatureK = temperatureSpin_->value();
@@ -159,6 +166,7 @@ void CalculatorDialog::refreshPreview()
 
     fmaxSpin_->setEnabled(isOpt);
     maxStepsSpin_->setEnabled(isOpt);
+    ensembleCombo_->setEnabled(isMd);
     temperatureSpin_->setEnabled(isMd);
     timestepSpin_->setEnabled(isMd);
     mdStepsSpin_->setEnabled(isMd);

@@ -25,6 +25,17 @@ Vec3 UnitCell::fractionalToCartesian(const Vec3& frac) const
     return vectors_[0] * frac.x + vectors_[1] * frac.y + vectors_[2] * frac.z;
 }
 
+Vec3 UnitCell::cartesianToFractional(const Vec3& cart) const
+{
+    // Rows of the inverse are the reciprocal vectors (b×c)/V, (c×a)/V, (a×b)/V.
+    const double signedVolume = vectors_[0].dot(vectors_[1].cross(vectors_[2]));
+    if (std::abs(signedVolume) < 1e-12)
+        return {};
+    return {cart.dot(vectors_[1].cross(vectors_[2])) / signedVolume,
+            cart.dot(vectors_[2].cross(vectors_[0])) / signedVolume,
+            cart.dot(vectors_[0].cross(vectors_[1])) / signedVolume};
+}
+
 std::array<Vec3, 8> UnitCell::corners() const
 {
     std::array<Vec3, 8> result;
