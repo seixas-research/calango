@@ -70,6 +70,18 @@ This roadmap outlines the core development phases for building a cross-platform 
 *   [ ] Hover highlight and per-atom labels in the viewport.
 *   [ ] MP4/WebM video export (ffmpeg) for longer trajectories.
 
+## 📅 Phase 7: Per-Element Styling, Timeline & ML Potentials (v0.4)
+**Focus:** Fine-grained visual control, trajectory workflow polish, and machine-learning potentials.
+
+*   [x] Per-element visual customization: individual color overrides *and* individual radius scales per chemical element (Element Settings dialog).
+*   [x] Two-light studio default: warm key light + soft cool fill light (both fully editable in the Lighting panel).
+*   [x] Viewport background color picker (Display panel), also usable as image/animation export background.
+*   [x] Interactive playback timeline embedded below the 3D viewport and above the job console: first/prev/play-pause/next/last transport, tick-marked scrubber, playback-speed selector (0.25×–4×).
+*   [x] MP4 (H.264) trajectory/turntable export with resolution, framerate and background-color options (imageio + bundled ffmpeg via the embedded Python bridge), alongside the existing transparent-GIF path.
+*   [x] MACE machine-learning interatomic potentials in the simulation setup: universal foundation models (MACE-MP-0 and MACE-OFF, small/medium/large — auto-downloaded and cached by mace-torch) and custom user-trained checkpoints (`.model` / `.pt`) via a file browser, with cpu/cuda/mps device selection. *(Runtime requires `pip install mace-torch` in the job environment.)*
+*   [ ] Per-atom (not just per-element) overrides and selection-based styling.
+*   [ ] NPT molecular dynamics and MACE dispersion-correction toggle.
+
 ## 🚀 Future Modules (Post-MVP)
 *   **Remote Job Submission:** Connect to HPC clusters using SSH/SFTP and generate SLURM/PBS submission scripts.
 *   **Plugin Architecture:** Decouple specific workflows (e.g., NEB path generation, band structure analysis) into modular C++ plugins using `QPluginLoader`.

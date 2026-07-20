@@ -48,6 +48,9 @@ public:
     void setShowCell(bool show);
     void setRepresentation(render::RepresentationMode mode);
 
+    QColor backgroundColor() const { return backgroundColor_; }
+    void setBackgroundColor(const QColor& color);
+
     /// Live style access for UI panels. Call styleChanged() afterwards:
     /// geometry-affecting edits (scales, colors, mode) rebuild the GPU
     /// buffers; light-only edits just repaint.
@@ -93,6 +96,7 @@ private:
     render::StructureRenderer renderer_;
     std::shared_ptr<const core::Structure> structure_;
     std::set<int> selection_;
+    QColor backgroundColor_{26, 28, 33};
     bool structureDirty_ = false;
     QPointF lastMousePos_;
     QPointF pressPos_;

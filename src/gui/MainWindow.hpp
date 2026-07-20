@@ -20,7 +20,7 @@ namespace calango::gui {
 class EnergyPlotWidget;
 class JobLogWidget;
 class StructureInfoWidget;
-class TrajectoryPlayerWidget;
+class TimelineWidget;
 class ViewportWidget;
 
 /// Application shell and MVC "Controller": owns the Structure model, the
@@ -42,7 +42,7 @@ private Q_SLOTS:
     void openTrajectory();
     void saveStructureAs();
     void exportImage();
-    void exportGifAnimation();
+    void exportAnimation();
 
     void createSupercell();
     void cleaveSurface();
@@ -80,9 +80,8 @@ private:
     StructureInfoWidget* infoWidget_ = nullptr;
     JobLogWidget* jobLogWidget_ = nullptr;
     EnergyPlotWidget* energyPlot_ = nullptr;
-    TrajectoryPlayerWidget* player_ = nullptr;
+    TimelineWidget* timeline_ = nullptr;
     QDockWidget* jobDock_ = nullptr;
-    QDockWidget* trajectoryDock_ = nullptr;
     jobs::JobRunner* jobRunner_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;

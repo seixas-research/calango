@@ -5,7 +5,9 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDoubleSpinBox>
+#include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QSpinBox>
 
 namespace calango::gui {
@@ -26,6 +28,7 @@ public:
 private Q_SLOTS:
     void refreshPreview();
     void saveScript();
+    void browseMaceModel();
 
 private:
     QComboBox* calculatorCombo_;
@@ -38,6 +41,11 @@ private:
     QSpinBox* mdStepsSpin_;
     QDoubleSpinBox* cutoffSpin_;
     QSpinBox* kptSpins_[3];
+    QComboBox* maceModelCombo_;
+    QComboBox* maceSizeCombo_;
+    QLineEdit* maceModelPathEdit_;
+    QPushButton* maceBrowseButton_;
+    QComboBox* maceDeviceCombo_;
     QPlainTextEdit* preview_;
 };
 

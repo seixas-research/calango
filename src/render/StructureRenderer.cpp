@@ -121,6 +121,23 @@ void multiBondLayout(int order, std::vector<float>& offsets, float& radiusScale)
 
 } // namespace
 
+std::vector<Light> StructureRenderer::defaultLights()
+{
+    Light key; // slightly warm, from upper left, carries the speculars
+    key.direction = QVector3D(-0.4f, -0.5f, -1.0f);
+    key.ambient = QColor::fromRgbF(0.24f, 0.24f, 0.23f);
+    key.diffuse = QColor::fromRgbF(0.66f, 0.64f, 0.60f);
+    key.specular = QColor::fromRgbF(0.30f, 0.30f, 0.30f);
+
+    Light fill; // softer, cooler, from the opposite side, no ambient
+    fill.direction = QVector3D(0.7f, 0.25f, -0.55f);
+    fill.ambient = QColor::fromRgbF(0.0f, 0.0f, 0.0f);
+    fill.diffuse = QColor::fromRgbF(0.24f, 0.27f, 0.33f);
+    fill.specular = QColor::fromRgbF(0.05f, 0.05f, 0.07f);
+
+    return {key, fill};
+}
+
 float StructureRenderer::displayRadius(int atomicNumber, const Style& style)
 {
     const float covalent = core::Elements::data(atomicNumber).covalentRadius;
@@ -138,7 +155,11 @@ float StructureRenderer::displayRadius(int atomicNumber, const Style& style)
         radius = 0.25f; // used by picking only
         break;
     }
-    return radius * style.atomScaleFactor;
+    float perElement = 1.0f;
+    if (const auto it = style.radiusScaleOverrides.find(atomicNumber);
+        it != style.radiusScaleOverrides.end())
+        perElement = it->second;
+    return radius * style.atomScaleFactor * perElement;
 }
 
 QColor StructureRenderer::atomColor(int atomicNumber, const Style& style)

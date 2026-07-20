@@ -57,7 +57,8 @@ public:
         float bondRadius = 0.12f;     ///< Å, base radius of a single bond
         float bondTolerance = 1.15f;  ///< bond-detection cutoff factor
         bool showCell = true;
-        std::map<int, QColor> colorOverrides; ///< Z -> user color (Atom Color Editor)
+        std::map<int, QColor> colorOverrides;      ///< Z -> user color
+        std::map<int, float> radiusScaleOverrides; ///< Z -> per-element radius factor
     };
 
     /// Display radius of an atom (Å) — the single source of truth shared
@@ -107,10 +108,13 @@ private:
     void uploadColoredBuffer(ColoredVertexBuffer& buffer, const std::vector<float>& data);
     void uploadLights();
 
+    /// Two-light studio default: warm key light + soft cool fill light.
+    static std::vector<Light> defaultLights();
+
     QOpenGLFunctions_3_3_Core* gl_ = nullptr;
     bool initialized_ = false;
     Style style_;
-    std::vector<Light> lights_{Light{}};
+    std::vector<Light> lights_ = defaultLights();
 
     QOpenGLShaderProgram meshProgram_;
     QOpenGLShaderProgram lineProgram_; ///< uniform-color lines (unit cell)

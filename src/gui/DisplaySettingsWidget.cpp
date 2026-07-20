@@ -1,6 +1,6 @@
 #include "gui/DisplaySettingsWidget.hpp"
 
-#include "gui/AtomColorDialog.hpp"
+#include "gui/ElementSettingsDialog.hpp"
 #include "gui/ViewportWidget.hpp"
 
 #include <QColorDialog>
@@ -57,11 +57,24 @@ DisplaySettingsWidget::DisplaySettingsWidget(ViewportWidget* viewport, QWidget* 
         viewport_->styleChanged(true);
     });
 
-    auto* colorsButton = new QPushButton(tr("Atom Colors…"), reprGroup);
-    reprForm->addRow(colorsButton);
-    connect(colorsButton, &QPushButton::clicked, this, [this] {
-        AtomColorDialog dialog(viewport_, this);
+    auto* elementsButton = new QPushButton(tr("Element Settings…"), reprGroup);
+    reprForm->addRow(elementsButton);
+    connect(elementsButton, &QPushButton::clicked, this, [this] {
+        ElementSettingsDialog dialog(viewport_, this);
         dialog.exec();
+    });
+
+    auto* backgroundButton = new QPushButton(reprGroup);
+    backgroundButton->setFixedHeight(22);
+    setButtonColor(backgroundButton, viewport_->backgroundColor());
+    reprForm->addRow(tr("Background:"), backgroundButton);
+    connect(backgroundButton, &QPushButton::clicked, this, [this, backgroundButton] {
+        const QColor chosen = QColorDialog::getColor(
+            viewport_->backgroundColor(), this, tr("Viewport Background Color"));
+        if (!chosen.isValid())
+            return;
+        setButtonColor(backgroundButton, chosen);
+        viewport_->setBackgroundColor(chosen);
     });
 
     layout->addWidget(reprGroup);

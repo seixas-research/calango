@@ -1,4 +1,4 @@
-#include "gui/AtomColorDialog.hpp"
+#include "gui/ElementSettingsDialog.hpp"
 
 #include "core/Structure.hpp"
 #include "gui/ViewportWidget.hpp"
@@ -8,9 +8,11 @@
 #include <QDialogButtonBox>
 #include <QHeaderView>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
+#include <cmath>
 #include <set>
 
 namespace calango::gui {
@@ -28,16 +30,17 @@ QString swatchStyle(const QColor& color)
 
 } // namespace
 
-AtomColorDialog::AtomColorDialog(ViewportWidget* viewport, QWidget* parent)
+ElementSettingsDialog::ElementSettingsDialog(ViewportWidget* viewport, QWidget* parent)
     : QDialog(parent)
     , viewport_(viewport)
     , table_(new QTableWidget(this))
 {
-    setWindowTitle(tr("Atom Color Editor"));
-    resize(360, 420);
+    setWindowTitle(tr("Element Settings"));
+    resize(440, 460);
 
-    table_->setColumnCount(3);
-    table_->setHorizontalHeaderLabels({tr("Element"), tr("Color"), QString()});
+    table_->setColumnCount(4);
+    table_->setHorizontalHeaderLabels({tr("Element"), tr("Color"), tr("Radius"),
+                                       QString()});
     table_->horizontalHeader()->setStretchLastSection(true);
     table_->verticalHeader()->setVisible(false);
     table_->setSelectionMode(QAbstractItemView::NoSelection);
@@ -56,7 +59,7 @@ AtomColorDialog::AtomColorDialog(ViewportWidget* viewport, QWidget* parent)
     populate();
 }
 
-void AtomColorDialog::populate()
+void ElementSettingsDialog::populate()
 {
     // Elements present in the current structure, ordered by Z; a sensible
     // default set when nothing is loaded.
@@ -68,6 +71,8 @@ void AtomColorDialog::populate()
         elements.insert(std::begin(kCommonElements), std::end(kCommonElements));
     }
 
+    const auto& style = viewport_->style();
+
     table_->setRowCount(static_cast<int>(elements.size()));
     int row = 0;
     for (const int z : elements) {
@@ -77,18 +82,36 @@ void AtomColorDialog::populate()
 
         auto* colorButton = new QPushButton(table_);
         colorButton->setStyleSheet(
-            swatchStyle(render::StructureRenderer::atomColor(z, viewport_->style())));
+            swatchStyle(render::StructureRenderer::atomColor(z, style)));
         connect(colorButton, &QPushButton::clicked, this, [this, z] { editColor(z); });
         table_->setCellWidget(row, 1, colorButton);
 
+        auto* radiusSpin = new QSpinBox(table_);
+        radiusSpin->setRange(10, 300);
+        radiusSpin->setSuffix(QStringLiteral(" %"));
+        const auto it = style.radiusScaleOverrides.find(z);
+        radiusSpin->setValue(it != style.radiusScaleOverrides.end()
+                                 ? static_cast<int>(std::lround(it->second * 100.0f))
+                                 : 100);
+        connect(radiusSpin, &QSpinBox::valueChanged, this, [this, z](int percent) {
+            if (percent == 100)
+                viewport_->style().radiusScaleOverrides.erase(z);
+            else
+                viewport_->style().radiusScaleOverrides[z] =
+                    static_cast<float>(percent) / 100.0f;
+            viewport_->styleChanged(true);
+        });
+        table_->setCellWidget(row, 2, radiusSpin);
+
         auto* resetButton = new QPushButton(tr("Reset"), table_);
-        connect(resetButton, &QPushButton::clicked, this, [this, z] { resetColor(z); });
-        table_->setCellWidget(row, 2, resetButton);
+        connect(resetButton, &QPushButton::clicked, this,
+                [this, z] { resetElement(z); });
+        table_->setCellWidget(row, 3, resetButton);
         ++row;
     }
 }
 
-void AtomColorDialog::editColor(int atomicNumber)
+void ElementSettingsDialog::editColor(int atomicNumber)
 {
     const QColor current =
         render::StructureRenderer::atomColor(atomicNumber, viewport_->style());
@@ -102,16 +125,18 @@ void AtomColorDialog::editColor(int atomicNumber)
     populate();
 }
 
-void AtomColorDialog::resetColor(int atomicNumber)
+void ElementSettingsDialog::resetElement(int atomicNumber)
 {
     viewport_->style().colorOverrides.erase(atomicNumber);
+    viewport_->style().radiusScaleOverrides.erase(atomicNumber);
     viewport_->styleChanged(true);
     populate();
 }
 
-void AtomColorDialog::resetAll()
+void ElementSettingsDialog::resetAll()
 {
     viewport_->style().colorOverrides.clear();
+    viewport_->style().radiusScaleOverrides.clear();
     viewport_->styleChanged(true);
     populate();
 }

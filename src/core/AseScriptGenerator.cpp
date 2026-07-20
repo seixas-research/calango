@@ -11,6 +11,7 @@ std::string toString(CalculatorKind kind)
     case CalculatorKind::LennardJones: return "Lennard-Jones";
     case CalculatorKind::QuantumEspresso: return "Quantum ESPRESSO";
     case CalculatorKind::Vasp: return "VASP";
+    case CalculatorKind::Mace: return "MACE";
     }
     return "?";
 }
@@ -63,6 +64,39 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
                "    },\n"
             << "    kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2] << "),\n"
                ")\n";
+        break;
+
+    case CalculatorKind::Mace:
+        out << "# MACE machine-learning interatomic potential.\n"
+               "# Requires:  pip install mace-torch   (in the interpreter running this job)\n";
+        switch (c.maceSource) {
+        case MaceModelSource::FoundationMP:
+            out << "# The MACE-MP-0 foundation model is downloaded automatically on\n"
+                   "# first use and cached under ~/.cache/mace.\n"
+                   "from mace.calculators import mace_mp\n"
+                   "\n"
+                << "atoms.calc = mace_mp(model=\"" << c.maceSize
+                << "\", device=\"" << c.maceDevice
+                << "\", default_dtype=\"float64\")\n";
+            break;
+        case MaceModelSource::FoundationOFF:
+            out << "# The MACE-OFF foundation model (organic molecules) is downloaded\n"
+                   "# automatically on first use and cached under ~/.cache/mace.\n"
+                   "from mace.calculators import mace_off\n"
+                   "\n"
+                << "atoms.calc = mace_off(model=\"" << c.maceSize
+                << "\", device=\"" << c.maceDevice
+                << "\", default_dtype=\"float64\")\n";
+            break;
+        case MaceModelSource::CustomFile:
+            out << "# User-trained MACE model checkpoint.\n"
+                   "from mace.calculators import MACECalculator\n"
+                   "\n"
+                << "atoms.calc = MACECalculator(model_paths=r\"" << c.maceModelPath
+                << "\", device=\"" << c.maceDevice
+                << "\", default_dtype=\"float64\")\n";
+            break;
+        }
         break;
 
     case CalculatorKind::Vasp:

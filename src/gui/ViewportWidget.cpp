@@ -67,6 +67,12 @@ void ViewportWidget::setRepresentation(render::RepresentationMode mode)
     refreshStructure();
 }
 
+void ViewportWidget::setBackgroundColor(const QColor& color)
+{
+    backgroundColor_ = color;
+    update();
+}
+
 void ViewportWidget::styleChanged(bool rebuildGeometry)
 {
     if (rebuildGeometry)
@@ -103,9 +109,8 @@ QImage ViewportWidget::renderToImage(int width, int height, const QColor& backgr
 
     fbo.release();
     // toImage() resolves multisampling and flips to Qt orientation.
+    // No clear-color restore needed: paintGL() sets it every frame.
     QImage image = fbo.toImage().convertToFormat(QImage::Format_ARGB32);
-
-    glClearColor(0.10f, 0.11f, 0.13f, 1.0f); // restore viewport clear color
     doneCurrent();
     return image;
 }
@@ -148,6 +153,9 @@ void ViewportWidget::paintGL()
 {
     ensureUploaded();
 
+    glClearColor(static_cast<float>(backgroundColor_.redF()),
+                 static_cast<float>(backgroundColor_.greenF()),
+                 static_cast<float>(backgroundColor_.blueF()), 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     const float aspect = height() > 0
         ? static_cast<float>(width()) / static_cast<float>(height())

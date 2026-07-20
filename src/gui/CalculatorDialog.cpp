@@ -26,7 +26,8 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
     calculatorCombo_->addItems({tr("EMT (effective medium theory — fast test potential)"),
                                 tr("Lennard-Jones"),
                                 tr("Quantum ESPRESSO (DFT, requires pw.x)"),
-                                tr("VASP (DFT, requires license)")});
+                                tr("VASP (DFT, requires license)"),
+                                tr("MACE (machine-learning potential, requires mace-torch)")});
 
     taskCombo_ = new QComboBox(this);
     taskCombo_->addItems({tr("Single-point energy"),
@@ -75,6 +76,31 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
         kptRow->addWidget(spin);
     }
 
+    // MACE: universal foundation models (downloaded & cached automatically
+    // by mace-torch on first use) or a user-trained checkpoint file.
+    maceModelCombo_ = new QComboBox(this);
+    maceModelCombo_->addItems({tr("MACE-MP-0 (universal, materials)"),
+                               tr("MACE-OFF (universal, organic molecules)"),
+                               tr("Custom trained model (file)")});
+
+    maceSizeCombo_ = new QComboBox(this);
+    maceSizeCombo_->addItems({QStringLiteral("small"), QStringLiteral("medium"),
+                              QStringLiteral("large")});
+    maceSizeCombo_->setCurrentIndex(1);
+
+    maceModelPathEdit_ = new QLineEdit(this);
+    maceModelPathEdit_->setPlaceholderText(tr("path/to/model.model or .pt"));
+    maceBrowseButton_ = new QPushButton(tr("Browse…"), this);
+    auto* macePathRow = new QHBoxLayout;
+    macePathRow->addWidget(maceModelPathEdit_, 1);
+    macePathRow->addWidget(maceBrowseButton_);
+    connect(maceBrowseButton_, &QPushButton::clicked,
+            this, &CalculatorDialog::browseMaceModel);
+
+    maceDeviceCombo_ = new QComboBox(this);
+    maceDeviceCombo_->addItems({QStringLiteral("cpu"), QStringLiteral("cuda"),
+                                QStringLiteral("mps")});
+
     auto* form = new QFormLayout;
     form->addRow(tr("Calculator:"), calculatorCombo_);
     form->addRow(tr("Task:"), taskCombo_);
@@ -86,6 +112,10 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
     form->addRow(tr("MD steps:"), mdStepsSpin_);
     form->addRow(tr("Plane-wave cutoff:"), cutoffSpin_);
     form->addRow(tr("k-point grid:"), kptRow);
+    form->addRow(tr("MACE model:"), maceModelCombo_);
+    form->addRow(tr("MACE model size:"), maceSizeCombo_);
+    form->addRow(tr("Custom model file:"), macePathRow);
+    form->addRow(tr("MACE device:"), maceDeviceCombo_);
 
     preview_ = new QPlainTextEdit(this);
     preview_->setReadOnly(true);
@@ -127,6 +157,10 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
     connect(cutoffSpin_, &QDoubleSpinBox::valueChanged, this, refresh);
     for (auto* spin : kptSpins_)
         connect(spin, &QSpinBox::valueChanged, this, refresh);
+    connect(maceModelCombo_, &QComboBox::currentIndexChanged, this, refresh);
+    connect(maceSizeCombo_, &QComboBox::currentIndexChanged, this, refresh);
+    connect(maceModelPathEdit_, &QLineEdit::textChanged, this, refresh);
+    connect(maceDeviceCombo_, &QComboBox::currentIndexChanged, this, refresh);
 
     refreshPreview();
 }
@@ -145,6 +179,10 @@ core::CalculatorConfig CalculatorDialog::config() const
     c.planeWaveCutoffEv = cutoffSpin_->value();
     for (int i = 0; i < 3; ++i)
         c.kpts[i] = kptSpins_[i]->value();
+    c.maceSource = static_cast<core::MaceModelSource>(maceModelCombo_->currentIndex());
+    c.maceSize = maceSizeCombo_->currentText().toStdString();
+    c.maceModelPath = maceModelPathEdit_->text().trimmed().toStdString();
+    c.maceDevice = maceDeviceCombo_->currentText().toStdString();
     return c;
 }
 
@@ -163,6 +201,9 @@ void CalculatorDialog::refreshPreview()
     const bool isMd = c.task == core::TaskKind::MolecularDynamics;
     const bool isDft = c.calculator == core::CalculatorKind::QuantumEspresso
         || c.calculator == core::CalculatorKind::Vasp;
+    const bool isMace = c.calculator == core::CalculatorKind::Mace;
+    const bool isCustomMace =
+        isMace && c.maceSource == core::MaceModelSource::CustomFile;
 
     fmaxSpin_->setEnabled(isOpt);
     maxStepsSpin_->setEnabled(isOpt);
@@ -173,8 +214,22 @@ void CalculatorDialog::refreshPreview()
     cutoffSpin_->setEnabled(isDft);
     for (auto* spin : kptSpins_)
         spin->setEnabled(isDft);
+    maceModelCombo_->setEnabled(isMace);
+    maceSizeCombo_->setEnabled(isMace && !isCustomMace);
+    maceModelPathEdit_->setEnabled(isCustomMace);
+    maceBrowseButton_->setEnabled(isCustomMace);
+    maceDeviceCombo_->setEnabled(isMace);
 
     preview_->setPlainText(script());
+}
+
+void CalculatorDialog::browseMaceModel()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Select MACE Model"), QString(),
+        tr("MACE models (*.model *.pt);;All files (*)"));
+    if (!path.isEmpty())
+        maceModelPathEdit_->setText(path); // textChanged refreshes the preview
 }
 
 void CalculatorDialog::saveScript()

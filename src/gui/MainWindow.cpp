@@ -6,15 +6,16 @@
 #include "gui/EnergyPlotWidget.hpp"
 #include "gui/JobLogWidget.hpp"
 #include "gui/StructureInfoWidget.hpp"
-#include "gui/TrajectoryPlayerWidget.hpp"
+#include "gui/TimelineWidget.hpp"
 #include "gui/ViewportWidget.hpp"
 #include "jobs/JobRunner.hpp"
+#include "python_bridge/AnimationExporter.hpp"
 #include "python_bridge/AseBridge.hpp"
-#include "python_bridge/GifExporter.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QDateTime>
 #include <QImageWriter>
@@ -57,8 +58,19 @@ MainWindow::MainWindow(QWidget* parent)
     setWindowTitle(QStringLiteral("Calango"));
     resize(1280, 840);
 
+    // Central column: 3D viewport with the playback timeline directly
+    // below it (the job console dock sits below both).
     viewport_ = new ViewportWidget(this);
-    setCentralWidget(viewport_);
+    timeline_ = new TimelineWidget(this);
+    timeline_->hide(); // appears when a trajectory is loaded
+    auto* central = new QWidget(this);
+    auto* centralLayout = new QVBoxLayout(central);
+    centralLayout->setContentsMargins(0, 0, 0, 0);
+    centralLayout->setSpacing(0);
+    centralLayout->addWidget(viewport_, 1);
+    centralLayout->addWidget(timeline_);
+    setCentralWidget(central);
+    connect(timeline_, &TimelineWidget::frameChanged, this, &MainWindow::showFrame);
 
     createMenusAndDocks();
 
@@ -103,8 +115,8 @@ void MainWindow::createMenusAndDocks()
     fileMenu->addSeparator();
     fileMenu->addAction(tr("Export &Image…"), QKeySequence(tr("Ctrl+E")),
                         this, &MainWindow::exportImage);
-    fileMenu->addAction(tr("Export Ani&mation (GIF)…"),
-                        this, &MainWindow::exportGifAnimation);
+    fileMenu->addAction(tr("Export Ani&mation (GIF/MP4)…"),
+                        this, &MainWindow::exportAnimation);
     fileMenu->addSeparator();
     fileMenu->addAction(tr("&Quit"), QKeySequence::Quit,
                         qApp, &QApplication::closeAllWindows);
@@ -165,20 +177,10 @@ void MainWindow::createMenusAndDocks()
     jobDock_->setWidget(jobTabs);
     addDockWidget(Qt::BottomDockWidgetArea, jobDock_);
 
-    trajectoryDock_ = new QDockWidget(tr("Trajectory"), this);
-    trajectoryDock_->setObjectName(QStringLiteral("trajectoryDock"));
-    player_ = new TrajectoryPlayerWidget(trajectoryDock_);
-    trajectoryDock_->setWidget(player_);
-    addDockWidget(Qt::BottomDockWidgetArea, trajectoryDock_);
-    trajectoryDock_->hide();
-    connect(player_, &TrajectoryPlayerWidget::frameChanged,
-            this, &MainWindow::showFrame);
-
     viewMenu->addSeparator();
     viewMenu->addAction(infoDock->toggleViewAction());
     viewMenu->addAction(displayDock->toggleViewAction());
     viewMenu->addAction(jobDock_->toggleViewAction());
-    viewMenu->addAction(trajectoryDock_->toggleViewAction());
 }
 
 bool MainWindow::ensureAseAvailable()
@@ -207,8 +209,8 @@ void MainWindow::setStructure(std::shared_ptr<core::Structure> structure,
     structure_ = std::move(structure);
     currentFileName_ = sourceName;
     frames_.clear();
-    trajectoryDock_->hide();
-    player_->stop();
+    timeline_->stop();
+    timeline_->hide();
     setWindowTitle(sourceName.isEmpty()
                        ? QStringLiteral("Calango")
                        : QStringLiteral("Calango — %1").arg(sourceName));
@@ -319,8 +321,8 @@ void MainWindow::openTrajectory()
         for (const auto& frame : rawFrames)
             frames_.push_back(std::make_shared<core::Structure>(frame));
 
-        player_->setFrameCount(static_cast<int>(frames_.size()));
-        trajectoryDock_->show();
+        timeline_->setFrameCount(static_cast<int>(frames_.size()));
+        timeline_->show();
         statusBar()->showMessage(tr("Loaded trajectory %1 (%2 frames)")
                                      .arg(path)
                                      .arg(frames_.size()));
@@ -401,7 +403,7 @@ void MainWindow::exportImage()
     const bool transparent = backgroundCombo->currentIndex() == 0;
     const QColor background = transparent ? QColor(0, 0, 0, 0)
         : backgroundCombo->currentIndex() == 1 ? QColor(Qt::white)
-                                               : QColor(26, 28, 33);
+                                               : viewport_->backgroundColor();
 
     QImage image =
         viewport_->renderToImage(widthSpin->value(), heightSpin->value(), background);
@@ -430,7 +432,7 @@ void MainWindow::exportImage()
                                  .arg(image.height()));
 }
 
-void MainWindow::exportGifAnimation()
+void MainWindow::exportAnimation()
 {
     if (!structure_ || structure_->empty()) {
         statusBar()->showMessage(tr("Open a structure first."));
@@ -438,7 +440,7 @@ void MainWindow::exportGifAnimation()
     }
 
     QDialog dialog(this);
-    dialog.setWindowTitle(tr("Export Animation (GIF)"));
+    dialog.setWindowTitle(tr("Export Animation"));
     auto* form = new QFormLayout(&dialog);
 
     auto* sourceCombo = new QComboBox(&dialog);
@@ -455,18 +457,36 @@ void MainWindow::exportGifAnimation()
     connect(sourceCombo, &QComboBox::currentIndexChanged, framesSpin,
             [framesSpin](int index) { framesSpin->setEnabled(index == 0); });
 
-    auto* sizeSpin = new QSpinBox(&dialog);
-    sizeSpin->setRange(64, 2048);
-    sizeSpin->setValue(480);
-    form->addRow(tr("Size (px, square):"), sizeSpin);
+    auto* widthSpin = new QSpinBox(&dialog);
+    widthSpin->setRange(64, 2048);
+    widthSpin->setSingleStep(2); // H.264 yuv420p wants even dimensions
+    widthSpin->setValue(640);
+    auto* heightSpin = new QSpinBox(&dialog);
+    heightSpin->setRange(64, 2048);
+    heightSpin->setSingleStep(2);
+    heightSpin->setValue(480);
+    form->addRow(tr("Width (px):"), widthSpin);
+    form->addRow(tr("Height (px):"), heightSpin);
 
     auto* fpsSpin = new QSpinBox(&dialog);
-    fpsSpin->setRange(1, 50);
-    fpsSpin->setValue(20);
+    fpsSpin->setRange(1, 60);
+    fpsSpin->setValue(24);
     form->addRow(tr("Frames per second:"), fpsSpin);
 
-    auto* transparentCheck = new QCheckBox(tr("Transparent background"), &dialog);
-    form->addRow(transparentCheck);
+    auto* backgroundCombo = new QComboBox(&dialog);
+    backgroundCombo->addItems({tr("Solid white"), tr("Viewport color"),
+                               tr("Custom color…"), tr("Transparent (GIF only)")});
+    form->addRow(tr("Background:"), backgroundCombo);
+    QColor customBackground = Qt::white;
+    connect(backgroundCombo, &QComboBox::currentIndexChanged, &dialog,
+            [this, &customBackground](int index) {
+                if (index != 2)
+                    return;
+                const QColor chosen = QColorDialog::getColor(
+                    customBackground, this, tr("Animation Background Color"));
+                if (chosen.isValid())
+                    customBackground = chosen;
+            });
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
                                          &dialog);
@@ -479,13 +499,26 @@ void MainWindow::exportGifAnimation()
 
     const QString path = QFileDialog::getSaveFileName(
         this, tr("Export Animation"), QStringLiteral("calango.gif"),
-        tr("GIF animation (*.gif)"));
+        tr("GIF animation (*.gif);;MP4 video (*.mp4)"));
     if (path.isEmpty())
         return;
+    const bool isMp4 = path.endsWith(QStringLiteral(".mp4"), Qt::CaseInsensitive);
 
-    const bool transparent = transparentCheck->isChecked();
-    const QColor background = transparent ? QColor(0, 0, 0, 0) : QColor(Qt::white);
-    const int size = sizeSpin->value();
+    bool transparent = backgroundCombo->currentIndex() == 3;
+    if (transparent && isMp4) {
+        QMessageBox::information(this, tr("Export Animation"),
+                                 tr("MP4 has no alpha channel — using a solid white "
+                                    "background instead."));
+        transparent = false;
+        backgroundCombo->setCurrentIndex(0);
+    }
+    const QColor background = transparent ? QColor(0, 0, 0, 0)
+        : backgroundCombo->currentIndex() == 1  ? viewport_->backgroundColor()
+        : backgroundCombo->currentIndex() == 2  ? customBackground
+                                                : QColor(Qt::white);
+
+    const int width = widthSpin->value() & ~1;
+    const int height = heightSpin->value() & ~1;
     const bool turntable = sourceCombo->currentIndex() == 0;
     const int frameCount =
         turntable ? framesSpin->value() : static_cast<int>(frames_.size());
@@ -496,7 +529,7 @@ void MainWindow::exportGifAnimation()
 
     std::vector<QImage> images;
     images.reserve(static_cast<std::size_t>(frameCount));
-    const int restoreFrame = hasTrajectory ? player_->currentFrame() : 0;
+    const int restoreFrame = hasTrajectory ? timeline_->currentFrame() : 0;
 
     for (int i = 0; i < frameCount; ++i) {
         progress.setValue(i);
@@ -506,11 +539,11 @@ void MainWindow::exportGifAnimation()
 
         if (turntable) {
             images.push_back(viewport_->renderToImage(
-                size, size, background,
+                width, height, background,
                 360.0f * static_cast<float>(i) / static_cast<float>(frameCount)));
         } else {
             viewport_->setStructure(frames_[static_cast<std::size_t>(i)], false);
-            images.push_back(viewport_->renderToImage(size, size, background));
+            images.push_back(viewport_->renderToImage(width, height, background));
         }
     }
 
@@ -521,7 +554,11 @@ void MainWindow::exportGifAnimation()
     progress.setValue(frameCount);
 
     try {
-        pybridge::GifExporter::exportGif(images, path, fpsSpin->value(), transparent);
+        if (isMp4)
+            pybridge::AnimationExporter::exportMp4(images, path, fpsSpin->value());
+        else
+            pybridge::AnimationExporter::exportGif(images, path, fpsSpin->value(),
+                                                   transparent);
         statusBar()->showMessage(tr("Exported %1 (%2 frames)").arg(path).arg(images.size()));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Export Animation"), QString::fromUtf8(e.what()));

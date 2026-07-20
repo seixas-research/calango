@@ -16,13 +16,20 @@ Development follows [ROADMAP.md](ROADMAP.md).
   `QOpenGLWidget`).
 - **Display panel** — Ball-and-Stick / Space-filling (CPK) / Wireframe
   representations, global atom-radius and bond-width sliders, per-element
-  color overrides (Atom Color Editor), and up to 4 configurable
-  directional lights (direction + ambient/diffuse/specular).
+  color *and* radius overrides (Element Settings dialog), viewport
+  background color picker, and up to 4 configurable directional lights
+  (two-light key/fill studio default; direction +
+  ambient/diffuse/specular per light).
 - **Image & animation export** — high-resolution off-screen captures
   (8× MSAA, up to 8192 px) to PNG/JPEG with white or transparent
-  background, and animated GIFs (turntable rotation or trajectory
-  playback) encoded through Pillow in the embedded Python
-  (`pip install pillow`).
+  background; animated GIFs (Pillow) and H.264 MP4 videos
+  (imageio + bundled ffmpeg) from turntable rotations or trajectory
+  frames, with resolution, framerate and background-color options.
+- **MACE ML potentials** — simulation setup supports MACE foundation
+  models (MACE-MP-0 for materials, MACE-OFF for organics;
+  small/medium/large, auto-downloaded on first use) and custom
+  user-trained checkpoints (`.model`/`.pt`) on cpu/cuda/mps
+  (`pip install mace-torch` to run the generated scripts).
 - **Picking & editing** — click / Ctrl+click ray-cast selection with
   highlight; add atoms, change element, translate or delete selections;
   snapshot undo/redo (Ctrl+Z / Ctrl+Shift+Z).
@@ -40,8 +47,9 @@ Development follows [ROADMAP.md](ROADMAP.md).
   `CALANGO_PROGRESS` markers drive a progress bar, `CALANGO_ENERGY`
   markers feed a live energy-vs-step plot, and finished jobs offer to
   load their result structure.
-- **Trajectory playback** — File → Open Trajectory (`.traj`, multi-frame
-  XYZ) with play/pause and a frame slider.
+- **Trajectory timeline** — File → Open Trajectory (`.traj`, multi-frame
+  XYZ) shows an interactive timeline docked under the viewport:
+  transport buttons, tick-marked scrubber, and 0.25×–4× playback speed.
 
 ## Building
 
@@ -55,7 +63,9 @@ Prerequisites:
 ```bash
 # 1. Python environment the app will embed
 python3 -m venv .venv
-.venv/bin/pip install ase numpy pillow   # pillow: GIF export
+.venv/bin/pip install ase numpy pillow imageio imageio-ffmpeg
+# pillow: GIF export · imageio(-ffmpeg): MP4 export
+# optional, for MACE ML potentials:  .venv/bin/pip install mace-torch
 
 # 2. Configure — point CMake at that interpreter (and at Qt if needed)
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
