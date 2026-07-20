@@ -4,12 +4,9 @@
 #include <QStyle>
 
 #include <algorithm>
+#include <cmath>
 
 namespace calango::gui {
-
-namespace {
-constexpr int kBaseIntervalMs = 66; // ~15 fps at 1x speed
-} // namespace
 
 TimelineWidget::TimelineWidget(QWidget* parent)
     : QWidget(parent)
@@ -19,7 +16,7 @@ TimelineWidget::TimelineWidget(QWidget* parent)
     , nextButton_(new QToolButton(this))
     , lastButton_(new QToolButton(this))
     , slider_(new QSlider(Qt::Horizontal, this))
-    , speedCombo_(new QComboBox(this))
+    , fpsSpin_(new QDoubleSpinBox(this))
     , frameLabel_(new QLabel(this))
 {
     firstButton_->setIcon(style()->standardIcon(QStyle::SP_MediaSkipBackward));
@@ -31,12 +28,13 @@ TimelineWidget::TimelineWidget(QWidget* parent)
 
     slider_->setTickPosition(QSlider::TicksBelow);
 
-    speedCombo_->addItem(QStringLiteral("0.25×"), 0.25);
-    speedCombo_->addItem(QStringLiteral("0.5×"), 0.5);
-    speedCombo_->addItem(QStringLiteral("1×"), 1.0);
-    speedCombo_->addItem(QStringLiteral("2×"), 2.0);
-    speedCombo_->addItem(QStringLiteral("4×"), 4.0);
-    speedCombo_->setCurrentIndex(2);
+    // Exact numeric playback rate (typed or stepped), instead of a fixed
+    // set of speed multipliers.
+    fpsSpin_->setRange(0.1, 120.0);
+    fpsSpin_->setDecimals(1);
+    fpsSpin_->setValue(15.0);
+    fpsSpin_->setSuffix(tr(" fps"));
+    fpsSpin_->setToolTip(tr("Playback rate in frames per second"));
 
     auto* layout = new QHBoxLayout(this);
     layout->setContentsMargins(6, 2, 6, 2);
@@ -45,7 +43,7 @@ TimelineWidget::TimelineWidget(QWidget* parent)
         layout->addWidget(button);
     layout->addWidget(slider_, 1);
     layout->addWidget(frameLabel_);
-    layout->addWidget(speedCombo_);
+    layout->addWidget(fpsSpin_);
 
     connect(firstButton_, &QToolButton::clicked, this, [this] { slider_->setValue(0); });
     connect(prevButton_, &QToolButton::clicked, this, [this] { step(-1); });
@@ -69,8 +67,8 @@ TimelineWidget::TimelineWidget(QWidget* parent)
         Q_EMIT frameChanged(value);
     });
 
-    connect(speedCombo_, &QComboBox::currentIndexChanged, this,
-            [this](int) { applySpeed(); });
+    connect(fpsSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double) { applySpeed(); });
 
     applySpeed();
     setFrameCount(0);
@@ -83,7 +81,7 @@ void TimelineWidget::setFrameCount(int count)
     const bool usable = count > 1;
     for (QWidget* widget : std::initializer_list<QWidget*>{
              firstButton_, prevButton_, playButton_, nextButton_, lastButton_,
-             slider_, speedCombo_})
+             slider_, fpsSpin_})
         widget->setEnabled(usable);
 
     slider_->setRange(0, std::max(0, count - 1));
@@ -116,8 +114,8 @@ void TimelineWidget::updateLabel()
 
 void TimelineWidget::applySpeed()
 {
-    const double speed = speedCombo_->currentData().toDouble();
-    timer_.setInterval(std::max(10, static_cast<int>(kBaseIntervalMs / speed)));
+    timer_.setInterval(
+        std::max(8, static_cast<int>(std::lround(1000.0 / fpsSpin_->value()))));
 }
 
 } // namespace calango::gui

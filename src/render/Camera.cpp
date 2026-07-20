@@ -47,6 +47,24 @@ QMatrix4x4 OrbitCamera::view() const
     return m;
 }
 
+QVector3D OrbitCamera::worldPosition() const
+{
+    return view().inverted().map(QVector3D(0.0f, 0.0f, 0.0f));
+}
+
+QVector3D OrbitCamera::worldUp() const
+{
+    return view().inverted().mapVector(QVector3D(0.0f, 1.0f, 0.0f)).normalized();
+}
+
+QMatrix4x4 OrbitCamera::rotationOnlyView() const
+{
+    QMatrix4x4 m;
+    m.rotate(pitchDeg_, 1.0f, 0.0f, 0.0f);
+    m.rotate(yawDeg_, 0.0f, 1.0f, 0.0f);
+    return m;
+}
+
 QMatrix4x4 OrbitCamera::projection(float aspectRatio) const
 {
     QMatrix4x4 m;

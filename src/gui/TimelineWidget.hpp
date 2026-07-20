@@ -1,6 +1,6 @@
 #pragma once
 
-#include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QLabel>
 #include <QSlider>
 #include <QTimer>
@@ -41,7 +41,7 @@ private:
     QToolButton* nextButton_;
     QToolButton* lastButton_;
     QSlider* slider_;
-    QComboBox* speedCombo_;
+    QDoubleSpinBox* fpsSpin_; ///< exact numeric playback rate
     QLabel* frameLabel_;
     QTimer timer_;
     int frameCount_ = 0;

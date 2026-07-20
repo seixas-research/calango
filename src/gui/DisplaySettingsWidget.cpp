@@ -3,6 +3,7 @@
 #include "gui/ElementSettingsDialog.hpp"
 #include "gui/ViewportWidget.hpp"
 
+#include <QCheckBox>
 #include <QColorDialog>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -101,6 +102,56 @@ DisplaySettingsWidget::DisplaySettingsWidget(ViewportWidget* viewport, QWidget* 
     });
 
     layout->addWidget(reprGroup);
+
+    // --- Overlays: unit cell wireframe + axes triad -------------------------
+    auto* overlayGroup = new QGroupBox(tr("Unit Cell && Axes"), this);
+    auto* overlayForm = new QFormLayout(overlayGroup);
+
+    auto* cellShowCheck = new QCheckBox(tr("Show unit cell"), overlayGroup);
+    cellShowCheck->setChecked(viewport_->style().showCell);
+    overlayForm->addRow(cellShowCheck);
+    connect(cellShowCheck, &QCheckBox::toggled,
+            viewport_, &ViewportWidget::setShowCell);
+
+    auto* cellColorButton = new QPushButton(overlayGroup);
+    cellColorButton->setFixedHeight(22);
+    setButtonColor(cellColorButton, viewport_->style().cellColor);
+    overlayForm->addRow(tr("Cell color:"), cellColorButton);
+    connect(cellColorButton, &QPushButton::clicked, this, [this, cellColorButton] {
+        const QColor chosen = QColorDialog::getColor(
+            viewport_->style().cellColor, this, tr("Unit Cell Wireframe Color"));
+        if (!chosen.isValid())
+            return;
+        setButtonColor(cellColorButton, chosen);
+        viewport_->style().cellColor = chosen;
+        viewport_->styleChanged(true);
+    });
+
+    auto* cellWidthSpin = new QDoubleSpinBox(overlayGroup);
+    cellWidthSpin->setRange(1.0, 8.0);
+    cellWidthSpin->setSingleStep(0.5);
+    cellWidthSpin->setValue(viewport_->style().cellLineWidth);
+    cellWidthSpin->setToolTip(tr("1 = thin lines; larger values render lit tubes"));
+    overlayForm->addRow(tr("Cell line width:"), cellWidthSpin);
+    connect(cellWidthSpin, &QDoubleSpinBox::valueChanged, this, [this](double value) {
+        viewport_->style().cellLineWidth = static_cast<float>(value);
+        viewport_->styleChanged(true);
+    });
+
+    auto* axesCheck = new QCheckBox(tr("Show axes triad"), overlayGroup);
+    axesCheck->setChecked(true);
+    overlayForm->addRow(axesCheck);
+    connect(axesCheck, &QCheckBox::toggled, viewport_, &ViewportWidget::setShowAxes);
+
+    auto* axesModeCombo = new QComboBox(overlayGroup);
+    axesModeCombo->addItems({tr("Cartesian (X, Y, Z)"),
+                             tr("Lattice vectors (a1, a2, a3)")});
+    overlayForm->addRow(tr("Axes style:"), axesModeCombo);
+    connect(axesModeCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
+        viewport_->setAxesLatticeMode(index == 1);
+    });
+
+    layout->addWidget(overlayGroup);
 
     // --- Lighting ----------------------------------------------------------
     auto* lightGroup = new QGroupBox(tr("Lighting"), this);

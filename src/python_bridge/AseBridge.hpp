@@ -28,7 +28,10 @@ public:
                                const std::string& format = {});
 
     /// All frames of a trajectory / multi-frame file (ase.io.read index=":").
-    static std::vector<core::Structure> readTrajectory(const std::string& path);
+    /// `format` is an explicit ASE format hint for ambiguous extensions
+    /// (e.g. "lammps-data"); empty lets ASE infer from name/content.
+    static std::vector<core::Structure> readTrajectory(const std::string& path,
+                                                       const std::string& format = {});
 
     /// (nx, ny, nz) repetition via ase.Atoms.repeat — requires a defined
     /// cell along the repeated directions.

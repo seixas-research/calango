@@ -5,7 +5,9 @@
 #include "core/Structure.hpp"
 #include "gui/BrillouinZoneDialog.hpp"
 #include "gui/CalculatorDialog.hpp"
+#include "gui/ExamplesDialog.hpp"
 #include "gui/NanoBuilderDialog.hpp"
+#include "gui/RayTraceDialog.hpp"
 #include "gui/RdfDialog.hpp"
 #include "gui/DisplaySettingsWidget.hpp"
 #include "gui/EnergyPlotWidget.hpp"
@@ -138,6 +140,8 @@ void MainWindow::createMenusAndDocks()
                         this, &MainWindow::exportImage);
     fileMenu->addAction(tr("Export Ani&mation (GIF/MP4)…"),
                         this, &MainWindow::exportAnimation);
+    fileMenu->addAction(tr("&Ray-Traced Render…"),
+                        this, &MainWindow::openRayTraceDialog);
     fileMenu->addSeparator();
     fileMenu->addAction(tr("&Quit"), QKeySequence::Quit,
                         qApp, &QApplication::closeAllWindows);
@@ -156,48 +160,18 @@ void MainWindow::createMenusAndDocks()
                         this, &MainWindow::translateSelection);
     editMenu->addAction(tr("&Delete Selected Atoms"), QKeySequence::Delete,
                         this, &MainWindow::deleteSelectedAtoms);
-    editMenu->addSeparator();
-    editMenu->addAction(tr("Add Random &Noise…"), this, &MainWindow::addRandomNoise);
     updateUndoActions();
 
     QMenu* buildMenu = menuBar()->addMenu(tr("&Build"));
     buildMenu->addAction(tr("Create &Supercell…"), this, &MainWindow::createSupercell);
     buildMenu->addAction(tr("Cleave S&urface (Slab)…"), this, &MainWindow::cleaveSurface);
     buildMenu->addAction(tr("&Nanomaterial Builder…"), this, &MainWindow::openNanoBuilder);
-
-    QMenu* examplesMenu = menuBar()->addMenu(tr("E&xamples"));
-    const struct {
-        const char* title;
-        const char* file;
-        const char* recommendation;
-    } examples[] = {
-        {"Diamond (bulk C)", "diamond.vasp", "MACE-MP-0"},
-        {"MoS₂ 2H (bulk)", "mos2_2h_bulk.vasp", "MACE-MP-0"},
-        {"Graphene monolayer", "graphene.vasp", "MACE-MP-0"},
-        {"MoS₂ 1H (monolayer)", "mos2_1h_monolayer.vasp", "MACE-MP-0"},
-        {"Benzene", "benzene.xyz", "MACE-OFF (or EMT for quick tests)"},
-        {"Naphthalene", "naphthalene.xyz", "MACE-OFF"},
-        {"Coronene", "coronene.xyz", "MACE-OFF"},
-    };
-    examplesMenu->addSection(tr("3D crystals"));
-    for (const auto& example : examples) {
-        if (QLatin1String(example.file) == QLatin1String("graphene.vasp"))
-            examplesMenu->addSection(tr("2D materials"));
-        if (QLatin1String(example.file) == QLatin1String("benzene.xyz"))
-            examplesMenu->addSection(tr("Organic molecules"));
-        QAction* action = examplesMenu->addAction(QString::fromUtf8(example.title));
-        const QString resource =
-            QStringLiteral(":/assets/samples/examples/") + QLatin1String(example.file);
-        const QString recommendation = QLatin1String(example.recommendation);
-        action->setToolTip(tr("Recommended potential: %1").arg(recommendation));
-        connect(action, &QAction::triggered, this, [this, resource, recommendation] {
-            loadExample(resource, recommendation);
-        });
-    }
+    buildMenu->addAction(tr("By &Examples…"), this, &MainWindow::openExamplesBrowser);
 
     QMenu* simulationMenu = menuBar()->addMenu(tr("&Simulation"));
     simulationMenu->addAction(tr("&New Calculation…"), QKeySequence(tr("Ctrl+R")),
                               this, &MainWindow::newCalculation);
+    simulationMenu->addAction(tr("Random &Noise…"), this, &MainWindow::addRandomNoise);
 
     QMenu* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
     analysisMenu->addAction(tr("&Brillouin Zone / k-Path…"),
@@ -424,6 +398,31 @@ void MainWindow::redo()
 // File I/O
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// Explicit ASE format hints for extensions ase.io cannot infer reliably.
+QString formatHintFor(const QString& path)
+{
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    if (suffix == QLatin1String("data"))
+        return QStringLiteral("lammps-data");
+    if (suffix == QLatin1String("dump") || suffix == QLatin1String("lammpstrj"))
+        return QStringLiteral("lammps-dump-text");
+    if (suffix == QLatin1String("pwi") || suffix == QLatin1String("in"))
+        return QStringLiteral("espresso-in");
+    if (suffix == QLatin1String("pwo"))
+        return QStringLiteral("espresso-out");
+    if (suffix == QLatin1String("gjf") || suffix == QLatin1String("com"))
+        return QStringLiteral("gaussian-in");
+    if (suffix == QLatin1String("cell"))
+        return QStringLiteral("castep-cell");
+    if (suffix == QLatin1String("res"))
+        return QStringLiteral("res");
+    return {}; // .out and others: let ASE sniff the contents
+}
+
+} // namespace
+
 void MainWindow::loadFile(const QString& path)
 {
     if (!ensureAseAvailable())
@@ -432,7 +431,8 @@ void MainWindow::loadFile(const QString& path)
         // Always read every frame: multi-frame files (trajectories,
         // animated XYZ) get a document with frames, which automatically
         // reveals and activates the timeline panel.
-        const auto rawFrames = pybridge::AseBridge::readTrajectory(path.toStdString());
+        const auto rawFrames = pybridge::AseBridge::readTrajectory(
+            path.toStdString(), formatHintFor(path).toStdString());
         if (rawFrames.empty())
             throw std::runtime_error("File contains no structures");
 
@@ -478,7 +478,14 @@ void MainWindow::openStructure()
 {
     const QStringList paths = QFileDialog::getOpenFileNames(
         this, tr("Open Structure(s)"), QString(),
-        tr("Structure files (*.xyz *.extxyz *.cif POSCAR CONTCAR *.vasp *.traj);;"
+        tr("Structure files (*.xyz *.extxyz *.cif POSCAR CONTCAR *.vasp *.traj "
+           "*.in *.pwi *.pwo *.out *.cell *.data *.dump *.lammpstrj *.gjf *.com "
+           "*.res);;"
+           "Quantum ESPRESSO (*.in *.pwi *.pwo *.out);;"
+           "CASTEP (*.cell);;"
+           "LAMMPS (*.data *.dump *.lammpstrj);;"
+           "Gaussian (*.gjf *.com);;"
+           "SHELX (*.res);;"
            "All files (*)"));
     for (const QString& path : paths)
         loadFile(path);
@@ -507,13 +514,35 @@ void MainWindow::saveStructureAs()
     Document* doc = currentDocument();
     if (!doc || !doc->structure || !ensureAseAvailable())
         return;
+    // Filter -> explicit ASE format (empty = infer from extension).
+    static const QList<QPair<QString, QString>> kSaveFormats = {
+        {tr("XYZ (*.xyz)"), QString()},
+        {tr("Extended XYZ (*.extxyz)"), QStringLiteral("extxyz")},
+        {tr("CIF (*.cif)"), QStringLiteral("cif")},
+        {tr("VASP POSCAR (*.vasp)"), QStringLiteral("vasp")},
+        {tr("Quantum ESPRESSO input (*.pwi *.in)"), QStringLiteral("espresso-in")},
+        {tr("LAMMPS data (*.data)"), QStringLiteral("lammps-data")},
+        {tr("CASTEP cell (*.cell)"), QStringLiteral("castep-cell")},
+        {tr("Gaussian input (*.com *.gjf)"), QStringLiteral("gaussian-in")},
+        {tr("SHELX (*.res)"), QStringLiteral("res")},
+    };
+    QStringList filters;
+    for (const auto& entry : kSaveFormats)
+        filters << entry.first;
+
+    QString selectedFilter;
     const QString path = QFileDialog::getSaveFileName(
-        this, tr("Save Structure As"), QString(),
-        tr("XYZ (*.xyz);;Extended XYZ (*.extxyz);;CIF (*.cif);;VASP POSCAR (*.vasp)"));
+        this, tr("Save Structure As"), QString(), filters.join(QStringLiteral(";;")),
+        &selectedFilter);
     if (path.isEmpty())
         return;
+    QString format;
+    for (const auto& entry : kSaveFormats)
+        if (entry.first == selectedFilter)
+            format = entry.second;
     try {
-        pybridge::AseBridge::writeStructure(*doc->structure, path.toStdString());
+        pybridge::AseBridge::writeStructure(*doc->structure, path.toStdString(),
+                                            format.toStdString());
         statusBar()->showMessage(tr("Saved %1").arg(path));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Save Structure"), QString::fromUtf8(e.what()));
@@ -1077,6 +1106,23 @@ void MainWindow::addRandomNoise()
     form->addRow(positionsCheck);
     form->addRow(cellCheck);
 
+    // Stochastic trajectory generation: 1 frame = perturb in place;
+    // more frames = a new trajectory tab.
+    auto* framesSpin = new QSpinBox(&dialog);
+    framesSpin->setRange(1, 1000);
+    framesSpin->setValue(1);
+    framesSpin->setToolTip(tr("1 perturbs the current structure in place;\n"
+                              "more generates a trajectory in a new tab"));
+    form->addRow(tr("Frames:"), framesSpin);
+
+    auto* modeCombo = new QComboBox(&dialog);
+    modeCombo->addItem(tr("Independent (each frame from the original)"));
+    modeCombo->addItem(tr("Cumulative (random walk from previous frame)"));
+    modeCombo->setEnabled(false);
+    form->addRow(tr("Accumulation:"), modeCombo);
+    connect(framesSpin, &QSpinBox::valueChanged, modeCombo,
+            [modeCombo](int frames) { modeCombo->setEnabled(frames > 1); });
+
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
                                          &dialog);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
@@ -1099,13 +1145,78 @@ void MainWindow::addRandomNoise()
     options.perturbPositions = positionsCheck->isChecked();
     options.perturbCell = cellCheck->isChecked();
 
-    pushUndo();
-    core::applyRandomNoise(*doc->structure, options);
-    notifyStructureChanged(false);
-    statusBar()->showMessage(tr("Applied %1 noise (amplitude %2 Å, seed %3)")
-                                 .arg(distributionCombo->currentText())
-                                 .arg(options.amplitude)
-                                 .arg(options.seed));
+    const int frameCount = framesSpin->value();
+    if (frameCount == 1) {
+        pushUndo();
+        core::applyRandomNoise(*doc->structure, options);
+        notifyStructureChanged(false);
+        statusBar()->showMessage(tr("Applied %1 noise (amplitude %2 Å, seed %3)")
+                                     .arg(distributionCombo->currentText())
+                                     .arg(options.amplitude)
+                                     .arg(options.seed));
+        return;
+    }
+
+    // Multi-frame stochastic trajectory (frame 0 = unperturbed original).
+    const bool cumulative = modeCombo->currentIndex() == 1;
+    const core::Structure original = *doc->structure;
+    std::vector<std::shared_ptr<core::Structure>> frames;
+    frames.reserve(static_cast<std::size_t>(frameCount) + 1);
+    frames.push_back(std::make_shared<core::Structure>(original));
+
+    core::Structure walker = original;
+    for (int k = 1; k <= frameCount; ++k) {
+        core::NoiseOptions frameOptions = options;
+        frameOptions.seed = options.seed + static_cast<unsigned int>(k);
+        if (cumulative) {
+            core::applyRandomNoise(walker, frameOptions); // builds on previous
+            frames.push_back(std::make_shared<core::Structure>(walker));
+        } else {
+            core::Structure fresh = original; // fresh displacement each frame
+            core::applyRandomNoise(fresh, frameOptions);
+            frames.push_back(std::make_shared<core::Structure>(std::move(fresh)));
+        }
+    }
+
+    const QString name = tr("%1 (%2 noise ×%3)")
+                             .arg(doc->fileName,
+                                  cumulative ? tr("cumulative") : tr("independent"))
+                             .arg(frameCount);
+    addDocument(frames.front(), name, std::move(frames));
+    statusBar()->showMessage(
+        tr("Generated %1-frame noise trajectory (seed %2)")
+            .arg(frameCount + 1)
+            .arg(options.seed));
+}
+
+void MainWindow::openExamplesBrowser()
+{
+    if (!ensureAseAvailable())
+        return;
+    ExamplesDialog dialog(this);
+    connect(&dialog, &ExamplesDialog::presetChosen,
+            this, &MainWindow::loadExample);
+    connect(&dialog, &ExamplesDialog::structureFetched, this,
+            [this](std::shared_ptr<core::Structure> structure, const QString& name) {
+                const auto atomCount = structure->size();
+                addDocument(std::move(structure), name);
+                statusBar()->showMessage(tr("Fetched %1 (%2 atoms) from the "
+                                            "Materials Project")
+                                             .arg(name)
+                                             .arg(atomCount));
+            });
+    dialog.exec();
+}
+
+void MainWindow::openRayTraceDialog()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        statusBar()->showMessage(tr("Open a structure first."));
+        return;
+    }
+    RayTraceDialog dialog(viewport_, this);
+    dialog.exec();
 }
 
 // ---------------------------------------------------------------------------

@@ -5,11 +5,18 @@
 
 #include <QColor>
 #include <QImage>
+#include <QOpenGLBuffer>
 #include <QOpenGLFunctions_3_3_Core>
+#include <QOpenGLShaderProgram>
+#include <QOpenGLVertexArrayObject>
 #include <QOpenGLWidget>
 
+#include <array>
 #include <memory>
 #include <set>
+#include <utility>
+
+class QPainter;
 
 namespace calango::core {
 class Structure;
@@ -56,6 +63,12 @@ public Q_SLOTS:
     /// preserves apparent scale (see OrbitCamera::projection).
     void setOrthographic(bool orthographic);
 
+    /// Corner coordinate-triad overlay.
+    void setShowAxes(bool show);
+    /// false = Cartesian X/Y/Z, true = lattice vectors a1/a2/a3
+    /// (falls back to Cartesian when the structure has no cell).
+    void setAxesLatticeMode(bool lattice);
+
     /// Live style access for UI panels. Call styleChanged() afterwards:
     /// geometry-affecting edits (scales, colors, mode) rebuild the GPU
     /// buffers; light-only edits just repaint.
@@ -97,12 +110,22 @@ private:
     /// Re-upload instance buffers if dirty (requires a current context).
     void ensureUploaded();
 
+    /// Axis directions + labels for the triad (Cartesian or lattice).
+    std::array<std::pair<QVector3D, QString>, 3> axesVectors() const;
+    void drawAxesOverlayGl();
+    void drawAxesLabels(QPainter& painter);
+
     render::OrbitCamera camera_;
     render::StructureRenderer renderer_;
     std::shared_ptr<const core::Structure> structure_;
     std::set<int> selection_;
     QColor backgroundColor_{26, 28, 33};
     bool structureDirty_ = false;
+    bool showAxes_ = true;
+    bool axesLatticeMode_ = false;
+    QOpenGLShaderProgram axesProgram_;
+    QOpenGLVertexArrayObject axesVao_;
+    QOpenGLBuffer axesVbo_{QOpenGLBuffer::VertexBuffer};
     QPointF lastMousePos_;
     QPointF pressPos_;
 };

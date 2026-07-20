@@ -108,6 +108,19 @@ This roadmap outlines the core development phases for building a cross-platform 
 *   [ ] RDF averaging over trajectory frames.
 *   [ ] Coordination-number and bond-angle distribution analyses.
 
+## 📅 Phase 10: Overlays, Databases, Stochastic Trajectories & Ray Tracing (v0.7)
+**Focus:** Viewport furniture, external structure databases, noise trajectories, publication renders, and broad file-format coverage.
+
+*   [x] Axes triad overlay in the viewport corner, toggleable, switchable between Cartesian X/Y/Z and Bravais lattice vectors a1/a2/a3 (Display panel).
+*   [x] Unit cell wireframe customization: visibility toggle, QColorDialog color, and line width — widths > 1 render as lit tubes (core-profile GL clamps `glLineWidth`, tubes are the portable equivalent).
+*   [x] Examples moved to Build → By Examples… as a "Database & Preset Browser" with a Presets tab and a Materials Project tab: fetch any structure by mp-id via the documented REST API (urllib through the embedded Python — no mp-api/pymatgen dependency; API key persisted in QSettings). *(JSON→Atoms conversion validated against an mp-149-shaped payload: Si-Si = 2.351 Å.)*
+*   [x] Random Noise moved to the Simulation menu and extended to multi-frame stochastic trajectories with Independent (fresh noise from the original per frame) and Cumulative (random-walk) accumulation modes; trajectories open in a new tab with the timeline active.
+*   [x] Timeline playback speed as a direct numeric FPS field (0.1–120 fps) instead of fixed multipliers.
+*   [x] POV-Ray and Tachyon integration (File → Ray-Traced Render…): scene files generated from the *active viewport scene* (camera pose incl. orthographic mode, lights, per-element styling, multi-bonds, cell), plus QProcess invocation of the installed renderer binary with live log capture.
+*   [x] Expanded ASE-backed I/O: Quantum ESPRESSO input/output (.in/.pwi/.pwo/.out), CASTEP .cell, LAMMPS data + dump trajectories, Gaussian .gjf/.com, SHELX .res, CIF — extension→format hints on read, explicit format mapping on save (QE export auto-fills pseudopotential placeholders). VASP: POSCAR I/O plus KPOINTS generation (Phase 8); INCAR templates remain part of calculator scripts.
+*   [ ] MP database tab: formula/keyword search with result list (currently by-ID fetch).
+*   [ ] Tachyon/POV-Ray trajectory batch rendering (frame sequences).
+
 ## 🚀 Future Modules (Post-MVP)
 *   **Remote Job Submission:** Connect to HPC clusters using SSH/SFTP and generate SLURM/PBS submission scripts.
 *   **Plugin Architecture:** Decouple specific workflows (e.g., NEB path generation, band structure analysis) into modular C++ plugins using `QPluginLoader`.

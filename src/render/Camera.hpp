@@ -38,6 +38,15 @@ public:
     QMatrix4x4 projection(float aspectRatio) const;
 
     float distance() const { return distance_; }
+    QVector3D target() const { return target_; }
+
+    /// World-space eye position / up vector (for ray-tracer scene export).
+    QVector3D worldPosition() const;
+    QVector3D worldUp() const;
+
+    /// View matrix with the translation removed — orientation only
+    /// (used by the axes-triad overlay).
+    QMatrix4x4 rotationOnlyView() const;
 
 private:
     QVector3D target_{0.0f, 0.0f, 0.0f};

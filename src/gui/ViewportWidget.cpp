@@ -4,10 +4,32 @@
 
 #include <QMouseEvent>
 #include <QOpenGLFramebufferObject>
+#include <QPainter>
 #include <QWheelEvent>
 
 #include <cmath>
 #include <limits>
+
+namespace {
+
+constexpr int kAxesBoxPx = 92;  // logical pixels, bottom-left corner
+constexpr int kAxesMarginPx = 10;
+
+const char* kAxesVertexShader = R"(#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aColor;
+uniform mat4 uMvp;
+out vec3 vColor;
+void main() { vColor = aColor; gl_Position = uMvp * vec4(aPos, 1.0); }
+)";
+
+const char* kAxesFragmentShader = R"(#version 330 core
+in vec3 vColor;
+out vec4 fragColor;
+void main() { fragColor = vec4(vColor, 1.0); }
+)";
+
+} // namespace
 
 namespace calango::gui {
 
@@ -80,6 +102,102 @@ void ViewportWidget::setOrthographic(bool orthographic)
     update();
 }
 
+void ViewportWidget::setShowAxes(bool show)
+{
+    showAxes_ = show;
+    update();
+}
+
+void ViewportWidget::setAxesLatticeMode(bool lattice)
+{
+    axesLatticeMode_ = lattice;
+    update();
+}
+
+std::array<std::pair<QVector3D, QString>, 3> ViewportWidget::axesVectors() const
+{
+    if (axesLatticeMode_ && structure_ && structure_->cell().isDefined()) {
+        const auto& v = structure_->cell().vectors();
+        const auto toUnit = [](const core::Vec3& a) {
+            const core::Vec3 n = a.normalized();
+            return QVector3D(static_cast<float>(n.x), static_cast<float>(n.y),
+                             static_cast<float>(n.z));
+        };
+        return {{{toUnit(v[0]), QStringLiteral("a1")},
+                 {toUnit(v[1]), QStringLiteral("a2")},
+                 {toUnit(v[2]), QStringLiteral("a3")}}};
+    }
+    return {{{{1, 0, 0}, QStringLiteral("X")},
+             {{0, 1, 0}, QStringLiteral("Y")},
+             {{0, 0, 1}, QStringLiteral("Z")}}};
+}
+
+void ViewportWidget::drawAxesOverlayGl()
+{
+    // Orientation-only rotation, orthographic corner viewport.
+    const QMatrix4x4 rotation = camera_.rotationOnlyView();
+    QMatrix4x4 proj;
+    proj.ortho(-1.35f, 1.35f, -1.35f, 1.35f, -2.0f, 2.0f);
+
+    const auto axes = axesVectors();
+    const QVector3D colors[3] = {{0.94f, 0.35f, 0.32f},
+                                 {0.36f, 0.83f, 0.40f},
+                                 {0.35f, 0.58f, 0.98f}};
+    std::vector<float> vertices;
+    for (int i = 0; i < 3; ++i) {
+        vertices.insert(vertices.end(), {0.0f, 0.0f, 0.0f, colors[i].x(),
+                                         colors[i].y(), colors[i].z()});
+        const QVector3D& a = axes[static_cast<std::size_t>(i)].first;
+        vertices.insert(vertices.end(),
+                        {a.x(), a.y(), a.z(), colors[i].x(), colors[i].y(),
+                         colors[i].z()});
+    }
+    axesVbo_.bind();
+    axesVbo_.allocate(vertices.data(), static_cast<int>(vertices.size() * sizeof(float)));
+
+    const auto ratio = devicePixelRatioF();
+    glViewport(static_cast<GLint>(kAxesMarginPx * ratio),
+               static_cast<GLint>(kAxesMarginPx * ratio),
+               static_cast<GLsizei>(kAxesBoxPx * ratio),
+               static_cast<GLsizei>(kAxesBoxPx * ratio));
+    glDisable(GL_DEPTH_TEST);
+    axesProgram_.bind();
+    axesProgram_.setUniformValue("uMvp", proj * rotation);
+    axesVao_.bind();
+    glDrawArrays(GL_LINES, 0, 6);
+    axesVao_.release();
+    axesProgram_.release();
+    glEnable(GL_DEPTH_TEST);
+    glViewport(0, 0, static_cast<GLsizei>(width() * ratio),
+               static_cast<GLsizei>(height() * ratio));
+}
+
+void ViewportWidget::drawAxesLabels(QPainter& painter)
+{
+    const QMatrix4x4 transform = [this] {
+        QMatrix4x4 proj;
+        proj.ortho(-1.35f, 1.35f, -1.35f, 1.35f, -2.0f, 2.0f);
+        return proj * camera_.rotationOnlyView();
+    }();
+
+    QFont font = painter.font();
+    font.setBold(true);
+    painter.setFont(font);
+
+    const QColor colors[3] = {QColor(240, 90, 82), QColor(92, 212, 102),
+                              QColor(90, 148, 250)};
+    const auto axes = axesVectors();
+    const QPointF boxOrigin(kAxesMarginPx, height() - kAxesMarginPx - kAxesBoxPx);
+    for (int i = 0; i < 3; ++i) {
+        const QVector3D tip =
+            transform.map(axes[static_cast<std::size_t>(i)].first * 1.12f);
+        const QPointF screen(boxOrigin.x() + (tip.x() * 0.5 + 0.5) * kAxesBoxPx,
+                             boxOrigin.y() + (0.5 - tip.y() * 0.5) * kAxesBoxPx);
+        painter.setPen(colors[i]);
+        painter.drawText(screen, axes[static_cast<std::size_t>(i)].second);
+    }
+}
+
 void ViewportWidget::styleChanged(bool rebuildGeometry)
 {
     if (rebuildGeometry)
@@ -141,6 +259,21 @@ void ViewportWidget::initializeGL()
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_MULTISAMPLE);
     renderer_.initialize(this);
+
+    axesProgram_.addShaderFromSourceCode(QOpenGLShader::Vertex, kAxesVertexShader);
+    axesProgram_.addShaderFromSourceCode(QOpenGLShader::Fragment, kAxesFragmentShader);
+    axesProgram_.link();
+    axesVao_.create();
+    axesVao_.bind();
+    axesVbo_.create();
+    axesVbo_.bind();
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), nullptr);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
+                          reinterpret_cast<void*>(3 * sizeof(float)));
+    axesVao_.release();
+
     structureDirty_ = true;
 }
 
@@ -160,6 +293,8 @@ void ViewportWidget::paintGL()
 {
     ensureUploaded();
 
+    // QPainter overlays reset pieces of GL state — reassert what we need.
+    glEnable(GL_DEPTH_TEST);
     glClearColor(static_cast<float>(backgroundColor_.redF()),
                  static_cast<float>(backgroundColor_.greenF()),
                  static_cast<float>(backgroundColor_.blueF()), 1.0f);
@@ -168,6 +303,13 @@ void ViewportWidget::paintGL()
         ? static_cast<float>(width()) / static_cast<float>(height())
         : 1.0f;
     renderer_.render(camera_.view(), camera_.projection(aspect));
+
+    if (showAxes_) {
+        drawAxesOverlayGl();
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        drawAxesLabels(painter);
+    }
 }
 
 void ViewportWidget::mousePressEvent(QMouseEvent* event)

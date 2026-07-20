@@ -198,6 +198,7 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     indices.clear();
     buildCylinder(24, vertices, indices);
     createMesh(cylinder_, vertices, indices);
+    createMesh(cellTube_, vertices, indices); // same geometry, own instances
 
     createColoredBuffer(wireBonds_);
     createColoredBuffer(wireAtoms_);
@@ -289,6 +290,7 @@ void StructureRenderer::setStructure(const core::Structure* structure,
     std::vector<float> wireBondVertices;
     std::vector<float> wireAtomVertices;
     std::vector<float> cellVertices;
+    std::vector<float> cellTubeInstances;
 
     const bool wantBonds = style_.mode != RepresentationMode::SpaceFilling;
     const bool wireframe = style_.mode == RepresentationMode::Wireframe;
@@ -377,12 +379,20 @@ void StructureRenderer::setStructure(const core::Structure* structure,
 
         if (structure->cell().isDefined()) {
             const auto corners = structure->cell().corners();
+            const bool tubes = style_.cellLineWidth > 1.01f;
+            const float tubeRadius = 0.015f * style_.cellLineWidth;
             for (const auto& [i, j] : core::UnitCell::edges()) {
-                for (const int corner : {i, j}) {
-                    const auto& p = corners[static_cast<std::size_t>(corner)];
-                    cellVertices.insert(cellVertices.end(),
-                                        {static_cast<float>(p.x), static_cast<float>(p.y),
-                                         static_cast<float>(p.z)});
+                const QVector3D from = toQt(corners[static_cast<std::size_t>(i)]);
+                const QVector3D to = toQt(corners[static_cast<std::size_t>(j)]);
+                if (tubes) {
+                    const QVector3D dir = (to - from).normalized();
+                    appendInstance(cellTubeInstances,
+                                   bondTransform(from, dir, from.distanceToPoint(to),
+                                                 tubeRadius),
+                                   style_.cellColor);
+                } else {
+                    for (const QVector3D& p : {from, to})
+                        cellVertices.insert(cellVertices.end(), {p.x(), p.y(), p.z()});
                 }
             }
         }
@@ -400,6 +410,13 @@ void StructureRenderer::setStructure(const core::Structure* structure,
 
     uploadColoredBuffer(wireBonds_, wireBondVertices);
     uploadColoredBuffer(wireAtoms_, wireAtomVertices);
+
+    cellTube_.instanceCount =
+        static_cast<int>(cellTubeInstances.size()) / kFloatsPerInstance;
+    cellTube_.instanceBuffer.bind();
+    cellTube_.instanceBuffer.allocate(
+        cellTubeInstances.data(),
+        static_cast<int>(cellTubeInstances.size() * sizeof(float)));
 
     cellVertexCount_ = static_cast<int>(cellVertices.size()) / 3;
     cellVbo_.bind();
@@ -473,10 +490,24 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
         meshProgram_.release();
     }
 
-    if (style_.showCell && cellVertexCount_ > 0) {
+    if (style_.showCell && cellTube_.instanceCount > 0) {
+        // Thick wireframe: lit tubes (independent of representation mode).
+        meshProgram_.bind();
+        meshProgram_.setUniformValue("uView", view);
+        meshProgram_.setUniformValue("uProj", projection);
+        uploadLights();
+        cellTube_.vao.bind();
+        gl_->glDrawElementsInstanced(GL_TRIANGLES, cellTube_.indexCount, GL_UNSIGNED_INT,
+                                     nullptr, cellTube_.instanceCount);
+        cellTube_.vao.release();
+        meshProgram_.release();
+    } else if (style_.showCell && cellVertexCount_ > 0) {
         lineProgram_.bind();
         lineProgram_.setUniformValue("uMvp", projection * view);
-        lineProgram_.setUniformValue("uColor", QVector4D(0.65f, 0.65f, 0.7f, 1.0f));
+        lineProgram_.setUniformValue(
+            "uColor", QVector4D(static_cast<float>(style_.cellColor.redF()),
+                                static_cast<float>(style_.cellColor.greenF()),
+                                static_cast<float>(style_.cellColor.blueF()), 1.0f));
         cellVao_.bind();
         gl_->glDrawArrays(GL_LINES, 0, cellVertexCount_);
         cellVao_.release();

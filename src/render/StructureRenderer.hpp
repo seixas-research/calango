@@ -57,6 +57,11 @@ public:
         float bondRadius = 0.12f;     ///< Å, base radius of a single bond
         float bondTolerance = 1.15f;  ///< bond-detection cutoff factor
         bool showCell = true;
+        QColor cellColor{166, 166, 178};
+        /// 1 = plain GL lines; > 1 renders the edges as thin lit tubes
+        /// (core-profile GL clamps glLineWidth, so tubes are the portable
+        /// way to get thick cell wireframes).
+        float cellLineWidth = 1.0f;
         std::map<int, QColor> colorOverrides;      ///< Z -> user color
         std::map<int, float> radiusScaleOverrides; ///< Z -> per-element radius factor
     };
@@ -122,6 +127,7 @@ private:
 
     InstancedMesh sphere_;
     InstancedMesh cylinder_;
+    InstancedMesh cellTube_; ///< thick cell wireframe (cellLineWidth > 1)
     ColoredVertexBuffer wireBonds_;  ///< GL_LINES
     ColoredVertexBuffer wireAtoms_;  ///< GL_POINTS (isolated atoms visible)
 

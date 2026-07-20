@@ -92,20 +92,35 @@ void AseBridge::writeStructure(const core::Structure& structure,
 {
     try {
         const py::object write = py::module_::import("ase.io").attr("write");
-        if (format.empty())
-            write(path, toAtoms(structure));
-        else
-            write(path, toAtoms(structure), py::arg("format") = format);
+        const py::object atoms = toAtoms(structure);
+        if (format.empty()) {
+            write(path, atoms);
+        } else if (format == "espresso-in") {
+            // The QE writer requires a pseudopotential per species; emit
+            // conventional "<El>.upf" placeholders the user adjusts to
+            // their pseudo library.
+            py::dict pseudopotentials;
+            for (const core::Atom& atom : structure.atoms())
+                pseudopotentials[py::str(atom.symbol())] =
+                    std::string(atom.symbol()) + ".upf";
+            write(path, atoms, py::arg("format") = format,
+                  py::arg("pseudopotentials") = pseudopotentials);
+        } else {
+            write(path, atoms, py::arg("format") = format);
+        }
     } catch (const py::error_already_set& e) {
         rethrow(e, "Failed to write '" + path + "'");
     }
 }
 
-std::vector<core::Structure> AseBridge::readTrajectory(const std::string& path)
+std::vector<core::Structure> AseBridge::readTrajectory(const std::string& path,
+                                                       const std::string& format)
 {
     try {
-        const py::object images =
-            py::module_::import("ase.io").attr("read")(path, py::arg("index") = ":");
+        const py::object read = py::module_::import("ase.io").attr("read");
+        const py::object images = format.empty()
+            ? read(path, py::arg("index") = ":")
+            : read(path, py::arg("index") = ":", py::arg("format") = format);
         std::vector<core::Structure> frames;
         if (py::isinstance<py::list>(images)) {
             for (const auto& frame : images.cast<py::list>())

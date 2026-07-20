@@ -87,12 +87,16 @@ qt_add_executable(calango
     src/python_bridge/AseBridge.cpp
     src/python_bridge/AnimationExporter.hpp
     src/python_bridge/AnimationExporter.cpp
+    src/python_bridge/MaterialsProject.hpp
+    src/python_bridge/MaterialsProject.cpp
 
     # render — OpenGL "View" over core::Structure (read-only access)
     src/render/Camera.hpp
     src/render/Camera.cpp
     src/render/StructureRenderer.hpp
     src/render/StructureRenderer.cpp
+    src/render/RayTraceExporter.hpp
+    src/render/RayTraceExporter.cpp
 
     # jobs — local subprocess management
     src/jobs/JobRunner.hpp
@@ -129,6 +133,10 @@ qt_add_executable(calango
     src/gui/RdfDialog.cpp
     src/gui/NanoBuilderDialog.hpp
     src/gui/NanoBuilderDialog.cpp
+    src/gui/ExamplesDialog.hpp
+    src/gui/ExamplesDialog.cpp
+    src/gui/RayTraceDialog.hpp
+    src/gui/RayTraceDialog.cpp
 )
 
 qt_add_resources(calango "shaders"

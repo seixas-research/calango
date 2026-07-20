@@ -61,6 +61,8 @@ private Q_SLOTS:
     void showBrillouinZone();
     void showRdf();
     void openNanoBuilder();
+    void openExamplesBrowser();
+    void openRayTraceDialog();
     void addRandomNoise();
     void loadExample(const QString& resourcePath, const QString& recommendation);
 

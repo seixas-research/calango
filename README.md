@@ -70,9 +70,18 @@ Development follows [ROADMAP.md](ROADMAP.md).
   worker thread and plotted with hover readout.
 - **Projection toggle** — perspective ↔ orthographic switch in the
   viewport toolbar, scale-preserving across the transition.
-- **Examples menu** — ready-to-simulate benchmarks (diamond, bulk
-  2H-MoS₂, graphene, 1H-MoS₂ monolayer, benzene, naphthalene, coronene)
-  with recommended potentials.
+- **Database & Preset Browser** (Build → By Examples…) — ready-to-simulate
+  benchmarks (diamond, bulk 2H-MoS₂, graphene, 1H-MoS₂ monolayer, benzene,
+  naphthalene, coronene) with recommended potentials, plus a **Materials
+  Project** tab that fetches structures by mp-id with your API key.
+- **Viewport overlays** — corner axes triad (Cartesian or lattice
+  vectors), and unit-cell wireframe with configurable color and width.
+- **Ray-traced renders** (File menu) — POV-Ray / Tachyon scene export
+  matching the on-screen scene, with one-click invocation of the
+  installed renderer binary.
+- **Stochastic trajectories** (Simulation → Random Noise…) — seeded
+  Gaussian/uniform noise as single perturbations or multi-frame
+  trajectories (independent or cumulative random-walk modes).
 - **Nanomaterial builder** (Build menu) — graphene sheets, zigzag /
   armchair nanoribbons, carbon nanotubes (n, m, length), and MX₂ TMD
   monolayers (1T/2H) via `ase.build`.
