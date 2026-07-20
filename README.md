@@ -64,6 +64,23 @@ Development follows [ROADMAP.md](ROADMAP.md).
   click points in order to draw a k-path, preload ASE's suggested path,
   and export to VASP `KPOINTS` (line mode) or Quantum ESPRESSO
   `K_POINTS crystal_b` files.
+- **Radial distribution function** (Analysis menu) — total and
+  element-pair partial g(r) with exact periodic-image evaluation (PBC
+  defaults from the structure, manually overridable), computed on a
+  worker thread and plotted with hover readout.
+- **Projection toggle** — perspective ↔ orthographic switch in the
+  viewport toolbar, scale-preserving across the transition.
+- **Examples menu** — ready-to-simulate benchmarks (diamond, bulk
+  2H-MoS₂, graphene, 1H-MoS₂ monolayer, benzene, naphthalene, coronene)
+  with recommended potentials.
+- **Nanomaterial builder** (Build menu) — graphene sheets, zigzag /
+  armchair nanoribbons, carbon nanotubes (n, m, length), and MX₂ TMD
+  monolayers (1T/2H) via `ase.build`.
+- **Random noise tool** (Edit menu) — seeded Gaussian/uniform
+  perturbations of positions and/or cell vectors (affine strain) for
+  thermal-like disorder and MD warm starts.
+- **Trajectory automation** — finished MD/optimization jobs open their
+  trajectory in a new tab with the playback timeline pre-loaded.
 
 ## Building
 

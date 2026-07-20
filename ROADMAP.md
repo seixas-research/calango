@@ -96,6 +96,18 @@ This roadmap outlines the core development phases for building a cross-platform 
 *   [ ] Band-structure job template that consumes the drawn k-path directly.
 *   [ ] Segmented (discontinuous) k-paths ("," breaks) in the path builder and exports.
 
+## 📅 Phase 9: Projections, Analysis, Workflow & Builders (v0.6)
+**Focus:** Camera projections, structural analysis, automated trajectory UX, benchmark library, and nanomaterial generators.
+
+*   [x] Perspective ↔ Orthographic camera toggle in the viewport toolbar; the orthographic frustum is matched to the perspective FOV at the target distance so the toggle preserves apparent scale and alignment (picking and exports follow automatically).
+*   [x] Radial distribution function g(r): total and element-pair partial RDFs, exact periodic-image evaluation (valid beyond L/2, triclinic-safe) with PBC defaulting from the structure and manual override; computed on a worker thread (QtConcurrent) and plotted in an interactive hover-readout chart. *(Validated: sc lattice shell positions and first-shell coordination = 6.000; CsCl-type partials.)*
+*   [x] Automated trajectory workflow: finished MD/optimization jobs auto-open their `md.traj`/`opt.traj` in a new tab with the timeline pre-loaded; any multi-frame file (traj/XYZ) loaded by any path now activates the timeline automatically.
+*   [x] Pre-built benchmark Examples menu (embedded as Qt resources, with recommended potentials): Diamond, bulk 2H-MoS₂, graphene monolayer, 1H-MoS₂ monolayer, benzene, naphthalene, coronene.
+*   [x] Nanomaterial Builder dialog (ase.build): graphene sheets, zigzag/armchair nanoribbons (optional H termination), carbon nanotubes with chiral indices (n, m) and length, and MX₂ TMD monolayers (formula, 1T/2H phase, lattice parameters, vacuum).
+*   [x] Random noise generator: Gaussian or uniform displacements with amplitude (Å) and reproducible seed; targets positions, cell vectors (affine strain — atoms follow fractionally), or both. Undoable.
+*   [ ] RDF averaging over trajectory frames.
+*   [ ] Coordination-number and bond-angle distribution analyses.
+
 ## 🚀 Future Modules (Post-MVP)
 *   **Remote Job Submission:** Connect to HPC clusters using SSH/SFTP and generate SLURM/PBS submission scripts.
 *   **Plugin Architecture:** Decouple specific workflows (e.g., NEB path generation, band structure analysis) into modular C++ plugins using `QPluginLoader`.

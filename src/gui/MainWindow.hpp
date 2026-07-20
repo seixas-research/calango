@@ -59,6 +59,10 @@ private Q_SLOTS:
     void onJobFinished(int exitCode, bool crashed);
     void showFrame(int index);
     void showBrillouinZone();
+    void showRdf();
+    void openNanoBuilder();
+    void addRandomNoise();
+    void loadExample(const QString& resourcePath, const QString& recommendation);
 
     void onTabChanged(int index);
     void onTabCloseRequested(int index);

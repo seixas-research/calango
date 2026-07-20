@@ -50,9 +50,17 @@ QMatrix4x4 OrbitCamera::view() const
 QMatrix4x4 OrbitCamera::projection(float aspectRatio) const
 {
     QMatrix4x4 m;
-    m.perspective(40.0f, aspectRatio,
-                  std::max(0.01f, distance_ * 0.01f),
-                  distance_ * 50.0f);
+    const float nearPlane = std::max(0.01f, distance_ * 0.01f);
+    const float farPlane = distance_ * 50.0f;
+    if (projectionMode_ == CameraProjection::Orthographic) {
+        // Half-height matching the perspective frustum at the target
+        // distance keeps apparent size constant across the toggle.
+        const float halfHeight = distance_ * std::tan(qDegreesToRadians(20.0f));
+        m.ortho(-halfHeight * aspectRatio, halfHeight * aspectRatio,
+                -halfHeight, halfHeight, nearPlane, farPlane);
+    } else {
+        m.perspective(40.0f, aspectRatio, nearPlane, farPlane);
+    }
     return m;
 }
 

@@ -5,10 +5,23 @@
 
 namespace calango::render {
 
+enum class CameraProjection {
+    Perspective,
+    Orthographic,
+};
+
 /// Orbit (turntable) camera: yaw/pitch around a target point, with pan
 /// and dolly-zoom. All angles in degrees.
+///
+/// The orthographic frustum height is matched to the perspective FOV at
+/// the target distance, so toggling projections keeps the structure at
+/// the same apparent size and alignment; zoom keeps working in both modes
+/// because both derive their extent from distance().
 class OrbitCamera {
 public:
+    void setProjectionMode(CameraProjection mode) { projectionMode_ = mode; }
+    CameraProjection projectionMode() const { return projectionMode_; }
+
     void rotate(float dxDeg, float dyDeg);
 
     /// Pan in screen space; dx/dy are in pixels, scaled by distance so the
@@ -31,6 +44,7 @@ private:
     float distance_ = 20.0f;
     float yawDeg_ = 0.0f;
     float pitchDeg_ = 20.0f;
+    CameraProjection projectionMode_ = CameraProjection::Perspective;
 };
 
 } // namespace calango::render

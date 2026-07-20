@@ -51,6 +51,11 @@ public:
     QColor backgroundColor() const { return backgroundColor_; }
     void setBackgroundColor(const QColor& color);
 
+public Q_SLOTS:
+    /// Perspective (default) vs. orthographic projection; the transition
+    /// preserves apparent scale (see OrbitCamera::projection).
+    void setOrthographic(bool orthographic);
+
     /// Live style access for UI panels. Call styleChanged() afterwards:
     /// geometry-affecting edits (scales, colors, mode) rebuild the GPU
     /// buffers; light-only edits just repaint.

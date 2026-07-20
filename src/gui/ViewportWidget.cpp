@@ -73,6 +73,13 @@ void ViewportWidget::setBackgroundColor(const QColor& color)
     update();
 }
 
+void ViewportWidget::setOrthographic(bool orthographic)
+{
+    camera_.setProjectionMode(orthographic ? render::CameraProjection::Orthographic
+                                           : render::CameraProjection::Perspective);
+    update();
+}
+
 void ViewportWidget::styleChanged(bool rebuildGeometry)
 {
     if (rebuildGeometry)

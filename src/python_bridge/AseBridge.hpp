@@ -40,6 +40,25 @@ public:
     static core::Structure makeSlab(const core::Structure& structure,
                                     int h, int k, int l, int layers, double vacuum);
 
+    // -- Nanomaterial builders (ase.build wrappers) ------------------------
+
+    /// Periodic graphene sheet (nx × ny cells, lattice constant a in Å).
+    static core::Structure buildGraphene(double a, int nx, int ny, double vacuum);
+
+    /// Graphene nanoribbon; `zigzag` selects the edge type, `saturated`
+    /// hydrogen-terminates the edges. width/length in ribbon unit cells.
+    static core::Structure buildNanoribbon(int width, int length, bool zigzag,
+                                           bool saturated, double vacuum);
+
+    /// Carbon nanotube with chiral indices (n, m) and `length` unit cells.
+    static core::Structure buildNanotube(int n, int m, int length, double bond,
+                                         double vacuum);
+
+    /// TMD monolayer via ase.build.mx2 (e.g. "MoS2", phase "2H" or "1T").
+    static core::Structure buildMx2(const std::string& formula, const std::string& phase,
+                                    double a, double thickness, int nx, int ny,
+                                    double vacuum);
+
     /// High-symmetry k-points and ASE's suggested band path for the
     /// structure's Bravais lattice (via ase Cell.bandpath()). The path
     /// string concatenates labels, ','-separated per segment ("GXWKG,UX").

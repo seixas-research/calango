@@ -132,6 +132,60 @@ core::Structure AseBridge::makeSlab(const core::Structure& structure,
     }
 }
 
+core::Structure AseBridge::buildGraphene(double a, int nx, int ny, double vacuum)
+{
+    try {
+        const py::object atoms = py::module_::import("ase.build").attr("graphene")(
+            py::arg("a") = a, py::arg("size") = py::make_tuple(nx, ny, 1),
+            py::arg("vacuum") = vacuum);
+        return fromAtoms(atoms);
+    } catch (const py::error_already_set& e) {
+        rethrow(e, "Failed to build graphene sheet");
+    }
+}
+
+core::Structure AseBridge::buildNanoribbon(int width, int length, bool zigzag,
+                                           bool saturated, double vacuum)
+{
+    try {
+        const py::object atoms =
+            py::module_::import("ase.build").attr("graphene_nanoribbon")(
+                width, length, py::arg("type") = (zigzag ? "zigzag" : "armchair"),
+                py::arg("saturated") = saturated, py::arg("vacuum") = vacuum);
+        return fromAtoms(atoms);
+    } catch (const py::error_already_set& e) {
+        rethrow(e, "Failed to build graphene nanoribbon");
+    }
+}
+
+core::Structure AseBridge::buildNanotube(int n, int m, int length, double bond,
+                                         double vacuum)
+{
+    try {
+        const py::object atoms = py::module_::import("ase.build").attr("nanotube")(
+            n, m, py::arg("length") = length, py::arg("bond") = bond,
+            py::arg("vacuum") = vacuum);
+        return fromAtoms(atoms);
+    } catch (const py::error_already_set& e) {
+        rethrow(e, "Failed to build nanotube (n, m must not both be zero)");
+    }
+}
+
+core::Structure AseBridge::buildMx2(const std::string& formula, const std::string& phase,
+                                    double a, double thickness, int nx, int ny,
+                                    double vacuum)
+{
+    try {
+        const py::object atoms = py::module_::import("ase.build").attr("mx2")(
+            py::arg("formula") = formula, py::arg("kind") = phase, py::arg("a") = a,
+            py::arg("thickness") = thickness,
+            py::arg("size") = py::make_tuple(nx, ny, 1), py::arg("vacuum") = vacuum);
+        return fromAtoms(atoms);
+    } catch (const py::error_already_set& e) {
+        rethrow(e, "Failed to build " + formula + " (" + phase + ")");
+    }
+}
+
 AseBridge::BandPathInfo AseBridge::bandPathInfo(const core::Structure& structure)
 {
     try {

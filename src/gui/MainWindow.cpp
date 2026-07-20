@@ -1,9 +1,12 @@
 #include "gui/MainWindow.hpp"
 
 #include "core/BrillouinZone.hpp"
+#include "core/Noise.hpp"
 #include "core/Structure.hpp"
 #include "gui/BrillouinZoneDialog.hpp"
 #include "gui/CalculatorDialog.hpp"
+#include "gui/NanoBuilderDialog.hpp"
+#include "gui/RdfDialog.hpp"
 #include "gui/DisplaySettingsWidget.hpp"
 #include "gui/EnergyPlotWidget.hpp"
 #include "gui/JobLogWidget.hpp"
@@ -41,6 +44,8 @@
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabBar>
+#include <QTemporaryDir>
+#include <QToolBar>
 #include <QTabWidget>
 #include <QTextStream>
 #include <QVBoxLayout>
@@ -151,11 +156,44 @@ void MainWindow::createMenusAndDocks()
                         this, &MainWindow::translateSelection);
     editMenu->addAction(tr("&Delete Selected Atoms"), QKeySequence::Delete,
                         this, &MainWindow::deleteSelectedAtoms);
+    editMenu->addSeparator();
+    editMenu->addAction(tr("Add Random &Noise…"), this, &MainWindow::addRandomNoise);
     updateUndoActions();
 
     QMenu* buildMenu = menuBar()->addMenu(tr("&Build"));
     buildMenu->addAction(tr("Create &Supercell…"), this, &MainWindow::createSupercell);
     buildMenu->addAction(tr("Cleave S&urface (Slab)…"), this, &MainWindow::cleaveSurface);
+    buildMenu->addAction(tr("&Nanomaterial Builder…"), this, &MainWindow::openNanoBuilder);
+
+    QMenu* examplesMenu = menuBar()->addMenu(tr("E&xamples"));
+    const struct {
+        const char* title;
+        const char* file;
+        const char* recommendation;
+    } examples[] = {
+        {"Diamond (bulk C)", "diamond.vasp", "MACE-MP-0"},
+        {"MoS₂ 2H (bulk)", "mos2_2h_bulk.vasp", "MACE-MP-0"},
+        {"Graphene monolayer", "graphene.vasp", "MACE-MP-0"},
+        {"MoS₂ 1H (monolayer)", "mos2_1h_monolayer.vasp", "MACE-MP-0"},
+        {"Benzene", "benzene.xyz", "MACE-OFF (or EMT for quick tests)"},
+        {"Naphthalene", "naphthalene.xyz", "MACE-OFF"},
+        {"Coronene", "coronene.xyz", "MACE-OFF"},
+    };
+    examplesMenu->addSection(tr("3D crystals"));
+    for (const auto& example : examples) {
+        if (QLatin1String(example.file) == QLatin1String("graphene.vasp"))
+            examplesMenu->addSection(tr("2D materials"));
+        if (QLatin1String(example.file) == QLatin1String("benzene.xyz"))
+            examplesMenu->addSection(tr("Organic molecules"));
+        QAction* action = examplesMenu->addAction(QString::fromUtf8(example.title));
+        const QString resource =
+            QStringLiteral(":/assets/samples/examples/") + QLatin1String(example.file);
+        const QString recommendation = QLatin1String(example.recommendation);
+        action->setToolTip(tr("Recommended potential: %1").arg(recommendation));
+        connect(action, &QAction::triggered, this, [this, resource, recommendation] {
+            loadExample(resource, recommendation);
+        });
+    }
 
     QMenu* simulationMenu = menuBar()->addMenu(tr("&Simulation"));
     simulationMenu->addAction(tr("&New Calculation…"), QKeySequence(tr("Ctrl+R")),
@@ -164,6 +202,8 @@ void MainWindow::createMenusAndDocks()
     QMenu* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
     analysisMenu->addAction(tr("&Brillouin Zone / k-Path…"),
                             this, &MainWindow::showBrillouinZone);
+    analysisMenu->addAction(tr("&Radial Distribution Function…"),
+                            this, &MainWindow::showRdf);
 
     QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(tr("&Frame Structure"), QKeySequence(tr("F")),
@@ -175,6 +215,17 @@ void MainWindow::createMenusAndDocks()
 
     QMenu* helpMenu = menuBar()->addMenu(tr("&Help"));
     helpMenu->addAction(tr("&About Calango"), this, &MainWindow::about);
+
+    // Viewport toolbar: framing + projection toggle.
+    QToolBar* viewToolbar = addToolBar(tr("Viewport"));
+    viewToolbar->setObjectName(QStringLiteral("viewportToolbar"));
+    viewToolbar->addAction(tr("Frame"), viewport_, &ViewportWidget::frameStructure);
+    QAction* orthoAction = viewToolbar->addAction(tr("Orthographic"));
+    orthoAction->setCheckable(true);
+    orthoAction->setToolTip(tr("Toggle between perspective and orthographic projection"));
+    connect(orthoAction, &QAction::toggled,
+            viewport_, &ViewportWidget::setOrthographic);
+    viewMenu->addAction(orthoAction);
 
     auto* infoDock = new QDockWidget(tr("Structure"), this);
     infoDock->setObjectName(QStringLiteral("structureDock"));
@@ -378,15 +429,49 @@ void MainWindow::loadFile(const QString& path)
     if (!ensureAseAvailable())
         return;
     try {
-        auto structure = std::make_shared<core::Structure>(
-            pybridge::AseBridge::readStructure(path.toStdString()));
-        const auto atomCount = structure->size();
-        addDocument(std::move(structure), QFileInfo(path).fileName());
-        statusBar()->showMessage(tr("Loaded %1 (%2 atoms)").arg(path).arg(atomCount));
+        // Always read every frame: multi-frame files (trajectories,
+        // animated XYZ) get a document with frames, which automatically
+        // reveals and activates the timeline panel.
+        const auto rawFrames = pybridge::AseBridge::readTrajectory(path.toStdString());
+        if (rawFrames.empty())
+            throw std::runtime_error("File contains no structures");
+
+        if (rawFrames.size() == 1) {
+            auto structure = std::make_shared<core::Structure>(rawFrames.front());
+            const auto atomCount = structure->size();
+            addDocument(std::move(structure), QFileInfo(path).fileName());
+            statusBar()->showMessage(tr("Loaded %1 (%2 atoms)").arg(path).arg(atomCount));
+        } else {
+            std::vector<std::shared_ptr<core::Structure>> frames;
+            frames.reserve(rawFrames.size());
+            for (const auto& frame : rawFrames)
+                frames.push_back(std::make_shared<core::Structure>(frame));
+            const auto frameCount = frames.size();
+            addDocument(frames.front(), QFileInfo(path).fileName(), std::move(frames));
+            statusBar()->showMessage(
+                tr("Loaded %1 (%2 frames)").arg(path).arg(frameCount));
+        }
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Open Structure"),
                               QString::fromUtf8(e.what()));
     }
+}
+
+void MainWindow::loadExample(const QString& resourcePath, const QString& recommendation)
+{
+    // Resource files need a real path for ase.io — stage them in temp
+    // with their original name so the tab title stays meaningful.
+    static QTemporaryDir stagingDir;
+    if (!stagingDir.isValid())
+        return;
+    const QString target = stagingDir.filePath(QFileInfo(resourcePath).fileName());
+    if (!QFile::exists(target))
+        QFile::copy(resourcePath, target);
+    loadFile(target);
+    statusBar()->showMessage(
+        tr("%1 — recommended potential: %2")
+            .arg(QFileInfo(resourcePath).fileName(), recommendation),
+        8000);
 }
 
 void MainWindow::openStructure()
@@ -401,31 +486,11 @@ void MainWindow::openStructure()
 
 void MainWindow::openTrajectory()
 {
-    if (!ensureAseAvailable())
-        return;
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Open Trajectory"), QString(),
         tr("Trajectories (*.traj *.extxyz *.xyz);;All files (*)"));
-    if (path.isEmpty())
-        return;
-
-    try {
-        const auto rawFrames = pybridge::AseBridge::readTrajectory(path.toStdString());
-        if (rawFrames.empty())
-            throw std::runtime_error("Trajectory contains no frames");
-
-        std::vector<std::shared_ptr<core::Structure>> frames;
-        frames.reserve(rawFrames.size());
-        for (const auto& frame : rawFrames)
-            frames.push_back(std::make_shared<core::Structure>(frame));
-
-        const auto frameCount = frames.size();
-        addDocument(frames.front(), QFileInfo(path).fileName(), std::move(frames));
-        statusBar()->showMessage(
-            tr("Loaded trajectory %1 (%2 frames)").arg(path).arg(frameCount));
-    } catch (const std::exception& e) {
-        QMessageBox::critical(this, tr("Open Trajectory"), QString::fromUtf8(e.what()));
-    }
+    if (!path.isEmpty())
+        loadFile(path); // multi-frame aware — activates the timeline
 }
 
 void MainWindow::showFrame(int index)
@@ -947,6 +1012,102 @@ void MainWindow::showBrillouinZone()
     }
 }
 
+void MainWindow::showRdf()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Radial Distribution Function"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    RdfDialog dialog(doc->structure, this);
+    dialog.exec();
+}
+
+void MainWindow::openNanoBuilder()
+{
+    if (!ensureAseAvailable())
+        return;
+    NanoBuilderDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted || !dialog.result())
+        return;
+    const auto atomCount = dialog.result()->size();
+    addDocument(dialog.result(), dialog.resultName());
+    statusBar()->showMessage(
+        tr("Built %1 (%2 atoms)").arg(dialog.resultName()).arg(atomCount));
+}
+
+void MainWindow::addRandomNoise()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        statusBar()->showMessage(tr("Open a structure first."));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Add Random Noise"));
+    auto* form = new QFormLayout(&dialog);
+
+    auto* distributionCombo = new QComboBox(&dialog);
+    distributionCombo->addItems({tr("Gaussian (normal)"), tr("Uniform")});
+    form->addRow(tr("Distribution:"), distributionCombo);
+
+    auto* amplitudeSpin = new QDoubleSpinBox(&dialog);
+    amplitudeSpin->setRange(0.001, 5.0);
+    amplitudeSpin->setDecimals(3);
+    amplitudeSpin->setSingleStep(0.01);
+    amplitudeSpin->setValue(0.05);
+    amplitudeSpin->setSuffix(tr(" Å"));
+    amplitudeSpin->setToolTip(tr("Gaussian: σ per component · Uniform: half-width"));
+    form->addRow(tr("Amplitude:"), amplitudeSpin);
+
+    auto* seedSpin = new QSpinBox(&dialog);
+    seedSpin->setRange(0, 2147483647);
+    seedSpin->setValue(42);
+    form->addRow(tr("Random seed:"), seedSpin);
+
+    auto* positionsCheck = new QCheckBox(tr("Perturb atomic positions"), &dialog);
+    positionsCheck->setChecked(true);
+    auto* cellCheck = new QCheckBox(tr("Perturb unit cell vectors (random strain)"),
+                                    &dialog);
+    cellCheck->setEnabled(doc->structure->cell().isDefined());
+    cellCheck->setToolTip(tr("Atoms follow the cell affinely (fractional "
+                             "coordinates preserved)"));
+    form->addRow(positionsCheck);
+    form->addRow(cellCheck);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                         &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    form->addRow(buttons);
+
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    if (!positionsCheck->isChecked() && !cellCheck->isChecked()) {
+        statusBar()->showMessage(tr("Nothing selected to perturb."));
+        return;
+    }
+
+    core::NoiseOptions options;
+    options.distribution = distributionCombo->currentIndex() == 0
+        ? core::NoiseOptions::Distribution::Gaussian
+        : core::NoiseOptions::Distribution::Uniform;
+    options.amplitude = amplitudeSpin->value();
+    options.seed = static_cast<unsigned int>(seedSpin->value());
+    options.perturbPositions = positionsCheck->isChecked();
+    options.perturbCell = cellCheck->isChecked();
+
+    pushUndo();
+    core::applyRandomNoise(*doc->structure, options);
+    notifyStructureChanged(false);
+    statusBar()->showMessage(tr("Applied %1 noise (amplitude %2 Å, seed %3)")
+                                 .arg(distributionCombo->currentText())
+                                 .arg(options.amplitude)
+                                 .arg(options.seed));
+}
+
 // ---------------------------------------------------------------------------
 // Simulation
 // ---------------------------------------------------------------------------
@@ -1018,7 +1179,22 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     if (crashed || exitCode != 0 || lastJobDir_.isEmpty())
         return;
 
-    // Offer the relaxed / final structure produced by the job.
+    // MD / optimization runs: open the trajectory automatically in a new
+    // tab — the timeline comes pre-loaded and ready to scrub.
+    for (const auto* trajectory : {"opt.traj", "md.traj"}) {
+        const QString trajectoryPath = lastJobDir_ + QLatin1Char('/')
+            + QLatin1String(trajectory);
+        if (!QFile::exists(trajectoryPath))
+            continue;
+        loadFile(trajectoryPath);
+        statusBar()->showMessage(
+            tr("Job finished — trajectory %1 opened in a new tab")
+                .arg(QLatin1String(trajectory)),
+            8000);
+        return;
+    }
+
+    // Otherwise offer the final structure, if the job produced one.
     for (const auto* candidate : {"optimized.extxyz", "md_final.extxyz"}) {
         const QString resultPath = lastJobDir_ + QLatin1Char('/')
             + QLatin1String(candidate);

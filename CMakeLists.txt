@@ -15,7 +15,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Dependencies
 # ---------------------------------------------------------------------------
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets OpenGLWidgets)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets OpenGLWidgets Concurrent)
 qt_standard_project_setup()   # enables AUTOMOC / AUTORCC / AUTOUIC
 
 # Recent macOS SDKs removed the ancient AGL framework, but Qt's WrapOpenGL
@@ -75,6 +75,10 @@ qt_add_executable(calango
     src/core/BrillouinZone.cpp
     src/core/KPath.hpp
     src/core/KPath.cpp
+    src/core/Rdf.hpp
+    src/core/Rdf.cpp
+    src/core/Noise.hpp
+    src/core/Noise.cpp
 
     # python_bridge — embedded CPython + ASE interop
     src/python_bridge/PythonEngine.hpp
@@ -119,6 +123,12 @@ qt_add_executable(calango
     src/gui/BrillouinZoneView.cpp
     src/gui/BrillouinZoneDialog.hpp
     src/gui/BrillouinZoneDialog.cpp
+    src/gui/LinePlotWidget.hpp
+    src/gui/LinePlotWidget.cpp
+    src/gui/RdfDialog.hpp
+    src/gui/RdfDialog.cpp
+    src/gui/NanoBuilderDialog.hpp
+    src/gui/NanoBuilderDialog.cpp
 )
 
 qt_add_resources(calango "shaders"
@@ -130,6 +140,18 @@ qt_add_resources(calango "shaders"
         assets/shaders/line.frag
         assets/shaders/wire.vert
         assets/shaders/wire.frag
+)
+
+qt_add_resources(calango "examples"
+    PREFIX "/"
+    FILES
+        assets/samples/examples/diamond.vasp
+        assets/samples/examples/mos2_2h_bulk.vasp
+        assets/samples/examples/graphene.vasp
+        assets/samples/examples/mos2_1h_monolayer.vasp
+        assets/samples/examples/benzene.xyz
+        assets/samples/examples/naphthalene.xyz
+        assets/samples/examples/coronene.xyz
 )
 
 target_include_directories(calango PRIVATE src)
@@ -149,6 +171,7 @@ target_compile_definitions(calango PRIVATE
 target_link_libraries(calango PRIVATE
     Qt6::Widgets
     Qt6::OpenGLWidgets
+    Qt6::Concurrent
     pybind11::embed
 )
 if(APPLE)
