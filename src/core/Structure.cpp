@@ -1,9 +1,39 @@
 #include "core/Structure.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 
 namespace calango::core {
+
+namespace {
+
+/// Distance-based bond-order heuristic. Calibrated on typical bond lengths
+/// relative to the sum of covalent radii (e.g. C–O 1.43 Å / 1.42 Å ≈ 1.01,
+/// C=O 1.21 Å ≈ 0.85, C≡O 1.13 Å ≈ 0.80). Only elements that commonly form
+/// multiple bonds participate — short metal-metal contacts must not be
+/// mistaken for double bonds. Real bond-order data (e.g. from SMILES or a
+/// force field) can override this later via Bond::order.
+int perceiveBondOrder(int zA, int zB, double distanceRatio)
+{
+    const auto formsMultipleBonds = [](int z) {
+        switch (z) {
+        case 6: case 7: case 8: case 15: case 16: case 33: case 34: // C N O P S As Se
+            return true;
+        default:
+            return false;
+        }
+    };
+    if (!formsMultipleBonds(zA) || !formsMultipleBonds(zB))
+        return 1;
+    if (distanceRatio < 0.81)
+        return 3;
+    if (distanceRatio < 0.92)
+        return 2;
+    return 1;
+}
+
+} // namespace
 
 void Structure::removeAtom(std::size_t index)
 {
@@ -91,10 +121,14 @@ std::vector<Bond> Structure::detectBonds(double tolerance) const
                 }
             }
 
-            const double cutoff = tolerance * (a.covalentRadius() + b.covalentRadius());
+            const double radiusSum = a.covalentRadius() + b.covalentRadius();
+            const double cutoff = tolerance * radiusSum;
             const double distSq = d.dot(d);
-            if (distSq < cutoff * cutoff && distSq > 0.16) // 0.4 Å floor: overlapping atoms
-                bonds.push_back({i, j, offset});
+            if (distSq < cutoff * cutoff && distSq > 0.16) { // 0.4 Å floor: overlapping atoms
+                const int order = perceiveBondOrder(
+                    a.atomicNumber, b.atomicNumber, std::sqrt(distSq) / radiusSum);
+                bonds.push_back({i, j, offset, order});
+            }
         }
     }
     return bonds;

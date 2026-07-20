@@ -3,6 +3,7 @@
 #include "core/Structure.hpp"
 
 #include <QMouseEvent>
+#include <QOpenGLFramebufferObject>
 #include <QWheelEvent>
 
 #include <cmath>
@@ -60,6 +61,55 @@ void ViewportWidget::setShowCell(bool show)
     update();
 }
 
+void ViewportWidget::setRepresentation(render::RepresentationMode mode)
+{
+    renderer_.style().mode = mode;
+    refreshStructure();
+}
+
+void ViewportWidget::styleChanged(bool rebuildGeometry)
+{
+    if (rebuildGeometry)
+        refreshStructure();
+    else
+        update();
+}
+
+QImage ViewportWidget::renderToImage(int width, int height, const QColor& background,
+                                     float extraYawDeg)
+{
+    makeCurrent();
+    ensureUploaded();
+
+    QOpenGLFramebufferObjectFormat format;
+    format.setAttachment(QOpenGLFramebufferObject::CombinedDepthStencil);
+    format.setSamples(8);
+    format.setInternalTextureFormat(GL_RGBA8);
+    QOpenGLFramebufferObject fbo(width, height, format);
+    fbo.bind();
+
+    glViewport(0, 0, width, height);
+    glClearColor(static_cast<float>(background.redF()),
+                 static_cast<float>(background.greenF()),
+                 static_cast<float>(background.blueF()),
+                 static_cast<float>(background.alphaF()));
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    render::OrbitCamera camera = camera_; // copy: don't disturb the live view
+    camera.rotate(extraYawDeg, 0.0f);
+    renderer_.render(camera.view(),
+                     camera.projection(static_cast<float>(width)
+                                       / static_cast<float>(std::max(1, height))));
+
+    fbo.release();
+    // toImage() resolves multisampling and flips to Qt orientation.
+    QImage image = fbo.toImage().convertToFormat(QImage::Format_ARGB32);
+
+    glClearColor(0.10f, 0.11f, 0.13f, 1.0f); // restore viewport clear color
+    doneCurrent();
+    return image;
+}
+
 void ViewportWidget::frameStructure()
 {
     if (!structure_ || structure_->empty())
@@ -86,12 +136,17 @@ void ViewportWidget::resizeGL(int, int)
 {
 }
 
-void ViewportWidget::paintGL()
+void ViewportWidget::ensureUploaded()
 {
     if (structureDirty_) {
         renderer_.setStructure(structure_.get(), &selection_);
         structureDirty_ = false;
     }
+}
+
+void ViewportWidget::paintGL()
+{
+    ensureUploaded();
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     const float aspect = height() > 0

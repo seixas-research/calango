@@ -11,8 +11,18 @@ Development follows [ROADMAP.md](ROADMAP.md).
 
 - **3D visualizer** — atoms as instanced spheres (CPK colors), bonds as
   per-atom-colored cylinders (minimum-image bonds across periodic
-  boundaries), unit-cell wireframe; orbit/pan/zoom camera (OpenGL 3.3
-  core via `QOpenGLWidget`).
+  boundaries; double/triple bonds as parallel offset cylinders),
+  unit-cell wireframe; orbit/pan/zoom camera (OpenGL 3.3 core via
+  `QOpenGLWidget`).
+- **Display panel** — Ball-and-Stick / Space-filling (CPK) / Wireframe
+  representations, global atom-radius and bond-width sliders, per-element
+  color overrides (Atom Color Editor), and up to 4 configurable
+  directional lights (direction + ambient/diffuse/specular).
+- **Image & animation export** — high-resolution off-screen captures
+  (8× MSAA, up to 8192 px) to PNG/JPEG with white or transparent
+  background, and animated GIFs (turntable rotation or trajectory
+  playback) encoded through Pillow in the embedded Python
+  (`pip install pillow`).
 - **Picking & editing** — click / Ctrl+click ray-cast selection with
   highlight; add atoms, change element, translate or delete selections;
   snapshot undo/redo (Ctrl+Z / Ctrl+Shift+Z).
@@ -45,7 +55,7 @@ Prerequisites:
 ```bash
 # 1. Python environment the app will embed
 python3 -m venv .venv
-.venv/bin/pip install ase numpy
+.venv/bin/pip install ase numpy pillow   # pillow: GIF export
 
 # 2. Configure — point CMake at that interpreter (and at Qt if needed)
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \

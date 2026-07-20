@@ -15,6 +15,9 @@ struct Bond {
     /// Cartesian shift applied to atom j's position to get the periodic
     /// image actually bonded to atom i. Zero for bonds inside the cell.
     Vec3 imageOffset{};
+    /// Perceived bond order (1, 2 or 3) from the distance/covalent-radius
+    /// ratio; rendering draws order-n bonds as n parallel cylinders.
+    int order = 1;
 
     bool crossesBoundary() const { return imageOffset.dot(imageOffset) > 1e-12; }
 };

@@ -56,6 +56,20 @@ This roadmap outlines the core development phases for building a cross-platform 
 
 ---
 
+## 📅 Phase 6: Advanced Visualization & Export (v0.3)
+**Focus:** Presentation-quality rendering and publication/media output.
+
+*   [x] Customizable rendering modes: Space-filling (CPK), Ball-and-Stick, and Wireframe.
+*   [x] Dynamic global scale controls for atom sphere radii and bond cylinder widths (Display panel sliders → shader instance data).
+*   [x] Multiple-bond rendering (double/triple) as parallel offset cylinders, with distance-ratio bond-order perception. *(Validation case: `assets/samples/acetic_acid.xyz` — the C=O at 1.25 Å renders as a double bond.)*
+*   [x] Atom Color Editor: per-element overrides of the CPK palette via `QColorDialog`, with per-element and global reset.
+*   [x] Lighting panel: up to 4 independent directional lights with editable direction vectors and ambient/diffuse/specular components (multi-light Blinn-Phong fragment shader).
+*   [x] High-resolution viewport capture via `QOpenGLFramebufferObject` (8× MSAA) up to 8192 px.
+*   [x] Static image export: PNG with solid-white or fully transparent background; JPEG (auto-flattened over white).
+*   [x] Animated GIF export: turntable rotation or loaded trajectory frames, with FPS control and background transparency (Pillow via the embedded Python bridge).
+*   [ ] Hover highlight and per-atom labels in the viewport.
+*   [ ] MP4/WebM video export (ffmpeg) for longer trajectories.
+
 ## 🚀 Future Modules (Post-MVP)
 *   **Remote Job Submission:** Connect to HPC clusters using SSH/SFTP and generate SLURM/PBS submission scripts.
 *   **Plugin Architecture:** Decouple specific workflows (e.g., NEB path generation, band structure analysis) into modular C++ plugins using `QPluginLoader`.

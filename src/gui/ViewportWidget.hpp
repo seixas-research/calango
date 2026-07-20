@@ -3,6 +3,8 @@
 #include "render/Camera.hpp"
 #include "render/StructureRenderer.hpp"
 
+#include <QColor>
+#include <QImage>
 #include <QOpenGLFunctions_3_3_Core>
 #include <QOpenGLWidget>
 
@@ -41,7 +43,26 @@ public:
     const std::set<int>& selection() const { return selection_; }
     void clearSelection();
 
+    std::shared_ptr<const core::Structure> structure() const { return structure_; }
+
     void setShowCell(bool show);
+    void setRepresentation(render::RepresentationMode mode);
+
+    /// Live style access for UI panels. Call styleChanged() afterwards:
+    /// geometry-affecting edits (scales, colors, mode) rebuild the GPU
+    /// buffers; light-only edits just repaint.
+    render::StructureRenderer::Style& style() { return renderer_.style(); }
+    std::vector<render::Light>& lights() { return renderer_.lights(); }
+    void styleChanged(bool rebuildGeometry);
+
+    render::OrbitCamera& camera() { return camera_; }
+
+    /// Off-screen high-resolution capture of the current scene into a
+    /// QImage (used by the image/GIF export engine). `background` with
+    /// alpha 0 produces a transparent image; `extraYawDeg` rotates the
+    /// camera around the target (turntable animation frames).
+    QImage renderToImage(int width, int height, const QColor& background,
+                         float extraYawDeg = 0.0f);
 
 public Q_SLOTS:
     void frameStructure();
@@ -64,6 +85,9 @@ private:
     /// Ray-cast from a screen position against atom display spheres.
     /// Returns the atom index of the nearest hit, or -1.
     int pickAtom(const QPointF& screenPos) const;
+
+    /// Re-upload instance buffers if dirty (requires a current context).
+    void ensureUploaded();
 
     render::OrbitCamera camera_;
     render::StructureRenderer renderer_;

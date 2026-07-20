@@ -41,6 +41,8 @@ private Q_SLOTS:
     void openStructure();
     void openTrajectory();
     void saveStructureAs();
+    void exportImage();
+    void exportGifAnimation();
 
     void createSupercell();
     void cleaveSurface();

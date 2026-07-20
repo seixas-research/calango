@@ -4,9 +4,9 @@
 
 #include <QOpenGLFunctions_3_3_Core>
 #include <QQuaternion>
-#include <QVector3D>
 #include <QtMath>
 
+#include <algorithm>
 #include <vector>
 
 namespace calango::render {
@@ -15,12 +15,20 @@ namespace {
 
 constexpr int kFloatsPerInstance = 20; // mat4 (16) + rgba (4)
 
-void appendInstance(std::vector<float>& data, const QMatrix4x4& model,
-                    float r, float g, float b, float a = 1.0f)
+void appendInstance(std::vector<float>& data, const QMatrix4x4& model, const QColor& color)
 {
     const float* m = model.constData(); // column-major, matching the shader
     data.insert(data.end(), m, m + 16);
-    data.insert(data.end(), {r, g, b, a});
+    data.insert(data.end(),
+                {static_cast<float>(color.redF()), static_cast<float>(color.greenF()),
+                 static_cast<float>(color.blueF()), 1.0f});
+}
+
+void appendColoredVertex(std::vector<float>& data, const QVector3D& pos, const QColor& color)
+{
+    data.insert(data.end(),
+                {pos.x(), pos.y(), pos.z(), static_cast<float>(color.redF()),
+                 static_cast<float>(color.greenF()), static_cast<float>(color.blueF())});
 }
 
 QVector3D toQt(const calango::core::Vec3& v)
@@ -80,11 +88,66 @@ QMatrix4x4 bondTransform(const QVector3D& from, const QVector3D& direction,
     return m;
 }
 
+/// Any unit vector perpendicular to `axis` — the offset direction for
+/// parallel cylinders of double/triple bonds. Camera-independent so the
+/// instance buffer stays static while orbiting.
+QVector3D perpendicularTo(const QVector3D& axis)
+{
+    const QVector3D reference = std::abs(axis.z()) < 0.9f
+        ? QVector3D(0.0f, 0.0f, 1.0f)
+        : QVector3D(1.0f, 0.0f, 0.0f);
+    return QVector3D::crossProduct(axis, reference).normalized();
+}
+
+/// Lateral center offsets (in units of the single-bond radius) and the
+/// per-cylinder radius shrink for a bond of the given order.
+void multiBondLayout(int order, std::vector<float>& offsets, float& radiusScale)
+{
+    switch (std::clamp(order, 1, 3)) {
+    case 2:
+        offsets = {-0.8f, 0.8f};
+        radiusScale = 0.55f;
+        break;
+    case 3:
+        offsets = {-1.5f, 0.0f, 1.5f};
+        radiusScale = 0.45f;
+        break;
+    default:
+        offsets = {0.0f};
+        radiusScale = 1.0f;
+        break;
+    }
+}
+
 } // namespace
 
 float StructureRenderer::displayRadius(int atomicNumber, const Style& style)
 {
-    return std::max(0.2f, core::Elements::data(atomicNumber).covalentRadius * style.atomScale);
+    const float covalent = core::Elements::data(atomicNumber).covalentRadius;
+    float radius = 0.25f;
+    switch (style.mode) {
+    case RepresentationMode::BallAndStick:
+        radius = std::max(0.2f, covalent * 0.4f);
+        break;
+    case RepresentationMode::SpaceFilling:
+        // vdW radius approximated as r_cov + 0.8 Å (good to ~0.1 Å for
+        // main-group elements; replace with a Bondi/Alvarez table later).
+        radius = covalent + 0.8f;
+        break;
+    case RepresentationMode::Wireframe:
+        radius = 0.25f; // used by picking only
+        break;
+    }
+    return radius * style.atomScaleFactor;
+}
+
+QColor StructureRenderer::atomColor(int atomicNumber, const Style& style)
+{
+    if (const auto it = style.colorOverrides.find(atomicNumber);
+        it != style.colorOverrides.end())
+        return it->second;
+    const auto& element = core::Elements::data(atomicNumber);
+    return QColor(element.rgb[0], element.rgb[1], element.rgb[2]);
 }
 
 void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
@@ -99,6 +162,12 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     lineProgram_.addShaderFromSourceFile(QOpenGLShader::Fragment, ":/assets/shaders/line.frag");
     lineProgram_.link();
 
+    wireProgram_.addShaderFromSourceFile(QOpenGLShader::Vertex, ":/assets/shaders/wire.vert");
+    wireProgram_.addShaderFromSourceFile(QOpenGLShader::Fragment, ":/assets/shaders/wire.frag");
+    wireProgram_.link();
+
+    gl_->glEnable(GL_PROGRAM_POINT_SIZE); // wire.vert sets gl_PointSize
+
     std::vector<float> vertices;
     std::vector<unsigned int> indices;
     buildSphere(20, 30, vertices, indices);
@@ -108,6 +177,9 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     indices.clear();
     buildCylinder(24, vertices, indices);
     createMesh(cylinder_, vertices, indices);
+
+    createColoredBuffer(wireBonds_);
+    createColoredBuffer(wireAtoms_);
 
     cellVao_.create();
     cellVao_.bind();
@@ -163,6 +235,28 @@ void StructureRenderer::createMesh(InstancedMesh& mesh,
     mesh.vao.release();
 }
 
+void StructureRenderer::createColoredBuffer(ColoredVertexBuffer& buffer)
+{
+    buffer.vao.create();
+    buffer.vao.bind();
+    buffer.vbo.create();
+    buffer.vbo.bind();
+    gl_->glEnableVertexAttribArray(0); // position
+    gl_->glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), nullptr);
+    gl_->glEnableVertexAttribArray(1); // color
+    gl_->glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
+                               reinterpret_cast<void*>(3 * sizeof(float)));
+    buffer.vao.release();
+}
+
+void StructureRenderer::uploadColoredBuffer(ColoredVertexBuffer& buffer,
+                                            const std::vector<float>& data)
+{
+    buffer.vertexCount = static_cast<int>(data.size()) / 6;
+    buffer.vbo.bind();
+    buffer.vbo.allocate(data.data(), static_cast<int>(data.size() * sizeof(float)));
+}
+
 void StructureRenderer::setStructure(const core::Structure* structure,
                                      const std::set<int>* selection)
 {
@@ -171,7 +265,12 @@ void StructureRenderer::setStructure(const core::Structure* structure,
 
     std::vector<float> atomInstances;
     std::vector<float> bondInstances;
+    std::vector<float> wireBondVertices;
+    std::vector<float> wireAtomVertices;
     std::vector<float> cellVertices;
+
+    const bool wantBonds = style_.mode != RepresentationMode::SpaceFilling;
+    const bool wireframe = style_.mode == RepresentationMode::Wireframe;
 
     if (structure && !structure->empty()) {
         const auto& atoms = structure->atoms();
@@ -179,48 +278,79 @@ void StructureRenderer::setStructure(const core::Structure* structure,
 
         for (std::size_t index = 0; index < atoms.size(); ++index) {
             const core::Atom& atom = atoms[index];
-            const auto& element = core::Elements::data(atom.atomicNumber);
             const bool selected =
                 selection && selection->count(static_cast<int>(index)) > 0;
 
-            QMatrix4x4 model;
-            model.translate(toQt(atom.position));
-            model.scale(displayRadius(atom.atomicNumber, style_) * (selected ? 1.2f : 1.0f));
-
-            float r = element.rgb[0] / 255.0f;
-            float g = element.rgb[1] / 255.0f;
-            float b = element.rgb[2] / 255.0f;
+            QColor color = atomColor(atom.atomicNumber, style_);
             if (selected) { // tint toward highlight orange
-                r = 0.45f * r + 0.55f * 1.00f;
-                g = 0.45f * g + 0.55f * 0.62f;
-                b = 0.45f * b + 0.55f * 0.10f;
+                color = QColor::fromRgbF(0.45f * color.redF() + 0.55f,
+                                         0.45f * color.greenF() + 0.55f * 0.62f,
+                                         0.45f * color.blueF() + 0.55f * 0.10f);
             }
-            appendInstance(atomInstances, model, r, g, b);
+
+            if (wireframe) {
+                appendColoredVertex(wireAtomVertices, toQt(atom.position), color);
+            } else {
+                QMatrix4x4 model;
+                model.translate(toQt(atom.position));
+                model.scale(displayRadius(atom.atomicNumber, style_)
+                            * (selected ? 1.2f : 1.0f));
+                appendInstance(atomInstances, model, color);
+            }
         }
 
-        for (const core::Bond& bond : structure->detectBonds(style_.bondTolerance)) {
-            const auto& a = atoms[static_cast<std::size_t>(bond.i)];
-            const auto& b = atoms[static_cast<std::size_t>(bond.j)];
-            const QVector3D pa = toQt(a.position);
-            const QVector3D pbImage = toQt(b.position + bond.imageOffset);
-            const QVector3D dir = (pbImage - pa).normalized();
-            const float half = pa.distanceToPoint(pbImage) * 0.5f;
+        if (wantBonds) {
+            const float baseRadius = style_.bondRadius * style_.bondWidthFactor;
+            for (const core::Bond& bond : structure->detectBonds(style_.bondTolerance)) {
+                const auto& a = atoms[static_cast<std::size_t>(bond.i)];
+                const auto& b = atoms[static_cast<std::size_t>(bond.j)];
+                const QVector3D pa = toQt(a.position);
+                const QVector3D pbReal = toQt(b.position);
+                const QVector3D pbImage = toQt(b.position + bond.imageOffset);
+                const QVector3D dir = (pbImage - pa).normalized();
+                const float half = pa.distanceToPoint(pbImage) * 0.5f;
 
-            const auto& ea = core::Elements::data(a.atomicNumber);
-            const auto& eb = core::Elements::data(b.atomicNumber);
-            appendInstance(bondInstances,
-                           bondTransform(pa, dir, half, style_.bondRadius),
-                           ea.rgb[0] / 255.0f, ea.rgb[1] / 255.0f, ea.rgb[2] / 255.0f);
-            if (!bond.crossesBoundary()) {
-                appendInstance(bondInstances,
-                               bondTransform(pa + dir * half, dir, half, style_.bondRadius),
-                               eb.rgb[0] / 255.0f, eb.rgb[1] / 255.0f, eb.rgb[2] / 255.0f);
-            } else {
-                // Wrapped bond: draw atom j's half as a stub pointing back
-                // toward its own periodic image of atom i.
-                appendInstance(bondInstances,
-                               bondTransform(toQt(b.position), -dir, half, style_.bondRadius),
-                               eb.rgb[0] / 255.0f, eb.rgb[1] / 255.0f, eb.rgb[2] / 255.0f);
+                const QColor colorA = atomColor(a.atomicNumber, style_);
+                const QColor colorB = atomColor(b.atomicNumber, style_);
+
+                if (wireframe) {
+                    // Single line regardless of order; halves colored per atom.
+                    appendColoredVertex(wireBondVertices, pa, colorA);
+                    appendColoredVertex(wireBondVertices, pa + dir * half, colorA);
+                    if (!bond.crossesBoundary()) {
+                        appendColoredVertex(wireBondVertices, pa + dir * half, colorB);
+                        appendColoredVertex(wireBondVertices, pbImage, colorB);
+                    } else {
+                        appendColoredVertex(wireBondVertices, pbReal, colorB);
+                        appendColoredVertex(wireBondVertices, pbReal - dir * half, colorB);
+                    }
+                    continue;
+                }
+
+                // Bond order n -> n parallel cylinders offset sideways.
+                std::vector<float> lateral;
+                float radiusScale = 1.0f;
+                multiBondLayout(bond.order, lateral, radiusScale);
+                const float radius = baseRadius * radiusScale;
+                const QVector3D perp = perpendicularTo(dir);
+
+                for (const float offsetUnits : lateral) {
+                    const QVector3D shift = perp * (offsetUnits * baseRadius);
+                    appendInstance(bondInstances,
+                                   bondTransform(pa + shift, dir, half, radius), colorA);
+                    if (!bond.crossesBoundary()) {
+                        appendInstance(
+                            bondInstances,
+                            bondTransform(pa + shift + dir * half, dir, half, radius),
+                            colorB);
+                    } else {
+                        // Wrapped bond: atom j's half is a stub pointing back
+                        // toward its own periodic image of atom i.
+                        appendInstance(
+                            bondInstances,
+                            bondTransform(pbReal + shift, -dir, half, radius), colorB);
+                    }
+                }
             }
         }
 
@@ -247,10 +377,43 @@ void StructureRenderer::setStructure(const core::Structure* structure,
     cylinder_.instanceBuffer.allocate(bondInstances.data(),
                                       static_cast<int>(bondInstances.size() * sizeof(float)));
 
+    uploadColoredBuffer(wireBonds_, wireBondVertices);
+    uploadColoredBuffer(wireAtoms_, wireAtomVertices);
+
     cellVertexCount_ = static_cast<int>(cellVertices.size()) / 3;
     cellVbo_.bind();
     cellVbo_.allocate(cellVertices.data(),
                       static_cast<int>(cellVertices.size() * sizeof(float)));
+}
+
+void StructureRenderer::uploadLights()
+{
+    QVector3D directions[kMaxLights];
+    QVector3D ambient[kMaxLights];
+    QVector3D diffuse[kMaxLights];
+    QVector3D specular[kMaxLights];
+
+    const int count = std::min<int>(kMaxLights, static_cast<int>(lights_.size()));
+    for (int i = 0; i < count; ++i) {
+        const Light& light = lights_[static_cast<std::size_t>(i)];
+        directions[i] = light.direction.normalized();
+        ambient[i] = {static_cast<float>(light.ambient.redF()),
+                      static_cast<float>(light.ambient.greenF()),
+                      static_cast<float>(light.ambient.blueF())};
+        diffuse[i] = {static_cast<float>(light.diffuse.redF()),
+                      static_cast<float>(light.diffuse.greenF()),
+                      static_cast<float>(light.diffuse.blueF())};
+        specular[i] = {static_cast<float>(light.specular.redF()),
+                       static_cast<float>(light.specular.greenF()),
+                       static_cast<float>(light.specular.blueF())};
+    }
+
+    meshProgram_.setUniformValue("uLightCount", count);
+    meshProgram_.setUniformValueArray("uLightDir", directions, kMaxLights);
+    meshProgram_.setUniformValueArray("uLightAmbient", ambient, kMaxLights);
+    meshProgram_.setUniformValueArray("uLightDiffuse", diffuse, kMaxLights);
+    meshProgram_.setUniformValueArray("uLightSpecular", specular, kMaxLights);
+    meshProgram_.setUniformValue("uShininess", 48.0f);
 }
 
 void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& projection)
@@ -258,22 +421,36 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
     if (!initialized_)
         return;
 
-    meshProgram_.bind();
-    meshProgram_.setUniformValue("uView", view);
-    meshProgram_.setUniformValue("uProj", projection);
-    // Headlight slightly above and to the right of the camera.
-    meshProgram_.setUniformValue("uLightDirView",
-                                 QVector3D(-0.4f, -0.5f, -1.0f).normalized());
+    if (style_.mode == RepresentationMode::Wireframe) {
+        wireProgram_.bind();
+        wireProgram_.setUniformValue("uMvp", projection * view);
+        if (wireBonds_.vertexCount > 0) {
+            wireBonds_.vao.bind();
+            gl_->glDrawArrays(GL_LINES, 0, wireBonds_.vertexCount);
+            wireBonds_.vao.release();
+        }
+        if (wireAtoms_.vertexCount > 0) {
+            wireAtoms_.vao.bind();
+            gl_->glDrawArrays(GL_POINTS, 0, wireAtoms_.vertexCount);
+            wireAtoms_.vao.release();
+        }
+        wireProgram_.release();
+    } else {
+        meshProgram_.bind();
+        meshProgram_.setUniformValue("uView", view);
+        meshProgram_.setUniformValue("uProj", projection);
+        uploadLights();
 
-    for (const InstancedMesh* mesh : {&sphere_, &cylinder_}) {
-        if (mesh->instanceCount == 0)
-            continue;
-        const_cast<InstancedMesh*>(mesh)->vao.bind();
-        gl_->glDrawElementsInstanced(GL_TRIANGLES, mesh->indexCount, GL_UNSIGNED_INT,
-                                     nullptr, mesh->instanceCount);
-        const_cast<InstancedMesh*>(mesh)->vao.release();
+        for (InstancedMesh* mesh : {&sphere_, &cylinder_}) {
+            if (mesh->instanceCount == 0)
+                continue;
+            mesh->vao.bind();
+            gl_->glDrawElementsInstanced(GL_TRIANGLES, mesh->indexCount, GL_UNSIGNED_INT,
+                                         nullptr, mesh->instanceCount);
+            mesh->vao.release();
+        }
+        meshProgram_.release();
     }
-    meshProgram_.release();
 
     if (style_.showCell && cellVertexCount_ > 0) {
         lineProgram_.bind();

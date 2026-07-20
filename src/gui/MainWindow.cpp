@@ -2,6 +2,7 @@
 
 #include "core/Structure.hpp"
 #include "gui/CalculatorDialog.hpp"
+#include "gui/DisplaySettingsWidget.hpp"
 #include "gui/EnergyPlotWidget.hpp"
 #include "gui/JobLogWidget.hpp"
 #include "gui/StructureInfoWidget.hpp"
@@ -9,10 +10,16 @@
 #include "gui/ViewportWidget.hpp"
 #include "jobs/JobRunner.hpp"
 #include "python_bridge/AseBridge.hpp"
+#include "python_bridge/GifExporter.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
 #include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
 #include <QDateTime>
+#include <QImageWriter>
+#include <QPainter>
+#include <QProgressDialog>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -94,6 +101,11 @@ void MainWindow::createMenusAndDocks()
     fileMenu->addAction(tr("Save Structure &As…"), QKeySequence::SaveAs,
                         this, &MainWindow::saveStructureAs);
     fileMenu->addSeparator();
+    fileMenu->addAction(tr("Export &Image…"), QKeySequence(tr("Ctrl+E")),
+                        this, &MainWindow::exportImage);
+    fileMenu->addAction(tr("Export Ani&mation (GIF)…"),
+                        this, &MainWindow::exportGifAnimation);
+    fileMenu->addSeparator();
     fileMenu->addAction(tr("&Quit"), QKeySequence::Quit,
                         qApp, &QApplication::closeAllWindows);
 
@@ -138,6 +150,11 @@ void MainWindow::createMenusAndDocks()
     infoDock->setWidget(infoWidget_);
     addDockWidget(Qt::LeftDockWidgetArea, infoDock);
 
+    auto* displayDock = new QDockWidget(tr("Display"), this);
+    displayDock->setObjectName(QStringLiteral("displayDock"));
+    displayDock->setWidget(new DisplaySettingsWidget(viewport_, displayDock));
+    addDockWidget(Qt::RightDockWidgetArea, displayDock);
+
     jobDock_ = new QDockWidget(tr("Job"), this);
     jobDock_->setObjectName(QStringLiteral("jobDock"));
     auto* jobTabs = new QTabWidget(jobDock_);
@@ -159,6 +176,7 @@ void MainWindow::createMenusAndDocks()
 
     viewMenu->addSeparator();
     viewMenu->addAction(infoDock->toggleViewAction());
+    viewMenu->addAction(displayDock->toggleViewAction());
     viewMenu->addAction(jobDock_->toggleViewAction());
     viewMenu->addAction(trajectoryDock_->toggleViewAction());
 }
@@ -333,6 +351,180 @@ void MainWindow::saveStructureAs()
         statusBar()->showMessage(tr("Saved %1").arg(path));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Save Structure"), QString::fromUtf8(e.what()));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Image & animation export
+// ---------------------------------------------------------------------------
+
+void MainWindow::exportImage()
+{
+    if (!structure_ || structure_->empty()) {
+        statusBar()->showMessage(tr("Open a structure first."));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Export Image"));
+    auto* form = new QFormLayout(&dialog);
+
+    auto* widthSpin = new QSpinBox(&dialog);
+    widthSpin->setRange(64, 8192);
+    widthSpin->setValue(viewport_->width() * 2); // 2x viewport = crisp default
+    auto* heightSpin = new QSpinBox(&dialog);
+    heightSpin->setRange(64, 8192);
+    heightSpin->setValue(viewport_->height() * 2);
+    form->addRow(tr("Width (px):"), widthSpin);
+    form->addRow(tr("Height (px):"), heightSpin);
+
+    auto* backgroundCombo = new QComboBox(&dialog);
+    backgroundCombo->addItems({tr("Transparent (PNG only)"), tr("Solid white"),
+                               tr("Viewport color")});
+    form->addRow(tr("Background:"), backgroundCombo);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                         &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    form->addRow(buttons);
+
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export Image"), QStringLiteral("calango.png"),
+        tr("PNG image (*.png);;JPEG image (*.jpg *.jpeg)"));
+    if (path.isEmpty())
+        return;
+
+    const bool transparent = backgroundCombo->currentIndex() == 0;
+    const QColor background = transparent ? QColor(0, 0, 0, 0)
+        : backgroundCombo->currentIndex() == 1 ? QColor(Qt::white)
+                                               : QColor(26, 28, 33);
+
+    QImage image =
+        viewport_->renderToImage(widthSpin->value(), heightSpin->value(), background);
+
+    const bool isJpeg = path.endsWith(QStringLiteral(".jpg"), Qt::CaseInsensitive)
+        || path.endsWith(QStringLiteral(".jpeg"), Qt::CaseInsensitive);
+    if (isJpeg && transparent) {
+        // JPEG has no alpha channel — composite over white instead.
+        QImage flattened(image.size(), QImage::Format_RGB32);
+        flattened.fill(Qt::white);
+        QPainter painter(&flattened);
+        painter.drawImage(0, 0, image);
+        painter.end();
+        image = flattened;
+    }
+
+    QImageWriter writer(path);
+    if (!writer.write(image)) {
+        QMessageBox::critical(this, tr("Export Image"),
+                              tr("Could not write %1:\n%2").arg(path, writer.errorString()));
+        return;
+    }
+    statusBar()->showMessage(tr("Exported %1 (%2×%3)")
+                                 .arg(path)
+                                 .arg(image.width())
+                                 .arg(image.height()));
+}
+
+void MainWindow::exportGifAnimation()
+{
+    if (!structure_ || structure_->empty()) {
+        statusBar()->showMessage(tr("Open a structure first."));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Export Animation (GIF)"));
+    auto* form = new QFormLayout(&dialog);
+
+    auto* sourceCombo = new QComboBox(&dialog);
+    sourceCombo->addItem(tr("Turntable rotation (360°)"));
+    const bool hasTrajectory = frames_.size() > 1;
+    if (hasTrajectory)
+        sourceCombo->addItem(tr("Trajectory frames (%1)").arg(frames_.size()));
+    form->addRow(tr("Source:"), sourceCombo);
+
+    auto* framesSpin = new QSpinBox(&dialog);
+    framesSpin->setRange(8, 360);
+    framesSpin->setValue(72);
+    form->addRow(tr("Rotation frames:"), framesSpin);
+    connect(sourceCombo, &QComboBox::currentIndexChanged, framesSpin,
+            [framesSpin](int index) { framesSpin->setEnabled(index == 0); });
+
+    auto* sizeSpin = new QSpinBox(&dialog);
+    sizeSpin->setRange(64, 2048);
+    sizeSpin->setValue(480);
+    form->addRow(tr("Size (px, square):"), sizeSpin);
+
+    auto* fpsSpin = new QSpinBox(&dialog);
+    fpsSpin->setRange(1, 50);
+    fpsSpin->setValue(20);
+    form->addRow(tr("Frames per second:"), fpsSpin);
+
+    auto* transparentCheck = new QCheckBox(tr("Transparent background"), &dialog);
+    form->addRow(transparentCheck);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                         &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    form->addRow(buttons);
+
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export Animation"), QStringLiteral("calango.gif"),
+        tr("GIF animation (*.gif)"));
+    if (path.isEmpty())
+        return;
+
+    const bool transparent = transparentCheck->isChecked();
+    const QColor background = transparent ? QColor(0, 0, 0, 0) : QColor(Qt::white);
+    const int size = sizeSpin->value();
+    const bool turntable = sourceCombo->currentIndex() == 0;
+    const int frameCount =
+        turntable ? framesSpin->value() : static_cast<int>(frames_.size());
+
+    QProgressDialog progress(tr("Rendering frames…"), tr("Cancel"), 0, frameCount, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+
+    std::vector<QImage> images;
+    images.reserve(static_cast<std::size_t>(frameCount));
+    const int restoreFrame = hasTrajectory ? player_->currentFrame() : 0;
+
+    for (int i = 0; i < frameCount; ++i) {
+        progress.setValue(i);
+        QApplication::processEvents();
+        if (progress.wasCanceled())
+            break;
+
+        if (turntable) {
+            images.push_back(viewport_->renderToImage(
+                size, size, background,
+                360.0f * static_cast<float>(i) / static_cast<float>(frameCount)));
+        } else {
+            viewport_->setStructure(frames_[static_cast<std::size_t>(i)], false);
+            images.push_back(viewport_->renderToImage(size, size, background));
+        }
+    }
+
+    if (!turntable)
+        showFrame(restoreFrame); // put the live view back where it was
+    if (progress.wasCanceled())
+        return;
+    progress.setValue(frameCount);
+
+    try {
+        pybridge::GifExporter::exportGif(images, path, fpsSpin->value(), transparent);
+        statusBar()->showMessage(tr("Exported %1 (%2 frames)").arg(path).arg(images.size()));
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, tr("Export Animation"), QString::fromUtf8(e.what()));
     }
 }
 

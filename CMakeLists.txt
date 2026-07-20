@@ -77,6 +77,8 @@ qt_add_executable(calango
     src/python_bridge/PythonEngine.cpp
     src/python_bridge/AseBridge.hpp
     src/python_bridge/AseBridge.cpp
+    src/python_bridge/GifExporter.hpp
+    src/python_bridge/GifExporter.cpp
 
     # render — OpenGL "View" over core::Structure (read-only access)
     src/render/Camera.hpp
@@ -103,6 +105,10 @@ qt_add_executable(calango
     src/gui/TrajectoryPlayerWidget.cpp
     src/gui/EnergyPlotWidget.hpp
     src/gui/EnergyPlotWidget.cpp
+    src/gui/DisplaySettingsWidget.hpp
+    src/gui/DisplaySettingsWidget.cpp
+    src/gui/AtomColorDialog.hpp
+    src/gui/AtomColorDialog.cpp
 )
 
 qt_add_resources(calango "shaders"
@@ -112,6 +118,8 @@ qt_add_resources(calango "shaders"
         assets/shaders/mesh.frag
         assets/shaders/line.vert
         assets/shaders/line.frag
+        assets/shaders/wire.vert
+        assets/shaders/wire.frag
 )
 
 target_include_directories(calango PRIVATE src)

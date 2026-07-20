@@ -1,10 +1,13 @@
 #pragma once
 
+#include <QColor>
 #include <QMatrix4x4>
 #include <QOpenGLBuffer>
 #include <QOpenGLShaderProgram>
 #include <QOpenGLVertexArrayObject>
+#include <QVector3D>
 
+#include <map>
 #include <set>
 #include <vector>
 
@@ -16,32 +19,59 @@ class QOpenGLFunctions_3_3_Core;
 
 namespace calango::render {
 
-/// Draws a core::Structure with instanced meshes:
-///   - atoms  -> instanced unit spheres  (ball-and-stick scaling)
-///   - bonds  -> two instanced half-cylinders, colored per atom
+enum class RepresentationMode {
+    BallAndStick,
+    SpaceFilling, ///< CPK: van-der-Waals-sized spheres, no bonds
+    Wireframe,    ///< bonds as colored lines, isolated atoms as points
+};
+
+/// One directional light, defined in VIEW space (camera-relative), so the
+/// lighting stays fixed with respect to the viewer while orbiting.
+/// Colors encode both hue and intensity of each Blinn-Phong component.
+struct Light {
+    QVector3D direction{-0.4f, -0.5f, -1.0f}; ///< direction the light travels
+    QColor ambient = QColor::fromRgbF(0.28f, 0.28f, 0.28f);
+    QColor diffuse = QColor::fromRgbF(0.72f, 0.72f, 0.72f);
+    QColor specular = QColor::fromRgbF(0.30f, 0.30f, 0.30f);
+};
+
+/// Hard cap mirrored by MAX_LIGHTS in mesh.frag.
+inline constexpr int kMaxLights = 4;
+
+/// Draws a core::Structure. Depending on the representation mode:
+///   - atoms  -> instanced unit spheres (covalent- or vdW-scaled)
+///   - bonds  -> instanced half-cylinders, colored per atom; bond order
+///               n renders as n parallel cylinders offset perpendicular
+///               to the bond axis; or colored GL_LINES in wireframe
 ///   - cell   -> 12 wireframe edges
 ///
 /// Strictly a View in MVC terms: it holds no reference to the Structure,
 /// only GPU buffers derived from it. Call setStructure() again after the
-/// model changes (a current GL context is required).
+/// model or style changes (a current GL context is required).
 class StructureRenderer {
 public:
     struct Style {
-        float atomScale = 0.4f;      ///< fraction of covalent radius
-        float bondRadius = 0.12f;    ///< Å
-        float bondTolerance = 1.15f; ///< bond-detection cutoff factor
+        RepresentationMode mode = RepresentationMode::BallAndStick;
+        float atomScaleFactor = 1.0f; ///< global sphere-radius multiplier (UI)
+        float bondWidthFactor = 1.0f; ///< global cylinder-width multiplier (UI)
+        float bondRadius = 0.12f;     ///< Å, base radius of a single bond
+        float bondTolerance = 1.15f;  ///< bond-detection cutoff factor
         bool showCell = true;
+        std::map<int, QColor> colorOverrides; ///< Z -> user color (Atom Color Editor)
     };
 
     /// Display radius of an atom (Å) — the single source of truth shared
     /// by instance building and by ray-cast picking in the viewport.
     static float displayRadius(int atomicNumber, const Style& style);
 
+    /// Element color after applying user overrides (default: Jmol CPK).
+    static QColor atomColor(int atomicNumber, const Style& style);
+
     /// Must be called once with a current GL context (from initializeGL).
     void initialize(QOpenGLFunctions_3_3_Core* gl);
 
-    /// Rebuild instance buffers from the model. nullptr clears the scene.
-    /// Atoms whose index is in `selection` are drawn highlighted.
+    /// Rebuild instance/vertex buffers from the model. nullptr clears the
+    /// scene. Atoms whose index is in `selection` are drawn highlighted.
     void setStructure(const core::Structure* structure,
                       const std::set<int>* selection = nullptr);
 
@@ -49,6 +79,10 @@ public:
 
     Style& style() { return style_; }
     const Style& style() const { return style_; }
+
+    /// 1..kMaxLights directional lights (extra entries are ignored).
+    std::vector<Light>& lights() { return lights_; }
+    const std::vector<Light>& lights() const { return lights_; }
 
 private:
     struct InstancedMesh {
@@ -60,19 +94,32 @@ private:
         int instanceCount = 0;
     };
 
+    struct ColoredVertexBuffer { // pos(3) + color(3) per vertex
+        QOpenGLVertexArrayObject vao;
+        QOpenGLBuffer vbo{QOpenGLBuffer::VertexBuffer};
+        int vertexCount = 0;
+    };
+
     void createMesh(InstancedMesh& mesh,
                     const std::vector<float>& vertices,
                     const std::vector<unsigned int>& indices);
+    void createColoredBuffer(ColoredVertexBuffer& buffer);
+    void uploadColoredBuffer(ColoredVertexBuffer& buffer, const std::vector<float>& data);
+    void uploadLights();
 
     QOpenGLFunctions_3_3_Core* gl_ = nullptr;
     bool initialized_ = false;
     Style style_;
+    std::vector<Light> lights_{Light{}};
 
     QOpenGLShaderProgram meshProgram_;
-    QOpenGLShaderProgram lineProgram_;
+    QOpenGLShaderProgram lineProgram_; ///< uniform-color lines (unit cell)
+    QOpenGLShaderProgram wireProgram_; ///< per-vertex-color lines/points
 
     InstancedMesh sphere_;
     InstancedMesh cylinder_;
+    ColoredVertexBuffer wireBonds_;  ///< GL_LINES
+    ColoredVertexBuffer wireAtoms_;  ///< GL_POINTS (isolated atoms visible)
 
     QOpenGLVertexArrayObject cellVao_;
     QOpenGLBuffer cellVbo_{QOpenGLBuffer::VertexBuffer};
