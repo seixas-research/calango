@@ -1,6 +1,7 @@
 #include "jobs/JobRunner.hpp"
 
 #include <QDir>
+#include <QFileInfo>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QTimer>
@@ -44,6 +45,22 @@ void JobRunner::start(const QString& pythonExe, const QString& scriptPath, const
 
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
+
+    // Make the selected environment self-contained: its bin directory wins
+    // over any globally installed solver binaries.
+    const QFileInfo interpreter(pythonExe);
+    const QString binDir = interpreter.absolutePath();
+    env.insert(QStringLiteral("PATH"),
+               binDir + QDir::listSeparator() + env.value(QStringLiteral("PATH")));
+    const QDir bin(binDir);
+    if (bin.dirName() == QLatin1String("bin")
+        || bin.dirName() == QLatin1String("Scripts")) {
+        QDir prefix = bin;
+        prefix.cdUp();
+        if (QFileInfo::exists(prefix.filePath(QStringLiteral("conda-meta"))))
+            env.insert(QStringLiteral("CONDA_PREFIX"), prefix.absolutePath());
+    }
+
     process_.setProcessEnvironment(env);
     process_.setWorkingDirectory(workDir);
     process_.start(pythonExe, {scriptPath});

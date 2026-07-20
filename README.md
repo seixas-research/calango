@@ -47,9 +47,23 @@ Development follows [ROADMAP.md](ROADMAP.md).
   `CALANGO_PROGRESS` markers drive a progress bar, `CALANGO_ENERGY`
   markers feed a live energy-vs-step plot, and finished jobs offer to
   load their result structure.
+- **Tabbed workspace** — open several structures/trajectories at once;
+  each tab keeps its own undo history while sharing one accelerated
+  viewport and consistent display settings.
 - **Trajectory timeline** — File → Open Trajectory (`.traj`, multi-frame
   XYZ) shows an interactive timeline docked under the viewport:
   transport buttons, tick-marked scrubber, and 0.25×–4× playback speed.
+- **ASE input generator** — split view with an *editable*,
+  syntax-highlighted script pane (manual edits pause form sync until
+  "Regenerate"); calculators: EMT, Lennard-Jones, Quantum ESPRESSO,
+  VASP, MACE, **GPAW**, **SIESTA**. A conda-environment selector runs
+  jobs inside any local env (its `bin/` is prepended to PATH, so solver
+  binaries resolve cleanly).
+- **Brillouin zone & k-path builder** (Analysis menu) — Wigner-Seitz
+  reciprocal cell rendered in 3D with labeled high-symmetry points;
+  click points in order to draw a k-path, preload ASE's suggested path,
+  and export to VASP `KPOINTS` (line mode) or Quantum ESPRESSO
+  `K_POINTS crystal_b` files.
 
 ## Building
 

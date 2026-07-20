@@ -1,20 +1,58 @@
 #include "gui/CalculatorDialog.hpp"
 
 #include "core/AseScriptGenerator.hpp"
+#include "gui/PythonHighlighter.hpp"
+#include "python_bridge/PythonEngine.hpp"
 
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSettings>
 #include <QTextStream>
 #include <QVBoxLayout>
 
 namespace calango::gui {
+
+namespace {
+
+const auto kEnvSettingsKey = QStringLiteral("jobs/environmentPath");
+
+/// Accepts either a python executable path, a conda environment root, or
+/// its bin/ directory; returns the interpreter path or empty if invalid.
+QString resolveEnvironmentPython(const QString& input)
+{
+    const QString trimmed = input.trimmed();
+    if (trimmed.isEmpty())
+        return {};
+    const QFileInfo info(trimmed);
+    if (info.isFile())
+        return info.absoluteFilePath();
+    if (info.isDir()) {
+        const QDir dir(trimmed);
+        const QStringList candidates = {
+#ifdef Q_OS_WIN
+            QStringLiteral("python.exe"), QStringLiteral("Scripts/python.exe"),
+#endif
+            QStringLiteral("bin/python"), QStringLiteral("bin/python3"),
+            QStringLiteral("python"), QStringLiteral("python3")};
+        for (const QString& candidate : candidates) {
+            if (QFileInfo::exists(dir.filePath(candidate)))
+                return QFileInfo(dir.filePath(candidate)).absoluteFilePath();
+        }
+    }
+    return {};
+}
+
+} // namespace
 
 CalculatorDialog::CalculatorDialog(QWidget* parent)
     : QDialog(parent)
@@ -27,7 +65,9 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
                                 tr("Lennard-Jones"),
                                 tr("Quantum ESPRESSO (DFT, requires pw.x)"),
                                 tr("VASP (DFT, requires license)"),
-                                tr("MACE (machine-learning potential, requires mace-torch)")});
+                                tr("MACE (machine-learning potential, requires mace-torch)"),
+                                tr("GPAW (DFT, python package)"),
+                                tr("SIESTA (DFT, requires siesta binary)")});
 
     taskCombo_ = new QComboBox(this);
     taskCombo_->addItems({tr("Single-point energy"),
@@ -117,9 +157,59 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
     form->addRow(tr("Custom model file:"), macePathRow);
     form->addRow(tr("MACE device:"), maceDeviceCombo_);
 
+    // The script pane is a real editor: syntax-highlighted and editable.
     preview_ = new QPlainTextEdit(this);
-    preview_->setReadOnly(true);
     preview_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    new PythonHighlighter(preview_->document()); // parented to the document
+    connect(preview_, &QPlainTextEdit::textChanged, this, [this] {
+        if (updatingPreview_ || manuallyEdited_)
+            return;
+        manuallyEdited_ = true;
+        editedNotice_->setVisible(true);
+    });
+
+    // Execution environment: a conda env (or any interpreter) the job
+    // runner uses instead of the embedded Python.
+    auto* envGroup = new QGroupBox(tr("Execution Environment"), this);
+    auto* envLayout = new QVBoxLayout(envGroup);
+    auto* envRow = new QHBoxLayout;
+    envPathEdit_ = new QLineEdit(envGroup);
+    envPathEdit_->setPlaceholderText(tr("conda env folder or python executable (empty = embedded)"));
+    auto* envDirButton = new QPushButton(tr("Env Folder…"), envGroup);
+    auto* envFileButton = new QPushButton(tr("Python…"), envGroup);
+    envRow->addWidget(envPathEdit_, 1);
+    envRow->addWidget(envDirButton);
+    envRow->addWidget(envFileButton);
+    envLayout->addLayout(envRow);
+    envStatusLabel_ = new QLabel(envGroup);
+    envStatusLabel_->setWordWrap(true);
+    envLayout->addWidget(envStatusLabel_);
+    connect(envDirButton, &QPushButton::clicked,
+            this, &CalculatorDialog::browseEnvironmentDir);
+    connect(envFileButton, &QPushButton::clicked,
+            this, &CalculatorDialog::browseEnvironmentPython);
+
+    const auto updateEnvStatus = [this] {
+        const QString text = envPathEdit_->text().trimmed();
+        if (text.isEmpty()) {
+            envStatusLabel_->setText(
+                tr("Using embedded interpreter: %1")
+                    .arg(QString::fromStdString(
+                        pybridge::PythonEngine::instance().executable())));
+            envStatusLabel_->setStyleSheet(QString());
+        } else if (const QString python = resolveEnvironmentPython(text);
+                   !python.isEmpty()) {
+            envStatusLabel_->setText(tr("Jobs will run with: %1").arg(python));
+            envStatusLabel_->setStyleSheet(QString());
+        } else {
+            envStatusLabel_->setText(tr("No python interpreter found at this path."));
+            envStatusLabel_->setStyleSheet(QStringLiteral("color: #d9534f;"));
+        }
+        QSettings().setValue(kEnvSettingsKey, envPathEdit_->text());
+    };
+    connect(envPathEdit_, &QLineEdit::textChanged, this, updateEnvStatus);
+    envPathEdit_->setText(QSettings().value(kEnvSettingsKey).toString());
+    updateEnvStatus();
 
     auto* buttons = new QDialogButtonBox(this);
     auto* runButton = buttons->addButton(tr("Run"), QDialogButtonBox::AcceptRole);
@@ -132,12 +222,25 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
 
     auto* left = new QVBoxLayout;
     left->addLayout(form);
+    left->addWidget(envGroup);
     left->addStretch(1);
 
     auto* content = new QHBoxLayout;
     content->addLayout(left, 0);
     auto* previewColumn = new QVBoxLayout;
-    previewColumn->addWidget(new QLabel(tr("Generated ASE script:"), this));
+    auto* previewHeader = new QHBoxLayout;
+    previewHeader->addWidget(new QLabel(tr("Generated ASE script (editable):"), this));
+    previewHeader->addStretch(1);
+    editedNotice_ = new QLabel(tr("edited — form sync paused"), this);
+    editedNotice_->setStyleSheet(QStringLiteral("color: #b07d2a;"));
+    editedNotice_->setVisible(false);
+    previewHeader->addWidget(editedNotice_);
+    auto* regenerateButton = new QPushButton(tr("Regenerate"), this);
+    regenerateButton->setToolTip(tr("Discard manual edits and regenerate from the form"));
+    previewHeader->addWidget(regenerateButton);
+    connect(regenerateButton, &QPushButton::clicked,
+            this, &CalculatorDialog::regenerateScript);
+    previewColumn->addLayout(previewHeader);
     previewColumn->addWidget(preview_, 1);
     content->addLayout(previewColumn, 1);
 
@@ -188,10 +291,38 @@ core::CalculatorConfig CalculatorDialog::config() const
 
 QString CalculatorDialog::script() const
 {
-    // The job runner always stages the structure as structure.extxyz
-    // inside the job directory, so the script refers to it relatively.
-    return QString::fromStdString(
-        core::AseScriptGenerator::generate(config(), "structure.extxyz"));
+    return preview_->toPlainText();
+}
+
+QString CalculatorDialog::pythonExecutable() const
+{
+    const QString resolved = resolveEnvironmentPython(envPathEdit_->text());
+    if (!resolved.isEmpty())
+        return resolved;
+    return QString::fromStdString(pybridge::PythonEngine::instance().executable());
+}
+
+void CalculatorDialog::regenerateScript()
+{
+    manuallyEdited_ = false;
+    editedNotice_->setVisible(false);
+    refreshPreview();
+}
+
+void CalculatorDialog::browseEnvironmentDir()
+{
+    const QString dir = QFileDialog::getExistingDirectory(
+        this, tr("Select Conda Environment Folder"));
+    if (!dir.isEmpty())
+        envPathEdit_->setText(dir);
+}
+
+void CalculatorDialog::browseEnvironmentPython()
+{
+    const QString file = QFileDialog::getOpenFileName(
+        this, tr("Select Python Interpreter"));
+    if (!file.isEmpty())
+        envPathEdit_->setText(file);
 }
 
 void CalculatorDialog::refreshPreview()
@@ -200,7 +331,9 @@ void CalculatorDialog::refreshPreview()
     const bool isOpt = c.task == core::TaskKind::GeometryOptimization;
     const bool isMd = c.task == core::TaskKind::MolecularDynamics;
     const bool isDft = c.calculator == core::CalculatorKind::QuantumEspresso
-        || c.calculator == core::CalculatorKind::Vasp;
+        || c.calculator == core::CalculatorKind::Vasp
+        || c.calculator == core::CalculatorKind::Gpaw
+        || c.calculator == core::CalculatorKind::Siesta;
     const bool isMace = c.calculator == core::CalculatorKind::Mace;
     const bool isCustomMace =
         isMace && c.maceSource == core::MaceModelSource::CustomFile;
@@ -220,7 +353,15 @@ void CalculatorDialog::refreshPreview()
     maceBrowseButton_->setEnabled(isCustomMace);
     maceDeviceCombo_->setEnabled(isMace);
 
-    preview_->setPlainText(script());
+    // Never clobber the user's manual edits; "Regenerate" re-enables sync.
+    if (manuallyEdited_)
+        return;
+    updatingPreview_ = true;
+    // The job runner always stages the structure as structure.extxyz
+    // inside the job directory, so the script refers to it relatively.
+    preview_->setPlainText(QString::fromStdString(
+        core::AseScriptGenerator::generate(config(), "structure.extxyz")));
+    updatingPreview_ = false;
 }
 
 void CalculatorDialog::browseMaceModel()

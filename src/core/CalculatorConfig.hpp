@@ -14,6 +14,8 @@ enum class CalculatorKind {
     QuantumEspresso,
     Vasp,
     Mace,
+    Gpaw,
+    Siesta,
 };
 
 /// Which MACE model the calculator loads. Foundation models are fetched

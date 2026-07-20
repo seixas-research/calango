@@ -12,6 +12,8 @@ std::string toString(CalculatorKind kind)
     case CalculatorKind::QuantumEspresso: return "Quantum ESPRESSO";
     case CalculatorKind::Vasp: return "VASP";
     case CalculatorKind::Mace: return "MACE";
+    case CalculatorKind::Gpaw: return "GPAW";
+    case CalculatorKind::Siesta: return "SIESTA";
     }
     return "?";
 }
@@ -97,6 +99,37 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
                 << "\", default_dtype=\"float64\")\n";
             break;
         }
+        break;
+
+    case CalculatorKind::Gpaw:
+        out << "# GPAW DFT — requires the gpaw package and its PAW datasets in the\n"
+               "# job environment (e.g. conda install -c conda-forge gpaw).\n"
+               "from gpaw import GPAW, PW\n"
+               "\n"
+               "atoms.calc = GPAW(\n"
+            << "    mode=PW(" << c.planeWaveCutoffEv << "),  # eV\n"
+               "    xc=\"PBE\",\n"
+            << "    kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2] << "),\n"
+               "    txt=\"gpaw.out\",\n"
+               ")\n";
+        break;
+
+    case CalculatorKind::Siesta:
+        out << "# SIESTA — requires the siesta binary and pseudopotentials\n"
+               "# (.psf/.psml) in the job environment. EDIT the two settings below.\n"
+               "import os\n"
+               "os.environ.setdefault(\"ASE_SIESTA_COMMAND\",\n"
+               "                      \"siesta < PREFIX.fdf > PREFIX.out\")  # EDIT ME\n"
+               "os.environ.setdefault(\"SIESTA_PP_PATH\", \"/path/to/pseudos\")  # EDIT ME\n"
+               "from ase.calculators.siesta import Siesta\n"
+               "\n"
+               "atoms.calc = Siesta(\n"
+               "    label=\"calango\",\n"
+               "    xc=\"PBE\",\n"
+               "    basis_set=\"DZP\",\n"
+            << "    mesh_cutoff=" << c.planeWaveCutoffEv << ",  # eV\n"
+            << "    kpts=[" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2] << "],\n"
+               ")\n";
         break;
 
     case CalculatorKind::Vasp:

@@ -1,6 +1,8 @@
 #include "gui/MainWindow.hpp"
 
+#include "core/BrillouinZone.hpp"
 #include "core/Structure.hpp"
+#include "gui/BrillouinZoneDialog.hpp"
 #include "gui/CalculatorDialog.hpp"
 #include "gui/DisplaySettingsWidget.hpp"
 #include "gui/EnergyPlotWidget.hpp"
@@ -18,9 +20,6 @@
 #include <QColorDialog>
 #include <QComboBox>
 #include <QDateTime>
-#include <QImageWriter>
-#include <QPainter>
-#include <QProgressDialog>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -30,14 +29,18 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QImageWriter>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPainter>
+#include <QProgressDialog>
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTextStream>
 #include <QVBoxLayout>
@@ -56,20 +59,29 @@ MainWindow::MainWindow(QWidget* parent)
     , jobRunner_(new jobs::JobRunner(this))
 {
     setWindowTitle(QStringLiteral("Calango"));
-    resize(1280, 840);
+    resize(1360, 860);
 
-    // Central column: 3D viewport with the playback timeline directly
-    // below it (the job console dock sits below both).
+    // Central column: document tab bar on top, then the shared 3D
+    // viewport, then the playback timeline (job console dock sits below).
+    tabBar_ = new QTabBar(this);
+    tabBar_->setDocumentMode(true);
+    tabBar_->setTabsClosable(true);
+    tabBar_->setExpanding(false);
     viewport_ = new ViewportWidget(this);
     timeline_ = new TimelineWidget(this);
-    timeline_->hide(); // appears when a trajectory is loaded
+    timeline_->hide(); // appears when the current document has frames
+
     auto* central = new QWidget(this);
     auto* centralLayout = new QVBoxLayout(central);
     centralLayout->setContentsMargins(0, 0, 0, 0);
     centralLayout->setSpacing(0);
+    centralLayout->addWidget(tabBar_);
     centralLayout->addWidget(viewport_, 1);
     centralLayout->addWidget(timeline_);
     setCentralWidget(central);
+
+    connect(tabBar_, &QTabBar::currentChanged, this, &MainWindow::onTabChanged);
+    connect(tabBar_, &QTabBar::tabCloseRequested, this, &MainWindow::onTabCloseRequested);
     connect(timeline_, &TimelineWidget::frameChanged, this, &MainWindow::showFrame);
 
     createMenusAndDocks();
@@ -112,6 +124,10 @@ void MainWindow::createMenusAndDocks()
                         this, &MainWindow::openTrajectory);
     fileMenu->addAction(tr("Save Structure &As…"), QKeySequence::SaveAs,
                         this, &MainWindow::saveStructureAs);
+    fileMenu->addAction(tr("&Close Tab"), QKeySequence::Close, this, [this] {
+        if (tabBar_->currentIndex() >= 0)
+            onTabCloseRequested(tabBar_->currentIndex());
+    });
     fileMenu->addSeparator();
     fileMenu->addAction(tr("Export &Image…"), QKeySequence(tr("Ctrl+E")),
                         this, &MainWindow::exportImage);
@@ -144,6 +160,10 @@ void MainWindow::createMenusAndDocks()
     QMenu* simulationMenu = menuBar()->addMenu(tr("&Simulation"));
     simulationMenu->addAction(tr("&New Calculation…"), QKeySequence(tr("Ctrl+R")),
                               this, &MainWindow::newCalculation);
+
+    QMenu* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
+    analysisMenu->addAction(tr("&Brillouin Zone / k-Path…"),
+                            this, &MainWindow::showBrillouinZone);
 
     QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(tr("&Frame Structure"), QKeySequence(tr("F")),
@@ -200,53 +220,136 @@ bool MainWindow::ensureAseAvailable()
 }
 
 // ---------------------------------------------------------------------------
-// Model management
+// Document / tab management
 // ---------------------------------------------------------------------------
 
-void MainWindow::setStructure(std::shared_ptr<core::Structure> structure,
-                              const QString& sourceName)
+MainWindow::Document* MainWindow::currentDocument()
 {
-    structure_ = std::move(structure);
-    currentFileName_ = sourceName;
-    frames_.clear();
-    timeline_->stop();
-    timeline_->hide();
-    setWindowTitle(sourceName.isEmpty()
+    const int index = tabBar_->currentIndex();
+    if (index < 0 || index >= static_cast<int>(documents_.size()))
+        return nullptr;
+    return documents_[static_cast<std::size_t>(index)].get();
+}
+
+MainWindow::Document& MainWindow::ensureDocument()
+{
+    if (Document* doc = currentDocument())
+        return *doc;
+    const int index =
+        addDocument(std::make_shared<core::Structure>(), tr("Untitled"));
+    return *documents_[static_cast<std::size_t>(index)];
+}
+
+int MainWindow::addDocument(std::shared_ptr<core::Structure> structure,
+                            const QString& name,
+                            std::vector<std::shared_ptr<core::Structure>> frames)
+{
+    auto document = std::make_unique<Document>();
+    document->structure = std::move(structure);
+    document->frames = std::move(frames);
+    document->fileName = name;
+    documents_.push_back(std::move(document));
+
+    const int index = tabBar_->addTab(name);
+    tabBar_->setCurrentIndex(index); // triggers onTabChanged -> sync
+    if (tabBar_->currentIndex() == index)
+        syncViewsToCurrent(true); // first tab: currentChanged may not fire
+    return index;
+}
+
+void MainWindow::onTabChanged(int index)
+{
+    if (index < 0 || index >= static_cast<int>(documents_.size())) {
+        viewport_->setStructure(nullptr);
+        infoWidget_->updateFromStructure(nullptr);
+        timeline_->stop();
+        timeline_->hide();
+        setWindowTitle(QStringLiteral("Calango"));
+        updateUndoActions();
+        return;
+    }
+    syncViewsToCurrent(true);
+}
+
+void MainWindow::onTabCloseRequested(int index)
+{
+    if (index < 0 || index >= static_cast<int>(documents_.size()))
+        return;
+    documents_.erase(documents_.begin() + index);
+    tabBar_->removeTab(index); // currentChanged fires and re-syncs
+}
+
+void MainWindow::syncViewsToCurrent(bool frameCamera)
+{
+    Document* doc = currentDocument();
+    if (!doc)
+        return;
+    viewport_->setStructure(doc->structure, frameCamera);
+    infoWidget_->updateFromStructure(doc->structure.get());
+    setWindowTitle(doc->fileName.isEmpty()
                        ? QStringLiteral("Calango")
-                       : QStringLiteral("Calango — %1").arg(sourceName));
-    notifyStructureChanged();
+                       : QStringLiteral("Calango — %1").arg(doc->fileName));
+    if (doc->frames.size() > 1) {
+        timeline_->setFrameCount(static_cast<int>(doc->frames.size()));
+        timeline_->show();
+    } else {
+        timeline_->stop();
+        timeline_->hide();
+    }
+    updateUndoActions();
+}
+
+void MainWindow::replaceCurrentStructure(std::shared_ptr<core::Structure> structure,
+                                         const QString& name)
+{
+    Document* doc = currentDocument();
+    if (!doc)
+        return;
+    doc->structure = std::move(structure);
+    doc->fileName = name;
+    doc->frames.clear();
+    tabBar_->setTabText(tabBar_->currentIndex(), name);
+    syncViewsToCurrent(true);
 }
 
 void MainWindow::notifyStructureChanged(bool frameCamera)
 {
-    viewport_->setStructure(structure_, frameCamera);
-    infoWidget_->updateFromStructure(structure_.get());
+    Document* doc = currentDocument();
+    if (!doc)
+        return;
+    viewport_->setStructure(doc->structure, frameCamera);
+    infoWidget_->updateFromStructure(doc->structure.get());
 }
 
 void MainWindow::pushUndo()
 {
-    undoStack_.push_back(structure_ ? std::make_shared<core::Structure>(*structure_)
-                                    : nullptr);
-    if (undoStack_.size() > kMaxUndoDepth)
-        undoStack_.pop_front();
-    redoStack_.clear();
+    Document* doc = currentDocument();
+    if (!doc)
+        return;
+    doc->undoStack.push_back(
+        doc->structure ? std::make_shared<core::Structure>(*doc->structure) : nullptr);
+    if (doc->undoStack.size() > kMaxUndoDepth)
+        doc->undoStack.pop_front();
+    doc->redoStack.clear();
     updateUndoActions();
 }
 
 void MainWindow::updateUndoActions()
 {
-    undoAction_->setEnabled(!undoStack_.empty());
-    redoAction_->setEnabled(!redoStack_.empty());
+    Document* doc = currentDocument();
+    undoAction_->setEnabled(doc && !doc->undoStack.empty());
+    redoAction_->setEnabled(doc && !doc->redoStack.empty());
 }
 
 void MainWindow::undo()
 {
-    if (undoStack_.empty())
+    Document* doc = currentDocument();
+    if (!doc || doc->undoStack.empty())
         return;
-    redoStack_.push_back(structure_ ? std::make_shared<core::Structure>(*structure_)
-                                    : nullptr);
-    structure_ = undoStack_.back();
-    undoStack_.pop_back();
+    doc->redoStack.push_back(
+        doc->structure ? std::make_shared<core::Structure>(*doc->structure) : nullptr);
+    doc->structure = doc->undoStack.back();
+    doc->undoStack.pop_back();
     updateUndoActions();
     notifyStructureChanged(false);
     statusBar()->showMessage(tr("Undo"), 2000);
@@ -254,12 +357,13 @@ void MainWindow::undo()
 
 void MainWindow::redo()
 {
-    if (redoStack_.empty())
+    Document* doc = currentDocument();
+    if (!doc || doc->redoStack.empty())
         return;
-    undoStack_.push_back(structure_ ? std::make_shared<core::Structure>(*structure_)
-                                    : nullptr);
-    structure_ = redoStack_.back();
-    redoStack_.pop_back();
+    doc->undoStack.push_back(
+        doc->structure ? std::make_shared<core::Structure>(*doc->structure) : nullptr);
+    doc->structure = doc->redoStack.back();
+    doc->redoStack.pop_back();
     updateUndoActions();
     notifyStructureChanged(false);
     statusBar()->showMessage(tr("Redo"), 2000);
@@ -276,11 +380,9 @@ void MainWindow::loadFile(const QString& path)
     try {
         auto structure = std::make_shared<core::Structure>(
             pybridge::AseBridge::readStructure(path.toStdString()));
-        pushUndo();
-        setStructure(std::move(structure), QFileInfo(path).fileName());
-        statusBar()->showMessage(tr("Loaded %1 (%2 atoms)")
-                                     .arg(path)
-                                     .arg(structure_->size()));
+        const auto atomCount = structure->size();
+        addDocument(std::move(structure), QFileInfo(path).fileName());
+        statusBar()->showMessage(tr("Loaded %1 (%2 atoms)").arg(path).arg(atomCount));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Open Structure"),
                               QString::fromUtf8(e.what()));
@@ -289,11 +391,11 @@ void MainWindow::loadFile(const QString& path)
 
 void MainWindow::openStructure()
 {
-    const QString path = QFileDialog::getOpenFileName(
-        this, tr("Open Structure"), QString(),
+    const QStringList paths = QFileDialog::getOpenFileNames(
+        this, tr("Open Structure(s)"), QString(),
         tr("Structure files (*.xyz *.extxyz *.cif POSCAR CONTCAR *.vasp *.traj);;"
            "All files (*)"));
-    if (!path.isEmpty())
+    for (const QString& path : paths)
         loadFile(path);
 }
 
@@ -312,20 +414,15 @@ void MainWindow::openTrajectory()
         if (rawFrames.empty())
             throw std::runtime_error("Trajectory contains no frames");
 
-        pushUndo();
-        setStructure(std::make_shared<core::Structure>(rawFrames.front()),
-                     QFileInfo(path).fileName());
-
-        frames_.clear();
-        frames_.reserve(rawFrames.size());
+        std::vector<std::shared_ptr<core::Structure>> frames;
+        frames.reserve(rawFrames.size());
         for (const auto& frame : rawFrames)
-            frames_.push_back(std::make_shared<core::Structure>(frame));
+            frames.push_back(std::make_shared<core::Structure>(frame));
 
-        timeline_->setFrameCount(static_cast<int>(frames_.size()));
-        timeline_->show();
-        statusBar()->showMessage(tr("Loaded trajectory %1 (%2 frames)")
-                                     .arg(path)
-                                     .arg(frames_.size()));
+        const auto frameCount = frames.size();
+        addDocument(frames.front(), QFileInfo(path).fileName(), std::move(frames));
+        statusBar()->showMessage(
+            tr("Loaded trajectory %1 (%2 frames)").arg(path).arg(frameCount));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Open Trajectory"), QString::fromUtf8(e.what()));
     }
@@ -333,15 +430,17 @@ void MainWindow::openTrajectory()
 
 void MainWindow::showFrame(int index)
 {
-    if (index < 0 || index >= static_cast<int>(frames_.size()))
+    Document* doc = currentDocument();
+    if (!doc || index < 0 || index >= static_cast<int>(doc->frames.size()))
         return;
-    structure_ = frames_[static_cast<std::size_t>(index)];
+    doc->structure = doc->frames[static_cast<std::size_t>(index)];
     notifyStructureChanged(false);
 }
 
 void MainWindow::saveStructureAs()
 {
-    if (!structure_ || !ensureAseAvailable())
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || !ensureAseAvailable())
         return;
     const QString path = QFileDialog::getSaveFileName(
         this, tr("Save Structure As"), QString(),
@@ -349,7 +448,7 @@ void MainWindow::saveStructureAs()
     if (path.isEmpty())
         return;
     try {
-        pybridge::AseBridge::writeStructure(*structure_, path.toStdString());
+        pybridge::AseBridge::writeStructure(*doc->structure, path.toStdString());
         statusBar()->showMessage(tr("Saved %1").arg(path));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Save Structure"), QString::fromUtf8(e.what()));
@@ -362,7 +461,8 @@ void MainWindow::saveStructureAs()
 
 void MainWindow::exportImage()
 {
-    if (!structure_ || structure_->empty()) {
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
         statusBar()->showMessage(tr("Open a structure first."));
         return;
     }
@@ -434,7 +534,8 @@ void MainWindow::exportImage()
 
 void MainWindow::exportAnimation()
 {
-    if (!structure_ || structure_->empty()) {
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
         statusBar()->showMessage(tr("Open a structure first."));
         return;
     }
@@ -445,9 +546,9 @@ void MainWindow::exportAnimation()
 
     auto* sourceCombo = new QComboBox(&dialog);
     sourceCombo->addItem(tr("Turntable rotation (360°)"));
-    const bool hasTrajectory = frames_.size() > 1;
+    const bool hasTrajectory = doc->frames.size() > 1;
     if (hasTrajectory)
-        sourceCombo->addItem(tr("Trajectory frames (%1)").arg(frames_.size()));
+        sourceCombo->addItem(tr("Trajectory frames (%1)").arg(doc->frames.size()));
     form->addRow(tr("Source:"), sourceCombo);
 
     auto* framesSpin = new QSpinBox(&dialog);
@@ -521,7 +622,7 @@ void MainWindow::exportAnimation()
     const int height = heightSpin->value() & ~1;
     const bool turntable = sourceCombo->currentIndex() == 0;
     const int frameCount =
-        turntable ? framesSpin->value() : static_cast<int>(frames_.size());
+        turntable ? framesSpin->value() : static_cast<int>(doc->frames.size());
 
     QProgressDialog progress(tr("Rendering frames…"), tr("Cancel"), 0, frameCount, this);
     progress.setWindowModality(Qt::WindowModal);
@@ -542,7 +643,7 @@ void MainWindow::exportAnimation()
                 width, height, background,
                 360.0f * static_cast<float>(i) / static_cast<float>(frameCount)));
         } else {
-            viewport_->setStructure(frames_[static_cast<std::size_t>(i)], false);
+            viewport_->setStructure(doc->frames[static_cast<std::size_t>(i)], false);
             images.push_back(viewport_->renderToImage(width, height, background));
         }
     }
@@ -571,7 +672,8 @@ void MainWindow::exportAnimation()
 
 void MainWindow::createSupercell()
 {
-    if (!structure_) {
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure) {
         statusBar()->showMessage(tr("Open a structure first."));
         return;
     }
@@ -600,10 +702,13 @@ void MainWindow::createSupercell()
 
     try {
         auto repeated = std::make_shared<core::Structure>(pybridge::AseBridge::makeSupercell(
-            *structure_, repeats[0]->value(), repeats[1]->value(), repeats[2]->value()));
+            *doc->structure, repeats[0]->value(), repeats[1]->value(),
+            repeats[2]->value()));
         pushUndo();
-        setStructure(std::move(repeated), tr("%1 (supercell)").arg(currentFileName_));
-        statusBar()->showMessage(tr("Supercell created: %1 atoms").arg(structure_->size()));
+        replaceCurrentStructure(std::move(repeated),
+                                tr("%1 (supercell)").arg(doc->fileName));
+        statusBar()->showMessage(
+            tr("Supercell created: %1 atoms").arg(doc->structure->size()));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Create Supercell"), QString::fromUtf8(e.what()));
     }
@@ -611,7 +716,8 @@ void MainWindow::createSupercell()
 
 void MainWindow::cleaveSurface()
 {
-    if (!structure_ || !structure_->cell().isDefined()) {
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || !doc->structure->cell().isDefined()) {
         QMessageBox::information(this, tr("Cleave Surface"),
                                  tr("Open a bulk structure with a unit cell first."));
         return;
@@ -663,16 +769,16 @@ void MainWindow::cleaveSurface()
 
     try {
         auto slab = std::make_shared<core::Structure>(pybridge::AseBridge::makeSlab(
-            *structure_, miller[0]->value(), miller[1]->value(), miller[2]->value(),
+            *doc->structure, miller[0]->value(), miller[1]->value(), miller[2]->value(),
             layersSpin->value(), vacuumSpin->value()));
         pushUndo();
-        setStructure(std::move(slab),
-                     tr("%1 (%2%3%4) slab")
-                         .arg(currentFileName_)
-                         .arg(miller[0]->value())
-                         .arg(miller[1]->value())
-                         .arg(miller[2]->value()));
-        statusBar()->showMessage(tr("Slab created: %1 atoms").arg(structure_->size()));
+        replaceCurrentStructure(std::move(slab),
+                                tr("%1 (%2%3%4) slab")
+                                    .arg(doc->fileName)
+                                    .arg(miller[0]->value())
+                                    .arg(miller[1]->value())
+                                    .arg(miller[2]->value()));
+        statusBar()->showMessage(tr("Slab created: %1 atoms").arg(doc->structure->size()));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Cleave Surface"), QString::fromUtf8(e.what()));
     }
@@ -717,14 +823,12 @@ void MainWindow::addAtom()
         return;
     }
 
+    Document& doc = ensureDocument();
     pushUndo();
-    const bool firstAtom = !structure_ || structure_->empty();
-    if (!structure_) {
-        structure_ = std::make_shared<core::Structure>();
-        currentFileName_ = tr("untitled");
-        setWindowTitle(QStringLiteral("Calango — %1").arg(currentFileName_));
-    }
-    structure_->addAtom(
+    const bool firstAtom = !doc.structure || doc.structure->empty();
+    if (!doc.structure)
+        doc.structure = std::make_shared<core::Structure>();
+    doc.structure->addAtom(
         {z, {coords[0]->value(), coords[1]->value(), coords[2]->value()}});
     notifyStructureChanged(firstAtom);
     statusBar()->showMessage(tr("Added %1 atom").arg(symbolEdit->text().trimmed()));
@@ -732,8 +836,9 @@ void MainWindow::addAtom()
 
 void MainWindow::changeElementOfSelection()
 {
+    Document* doc = currentDocument();
     const auto& selection = viewport_->selection();
-    if (!structure_ || selection.empty()) {
+    if (!doc || !doc->structure || selection.empty()) {
         statusBar()->showMessage(tr("Select atoms first (click / Ctrl+click)."));
         return;
     }
@@ -756,14 +861,15 @@ void MainWindow::changeElementOfSelection()
 
     pushUndo();
     for (const int index : selection)
-        structure_->atoms()[static_cast<std::size_t>(index)].atomicNumber = z;
+        doc->structure->atoms()[static_cast<std::size_t>(index)].atomicNumber = z;
     notifyStructureChanged(false);
 }
 
 void MainWindow::translateSelection()
 {
+    Document* doc = currentDocument();
     const auto& selection = viewport_->selection();
-    if (!structure_ || selection.empty()) {
+    if (!doc || !doc->structure || selection.empty()) {
         statusBar()->showMessage(tr("Select atoms first (click / Ctrl+click)."));
         return;
     }
@@ -792,14 +898,15 @@ void MainWindow::translateSelection()
     pushUndo();
     const core::Vec3 shift{delta[0]->value(), delta[1]->value(), delta[2]->value()};
     for (const int index : selection)
-        structure_->atoms()[static_cast<std::size_t>(index)].position += shift;
+        doc->structure->atoms()[static_cast<std::size_t>(index)].position += shift;
     notifyStructureChanged(false);
 }
 
 void MainWindow::deleteSelectedAtoms()
 {
+    Document* doc = currentDocument();
     const auto& selection = viewport_->selection();
-    if (!structure_ || selection.empty()) {
+    if (!doc || !doc->structure || selection.empty()) {
         statusBar()->showMessage(tr("Select atoms first (click / Ctrl+click)."));
         return;
     }
@@ -809,10 +916,35 @@ void MainWindow::deleteSelectedAtoms()
     std::vector<int> indices(selection.begin(), selection.end());
     std::sort(indices.rbegin(), indices.rend());
     for (const int index : indices)
-        structure_->removeAtom(static_cast<std::size_t>(index));
+        doc->structure->removeAtom(static_cast<std::size_t>(index));
     notifyStructureChanged(false);
     statusBar()->showMessage(tr("Deleted %n atom(s)", nullptr,
                                 static_cast<int>(indices.size())));
+}
+
+// ---------------------------------------------------------------------------
+// Analysis
+// ---------------------------------------------------------------------------
+
+void MainWindow::showBrillouinZone()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || !doc->structure->cell().isDefined()) {
+        QMessageBox::information(this, tr("Brillouin Zone"),
+                                 tr("Open a periodic structure with a unit cell first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    try {
+        const auto zone = core::computeBrillouinZone(doc->structure->cell());
+        const auto bandPath = pybridge::AseBridge::bandPathInfo(*doc->structure);
+        BrillouinZoneDialog dialog(zone, bandPath, this);
+        dialog.exec();
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, tr("Brillouin Zone"), QString::fromUtf8(e.what()));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -821,7 +953,8 @@ void MainWindow::deleteSelectedAtoms()
 
 void MainWindow::newCalculation()
 {
-    if (!structure_ || structure_->empty()) {
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
         QMessageBox::information(this, tr("New Calculation"),
                                  tr("Open or build a structure first."));
         return;
@@ -836,11 +969,15 @@ void MainWindow::newCalculation()
 
     CalculatorDialog dialog(this);
     if (dialog.exec() == QDialog::Accepted)
-        runScript(dialog.script());
+        runScript(dialog.script(), dialog.pythonExecutable());
 }
 
-void MainWindow::runScript(const QString& script)
+void MainWindow::runScript(const QString& script, const QString& pythonExe)
 {
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure)
+        return;
+
     // Each job gets its own directory under the per-user app-data location.
     const QString jobsRoot =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
@@ -856,7 +993,7 @@ void MainWindow::runScript(const QString& script)
     try {
         // Stage inputs: structure (extxyz round-trips everything) + script.
         pybridge::AseBridge::writeStructure(
-            *structure_, (jobDir + QStringLiteral("/structure.extxyz")).toStdString(),
+            *doc->structure, (jobDir + QStringLiteral("/structure.extxyz")).toStdString(),
             "extxyz");
 
         const QString scriptPath = jobDir + QStringLiteral("/run.py");
@@ -869,10 +1006,8 @@ void MainWindow::runScript(const QString& script)
         lastJobDir_ = jobDir;
         jobDock_->show();
         jobDock_->raise();
-        jobRunner_->start(
-            QString::fromStdString(pybridge::PythonEngine::instance().executable()),
-            QStringLiteral("run.py"), jobDir);
-        statusBar()->showMessage(tr("Job running in %1").arg(jobDir));
+        jobRunner_->start(pythonExe, QStringLiteral("run.py"), jobDir);
+        statusBar()->showMessage(tr("Job running in %1 (%2)").arg(jobDir, pythonExe));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Run Job"), QString::fromUtf8(e.what()));
     }
@@ -891,7 +1026,7 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
             continue;
         const auto answer = QMessageBox::question(
             this, tr("Job Finished"),
-            tr("The job produced %1.\nLoad it into the viewport?")
+            tr("The job produced %1.\nLoad it into a new tab?")
                 .arg(QLatin1String(candidate)));
         if (answer == QMessageBox::Yes)
             loadFile(resultPath);

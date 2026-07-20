@@ -60,8 +60,8 @@ int main(int argc, char* argv[])
     calango::gui::MainWindow window;
     window.show();
 
-    if (argc > 1)
-        window.loadFile(QString::fromLocal8Bit(argv[1]));
+    for (int i = 1; i < argc; ++i) // each file opens in its own tab
+        window.loadFile(QString::fromLocal8Bit(argv[i]));
 
     return QApplication::exec();
 }

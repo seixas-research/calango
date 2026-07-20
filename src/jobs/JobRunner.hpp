@@ -23,6 +23,11 @@ public:
 
 public Q_SLOTS:
     /// Launch `pythonExe scriptPath` with `workDir` as the working directory.
+    ///
+    /// The interpreter's directory is prepended to PATH so that solver
+    /// binaries installed alongside it (pw.x, siesta, ... in a conda env's
+    /// bin/) are found without global PATH conflicts; for conda-style
+    /// layouts CONDA_PREFIX is set to the environment root as well.
     void start(const QString& pythonExe, const QString& scriptPath, const QString& workDir);
 
     /// Politely terminate; escalates to kill() after a grace period.

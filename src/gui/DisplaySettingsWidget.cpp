@@ -7,7 +7,11 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
+
+#include <cmath>
+#include <functional>
 
 namespace calango::gui {
 
@@ -29,33 +33,52 @@ DisplaySettingsWidget::DisplaySettingsWidget(ViewportWidget* viewport, QWidget* 
         viewport_->setRepresentation(static_cast<render::RepresentationMode>(index));
     });
 
-    const auto makeScaleRow = [this](QSlider*& slider, QLabel*& label) {
+    // Slider for coarse adjustment + spinbox for exact typed values,
+    // bidirectionally synced (both drive the same style factor).
+    const auto makeScaleRow = [this](QSlider*& slider, QDoubleSpinBox*& spin,
+                                     const std::function<void(float)>& apply) {
         auto* row = new QWidget(this);
         auto* rowLayout = new QHBoxLayout(row);
         rowLayout->setContentsMargins(0, 0, 0, 0);
         slider = new QSlider(Qt::Horizontal, row);
         slider->setRange(20, 300); // percent
         slider->setValue(100);
-        label = new QLabel(QStringLiteral("100%"), row);
-        label->setMinimumWidth(44);
+        spin = new QDoubleSpinBox(row);
+        spin->setRange(0.20, 3.00);
+        spin->setDecimals(2);
+        spin->setSingleStep(0.05);
+        spin->setValue(1.00);
+        spin->setSuffix(QStringLiteral("×"));
         rowLayout->addWidget(slider, 1);
-        rowLayout->addWidget(label);
+        rowLayout->addWidget(spin);
+
+        connect(slider, &QSlider::valueChanged, this, [spin, apply](int percent) {
+            const float factor = static_cast<float>(percent) / 100.0f;
+            {
+                const QSignalBlocker blocker(spin);
+                spin->setValue(factor);
+            }
+            apply(factor);
+        });
+        connect(spin, &QDoubleSpinBox::valueChanged, this,
+                [slider = slider, apply](double factor) {
+                    const QSignalBlocker blocker(slider);
+                    slider->setValue(static_cast<int>(std::lround(factor * 100.0)));
+                    apply(static_cast<float>(factor));
+                });
         return row;
     };
 
-    reprForm->addRow(tr("Atom radius:"), makeScaleRow(atomScaleSlider_, atomScaleLabel_));
-    reprForm->addRow(tr("Bond width:"), makeScaleRow(bondWidthSlider_, bondWidthLabel_));
-
-    connect(atomScaleSlider_, &QSlider::valueChanged, this, [this](int percent) {
-        atomScaleLabel_->setText(QStringLiteral("%1%").arg(percent));
-        viewport_->style().atomScaleFactor = static_cast<float>(percent) / 100.0f;
-        viewport_->styleChanged(true);
-    });
-    connect(bondWidthSlider_, &QSlider::valueChanged, this, [this](int percent) {
-        bondWidthLabel_->setText(QStringLiteral("%1%").arg(percent));
-        viewport_->style().bondWidthFactor = static_cast<float>(percent) / 100.0f;
-        viewport_->styleChanged(true);
-    });
+    reprForm->addRow(tr("Atom radius:"),
+                     makeScaleRow(atomScaleSlider_, atomScaleSpin_, [this](float factor) {
+                         viewport_->style().atomScaleFactor = factor;
+                         viewport_->styleChanged(true);
+                     }));
+    reprForm->addRow(tr("Bond width:"),
+                     makeScaleRow(bondWidthSlider_, bondWidthSpin_, [this](float factor) {
+                         viewport_->style().bondWidthFactor = factor;
+                         viewport_->styleChanged(true);
+                     }));
 
     auto* elementsButton = new QPushButton(tr("Element Settings…"), reprGroup);
     reprForm->addRow(elementsButton);

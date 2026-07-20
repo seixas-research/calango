@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/KPath.hpp"
 #include "core/Structure.hpp"
 
 #include <pybind11/pybind11.h>
@@ -38,6 +39,15 @@ public:
     /// number of layers, vacuum padding in Å on each side.
     static core::Structure makeSlab(const core::Structure& structure,
                                     int h, int k, int l, int layers, double vacuum);
+
+    /// High-symmetry k-points and ASE's suggested band path for the
+    /// structure's Bravais lattice (via ase Cell.bandpath()). The path
+    /// string concatenates labels, ','-separated per segment ("GXWKG,UX").
+    struct BandPathInfo {
+        std::vector<core::KPathPoint> specialPoints;
+        std::string suggestedPath;
+    };
+    static BandPathInfo bandPathInfo(const core::Structure& structure);
 
     /// core::Structure -> ase.Atoms (positions, symbols, cell, pbc).
     static pybind11::object toAtoms(const core::Structure& structure);

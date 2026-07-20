@@ -82,6 +82,20 @@ This roadmap outlines the core development phases for building a cross-platform 
 *   [ ] Per-atom (not just per-element) overrides and selection-based styling.
 *   [ ] NPT molecular dynamics and MACE dispersion-correction toggle.
 
+## 📅 Phase 8: Workspace, Solvers, Environments & Reciprocal Space (v0.5)
+**Focus:** Multi-document workflow, expanded electronic-structure support, isolated execution environments, and k-space analytics.
+
+*   [x] Tabbed multi-file workspace: every opened structure/trajectory gets its own tab (with per-document undo history); all tabs share the single accelerated viewport so display settings stay consistent.
+*   [x] Precise UI controls: atom-radius and bond-width sliders paired with synced `QDoubleSpinBox` fields for exact typed values.
+*   [x] Interactive ASE script editor: form on the left, live script on the right — now syntax-highlighted and manually editable, with edit detection that pauses form sync and an explicit "Regenerate" action.
+*   [x] GPAW and SIESTA calculator modules in the ASE input generator (plane-wave/mesh cutoff + k-grid mapped into both).
+*   [x] Conda environment selector: browse to an env folder or python executable; jobs run inside it with the env's `bin/` prepended to PATH (and `CONDA_PREFIX` set), so pw.x / siesta / gpaw / mace binaries resolve without global conflicts. Persisted across sessions.
+*   [x] Brillouin zone viewer: Wigner-Seitz cell of the reciprocal lattice (exact half-space intersection, validated against sc cube and fcc truncated octahedron), translucent 3D polyhedron with edges.
+*   [x] High-symmetry points from ASE's Bravais-lattice detection, rendered with labels (Γ, X, W, K, L, U, …); click points sequentially to draw the k-path (with order badges, undo/clear, and ASE's suggested path preload).
+*   [x] k-path export to VASP `KPOINTS` (line mode) and Quantum ESPRESSO `K_POINTS crystal_b` card files.
+*   [ ] Band-structure job template that consumes the drawn k-path directly.
+*   [ ] Segmented (discontinuous) k-paths ("," breaks) in the path builder and exports.
+
 ## 🚀 Future Modules (Post-MVP)
 *   **Remote Job Submission:** Connect to HPC clusters using SSH/SFTP and generate SLURM/PBS submission scripts.
 *   **Plugin Architecture:** Decouple specific workflows (e.g., NEB path generation, band structure analysis) into modular C++ plugins using `QPluginLoader`.

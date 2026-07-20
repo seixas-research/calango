@@ -71,6 +71,10 @@ qt_add_executable(calango
     src/core/CalculatorConfig.hpp
     src/core/AseScriptGenerator.hpp
     src/core/AseScriptGenerator.cpp
+    src/core/BrillouinZone.hpp
+    src/core/BrillouinZone.cpp
+    src/core/KPath.hpp
+    src/core/KPath.cpp
 
     # python_bridge — embedded CPython + ASE interop
     src/python_bridge/PythonEngine.hpp
@@ -109,6 +113,12 @@ qt_add_executable(calango
     src/gui/DisplaySettingsWidget.cpp
     src/gui/ElementSettingsDialog.hpp
     src/gui/ElementSettingsDialog.cpp
+    src/gui/PythonHighlighter.hpp
+    src/gui/PythonHighlighter.cpp
+    src/gui/BrillouinZoneView.hpp
+    src/gui/BrillouinZoneView.cpp
+    src/gui/BrillouinZoneDialog.hpp
+    src/gui/BrillouinZoneDialog.cpp
 )
 
 qt_add_resources(calango "shaders"

@@ -41,9 +41,9 @@ private:
 
     QComboBox* modeCombo_;
     QSlider* atomScaleSlider_;
-    QLabel* atomScaleLabel_;
+    QDoubleSpinBox* atomScaleSpin_;
     QSlider* bondWidthSlider_;
-    QLabel* bondWidthLabel_;
+    QDoubleSpinBox* bondWidthSpin_;
 
     QListWidget* lightList_;
     QPushButton* addLightButton_;

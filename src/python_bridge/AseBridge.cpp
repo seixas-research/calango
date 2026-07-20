@@ -132,6 +132,26 @@ core::Structure AseBridge::makeSlab(const core::Structure& structure,
     }
 }
 
+AseBridge::BandPathInfo AseBridge::bandPathInfo(const core::Structure& structure)
+{
+    try {
+        const py::object bandpath = toAtoms(structure).attr("cell").attr("bandpath")();
+        const py::module_ np = py::module_::import("numpy");
+
+        BandPathInfo info;
+        info.suggestedPath = bandpath.attr("path").cast<std::string>();
+        for (const auto& item : bandpath.attr("special_points").cast<py::dict>()) {
+            const auto frac = np.attr("asarray")(item.second).cast<py::array_t<double>>();
+            const auto f = frac.unchecked<1>();
+            info.specialPoints.push_back(
+                {item.first.cast<std::string>(), {f(0), f(1), f(2)}});
+        }
+        return info;
+    } catch (const py::error_already_set& e) {
+        rethrow(e, "Could not determine the band path for this cell");
+    }
+}
+
 core::Structure AseBridge::makeSupercell(const core::Structure& structure,
                                          int nx, int ny, int nz)
 {

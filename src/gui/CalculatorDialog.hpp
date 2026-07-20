@@ -5,6 +5,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDoubleSpinBox>
+#include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -12,10 +13,12 @@
 
 namespace calango::gui {
 
-/// "ASE input generator": maps a form onto core::CalculatorConfig and
-/// previews the generated Python script live. On accept the caller takes
-/// script() and hands it to the job runner; Save Script… exports it for
-/// editing or cluster submission.
+/// "ASE input generator": configuration forms on the left, the live
+/// generated Python/ASE script on the right. The script pane is a real
+/// editor (syntax-highlighted, manually editable): the first manual edit
+/// pauses form→script regeneration until "Regenerate" is pressed, so user
+/// tweaks are never silently overwritten. Also hosts the execution-
+/// environment selector (conda env / interpreter) used by the job runner.
 class CalculatorDialog : public QDialog {
     Q_OBJECT
 
@@ -23,12 +26,22 @@ public:
     explicit CalculatorDialog(QWidget* parent = nullptr);
 
     core::CalculatorConfig config() const;
+
+    /// Current script text — the user's edited version if they typed in
+    /// the editor, otherwise the generated one.
     QString script() const;
+
+    /// Interpreter that will run the job: the selected conda environment's
+    /// python, or the embedded interpreter when no environment is chosen.
+    QString pythonExecutable() const;
 
 private Q_SLOTS:
     void refreshPreview();
+    void regenerateScript();
     void saveScript();
     void browseMaceModel();
+    void browseEnvironmentDir();
+    void browseEnvironmentPython();
 
 private:
     QComboBox* calculatorCombo_;
@@ -46,7 +59,12 @@ private:
     QLineEdit* maceModelPathEdit_;
     QPushButton* maceBrowseButton_;
     QComboBox* maceDeviceCombo_;
+    QLineEdit* envPathEdit_;
+    QLabel* envStatusLabel_;
+    QLabel* editedNotice_;
     QPlainTextEdit* preview_;
+    bool updatingPreview_ = false;
+    bool manuallyEdited_ = false;
 };
 
 } // namespace calango::gui
