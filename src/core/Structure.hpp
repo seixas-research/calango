@@ -16,8 +16,9 @@ struct Bond {
     /// Cartesian shift applied to atom j's position to get the periodic
     /// image actually bonded to atom i. Zero for bonds inside the cell.
     Vec3 imageOffset{};
-    /// Perceived bond order (1, 2 or 3) from the distance/covalent-radius
-    /// ratio; rendering draws order-n bonds as n parallel cylinders.
+    /// Bond order (1, 2 or 3). Orders are never auto-perceived — they are
+    /// assigned manually (Representation panel / setBondOrder) and default
+    /// to single; rendering draws order-n bonds as n parallel cylinders.
     int order = 1;
 
     bool crossesBoundary() const { return imageOffset.dot(imageOffset) > 1e-12; }
@@ -80,6 +81,20 @@ public:
     void clearBondOverride(int i, int j);
     void clearBondOverrides();
 
+    // -- Manual bond orders ------------------------------------------------
+    //
+    // Assigned per atom pair (index-normalized i < j, persisted like the
+    // add/remove overrides). Applies to whichever bond — auto-detected or
+    // manual — connects the pair; unlisted pairs are single bonds.
+
+    const std::map<std::pair<int, int>, int>& bondOrders() const {
+        return bondOrders_;
+    }
+    /// Order of the bond between i and j (1 when unassigned).
+    int bondOrder(int i, int j) const;
+    /// Assign order 1-3; 1 resets the pair to the default.
+    void setBondOrder(int i, int j, int order);
+
     // -- Per-atom scalar fields (charges, |forces|, potentials, ...) -------
     //
     // Named one-value-per-atom overlays used by the scalar color-mapping
@@ -108,6 +123,7 @@ public:
 private:
     std::vector<Atom> atoms_;
     UnitCell cell_;
+    std::map<std::pair<int, int>, int> bondOrders_;
     std::map<std::string, std::vector<double>> scalarFields_;
     std::map<std::string, std::vector<Vec3>> vectorFields_;
     std::vector<std::pair<int, int>> addedBonds_;

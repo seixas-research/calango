@@ -131,6 +131,40 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
                      viewport_->styleChanged(true);
                  }));
 
+    // --- Manual bond order -------------------------------------------------
+    // Orders are never auto-perceived; select exactly two atoms in the
+    // viewport and assign the multiplicity here.
+    auto* orderRow = new QWidget(this);
+    auto* orderLayout = new QHBoxLayout(orderRow);
+    orderLayout->setContentsMargins(0, 0, 0, 0);
+    orderLayout->setSpacing(4);
+    const std::array<const char*, 3> orderNames{
+        QT_TR_NOOP("Single"), QT_TR_NOOP("Double"), QT_TR_NOOP("Triple")};
+    for (int order = 1; order <= 3; ++order) {
+        auto* button = new QPushButton(tr(orderNames[order - 1]), orderRow);
+        bondOrderButtons_[order - 1] = button;
+        orderLayout->addWidget(button);
+        connect(button, &QPushButton::clicked, this, [this, order] {
+            Q_EMIT bondOrderAssignRequested(order);
+        });
+    }
+    form->addRow(tr("Bond order:"), orderRow);
+
+    const auto syncBondOrderButtons = [this](int selectedCount) {
+        const bool pair = selectedCount == 2;
+        for (auto* button : bondOrderButtons_) {
+            button->setEnabled(pair);
+            button->setToolTip(pair
+                                   ? tr("Assign this bond order to the "
+                                        "selected atom pair")
+                                   : tr("Select exactly two atoms in the "
+                                        "viewport first (Shift+click)"));
+        }
+    };
+    connect(viewport_, &ViewportWidget::selectionChanged,
+            this, syncBondOrderButtons);
+    syncBondOrderButtons(static_cast<int>(viewport_->selection().size()));
+
     gradientBondsCheck_ = new QCheckBox(tr("Gradient bond coloring"), this);
     gradientBondsCheck_->setChecked(viewport_->style().gradientBonds);
     gradientBondsCheck_->setToolTip(tr("Blend each bond smoothly from one atom's "

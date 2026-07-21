@@ -102,6 +102,13 @@ QJsonObject structureToJson(const core::Structure& structure)
         json[QStringLiteral("removedBonds")]
             = bondPairsToJson(structure.removedBonds());
 
+    if (!structure.bondOrders().empty()) {
+        QJsonArray orders;
+        for (const auto& [pair, order] : structure.bondOrders())
+            orders.append(QJsonArray{pair.first, pair.second, order});
+        json[QStringLiteral("bondOrders")] = orders;
+    }
+
     return json;
 }
 
@@ -152,6 +159,12 @@ std::shared_ptr<core::Structure> structureFromJson(const QJsonObject& json)
     for (const auto& [i, j] :
          bondPairsFromJson(json[QStringLiteral("removedBonds")].toArray()))
         structure->removeBondOverride(i, j);
+    for (const auto& entry : json[QStringLiteral("bondOrders")].toArray()) {
+        const QJsonArray triple = entry.toArray();
+        if (triple.size() == 3)
+            structure->setBondOrder(triple[0].toInt(), triple[1].toInt(),
+                                    triple[2].toInt(1));
+    }
 
     return structure;
 }

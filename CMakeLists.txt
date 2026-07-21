@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.13
+    VERSION 26.7.14
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -92,6 +92,12 @@ qt_add_executable(calango
     src/core/Noise.cpp
     src/core/PhononScriptGenerator.hpp
     src/core/PhononScriptGenerator.cpp
+    src/core/SchedulerScript.hpp
+    src/core/SchedulerScript.cpp
+    src/core/ChemicalOrder.hpp
+    src/core/ChemicalOrder.cpp
+    src/core/LocalEntropy.hpp
+    src/core/LocalEntropy.cpp
 
     # python_bridge — embedded CPython + ASE interop
     src/python_bridge/PythonEngine.hpp
@@ -102,6 +108,8 @@ qt_add_executable(calango
     src/python_bridge/AnimationExporter.cpp
     src/python_bridge/MaterialsProject.hpp
     src/python_bridge/MaterialsProject.cpp
+    src/python_bridge/SqsBuilder.hpp
+    src/python_bridge/SqsBuilder.cpp
 
     # render — OpenGL "View" over core::Structure (read-only access)
     src/render/Camera.hpp
@@ -116,6 +124,10 @@ qt_add_executable(calango
     # jobs — local subprocess management
     src/jobs/JobRunner.hpp
     src/jobs/JobRunner.cpp
+
+    # remote — SSH/SFTP HPC job submission (paramiko helper subprocess)
+    src/remote/RemoteClient.hpp
+    src/remote/RemoteClient.cpp
 
     # gui — Qt widgets: "View + Controller"
     src/gui/MainWindow.hpp
@@ -178,6 +190,16 @@ qt_add_executable(calango
     src/gui/ExamplesDialog.cpp
     src/gui/RayTraceDialog.hpp
     src/gui/RayTraceDialog.cpp
+    src/gui/BrandingPanel.hpp
+    src/gui/BrandingPanel.cpp
+    src/gui/RemoteAccessPanel.hpp
+    src/gui/RemoteAccessPanel.cpp
+    src/gui/SqsDialog.hpp
+    src/gui/SqsDialog.cpp
+    src/gui/WarrenCowleyDialog.hpp
+    src/gui/WarrenCowleyDialog.cpp
+    src/gui/LocalEntropyDialog.hpp
+    src/gui/LocalEntropyDialog.cpp
 )
 
 qt_add_resources(calango "shaders"
@@ -195,6 +217,12 @@ qt_add_resources(calango "branding"
     PREFIX "/"
     FILES
         assets/calango/icon_transparent.png
+)
+
+qt_add_resources(calango "remote"
+    PREFIX "/"
+    FILES
+        assets/remote/calango_remote.py
 )
 
 # Distributable macOS bundle: configure with -DCALANGO_MACOS_BUNDLE=ON.

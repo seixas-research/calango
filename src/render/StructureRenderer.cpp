@@ -208,7 +208,14 @@ std::vector<Light> StructureRenderer::defaultLights()
     fill.diffuse = QColor::fromRgbF(0.24f, 0.27f, 0.33f);
     fill.specular = QColor::fromRgbF(0.05f, 0.05f, 0.07f);
 
-    return {key, fill};
+    Light back; // rim light from behind/above: separates spheres from the
+                // background and adds depth to sphere silhouettes
+    back.direction = QVector3D(0.15f, 0.45f, 0.90f);
+    back.ambient = QColor::fromRgbF(0.0f, 0.0f, 0.0f);
+    back.diffuse = QColor::fromRgbF(0.14f, 0.14f, 0.16f);
+    back.specular = QColor::fromRgbF(0.10f, 0.10f, 0.12f);
+
+    return {key, fill, back};
 }
 
 float StructureRenderer::displayRadius(int atomicNumber, const Style& style)

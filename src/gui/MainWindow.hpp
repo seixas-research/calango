@@ -20,6 +20,7 @@ namespace calango::gui {
 
 class JobLogWidget;
 class MetricPlotWidget;
+class RemoteAccessPanel;
 class StructureInfoWidget;
 class TimelineWidget;
 class ViewportWidget;
@@ -63,11 +64,14 @@ private Q_SLOTS:
     void translateSelection();
     void deleteSelectedAtoms();
     void showBondEditor();
+    void assignBondOrderToSelection(int order);
     void showPreferences();
     void undo();
     void redo();
 
     void newCalculation();
+    void newRemoteCalculation();
+    void onRemoteResultsReady(const QString& localDir);
     void onJobFinished(int exitCode, bool crashed);
     void showFrame(int index);
     void showBrillouinZone();
@@ -78,6 +82,9 @@ private Q_SLOTS:
     void showXrd();
     void openNanoBuilder();
     void openPhononBuilder();
+    void openSqsBuilder();
+    void showWarrenCowley();
+    void showLocalEntropy();
     void openExamplesBrowser();
     void openRayTraceDialog();
     void addRandomNoise();
@@ -111,6 +118,10 @@ private:
     void notifyStructureChanged(bool frameCamera = true);
     void pushUndo();
     void updateUndoActions();
+    /// Write run.py + structure.extxyz into a fresh job directory under
+    /// app-data; returns the directory ("" on failure). Shared by local
+    /// runs (JobRunner) and remote submissions (RemoteAccessPanel).
+    QString stageJob(const QString& script);
     void runScript(const QString& script, const QString& pythonExe);
     bool ensureAseAvailable();
 
@@ -137,6 +148,8 @@ private:
     MetricPlotWidget* pressurePlot_ = nullptr;
     TimelineWidget* timeline_ = nullptr;
     QDockWidget* jobDock_ = nullptr;
+    QDockWidget* remoteDock_ = nullptr;
+    RemoteAccessPanel* remotePanel_ = nullptr;
     jobs::JobRunner* jobRunner_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;

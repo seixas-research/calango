@@ -7,35 +7,6 @@
 
 namespace calango::core {
 
-namespace {
-
-/// Distance-based bond-order heuristic. Calibrated on typical bond lengths
-/// relative to the sum of covalent radii (e.g. C–O 1.43 Å / 1.42 Å ≈ 1.01,
-/// C=O 1.21 Å ≈ 0.85, C≡O 1.13 Å ≈ 0.80). Only elements that commonly form
-/// multiple bonds participate — short metal-metal contacts must not be
-/// mistaken for double bonds. Real bond-order data (e.g. from SMILES or a
-/// force field) can override this later via Bond::order.
-int perceiveBondOrder(int zA, int zB, double distanceRatio)
-{
-    const auto formsMultipleBonds = [](int z) {
-        switch (z) {
-        case 6: case 7: case 8: case 15: case 16: case 33: case 34: // C N O P S As Se
-            return true;
-        default:
-            return false;
-        }
-    };
-    if (!formsMultipleBonds(zA) || !formsMultipleBonds(zB))
-        return 1;
-    if (distanceRatio < 0.81)
-        return 3;
-    if (distanceRatio < 0.92)
-        return 2;
-    return 1;
-}
-
-} // namespace
-
 void Structure::addAtom(const Atom& atom)
 {
     atoms_.push_back(atom);
@@ -77,6 +48,15 @@ void Structure::removeAtom(std::size_t index)
                 --j;
         }
     }
+    // Same for the manual bond orders (keys are immutable — rebuild).
+    std::map<std::pair<int, int>, int> orders;
+    for (const auto& [pair, order] : bondOrders_) {
+        if (pair.first == removed || pair.second == removed)
+            continue;
+        orders[{pair.first - (pair.first > removed ? 1 : 0),
+                pair.second - (pair.second > removed ? 1 : 0)}] = order;
+    }
+    bondOrders_ = std::move(orders);
 }
 
 void Structure::clear()
@@ -195,11 +175,8 @@ std::vector<Bond> Structure::detectBonds(double tolerance, bool autoDetect) cons
                 const double radiusSum = a.covalentRadius() + b.covalentRadius();
                 const double cutoff = tolerance * radiusSum;
                 const double distSq = d.dot(d);
-                if (distSq < cutoff * cutoff && distSq > 0.16) { // 0.4 Å floor
-                    const int order = perceiveBondOrder(
-                        a.atomicNumber, b.atomicNumber, std::sqrt(distSq) / radiusSum);
-                    bonds.push_back({i, j, offset, order});
-                }
+                if (distSq < cutoff * cutoff && distSq > 0.16) // 0.4 Å floor
+                    bonds.push_back({i, j, offset, bondOrder(i, j)});
             }
         }
     }
@@ -210,17 +187,27 @@ std::vector<Bond> Structure::detectBonds(double tolerance, bool autoDetect) cons
             continue;
         Vec3 d, offset;
         minimumImage(i, j, d, offset);
-        const double radiusSum = atoms_[static_cast<std::size_t>(i)].covalentRadius()
-            + atoms_[static_cast<std::size_t>(j)].covalentRadius();
-        const double dist = std::sqrt(d.dot(d));
-        const int order = dist > 1e-6
-            ? perceiveBondOrder(atoms_[static_cast<std::size_t>(i)].atomicNumber,
-                                atoms_[static_cast<std::size_t>(j)].atomicNumber,
-                                dist / radiusSum)
-            : 1;
-        bonds.push_back({i, j, offset, order});
+        bonds.push_back({i, j, offset, bondOrder(i, j)});
     }
     return bonds;
+}
+
+int Structure::bondOrder(int i, int j) const
+{
+    const auto pair = std::minmax(i, j);
+    const auto it = bondOrders_.find({pair.first, pair.second});
+    return it != bondOrders_.end() ? it->second : 1;
+}
+
+void Structure::setBondOrder(int i, int j, int order)
+{
+    if (i == j)
+        return;
+    const auto pair = std::minmax(i, j);
+    if (order <= 1)
+        bondOrders_.erase({pair.first, pair.second}); // single is the default
+    else
+        bondOrders_[{pair.first, pair.second}] = std::min(order, 3);
 }
 
 void Structure::addBondOverride(int i, int j)

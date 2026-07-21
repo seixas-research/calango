@@ -8,6 +8,8 @@
 #include <QSlider>
 #include <QWidget>
 
+#include <array>
+
 namespace calango::gui {
 
 class ViewportWidget;
@@ -21,6 +23,12 @@ class RepresentationPanel : public QWidget {
 
 public:
     explicit RepresentationPanel(ViewportWidget* viewport, QWidget* parent = nullptr);
+
+Q_SIGNALS:
+    /// Assign `order` (1-3) to the currently selected atom pair. Emitted
+    /// only from the bond-order buttons; MainWindow owns the mutable
+    /// structure and applies the change (with an undo snapshot).
+    void bondOrderAssignRequested(int order);
 
 private Q_SLOTS:
     void applyColorMode();
@@ -41,6 +49,7 @@ private:
     QSlider* bondWidthSlider_;
     QDoubleSpinBox* bondWidthSpin_;
     QCheckBox* gradientBondsCheck_;
+    std::array<QPushButton*, 3> bondOrderButtons_{};
     QCheckBox* forcesCheck_;
     QCheckBox* velocitiesCheck_;
     QSlider* vectorScaleSlider_;

@@ -20,8 +20,13 @@
 #include "gui/LightingPanel.hpp"
 #include "gui/PeriodicTableDialog.hpp"
 #include "gui/PreferencesDialog.hpp"
+#include "gui/BrandingPanel.hpp"
+#include "gui/RemoteAccessPanel.hpp"
 #include "gui/RepresentationPanel.hpp"
 #include "gui/SlabWizard.hpp"
+#include "gui/SqsDialog.hpp"
+#include "gui/WarrenCowleyDialog.hpp"
+#include "gui/LocalEntropyDialog.hpp"
 #include "gui/JobLogWidget.hpp"
 #include "gui/MetricPlotWidget.hpp"
 #include "gui/ProjectSerializer.hpp"
@@ -39,6 +44,7 @@
 #include <QColorDialog>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -82,8 +88,9 @@ namespace {
 constexpr std::size_t kMaxUndoDepth = 50;
 /// Version tag for saveState/restoreState. Bumped when the default dock
 /// grid changes so stale saved layouts don't override the new default
-/// (v2 = the 8-zone grid workspace).
-constexpr int kLayoutVersion = 2;
+/// (v2 = the 8-zone grid workspace, v3 = the 12-zone grid with the
+/// branding and Remote Access panels).
+constexpr int kLayoutVersion = 3;
 
 /// Painted icons for the frame-panel camera toolbar (icon-only buttons).
 /// Plane icons use the axes-triad colors: x red, y green, z blue.
@@ -337,11 +344,16 @@ void MainWindow::createMenusAndDocks()
     buildMenu->addAction(tr("&Nanomaterial Builder…"), this, &MainWindow::openNanoBuilder);
     buildMenu->addAction(tr("&Normal Modes / Phonon Builder…"),
                          this, &MainWindow::openPhononBuilder);
+    buildMenu->addAction(tr("Special &Quasirandom Structure (SQS)…"),
+                         this, &MainWindow::openSqsBuilder);
     buildMenu->addAction(tr("From &Database…"), this, &MainWindow::openExamplesBrowser);
 
     QMenu* simulationMenu = menuBar()->addMenu(tr("&Simulation"));
     simulationMenu->addAction(tr("&New Calculation…"), QKeySequence(tr("Ctrl+R")),
                               this, &MainWindow::newCalculation);
+    simulationMenu->addAction(tr("New &Remote Calculation…"),
+                              QKeySequence(tr("Ctrl+Shift+R")),
+                              this, &MainWindow::newRemoteCalculation);
     simulationMenu->addAction(tr("Random &Noise…"), this, &MainWindow::addRandomNoise);
 
     QMenu* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
@@ -357,44 +369,70 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showStructureFactor);
     analysisMenu->addAction(tr("&X-Ray Diffraction (XRD)…"),
                             this, &MainWindow::showXrd);
+    analysisMenu->addAction(tr("&Warren-Cowley analysis"),
+                            this, &MainWindow::showWarrenCowley);
+    analysisMenu->addAction(tr("Local &Entropy Analysis…"),
+                            this, &MainWindow::showLocalEntropy);
 
+    // Help trails the menu bar: online resources first, About last (as is
+    // conventional). New documentation/support links belong in kHelpLinks.
     QMenu* helpMenu = menuBar()->addMenu(tr("&Help"));
+    struct HelpLink {
+        const char* title;
+        const char* url;
+    };
+    static constexpr HelpLink kHelpLinks[] = {
+        {QT_TR_NOOP("&GitHub Repository"),
+         "https://github.com/seixas-research/calango"},
+    };
+    for (const auto& link : kHelpLinks) {
+        const QUrl url = QUrl(QLatin1String(link.url));
+        helpMenu->addAction(tr(link.title),
+                            [url] { QDesktopServices::openUrl(url); });
+    }
+    helpMenu->addSeparator();
     helpMenu->addAction(tr("&About Calango"), this, &MainWindow::about);
 
-    // ----- 8-zone grid workspace (4 columns × 2 rows) ----------------------
+    // ----- 12-zone grid workspace (4 columns × 3 rows) ---------------------
     //
-    //   | 1 Structure | 2-3 Viewport | 4 Representation   |
-    //   | 5 Lighting  | 6-7 Job      | 8 Unit Cell & Axes |
+    //   | 1 Logo & Name | 2-3   Viewport | 4  Representation  |
+    //   | 5 Structure   | 6-7   Viewport | 8  (Representation)|
+    //   | 9 Lighting    | 10 Job | 11 Remote | 12 Cell & Axes |
     //
-    // The side columns own their corners, so the bottom dock area (Job)
-    // spans only the middle columns — the central widget (tab bar +
-    // viewport + timeline) fills zones 2-3. Every zone stays resizable
-    // via the dock splitters, and panels remain re-dockable/floatable.
-    setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
-    setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
+    // The bottom dock area owns both corners, so the third row spans the
+    // full window width with four zones side by side. The left column
+    // (branding over structure) and the right column (Representation
+    // spanning two rows) flank the central widget (tab bar + viewport +
+    // timeline) that fills zones 2-3/6-7. Every zone stays resizable via
+    // the dock splitters, and panels remain re-dockable/floatable.
+    setCorner(Qt::BottomLeftCorner, Qt::BottomDockWidgetArea);
+    setCorner(Qt::BottomRightCorner, Qt::BottomDockWidgetArea);
 
-    auto* infoDock = new QDockWidget(tr("Structure"), this); // zone 1
+    auto* brandingDock = new QDockWidget(tr("Calango"), this); // zone 1
+    brandingDock->setObjectName(QStringLiteral("brandingDock"));
+    brandingDock->setWidget(new BrandingPanel(brandingDock));
+    addDockWidget(Qt::LeftDockWidgetArea, brandingDock);
+
+    auto* infoDock = new QDockWidget(tr("Structure"), this); // zone 5
     infoDock->setObjectName(QStringLiteral("structureDock"));
     infoWidget_ = new StructureInfoWidget(infoDock);
     infoDock->setWidget(infoWidget_);
-    addDockWidget(Qt::LeftDockWidgetArea, infoDock);
+    splitDockWidget(brandingDock, infoDock, Qt::Vertical);
 
-    auto* lightingDock = new QDockWidget(tr("Lighting"), this); // zone 5
+    auto* reprDock = new QDockWidget(tr("Representation"), this); // zones 4 & 8
+    reprDock->setObjectName(QStringLiteral("representationDock"));
+    auto* reprPanel = new RepresentationPanel(viewport_, reprDock);
+    reprDock->setWidget(reprPanel);
+    addDockWidget(Qt::RightDockWidgetArea, reprDock);
+    connect(reprPanel, &RepresentationPanel::bondOrderAssignRequested,
+            this, &MainWindow::assignBondOrderToSelection);
+
+    auto* lightingDock = new QDockWidget(tr("Lighting"), this); // zone 9
     lightingDock->setObjectName(QStringLiteral("lightingDock"));
     lightingDock->setWidget(new LightingPanel(viewport_, lightingDock));
-    splitDockWidget(infoDock, lightingDock, Qt::Vertical);
+    addDockWidget(Qt::BottomDockWidgetArea, lightingDock);
 
-    auto* reprDock = new QDockWidget(tr("Representation"), this); // zone 4
-    reprDock->setObjectName(QStringLiteral("representationDock"));
-    reprDock->setWidget(new RepresentationPanel(viewport_, reprDock));
-    addDockWidget(Qt::RightDockWidgetArea, reprDock);
-
-    auto* cellAxesDock = new QDockWidget(tr("Unit Cell && Axes"), this); // zone 8
-    cellAxesDock->setObjectName(QStringLiteral("cellAxesDock"));
-    cellAxesDock->setWidget(new CellAxesPanel(viewport_, cellAxesDock));
-    splitDockWidget(reprDock, cellAxesDock, Qt::Vertical);
-
-    jobDock_ = new QDockWidget(tr("Job"), this); // zones 6-7
+    jobDock_ = new QDockWidget(tr("Job"), this); // zone 10
     jobDock_->setObjectName(QStringLiteral("jobDock"));
     auto* jobTabs = new QTabWidget(jobDock_);
     jobLogWidget_ = new JobLogWidget(jobTabs);
@@ -490,22 +528,45 @@ void MainWindow::createMenusAndDocks()
     jobTabs->addTab(plotPage(forcePlot_), tr("Force"));
     jobTabs->addTab(plotPage(pressurePlot_), tr("Pressure"));
     jobDock_->setWidget(jobTabs);
-    addDockWidget(Qt::BottomDockWidgetArea, jobDock_);
+    splitDockWidget(lightingDock, jobDock_, Qt::Horizontal);
 
-    // Default grid proportions: side columns ~290 px, bottom row ~240 px,
-    // side columns split evenly between their two zones.
-    resizeDocks({infoDock, lightingDock}, {290, 290}, Qt::Horizontal);
-    resizeDocks({reprDock, cellAxesDock}, {290, 290}, Qt::Horizontal);
-    resizeDocks({infoDock, lightingDock}, {1, 1}, Qt::Vertical);
-    resizeDocks({reprDock, cellAxesDock}, {1, 1}, Qt::Vertical);
-    resizeDocks({jobDock_}, {240}, Qt::Vertical);
+    remoteDock_ = new QDockWidget(tr("Remote Access"), this); // zone 11
+    remoteDock_->setObjectName(QStringLiteral("remoteDock"));
+    remotePanel_ = new RemoteAccessPanel(
+        QString::fromStdString(pybridge::PythonEngine::instance().executable()),
+        remoteDock_);
+    remoteDock_->setWidget(remotePanel_);
+    splitDockWidget(jobDock_, remoteDock_, Qt::Horizontal);
+
+    auto* cellAxesDock = new QDockWidget(tr("Unit Cell && Axes"), this); // zone 12
+    cellAxesDock->setObjectName(QStringLiteral("cellAxesDock"));
+    cellAxesDock->setWidget(new CellAxesPanel(viewport_, cellAxesDock));
+    splitDockWidget(remoteDock_, cellAxesDock, Qt::Horizontal);
+
+    connect(remotePanel_, &RemoteAccessPanel::submitCalculationRequested,
+            this, &MainWindow::newRemoteCalculation);
+    connect(remotePanel_, &RemoteAccessPanel::resultsReady,
+            this, &MainWindow::onRemoteResultsReady);
+
+    // Default grid proportions: side columns ~290 px wide with a compact
+    // branding card; the full-width bottom row is ~250 px tall, its four
+    // zones sized so the Job console keeps the most room.
+    resizeDocks({brandingDock, infoDock}, {290, 290}, Qt::Horizontal);
+    resizeDocks({reprDock}, {290}, Qt::Horizontal);
+    resizeDocks({brandingDock, infoDock}, {90, 640}, Qt::Vertical);
+    resizeDocks({lightingDock, jobDock_, remoteDock_, cellAxesDock},
+                {250, 250, 250, 250}, Qt::Vertical);
+    resizeDocks({lightingDock, jobDock_, remoteDock_, cellAxesDock},
+                {280, 560, 430, 290}, Qt::Horizontal);
 
     viewMenu->addSeparator();
+    viewMenu->addAction(brandingDock->toggleViewAction());
     viewMenu->addAction(infoDock->toggleViewAction());
     viewMenu->addAction(reprDock->toggleViewAction());
     viewMenu->addAction(cellAxesDock->toggleViewAction());
     viewMenu->addAction(lightingDock->toggleViewAction());
     viewMenu->addAction(jobDock_->toggleViewAction());
+    viewMenu->addAction(remoteDock_->toggleViewAction());
 
     // Reapply the layout the user left behind last session. The version
     // tag rejects layouts saved before the 8-zone grid existed, so the
@@ -1641,6 +1702,30 @@ void MainWindow::deleteSelectedAtoms()
                                 static_cast<int>(indices.size())));
 }
 
+void MainWindow::assignBondOrderToSelection(int order)
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure)
+        return;
+    const auto& selection = viewport_->selection();
+    if (selection.size() != 2)
+        return; // the panel's buttons are disabled otherwise
+
+    pushUndo();
+    const int i = *selection.begin();
+    const int j = *std::next(selection.begin());
+    doc->structure->setBondOrder(i, j, order);
+    // A multiple bond the user asked for should be visible even when the
+    // pair sits outside the auto-detection cutoff.
+    if (order > 1)
+        doc->structure->addBondOverride(i, j);
+    notifyStructureChanged(false);
+    statusBar()->showMessage(tr("Bond %1–%2 set to order %3")
+                                 .arg(i)
+                                 .arg(j)
+                                 .arg(order));
+}
+
 void MainWindow::showBondEditor()
 {
     Document* doc = currentDocument();
@@ -1736,6 +1821,61 @@ void MainWindow::showXrd()
         return;
     XrdDialog dialog(doc->structure, this);
     dialog.exec();
+}
+
+void MainWindow::showWarrenCowley()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Warren-Cowley analysis"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    WarrenCowleyDialog dialog(doc->structure, this);
+    dialog.exec();
+}
+
+void MainWindow::showLocalEntropy()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Local Entropy Analysis"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    LocalEntropyDialog dialog(doc->structure, viewport_, this);
+    // The computed field must reach every view (property combo, info
+    // panel) — same refresh path as the Bond Editor.
+    connect(&dialog, &LocalEntropyDialog::fieldStored, this,
+            [this] { notifyStructureChanged(false); });
+    dialog.exec();
+}
+
+void MainWindow::openSqsBuilder()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Special Quasirandom Structure"),
+                                 tr("Open or build a base structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    SqsDialog dialog(doc->structure, this);
+    if (dialog.exec() != QDialog::Accepted || !dialog.result())
+        return;
+
+    const auto& generated = *dialog.result();
+    const int tab = addDocument(
+        std::make_shared<core::Structure>(generated.structure),
+        tr("SQS (%1)").arg(QString::fromStdString(generated.method)));
+    tabBar_->setCurrentIndex(tab);
+    statusBar()->showMessage(
+        generated.method == "icet"
+            ? tr("SQS generated with icet")
+            : tr("SQS generated (internal annealer, residual Σα² = %1)")
+                  .arg(generated.objective, 0, 'f', 4));
 }
 
 void MainWindow::showCoordination()
@@ -1982,11 +2122,11 @@ void MainWindow::newCalculation()
         runScript(dialog.script(), dialog.pythonExecutable());
 }
 
-void MainWindow::runScript(const QString& script, const QString& pythonExe)
+QString MainWindow::stageJob(const QString& script)
 {
     Document* doc = currentDocument();
     if (!doc || !doc->structure)
-        return;
+        return {};
 
     // Each job gets its own directory under the per-user app-data location.
     const QString jobsRoot =
@@ -1997,7 +2137,7 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe)
     if (!QDir().mkpath(jobDir)) {
         QMessageBox::critical(this, tr("Run Job"),
                               tr("Could not create job directory %1").arg(jobDir));
-        return;
+        return {};
     }
 
     try {
@@ -2012,15 +2152,68 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe)
             throw std::runtime_error("Could not write " + scriptPath.toStdString());
         QTextStream(&scriptFile) << script;
         scriptFile.close();
-
-        lastJobDir_ = jobDir;
-        jobDock_->show();
-        jobDock_->raise();
-        jobRunner_->start(pythonExe, QStringLiteral("run.py"), jobDir);
-        statusBar()->showMessage(tr("Job running in %1 (%2)").arg(jobDir, pythonExe));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Run Job"), QString::fromUtf8(e.what()));
+        return {};
     }
+    return jobDir;
+}
+
+void MainWindow::runScript(const QString& script, const QString& pythonExe)
+{
+    const QString jobDir = stageJob(script);
+    if (jobDir.isEmpty())
+        return;
+
+    lastJobDir_ = jobDir;
+    jobDock_->show();
+    jobDock_->raise();
+    jobRunner_->start(pythonExe, QStringLiteral("run.py"), jobDir);
+    statusBar()->showMessage(tr("Job running in %1 (%2)").arg(jobDir, pythonExe));
+}
+
+void MainWindow::newRemoteCalculation()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("New Remote Calculation"),
+                                 tr("Open or build a structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    CalculatorDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString jobDir = stageJob(dialog.script());
+    if (jobDir.isEmpty())
+        return;
+
+    remoteDock_->show();
+    remoteDock_->raise();
+    remotePanel_->submitStagedJob(
+        jobDir, QFileInfo(doc->fileName).completeBaseName());
+    statusBar()->showMessage(tr("Submitting %1 to the cluster…").arg(jobDir));
+}
+
+void MainWindow::onRemoteResultsReady(const QString& localDir)
+{
+    // Same convention as local jobs: trajectories first (they activate
+    // the timeline), then a bare optimized structure.
+    for (const auto* candidate :
+         {"md.traj", "opt.traj", "optimized.extxyz"}) {
+        const QString path = localDir + QLatin1Char('/') + QLatin1String(candidate);
+        if (QFile::exists(path)) {
+            loadFile(path);
+            statusBar()->showMessage(
+                tr("Remote results loaded from %1").arg(localDir));
+            return;
+        }
+    }
+    statusBar()->showMessage(
+        tr("Remote job finished — results in %1").arg(localDir));
 }
 
 void MainWindow::onJobFinished(int exitCode, bool crashed)
