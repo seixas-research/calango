@@ -21,6 +21,8 @@ public Q_SLOTS:
     void clear();
     void addSample(int step, double temperatureK);
     void setTargetTemperature(double temperatureK);
+    /// Save the recorded (step, temperature, target) series as .csv/.dat.
+    void exportData();
 
 protected:
     void paintEvent(QPaintEvent* event) override;

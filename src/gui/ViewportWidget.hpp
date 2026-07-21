@@ -157,8 +157,10 @@ private:
 
     /// Axis directions + labels for the triad (Cartesian or lattice).
     std::array<std::pair<QVector3D, QString>, 3> axesVectors() const;
-    void drawAxesOverlayGl();
-    void drawAxesLabels(QPainter& painter);
+    /// Corner triad, drawn entirely with QPainter: core-profile GL clamps
+    /// glLineWidth to 1 px, so painter strokes are the portable way to get
+    /// thick, high-DPI-crisp axis lines.
+    void drawAxesOverlay(QPainter& painter);
 
     render::OrbitCamera camera_;
     render::StructureRenderer renderer_;
@@ -172,9 +174,6 @@ private:
     bool showAxes_ = true;
     bool axesLatticeMode_ = false;
     int axesSizePx_ = 92;
-    QOpenGLShaderProgram axesProgram_;
-    QOpenGLVertexArrayObject axesVao_;
-    QOpenGLBuffer axesVbo_{QOpenGLBuffer::VertexBuffer};
     QPointF lastMousePos_;
     QPointF pressPos_;
 };

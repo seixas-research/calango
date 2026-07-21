@@ -191,6 +191,35 @@ qt_add_resources(calango "shaders"
         assets/shaders/wire.frag
 )
 
+qt_add_resources(calango "branding"
+    PREFIX "/"
+    FILES
+        assets/calango/icon_white.png
+        assets/calango/icon_transparent.png
+)
+
+# For a distributable macOS bundle, generate assets/calango/calango.icns
+# (iconutil over an iconset rendered from icon_white.png) and configure
+# with -DCALANGO_MACOS_BUNDLE=ON; the default plain binary keeps the
+# familiar ./build/calango developer workflow, with the window/dock icon
+# set at runtime from the embedded resource.
+option(CALANGO_MACOS_BUNDLE "Build calango as a macOS .app bundle" OFF)
+if(APPLE AND CALANGO_MACOS_BUNDLE)
+    set_target_properties(calango PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "Calango"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "org.seixasresearch.calango"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/calango.icns")
+        set_target_properties(calango PROPERTIES
+            MACOSX_BUNDLE_ICON_FILE "calango.icns")
+        target_sources(calango PRIVATE assets/calango/calango.icns)
+        set_source_files_properties(assets/calango/calango.icns PROPERTIES
+            MACOSX_PACKAGE_LOCATION "Resources")
+    endif()
+endif()
+
 qt_add_resources(calango "examples"
     PREFIX "/"
     FILES

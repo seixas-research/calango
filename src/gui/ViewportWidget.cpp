@@ -17,20 +17,6 @@ namespace {
 
 constexpr int kAxesMarginPx = 10; // logical pixels, bottom-left corner
 
-const char* kAxesVertexShader = R"(#version 330 core
-layout(location = 0) in vec3 aPos;
-layout(location = 1) in vec3 aColor;
-uniform mat4 uMvp;
-out vec3 vColor;
-void main() { vColor = aColor; gl_Position = uMvp * vec4(aPos, 1.0); }
-)";
-
-const char* kAxesFragmentShader = R"(#version 330 core
-in vec3 vColor;
-out vec4 fragColor;
-void main() { fragColor = vec4(vColor, 1.0); }
-)";
-
 } // namespace
 
 namespace calango::gui {
@@ -203,53 +189,20 @@ std::array<std::pair<QVector3D, QString>, 3> ViewportWidget::axesVectors() const
              {{0, 0, 1}, QStringLiteral("Z")}}};
 }
 
-void ViewportWidget::drawAxesOverlayGl()
-{
-    // Orientation-only rotation, orthographic corner viewport.
-    const QMatrix4x4 rotation = camera_.rotationOnlyView();
-    QMatrix4x4 proj;
-    proj.ortho(-1.35f, 1.35f, -1.35f, 1.35f, -2.0f, 2.0f);
-
-    const auto axes = axesVectors();
-    const QVector3D colors[3] = {{0.94f, 0.35f, 0.32f},
-                                 {0.36f, 0.83f, 0.40f},
-                                 {0.35f, 0.58f, 0.98f}};
-    std::vector<float> vertices;
-    for (int i = 0; i < 3; ++i) {
-        vertices.insert(vertices.end(), {0.0f, 0.0f, 0.0f, colors[i].x(),
-                                         colors[i].y(), colors[i].z()});
-        const QVector3D& a = axes[static_cast<std::size_t>(i)].first;
-        vertices.insert(vertices.end(),
-                        {a.x(), a.y(), a.z(), colors[i].x(), colors[i].y(),
-                         colors[i].z()});
-    }
-    axesVbo_.bind();
-    axesVbo_.allocate(vertices.data(), static_cast<int>(vertices.size() * sizeof(float)));
-
-    const auto ratio = devicePixelRatioF();
-    glViewport(static_cast<GLint>(kAxesMarginPx * ratio),
-               static_cast<GLint>(kAxesMarginPx * ratio),
-               static_cast<GLsizei>(axesSizePx_ * ratio),
-               static_cast<GLsizei>(axesSizePx_ * ratio));
-    glDisable(GL_DEPTH_TEST);
-    axesProgram_.bind();
-    axesProgram_.setUniformValue("uMvp", proj * rotation);
-    axesVao_.bind();
-    glDrawArrays(GL_LINES, 0, 6);
-    axesVao_.release();
-    axesProgram_.release();
-    glEnable(GL_DEPTH_TEST);
-    glViewport(0, 0, static_cast<GLsizei>(width() * ratio),
-               static_cast<GLsizei>(height() * ratio));
-}
-
-void ViewportWidget::drawAxesLabels(QPainter& painter)
+void ViewportWidget::drawAxesOverlay(QPainter& painter)
 {
     const QMatrix4x4 transform = [this] {
         QMatrix4x4 proj;
         proj.ortho(-1.35f, 1.35f, -1.35f, 1.35f, -2.0f, 2.0f);
         return proj * camera_.rotationOnlyView();
     }();
+
+    const QPointF boxOrigin(kAxesMarginPx, height() - kAxesMarginPx - axesSizePx_);
+    const auto toScreen = [&](const QVector3D& v) {
+        const QVector3D mapped = transform.map(v);
+        return QPointF(boxOrigin.x() + (mapped.x() * 0.5 + 0.5) * axesSizePx_,
+                       boxOrigin.y() + (0.5 - mapped.y() * 0.5) * axesSizePx_);
+    };
 
     QFont font = painter.font();
     font.setBold(true);
@@ -258,14 +211,18 @@ void ViewportWidget::drawAxesLabels(QPainter& painter)
     const QColor colors[3] = {QColor(240, 90, 82), QColor(92, 212, 102),
                               QColor(90, 148, 250)};
     const auto axes = axesVectors();
-    const QPointF boxOrigin(kAxesMarginPx, height() - kAxesMarginPx - axesSizePx_);
+    const QPointF origin = toScreen({0.0f, 0.0f, 0.0f});
+    // 2.4 px logical strokes ≈ double the old 1-device-px GL lines and
+    // stay crisp (properly scaled) on high-DPI displays.
+    constexpr qreal kAxisStrokeWidth = 2.4;
     for (int i = 0; i < 3; ++i) {
-        const QVector3D tip =
-            transform.map(axes[static_cast<std::size_t>(i)].first * 1.12f);
-        const QPointF screen(boxOrigin.x() + (tip.x() * 0.5 + 0.5) * axesSizePx_,
-                             boxOrigin.y() + (0.5 - tip.y() * 0.5) * axesSizePx_);
+        const QVector3D& axis = axes[static_cast<std::size_t>(i)].first;
+        painter.setPen(QPen(colors[i], kAxisStrokeWidth, Qt::SolidLine,
+                            Qt::RoundCap));
+        painter.drawLine(origin, toScreen(axis));
         painter.setPen(colors[i]);
-        painter.drawText(screen, axes[static_cast<std::size_t>(i)].second);
+        painter.drawText(toScreen(axis * 1.12f),
+                         axes[static_cast<std::size_t>(i)].second);
     }
 }
 
@@ -357,20 +314,6 @@ void ViewportWidget::initializeGL()
     glEnable(GL_MULTISAMPLE);
     renderer_.initialize(this);
 
-    axesProgram_.addShaderFromSourceCode(QOpenGLShader::Vertex, kAxesVertexShader);
-    axesProgram_.addShaderFromSourceCode(QOpenGLShader::Fragment, kAxesFragmentShader);
-    axesProgram_.link();
-    axesVao_.create();
-    axesVao_.bind();
-    axesVbo_.create();
-    axesVbo_.bind();
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), nullptr);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
-                          reinterpret_cast<void*>(3 * sizeof(float)));
-    axesVao_.release();
-
     structureDirty_ = true;
 }
 
@@ -402,10 +345,9 @@ void ViewportWidget::paintGL()
     renderer_.render(camera_.view(), camera_.projection(aspect));
 
     if (showAxes_) {
-        drawAxesOverlayGl();
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
-        drawAxesLabels(painter);
+        drawAxesOverlay(painter);
     }
 }
 

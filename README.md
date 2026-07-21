@@ -1,4 +1,7 @@
-# Calango
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/calango/logo_dark.png">
+  <img src="assets/calango/logo_light.png" alt="Calango" width="440">
+</picture>
 
 **Calango** is a modern, high-performance, cross-platform desktop application for materials science, crystallography, and atomistic modeling. By combining a raw C++20/OpenGL core with the flexibility of Python's Atomic Simulation Environment (ASE), Calango provides the speed needed for real-time 3D visualization together with the extensibility of state-of-the-art simulation tools.
 
@@ -189,6 +192,7 @@ export CALANGO_PYTHON=/path/to/.venv/bin/python
 - `assets/`
   - `shaders/` — GLSL shaders (compiled in as Qt resources).
   - `examples/` — benchmark structure files for the Examples browser.
+  - `calango/` — brand assets (application icon, logos; icon variants are embedded as Qt resources).
 - `docs/` — architecture guides and design notes.
 - `src/`
   - `main.cpp` — application entry point and CLI (`--probe-python`).

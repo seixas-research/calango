@@ -382,8 +382,26 @@ void MainWindow::createMenusAndDocks()
     energyPlot_ = new EnergyPlotWidget(jobTabs);
     temperaturePlot_ = new TemperaturePlotWidget(jobTabs);
     jobTabs->addTab(jobLogWidget_, tr("Log"));
-    jobTabs->addTab(energyPlot_, tr("Energy"));
-    jobTabs->addTab(temperaturePlot_, tr("Temperature"));
+
+    // Plot tabs carry their own Export Data… action for external analysis.
+    const auto plotPage = [jobTabs](auto* plot, const auto exportSlot) {
+        auto* page = new QWidget(jobTabs);
+        auto* layout = new QVBoxLayout(page);
+        layout->setContentsMargins(0, 0, 0, 2);
+        layout->setSpacing(2);
+        layout->addWidget(plot, 1);
+        auto* row = new QHBoxLayout;
+        row->addStretch(1);
+        auto* exportButton = new QPushButton(QObject::tr("Export Data…"), page);
+        row->addWidget(exportButton);
+        layout->addLayout(row);
+        QObject::connect(exportButton, &QPushButton::clicked, plot, exportSlot);
+        return page;
+    };
+    jobTabs->addTab(plotPage(energyPlot_, &EnergyPlotWidget::exportData),
+                    tr("Energy"));
+    jobTabs->addTab(plotPage(temperaturePlot_, &TemperaturePlotWidget::exportData),
+                    tr("Temperature"));
     jobDock_->setWidget(jobTabs);
     addDockWidget(Qt::BottomDockWidgetArea, jobDock_);
 
@@ -1710,8 +1728,13 @@ QString runtimeVersion()
 void MainWindow::about()
 {
     const auto& python = pybridge::PythonEngine::instance();
-    QMessageBox::about(
-        this, tr("About Calango"),
+    QMessageBox box(this);
+    box.setWindowTitle(tr("About Calango"));
+    // Brand banner: the transparent icon variant, scaled for the dialog.
+    box.setIconPixmap(
+        QPixmap(QStringLiteral(":/assets/calango/icon_transparent.png"))
+            .scaled(140, 140, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    box.setText(
         tr("<h3>Calango %1</h3>"
            "<p>Atomistic modeling and simulation front-end built on Qt6, "
            "OpenGL and the Atomic Simulation Environment.</p>"
@@ -1721,6 +1744,8 @@ void MainWindow::about()
                  python.aseAvailable()
                      ? QString::fromStdString(python.aseVersion())
                      : tr("not available")));
+    box.setStandardButtons(QMessageBox::Ok);
+    box.exec();
 }
 
 } // namespace calango::gui

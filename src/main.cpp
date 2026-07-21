@@ -12,6 +12,7 @@
 #include "python_bridge/PythonEngine.hpp"
 
 #include <QApplication>
+#include <QIcon>
 #include <QMessageBox>
 #include <QSurfaceFormat>
 
@@ -43,6 +44,9 @@ int main(int argc, char* argv[])
     QApplication::setApplicationName(QStringLiteral("Calango"));
     QApplication::setApplicationVersion(QStringLiteral(CALANGO_VERSION));
     QApplication::setOrganizationName(QStringLiteral("Seixas Research"));
+    // Window / taskbar / dock icon (embedded high-resolution brand icon).
+    QApplication::setWindowIcon(
+        QIcon(QStringLiteral(":/assets/calango/icon_white.png")));
 
     calango::pybridge::PythonEngine python;
     if (!python.aseAvailable()) {
