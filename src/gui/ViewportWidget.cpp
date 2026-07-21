@@ -1,5 +1,6 @@
 #include "gui/ViewportWidget.hpp"
 
+#include "core/Element.hpp"
 #include "core/Structure.hpp"
 
 #include <QMouseEvent>
@@ -44,6 +45,9 @@ void ViewportWidget::setStructure(std::shared_ptr<const core::Structure> structu
         selection_.clear();
         Q_EMIT selectionChanged(0);
     }
+    // Measurement atom indices would dangle across a structure swap.
+    measureAtoms_.clear();
+    measurementLabel_.clear();
     updateColorScalars();
     structureDirty_ = true;
     if (frameCamera)
@@ -351,10 +355,12 @@ void ViewportWidget::paintGL()
         : 1.0f;
     renderer_.render(camera_.view(), camera_.projection(aspect));
 
-    if (showAxes_) {
+    if (showAxes_ || !measureAtoms_.empty()) {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
-        drawAxesOverlay(painter);
+        if (showAxes_)
+            drawAxesOverlay(painter);
+        drawMeasurementOverlay(painter);
     }
 }
 
@@ -362,6 +368,8 @@ void ViewportWidget::setInteractionMode(InteractionMode mode)
 {
     interactionMode_ = mode;
     insertDragFromAtom_ = -1;
+    measureAtoms_.clear();
+    measurementLabel_.clear();
     if (rubberBand_)
         rubberBand_->hide();
     // Cursor as a mode reminder: crosshair while placing/selecting.
@@ -374,9 +382,12 @@ void ViewportWidget::setInteractionMode(InteractionMode mode)
         break;
     case InteractionMode::Select:
     case InteractionMode::Insert:
+    case InteractionMode::MeasureDistance:
+    case InteractionMode::MeasureAngle:
         setCursor(Qt::CrossCursor);
         break;
     }
+    update();
 }
 
 void ViewportWidget::mousePressEvent(QMouseEvent* event)
@@ -414,6 +425,10 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
     } else if (event->buttons().testFlag(Qt::LeftButton)) {
         switch (interactionMode_) {
         case InteractionMode::Rotate:
+        case InteractionMode::MeasureDistance:
+        case InteractionMode::MeasureAngle:
+            // Measure modes keep orbit-on-drag so the structure can be
+            // turned between the measurement clicks.
             camera_.rotate(static_cast<float>(delta.x()) * 0.4f,
                            static_cast<float>(delta.y()) * 0.4f);
             break;
@@ -489,6 +504,14 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent* event)
         return; // camera drag
     if (event->modifiers().testFlag(Qt::ShiftModifier))
         return;
+
+    // --- Measurement modes: clicks accumulate atoms ------------------------
+    if (interactionMode_ == InteractionMode::MeasureDistance
+        || interactionMode_ == InteractionMode::MeasureAngle) {
+        advanceMeasurement(pickAtom(event->position()));
+        update();
+        return;
+    }
 
     const int picked = pickAtom(event->position());
 
@@ -589,6 +612,126 @@ std::set<int> ViewportWidget::atomsInRect(const QRectF& rect) const
             hits.insert(static_cast<int>(i));
     }
     return hits;
+}
+
+bool ViewportWidget::projectAtomToScreen(int index, QPointF& out) const
+{
+    if (!structure_ || index < 0
+        || static_cast<std::size_t>(index) >= structure_->size() || height() <= 0)
+        return false;
+    const float aspect = static_cast<float>(width()) / static_cast<float>(height());
+    const QMatrix4x4 mvp = camera_.projection(aspect) * camera_.view();
+    const auto& p = structure_->atoms()[static_cast<std::size_t>(index)].position;
+    const QVector4D clip = mvp
+        * QVector4D(static_cast<float>(p.x), static_cast<float>(p.y),
+                    static_cast<float>(p.z), 1.0f);
+    if (clip.w() <= 0.0f)
+        return false;
+    out = QPointF((clip.x() / clip.w() * 0.5f + 0.5f) * width(),
+                  (0.5f - clip.y() / clip.w() * 0.5f) * height());
+    return true;
+}
+
+void ViewportWidget::advanceMeasurement(int atom)
+{
+    if (atom < 0) { // empty space cancels the running measurement
+        measureAtoms_.clear();
+        measurementLabel_.clear();
+        return;
+    }
+    const std::size_t needed =
+        interactionMode_ == InteractionMode::MeasureDistance ? 2u : 3u;
+    if (measureAtoms_.size() >= needed) { // completed — start a new one
+        measureAtoms_.clear();
+        measurementLabel_.clear();
+    }
+    if (!measureAtoms_.empty() && measureAtoms_.back() == atom)
+        return; // same atom clicked twice
+    measureAtoms_.push_back(atom);
+    if (!structure_ || measureAtoms_.size() < needed)
+        return;
+
+    const auto& atoms = structure_->atoms();
+    const auto tag = [&atoms](int i) {
+        return QStringLiteral("%1(%2)")
+            .arg(QLatin1String(core::Elements::data(
+                     atoms[static_cast<std::size_t>(i)].atomicNumber)
+                     .symbol))
+            .arg(i);
+    };
+
+    if (interactionMode_ == InteractionMode::MeasureDistance) {
+        const core::Vec3 d =
+            atoms[static_cast<std::size_t>(measureAtoms_[1])].position
+            - atoms[static_cast<std::size_t>(measureAtoms_[0])].position;
+        measurementLabel_ = QStringLiteral("%1 Å").arg(d.norm(), 0, 'f', 3);
+        Q_EMIT measurementMade(tr("Distance %1 – %2: %3 Å")
+                                   .arg(tag(measureAtoms_[0]),
+                                        tag(measureAtoms_[1]))
+                                   .arg(d.norm(), 0, 'f', 3));
+    } else {
+        const auto& vertex =
+            atoms[static_cast<std::size_t>(measureAtoms_[1])].position;
+        const core::Vec3 u =
+            atoms[static_cast<std::size_t>(measureAtoms_[0])].position - vertex;
+        const core::Vec3 v =
+            atoms[static_cast<std::size_t>(measureAtoms_[2])].position - vertex;
+        const double norms = u.norm() * v.norm();
+        if (norms < 1e-12)
+            return;
+        const double angle =
+            std::acos(std::clamp(u.dot(v) / norms, -1.0, 1.0)) * 180.0 / M_PI;
+        measurementLabel_ = QStringLiteral("%1°").arg(angle, 0, 'f', 2);
+        Q_EMIT measurementMade(tr("Angle %1 – %2 – %3: %4°")
+                                   .arg(tag(measureAtoms_[0]),
+                                        tag(measureAtoms_[1]),
+                                        tag(measureAtoms_[2]))
+                                   .arg(angle, 0, 'f', 2));
+    }
+}
+
+void ViewportWidget::drawMeasurementOverlay(QPainter& painter)
+{
+    if (measureAtoms_.empty() || !structure_)
+        return;
+    std::vector<QPointF> points;
+    points.reserve(measureAtoms_.size());
+    for (const int index : measureAtoms_) {
+        QPointF p;
+        if (!projectAtomToScreen(index, p))
+            return; // an endpoint is behind the camera — skip this frame
+        points.push_back(p);
+    }
+
+    const QColor accent(255, 199, 88);
+    painter.setPen(QPen(accent, 2.0, Qt::DashLine, Qt::RoundCap));
+    for (std::size_t i = 1; i < points.size(); ++i)
+        painter.drawLine(points[i - 1], points[i]);
+
+    painter.setPen(QPen(accent, 2.0));
+    painter.setBrush(Qt::NoBrush);
+    for (const QPointF& p : points)
+        painter.drawEllipse(p, 7.0, 7.0);
+
+    if (measurementLabel_.isEmpty())
+        return;
+    // Distance: label at the segment midpoint; angle: near the vertex.
+    const QPointF anchor = points.size() == 2
+        ? (points[0] + points[1]) / 2.0
+        : points[1] + QPointF(0, -14);
+    QFont font = painter.font();
+    font.setBold(true);
+    font.setPointSizeF(font.pointSizeF() * 1.15);
+    painter.setFont(font);
+    const QRectF text =
+        QFontMetricsF(font).boundingRect(measurementLabel_).adjusted(-6, -3, 6, 3);
+    QRectF box = text;
+    box.moveCenter(anchor + QPointF(0, -16));
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(20, 22, 26, 200));
+    painter.drawRoundedRect(box, 5, 5);
+    painter.setPen(accent);
+    painter.drawText(box, Qt::AlignCenter, measurementLabel_);
 }
 
 int ViewportWidget::pickAtom(const QPointF& screenPos) const

@@ -120,10 +120,12 @@ public:
     /// What a plain left-drag / left-click does. Regardless of mode,
     /// middle-drag (or Shift+left-drag) pans and the wheel zooms.
     enum class InteractionMode {
-        Rotate, ///< drag orbits the camera (default)
-        Pan,    ///< drag translates the scene
-        Select, ///< drag draws a rubber-band box selecting atoms
-        Insert, ///< click empty space -> new atom; drag atom->atom -> bond
+        Rotate,          ///< drag orbits the camera (default)
+        Pan,             ///< drag translates the scene
+        Select,          ///< drag draws a rubber-band box selecting atoms
+        Insert,          ///< click empty space -> new atom; drag atom->atom -> bond
+        MeasureDistance, ///< click two atoms -> interatomic distance (Å)
+        MeasureAngle,    ///< click three atoms -> angle at the middle one (°)
     };
     void setInteractionMode(InteractionMode mode);
     InteractionMode interactionMode() const { return interactionMode_; }
@@ -154,6 +156,10 @@ Q_SIGNALS:
     void atomInsertRequested(const core::Vec3& position);
     /// Insert mode: the user dragged from atom i to atom j — bond them.
     void bondInsertRequested(int i, int j);
+    /// A distance/angle measurement completed — `text` is the
+    /// human-readable result for the status/log console (the viewport
+    /// itself overlays the value on the canvas).
+    void measurementMade(const QString& text);
     /// A different Structure is now observed (its scalar fields may differ).
     void structureReplaced();
     /// The scalar color mapping was recomputed (mode, range or data changed).
@@ -183,6 +189,13 @@ private:
     bool unprojectToTargetPlane(const QPointF& screenPos, core::Vec3& out) const;
     /// Atoms whose projected centers fall inside the screen-space rect.
     std::set<int> atomsInRect(const QRectF& rect) const;
+    /// Screen position of an atom center; false if behind the camera.
+    bool projectAtomToScreen(int index, QPointF& out) const;
+    /// Register a click on `atom` for the active measurement mode.
+    void advanceMeasurement(int atom);
+    /// Markers, connecting lines and the value label of the running
+    /// distance/angle measurement.
+    void drawMeasurementOverlay(QPainter& painter);
 
     /// Re-upload instance buffers if dirty (requires a current context).
     void ensureUploaded();
@@ -214,6 +227,10 @@ private:
     InteractionMode interactionMode_ = InteractionMode::Rotate;
     QRubberBand* rubberBand_ = nullptr; ///< Select-mode drag box
     int insertDragFromAtom_ = -1;       ///< Insert mode: drag start atom
+    /// Atoms clicked so far in a measurement (2 = distance, 3 = angle);
+    /// kept after completion so the overlay stays until the next click.
+    std::vector<int> measureAtoms_;
+    QString measurementLabel_; ///< overlay text of a completed measurement
     QPointF pressPos_;
 };
 

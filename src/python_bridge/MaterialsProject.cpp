@@ -66,7 +66,9 @@ for site in s["sites"]:
 atoms = ase.Atoms(symbols=symbols, scaled_positions=fractional,
                   cell=lattice, pbc=True)
 )PY",
-                 py::globals(), locals);
+                 // locals doubles as globals: script-defined functions must
+                 // see the script's own names (see AseBridge::symmetryInfo).
+                 locals, locals);
 
         return AseBridge::fromAtoms(locals["atoms"]);
     } catch (const py::error_already_set& e) {

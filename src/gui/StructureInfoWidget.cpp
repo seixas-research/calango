@@ -92,9 +92,9 @@ void StructureInfoWidget::updateFromStructure(const core::Structure* structure)
     if (structure->cell().isDefined()) {
         const auto& v = structure->cell().vectors();
         lengthsLabel_->setText(QStringLiteral("%1, %2, %3 Å")
-                                   .arg(v[0].norm(), 0, 'f', 4)
-                                   .arg(v[1].norm(), 0, 'f', 4)
-                                   .arg(v[2].norm(), 0, 'f', 4));
+                                   .arg(v[0].norm(), 0, 'f', 2)
+                                   .arg(v[1].norm(), 0, 'f', 2)
+                                   .arg(v[2].norm(), 0, 'f', 2));
         // Crystallographic convention: α = ∠(b, c), β = ∠(a, c), γ = ∠(a, b).
         anglesLabel_->setText(QStringLiteral("%1°, %2°, %3°")
                                   .arg(vectorAngleDeg(v[1], v[2]), 0, 'f', 2)

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.17
+    VERSION 26.7.18
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -342,6 +342,22 @@ if(CALANGO_BUILD_TESTS)
         CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}")
     target_link_libraries(calango_sqs_test PRIVATE pybind11::embed)
     add_test(NAME sqs_sige_alloy COMMAND calango_sqs_test)
+
+    add_executable(calango_symmetry_test
+        tests/SymmetrySiTest.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/python_bridge/PythonEngine.cpp
+        src/python_bridge/AseBridge.cpp
+    )
+    target_include_directories(calango_symmetry_test PRIVATE src)
+    target_compile_definitions(calango_symmetry_test PRIVATE
+        CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}")
+    target_link_libraries(calango_symmetry_test PRIVATE pybind11::embed)
+    add_test(NAME symmetry_si_diamond
+             COMMAND calango_symmetry_test
+                     "${CMAKE_CURRENT_SOURCE_DIR}/assets/examples/Si_diamond.vasp")
 endif()
 
 # ---------------------------------------------------------------------------

@@ -56,7 +56,7 @@ public:
         RepresentationMode mode = RepresentationMode::BallAndStick;
         float atomScaleFactor = 1.0f; ///< global sphere-radius multiplier (UI)
         float bondWidthFactor = 1.0f; ///< global cylinder-width multiplier (UI)
-        float bondRadius = 0.06f;     ///< Å, base radius of a single bond
+        float bondRadius = 0.078f;    ///< Å, base radius of a single bond
         float bondTolerance = 1.15f;  ///< bond-detection cutoff factor
         bool autoBonds = true;        ///< distance-based bond perception on/off
                                       ///< (manual bond overrides always render)
@@ -77,7 +77,7 @@ public:
         /// 1 = plain GL lines; > 1 renders the edges as thin lit tubes
         /// (core-profile GL clamps glLineWidth, so tubes are the portable
         /// way to get thick cell wireframes).
-        float cellLineWidth = 1.0f;
+        float cellLineWidth = 2.0f;
         std::map<int, QColor> colorOverrides;      ///< Z -> user color
         std::map<int, float> radiusScaleOverrides; ///< Z -> per-element radius factor
         /// Scalar color mapping: Element uses the CPK palette; the other

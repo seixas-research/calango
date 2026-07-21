@@ -394,7 +394,11 @@ else:
                   "pointgroup": str(field("pointgroup")), "system": crystal,
                   "error": ""}
 )PY",
-                 py::globals(), locals);
+                 // One dict as BOTH globals and locals: with separate
+                 // dicts, field()'s body cannot see `dataset` (function
+                 // name lookup skips exec locals) — same scoping pitfall
+                 // fixed in SqsBuilder.
+                 locals, locals);
         const py::dict result = locals["result"].cast<py::dict>();
         if (result.contains("error"))
             info.error = result["error"].cast<std::string>();

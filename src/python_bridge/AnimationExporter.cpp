@@ -65,7 +65,9 @@ if transparent:
     kwargs.update(transparency=255, disposal=2)
 processed[0].save(path, **kwargs)
 )PY",
-                 py::globals(), locals);
+                 // locals doubles as globals: script-defined functions must
+                 // see the script's own names (see AseBridge::symmetryInfo).
+                 locals, locals);
     } catch (const py::error_already_set& e) {
         throw std::runtime_error(std::string("GIF export failed:\n") + e.what());
     }
@@ -127,7 +129,9 @@ try:
 finally:
     writer.close()
 )PY",
-                 py::globals(), locals);
+                 // locals doubles as globals: script-defined functions must
+                 // see the script's own names (see AseBridge::symmetryInfo).
+                 locals, locals);
     } catch (const py::error_already_set& e) {
         throw std::runtime_error(std::string("MP4 export failed:\n") + e.what());
     }

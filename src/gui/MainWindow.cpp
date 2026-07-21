@@ -178,6 +178,23 @@ QIcon cameraToolbarIcon(const QString& kind)
         p.setPen(QPen(neutral, 3.0, Qt::SolidLine, Qt::RoundCap));
         p.drawLine(QPointF(24, 4), QPointF(24, 14));
         p.drawLine(QPointF(19, 9), QPointF(29, 9));
+    } else if (kind == QLatin1String("distance")) {
+        // Two atoms joined by a dashed ruler line.
+        QPen dashed(neutral, 2.0);
+        dashed.setStyle(Qt::DashLine);
+        p.setPen(dashed);
+        p.drawLine(QPointF(8, 24), QPointF(24, 8));
+        p.setPen(Qt::NoPen);
+        p.setBrush(neutral);
+        p.drawEllipse(QPointF(7, 25), 4.0, 4.0);
+        p.drawEllipse(QPointF(25, 7), 4.0, 4.0);
+    } else if (kind == QLatin1String("angle")) {
+        // Two rays from a vertex with the angle arc.
+        p.setPen(QPen(neutral, 2.4, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(6, 26), QPointF(28, 26));
+        p.drawLine(QPointF(6, 26), QPointF(22, 6));
+        p.setPen(QPen(neutral, 2.0));
+        p.drawArc(QRectF(6 - 9, 26 - 9, 18, 18), 0, 52 * 16);
     }
     return QIcon(pixmap);
 }
@@ -249,6 +266,15 @@ MainWindow::MainWindow(QWidget* parent)
                      "the active element;\ndrag from one atom to another to "
                      "bond them"),
                   ViewportWidget::InteractionMode::Insert);
+    addModeAction(QStringLiteral("distance"),
+                  tr("Distance measurement — click two atoms to read their "
+                     "separation in Å\n(click empty space to reset)"),
+                  ViewportWidget::InteractionMode::MeasureDistance);
+    addModeAction(QStringLiteral("angle"),
+                  tr("Angle measurement — click three atoms (vertex second) "
+                     "to read the angle in degrees\n(click empty space to "
+                     "reset)"),
+                  ViewportWidget::InteractionMode::MeasureAngle);
     rotateMode->setChecked(true);
 
     // Active element for Insertion mode; opens the periodic table.
@@ -357,6 +383,10 @@ MainWindow::MainWindow(QWidget* parent)
                         .arg(position.y, 0, 'f', 2)
                         .arg(position.z, 0, 'f', 2));
             });
+    // Measurements land in the status console (the viewport overlays the
+    // same value on the canvas).
+    connect(viewport_, &ViewportWidget::measurementMade, this,
+            [this](const QString& text) { statusBar()->showMessage(text); });
     connect(viewport_, &ViewportWidget::bondInsertRequested, this,
             [this](int i, int j) {
                 Document* doc = currentDocument();
@@ -663,7 +693,7 @@ void MainWindow::createMenusAndDocks()
     // zones sized so the Job console keeps the most room.
     resizeDocks({brandingDock, infoDock}, {290, 290}, Qt::Horizontal);
     resizeDocks({reprDock}, {290}, Qt::Horizontal);
-    resizeDocks({brandingDock, infoDock}, {90, 640}, Qt::Vertical);
+    resizeDocks({brandingDock, infoDock}, {150, 580}, Qt::Vertical);
     resizeDocks({lightingDock, jobDock_, remoteDock_, cellAxesDock},
                 {250, 250, 250, 250}, Qt::Vertical);
     resizeDocks({lightingDock, jobDock_, remoteDock_, cellAxesDock},

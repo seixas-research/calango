@@ -19,16 +19,16 @@ BrandingPanel::BrandingPanel(QWidget* parent)
     auto* logo = new QLabel(this);
     const QPixmap pixmap(QStringLiteral(":/assets/calango/icon_transparent.png"));
     const qreal dpr = devicePixelRatioF();
-    QPixmap scaled = pixmap.scaled(QSize(56, 56) * dpr, Qt::KeepAspectRatio,
+    QPixmap scaled = pixmap.scaled(QSize(112, 112) * dpr, Qt::KeepAspectRatio,
                                    Qt::SmoothTransformation);
     scaled.setDevicePixelRatio(dpr);
     logo->setPixmap(scaled);
-    logo->setFixedSize(56, 56);
+    logo->setFixedSize(112, 112);
     layout->addWidget(logo, 0, Qt::AlignVCenter);
 
     auto* name = new QLabel(QStringLiteral("Calango"), this);
     QFont nameFont = name->font();
-    nameFont.setPointSizeF(nameFont.pointSizeF() * 1.7);
+    nameFont.setPointSizeF(nameFont.pointSizeF() * 3.4);
     nameFont.setBold(true);
     name->setFont(nameFont);
     layout->addWidget(name, 0, Qt::AlignVCenter);
