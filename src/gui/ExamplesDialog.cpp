@@ -71,7 +71,12 @@ ExamplesDialog::ExamplesDialog(QWidget* parent)
     apiKeyEdit_ = new QLineEdit(mpPage);
     apiKeyEdit_->setEchoMode(QLineEdit::Password);
     apiKeyEdit_->setPlaceholderText(tr("API key from materialsproject.org/api"));
-    apiKeyEdit_->setText(QSettings().value(kApiKeySetting).toString());
+    // Stored key first; otherwise the environment (auto-loaded from the
+    // configured .env file at launch — see Preferences).
+    QString storedKey = QSettings().value(kApiKeySetting).toString();
+    if (storedKey.isEmpty())
+        storedKey = qEnvironmentVariable("MP_API_KEY");
+    apiKeyEdit_->setText(storedKey);
     connect(apiKeyEdit_, &QLineEdit::textChanged, this, [this] {
         QSettings().setValue(kApiKeySetting, apiKeyEdit_->text());
     });

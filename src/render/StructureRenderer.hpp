@@ -58,6 +58,12 @@ public:
         float bondWidthFactor = 1.0f; ///< global cylinder-width multiplier (UI)
         float bondRadius = 0.12f;     ///< Å, base radius of a single bond
         float bondTolerance = 1.15f;  ///< bond-detection cutoff factor
+        bool autoBonds = true;        ///< distance-based bond perception on/off
+                                      ///< (manual bond overrides always render)
+        /// Smooth axial color gradient across each bond (atom A color at one
+        /// end blending to atom B color at the other); off = classic
+        /// half-and-half coloring.
+        bool gradientBonds = true;
         bool showCell = true;
         QColor cellColor{166, 166, 178};
         /// 1 = plain GL lines; > 1 renders the edges as thin lit tubes

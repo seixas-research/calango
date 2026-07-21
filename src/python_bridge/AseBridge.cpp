@@ -152,6 +152,26 @@ void AseBridge::writeStructure(const core::Structure& structure,
     }
 }
 
+void AseBridge::writeTrajectory(
+    const std::vector<std::shared_ptr<core::Structure>>& frames,
+    const std::string& path, const std::string& format)
+{
+    try {
+        py::list images;
+        for (const auto& frame : frames) {
+            if (frame)
+                images.append(toAtoms(*frame));
+        }
+        const py::object write = py::module_::import("ase.io").attr("write");
+        if (format.empty())
+            write(path, images);
+        else
+            write(path, images, py::arg("format") = format);
+    } catch (const py::error_already_set& e) {
+        rethrow(e, "Failed to write trajectory '" + path + "'");
+    }
+}
+
 std::vector<core::Structure> AseBridge::readTrajectory(const std::string& path,
                                                        const std::string& format)
 {

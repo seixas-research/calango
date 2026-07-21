@@ -31,9 +31,11 @@ public:
 private Q_SLOTS:
     void compute();
     void computeFinished();
+    void exportData();
 
 private:
     std::shared_ptr<const core::Structure> structure_;
+    core::RdfResult lastResult_;
 
     QComboBox* elementACombo_;
     QComboBox* elementBCombo_;
@@ -41,6 +43,7 @@ private:
     QSpinBox* binsSpin_;
     QCheckBox* pbcCheck_;
     QPushButton* computeButton_;
+    QPushButton* exportButton_;
     LinePlotWidget* plot_;
     QFutureWatcher<core::RdfResult> watcher_;
 };

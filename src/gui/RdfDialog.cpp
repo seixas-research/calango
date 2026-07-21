@@ -3,8 +3,12 @@
 #include "gui/LinePlotWidget.hpp"
 
 #include <QDialogButtonBox>
+#include <QFile>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QMessageBox>
+#include <QTextStream>
 #include <QVBoxLayout>
 #include <QtConcurrent>
 
@@ -21,6 +25,7 @@ RdfDialog::RdfDialog(std::shared_ptr<const core::Structure> structure, QWidget* 
     , binsSpin_(new QSpinBox(this))
     , pbcCheck_(new QCheckBox(tr("Periodic boundary conditions"), this))
     , computeButton_(new QPushButton(tr("Compute"), this))
+    , exportButton_(new QPushButton(tr("Export Data…"), this))
     , plot_(new LinePlotWidget(this))
 {
     setWindowTitle(tr("Radial Distribution Function g(r)"));
@@ -59,7 +64,13 @@ RdfDialog::RdfDialog(std::shared_ptr<const core::Structure> structure, QWidget* 
     form->addRow(tr("r max:"), rMaxSpin_);
     form->addRow(tr("Bins:"), binsSpin_);
     form->addRow(pbcCheck_);
-    form->addRow(computeButton_);
+    auto* buttonRow = new QHBoxLayout;
+    buttonRow->addWidget(computeButton_, 1);
+    buttonRow->addWidget(exportButton_, 1);
+    form->addRow(buttonRow);
+    exportButton_->setEnabled(false);
+    exportButton_->setToolTip(tr("Save the g(r) curve as CSV or "
+                                 "whitespace-separated .dat"));
 
     plot_->setAxisLabels(QStringLiteral("r [Å]"), QStringLiteral("g(r)"));
 
@@ -72,6 +83,7 @@ RdfDialog::RdfDialog(std::shared_ptr<const core::Structure> structure, QWidget* 
     layout->addWidget(buttons);
 
     connect(computeButton_, &QPushButton::clicked, this, &RdfDialog::compute);
+    connect(exportButton_, &QPushButton::clicked, this, &RdfDialog::exportData);
     connect(&watcher_, &QFutureWatcher<core::RdfResult>::finished,
             this, &RdfDialog::computeFinished);
 
@@ -97,10 +109,49 @@ void RdfDialog::compute()
 
 void RdfDialog::computeFinished()
 {
-    const core::RdfResult result = watcher_.result();
-    plot_->setData(result.r, result.g);
+    lastResult_ = watcher_.result();
+    plot_->setData(lastResult_.r, lastResult_.g);
     computeButton_->setEnabled(true);
     computeButton_->setText(tr("Compute"));
+    exportButton_->setEnabled(!lastResult_.r.empty());
+}
+
+void RdfDialog::exportData()
+{
+    if (lastResult_.r.empty())
+        return;
+
+    QString selectedFilter;
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export g(r) Data"), QStringLiteral("rdf.csv"),
+        tr("CSV (*.csv);;Data file (*.dat)"), &selectedFilter);
+    if (path.isEmpty())
+        return;
+    const bool csv = !path.endsWith(QStringLiteral(".dat"), Qt::CaseInsensitive);
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, tr("Export g(r) Data"),
+                              tr("Could not write %1").arg(path));
+        return;
+    }
+    QTextStream out(&file);
+    const QString pairA = elementACombo_->currentText();
+    const QString pairB = elementBCombo_->currentText();
+    if (csv) {
+        out << "# Calango radial distribution function, pair " << pairA << "-"
+            << pairB << "\n";
+        out << "r_angstrom,g_r\n";
+        for (std::size_t i = 0; i < lastResult_.r.size(); ++i)
+            out << QString::number(lastResult_.r[i], 'f', 6) << ','
+                << QString::number(lastResult_.g[i], 'f', 6) << '\n';
+    } else {
+        out << "# Calango RDF, pair " << pairA << "-" << pairB << "\n";
+        out << "#      r[A]           g(r)\n";
+        for (std::size_t i = 0; i < lastResult_.r.size(); ++i)
+            out << QString::asprintf("%14.6f %14.6f\n", lastResult_.r[i],
+                                     lastResult_.g[i]);
+    }
 }
 
 } // namespace calango::gui

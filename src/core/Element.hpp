@@ -14,7 +14,7 @@ struct ElementData {
 namespace Elements {
 
 /// Highest atomic number with tabulated data.
-inline constexpr int maxZ = 86;
+inline constexpr int maxZ = 118;
 
 /// Data for atomic number `z`; out-of-range values return a gray dummy ("X").
 const ElementData& data(int z);

@@ -5,6 +5,7 @@
 
 #include <pybind11/pybind11.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,13 @@ public:
     static void writeStructure(const core::Structure& structure,
                                const std::string& path,
                                const std::string& format = {});
+
+    /// Write a multi-frame trajectory via ase.io.write. `format` is an ASE
+    /// format name ("extxyz", "xyz", "traj", "proteindatabank" for PDB
+    /// multi-model, ...); empty = infer from extension.
+    static void writeTrajectory(
+        const std::vector<std::shared_ptr<core::Structure>>& frames,
+        const std::string& path, const std::string& format = {});
 
     /// All frames of a trajectory / multi-frame file (ase.io.read index=":").
     /// `format` is an explicit ASE format hint for ambiguous extensions

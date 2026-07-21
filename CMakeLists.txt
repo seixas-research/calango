@@ -15,7 +15,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Dependencies
 # ---------------------------------------------------------------------------
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets OpenGLWidgets Concurrent)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets OpenGLWidgets Concurrent Svg)
 qt_standard_project_setup()   # enables AUTOMOC / AUTORCC / AUTOUIC
 
 # Recent macOS SDKs removed the ancient AGL framework, but Qt's WrapOpenGL
@@ -123,8 +123,12 @@ qt_add_executable(calango
     src/gui/TimelineWidget.cpp
     src/gui/EnergyPlotWidget.hpp
     src/gui/EnergyPlotWidget.cpp
-    src/gui/DisplaySettingsWidget.hpp
-    src/gui/DisplaySettingsWidget.cpp
+    src/gui/RepresentationPanel.hpp
+    src/gui/RepresentationPanel.cpp
+    src/gui/CellAxesPanel.hpp
+    src/gui/CellAxesPanel.cpp
+    src/gui/LightingPanel.hpp
+    src/gui/LightingPanel.cpp
     src/gui/ElementSettingsDialog.hpp
     src/gui/ElementSettingsDialog.cpp
     src/gui/PythonHighlighter.hpp
@@ -143,6 +147,16 @@ qt_add_executable(calango
     src/gui/NanoBuilderDialog.cpp
     src/gui/PhononBuilderDialog.hpp
     src/gui/PhononBuilderDialog.cpp
+    src/gui/BondEditorDialog.hpp
+    src/gui/BondEditorDialog.cpp
+    src/gui/PeriodicTableDialog.hpp
+    src/gui/PeriodicTableDialog.cpp
+    src/gui/SlabBuilderDialog.hpp
+    src/gui/SlabBuilderDialog.cpp
+    src/gui/PreferencesDialog.hpp
+    src/gui/PreferencesDialog.cpp
+    src/gui/EnvFile.hpp
+    src/gui/EnvFile.cpp
     src/gui/ExamplesDialog.hpp
     src/gui/ExamplesDialog.cpp
     src/gui/RayTraceDialog.hpp
@@ -190,6 +204,7 @@ target_link_libraries(calango PRIVATE
     Qt6::Widgets
     Qt6::OpenGLWidgets
     Qt6::Concurrent
+    Qt6::Svg
     pybind11::embed
 )
 if(APPLE)

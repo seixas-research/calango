@@ -6,9 +6,12 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QHBoxLayout>
+#include <QImage>
 #include <QLabel>
 #include <QMessageBox>
+#include <QPainter>
 #include <QPushButton>
+#include <QSvgGenerator>
 #include <QTextStream>
 #include <QVBoxLayout>
 
@@ -23,16 +26,18 @@ QString displayLabel(const std::string& label)
     return label == "G" ? QStringLiteral("Γ") : QString::fromStdString(label);
 }
 
-/// Parse an ASE path string ("GXWKGLUWLK,UX") into labels; only the first
-/// continuous segment (up to the first ',') is used. Labels are one letter
+/// Parse an ASE path string ("GXWKGLUWLK,UX") into labels; a "," marks a
+/// section break and is kept as an empty entry. Labels are one letter
 /// optionally followed by digits ("X1").
 QStringList parsePathLabels(const QString& path)
 {
     QStringList labels;
     for (const QChar c : path) {
-        if (c == QLatin1Char(','))
-            break;
-        if (c.isDigit() && !labels.isEmpty())
+        if (c == QLatin1Char(',')) {
+            labels << QString(); // break marker
+            continue;
+        }
+        if (c.isDigit() && !labels.isEmpty() && !labels.last().isEmpty())
             labels.last() += c;
         else
             labels << QString(c);
@@ -83,14 +88,19 @@ BrillouinZoneDialog::BrillouinZoneDialog(const core::BrillouinZoneData& zone,
     auto* pathButtons = new QHBoxLayout;
     auto* suggestedButton = new QPushButton(tr("Suggested"), this);
     suggestedButton->setToolTip(tr("Load ASE's suggested path: %1").arg(suggestedPath_));
+    auto* breakButton = new QPushButton(tr("Break"), this);
+    breakButton->setToolTip(tr("Start a new discontinuous section "
+                               "(e.g. Γ → X | M → R)"));
     auto* undoButton = new QPushButton(tr("Undo"), this);
     auto* clearButton = new QPushButton(tr("Clear"), this);
     pathButtons->addWidget(suggestedButton);
+    pathButtons->addWidget(breakButton);
     pathButtons->addWidget(undoButton);
     pathButtons->addWidget(clearButton);
     side->addLayout(pathButtons);
     connect(suggestedButton, &QPushButton::clicked,
             this, &BrillouinZoneDialog::useSuggestedPath);
+    connect(breakButton, &QPushButton::clicked, this, &BrillouinZoneDialog::addBreak);
     connect(undoButton, &QPushButton::clicked, this, &BrillouinZoneDialog::undoLastPoint);
     connect(clearButton, &QPushButton::clicked, this, &BrillouinZoneDialog::clearPath);
 
@@ -101,14 +111,23 @@ BrillouinZoneDialog::BrillouinZoneDialog(const core::BrillouinZoneData& zone,
     divisionsRow->addWidget(divisionsSpin_, 1);
     side->addLayout(divisionsRow);
 
-    auto* exportVaspButton = new QPushButton(tr("Export VASP KPOINTS…"), this);
-    auto* exportQeButton = new QPushButton(tr("Export QE K_POINTS…"), this);
-    side->addWidget(exportVaspButton);
-    side->addWidget(exportQeButton);
-    connect(exportVaspButton, &QPushButton::clicked,
-            this, &BrillouinZoneDialog::exportVaspKpoints);
-    connect(exportQeButton, &QPushButton::clicked,
-            this, &BrillouinZoneDialog::exportQeKpoints);
+    const auto addExportButton = [this, side](const QString& text, auto slot) {
+        auto* button = new QPushButton(text, this);
+        side->addWidget(button);
+        connect(button, &QPushButton::clicked, this, slot);
+    };
+    addExportButton(tr("Export VASP KPOINTS…"),
+                    &BrillouinZoneDialog::exportVaspKpoints);
+    addExportButton(tr("Export QE K_POINTS…"),
+                    &BrillouinZoneDialog::exportQeKpoints);
+    addExportButton(tr("Export CASTEP Path…"),
+                    &BrillouinZoneDialog::exportCastepPath);
+    addExportButton(tr("Export SIESTA BandLines…"),
+                    &BrillouinZoneDialog::exportSiestaBands);
+    addExportButton(tr("Export ASE Script…"),
+                    &BrillouinZoneDialog::exportAseScript);
+    addExportButton(tr("Export Figure (PNG/SVG)…"),
+                    &BrillouinZoneDialog::exportFigure);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -132,6 +151,15 @@ void BrillouinZoneDialog::appendPoint(int index)
     syncPathViews();
 }
 
+void BrillouinZoneDialog::addBreak()
+{
+    // A break needs a point before it and never repeats.
+    if (path_.empty() || path_.back() < 0)
+        return;
+    path_.push_back(-1);
+    syncPathViews();
+}
+
 void BrillouinZoneDialog::undoLastPoint()
 {
     if (path_.empty())
@@ -150,6 +178,11 @@ void BrillouinZoneDialog::useSuggestedPath()
 {
     path_.clear();
     for (const QString& label : parsePathLabels(suggestedPath_)) {
+        if (label.isEmpty()) { // "," in the ASE path string
+            if (!path_.empty() && path_.back() >= 0)
+                path_.push_back(-1);
+            continue;
+        }
         const auto it = std::find_if(
             specialPoints_.begin(), specialPoints_.end(),
             [&](const core::KPathPoint& p) {
@@ -164,10 +197,15 @@ void BrillouinZoneDialog::useSuggestedPath()
 void BrillouinZoneDialog::syncPathViews()
 {
     pathList_->clear();
-    for (std::size_t i = 0; i < path_.size(); ++i) {
-        const auto& point = specialPoints_[static_cast<std::size_t>(path_[i])];
+    int order = 0;
+    for (const int entry : path_) {
+        if (entry < 0) {
+            pathList_->addItem(QStringLiteral("      — break —"));
+            continue;
+        }
+        const auto& point = specialPoints_[static_cast<std::size_t>(entry)];
         pathList_->addItem(QStringLiteral("%1.  %2   (%3, %4, %5)")
-                               .arg(i + 1)
+                               .arg(++order)
                                .arg(displayLabel(point.label))
                                .arg(point.fractional.x, 0, 'f', 3)
                                .arg(point.fractional.y, 0, 'f', 3)
@@ -176,12 +214,30 @@ void BrillouinZoneDialog::syncPathViews()
     view_->setPath(path_);
 }
 
-std::vector<core::KPathPoint> BrillouinZoneDialog::pathPoints() const
+core::KPathSegments BrillouinZoneDialog::segments() const
 {
-    std::vector<core::KPathPoint> points;
-    for (const int index : path_)
-        points.push_back(specialPoints_[static_cast<std::size_t>(index)]);
-    return points;
+    core::KPathSegments sections;
+    std::vector<core::KPathPoint> current;
+    for (const int entry : path_) {
+        if (entry < 0) {
+            if (!current.empty())
+                sections.push_back(std::move(current));
+            current.clear();
+            continue;
+        }
+        current.push_back(specialPoints_[static_cast<std::size_t>(entry)]);
+    }
+    if (!current.empty())
+        sections.push_back(std::move(current));
+    return sections;
+}
+
+bool BrillouinZoneDialog::hasExportablePath() const
+{
+    for (const auto& section : segments())
+        if (section.size() >= 2)
+            return true;
+    return false;
 }
 
 void BrillouinZoneDialog::saveTextFile(const QString& text, const QString& caption,
@@ -200,27 +256,107 @@ void BrillouinZoneDialog::saveTextFile(const QString& text, const QString& capti
 
 void BrillouinZoneDialog::exportVaspKpoints()
 {
-    if (path_.size() < 2) {
+    if (!hasExportablePath()) {
         QMessageBox::information(this, tr("Export KPOINTS"),
-                                 tr("Pick at least two points first."));
+                                 tr("Pick at least two connected points first."));
         return;
     }
     saveTextFile(QString::fromStdString(
-                     core::toVaspKpoints(pathPoints(), divisionsSpin_->value())),
+                     core::toVaspKpoints(segments(), divisionsSpin_->value())),
                  tr("Export VASP KPOINTS"), QStringLiteral("KPOINTS"));
 }
 
 void BrillouinZoneDialog::exportQeKpoints()
 {
-    if (path_.size() < 2) {
+    if (!hasExportablePath()) {
         QMessageBox::information(this, tr("Export K_POINTS"),
-                                 tr("Pick at least two points first."));
+                                 tr("Pick at least two connected points first."));
         return;
     }
     saveTextFile(QString::fromStdString(
-                     core::toQeKpointsCard(pathPoints(), divisionsSpin_->value())),
+                     core::toQeKpointsCard(segments(), divisionsSpin_->value())),
                  tr("Export Quantum ESPRESSO K_POINTS"),
                  QStringLiteral("kpath_qe.in"));
+}
+
+void BrillouinZoneDialog::exportCastepPath()
+{
+    if (!hasExportablePath()) {
+        QMessageBox::information(this, tr("Export CASTEP Path"),
+                                 tr("Pick at least two connected points first."));
+        return;
+    }
+    saveTextFile(QString::fromStdString(core::toCastepPath(segments())),
+                 tr("Export CASTEP Spectral k-Point Path"),
+                 QStringLiteral("kpath_castep.cell"));
+}
+
+void BrillouinZoneDialog::exportSiestaBands()
+{
+    if (!hasExportablePath()) {
+        QMessageBox::information(this, tr("Export SIESTA BandLines"),
+                                 tr("Pick at least two connected points first."));
+        return;
+    }
+    saveTextFile(QString::fromStdString(
+                     core::toSiestaBandLines(segments(), divisionsSpin_->value())),
+                 tr("Export SIESTA BandLines"), QStringLiteral("kpath_siesta.fdf"));
+}
+
+void BrillouinZoneDialog::exportAseScript()
+{
+    if (!hasExportablePath()) {
+        QMessageBox::information(this, tr("Export ASE Script"),
+                                 tr("Pick at least two connected points first."));
+        return;
+    }
+    // Total sampling matched to per-segment divisions across all legs.
+    int legs = 0;
+    for (const auto& section : segments())
+        if (section.size() >= 2)
+            legs += static_cast<int>(section.size()) - 1;
+    saveTextFile(QString::fromStdString(core::toAsePythonScript(
+                     segments(), std::max(20, legs * divisionsSpin_->value()))),
+                 tr("Export ASE Band-Path Script"), QStringLiteral("kpath_ase.py"));
+}
+
+void BrillouinZoneDialog::exportFigure()
+{
+    QString selectedFilter;
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export Brillouin Zone Figure"),
+        QStringLiteral("brillouin_zone.png"),
+        tr("PNG image (*.png);;SVG vector image (*.svg)"), &selectedFilter);
+    if (path.isEmpty())
+        return;
+
+    const bool svg = path.endsWith(QStringLiteral(".svg"), Qt::CaseInsensitive);
+    const QSize figureSize(1600, 1400); // high-resolution canvas
+
+    if (svg) {
+        QSvgGenerator generator;
+        generator.setFileName(path);
+        generator.setSize(figureSize);
+        generator.setViewBox(QRect(QPoint(0, 0), figureSize));
+        generator.setTitle(QStringLiteral("Brillouin zone — Calango"));
+        generator.setDescription(
+            QStringLiteral("First Brillouin zone with high-symmetry points "
+                           "and k-path"));
+        QPainter painter(&generator);
+        view_->paintFigure(painter, figureSize);
+        painter.end();
+    } else {
+        QImage image(figureSize, QImage::Format_ARGB32);
+        image.fill(Qt::white);
+        QPainter painter(&image);
+        view_->paintFigure(painter, figureSize);
+        painter.end();
+        if (!image.save(path)) {
+            QMessageBox::critical(this, tr("Export Figure"),
+                                  tr("Could not write %1").arg(path));
+            return;
+        }
+    }
 }
 
 } // namespace calango::gui

@@ -57,7 +57,28 @@ public:
     /// convention, so bonds across cell boundaries are found and carry
     /// the image offset for rendering. O(N²) — fine for a few thousand
     /// atoms; a cell-list spatial index is on the roadmap (Phase 3).
-    std::vector<Bond> detectBonds(double tolerance = 1.15) const;
+    ///
+    /// Manual overrides are always honored: pairs marked removed are
+    /// suppressed, manually added bonds are appended (minimum-image, even
+    /// beyond the cutoff). `autoDetect = false` skips perception entirely
+    /// and returns only the manual bonds.
+    std::vector<Bond> detectBonds(double tolerance = 1.15, bool autoDetect = true) const;
+
+    // -- Manual bond overrides (Bond Editor) -------------------------------
+    //
+    // Pairs are stored index-normalized (i < j) and survive atom removal
+    // (indices shift; pairs touching a removed atom are dropped).
+
+    const std::vector<std::pair<int, int>>& addedBonds() const { return addedBonds_; }
+    const std::vector<std::pair<int, int>>& removedBonds() const { return removedBonds_; }
+    /// Force a bond between i and j (clears an opposing "removed" mark).
+    void addBondOverride(int i, int j);
+    /// Suppress the auto-detected bond between i and j (clears an opposing
+    /// manual bond).
+    void removeBondOverride(int i, int j);
+    /// Forget any override for the pair / all overrides.
+    void clearBondOverride(int i, int j);
+    void clearBondOverrides();
 
     // -- Per-atom scalar fields (charges, |forces|, potentials, ...) -------
     //
@@ -76,6 +97,8 @@ private:
     std::vector<Atom> atoms_;
     UnitCell cell_;
     std::map<std::string, std::vector<double>> scalarFields_;
+    std::vector<std::pair<int, int>> addedBonds_;
+    std::vector<std::pair<int, int>> removedBonds_;
 };
 
 } // namespace calango::core

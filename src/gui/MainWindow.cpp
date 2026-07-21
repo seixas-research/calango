@@ -11,7 +11,14 @@
 #include "gui/PhononBuilderDialog.hpp"
 #include "gui/RayTraceDialog.hpp"
 #include "gui/RdfDialog.hpp"
-#include "gui/DisplaySettingsWidget.hpp"
+#include "gui/BondEditorDialog.hpp"
+#include "gui/CellAxesPanel.hpp"
+#include "gui/EnvFile.hpp"
+#include "gui/LightingPanel.hpp"
+#include "gui/PeriodicTableDialog.hpp"
+#include "gui/PreferencesDialog.hpp"
+#include "gui/RepresentationPanel.hpp"
+#include "gui/SlabBuilderDialog.hpp"
 #include "gui/EnergyPlotWidget.hpp"
 #include "gui/JobLogWidget.hpp"
 #include "gui/StructureInfoWidget.hpp"
@@ -24,6 +31,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QColorDialog>
 #include <QComboBox>
 #include <QDateTime>
@@ -44,6 +52,7 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QProgressDialog>
+#include <QSettings>
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -69,6 +78,10 @@ MainWindow::MainWindow(QWidget* parent)
 {
     setWindowTitle(QStringLiteral("Calango"));
     resize(1360, 860);
+
+    // Publish MP_API_KEY (Materials Project) from the configured .env file
+    // — ~/.env by default, overridable in Edit → Preferences.
+    loadEnvironmentFile();
 
     // Central column: document tab bar on top, then the shared 3D
     // viewport, then the playback timeline (job console dock sits below).
@@ -126,6 +139,12 @@ MainWindow::~MainWindow() = default;
 
 void MainWindow::createMenusAndDocks()
 {
+    // Docks can sit side-by-side (nested), stack as tabs, or float.
+    setDockOptions(QMainWindow::AnimatedDocks | QMainWindow::AllowNestedDocks
+                   | QMainWindow::AllowTabbedDocks);
+
+    // Menu bar order is fixed: File, Edit, View, Build, Simulation,
+    // Analysis (Help trails as is conventional).
     QMenu* fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(tr("&Open Structure…"), QKeySequence::Open,
                         this, &MainWindow::openStructure);
@@ -133,6 +152,8 @@ void MainWindow::createMenusAndDocks()
                         this, &MainWindow::openTrajectory);
     fileMenu->addAction(tr("Save Structure &As…"), QKeySequence::SaveAs,
                         this, &MainWindow::saveStructureAs);
+    fileMenu->addAction(tr("Save Tra&jectory As…"), QKeySequence(tr("Ctrl+Shift+T")),
+                        this, &MainWindow::saveTrajectoryAs);
     fileMenu->addAction(tr("&Close Tab"), QKeySequence::Close, this, [this] {
         if (tabBar_->currentIndex() >= 0)
             onTabCloseRequested(tabBar_->currentIndex());
@@ -145,6 +166,9 @@ void MainWindow::createMenusAndDocks()
     fileMenu->addAction(tr("&Ray-Traced Render…"),
                         this, &MainWindow::openRayTraceDialog);
     fileMenu->addSeparator();
+    // Quit goes through closeAllWindows so closeEvent persists the window
+    // geometry / dock layout; the embedded interpreter is finalized by
+    // PythonEngine's destructor in main() afterwards.
     fileMenu->addAction(tr("&Quit"), QKeySequence::Quit,
                         qApp, &QApplication::closeAllWindows);
 
@@ -162,7 +186,26 @@ void MainWindow::createMenusAndDocks()
                         this, &MainWindow::translateSelection);
     editMenu->addAction(tr("&Delete Selected Atoms"), QKeySequence::Delete,
                         this, &MainWindow::deleteSelectedAtoms);
+    editMenu->addSeparator();
+    editMenu->addAction(tr("&Bond Editor…"), QKeySequence(tr("Ctrl+B")),
+                        this, &MainWindow::showBondEditor);
+    editMenu->addSeparator();
+    editMenu->addAction(tr("&Preferences…"), QKeySequence::Preferences,
+                        this, &MainWindow::showPreferences);
     updateUndoActions();
+
+    QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
+    viewMenu->addAction(tr("&Frame Structure"), QKeySequence(tr("F")),
+                        viewport_, &ViewportWidget::frameStructure);
+    QAction* cellAction = viewMenu->addAction(tr("Show Unit &Cell"));
+    cellAction->setCheckable(true);
+    cellAction->setChecked(true);
+    connect(cellAction, &QAction::toggled, viewport_, &ViewportWidget::setShowCell);
+    QAction* orthoAction = viewMenu->addAction(tr("&Orthographic"));
+    orthoAction->setCheckable(true);
+    orthoAction->setToolTip(tr("Toggle between perspective and orthographic projection"));
+    connect(orthoAction, &QAction::toggled,
+            viewport_, &ViewportWidget::setOrthographic);
 
     QMenu* buildMenu = menuBar()->addMenu(tr("&Build"));
     buildMenu->addAction(tr("Create &Supercell…"), this, &MainWindow::createSupercell);
@@ -185,14 +228,6 @@ void MainWindow::createMenusAndDocks()
     analysisMenu->addAction(tr("&Coordination Numbers (CN / GCN)…"),
                             this, &MainWindow::showCoordination);
 
-    QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
-    viewMenu->addAction(tr("&Frame Structure"), QKeySequence(tr("F")),
-                        viewport_, &ViewportWidget::frameStructure);
-    QAction* cellAction = viewMenu->addAction(tr("Show Unit &Cell"));
-    cellAction->setCheckable(true);
-    cellAction->setChecked(true);
-    connect(cellAction, &QAction::toggled, viewport_, &ViewportWidget::setShowCell);
-
     QMenu* helpMenu = menuBar()->addMenu(tr("&Help"));
     helpMenu->addAction(tr("&About Calango"), this, &MainWindow::about);
 
@@ -200,12 +235,7 @@ void MainWindow::createMenusAndDocks()
     QToolBar* viewToolbar = addToolBar(tr("Viewport"));
     viewToolbar->setObjectName(QStringLiteral("viewportToolbar"));
     viewToolbar->addAction(tr("Frame"), viewport_, &ViewportWidget::frameStructure);
-    QAction* orthoAction = viewToolbar->addAction(tr("Orthographic"));
-    orthoAction->setCheckable(true);
-    orthoAction->setToolTip(tr("Toggle between perspective and orthographic projection"));
-    connect(orthoAction, &QAction::toggled,
-            viewport_, &ViewportWidget::setOrthographic);
-    viewMenu->addAction(orthoAction);
+    viewToolbar->addAction(orthoAction);
 
     auto* infoDock = new QDockWidget(tr("Structure"), this);
     infoDock->setObjectName(QStringLiteral("structureDock"));
@@ -213,10 +243,26 @@ void MainWindow::createMenusAndDocks()
     infoDock->setWidget(infoWidget_);
     addDockWidget(Qt::LeftDockWidgetArea, infoDock);
 
-    auto* displayDock = new QDockWidget(tr("Display"), this);
-    displayDock->setObjectName(QStringLiteral("displayDock"));
-    displayDock->setWidget(new DisplaySettingsWidget(viewport_, displayDock));
-    addDockWidget(Qt::RightDockWidgetArea, displayDock);
+    // Viewport settings as three independent dock panels, tabbed on the
+    // right by default; each can be re-docked side-by-side or floated.
+    auto* reprDock = new QDockWidget(tr("Representation"), this);
+    reprDock->setObjectName(QStringLiteral("representationDock"));
+    reprDock->setWidget(new RepresentationPanel(viewport_, reprDock));
+    addDockWidget(Qt::RightDockWidgetArea, reprDock);
+
+    auto* cellAxesDock = new QDockWidget(tr("Unit Cell && Axes"), this);
+    cellAxesDock->setObjectName(QStringLiteral("cellAxesDock"));
+    cellAxesDock->setWidget(new CellAxesPanel(viewport_, cellAxesDock));
+    addDockWidget(Qt::RightDockWidgetArea, cellAxesDock);
+
+    auto* lightingDock = new QDockWidget(tr("Lighting"), this);
+    lightingDock->setObjectName(QStringLiteral("lightingDock"));
+    lightingDock->setWidget(new LightingPanel(viewport_, lightingDock));
+    addDockWidget(Qt::RightDockWidgetArea, lightingDock);
+
+    tabifyDockWidget(reprDock, cellAxesDock);
+    tabifyDockWidget(cellAxesDock, lightingDock);
+    reprDock->raise();
 
     jobDock_ = new QDockWidget(tr("Job"), this);
     jobDock_->setObjectName(QStringLiteral("jobDock"));
@@ -230,8 +276,23 @@ void MainWindow::createMenusAndDocks()
 
     viewMenu->addSeparator();
     viewMenu->addAction(infoDock->toggleViewAction());
-    viewMenu->addAction(displayDock->toggleViewAction());
+    viewMenu->addAction(reprDock->toggleViewAction());
+    viewMenu->addAction(cellAxesDock->toggleViewAction());
+    viewMenu->addAction(lightingDock->toggleViewAction());
     viewMenu->addAction(jobDock_->toggleViewAction());
+
+    // Reapply the layout the user left behind last session.
+    const QSettings settings;
+    restoreGeometry(settings.value(QStringLiteral("window/geometry")).toByteArray());
+    restoreState(settings.value(QStringLiteral("window/state")).toByteArray());
+}
+
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+    QSettings settings;
+    settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
+    settings.setValue(QStringLiteral("window/state"), saveState());
+    QMainWindow::closeEvent(event);
 }
 
 bool MainWindow::ensureAseAvailable()
@@ -555,6 +616,50 @@ void MainWindow::saveStructureAs()
     }
 }
 
+void MainWindow::saveTrajectoryAs()
+{
+    Document* doc = currentDocument();
+    if (!doc || doc->frames.size() < 2) {
+        QMessageBox::information(
+            this, tr("Save Trajectory"),
+            tr("The current tab has no multi-frame trajectory.\n"
+               "Open a trajectory (or generate one) first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    static const QList<QPair<QString, QString>> kTrajectoryFormats = {
+        {tr("Extended XYZ trajectory (*.extxyz)"), QStringLiteral("extxyz")},
+        {tr("XYZ multi-frame (*.xyz)"), QStringLiteral("xyz")},
+        {tr("ASE trajectory (*.traj)"), QStringLiteral("traj")},
+        {tr("PDB multi-model (*.pdb)"), QStringLiteral("proteindatabank")},
+    };
+    QStringList filters;
+    for (const auto& entry : kTrajectoryFormats)
+        filters << entry.first;
+
+    QString selectedFilter;
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Save Trajectory As"), QStringLiteral("trajectory.extxyz"),
+        filters.join(QStringLiteral(";;")), &selectedFilter);
+    if (path.isEmpty())
+        return;
+    QString format;
+    for (const auto& entry : kTrajectoryFormats)
+        if (entry.first == selectedFilter)
+            format = entry.second;
+
+    try {
+        pybridge::AseBridge::writeTrajectory(doc->frames, path.toStdString(),
+                                             format.toStdString());
+        statusBar()->showMessage(
+            tr("Saved %1 (%2 frames)").arg(path).arg(doc->frames.size()));
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, tr("Save Trajectory"), QString::fromUtf8(e.what()));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Image & animation export
 // ---------------------------------------------------------------------------
@@ -825,63 +930,16 @@ void MainWindow::cleaveSurface()
     if (!ensureAseAvailable())
         return;
 
-    QDialog dialog(this);
-    dialog.setWindowTitle(tr("Cleave Surface (Slab)"));
-    auto* form = new QFormLayout(&dialog);
-
-    QSpinBox* miller[3];
-    const char* names[3] = {"h", "k", "l"};
-    auto* millerRow = new QWidget(&dialog);
-    auto* millerLayout = new QFormLayout(millerRow);
-    millerLayout->setContentsMargins(0, 0, 0, 0);
-    for (int i = 0; i < 3; ++i) {
-        miller[i] = new QSpinBox(&dialog);
-        miller[i]->setRange(-9, 9);
-        miller[i]->setValue(i == 2 ? 1 : 0); // default (0 0 1)
-        millerLayout->addRow(QLatin1String(names[i]), miller[i]);
-    }
-    form->addRow(tr("Miller indices:"), millerRow);
-
-    auto* layersSpin = new QSpinBox(&dialog);
-    layersSpin->setRange(1, 40);
-    layersSpin->setValue(4);
-    form->addRow(tr("Layers:"), layersSpin);
-
-    auto* vacuumSpin = new QDoubleSpinBox(&dialog);
-    vacuumSpin->setRange(0.0, 60.0);
-    vacuumSpin->setValue(10.0);
-    vacuumSpin->setSuffix(tr(" Å"));
-    form->addRow(tr("Vacuum (each side):"), vacuumSpin);
-
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
-                                         &dialog);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    form->addRow(buttons);
-
-    if (dialog.exec() != QDialog::Accepted)
+    // Live-preview builder: parameters rebuild the slab on the fly and the
+    // surface vectors / thickness are reported before insertion.
+    SlabBuilderDialog dialog(doc->structure, this);
+    if (dialog.exec() != QDialog::Accepted || !dialog.result())
         return;
-    if (miller[0]->value() == 0 && miller[1]->value() == 0 && miller[2]->value() == 0) {
-        QMessageBox::warning(this, tr("Cleave Surface"),
-                             tr("Miller indices (0 0 0) are not a valid plane."));
-        return;
-    }
 
-    try {
-        auto slab = std::make_shared<core::Structure>(pybridge::AseBridge::makeSlab(
-            *doc->structure, miller[0]->value(), miller[1]->value(), miller[2]->value(),
-            layersSpin->value(), vacuumSpin->value()));
-        pushUndo();
-        replaceCurrentStructure(std::move(slab),
-                                tr("%1 (%2%3%4) slab")
-                                    .arg(doc->fileName)
-                                    .arg(miller[0]->value())
-                                    .arg(miller[1]->value())
-                                    .arg(miller[2]->value()));
-        statusBar()->showMessage(tr("Slab created: %1 atoms").arg(doc->structure->size()));
-    } catch (const std::exception& e) {
-        QMessageBox::critical(this, tr("Cleave Surface"), QString::fromUtf8(e.what()));
-    }
+    pushUndo();
+    replaceCurrentStructure(dialog.result(),
+                            tr("%1 %2").arg(doc->fileName, dialog.resultLabel()));
+    statusBar()->showMessage(tr("Slab created: %1 atoms").arg(doc->structure->size()));
 }
 
 // ---------------------------------------------------------------------------
@@ -894,8 +952,24 @@ void MainWindow::addAtom()
     dialog.setWindowTitle(tr("Add Atom"));
     auto* form = new QFormLayout(&dialog);
 
-    auto* symbolEdit = new QLineEdit(QStringLiteral("C"), &dialog);
-    form->addRow(tr("Element symbol:"), symbolEdit);
+    // Element choice via the graphical periodic table.
+    int selectedZ = 6; // carbon default
+    auto* elementButton = new QPushButton(&dialog);
+    const auto updateElementButton = [&selectedZ, elementButton] {
+        elementButton->setText(
+            QStringLiteral("%1  (Z = %2)")
+                .arg(QLatin1String(core::Elements::data(selectedZ).symbol))
+                .arg(selectedZ));
+    };
+    updateElementButton();
+    form->addRow(tr("Element:"), elementButton);
+    connect(elementButton, &QPushButton::clicked, &dialog,
+            [&dialog, &selectedZ, updateElementButton] {
+                if (const int z = PeriodicTableDialog::pickElement(&dialog, selectedZ)) {
+                    selectedZ = z;
+                    updateElementButton();
+                }
+            });
 
     QDoubleSpinBox* coords[3];
     const char* names[3] = {"x", "y", "z"};
@@ -916,22 +990,16 @@ void MainWindow::addAtom()
     if (dialog.exec() != QDialog::Accepted)
         return;
 
-    const int z = core::Elements::atomicNumber(symbolEdit->text().trimmed().toStdString());
-    if (z == 0) {
-        QMessageBox::warning(this, tr("Add Atom"),
-                             tr("Unknown element symbol '%1'.").arg(symbolEdit->text()));
-        return;
-    }
-
     Document& doc = ensureDocument();
     pushUndo();
     const bool firstAtom = !doc.structure || doc.structure->empty();
     if (!doc.structure)
         doc.structure = std::make_shared<core::Structure>();
     doc.structure->addAtom(
-        {z, {coords[0]->value(), coords[1]->value(), coords[2]->value()}});
+        {selectedZ, {coords[0]->value(), coords[1]->value(), coords[2]->value()}});
     notifyStructureChanged(firstAtom);
-    statusBar()->showMessage(tr("Added %1 atom").arg(symbolEdit->text().trimmed()));
+    statusBar()->showMessage(
+        tr("Added %1 atom").arg(QLatin1String(core::Elements::data(selectedZ).symbol)));
 }
 
 void MainWindow::changeElementOfSelection()
@@ -943,26 +1011,21 @@ void MainWindow::changeElementOfSelection()
         return;
     }
 
-    bool ok = false;
-    const QString symbol = QInputDialog::getText(
-        this, tr("Change Element"),
-        tr("New element symbol for %n atom(s):", nullptr,
-           static_cast<int>(selection.size())),
-        QLineEdit::Normal, QString(), &ok);
-    if (!ok || symbol.trimmed().isEmpty())
+    // Highlight the current element when the selection is homogeneous.
+    const int firstZ = doc->structure
+                           ->atoms()[static_cast<std::size_t>(*selection.begin())]
+                           .atomicNumber;
+    const int z = PeriodicTableDialog::pickElement(this, firstZ);
+    if (z == 0)
         return;
-
-    const int z = core::Elements::atomicNumber(symbol.trimmed().toStdString());
-    if (z == 0) {
-        QMessageBox::warning(this, tr("Change Element"),
-                             tr("Unknown element symbol '%1'.").arg(symbol));
-        return;
-    }
 
     pushUndo();
     for (const int index : selection)
         doc->structure->atoms()[static_cast<std::size_t>(index)].atomicNumber = z;
     notifyStructureChanged(false);
+    statusBar()->showMessage(
+        tr("Changed %n atom(s) to %1", nullptr, static_cast<int>(selection.size()))
+            .arg(QLatin1String(core::Elements::data(z).symbol)));
 }
 
 void MainWindow::translateSelection()
@@ -1020,6 +1083,28 @@ void MainWindow::deleteSelectedAtoms()
     notifyStructureChanged(false);
     statusBar()->showMessage(tr("Deleted %n atom(s)", nullptr,
                                 static_cast<int>(indices.size())));
+}
+
+void MainWindow::showBondEditor()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        statusBar()->showMessage(tr("Open a structure first."));
+        return;
+    }
+
+    // One undo snapshot per editing session (the dialog applies live).
+    pushUndo();
+    BondEditorDialog dialog(doc->structure, viewport_, this);
+    connect(&dialog, &BondEditorDialog::bondsEdited, this,
+            [this] { notifyStructureChanged(false); });
+    dialog.exec();
+}
+
+void MainWindow::showPreferences()
+{
+    PreferencesDialog dialog(this);
+    dialog.exec();
 }
 
 // ---------------------------------------------------------------------------

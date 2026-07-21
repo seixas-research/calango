@@ -2,7 +2,7 @@
 
 This roadmap outlines the core development phases for building a cross-platform desktop application for materials science using C++20, Qt6, OpenGL, and Python/ASE.
 
-> Status as of v0.8 — checked items are implemented; partial items carry a note.
+> Status as of v0.9 — checked items are implemented; partial items carry a note.
 
 ---
 
@@ -139,6 +139,27 @@ This roadmap outlines the core development phases for building a cross-platform 
 *   [ ] In-app phonon band-structure and DOS plots (LinePlotWidget) fed from the generated CSV files.
 *   [ ] Viewport colorbar overlay for the active scalar mapping (numeric legend in exports).
 *   [ ] Per-atom scalar editing/import UI (paste charges, load from file) beyond extxyz auto-import.
+
+## 📅 Phase 12: UI Refinement, Interactive Editing & Advanced Exports (v0.9)
+**Focus:** Menu/dock reorganization, gradient visuals, bond-level editing, live previews, and multi-code k-path interchange.
+
+*   [x] Menu bar reorganized to the canonical order File · Edit · View · Build · Simulation · Analysis (Help trailing); the projection toggle moved into View.
+*   [x] File → Save Trajectory As…: multi-frame export to extended XYZ, plain multi-frame XYZ, ASE `.traj`, and multi-model PDB (`ase.io.write` over the frame list). *(Validated: 4-frame round-trip in all four formats.)*
+*   [x] Quit with layout persistence: window geometry and dock arrangement saved via QSettings in closeEvent and restored at launch; the embedded interpreter is finalized cleanly by PythonEngine's destructor after window teardown.
+*   [x] Gradient bond coloring: per-instance start/end colors (instance stride 20 → 24 floats, attribute location 7) interpolated along the cylinder axis in mesh.vert — bond halves meet at the midpoint color for one continuous atom-to-atom gradient; wireframe bonds interpolate per-vertex GL colors the same way. Toggleable in the Representation panel.
+*   [x] Display settings split into three fully dockable/tabbable/floatable panels: Representation (mode, color mapping, scales, gradient bonds, element settings, background), Unit Cell & Axes (cell wireframe controls + new axes-triad size slider/spinbox), and Lighting (per-light directions and components). Nested and tabbed docking enabled.
+*   [x] Edit → Bond Editor: automatic-perception toggle, live covalent cutoff multiplier, and manual add/suppress of individual bonds (by 1-based index pair or the two-atom viewport selection); overrides are stored on `core::Structure` (index-stable across atom deletion, captured by undo) and render regardless of representation mode.
+*   [x] Graphical periodic table dialog (Z = 1–118, standard 18-group layout with f-block rows, colored by chemical family) wired into Add Atom and Change Element; element data table extended from Z = 86 to Z = 118 (Pyykkö radii, Jmol colors where defined).
+*   [x] Surface slab generator rebuilt around a live preview: debounced `ase.build.surface` rebuilds on every parameter change, embedded 3D preview viewport, and a readout of the surface cell vectors u/v (components, lengths, angle), slab thickness and atom count before insertion.
+*   [x] RDF dialog Export Data…: g(r) curves as structured `.csv` or whitespace `.dat` with header comments.
+*   [x] Discontinuous k-paths: a Break action splits the path into sections (Γ→X | M→R) honored by the list, the 3D view, and every exporter; ASE's suggested paths now import their "," breaks too.
+*   [x] Multi-format k-path export: CASTEP `SPECTRAL_KPOINT_PATH` (with `break`), SIESTA `BandLines` (sections restart at count 1), and a standalone ASE/Python band-path script, alongside the existing VASP/QE exporters (now section-aware). *(Validated: generated ASE script runs against ase 3.29 — BandPath 'GXW,KL', 160 k-points.)*
+*   [x] Directional arrowheads along k-path legs in the Brillouin-zone canvas (3D wings in the GL view, filled 2D arrowheads in exports).
+*   [x] Brillouin-zone figure export: publication-style rendering (white background, depth-sorted translucent faces, labels, order badges, path arrows) to high-resolution PNG or true-vector SVG via Qt Svg.
+*   [x] Materials Project API key auto-loaded from an `.env` file at launch (`~/.env` default, shell environment wins); Edit → Preferences dialog to change the path, reload on demand, and inspect status. The Examples browser falls back to the environment key when none is stored.
+*   [ ] Hover highlight and per-atom labels in the viewport.
+*   [ ] Per-atom (not just per-element) style overrides and selection-based styling.
+*   [ ] Bond-editor visual feedback: highlight the pending pair in the viewport.
 
 ## 🚀 Future Modules (Post-MVP)
 *   **Remote Job Submission:** Connect to HPC clusters using SSH/SFTP and generate SLURM/PBS submission scripts.

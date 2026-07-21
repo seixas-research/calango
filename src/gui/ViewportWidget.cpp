@@ -15,8 +15,7 @@
 
 namespace {
 
-constexpr int kAxesBoxPx = 92;  // logical pixels, bottom-left corner
-constexpr int kAxesMarginPx = 10;
+constexpr int kAxesMarginPx = 10; // logical pixels, bottom-left corner
 
 const char* kAxesVertexShader = R"(#version 330 core
 layout(location = 0) in vec3 aPos;
@@ -180,6 +179,12 @@ void ViewportWidget::setAxesLatticeMode(bool lattice)
     update();
 }
 
+void ViewportWidget::setAxesSize(int px)
+{
+    axesSizePx_ = std::clamp(px, 32, 512);
+    update();
+}
+
 std::array<std::pair<QVector3D, QString>, 3> ViewportWidget::axesVectors() const
 {
     if (axesLatticeMode_ && structure_ && structure_->cell().isDefined()) {
@@ -224,8 +229,8 @@ void ViewportWidget::drawAxesOverlayGl()
     const auto ratio = devicePixelRatioF();
     glViewport(static_cast<GLint>(kAxesMarginPx * ratio),
                static_cast<GLint>(kAxesMarginPx * ratio),
-               static_cast<GLsizei>(kAxesBoxPx * ratio),
-               static_cast<GLsizei>(kAxesBoxPx * ratio));
+               static_cast<GLsizei>(axesSizePx_ * ratio),
+               static_cast<GLsizei>(axesSizePx_ * ratio));
     glDisable(GL_DEPTH_TEST);
     axesProgram_.bind();
     axesProgram_.setUniformValue("uMvp", proj * rotation);
@@ -253,12 +258,12 @@ void ViewportWidget::drawAxesLabels(QPainter& painter)
     const QColor colors[3] = {QColor(240, 90, 82), QColor(92, 212, 102),
                               QColor(90, 148, 250)};
     const auto axes = axesVectors();
-    const QPointF boxOrigin(kAxesMarginPx, height() - kAxesMarginPx - kAxesBoxPx);
+    const QPointF boxOrigin(kAxesMarginPx, height() - kAxesMarginPx - axesSizePx_);
     for (int i = 0; i < 3; ++i) {
         const QVector3D tip =
             transform.map(axes[static_cast<std::size_t>(i)].first * 1.12f);
-        const QPointF screen(boxOrigin.x() + (tip.x() * 0.5 + 0.5) * kAxesBoxPx,
-                             boxOrigin.y() + (0.5 - tip.y() * 0.5) * kAxesBoxPx);
+        const QPointF screen(boxOrigin.x() + (tip.x() * 0.5 + 0.5) * axesSizePx_,
+                             boxOrigin.y() + (0.5 - tip.y() * 0.5) * axesSizePx_);
         painter.setPen(colors[i]);
         painter.drawText(screen, axes[static_cast<std::size_t>(i)].second);
     }

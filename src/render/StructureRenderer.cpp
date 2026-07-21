@@ -14,15 +14,34 @@ namespace calango::render {
 
 namespace {
 
-constexpr int kFloatsPerInstance = 20; // mat4 (16) + rgba (4)
+constexpr int kFloatsPerInstance = 24; // mat4 (16) + rgba (4) + rgba2 (4)
 
-void appendInstance(std::vector<float>& data, const QMatrix4x4& model, const QColor& color)
+/// One instance record. `color` is sampled at the mesh's z = 0 end and
+/// `color2` at z = 1 (mesh.vert interpolates axially — the bond gradient);
+/// pass the same color twice for uniform meshes (spheres, cell tubes).
+void appendInstance(std::vector<float>& data, const QMatrix4x4& model,
+                    const QColor& color, const QColor& color2)
 {
     const float* m = model.constData(); // column-major, matching the shader
     data.insert(data.end(), m, m + 16);
     data.insert(data.end(),
                 {static_cast<float>(color.redF()), static_cast<float>(color.greenF()),
                  static_cast<float>(color.blueF()), 1.0f});
+    data.insert(data.end(),
+                {static_cast<float>(color2.redF()), static_cast<float>(color2.greenF()),
+                 static_cast<float>(color2.blueF()), 1.0f});
+}
+
+void appendInstance(std::vector<float>& data, const QMatrix4x4& model, const QColor& color)
+{
+    appendInstance(data, model, color, color);
+}
+
+QColor midpointColor(const QColor& a, const QColor& b)
+{
+    return QColor::fromRgbF(0.5f * static_cast<float>(a.redF() + b.redF()),
+                            0.5f * static_cast<float>(a.greenF() + b.greenF()),
+                            0.5f * static_cast<float>(a.blueF() + b.blueF()));
 }
 
 void appendColoredVertex(std::vector<float>& data, const QVector3D& pos, const QColor& color)
@@ -261,7 +280,8 @@ void StructureRenderer::createMesh(InstancedMesh& mesh,
     mesh.indexBuffer.allocate(indices.data(),
                               static_cast<int>(indices.size() * sizeof(unsigned int)));
 
-    // Per-instance data: locations 2..5 = mat4 columns, 6 = rgba color.
+    // Per-instance data: locations 2..5 = mat4 columns, 6 = rgba color at
+    // z = 0, 7 = rgba color at z = 1 (axial bond gradient).
     mesh.instanceBuffer.create();
     mesh.instanceBuffer.bind();
     const auto stride = kFloatsPerInstance * static_cast<int>(sizeof(float));
@@ -272,10 +292,13 @@ void StructureRenderer::createMesh(InstancedMesh& mesh,
                                    reinterpret_cast<void*>(sizeof(float) * 4 * static_cast<std::size_t>(column)));
         gl_->glVertexAttribDivisor(location, 1);
     }
-    gl_->glEnableVertexAttribArray(6);
-    gl_->glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, stride,
-                               reinterpret_cast<void*>(sizeof(float) * 16));
-    gl_->glVertexAttribDivisor(6, 1);
+    for (int slot = 0; slot < 2; ++slot) {
+        const auto location = static_cast<GLuint>(6 + slot);
+        gl_->glEnableVertexAttribArray(location);
+        gl_->glVertexAttribPointer(location, 4, GL_FLOAT, GL_FALSE, stride,
+                                   reinterpret_cast<void*>(sizeof(float) * (16 + 4 * static_cast<std::size_t>(slot))));
+        gl_->glVertexAttribDivisor(location, 1);
+    }
 
     mesh.vao.release();
 }
@@ -347,7 +370,8 @@ void StructureRenderer::setStructure(const core::Structure* structure,
 
         if (wantBonds) {
             const float baseRadius = style_.bondRadius * style_.bondWidthFactor;
-            for (const core::Bond& bond : structure->detectBonds(style_.bondTolerance)) {
+            for (const core::Bond& bond :
+                 structure->detectBonds(style_.bondTolerance, style_.autoBonds)) {
                 const auto& a = atoms[static_cast<std::size_t>(bond.i)];
                 const auto& b = atoms[static_cast<std::size_t>(bond.j)];
                 const QVector3D pa = toQt(a.position);
@@ -361,16 +385,24 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                 const QColor colorB = resolvedAtomColor(
                     static_cast<std::size_t>(bond.j), b.atomicNumber);
 
+                const QColor mid = style_.gradientBonds
+                    ? midpointColor(colorA, colorB)
+                    : QColor();
+
                 if (wireframe) {
-                    // Single line regardless of order; halves colored per atom.
+                    // Single line regardless of order. GL interpolates the
+                    // per-vertex colors, so handing the joint the midpoint
+                    // color yields a smooth end-to-end gradient.
+                    const QColor jointA = style_.gradientBonds ? mid : colorA;
+                    const QColor jointB = style_.gradientBonds ? mid : colorB;
                     appendColoredVertex(wireBondVertices, pa, colorA);
-                    appendColoredVertex(wireBondVertices, pa + dir * half, colorA);
+                    appendColoredVertex(wireBondVertices, pa + dir * half, jointA);
                     if (!bond.crossesBoundary()) {
-                        appendColoredVertex(wireBondVertices, pa + dir * half, colorB);
+                        appendColoredVertex(wireBondVertices, pa + dir * half, jointB);
                         appendColoredVertex(wireBondVertices, pbImage, colorB);
                     } else {
                         appendColoredVertex(wireBondVertices, pbReal, colorB);
-                        appendColoredVertex(wireBondVertices, pbReal - dir * half, colorB);
+                        appendColoredVertex(wireBondVertices, pbReal - dir * half, jointB);
                     }
                     continue;
                 }
@@ -384,19 +416,26 @@ void StructureRenderer::setStructure(const core::Structure* structure,
 
                 for (const float offsetUnits : lateral) {
                     const QVector3D shift = perp * (offsetUnits * baseRadius);
+                    // Each half-cylinder carries a start/end color pair; with
+                    // gradient bonds the halves meet at the midpoint color,
+                    // producing one continuous atomA -> atomB gradient.
                     appendInstance(bondInstances,
-                                   bondTransform(pa + shift, dir, half, radius), colorA);
+                                   bondTransform(pa + shift, dir, half, radius),
+                                   colorA,
+                                   style_.gradientBonds ? mid : colorA);
                     if (!bond.crossesBoundary()) {
                         appendInstance(
                             bondInstances,
                             bondTransform(pa + shift + dir * half, dir, half, radius),
-                            colorB);
+                            style_.gradientBonds ? mid : colorB, colorB);
                     } else {
                         // Wrapped bond: atom j's half is a stub pointing back
-                        // toward its own periodic image of atom i.
+                        // toward its own periodic image of atom i (z = 0 sits
+                        // at the atom, so the gradient runs atom -> midpoint).
                         appendInstance(
                             bondInstances,
-                            bondTransform(pbReal + shift, -dir, half, radius), colorB);
+                            bondTransform(pbReal + shift, -dir, half, radius),
+                            colorB, style_.gradientBonds ? mid : colorB);
                     }
                 }
             }

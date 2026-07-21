@@ -39,10 +39,17 @@ public:
     /// Load any ASE-readable structure file into a new tab.
     void loadFile(const QString& path);
 
+protected:
+    /// Persists the window geometry and dock layout before shutdown; the
+    /// embedded Python interpreter is released by PythonEngine's destructor
+    /// in main() after the window is gone.
+    void closeEvent(QCloseEvent* event) override;
+
 private Q_SLOTS:
     void openStructure();
     void openTrajectory();
     void saveStructureAs();
+    void saveTrajectoryAs();
     void exportImage();
     void exportAnimation();
 
@@ -52,6 +59,8 @@ private Q_SLOTS:
     void changeElementOfSelection();
     void translateSelection();
     void deleteSelectedAtoms();
+    void showBondEditor();
+    void showPreferences();
     void undo();
     void redo();
 

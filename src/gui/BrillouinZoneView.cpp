@@ -84,6 +84,7 @@ void BrillouinZoneView::setZone(const core::BrillouinZoneData& zone,
     float radius = 0.5f;
     for (const auto& vertex : zone_.vertices)
         radius = std::max(radius, toQt(vertex).length());
+    zoneRadius_ = radius;
     camera_.frame({0.0f, 0.0f, 0.0f}, radius);
     update();
 }
@@ -166,10 +167,35 @@ void BrillouinZoneView::uploadZone()
 void BrillouinZoneView::uploadPath()
 {
     std::vector<float> vertices;
+    const auto push = [&vertices](const QVector3D& p) {
+        vertices.insert(vertices.end(), {p.x(), p.y(), p.z()});
+    };
+
     for (std::size_t i = 0; i + 1 < path_.size(); ++i) {
-        for (const int idx : {path_[i], path_[i + 1]}) {
-            const QVector3D p = points_[static_cast<std::size_t>(idx)].cartesian;
-            vertices.insert(vertices.end(), {p.x(), p.y(), p.z()});
+        // -1 marks a section break: no leg is drawn across it.
+        if (path_[i] < 0 || path_[i + 1] < 0)
+            continue;
+        const QVector3D a = points_[static_cast<std::size_t>(path_[i])].cartesian;
+        const QVector3D b = points_[static_cast<std::size_t>(path_[i + 1])].cartesian;
+        push(a);
+        push(b);
+
+        // Directional arrowhead: four short wings meeting at ~60% along
+        // the leg, visible from any viewing angle.
+        const QVector3D dir = (b - a).normalized();
+        const float length = (b - a).length();
+        if (length < 1e-6f)
+            continue;
+        const float wing = std::min(0.14f * length, 0.07f * zoneRadius_);
+        const QVector3D reference = std::abs(dir.z()) < 0.9f
+            ? QVector3D(0.0f, 0.0f, 1.0f)
+            : QVector3D(1.0f, 0.0f, 0.0f);
+        const QVector3D perp1 = QVector3D::crossProduct(dir, reference).normalized();
+        const QVector3D perp2 = QVector3D::crossProduct(dir, perp1).normalized();
+        const QVector3D tip = a + (b - a) * 0.6f;
+        for (const QVector3D& perp : {perp1, -perp1, perp2, -perp2}) {
+            push(tip);
+            push(tip - dir * wing + perp * (wing * 0.55f));
         }
     }
     pathVertexCount_ = static_cast<int>(vertices.size()) / 3;
@@ -188,11 +214,18 @@ QMatrix4x4 BrillouinZoneView::mvp() const
 bool BrillouinZoneView::project(const QVector3D& point, const QMatrix4x4& mvp,
                                 QPointF& screen) const
 {
+    return projectTo(point, mvp, QSizeF(width(), height()), screen);
+}
+
+bool BrillouinZoneView::projectTo(const QVector3D& point, const QMatrix4x4& mvp,
+                                  const QSizeF& size, QPointF& screen)
+{
     const QVector4D clip = mvp * QVector4D(point, 1.0f);
     if (clip.w() <= 0.0f)
         return false;
     const QVector3D ndc = clip.toVector3D() / clip.w();
-    screen = {(ndc.x() * 0.5 + 0.5) * width(), (0.5 - ndc.y() * 0.5) * height()};
+    screen = {(ndc.x() * 0.5 + 0.5) * size.width(),
+              (0.5 - ndc.y() * 0.5) * size.height()};
     return true;
 }
 
@@ -274,14 +307,150 @@ void BrillouinZoneView::paintGL()
         painter.setPen(QColor(235, 238, 245));
         painter.drawText(screen + QPointF(9, -7), points_[i].label);
 
-        // Order badge(s) for path membership, e.g. "1,4".
+        // Order badge(s) for path membership, e.g. "1,4" — breaks (-1) do
+        // not consume an order number.
         QStringList orders;
-        for (std::size_t k = 0; k < path_.size(); ++k)
-            if (path_[k] == static_cast<int>(i))
-                orders << QString::number(k + 1);
+        int order = 0;
+        for (const int entry : path_) {
+            if (entry < 0)
+                continue;
+            ++order;
+            if (entry == static_cast<int>(i))
+                orders << QString::number(order);
+        }
         if (!orders.isEmpty()) {
             painter.setPen(QColor(255, 158, 31));
             painter.drawText(screen + QPointF(9, 14), orders.join(QLatin1Char(',')));
+        }
+    }
+}
+
+void BrillouinZoneView::paintFigure(QPainter& painter, const QSize& size) const
+{
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.fillRect(QRect(QPoint(0, 0), size), Qt::white);
+
+    const float aspect = size.height() > 0
+        ? static_cast<float>(size.width()) / static_cast<float>(size.height())
+        : 1.0f;
+    const QMatrix4x4 view = camera_.view();
+    const QMatrix4x4 transform = camera_.projection(aspect) * view;
+    const QSizeF sizeF(size);
+    const double scale = std::min(size.width(), size.height()) / 560.0;
+
+    // Zone faces, painter's algorithm: farthest centroid first.
+    std::vector<std::pair<float, const std::vector<int>*>> ordered;
+    for (const auto& face : zone_.faces) {
+        QVector3D centroid;
+        for (const int v : face)
+            centroid += toQt(zone_.vertices[static_cast<std::size_t>(v)]);
+        centroid /= static_cast<float>(face.size());
+        ordered.emplace_back((view.map(centroid)).z(), &face);
+    }
+    std::sort(ordered.begin(), ordered.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(93, 140, 235, 32));
+    for (const auto& [depth, face] : ordered) {
+        (void)depth;
+        QPolygonF polygon;
+        bool visible = true;
+        for (const int v : *face) {
+            QPointF screen;
+            if (!projectTo(toQt(zone_.vertices[static_cast<std::size_t>(v)]),
+                           transform, sizeF, screen)) {
+                visible = false;
+                break;
+            }
+            polygon << screen;
+        }
+        if (visible)
+            painter.drawPolygon(polygon);
+    }
+
+    // Zone edges (deduplicated).
+    std::set<std::pair<int, int>> edges;
+    for (const auto& face : zone_.faces)
+        for (std::size_t i = 0; i < face.size(); ++i) {
+            const int a = face[i];
+            const int b = face[(i + 1) % face.size()];
+            edges.insert({std::min(a, b), std::max(a, b)});
+        }
+    painter.setPen(QPen(QColor(96, 102, 112), 1.4 * scale));
+    painter.setBrush(Qt::NoBrush);
+    for (const auto& [a, b] : edges) {
+        QPointF from, to;
+        if (projectTo(toQt(zone_.vertices[static_cast<std::size_t>(a)]), transform,
+                      sizeF, from)
+            && projectTo(toQt(zone_.vertices[static_cast<std::size_t>(b)]), transform,
+                         sizeF, to))
+            painter.drawLine(from, to);
+    }
+
+    // k-path legs with 2D arrowheads at 60% of each leg.
+    const QColor pathColor(232, 130, 20);
+    painter.setPen(QPen(pathColor, 2.4 * scale, Qt::SolidLine, Qt::RoundCap));
+    for (std::size_t i = 0; i + 1 < path_.size(); ++i) {
+        if (path_[i] < 0 || path_[i + 1] < 0)
+            continue;
+        QPointF from, to;
+        if (!projectTo(points_[static_cast<std::size_t>(path_[i])].cartesian,
+                       transform, sizeF, from)
+            || !projectTo(points_[static_cast<std::size_t>(path_[i + 1])].cartesian,
+                          transform, sizeF, to))
+            continue;
+        painter.drawLine(from, to);
+
+        const QPointF delta = to - from;
+        const double length = std::hypot(delta.x(), delta.y());
+        if (length < 8.0)
+            continue;
+        const QPointF dir = delta / length;
+        const QPointF normal(-dir.y(), dir.x());
+        const QPointF tip = from + delta * 0.6;
+        const double wing = std::min(14.0 * scale, length * 0.25);
+        QPolygonF arrow;
+        arrow << tip << tip - dir * wing + normal * (wing * 0.5)
+              << tip - dir * wing - normal * (wing * 0.5);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(pathColor);
+        painter.drawPolygon(arrow);
+        painter.setPen(QPen(pathColor, 2.4 * scale, Qt::SolidLine, Qt::RoundCap));
+    }
+
+    // High-symmetry points, labels and order badges.
+    QFont font = painter.font();
+    font.setPointSizeF(font.pointSizeF() * std::max(1.0, scale) + 2.0);
+    font.setBold(true);
+    painter.setFont(font);
+    for (std::size_t i = 0; i < points_.size(); ++i) {
+        QPointF screen;
+        if (!projectTo(points_[i].cartesian, transform, sizeF, screen))
+            continue;
+        const bool onPath =
+            std::find(path_.begin(), path_.end(), static_cast<int>(i)) != path_.end();
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(onPath ? pathColor : QColor(58, 199, 235));
+        painter.drawEllipse(screen, (onPath ? 5.5 : 4.0) * scale,
+                            (onPath ? 5.5 : 4.0) * scale);
+
+        painter.setPen(QColor(32, 36, 42));
+        painter.drawText(screen + QPointF(8 * scale, -6 * scale), points_[i].label);
+
+        QStringList orders;
+        int order = 0;
+        for (const int entry : path_) {
+            if (entry < 0)
+                continue;
+            ++order;
+            if (entry == static_cast<int>(i))
+                orders << QString::number(order);
+        }
+        if (!orders.isEmpty()) {
+            painter.setPen(pathColor.darker(110));
+            painter.drawText(screen + QPointF(8 * scale, 15 * scale),
+                             orders.join(QLatin1Char(',')));
         }
     }
 }

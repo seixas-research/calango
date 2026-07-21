@@ -95,6 +95,9 @@ public Q_SLOTS:
     /// false = Cartesian X/Y/Z, true = lattice vectors a1/a2/a3
     /// (falls back to Cartesian when the structure has no cell).
     void setAxesLatticeMode(bool lattice);
+    /// On-screen edge length of the axes-triad box (logical pixels).
+    void setAxesSize(int px);
+    int axesSize() const { return axesSizePx_; }
 
     /// Live style access for UI panels. Call styleChanged() afterwards:
     /// geometry-affecting edits (scales, colors, mode) rebuild the GPU
@@ -161,6 +164,7 @@ private:
     bool structureDirty_ = false;
     bool showAxes_ = true;
     bool axesLatticeMode_ = false;
+    int axesSizePx_ = 92;
     QOpenGLShaderProgram axesProgram_;
     QOpenGLVertexArrayObject axesVao_;
     QOpenGLBuffer axesVbo_{QOpenGLBuffer::VertexBuffer};

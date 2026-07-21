@@ -35,8 +35,16 @@ public:
     void setZone(const core::BrillouinZoneData& zone,
                  const std::vector<LabeledPoint>& points);
 
-    /// Ordered indices into the labeled points forming the k-path.
+    /// Ordered indices into the labeled points forming the k-path; -1
+    /// entries mark discontinuities ("breaks") between path sections.
+    /// Directional arrowheads are drawn along each connected leg.
     void setPath(const std::vector<int>& path);
+
+    /// Publication-style figure (white background) of the current zone,
+    /// high-symmetry labels and k-path, rendered with QPainter primitives
+    /// only — suitable for both raster (QImage) and vector (QSvgGenerator)
+    /// paint devices at any resolution.
+    void paintFigure(QPainter& painter, const QSize& size) const;
 
 Q_SIGNALS:
     void pointPicked(int index);
@@ -53,6 +61,8 @@ protected:
 private:
     QMatrix4x4 mvp() const;
     bool project(const QVector3D& point, const QMatrix4x4& mvp, QPointF& screen) const;
+    static bool projectTo(const QVector3D& point, const QMatrix4x4& mvp,
+                          const QSizeF& size, QPointF& screen);
     void uploadZone();
     void uploadPath();
 
@@ -60,6 +70,7 @@ private:
     core::BrillouinZoneData zone_;
     std::vector<LabeledPoint> points_;
     std::vector<int> path_;
+    float zoneRadius_ = 1.0f;
     bool zoneDirty_ = false;
     bool pathDirty_ = false;
 
