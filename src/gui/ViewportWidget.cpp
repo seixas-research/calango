@@ -319,6 +319,24 @@ QImage ViewportWidget::renderToImage(int width, int height, const QColor& backgr
     return image;
 }
 
+void ViewportWidget::alignToPlane(int plane)
+{
+    // Orbit convention: yaw 0 / pitch 0 looks along -z (XY plane on
+    // screen); pitch 90 looks along -y (XZ); yaw 90 looks along -x (YZ).
+    switch (plane) {
+    case 1:
+        camera_.setOrientation(0.0f, 90.0f);
+        break;
+    case 2:
+        camera_.setOrientation(90.0f, 0.0f);
+        break;
+    default:
+        camera_.setOrientation(0.0f, 0.0f);
+        break;
+    }
+    update();
+}
+
 void ViewportWidget::frameStructure()
 {
     if (!structure_ || structure_->empty())

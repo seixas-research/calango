@@ -132,6 +132,8 @@ qt_add_executable(calango
     src/gui/TimelineWidget.cpp
     src/gui/EnergyPlotWidget.hpp
     src/gui/EnergyPlotWidget.cpp
+    src/gui/TemperaturePlotWidget.hpp
+    src/gui/TemperaturePlotWidget.cpp
     src/gui/RepresentationPanel.hpp
     src/gui/RepresentationPanel.cpp
     src/gui/CellAxesPanel.hpp

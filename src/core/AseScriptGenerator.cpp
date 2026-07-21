@@ -184,17 +184,9 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
             << "md_steps = " << c.mdSteps << "\n"
                "\n"
                "MaxwellBoltzmannDistribution(atoms, temperature_K=temperature_K)\n";
-        if (c.ensemble == MdEnsemble::LangevinNVT) {
-            out << "from ase.md.langevin import Langevin\n"
-                   "\n"
-                   "dyn = Langevin(\n"
-                   "    atoms,\n"
-                << "    timestep=" << c.timestepFs << " * units.fs,\n"
-                   "    temperature_K=temperature_K,\n"
-                   "    friction=0.02,\n"
-                   "    trajectory=\"md.traj\",\n"
-                   ")\n";
-        } else {
+
+        switch (c.ensemble) {
+        case MdEnsemble::VelocityVerletNVE:
             out << "from ase.md.verlet import VelocityVerlet\n"
                    "\n"
                    "dyn = VelocityVerlet(\n"
@@ -202,15 +194,104 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                 << "    timestep=" << c.timestepFs << " * units.fs,\n"
                    "    trajectory=\"md.traj\",\n"
                    ")\n";
+            break;
+        case MdEnsemble::LangevinNVT:
+            out << "from ase.md.langevin import Langevin\n"
+                   "\n"
+                   "dyn = Langevin(\n"
+                   "    atoms,\n"
+                << "    timestep=" << c.timestepFs << " * units.fs,\n"
+                   "    temperature_K=temperature_K,\n"
+                << "    friction=" << c.frictionPerFs << " / units.fs,\n"
+                   "    trajectory=\"md.traj\",\n"
+                   ")\n";
+            break;
+        case MdEnsemble::AndersenNVT:
+            out << "from ase.md.andersen import Andersen\n"
+                   "\n"
+                   "dyn = Andersen(\n"
+                   "    atoms,\n"
+                << "    timestep=" << c.timestepFs << " * units.fs,\n"
+                   "    temperature_K=temperature_K,\n"
+                << "    andersen_prob=" << c.andersenProb << ",\n"
+                   "    trajectory=\"md.traj\",\n"
+                   ")\n";
+            break;
+        case MdEnsemble::BerendsenNVT:
+            out << "from ase.md.nvtberendsen import NVTBerendsen\n"
+                   "\n"
+                   "dyn = NVTBerendsen(\n"
+                   "    atoms,\n"
+                << "    timestep=" << c.timestepFs << " * units.fs,\n"
+                   "    temperature_K=temperature_K,\n"
+                << "    taut=" << c.tautFs << " * units.fs,\n"
+                   "    trajectory=\"md.traj\",\n"
+                   ")\n";
+            break;
+        case MdEnsemble::NoseHooverChainNVT:
+            out << "from ase.md.nose_hoover_chain import NoseHooverChainNVT\n"
+                   "\n"
+                   "dyn = NoseHooverChainNVT(\n"
+                   "    atoms,\n"
+                << "    timestep=" << c.timestepFs << " * units.fs,\n"
+                   "    temperature_K=temperature_K,\n"
+                << "    tdamp=" << c.tautFs << " * units.fs,\n"
+                   "    trajectory=\"md.traj\",\n"
+                   ")\n";
+            break;
+        case MdEnsemble::BerendsenNPT:
+            out << "from ase.md.nptberendsen import NPTBerendsen\n"
+                   "\n"
+                   "# EDIT ME: compressibility_au below is water-like; use your\n"
+                   "# material's isothermal compressibility for meaningful cell\n"
+                   "# dynamics.\n"
+                   "dyn = NPTBerendsen(\n"
+                   "    atoms,\n"
+                << "    timestep=" << c.timestepFs << " * units.fs,\n"
+                   "    temperature_K=temperature_K,\n"
+                << "    taut=" << c.tautFs << " * units.fs,\n"
+                << "    pressure_au=" << c.pressureGPa << " * units.GPa,\n"
+                << "    taup=" << c.taupFs << " * units.fs,\n"
+                   "    compressibility_au=4.57e-5 / units.bar,\n"
+                   "    trajectory=\"md.traj\",\n"
+                   ")\n";
+            break;
+        case MdEnsemble::MelchionnaNPT:
+            out << "from ase.md.npt import NPT\n"
+                   "\n"
+                   "# Nosé-Hoover thermostat + Parrinello-Rahman barostat\n"
+                   "# (Melchionna). Requires an upper-triangular cell.\n"
+                   "# EDIT ME: pfactor = ptime² · bulk modulus — 100 GPa below is\n"
+                   "# a solid-like placeholder.\n"
+                   "atoms.set_cell(atoms.cell.standard_form()[0], scale_atoms=True)\n"
+                   "dyn = NPT(\n"
+                   "    atoms,\n"
+                << "    timestep=" << c.timestepFs << " * units.fs,\n"
+                   "    temperature_K=temperature_K,\n"
+                << "    externalstress=" << c.pressureGPa << " * units.GPa,\n"
+                << "    ttime=" << c.tautFs << " * units.fs,\n"
+                << "    pfactor=(" << c.taupFs << " * units.fs) ** 2 * 100 * units.GPa,\n"
+                   "    trajectory=\"md.traj\",\n"
+                   ")\n";
+            break;
         }
+
+        if (isConstantTemperature(c.ensemble))
+            out << "\n"
+                   "# Thermostat target — drives the dashed reference line in the\n"
+                   "# Temperature tab (omitted for NVE).\n"
+                   "print(f\"CALANGO_TARGET_TEMP {temperature_K}\", flush=True)\n";
+
         out << "\n"
                "def _report():\n"
                "    epot = atoms.get_potential_energy()\n"
                "    ekin = atoms.get_kinetic_energy()\n"
+               "    temp = atoms.get_temperature()\n"
                "    print(f\"CALANGO_PROGRESS {dyn.nsteps} {md_steps}\", flush=True)\n"
                "    print(f\"CALANGO_ENERGY {dyn.nsteps} {epot:.6f}\", flush=True)\n"
-               "    print(f\"CALANGO_MD step={dyn.nsteps} epot_eV={epot:.4f} ekin_eV={ekin:.4f}\","
-               " flush=True)\n"
+               "    print(f\"CALANGO_TEMP {dyn.nsteps} {temp:.2f}\", flush=True)\n"
+               "    print(f\"CALANGO_MD step={dyn.nsteps} epot_eV={epot:.4f} ekin_eV={ekin:.4f}"
+               " T_K={temp:.1f}\", flush=True)\n"
                "\n"
                "dyn.attach(_report, interval=10)\n"
                "dyn.run(md_steps)\n"

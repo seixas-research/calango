@@ -108,6 +108,17 @@ void JobRunner::handleLine(const QString& line, bool isStderr)
     if (const auto match = energyRe.match(line); match.hasMatch())
         Q_EMIT energySample(match.captured(1).toInt(), match.captured(2).toDouble());
 
+    static const QRegularExpression temperatureRe(
+        QStringLiteral(R"(^CALANGO_TEMP (\d+) (-?[\d.]+(?:[eE][+-]?\d+)?)\s*$)"));
+    if (const auto match = temperatureRe.match(line); match.hasMatch())
+        Q_EMIT temperatureSample(match.captured(1).toInt(),
+                                 match.captured(2).toDouble());
+
+    static const QRegularExpression targetTempRe(
+        QStringLiteral(R"(^CALANGO_TARGET_TEMP (-?[\d.]+(?:[eE][+-]?\d+)?)\s*$)"));
+    if (const auto match = targetTempRe.match(line); match.hasMatch())
+        Q_EMIT targetTemperature(match.captured(1).toDouble());
+
     Q_EMIT outputLine(line);
 }
 

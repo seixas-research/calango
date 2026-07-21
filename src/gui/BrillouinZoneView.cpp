@@ -96,6 +96,14 @@ void BrillouinZoneView::setPath(const std::vector<int>& path)
     update();
 }
 
+void BrillouinZoneView::setOrthographic(bool orthographic)
+{
+    camera_.setProjectionMode(orthographic
+                                  ? render::CameraProjection::Orthographic
+                                  : render::CameraProjection::Perspective);
+    update();
+}
+
 void BrillouinZoneView::initializeGL()
 {
     initializeOpenGLFunctions();

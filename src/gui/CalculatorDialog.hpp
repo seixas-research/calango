@@ -57,6 +57,9 @@ private:
     QDoubleSpinBox* temperatureSpin_;
     QDoubleSpinBox* timestepSpin_;
     QSpinBox* mdStepsSpin_;
+    QDoubleSpinBox* tautSpin_;
+    QDoubleSpinBox* taupSpin_;
+    QDoubleSpinBox* pressureSpin_;
     QDoubleSpinBox* cutoffSpin_;
     QSpinBox* kptSpins_[3];
     QComboBox* maceModelCombo_;

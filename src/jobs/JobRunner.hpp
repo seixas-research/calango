@@ -40,6 +40,11 @@ Q_SIGNALS:
     void progress(int step, int total);
     /// One sample per "CALANGO_ENERGY <step> <energy_eV>" marker.
     void energySample(int step, double energyEv);
+    /// One sample per "CALANGO_TEMP <step> <temperature_K>" marker.
+    void temperatureSample(int step, double temperatureK);
+    /// "CALANGO_TARGET_TEMP <K>": the thermostat setpoint of a
+    /// constant-temperature MD run (never emitted for NVE).
+    void targetTemperature(double temperatureK);
     void finished(int exitCode, bool crashed);
 
 private:

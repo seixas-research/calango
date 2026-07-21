@@ -2,7 +2,7 @@
 
 This roadmap outlines the core development phases for building a cross-platform desktop application for materials science using C++20, Qt6, OpenGL, and Python/ASE.
 
-> Status as of v0.12 — checked items are implemented; partial items carry a note.
+> Status as of v0.13 — checked items are implemented; partial items carry a note.
 
 ---
 
@@ -202,6 +202,20 @@ This roadmap outlines the core development phases for building a cross-platform 
 *   [ ] Trajectory averaging for the bond length/angle distributions (currently single-frame).
 *   [ ] Laue / single-crystal spot patterns in the XRD module.
 *   [ ] Wyckoff positions and symmetry-operation listing in the Structure panel.
+
+## 📅 Phase 16: Bond Winding Fix, Camera Toolbar, Full MD Ensembles (v0.13)
+**Focus:** The root-cause bond shading fix, viewport ergonomics, the complete ASE thermostat/barostat matrix, and database polish.
+
+*   [x] **Bond lighting root cause found and fixed** (Si-diamond benchmark, `assets/bond_test.png`): the cylinder mesh's triangle winding faced inward, so every outside-viewed bond fragment had `gl_FrontFacing == false` and the fragment shader's two-sided rule flipped the correct outward normals inward — collapsing all bonds to ambient-only shading (the dark bonds in the screenshot ≈ 0.24 × CPK color exactly). Uniforms and colors were always identical to the atoms', which is why earlier uniform-level audits passed. Cylinder winding corrected (and the cone base cap, same defect); homonuclear bonds now shade with the full identical ambient/diffuse/specular response. *(Verified analytically: 48/48 cylinder triangles disagreed with their normals under the old winding, 0/48 after the fix; cone fully consistent.)*
+*   [x] Top application toolbar ("Frame" / "Orthographic") removed; a compact icon-only camera toolbar now lives inside the frame panel: reset/center camera, orthographic toggle (one QAction shared with View → Orthographic, always in sync), and align-view-with-XY/XZ/YZ actions (painted icons in the axes-triad colors; `OrbitCamera::setOrientation`).
+*   [x] Brillouin-zone view gained a perspective/orthographic projection toggle (checkbox in the k-path builder; figure exports follow the active mode).
+*   [x] Structure panel symmetry is now an explicit "Detect Symmetry" action with an adjustable spglib tolerance (symprec) — results show space group (symbol, number, tolerance used), point group and crystal system, clear on any structure change, and trajectory playback no longer triggers per-frame Python calls.
+*   [x] Force/velocity arrow default scale raised ×10 (slider/spinbox range extended to 200×).
+*   [x] Full ASE MD ensemble matrix in the calculator: NVE (velocity Verlet), NVT via Langevin, Andersen, Berendsen and Nosé–Hoover chains, and NPT via Berendsen and Nosé–Hoover/Parrinello–Rahman (Melchionna, with automatic upper-triangular cell conversion). New thermostat/barostat coupling-time and pressure controls, enabled contextually; compressibility/pfactor emitted with EDIT-ME guidance. *(Validated: all seven constructors run 20 EMT-Cu steps on ase 3.29.)*
+*   [x] Job panel "Temperature" tab: ionic temperature vs. step from new CALANGO_TEMP markers, with a dashed thermostat-setpoint reference line driven by CALANGO_TARGET_TEMP — emitted only for constant-temperature ensembles, so NVE plots carry no reference line.
+*   [x] Build → From Database… (renamed from "By Examples…"); the browser's Materials Project tab gained a .env location row (browse to any directory containing the file + reload) and the API key remains strictly password-masked on screen.
+*   [ ] Persist per-ensemble MD parameter sets between sessions.
+*   [ ] Live pressure/stress tab for NPT runs (CALANGO_PRESSURE markers).
 
 ## 🚀 Future Modules (Post-MVP)
 *   **Remote Job Submission:** Connect to HPC clusters using SSH/SFTP and generate SLURM/PBS submission scripts.

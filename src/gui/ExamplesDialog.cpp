@@ -1,10 +1,13 @@
 #include "gui/ExamplesDialog.hpp"
 
+#include "gui/EnvFile.hpp"
 #include "python_bridge/MaterialsProject.hpp"
 
 #include <QDialogButtonBox>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QGuiApplication>
+#include <QHBoxLayout>
 #include <QSettings>
 #include <QTabWidget>
 #include <QVBoxLayout>
@@ -84,6 +87,39 @@ ExamplesDialog::ExamplesDialog(QWidget* parent)
     materialIdEdit_->setPlaceholderText(tr("e.g. mp-149 (silicon)"));
     form->addRow(tr("API key:"), apiKeyEdit_);
     form->addRow(tr("Material ID:"), materialIdEdit_);
+
+    // .env location: the key can live in a custom directory's .env file;
+    // Browse points Calango there, Reload re-imports MP_API_KEY. The key
+    // itself is only ever shown password-masked above.
+    auto* envRow = new QHBoxLayout;
+    auto* envLabel = new QLabel(envFilePath(), mpPage);
+    envLabel->setWordWrap(true);
+    auto* envBrowseButton = new QPushButton(tr("Browse…"), mpPage);
+    auto* envReloadButton = new QPushButton(tr("Reload"), mpPage);
+    envRow->addWidget(envLabel, 1);
+    envRow->addWidget(envBrowseButton);
+    envRow->addWidget(envReloadButton);
+    form->addRow(tr(".env file:"), envRow);
+
+    const auto applyEnvKey = [this] {
+        loadEnvironmentFile(/*overrideExisting=*/true);
+        const QString envKey = qEnvironmentVariable("MP_API_KEY");
+        if (!envKey.isEmpty())
+            apiKeyEdit_->setText(envKey); // stays password-masked on screen
+    };
+    connect(envBrowseButton, &QPushButton::clicked, this,
+            [this, envLabel, applyEnvKey] {
+                const QString dir = QFileDialog::getExistingDirectory(
+                    this, tr("Select Directory Containing .env"));
+                if (dir.isEmpty())
+                    return;
+                setEnvFilePath(dir + QStringLiteral("/.env"));
+                envLabel->setText(envFilePath());
+                applyEnvKey();
+            });
+    connect(envReloadButton, &QPushButton::clicked, this,
+            [applyEnvKey] { applyEnvKey(); });
+
     mpLayout->addLayout(form);
 
     fetchButton_ = new QPushButton(tr("Fetch Structure"), mpPage);

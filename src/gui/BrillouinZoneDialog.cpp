@@ -2,6 +2,7 @@
 
 #include "gui/BrillouinZoneView.hpp"
 
+#include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QFile>
 #include <QFileDialog>
@@ -83,6 +84,15 @@ BrillouinZoneDialog::BrillouinZoneDialog(const core::BrillouinZoneData& zone,
         this);
     hint->setWordWrap(true);
     side->addWidget(hint);
+
+    auto* orthoCheck = new QCheckBox(tr("Orthographic projection"), this);
+    orthoCheck->setToolTip(tr("Parallel projection — useful for reading "
+                              "symmetric zone geometry without perspective "
+                              "foreshortening"));
+    side->addWidget(orthoCheck);
+    connect(orthoCheck, &QCheckBox::toggled,
+            view_, &BrillouinZoneView::setOrthographic);
+
     side->addWidget(new QLabel(tr("k-path sequence:"), this));
     side->addWidget(pathList_, 1);
 

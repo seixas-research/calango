@@ -69,7 +69,7 @@ public:
         /// structure's vector fields "forces" / "velocities".
         bool showForces = false;
         bool showVelocities = false;
-        float vectorScale = 1.0f; ///< Å of arrow length per field unit
+        float vectorScale = 10.0f; ///< Å of arrow length per field unit
         QColor forceColor{242, 92, 54};
         QColor velocityColor{54, 166, 242};
         bool showCell = true;

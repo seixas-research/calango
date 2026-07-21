@@ -21,6 +21,7 @@ namespace calango::gui {
 class EnergyPlotWidget;
 class JobLogWidget;
 class StructureInfoWidget;
+class TemperaturePlotWidget;
 class TimelineWidget;
 class ViewportWidget;
 
@@ -119,11 +120,14 @@ private:
     StructureInfoWidget* infoWidget_ = nullptr;
     JobLogWidget* jobLogWidget_ = nullptr;
     EnergyPlotWidget* energyPlot_ = nullptr;
+    TemperaturePlotWidget* temperaturePlot_ = nullptr;
     TimelineWidget* timeline_ = nullptr;
     QDockWidget* jobDock_ = nullptr;
     jobs::JobRunner* jobRunner_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;
+    /// Shared between View → Orthographic and the frame-panel toolbar.
+    QAction* orthoAction_ = nullptr;
 };
 
 } // namespace calango::gui

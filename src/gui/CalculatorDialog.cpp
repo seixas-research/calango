@@ -72,9 +72,17 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
                           tr("Geometry optimization (BFGS)"),
                           tr("Molecular dynamics")});
 
+    // Order mirrors core::MdEnsemble.
     ensembleCombo_ = new QComboBox(this);
-    ensembleCombo_->addItems({tr("NVT — Langevin thermostat"),
-                              tr("NVE — Velocity Verlet")});
+    ensembleCombo_->addItems({tr("NVE — Velocity Verlet"),
+                              tr("NVT — Langevin dynamics"),
+                              tr("NVT — Andersen thermostat"),
+                              tr("NVT — Berendsen thermostat"),
+                              tr("NVT — Nosé–Hoover chain"),
+                              tr("NPT — Berendsen"),
+                              tr("NPT — Nosé–Hoover / Parrinello–Rahman "
+                                 "(Melchionna)")});
+    ensembleCombo_->setCurrentIndex(1); // Langevin stays the default
 
     fmaxSpin_ = new QDoubleSpinBox(this);
     fmaxSpin_->setRange(0.001, 1.0);
@@ -100,6 +108,25 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
     mdStepsSpin_ = new QSpinBox(this);
     mdStepsSpin_->setRange(1, 10000000);
     mdStepsSpin_->setValue(1000);
+
+    tautSpin_ = new QDoubleSpinBox(this);
+    tautSpin_->setRange(1.0, 100000.0);
+    tautSpin_->setValue(100.0);
+    tautSpin_->setSuffix(tr(" fs"));
+    tautSpin_->setToolTip(tr("Thermostat coupling time (taut / tdamp / ttime)"));
+
+    taupSpin_ = new QDoubleSpinBox(this);
+    taupSpin_->setRange(1.0, 1000000.0);
+    taupSpin_->setValue(1000.0);
+    taupSpin_->setSuffix(tr(" fs"));
+    taupSpin_->setToolTip(tr("Barostat coupling time (taup / ptime)"));
+
+    pressureSpin_ = new QDoubleSpinBox(this);
+    pressureSpin_->setRange(-10.0, 500.0);
+    pressureSpin_->setDecimals(4);
+    pressureSpin_->setValue(0.0);
+    pressureSpin_->setSuffix(tr(" GPa"));
+    pressureSpin_->setToolTip(tr("External pressure for NPT (0 ≈ ambient)"));
 
     cutoffSpin_ = new QDoubleSpinBox(this);
     cutoffSpin_->setRange(100.0, 2000.0);
@@ -148,6 +175,9 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
     form->addRow(tr("Temperature:"), temperatureSpin_);
     form->addRow(tr("Timestep:"), timestepSpin_);
     form->addRow(tr("MD steps:"), mdStepsSpin_);
+    form->addRow(tr("Thermostat coupling:"), tautSpin_);
+    form->addRow(tr("Barostat coupling:"), taupSpin_);
+    form->addRow(tr("Pressure:"), pressureSpin_);
     form->addRow(tr("Plane-wave cutoff:"), cutoffSpin_);
     form->addRow(tr("k-point grid:"), kptRow);
     form->addRow(tr("MACE model:"), maceModelCombo_);
@@ -255,6 +285,9 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
     connect(temperatureSpin_, &QDoubleSpinBox::valueChanged, this, refresh);
     connect(timestepSpin_, &QDoubleSpinBox::valueChanged, this, refresh);
     connect(mdStepsSpin_, &QSpinBox::valueChanged, this, refresh);
+    connect(tautSpin_, &QDoubleSpinBox::valueChanged, this, refresh);
+    connect(taupSpin_, &QDoubleSpinBox::valueChanged, this, refresh);
+    connect(pressureSpin_, &QDoubleSpinBox::valueChanged, this, refresh);
     connect(cutoffSpin_, &QDoubleSpinBox::valueChanged, this, refresh);
     for (auto* spin : kptSpins_)
         connect(spin, &QSpinBox::valueChanged, this, refresh);
@@ -277,6 +310,9 @@ core::CalculatorConfig CalculatorDialog::config() const
     c.temperatureK = temperatureSpin_->value();
     c.timestepFs = timestepSpin_->value();
     c.mdSteps = mdStepsSpin_->value();
+    c.tautFs = tautSpin_->value();
+    c.taupFs = taupSpin_->value();
+    c.pressureGPa = pressureSpin_->value();
     c.planeWaveCutoffEv = cutoffSpin_->value();
     for (int i = 0; i < 3; ++i)
         c.kpts[i] = kptSpins_[i]->value();
@@ -339,9 +375,19 @@ void CalculatorDialog::refreshPreview()
     fmaxSpin_->setEnabled(isOpt);
     maxStepsSpin_->setEnabled(isOpt);
     ensembleCombo_->setEnabled(isMd);
-    temperatureSpin_->setEnabled(isMd);
+    temperatureSpin_->setEnabled(
+        isMd && core::isConstantTemperature(c.ensemble));
     timestepSpin_->setEnabled(isMd);
     mdStepsSpin_->setEnabled(isMd);
+    const bool usesTaut = c.ensemble == core::MdEnsemble::BerendsenNVT
+        || c.ensemble == core::MdEnsemble::NoseHooverChainNVT
+        || c.ensemble == core::MdEnsemble::BerendsenNPT
+        || c.ensemble == core::MdEnsemble::MelchionnaNPT;
+    const bool isNpt = c.ensemble == core::MdEnsemble::BerendsenNPT
+        || c.ensemble == core::MdEnsemble::MelchionnaNPT;
+    tautSpin_->setEnabled(isMd && usesTaut);
+    taupSpin_->setEnabled(isMd && isNpt);
+    pressureSpin_->setEnabled(isMd && isNpt);
     cutoffSpin_->setEnabled(isDft);
     for (auto* spin : kptSpins_)
         spin->setEnabled(isDft);

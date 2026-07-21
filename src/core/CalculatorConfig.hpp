@@ -33,11 +33,24 @@ enum class TaskKind {
     MolecularDynamics,
 };
 
+/// The full set of MD integrators/thermostats ASE ships. Enum order is
+/// the ensemble combo order in the calculator dialog.
 enum class MdEnsemble {
+    VelocityVerletNVE,   ///< microcanonical
     LangevinNVT,
-    VelocityVerletNVE,
-    // NPT (Parrinello-Rahman / Nose-Hoover) planned — see ROADMAP.md Phase 4.
+    AndersenNVT,
+    BerendsenNVT,
+    NoseHooverChainNVT,
+    BerendsenNPT,
+    MelchionnaNPT,       ///< ase.md.npt.NPT (Nosé-Hoover + Parrinello-Rahman)
 };
+
+/// True for every thermostatted ensemble (all but NVE) — drives the
+/// CALANGO_TARGET_TEMP marker and the Temperature-tab reference line.
+constexpr bool isConstantTemperature(MdEnsemble ensemble)
+{
+    return ensemble != MdEnsemble::VelocityVerletNVE;
+}
 
 /// Plain parameter bag filled in by CalculatorDialog and consumed by
 /// AseScriptGenerator. Deliberately UI-free so scripts can also be
@@ -55,6 +68,11 @@ struct CalculatorConfig {
     double temperatureK = 300.0;
     double timestepFs = 1.0;
     int mdSteps = 1000;
+    double frictionPerFs = 0.01; ///< Langevin friction (fs⁻¹)
+    double andersenProb = 0.05;  ///< Andersen collision probability
+    double tautFs = 100.0;       ///< thermostat coupling time (Berendsen/NHC)
+    double taupFs = 1000.0;      ///< barostat coupling time (NPT)
+    double pressureGPa = 0.0;    ///< external pressure (NPT; 0 ≈ ambient)
 
     // DFT common knobs (used by the QE/VASP templates)
     double planeWaveCutoffEv = 550.0;

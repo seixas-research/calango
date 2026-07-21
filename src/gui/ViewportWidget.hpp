@@ -118,6 +118,13 @@ public Q_SLOTS:
 public Q_SLOTS:
     void frameStructure();
 
+    /// Align the view with a Cartesian plane (camera looking along the
+    /// remaining axis): 0 = XY (along z), 1 = XZ (along y), 2 = YZ (along x).
+    void alignWithXY() { alignToPlane(0); }
+    void alignWithXZ() { alignToPlane(1); }
+    void alignWithYZ() { alignToPlane(2); }
+    void alignToPlane(int plane);
+
 Q_SIGNALS:
     void selectionChanged(int count);
     /// A different Structure is now observed (its scalar fields may differ).

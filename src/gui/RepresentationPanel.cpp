@@ -148,13 +148,13 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     auto* vectorLayout = new QHBoxLayout(vectorRow);
     vectorLayout->setContentsMargins(0, 0, 0, 0);
     vectorScaleSlider_ = new QSlider(Qt::Horizontal, vectorRow);
-    vectorScaleSlider_->setRange(5, 2000); // ×0.05 .. ×20 in hundredths
-    vectorScaleSlider_->setValue(100);
+    vectorScaleSlider_->setRange(5, 20000); // ×0.05 .. ×200 in hundredths
+    vectorScaleSlider_->setValue(1000);     // ×10 default
     vectorScaleSpin_ = new QDoubleSpinBox(vectorRow);
-    vectorScaleSpin_->setRange(0.05, 20.0);
+    vectorScaleSpin_->setRange(0.05, 200.0);
     vectorScaleSpin_->setDecimals(2);
-    vectorScaleSpin_->setSingleStep(0.05);
-    vectorScaleSpin_->setValue(1.00);
+    vectorScaleSpin_->setSingleStep(0.5);
+    vectorScaleSpin_->setValue(10.00);
     vectorScaleSpin_->setSuffix(QStringLiteral("×"));
     vectorScaleSpin_->setToolTip(tr("Arrow length in Å per field unit\n"
                                     "(eV/Å for forces, Å/fs·√(amu) units for "

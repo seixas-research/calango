@@ -25,6 +25,7 @@
 #include "gui/EnergyPlotWidget.hpp"
 #include "gui/JobLogWidget.hpp"
 #include "gui/StructureInfoWidget.hpp"
+#include "gui/TemperaturePlotWidget.hpp"
 #include "gui/TimelineWidget.hpp"
 #include "gui/ViewportWidget.hpp"
 #include "jobs/JobRunner.hpp"
@@ -79,6 +80,66 @@ constexpr std::size_t kMaxUndoDepth = 50;
 /// grid changes so stale saved layouts don't override the new default
 /// (v2 = the 8-zone grid workspace).
 constexpr int kLayoutVersion = 2;
+
+/// Painted icons for the frame-panel camera toolbar (icon-only buttons).
+/// Plane icons use the axes-triad colors: x red, y green, z blue.
+QIcon cameraToolbarIcon(const QString& kind)
+{
+    QPixmap pixmap(32, 32);
+    pixmap.fill(Qt::transparent);
+    QPainter p(&pixmap);
+    p.setRenderHint(QPainter::Antialiasing);
+    const QColor neutral(155, 160, 170);
+    const QColor xColor(235, 100, 90);
+    const QColor yColor(110, 210, 130);
+    const QColor zColor(90, 148, 250);
+
+    const auto arrow = [&p](const QPointF& from, const QPointF& to,
+                            const QColor& color) {
+        p.setPen(QPen(color, 3.0, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(from, to);
+        const QLineF line(from, to);
+        const QPointF dir = (to - from) / line.length();
+        const QPointF perp(-dir.y(), dir.x());
+        p.drawLine(to, to - dir * 7.0 + perp * 4.0);
+        p.drawLine(to, to - dir * 7.0 - perp * 4.0);
+    };
+
+    if (kind == QLatin1String("reset")) {
+        p.setPen(QPen(neutral, 2.6));
+        p.drawEllipse(QPointF(16, 16), 8.5, 8.5);
+        for (const auto& [from, to] :
+             {std::pair{QPointF(16, 2), QPointF(16, 8)},
+              std::pair{QPointF(16, 24), QPointF(16, 30)},
+              std::pair{QPointF(2, 16), QPointF(8, 16)},
+              std::pair{QPointF(24, 16), QPointF(30, 16)}})
+            p.drawLine(from, to);
+        p.setBrush(neutral);
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QPointF(16, 16), 2.4, 2.4);
+    } else if (kind == QLatin1String("ortho")) {
+        p.setPen(QPen(neutral, 2.4));
+        p.drawRect(QRectF(5, 11, 15, 15));   // front face
+        p.drawRect(QRectF(11, 5, 15, 15));   // parallel back face
+        p.setPen(QPen(neutral, 1.6));
+        for (const auto& [from, to] :
+             {std::pair{QPointF(5, 11), QPointF(11, 5)},
+              std::pair{QPointF(20, 11), QPointF(26, 5)},
+              std::pair{QPointF(5, 26), QPointF(11, 20)},
+              std::pair{QPointF(20, 26), QPointF(26, 20)}})
+            p.drawLine(from, to);
+    } else if (kind == QLatin1String("xy")) {
+        arrow(QPointF(7, 25), QPointF(28, 25), xColor);
+        arrow(QPointF(7, 25), QPointF(7, 4), yColor);
+    } else if (kind == QLatin1String("xz")) {
+        arrow(QPointF(7, 25), QPointF(28, 25), xColor);
+        arrow(QPointF(7, 25), QPointF(7, 4), zColor);
+    } else if (kind == QLatin1String("yz")) {
+        arrow(QPointF(7, 25), QPointF(28, 25), yColor);
+        arrow(QPointF(7, 25), QPointF(7, 4), zColor);
+    }
+    return QIcon(pixmap);
+}
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent)
@@ -102,11 +163,44 @@ MainWindow::MainWindow(QWidget* parent)
     timeline_ = new TimelineWidget(this);
     timeline_->hide(); // appears when the current document has frames
 
+    // Compact icon-only camera toolbar living inside the frame panel
+    // (replaces the old top application toolbar). The orthographic action
+    // is shared with View → Orthographic so both stay in sync.
+    orthoAction_ = new QAction(cameraToolbarIcon(QStringLiteral("ortho")),
+                               tr("Orthographic"), this);
+    orthoAction_->setCheckable(true);
+    orthoAction_->setToolTip(tr("Toggle perspective / orthographic projection"));
+    connect(orthoAction_, &QAction::toggled,
+            viewport_, &ViewportWidget::setOrthographic);
+
+    auto* frameToolbar = new QToolBar(this);
+    frameToolbar->setObjectName(QStringLiteral("frameToolbar"));
+    frameToolbar->setIconSize(QSize(18, 18));
+    frameToolbar->setMovable(false);
+    frameToolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    QAction* resetAction = frameToolbar->addAction(
+        cameraToolbarIcon(QStringLiteral("reset")),
+        tr("Reset camera (center and frame the structure)"));
+    connect(resetAction, &QAction::triggered,
+            viewport_, &ViewportWidget::frameStructure);
+    frameToolbar->addAction(orthoAction_);
+    frameToolbar->addSeparator();
+    QAction* alignXy = frameToolbar->addAction(
+        cameraToolbarIcon(QStringLiteral("xy")), tr("Align view with the XY plane"));
+    connect(alignXy, &QAction::triggered, viewport_, &ViewportWidget::alignWithXY);
+    QAction* alignXz = frameToolbar->addAction(
+        cameraToolbarIcon(QStringLiteral("xz")), tr("Align view with the XZ plane"));
+    connect(alignXz, &QAction::triggered, viewport_, &ViewportWidget::alignWithXZ);
+    QAction* alignYz = frameToolbar->addAction(
+        cameraToolbarIcon(QStringLiteral("yz")), tr("Align view with the YZ plane"));
+    connect(alignYz, &QAction::triggered, viewport_, &ViewportWidget::alignWithYZ);
+
     auto* central = new QWidget(this);
     auto* centralLayout = new QVBoxLayout(central);
     centralLayout->setContentsMargins(0, 0, 0, 0);
     centralLayout->setSpacing(0);
     centralLayout->addWidget(tabBar_);
+    centralLayout->addWidget(frameToolbar);
     centralLayout->addWidget(viewport_, 1);
     centralLayout->addWidget(timeline_);
     setCentralWidget(central);
@@ -129,6 +223,12 @@ MainWindow::MainWindow(QWidget* parent)
             jobLogWidget_, &JobLogWidget::onProgress);
     connect(jobRunner_, &jobs::JobRunner::energySample,
             energyPlot_, &EnergyPlotWidget::addSample);
+    connect(jobRunner_, &jobs::JobRunner::started,
+            temperaturePlot_, &TemperaturePlotWidget::clear);
+    connect(jobRunner_, &jobs::JobRunner::temperatureSample,
+            temperaturePlot_, &TemperaturePlotWidget::addSample);
+    connect(jobRunner_, &jobs::JobRunner::targetTemperature,
+            temperaturePlot_, &TemperaturePlotWidget::setTargetTemperature);
     connect(jobRunner_, &jobs::JobRunner::finished,
             jobLogWidget_, &JobLogWidget::onJobFinished);
     connect(jobRunner_, &jobs::JobRunner::finished,
@@ -210,11 +310,7 @@ void MainWindow::createMenusAndDocks()
     cellAction->setCheckable(true);
     cellAction->setChecked(true);
     connect(cellAction, &QAction::toggled, viewport_, &ViewportWidget::setShowCell);
-    QAction* orthoAction = viewMenu->addAction(tr("&Orthographic"));
-    orthoAction->setCheckable(true);
-    orthoAction->setToolTip(tr("Toggle between perspective and orthographic projection"));
-    connect(orthoAction, &QAction::toggled,
-            viewport_, &ViewportWidget::setOrthographic);
+    viewMenu->addAction(orthoAction_); // shared with the frame-panel toolbar
 
     QMenu* buildMenu = menuBar()->addMenu(tr("&Build"));
     buildMenu->addAction(tr("Create &Supercell…"), this, &MainWindow::createSupercell);
@@ -222,7 +318,7 @@ void MainWindow::createMenusAndDocks()
     buildMenu->addAction(tr("&Nanomaterial Builder…"), this, &MainWindow::openNanoBuilder);
     buildMenu->addAction(tr("&Normal Modes / Phonon Builder…"),
                          this, &MainWindow::openPhononBuilder);
-    buildMenu->addAction(tr("By &Examples…"), this, &MainWindow::openExamplesBrowser);
+    buildMenu->addAction(tr("From &Database…"), this, &MainWindow::openExamplesBrowser);
 
     QMenu* simulationMenu = menuBar()->addMenu(tr("&Simulation"));
     simulationMenu->addAction(tr("&New Calculation…"), QKeySequence(tr("Ctrl+R")),
@@ -245,12 +341,6 @@ void MainWindow::createMenusAndDocks()
 
     QMenu* helpMenu = menuBar()->addMenu(tr("&Help"));
     helpMenu->addAction(tr("&About Calango"), this, &MainWindow::about);
-
-    // Viewport toolbar: framing + projection toggle.
-    QToolBar* viewToolbar = addToolBar(tr("Viewport"));
-    viewToolbar->setObjectName(QStringLiteral("viewportToolbar"));
-    viewToolbar->addAction(tr("Frame"), viewport_, &ViewportWidget::frameStructure);
-    viewToolbar->addAction(orthoAction);
 
     // ----- 8-zone grid workspace (4 columns × 2 rows) ----------------------
     //
@@ -290,8 +380,10 @@ void MainWindow::createMenusAndDocks()
     auto* jobTabs = new QTabWidget(jobDock_);
     jobLogWidget_ = new JobLogWidget(jobTabs);
     energyPlot_ = new EnergyPlotWidget(jobTabs);
+    temperaturePlot_ = new TemperaturePlotWidget(jobTabs);
     jobTabs->addTab(jobLogWidget_, tr("Log"));
     jobTabs->addTab(energyPlot_, tr("Energy"));
+    jobTabs->addTab(temperaturePlot_, tr("Temperature"));
     jobDock_->setWidget(jobTabs);
     addDockWidget(Qt::BottomDockWidgetArea, jobDock_);
 

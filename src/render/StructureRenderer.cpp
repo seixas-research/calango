@@ -95,6 +95,12 @@ void buildSphere(int stacks, int slices,
 /// End caps are unnecessary — sphere instances cover the joints. Each
 /// vertex carries its radial surface normal, so bonds receive the same
 /// multi-light Blinn-Phong shading as the atom spheres (shared program).
+///
+/// Winding matters even without face culling: triangles must be CCW as
+/// seen from OUTSIDE, or the fragment shader's two-sided rule
+/// (gl_FrontFacing) flips the outward normals inward and bonds collapse
+/// to ambient-only shading — the long-standing "bonds darker than atoms"
+/// bug captured in assets/bond_test.png.
 void buildCylinder(int segments,
                    std::vector<float>& vertices, std::vector<unsigned int>& indices)
 {
@@ -107,7 +113,8 @@ void buildCylinder(int segments,
     }
     for (unsigned int j = 0; j < static_cast<unsigned int>(segments); ++j) {
         const unsigned int a = j * 2;
-        indices.insert(indices.end(), {a, a + 1, a + 2, a + 2, a + 1, a + 3});
+        // CCW from outside: (ring j, z0) -> (ring j+1, z0) -> (ring j, z1).
+        indices.insert(indices.end(), {a, a + 2, a + 1, a + 1, a + 2, a + 3});
     }
 }
 
@@ -130,7 +137,8 @@ void buildCone(int segments,
         const unsigned int a = j * 2;
         indices.insert(indices.end(), {a, a + 2, a + 1});
     }
-    // Base cap (facing -z).
+    // Base cap (facing -z); wound CCW as seen from below (-z), matching
+    // the -z normals so gl_FrontFacing agrees with the attribute normal.
     const auto capCenter = static_cast<unsigned int>(vertices.size() / 6);
     vertices.insert(vertices.end(), {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f});
     for (int j = 0; j <= segments; ++j) {
@@ -140,7 +148,7 @@ void buildCone(int segments,
     }
     for (unsigned int j = 0; j < static_cast<unsigned int>(segments); ++j)
         indices.insert(indices.end(),
-                       {capCenter, capCenter + 1 + j, capCenter + 2 + j});
+                       {capCenter, capCenter + 2 + j, capCenter + 1 + j});
 }
 
 QMatrix4x4 bondTransform(const QVector3D& from, const QVector3D& direction,

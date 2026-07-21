@@ -40,6 +40,11 @@ public:
     /// Directional arrowheads are drawn along each connected leg.
     void setPath(const std::vector<int>& path);
 
+    /// Perspective (default) vs. orthographic projection — the toggle
+    /// preserves apparent scale (see OrbitCamera::projection). Figure
+    /// exports follow the active mode.
+    void setOrthographic(bool orthographic);
+
     /// Publication-style figure (white background) of the current zone,
     /// high-symmetry labels and k-path, rendered with QPainter primitives
     /// only — suitable for both raster (QImage) and vector (QSvgGenerator)

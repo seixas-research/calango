@@ -24,6 +24,14 @@ public:
 
     void rotate(float dxDeg, float dyDeg);
 
+    /// Jump to an absolute orientation (used by the view-alignment
+    /// buttons): yaw/pitch in degrees, target and distance unchanged.
+    void setOrientation(float yawDeg, float pitchDeg)
+    {
+        yawDeg_ = yawDeg;
+        pitchDeg_ = pitchDeg;
+    }
+
     /// Pan in screen space; dx/dy are in pixels, scaled by distance so the
     /// scene appears to follow the cursor.
     void pan(float dxPixels, float dyPixels, int viewportHeight);
