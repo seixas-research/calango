@@ -5,6 +5,8 @@ modeling.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-red?style=for-the-badge)](LICENSE)
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?style=for-the-badge&logo=cplusplus&logoColor=white)](https://isocpp.org/)
+[![CMake 3.21+](https://img.shields.io/badge/CMake-3.21%2B-064F8C?style=for-the-badge&logo=cmake&logoColor=white)](https://cmake.org/)
+[![Qt 6.4+](https://img.shields.io/badge/Qt-6.4%2B-41CD52?style=for-the-badge&logo=qt&logoColor=white)](https://www.qt.io/)
 [![Python](https://img.shields.io/badge/Python-3.14%2B-fcbc2c?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 
 ## Building
