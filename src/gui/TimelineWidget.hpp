@@ -22,7 +22,12 @@ public:
 
     /// Resets to frame 0 (emits frameChanged(0)) and stops playback.
     void setFrameCount(int count);
+    /// Live-streaming growth: extends the range without resetting the
+    /// playhead or stopping playback (new frames keep arriving).
+    void extendFrameCount(int count);
     int currentFrame() const { return slider_->value(); }
+    /// Programmatic jump (emits frameChanged like a user scrub).
+    void setCurrentFrame(int index) { slider_->setValue(index); }
 
 public Q_SLOTS:
     void stop();

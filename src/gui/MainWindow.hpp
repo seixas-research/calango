@@ -21,6 +21,7 @@ namespace calango::gui {
 
 class JobLogWidget;
 class MetricPlotWidget;
+class ProcessManagerPanel;
 class RemoteAccessPanel;
 class StructureInfoWidget;
 class TimelineWidget;
@@ -76,6 +77,14 @@ private Q_SLOTS:
     void newRemoteCalculation();
     void onRemoteResultsReady(const QString& localDir);
     void onJobFinished(int exitCode, bool crashed);
+    /// One live trajectory frame from the running job's stdout stream.
+    void onFrameStreamed(const std::shared_ptr<core::Structure>& frame);
+    void showBandStructure();
+    /// Open the band/PDOS viewer for a finished job directory.
+    void openBandResults(const QString& directory);
+    /// "Load Result" from the Process panel: band data, trajectory or
+    /// final structure — whatever the task directory contains.
+    void onProcessResultRequested(const QString& directory);
     void showFrame(int index);
     void showBrillouinZone();
     void showRdf();
@@ -130,7 +139,12 @@ private:
     /// app-data; returns the directory ("" on failure). Shared by local
     /// runs (JobRunner) and remote submissions (RemoteAccessPanel).
     QString stageJob(const QString& script);
-    void runScript(const QString& script, const QString& pythonExe);
+    /// Launch a staged local job. `taskLabel` names it in the Process
+    /// panel; `expectFrames` opens a live trajectory tab that streamed
+    /// CALANGO_FRAME blocks append to while the job runs.
+    void runScript(const QString& script, const QString& pythonExe,
+                   const QString& taskLabel = {}, bool expectFrames = true);
+    int indexOfDocument(const Document* document) const;
     bool ensureAseAvailable();
 
     // -- .calproj project workspace persistence ----------------------------
@@ -162,6 +176,12 @@ private:
     QDockWidget* jobDock_ = nullptr;
     QDockWidget* remoteDock_ = nullptr;
     RemoteAccessPanel* remotePanel_ = nullptr;
+    ProcessManagerPanel* processPanel_ = nullptr;
+    /// Process-panel id of the running local job (-1 when idle).
+    int currentTaskId_ = -1;
+    /// Document receiving live streamed frames (null outside runs;
+    /// cleared when its tab is closed mid-run).
+    Document* liveDoc_ = nullptr;
     jobs::JobRunner* jobRunner_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;

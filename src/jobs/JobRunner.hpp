@@ -1,8 +1,12 @@
 #pragma once
 
+#include "core/Structure.hpp"
+
 #include <QObject>
 #include <QProcess>
 #include <QString>
+
+#include <memory>
 
 namespace calango::jobs {
 
@@ -54,6 +58,10 @@ Q_SIGNALS:
     /// "CALANGO_TARGET_PRESSURE <GPa>": the barostat setpoint of a
     /// constant-pressure MD run (NPT/NPH only).
     void targetPressure(double pressureGPa);
+    /// One complete streamed geometry per "CALANGO_CELL … / CALANGO_FRAME
+    /// <n> / n atom lines" block: live trajectory frames during MD and
+    /// relaxations. Atom lines are consumed here (not echoed to the log).
+    void frameStreamed(const std::shared_ptr<core::Structure>& frame);
     void finished(int exitCode, bool crashed);
 
 private:
@@ -63,6 +71,12 @@ private:
     QProcess process_;
     QString stdoutBuffer_;
     QString stderrBuffer_;
+
+    // Frame-streaming state machine (CALANGO_CELL / CALANGO_FRAME).
+    std::unique_ptr<core::Structure> pendingFrame_;
+    int pendingAtoms_ = 0; ///< atom lines still expected for the frame
+    bool pendingCellValid_ = false;
+    double pendingCell_[9] = {};
 };
 
 } // namespace calango::jobs

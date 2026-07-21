@@ -30,6 +30,25 @@ std::string toString(TaskKind kind)
 
 namespace {
 
+/// Live viewport streaming: one "CALANGO_CELL … / CALANGO_FRAME n /
+/// n atom lines" block per call, parsed by JobRunner into a trajectory
+/// frame. Built as a single write + flush so blocks arrive atomically.
+constexpr const char* kStreamFrameHelper =
+    "import sys as _sys\n"
+    "\n"
+    "def _stream_frame():\n"
+    "    lines = []\n"
+    "    if atoms.pbc.any():\n"
+    "        cell = atoms.cell[:]\n"
+    "        lines.append(\"CALANGO_CELL \" + \" \".join(\n"
+    "            f\"{v:.8f}\" for row in cell for v in row))\n"
+    "    lines.append(f\"CALANGO_FRAME {len(atoms)}\")\n"
+    "    for s, p in zip(atoms.get_chemical_symbols(), atoms.get_positions()):\n"
+    "        lines.append(f\"{s} {p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\")\n"
+    "    _sys.stdout.write(\"\\n\".join(lines) + \"\\n\")\n"
+    "    _sys.stdout.flush()\n"
+    "\n";
+
 void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
 {
     switch (c.calculator) {
@@ -163,13 +182,16 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
             << "max_steps = " << c.maxSteps << "\n"
                "opt = BFGS(atoms, trajectory=\"opt.traj\", logfile=\"-\")\n"
                "\n"
-               "def _report():\n"
+            << kStreamFrameHelper
+            << "def _report():\n"
                "    print(f\"CALANGO_PROGRESS {opt.nsteps} {max_steps}\", flush=True)\n"
                "    energy = atoms.get_potential_energy()\n"
                "    fmax_now = abs(atoms.get_forces()).max()\n"
                "    print(f\"CALANGO_ENERGY {opt.nsteps} {energy:.6f}\", flush=True)\n"
                "    print(f\"CALANGO_FMAX {opt.nsteps} {fmax_now:.6f}\", flush=True)\n"
+               "    _stream_frame()\n"
                "\n"
+               "_stream_frame()\n"
                "opt.attach(_report)\n"
             << "converged = opt.run(fmax=" << c.fmax << ", steps=max_steps)\n"
                "\n"
@@ -284,6 +306,13 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                    ")\n";
             break;
         }
+
+        // Live viewport trajectory: stream a frame every few MD steps
+        // (capped at ~400 streamed frames per run) plus the initial one.
+        out << "\n"
+            << kStreamFrameHelper
+            << "_stream_frame()\n"
+               "dyn.attach(_stream_frame, interval=max(1, md_steps // 400))\n";
 
         if (isConstantTemperature(c.ensemble))
             out << "\n"

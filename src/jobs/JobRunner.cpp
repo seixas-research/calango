@@ -1,5 +1,7 @@
 #include "jobs/JobRunner.hpp"
 
+#include "core/Element.hpp"
+
 #include <QDir>
 #include <QFileInfo>
 #include <QProcessEnvironment>
@@ -42,6 +44,9 @@ void JobRunner::start(const QString& pythonExe, const QString& scriptPath, const
 
     stdoutBuffer_.clear();
     stderrBuffer_.clear();
+    pendingFrame_.reset();
+    pendingAtoms_ = 0;
+    pendingCellValid_ = false;
 
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
@@ -95,6 +100,64 @@ void JobRunner::handleLine(const QString& line, bool isStderr)
 {
     if (isStderr) {
         Q_EMIT errorLine(line);
+        return;
+    }
+
+    // --- Live geometry stream (CALANGO_CELL / CALANGO_FRAME) ---------------
+    if (pendingAtoms_ > 0) {
+        // Expecting "<symbol> <x> <y> <z>" — consumed silently.
+        const QStringList parts =
+            line.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        bool okX = false, okY = false, okZ = false;
+        const int z = parts.size() == 4
+            ? core::Elements::atomicNumber(parts[0].toStdString())
+            : 0;
+        if (z > 0) {
+            const core::Vec3 position{parts[1].toDouble(&okX),
+                                      parts[2].toDouble(&okY),
+                                      parts[3].toDouble(&okZ)};
+            if (okX && okY && okZ)
+                pendingFrame_->addAtom({z, position});
+        }
+        if (z <= 0 || !okX || !okY || !okZ) { // malformed — abandon frame
+            pendingFrame_.reset();
+            pendingAtoms_ = 0;
+            Q_EMIT outputLine(line);
+            return;
+        }
+        if (--pendingAtoms_ == 0) {
+            if (pendingCellValid_) {
+                pendingFrame_->setCell(core::UnitCell(
+                    {pendingCell_[0], pendingCell_[1], pendingCell_[2]},
+                    {pendingCell_[3], pendingCell_[4], pendingCell_[5]},
+                    {pendingCell_[6], pendingCell_[7], pendingCell_[8]},
+                    {true, true, true}));
+                pendingCellValid_ = false;
+            }
+            Q_EMIT frameStreamed(
+                std::shared_ptr<core::Structure>(std::move(pendingFrame_)));
+        }
+        return;
+    }
+    static const QRegularExpression cellRe(QStringLiteral(
+        R"(^CALANGO_CELL((?: -?[\d.]+(?:[eE][+-]?\d+)?){9})\s*$)"));
+    if (const auto match = cellRe.match(line); match.hasMatch()) {
+        const QStringList values =
+            match.captured(1).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        for (int i = 0; i < 9; ++i)
+            pendingCell_[i] = values[i].toDouble();
+        pendingCellValid_ = true;
+        return;
+    }
+    static const QRegularExpression frameRe(
+        QStringLiteral(R"(^CALANGO_FRAME (\d+)\s*$)"));
+    if (const auto match = frameRe.match(line); match.hasMatch()) {
+        pendingAtoms_ = match.captured(1).toInt();
+        pendingFrame_ = std::make_unique<core::Structure>();
+        if (pendingAtoms_ <= 0) {
+            pendingFrame_.reset();
+            pendingAtoms_ = 0;
+        }
         return;
     }
 

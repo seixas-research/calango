@@ -24,7 +24,10 @@
 #include "gui/RemoteAccessPanel.hpp"
 #include "gui/RepresentationPanel.hpp"
 #include "gui/SlabWizard.hpp"
+#include "core/ElectronicScriptGenerator.hpp"
+#include "gui/BandPdosWindow.hpp"
 #include "gui/DatasetManagerDialog.hpp"
+#include "gui/ProcessManagerPanel.hpp"
 #include "gui/RamanDialog.hpp"
 #include "gui/SqsDialog.hpp"
 #include "gui/VisualEffectsDialog.hpp"
@@ -73,6 +76,7 @@
 #include <QSaveFile>
 #include <QSettings>
 #include <QSpinBox>
+#include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabBar>
@@ -415,6 +419,8 @@ MainWindow::MainWindow(QWidget* parent)
             jobLogWidget_, &JobLogWidget::onJobFinished);
     connect(jobRunner_, &jobs::JobRunner::finished,
             this, &MainWindow::onJobFinished);
+    connect(jobRunner_, &jobs::JobRunner::frameStreamed,
+            this, &MainWindow::onFrameStreamed);
     connect(jobLogWidget_, &JobLogWidget::terminateRequested,
             jobRunner_, &jobs::JobRunner::terminate);
 
@@ -579,6 +585,8 @@ void MainWindow::createMenusAndDocks()
     simulationMenu->addAction(tr("New &Remote Calculation…"),
                               QKeySequence(tr("Ctrl+Shift+R")),
                               this, &MainWindow::newRemoteCalculation);
+    simulationMenu->addAction(tr("Electronic &Bands / PDOS…"),
+                              this, &MainWindow::showBandStructure);
     simulationMenu->addSeparator();
     simulationMenu->addAction(tr("&Dataset Manager (MLIP)…"),
                               this, &MainWindow::showDatasetManager);
@@ -652,11 +660,20 @@ void MainWindow::createMenusAndDocks()
     brandingDock->setTitleBarWidget(new QWidget(brandingDock));
     addDockWidget(Qt::LeftDockWidgetArea, brandingDock);
 
+    // Compact Process Manager between the branding card and Structure.
+    auto* processDock = new QDockWidget(tr("Processes"), this);
+    processDock->setObjectName(QStringLiteral("processDock"));
+    processPanel_ = new ProcessManagerPanel(processDock);
+    processDock->setWidget(processPanel_);
+    splitDockWidget(brandingDock, processDock, Qt::Vertical);
+    connect(processPanel_, &ProcessManagerPanel::loadResultRequested,
+            this, &MainWindow::onProcessResultRequested);
+
     auto* infoDock = new QDockWidget(tr("Structure"), this); // zone 5
     infoDock->setObjectName(QStringLiteral("structureDock"));
     infoWidget_ = new StructureInfoWidget(infoDock);
     infoDock->setWidget(infoWidget_);
-    splitDockWidget(brandingDock, infoDock, Qt::Vertical);
+    splitDockWidget(processDock, infoDock, Qt::Vertical);
 
     auto* reprDock = new QDockWidget(tr("Representation"), this); // zones 4 & 8
     reprDock->setObjectName(QStringLiteral("representationDock"));
@@ -799,9 +816,11 @@ void MainWindow::createMenusAndDocks()
     // Default grid proportions: side columns ~290 px wide with a compact
     // branding card; the full-width bottom row is ~250 px tall, its four
     // zones sized so the Job console keeps the most room.
-    resizeDocks({brandingDock, infoDock}, {290, 290}, Qt::Horizontal);
+    resizeDocks({brandingDock, processDock, infoDock}, {290, 290, 290},
+                Qt::Horizontal);
     resizeDocks({reprDock}, {290}, Qt::Horizontal);
-    resizeDocks({brandingDock, infoDock}, {150, 580}, Qt::Vertical);
+    resizeDocks({brandingDock, processDock, infoDock}, {150, 150, 430},
+                Qt::Vertical);
     resizeDocks({lightingDock, jobDock_, remoteDock_, cellAxesDock},
                 {250, 250, 250, 250}, Qt::Vertical);
     resizeDocks({lightingDock, jobDock_, remoteDock_, cellAxesDock},
@@ -822,6 +841,7 @@ void MainWindow::createMenusAndDocks()
 
     viewMenu->addSeparator();
     viewMenu->addAction(brandingDock->toggleViewAction());
+    viewMenu->addAction(processDock->toggleViewAction());
     viewMenu->addAction(infoDock->toggleViewAction());
     viewMenu->addAction(reprDock->toggleViewAction());
     viewMenu->addAction(cellAxesDock->toggleViewAction());
@@ -934,6 +954,8 @@ void MainWindow::onTabCloseRequested(int index)
 {
     if (index < 0 || index >= static_cast<int>(documents_.size()))
         return;
+    if (documents_[static_cast<std::size_t>(index)].get() == liveDoc_)
+        liveDoc_ = nullptr; // stream continues, frames just aren't shown
     documents_.erase(documents_.begin() + index);
     tabBar_->removeTab(index); // currentChanged fires and re-syncs
     isDirty_ = true;
@@ -2109,6 +2131,139 @@ void MainWindow::showXrd()
     dialog.exec();
 }
 
+void MainWindow::showBandStructure()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()
+        || !doc->structure->cell().isDefined()) {
+        QMessageBox::information(this, tr("Electronic Bands / PDOS"),
+                                 tr("Open a periodic structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+    if (jobRunner_->isRunning()) {
+        QMessageBox::information(this, tr("Electronic Bands / PDOS"),
+                                 tr("A job is already running — kill it first."));
+        return;
+    }
+
+    // Suggested path from ASE's Bravais-lattice detection.
+    QString suggestedPath;
+    try {
+        suggestedPath = QString::fromStdString(
+            pybridge::AseBridge::bandPathInfo(*doc->structure).suggestedPath);
+    } catch (const std::exception&) {
+        suggestedPath.clear();
+    }
+    const bool gpawAvailable = [] {
+        try {
+            pybind11::module_::import("gpaw");
+            return true;
+        } catch (const pybind11::error_already_set&) {
+            return false;
+        }
+    }();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Electronic Bands / PDOS"));
+    auto* form = new QFormLayout(&dialog);
+    auto* backendCombo = new QComboBox(&dialog);
+    backendCombo->addItem(tr("Free electrons (ASE — bands only)"));
+    backendCombo->addItem(gpawAvailable
+                              ? tr("GPAW (DFT, bands + PDOS)")
+                              : tr("GPAW (not installed)"));
+    backendCombo->addItem(tr("Quantum ESPRESSO (needs pw.x + pseudos)"));
+    if (!gpawAvailable) {
+        auto* model = qobject_cast<QStandardItemModel*>(backendCombo->model());
+        if (model)
+            model->item(1)->setEnabled(false);
+    }
+    form->addRow(tr("Backend:"), backendCombo);
+    auto* pathEdit = new QLineEdit(suggestedPath, &dialog);
+    pathEdit->setPlaceholderText(tr("empty = ASE suggestion"));
+    form->addRow(tr("k-path:"), pathEdit);
+    auto* npointsSpin = new QSpinBox(&dialog);
+    npointsSpin->setRange(20, 2000);
+    npointsSpin->setValue(80);
+    form->addRow(tr("k-points:"), npointsSpin);
+    auto* valenceSpin = new QSpinBox(&dialog);
+    valenceSpin->setRange(1, 200);
+    valenceSpin->setValue(4);
+    valenceSpin->setToolTip(tr("Electrons per cell (free-electron backend)"));
+    form->addRow(tr("Valence electrons:"), valenceSpin);
+    auto* ecutSpin = new QDoubleSpinBox(&dialog);
+    ecutSpin->setRange(50.0, 2000.0);
+    ecutSpin->setValue(340.0);
+    ecutSpin->setSuffix(QStringLiteral(" eV"));
+    form->addRow(tr("PW cutoff:"), ecutSpin);
+    auto* kgridSpin = new QSpinBox(&dialog);
+    kgridSpin->setRange(1, 16);
+    kgridSpin->setValue(4);
+    form->addRow(tr("SCF k-grid (n³):"), kgridSpin);
+    auto* pdosCheck = new QCheckBox(tr("Compute element/orbital PDOS "
+                                       "(GPAW backend)"),
+                                    &dialog);
+    pdosCheck->setChecked(true);
+    form->addRow(pdosCheck);
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    core::ElectronicConfig config;
+    config.backend = backendCombo->currentIndex() == 1
+        ? core::ElectronicBackend::Gpaw
+        : backendCombo->currentIndex() == 2 ? core::ElectronicBackend::Espresso
+                                            : core::ElectronicBackend::FreeElectrons;
+    config.kpath = pathEdit->text().trimmed().remove(QLatin1Char(',')).toStdString();
+    config.npoints = npointsSpin->value();
+    config.nvalence = valenceSpin->value();
+    config.ecutEv = ecutSpin->value();
+    config.scfKpts = kgridSpin->value();
+    config.pdos = pdosCheck->isChecked();
+
+    runScript(QString::fromStdString(core::generateElectronicScript(config)),
+              QString::fromStdString(
+                  pybridge::PythonEngine::instance().executable()),
+              tr("Band structure"), /*expectFrames=*/false);
+}
+
+void MainWindow::openBandResults(const QString& directory)
+{
+    auto* window = new BandPdosWindow(directory, this);
+    if (!window->hasData()) {
+        delete window;
+        QMessageBox::information(this, tr("Band Structure"),
+                                 tr("No bands.json found in %1").arg(directory));
+        return;
+    }
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    window->show();
+}
+
+void MainWindow::onProcessResultRequested(const QString& directory)
+{
+    if (QFile::exists(directory + QStringLiteral("/bands.json"))) {
+        openBandResults(directory);
+        return;
+    }
+    for (const auto* candidate :
+         {"md.traj", "opt.traj", "optimized.extxyz", "md_final.extxyz"}) {
+        const QString path = directory + QLatin1Char('/')
+            + QLatin1String(candidate);
+        if (QFile::exists(path)) {
+            loadFile(path);
+            return;
+        }
+    }
+    statusBar()->showMessage(
+        tr("No loadable result in %1 yet — try Open Folder").arg(directory));
+}
+
 void MainWindow::newProject()
 {
     if (isDirty_) {
@@ -2469,10 +2624,15 @@ QString MainWindow::stageJob(const QString& script)
     if (!doc || !doc->structure)
         return {};
 
-    // Each job gets its own directory under the per-user app-data location.
-    const QString jobsRoot =
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-        + QStringLiteral("/jobs");
+    // Managed session storage: jobs of a saved project live in a
+    // .calango_tmp/ folder next to the .calproj (checkpoints, trajectory
+    // dumps and logs stay with the project, reachable from the Process
+    // panel); unsaved sessions fall back to the per-user app-data store.
+    const QString jobsRoot = projectPath_.isEmpty()
+        ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+            + QStringLiteral("/jobs")
+        : QFileInfo(projectPath_).absolutePath()
+            + QStringLiteral("/.calango_tmp");
     const QString jobDir = jobsRoot + QStringLiteral("/job_")
         + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
     if (!QDir().mkpath(jobDir)) {
@@ -2500,7 +2660,8 @@ QString MainWindow::stageJob(const QString& script)
     return jobDir;
 }
 
-void MainWindow::runScript(const QString& script, const QString& pythonExe)
+void MainWindow::runScript(const QString& script, const QString& pythonExe,
+                           const QString& taskLabel, bool expectFrames)
 {
     const QString jobDir = stageJob(script);
     if (jobDir.isEmpty())
@@ -2508,10 +2669,58 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe)
 
     lastJobDir_ = jobDir;
     isDirty_ = true; // the job console + metric series persist in .calproj
+    currentTaskId_ = processPanel_->registerTask(
+        taskLabel.isEmpty() ? tr("Local calculation") : taskLabel, jobDir);
+    processPanel_->setTaskStatus(currentTaskId_,
+                                 ProcessManagerPanel::Status::Running);
+
+    // Live viewport streaming: MD/relaxation scripts emit CALANGO_FRAME
+    // blocks — open the trajectory tab NOW and let frames pour in.
+    liveDoc_ = nullptr;
+    if (expectFrames) {
+        Document* doc = currentDocument();
+        if (doc && doc->structure) {
+            auto first = std::make_shared<core::Structure>(*doc->structure);
+            const int tab = addDocument(
+                first,
+                tr("%1 (live)").arg(taskLabel.isEmpty() ? tr("run") : taskLabel),
+                {first});
+            liveDoc_ = documents_[static_cast<std::size_t>(tab)].get();
+            tabBar_->setCurrentIndex(tab);
+        }
+    }
+
     jobDock_->show();
     jobDock_->raise();
     jobRunner_->start(pythonExe, QStringLiteral("run.py"), jobDir);
     statusBar()->showMessage(tr("Job running in %1 (%2)").arg(jobDir, pythonExe));
+}
+
+int MainWindow::indexOfDocument(const Document* document) const
+{
+    for (std::size_t i = 0; i < documents_.size(); ++i)
+        if (documents_[i].get() == document)
+            return static_cast<int>(i);
+    return -1;
+}
+
+void MainWindow::onFrameStreamed(const std::shared_ptr<core::Structure>& frame)
+{
+    const int index = liveDoc_ ? indexOfDocument(liveDoc_) : -1;
+    if (index < 0 || !frame)
+        return;
+    Document& doc = *liveDoc_;
+    const bool followTail = static_cast<std::size_t>(timeline_->currentFrame())
+        + 1 >= doc.frames.size();
+    doc.frames.push_back(frame);
+    isDirty_ = true;
+
+    if (tabBar_->currentIndex() != index)
+        return; // tab exists and accumulates; views update on switch
+    timeline_->extendFrameCount(static_cast<int>(doc.frames.size()));
+    timeline_->show();
+    if (followTail) // keep tracking the newest frame unless the user scrubbed
+        timeline_->setCurrentFrame(static_cast<int>(doc.frames.size()) - 1);
 }
 
 void MainWindow::newRemoteCalculation()
@@ -2535,6 +2744,10 @@ void MainWindow::newRemoteCalculation()
 
     remoteDock_->show();
     remoteDock_->raise();
+    // Remote tasks are tracked too; the staging dir receives the
+    // downloaded results, so "Load Result" works after completion.
+    const int taskId = processPanel_->registerTask(tr("Remote calculation"), jobDir);
+    processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
     remotePanel_->submitStagedJob(
         jobDir, QFileInfo(doc->fileName).completeBaseName());
     statusBar()->showMessage(tr("Submitting %1 to the cluster…").arg(jobDir));
@@ -2560,8 +2773,44 @@ void MainWindow::onRemoteResultsReady(const QString& localDir)
 
 void MainWindow::onJobFinished(int exitCode, bool crashed)
 {
-    if (crashed || exitCode != 0 || lastJobDir_.isEmpty())
+    const bool failed = crashed || exitCode != 0;
+    if (currentTaskId_ >= 0) {
+        processPanel_->setTaskStatus(currentTaskId_,
+                                     failed ? ProcessManagerPanel::Status::Failed
+                                            : ProcessManagerPanel::Status::Completed);
+        currentTaskId_ = -1;
+    }
+
+    // A live-streamed run already owns its trajectory tab — finalize its
+    // title and skip the legacy end-of-job trajectory load.
+    if (liveDoc_) {
+        const int index = indexOfDocument(liveDoc_);
+        Document* streamed = liveDoc_;
+        liveDoc_ = nullptr;
+        if (index >= 0 && streamed->frames.size() > 1) {
+            streamed->fileName.replace(tr(" (live)"), QString());
+            tabBar_->setTabText(index, streamed->fileName);
+            if (tabBar_->currentIndex() == index)
+                syncViewsToCurrent(false);
+            if (!failed)
+                statusBar()->showMessage(
+                    tr("Job finished — %n streamed frame(s)", nullptr,
+                       static_cast<int>(streamed->frames.size())));
+            return;
+        }
+        // Nothing streamed (e.g. single-point) — drop the placeholder tab.
+        if (index >= 0 && streamed->frames.size() <= 1)
+            onTabCloseRequested(index);
+    }
+
+    if (failed || lastJobDir_.isEmpty())
         return;
+
+    // Electronic-structure runs: open the band/PDOS viewer directly.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/bands.json"))) {
+        openBandResults(lastJobDir_);
+        return;
+    }
 
     // MD / optimization runs: open the trajectory automatically in a new
     // tab — the timeline comes pre-loaded and ready to scrub.

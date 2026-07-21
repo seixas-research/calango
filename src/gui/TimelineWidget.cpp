@@ -74,6 +74,19 @@ TimelineWidget::TimelineWidget(QWidget* parent)
     setFrameCount(0);
 }
 
+void TimelineWidget::extendFrameCount(int count)
+{
+    frameCount_ = count;
+    const bool usable = count > 1;
+    for (QWidget* widget : std::initializer_list<QWidget*>{
+             firstButton_, prevButton_, playButton_, nextButton_, lastButton_,
+             slider_, fpsSpin_})
+        widget->setEnabled(usable);
+    slider_->setRange(0, std::max(0, count - 1));
+    slider_->setTickInterval(std::max(1, count / 20));
+    updateLabel();
+}
+
 void TimelineWidget::setFrameCount(int count)
 {
     frameCount_ = count;

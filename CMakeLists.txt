@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.21
+    VERSION 26.7.22
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -104,6 +104,8 @@ qt_add_executable(calango
     src/core/MarchingCubes.cpp
     src/core/DatasetSplit.hpp
     src/core/DatasetSplit.cpp
+    src/core/ElectronicScriptGenerator.hpp
+    src/core/ElectronicScriptGenerator.cpp
 
     # python_bridge — embedded CPython + ASE interop
     src/python_bridge/PythonEngine.hpp
@@ -218,6 +220,12 @@ qt_add_executable(calango
     src/gui/VisualEffectsDialog.cpp
     src/gui/DatasetManagerDialog.hpp
     src/gui/DatasetManagerDialog.cpp
+    src/gui/ProcessManagerPanel.hpp
+    src/gui/ProcessManagerPanel.cpp
+    src/gui/BandPdosView.hpp
+    src/gui/BandPdosView.cpp
+    src/gui/BandPdosWindow.hpp
+    src/gui/BandPdosWindow.cpp
 )
 
 qt_add_resources(calango "shaders"
@@ -416,6 +424,20 @@ if(CALANGO_BUILD_TESTS)
     add_test(NAME raman_si_diamond
              COMMAND calango_raman_test
                      "${CMAKE_CURRENT_SOURCE_DIR}/assets/examples/Si_diamond.vasp")
+
+    add_executable(calango_stream_test
+        tests/StreamingTest.cpp
+        src/jobs/JobRunner.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_stream_test PRIVATE src)
+    target_compile_definitions(calango_stream_test PRIVATE
+        QT_NO_KEYWORDS
+        CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}")
+    target_link_libraries(calango_stream_test PRIVATE Qt6::Core)
+    add_test(NAME frame_streaming COMMAND calango_stream_test)
 endif()
 
 # ---------------------------------------------------------------------------
