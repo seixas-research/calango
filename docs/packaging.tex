@@ -1,0 +1,384 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.6cm]{geometry}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage[colorlinks=true,linkcolor=calangoteal,urlcolor=calangoteal]{hyperref}
+\usepackage{parskip}
+
+\definecolor{calangoteal}{RGB}{0,110,110}
+\definecolor{codebg}{RGB}{245,246,248}
+\definecolor{codeframe}{RGB}{210,214,220}
+\definecolor{shadegray}{RGB}{90,96,104}
+
+\lstdefinestyle{shell}{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  framesep=6pt,
+  xleftmargin=8pt,
+  xrightmargin=8pt,
+  breaklines=true,
+  breakatwhitespace=true,
+  postbreak=\mbox{\textcolor{shadegray}{$\hookrightarrow$}\space},
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  upquote=true,
+}
+\lstset{style=shell}
+
+\newcommand{\file}[1]{\texttt{#1}}
+\newcommand{\opt}[1]{\texttt{#1}}
+
+\title{\bfseries Calango Packaging Guide\\[4pt]
+\Large Building the macOS \file{.dmg} and Linux \file{.deb} installers}
+\author{Seixas Research}
+\date{July 2026 --- Calango 26.7.13}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+Calango ships as two native installers built with CMake/CPack: a
+drag-and-drop disk image (\file{.dmg}) for macOS and a Debian package
+(\file{.deb}) for Ubuntu/Debian. This guide covers the prerequisites, the
+exact commands, what the packaging pipeline does under the hood, how to
+verify the artifacts, and the failure modes we have already hit --- with
+their fixes. Everything described here lives in \file{CMakeLists.txt}
+(install and CPack sections) and in the \file{packaging/} directory of the
+repository.
+\end{abstract}
+
+\tableofcontents
+\bigskip
+\hrule
+
+\section{Overview}
+
+Both installers come out of the standard CMake flow: \emph{configure}
+$\to$ \emph{build} $\to$ \emph{cpack}. The platform decides the generator:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Platform & CPack generator & Artifact \\
+\midrule
+macOS (\opt{-DCALANGO\_MACOS\_BUNDLE=ON}) & \opt{DragNDrop} &
+\file{calango-26.7.13-macos-arm64.dmg} \\
+Linux & \opt{DEB} & \file{calango\_26.7.13\_amd64.deb} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Each artifact is accompanied by a \file{.sha256} checksum file. The
+package version comes from \opt{project(calango VERSION ...)} in
+\file{CMakeLists.txt}, which should match the plain-text \file{version}
+file at the repository root.
+
+The supporting files are:
+
+\begin{itemize}[itemsep=2pt]
+  \item \file{packaging/macos/make\_icns.sh} --- renders
+        \file{calango.icns} from the master PNG icon in
+        \file{assets/calango/} (used when no committed \file{.icns}
+        exists).
+  \item \file{packaging/macos/embed\_python\_framework.sh} --- makes the
+        \file{.app} independent of the build machine's Python
+        (Section~\ref{sec:python-embed}).
+  \item \file{packaging/linux/calango.desktop} --- application launcher entry.
+  \item \file{packaging/linux/calango-mime.xml} --- registers the
+        \texttt{application/x-calango-project} MIME type for
+        \file{.calproj} project files.
+  \item \file{packaging/linux/postinst}, \file{postrm} --- refresh the
+        desktop/MIME/icon caches on install and removal.
+\end{itemize}
+
+\section{macOS: building the \file{.dmg}}
+
+\subsection{Prerequisites}
+
+\begin{itemize}[itemsep=2pt]
+  \item Xcode command-line tools (provides \file{sips}, \file{iconutil},
+        \file{codesign}, \file{hdiutil}).
+  \item Qt 6 with the Svg module; Homebrew's \lstinline|brew install qt|
+        puts it at \file{/opt/homebrew/opt/qt}.
+  \item CMake $\geq$ 3.21.
+  \item A Python virtualenv with ASE installed, e.g.\ the project
+        \file{.venv} (\lstinline|python3 -m venv .venv && .venv/bin/pip install ase|).
+\end{itemize}
+
+\subsection{Commands}
+
+From the repository root:
+
+\begin{lstlisting}
+cmake -S . -B build-dmg \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DPython3_EXECUTABLE=$PWD/.venv/bin/python \
+  -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/qt \
+  -DCALANGO_MACOS_BUNDLE=ON
+
+cmake --build build-dmg -j 8
+
+cd build-dmg && cpack
+\end{lstlisting}
+
+The result is \file{build-dmg/calango-26.7.13-macos-arm64.dmg}. Mounting
+it shows \file{calango.app} next to an \file{/Applications} symlink ---
+the standard drag-to-install layout. There is deliberately no
+click-through license sheet
+(\opt{CPACK\_DMG\_SLA\_USE\_RESOURCE\_FILE\_LICENSE OFF}): a license SLA
+blocks scripted \file{hdiutil attach} and adds friction for an
+MIT-licensed application.
+
+\subsection{What the install step does}
+
+\opt{cpack} internally runs the CMake install rules into a staging
+directory (\file{\_CPack\_Packages/}) and then wraps the result in a
+disk image. The install rules perform, in order:
+
+\begin{enumerate}[itemsep=2pt]
+  \item \textbf{Stage the bundle.} \file{calango.app} is installed with
+        the Finder icon (\file{calango.icns}, committed or rendered at
+        build time by \file{make\_icns.sh}) and the \file{Info.plist}
+        metadata (bundle id \texttt{org.seixasresearch.calango}).
+  \item \textbf{Optionally embed a Python environment} into
+        \file{Contents/Resources/python}, when the cache variable
+        \opt{CALANGO\_EMBEDDED\_PYTHON\_DIR} is set
+        (Section~\ref{sec:python-embed}).
+  \item \textbf{Deploy Qt with \file{macdeployqt} --- twice.} The tool
+        copies the Qt frameworks and plugins into the bundle and rewrites
+        their load paths to \texttt{@executable\_path}. Two passes with
+        \opt{-libpath=/opt/homebrew/opt/qt/lib} are required: frameworks
+        copied into the bundle lose the \texttt{@loader\_path} context
+        their \texttt{@rpath} dependencies resolve against, so
+        transitive dependencies (e.g.\ QtGui $\to$ QtDBus, plugin
+        dependencies) are only found when the second pass re-scans the
+        already-copied frameworks. The first pass prints a wall of
+        \texttt{ERROR: Cannot resolve rpath} lines --- this is expected
+        noise; judge success by the verification steps below.
+  \item \textbf{Embed the linked \file{Python.framework}.}
+        \file{embed\_python\_framework.sh} copies the framework version
+        the binary links against (typically Homebrew's) into
+        \file{Contents/Frameworks}, replaces Homebrew's dangling
+        \file{site-packages} symlink with a real directory, recreates the
+        canonical framework symlinks, retargets the load command with
+        \file{install\_name\_tool}, and finally re-signs the whole bundle
+        ad hoc (\lstinline|codesign --force --deep --sign -|). Without
+        the re-sign, Apple-silicon macOS refuses to load the modified
+        binaries.
+\end{enumerate}
+
+\subsection{Verification}
+
+\begin{lstlisting}
+APP=_CPack_Packages/Darwin/DragNDrop/calango-26.7.13-macos-arm64/calango.app
+
+# 1. Signature must verify strictly, including nested code
+codesign --verify --deep --strict "$APP"
+
+# 2. The packaged binary must start and find a Python with ASE
+"$APP/Contents/MacOS/calango" --probe-python
+
+# 3. The image must mount without an SLA prompt
+hdiutil attach -readonly -nobrowse calango-26.7.13-macos-arm64.dmg
+\end{lstlisting}
+
+To rebuild the package from a clean state, clear the staging area first
+with \lstinline|cmake -E rm -rf _CPack_Packages| --- stale staging can
+mask deployment bugs.
+
+\subsection{Troubleshooting}
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{0.44\textwidth}p{0.5\textwidth}@{}}
+\toprule
+Symptom & Cause / fix \\
+\midrule
+\texttt{ERROR: Cannot resolve rpath "@rpath/Qt...''} during
+\opt{cpack} &
+Expected noise from \file{macdeployqt}'s first pass. Only investigate if
+verification fails afterwards. \\
+\addlinespace
+\texttt{dyld: Library not loaded: @rpath/QtDBus...} when launching the
+packaged app &
+A framework is missing from the bundle --- the second
+\file{macdeployqt} pass or the \opt{-libpath} argument was removed, or
+the install rpath was stripped. Both fixes live in the
+\opt{install(CODE ...)} block of \file{CMakeLists.txt}. \\
+\addlinespace
+\texttt{codesign} reports \texttt{No such file or directory} for a path
+that exists &
+A dangling symlink inside the bundle (Homebrew's
+\file{site-packages} link is the known case, handled by
+\file{embed\_python\_framework.sh}). Find offenders with
+\lstinline|find app -type l ! -exec test -e {} \; -print|. \\
+\addlinespace
+\texttt{hdiutil: attach canceled} &
+The DMG carries a click-through SLA. Keep
+\opt{CPACK\_DMG\_SLA\_USE\_RESOURCE\_FILE\_LICENSE} set to \opt{OFF}. \\
+\addlinespace
+\texttt{Permission denied} running a \file{packaging/} script &
+Cloud-synced checkouts (Dropbox) strip executable bits. CMake therefore
+invokes every packaging script via \lstinline|bash <script>|; keep that
+pattern when adding new ones. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Linux: building the \file{.deb}}
+
+\subsection{Prerequisites (Ubuntu/Debian)}
+
+\begin{lstlisting}
+sudo apt install build-essential cmake ninja-build \
+  qt6-base-dev libqt6svg6-dev libqt6opengl6-dev \
+  libgl1-mesa-dev python3-dev python3-venv \
+  dpkg-dev file
+
+python3 -m venv .venv && .venv/bin/pip install ase
+\end{lstlisting}
+
+\opt{dpkg-dev} provides \file{dpkg-shlibdeps}, which CPack uses to
+compute the runtime \texttt{Depends:} line automatically
+(\opt{CPACK\_DEBIAN\_PACKAGE\_SHLIBDEPS ON}).
+
+\subsection{Commands}
+
+\begin{lstlisting}
+cmake -S . -B build-deb \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DPython3_EXECUTABLE=$PWD/.venv/bin/python
+
+cmake --build build-deb -j$(nproc)
+
+cd build-deb && cpack
+\end{lstlisting}
+
+The result is \file{calango\_26.7.13\_<arch>.deb}. Install it via
+\opt{apt} rather than \opt{dpkg -i}, so the dependencies are resolved:
+
+\begin{lstlisting}
+sudo apt install ./calango_26.7.13_amd64.deb
+\end{lstlisting}
+
+\subsection{Package contents and desktop integration}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{0.32\textwidth}@{}}
+\toprule
+Path in package & Purpose \\
+\midrule
+\file{/usr/bin/calango} & The application binary \\
+\file{/usr/share/applications/calango.desktop} & Launcher entry
+(\texttt{Exec=calango \%F}) \\
+\file{/usr/share/mime/packages/calango-mime.xml} & MIME type for
+\file{.calproj} \\
+\file{/usr/share/icons/hicolor/scalable/apps/calango.svg} & Scalable icon \\
+\file{/usr/share/pixmaps/calango.png} & Legacy raster icon \\
+\file{/usr/lib/calango/python/} & Embedded Python (optional, see
+Section~\ref{sec:python-embed}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The MIME registration means double-clicking a \file{.calproj} workspace
+in the file manager opens it in Calango; \file{MainWindow::loadFile}
+routes \file{.calproj} arguments to the project loader rather than the
+ASE structure reader. The \file{postinst}/\file{postrm} maintainer
+scripts refresh \file{update-mime-database},
+\file{update-desktop-database} and \file{gtk-update-icon-cache} so the
+association is live immediately after install (modern dpkg triggers
+usually do this anyway; the scripts make it robust on minimal systems).
+
+Unless an embedded Python is bundled, the package declares
+\texttt{Depends: python3 (>= 3.9)} and \texttt{Recommends: python3-ase}.
+Without ASE the GUI starts but structure I/O and job submission are
+disabled; users can also point Calango at any interpreter via
+\texttt{CALANGO\_PYTHON}.
+
+\subsection{Verification}
+
+\begin{lstlisting}
+dpkg-deb --info  calango_26.7.13_amd64.deb   # control fields, Depends
+dpkg-deb --contents calango_26.7.13_amd64.deb
+
+# after installing:
+calango --probe-python
+xdg-mime query default application/x-calango-project
+\end{lstlisting}
+
+\noindent
+\textbf{Status note:} the DEB configuration is complete but has so far
+been validated only structurally (the development machine is a Mac
+without \file{dpkg}). The first CI or VM build on Ubuntu should run the
+verification steps above.
+
+\section{The embedded Python environment}
+\label{sec:python-embed}
+
+Calango embeds CPython at runtime. The interpreter is resolved in this
+order (documented in \file{src/python\_bridge/PythonEngine.hpp}):
+
+\begin{enumerate}[itemsep=1pt]
+  \item \texttt{\$CALANGO\_PYTHON} --- explicit interpreter path;
+  \item \texttt{\$VIRTUAL\_ENV/bin/python} --- active virtualenv;
+  \item a Python bundled by the installers:
+        \file{Contents/Resources/python/bin/python3} (macOS) or
+        \file{<prefix>/lib/calango/python/bin/python3} (Linux);
+  \item the interpreter CMake was configured against
+        (\opt{CALANGO\_DEFAULT\_PYTHON}, meaningful only on the build
+        machine).
+\end{enumerate}
+
+To ship a fully self-contained installer, pass a \emph{relocatable}
+Python distribution that has ASE installed:
+
+\begin{lstlisting}
+cmake -S . -B build-dmg ... \
+  -DCALANGO_EMBEDDED_PYTHON_DIR=/path/to/standalone-python
+\end{lstlisting}
+
+A distribution from the \texttt{python-build-standalone} project is the
+recommended source. A plain project \file{.venv} is \emph{not}
+relocatable --- its \file{bin/python} and \file{pyvenv.cfg} refer back to
+the build machine's base interpreter.
+
+Independent of this option, the macOS pipeline always embeds the
+\file{Python.framework} that the binary itself links against
+(\file{libpython} via \opt{Development.Embed}), so the packaged app
+launches on machines without Homebrew. For the interpreter to also find
+ASE there, either bundle an environment as above or let users install
+ASE and set \texttt{CALANGO\_PYTHON}.
+
+\section{Known limitations and next steps}
+
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Code signing:} the \file{.app} is signed ad hoc.
+        Distribution outside a lab requires a Developer~ID certificate
+        and notarization (\file{codesign --sign "Developer ID..."},
+        \file{notarytool submit}, \file{stapler}); the ad-hoc step in
+        \file{embed\_python\_framework.sh} is the place to swap the
+        identity in.
+  \item \textbf{DEB validation:} run the Linux pipeline once in CI
+        (Ubuntu 22.04/24.04) and consider \file{lintian} for policy
+        checks.
+  \item \textbf{Full ASE bundling:} wiring a
+        \texttt{python-build-standalone} + ASE tree into both installers
+        (and building against its \file{libpython}) would remove the
+        last runtime dependency on a user-provided Python.
+\end{itemize}
+
+\end{document}

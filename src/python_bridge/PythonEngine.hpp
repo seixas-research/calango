@@ -18,7 +18,10 @@ namespace calango::pybridge {
 /// therefore initialize with an explicit PyConfig.executable, resolved as:
 ///   1. $CALANGO_PYTHON            (explicit interpreter path)
 ///   2. $VIRTUAL_ENV/bin/python    (active virtualenv)
-///   3. the interpreter Calango was configured against at build time
+///   3. a Python bundled next to the executable by the installers
+///      (macOS: Calango.app/Contents/Resources/python,
+///       Linux: <prefix>/lib/calango/python)
+///   4. the interpreter Calango was configured against at build time
 /// Python then performs normal venv activation via pyvenv.cfg.
 ///
 /// Threading policy (v0.2): all embedded-Python calls happen on the GUI

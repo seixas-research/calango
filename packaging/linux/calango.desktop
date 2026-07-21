@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Calango
+GenericName=Atomistic Modeling
+Comment=Atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE
+Exec=calango %F
+Icon=calango
+Terminal=false
+Categories=Science;Chemistry;Physics;Education;
+MimeType=application/x-calango-project;
+StartupWMClass=calango

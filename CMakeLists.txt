@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 0.10.0
+    VERSION 26.7.13
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -197,11 +197,12 @@ qt_add_resources(calango "branding"
         assets/calango/icon_transparent.png
 )
 
-# For a distributable macOS bundle, generate assets/calango/calango.icns
-# (iconutil over an iconset rendered from icon_transparent.png) and configure
-# with -DCALANGO_MACOS_BUNDLE=ON; the default plain binary keeps the
-# familiar ./build/calango developer workflow, with the window/dock icon
-# set at runtime from the embedded resource.
+# Distributable macOS bundle: configure with -DCALANGO_MACOS_BUNDLE=ON.
+# The default plain binary keeps the familiar ./build/calango developer
+# workflow, with the window/dock icon set at runtime from the embedded
+# resource. The bundle icon uses a committed assets/calango/calango.icns
+# when present, otherwise it is rendered at build time from
+# icon_transparent.png with the stock sips/iconutil tools.
 option(CALANGO_MACOS_BUNDLE "Build calango as a macOS .app bundle" OFF)
 if(APPLE AND CALANGO_MACOS_BUNDLE)
     set_target_properties(calango PROPERTIES
@@ -210,12 +211,36 @@ if(APPLE AND CALANGO_MACOS_BUNDLE)
         MACOSX_BUNDLE_GUI_IDENTIFIER "org.seixasresearch.calango"
         MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
+
+    set(CALANGO_ICNS "")
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/calango.icns")
+        set(CALANGO_ICNS "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/calango.icns")
+    else()
+        find_program(SIPS_EXECUTABLE sips)
+        find_program(ICONUTIL_EXECUTABLE iconutil)
+        if(SIPS_EXECUTABLE AND ICONUTIL_EXECUTABLE)
+            set(CALANGO_ICNS "${CMAKE_CURRENT_BINARY_DIR}/calango.icns")
+            # Run via bash: cloud-synced checkouts (Dropbox) may strip the
+            # executable bit from the script.
+            add_custom_command(OUTPUT "${CALANGO_ICNS}"
+                COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/make_icns.sh"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/icon_transparent.png"
+                        "${CALANGO_ICNS}"
+                DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/icon_transparent.png"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/make_icns.sh"
+                COMMENT "Rendering calango.icns from icon_transparent.png")
+        else()
+            message(WARNING "sips/iconutil not found — the .app bundle will "
+                            "have no Finder icon")
+        endif()
+    endif()
+    if(CALANGO_ICNS)
         set_target_properties(calango PROPERTIES
             MACOSX_BUNDLE_ICON_FILE "calango.icns")
-        target_sources(calango PRIVATE assets/calango/calango.icns)
-        set_source_files_properties(assets/calango/calango.icns PROPERTIES
-            MACOSX_PACKAGE_LOCATION "Resources")
+        target_sources(calango PRIVATE "${CALANGO_ICNS}")
+        set_source_files_properties("${CALANGO_ICNS}" PROPERTIES
+            MACOSX_PACKAGE_LOCATION "Resources"
+            GENERATED TRUE)
     endif()
 endif()
 
@@ -267,3 +292,147 @@ if(MSVC)
 else()
     target_compile_options(calango PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+# ---------------------------------------------------------------------------
+# Installation
+# ---------------------------------------------------------------------------
+# A relocatable Python environment (with ASE installed) to ship inside the
+# installers, e.g. a python-build-standalone tree. It must contain
+# bin/python3. Left empty, the installed app falls back to the runtime
+# resolution order documented in PythonEngine.hpp ($CALANGO_PYTHON,
+# $VIRTUAL_ENV, system python3). Note: a plain project .venv is NOT
+# relocatable — its bin/python links back to the build machine's base
+# interpreter.
+set(CALANGO_EMBEDDED_PYTHON_DIR "" CACHE PATH
+    "Standalone Python distribution (with ASE) to bundle into installers")
+
+include(GNUInstallDirs)
+
+if(APPLE AND CALANGO_MACOS_BUNDLE)
+    install(TARGETS calango BUNDLE DESTINATION .)
+
+    # Embedded interpreter — PythonEngine looks this location up at runtime.
+    if(CALANGO_EMBEDDED_PYTHON_DIR)
+        install(DIRECTORY "${CALANGO_EMBEDDED_PYTHON_DIR}/"
+                DESTINATION calango.app/Contents/Resources/python
+                USE_SOURCE_PERMISSIONS)
+    endif()
+
+    # macdeployqt copies the Qt frameworks/plugins into the bundle and
+    # rewrites the load paths. It runs at install/package time against the
+    # staged .app, after the Python payload is in place.
+    get_target_property(_qmake_location Qt6::qmake IMPORTED_LOCATION)
+    get_filename_component(_qt_bin_dir "${_qmake_location}" DIRECTORY)
+    find_program(MACDEPLOYQT_EXECUTABLE macdeployqt HINTS "${_qt_bin_dir}")
+
+    # CMake strips the build-tree rpath when installing, which leaves
+    # macdeployqt unable to resolve the @rpath references of the Qt
+    # frameworks/plugins it scans (QtDBus etc. silently go missing).
+    # Keep the Qt lib dir as install rpath — macdeployqt rewrites every
+    # copied library to @executable_path afterwards.
+    get_filename_component(_qt_lib_dir "${_qt_bin_dir}/../lib" ABSOLUTE)
+    set_target_properties(calango PROPERTIES INSTALL_RPATH "${_qt_lib_dir}")
+    if(MACDEPLOYQT_EXECUTABLE)
+        # Two passes: frameworks copied into the bundle lose the
+        # @loader_path context their @rpath dependencies resolve against,
+        # so transitive deps (QtGui -> QtDBus, plugin deps) are missed on
+        # the first scan. The second pass re-scans the deployed copies —
+        # with -libpath naming the copy source — and completes the set.
+        install(CODE "
+            message(STATUS \"Deploying Qt into \${CMAKE_INSTALL_PREFIX}/calango.app\")
+            foreach(_pass RANGE 1 2)
+                execute_process(
+                    COMMAND \"${MACDEPLOYQT_EXECUTABLE}\"
+                            \"\${CMAKE_INSTALL_PREFIX}/calango.app\"
+                            -always-overwrite
+                            -libpath=${_qt_lib_dir}
+                    COMMAND_ERROR_IS_FATAL ANY)
+            endforeach()
+        ")
+    else()
+        message(WARNING "macdeployqt not found next to ${_qmake_location} — "
+                        "the packaged .app will not be self-contained")
+    endif()
+
+    # macdeployqt skips the linked Python.framework (libpython from
+    # Development.Embed) — copy it into the bundle and retarget the load
+    # command so the app launches without the build machine's Python.
+    install(CODE "
+        execute_process(
+            COMMAND bash
+                \"${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/embed_python_framework.sh\"
+                \"\${CMAKE_INSTALL_PREFIX}/calango.app\"
+            COMMAND_ERROR_IS_FATAL ANY)
+    ")
+elseif(UNIX AND NOT APPLE)
+    install(TARGETS calango RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+    # Desktop integration: launcher entry, MIME type for .calproj project
+    # files (main.cpp routes them to the workspace loader), and icons.
+    install(FILES packaging/linux/calango.desktop
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+    install(FILES packaging/linux/calango-mime.xml
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages)
+    install(FILES assets/calango/icon_transparent.svg
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
+            RENAME calango.svg)
+    install(FILES assets/calango/icon_transparent.png
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps
+            RENAME calango.png)
+
+    if(CALANGO_EMBEDDED_PYTHON_DIR)
+        install(DIRECTORY "${CALANGO_EMBEDDED_PYTHON_DIR}/"
+                DESTINATION ${CMAKE_INSTALL_LIBDIR}/calango/python
+                USE_SOURCE_PERMISSIONS)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Packaging (CPack)
+#   macOS:  cmake -B build -DCALANGO_MACOS_BUNDLE=ON ... && cpack --config
+#           build/CPackConfig.cmake  ->  drag-and-drop .dmg
+#   Linux:  cpack  ->  .deb with desktop/MIME/icon integration
+# ---------------------------------------------------------------------------
+set(CPACK_PACKAGE_NAME "calango")
+set(CPACK_PACKAGE_VENDOR "Seixas Research")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/seixas-research/calango")
+set(CPACK_PACKAGE_CONTACT "Leandro Seixas <leandro.fisica@gmail.com>")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+set(CPACK_PACKAGE_CHECKSUM SHA256)
+set(CPACK_STRIP_FILES TRUE)
+
+if(APPLE AND CALANGO_MACOS_BUNDLE)
+    # DragNDrop = a .dmg whose window holds Calango.app plus an
+    # /Applications symlink, the standard drag-to-install layout.
+    set(CPACK_GENERATOR "DragNDrop")
+    set(CPACK_DMG_VOLUME_NAME "Calango ${PROJECT_VERSION}")
+    set(CPACK_DMG_FORMAT "UDZO") # zlib-compressed, read-only
+    # No click-through SLA: it blocks scripted mounts and adds friction
+    # for an MIT-licensed app (the license still ships inside the .deb).
+    set(CPACK_DMG_SLA_USE_RESOURCE_FILE_LICENSE OFF)
+    set(CPACK_PACKAGE_FILE_NAME
+        "calango-${PROJECT_VERSION}-macos-${CMAKE_SYSTEM_PROCESSOR}")
+elseif(UNIX AND NOT APPLE)
+    set(CPACK_GENERATOR "DEB")
+    set(CPACK_DEBIAN_FILE_NAME "DEB-DEFAULT") # calango_<ver>_<arch>.deb
+    set(CPACK_DEBIAN_PACKAGE_SECTION "science")
+    set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+    set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "${CPACK_PACKAGE_HOMEPAGE_URL}")
+    # dpkg-shlibdeps derives the Qt6/OpenGL/libpython runtime dependencies
+    # from the linked shared libraries.
+    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+    if(NOT CALANGO_EMBEDDED_PYTHON_DIR)
+        # No bundled interpreter: the embedded runtime resolves the system
+        # python3, which needs ASE for structure I/O and job features.
+        set(CPACK_DEBIAN_PACKAGE_DEPENDS "python3 (>= 3.9)")
+        set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "python3-ase")
+    endif()
+    # Refresh MIME/desktop/icon caches on install and removal.
+    set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/postinst;${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/postrm")
+    set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION TRUE)
+endif()
+
+include(CPack)

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <!-- .calproj is the JSON workspace format written by ProjectSerializer. -->
+  <mime-type type="application/x-calango-project">
+    <comment>Calango project</comment>
+    <sub-class-of type="application/json"/>
+    <glob pattern="*.calproj"/>
+    <icon name="calango"/>
+  </mime-type>
+</mime-info>

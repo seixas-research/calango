@@ -30,7 +30,9 @@ enum class ColorGradient {
 namespace ColorMap {
 
 /// Color at normalized position t ∈ [0, 1] (clamped) along the gradient.
-QColor sample(ColorGradient gradient, float t);
+/// `inverted` reverses the mapping (t -> 1 - t), so minima take the high
+/// end of the palette and maxima the low end — matplotlib's "_r" variants.
+QColor sample(ColorGradient gradient, float t, bool inverted = false);
 
 } // namespace ColorMap
 } // namespace calango::render

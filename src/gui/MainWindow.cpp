@@ -721,6 +721,14 @@ QString formatHintFor(const QString& path)
 
 void MainWindow::loadFile(const QString& path)
 {
+    // Project workspaces (double-click / "Open with" via the installer's
+    // MIME association, or a CLI argument) restore the whole session
+    // instead of loading a structure through ASE.
+    if (path.endsWith(QStringLiteral(".calproj"), Qt::CaseInsensitive)) {
+        if (readProject(path))
+            projectPath_ = path;
+        return;
+    }
     if (!ensureAseAvailable())
         return;
     try {

@@ -65,6 +65,8 @@ public:
     /// replacement — trajectory playback re-colors frame by frame.
     void setColorMode(render::ColorMode mode, const QString& customField = {});
     void setColorGradient(render::ColorGradient gradient);
+    /// Reverse the scalar -> color mapping of the current gradient.
+    void setGradientInverted(bool inverted);
     QString customScalarField() const { return customField_; }
 
     /// Neighbor-cutoff settings the CN/GCN color modes use.

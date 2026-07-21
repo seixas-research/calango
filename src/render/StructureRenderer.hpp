@@ -85,6 +85,9 @@ public:
         /// scalars passed to setAtomScalars(), sampled along `gradient`.
         ColorMode colorMode = ColorMode::Element;
         ColorGradient gradient = ColorGradient::Viridis;
+        /// Reverse the scalar -> color mapping of `gradient` (minima get
+        /// the high end of the palette), like matplotlib's "_r" maps.
+        bool invertGradient = false;
     };
 
     /// Display radius of an atom (Å) — the single source of truth shared

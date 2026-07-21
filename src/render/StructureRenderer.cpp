@@ -263,7 +263,7 @@ QColor StructureRenderer::resolvedAtomColor(std::size_t index, int atomicNumber)
     // A flat field (all atoms identical) maps to the middle of the gradient.
     const float range = scalarMax_ - scalarMin_;
     const float t = range > 1e-12f ? (atomScalars_[index] - scalarMin_) / range : 0.5f;
-    return ColorMap::sample(style_.gradient, t);
+    return ColorMap::sample(style_.gradient, t, style_.invertGradient);
 }
 
 void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)

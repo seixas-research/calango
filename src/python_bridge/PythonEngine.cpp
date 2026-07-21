@@ -4,12 +4,61 @@
 #include <cstdlib>
 #include <filesystem>
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <vector>
+#endif
+
 namespace py = pybind11;
 namespace fs = std::filesystem;
 
 namespace calango::pybridge {
 
 namespace {
+
+/// Directory of the running executable ("" if it cannot be determined).
+fs::path executableDir()
+{
+    std::error_code ec;
+#if defined(__APPLE__)
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size); // query required buffer size
+    std::vector<char> buffer(size);
+    if (_NSGetExecutablePath(buffer.data(), &size) == 0) {
+        const fs::path exe = fs::canonical(buffer.data(), ec);
+        if (!ec)
+            return exe.parent_path();
+    }
+#elif defined(__linux__)
+    const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+    if (!ec)
+        return exe.parent_path();
+#endif
+    return {};
+}
+
+/// Python environment shipped inside the installed layout, if any:
+/// macOS bundle:  Calango.app/Contents/{MacOS,Resources/python/bin/python3}
+/// Linux (deb):   <prefix>/{bin,lib/calango/python/bin/python3}
+std::string bundledInterpreter()
+{
+    const fs::path exeDir = executableDir();
+    if (exeDir.empty())
+        return {};
+#if defined(__APPLE__)
+    const fs::path candidate =
+        exeDir / ".." / "Resources" / "python" / "bin" / "python3";
+#else
+    const fs::path candidate =
+        exeDir / ".." / "lib" / "calango" / "python" / "bin" / "python3";
+#endif
+    std::error_code ec;
+    if (fs::exists(candidate, ec)) {
+        const fs::path resolved = fs::canonical(candidate, ec);
+        return ec ? candidate.string() : resolved.string();
+    }
+    return {};
+}
 
 /// See the resolution order documented in PythonEngine.hpp.
 std::string resolveInterpreter()
@@ -27,6 +76,8 @@ std::string resolveInterpreter()
         if (fs::exists(candidate))
             return candidate.string();
     }
+    if (auto bundled = bundledInterpreter(); !bundled.empty())
+        return bundled;
 #ifdef CALANGO_DEFAULT_PYTHON
     if (fs::exists(CALANGO_DEFAULT_PYTHON))
         return CALANGO_DEFAULT_PYTHON;

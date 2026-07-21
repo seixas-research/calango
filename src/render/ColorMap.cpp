@@ -140,10 +140,12 @@ const std::array<Rgb, 9>& anchors(ColorGradient gradient)
 
 } // namespace
 
-QColor ColorMap::sample(ColorGradient gradient, float t)
+QColor ColorMap::sample(ColorGradient gradient, float t, bool inverted)
 {
     const auto& table = anchors(gradient);
     t = std::clamp(t, 0.0f, 1.0f);
+    if (inverted)
+        t = 1.0f - t;
     const float scaled = t * static_cast<float>(table.size() - 1);
     const auto low = static_cast<std::size_t>(scaled);
     const auto high = std::min(low + 1, table.size() - 1);

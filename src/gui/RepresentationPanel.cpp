@@ -58,6 +58,16 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
         viewport_->setColorGradient(static_cast<render::ColorGradient>(index));
     });
 
+    invertGradientCheck_ = new QCheckBox(tr("Invert palette"), this);
+    invertGradientCheck_->setToolTip(tr("Reverse the scalar-to-color mapping: "
+                                        "minimum values take the high end of the\n"
+                                        "gradient and maximum values the low end "
+                                        "(matplotlib \"_r\" palettes)"));
+    form->addRow(invertGradientCheck_);
+    connect(invertGradientCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        viewport_->setGradientInverted(on);
+    });
+
     propertyCombo_ = new QComboBox(this);
     propertyCombo_->setToolTip(tr("Per-atom scalar fields of the current structure\n"
                                   "(charges, |forces|, extxyz columns, ...)"));
@@ -262,6 +272,10 @@ void RepresentationPanel::syncColoringFromViewport()
         const QSignalBlocker blocker(gradientCombo_);
         gradientCombo_->setCurrentIndex(static_cast<int>(viewport_->style().gradient));
     }
+    {
+        const QSignalBlocker blocker(invertGradientCheck_);
+        invertGradientCheck_->setChecked(viewport_->style().invertGradient);
+    }
     if (mode == render::ColorMode::CustomScalar) {
         const QSignalBlocker blocker(propertyCombo_);
         const int index = propertyCombo_->findText(viewport_->customScalarField());
@@ -271,6 +285,7 @@ void RepresentationPanel::syncColoringFromViewport()
 
     const bool scalarMode = mode != render::ColorMode::Element;
     gradientCombo_->setEnabled(scalarMode);
+    invertGradientCheck_->setEnabled(scalarMode);
     propertyCombo_->setEnabled(mode == render::ColorMode::CustomScalar);
     rangeLabel_->setEnabled(scalarMode);
 

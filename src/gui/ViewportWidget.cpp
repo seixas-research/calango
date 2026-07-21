@@ -93,6 +93,12 @@ void ViewportWidget::setColorGradient(render::ColorGradient gradient)
     refreshStructure(); // scalars unchanged — only the palette differs
 }
 
+void ViewportWidget::setGradientInverted(bool inverted)
+{
+    renderer_.style().invertGradient = inverted;
+    refreshStructure(); // scalars unchanged — only the palette differs
+}
+
 void ViewportWidget::setCoordinationOptions(const core::CoordinationOptions& options)
 {
     coordinationOptions_ = options;

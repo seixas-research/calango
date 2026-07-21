@@ -33,6 +33,7 @@ private:
     QComboBox* modeCombo_;
     QComboBox* colorModeCombo_;
     QComboBox* gradientCombo_;
+    QCheckBox* invertGradientCheck_;
     QComboBox* propertyCombo_;
     QLabel* rangeLabel_;
     QSlider* atomScaleSlider_;

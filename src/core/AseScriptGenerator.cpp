@@ -180,12 +180,19 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
 
     case TaskKind::MolecularDynamics:
         out << "from ase import units\n"
-               "from ase.md.velocitydistribution import MaxwellBoltzmannDistribution\n"
+               "from ase.md.velocitydistribution import (MaxwellBoltzmannDistribution,\n"
+               "                                         Stationary, ZeroRotation)\n"
                "\n"
             << "temperature_K = " << c.temperatureK << "\n"
             << "md_steps = " << c.mdSteps << "\n"
                "\n"
-               "MaxwellBoltzmannDistribution(atoms, temperature_K=temperature_K)\n";
+               "MaxwellBoltzmannDistribution(atoms, temperature_K=temperature_K)\n"
+               "# Remove the net center-of-mass momentum the random velocities\n"
+               "# carry, so the system does not drift as a whole during MD.\n"
+               "Stationary(atoms)\n"
+               "if not atoms.pbc.any():\n"
+               "    # Isolated system: also remove net angular momentum.\n"
+               "    ZeroRotation(atoms)\n";
 
         switch (c.ensemble) {
         case MdEnsemble::VelocityVerletNVE:
