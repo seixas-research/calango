@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.23
+    VERSION 26.7.25
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -44,6 +44,14 @@ endif()
 # Point CMake at a virtualenv that has ASE installed:
 #   cmake -B build -DPython3_EXECUTABLE=/path/to/.venv/bin/python
 find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter Development.Embed)
+
+# Make pybind11 reuse the interpreter/library found by FindPython3 above
+# (its new-style FindPython path) instead of its legacy FindPythonLibs
+# search, which ignores Python3_EXECUTABLE and picks up whatever `python`
+# is first on PATH (e.g. a Conda/Homebrew libpython). Without this the
+# binary links a non-system libpython, which breaks dpkg-shlibdeps and
+# makes the .deb non-portable.
+set(PYBIND11_FINDPYTHON ON)
 
 # 2.12+ is needed for scoped_interpreter(PyConfig*).
 find_package(pybind11 2.12 CONFIG QUIET)
@@ -527,9 +535,10 @@ elseif(UNIX AND NOT APPLE)
             DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
     install(FILES packaging/linux/calango-mime.xml
             DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages)
-    install(FILES assets/calango/icon_transparent.svg
-            DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
-            RENAME calango.svg)
+    # No vector source exists in the repo (only the master PNG), so ship the
+    # PNG as the pixmaps icon — it resolves the .desktop "Icon=calango"
+    # lookup. Add a hicolor/scalable/apps/calango.svg install here if a real
+    # SVG is committed later.
     install(FILES assets/calango/icon_transparent.png
             DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps
             RENAME calango.png)

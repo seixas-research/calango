@@ -1,30 +1,61 @@
 \documentclass[11pt,a4paper]{article}
 
-\usepackage[margin=2.6cm]{geometry}
+\usepackage[margin=2.5cm,headheight=24pt,headsep=16pt]{geometry}
 \usepackage{lmodern}
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 \usepackage{microtype}
+\usepackage{graphicx}
 \usepackage{xcolor}
 \usepackage{booktabs}
 \usepackage{listings}
 \usepackage{enumitem}
-\usepackage[colorlinks=true,linkcolor=calangoteal,urlcolor=calangoteal]{hyperref}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
 \usepackage{parskip}
+\usepackage[colorlinks=true,linkcolor=calangoteal,urlcolor=calangoteal]{hyperref}
 
 \definecolor{calangoteal}{RGB}{0,110,110}
+\definecolor{calangodark}{RGB}{30,34,40}
 \definecolor{codebg}{RGB}{245,246,248}
-\definecolor{codeframe}{RGB}{210,214,220}
 \definecolor{shadegray}{RGB}{90,96,104}
 
+% --- Section typography: teal numbers, rule under sections -----------------
+\titleformat{\section}
+  {\Large\bfseries\color{calangodark}}
+  {\textcolor{calangoteal}{\thesection}}{0.8em}{}
+  [\vspace{-6pt}{\color{calangoteal}\rule{\textwidth}{1.2pt}}]
+\titleformat{\subsection}
+  {\large\bfseries\color{calangodark}}
+  {\textcolor{calangoteal}{\thesubsection}}{0.8em}{}
+\titlespacing*{\section}{0pt}{18pt}{10pt}
+\titlespacing*{\subsection}{0pt}{12pt}{6pt}
+
+% --- Running header/footer with the brand ----------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\raisebox{-4pt}{%
+  \includegraphics[height=18pt]{../assets/calango/logo_light.png}}}
+\fancyhead[R]{\small\color{shadegray}Calango Packaging Guide}
+\fancyfoot[L]{\small\color{shadegray}Leandro Seixas}
+\fancyfoot[R]{\small\color{shadegray}\thepage}
+\renewcommand{\headrulewidth}{0.8pt}
+\renewcommand{\headrule}{{\color{calangoteal}%
+  \hrule width\headwidth height\headrulewidth}}
+\renewcommand{\footrulewidth}{0pt}
+
+% --- Code blocks: teal accent bar, soft background -------------------------
 \lstdefinestyle{shell}{
   basicstyle=\ttfamily\small,
   backgroundcolor=\color{codebg},
-  frame=single,
-  rulecolor=\color{codeframe},
-  framesep=6pt,
-  xleftmargin=8pt,
-  xrightmargin=8pt,
+  frame=leftline,
+  framerule=2.4pt,
+  rulecolor=\color{calangoteal},
+  framesep=8pt,
+  xleftmargin=12pt,
+  xrightmargin=6pt,
+  aboveskip=10pt,
+  belowskip=10pt,
   breaklines=true,
   breakatwhitespace=true,
   postbreak=\mbox{\textcolor{shadegray}{$\hookrightarrow$}\space},
@@ -38,13 +69,29 @@
 \newcommand{\file}[1]{\texttt{#1}}
 \newcommand{\opt}[1]{\texttt{#1}}
 
-\title{\bfseries Calango Packaging Guide\\[4pt]
-\Large Building the macOS \file{.dmg} and Linux \file{.deb} installers}
-\author{Seixas Research}
-\date{July 2026 --- Calango 26.7.13}
-
 \begin{document}
-\maketitle
+
+% --- Title block with the brand logo ---------------------------------------
+\begin{titlepage}
+\centering
+\vspace*{2.2cm}
+\includegraphics[width=0.52\textwidth]{../assets/calango/logo_light.png}\par
+\vspace{1.4cm}
+{\color{calangoteal}\rule{0.72\textwidth}{1.6pt}}\par
+\vspace{0.9cm}
+{\Huge\bfseries Packaging Guide\par}
+\vspace{0.5cm}
+{\Large Building the macOS \file{.dmg} and Linux \file{.deb} installers\par}
+\vspace{0.9cm}
+{\color{calangoteal}\rule{0.72\textwidth}{1.6pt}}\par
+\vspace{1.6cm}
+{\large\bfseries Leandro Seixas\par}
+\vspace{0.3cm}
+{\large\color{shadegray}Seixas Research\par}
+\vfill
+{\large July 2026 --- Calango 26.7.23\par}
+\vspace*{1.2cm}
+\end{titlepage}
 
 \begin{abstract}
 \noindent
@@ -74,8 +121,8 @@ $\to$ \emph{build} $\to$ \emph{cpack}. The platform decides the generator:
 Platform & CPack generator & Artifact \\
 \midrule
 macOS (\opt{-DCALANGO\_MACOS\_BUNDLE=ON}) & \opt{DragNDrop} &
-\file{calango-26.7.13-macos-arm64.dmg} \\
-Linux & \opt{DEB} & \file{calango\_26.7.13\_amd64.deb} \\
+\file{calango-26.7.23-macos-arm64.dmg} \\
+Linux & \opt{DEB} & \file{calango\_26.7.23\_amd64.deb} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -134,7 +181,7 @@ cmake --build build-dmg -j 8
 cd build-dmg && cpack
 \end{lstlisting}
 
-The result is \file{build-dmg/calango-26.7.13-macos-arm64.dmg}. Mounting
+The result is \file{build-dmg/calango-26.7.23-macos-arm64.dmg}. Mounting
 it shows \file{calango.app} next to an \file{/Applications} symlink ---
 the standard drag-to-install layout. There is deliberately no
 click-through license sheet
@@ -183,7 +230,7 @@ disk image. The install rules perform, in order:
 \subsection{Verification}
 
 \begin{lstlisting}
-APP=_CPack_Packages/Darwin/DragNDrop/calango-26.7.13-macos-arm64/calango.app
+APP=_CPack_Packages/Darwin/DragNDrop/calango-26.7.23-macos-arm64/calango.app
 
 # 1. Signature must verify strictly, including nested code
 codesign --verify --deep --strict "$APP"
@@ -192,7 +239,7 @@ codesign --verify --deep --strict "$APP"
 "$APP/Contents/MacOS/calango" --probe-python
 
 # 3. The image must mount without an SLA prompt
-hdiutil attach -readonly -nobrowse calango-26.7.13-macos-arm64.dmg
+hdiutil attach -readonly -nobrowse calango-26.7.23-macos-arm64.dmg
 \end{lstlisting}
 
 To rebuild the package from a clean state, clear the staging area first
@@ -247,31 +294,59 @@ sudo apt install build-essential cmake ninja-build \
   qt6-base-dev libqt6svg6-dev libqt6opengl6-dev \
   libgl1-mesa-dev python3-dev python3-venv \
   dpkg-dev file
-
-python3 -m venv .venv && .venv/bin/pip install ase
 \end{lstlisting}
 
 \opt{dpkg-dev} provides \file{dpkg-shlibdeps}, which CPack uses to
 compute the runtime \texttt{Depends:} line automatically
 (\opt{CPACK\_DEBIAN\_PACKAGE\_SHLIBDEPS ON}).
 
+\medskip
+\noindent\textbf{Build against the system Python, not Conda/Homebrew.}
+The \file{.deb} must link the distribution's \file{libpython}
+(\file{/usr/lib/.../libpython3.x.so.1.0}, owned by the
+\opt{libpython3.x} package) so that \file{dpkg-shlibdeps} can resolve it
+into a proper \texttt{Depends:} line. If CMake is pointed at a Conda or
+Homebrew interpreter, the binary links a \file{libpython} under
+\file{\$HOME} that \file{dpkg-shlibdeps} cannot find --- packaging fails
+with \texttt{dpkg-shlibdeps: error: cannot find library} --- and the
+resulting package would not be installable on other machines anyway.
+\file{python3-dev} installs the system interpreter and its
+\file{libpython}; configure against \file{/usr/bin/python3}
+(Section~\ref{sec:deb-commands}). ASE is only a runtime
+\texttt{Recommends} (\texttt{apt install python3-ase}); it is not needed
+to build the package.
+
 \subsection{Commands}
+\label{sec:deb-commands}
+
+Configure a \emph{fresh}, Linux-native build directory --- never reuse a
+tree configured on another machine or OS (see the note below) --- and
+point CMake at the system interpreter:
 
 \begin{lstlisting}
 cmake -S . -B build-deb \
   -DCMAKE_BUILD_TYPE=Release \
-  -DPython3_EXECUTABLE=$PWD/.venv/bin/python
+  -DPython3_EXECUTABLE=/usr/bin/python3
 
 cmake --build build-deb -j$(nproc)
 
 cd build-deb && cpack
 \end{lstlisting}
 
-The result is \file{calango\_26.7.13\_<arch>.deb}. Install it via
+\noindent\textbf{Do not run \opt{cpack} in a build directory copied from
+another host.} Cloud-synced checkouts (Dropbox) carry the macOS
+\file{build/} tree along with the source. Its \file{CMakeCache.txt} and
+\file{CPackConfig.cmake} bake in absolute macOS tool paths, so a Linux
+\opt{cpack} there fails with \texttt{CPack Error: Cannot find
+description file name: [/opt/homebrew/share/cmake/Templates/...]}. A
+separate \file{build-deb} directory, configured by the Linux \file{cmake},
+avoids this entirely.
+
+The result is \file{calango\_26.7.23\_<arch>.deb}. Install it via
 \opt{apt} rather than \opt{dpkg -i}, so the dependencies are resolved:
 
 \begin{lstlisting}
-sudo apt install ./calango_26.7.13_amd64.deb
+sudo apt install ./calango_26.7.23_amd64.deb
 \end{lstlisting}
 
 \subsection{Package contents and desktop integration}
@@ -287,8 +362,8 @@ Path in package & Purpose \\
 (\texttt{Exec=calango \%F}) \\
 \file{/usr/share/mime/packages/calango-mime.xml} & MIME type for
 \file{.calproj} \\
-\file{/usr/share/icons/hicolor/scalable/apps/calango.svg} & Scalable icon \\
-\file{/usr/share/pixmaps/calango.png} & Legacy raster icon \\
+\file{/usr/share/pixmaps/calango.png} & Application icon (resolves the
+\file{.desktop} \texttt{Icon=calango} lookup) \\
 \file{/usr/lib/calango/python/} & Embedded Python (optional, see
 Section~\ref{sec:python-embed}) \\
 \bottomrule
@@ -313,8 +388,8 @@ disabled; users can also point Calango at any interpreter via
 \subsection{Verification}
 
 \begin{lstlisting}
-dpkg-deb --info  calango_26.7.13_amd64.deb   # control fields, Depends
-dpkg-deb --contents calango_26.7.13_amd64.deb
+dpkg-deb --info  calango_26.7.23_amd64.deb   # control fields, Depends
+dpkg-deb --contents calango_26.7.23_amd64.deb
 
 # after installing:
 calango --probe-python
@@ -322,10 +397,47 @@ xdg-mime query default application/x-calango-project
 \end{lstlisting}
 
 \noindent
-\textbf{Status note:} the DEB configuration is complete but has so far
-been validated only structurally (the development machine is a Mac
-without \file{dpkg}). The first CI or VM build on Ubuntu should run the
-verification steps above.
+\textbf{Status note:} the DEB pipeline has been built and verified
+end-to-end on Ubuntu (\file{dpkg-deb --info} shows the auto-computed
+\texttt{Depends:}, including \opt{libpython3.12t64} and the Qt~6 runtime
+libraries). Running it in CI on a clean Ubuntu 22.04/24.04 image remains
+worthwhile to catch host-specific assumptions.
+
+\subsection{Troubleshooting}
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{0.44\textwidth}p{0.5\textwidth}@{}}
+\toprule
+Symptom & Cause / fix \\
+\midrule
+\texttt{CPack Error: Cannot find description file name:
+[/opt/homebrew/.../CPack.GenericDescription.txt]} &
+\opt{cpack} was run in a build directory configured on macOS (a
+Dropbox-synced \file{build/} tree). Configure a fresh \file{build-deb}
+with the Linux \file{cmake}; never reuse a cross-platform build tree. \\
+\addlinespace
+\texttt{file INSTALL cannot find
+".../assets/calango/icon\_transparent.svg"} &
+A stale install rule referenced a vector icon that is not in the repo.
+The Linux install now ships \file{icon\_transparent.png} to
+\file{/usr/share/pixmaps}; add a
+\file{hicolor/scalable/apps/calango.svg} install only if a real SVG is
+committed. \\
+\addlinespace
+\texttt{dpkg-shlibdeps: error: cannot find library} during
+\opt{cpack} &
+The binary links a non-system \file{libpython} (Conda/Homebrew on
+\texttt{\$PATH}). Configure with
+\opt{-DPython3\_EXECUTABLE=/usr/bin/python3}. The build sets
+\opt{PYBIND11\_FINDPYTHON=ON} so pybind11 reuses the \file{FindPython3}
+interpreter instead of its legacy \file{PATH} search; check
+\lstinline|readelf -d build-deb/calango| shows
+\file{libpython3.x.so.1.0} from \file{/usr/lib}, not from
+\file{\$HOME}. \\
+\bottomrule
+\end{tabular}
+\end{center}
 
 \section{The embedded Python environment}
 \label{sec:python-embed}
