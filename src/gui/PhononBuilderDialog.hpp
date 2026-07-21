@@ -39,8 +39,10 @@ public:
     /// True when the user chose to only generate displaced structures.
     bool generateDisplacementsOnly() const;
 
-    /// Reference supercell + one frame per (atom, axis, ±δ) displacement.
-    /// Requires ASE (supercell construction); throws std::runtime_error.
+    /// Reference supercell + one frame per (supercell atom, axis, ±δ)
+    /// displacement: the supercell is expanded first and every atom in it
+    /// is displaced (6·N_supercell + 1 frames). Requires ASE (supercell
+    /// construction); throws std::runtime_error.
     std::vector<std::shared_ptr<core::Structure>> buildDisplacedFrames() const;
 
     core::PhononConfig config() const;

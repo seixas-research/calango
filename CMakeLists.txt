@@ -151,8 +151,8 @@ qt_add_executable(calango
     src/gui/BondEditorDialog.cpp
     src/gui/PeriodicTableDialog.hpp
     src/gui/PeriodicTableDialog.cpp
-    src/gui/SlabBuilderDialog.hpp
-    src/gui/SlabBuilderDialog.cpp
+    src/gui/SlabWizard.hpp
+    src/gui/SlabWizard.cpp
     src/gui/PreferencesDialog.hpp
     src/gui/PreferencesDialog.cpp
     src/gui/EnvFile.hpp

@@ -1,8 +1,14 @@
 #version 330 core
 
-// Blinn-Phong with up to 4 independent directional lights.
+// Blinn-Phong with up to 4 independent directional lights (key, fill, ...).
 // Light directions are in VIEW space (camera-relative), so lighting stays
 // fixed relative to the viewer while the camera orbits the structure.
+//
+// This single program shades EVERY instanced mesh — atomic spheres, bond
+// cylinders and cell tubes — so ambient, diffuse and specular terms are
+// evaluated identically on all of them from their per-vertex surface
+// normals (cylinders carry radial normals; mesh.vert's inverse-transpose
+// keeps them correct under the cylinders' non-uniform axis scaling).
 
 #define MAX_LIGHTS 4
 

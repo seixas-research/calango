@@ -269,19 +269,21 @@ std::vector<std::shared_ptr<core::Structure>>
 PhononBuilderDialog::buildDisplacedFrames() const
 {
     const core::PhononConfig c = config();
-    // Displacements target the original (primitive) atoms; atoms.repeat
-    // keeps them as the first N entries of the supercell.
+    // Build the fully expanded supercell FIRST, then displace every atom
+    // it contains — a displacement set generated from the original cell
+    // atoms alone would miss the supercell copies and yield an incomplete
+    // force-constant sampling for external codes.
     const core::Structure base = periodic_
         ? pybridge::AseBridge::makeSupercell(*structure_, c.supercell[0],
                                              c.supercell[1], c.supercell[2])
         : *structure_;
-    const std::size_t primitiveCount = structure_->size();
+    const std::size_t displacedCount = base.size();
 
     std::vector<std::shared_ptr<core::Structure>> frames;
-    frames.reserve(6 * primitiveCount + 1);
+    frames.reserve(6 * displacedCount + 1);
     frames.push_back(std::make_shared<core::Structure>(base)); // reference
 
-    for (std::size_t atom = 0; atom < primitiveCount; ++atom) {
+    for (std::size_t atom = 0; atom < displacedCount; ++atom) {
         for (int axis = 0; axis < 3; ++axis) {
             for (const double sign : {+1.0, -1.0}) {
                 auto frame = std::make_shared<core::Structure>(base);
@@ -324,8 +326,16 @@ void PhononBuilderDialog::refreshPreview()
     const bool isCustomMace =
         isMace && c.calculator.maceSource == core::MaceModelSource::CustomFile;
 
-    const std::size_t frameCount = 6 * structure_->size() + 1;
-    countLabel_->setText(tr("%1 (reference + 6N displacements)").arg(frameCount));
+    // Displacements act on the expanded supercell, so the frame count
+    // scales with the supercell multiplicity for periodic systems.
+    const std::size_t multiplicity = periodic_
+        ? static_cast<std::size_t>(c.supercell[0]) * c.supercell[1] * c.supercell[2]
+        : 1;
+    const std::size_t frameCount = 6 * structure_->size() * multiplicity + 1;
+    countLabel_->setText(
+        tr("%1 (reference + 6 × %2 supercell atoms)")
+            .arg(frameCount)
+            .arg(structure_->size() * multiplicity));
 
     runButton_->setText(displacedOnly ? tr("Generate") : tr("Run"));
     calculatorCombo_->setEnabled(!displacedOnly);

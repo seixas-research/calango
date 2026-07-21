@@ -18,7 +18,7 @@
 #include "gui/PeriodicTableDialog.hpp"
 #include "gui/PreferencesDialog.hpp"
 #include "gui/RepresentationPanel.hpp"
-#include "gui/SlabBuilderDialog.hpp"
+#include "gui/SlabWizard.hpp"
 #include "gui/EnergyPlotWidget.hpp"
 #include "gui/JobLogWidget.hpp"
 #include "gui/StructureInfoWidget.hpp"
@@ -70,6 +70,10 @@ namespace calango::gui {
 
 namespace {
 constexpr std::size_t kMaxUndoDepth = 50;
+/// Version tag for saveState/restoreState. Bumped when the default dock
+/// grid changes so stale saved layouts don't override the new default
+/// (v2 = the 8-zone grid workspace).
+constexpr int kLayoutVersion = 2;
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent)
@@ -209,9 +213,9 @@ void MainWindow::createMenusAndDocks()
 
     QMenu* buildMenu = menuBar()->addMenu(tr("&Build"));
     buildMenu->addAction(tr("Create &Supercell…"), this, &MainWindow::createSupercell);
-    buildMenu->addAction(tr("Cleave S&urface (Slab)…"), this, &MainWindow::cleaveSurface);
+    buildMenu->addAction(tr("&Surface Slab…"), this, &MainWindow::cleaveSurface);
     buildMenu->addAction(tr("&Nanomaterial Builder…"), this, &MainWindow::openNanoBuilder);
-    buildMenu->addAction(tr("&Phonon Builder (Finite Displacements)…"),
+    buildMenu->addAction(tr("&Normal Modes / Phonon Builder…"),
                          this, &MainWindow::openPhononBuilder);
     buildMenu->addAction(tr("By &Examples…"), this, &MainWindow::openExamplesBrowser);
 
@@ -237,34 +241,40 @@ void MainWindow::createMenusAndDocks()
     viewToolbar->addAction(tr("Frame"), viewport_, &ViewportWidget::frameStructure);
     viewToolbar->addAction(orthoAction);
 
-    auto* infoDock = new QDockWidget(tr("Structure"), this);
+    // ----- 8-zone grid workspace (4 columns × 2 rows) ----------------------
+    //
+    //   | 1 Structure | 2-3 Viewport | 4 Representation   |
+    //   | 5 Lighting  | 6-7 Job      | 8 Unit Cell & Axes |
+    //
+    // The side columns own their corners, so the bottom dock area (Job)
+    // spans only the middle columns — the central widget (tab bar +
+    // viewport + timeline) fills zones 2-3. Every zone stays resizable
+    // via the dock splitters, and panels remain re-dockable/floatable.
+    setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
+    setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
+
+    auto* infoDock = new QDockWidget(tr("Structure"), this); // zone 1
     infoDock->setObjectName(QStringLiteral("structureDock"));
     infoWidget_ = new StructureInfoWidget(infoDock);
     infoDock->setWidget(infoWidget_);
     addDockWidget(Qt::LeftDockWidgetArea, infoDock);
 
-    // Viewport settings as three independent dock panels, tabbed on the
-    // right by default; each can be re-docked side-by-side or floated.
-    auto* reprDock = new QDockWidget(tr("Representation"), this);
+    auto* lightingDock = new QDockWidget(tr("Lighting"), this); // zone 5
+    lightingDock->setObjectName(QStringLiteral("lightingDock"));
+    lightingDock->setWidget(new LightingPanel(viewport_, lightingDock));
+    splitDockWidget(infoDock, lightingDock, Qt::Vertical);
+
+    auto* reprDock = new QDockWidget(tr("Representation"), this); // zone 4
     reprDock->setObjectName(QStringLiteral("representationDock"));
     reprDock->setWidget(new RepresentationPanel(viewport_, reprDock));
     addDockWidget(Qt::RightDockWidgetArea, reprDock);
 
-    auto* cellAxesDock = new QDockWidget(tr("Unit Cell && Axes"), this);
+    auto* cellAxesDock = new QDockWidget(tr("Unit Cell && Axes"), this); // zone 8
     cellAxesDock->setObjectName(QStringLiteral("cellAxesDock"));
     cellAxesDock->setWidget(new CellAxesPanel(viewport_, cellAxesDock));
-    addDockWidget(Qt::RightDockWidgetArea, cellAxesDock);
+    splitDockWidget(reprDock, cellAxesDock, Qt::Vertical);
 
-    auto* lightingDock = new QDockWidget(tr("Lighting"), this);
-    lightingDock->setObjectName(QStringLiteral("lightingDock"));
-    lightingDock->setWidget(new LightingPanel(viewport_, lightingDock));
-    addDockWidget(Qt::RightDockWidgetArea, lightingDock);
-
-    tabifyDockWidget(reprDock, cellAxesDock);
-    tabifyDockWidget(cellAxesDock, lightingDock);
-    reprDock->raise();
-
-    jobDock_ = new QDockWidget(tr("Job"), this);
+    jobDock_ = new QDockWidget(tr("Job"), this); // zones 6-7
     jobDock_->setObjectName(QStringLiteral("jobDock"));
     auto* jobTabs = new QTabWidget(jobDock_);
     jobLogWidget_ = new JobLogWidget(jobTabs);
@@ -274,6 +284,14 @@ void MainWindow::createMenusAndDocks()
     jobDock_->setWidget(jobTabs);
     addDockWidget(Qt::BottomDockWidgetArea, jobDock_);
 
+    // Default grid proportions: side columns ~290 px, bottom row ~240 px,
+    // side columns split evenly between their two zones.
+    resizeDocks({infoDock, lightingDock}, {290, 290}, Qt::Horizontal);
+    resizeDocks({reprDock, cellAxesDock}, {290, 290}, Qt::Horizontal);
+    resizeDocks({infoDock, lightingDock}, {1, 1}, Qt::Vertical);
+    resizeDocks({reprDock, cellAxesDock}, {1, 1}, Qt::Vertical);
+    resizeDocks({jobDock_}, {240}, Qt::Vertical);
+
     viewMenu->addSeparator();
     viewMenu->addAction(infoDock->toggleViewAction());
     viewMenu->addAction(reprDock->toggleViewAction());
@@ -281,17 +299,20 @@ void MainWindow::createMenusAndDocks()
     viewMenu->addAction(lightingDock->toggleViewAction());
     viewMenu->addAction(jobDock_->toggleViewAction());
 
-    // Reapply the layout the user left behind last session.
+    // Reapply the layout the user left behind last session. The version
+    // tag rejects layouts saved before the 8-zone grid existed, so the
+    // new default appears once and user rearrangements persist after.
     const QSettings settings;
     restoreGeometry(settings.value(QStringLiteral("window/geometry")).toByteArray());
-    restoreState(settings.value(QStringLiteral("window/state")).toByteArray());
+    restoreState(settings.value(QStringLiteral("window/state")).toByteArray(),
+                 kLayoutVersion);
 }
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
     QSettings settings;
     settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
-    settings.setValue(QStringLiteral("window/state"), saveState());
+    settings.setValue(QStringLiteral("window/state"), saveState(kLayoutVersion));
     QMainWindow::closeEvent(event);
 }
 
@@ -923,22 +944,22 @@ void MainWindow::cleaveSurface()
 {
     Document* doc = currentDocument();
     if (!doc || !doc->structure || !doc->structure->cell().isDefined()) {
-        QMessageBox::information(this, tr("Cleave Surface"),
+        QMessageBox::information(this, tr("Surface Slab"),
                                  tr("Open a bulk structure with a unit cell first."));
         return;
     }
     if (!ensureAseAvailable())
         return;
 
-    // Live-preview builder: parameters rebuild the slab on the fly and the
-    // surface vectors / thickness are reported before insertion.
-    SlabBuilderDialog dialog(doc->structure, this);
-    if (dialog.exec() != QDialog::Accepted || !dialog.result())
+    // Three-stage wizard: orientation (draggable in-plane vectors) →
+    // cut / terminations (cross-section) → vacuum + 3D preview.
+    SlabWizard wizard(doc->structure, this);
+    if (wizard.exec() != QDialog::Accepted || !wizard.result())
         return;
 
     pushUndo();
-    replaceCurrentStructure(dialog.result(),
-                            tr("%1 %2").arg(doc->fileName, dialog.resultLabel()));
+    replaceCurrentStructure(wizard.result(),
+                            tr("%1 %2").arg(doc->fileName, wizard.resultLabel()));
     statusBar()->showMessage(tr("Slab created: %1 atoms").arg(doc->structure->size()));
 }
 

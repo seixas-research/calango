@@ -17,6 +17,7 @@
 - **Representation Modes:** Ball-and-stick, space-filling (CPK), and wireframe, with multiple-bond perception (double/triple bonds rendered as parallel cylinders).
 - **Gradient Bond Coloring:** Each bond blends smoothly from one atom's color to the other's (Gouraud-interpolated along the cylinder axis in the instanced shader), toggleable back to the classic half-and-half split.
 - **Modular Dock Panels:** Viewport settings live in three independent dock widgets — Representation, Unit Cell and Axes (including an axes-triad size control), and Lighting — which can be docked side-by-side, stacked as tabs, or floated; the layout persists across sessions.
+- **8-Zone Grid Workspace:** The default layout is a 4x2 grid — Structure, the spanning 3D viewport, and Representation across the top row; Lighting, the spanning Job console, and Unit Cell and Axes across the bottom — with every zone resizable via splitters.
 - **Dynamic Atom Color Mapping:** Four coloring modes selectable from the Display panel, applied to atoms and their bond halves in every representation:
   - *Element (CPK):* the Jmol palette with per-element user overrides.
   - *Coordination Number (CN):* discrete CN values mapped along a continuous gradient.
@@ -33,7 +34,7 @@
 - **Editing Tools:** Add/delete atoms, change chemical species, translate selections, all with snapshot undo/redo; ray-cast picking with click and Ctrl/Cmd+click multi-selection.
 - **Periodic Table Selector:** Adding an atom or changing a selection's element opens a graphical periodic table (Z = 1 to 118, colored by chemical family) for single-click selection.
 - **Interactive Bond Editor:** Toggle automatic bond perception, tune the covalent cutoff multiplier live, and manually add or suppress individual bonds between atom pairs (by index or from the two-atom viewport selection); overrides live on the structure and are undoable.
-- **Slab Generator with Live Preview:** The surface cleaver shows a debounced 3D preview plus the surface unit-cell vectors u and v (lengths and angle), slab thickness, and atom count before anything is inserted into the workspace.
+- **Three-Stage Surface Slab Wizard:** (1) pick the orientation with Miller spinboxes or by dragging the in-plane cell vectors on a lattice canvas — snapped vectors recompute the nearest integer (h k l) exactly; (2) choose top/bottom termination layers and thickness on an orthogonal cross-section view; (3) configure top/bottom or centered vacuum with a full 3D preview before insertion.
 - **Trajectory Export:** Save multi-frame datasets as extended XYZ, multi-frame XYZ, ASE .traj, or multi-model PDB.
 - **Databases and Examples:** Curated benchmark presets (diamond, MoS2 phases, graphene, aromatic molecules) plus Materials Project fetch-by-id through the documented REST API.
 - **Deformation and Randomization:** Gaussian or uniform noise on positions and/or cell vectors (affine strain), single-shot or as multi-frame stochastic trajectories.
@@ -46,7 +47,7 @@
 - **Subprocess Isolation:** Jobs run as separate processes in per-job directories with live log capture, progress markers, an energy-convergence plot, and automatic trajectory loading on completion. A conda-environment selector routes jobs to any interpreter.
 
 ### Vibrational Analysis: Phonon Builder
-- **Finite Displacements (Build menu):** Constructs the supercell and applies plus/minus displacements (default 0.01 angstrom) along x, y, and z for every atom — 6N + 1 configurations, following the standard finite-displacement recipe (Phonopy-style; symmetry reduction is on the roadmap).
+- **Finite Displacements (Build menu):** Constructs the fully expanded supercell first and then applies plus/minus displacements (default 0.01 angstrom) along x, y, and z to every atom it contains — 6N_supercell + 1 configurations, following the standard finite-displacement recipe (Phonopy-style; symmetry reduction is on the roadmap).
 - **Two Workflows:**
   - *Generate displaced structures:* the displacement set opens as a trajectory tab, ready for inspection or export to external DFT codes.
   - *Run calculation:* a generated ASE script computes forces with EMT, Lennard-Jones, or MACE, assembles force constants and the dynamical matrix (acoustic sum rule enforced), and reports vibrational frequencies.

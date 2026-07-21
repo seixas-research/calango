@@ -197,9 +197,13 @@ core::Structure AseBridge::makeSlab(const core::Structure& structure,
                                     int h, int k, int l, int layers, double vacuum)
 {
     try {
-        const py::object slab = py::module_::import("ase.build").attr("surface")(
-            toAtoms(structure), py::make_tuple(h, k, l), layers,
-            py::arg("vacuum") = vacuum);
+        const py::object surface = py::module_::import("ase.build").attr("surface");
+        // vacuum <= 0 is deprecated (future ValueError): omit the kwarg to
+        // get a continuous bulk-like stack instead.
+        const py::object slab = vacuum > 0.0
+            ? surface(toAtoms(structure), py::make_tuple(h, k, l), layers,
+                      py::arg("vacuum") = vacuum)
+            : surface(toAtoms(structure), py::make_tuple(h, k, l), layers);
         return fromAtoms(slab);
     } catch (const py::error_already_set& e) {
         rethrow(e, "Failed to cleave surface (is a bulk unit cell defined?)");

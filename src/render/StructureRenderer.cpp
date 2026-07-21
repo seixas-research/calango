@@ -81,7 +81,9 @@ void buildSphere(int stacks, int slices,
 }
 
 /// Open-ended unit cylinder: radius 1, axis +z, spanning z in [0, 1].
-/// End caps are unnecessary — sphere instances cover the joints.
+/// End caps are unnecessary — sphere instances cover the joints. Each
+/// vertex carries its radial surface normal, so bonds receive the same
+/// multi-light Blinn-Phong shading as the atom spheres (shared program).
 void buildCylinder(int segments,
                    std::vector<float>& vertices, std::vector<unsigned int>& indices)
 {

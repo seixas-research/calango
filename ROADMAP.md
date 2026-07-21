@@ -2,7 +2,7 @@
 
 This roadmap outlines the core development phases for building a cross-platform desktop application for materials science using C++20, Qt6, OpenGL, and Python/ASE.
 
-> Status as of v0.9 — checked items are implemented; partial items carry a note.
+> Status as of v0.10 — checked items are implemented; partial items carry a note.
 
 ---
 
@@ -160,6 +160,20 @@ This roadmap outlines the core development phases for building a cross-platform 
 *   [ ] Hover highlight and per-atom labels in the viewport.
 *   [ ] Per-atom (not just per-element) style overrides and selection-based styling.
 *   [ ] Bond-editor visual feedback: highlight the pending pair in the viewport.
+
+## 📅 Phase 13: Workspace Grid, Slab Wizard & Phonon Fix (v0.10)
+**Focus:** Fixed-grid workspace default, staged surface construction, and finite-displacement correctness.
+
+*   [x] Phonon displacement bug fix (Build → Normal Modes / Phonon Builder): displaced-structure generation now expands the supercell FIRST and displaces every atom it contains (6·N_supercell + 1 frames), instead of displacing only the original cell atoms; the frame-count readout scales with the supercell multiplicity. *(The ase.phonons job path was already supercell-correct via ASE's own machinery and is unchanged.)*
+*   [x] Bond-cylinder lighting parity verified: spheres, bond cylinders and cell tubes all render through the one instanced Blinn-Phong program (per-vertex radial normals, inverse-transpose normal transform, all active key/fill lights with ambient/diffuse/specular) — contract now documented in mesh.frag and the cylinder builder.
+*   [x] 8-zone grid workspace (4 columns × 2 rows): Structure | Viewport (span) | Representation on top, Lighting | Job (span) | Unit Cell & Axes below — implemented with dock-area corner ownership so the Job dock spans only the middle columns; all zones splitter-resizable, panels still re-dockable/floatable, and the saved-layout version tag was bumped so the new default applies over stale layouts exactly once.
+*   [x] Surface Slab wizard, stage 1 — orientation: Miller spinboxes + axonometric lattice canvas showing the surface parallelogram and in-plane vectors u, v; vector tips drag-snap to lattice points, and since snapped vectors are integer lattice combinations p·a, q·a, the Miller indices come out exactly as the integer cross product p × q (gcd-reduced, positive-leading). Canonical u/v recovery from ASE's rotated slab cell goes through the rotation-invariant metric tensor. *(Validated against ase.build.surface for fcc (111)/(100)/(110)/(211) and diamond (111).)*
+*   [x] Surface Slab wizard, stage 2 — cut: orthogonal cross-section canvas with atomic layers clustered along the surface normal (0.1 Å tolerance — resolves the 0.78 Å Si(111) bilayer splitting into separate terminations); clicking layers assigns top/bottom terminations, with synchronized layer-count and Ångström-thickness controls.
+*   [x] Surface Slab wizard, stage 3 — vacuum: top/bottom vacuum spinboxes with a symmetric/centered mode, live 3D preview (full viewport renderer), and final slab assembly in C++ (layer slice, re-basing, c = thickness + vacua) inserted into the active tab on Finish.
+*   [x] ase.build.surface vacuum ≤ 0 deprecation fixed in the bridge (kwarg omitted for continuous bulk-like stacks).
+*   [ ] Multiple termination *chemistries* offered as presets (e.g. Mo- vs S-terminated) rather than raw layer picking.
+*   [ ] In-plane supercell repetition (n × m) as a wizard stage.
+*   [ ] Wizard-built slab reconstructions (adatoms, missing-row) as an optional stage 4.
 
 ## 🚀 Future Modules (Post-MVP)
 *   **Remote Job Submission:** Connect to HPC clusters using SSH/SFTP and generate SLURM/PBS submission scripts.
