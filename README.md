@@ -98,24 +98,23 @@
 Calango enforces a strict Model-View-Controller (MVC) split to ensure stability, performance, and easy extension:
 
 ```
-            +----------------------------------------------+
-            |                  gui/  (Qt Widgets)          |
-            |   MainWindow = Controller                    |
-            |   ViewportWidget / docks / dialogs = Views   |
-            +------+----------------+-------------+--------+
-                   | observes       | uses        | uses
-            +------v------+  +------v-------+  +--v-----------+
-            |   render/   |  |python_bridge/|  |    jobs/     |
-            | OpenGL View |  | embedded ASE |  |   QProcess   |
-            +------+------+  +------+-------+  +--------------+
-                   | reads          | converts
-            +------v----------------v-------+
-            |            core/              |
-            |  Model: Structure, Atom,      |
-            |  UnitCell, Coordination, Rdf, |
-            |  CalculatorConfig, script     |
-            |  generators (ASE, phonons)    |
-            +-------------------------------+
+            ┌──────────────────────────────────────────────┐
+            │                  gui/  (Qt Widgets)          │
+            │   MainWindow = Controller                    │
+            │   ViewportWidget / docks / dialogs = Views   │
+            └──────┬────────────────┬─────────────┬────────┘
+                   │ observes       │ uses        │ uses
+            ┌──────▼──────┐  ┌──────▼───────┐  ┌──▼───────────┐
+            │   render/   │  │python_bridge/│  │    jobs/     │
+            │ OpenGL View │  │ embedded ASE │  │   QProcess   │
+            └──────┬──────┘  └──────┬───────┘  └──────────────┘
+                   │ reads          │ converts
+            ┌──────▼────────────────▼───────┐
+            │            core/              │
+            │  Model: Structure, Atom,      │
+            │  UnitCell, CalculatorConfig,  │
+            │  AseScriptGenerator           │
+            └───────────────────────────────┘
 ```
 
 1. **`core/` (Model):** Physics and geometry — structures, cells, bond perception, coordination and RDF analysis, and the ASE/phonon script generators. Pure C++ with zero GUI or Python dependencies.
