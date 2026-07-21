@@ -7,8 +7,11 @@
 #include <QPainter>
 #include <QWheelEvent>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -55,9 +58,11 @@ void ViewportWidget::setStructure(std::shared_ptr<const core::Structure> structu
         selection_.clear();
         Q_EMIT selectionChanged(0);
     }
+    updateColorScalars();
     structureDirty_ = true;
     if (frameCamera)
         frameStructure();
+    Q_EMIT structureReplaced();
     update();
 }
 
@@ -87,6 +92,67 @@ void ViewportWidget::setRepresentation(render::RepresentationMode mode)
 {
     renderer_.style().mode = mode;
     refreshStructure();
+}
+
+void ViewportWidget::setColorMode(render::ColorMode mode, const QString& customField)
+{
+    renderer_.style().colorMode = mode;
+    customField_ = customField;
+    updateColorScalars();
+    refreshStructure();
+}
+
+void ViewportWidget::setColorGradient(render::ColorGradient gradient)
+{
+    renderer_.style().gradient = gradient;
+    refreshStructure(); // scalars unchanged — only the palette differs
+}
+
+void ViewportWidget::setCoordinationOptions(const core::CoordinationOptions& options)
+{
+    coordinationOptions_ = options;
+    const auto mode = renderer_.style().colorMode;
+    if (mode == render::ColorMode::CoordinationNumber
+        || mode == render::ColorMode::GeneralizedCoordination) {
+        updateColorScalars();
+        refreshStructure();
+    }
+}
+
+void ViewportWidget::updateColorScalars()
+{
+    std::vector<float> scalars;
+    if (structure_ && !structure_->empty()) {
+        switch (renderer_.style().colorMode) {
+        case render::ColorMode::Element:
+            break;
+        case render::ColorMode::CoordinationNumber: {
+            const auto result = core::computeCoordination(*structure_, coordinationOptions_);
+            scalars.assign(result.cn.begin(), result.cn.end());
+            break;
+        }
+        case render::ColorMode::GeneralizedCoordination: {
+            const auto result = core::computeCoordination(*structure_, coordinationOptions_);
+            scalars.assign(result.gcn.begin(), result.gcn.end());
+            break;
+        }
+        case render::ColorMode::CustomScalar: {
+            const auto& fields = structure_->scalarFields();
+            if (const auto it = fields.find(customField_.toStdString());
+                it != fields.end())
+                scalars.assign(it->second.begin(), it->second.end());
+            break;
+        }
+        }
+    }
+
+    scalarRange_ = {};
+    if (!scalars.empty()) {
+        const auto [lo, hi] = std::minmax_element(scalars.begin(), scalars.end());
+        scalarRange_ = {true, *lo, *hi};
+    }
+    renderer_.setAtomScalars(std::move(scalars));
+    Q_EMIT colorMappingChanged();
 }
 
 void ViewportWidget::setBackgroundColor(const QColor& color)

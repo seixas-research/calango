@@ -77,8 +77,12 @@ qt_add_executable(calango
     src/core/KPath.cpp
     src/core/Rdf.hpp
     src/core/Rdf.cpp
+    src/core/Coordination.hpp
+    src/core/Coordination.cpp
     src/core/Noise.hpp
     src/core/Noise.cpp
+    src/core/PhononScriptGenerator.hpp
+    src/core/PhononScriptGenerator.cpp
 
     # python_bridge — embedded CPython + ASE interop
     src/python_bridge/PythonEngine.hpp
@@ -93,6 +97,8 @@ qt_add_executable(calango
     # render — OpenGL "View" over core::Structure (read-only access)
     src/render/Camera.hpp
     src/render/Camera.cpp
+    src/render/ColorMap.hpp
+    src/render/ColorMap.cpp
     src/render/StructureRenderer.hpp
     src/render/StructureRenderer.cpp
     src/render/RayTraceExporter.hpp
@@ -131,8 +137,12 @@ qt_add_executable(calango
     src/gui/LinePlotWidget.cpp
     src/gui/RdfDialog.hpp
     src/gui/RdfDialog.cpp
+    src/gui/CoordinationDialog.hpp
+    src/gui/CoordinationDialog.cpp
     src/gui/NanoBuilderDialog.hpp
     src/gui/NanoBuilderDialog.cpp
+    src/gui/PhononBuilderDialog.hpp
+    src/gui/PhononBuilderDialog.cpp
     src/gui/ExamplesDialog.hpp
     src/gui/ExamplesDialog.cpp
     src/gui/RayTraceDialog.hpp

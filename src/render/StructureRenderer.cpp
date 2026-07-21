@@ -7,6 +7,7 @@
 #include <QtMath>
 
 #include <algorithm>
+#include <utility>
 #include <vector>
 
 namespace calango::render {
@@ -171,6 +172,28 @@ QColor StructureRenderer::atomColor(int atomicNumber, const Style& style)
     return QColor(element.rgb[0], element.rgb[1], element.rgb[2]);
 }
 
+void StructureRenderer::setAtomScalars(std::vector<float> scalars)
+{
+    atomScalars_ = std::move(scalars);
+    scalarMin_ = 0.0f;
+    scalarMax_ = 1.0f;
+    if (!atomScalars_.empty()) {
+        const auto [lo, hi] = std::minmax_element(atomScalars_.begin(), atomScalars_.end());
+        scalarMin_ = *lo;
+        scalarMax_ = *hi;
+    }
+}
+
+QColor StructureRenderer::resolvedAtomColor(std::size_t index, int atomicNumber) const
+{
+    if (style_.colorMode == ColorMode::Element || index >= atomScalars_.size())
+        return atomColor(atomicNumber, style_);
+    // A flat field (all atoms identical) maps to the middle of the gradient.
+    const float range = scalarMax_ - scalarMin_;
+    const float t = range > 1e-12f ? (atomScalars_[index] - scalarMin_) / range : 0.5f;
+    return ColorMap::sample(style_.gradient, t);
+}
+
 void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
 {
     gl_ = gl;
@@ -304,7 +327,7 @@ void StructureRenderer::setStructure(const core::Structure* structure,
             const bool selected =
                 selection && selection->count(static_cast<int>(index)) > 0;
 
-            QColor color = atomColor(atom.atomicNumber, style_);
+            QColor color = resolvedAtomColor(index, atom.atomicNumber);
             if (selected) { // tint toward highlight orange
                 color = QColor::fromRgbF(0.45f * color.redF() + 0.55f,
                                          0.45f * color.greenF() + 0.55f * 0.62f,
@@ -333,8 +356,10 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                 const QVector3D dir = (pbImage - pa).normalized();
                 const float half = pa.distanceToPoint(pbImage) * 0.5f;
 
-                const QColor colorA = atomColor(a.atomicNumber, style_);
-                const QColor colorB = atomColor(b.atomicNumber, style_);
+                const QColor colorA = resolvedAtomColor(
+                    static_cast<std::size_t>(bond.i), a.atomicNumber);
+                const QColor colorB = resolvedAtomColor(
+                    static_cast<std::size_t>(bond.j), b.atomicNumber);
 
                 if (wireframe) {
                     // Single line regardless of order; halves colored per atom.

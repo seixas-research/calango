@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <utility>
 
 namespace calango::core {
 
@@ -35,16 +36,39 @@ int perceiveBondOrder(int zA, int zB, double distanceRatio)
 
 } // namespace
 
+void Structure::addAtom(const Atom& atom)
+{
+    atoms_.push_back(atom);
+    for (auto& [name, values] : scalarFields_) {
+        (void)name;
+        values.push_back(0.0);
+    }
+}
+
 void Structure::removeAtom(std::size_t index)
 {
-    if (index < atoms_.size())
-        atoms_.erase(atoms_.begin() + static_cast<std::ptrdiff_t>(index));
+    if (index >= atoms_.size())
+        return;
+    atoms_.erase(atoms_.begin() + static_cast<std::ptrdiff_t>(index));
+    for (auto& [name, values] : scalarFields_) {
+        (void)name;
+        if (index < values.size())
+            values.erase(values.begin() + static_cast<std::ptrdiff_t>(index));
+    }
 }
 
 void Structure::clear()
 {
     atoms_.clear();
     cell_ = UnitCell{};
+    scalarFields_.clear();
+}
+
+void Structure::setScalarField(const std::string& name, std::vector<double> values)
+{
+    if (values.size() != atoms_.size())
+        return;
+    scalarFields_[name] = std::move(values);
 }
 
 std::string Structure::chemicalFormula() const

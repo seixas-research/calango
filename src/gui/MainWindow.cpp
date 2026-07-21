@@ -5,8 +5,10 @@
 #include "core/Structure.hpp"
 #include "gui/BrillouinZoneDialog.hpp"
 #include "gui/CalculatorDialog.hpp"
+#include "gui/CoordinationDialog.hpp"
 #include "gui/ExamplesDialog.hpp"
 #include "gui/NanoBuilderDialog.hpp"
+#include "gui/PhononBuilderDialog.hpp"
 #include "gui/RayTraceDialog.hpp"
 #include "gui/RdfDialog.hpp"
 #include "gui/DisplaySettingsWidget.hpp"
@@ -166,6 +168,8 @@ void MainWindow::createMenusAndDocks()
     buildMenu->addAction(tr("Create &Supercell…"), this, &MainWindow::createSupercell);
     buildMenu->addAction(tr("Cleave S&urface (Slab)…"), this, &MainWindow::cleaveSurface);
     buildMenu->addAction(tr("&Nanomaterial Builder…"), this, &MainWindow::openNanoBuilder);
+    buildMenu->addAction(tr("&Phonon Builder (Finite Displacements)…"),
+                         this, &MainWindow::openPhononBuilder);
     buildMenu->addAction(tr("By &Examples…"), this, &MainWindow::openExamplesBrowser);
 
     QMenu* simulationMenu = menuBar()->addMenu(tr("&Simulation"));
@@ -178,6 +182,8 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showBrillouinZone);
     analysisMenu->addAction(tr("&Radial Distribution Function…"),
                             this, &MainWindow::showRdf);
+    analysisMenu->addAction(tr("&Coordination Numbers (CN / GCN)…"),
+                            this, &MainWindow::showCoordination);
 
     QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(tr("&Frame Structure"), QKeySequence(tr("F")),
@@ -1051,6 +1057,59 @@ void MainWindow::showRdf()
     }
     RdfDialog dialog(doc->structure, this);
     dialog.exec();
+}
+
+void MainWindow::showCoordination()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Coordination Numbers"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    CoordinationDialog dialog(doc->structure, viewport_, this);
+    dialog.exec();
+}
+
+void MainWindow::openPhononBuilder()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Phonon Builder"),
+                                 tr("Open or build a structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    PhononBuilderDialog dialog(doc->structure, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    if (dialog.generateDisplacementsOnly()) {
+        try {
+            auto frames = dialog.buildDisplacedFrames();
+            const auto frameCount = frames.size();
+            auto reference = frames.front();
+            addDocument(std::move(reference),
+                        tr("%1 (displacements)").arg(doc->fileName),
+                        std::move(frames));
+            statusBar()->showMessage(
+                tr("Generated %1 displaced structures (δ scrubbed on the timeline; "
+                   "save frames for external codes via File → Save Structure As)")
+                    .arg(frameCount));
+        } catch (const std::exception& e) {
+            QMessageBox::critical(this, tr("Phonon Builder"), QString::fromUtf8(e.what()));
+        }
+        return;
+    }
+
+    if (jobRunner_->isRunning()) {
+        QMessageBox::information(this, tr("Phonon Builder"),
+                                 tr("A job is already running — kill it first."));
+        return;
+    }
+    runScript(dialog.script(), dialog.pythonExecutable());
 }
 
 void MainWindow::openNanoBuilder()

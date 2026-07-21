@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Coordination.hpp"
 #include "render/Camera.hpp"
 #include "render/StructureRenderer.hpp"
 
@@ -55,6 +56,32 @@ public:
     void setShowCell(bool show);
     void setRepresentation(render::RepresentationMode mode);
 
+    // -- Scalar color mapping ----------------------------------------------
+
+    render::ColorMode colorMode() const { return renderer_.style().colorMode; }
+    /// Switch the atom coloring mode. `customField` names the structure
+    /// scalar field to map in CustomScalar mode (ignored otherwise).
+    /// CN/GCN scalars are (re)computed here and after every structure
+    /// replacement — trajectory playback re-colors frame by frame.
+    void setColorMode(render::ColorMode mode, const QString& customField = {});
+    void setColorGradient(render::ColorGradient gradient);
+    QString customScalarField() const { return customField_; }
+
+    /// Neighbor-cutoff settings the CN/GCN color modes use.
+    const core::CoordinationOptions& coordinationOptions() const {
+        return coordinationOptions_;
+    }
+    void setCoordinationOptions(const core::CoordinationOptions& options);
+
+    /// Min/max of the active scalar mapping (legend range); `valid` is
+    /// false in Element mode or when no scalars are available.
+    struct ScalarRange {
+        bool valid = false;
+        float min = 0.0f;
+        float max = 1.0f;
+    };
+    ScalarRange scalarRange() const { return scalarRange_; }
+
     QColor backgroundColor() const { return backgroundColor_; }
     void setBackgroundColor(const QColor& color);
 
@@ -90,6 +117,10 @@ public Q_SLOTS:
 
 Q_SIGNALS:
     void selectionChanged(int count);
+    /// A different Structure is now observed (its scalar fields may differ).
+    void structureReplaced();
+    /// The scalar color mapping was recomputed (mode, range or data changed).
+    void colorMappingChanged();
 
 protected:
     void initializeGL() override;
@@ -110,6 +141,10 @@ private:
     /// Re-upload instance buffers if dirty (requires a current context).
     void ensureUploaded();
 
+    /// Recompute the per-atom scalars for the active color mode and hand
+    /// them to the renderer (CN/GCN analysis or field lookup).
+    void updateColorScalars();
+
     /// Axis directions + labels for the triad (Cartesian or lattice).
     std::array<std::pair<QVector3D, QString>, 3> axesVectors() const;
     void drawAxesOverlayGl();
@@ -119,6 +154,9 @@ private:
     render::StructureRenderer renderer_;
     std::shared_ptr<const core::Structure> structure_;
     std::set<int> selection_;
+    QString customField_;
+    core::CoordinationOptions coordinationOptions_;
+    ScalarRange scalarRange_;
     QColor backgroundColor_{26, 28, 33};
     bool structureDirty_ = false;
     bool showAxes_ = true;

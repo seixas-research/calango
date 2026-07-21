@@ -60,7 +60,9 @@ private Q_SLOTS:
     void showFrame(int index);
     void showBrillouinZone();
     void showRdf();
+    void showCoordination();
     void openNanoBuilder();
+    void openPhononBuilder();
     void openExamplesBrowser();
     void openRayTraceDialog();
     void addRandomNoise();

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "render/ColorMap.hpp"
+
 #include <QColor>
 #include <QMatrix4x4>
 #include <QOpenGLBuffer>
@@ -64,6 +66,11 @@ public:
         float cellLineWidth = 1.0f;
         std::map<int, QColor> colorOverrides;      ///< Z -> user color
         std::map<int, float> radiusScaleOverrides; ///< Z -> per-element radius factor
+        /// Scalar color mapping: Element uses the CPK palette; the other
+        /// modes color atoms (and their bond halves) by the per-atom
+        /// scalars passed to setAtomScalars(), sampled along `gradient`.
+        ColorMode colorMode = ColorMode::Element;
+        ColorGradient gradient = ColorGradient::Viridis;
     };
 
     /// Display radius of an atom (Å) — the single source of truth shared
@@ -80,6 +87,13 @@ public:
     /// scene. Atoms whose index is in `selection` are drawn highlighted.
     void setStructure(const core::Structure* structure,
                       const std::set<int>* selection = nullptr);
+
+    /// Per-atom scalars driving the non-Element color modes (CN, GCN,
+    /// custom fields). Values are normalized to the [min, max] range
+    /// internally; an empty vector (or a size mismatch with the current
+    /// structure) falls back to element colors. Call setStructure()
+    /// afterwards to rebuild the instance colors.
+    void setAtomScalars(std::vector<float> scalars);
 
     void render(const QMatrix4x4& view, const QMatrix4x4& projection);
 
@@ -106,6 +120,10 @@ private:
         int vertexCount = 0;
     };
 
+    /// Color of atom `index`: the scalar mapping when active, otherwise
+    /// the (possibly overridden) element color.
+    QColor resolvedAtomColor(std::size_t index, int atomicNumber) const;
+
     void createMesh(InstancedMesh& mesh,
                     const std::vector<float>& vertices,
                     const std::vector<unsigned int>& indices);
@@ -120,6 +138,9 @@ private:
     bool initialized_ = false;
     Style style_;
     std::vector<Light> lights_ = defaultLights();
+    std::vector<float> atomScalars_; ///< per-atom values for scalar coloring
+    float scalarMin_ = 0.0f;
+    float scalarMax_ = 1.0f;
 
     QOpenGLShaderProgram meshProgram_;
     QOpenGLShaderProgram lineProgram_; ///< uniform-color lines (unit cell)

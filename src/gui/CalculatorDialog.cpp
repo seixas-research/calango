@@ -26,9 +26,9 @@ namespace {
 
 const auto kEnvSettingsKey = QStringLiteral("jobs/environmentPath");
 
-/// Accepts either a python executable path, a conda environment root, or
-/// its bin/ directory; returns the interpreter path or empty if invalid.
-QString resolveEnvironmentPython(const QString& input)
+} // namespace
+
+QString CalculatorDialog::resolveEnvironmentPython(const QString& input)
 {
     const QString trimmed = input.trimmed();
     if (trimmed.isEmpty())
@@ -51,8 +51,6 @@ QString resolveEnvironmentPython(const QString& input)
     }
     return {};
 }
-
-} // namespace
 
 CalculatorDialog::CalculatorDialog(QWidget* parent)
     : QDialog(parent)

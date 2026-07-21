@@ -223,6 +223,13 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
 
 } // namespace
 
+std::string AseScriptGenerator::calculatorSnippet(const CalculatorConfig& config)
+{
+    std::ostringstream out;
+    emitCalculator(out, config);
+    return out.str();
+}
+
 std::string AseScriptGenerator::generate(const CalculatorConfig& config,
                                          const std::string& structureFile)
 {

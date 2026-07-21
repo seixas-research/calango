@@ -3,7 +3,9 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
+#include <cmath>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace py = pybind11;
@@ -47,6 +49,43 @@ core::Structure AseBridge::fromAtoms(const py::handle& atoms)
         {c(1, 0), c(1, 1), c(1, 2)},
         {c(2, 0), c(2, 1), c(2, 2)},
         {pbcList[0], pbcList[1], pbcList[2]}));
+
+    // Extra per-atom arrays (extxyz columns: charges, forces, ...) become
+    // scalar fields for the custom color-mapping mode. 1D numeric arrays
+    // import directly; (N, 3) vector arrays contribute their magnitude as
+    // "|name|". Non-numeric arrays are skipped silently.
+    const auto n = symbols.size();
+    for (const auto& item : atoms.attr("arrays").cast<py::dict>()) {
+        const auto name = item.first.cast<std::string>();
+        if (name == "numbers" || name == "positions")
+            continue;
+        try {
+            const auto values =
+                np.attr("asarray")(item.second, py::arg("dtype") = "float64")
+                    .cast<py::array_t<double>>();
+            if (values.ndim() == 1 && static_cast<std::size_t>(values.shape(0)) == n) {
+                const auto v = values.unchecked<1>();
+                std::vector<double> field(n);
+                for (std::size_t i = 0; i < n; ++i)
+                    field[i] = v(static_cast<py::ssize_t>(i));
+                structure.setScalarField(name, std::move(field));
+            } else if (values.ndim() == 2
+                       && static_cast<std::size_t>(values.shape(0)) == n
+                       && values.shape(1) == 3) {
+                const auto v = values.unchecked<2>();
+                std::vector<double> magnitude(n);
+                for (std::size_t i = 0; i < n; ++i) {
+                    const auto row = static_cast<py::ssize_t>(i);
+                    magnitude[i] = std::sqrt(v(row, 0) * v(row, 0)
+                                             + v(row, 1) * v(row, 1)
+                                             + v(row, 2) * v(row, 2));
+                }
+                structure.setScalarField("|" + name + "|", std::move(magnitude));
+            }
+        } catch (const py::error_already_set&) {
+            continue;
+        }
+    }
     return structure;
 }
 

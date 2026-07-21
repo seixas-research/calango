@@ -16,6 +16,8 @@ class ViewportWidget;
 
 /// Dockable panel driving the renderer's Style and Lights:
 ///   - representation mode (ball-and-stick / space-filling / wireframe)
+///   - atom color mode (element CPK / CN / GCN / custom scalar field)
+///     with gradient selection and a live legend-range readout
 ///   - global atom-radius and bond-width scale sliders
 ///   - Atom Color Editor launcher
 ///   - up to render::kMaxLights directional lights with per-light
@@ -31,6 +33,9 @@ private Q_SLOTS:
     void removeLight();
     void loadSelectedLight();
     void applyLightEdits();
+    void applyColorMode();
+    void refreshPropertyList();
+    void syncColoringFromViewport();
 
 private:
     void refreshLightList(int selectRow);
@@ -40,6 +45,10 @@ private:
     ViewportWidget* viewport_;
 
     QComboBox* modeCombo_;
+    QComboBox* colorModeCombo_;
+    QComboBox* gradientCombo_;
+    QComboBox* propertyCombo_;
+    QLabel* rangeLabel_;
     QSlider* atomScaleSlider_;
     QDoubleSpinBox* atomScaleSpin_;
     QSlider* bondWidthSlider_;

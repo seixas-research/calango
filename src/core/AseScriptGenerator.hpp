@@ -19,6 +19,10 @@ public:
     /// relative name "structure.extxyz" inside the job directory).
     static std::string generate(const CalculatorConfig& config,
                                 const std::string& structureFile);
+
+    /// Just the calculator-construction block (imports + `atoms.calc = ...`),
+    /// for embedding in other generated scripts (e.g. the phonon builder).
+    static std::string calculatorSnippet(const CalculatorConfig& config);
 };
 
 } // namespace calango::core

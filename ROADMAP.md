@@ -2,7 +2,7 @@
 
 This roadmap outlines the core development phases for building a cross-platform desktop application for materials science using C++20, Qt6, OpenGL, and Python/ASE.
 
-> Status as of v0.2 — checked items are implemented; partial items carry a note.
+> Status as of v0.8 — checked items are implemented; partial items carry a note.
 
 ---
 
@@ -106,7 +106,8 @@ This roadmap outlines the core development phases for building a cross-platform 
 *   [x] Nanomaterial Builder dialog (ase.build): graphene sheets, zigzag/armchair nanoribbons (optional H termination), carbon nanotubes with chiral indices (n, m) and length, and MX₂ TMD monolayers (formula, 1T/2H phase, lattice parameters, vacuum).
 *   [x] Random noise generator: Gaussian or uniform displacements with amplitude (Å) and reproducible seed; targets positions, cell vectors (affine strain — atoms follow fractionally), or both. Undoable.
 *   [ ] RDF averaging over trajectory frames.
-*   [ ] Coordination-number and bond-angle distribution analyses.
+*   [x] Coordination-number analysis. *(Shipped in Phase 11 as the CN/GCN module; bond-angle distributions still pending below.)*
+*   [ ] Bond-angle distribution analysis.
 
 ## 📅 Phase 10: Overlays, Databases, Stochastic Trajectories & Ray Tracing (v0.7)
 **Focus:** Viewport furniture, external structure databases, noise trajectories, publication renders, and broad file-format coverage.
@@ -120,6 +121,24 @@ This roadmap outlines the core development phases for building a cross-platform 
 *   [x] Expanded ASE-backed I/O: Quantum ESPRESSO input/output (.in/.pwi/.pwo/.out), CASTEP .cell, LAMMPS data + dump trajectories, Gaussian .gjf/.com, SHELX .res, CIF — extension→format hints on read, explicit format mapping on save (QE export auto-fills pseudopotential placeholders). VASP: POSCAR I/O plus KPOINTS generation (Phase 8); INCAR templates remain part of calculator scripts.
 *   [ ] MP database tab: formula/keyword search with result list (currently by-ID fetch).
 *   [ ] Tachyon/POV-Ray trajectory batch rendering (frame sequences).
+
+## 📅 Phase 11: Topological Analysis, Scalar Color Mapping & Phonons (v0.8)
+**Focus:** Atomic-environment descriptors, data-driven viewport coloring, and finite-displacement vibrational analysis.
+
+*   [x] Coordination-number (CN) module: covalent-radius scaling (tolerance-adjustable) or fixed cutoff radius, with exact periodic-image enumeration — a primitive fcc cell correctly reports CN = 12 from self-images. *(Validated: fcc Cu primitive CN = 12; N₂ CN = 1; slab surface layers undercoordinated vs. bulk.)*
+*   [x] Generalized coordination numbers (GCN) after Calle-Vallejo et al. (DOI 10.1002/advs.202207644): neighbor CNs summed and normalized by a bulk reference cn_max (12 fcc/hcp, 8 bcc, 4 diamond, or auto = max CN found), ranking terrace/step/edge/vertex sites of nanoparticles and slabs.
+*   [x] Analysis → Coordination Numbers dialog: worker-thread computation, per-atom CN/GCN table with summary statistics (min/max/mean, cn_max used), and one-click "color viewport by CN / GCN".
+*   [x] Multi-mode atom color mapping in the renderer: Element (CPK) / CN / GCN / custom per-atom property, applied consistently to atoms and bond halves in ball-and-stick, space-filling and wireframe modes; selection highlight tint composes on top.
+*   [x] Scientific colormaps (Viridis, Plasma, Turbo) with normalized-range sampling, Display-panel gradient selector, and a live legend-range readout; trajectory playback recomputes CN/GCN per frame so dynamic mapping stays in sync.
+*   [x] Scalar-field infrastructure on `core::Structure` (named per-atom arrays, kept index-aligned through atom add/remove) with automatic import of extended-XYZ per-atom columns — 1D arrays directly, (N, 3) arrays as magnitudes (e.g. `|forces|`) — ready for charges, forces and local potentials.
+*   [x] Build → Phonon Builder (Finite Displacements): supercell size, displacement δ (default 0.01 Å), and calculator selection (EMT / Lennard-Jones / MACE foundation or custom checkpoints, cpu/cuda/mps), with the same editable syntax-highlighted script preview and conda-environment selector as the calculator dialog.
+*   [x] Displaced-structure generation in-app: reference supercell + 6N ±δ configurations opened as a trajectory tab (timeline-scrubbable), ready for export to external DFT codes.
+*   [x] Phonon pipeline via ase.phonons: force constants from finite displacements, dynamical matrix with acoustic sum rule, Γ-point frequencies as job-console results, dispersion along the ASE-suggested Brillouin-zone path (`phonon_bands.csv`) and DOS (`phonon_dos.csv`). *(Validated end-to-end: bulk Al/EMT 2×2×2 — three acoustic branches at Γ = 0.)*
+*   [x] Molecular branch via ase.vibrations for non-periodic systems: frequency summary (imaginary modes flagged), `vibrations.txt`, and per-mode animation trajectories (`vib.<n>.traj`) openable directly in Calango; zero/imaginary modes excluded from animation (divergent 1/ω amplitude).
+*   [ ] Symmetry-inequivalent displacement reduction (spglib/phonopy backend) to cut the 6N force evaluations.
+*   [ ] In-app phonon band-structure and DOS plots (LinePlotWidget) fed from the generated CSV files.
+*   [ ] Viewport colorbar overlay for the active scalar mapping (numeric legend in exports).
+*   [ ] Per-atom scalar editing/import UI (paste charges, load from file) beyond extxyz auto-import.
 
 ## 🚀 Future Modules (Post-MVP)
 *   **Remote Job Submission:** Connect to HPC clusters using SSH/SFTP and generate SLURM/PBS submission scripts.

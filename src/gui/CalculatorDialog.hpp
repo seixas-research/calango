@@ -35,6 +35,11 @@ public:
     /// python, or the embedded interpreter when no environment is chosen.
     QString pythonExecutable() const;
 
+    /// Accepts a python executable path, a conda environment root, or its
+    /// bin/ directory; returns the interpreter path or empty if invalid.
+    /// Shared with the other job-launching dialogs (Phonon Builder).
+    static QString resolveEnvironmentPython(const QString& input);
+
 private Q_SLOTS:
     void refreshPreview();
     void regenerateScript();

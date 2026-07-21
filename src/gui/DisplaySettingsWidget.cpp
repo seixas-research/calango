@@ -81,6 +81,40 @@ DisplaySettingsWidget::DisplaySettingsWidget(ViewportWidget* viewport, QWidget* 
                          viewport_->styleChanged(true);
                      }));
 
+    // --- Atom coloring -----------------------------------------------------
+    colorModeCombo_ = new QComboBox(reprGroup);
+    colorModeCombo_->addItems({tr("Element (CPK)"),
+                               tr("Coordination number (CN)"),
+                               tr("Generalized CN (GCN)"),
+                               tr("Custom property")});
+    reprForm->addRow(tr("Color by:"), colorModeCombo_);
+    connect(colorModeCombo_, &QComboBox::currentIndexChanged,
+            this, &DisplaySettingsWidget::applyColorMode);
+
+    gradientCombo_ = new QComboBox(reprGroup);
+    gradientCombo_->addItems({tr("Viridis"), tr("Plasma"), tr("Turbo")});
+    reprForm->addRow(tr("Gradient:"), gradientCombo_);
+    connect(gradientCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        viewport_->setColorGradient(static_cast<render::ColorGradient>(index));
+    });
+
+    propertyCombo_ = new QComboBox(reprGroup);
+    propertyCombo_->setToolTip(tr("Per-atom scalar fields of the current structure\n"
+                                  "(charges, |forces|, extxyz columns, ...)"));
+    reprForm->addRow(tr("Property:"), propertyCombo_);
+    connect(propertyCombo_, &QComboBox::currentIndexChanged,
+            this, &DisplaySettingsWidget::applyColorMode);
+
+    rangeLabel_ = new QLabel(reprGroup);
+    reprForm->addRow(tr("Range:"), rangeLabel_);
+
+    connect(viewport_, &ViewportWidget::structureReplaced,
+            this, &DisplaySettingsWidget::refreshPropertyList);
+    connect(viewport_, &ViewportWidget::colorMappingChanged,
+            this, &DisplaySettingsWidget::syncColoringFromViewport);
+    refreshPropertyList();
+    syncColoringFromViewport();
+
     auto* elementsButton = new QPushButton(tr("Element Settings…"), reprGroup);
     reprForm->addRow(elementsButton);
     connect(elementsButton, &QPushButton::clicked, this, [this] {
@@ -305,6 +339,65 @@ void DisplaySettingsWidget::applyLightEdits()
                                 static_cast<float>(directionSpin_[1]->value()),
                                 static_cast<float>(directionSpin_[2]->value()));
     viewport_->styleChanged(false);
+}
+
+void DisplaySettingsWidget::applyColorMode()
+{
+    const auto mode = static_cast<render::ColorMode>(colorModeCombo_->currentIndex());
+    const bool custom = mode == render::ColorMode::CustomScalar;
+    viewport_->setColorMode(mode, custom ? propertyCombo_->currentText() : QString());
+}
+
+void DisplaySettingsWidget::refreshPropertyList()
+{
+    const QSignalBlocker blocker(propertyCombo_);
+    const QString previous = propertyCombo_->currentText();
+    propertyCombo_->clear();
+    if (const auto structure = viewport_->structure()) {
+        for (const auto& [name, values] : structure->scalarFields()) {
+            (void)values;
+            propertyCombo_->addItem(QString::fromStdString(name));
+        }
+    }
+    const int index = propertyCombo_->findText(previous);
+    if (index >= 0)
+        propertyCombo_->setCurrentIndex(index);
+}
+
+void DisplaySettingsWidget::syncColoringFromViewport()
+{
+    // The mapping can also be driven from outside (Coordination Analysis
+    // dialog) — mirror the viewport state without re-triggering it.
+    const auto mode = viewport_->colorMode();
+    {
+        const QSignalBlocker blocker(colorModeCombo_);
+        colorModeCombo_->setCurrentIndex(static_cast<int>(mode));
+    }
+    if (mode == render::ColorMode::CustomScalar) {
+        const QSignalBlocker blocker(propertyCombo_);
+        const int index = propertyCombo_->findText(viewport_->customScalarField());
+        if (index >= 0)
+            propertyCombo_->setCurrentIndex(index);
+    }
+
+    const bool scalarMode = mode != render::ColorMode::Element;
+    gradientCombo_->setEnabled(scalarMode);
+    propertyCombo_->setEnabled(mode == render::ColorMode::CustomScalar);
+    rangeLabel_->setEnabled(scalarMode);
+
+    const auto range = viewport_->scalarRange();
+    if (!scalarMode)
+        rangeLabel_->setText(tr("—"));
+    else if (!range.valid)
+        rangeLabel_->setText(tr("no data"));
+    else if (mode == render::ColorMode::CoordinationNumber)
+        rangeLabel_->setText(QStringLiteral("%1 – %2")
+                                 .arg(static_cast<int>(range.min))
+                                 .arg(static_cast<int>(range.max)));
+    else
+        rangeLabel_->setText(QStringLiteral("%1 – %2")
+                                 .arg(static_cast<double>(range.min), 0, 'f', 3)
+                                 .arg(static_cast<double>(range.max), 0, 'f', 3));
 }
 
 void DisplaySettingsWidget::setButtonColor(QPushButton* button, const QColor& color)

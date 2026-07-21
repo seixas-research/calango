@@ -4,6 +4,7 @@
 #include "core/UnitCell.hpp"
 
 #include <cstddef>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -34,7 +35,7 @@ public:
     const UnitCell& cell() const { return cell_; }
     void setCell(const UnitCell& cell) { cell_ = cell; }
 
-    void addAtom(const Atom& atom) { atoms_.push_back(atom); }
+    void addAtom(const Atom& atom);
     void removeAtom(std::size_t index);
     void clear();
 
@@ -58,9 +59,23 @@ public:
     /// atoms; a cell-list spatial index is on the roadmap (Phase 3).
     std::vector<Bond> detectBonds(double tolerance = 1.15) const;
 
+    // -- Per-atom scalar fields (charges, |forces|, potentials, ...) -------
+    //
+    // Named one-value-per-atom overlays used by the scalar color-mapping
+    // modes. Fields are kept index-aligned with atoms(): addAtom() pads
+    // every field with 0.0 and removeAtom() erases the matching entry.
+
+    const std::map<std::string, std::vector<double>>& scalarFields() const {
+        return scalarFields_;
+    }
+    /// Stores (or replaces) a field; ignored unless values.size() == size().
+    void setScalarField(const std::string& name, std::vector<double> values);
+    void removeScalarField(const std::string& name) { scalarFields_.erase(name); }
+
 private:
     std::vector<Atom> atoms_;
     UnitCell cell_;
+    std::map<std::string, std::vector<double>> scalarFields_;
 };
 
 } // namespace calango::core
