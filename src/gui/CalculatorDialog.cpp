@@ -65,7 +65,8 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
                                 tr("VASP (DFT, requires license)"),
                                 tr("MACE (machine-learning potential, requires mace-torch)"),
                                 tr("GPAW (DFT, python package)"),
-                                tr("SIESTA (DFT, requires siesta binary)")});
+                                tr("SIESTA (DFT, requires siesta binary)"),
+                                tr("ORCA (quantum chemistry, requires orca binary)")});
 
     taskCombo_ = new QComboBox(this);
     taskCombo_->addItems({tr("Single-point energy"),
@@ -166,6 +167,35 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
     maceDeviceCombo_->addItems({QStringLiteral("cpu"), QStringLiteral("cuda"),
                                 QStringLiteral("mps")});
 
+    // ORCA: method / basis are editable combos (any ORCA keyword works).
+    orcaMethodCombo_ = new QComboBox(this);
+    orcaMethodCombo_->setEditable(true);
+    orcaMethodCombo_->addItems({QStringLiteral("B3LYP"), QStringLiteral("PBE0"),
+                                QStringLiteral("r2SCAN"),
+                                QStringLiteral("wB97X-D3"), QStringLiteral("HF"),
+                                QStringLiteral("MP2")});
+    orcaBasisCombo_ = new QComboBox(this);
+    orcaBasisCombo_->setEditable(true);
+    orcaBasisCombo_->addItems({QStringLiteral("def2-SVP"),
+                               QStringLiteral("def2-TZVP"),
+                               QStringLiteral("def2-TZVPP"),
+                               QStringLiteral("cc-pVDZ"),
+                               QStringLiteral("cc-pVTZ")});
+    chargeSpin_ = new QSpinBox(this);
+    chargeSpin_->setRange(-10, 10);
+    chargeSpin_->setValue(0);
+    multiplicitySpin_ = new QSpinBox(this);
+    multiplicitySpin_->setRange(1, 11);
+    multiplicitySpin_->setValue(1);
+    multiplicitySpin_->setToolTip(tr("Spin multiplicity 2S+1"));
+    orcaSolvationCombo_ = new QComboBox(this);
+    orcaSolvationCombo_->addItems({tr("None (gas phase)"),
+                                   QStringLiteral("CPCM"),
+                                   QStringLiteral("SMD")});
+    orcaSolventEdit_ = new QLineEdit(QStringLiteral("water"), this);
+    orcaSolventEdit_->setToolTip(tr("Solvent name for CPCM/SMD "
+                                    "(water, acetonitrile, toluene, ...)"));
+
     auto* form = new QFormLayout;
     form->addRow(tr("Calculator:"), calculatorCombo_);
     form->addRow(tr("Task:"), taskCombo_);
@@ -184,6 +214,12 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
     form->addRow(tr("MACE model size:"), maceSizeCombo_);
     form->addRow(tr("Custom model file:"), macePathRow);
     form->addRow(tr("MACE device:"), maceDeviceCombo_);
+    form->addRow(tr("ORCA method:"), orcaMethodCombo_);
+    form->addRow(tr("ORCA basis:"), orcaBasisCombo_);
+    form->addRow(tr("Charge:"), chargeSpin_);
+    form->addRow(tr("Multiplicity:"), multiplicitySpin_);
+    form->addRow(tr("Solvation:"), orcaSolvationCombo_);
+    form->addRow(tr("Solvent:"), orcaSolventEdit_);
 
     // The script pane is a real editor: syntax-highlighted and editable.
     preview_ = new QPlainTextEdit(this);
@@ -277,6 +313,12 @@ CalculatorDialog::CalculatorDialog(QWidget* parent)
     layout->addWidget(buttons);
 
     const auto refresh = [this] { refreshPreview(); };
+    connect(orcaMethodCombo_, &QComboBox::currentTextChanged, this, refresh);
+    connect(orcaBasisCombo_, &QComboBox::currentTextChanged, this, refresh);
+    connect(chargeSpin_, &QSpinBox::valueChanged, this, refresh);
+    connect(multiplicitySpin_, &QSpinBox::valueChanged, this, refresh);
+    connect(orcaSolvationCombo_, &QComboBox::currentIndexChanged, this, refresh);
+    connect(orcaSolventEdit_, &QLineEdit::textChanged, this, refresh);
     connect(calculatorCombo_, &QComboBox::currentIndexChanged, this, refresh);
     connect(taskCombo_, &QComboBox::currentIndexChanged, this, refresh);
     connect(ensembleCombo_, &QComboBox::currentIndexChanged, this, refresh);
@@ -320,6 +362,14 @@ core::CalculatorConfig CalculatorDialog::config() const
     c.maceSize = maceSizeCombo_->currentText().toStdString();
     c.maceModelPath = maceModelPathEdit_->text().trimmed().toStdString();
     c.maceDevice = maceDeviceCombo_->currentText().toStdString();
+    c.orcaMethod = orcaMethodCombo_->currentText().trimmed().toStdString();
+    c.orcaBasis = orcaBasisCombo_->currentText().trimmed().toStdString();
+    c.charge = chargeSpin_->value();
+    c.multiplicity = multiplicitySpin_->value();
+    c.orcaSolvationModel = orcaSolvationCombo_->currentIndex() == 0
+        ? std::string()
+        : orcaSolvationCombo_->currentText().toStdString();
+    c.orcaSolvent = orcaSolventEdit_->text().trimmed().toStdString();
     return c;
 }
 

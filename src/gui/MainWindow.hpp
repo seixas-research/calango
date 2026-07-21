@@ -95,6 +95,8 @@ private Q_SLOTS:
     void openNanoBuilder();
     void openPhononBuilder();
     void openSqsBuilder();
+    void openNanoparticleBuilder();
+    void showAdsorption();
     void showWarrenCowley();
     void showLocalEntropy();
     void showRamanModes();

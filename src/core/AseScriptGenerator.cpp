@@ -14,6 +14,7 @@ std::string toString(CalculatorKind kind)
     case CalculatorKind::Mace: return "MACE";
     case CalculatorKind::Gpaw: return "GPAW";
     case CalculatorKind::Siesta: return "SIESTA";
+    case CalculatorKind::Orca: return "ORCA";
     }
     return "?";
 }
@@ -150,6 +151,34 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
             << "    kpts=[" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2] << "],\n"
                ")\n";
         break;
+
+    case CalculatorKind::Orca: {
+        // Simple-input line: method, basis and (optionally) implicit
+        // solvation. SMD goes through the %cpcm block instead.
+        std::string simpleInput = c.orcaMethod + " " + c.orcaBasis;
+        if (c.orcaSolvationModel == "CPCM")
+            simpleInput += " CPCM(" + c.orcaSolvent + ")";
+        out << "# ORCA quantum chemistry — requires the ORCA binaries\n"
+               "# (https://orcaforum.kofo.mpg.de). ASE writes the .inp input\n"
+               "# file into the job directory and parses the .out results.\n"
+               "from ase.calculators.orca import ORCA, OrcaProfile\n"
+               "\n"
+               "profile = OrcaProfile(command=\"/path/to/orca\")  # EDIT ME\n"
+               "\n"
+               "atoms.calc = ORCA(\n"
+               "    profile=profile,\n"
+               "    directory=\".\",\n"
+            << "    charge=" << c.charge << ",\n"
+            << "    mult=" << c.multiplicity << ",\n"
+            << "    orcasimpleinput=\"" << simpleInput << "\",\n"
+               "    orcablocks=\"\"\"%pal nprocs 1 end";
+        if (c.orcaSolvationModel == "SMD")
+            out << "\n%cpcm smd true SMDsolvent \\\"" << c.orcaSolvent
+                << "\\\" end";
+        out << "\"\"\",\n"
+               ")\n";
+        break;
+    }
 
     case CalculatorKind::Vasp:
         out << "# VASP via ASE — requires the VASP_PP_PATH and ASE_VASP_COMMAND\n"

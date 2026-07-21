@@ -67,6 +67,12 @@ private:
     QLineEdit* maceModelPathEdit_;
     QPushButton* maceBrowseButton_;
     QComboBox* maceDeviceCombo_;
+    QComboBox* orcaMethodCombo_;
+    QComboBox* orcaBasisCombo_;
+    QSpinBox* chargeSpin_;
+    QSpinBox* multiplicitySpin_;
+    QComboBox* orcaSolvationCombo_;
+    QLineEdit* orcaSolventEdit_;
     QLineEdit* envPathEdit_;
     QLabel* envStatusLabel_;
     QLabel* editedNotice_;

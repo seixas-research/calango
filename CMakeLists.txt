@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.22
+    VERSION 26.7.23
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -120,6 +120,8 @@ qt_add_executable(calango
     src/python_bridge/SqsBuilder.cpp
     src/python_bridge/RamanAnalysis.hpp
     src/python_bridge/RamanAnalysis.cpp
+    src/python_bridge/SurfaceScience.hpp
+    src/python_bridge/SurfaceScience.cpp
 
     # render — OpenGL "View" over core::Structure (read-only access)
     src/render/Camera.hpp
@@ -226,6 +228,10 @@ qt_add_executable(calango
     src/gui/BandPdosView.cpp
     src/gui/BandPdosWindow.hpp
     src/gui/BandPdosWindow.cpp
+    src/gui/NanoparticleDialog.hpp
+    src/gui/NanoparticleDialog.cpp
+    src/gui/AdsorptionDialog.hpp
+    src/gui/AdsorptionDialog.cpp
 )
 
 qt_add_resources(calango "shaders"

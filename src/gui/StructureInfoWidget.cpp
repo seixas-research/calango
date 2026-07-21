@@ -49,8 +49,8 @@ StructureInfoWidget::StructureInfoWidget(QWidget* parent)
     layout->addRow(tr("Cell volume:"), cellLabel_);
     layout->addRow(tr("Periodic:"), pbcLabel_);
 
-    symprecSpin_->setRange(1e-6, 1.0);
-    symprecSpin_->setDecimals(6);
+    symprecSpin_->setRange(0.0001, 1.0);
+    symprecSpin_->setDecimals(4); // display at most 4 decimal places
     symprecSpin_->setSingleStep(0.001);
     symprecSpin_->setValue(0.001);
     symprecSpin_->setSuffix(tr(" Å"));
@@ -130,11 +130,12 @@ void StructureInfoWidget::detectSymmetry()
     const auto symmetry =
         pybridge::AseBridge::symmetryInfo(*structure_, symprecSpin_->value());
     if (symmetry.error.empty()) {
+        // The tolerance is already visible in its own spinbox — the space
+        // group shows only symbol and number.
         spaceGroupLabel_->setText(
-            QStringLiteral("%1 (#%2) @ %3 Å")
+            QStringLiteral("%1 (%2)")
                 .arg(QString::fromStdString(symmetry.spaceGroupSymbol))
-                .arg(symmetry.spaceGroupNumber)
-                .arg(symprecSpin_->value(), 0, 'g', 3));
+                .arg(symmetry.spaceGroupNumber));
         pointGroupLabel_->setText(QString::fromStdString(symmetry.pointGroup));
         crystalSystemLabel_->setText(QString::fromStdString(symmetry.crystalSystem));
     } else {

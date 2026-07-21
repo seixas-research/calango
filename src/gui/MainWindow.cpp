@@ -25,7 +25,9 @@
 #include "gui/RepresentationPanel.hpp"
 #include "gui/SlabWizard.hpp"
 #include "core/ElectronicScriptGenerator.hpp"
+#include "gui/AdsorptionDialog.hpp"
 #include "gui/BandPdosWindow.hpp"
+#include "gui/NanoparticleDialog.hpp"
 #include "gui/DatasetManagerDialog.hpp"
 #include "gui/ProcessManagerPanel.hpp"
 #include "gui/RamanDialog.hpp"
@@ -569,6 +571,8 @@ void MainWindow::createMenusAndDocks()
     QMenu* buildMenu = menuBar()->addMenu(tr("&Build"));
     buildMenu->addAction(tr("&Nanomaterial Builder…"), this, &MainWindow::openNanoBuilder);
     buildMenu->addAction(tr("&Surface Slab…"), this, &MainWindow::cleaveSurface);
+    buildMenu->addAction(tr("Metallic Nano&particle (Wulff)…"),
+                         this, &MainWindow::openNanoparticleBuilder);
     buildMenu->addAction(tr("Special &Quasirandom Structure (SQS)…"),
                          this, &MainWindow::openSqsBuilder);
     buildMenu->addAction(tr("&Normal Modes / Phonon Builder…"),
@@ -611,6 +615,8 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showRamanModes);
     analysisMenu->addAction(tr("&Volumetric Data…"),
                             this, &MainWindow::showVolumetricData);
+    analysisMenu->addAction(tr("Adsorption && Catal&ysis…"),
+                            this, &MainWindow::showAdsorption);
     analysisMenu->addSeparator();
     analysisMenu->addAction(tr("&Brillouin Zone / k-Path…"),
                             this, &MainWindow::showBrillouinZone);
@@ -2206,6 +2212,61 @@ void MainWindow::showBandStructure()
                                     &dialog);
     pdosCheck->setChecked(true);
     form->addRow(pdosCheck);
+
+    // Execution environment: solvers like GPAW/QE/SIESTA usually live in
+    // dedicated conda envs — same selector as the ASE input generator.
+    const auto kBandsEnvKey = QStringLiteral("jobs/bandsEnvironmentPath");
+    auto* envRow = new QWidget(&dialog);
+    auto* envLayout = new QHBoxLayout(envRow);
+    envLayout->setContentsMargins(0, 0, 0, 0);
+    auto* envEdit = new QLineEdit(QSettings().value(kBandsEnvKey).toString(),
+                                  envRow);
+    envEdit->setPlaceholderText(
+        tr("conda env folder or python executable (empty = embedded)"));
+    auto* envDirButton = new QPushButton(tr("Env Folder…"), envRow);
+    auto* envFileButton = new QPushButton(tr("Python…"), envRow);
+    envLayout->addWidget(envEdit, 1);
+    envLayout->addWidget(envDirButton);
+    envLayout->addWidget(envFileButton);
+    form->addRow(tr("Environment:"), envRow);
+    auto* envStatus = new QLabel(&dialog);
+    envStatus->setWordWrap(true);
+    form->addRow(QString(), envStatus);
+    const auto updateEnvStatus = [envEdit, envStatus] {
+        const QString text = envEdit->text().trimmed();
+        if (text.isEmpty()) {
+            envStatus->setText(
+                QObject::tr("Using embedded interpreter: %1")
+                    .arg(QString::fromStdString(
+                        pybridge::PythonEngine::instance().executable())));
+            envStatus->setStyleSheet(QString());
+        } else if (const QString python =
+                       CalculatorDialog::resolveEnvironmentPython(text);
+                   !python.isEmpty()) {
+            envStatus->setText(
+                QObject::tr("Job will run with: %1").arg(python));
+            envStatus->setStyleSheet(QString());
+        } else {
+            envStatus->setText(
+                QObject::tr("No python interpreter found at this path."));
+            envStatus->setStyleSheet(QStringLiteral("color: #d9534f;"));
+        }
+    };
+    connect(envEdit, &QLineEdit::textChanged, &dialog, updateEnvStatus);
+    connect(envDirButton, &QPushButton::clicked, &dialog, [envEdit, &dialog] {
+        const QString dir = QFileDialog::getExistingDirectory(
+            &dialog, tr("Select Conda Environment Folder"));
+        if (!dir.isEmpty())
+            envEdit->setText(dir);
+    });
+    connect(envFileButton, &QPushButton::clicked, &dialog, [envEdit, &dialog] {
+        const QString file = QFileDialog::getOpenFileName(
+            &dialog, tr("Select Python Interpreter"));
+        if (!file.isEmpty())
+            envEdit->setText(file);
+    });
+    updateEnvStatus();
+
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     form->addRow(buttons);
@@ -2213,6 +2274,7 @@ void MainWindow::showBandStructure()
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted)
         return;
+    QSettings().setValue(kBandsEnvKey, envEdit->text());
 
     core::ElectronicConfig config;
     config.backend = backendCombo->currentIndex() == 1
@@ -2226,10 +2288,13 @@ void MainWindow::showBandStructure()
     config.scfKpts = kgridSpin->value();
     config.pdos = pdosCheck->isChecked();
 
+    QString python =
+        CalculatorDialog::resolveEnvironmentPython(envEdit->text());
+    if (python.isEmpty())
+        python = QString::fromStdString(
+            pybridge::PythonEngine::instance().executable());
     runScript(QString::fromStdString(core::generateElectronicScript(config)),
-              QString::fromStdString(
-                  pybridge::PythonEngine::instance().executable()),
-              tr("Band structure"), /*expectFrames=*/false);
+              python, tr("Band structure"), /*expectFrames=*/false);
 }
 
 void MainWindow::openBandResults(const QString& directory)
@@ -2252,7 +2317,8 @@ void MainWindow::onProcessResultRequested(const QString& directory)
         return;
     }
     for (const auto* candidate :
-         {"md.traj", "opt.traj", "optimized.extxyz", "md_final.extxyz"}) {
+         {"md.traj", "opt.traj", "optimized.extxyz", "md_final.extxyz",
+          "perturbed.extxyz"}) {
         const QString path = directory + QLatin1Char('/')
             + QLatin1String(candidate);
         if (QFile::exists(path)) {
@@ -2345,6 +2411,46 @@ void MainWindow::showLocalEntropy()
     connect(&dialog, &LocalEntropyDialog::fieldStored, this,
             [this] { notifyStructureChanged(false); });
     dialog.exec();
+}
+
+void MainWindow::openNanoparticleBuilder()
+{
+    if (!ensureAseAvailable())
+        return;
+    NanoparticleDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted || !dialog.result())
+        return;
+    const int tab = addDocument(
+        std::make_shared<core::Structure>(*dialog.result()),
+        dialog.resultName());
+    tabBar_->setCurrentIndex(tab);
+    statusBar()->showMessage(tr("%1 generated").arg(dialog.resultName()));
+}
+
+void MainWindow::showAdsorption()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()
+        || !doc->structure->cell().isDefined()) {
+        QMessageBox::information(
+            this, tr("Adsorption & Catalysis"),
+            tr("Open a periodic slab structure first (e.g. from the "
+               "Surface Slab wizard)."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    AdsorptionDialog dialog(doc->structure, this);
+    if (dialog.exec() != QDialog::Accepted || dialog.outputs().empty())
+        return;
+    int lastTab = -1;
+    for (const auto& output : dialog.outputs())
+        lastTab = addDocument(output.structure, output.name);
+    tabBar_->setCurrentIndex(lastTab);
+    statusBar()->showMessage(
+        tr("%n adsorption structure(s) generated", nullptr,
+           static_cast<int>(dialog.outputs().size())));
 }
 
 void MainWindow::openSqsBuilder()
@@ -2556,11 +2662,44 @@ void MainWindow::addRandomNoise()
                              .arg(doc->fileName,
                                   cumulative ? tr("cumulative") : tr("independent"))
                              .arg(frameCount);
+
+    // Track the ensemble in the Process panel and checkpoint it into the
+    // managed session store, so the perturbed frames stay available for
+    // post-processing (RDF, distributions, datasets) without regeneration.
+    const QString tasksRoot = projectPath_.isEmpty()
+        ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+            + QStringLiteral("/jobs")
+        : QFileInfo(projectPath_).absolutePath()
+            + QStringLiteral("/.calango_tmp");
+    const QString taskDir = tasksRoot + QStringLiteral("/noise_")
+        + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
+    const int taskId = processPanel_->registerTask(
+        tr("Noise trajectory (×%1, seed %2)").arg(frameCount).arg(options.seed),
+        taskDir);
+    processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
+    bool stored = false;
+    if (QDir().mkpath(taskDir)) {
+        try {
+            pybridge::AseBridge::writeTrajectory(
+                frames, (taskDir + QStringLiteral("/perturbed.extxyz")).toStdString(),
+                "extxyz");
+            stored = true;
+        } catch (const std::exception&) {
+            stored = false; // in-app tab still opens; only the checkpoint failed
+        }
+    }
+    processPanel_->setTaskStatus(taskId,
+                                 stored ? ProcessManagerPanel::Status::Completed
+                                        : ProcessManagerPanel::Status::Failed);
+    isDirty_ = true;
+
     addDocument(frames.front(), name, std::move(frames));
     statusBar()->showMessage(
-        tr("Generated %1-frame noise trajectory (seed %2)")
+        tr("Generated %1-frame noise trajectory (seed %2)%3")
             .arg(frameCount + 1)
-            .arg(options.seed));
+            .arg(options.seed)
+            .arg(stored ? tr(" — checkpointed to %1").arg(taskDir)
+                        : QString()));
 }
 
 void MainWindow::openExamplesBrowser()

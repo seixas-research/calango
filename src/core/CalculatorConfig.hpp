@@ -16,6 +16,7 @@ enum class CalculatorKind {
     Mace,
     Gpaw,
     Siesta,
+    Orca, ///< quantum chemistry (requires the ORCA binary)
 };
 
 /// Which MACE model the calculator loads. Foundation models are fetched
@@ -92,6 +93,16 @@ struct CalculatorConfig {
     std::string maceSize = "medium";   ///< "small" | "medium" | "large"
     std::string maceModelPath;         ///< custom checkpoint (CustomFile)
     std::string maceDevice = "cpu";    ///< "cpu" | "cuda" | "mps"
+
+    // -- ORCA (quantum chemistry) ------------------------------------------
+    std::string orcaMethod = "B3LYP";   ///< functional / method keyword
+    std::string orcaBasis = "def2-SVP"; ///< basis set keyword
+    int charge = 0;
+    int multiplicity = 1;               ///< 2S+1
+    /// "" (gas phase), "CPCM" or "SMD" — with `orcaSolvent` naming the
+    /// solvent (water, acetonitrile, ...).
+    std::string orcaSolvationModel;
+    std::string orcaSolvent = "water";
 };
 
 std::string toString(CalculatorKind kind);
