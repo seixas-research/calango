@@ -93,10 +93,23 @@ public:
     void setScalarField(const std::string& name, std::vector<double> values);
     void removeScalarField(const std::string& name) { scalarFields_.erase(name); }
 
+    // -- Per-atom vector fields (forces, velocities, dipoles, ...) ---------
+    //
+    // One 3-vector per atom, index-aligned like the scalar fields; the
+    // renderer draws them as arrows (Representation panel toggles).
+
+    const std::map<std::string, std::vector<Vec3>>& vectorFields() const {
+        return vectorFields_;
+    }
+    /// Stores (or replaces) a field; ignored unless values.size() == size().
+    void setVectorField(const std::string& name, std::vector<Vec3> values);
+    void removeVectorField(const std::string& name) { vectorFields_.erase(name); }
+
 private:
     std::vector<Atom> atoms_;
     UnitCell cell_;
     std::map<std::string, std::vector<double>> scalarFields_;
+    std::map<std::string, std::vector<Vec3>> vectorFields_;
     std::vector<std::pair<int, int>> addedBonds_;
     std::vector<std::pair<int, int>> removedBonds_;
 };

@@ -51,7 +51,7 @@ ExamplesDialog::ExamplesDialog(QWidget* parent)
                                               QLatin1String(preset.recommendation)),
             presetList_);
         item->setData(Qt::UserRole,
-                      QStringLiteral(":/assets/samples/examples/")
+                      QStringLiteral(":/assets/examples/")
                           + QLatin1String(preset.file));
         item->setData(Qt::UserRole + 1, QLatin1String(preset.recommendation));
     }

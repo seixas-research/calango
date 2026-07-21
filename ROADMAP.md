@@ -2,7 +2,7 @@
 
 This roadmap outlines the core development phases for building a cross-platform desktop application for materials science using C++20, Qt6, OpenGL, and Python/ASE.
 
-> Status as of v0.10 — checked items are implemented; partial items carry a note.
+> Status as of v0.11 — checked items are implemented; partial items carry a note.
 
 ---
 
@@ -61,7 +61,7 @@ This roadmap outlines the core development phases for building a cross-platform 
 
 *   [x] Customizable rendering modes: Space-filling (CPK), Ball-and-Stick, and Wireframe.
 *   [x] Dynamic global scale controls for atom sphere radii and bond cylinder widths (Display panel sliders → shader instance data).
-*   [x] Multiple-bond rendering (double/triple) as parallel offset cylinders, with distance-ratio bond-order perception. *(Validation case: `assets/samples/acetic_acid.xyz` — the C=O at 1.25 Å renders as a double bond.)*
+*   [x] Multiple-bond rendering (double/triple) as parallel offset cylinders, with distance-ratio bond-order perception. *(Validation case: `assets/examples/acetic_acid.xyz` — the C=O at 1.25 Å renders as a double bond.)*
 *   [x] Atom Color Editor: per-element overrides of the CPK palette via `QColorDialog`, with per-element and global reset.
 *   [x] Lighting panel: up to 4 independent directional lights with editable direction vectors and ambient/diffuse/specular components (multi-light Blinn-Phong fragment shader).
 *   [x] High-resolution viewport capture via `QOpenGLFramebufferObject` (8× MSAA) up to 8192 px.
@@ -174,6 +174,20 @@ This roadmap outlines the core development phases for building a cross-platform 
 *   [ ] Multiple termination *chemistries* offered as presets (e.g. Mo- vs S-terminated) rather than raw layer picking.
 *   [ ] In-plane supercell repetition (n × m) as a wizard stage.
 *   [ ] Wizard-built slab reconstructions (adatoms, missing-row) as an optional stage 4.
+
+## 📅 Phase 14: Visual Fixes, Vector Overlays & Housekeeping (v0.11)
+**Focus:** Rendering correctness, per-atom vector visualization, export ergonomics, and project hygiene.
+
+*   [x] Offline-render depth bug fixed: the QPainter overlay at the end of paintGL() resets GL state, so FBO captures (image/GIF/MP4 export) could run with depth testing disabled — bonds then painted over atoms in submission order. renderToImage() now re-enables GL_DEPTH_TEST + depth writes explicitly inside the FBO pass.
+*   [x] Default bond radius halved (0.12 → 0.06 Å) for lighter out-of-the-box bonds; the bond-width slider still scales from there.
+*   [x] Bond/atom lighting parity re-audited: one shared instanced Blinn-Phong program shades spheres, cylinders and cones with identical ambient/diffuse/specular terms and correct normals — the perceived export discrepancy was the depth bug above.
+*   [x] Force and velocity vector overlays: per-atom 3D arrows (lit cylinder shaft + closed cone head through the same shader path) with Representation-panel toggles and a 0.05–20× scale slider/spinbox. `core::Structure` gained per-atom vector fields (index-stable across atom add/remove); the ASE bridge imports every (N, 3) numeric array as vectors + magnitude scalar and derives "velocities" from momenta/masses. Toggles auto-disable when the structure lacks the data.
+*   [x] Export resolution presets (720p / 1080p / 4K UHD / Custom) in both the image and animation dialogs; manual size edits flip back to Custom, and the animation size cap was raised to 4096 px for 4K.
+*   [x] Surface Slab wizard now inserts the finished slab into a NEW workspace tab, leaving the bulk structure and its undo history untouched.
+*   [x] Assets consolidated: `assets/samples` and `assets/samples/examples` merged into a single `assets/examples` (git history preserved via renames; CMake resources, Examples browser paths and docs updated).
+*   [x] Dynamic versioning: the user-facing version lives in the plain-text `version` file at the repository root, read at runtime with std::ifstream (binary dir → parent → cwd, compile-time fallback) and shown in the About Calango dialog; CMake stages a copy beside the binary.
+*   [ ] Arrow overlays in the wireframe representation (line-based arrows).
+*   [ ] Vector-field color mapping (arrow color by magnitude via the scalar gradients).
 
 ## 🚀 Future Modules (Post-MVP)
 *   **Remote Job Submission:** Connect to HPC clusters using SSH/SFTP and generate SLURM/PBS submission scripts.

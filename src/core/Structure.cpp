@@ -43,6 +43,10 @@ void Structure::addAtom(const Atom& atom)
         (void)name;
         values.push_back(0.0);
     }
+    for (auto& [name, values] : vectorFields_) {
+        (void)name;
+        values.push_back(Vec3{});
+    }
 }
 
 void Structure::removeAtom(std::size_t index)
@@ -51,6 +55,11 @@ void Structure::removeAtom(std::size_t index)
         return;
     atoms_.erase(atoms_.begin() + static_cast<std::ptrdiff_t>(index));
     for (auto& [name, values] : scalarFields_) {
+        (void)name;
+        if (index < values.size())
+            values.erase(values.begin() + static_cast<std::ptrdiff_t>(index));
+    }
+    for (auto& [name, values] : vectorFields_) {
         (void)name;
         if (index < values.size())
             values.erase(values.begin() + static_cast<std::ptrdiff_t>(index));
@@ -75,6 +84,7 @@ void Structure::clear()
     atoms_.clear();
     cell_ = UnitCell{};
     scalarFields_.clear();
+    vectorFields_.clear();
 }
 
 void Structure::setScalarField(const std::string& name, std::vector<double> values)
@@ -82,6 +92,13 @@ void Structure::setScalarField(const std::string& name, std::vector<double> valu
     if (values.size() != atoms_.size())
         return;
     scalarFields_[name] = std::move(values);
+}
+
+void Structure::setVectorField(const std::string& name, std::vector<Vec3> values)
+{
+    if (values.size() != atoms_.size())
+        return;
+    vectorFields_[name] = std::move(values);
 }
 
 std::string Structure::chemicalFormula() const

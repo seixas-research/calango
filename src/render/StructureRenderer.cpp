@@ -100,6 +100,38 @@ void buildCylinder(int segments,
     }
 }
 
+/// Unit cone (arrowhead): base circle radius 1 at z = 0, apex at z = 1,
+/// closed base cap. Side normals are the exact cone-surface normals
+/// (radial + axial)/√2, lit by the same shared program.
+void buildCone(int segments,
+               std::vector<float>& vertices, std::vector<unsigned int>& indices)
+{
+    const float inv = 1.0f / std::sqrt(2.0f);
+    // Side: base ring + one apex vertex per segment (for correct normals).
+    for (int j = 0; j <= segments; ++j) {
+        const float theta = 2.0f * float(M_PI) * float(j) / float(segments);
+        const float x = std::cos(theta);
+        const float y = std::sin(theta);
+        vertices.insert(vertices.end(), {x, y, 0.0f, x * inv, y * inv, inv});
+        vertices.insert(vertices.end(), {0.0f, 0.0f, 1.0f, x * inv, y * inv, inv});
+    }
+    for (unsigned int j = 0; j < static_cast<unsigned int>(segments); ++j) {
+        const unsigned int a = j * 2;
+        indices.insert(indices.end(), {a, a + 2, a + 1});
+    }
+    // Base cap (facing -z).
+    const auto capCenter = static_cast<unsigned int>(vertices.size() / 6);
+    vertices.insert(vertices.end(), {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f});
+    for (int j = 0; j <= segments; ++j) {
+        const float theta = 2.0f * float(M_PI) * float(j) / float(segments);
+        vertices.insert(vertices.end(),
+                        {std::cos(theta), std::sin(theta), 0.0f, 0.0f, 0.0f, -1.0f});
+    }
+    for (unsigned int j = 0; j < static_cast<unsigned int>(segments); ++j)
+        indices.insert(indices.end(),
+                       {capCenter, capCenter + 1 + j, capCenter + 2 + j});
+}
+
 QMatrix4x4 bondTransform(const QVector3D& from, const QVector3D& direction,
                          float length, float radius)
 {
@@ -244,6 +276,11 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     createMesh(cylinder_, vertices, indices);
     createMesh(cellTube_, vertices, indices); // same geometry, own instances
 
+    vertices.clear();
+    indices.clear();
+    buildCone(20, vertices, indices);
+    createMesh(cone_, vertices, indices);
+
     createColoredBuffer(wireBonds_);
     createColoredBuffer(wireAtoms_);
 
@@ -335,6 +372,7 @@ void StructureRenderer::setStructure(const core::Structure* structure,
 
     std::vector<float> atomInstances;
     std::vector<float> bondInstances;
+    std::vector<float> coneInstances;
     std::vector<float> wireBondVertices;
     std::vector<float> wireAtomVertices;
     std::vector<float> cellVertices;
@@ -443,6 +481,45 @@ void StructureRenderer::setStructure(const core::Structure* structure,
             }
         }
 
+        // Force / velocity arrows: shaft (cylinder) + head (cone) per atom,
+        // sharing the lit instanced pipeline. Skipped in wireframe mode.
+        if (!wireframe && (style_.showForces || style_.showVelocities)) {
+            const auto addArrows = [&](const std::string& fieldName,
+                                       const QColor& color) {
+                const auto& fields = structure->vectorFields();
+                const auto it = fields.find(fieldName);
+                if (it == fields.end() || it->second.size() != atoms.size())
+                    return;
+                const float shaftRadius = 0.045f;
+                for (std::size_t index = 0; index < atoms.size(); ++index) {
+                    const core::Vec3& v = it->second[index];
+                    const double length = v.norm() * style_.vectorScale;
+                    if (length < 0.05)
+                        continue; // invisible / zero vector
+                    const QVector3D origin = toQt(atoms[index].position);
+                    const QVector3D dir = toQt(v.normalized());
+                    const auto headLength =
+                        static_cast<float>(std::min(0.30 * length, 0.45));
+                    const auto shaftLength =
+                        static_cast<float>(length) - headLength;
+                    appendInstance(bondInstances,
+                                   bondTransform(origin, dir, shaftLength,
+                                                 shaftRadius),
+                                   color);
+                    // Arrowhead cone: unit radius scales laterally via
+                    // bondTransform's radius parameter.
+                    appendInstance(coneInstances,
+                                   bondTransform(origin + dir * shaftLength, dir,
+                                                 headLength, shaftRadius * 2.6f),
+                                   color);
+                }
+            };
+            if (style_.showForces)
+                addArrows("forces", style_.forceColor);
+            if (style_.showVelocities)
+                addArrows("velocities", style_.velocityColor);
+        }
+
         if (structure->cell().isDefined()) {
             const auto corners = structure->cell().corners();
             const bool tubes = style_.cellLineWidth > 1.01f;
@@ -473,6 +550,11 @@ void StructureRenderer::setStructure(const core::Structure* structure,
     cylinder_.instanceBuffer.bind();
     cylinder_.instanceBuffer.allocate(bondInstances.data(),
                                       static_cast<int>(bondInstances.size() * sizeof(float)));
+
+    cone_.instanceCount = static_cast<int>(coneInstances.size()) / kFloatsPerInstance;
+    cone_.instanceBuffer.bind();
+    cone_.instanceBuffer.allocate(coneInstances.data(),
+                                  static_cast<int>(coneInstances.size() * sizeof(float)));
 
     uploadColoredBuffer(wireBonds_, wireBondVertices);
     uploadColoredBuffer(wireAtoms_, wireAtomVertices);
@@ -545,7 +627,7 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
         meshProgram_.setUniformValue("uProj", projection);
         uploadLights();
 
-        for (InstancedMesh* mesh : {&sphere_, &cylinder_}) {
+        for (InstancedMesh* mesh : {&sphere_, &cylinder_, &cone_}) {
             if (mesh->instanceCount == 0)
                 continue;
             mesh->vao.bind();

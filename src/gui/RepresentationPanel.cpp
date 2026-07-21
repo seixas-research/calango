@@ -129,6 +129,57 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
         viewport_->styleChanged(true);
     });
 
+    // --- Force / velocity vector arrows ------------------------------------
+    forcesCheck_ = new QCheckBox(tr("Force vectors"), this);
+    velocitiesCheck_ = new QCheckBox(tr("Velocity vectors"), this);
+    form->addRow(forcesCheck_);
+    form->addRow(velocitiesCheck_);
+    connect(forcesCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        viewport_->style().showForces = on;
+        viewport_->styleChanged(true);
+    });
+    connect(velocitiesCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        viewport_->style().showVelocities = on;
+        viewport_->styleChanged(true);
+    });
+
+    // Arrow scale: slider (coarse) + spinbox (exact), Å per field unit.
+    auto* vectorRow = new QWidget(this);
+    auto* vectorLayout = new QHBoxLayout(vectorRow);
+    vectorLayout->setContentsMargins(0, 0, 0, 0);
+    vectorScaleSlider_ = new QSlider(Qt::Horizontal, vectorRow);
+    vectorScaleSlider_->setRange(5, 2000); // ×0.05 .. ×20 in hundredths
+    vectorScaleSlider_->setValue(100);
+    vectorScaleSpin_ = new QDoubleSpinBox(vectorRow);
+    vectorScaleSpin_->setRange(0.05, 20.0);
+    vectorScaleSpin_->setDecimals(2);
+    vectorScaleSpin_->setSingleStep(0.05);
+    vectorScaleSpin_->setValue(1.00);
+    vectorScaleSpin_->setSuffix(QStringLiteral("×"));
+    vectorScaleSpin_->setToolTip(tr("Arrow length in Å per field unit\n"
+                                    "(eV/Å for forces, Å/fs·√(amu) units for "
+                                    "velocities)"));
+    vectorLayout->addWidget(vectorScaleSlider_, 1);
+    vectorLayout->addWidget(vectorScaleSpin_);
+    form->addRow(tr("Vector scale:"), vectorRow);
+    connect(vectorScaleSlider_, &QSlider::valueChanged, this, [this](int hundredths) {
+        const float factor = static_cast<float>(hundredths) / 100.0f;
+        {
+            const QSignalBlocker blocker(vectorScaleSpin_);
+            vectorScaleSpin_->setValue(factor);
+        }
+        viewport_->style().vectorScale = factor;
+        viewport_->styleChanged(true);
+    });
+    connect(vectorScaleSpin_, &QDoubleSpinBox::valueChanged, this, [this](double factor) {
+        {
+            const QSignalBlocker blocker(vectorScaleSlider_);
+            vectorScaleSlider_->setValue(static_cast<int>(std::lround(factor * 100.0)));
+        }
+        viewport_->style().vectorScale = static_cast<float>(factor);
+        viewport_->styleChanged(true);
+    });
+
     auto* elementsButton = new QPushButton(tr("Element Settings…"), this);
     form->addRow(elementsButton);
     connect(elementsButton, &QPushButton::clicked, this, [this] {
@@ -165,15 +216,34 @@ void RepresentationPanel::refreshPropertyList()
     const QSignalBlocker blocker(propertyCombo_);
     const QString previous = propertyCombo_->currentText();
     propertyCombo_->clear();
+    bool hasForces = false;
+    bool hasVelocities = false;
     if (const auto structure = viewport_->structure()) {
         for (const auto& [name, values] : structure->scalarFields()) {
             (void)values;
             propertyCombo_->addItem(QString::fromStdString(name));
         }
+        const auto& vectors = structure->vectorFields();
+        hasForces = vectors.count("forces") > 0;
+        hasVelocities = vectors.count("velocities") > 0;
     }
     const int index = propertyCombo_->findText(previous);
     if (index >= 0)
         propertyCombo_->setCurrentIndex(index);
+
+    // Arrow toggles only make sense when the structure carries the data.
+    forcesCheck_->setEnabled(hasForces);
+    forcesCheck_->setToolTip(hasForces
+                                 ? QString()
+                                 : tr("No per-atom \"forces\" data in this "
+                                      "structure (load an extxyz with a "
+                                      "forces column)"));
+    velocitiesCheck_->setEnabled(hasVelocities);
+    velocitiesCheck_->setToolTip(hasVelocities
+                                     ? QString()
+                                     : tr("No velocities/momenta in this "
+                                          "structure (e.g. an MD .traj "
+                                          "frame)"));
 }
 
 void RepresentationPanel::syncColoringFromViewport()

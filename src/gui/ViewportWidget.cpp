@@ -290,6 +290,14 @@ QImage ViewportWidget::renderToImage(int width, int height, const QColor& backgr
     QOpenGLFramebufferObject fbo(width, height, format);
     fbo.bind();
 
+    // Depth testing must be (re-)enabled explicitly here: the QPainter
+    // overlay at the end of paintGL() resets GL state, and an offline FBO
+    // capture inheriting that state draws bonds over atoms in submission
+    // order (the GIF/MP4 z-ordering bug). Never rely on ambient state for
+    // off-screen passes.
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+
     glViewport(0, 0, width, height);
     glClearColor(static_cast<float>(background.redF()),
                  static_cast<float>(background.greenF()),

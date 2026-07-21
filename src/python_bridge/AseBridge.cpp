@@ -3,6 +3,7 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <utility>
@@ -72,19 +73,47 @@ core::Structure AseBridge::fromAtoms(const py::handle& atoms)
             } else if (values.ndim() == 2
                        && static_cast<std::size_t>(values.shape(0)) == n
                        && values.shape(1) == 3) {
+                // Vector arrays import twice: the full vectors (for arrow
+                // rendering — forces, momenta, ...) and their magnitudes
+                // (for scalar color mapping).
                 const auto v = values.unchecked<2>();
+                std::vector<core::Vec3> vectors(n);
                 std::vector<double> magnitude(n);
                 for (std::size_t i = 0; i < n; ++i) {
                     const auto row = static_cast<py::ssize_t>(i);
-                    magnitude[i] = std::sqrt(v(row, 0) * v(row, 0)
-                                             + v(row, 1) * v(row, 1)
-                                             + v(row, 2) * v(row, 2));
+                    vectors[i] = {v(row, 0), v(row, 1), v(row, 2)};
+                    magnitude[i] = vectors[i].norm();
                 }
+                structure.setVectorField(name, std::move(vectors));
                 structure.setScalarField("|" + name + "|", std::move(magnitude));
             }
         } catch (const py::error_already_set&) {
             continue;
         }
+    }
+
+    // Velocities derived from momenta/masses (ase get_velocities); only
+    // stored when they carry information.
+    try {
+        const auto velocities = np.attr("asarray")(atoms.attr("get_velocities")(),
+                                                   py::arg("dtype") = "float64")
+                                    .cast<py::array_t<double>>();
+        if (velocities.ndim() == 2
+            && static_cast<std::size_t>(velocities.shape(0)) == n
+            && velocities.shape(1) == 3) {
+            const auto v = velocities.unchecked<2>();
+            std::vector<core::Vec3> vectors(n);
+            double largest = 0.0;
+            for (std::size_t i = 0; i < n; ++i) {
+                const auto row = static_cast<py::ssize_t>(i);
+                vectors[i] = {v(row, 0), v(row, 1), v(row, 2)};
+                largest = std::max(largest, vectors[i].norm());
+            }
+            if (largest > 1e-12)
+                structure.setVectorField("velocities", std::move(vectors));
+        }
+    } catch (const py::error_already_set&) {
+        // no momenta / masses — fine
     }
     return structure;
 }

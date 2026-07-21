@@ -1,10 +1,15 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 0.1.0
+    VERSION 0.10.0
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
+
+# The user-facing version string lives in the plain-text `version` file at
+# the repository root, read at runtime (About dialog). Stage a copy next
+# to the built binary so it is found outside the source tree too.
+configure_file(version ${CMAKE_CURRENT_BINARY_DIR}/version COPYONLY)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -177,13 +182,13 @@ qt_add_resources(calango "shaders"
 qt_add_resources(calango "examples"
     PREFIX "/"
     FILES
-        assets/samples/examples/diamond.vasp
-        assets/samples/examples/mos2_2h_bulk.vasp
-        assets/samples/examples/graphene.vasp
-        assets/samples/examples/mos2_1h_monolayer.vasp
-        assets/samples/examples/benzene.xyz
-        assets/samples/examples/naphthalene.xyz
-        assets/samples/examples/coronene.xyz
+        assets/examples/diamond.vasp
+        assets/examples/mos2_2h_bulk.vasp
+        assets/examples/graphene.vasp
+        assets/examples/mos2_1h_monolayer.vasp
+        assets/examples/benzene.xyz
+        assets/examples/naphthalene.xyz
+        assets/examples/coronene.xyz
 )
 
 target_include_directories(calango PRIVATE src)

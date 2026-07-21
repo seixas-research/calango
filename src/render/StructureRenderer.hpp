@@ -56,7 +56,7 @@ public:
         RepresentationMode mode = RepresentationMode::BallAndStick;
         float atomScaleFactor = 1.0f; ///< global sphere-radius multiplier (UI)
         float bondWidthFactor = 1.0f; ///< global cylinder-width multiplier (UI)
-        float bondRadius = 0.12f;     ///< Å, base radius of a single bond
+        float bondRadius = 0.06f;     ///< Å, base radius of a single bond
         float bondTolerance = 1.15f;  ///< bond-detection cutoff factor
         bool autoBonds = true;        ///< distance-based bond perception on/off
                                       ///< (manual bond overrides always render)
@@ -64,6 +64,14 @@ public:
         /// end blending to atom B color at the other); off = classic
         /// half-and-half coloring.
         bool gradientBonds = true;
+        /// Per-atom vector overlays drawn as 3D arrows from each atom
+        /// center (mesh representations only). Data comes from the
+        /// structure's vector fields "forces" / "velocities".
+        bool showForces = false;
+        bool showVelocities = false;
+        float vectorScale = 1.0f; ///< Å of arrow length per field unit
+        QColor forceColor{242, 92, 54};
+        QColor velocityColor{54, 166, 242};
         bool showCell = true;
         QColor cellColor{166, 166, 178};
         /// 1 = plain GL lines; > 1 renders the edges as thin lit tubes
@@ -154,6 +162,7 @@ private:
 
     InstancedMesh sphere_;
     InstancedMesh cylinder_;
+    InstancedMesh cone_;     ///< arrowheads of force/velocity vectors
     InstancedMesh cellTube_; ///< thick cell wireframe (cellLineWidth > 1)
     ColoredVertexBuffer wireBonds_;  ///< GL_LINES
     ColoredVertexBuffer wireAtoms_;  ///< GL_POINTS (isolated atoms visible)

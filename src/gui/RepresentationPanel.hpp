@@ -40,6 +40,10 @@ private:
     QSlider* bondWidthSlider_;
     QDoubleSpinBox* bondWidthSpin_;
     QCheckBox* gradientBondsCheck_;
+    QCheckBox* forcesCheck_;
+    QCheckBox* velocitiesCheck_;
+    QSlider* vectorScaleSlider_;
+    QDoubleSpinBox* vectorScaleSpin_;
 };
 
 } // namespace calango::gui

@@ -64,7 +64,9 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <fstream>
 #include <stdexcept>
+#include <string>
 
 namespace calango::gui {
 
@@ -685,6 +687,52 @@ void MainWindow::saveTrajectoryAs()
 // Image & animation export
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// Attaches a resolution-preset combo (720p / 1080p / 4K / Custom) to a
+/// width/height spinbox pair: picking a preset writes the spins, editing
+/// a spin manually flips the combo back to Custom.
+QComboBox* makeResolutionPresetCombo(QDialog* dialog, QSpinBox* widthSpin,
+                                     QSpinBox* heightSpin)
+{
+    struct Preset {
+        const char* label;
+        int width;
+        int height;
+    };
+    static constexpr Preset kPresets[] = {
+        {"720p (1280 × 720)", 1280, 720},
+        {"1080p (1920 × 1080)", 1920, 1080},
+        {"4K UHD (3840 × 2160)", 3840, 2160},
+    };
+
+    auto* combo = new QComboBox(dialog);
+    for (const Preset& preset : kPresets)
+        combo->addItem(QObject::tr(preset.label), QSize(preset.width, preset.height));
+    combo->addItem(QObject::tr("Custom"), QSize());
+    combo->setCurrentIndex(combo->count() - 1); // dialogs open with custom sizes
+
+    QObject::connect(combo, &QComboBox::currentIndexChanged, dialog,
+                     [combo, widthSpin, heightSpin](int index) {
+                         const QSize size = combo->itemData(index).toSize();
+                         if (!size.isValid() || size.isEmpty())
+                             return; // Custom: leave the spins alone
+                         const QSignalBlocker blockWidth(widthSpin);
+                         const QSignalBlocker blockHeight(heightSpin);
+                         widthSpin->setValue(size.width());
+                         heightSpin->setValue(size.height());
+                     });
+    const auto toCustom = [combo] {
+        const QSignalBlocker blocker(combo);
+        combo->setCurrentIndex(combo->count() - 1);
+    };
+    QObject::connect(widthSpin, &QSpinBox::valueChanged, dialog, toCustom);
+    QObject::connect(heightSpin, &QSpinBox::valueChanged, dialog, toCustom);
+    return combo;
+}
+
+} // namespace
+
 void MainWindow::exportImage()
 {
     Document* doc = currentDocument();
@@ -703,6 +751,8 @@ void MainWindow::exportImage()
     auto* heightSpin = new QSpinBox(&dialog);
     heightSpin->setRange(64, 8192);
     heightSpin->setValue(viewport_->height() * 2);
+    form->addRow(tr("Resolution preset:"),
+                 makeResolutionPresetCombo(&dialog, widthSpin, heightSpin));
     form->addRow(tr("Width (px):"), widthSpin);
     form->addRow(tr("Height (px):"), heightSpin);
 
@@ -785,13 +835,15 @@ void MainWindow::exportAnimation()
             [framesSpin](int index) { framesSpin->setEnabled(index == 0); });
 
     auto* widthSpin = new QSpinBox(&dialog);
-    widthSpin->setRange(64, 2048);
+    widthSpin->setRange(64, 4096); // up to 4K UHD
     widthSpin->setSingleStep(2); // H.264 yuv420p wants even dimensions
     widthSpin->setValue(640);
     auto* heightSpin = new QSpinBox(&dialog);
-    heightSpin->setRange(64, 2048);
+    heightSpin->setRange(64, 4096);
     heightSpin->setSingleStep(2);
     heightSpin->setValue(480);
+    form->addRow(tr("Resolution preset:"),
+                 makeResolutionPresetCombo(&dialog, widthSpin, heightSpin));
     form->addRow(tr("Width (px):"), widthSpin);
     form->addRow(tr("Height (px):"), heightSpin);
 
@@ -957,10 +1009,12 @@ void MainWindow::cleaveSurface()
     if (wizard.exec() != QDialog::Accepted || !wizard.result())
         return;
 
-    pushUndo();
-    replaceCurrentStructure(wizard.result(),
-                            tr("%1 %2").arg(doc->fileName, wizard.resultLabel()));
-    statusBar()->showMessage(tr("Slab created: %1 atoms").arg(doc->structure->size()));
+    // The slab opens in its own tab — the bulk structure the wizard was
+    // fed stays untouched in the original tab (with its undo history).
+    const auto atomCount = wizard.result()->size();
+    addDocument(wizard.result(),
+                tr("%1 %2").arg(doc->fileName, wizard.resultLabel()));
+    statusBar()->showMessage(tr("Slab created in a new tab: %1 atoms").arg(atomCount));
 }
 
 // ---------------------------------------------------------------------------
@@ -1486,6 +1540,34 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     }
 }
 
+namespace {
+
+/// User-facing version string, read at runtime from the plain-text
+/// `version` file (standard C++ file I/O). Searched next to the binary,
+/// one level up (a `build/` dir inside the repository root), and in the
+/// working directory; the compile-time version is only a fallback.
+QString runtimeVersion()
+{
+    const QStringList candidates = {
+        QCoreApplication::applicationDirPath() + QStringLiteral("/version"),
+        QCoreApplication::applicationDirPath() + QStringLiteral("/../version"),
+        QStringLiteral("version"),
+    };
+    for (const QString& path : candidates) {
+        std::ifstream file(path.toStdString());
+        if (!file.is_open())
+            continue;
+        std::string line;
+        std::getline(file, line);
+        const QString version = QString::fromStdString(line).trimmed();
+        if (!version.isEmpty())
+            return version;
+    }
+    return QStringLiteral(CALANGO_VERSION);
+}
+
+} // namespace
+
 void MainWindow::about()
 {
     const auto& python = pybridge::PythonEngine::instance();
@@ -1495,7 +1577,7 @@ void MainWindow::about()
            "<p>Atomistic modeling and simulation front-end built on Qt6, "
            "OpenGL and the Atomic Simulation Environment.</p>"
            "<p>Python: %2<br>ASE: %3</p>")
-            .arg(QStringLiteral(CALANGO_VERSION),
+            .arg(runtimeVersion(),
                  QString::fromStdString(python.pythonVersion()).section('\n', 0, 0),
                  python.aseAvailable()
                      ? QString::fromStdString(python.aseVersion())

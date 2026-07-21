@@ -24,6 +24,7 @@
   - *Generalized Coordination Number (GCN):* continuous GCN values, ideal for highlighting terraces, steps, edges, and vertices of nanoparticles and slabs.
   - *Custom Property:* any per-atom scalar field carried by the structure (charges, force magnitudes, extended-XYZ columns) overlaid on the atomic spheres.
 - **Scientific Gradients:** Viridis, Plasma, and Turbo colormaps with a live legend-range readout; trajectory playback re-colors every frame, so CN/GCN maps stay in sync during animations.
+- **Force and Velocity Arrows:** Per-atom force and velocity vectors render as lit 3D arrows (cylinder shaft plus cone head) from each atom center, with a scale slider/spinbox in the Representation panel; data imports automatically from extended-XYZ force columns and trajectory momenta.
 - **Lighting and Camera Control:** Turntable camera with double-click reframing, perspective/orthographic projections preserving apparent scale, and a multi-light studio setup (warm key plus cool fill) editable in a real-time lighting panel (up to four directional lights, Blinn-Phong).
 - **Per-Element Styling:** CPK color overrides via `QColorDialog` and per-element radius scaling, plus global atom-radius and bond-width sliders with synced spin boxes.
 - **Viewport Furniture:** Axes triad showing Cartesian (X, Y, Z) or Bravais lattice vectors (a1, a2, a3), and unit cell boundaries rendered as thin lines or lit tubes with configurable color and width.
@@ -60,8 +61,8 @@
 - **k-Path Builder:** Click-to-build k-paths with discontinuous sections (Gamma to X | M to R) and export to VASP `KPOINTS` (line mode), Quantum ESPRESSO `K_POINTS crystal_b`, CASTEP `SPECTRAL_KPOINT_PATH`, SIESTA `BandLines`, and standalone ASE/Python scripts.
 
 ### Publication Output
-- **Static Images:** High-resolution off-screen capture (8x MSAA, up to 8192 px) as PNG (transparent or solid) or JPEG.
-- **Animations:** Turntable or trajectory export to animated GIF (with transparency) or MP4 (H.264) with resolution, framerate, and background options.
+- **Static Images:** High-resolution off-screen capture (8x MSAA, up to 8192 px) as PNG (transparent or solid) or JPEG, with 720p/1080p/4K resolution presets.
+- **Animations:** Turntable or trajectory export to animated GIF (with transparency) or MP4 (H.264) up to 4K, with resolution presets, framerate, and background options.
 - **Ray Tracing:** POV-Ray and Tachyon scene export reproducing the active viewport (camera, lights, styling, multi-bonds, cell), with in-app renderer invocation and log capture.
 
 ---
@@ -146,7 +147,7 @@ Calango enforces a strict Model-View-Controller (MVC) split to ensure stability,
    cmake --build build -j
 
    # Run with a sample structure
-   ./build/calango assets/samples/examples/diamond.vasp
+   ./build/calango assets/examples/diamond.vasp
    ```
 
 ---
@@ -182,7 +183,7 @@ export CALANGO_PYTHON=/path/to/.venv/bin/python
 - `CMakeLists.txt` — global build configuration.
 - `assets/`
   - `shaders/` — GLSL shaders (compiled in as Qt resources).
-  - `samples/` — benchmark structure files for the Examples browser.
+  - `examples/` — benchmark structure files for the Examples browser.
 - `docs/` — architecture guides and design notes.
 - `src/`
   - `main.cpp` — application entry point and CLI (`--probe-python`).
