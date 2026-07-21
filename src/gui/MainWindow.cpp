@@ -24,6 +24,7 @@
 #include "gui/RemoteAccessPanel.hpp"
 #include "gui/RepresentationPanel.hpp"
 #include "gui/SlabWizard.hpp"
+#include "gui/RamanDialog.hpp"
 #include "gui/SqsDialog.hpp"
 #include "gui/WarrenCowleyDialog.hpp"
 #include "gui/LocalEntropyDialog.hpp"
@@ -80,6 +81,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <array>
 #include <stdexcept>
 #include <string>
 
@@ -275,6 +277,8 @@ MainWindow::MainWindow(QWidget* parent)
                      "bond them"),
                   ViewportWidget::InteractionMode::Insert,
                   QKeySequence(Qt::Key_I));
+    // Visual break: navigation/editing modes | measurement modes.
+    frameToolbar->addSeparator();
     addModeAction(QStringLiteral("distance"),
                   tr("Distance measurement — click two atoms to read their "
                      "separation in Å\n(click empty space to reset)"),
@@ -325,6 +329,44 @@ MainWindow::MainWindow(QWidget* parent)
     QAction* alignYz = frameToolbar->addAction(
         cameraToolbarIcon(QStringLiteral("yz")), tr("Align view with the YZ plane"));
     connect(alignYz, &QAction::triggered, viewport_, &ViewportWidget::alignWithYZ);
+
+    // --- Fixed-angle axis rotations ---------------------------------------
+    // X+/X− .. Z+/Z− rotate the scene about a world axis by the editable
+    // step; the transform animates smoothly and clicks compose exactly.
+    frameToolbar->addSeparator();
+    auto* angleStepSpin = new QDoubleSpinBox(frameToolbar);
+    angleStepSpin->setRange(1.0, 180.0);
+    angleStepSpin->setValue(15.0);
+    angleStepSpin->setDecimals(1);
+    angleStepSpin->setSingleStep(5.0);
+    angleStepSpin->setSuffix(QStringLiteral("°"));
+    angleStepSpin->setToolTip(tr("Rotation step of the X/Y/Z axis buttons"));
+    frameToolbar->addWidget(angleStepSpin);
+    const std::array<QString, 3> axisNames{QStringLiteral("X"),
+                                           QStringLiteral("Y"),
+                                           QStringLiteral("Z")};
+    for (int axis = 0; axis < 3; ++axis) {
+        for (const int sign : {+1, -1}) {
+            auto* button = new QToolButton(frameToolbar);
+            button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+            button->setText(QStringLiteral("%1%2").arg(
+                axisNames[static_cast<std::size_t>(axis)],
+                sign > 0 ? QStringLiteral("+") : QStringLiteral("−")));
+            button->setToolTip(sign > 0
+                                   ? tr("Rotate counter-clockwise around the "
+                                        "%1 axis by the angle step")
+                                         .arg(axisNames[static_cast<std::size_t>(axis)])
+                                   : tr("Rotate clockwise around the %1 axis "
+                                        "by the angle step")
+                                         .arg(axisNames[static_cast<std::size_t>(axis)]));
+            connect(button, &QToolButton::clicked, this,
+                    [this, axis, sign, angleStepSpin] {
+                        viewport_->rotateSceneAxis(axis,
+                                                   sign * angleStepSpin->value());
+                    });
+            frameToolbar->addWidget(button);
+        }
+    }
 
     auto* central = new QWidget(this);
     auto* centralLayout = new QVBoxLayout(central);
@@ -526,6 +568,8 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showWarrenCowley);
     analysisMenu->addAction(tr("Local &Entropy Analysis…"),
                             this, &MainWindow::showLocalEntropy);
+    analysisMenu->addAction(tr("Ra&man Modes…"),
+                            this, &MainWindow::showRamanModes);
 
     // Help trails the menu bar: online resources first, About last (as is
     // conventional). New documentation/support links belong in kHelpLinks.
@@ -564,6 +608,10 @@ void MainWindow::createMenusAndDocks()
     auto* brandingDock = new QDockWidget(tr("Calango"), this); // zone 1
     brandingDock->setObjectName(QStringLiteral("brandingDock"));
     brandingDock->setWidget(new BrandingPanel(brandingDock));
+    // No title bar: zone 1 shows only the centered logo. (The dock title
+    // still names the View-menu toggle; an empty title widget removes
+    // the header without disabling the dock.)
+    brandingDock->setTitleBarWidget(new QWidget(brandingDock));
     addDockWidget(Qt::LeftDockWidgetArea, brandingDock);
 
     auto* infoDock = new QDockWidget(tr("Structure"), this); // zone 5
@@ -680,7 +728,16 @@ void MainWindow::createMenusAndDocks()
     jobTabs->addTab(plotPage(temperaturePlot_), tr("Temperature"));
     jobTabs->addTab(plotPage(forcePlot_), tr("Force"));
     jobTabs->addTab(plotPage(pressurePlot_), tr("Pressure"));
-    jobDock_->setWidget(jobTabs);
+    // Wrap the tab widget with a small top margin: without it the tab
+    // titles (Log/Energy/...) render flush against the dock's title bar
+    // and visually collide with it (zone-10 overflow).
+    auto* jobContainer = new QWidget(jobDock_);
+    auto* jobLayout = new QVBoxLayout(jobContainer);
+    jobLayout->setContentsMargins(4, 8, 4, 4);
+    jobLayout->setSpacing(0);
+    jobLayout->addWidget(jobTabs);
+    jobTabs->setDocumentMode(true); // flat tab bar, no frame to overlap
+    jobDock_->setWidget(jobContainer);
     splitDockWidget(lightingDock, jobDock_, Qt::Horizontal);
 
     remoteDock_ = new QDockWidget(tr("Remote Access"), this); // zone 11
@@ -712,12 +769,13 @@ void MainWindow::createMenusAndDocks()
     resizeDocks({lightingDock, jobDock_, remoteDock_, cellAxesDock},
                 {280, 560, 430, 290}, Qt::Horizontal);
 
-    // Dock titles at 1.5× the theme default across all zones. The font is
-    // set on the QDockWidget (whose title bar renders with it) and reset
-    // on each content widget, since fonts would otherwise propagate down.
+    // Dock titles at 1.2× the theme default across all zones (the earlier
+    // 1.5× reduced by 0.8×). The font is set on the QDockWidget (whose
+    // title bar renders with it) and reset on each content widget, since
+    // fonts would otherwise propagate down.
     const QFont contentFont = QApplication::font();
     QFont dockTitleFont = contentFont;
-    dockTitleFont.setPointSizeF(contentFont.pointSizeF() * 1.5);
+    dockTitleFont.setPointSizeF(contentFont.pointSizeF() * 1.2);
     for (QDockWidget* dock : findChildren<QDockWidget*>()) {
         dock->setFont(dockTitleFont);
         if (dock->widget())
@@ -2010,6 +2068,20 @@ void MainWindow::showXrd()
     if (!ensureAseAvailable())
         return;
     XrdDialog dialog(doc->structure, this);
+    dialog.exec();
+}
+
+void MainWindow::showRamanModes()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Raman Modes"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+    RamanDialog dialog(doc->structure, this);
     dialog.exec();
 }
 

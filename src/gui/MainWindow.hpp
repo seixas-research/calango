@@ -88,6 +88,7 @@ private Q_SLOTS:
     void openSqsBuilder();
     void showWarrenCowley();
     void showLocalEntropy();
+    void showRamanModes();
     void openExamplesBrowser();
     void openRayTraceDialog();
     void addRandomNoise();

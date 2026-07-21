@@ -7,6 +7,7 @@
 #include <QOpenGLFramebufferObject>
 #include <QPainter>
 #include <QRubberBand>
+#include <QVariantAnimation>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -362,6 +363,33 @@ void ViewportWidget::paintGL()
             drawAxesOverlay(painter);
         drawMeasurementOverlay(painter);
     }
+}
+
+void ViewportWidget::rotateSceneAxis(int axis, double degrees)
+{
+    static const QVector3D kAxes[3] = {{1.0f, 0.0f, 0.0f},
+                                       {0.0f, 1.0f, 0.0f},
+                                       {0.0f, 0.0f, 1.0f}};
+    if (axis < 0 || axis > 2 || degrees == 0.0)
+        return;
+
+    // Incremental animation: each tick applies only the delta since the
+    // previous one, so several in-flight animations compose exactly.
+    auto* animation = new QVariantAnimation(this);
+    animation->setStartValue(0.0);
+    animation->setEndValue(degrees);
+    animation->setDuration(200);
+    animation->setEasingCurve(QEasingCurve::InOutQuad);
+    auto applied = std::make_shared<double>(0.0);
+    connect(animation, &QVariantAnimation::valueChanged, this,
+            [this, axis, applied](const QVariant& value) {
+                const double now = value.toDouble();
+                camera_.rotateScene(kAxes[axis],
+                                    static_cast<float>(now - *applied));
+                *applied = now;
+                update();
+            });
+    animation->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
 void ViewportWidget::setInteractionMode(InteractionMode mode)

@@ -20,8 +20,13 @@ void OrbitCamera::pan(float dxPixels, float dyPixels, int viewportHeight)
     QMatrix4x4 rotation;
     rotation.rotate(-yawDeg_, 0.0f, 1.0f, 0.0f);
     rotation.rotate(-pitchDeg_, 1.0f, 0.0f, 0.0f);
-    const QVector3D right = rotation.map(QVector3D(1.0f, 0.0f, 0.0f));
-    const QVector3D up = rotation.map(QVector3D(0.0f, 1.0f, 0.0f));
+    // Undo the scene rotation too, so panning follows the cursor even
+    // after fixed-angle axis rotations.
+    const QQuaternion inverse = sceneRotation_.inverted();
+    const QVector3D right =
+        inverse.rotatedVector(rotation.map(QVector3D(1.0f, 0.0f, 0.0f)));
+    const QVector3D up =
+        inverse.rotatedVector(rotation.map(QVector3D(0.0f, 1.0f, 0.0f)));
 
     target_ += (-dxPixels * right + dyPixels * up) * worldPerPixel;
 }
@@ -43,6 +48,7 @@ QMatrix4x4 OrbitCamera::view() const
     m.translate(0.0f, 0.0f, -distance_);
     m.rotate(pitchDeg_, 1.0f, 0.0f, 0.0f);
     m.rotate(yawDeg_, 0.0f, 1.0f, 0.0f);
+    m.rotate(sceneRotation_); // world-axis rotation about the target
     m.translate(-target_);
     return m;
 }
@@ -62,6 +68,7 @@ QMatrix4x4 OrbitCamera::rotationOnlyView() const
     QMatrix4x4 m;
     m.rotate(pitchDeg_, 1.0f, 0.0f, 0.0f);
     m.rotate(yawDeg_, 0.0f, 1.0f, 0.0f);
+    m.rotate(sceneRotation_); // keep the axes triad in sync
     return m;
 }
 

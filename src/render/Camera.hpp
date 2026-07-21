@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMatrix4x4>
+#include <QQuaternion>
 #include <QVector3D>
 
 namespace calango::render {
@@ -26,10 +27,22 @@ public:
 
     /// Jump to an absolute orientation (used by the view-alignment
     /// buttons): yaw/pitch in degrees, target and distance unchanged.
+    /// Clears any scene rotation so the alignment is truly axis-aligned.
     void setOrientation(float yawDeg, float pitchDeg)
     {
         yawDeg_ = yawDeg;
         pitchDeg_ = pitchDeg;
+        sceneRotation_ = QQuaternion();
+    }
+
+    /// Rotate the scene about a world-space axis through the camera
+    /// target (the fixed-angle X/Y/Z toolbar buttons). Composes with the
+    /// orbit yaw/pitch; picking and overlays stay consistent because
+    /// every consumer goes through view()/projection().
+    void rotateScene(const QVector3D& axis, float degrees)
+    {
+        sceneRotation_ =
+            QQuaternion::fromAxisAndAngle(axis, degrees) * sceneRotation_;
     }
 
     /// Pan in screen space; dx/dy are in pixels, scaled by distance so the
@@ -61,6 +74,7 @@ private:
     float distance_ = 20.0f;
     float yawDeg_ = 0.0f;
     float pitchDeg_ = 20.0f;
+    QQuaternion sceneRotation_; ///< extra world-axis rotation (identity default)
     CameraProjection projectionMode_ = CameraProjection::Perspective;
 };
 

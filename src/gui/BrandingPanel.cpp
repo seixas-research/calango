@@ -9,11 +9,9 @@ namespace calango::gui {
 BrandingPanel::BrandingPanel(QWidget* parent)
     : QWidget(parent)
 {
-    // Logo + wordmark as one centered group: stretches on both sides
-    // center it horizontally, AlignVCenter centers it in the panel height.
+    // Just the logo, centered both ways — the panel carries no text.
     auto* layout = new QHBoxLayout(this);
     layout->setContentsMargins(12, 8, 12, 8);
-    layout->setSpacing(12);
     layout->addStretch(1);
 
     auto* logo = new QLabel(this);
@@ -25,13 +23,6 @@ BrandingPanel::BrandingPanel(QWidget* parent)
     logo->setPixmap(scaled);
     logo->setFixedSize(112, 112);
     layout->addWidget(logo, 0, Qt::AlignVCenter);
-
-    auto* name = new QLabel(QStringLiteral("Calango"), this);
-    QFont nameFont = name->font();
-    nameFont.setPointSizeF(nameFont.pointSizeF() * 3.4);
-    nameFont.setBold(true);
-    name->setFont(nameFont);
-    layout->addWidget(name, 0, Qt::AlignVCenter);
 
     layout->addStretch(1);
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);

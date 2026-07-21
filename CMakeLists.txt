@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.19
+    VERSION 26.7.20
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -110,6 +110,8 @@ qt_add_executable(calango
     src/python_bridge/MaterialsProject.cpp
     src/python_bridge/SqsBuilder.hpp
     src/python_bridge/SqsBuilder.cpp
+    src/python_bridge/RamanAnalysis.hpp
+    src/python_bridge/RamanAnalysis.cpp
 
     # render — OpenGL "View" over core::Structure (read-only access)
     src/render/Camera.hpp
@@ -200,6 +202,8 @@ qt_add_executable(calango
     src/gui/WarrenCowleyDialog.cpp
     src/gui/LocalEntropyDialog.hpp
     src/gui/LocalEntropyDialog.cpp
+    src/gui/RamanDialog.hpp
+    src/gui/RamanDialog.cpp
 )
 
 qt_add_resources(calango "shaders"
@@ -377,6 +381,23 @@ if(CALANGO_BUILD_TESTS)
     add_test(NAME materials_project_mp1434 COMMAND calango_mp_test)
     set_tests_properties(materials_project_mp1434 PROPERTIES
         SKIP_RETURN_CODE 77)
+
+    add_executable(calango_raman_test
+        tests/RamanSiTest.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/python_bridge/PythonEngine.cpp
+        src/python_bridge/AseBridge.cpp
+        src/python_bridge/RamanAnalysis.cpp
+    )
+    target_include_directories(calango_raman_test PRIVATE src)
+    target_compile_definitions(calango_raman_test PRIVATE
+        CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}")
+    target_link_libraries(calango_raman_test PRIVATE pybind11::embed)
+    add_test(NAME raman_si_diamond
+             COMMAND calango_raman_test
+                     "${CMAKE_CURRENT_SOURCE_DIR}/assets/examples/Si_diamond.vasp")
 endif()
 
 # ---------------------------------------------------------------------------

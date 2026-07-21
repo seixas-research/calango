@@ -148,6 +148,11 @@ public Q_SLOTS:
     void alignWithYZ() { alignToPlane(2); }
     void alignToPlane(int plane);
 
+    /// Smoothly rotate the scene about world axis 0/1/2 (x/y/z) by
+    /// `degrees` (signed). Animated over ~200 ms; concurrent calls
+    /// compose, so rapid clicks still sum to exact multiples.
+    void rotateSceneAxis(int axis, double degrees);
+
 Q_SIGNALS:
     void selectionChanged(int count);
     /// Insert mode: the user clicked empty space — create an atom there
