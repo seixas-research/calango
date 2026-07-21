@@ -25,6 +25,8 @@ enum class ColorGradient {
     Cividis,
     Hot,
     Afmhot,
+    Coolwarm, ///< diverging blue-white-red (potentials, signed fields)
+    Rainbow,  ///< classic violet-to-red spectral ramp
 };
 
 namespace ColorMap {

@@ -130,6 +130,18 @@ public:
     void setInteractionMode(InteractionMode mode);
     InteractionMode interactionMode() const { return interactionMode_; }
 
+    /// Depth-of-field post-processing (View -> Visual Effects). Fog lives
+    /// in the renderer Style; DoF is a viewport-level composite pass.
+    /// While enabled the scene renders into a non-multisampled offscreen
+    /// target, so MSAA is traded for the effect.
+    struct DepthOfField {
+        bool enabled = false;
+        float strength = 6.0f;   ///< max blur radius (pixels)
+        float focusRange = 12.0f; ///< Å around the focal plane kept sharp
+        float focusOffset = 0.0f; ///< Å shift of the focal plane from the target
+    };
+    DepthOfField& depthOfField() { return dof_; }
+
 public Q_SLOTS:
     /// Off-screen high-resolution capture of the current scene into a
     /// QImage (used by the image/GIF export engine). `background` with
@@ -198,6 +210,12 @@ private:
     bool unprojectToTargetPlane(const QPointF& screenPos, core::Vec3& out) const;
     /// Atoms whose projected centers fall inside the screen-space rect.
     std::set<int> atomsInRect(const QRectF& rect) const;
+
+    /// (Re)create the offscreen color+depth pair for the DoF pass.
+    void ensureDofTarget(int w, int h);
+    void destroyDofTarget();
+    /// Draw the scene (GL state assumed set) — shared by both paths.
+    void renderScene();
     /// Screen position of an atom center; false if behind the camera.
     bool projectAtomToScreen(int index, QPointF& out) const;
     /// Register a click on `atom` for the active measurement mode.
@@ -240,6 +258,15 @@ private:
     /// kept after completion so the overlay stays until the next click.
     std::vector<int> measureAtoms_;
     QString measurementLabel_; ///< overlay text of a completed measurement
+
+    DepthOfField dof_;
+    QOpenGLShaderProgram dofProgram_;
+    QOpenGLVertexArrayObject dofVao_; ///< empty VAO for the fullscreen triangle
+    unsigned dofFbo_ = 0;
+    unsigned dofColorTex_ = 0;
+    unsigned dofDepthTex_ = 0;
+    int dofWidth_ = 0;
+    int dofHeight_ = 0;
     QPointF pressPos_;
 };
 

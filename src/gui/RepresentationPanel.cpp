@@ -52,7 +52,8 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     // Same order as render::ColorGradient.
     gradientCombo_->addItems({tr("Viridis"), tr("Plasma"), tr("Turbo"),
                               tr("Inferno"), tr("Magma"), tr("Cividis"),
-                              tr("Hot"), tr("Afmhot")});
+                              tr("Hot"), tr("Afmhot"), tr("Coolwarm"),
+                              tr("Rainbow")});
     form->addRow(tr("Gradient:"), gradientCombo_);
     connect(gradientCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
         viewport_->setColorGradient(static_cast<render::ColorGradient>(index));

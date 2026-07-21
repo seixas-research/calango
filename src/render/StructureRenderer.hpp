@@ -88,6 +88,14 @@ public:
         /// Reverse the scalar -> color mapping of `gradient` (minima get
         /// the high end of the palette), like matplotlib's "_r" maps.
         bool invertGradient = false;
+        /// Distance fog (View -> Visual Effects): 0 = off, 1 = linear
+        /// between fogStart/fogEnd, 2 = exponential with fogDensity.
+        /// fogColor tracks the viewport background.
+        int fogMode = 0;
+        float fogStart = 15.0f; ///< Å (view-space distance)
+        float fogEnd = 80.0f;   ///< Å
+        float fogDensity = 0.03f;
+        QColor fogColor{26, 28, 33};
     };
 
     /// Display radius of an atom (Å) — the single source of truth shared

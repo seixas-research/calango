@@ -89,6 +89,10 @@ private Q_SLOTS:
     void showWarrenCowley();
     void showLocalEntropy();
     void showRamanModes();
+    void newProject();
+    void showVisualEffects();
+    void showVolumetricData();
+    void showDatasetManager();
     void openExamplesBrowser();
     void openRayTraceDialog();
     void addRandomNoise();

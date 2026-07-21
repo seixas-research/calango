@@ -24,8 +24,11 @@
 #include "gui/RemoteAccessPanel.hpp"
 #include "gui/RepresentationPanel.hpp"
 #include "gui/SlabWizard.hpp"
+#include "gui/DatasetManagerDialog.hpp"
 #include "gui/RamanDialog.hpp"
 #include "gui/SqsDialog.hpp"
+#include "gui/VisualEffectsDialog.hpp"
+#include "gui/VolumetricDialog.hpp"
 #include "gui/WarrenCowleyDialog.hpp"
 #include "gui/LocalEntropyDialog.hpp"
 #include "gui/JobLogWidget.hpp"
@@ -466,42 +469,50 @@ void MainWindow::createMenusAndDocks()
 
     // Menu bar order is fixed: File, Edit, View, Build, Simulation,
     // Analysis (Help trails as is conventional).
+    // ----- File: New | Open | Save | Import/Export | Workspace | Quit ------
     QMenu* fileMenu = menuBar()->addMenu(tr("&File"));
+    fileMenu->addAction(tr("&New Workspace"), QKeySequence::New,
+                        this, &MainWindow::newProject);
+    QMenu* openMenu = fileMenu->addMenu(tr("&Open"));
+    openMenu->addAction(tr("&Structure…"), QKeySequence::Open,
+                        this, &MainWindow::openStructure);
+    openMenu->addAction(tr("&Trajectory…"), QKeySequence(tr("Ctrl+T")),
+                        this, &MainWindow::openTrajectory);
+    QMenu* saveMenu = fileMenu->addMenu(tr("&Save"));
+    saveMenu->addAction(tr("Structure &As…"), QKeySequence::SaveAs,
+                        this, &MainWindow::saveStructureAs);
+    saveMenu->addAction(tr("Tra&jectory As…"), QKeySequence(tr("Ctrl+Shift+T")),
+                        this, &MainWindow::saveTrajectoryAs);
+    QMenu* exportMenu = fileMenu->addMenu(tr("&Import / Export"));
+    exportMenu->addAction(tr("Export &Image…"), QKeySequence(tr("Ctrl+E")),
+                          this, &MainWindow::exportImage);
+    exportMenu->addAction(tr("Export Ani&mation (GIF/MP4)…"),
+                          this, &MainWindow::exportAnimation);
+    exportMenu->addAction(tr("&Ray-Traced Render…"),
+                          this, &MainWindow::openRayTraceDialog);
+    fileMenu->addSeparator();
     // Project workspace: one .calproj file restores the whole multi-tab
     // session (structures, trajectories, job console + metric series).
-    fileMenu->addAction(tr("Open &Project…"), QKeySequence(tr("Ctrl+Shift+O")),
-                        this, &MainWindow::openProject);
-    fileMenu->addAction(tr("Save P&roject"), QKeySequence::Save,
-                        this, &MainWindow::saveProject);
-    fileMenu->addAction(tr("Save Project As…"),
-                        this, &MainWindow::saveProjectAs);
-    fileMenu->addSeparator();
-    fileMenu->addAction(tr("&Open Structure…"), QKeySequence::Open,
-                        this, &MainWindow::openStructure);
-    fileMenu->addAction(tr("Open &Trajectory…"), QKeySequence(tr("Ctrl+T")),
-                        this, &MainWindow::openTrajectory);
-    fileMenu->addAction(tr("Save Structure &As…"), QKeySequence::SaveAs,
-                        this, &MainWindow::saveStructureAs);
-    fileMenu->addAction(tr("Save Tra&jectory As…"), QKeySequence(tr("Ctrl+Shift+T")),
-                        this, &MainWindow::saveTrajectoryAs);
+    QMenu* workspaceMenu = fileMenu->addMenu(tr("Project &Workspace"));
+    workspaceMenu->addAction(tr("Open &Project…"),
+                             QKeySequence(tr("Ctrl+Shift+O")),
+                             this, &MainWindow::openProject);
+    workspaceMenu->addAction(tr("Save P&roject"), QKeySequence::Save,
+                             this, &MainWindow::saveProject);
+    workspaceMenu->addAction(tr("Save Project As…"),
+                             this, &MainWindow::saveProjectAs);
     fileMenu->addAction(tr("&Close Tab"), QKeySequence::Close, this, [this] {
         if (tabBar_->currentIndex() >= 0)
             onTabCloseRequested(tabBar_->currentIndex());
     });
     fileMenu->addSeparator();
-    fileMenu->addAction(tr("Export &Image…"), QKeySequence(tr("Ctrl+E")),
-                        this, &MainWindow::exportImage);
-    fileMenu->addAction(tr("Export Ani&mation (GIF/MP4)…"),
-                        this, &MainWindow::exportAnimation);
-    fileMenu->addAction(tr("&Ray-Traced Render…"),
-                        this, &MainWindow::openRayTraceDialog);
-    fileMenu->addSeparator();
     // Quit goes through closeAllWindows so closeEvent persists the window
-    // geometry / dock layout; the embedded interpreter is finalized by
-    // PythonEngine's destructor in main() afterwards.
+    // geometry / dock layout (and runs the unsaved-changes guard); the
+    // embedded interpreter is finalized by PythonEngine's destructor.
     fileMenu->addAction(tr("&Quit"), QKeySequence::Quit,
                         qApp, &QApplication::closeAllWindows);
 
+    // ----- Edit: Selection | Deletion | Bonds | Cell | Preferences ---------
     QMenu* editMenu = menuBar()->addMenu(tr("&Edit"));
     undoAction_ = editMenu->addAction(tr("&Undo"), QKeySequence::Undo,
                                       this, &MainWindow::undo);
@@ -510,66 +521,91 @@ void MainWindow::createMenusAndDocks()
     editMenu->addSeparator();
     editMenu->addAction(tr("&Add Atom…"), QKeySequence(tr("Ctrl+Shift+A")),
                         this, &MainWindow::addAtom);
-    editMenu->addAction(tr("&Change Element of Selection…"),
-                        this, &MainWindow::changeElementOfSelection);
-    editMenu->addAction(tr("&Translate Selection…"),
-                        this, &MainWindow::translateSelection);
+    QMenu* selectionMenu = editMenu->addMenu(tr("&Selection"));
+    selectionMenu->addAction(tr("&Change Element of Selection…"),
+                             this, &MainWindow::changeElementOfSelection);
+    selectionMenu->addAction(tr("&Translate Selection…"),
+                             this, &MainWindow::translateSelection);
     editMenu->addAction(tr("&Delete Selected Atoms"), QKeySequence::Delete,
                         this, &MainWindow::deleteSelectedAtoms);
     editMenu->addSeparator();
     editMenu->addAction(tr("&Bond Editor…"), QKeySequence(tr("Ctrl+B")),
                         this, &MainWindow::showBondEditor);
+    QMenu* cellMenu = editMenu->addMenu(tr("Unit &Cell"));
+    cellMenu->addAction(tr("Create &Supercell…"),
+                        this, &MainWindow::createSupercell);
     editMenu->addSeparator();
     editMenu->addAction(tr("&Preferences…"), QKeySequence::Preferences,
                         this, &MainWindow::showPreferences);
     updateUndoActions();
 
+    // ----- View: projection | overlays | alignment | effects | panels ------
     QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
-    viewMenu->addAction(tr("&Frame Structure"), QKeySequence(tr("F")),
-                        viewport_, &ViewportWidget::frameStructure);
-    QAction* cellAction = viewMenu->addAction(tr("Show Unit &Cell"));
+    viewMenu->addAction(orthoAction_); // shared with the frame-panel toolbar
+    QMenu* overlaysMenu = viewMenu->addMenu(tr("&Overlays"));
+    QAction* cellAction = overlaysMenu->addAction(tr("Show Unit &Cell"));
     cellAction->setCheckable(true);
     cellAction->setChecked(true);
     connect(cellAction, &QAction::toggled, viewport_, &ViewportWidget::setShowCell);
-    viewMenu->addAction(orthoAction_); // shared with the frame-panel toolbar
+    QMenu* alignMenu = viewMenu->addMenu(tr("&Alignment"));
+    alignMenu->addAction(tr("&Frame Structure"), QKeySequence(tr("F")),
+                         viewport_, &ViewportWidget::frameStructure);
+    alignMenu->addAction(tr("Align with &XY Plane"),
+                         viewport_, &ViewportWidget::alignWithXY);
+    alignMenu->addAction(tr("Align with X&Z Plane"),
+                         viewport_, &ViewportWidget::alignWithXZ);
+    alignMenu->addAction(tr("Align with &YZ Plane"),
+                         viewport_, &ViewportWidget::alignWithYZ);
+    viewMenu->addAction(tr("Visual &Effects…"),
+                        this, &MainWindow::showVisualEffects);
 
+    // ----- Build: generators and structure sources -------------------------
     QMenu* buildMenu = menuBar()->addMenu(tr("&Build"));
-    buildMenu->addAction(tr("Create &Supercell…"), this, &MainWindow::createSupercell);
-    buildMenu->addAction(tr("&Surface Slab…"), this, &MainWindow::cleaveSurface);
     buildMenu->addAction(tr("&Nanomaterial Builder…"), this, &MainWindow::openNanoBuilder);
-    buildMenu->addAction(tr("&Normal Modes / Phonon Builder…"),
-                         this, &MainWindow::openPhononBuilder);
+    buildMenu->addAction(tr("&Surface Slab…"), this, &MainWindow::cleaveSurface);
     buildMenu->addAction(tr("Special &Quasirandom Structure (SQS)…"),
                          this, &MainWindow::openSqsBuilder);
+    buildMenu->addAction(tr("&Normal Modes / Phonon Builder…"),
+                         this, &MainWindow::openPhononBuilder);
     buildMenu->addAction(tr("From &Database…"), this, &MainWindow::openExamplesBrowser);
+    buildMenu->addAction(tr("Structure Perturbation / &Noise…"),
+                         this, &MainWindow::addRandomNoise);
 
+    // ----- Simulation: local/remote jobs and ML datasets -------------------
     QMenu* simulationMenu = menuBar()->addMenu(tr("&Simulation"));
-    simulationMenu->addAction(tr("&New Calculation…"), QKeySequence(tr("Ctrl+R")),
+    simulationMenu->addAction(tr("&New Calculation (ASE)…"),
+                              QKeySequence(tr("Ctrl+R")),
                               this, &MainWindow::newCalculation);
     simulationMenu->addAction(tr("New &Remote Calculation…"),
                               QKeySequence(tr("Ctrl+Shift+R")),
                               this, &MainWindow::newRemoteCalculation);
-    simulationMenu->addAction(tr("Random &Noise…"), this, &MainWindow::addRandomNoise);
+    simulationMenu->addSeparator();
+    simulationMenu->addAction(tr("&Dataset Manager (MLIP)…"),
+                              this, &MainWindow::showDatasetManager);
 
+    // ----- Analysis: spec order, reciprocal-space tools at the end ---------
     QMenu* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
-    analysisMenu->addAction(tr("&Brillouin Zone / k-Path…"),
-                            this, &MainWindow::showBrillouinZone);
-    analysisMenu->addAction(tr("&Radial Distribution Function…"),
-                            this, &MainWindow::showRdf);
-    analysisMenu->addAction(tr("&Coordination Numbers (CN / GCN)…"),
-                            this, &MainWindow::showCoordination);
-    analysisMenu->addAction(tr("Bond &Length / Angle Distributions…"),
-                            this, &MainWindow::showDistributions);
     analysisMenu->addAction(tr("Structure &Factor S(q)…"),
                             this, &MainWindow::showStructureFactor);
     analysisMenu->addAction(tr("&X-Ray Diffraction (XRD)…"),
                             this, &MainWindow::showXrd);
+    analysisMenu->addAction(tr("&Radial Distribution Function…"),
+                            this, &MainWindow::showRdf);
+    analysisMenu->addAction(tr("Bond &Length / Angle Distributions…"),
+                            this, &MainWindow::showDistributions);
+    analysisMenu->addAction(tr("&Coordination Numbers (CN / GCN)…"),
+                            this, &MainWindow::showCoordination);
     analysisMenu->addAction(tr("&Warren-Cowley analysis"),
                             this, &MainWindow::showWarrenCowley);
     analysisMenu->addAction(tr("Local &Entropy Analysis…"),
                             this, &MainWindow::showLocalEntropy);
     analysisMenu->addAction(tr("Ra&man Modes…"),
                             this, &MainWindow::showRamanModes);
+    analysisMenu->addAction(tr("&Volumetric Data…"),
+                            this, &MainWindow::showVolumetricData);
+    analysisMenu->addSeparator();
+    analysisMenu->addAction(tr("&Brillouin Zone / k-Path…"),
+                            this, &MainWindow::showBrillouinZone);
 
     // Help trails the menu bar: online resources first, About last (as is
     // conventional). New documentation/support links belong in kHelpLinks.
@@ -579,6 +615,8 @@ void MainWindow::createMenusAndDocks()
         const char* url;
     };
     static constexpr HelpLink kHelpLinks[] = {
+        {QT_TR_NOOP("&Documentation"),
+         "https://github.com/seixas-research/calango#readme"},
         {QT_TR_NOOP("&GitHub Repository"),
          "https://github.com/seixas-research/calango"},
     };
@@ -2068,6 +2106,47 @@ void MainWindow::showXrd()
     if (!ensureAseAvailable())
         return;
     XrdDialog dialog(doc->structure, this);
+    dialog.exec();
+}
+
+void MainWindow::newProject()
+{
+    if (isDirty_) {
+        const auto choice = QMessageBox::warning(
+            this, tr("New Workspace"),
+            tr("The project has unsaved changes.\n"
+               "Save them before starting a new workspace?"),
+            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+            QMessageBox::Save);
+        if (choice == QMessageBox::Cancel
+            || (choice == QMessageBox::Save && !saveProject()))
+            return;
+    }
+    closeAllDocuments();
+    projectPath_.clear();
+    isDirty_ = false;
+    statusBar()->showMessage(tr("New workspace"));
+}
+
+void MainWindow::showVisualEffects()
+{
+    // Modeless so the scene can be orbited while tuning the sliders.
+    auto* dialog = new VisualEffectsDialog(viewport_, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
+}
+
+void MainWindow::showVolumetricData()
+{
+    VolumetricDialog dialog(this);
+    dialog.exec();
+}
+
+void MainWindow::showDatasetManager()
+{
+    if (!ensureAseAvailable())
+        return;
+    DatasetManagerDialog dialog(this);
     dialog.exec();
 }
 

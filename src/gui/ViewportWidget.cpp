@@ -35,6 +35,7 @@ ViewportWidget::~ViewportWidget()
 {
     // GL resources held by the renderer are released with the context.
     makeCurrent();
+    destroyDofTarget();
     doneCurrent();
 }
 
@@ -155,6 +156,7 @@ void ViewportWidget::updateColorScalars()
 void ViewportWidget::setBackgroundColor(const QColor& color)
 {
     backgroundColor_ = color;
+    renderer_.style().fogColor = color; // fog fades into the background
     update();
 }
 
@@ -326,7 +328,59 @@ void ViewportWidget::initializeGL()
     glEnable(GL_MULTISAMPLE);
     renderer_.initialize(this);
 
+    dofProgram_.addShaderFromSourceFile(QOpenGLShader::Vertex,
+                                        QStringLiteral(":/assets/shaders/dof.vert"));
+    dofProgram_.addShaderFromSourceFile(QOpenGLShader::Fragment,
+                                        QStringLiteral(":/assets/shaders/dof.frag"));
+    dofProgram_.link();
+    dofVao_.create(); // empty — the fullscreen triangle comes from gl_VertexID
+
     structureDirty_ = true;
+}
+
+void ViewportWidget::ensureDofTarget(int w, int h)
+{
+    if (dofFbo_ && dofWidth_ == w && dofHeight_ == h)
+        return;
+    destroyDofTarget();
+    dofWidth_ = w;
+    dofHeight_ = h;
+
+    glGenTextures(1, &dofColorTex_);
+    glBindTexture(GL_TEXTURE_2D, dofColorTex_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glGenTextures(1, &dofDepthTex_);
+    glBindTexture(GL_TEXTURE_2D, dofDepthTex_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0,
+                 GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glGenFramebuffers(1, &dofFbo_);
+    glBindFramebuffer(GL_FRAMEBUFFER, dofFbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           dofColorTex_, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
+                           dofDepthTex_, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
+}
+
+void ViewportWidget::destroyDofTarget()
+{
+    if (dofFbo_) {
+        glDeleteFramebuffers(1, &dofFbo_);
+        glDeleteTextures(1, &dofColorTex_);
+        glDeleteTextures(1, &dofDepthTex_);
+        dofFbo_ = dofColorTex_ = dofDepthTex_ = 0;
+    }
 }
 
 void ViewportWidget::resizeGL(int, int)
@@ -341,11 +395,8 @@ void ViewportWidget::ensureUploaded()
     }
 }
 
-void ViewportWidget::paintGL()
+void ViewportWidget::renderScene()
 {
-    ensureUploaded();
-
-    // QPainter overlays reset pieces of GL state — reassert what we need.
     glEnable(GL_DEPTH_TEST);
     glClearColor(static_cast<float>(backgroundColor_.redF()),
                  static_cast<float>(backgroundColor_.greenF()),
@@ -355,6 +406,53 @@ void ViewportWidget::paintGL()
         ? static_cast<float>(width()) / static_cast<float>(height())
         : 1.0f;
     renderer_.render(camera_.view(), camera_.projection(aspect));
+}
+
+void ViewportWidget::paintGL()
+{
+    ensureUploaded();
+
+    if (!dof_.enabled) {
+        // QPainter overlays reset pieces of GL state — reassert then draw.
+        renderScene();
+    } else {
+        // Depth-of-field: scene into an offscreen color+depth pair, then
+        // a fullscreen composite with the circle-of-confusion blur.
+        const qreal dpr = devicePixelRatioF();
+        const int w = std::max(1, static_cast<int>(width() * dpr));
+        const int h = std::max(1, static_cast<int>(height() * dpr));
+        ensureDofTarget(w, h);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, dofFbo_);
+        glViewport(0, 0, w, h);
+        renderScene();
+
+        glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
+        glViewport(0, 0, w, h);
+        glDisable(GL_DEPTH_TEST);
+        dofProgram_.bind();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, dofColorTex_);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, dofDepthTex_);
+        dofProgram_.setUniformValue("uColor", 0);
+        dofProgram_.setUniformValue("uDepth", 1);
+        const float distance = camera_.distance();
+        dofProgram_.setUniformValue("uNear", std::max(0.01f, distance * 0.01f));
+        dofProgram_.setUniformValue("uFar", distance * 50.0f);
+        dofProgram_.setUniformValue("uFocusDistance",
+                                    distance + dof_.focusOffset);
+        dofProgram_.setUniformValue("uFocusRange", dof_.focusRange);
+        dofProgram_.setUniformValue("uStrength", dof_.strength * static_cast<float>(dpr));
+        dofProgram_.setUniformValue(
+            "uPixelSize", QVector2D(1.0f / w, 1.0f / h));
+        dofVao_.bind();
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        dofVao_.release();
+        dofProgram_.release();
+        glEnable(GL_DEPTH_TEST);
+        glActiveTexture(GL_TEXTURE0);
+    }
 
     if (showAxes_ || !measureAtoms_.empty()) {
         QPainter painter(this);

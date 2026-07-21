@@ -630,6 +630,16 @@ void StructureRenderer::uploadLights()
     meshProgram_.setUniformValueArray("uLightDiffuse", diffuse, kMaxLights);
     meshProgram_.setUniformValueArray("uLightSpecular", specular, kMaxLights);
     meshProgram_.setUniformValue("uShininess", 48.0f);
+
+    meshProgram_.setUniformValue("uFogMode", style_.fogMode);
+    meshProgram_.setUniformValue(
+        "uFogColor",
+        QVector3D(static_cast<float>(style_.fogColor.redF()),
+                  static_cast<float>(style_.fogColor.greenF()),
+                  static_cast<float>(style_.fogColor.blueF())));
+    meshProgram_.setUniformValue("uFogStart", style_.fogStart);
+    meshProgram_.setUniformValue("uFogEnd", style_.fogEnd);
+    meshProgram_.setUniformValue("uFogDensity", style_.fogDensity);
 }
 
 void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& projection)

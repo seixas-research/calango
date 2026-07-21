@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.20
+    VERSION 26.7.21
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -98,6 +98,12 @@ qt_add_executable(calango
     src/core/ChemicalOrder.cpp
     src/core/LocalEntropy.hpp
     src/core/LocalEntropy.cpp
+    src/core/VolumetricData.hpp
+    src/core/VolumetricData.cpp
+    src/core/MarchingCubes.hpp
+    src/core/MarchingCubes.cpp
+    src/core/DatasetSplit.hpp
+    src/core/DatasetSplit.cpp
 
     # python_bridge — embedded CPython + ASE interop
     src/python_bridge/PythonEngine.hpp
@@ -204,6 +210,14 @@ qt_add_executable(calango
     src/gui/LocalEntropyDialog.cpp
     src/gui/RamanDialog.hpp
     src/gui/RamanDialog.cpp
+    src/gui/VolumeViewWidget.hpp
+    src/gui/VolumeViewWidget.cpp
+    src/gui/VolumetricDialog.hpp
+    src/gui/VolumetricDialog.cpp
+    src/gui/VisualEffectsDialog.hpp
+    src/gui/VisualEffectsDialog.cpp
+    src/gui/DatasetManagerDialog.hpp
+    src/gui/DatasetManagerDialog.cpp
 )
 
 qt_add_resources(calango "shaders"
@@ -215,6 +229,10 @@ qt_add_resources(calango "shaders"
         assets/shaders/line.frag
         assets/shaders/wire.vert
         assets/shaders/wire.frag
+        assets/shaders/volume.vert
+        assets/shaders/volume.frag
+        assets/shaders/dof.vert
+        assets/shaders/dof.frag
 )
 
 qt_add_resources(calango "branding"

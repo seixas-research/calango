@@ -23,6 +23,15 @@ uniform vec3  uLightDiffuse[MAX_LIGHTS];
 uniform vec3  uLightSpecular[MAX_LIGHTS];
 uniform float uShininess;
 
+// Distance fog (View -> Visual Effects): 0 = off, 1 = linear between
+// uFogStart/uFogEnd, 2 = exponential with uFogDensity. uFogColor tracks
+// the viewport background so faded geometry blends into it.
+uniform int   uFogMode;
+uniform vec3  uFogColor;
+uniform float uFogStart;
+uniform float uFogEnd;
+uniform float uFogDensity;
+
 out vec4 fragColor;
 
 void main()
@@ -41,6 +50,13 @@ void main()
         color += vColor.rgb * uLightAmbient[i]
                + vColor.rgb * uLightDiffuse[i] * ndl
                + uLightSpecular[i] * spec;
+    }
+    if (uFogMode != 0) {
+        float dist = length(vPosView);
+        float visibility = uFogMode == 1
+            ? clamp((uFogEnd - dist) / max(uFogEnd - uFogStart, 1e-3), 0.0, 1.0)
+            : exp(-uFogDensity * max(dist - uFogStart, 0.0));
+        color = mix(uFogColor, color, visibility);
     }
     fragColor = vec4(color, vColor.a);
 }

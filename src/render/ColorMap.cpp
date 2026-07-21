@@ -115,6 +115,30 @@ constexpr std::array<Rgb, 9> kAfmhot{{
     {1.000f, 1.000f, 1.000f},
 }};
 
+constexpr std::array<Rgb, 9> kCoolwarm{{
+    {0.230f, 0.299f, 0.754f},
+    {0.406f, 0.537f, 0.934f},
+    {0.602f, 0.731f, 0.999f},
+    {0.788f, 0.845f, 0.939f},
+    {0.865f, 0.865f, 0.865f},
+    {0.930f, 0.731f, 0.637f},
+    {0.958f, 0.603f, 0.482f},
+    {0.867f, 0.333f, 0.273f},
+    {0.706f, 0.016f, 0.150f},
+}};
+
+constexpr std::array<Rgb, 9> kRainbow{{
+    {0.500f, 0.000f, 1.000f},
+    {0.160f, 0.350f, 1.000f},
+    {0.000f, 0.710f, 0.930f},
+    {0.170f, 0.930f, 0.650f},
+    {0.350f, 1.000f, 0.380f},
+    {0.720f, 0.980f, 0.170f},
+    {1.000f, 0.850f, 0.000f},
+    {1.000f, 0.480f, 0.000f},
+    {1.000f, 0.000f, 0.000f},
+}};
+
 const std::array<Rgb, 9>& anchors(ColorGradient gradient)
 {
     switch (gradient) {
@@ -132,6 +156,10 @@ const std::array<Rgb, 9>& anchors(ColorGradient gradient)
         return kHot;
     case ColorGradient::Afmhot:
         return kAfmhot;
+    case ColorGradient::Coolwarm:
+        return kCoolwarm;
+    case ColorGradient::Rainbow:
+        return kRainbow;
     case ColorGradient::Viridis:
         break;
     }
