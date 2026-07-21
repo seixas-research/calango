@@ -1,6 +1,6 @@
 # Calango
 
-**Calango** is a modern, high-performance, cross-platform desktop application designed for materials science, crystallography, and atomistic modeling. By combining a raw **C++20/OpenGL** core with the flexibility of **Python's Atomic Simulation Environment (ASE)**, Calango provides the speed needed for real-time 3D visualization and the extensibility of state-of-the-art simulation tools.
+**Calango** is a modern, high-performance, cross-platform desktop application designed for materials science, crystallography, and atomistic modeling. By combining a raw C++20/OpenGL core with the flexibility of Python's Atomic Simulation Environment (ASE), Calango provides the speed needed for real-time 3D visualization and the extensibility of state-of-the-art simulation tools.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-red?style=for-the-badge)](LICENSE)
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?style=for-the-badge&logo=cplusplus&logoColor=white)](https://isocpp.org/)
