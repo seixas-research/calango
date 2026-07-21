@@ -253,6 +253,7 @@ qt_add_resources(calango "branding"
     PREFIX "/"
     FILES
         assets/calango/icon_transparent.png
+        assets/calango/panel.png
 )
 
 qt_add_resources(calango "remote"

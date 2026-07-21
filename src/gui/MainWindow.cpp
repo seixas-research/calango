@@ -2994,8 +2994,7 @@ void MainWindow::about()
             .scaled(140, 140, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     box.setText(
         tr("<h3>Calango %1</h3>"
-           "<p>Atomistic modeling and simulation front-end built on Qt6, "
-           "OpenGL and the Atomic Simulation Environment.</p>"
+           "<p>For visual atomistic modeling</p>"
            "<p>Python: %2<br>ASE: %3</p>")
             .arg(QStringLiteral(CALANGO_VERSION),
                  QString::fromStdString(python.pythonVersion()).section('\n', 0, 0),
