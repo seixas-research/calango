@@ -8,6 +8,7 @@
 
 class QDockWidget;
 class QTabBar;
+class QToolButton;
 
 namespace calango::core {
 class Structure;
@@ -153,6 +154,9 @@ private:
     jobs::JobRunner* jobRunner_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;
+    /// Element placed by the viewport's Insertion mode (toolbar selector).
+    int activeElementZ_ = 6;
+    QToolButton* elementButton_ = nullptr;
     /// Shared between View → Orthographic and the frame-panel toolbar.
     QAction* orthoAction_ = nullptr;
 };

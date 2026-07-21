@@ -38,6 +38,7 @@
 #include "python_bridge/AseBridge.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
+#include <QActionGroup>
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -73,12 +74,12 @@
 #include <QTabBar>
 #include <QTemporaryDir>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTabWidget>
 #include <QTextStream>
 #include <QVBoxLayout>
 
 #include <algorithm>
-#include <fstream>
 #include <stdexcept>
 #include <string>
 
@@ -148,6 +149,35 @@ QIcon cameraToolbarIcon(const QString& kind)
     } else if (kind == QLatin1String("yz")) {
         arrow(QPointF(7, 25), QPointF(28, 25), yColor);
         arrow(QPointF(7, 25), QPointF(7, 4), zColor);
+    } else if (kind == QLatin1String("rotate")) {
+        // Orbit arc with an arrowhead.
+        p.setPen(QPen(neutral, 2.6, Qt::SolidLine, Qt::RoundCap));
+        p.drawArc(QRectF(6, 6, 20, 20), 45 * 16, 250 * 16);
+        arrow(QPointF(22.2, 24.5), QPointF(24.5, 22.0), neutral);
+    } else if (kind == QLatin1String("pan")) {
+        // Four-way move cross.
+        arrow(QPointF(16, 16), QPointF(16, 3), neutral);
+        arrow(QPointF(16, 16), QPointF(16, 29), neutral);
+        arrow(QPointF(16, 16), QPointF(3, 16), neutral);
+        arrow(QPointF(16, 16), QPointF(29, 16), neutral);
+    } else if (kind == QLatin1String("select")) {
+        // Dashed selection box around a couple of "atoms".
+        QPen dashed(neutral, 2.0);
+        dashed.setStyle(Qt::DashLine);
+        p.setPen(dashed);
+        p.drawRect(QRectF(5, 5, 22, 22));
+        p.setPen(Qt::NoPen);
+        p.setBrush(neutral);
+        p.drawEllipse(QPointF(12, 14), 3.2, 3.2);
+        p.drawEllipse(QPointF(21, 20), 3.2, 3.2);
+    } else if (kind == QLatin1String("insert")) {
+        // New atom (circle) with a plus.
+        p.setPen(QPen(neutral, 2.4));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(QPointF(13, 19), 8.0, 8.0);
+        p.setPen(QPen(neutral, 3.0, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(24, 4), QPointF(24, 14));
+        p.drawLine(QPointF(19, 9), QPointF(29, 9));
     }
     return QIcon(pixmap);
 }
@@ -189,6 +219,59 @@ MainWindow::MainWindow(QWidget* parent)
     frameToolbar->setIconSize(QSize(18, 18));
     frameToolbar->setMovable(false);
     frameToolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+
+    // --- Mouse interaction modes (exclusive) -------------------------------
+    auto* modeGroup = new QActionGroup(this);
+    modeGroup->setExclusive(true);
+    const auto addModeAction =
+        [this, frameToolbar, modeGroup](const QString& icon, const QString& text,
+                                        ViewportWidget::InteractionMode mode) {
+            QAction* action = frameToolbar->addAction(cameraToolbarIcon(icon), text);
+            action->setCheckable(true);
+            modeGroup->addAction(action);
+            connect(action, &QAction::triggered, this,
+                    [this, mode] { viewport_->setInteractionMode(mode); });
+            return action;
+        };
+    QAction* rotateMode = addModeAction(
+        QStringLiteral("rotate"),
+        tr("Rotation mode — drag orbits the camera around the structure"),
+        ViewportWidget::InteractionMode::Rotate);
+    addModeAction(QStringLiteral("pan"),
+                  tr("Translation mode — drag pans the scene"),
+                  ViewportWidget::InteractionMode::Pan);
+    addModeAction(QStringLiteral("select"),
+                  tr("Selection mode — drag a box to select multiple atoms "
+                     "(and their bonds)"),
+                  ViewportWidget::InteractionMode::Select);
+    addModeAction(QStringLiteral("insert"),
+                  tr("Insertion mode — click empty space to add an atom of "
+                     "the active element;\ndrag from one atom to another to "
+                     "bond them"),
+                  ViewportWidget::InteractionMode::Insert);
+    rotateMode->setChecked(true);
+
+    // Active element for Insertion mode; opens the periodic table.
+    elementButton_ = new QToolButton(frameToolbar);
+    elementButton_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    elementButton_->setToolTip(tr("Element inserted by Insertion mode — "
+                                  "click to choose from the periodic table"));
+    const auto updateElementButton = [this] {
+        elementButton_->setText(
+            QLatin1String(core::Elements::data(activeElementZ_).symbol));
+    };
+    updateElementButton();
+    connect(elementButton_, &QToolButton::clicked, this,
+            [this, updateElementButton] {
+                if (const int z =
+                        PeriodicTableDialog::pickElement(this, activeElementZ_)) {
+                    activeElementZ_ = z;
+                    updateElementButton();
+                }
+            });
+    frameToolbar->addWidget(elementButton_);
+    frameToolbar->addSeparator();
+
     QAction* resetAction = frameToolbar->addAction(
         cameraToolbarIcon(QStringLiteral("reset")),
         tr("Reset camera (center and frame the structure)"));
@@ -257,6 +340,33 @@ MainWindow::MainWindow(QWidget* parent)
         if (count > 0)
             statusBar()->showMessage(tr("%n atom(s) selected", nullptr, count));
     });
+
+    // Insertion mode edits: the viewport only *requests* — the document
+    // (with its undo history) is mutated here.
+    connect(viewport_, &ViewportWidget::atomInsertRequested, this,
+            [this](const core::Vec3& position) {
+                Document& doc = ensureDocument();
+                pushUndo();
+                doc.structure->addAtom({activeElementZ_, position});
+                notifyStructureChanged(false);
+                statusBar()->showMessage(
+                    tr("Added %1 at (%2, %3, %4) Å")
+                        .arg(QLatin1String(
+                            core::Elements::data(activeElementZ_).symbol))
+                        .arg(position.x, 0, 'f', 2)
+                        .arg(position.y, 0, 'f', 2)
+                        .arg(position.z, 0, 'f', 2));
+            });
+    connect(viewport_, &ViewportWidget::bondInsertRequested, this,
+            [this](int i, int j) {
+                Document* doc = currentDocument();
+                if (!doc || !doc->structure)
+                    return;
+                pushUndo();
+                doc->structure->addBondOverride(i, j);
+                notifyStructureChanged(false);
+                statusBar()->showMessage(tr("Bond %1–%2 created").arg(i).arg(j));
+            });
 
     statusBar()->showMessage(tr("Ready — open a structure to begin (File → Open)"));
 }
@@ -2252,33 +2362,6 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     }
 }
 
-namespace {
-
-/// User-facing version string, read at runtime from the plain-text
-/// `version` file (standard C++ file I/O). Searched next to the binary,
-/// one level up (a `build/` dir inside the repository root), and in the
-/// working directory; the compile-time version is only a fallback.
-QString runtimeVersion()
-{
-    const QStringList candidates = {
-        QCoreApplication::applicationDirPath() + QStringLiteral("/version"),
-        QCoreApplication::applicationDirPath() + QStringLiteral("/../version"),
-        QStringLiteral("version"),
-    };
-    for (const QString& path : candidates) {
-        std::ifstream file(path.toStdString());
-        if (!file.is_open())
-            continue;
-        std::string line;
-        std::getline(file, line);
-        const QString version = QString::fromStdString(line).trimmed();
-        if (!version.isEmpty())
-            return version;
-    }
-    return QStringLiteral(CALANGO_VERSION);
-}
-
-} // namespace
 
 void MainWindow::about()
 {
@@ -2294,7 +2377,7 @@ void MainWindow::about()
            "<p>Atomistic modeling and simulation front-end built on Qt6, "
            "OpenGL and the Atomic Simulation Environment.</p>"
            "<p>Python: %2<br>ASE: %3</p>")
-            .arg(runtimeVersion(),
+            .arg(QStringLiteral(CALANGO_VERSION),
                  QString::fromStdString(python.pythonVersion()).section('\n', 0, 0),
                  python.aseAvailable()
                      ? QString::fromStdString(python.aseVersion())

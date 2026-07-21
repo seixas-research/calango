@@ -1,15 +1,15 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.14
+    VERSION 26.7.17
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
 
-# The user-facing version string lives in the plain-text `version` file at
-# the repository root, read at runtime (About dialog). Stage a copy next
-# to the built binary so it is found outside the source tree too.
-configure_file(version ${CMAKE_CURRENT_BINARY_DIR}/version COPYONLY)
+# The single source of truth for the user-facing version is the
+# project(VERSION ...) above: it is baked into the binary as the
+# CALANGO_VERSION compile definition (About dialog, project files) and
+# reused by CPack for the installer file names.
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -319,6 +319,29 @@ if(MSVC)
     target_compile_options(calango PRIVATE /W4 /permissive-)
 else()
     target_compile_options(calango PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+# ---------------------------------------------------------------------------
+# Integration tests (GUI-free: core + embedded Python bridge only)
+#   cmake -B build -DCALANGO_BUILD_TESTS=ON ... && ctest --test-dir build
+# ---------------------------------------------------------------------------
+option(CALANGO_BUILD_TESTS "Build the integration test executables" OFF)
+if(CALANGO_BUILD_TESTS)
+    enable_testing()
+    add_executable(calango_sqs_test
+        tests/SqsSiGeTest.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/python_bridge/PythonEngine.cpp
+        src/python_bridge/AseBridge.cpp
+        src/python_bridge/SqsBuilder.cpp
+    )
+    target_include_directories(calango_sqs_test PRIVATE src)
+    target_compile_definitions(calango_sqs_test PRIVATE
+        CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}")
+    target_link_libraries(calango_sqs_test PRIVATE pybind11::embed)
+    add_test(NAME sqs_sige_alloy COMMAND calango_sqs_test)
 endif()
 
 # ---------------------------------------------------------------------------

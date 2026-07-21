@@ -5,6 +5,7 @@
 #include <QMouseEvent>
 #include <QOpenGLFramebufferObject>
 #include <QPainter>
+#include <QRubberBand>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -357,10 +358,45 @@ void ViewportWidget::paintGL()
     }
 }
 
+void ViewportWidget::setInteractionMode(InteractionMode mode)
+{
+    interactionMode_ = mode;
+    insertDragFromAtom_ = -1;
+    if (rubberBand_)
+        rubberBand_->hide();
+    // Cursor as a mode reminder: crosshair while placing/selecting.
+    switch (mode) {
+    case InteractionMode::Rotate:
+        setCursor(Qt::ArrowCursor);
+        break;
+    case InteractionMode::Pan:
+        setCursor(Qt::OpenHandCursor);
+        break;
+    case InteractionMode::Select:
+    case InteractionMode::Insert:
+        setCursor(Qt::CrossCursor);
+        break;
+    }
+}
+
 void ViewportWidget::mousePressEvent(QMouseEvent* event)
 {
     lastMousePos_ = event->position();
     pressPos_ = event->position();
+
+    if (event->button() != Qt::LeftButton
+        || event->modifiers().testFlag(Qt::ShiftModifier))
+        return;
+
+    if (interactionMode_ == InteractionMode::Select) {
+        if (!rubberBand_)
+            rubberBand_ = new QRubberBand(QRubberBand::Rectangle, this);
+        rubberBand_->setGeometry(
+            QRect(event->position().toPoint(), QSize()));
+        rubberBand_->show();
+    } else if (interactionMode_ == InteractionMode::Insert) {
+        insertDragFromAtom_ = pickAtom(event->position());
+    }
 }
 
 void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
@@ -368,15 +404,32 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
     const QPointF delta = event->position() - lastMousePos_;
     lastMousePos_ = event->position();
 
-    const bool panning = event->buttons().testFlag(Qt::MiddleButton)
+    // Middle-drag / Shift+left-drag pans in every mode (muscle memory).
+    const bool forcePan = event->buttons().testFlag(Qt::MiddleButton)
         || (event->buttons().testFlag(Qt::LeftButton)
             && event->modifiers().testFlag(Qt::ShiftModifier));
 
-    if (panning) {
+    if (forcePan) {
         camera_.pan(static_cast<float>(delta.x()), static_cast<float>(delta.y()), height());
     } else if (event->buttons().testFlag(Qt::LeftButton)) {
-        camera_.rotate(static_cast<float>(delta.x()) * 0.4f,
-                       static_cast<float>(delta.y()) * 0.4f);
+        switch (interactionMode_) {
+        case InteractionMode::Rotate:
+            camera_.rotate(static_cast<float>(delta.x()) * 0.4f,
+                           static_cast<float>(delta.y()) * 0.4f);
+            break;
+        case InteractionMode::Pan:
+            camera_.pan(static_cast<float>(delta.x()),
+                        static_cast<float>(delta.y()), height());
+            break;
+        case InteractionMode::Select:
+            if (rubberBand_)
+                rubberBand_->setGeometry(
+                    QRect(pressPos_.toPoint(), event->position().toPoint())
+                        .normalized());
+            return; // no repaint needed — the band is a child widget
+        case InteractionMode::Insert:
+            return; // nothing to preview; release decides atom vs bond
+        }
     } else {
         return;
     }
@@ -388,14 +441,56 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent* event)
     if (event->button() != Qt::LeftButton)
         return;
     const QPointF drag = event->position() - pressPos_;
-    if (std::abs(drag.x()) + std::abs(drag.y()) > 4.0) // it was a drag, not a click
-        return;
+    const bool wasClick = std::abs(drag.x()) + std::abs(drag.y()) <= 4.0;
+    const bool toggle = event->modifiers().testFlag(Qt::ControlModifier)
+        || event->modifiers().testFlag(Qt::MetaModifier);
+
+    // --- Select mode: rubber-band box selection ----------------------------
+    if (interactionMode_ == InteractionMode::Select && rubberBand_
+        && rubberBand_->isVisible()) {
+        const QRectF rect = rubberBand_->geometry();
+        rubberBand_->hide();
+        if (!wasClick) {
+            const std::set<int> boxed = atomsInRect(rect);
+            if (toggle)
+                selection_.insert(boxed.begin(), boxed.end());
+            else
+                selection_ = boxed;
+            Q_EMIT selectionChanged(static_cast<int>(selection_.size()));
+            structureDirty_ = true;
+            update();
+            return;
+        }
+        // A click in Select mode falls through to single-atom picking.
+    }
+
+    // --- Insert mode: place an atom / draw a bond --------------------------
+    if (interactionMode_ == InteractionMode::Insert
+        && !event->modifiers().testFlag(Qt::ShiftModifier)) {
+        const int from = insertDragFromAtom_;
+        insertDragFromAtom_ = -1;
+        if (wasClick) {
+            if (pickAtom(event->position()) < 0) {
+                core::Vec3 position;
+                if (unprojectToTargetPlane(event->position(), position))
+                    Q_EMIT atomInsertRequested(position);
+                return;
+            }
+            // Clicking an existing atom picks it (fall through below).
+        } else {
+            const int to = pickAtom(event->position());
+            if (from >= 0 && to >= 0 && from != to)
+                Q_EMIT bondInsertRequested(from, to);
+            return;
+        }
+    }
+
+    if (!wasClick)
+        return; // camera drag
     if (event->modifiers().testFlag(Qt::ShiftModifier))
         return;
 
     const int picked = pickAtom(event->position());
-    const bool toggle = event->modifiers().testFlag(Qt::ControlModifier)
-        || event->modifiers().testFlag(Qt::MetaModifier);
 
     if (picked < 0) {
         if (!toggle)
@@ -423,30 +518,88 @@ void ViewportWidget::wheelEvent(QWheelEvent* event)
     update();
 }
 
-int ViewportWidget::pickAtom(const QPointF& screenPos) const
+bool ViewportWidget::screenRay(const QPointF& screenPos, QVector3D& origin,
+                               QVector3D& direction) const
 {
-    if (!structure_ || structure_->empty() || height() <= 0)
-        return -1;
-
-    // Unproject the pixel to a world-space ray.
+    if (height() <= 0)
+        return false;
     const float aspect = static_cast<float>(width()) / static_cast<float>(height());
     bool invertible = false;
     const QMatrix4x4 inverse =
         (camera_.projection(aspect) * camera_.view()).inverted(&invertible);
     if (!invertible)
-        return -1;
+        return false;
 
     const float ndcX = 2.0f * static_cast<float>(screenPos.x()) / width() - 1.0f;
     const float ndcY = 1.0f - 2.0f * static_cast<float>(screenPos.y()) / height();
     QVector4D nearPoint = inverse * QVector4D(ndcX, ndcY, -1.0f, 1.0f);
     QVector4D farPoint = inverse * QVector4D(ndcX, ndcY, 1.0f, 1.0f);
     if (qFuzzyIsNull(nearPoint.w()) || qFuzzyIsNull(farPoint.w()))
-        return -1;
+        return false;
     nearPoint /= nearPoint.w();
     farPoint /= farPoint.w();
 
-    const QVector3D origin = nearPoint.toVector3D();
-    const QVector3D direction = (farPoint - nearPoint).toVector3D().normalized();
+    origin = nearPoint.toVector3D();
+    direction = (farPoint - nearPoint).toVector3D().normalized();
+    return true;
+}
+
+bool ViewportWidget::unprojectToTargetPlane(const QPointF& screenPos,
+                                            core::Vec3& out) const
+{
+    QVector3D origin, direction;
+    if (!screenRay(screenPos, origin, direction))
+        return false;
+    // Plane through the camera target, facing the viewer: what you click
+    // is where the atom appears, at the depth the camera orbits around.
+    const QVector3D normal =
+        (camera_.target() - camera_.worldPosition()).normalized();
+    const float denom = QVector3D::dotProduct(direction, normal);
+    if (qFuzzyIsNull(denom))
+        return false;
+    const float t =
+        QVector3D::dotProduct(camera_.target() - origin, normal) / denom;
+    if (t < 0.0f)
+        return false;
+    const QVector3D hit = origin + direction * t;
+    out = {static_cast<double>(hit.x()), static_cast<double>(hit.y()),
+           static_cast<double>(hit.z())};
+    return true;
+}
+
+std::set<int> ViewportWidget::atomsInRect(const QRectF& rect) const
+{
+    std::set<int> hits;
+    if (!structure_ || structure_->empty() || height() <= 0)
+        return hits;
+    const float aspect = static_cast<float>(width()) / static_cast<float>(height());
+    const QMatrix4x4 mvp = camera_.projection(aspect) * camera_.view();
+
+    const auto& atoms = structure_->atoms();
+    for (std::size_t i = 0; i < atoms.size(); ++i) {
+        const auto& p = atoms[i].position;
+        const QVector4D clip = mvp
+            * QVector4D(static_cast<float>(p.x), static_cast<float>(p.y),
+                        static_cast<float>(p.z), 1.0f);
+        if (clip.w() <= 0.0f)
+            continue; // behind the camera
+        const float sx = (clip.x() / clip.w() * 0.5f + 0.5f) * width();
+        const float sy = (0.5f - clip.y() / clip.w() * 0.5f) * height();
+        if (rect.contains(QPointF(sx, sy)))
+            hits.insert(static_cast<int>(i));
+    }
+    return hits;
+}
+
+int ViewportWidget::pickAtom(const QPointF& screenPos) const
+{
+    if (!structure_ || structure_->empty() || height() <= 0)
+        return -1;
+
+    // Unproject the pixel to a world-space ray.
+    QVector3D origin, direction;
+    if (!screenRay(screenPos, origin, direction))
+        return -1;
 
     // Nearest ray-sphere intersection over all atoms.
     int best = -1;

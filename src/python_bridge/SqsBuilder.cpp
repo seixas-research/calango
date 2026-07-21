@@ -148,7 +148,11 @@ SqsBuilder::Result SqsBuilder::generate(const core::Structure& base,
         scope["steps"] = params.steps;
         scope["seed"] = params.seed;
 
-        py::exec(kSqsScript, py::globals(), scope);
+        // scope serves as BOTH globals and locals: with separate dicts,
+        // functions defined by the script (objective_of) could not see
+        // the script's own imports and variables — module-style name
+        // lookup goes local -> global -> builtins, skipping exec locals.
+        py::exec(kSqsScript, scope, scope);
 
         Result result;
         result.structure = AseBridge::fromAtoms(scope["result_atoms"]);

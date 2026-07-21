@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Coordination.hpp"
+#include "core/Vec3.hpp"
 #include "render/Camera.hpp"
 #include "render/StructureRenderer.hpp"
 
@@ -18,6 +19,7 @@
 #include <utility>
 
 class QPainter;
+class QRubberBand;
 
 namespace calango::core {
 class Structure;
@@ -30,7 +32,9 @@ namespace calango::gui {
 /// Structure model. Selection is view state; editing it emits
 /// selectionChanged so the controller can act on it.
 ///
-/// Interaction: left-drag rotates, middle-drag or Shift+left-drag pans,
+/// Interaction: what a left-drag does depends on the InteractionMode
+/// (rotate by default, pan, rubber-band selection, or atom/bond
+/// insertion); middle-drag or Shift+left-drag always pans,
 /// wheel zooms, double-click reframes. A left *click* (no drag) picks the
 /// atom under the cursor (Ctrl/Cmd+click toggles; empty click clears).
 class ViewportWidget : public QOpenGLWidget, protected QOpenGLFunctions_3_3_Core {
@@ -110,6 +114,21 @@ public Q_SLOTS:
 
     render::OrbitCamera& camera() { return camera_; }
 
+public:
+    // -- Mouse interaction modes -------------------------------------------
+
+    /// What a plain left-drag / left-click does. Regardless of mode,
+    /// middle-drag (or Shift+left-drag) pans and the wheel zooms.
+    enum class InteractionMode {
+        Rotate, ///< drag orbits the camera (default)
+        Pan,    ///< drag translates the scene
+        Select, ///< drag draws a rubber-band box selecting atoms
+        Insert, ///< click empty space -> new atom; drag atom->atom -> bond
+    };
+    void setInteractionMode(InteractionMode mode);
+    InteractionMode interactionMode() const { return interactionMode_; }
+
+public Q_SLOTS:
     /// Off-screen high-resolution capture of the current scene into a
     /// QImage (used by the image/GIF export engine). `background` with
     /// alpha 0 produces a transparent image; `extraYawDeg` rotates the
@@ -129,6 +148,12 @@ public Q_SLOTS:
 
 Q_SIGNALS:
     void selectionChanged(int count);
+    /// Insert mode: the user clicked empty space — create an atom there
+    /// (world coordinates on the camera-target plane). The viewport never
+    /// mutates the structure; MainWindow owns the edit + undo.
+    void atomInsertRequested(const core::Vec3& position);
+    /// Insert mode: the user dragged from atom i to atom j — bond them.
+    void bondInsertRequested(int i, int j);
     /// A different Structure is now observed (its scalar fields may differ).
     void structureReplaced();
     /// The scalar color mapping was recomputed (mode, range or data changed).
@@ -149,6 +174,15 @@ private:
     /// Ray-cast from a screen position against atom display spheres.
     /// Returns the atom index of the nearest hit, or -1.
     int pickAtom(const QPointF& screenPos) const;
+
+    /// World-space ray under a pixel; false if the view is degenerate.
+    bool screenRay(const QPointF& screenPos, QVector3D& origin,
+                   QVector3D& direction) const;
+    /// Intersection of that ray with the plane through the camera target
+    /// perpendicular to the view direction (where inserted atoms land).
+    bool unprojectToTargetPlane(const QPointF& screenPos, core::Vec3& out) const;
+    /// Atoms whose projected centers fall inside the screen-space rect.
+    std::set<int> atomsInRect(const QRectF& rect) const;
 
     /// Re-upload instance buffers if dirty (requires a current context).
     void ensureUploaded();
@@ -177,6 +211,9 @@ private:
     bool axesLatticeMode_ = false;
     int axesSizePx_ = 92;
     QPointF lastMousePos_;
+    InteractionMode interactionMode_ = InteractionMode::Rotate;
+    QRubberBand* rubberBand_ = nullptr; ///< Select-mode drag box
+    int insertDragFromAtom_ = -1;       ///< Insert mode: drag start atom
     QPointF pressPos_;
 };
 

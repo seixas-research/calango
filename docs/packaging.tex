@@ -82,8 +82,9 @@ Linux & \opt{DEB} & \file{calango\_26.7.13\_amd64.deb} \\
 
 Each artifact is accompanied by a \file{.sha256} checksum file. The
 package version comes from \opt{project(calango VERSION ...)} in
-\file{CMakeLists.txt}, which should match the plain-text \file{version}
-file at the repository root.
+\file{CMakeLists.txt} --- the single source of truth for the version,
+baked into the binary as \opt{CALANGO\_VERSION} (About dialog, project
+files) and reused by CPack for the installer file names.
 
 The supporting files are:
 
