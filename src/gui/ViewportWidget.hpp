@@ -160,6 +160,9 @@ Q_SIGNALS:
     /// human-readable result for the status/log console (the viewport
     /// itself overlays the value on the canvas).
     void measurementMade(const QString& text);
+    /// Select mode: Delete/Backspace pressed with atoms selected —
+    /// MainWindow deletes them (bonds rebuild via structure refresh).
+    void deleteSelectionRequested();
     /// A different Structure is now observed (its scalar fields may differ).
     void structureReplaced();
     /// The scalar color mapping was recomputed (mode, range or data changed).
@@ -175,6 +178,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
 private:
     /// Ray-cast from a screen position against atom display spheres.

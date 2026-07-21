@@ -541,6 +541,20 @@ void ViewportWidget::wheelEvent(QWheelEvent* event)
     update();
 }
 
+void ViewportWidget::keyPressEvent(QKeyEvent* event)
+{
+    // Select mode: Delete/Backspace removes the boxed/picked atoms. The
+    // Edit-menu action already binds the Del key window-wide; this path
+    // adds Backspace and works whenever the viewport has focus.
+    if (interactionMode_ == InteractionMode::Select
+        && (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)
+        && !selection_.empty()) {
+        Q_EMIT deleteSelectionRequested();
+        return;
+    }
+    QOpenGLWidget::keyPressEvent(event);
+}
+
 bool ViewportWidget::screenRay(const QPointF& screenPos, QVector3D& origin,
                                QVector3D& direction) const
 {

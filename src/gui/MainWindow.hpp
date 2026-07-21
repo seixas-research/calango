@@ -49,8 +49,10 @@ protected:
 
 private Q_SLOTS:
     void openProject();
-    void saveProject();
-    void saveProjectAs();
+    /// Both return false when nothing was written (error or cancel) —
+    /// the close-event guard aborts quitting in that case.
+    bool saveProject();
+    bool saveProjectAs();
     void openStructure();
     void openTrajectory();
     void saveStructureAs();
@@ -137,6 +139,10 @@ private:
 
     std::vector<std::unique_ptr<Document>> documents_;
     QString lastJobDir_;
+    /// Unsaved-changes flag: set by every workspace mutation (undoable
+    /// edits, document add/close, job runs), cleared by project
+    /// save/load. Drives the quit confirmation in closeEvent().
+    bool isDirty_ = false;
     QString projectPath_; ///< current .calproj file ("" until saved/opened)
 
     QTabBar* tabBar_ = nullptr;

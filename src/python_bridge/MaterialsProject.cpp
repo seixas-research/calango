@@ -34,9 +34,16 @@ import urllib.request
 
 import ase
 
-url = f"https://api.materialsproject.org/materials/summary/{mp_id}/?_fields=structure"
+# Query-parameter form: the path-suffix form (/summary/<id>/) was
+# retired by Materials Project in 2026 and now returns an
+# "upgrade to mp-api" error blob instead of data.
+url = ("https://api.materialsproject.org/materials/summary/"
+       f"?material_ids={mp_id}&_fields=structure")
+# An explicit User-Agent is required: the API's edge blocks urllib's
+# default "Python-urllib/x.y" agent with HTTP 403.
 request = urllib.request.Request(
-    url, headers={"X-API-KEY": api_key, "accept": "application/json"})
+    url, headers={"X-API-KEY": api_key, "accept": "application/json",
+                  "User-Agent": "calango (materials modeling GUI)"})
 try:
     with urllib.request.urlopen(request, timeout=20) as response:
         payload = json.load(response)

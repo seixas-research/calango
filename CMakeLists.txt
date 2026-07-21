@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.18
+    VERSION 26.7.19
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -358,6 +358,25 @@ if(CALANGO_BUILD_TESTS)
     add_test(NAME symmetry_si_diamond
              COMMAND calango_symmetry_test
                      "${CMAKE_CURRENT_SOURCE_DIR}/assets/examples/Si_diamond.vasp")
+
+    # Live network test — skipped (exit 77) when MP_API_KEY is neither in
+    # the environment nor in ~/.env.
+    add_executable(calango_mp_test
+        tests/MaterialsProjectTest.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/python_bridge/PythonEngine.cpp
+        src/python_bridge/AseBridge.cpp
+        src/python_bridge/MaterialsProject.cpp
+    )
+    target_include_directories(calango_mp_test PRIVATE src)
+    target_compile_definitions(calango_mp_test PRIVATE
+        CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}")
+    target_link_libraries(calango_mp_test PRIVATE pybind11::embed)
+    add_test(NAME materials_project_mp1434 COMMAND calango_mp_test)
+    set_tests_properties(materials_project_mp1434 PROPERTIES
+        SKIP_RETURN_CODE 77)
 endif()
 
 # ---------------------------------------------------------------------------

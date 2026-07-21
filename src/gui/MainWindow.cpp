@@ -227,7 +227,8 @@ MainWindow::MainWindow(QWidget* parent)
     orthoAction_ = new QAction(cameraToolbarIcon(QStringLiteral("ortho")),
                                tr("Orthographic"), this);
     orthoAction_->setCheckable(true);
-    orthoAction_->setToolTip(tr("Toggle perspective / orthographic projection"));
+    orthoAction_->setShortcut(QKeySequence(Qt::Key_O));
+    orthoAction_->setToolTip(tr("Toggle perspective / orthographic projection  [O]"));
     connect(orthoAction_, &QAction::toggled,
             viewport_, &ViewportWidget::setOrthographic);
 
@@ -237,14 +238,20 @@ MainWindow::MainWindow(QWidget* parent)
     frameToolbar->setMovable(false);
     frameToolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
 
-    // --- Mouse interaction modes (exclusive) -------------------------------
+    // --- Mouse interaction modes (exclusive, single-letter hotkeys) --------
+    // Plain-letter shortcuts are safe: Qt's ShortcutOverride lets text
+    // widgets keep the keys while typing (same as the View menu's "F").
     auto* modeGroup = new QActionGroup(this);
     modeGroup->setExclusive(true);
     const auto addModeAction =
         [this, frameToolbar, modeGroup](const QString& icon, const QString& text,
-                                        ViewportWidget::InteractionMode mode) {
-            QAction* action = frameToolbar->addAction(cameraToolbarIcon(icon), text);
+                                        ViewportWidget::InteractionMode mode,
+                                        const QKeySequence& key) {
+            QAction* action = frameToolbar->addAction(
+                cameraToolbarIcon(icon),
+                tr("%1  [%2]").arg(text, key.toString(QKeySequence::NativeText)));
             action->setCheckable(true);
+            action->setShortcut(key);
             modeGroup->addAction(action);
             connect(action, &QAction::triggered, this,
                     [this, mode] { viewport_->setInteractionMode(mode); });
@@ -253,28 +260,32 @@ MainWindow::MainWindow(QWidget* parent)
     QAction* rotateMode = addModeAction(
         QStringLiteral("rotate"),
         tr("Rotation mode — drag orbits the camera around the structure"),
-        ViewportWidget::InteractionMode::Rotate);
+        ViewportWidget::InteractionMode::Rotate, QKeySequence(Qt::Key_R));
     addModeAction(QStringLiteral("pan"),
                   tr("Translation mode — drag pans the scene"),
-                  ViewportWidget::InteractionMode::Pan);
+                  ViewportWidget::InteractionMode::Pan, QKeySequence(Qt::Key_T));
     addModeAction(QStringLiteral("select"),
                   tr("Selection mode — drag a box to select multiple atoms "
-                     "(and their bonds)"),
-                  ViewportWidget::InteractionMode::Select);
+                     "(and their bonds); Delete/Backspace removes them"),
+                  ViewportWidget::InteractionMode::Select,
+                  QKeySequence(Qt::Key_S));
     addModeAction(QStringLiteral("insert"),
                   tr("Insertion mode — click empty space to add an atom of "
                      "the active element;\ndrag from one atom to another to "
                      "bond them"),
-                  ViewportWidget::InteractionMode::Insert);
+                  ViewportWidget::InteractionMode::Insert,
+                  QKeySequence(Qt::Key_I));
     addModeAction(QStringLiteral("distance"),
                   tr("Distance measurement — click two atoms to read their "
                      "separation in Å\n(click empty space to reset)"),
-                  ViewportWidget::InteractionMode::MeasureDistance);
+                  ViewportWidget::InteractionMode::MeasureDistance,
+                  QKeySequence(Qt::Key_D));
     addModeAction(QStringLiteral("angle"),
                   tr("Angle measurement — click three atoms (vertex second) "
                      "to read the angle in degrees\n(click empty space to "
                      "reset)"),
-                  ViewportWidget::InteractionMode::MeasureAngle);
+                  ViewportWidget::InteractionMode::MeasureAngle,
+                  QKeySequence(Qt::Key_A));
     rotateMode->setChecked(true);
 
     // Active element for Insertion mode; opens the periodic table.
@@ -387,6 +398,8 @@ MainWindow::MainWindow(QWidget* parent)
     // same value on the canvas).
     connect(viewport_, &ViewportWidget::measurementMade, this,
             [this](const QString& text) { statusBar()->showMessage(text); });
+    connect(viewport_, &ViewportWidget::deleteSelectionRequested,
+            this, &MainWindow::deleteSelectedAtoms);
     connect(viewport_, &ViewportWidget::bondInsertRequested, this,
             [this](int i, int j) {
                 Document* doc = currentDocument();
@@ -699,6 +712,18 @@ void MainWindow::createMenusAndDocks()
     resizeDocks({lightingDock, jobDock_, remoteDock_, cellAxesDock},
                 {280, 560, 430, 290}, Qt::Horizontal);
 
+    // Dock titles at 1.5× the theme default across all zones. The font is
+    // set on the QDockWidget (whose title bar renders with it) and reset
+    // on each content widget, since fonts would otherwise propagate down.
+    const QFont contentFont = QApplication::font();
+    QFont dockTitleFont = contentFont;
+    dockTitleFont.setPointSizeF(contentFont.pointSizeF() * 1.5);
+    for (QDockWidget* dock : findChildren<QDockWidget*>()) {
+        dock->setFont(dockTitleFont);
+        if (dock->widget())
+            dock->widget()->setFont(contentFont);
+    }
+
     viewMenu->addSeparator();
     viewMenu->addAction(brandingDock->toggleViewAction());
     viewMenu->addAction(infoDock->toggleViewAction());
@@ -719,6 +744,22 @@ void MainWindow::createMenusAndDocks()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    // File -> Quit funnels through closeAllWindows, so this guard covers
+    // both the menu action and the window close button.
+    if (isDirty_) {
+        const auto choice = QMessageBox::warning(
+            this, tr("Unsaved Changes"),
+            tr("The project has unsaved changes.\n"
+               "Do you want to save them before quitting?"),
+            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+            QMessageBox::Save);
+        if (choice == QMessageBox::Cancel
+            || (choice == QMessageBox::Save && !saveProject())) {
+            event->ignore(); // stay open (save failed or was cancelled too)
+            return;
+        }
+    }
+
     QSettings settings;
     settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
     settings.setValue(QStringLiteral("window/state"), saveState(kLayoutVersion));
@@ -799,6 +840,7 @@ void MainWindow::onTabCloseRequested(int index)
         return;
     documents_.erase(documents_.begin() + index);
     tabBar_->removeTab(index); // currentChanged fires and re-syncs
+    isDirty_ = true;
 }
 
 void MainWindow::syncViewsToCurrent(bool frameCamera)
@@ -848,6 +890,9 @@ void MainWindow::pushUndo()
     Document* doc = currentDocument();
     if (!doc)
         return;
+    // Every undoable mutation funnels through here — the natural single
+    // point to flag the workspace as having unsaved changes.
+    isDirty_ = true;
     doc->undoStack.push_back(
         doc->structure ? std::make_shared<core::Structure>(*doc->structure) : nullptr);
     if (doc->undoStack.size() > kMaxUndoDepth)
@@ -1307,6 +1352,7 @@ bool MainWindow::readProject(const QString& path)
     statusBar()->showMessage(tr("Project %1 restored (%2 tab(s))")
                                  .arg(path)
                                  .arg(documents_.size()));
+    isDirty_ = false; // freshly restored — matches the file on disk
     return true;
 }
 
@@ -1343,26 +1389,30 @@ void MainWindow::openProject()
         projectPath_ = path;
 }
 
-void MainWindow::saveProject()
+bool MainWindow::saveProject()
 {
-    if (projectPath_.isEmpty()) {
-        saveProjectAs();
-        return;
-    }
-    writeProject(projectPath_);
+    if (projectPath_.isEmpty())
+        return saveProjectAs();
+    const bool ok = writeProject(projectPath_);
+    if (ok)
+        isDirty_ = false;
+    return ok;
 }
 
-void MainWindow::saveProjectAs()
+bool MainWindow::saveProjectAs()
 {
     QString path = QFileDialog::getSaveFileName(
         this, tr("Save Project As"), QStringLiteral("workspace.calproj"),
         tr("Calango project (*.calproj)"));
     if (path.isEmpty())
-        return;
+        return false; // user cancelled
     if (!path.endsWith(QStringLiteral(".calproj"), Qt::CaseInsensitive))
         path += QStringLiteral(".calproj");
-    if (writeProject(path))
-        projectPath_ = path;
+    if (!writeProject(path))
+        return false;
+    projectPath_ = path;
+    isDirty_ = false;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -2306,6 +2356,7 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe)
         return;
 
     lastJobDir_ = jobDir;
+    isDirty_ = true; // the job console + metric series persist in .calproj
     jobDock_->show();
     jobDock_->raise();
     jobRunner_->start(pythonExe, QStringLiteral("run.py"), jobDir);
