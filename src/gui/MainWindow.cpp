@@ -22,10 +22,10 @@
 #include "gui/PreferencesDialog.hpp"
 #include "gui/RepresentationPanel.hpp"
 #include "gui/SlabWizard.hpp"
-#include "gui/EnergyPlotWidget.hpp"
 #include "gui/JobLogWidget.hpp"
+#include "gui/MetricPlotWidget.hpp"
+#include "gui/ProjectSerializer.hpp"
 #include "gui/StructureInfoWidget.hpp"
-#include "gui/TemperaturePlotWidget.hpp"
 #include "gui/TimelineWidget.hpp"
 #include "gui/ViewportWidget.hpp"
 #include "jobs/JobRunner.hpp"
@@ -50,12 +50,16 @@
 #include <QFormLayout>
 #include <QImageWriter>
 #include <QInputDialog>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPainter>
 #include <QProgressDialog>
+#include <QSaveFile>
 #include <QSettings>
 #include <QSpinBox>
 #include <QStandardPaths>
@@ -213,8 +217,10 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(jobRunner_, &jobs::JobRunner::started,
             jobLogWidget_, &JobLogWidget::onJobStarted);
-    connect(jobRunner_, &jobs::JobRunner::started,
-            energyPlot_, &EnergyPlotWidget::clear);
+    for (MetricPlotWidget* plot :
+         {energyPlot_, temperaturePlot_, forcePlot_, pressurePlot_})
+        connect(jobRunner_, &jobs::JobRunner::started,
+                plot, &MetricPlotWidget::clear);
     connect(jobRunner_, &jobs::JobRunner::outputLine,
             jobLogWidget_, &JobLogWidget::onOutputLine);
     connect(jobRunner_, &jobs::JobRunner::errorLine,
@@ -222,13 +228,17 @@ MainWindow::MainWindow(QWidget* parent)
     connect(jobRunner_, &jobs::JobRunner::progress,
             jobLogWidget_, &JobLogWidget::onProgress);
     connect(jobRunner_, &jobs::JobRunner::energySample,
-            energyPlot_, &EnergyPlotWidget::addSample);
-    connect(jobRunner_, &jobs::JobRunner::started,
-            temperaturePlot_, &TemperaturePlotWidget::clear);
+            energyPlot_, &MetricPlotWidget::addSample);
     connect(jobRunner_, &jobs::JobRunner::temperatureSample,
-            temperaturePlot_, &TemperaturePlotWidget::addSample);
+            temperaturePlot_, &MetricPlotWidget::addSample);
     connect(jobRunner_, &jobs::JobRunner::targetTemperature,
-            temperaturePlot_, &TemperaturePlotWidget::setTargetTemperature);
+            temperaturePlot_, &MetricPlotWidget::setTarget);
+    connect(jobRunner_, &jobs::JobRunner::maxForceSample,
+            forcePlot_, &MetricPlotWidget::addSample);
+    connect(jobRunner_, &jobs::JobRunner::pressureSample,
+            pressurePlot_, &MetricPlotWidget::addSample);
+    connect(jobRunner_, &jobs::JobRunner::targetPressure,
+            pressurePlot_, &MetricPlotWidget::setTarget);
     connect(jobRunner_, &jobs::JobRunner::finished,
             jobLogWidget_, &JobLogWidget::onJobFinished);
     connect(jobRunner_, &jobs::JobRunner::finished,
@@ -255,6 +265,15 @@ void MainWindow::createMenusAndDocks()
     // Menu bar order is fixed: File, Edit, View, Build, Simulation,
     // Analysis (Help trails as is conventional).
     QMenu* fileMenu = menuBar()->addMenu(tr("&File"));
+    // Project workspace: one .calproj file restores the whole multi-tab
+    // session (structures, trajectories, job console + metric series).
+    fileMenu->addAction(tr("Open &Project…"), QKeySequence(tr("Ctrl+Shift+O")),
+                        this, &MainWindow::openProject);
+    fileMenu->addAction(tr("Save P&roject"), QKeySequence::Save,
+                        this, &MainWindow::saveProject);
+    fileMenu->addAction(tr("Save Project As…"),
+                        this, &MainWindow::saveProjectAs);
+    fileMenu->addSeparator();
     fileMenu->addAction(tr("&Open Structure…"), QKeySequence::Open,
                         this, &MainWindow::openStructure);
     fileMenu->addAction(tr("Open &Trajectory…"), QKeySequence(tr("Ctrl+T")),
@@ -379,12 +398,79 @@ void MainWindow::createMenusAndDocks()
     jobDock_->setObjectName(QStringLiteral("jobDock"));
     auto* jobTabs = new QTabWidget(jobDock_);
     jobLogWidget_ = new JobLogWidget(jobTabs);
-    energyPlot_ = new EnergyPlotWidget(jobTabs);
-    temperaturePlot_ = new TemperaturePlotWidget(jobTabs);
+
+    // One MetricPlotWidget per job observable; the specs carry all
+    // labeling/units so the tabs stay behaviorally identical.
+    MetricPlotWidget::MetricSpec energySpec;
+    energySpec.quantity = tr("Energy");
+    energySpec.yAxisLabel = tr("Total Energy (eV)");
+    energySpec.xAxisLabel = tr("MD/optimization step");
+    energySpec.valueSymbol = QStringLiteral("E");
+    energySpec.unit = tr("eV");
+    energySpec.placeholder = tr("Energy vs. step will appear here during a job");
+    energySpec.marker = QStringLiteral("CALANGO_ENERGY");
+    energySpec.csvColumn = QStringLiteral("total_energy_eV");
+    energySpec.exportBaseName = QStringLiteral("energy.csv");
+    energySpec.lineColor = QColor(102, 153, 255);
+    energySpec.decimals = 3;
+
+    MetricPlotWidget::MetricSpec temperatureSpec;
+    temperatureSpec.quantity = tr("Temperature");
+    temperatureSpec.yAxisLabel = tr("Temperature (K)");
+    temperatureSpec.xAxisLabel = tr("MD step");
+    temperatureSpec.valueSymbol = QStringLiteral("T");
+    temperatureSpec.unit = tr("K");
+    temperatureSpec.placeholder =
+        tr("Temperature vs. step will appear here during an MD run");
+    temperatureSpec.marker = QStringLiteral("CALANGO_TEMP");
+    temperatureSpec.csvColumn = QStringLiteral("temperature_K");
+    temperatureSpec.csvTargetColumn = QStringLiteral("target_K");
+    temperatureSpec.exportBaseName = QStringLiteral("temperature.csv");
+    temperatureSpec.lineColor = QColor(235, 110, 80);
+    temperatureSpec.decimals = 1;
+    temperatureSpec.exportDecimals = 2;
+    temperatureSpec.flatPadding = 5.0;
+
+    MetricPlotWidget::MetricSpec forceSpec;
+    forceSpec.quantity = tr("Force");
+    forceSpec.yAxisLabel = tr("Max |F| (eV/Å)");
+    forceSpec.xAxisLabel = tr("MD/optimization step");
+    forceSpec.valueSymbol = tr("max |F|");
+    forceSpec.unit = tr("eV/Å");
+    forceSpec.placeholder = tr("Maximum atomic force vs. step will appear here "
+                               "during an optimization or MD run");
+    forceSpec.marker = QStringLiteral("CALANGO_FMAX");
+    forceSpec.csvColumn = QStringLiteral("max_force_eV_per_A");
+    forceSpec.exportBaseName = QStringLiteral("max_force.csv");
+    forceSpec.lineColor = QColor(110, 210, 130);
+    forceSpec.decimals = 3;
+    forceSpec.flatPadding = 0.05;
+
+    MetricPlotWidget::MetricSpec pressureSpec;
+    pressureSpec.quantity = tr("Pressure");
+    pressureSpec.yAxisLabel = tr("Pressure (GPa)");
+    pressureSpec.xAxisLabel = tr("MD step");
+    pressureSpec.valueSymbol = QStringLiteral("P");
+    pressureSpec.unit = tr("GPa");
+    pressureSpec.placeholder =
+        tr("Pressure vs. step will appear here during a constant-pressure "
+           "(NPT) MD run");
+    pressureSpec.marker = QStringLiteral("CALANGO_PRESSURE");
+    pressureSpec.csvColumn = QStringLiteral("pressure_GPa");
+    pressureSpec.csvTargetColumn = QStringLiteral("target_GPa");
+    pressureSpec.exportBaseName = QStringLiteral("pressure.csv");
+    pressureSpec.lineColor = QColor(188, 140, 255);
+    pressureSpec.decimals = 3;
+    pressureSpec.flatPadding = 0.1;
+
+    energyPlot_ = new MetricPlotWidget(energySpec, jobTabs);
+    temperaturePlot_ = new MetricPlotWidget(temperatureSpec, jobTabs);
+    forcePlot_ = new MetricPlotWidget(forceSpec, jobTabs);
+    pressurePlot_ = new MetricPlotWidget(pressureSpec, jobTabs);
     jobTabs->addTab(jobLogWidget_, tr("Log"));
 
     // Plot tabs carry their own Export Data… action for external analysis.
-    const auto plotPage = [jobTabs](auto* plot, const auto exportSlot) {
+    const auto plotPage = [jobTabs](MetricPlotWidget* plot) {
         auto* page = new QWidget(jobTabs);
         auto* layout = new QVBoxLayout(page);
         layout->setContentsMargins(0, 0, 0, 2);
@@ -395,13 +481,14 @@ void MainWindow::createMenusAndDocks()
         auto* exportButton = new QPushButton(QObject::tr("Export Data…"), page);
         row->addWidget(exportButton);
         layout->addLayout(row);
-        QObject::connect(exportButton, &QPushButton::clicked, plot, exportSlot);
+        QObject::connect(exportButton, &QPushButton::clicked,
+                         plot, &MetricPlotWidget::exportData);
         return page;
     };
-    jobTabs->addTab(plotPage(energyPlot_, &EnergyPlotWidget::exportData),
-                    tr("Energy"));
-    jobTabs->addTab(plotPage(temperaturePlot_, &TemperaturePlotWidget::exportData),
-                    tr("Temperature"));
+    jobTabs->addTab(plotPage(energyPlot_), tr("Energy"));
+    jobTabs->addTab(plotPage(temperaturePlot_), tr("Temperature"));
+    jobTabs->addTab(plotPage(forcePlot_), tr("Force"));
+    jobTabs->addTab(plotPage(pressurePlot_), tr("Pressure"));
     jobDock_->setWidget(jobTabs);
     addDockWidget(Qt::BottomDockWidgetArea, jobDock_);
 
@@ -800,6 +887,273 @@ void MainWindow::saveTrajectoryAs()
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Save Trajectory"), QString::fromUtf8(e.what()));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Project workspace persistence (.calproj)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// (step, value[, target]) series of one Job-panel metric tab.
+QJsonObject metricToJson(const MetricPlotWidget* plot)
+{
+    QJsonObject metric;
+    QJsonArray samples;
+    for (const MetricPlotWidget::Sample& sample : plot->samples())
+        samples.append(QJsonArray{sample.step, sample.value});
+    metric[QStringLiteral("samples")] = samples;
+    if (plot->hasTarget())
+        metric[QStringLiteral("target")] = plot->targetValue();
+    return metric;
+}
+
+void metricFromJson(const QJsonObject& metric, MetricPlotWidget* plot)
+{
+    plot->clear();
+    std::vector<MetricPlotWidget::Sample> samples;
+    const QJsonArray array = metric[QStringLiteral("samples")].toArray();
+    samples.reserve(static_cast<std::size_t>(array.size()));
+    for (const auto& entry : array) {
+        const QJsonArray pair = entry.toArray();
+        if (pair.size() == 2)
+            samples.push_back({pair[0].toInt(), pair[1].toDouble()});
+    }
+    plot->setSamples(std::move(samples));
+    if (metric.contains(QStringLiteral("target")))
+        plot->setTarget(metric[QStringLiteral("target")].toDouble());
+}
+
+} // namespace
+
+bool MainWindow::writeProject(const QString& path)
+{
+    QJsonObject root;
+    root[QStringLiteral("application")] = QStringLiteral("calango");
+    root[QStringLiteral("fileType")] = QStringLiteral("project");
+    root[QStringLiteral("formatVersion")] = ProjectSerializer::kFormatVersion;
+    root[QStringLiteral("calangoVersion")] = QStringLiteral(CALANGO_VERSION);
+
+    QJsonArray docs;
+    for (const auto& document : documents_) {
+        QJsonObject docJson;
+        docJson[QStringLiteral("fileName")] = document->fileName;
+        if (!document->frames.empty()) {
+            // Trajectory tab: persist every frame; the displayed structure
+            // is one of them, recorded by index instead of duplicated.
+            QJsonArray frames;
+            int currentFrame = -1;
+            for (std::size_t i = 0; i < document->frames.size(); ++i) {
+                if (document->frames[i] == document->structure)
+                    currentFrame = static_cast<int>(i);
+                frames.append(
+                    ProjectSerializer::structureToJson(*document->frames[i]));
+            }
+            docJson[QStringLiteral("frames")] = frames;
+            docJson[QStringLiteral("currentFrame")] = currentFrame;
+            if (currentFrame < 0 && document->structure)
+                docJson[QStringLiteral("structure")]
+                    = ProjectSerializer::structureToJson(*document->structure);
+        } else if (document->structure) {
+            docJson[QStringLiteral("structure")]
+                = ProjectSerializer::structureToJson(*document->structure);
+        }
+        docs.append(docJson);
+    }
+    root[QStringLiteral("documents")] = docs;
+    root[QStringLiteral("activeTab")] = tabBar_->currentIndex();
+
+    QJsonObject viewportJson;
+    viewportJson[QStringLiteral("colorMode")]
+        = static_cast<int>(viewport_->colorMode());
+    viewportJson[QStringLiteral("gradient")]
+        = static_cast<int>(viewport_->style().gradient);
+    viewportJson[QStringLiteral("customField")] = viewport_->customScalarField();
+    viewportJson[QStringLiteral("background")]
+        = viewport_->backgroundColor().name();
+    root[QStringLiteral("viewport")] = viewportJson;
+
+    QJsonObject job;
+    job[QStringLiteral("lastJobDir")] = lastJobDir_;
+    job[QStringLiteral("log")] = jobLogWidget_->logText();
+    job[QStringLiteral("energy")] = metricToJson(energyPlot_);
+    job[QStringLiteral("temperature")] = metricToJson(temperaturePlot_);
+    job[QStringLiteral("maxForce")] = metricToJson(forcePlot_);
+    job[QStringLiteral("pressure")] = metricToJson(pressurePlot_);
+    root[QStringLiteral("job")] = job;
+
+    // QSaveFile: the previous project survives a failed / interrupted save.
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        QMessageBox::critical(this, tr("Save Project"),
+                              tr("Could not write %1:\n%2")
+                                  .arg(path, file.errorString()));
+        return false;
+    }
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+    if (!file.commit()) {
+        QMessageBox::critical(this, tr("Save Project"),
+                              tr("Could not write %1:\n%2")
+                                  .arg(path, file.errorString()));
+        return false;
+    }
+    statusBar()->showMessage(tr("Project saved to %1 (%2 tab(s))")
+                                 .arg(path)
+                                 .arg(documents_.size()));
+    return true;
+}
+
+bool MainWindow::readProject(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::critical(this, tr("Open Project"),
+                              tr("Could not read %1:\n%2")
+                                  .arg(path, file.errorString()));
+        return false;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument json = QJsonDocument::fromJson(file.readAll(), &parseError);
+    const QJsonObject root = json.object();
+    if (parseError.error != QJsonParseError::NoError
+        || root[QStringLiteral("application")].toString()
+            != QLatin1String("calango")
+        || root[QStringLiteral("fileType")].toString() != QLatin1String("project")) {
+        QMessageBox::critical(this, tr("Open Project"),
+                              tr("%1 is not a Calango project file.").arg(path));
+        return false;
+    }
+    if (root[QStringLiteral("formatVersion")].toInt()
+        > ProjectSerializer::kFormatVersion) {
+        QMessageBox::critical(
+            this, tr("Open Project"),
+            tr("%1 was saved by a newer Calango (project format %2, this build "
+               "reads up to %3). Update Calango to open it.")
+                .arg(path)
+                .arg(root[QStringLiteral("formatVersion")].toInt())
+                .arg(ProjectSerializer::kFormatVersion));
+        return false;
+    }
+
+    closeAllDocuments();
+
+    for (const auto& entry : root[QStringLiteral("documents")].toArray()) {
+        const QJsonObject docJson = entry.toObject();
+        std::vector<std::shared_ptr<core::Structure>> frames;
+        for (const auto& frameJson : docJson[QStringLiteral("frames")].toArray())
+            frames.push_back(
+                ProjectSerializer::structureFromJson(frameJson.toObject()));
+
+        const int currentFrame = docJson[QStringLiteral("currentFrame")].toInt(-1);
+        std::shared_ptr<core::Structure> structure;
+        if (currentFrame >= 0 && currentFrame < static_cast<int>(frames.size()))
+            structure = frames[static_cast<std::size_t>(currentFrame)];
+        else if (docJson.contains(QStringLiteral("structure")))
+            structure = ProjectSerializer::structureFromJson(
+                docJson[QStringLiteral("structure")].toObject());
+        else if (!frames.empty())
+            structure = frames.front();
+        else
+            structure = std::make_shared<core::Structure>();
+
+        addDocument(std::move(structure),
+                    docJson[QStringLiteral("fileName")].toString(tr("Untitled")),
+                    std::move(frames));
+    }
+
+    const int activeTab = root[QStringLiteral("activeTab")].toInt(0);
+    if (activeTab >= 0 && activeTab < tabBar_->count())
+        tabBar_->setCurrentIndex(activeTab);
+
+    // Color mapping / viewport state — restore before the panels sync.
+    const QJsonObject viewportJson = root[QStringLiteral("viewport")].toObject();
+    if (!viewportJson.isEmpty()) {
+        if (const QColor background(
+                viewportJson[QStringLiteral("background")].toString());
+            background.isValid())
+            viewport_->setBackgroundColor(background);
+        const int gradient = viewportJson[QStringLiteral("gradient")].toInt(0);
+        if (gradient >= 0 && gradient <= static_cast<int>(render::ColorGradient::Afmhot))
+            viewport_->setColorGradient(static_cast<render::ColorGradient>(gradient));
+        const int colorMode = viewportJson[QStringLiteral("colorMode")].toInt(0);
+        if (colorMode >= 0
+            && colorMode <= static_cast<int>(render::ColorMode::CustomScalar))
+            viewport_->setColorMode(
+                static_cast<render::ColorMode>(colorMode),
+                viewportJson[QStringLiteral("customField")].toString());
+    }
+
+    // Job console + metric series of the last (unexported) run.
+    const QJsonObject job = root[QStringLiteral("job")].toObject();
+    if (!job.isEmpty()) {
+        lastJobDir_ = job[QStringLiteral("lastJobDir")].toString();
+        jobLogWidget_->restoreLog(job[QStringLiteral("log")].toString());
+        metricFromJson(job[QStringLiteral("energy")].toObject(), energyPlot_);
+        metricFromJson(job[QStringLiteral("temperature")].toObject(),
+                       temperaturePlot_);
+        metricFromJson(job[QStringLiteral("maxForce")].toObject(), forcePlot_);
+        metricFromJson(job[QStringLiteral("pressure")].toObject(), pressurePlot_);
+    }
+
+    statusBar()->showMessage(tr("Project %1 restored (%2 tab(s))")
+                                 .arg(path)
+                                 .arg(documents_.size()));
+    return true;
+}
+
+void MainWindow::closeAllDocuments()
+{
+    documents_.clear();
+    while (tabBar_->count() > 0)
+        tabBar_->removeTab(0); // currentChanged fires; views reset gracefully
+}
+
+void MainWindow::openProject()
+{
+    if (jobRunner_->isRunning()) {
+        QMessageBox::information(this, tr("Open Project"),
+                                 tr("A job is running — kill it before "
+                                    "switching projects."));
+        return;
+    }
+    if (!documents_.empty()
+        && QMessageBox::question(
+               this, tr("Open Project"),
+               tr("Opening a project replaces the current workspace "
+                  "(%n open tab(s)). Continue?",
+                  nullptr, static_cast<int>(documents_.size())))
+            != QMessageBox::Yes)
+        return;
+
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Open Project"), QString(),
+        tr("Calango project (*.calproj);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    if (readProject(path))
+        projectPath_ = path;
+}
+
+void MainWindow::saveProject()
+{
+    if (projectPath_.isEmpty()) {
+        saveProjectAs();
+        return;
+    }
+    writeProject(projectPath_);
+}
+
+void MainWindow::saveProjectAs()
+{
+    QString path = QFileDialog::getSaveFileName(
+        this, tr("Save Project As"), QStringLiteral("workspace.calproj"),
+        tr("Calango project (*.calproj)"));
+    if (path.isEmpty())
+        return;
+    if (!path.endsWith(QStringLiteral(".calproj"), Qt::CaseInsensitive))
+        path += QStringLiteral(".calproj");
+    if (writeProject(path))
+        projectPath_ = path;
 }
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@
 
 #include <QFontDatabase>
 #include <QHBoxLayout>
+#include <QTextCursor>
 #include <QVBoxLayout>
 
 namespace calango::gui {
@@ -30,6 +31,20 @@ JobLogWidget::JobLogWidget(QWidget* parent)
     auto* layout = new QVBoxLayout(this);
     layout->addLayout(topRow);
     layout->addWidget(logView_);
+}
+
+QString JobLogWidget::logText() const
+{
+    return logView_->toPlainText();
+}
+
+void JobLogWidget::restoreLog(const QString& text)
+{
+    logView_->setPlainText(text);
+    logView_->moveCursor(QTextCursor::End);
+    statusLabel_->setText(tr("Restored from project"));
+    progressBar_->setRange(0, 1);
+    progressBar_->setValue(0);
 }
 
 void JobLogWidget::onJobStarted(const QString& description)

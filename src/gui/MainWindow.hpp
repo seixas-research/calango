@@ -18,10 +18,9 @@ class JobRunner;
 
 namespace calango::gui {
 
-class EnergyPlotWidget;
 class JobLogWidget;
+class MetricPlotWidget;
 class StructureInfoWidget;
-class TemperaturePlotWidget;
 class TimelineWidget;
 class ViewportWidget;
 
@@ -47,6 +46,9 @@ protected:
     void closeEvent(QCloseEvent* event) override;
 
 private Q_SLOTS:
+    void openProject();
+    void saveProject();
+    void saveProjectAs();
     void openStructure();
     void openTrajectory();
     void saveStructureAs();
@@ -112,15 +114,27 @@ private:
     void runScript(const QString& script, const QString& pythonExe);
     bool ensureAseAvailable();
 
+    // -- .calproj project workspace persistence ----------------------------
+    /// Serialize the whole session (documents, tabs, viewport color
+    /// mapping, job console + metric series) into `path`. Reports errors
+    /// itself; returns false on failure.
+    bool writeProject(const QString& path);
+    /// Replace the session with the one stored in `path`.
+    bool readProject(const QString& path);
+    void closeAllDocuments();
+
     std::vector<std::unique_ptr<Document>> documents_;
     QString lastJobDir_;
+    QString projectPath_; ///< current .calproj file ("" until saved/opened)
 
     QTabBar* tabBar_ = nullptr;
     ViewportWidget* viewport_ = nullptr;
     StructureInfoWidget* infoWidget_ = nullptr;
     JobLogWidget* jobLogWidget_ = nullptr;
-    EnergyPlotWidget* energyPlot_ = nullptr;
-    TemperaturePlotWidget* temperaturePlot_ = nullptr;
+    MetricPlotWidget* energyPlot_ = nullptr;
+    MetricPlotWidget* temperaturePlot_ = nullptr;
+    MetricPlotWidget* forcePlot_ = nullptr;
+    MetricPlotWidget* pressurePlot_ = nullptr;
     TimelineWidget* timeline_ = nullptr;
     QDockWidget* jobDock_ = nullptr;
     jobs::JobRunner* jobRunner_ = nullptr;

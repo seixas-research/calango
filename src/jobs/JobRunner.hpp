@@ -42,9 +42,18 @@ Q_SIGNALS:
     void energySample(int step, double energyEv);
     /// One sample per "CALANGO_TEMP <step> <temperature_K>" marker.
     void temperatureSample(int step, double temperatureK);
+    /// One sample per "CALANGO_FMAX <step> <fmax_eV_per_A>" marker: the
+    /// maximum atomic force component during optimizations and MD runs.
+    void maxForceSample(int step, double fmaxEvPerA);
+    /// One sample per "CALANGO_PRESSURE <step> <pressure_GPa>" marker:
+    /// the scalar pressure -tr(stress)/3, emitted by barostatted MD only.
+    void pressureSample(int step, double pressureGPa);
     /// "CALANGO_TARGET_TEMP <K>": the thermostat setpoint of a
     /// constant-temperature MD run (never emitted for NVE).
     void targetTemperature(double temperatureK);
+    /// "CALANGO_TARGET_PRESSURE <GPa>": the barostat setpoint of a
+    /// constant-pressure MD run (NPT/NPH only).
+    void targetPressure(double pressureGPa);
     void finished(int exitCode, bool crashed);
 
 private:

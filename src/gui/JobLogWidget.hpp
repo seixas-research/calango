@@ -17,6 +17,12 @@ class JobLogWidget : public QWidget {
 public:
     explicit JobLogWidget(QWidget* parent = nullptr);
 
+    // Project persistence: the accumulated console history as plain text.
+    QString logText() const;
+    /// Replace the console contents with a restored history (formatting
+    /// colors are not preserved — the text is).
+    void restoreLog(const QString& text);
+
 public Q_SLOTS:
     void onJobStarted(const QString& description);
     void onOutputLine(const QString& line);

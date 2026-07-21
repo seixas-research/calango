@@ -114,10 +114,27 @@ void JobRunner::handleLine(const QString& line, bool isStderr)
         Q_EMIT temperatureSample(match.captured(1).toInt(),
                                  match.captured(2).toDouble());
 
+    static const QRegularExpression fmaxRe(
+        QStringLiteral(R"(^CALANGO_FMAX (\d+) (-?[\d.]+(?:[eE][+-]?\d+)?)\s*$)"));
+    if (const auto match = fmaxRe.match(line); match.hasMatch())
+        Q_EMIT maxForceSample(match.captured(1).toInt(),
+                              match.captured(2).toDouble());
+
+    static const QRegularExpression pressureRe(
+        QStringLiteral(R"(^CALANGO_PRESSURE (\d+) (-?[\d.]+(?:[eE][+-]?\d+)?)\s*$)"));
+    if (const auto match = pressureRe.match(line); match.hasMatch())
+        Q_EMIT pressureSample(match.captured(1).toInt(),
+                              match.captured(2).toDouble());
+
     static const QRegularExpression targetTempRe(
         QStringLiteral(R"(^CALANGO_TARGET_TEMP (-?[\d.]+(?:[eE][+-]?\d+)?)\s*$)"));
     if (const auto match = targetTempRe.match(line); match.hasMatch())
         Q_EMIT targetTemperature(match.captured(1).toDouble());
+
+    static const QRegularExpression targetPressureRe(
+        QStringLiteral(R"(^CALANGO_TARGET_PRESSURE (-?[\d.]+(?:[eE][+-]?\d+)?)\s*$)"));
+    if (const auto match = targetPressureRe.match(line); match.hasMatch())
+        Q_EMIT targetPressure(match.captured(1).toDouble());
 
     Q_EMIT outputLine(line);
 }

@@ -130,10 +130,10 @@ qt_add_executable(calango
     src/gui/JobLogWidget.cpp
     src/gui/TimelineWidget.hpp
     src/gui/TimelineWidget.cpp
-    src/gui/EnergyPlotWidget.hpp
-    src/gui/EnergyPlotWidget.cpp
-    src/gui/TemperaturePlotWidget.hpp
-    src/gui/TemperaturePlotWidget.cpp
+    src/gui/MetricPlotWidget.hpp
+    src/gui/MetricPlotWidget.cpp
+    src/gui/ProjectSerializer.hpp
+    src/gui/ProjectSerializer.cpp
     src/gui/RepresentationPanel.hpp
     src/gui/RepresentationPanel.cpp
     src/gui/CellAxesPanel.hpp
@@ -194,12 +194,11 @@ qt_add_resources(calango "shaders"
 qt_add_resources(calango "branding"
     PREFIX "/"
     FILES
-        assets/calango/icon_white.png
         assets/calango/icon_transparent.png
 )
 
 # For a distributable macOS bundle, generate assets/calango/calango.icns
-# (iconutil over an iconset rendered from icon_white.png) and configure
+# (iconutil over an iconset rendered from icon_transparent.png) and configure
 # with -DCALANGO_MACOS_BUNDLE=ON; the default plain binary keeps the
 # familiar ./build/calango developer workflow, with the window/dock icon
 # set at runtime from the embedded resource.

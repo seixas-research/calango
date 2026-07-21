@@ -52,6 +52,15 @@ constexpr bool isConstantTemperature(MdEnsemble ensemble)
     return ensemble != MdEnsemble::VelocityVerletNVE;
 }
 
+/// True for every barostatted ensemble — drives the CALANGO_PRESSURE /
+/// CALANGO_TARGET_PRESSURE markers and the Pressure-tab reference line
+/// (constant-volume ensembles never report a pressure series).
+constexpr bool isConstantPressure(MdEnsemble ensemble)
+{
+    return ensemble == MdEnsemble::BerendsenNPT
+        || ensemble == MdEnsemble::MelchionnaNPT;
+}
+
 /// Plain parameter bag filled in by CalculatorDialog and consumed by
 /// AseScriptGenerator. Deliberately UI-free so scripts can also be
 /// generated headlessly (e.g. future batch/CLI mode).

@@ -12,11 +12,19 @@ enum class ColorMode {
     CustomScalar,             ///< any per-atom scalar field (charges, |forces|, ...)
 };
 
-/// Perceptually-uniform gradients for scalar color mapping.
+/// Gradients for scalar color mapping. Viridis…Cividis are the
+/// perceptually-uniform matplotlib family; Hot/Afmhot are the classic
+/// black-body ramps. Enum order is the Representation-panel combo order —
+/// append only, existing values are persisted in project files.
 enum class ColorGradient {
     Viridis,
     Plasma,
     Turbo,
+    Inferno,
+    Magma,
+    Cividis,
+    Hot,
+    Afmhot,
 };
 
 namespace ColorMap {

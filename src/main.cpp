@@ -44,9 +44,10 @@ int main(int argc, char* argv[])
     QApplication::setApplicationName(QStringLiteral("Calango"));
     QApplication::setApplicationVersion(QStringLiteral(CALANGO_VERSION));
     QApplication::setOrganizationName(QStringLiteral("Seixas Research"));
-    // Window / taskbar / dock icon (embedded high-resolution brand icon).
+    // Window / taskbar / dock icon (embedded high-resolution brand icon,
+    // transparent-background variant).
     QApplication::setWindowIcon(
-        QIcon(QStringLiteral(":/assets/calango/icon_white.png")));
+        QIcon(QStringLiteral(":/assets/calango/icon_transparent.png")));
 
     calango::pybridge::PythonEngine python;
     if (!python.aseAvailable()) {

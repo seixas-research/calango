@@ -166,7 +166,9 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "def _report():\n"
                "    print(f\"CALANGO_PROGRESS {opt.nsteps} {max_steps}\", flush=True)\n"
                "    energy = atoms.get_potential_energy()\n"
+               "    fmax_now = abs(atoms.get_forces()).max()\n"
                "    print(f\"CALANGO_ENERGY {opt.nsteps} {energy:.6f}\", flush=True)\n"
+               "    print(f\"CALANGO_FMAX {opt.nsteps} {fmax_now:.6f}\", flush=True)\n"
                "\n"
                "opt.attach(_report)\n"
             << "converged = opt.run(fmax=" << c.fmax << ", steps=max_steps)\n"
@@ -282,15 +284,32 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                    "# Temperature tab (omitted for NVE).\n"
                    "print(f\"CALANGO_TARGET_TEMP {temperature_K}\", flush=True)\n";
 
+        if (isConstantPressure(c.ensemble))
+            out << "\n"
+                   "# Barostat target — drives the dashed reference line in the\n"
+                   "# Pressure tab (omitted for constant-volume ensembles).\n"
+                << "print(f\"CALANGO_TARGET_PRESSURE " << c.pressureGPa
+                << "\", flush=True)\n";
+
         out << "\n"
                "def _report():\n"
                "    epot = atoms.get_potential_energy()\n"
                "    ekin = atoms.get_kinetic_energy()\n"
                "    temp = atoms.get_temperature()\n"
+               "    fmax_now = abs(atoms.get_forces()).max()\n"
                "    print(f\"CALANGO_PROGRESS {dyn.nsteps} {md_steps}\", flush=True)\n"
                "    print(f\"CALANGO_ENERGY {dyn.nsteps} {epot:.6f}\", flush=True)\n"
                "    print(f\"CALANGO_TEMP {dyn.nsteps} {temp:.2f}\", flush=True)\n"
-               "    print(f\"CALANGO_MD step={dyn.nsteps} epot_eV={epot:.4f} ekin_eV={ekin:.4f}"
+               "    print(f\"CALANGO_FMAX {dyn.nsteps} {fmax_now:.6f}\", flush=True)\n";
+
+        if (isConstantPressure(c.ensemble))
+            out << "    # Scalar pressure P = -tr(σ)/3 from the full stress tensor\n"
+                   "    # (eV/Å³ → GPa); only meaningful with a barostatted cell.\n"
+                   "    stress = atoms.get_stress(voigt=True)\n"
+                   "    pressure_GPa = -(stress[0] + stress[1] + stress[2]) / 3.0 / units.GPa\n"
+                   "    print(f\"CALANGO_PRESSURE {dyn.nsteps} {pressure_GPa:.6f}\", flush=True)\n";
+
+        out << "    print(f\"CALANGO_MD step={dyn.nsteps} epot_eV={epot:.4f} ekin_eV={ekin:.4f}"
                " T_K={temp:.1f}\", flush=True)\n"
                "\n"
                "dyn.attach(_report, interval=10)\n"

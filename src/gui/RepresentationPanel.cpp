@@ -49,7 +49,10 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
             this, &RepresentationPanel::applyColorMode);
 
     gradientCombo_ = new QComboBox(this);
-    gradientCombo_->addItems({tr("Viridis"), tr("Plasma"), tr("Turbo")});
+    // Same order as render::ColorGradient.
+    gradientCombo_->addItems({tr("Viridis"), tr("Plasma"), tr("Turbo"),
+                              tr("Inferno"), tr("Magma"), tr("Cividis"),
+                              tr("Hot"), tr("Afmhot")});
     form->addRow(tr("Gradient:"), gradientCombo_);
     connect(gradientCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
         viewport_->setColorGradient(static_cast<render::ColorGradient>(index));
@@ -254,6 +257,10 @@ void RepresentationPanel::syncColoringFromViewport()
     {
         const QSignalBlocker blocker(colorModeCombo_);
         colorModeCombo_->setCurrentIndex(static_cast<int>(mode));
+    }
+    {
+        const QSignalBlocker blocker(gradientCombo_);
+        gradientCombo_->setCurrentIndex(static_cast<int>(viewport_->style().gradient));
     }
     if (mode == render::ColorMode::CustomScalar) {
         const QSignalBlocker blocker(propertyCombo_);
