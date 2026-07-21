@@ -246,45 +246,6 @@ To rebuild the package from a clean state, clear the staging area first
 with \lstinline|cmake -E rm -rf _CPack_Packages| --- stale staging can
 mask deployment bugs.
 
-\subsection{Troubleshooting}
-
-\begin{center}
-\small
-\begin{tabular}{@{}p{0.44\textwidth}p{0.5\textwidth}@{}}
-\toprule
-Symptom & Cause / fix \\
-\midrule
-\texttt{ERROR: Cannot resolve rpath "@rpath/Qt...''} during
-\opt{cpack} &
-Expected noise from \file{macdeployqt}'s first pass. Only investigate if
-verification fails afterwards. \\
-\addlinespace
-\texttt{dyld: Library not loaded: @rpath/QtDBus...} when launching the
-packaged app &
-A framework is missing from the bundle --- the second
-\file{macdeployqt} pass or the \opt{-libpath} argument was removed, or
-the install rpath was stripped. Both fixes live in the
-\opt{install(CODE ...)} block of \file{CMakeLists.txt}. \\
-\addlinespace
-\texttt{codesign} reports \texttt{No such file or directory} for a path
-that exists &
-A dangling symlink inside the bundle (Homebrew's
-\file{site-packages} link is the known case, handled by
-\file{embed\_python\_framework.sh}). Find offenders with
-\lstinline|find app -type l ! -exec test -e {} \; -print|. \\
-\addlinespace
-\texttt{hdiutil: attach canceled} &
-The DMG carries a click-through SLA. Keep
-\opt{CPACK\_DMG\_SLA\_USE\_RESOURCE\_FILE\_LICENSE} set to \opt{OFF}. \\
-\addlinespace
-\texttt{Permission denied} running a \file{packaging/} script &
-Cloud-synced checkouts (Dropbox) strip executable bits. CMake therefore
-invokes every packaging script via \lstinline|bash <script>|; keep that
-pattern when adding new ones. \\
-\bottomrule
-\end{tabular}
-\end{center}
-
 \section{Linux: building the \file{.deb}}
 
 \subsection{Prerequisites (Ubuntu/Debian)}
@@ -402,42 +363,6 @@ end-to-end on Ubuntu (\file{dpkg-deb --info} shows the auto-computed
 \texttt{Depends:}, including \opt{libpython3.12t64} and the Qt~6 runtime
 libraries). Running it in CI on a clean Ubuntu 22.04/24.04 image remains
 worthwhile to catch host-specific assumptions.
-
-\subsection{Troubleshooting}
-
-\begin{center}
-\small
-\begin{tabular}{@{}p{0.44\textwidth}p{0.5\textwidth}@{}}
-\toprule
-Symptom & Cause / fix \\
-\midrule
-\texttt{CPack Error: Cannot find description file name:
-[/opt/homebrew/.../CPack.GenericDescription.txt]} &
-\opt{cpack} was run in a build directory configured on macOS (a
-Dropbox-synced \file{build/} tree). Configure a fresh \file{build-deb}
-with the Linux \file{cmake}; never reuse a cross-platform build tree. \\
-\addlinespace
-\texttt{file INSTALL cannot find
-".../assets/calango/icon\_transparent.svg"} &
-A stale install rule referenced a vector icon that is not in the repo.
-The Linux install now ships \file{icon\_transparent.png} to
-\file{/usr/share/pixmaps}; add a
-\file{hicolor/scalable/apps/calango.svg} install only if a real SVG is
-committed. \\
-\addlinespace
-\texttt{dpkg-shlibdeps: error: cannot find library} during
-\opt{cpack} &
-The binary links a non-system \file{libpython} (Conda/Homebrew on
-\texttt{\$PATH}). Configure with
-\opt{-DPython3\_EXECUTABLE=/usr/bin/python3}. The build sets
-\opt{PYBIND11\_FINDPYTHON=ON} so pybind11 reuses the \file{FindPython3}
-interpreter instead of its legacy \file{PATH} search; check
-\lstinline|readelf -d build-deb/calango| shows
-\file{libpython3.x.so.1.0} from \file{/usr/lib}, not from
-\file{\$HOME}. \\
-\bottomrule
-\end{tabular}
-\end{center}
 
 \section{The embedded Python environment}
 \label{sec:python-embed}
