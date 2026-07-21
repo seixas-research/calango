@@ -1,7 +1,13 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/calango/logo_dark.png">
-  <img src="assets/calango/logo_light.png" alt="Calango" width="440">
-</picture>
+<h1 align="center" style="margin-top:20px; margin-bottom:50px;">
+
+<a href="https://github.com/seixas-research/calango" target="_blank" rel="noopener noreferrer">
+  <picture>
+    <source srcset="https://raw.githubusercontent.com/seixas-research/calango/refs/heads/main/assets/calango/logo_dark.png" media="(prefers-color-scheme: dark)">
+    <source srcset="https://raw.githubusercontent.com/seixas-research/calango/refs/heads/main/assets/calango/logo_light.png" media="(prefers-color-scheme: light)">
+    <img src="https://raw.githubusercontent.com/seixas-research/carcara/refs/heads/main/assets/calango/logo_light.png" alt="Carcará logo" style="height: auto; width: auto; max-height: 100px;">
+  </picture>
+</a>
+</h1> 
 
 **Calango** is a modern, high-performance, cross-platform desktop application for materials science, crystallography, and atomistic modeling. By combining a raw C++20/OpenGL core with the flexibility of Python's Atomic Simulation Environment (ASE), Calango provides the speed needed for real-time 3D visualization together with the extensibility of state-of-the-art simulation tools.
 
