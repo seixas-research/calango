@@ -35,12 +35,17 @@ private Q_SLOTS:
     void undoLastPoint();
     void clearPath();
     void useSuggestedPath();
+    /// One entry point for every k-path format: pops a format-selection
+    /// dialog (VASP / QE / CASTEP / SIESTA / ASE script) and dispatches.
+    void exportKPath();
+    void exportFigure();
+
+private:
     void exportVaspKpoints();
     void exportQeKpoints();
     void exportCastepPath();
     void exportSiestaBands();
     void exportAseScript();
-    void exportFigure();
 
 private:
     void syncPathViews();

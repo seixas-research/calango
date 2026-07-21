@@ -62,6 +62,10 @@ __pycache__/
 # C extensions
 *.so
 
+# Rendering
+*.gif
+*.mp4
+
 # Distribution / packaging
 .Python
 build/

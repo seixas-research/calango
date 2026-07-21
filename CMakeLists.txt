@@ -84,6 +84,10 @@ qt_add_executable(calango
     src/core/Rdf.cpp
     src/core/Coordination.hpp
     src/core/Coordination.cpp
+    src/core/Distributions.hpp
+    src/core/Distributions.cpp
+    src/core/StructureFactor.hpp
+    src/core/StructureFactor.cpp
     src/core/Noise.hpp
     src/core/Noise.cpp
     src/core/PhononScriptGenerator.hpp
@@ -148,6 +152,12 @@ qt_add_executable(calango
     src/gui/RdfDialog.cpp
     src/gui/CoordinationDialog.hpp
     src/gui/CoordinationDialog.cpp
+    src/gui/DistributionDialog.hpp
+    src/gui/DistributionDialog.cpp
+    src/gui/StructureFactorDialog.hpp
+    src/gui/StructureFactorDialog.cpp
+    src/gui/XrdDialog.hpp
+    src/gui/XrdDialog.cpp
     src/gui/NanoBuilderDialog.hpp
     src/gui/NanoBuilderDialog.cpp
     src/gui/PhononBuilderDialog.hpp

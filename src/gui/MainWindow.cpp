@@ -6,6 +6,9 @@
 #include "gui/BrillouinZoneDialog.hpp"
 #include "gui/CalculatorDialog.hpp"
 #include "gui/CoordinationDialog.hpp"
+#include "gui/DistributionDialog.hpp"
+#include "gui/StructureFactorDialog.hpp"
+#include "gui/XrdDialog.hpp"
 #include "gui/ExamplesDialog.hpp"
 #include "gui/NanoBuilderDialog.hpp"
 #include "gui/PhononBuilderDialog.hpp"
@@ -233,6 +236,12 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showRdf);
     analysisMenu->addAction(tr("&Coordination Numbers (CN / GCN)…"),
                             this, &MainWindow::showCoordination);
+    analysisMenu->addAction(tr("Bond &Length / Angle Distributions…"),
+                            this, &MainWindow::showDistributions);
+    analysisMenu->addAction(tr("Structure &Factor S(q)…"),
+                            this, &MainWindow::showStructureFactor);
+    analysisMenu->addAction(tr("&X-Ray Diffraction (XRD)…"),
+                            this, &MainWindow::showXrd);
 
     QMenu* helpMenu = menuBar()->addMenu(tr("&Help"));
     helpMenu->addAction(tr("&About Calango"), this, &MainWindow::about);
@@ -1215,7 +1224,45 @@ void MainWindow::showRdf()
                                  tr("Open a structure first."));
         return;
     }
-    RdfDialog dialog(doc->structure, this);
+    RdfDialog dialog(doc->structure, doc->frames, this);
+    dialog.exec();
+}
+
+void MainWindow::showDistributions()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Bond Distributions"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    DistributionDialog dialog(doc->structure, this);
+    dialog.exec();
+}
+
+void MainWindow::showStructureFactor()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Structure Factor"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    StructureFactorDialog dialog(doc->structure, doc->frames, this);
+    dialog.exec();
+}
+
+void MainWindow::showXrd()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("X-Ray Diffraction"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+    XrdDialog dialog(doc->structure, this);
     dialog.exec();
 }
 

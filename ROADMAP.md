@@ -2,7 +2,7 @@
 
 This roadmap outlines the core development phases for building a cross-platform desktop application for materials science using C++20, Qt6, OpenGL, and Python/ASE.
 
-> Status as of v0.11 — checked items are implemented; partial items carry a note.
+> Status as of v0.12 — checked items are implemented; partial items carry a note.
 
 ---
 
@@ -188,6 +188,20 @@ This roadmap outlines the core development phases for building a cross-platform 
 *   [x] Dynamic versioning: the user-facing version lives in the plain-text `version` file at the repository root, read at runtime with std::ifstream (binary dir → parent → cwd, compile-time fallback) and shown in the About Calango dialog; CMake stages a copy beside the binary.
 *   [ ] Arrow overlays in the wireframe representation (line-based arrows).
 *   [ ] Vector-field color mapping (arrow color by magnitude via the scalar gradients).
+
+## 📅 Phase 15: Trajectory-Aware Analysis, Diffraction & Crystallography (v0.12)
+**Focus:** Frame-restricted statistics, reciprocal-space observables, symmetry reporting, and rendering continuity.
+
+*   [x] Frame-restricted RDF: Start/End/Stride frame selectors (shown only for trajectories) feed a frame-averaged g(r) (`computeRdfAveraged`); the worker thread owns copies of the selected frames, and CSV/.dat exports record the averaging count.
+*   [x] Bond length & bond angle distributions (Analysis menu): pair-distance and three-body j–i–k angle histograms within a configurable cutoff, exact periodic-image enumeration, species filters, worker-thread compute, interactive plot and CSV/.dat export. *(Validated: sc lattice — 3 unique first-shell pairs, 12 angles at 90°, 3 at 180°; the 180° edge case exposed and fixed an inclusive-upper-edge histogram bug.)*
+*   [x] Static structure factor S(q) (Analysis menu): Fourier transform of g(r)−1 with a Lorch window, number density consistent with the RDF normalization, q-range/points controls, trajectory frame averaging, plot + CSV export. *(Validated: fcc Cu first peak at 3.00 Å⁻¹ vs. the (111) reflection at 3.01.)*
+*   [x] XRD simulation (Analysis menu): Debye-equation powder patterns via ase.utils.xrdebye with Cu/Co/Mo/Cr Kα presets or custom λ, 2θ range/points, and periodic-direction supercell repeat for Bragg sharpening; exports the 2θ–intensity curve and a detected-peak list (2θ, I, d-spacing). Waasmaier–Kirfel form factors when every species is tabulated, constant f = Z fallback otherwise (peak positions exact; the choice is reported in the UI and export header). *(Validated: Cu 3×3×3 strongest peak 43.4° vs. 43.3° (111).)*
+*   [x] Structure panel extended: cell vector lengths a, b, c and angles α, β, γ alongside volume/periodicity, plus space group (international symbol + number), point group and crystal system via spglib through the embedded interpreter (tolerant of both dict- and dataclass-style spglib datasets; graceful "not installed"/"aperiodic" fallbacks). spglib added to the project venv. *(Validated: Si diamond → Fd-3m #227, m-3m.)*
+*   [x] Brillouin-zone dialog cleanup: the five k-path exporters collapsed into one "Export k-Path…" action with a format-selection dialog (VASP / QE / CASTEP / SIESTA / ASE script); "Export Figure (PNG/SVG)…" remains a standalone direct action.
+*   [x] Bond color continuity fix: the selection highlight tint now applies to bond endpoints touching selected atoms, not just the spheres — bond-end colors match the adjacent sphere exactly in every state. Re-audited on the 1H-MoS₂ benchmark: every rendered bond is Mo–S with the gradient spanning exactly the Mo and S sphere colors, shading through the single shared Blinn-Phong program in the viewport and (since the v0.11 FBO depth fix) in exported images alike. *(Model-level validation: 2 primitive-cell Mo–S bonds, zero same-species; CN(Mo) = 6 at a 3.0 Å cutoff; bond-length peak 2.42 Å.)*
+*   [ ] Trajectory averaging for the bond length/angle distributions (currently single-frame).
+*   [ ] Laue / single-crystal spot patterns in the XRD module.
+*   [ ] Wyckoff positions and symmetry-operation listing in the Structure panel.
 
 ## 🚀 Future Modules (Post-MVP)
 *   **Remote Job Submission:** Connect to HPC clusters using SSH/SFTP and generate SLURM/PBS submission scripts.

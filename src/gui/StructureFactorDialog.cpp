@@ -1,4 +1,4 @@
-#include "gui/RdfDialog.hpp"
+#include "gui/StructureFactorDialog.hpp"
 
 #include "gui/LinePlotWidget.hpp"
 
@@ -13,19 +13,19 @@
 #include <QtConcurrent>
 
 #include <algorithm>
-#include <set>
 #include <utility>
 
 namespace calango::gui {
 
-RdfDialog::RdfDialog(std::shared_ptr<const core::Structure> structure,
-                     std::vector<std::shared_ptr<core::Structure>> frames,
-                     QWidget* parent)
+StructureFactorDialog::StructureFactorDialog(
+    std::shared_ptr<const core::Structure> structure,
+    std::vector<std::shared_ptr<core::Structure>> frames, QWidget* parent)
     : QDialog(parent)
     , structure_(std::move(structure))
     , frames_(std::move(frames))
-    , elementACombo_(new QComboBox(this))
-    , elementBCombo_(new QComboBox(this))
+    , qMinSpin_(new QDoubleSpinBox(this))
+    , qMaxSpin_(new QDoubleSpinBox(this))
+    , qPointsSpin_(new QSpinBox(this))
     , rMaxSpin_(new QDoubleSpinBox(this))
     , binsSpin_(new QSpinBox(this))
     , pbcCheck_(new QCheckBox(tr("Periodic boundary conditions"), this))
@@ -36,39 +36,35 @@ RdfDialog::RdfDialog(std::shared_ptr<const core::Structure> structure,
     , exportButton_(new QPushButton(tr("Export Data…"), this))
     , plot_(new LinePlotWidget(this))
 {
-    setWindowTitle(tr("Radial Distribution Function g(r)"));
+    setWindowTitle(tr("Static Structure Factor S(q)"));
     resize(760, 560);
 
-    // Element pair: "Total" plus every element present in the structure.
-    std::set<int> elements;
-    for (const core::Atom& atom : structure_->atoms())
-        elements.insert(atom.atomicNumber);
-    for (QComboBox* combo : {elementACombo_, elementBCombo_}) {
-        combo->addItem(tr("Any"), 0);
-        for (const int z : elements)
-            combo->addItem(QLatin1String(core::Elements::data(z).symbol), z);
-    }
+    qMinSpin_->setRange(0.05, 10.0);
+    qMinSpin_->setDecimals(2);
+    qMinSpin_->setSingleStep(0.05);
+    qMinSpin_->setValue(0.3);
+    qMinSpin_->setSuffix(tr(" Å⁻¹"));
+    qMaxSpin_->setRange(1.0, 40.0);
+    qMaxSpin_->setDecimals(2);
+    qMaxSpin_->setValue(12.0);
+    qMaxSpin_->setSuffix(tr(" Å⁻¹"));
+    qPointsSpin_->setRange(50, 4000);
+    qPointsSpin_->setValue(400);
 
-    rMaxSpin_->setRange(1.0, 40.0);
+    rMaxSpin_->setRange(2.0, 40.0);
     rMaxSpin_->setValue(10.0);
     rMaxSpin_->setSuffix(tr(" Å"));
-    binsSpin_->setRange(20, 2000);
-    binsSpin_->setValue(200);
+    rMaxSpin_->setToolTip(tr("Upper bound of the g(r) Fourier integral — "
+                             "larger values improve low-q fidelity"));
+    binsSpin_->setRange(50, 4000);
+    binsSpin_->setValue(400);
 
-    // PBC defaults ON when the structure is periodic, OFF otherwise —
-    // and stays user-overridable.
     const bool periodic = structure_->cell().isDefined()
         && (structure_->cell().pbc()[0] || structure_->cell().pbc()[1]
             || structure_->cell().pbc()[2]);
     pbcCheck_->setChecked(periodic);
     pbcCheck_->setEnabled(structure_->cell().isDefined());
 
-    auto* pairRow = new QHBoxLayout;
-    pairRow->addWidget(elementACombo_, 1);
-    pairRow->addWidget(elementBCombo_, 1);
-
-    // Trajectory frame range: 1-based Start/End plus Stride; only shown
-    // when the document actually carries multiple frames.
     const int frameCount = static_cast<int>(frames_.size());
     auto* frameRow = new QHBoxLayout;
     startFrameSpin_->setRange(1, std::max(1, frameCount));
@@ -93,9 +89,13 @@ RdfDialog::RdfDialog(std::shared_ptr<const core::Structure> structure,
     });
 
     auto* form = new QFormLayout;
-    form->addRow(tr("Element pair:"), pairRow);
-    form->addRow(tr("r max:"), rMaxSpin_);
-    form->addRow(tr("Bins:"), binsSpin_);
+    auto* qRow = new QHBoxLayout;
+    qRow->addWidget(qMinSpin_, 1);
+    qRow->addWidget(qMaxSpin_, 1);
+    form->addRow(tr("q range:"), qRow);
+    form->addRow(tr("q points:"), qPointsSpin_);
+    form->addRow(tr("g(r) r max:"), rMaxSpin_);
+    form->addRow(tr("g(r) bins:"), binsSpin_);
     form->addRow(pbcCheck_);
     if (frameCount > 1)
         form->addRow(tr("Frames:"), frameRow);
@@ -107,10 +107,8 @@ RdfDialog::RdfDialog(std::shared_ptr<const core::Structure> structure,
     buttonRow->addWidget(exportButton_, 1);
     form->addRow(buttonRow);
     exportButton_->setEnabled(false);
-    exportButton_->setToolTip(tr("Save the g(r) curve as CSV or "
-                                 "whitespace-separated .dat"));
 
-    plot_->setAxisLabels(QStringLiteral("r [Å]"), QStringLiteral("g(r)"));
+    plot_->setAxisLabels(QStringLiteral("q [Å⁻¹]"), QStringLiteral("S(q)"));
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -120,28 +118,30 @@ RdfDialog::RdfDialog(std::shared_ptr<const core::Structure> structure,
     layout->addWidget(plot_, 1);
     layout->addWidget(buttons);
 
-    connect(computeButton_, &QPushButton::clicked, this, &RdfDialog::compute);
-    connect(exportButton_, &QPushButton::clicked, this, &RdfDialog::exportData);
-    connect(&watcher_, &QFutureWatcher<core::RdfResult>::finished,
-            this, &RdfDialog::computeFinished);
+    connect(computeButton_, &QPushButton::clicked,
+            this, &StructureFactorDialog::compute);
+    connect(exportButton_, &QPushButton::clicked,
+            this, &StructureFactorDialog::exportData);
+    connect(&watcher_, &QFutureWatcher<core::StructureFactorResult>::finished,
+            this, &StructureFactorDialog::computeFinished);
 
     compute(); // show something immediately
 }
 
-void RdfDialog::compute()
+void StructureFactorDialog::compute()
 {
-    core::RdfOptions options;
-    options.rMax = rMaxSpin_->value();
-    options.bins = binsSpin_->value();
-    options.usePbc = pbcCheck_->isChecked();
-    options.elementA = elementACombo_->currentData().toInt();
-    options.elementB = elementBCombo_->currentData().toInt();
+    core::StructureFactorOptions options;
+    options.qMin = qMinSpin_->value();
+    options.qMax = std::max(qMaxSpin_->value(), qMinSpin_->value() + 0.5);
+    options.qPoints = qPointsSpin_->value();
+    options.rdf.rMax = rMaxSpin_->value();
+    options.rdf.bins = binsSpin_->value();
+    options.rdf.usePbc = pbcCheck_->isChecked();
 
     computeButton_->setEnabled(false);
     computeButton_->setText(tr("Computing…"));
 
-    // Copy the selected frames (or the single structure) so the worker
-    // thread owns its data outright — playback/edits can't race it.
+    // Copy the selected frames so the worker thread owns its data.
     std::vector<core::Structure> selection;
     if (frames_.size() > 1) {
         const auto start = static_cast<std::size_t>(startFrameSpin_->value() - 1);
@@ -157,55 +157,50 @@ void RdfDialog::compute()
 
     watcher_.setFuture(QtConcurrent::run(
         [selection = std::move(selection), options] {
-            return core::computeRdfAveraged(selection, options);
+            return core::computeStructureFactorAveraged(selection, options);
         }));
 }
 
-void RdfDialog::computeFinished()
+void StructureFactorDialog::computeFinished()
 {
     lastResult_ = watcher_.result();
-    plot_->setData(lastResult_.r, lastResult_.g);
+    plot_->setData(lastResult_.q, lastResult_.s);
     computeButton_->setEnabled(true);
     computeButton_->setText(tr("Compute"));
-    exportButton_->setEnabled(!lastResult_.r.empty());
+    exportButton_->setEnabled(!lastResult_.q.empty());
 }
 
-void RdfDialog::exportData()
+void StructureFactorDialog::exportData()
 {
-    if (lastResult_.r.empty())
+    if (lastResult_.q.empty())
         return;
 
-    QString selectedFilter;
     const QString path = QFileDialog::getSaveFileName(
-        this, tr("Export g(r) Data"), QStringLiteral("rdf.csv"),
-        tr("CSV (*.csv);;Data file (*.dat)"), &selectedFilter);
+        this, tr("Export S(q) Data"), QStringLiteral("structure_factor.csv"),
+        tr("CSV (*.csv);;Data file (*.dat)"));
     if (path.isEmpty())
         return;
     const bool csv = !path.endsWith(QStringLiteral(".dat"), Qt::CaseInsensitive);
 
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::critical(this, tr("Export g(r) Data"),
+        QMessageBox::critical(this, tr("Export S(q) Data"),
                               tr("Could not write %1").arg(path));
         return;
     }
     QTextStream out(&file);
-    const QString pairA = elementACombo_->currentText();
-    const QString pairB = elementBCombo_->currentText();
+    out << "# Calango static structure factor, averaged over " << lastFrameCount_
+        << " frame(s), rmax " << QString::number(rMaxSpin_->value(), 'f', 2)
+        << " A\n";
     if (csv) {
-        out << "# Calango radial distribution function, pair " << pairA << "-"
-            << pairB << ", averaged over " << lastFrameCount_ << " frame(s)\n";
-        out << "r_angstrom,g_r\n";
-        for (std::size_t i = 0; i < lastResult_.r.size(); ++i)
-            out << QString::number(lastResult_.r[i], 'f', 6) << ','
-                << QString::number(lastResult_.g[i], 'f', 6) << '\n';
+        out << "q_inv_angstrom,s_q\n";
+        for (std::size_t i = 0; i < lastResult_.q.size(); ++i)
+            out << QString::number(lastResult_.q[i], 'f', 6) << ','
+                << QString::number(lastResult_.s[i], 'f', 6) << '\n';
     } else {
-        out << "# Calango RDF, pair " << pairA << "-" << pairB
-            << ", averaged over " << lastFrameCount_ << " frame(s)\n";
-        out << "#      r[A]           g(r)\n";
-        for (std::size_t i = 0; i < lastResult_.r.size(); ++i)
-            out << QString::asprintf("%14.6f %14.6f\n", lastResult_.r[i],
-                                     lastResult_.g[i]);
+        for (std::size_t i = 0; i < lastResult_.q.size(); ++i)
+            out << QString::asprintf("%14.6f %14.6f\n", lastResult_.q[i],
+                                     lastResult_.s[i]);
     }
 }
 

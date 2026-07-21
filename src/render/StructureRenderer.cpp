@@ -44,6 +44,17 @@ QColor midpointColor(const QColor& a, const QColor& b)
                             0.5f * static_cast<float>(a.blueF() + b.blueF()));
 }
 
+/// Selection highlight (tint toward orange). Applied to the sphere AND to
+/// every bond endpoint touching the selected atom, so bond colors always
+/// match the adjacent sphere exactly — selected or not.
+QColor selectionTint(const QColor& color)
+{
+    return QColor::fromRgbF(
+        0.45f * static_cast<float>(color.redF()) + 0.55f,
+        0.45f * static_cast<float>(color.greenF()) + 0.55f * 0.62f,
+        0.45f * static_cast<float>(color.blueF()) + 0.55f * 0.10f);
+}
+
 void appendColoredVertex(std::vector<float>& data, const QVector3D& pos, const QColor& color)
 {
     data.insert(data.end(),
@@ -391,11 +402,8 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                 selection && selection->count(static_cast<int>(index)) > 0;
 
             QColor color = resolvedAtomColor(index, atom.atomicNumber);
-            if (selected) { // tint toward highlight orange
-                color = QColor::fromRgbF(0.45f * color.redF() + 0.55f,
-                                         0.45f * color.greenF() + 0.55f * 0.62f,
-                                         0.45f * color.blueF() + 0.55f * 0.10f);
-            }
+            if (selected)
+                color = selectionTint(color);
 
             if (wireframe) {
                 appendColoredVertex(wireAtomVertices, toQt(atom.position), color);
@@ -420,10 +428,17 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                 const QVector3D dir = (pbImage - pa).normalized();
                 const float half = pa.distanceToPoint(pbImage) * 0.5f;
 
-                const QColor colorA = resolvedAtomColor(
+                QColor colorA = resolvedAtomColor(
                     static_cast<std::size_t>(bond.i), a.atomicNumber);
-                const QColor colorB = resolvedAtomColor(
+                QColor colorB = resolvedAtomColor(
                     static_cast<std::size_t>(bond.j), b.atomicNumber);
+                // Keep bond endpoints identical to their spheres, including
+                // the selection highlight (previously spheres tinted but
+                // bonds did not — a visible color mismatch at the joint).
+                if (selection && selection->count(bond.i) > 0)
+                    colorA = selectionTint(colorA);
+                if (selection && selection->count(bond.j) > 0)
+                    colorB = selectionTint(colorB);
 
                 const QColor mid = style_.gradientBonds
                     ? midpointColor(colorA, colorB)

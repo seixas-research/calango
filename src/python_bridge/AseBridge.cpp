@@ -1,5 +1,6 @@
 #include "python_bridge/AseBridge.hpp"
 
+#include <pybind11/eval.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
@@ -290,6 +291,123 @@ core::Structure AseBridge::buildMx2(const std::string& formula, const std::strin
         return fromAtoms(atoms);
     } catch (const py::error_already_set& e) {
         rethrow(e, "Failed to build " + formula + " (" + phase + ")");
+    }
+}
+
+AseBridge::XrdResult AseBridge::simulateXrd(const core::Structure& structure,
+                                            double wavelength, double twoThetaMin,
+                                            double twoThetaMax, int points,
+                                            int repeat)
+{
+    try {
+        py::object atoms = toAtoms(structure);
+        if (repeat > 1 && structure.cell().isDefined()) {
+            const auto pbc = structure.cell().pbc();
+            atoms = atoms.attr("repeat")(py::make_tuple(pbc[0] ? repeat : 1,
+                                                        pbc[1] ? repeat : 1,
+                                                        pbc[2] ? repeat : 1));
+        }
+
+        const py::module_ np = py::module_::import("numpy");
+        const py::module_ xrdebye = py::module_::import("ase.utils.xrdebye");
+
+        // Iwasa (Waasmaier-Kirfel q-dependent form factors) only covers a
+        // handful of elements; for anything else XrDebye silently returns
+        // zero. Fall back to constant f = Z when a species is missing:
+        // peak positions stay exact, high-angle intensities approximate.
+        const py::object table = xrdebye.attr("waasmaier");
+        bool allTabulated = true;
+        for (const core::Atom& atom : structure.atoms()) {
+            if (!table.contains(py::str(atom.symbol()))) {
+                allTabulated = false;
+                break;
+            }
+        }
+        const std::string method = allTabulated ? "Iwasa" : "Z";
+
+        const py::object simulator =
+            xrdebye.attr("XrDebye")(py::arg("atoms") = atoms,
+                                    py::arg("wavelength") = wavelength,
+                                    py::arg("method") = method,
+                                    py::arg("warn") = false);
+        const py::object grid =
+            np.attr("linspace")(twoThetaMin, twoThetaMax, points);
+        const auto pattern =
+            np.attr("asarray")(simulator.attr("calc_pattern")(
+                                   py::arg("x") = grid, py::arg("mode") = "XRD"),
+                               py::arg("dtype") = "float64")
+                .cast<py::array_t<double>>();
+        const auto angles =
+            np.attr("asarray")(grid, py::arg("dtype") = "float64")
+                .cast<py::array_t<double>>();
+
+        XrdResult result;
+        result.method = method;
+        const auto a = angles.unchecked<1>();
+        const auto p = pattern.unchecked<1>();
+        const auto count = std::min(a.shape(0), p.shape(0));
+        result.twoTheta.reserve(static_cast<std::size_t>(count));
+        result.intensity.reserve(static_cast<std::size_t>(count));
+        for (py::ssize_t i = 0; i < count; ++i) {
+            result.twoTheta.push_back(a(i));
+            result.intensity.push_back(p(i));
+        }
+        return result;
+    } catch (const py::error_already_set& e) {
+        rethrow(e, "XRD simulation failed");
+    }
+}
+
+AseBridge::SymmetryInfo AseBridge::symmetryInfo(const core::Structure& structure,
+                                                double symprec)
+{
+    SymmetryInfo info;
+    if (!structure.cell().isDefined()) {
+        info.error = "no unit cell";
+        return info;
+    }
+    try {
+        py::dict locals;
+        locals["atoms"] = toAtoms(structure);
+        locals["symprec"] = symprec;
+        // spglib's dataset changed from a dict (< 2.5) to a dataclass;
+        // read fields tolerantly through a small helper.
+        py::exec(R"PY(
+try:
+    import spglib
+except ImportError:
+    result = {"error": "spglib is not installed (pip install spglib)"}
+else:
+    cell = (atoms.cell[:], atoms.get_scaled_positions(), atoms.numbers)
+    dataset = spglib.get_symmetry_dataset(cell, symprec=symprec)
+    if dataset is None:
+        result = {"error": "symmetry detection failed"}
+    else:
+        def field(name):
+            return dataset[name] if isinstance(dataset, dict) else getattr(dataset, name)
+        number = int(field("number"))
+        systems = [(2, "triclinic"), (15, "monoclinic"), (74, "orthorhombic"),
+                   (142, "tetragonal"), (167, "trigonal"), (194, "hexagonal"),
+                   (230, "cubic")]
+        crystal = next(name for bound, name in systems if number <= bound)
+        result = {"symbol": str(field("international")), "number": number,
+                  "pointgroup": str(field("pointgroup")), "system": crystal,
+                  "error": ""}
+)PY",
+                 py::globals(), locals);
+        const py::dict result = locals["result"].cast<py::dict>();
+        if (result.contains("error"))
+            info.error = result["error"].cast<std::string>();
+        if (!info.error.empty())
+            return info;
+        info.spaceGroupSymbol = result["symbol"].cast<std::string>();
+        info.spaceGroupNumber = result["number"].cast<int>();
+        info.pointGroup = result["pointgroup"].cast<std::string>();
+        info.crystalSystem = result["system"].cast<std::string>();
+        return info;
+    } catch (const py::error_already_set& e) {
+        info.error = std::string("symmetry query failed: ") + e.what();
+        return info;
     }
 }
 

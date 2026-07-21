@@ -123,4 +123,27 @@ RdfResult computeRdf(const Structure& structure, const RdfOptions& options)
     return result;
 }
 
+RdfResult computeRdfAveraged(const std::vector<Structure>& frames,
+                             const RdfOptions& options)
+{
+    RdfResult accumulated;
+    std::size_t contributing = 0;
+    for (const Structure& frame : frames) {
+        const RdfResult single = computeRdf(frame, options);
+        if (single.g.empty())
+            continue;
+        if (accumulated.g.empty()) {
+            accumulated = single;
+        } else {
+            for (std::size_t k = 0; k < accumulated.g.size(); ++k)
+                accumulated.g[k] += single.g[k];
+        }
+        ++contributing;
+    }
+    if (contributing > 1)
+        for (double& g : accumulated.g)
+            g /= static_cast<double>(contributing);
+    return accumulated;
+}
+
 } // namespace calango::core

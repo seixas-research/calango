@@ -79,6 +79,39 @@ public:
     };
     static BandPathInfo bandPathInfo(const core::Structure& structure);
 
+    /// Simulated powder XRD pattern via the Debye scattering equation
+    /// (ase.utils.xrdebye.XrDebye). Periodic structures are repeated
+    /// `repeat`× along their periodic directions first — the Debye sum
+    /// acts on a finite cluster, so repetition sharpens the Bragg peaks.
+    /// `wavelength` in Å (e.g. Cu Kα = 1.54056); the two-theta grid is in
+    /// degrees. O(N² · points): keep the repeat modest.
+    struct XrdResult {
+        std::vector<double> twoTheta;  ///< degrees
+        std::vector<double> intensity; ///< arbitrary units
+        /// Form-factor model used: "Iwasa" (Waasmaier-Kirfel q-dependent
+        /// factors — only when every species is tabulated) or "Z"
+        /// (constant f = Z: peak positions exact, relative intensities
+        /// approximate at high angles).
+        std::string method;
+    };
+    static XrdResult simulateXrd(const core::Structure& structure,
+                                 double wavelength, double twoThetaMin,
+                                 double twoThetaMax, int points, int repeat);
+
+    /// Crystallographic symmetry via spglib: space group (international
+    /// symbol + number), point group, and crystal system. Empty `error`
+    /// on success; on failure (no spglib, no cell, detection error) the
+    /// other fields are empty and `error` says why.
+    struct SymmetryInfo {
+        std::string spaceGroupSymbol;
+        int spaceGroupNumber = 0;
+        std::string pointGroup;
+        std::string crystalSystem;
+        std::string error;
+    };
+    static SymmetryInfo symmetryInfo(const core::Structure& structure,
+                                     double symprec = 1e-3);
+
     /// core::Structure -> ase.Atoms (positions, symbols, cell, pbc).
     static pybind11::object toAtoms(const core::Structure& structure);
 

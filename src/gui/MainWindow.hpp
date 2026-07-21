@@ -70,6 +70,9 @@ private Q_SLOTS:
     void showBrillouinZone();
     void showRdf();
     void showCoordination();
+    void showDistributions();
+    void showStructureFactor();
+    void showXrd();
     void openNanoBuilder();
     void openPhononBuilder();
     void openExamplesBrowser();

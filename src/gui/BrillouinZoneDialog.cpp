@@ -7,6 +7,7 @@
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QImage>
+#include <QInputDialog>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPainter>
@@ -111,23 +112,19 @@ BrillouinZoneDialog::BrillouinZoneDialog(const core::BrillouinZoneData& zone,
     divisionsRow->addWidget(divisionsSpin_, 1);
     side->addLayout(divisionsRow);
 
-    const auto addExportButton = [this, side](const QString& text, auto slot) {
-        auto* button = new QPushButton(text, this);
-        side->addWidget(button);
-        connect(button, &QPushButton::clicked, this, slot);
-    };
-    addExportButton(tr("Export VASP KPOINTS…"),
-                    &BrillouinZoneDialog::exportVaspKpoints);
-    addExportButton(tr("Export QE K_POINTS…"),
-                    &BrillouinZoneDialog::exportQeKpoints);
-    addExportButton(tr("Export CASTEP Path…"),
-                    &BrillouinZoneDialog::exportCastepPath);
-    addExportButton(tr("Export SIESTA BandLines…"),
-                    &BrillouinZoneDialog::exportSiestaBands);
-    addExportButton(tr("Export ASE Script…"),
-                    &BrillouinZoneDialog::exportAseScript);
-    addExportButton(tr("Export Figure (PNG/SVG)…"),
-                    &BrillouinZoneDialog::exportFigure);
+    // One consolidated k-path exporter (format picked in a sub-dialog)
+    // plus the direct-action figure capture.
+    auto* exportPathButton = new QPushButton(tr("Export k-Path…"), this);
+    exportPathButton->setToolTip(tr("VASP KPOINTS · QE K_POINTS · CASTEP · "
+                                    "SIESTA BandLines · ASE/Python script"));
+    side->addWidget(exportPathButton);
+    connect(exportPathButton, &QPushButton::clicked,
+            this, &BrillouinZoneDialog::exportKPath);
+
+    auto* exportFigureButton = new QPushButton(tr("Export Figure (PNG/SVG)…"), this);
+    side->addWidget(exportFigureButton);
+    connect(exportFigureButton, &QPushButton::clicked,
+            this, &BrillouinZoneDialog::exportFigure);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -254,13 +251,37 @@ void BrillouinZoneDialog::saveTextFile(const QString& text, const QString& capti
     QTextStream(&file) << text;
 }
 
-void BrillouinZoneDialog::exportVaspKpoints()
+void BrillouinZoneDialog::exportKPath()
 {
     if (!hasExportablePath()) {
-        QMessageBox::information(this, tr("Export KPOINTS"),
+        QMessageBox::information(this, tr("Export k-Path"),
                                  tr("Pick at least two connected points first."));
         return;
     }
+
+    const QStringList formats = {tr("VASP KPOINTS (line mode)"),
+                                 tr("Quantum ESPRESSO K_POINTS (crystal_b)"),
+                                 tr("CASTEP SPECTRAL_KPOINT_PATH"),
+                                 tr("SIESTA BandLines"),
+                                 tr("ASE / Python script")};
+    bool ok = false;
+    const QString chosen = QInputDialog::getItem(
+        this, tr("Export k-Path"), tr("Format:"), formats, 0,
+        /*editable=*/false, &ok);
+    if (!ok)
+        return;
+    switch (formats.indexOf(chosen)) {
+    case 0: exportVaspKpoints(); break;
+    case 1: exportQeKpoints(); break;
+    case 2: exportCastepPath(); break;
+    case 3: exportSiestaBands(); break;
+    case 4: exportAseScript(); break;
+    default: break;
+    }
+}
+
+void BrillouinZoneDialog::exportVaspKpoints()
+{
     saveTextFile(QString::fromStdString(
                      core::toVaspKpoints(segments(), divisionsSpin_->value())),
                  tr("Export VASP KPOINTS"), QStringLiteral("KPOINTS"));
@@ -268,11 +289,6 @@ void BrillouinZoneDialog::exportVaspKpoints()
 
 void BrillouinZoneDialog::exportQeKpoints()
 {
-    if (!hasExportablePath()) {
-        QMessageBox::information(this, tr("Export K_POINTS"),
-                                 tr("Pick at least two connected points first."));
-        return;
-    }
     saveTextFile(QString::fromStdString(
                      core::toQeKpointsCard(segments(), divisionsSpin_->value())),
                  tr("Export Quantum ESPRESSO K_POINTS"),
@@ -281,11 +297,6 @@ void BrillouinZoneDialog::exportQeKpoints()
 
 void BrillouinZoneDialog::exportCastepPath()
 {
-    if (!hasExportablePath()) {
-        QMessageBox::information(this, tr("Export CASTEP Path"),
-                                 tr("Pick at least two connected points first."));
-        return;
-    }
     saveTextFile(QString::fromStdString(core::toCastepPath(segments())),
                  tr("Export CASTEP Spectral k-Point Path"),
                  QStringLiteral("kpath_castep.cell"));
@@ -293,11 +304,6 @@ void BrillouinZoneDialog::exportCastepPath()
 
 void BrillouinZoneDialog::exportSiestaBands()
 {
-    if (!hasExportablePath()) {
-        QMessageBox::information(this, tr("Export SIESTA BandLines"),
-                                 tr("Pick at least two connected points first."));
-        return;
-    }
     saveTextFile(QString::fromStdString(
                      core::toSiestaBandLines(segments(), divisionsSpin_->value())),
                  tr("Export SIESTA BandLines"), QStringLiteral("kpath_siesta.fdf"));
@@ -305,11 +311,6 @@ void BrillouinZoneDialog::exportSiestaBands()
 
 void BrillouinZoneDialog::exportAseScript()
 {
-    if (!hasExportablePath()) {
-        QMessageBox::information(this, tr("Export ASE Script"),
-                                 tr("Pick at least two connected points first."));
-        return;
-    }
     // Total sampling matched to per-segment divisions across all legs.
     int legs = 0;
     for (const auto& section : segments())

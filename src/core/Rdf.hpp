@@ -31,4 +31,11 @@ struct RdfResult {
 /// the customary choice for isolated molecules.
 RdfResult computeRdf(const Structure& structure, const RdfOptions& options);
 
+/// Frame-averaged g(r): the arithmetic mean of per-frame RDFs on the
+/// shared r grid (all frames use the same options). Frames yielding an
+/// empty result (e.g. missing element pair) are skipped; an empty result
+/// is returned when nothing contributes.
+RdfResult computeRdfAveraged(const std::vector<Structure>& frames,
+                             const RdfOptions& options);
+
 } // namespace calango::core
