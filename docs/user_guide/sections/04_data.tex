@@ -1,0 +1,121 @@
+\chapter{Getting Data In and Out}
+\label{ch:data}
+
+\section{Supported formats}
+\label{sec:formats}
+
+All structure I/O goes through \texttt{ase.io}, so Calango reads and writes
+every format ASE knows. The file dialog offers the common ones directly:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{9.2cm}@{}}
+\toprule
+Family & Extensions \\
+\midrule
+XYZ            & \file{.xyz}, \file{.extxyz} \\
+Crystallography& \file{.cif} \\
+VASP           & \file{POSCAR}, \file{CONTCAR}, \file{.vasp} \\
+ASE            & \file{.traj} \\
+Quantum ESPRESSO & \file{.in}, \file{.pwi}, \file{.pwo}, \file{.out} \\
+CASTEP         & \file{.cell} \\
+LAMMPS         & \file{.data}, \file{.dump}, \file{.lammpstrj} \\
+Gaussian       & \file{.gjf}, \file{.com} \\
+SHELX          & \file{.res} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{calnote}
+Extended-XYZ per-atom arrays are imported as \emph{scalar fields} and
+\emph{vector fields}. A \texttt{charges} or \texttt{forces} column becomes
+selectable in the \ui{Custom property} colour mode, and \texttt{forces} or
+\texttt{momenta} enable the force and velocity arrow overlays. This is the
+simplest route for visualising per-atom data computed elsewhere: write it
+as an extxyz column and open the file.
+\end{calnote}
+
+\section{Opening structures and trajectories}
+
+\begin{description}
+  \item[\menu{File}\menusep\menu{Open}\menusep\menu{Structure}]
+    \kbd{Ctrl}+\kbd{O}.
+  \item[\menu{File}\menusep\menu{Open}\menusep\menu{Trajectory}]
+    \kbd{Ctrl}+\kbd{T}.
+\end{description}
+
+Both entries read \emph{every} frame in the file. A single-frame file opens
+as a plain structure tab; a multi-frame file opens as a trajectory with the
+timeline active. In practice the two entries differ only in the file
+filter, so either works for either kind of file.
+
+Opening a \file{.calproj} file --- from the command line, your file
+manager, or the structure dialog --- restores the saved session rather than
+loading a geometry.
+
+\section{Saving structures and trajectories}
+
+\begin{description}
+  \item[\menu{File}\menusep\menu{Save}\menusep\menu{Structure As}]
+    \kbd{Ctrl}+\kbd{Shift}+\kbd{S}. Writes the currently displayed frame.
+    The format follows the extension you type.
+  \item[\menu{File}\menusep\menu{Save}\menusep\menu{Trajectory As}]
+    \kbd{Ctrl}+\kbd{Shift}+\kbd{T}. Writes all frames of the active
+    document as extended XYZ, multi-frame XYZ, ASE \file{.traj}, or
+    multi-model PDB.
+\end{description}
+
+\begin{caltip}
+Extended XYZ round-trips more than plain XYZ --- cell, periodicity and
+per-atom arrays all survive. When in doubt, save \file{.extxyz}.
+\end{caltip}
+
+\section{The database and preset browser}
+\label{sec:database}
+
+\menu{Build}\menusep\menu{From Database} opens a two-tab browser.
+
+\subsection{Presets}
+
+Seven benchmark structures ship with Calango, each annotated with a
+suggested calculator:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Preset & File & Suggested calculator \\
+\midrule
+Diamond (bulk C)       & \file{diamond.vasp}            & MACE-MP-0 \\
+MoS$_2$ 2H (bulk)      & \file{mos2\_2h\_bulk.vasp}     & MACE-MP-0 \\
+Graphene monolayer     & \file{graphene.vasp}           & MACE-MP-0 \\
+MoS$_2$ 1H (monolayer) & \file{mos2\_1h\_monolayer.vasp}& MACE-MP-0 \\
+Benzene                & \file{benzene.xyz}             & MACE-OFF (or EMT) \\
+Naphthalene            & \file{naphthalene.xyz}         & MACE-OFF \\
+Coronene               & \file{coronene.xyz}            & MACE-OFF \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Select a row and press \ui{Load Selected}, or double-click it.
+
+\subsection{Materials Project}
+
+The second tab fetches structures by Materials Project ID.
+
+\begin{description}
+  \item[\ui{API key}] Masked field, pre-filled from your saved setting or
+    from \opt{MP\_API\_KEY} in the environment. It is stored as you type.
+  \item[\ui{Material ID}] For example \texttt{mp-149} (silicon). Pressing
+    \kbd{Enter} triggers the fetch.
+  \item[\ui{.env file}] Shows the current environment file path, with
+    \ui{Browse\ldots} to point elsewhere and \ui{Reload} to re-import the
+    key (Section~\ref{sec:envfile}).
+  \item[\ui{Fetch Structure}] Downloads the entry and opens it in a new
+    tab, reporting the formula and atom count.
+\end{description}
+
+\begin{calwarn}
+Needs a network connection and a personal API key from
+\url{https://materialsproject.org/api}.
+\end{calwarn}

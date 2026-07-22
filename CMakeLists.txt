@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.26
+    VERSION 26.7.27
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -114,6 +114,8 @@ qt_add_executable(calango
     src/core/DatasetSplit.cpp
     src/core/ElectronicScriptGenerator.hpp
     src/core/ElectronicScriptGenerator.cpp
+    src/core/AdsorptionSites.hpp
+    src/core/AdsorptionSites.cpp
 
     # python_bridge — embedded CPython + ASE interop
     src/python_bridge/PythonEngine.hpp
@@ -240,6 +242,10 @@ qt_add_executable(calango
     src/gui/NanoparticleDialog.cpp
     src/gui/AdsorptionDialog.hpp
     src/gui/AdsorptionDialog.cpp
+    src/gui/SupercellDialog.hpp
+    src/gui/SupercellDialog.cpp
+    src/gui/SimulationDialogs.hpp
+    src/gui/SimulationDialogs.cpp
 )
 
 qt_add_resources(calango "shaders"
@@ -387,6 +393,22 @@ if(CALANGO_BUILD_TESTS)
         CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}")
     target_link_libraries(calango_sqs_test PRIVATE pybind11::embed)
     add_test(NAME sqs_sige_alloy COMMAND calango_sqs_test)
+
+    add_executable(calango_adsorption_test
+        tests/AdsorptionTest.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/core/AdsorptionSites.cpp
+        src/python_bridge/PythonEngine.cpp
+        src/python_bridge/AseBridge.cpp
+        src/python_bridge/SurfaceScience.cpp
+    )
+    target_include_directories(calango_adsorption_test PRIVATE src)
+    target_compile_definitions(calango_adsorption_test PRIVATE
+        CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}")
+    target_link_libraries(calango_adsorption_test PRIVATE pybind11::embed)
+    add_test(NAME adsorption_nanoparticle COMMAND calango_adsorption_test)
 
     add_executable(calango_symmetry_test
         tests/SymmetrySiTest.cpp

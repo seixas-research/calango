@@ -1,0 +1,178 @@
+\chapter{The Workspace}
+\label{ch:workspace}
+
+\section{The 12-zone grid}
+
+Calango opens into a fixed default arrangement: a $4 \times 3$ grid of
+twelve zones around the central 3D viewport. Every zone is a Qt dock
+widget, so the layout is a starting point rather than a constraint --- any
+panel can be resized, re-docked, tabbed with another, floated onto a second
+monitor, or hidden entirely.
+
+\begin{center}
+\begin{tikzpicture}[
+    zone/.style={draw=shadegray, fill=panelgray, rounded corners=2pt,
+                 minimum height=1.5cm, align=center, font=\small},
+    view/.style={draw=calangoteal, fill=calangoteal!12, rounded corners=2pt,
+                 align=center, font=\small\bfseries, text=calangodark},
+    node distance=2mm]
+  % row 1
+  \node[zone, minimum width=3.1cm] (z1) at (0,3.2) {\textbf{1}\\Logo};
+  \node[view, minimum width=6.4cm, minimum height=3.2cm] (v) at (3.9,2.35)
+       {\textbf{2--3, 6--7}\\3D Viewport\\[2pt]
+        \footnotesize\mdseries tab bar $\cdot$ toolbar $\cdot$ timeline};
+  \node[view, minimum width=3.1cm, minimum height=3.2cm, fill=calangoteal!7]
+       (z48) at (7.8,2.35) {\textbf{4, 8}\\Representation};
+  % row 2
+  \node[zone, minimum width=3.1cm] (z5) at (0,1.5) {\textbf{5}\\Processes\\+ Structure};
+  % row 3
+  \node[zone, minimum width=1.9cm] (z9)  at (-0.6,0) {\textbf{9}\\Lighting};
+  \node[zone, minimum width=2.9cm] (z10) at (1.85,0) {\textbf{10}\\Job};
+  \node[zone, minimum width=2.4cm] (z11) at (4.55,0) {\textbf{11}\\Remote};
+  \node[zone, minimum width=2.4cm] (z12) at (7.15,0) {\textbf{12}\\Cell \& Axes};
+\end{tikzpicture}
+\end{center}
+
+\begin{description}
+  \item[Zone 1 --- branding] The Calango banner. Purely decorative; hide it
+    from \menu{View} if you want the vertical space.
+  \item[Zone 5 --- \ui{Processes} and \ui{Structure}] The process manager
+    (Section~\ref{sec:process-manager}) sits above the structure
+    information panel.
+  \item[Zones 2--3, 6--7 --- the viewport] The document tab bar, the frame
+    toolbar, the 3D canvas, and the playback timeline (visible only for
+    trajectories). Covered in Chapter~\ref{ch:viewport}.
+  \item[Zones 4 and 8 --- \ui{Representation}] Appearance controls,
+    spanning the full height of the right column
+    (Chapter~\ref{ch:appearance}).
+  \item[Zone 9 --- \ui{Lighting}] Directional light editor.
+  \item[Zone 10 --- \ui{Job}] Console and live metric plots for the running
+    calculation (Section~\ref{sec:job-panel}).
+  \item[Zone 11 --- \ui{Remote Access}] SSH connection, cluster job
+    submission and queue monitoring (Chapter~\ref{ch:remote}).
+  \item[Zone 12 --- \ui{Unit Cell \& Axes}] Cell wireframe and axes triad
+    styling.
+\end{description}
+
+\begin{caltip}
+Your layout is saved when you quit and restored on the next launch,
+including floating panels and window geometry. Every panel has a toggle at
+the bottom of the \menu{View} menu, so a panel you closed by accident is
+one menu click away.
+\end{caltip}
+
+\section{Documents, tabs and the timeline}
+
+Each structure or trajectory you open occupies its own \emph{tab} above the
+viewport, and each tab carries its own undo history. All tabs share one
+accelerated viewport --- switching tabs changes which document the views
+observe, so display settings stay consistent and no OpenGL context is
+recreated.
+
+When a document contains more than one frame, the \textbf{playback
+timeline} appears below the viewport:
+
+\begin{description}
+  \item[Transport buttons] first, previous, play/pause, next, last.
+  \item[Scrubber] a tick-marked slider over the frame range.
+  \item[Rate] playback speed in frames per second, 0.1--120, default 15.
+\end{description}
+
+Trajectories arrive from several places: opening a multi-frame file,
+finishing an MD or relaxation run, generating displaced structures in the
+phonon builder, or producing a noise ensemble. During a running simulation
+the timeline grows in real time as frames stream in
+(Section~\ref{sec:live-streaming}).
+
+\section{The Structure panel}
+\label{sec:structure-panel}
+
+The \ui{Structure} panel reports what Calango knows about the active
+document:
+
+\begin{description}
+  \item[\ui{Formula}] Hill-ordered chemical formula.
+  \item[\ui{Atoms}, \ui{Bonds}] Counts, with bonds as currently perceived.
+  \item[\ui{a, b, c}] Cell vector lengths in \AA{}, to two decimals.
+  \item[\ui{$\alpha$, $\beta$, $\gamma$}] Cell angles in degrees.
+  \item[\ui{Cell volume}, \ui{Periodic}] Volume and per-axis periodicity.
+  \item[\ui{Tolerance}] The spglib symmetry tolerance (\emph{symprec}) used
+    for the three fields below, in \AA{}, up to four decimals. Default
+    0.001. Raise it for structures with numerical noise --- a relaxed cell
+    often needs 0.01 or more before its true symmetry is recognised.
+  \item[\ui{Space group}, \ui{Point group}, \ui{Crystal system}] Detected
+    symmetry, e.g.\ \texttt{Fd-3m (227)}, \texttt{m-3m}, \texttt{cubic}.
+\end{description}
+
+\begin{calwarn}
+Symmetry detection needs \texttt{spglib} and a defined unit cell.
+\end{calwarn}
+
+\section{Projects and session storage}
+\label{sec:projects}
+
+A \emph{project} is one \file{.calproj} file that restores an entire
+session: every tab with its structures and trajectory frames, the viewport
+colour mapping, and the job console with its recorded metric series.
+
+\begin{description}
+  \item[\menu{File}\menusep\menu{Project Workspace}\menusep\menu{Open Project}]
+    \kbd{Ctrl}+\kbd{Shift}+\kbd{O}. Replaces the current session, warning
+    first if tabs are open.
+  \item[\menu{File}\menusep\menu{Project Workspace}\menusep\menu{Save Project}]
+    \kbd{Ctrl}+\kbd{S}.
+  \item[\menu{File}\menusep\menu{New Workspace}] \kbd{Ctrl}+\kbd{N}. Closes
+    everything and starts clean.
+\end{description}
+
+Calango tracks unsaved changes. Every undoable edit, tab close and job
+launch marks the session dirty; saving or loading a project clears the
+flag. Quitting with unsaved changes asks whether to \ui{Save},
+\ui{Discard} or \ui{Cancel} --- cancelling (or cancelling the save dialog
+that follows) leaves the application open.
+
+\subsection{The managed temporary directory}
+\label{sec:calango-tmp}
+
+Simulation jobs and generated ensembles need somewhere to put their working
+files. Once a project has been saved, Calango places them in a
+\file{.calango\_tmp/} folder \emph{next to the \file{.calproj} file}, one
+timestamped subdirectory per task:
+
+\begin{lstlisting}
+my_study.calproj
+.calango_tmp/
+    job_20260721_143255/     run.py, structure.extxyz, md.traj, logs
+    noise_20260721_144012/   perturbed.extxyz
+    job_20260721_150130/     bands.json, pdos.json
+\end{lstlisting}
+
+Until a project has been saved, the same directories are created under the
+per-user application data location instead. Either way the process manager
+keeps a live link to each one.
+
+\section{The process manager}
+\label{sec:process-manager}
+
+The compact \ui{Processes} panel in zone 5 lists every background task of
+the session --- local calculations, remote submissions, band-structure
+runs, noise ensembles --- with its name, colour-coded status
+(\emph{queued}, \emph{running}, \emph{completed}, \emph{failed}) and start
+time.
+
+Two buttons act on the selected task:
+
+\begin{description}
+  \item[\ui{Open Folder}] Reveals the task's working directory in your file
+    manager, for the raw logs and any files Calango does not import.
+  \item[\ui{Load Result}] Brings the result back into the workspace.
+    Double-clicking the row does the same. Calango inspects the directory
+    and opens whatever it finds: band structure and PDOS data open in the
+    electronic-structure viewer, trajectories and final geometries open as
+    tabs.
+\end{description}
+
+The point of keeping these links is that a finished calculation stays one
+click from further analysis. A completed MD run can be re-loaded weeks
+later and fed to the RDF, distribution or dataset tools without recomputing
+anything.

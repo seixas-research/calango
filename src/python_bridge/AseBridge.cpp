@@ -447,4 +447,34 @@ core::Structure AseBridge::makeSupercell(const core::Structure& structure,
     }
 }
 
+core::Structure AseBridge::makeSupercellMatrix(const core::Structure& structure,
+                                               const int p[3][3])
+{
+    // Guard against a singular transformation up front: ase.build.make_supercell
+    // raises deep inside numpy on a zero-determinant P, and the traceback is
+    // opaque. det of an integer 3×3 is exact in long arithmetic.
+    const long det =
+        static_cast<long>(p[0][0]) * (static_cast<long>(p[1][1]) * p[2][2]
+                                      - static_cast<long>(p[1][2]) * p[2][1])
+        - static_cast<long>(p[0][1]) * (static_cast<long>(p[1][0]) * p[2][2]
+                                        - static_cast<long>(p[1][2]) * p[2][0])
+        + static_cast<long>(p[0][2]) * (static_cast<long>(p[1][0]) * p[2][1]
+                                        - static_cast<long>(p[1][1]) * p[2][0]);
+    if (det == 0)
+        throw std::runtime_error(
+            "Supercell matrix is singular (determinant = 0): the three "
+            "transformed lattice vectors are coplanar or collinear.");
+
+    try {
+        const py::object makeSupercell =
+            py::module_::import("ase.build").attr("make_supercell");
+        py::list matrix;
+        for (int i = 0; i < 3; ++i)
+            matrix.append(py::make_tuple(p[i][0], p[i][1], p[i][2]));
+        return fromAtoms(makeSupercell(toAtoms(structure), matrix));
+    } catch (const py::error_already_set& e) {
+        rethrow(e, "Failed to build non-diagonal supercell (is a unit cell defined?)");
+    }
+}
+
 } // namespace calango::pybridge

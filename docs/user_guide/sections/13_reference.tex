@@ -1,0 +1,242 @@
+\chapter{Reference}
+\label{ch:reference}
+
+\section{Keyboard shortcuts}
+
+\subsection{Viewport}
+
+Single-letter shortcuts, no modifier. They yield to text fields while you
+are typing.
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Key & Action \\
+\midrule
+\kbd{R} & Rotation mode \\
+\kbd{T} & Translation (pan) mode \\
+\kbd{S} & Selection mode \\
+\kbd{I} & Insertion mode \\
+\kbd{D} & Distance measurement mode \\
+\kbd{A} & Angle measurement mode \\
+\kbd{O} & Toggle orthographic / perspective \\
+\kbd{F} & Frame structure \\
+\kbd{Delete} / \kbd{Backspace} & Delete selection (Selection mode) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Application}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Shortcut & Action \\
+\midrule
+\kbd{Ctrl}+\kbd{N} & New workspace \\
+\kbd{Ctrl}+\kbd{O} & Open structure \\
+\kbd{Ctrl}+\kbd{T} & Open trajectory \\
+\kbd{Ctrl}+\kbd{Shift}+\kbd{O} & Open project \\
+\kbd{Ctrl}+\kbd{S} & Save project \\
+\kbd{Ctrl}+\kbd{Shift}+\kbd{S} & Save structure as \\
+\kbd{Ctrl}+\kbd{Shift}+\kbd{T} & Save trajectory as \\
+\kbd{Ctrl}+\kbd{E} & Export image \\
+\kbd{Ctrl}+\kbd{W} & Close tab \\
+\kbd{Ctrl}+\kbd{Q} & Quit \\
+\kbd{Ctrl}+\kbd{Z} & Undo \\
+\kbd{Ctrl}+\kbd{Shift}+\kbd{Z} & Redo \\
+\kbd{Ctrl}+\kbd{Shift}+\kbd{A} & Add atom \\
+\kbd{Ctrl}+\kbd{B} & Bond editor \\
+\kbd{Ctrl}+\kbd{R} & New calculation \\
+\kbd{Ctrl}+\kbd{Shift}+\kbd{R} & New remote calculation \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+On macOS, \kbd{Ctrl} in this table is \kbd{Cmd}.
+
+\subsection{Mouse}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Gesture & Action \\
+\midrule
+Left drag                  & Depends on interaction mode \\
+Middle drag                & Pan (any mode) \\
+\kbd{Shift}+left drag      & Pan (any mode) \\
+Wheel                      & Zoom \\
+Left click                 & Pick atom \\
+\kbd{Ctrl}/\kbd{Cmd}+click & Toggle atom in selection \\
+Double click               & Frame structure \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Menu map}
+
+\begin{description}
+  \item[\menu{File}] New Workspace $\cdot$ Open (Structure, Trajectory)
+    $\cdot$ Save (Structure As, Trajectory As) $\cdot$ Import / Export
+    (Image, Animation, Ray-Traced Render) $\cdot$ Project Workspace (Open,
+    Save, Save As) $\cdot$ Close Tab $\cdot$ Quit
+  \item[\menu{Edit}] Undo $\cdot$ Redo $\cdot$ Add Atom $\cdot$ Selection
+    (Change Element, Translate) $\cdot$ Delete Selected Atoms $\cdot$ Bond
+    Editor $\cdot$ Unit Cell (Create Supercell) $\cdot$ Preferences
+  \item[\menu{View}] Orthographic $\cdot$ Overlays (Show Unit Cell) $\cdot$
+    Alignment (Frame Structure, XY, XZ, YZ) $\cdot$ Visual Effects $\cdot$
+    panel toggles
+  \item[\menu{Build}] Nanomaterial Builder $\cdot$ Surface Slab $\cdot$
+    Metallic Nanoparticle (Wulff) $\cdot$ Special Quasirandom Structure
+    (SQS) $\cdot$ Normal Modes / Phonon Builder $\cdot$ From Database
+    $\cdot$ Structure Perturbation / Noise
+  \item[\menu{Simulation}] New Calculation (ASE) $\cdot$ New Remote
+    Calculation $\cdot$ Electronic Bands / PDOS $\cdot$ Dataset Manager
+    (MLIP)
+  \item[\menu{Analysis}] Structure Factor S(q) $\cdot$ X-Ray Diffraction
+    $\cdot$ Radial Distribution Function $\cdot$ Bond Length / Angle
+    Distributions $\cdot$ Coordination Numbers (CN / GCN) $\cdot$
+    Warren-Cowley analysis $\cdot$ Local Entropy Analysis $\cdot$ Raman
+    Modes $\cdot$ Volumetric Data $\cdot$ Adsorption \& Catalysis $\cdot$
+    Brillouin Zone / k-Path
+  \item[\menu{Help}] Documentation $\cdot$ GitHub Repository $\cdot$ About
+    Calango
+\end{description}
+
+\section{Python dependencies by feature}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Package & Needed for \\
+\midrule
+\texttt{ase}, \texttt{numpy} & Everything (structure I/O, building, jobs) \\
+\texttt{spglib}       & Symmetry detection, Raman modes \\
+\texttt{paramiko}     & Remote Access panel \\
+\texttt{pillow}       & GIF animation export \\
+\texttt{imageio}, \texttt{imageio-ffmpeg} & MP4 animation export \\
+\texttt{mace-torch}   & MACE machine-learning potentials \\
+\texttt{gpaw}         & DFT band structures and PDOS \\
+\texttt{icet}         & Preferred SQS backend (optional) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+External binaries: \texttt{pw.x} (Quantum ESPRESSO), \texttt{siesta},
+VASP, \texttt{orca}, \texttt{povray} or \texttt{tachyon}.
+
+\section{Job directory contents}
+
+A typical job directory under \file{.calango\_tmp/}
+(Section~\ref{sec:calango-tmp}):
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+File & Written by \\
+\midrule
+\file{run.py}            & The generated (possibly hand-edited) script \\
+\file{structure.extxyz}  & The staged input geometry \\
+\file{opt.traj}          & Geometry optimization trajectory \\
+\file{md.traj}           & Molecular dynamics trajectory \\
+\file{optimized.extxyz}  & Final relaxed geometry \\
+\file{bands.json}, \file{pdos.json} & Electronic structure results \\
+\file{phonon\_bands.csv}, \file{phonon\_dos.csv} & Phonon results \\
+\file{perturbed.extxyz}  & Noise ensemble checkpoint \\
+\file{job.sh}            & Scheduler wrapper (remote jobs) \\
+\file{calango\_job.out}, \file{calango\_job.err} & Remote stdout/stderr \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Progress markers}
+
+Generated scripts communicate with the interface by printing markers to
+standard output. If you hand-edit a script or write your own, emitting
+these keeps the Job panel live:
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Marker & Effect \\
+\midrule
+\texttt{CALANGO\_PROGRESS step total}   & Progress bar \\
+\texttt{CALANGO\_ENERGY step value}     & Energy plot (eV) \\
+\texttt{CALANGO\_TEMP step value}       & Temperature plot (K) \\
+\texttt{CALANGO\_FMAX step value}       & Force plot (eV/\AA) \\
+\texttt{CALANGO\_PRESSURE step value}   & Pressure plot (GPa) \\
+\texttt{CALANGO\_TARGET\_TEMP value}    & Thermostat reference line \\
+\texttt{CALANGO\_TARGET\_PRESSURE value}& Barostat reference line \\
+\texttt{CALANGO\_CELL} + \texttt{CALANGO\_FRAME} & Live trajectory streaming \\
+\texttt{CALANGO\_RESULT \ldots}         & Final summary line \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Troubleshooting}
+
+\begin{description}
+  \item[Structures will not open; job features are disabled.]
+    ASE is not importable. Run \lstinline|calango --probe-python| to see
+    which interpreter is being used, then either install ASE there or set
+    \opt{CALANGO\_PYTHON} to an environment that has it
+    (Section~\ref{sec:python-env}).
+
+  \item[The space group is \texttt{P1} for an obviously symmetric crystal.]
+    Numerical noise in the coordinates. Raise \ui{Tolerance} in the
+    \ui{Structure} panel --- a relaxed cell often needs 0.01\,\AA{} or
+    more.
+
+  \item[Bonds are missing or spurious.]
+    Adjust \ui{Covalent cutoff multiplier} in the bond editor
+    (Section~\ref{sec:bonds}), or add and suppress individual bonds by
+    hand. Metallic and ionic systems rarely match a covalent-radius rule.
+
+  \item[Double and triple bonds do not appear automatically.]
+    By design. Assign them with the \ui{Bond order} buttons
+    (Section~\ref{sec:bond-orders}).
+
+  \item[A job fails immediately with an import error.]
+    The job is running in a different environment from Calango itself.
+    Check the \ui{Execution Environment} status line in the calculation
+    dialog (Section~\ref{sec:exec-env}).
+
+  \item[The GPAW backend is greyed out.]
+    GPAW is not importable in the selected environment. Point the
+    \ui{Environment} selector at a Conda environment where it is installed.
+
+  \item[The remote panel reports a connection failure.]
+    Test the same host, port, user and key with \texttt{ssh} from a
+    terminal first. Remember that the passphrase field doubles as the key
+    passphrase in \ui{SSH key} mode.
+
+  \item[Adsorption site detection finds no bridge or hollow sites.]
+    The surface cell is too small to have in-plane neighbours. Build a
+    supercell of the slab first.
+
+  \item[The viewport looks soft after enabling depth of field.]
+    Expected --- the effect trades multisample anti-aliasing for the blur
+    pass (Section~\ref{sec:visual-effects}). Disable it before exporting
+    still images.
+
+  \item[Animation export fails.]
+    Install \texttt{pillow} for GIF, or \texttt{imageio} and
+    \texttt{imageio-ffmpeg} for MP4, in Calango's Python environment.
+\end{description}
+
+\section{Further reading}
+
+\begin{description}
+  \item[\file{README.md}] Feature overview and build instructions.
+  \item[\file{docs/packaging.pdf}] Building the macOS and Linux installers.
+  \item[\url{https://github.com/seixas-research/calango}] Source, issues
+    and releases.
+  \item[\url{https://wiki.fysik.dtu.dk/ase/}] ASE documentation --- the
+    reference for anything in a generated script.
+\end{description}

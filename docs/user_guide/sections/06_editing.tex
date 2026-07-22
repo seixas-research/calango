@@ -1,0 +1,93 @@
+\chapter{Editing Structures}
+\label{ch:editing}
+
+Every operation in this chapter is a single undo step.
+\menu{Edit}\menusep\menu{Undo} (\kbd{Ctrl}+\kbd{Z}) and
+\menu{Edit}\menusep\menu{Redo} (\kbd{Ctrl}+\kbd{Shift}+\kbd{Z}) walk a
+per-document history up to 50 states deep.
+
+\section{Atoms}
+
+\begin{description}
+  \item[\menu{Edit}\menusep\menu{Add Atom}] \kbd{Ctrl}+\kbd{Shift}+\kbd{A}.
+    Choose the element from the graphical periodic table and type exact
+    $x$, $y$, $z$ coordinates. For placing atoms by eye instead, use
+    Insertion mode in the viewport (\kbd{I}).
+  \item[\menu{Edit}\menusep\menu{Selection}\menusep\menu{Change Element of Selection}]
+    Replaces the species of every selected atom, again via the periodic
+    table.
+  \item[\menu{Edit}\menusep\menu{Selection}\menusep\menu{Translate Selection}]
+    Shifts the selection by a $\Delta x$, $\Delta y$, $\Delta z$ vector in
+    \AA.
+  \item[\menu{Edit}\menusep\menu{Delete Selected Atoms}] \kbd{Delete}.
+    Removes the selection; with the viewport focused in Selection mode,
+    \kbd{Backspace} does the same.
+\end{description}
+
+Deleting atoms re-indexes everything that referenced them --- bond
+overrides, bond orders and per-atom fields all follow correctly.
+
+\section{The periodic table selector}
+
+Wherever an element must be chosen, Calango opens a graphical periodic
+table: $Z = 1$ to 118 in the standard 18-group layout, f-block below,
+coloured by chemical family. One click selects and closes.
+
+\section{Bond perception}
+\label{sec:bonds}
+
+By default Calango perceives bonds by distance: atoms $i$ and $j$ are
+bonded when
+\[
+  d_{ij} < t \cdot \bigl(r_\text{cov}(i) + r_\text{cov}(j)\bigr),
+\]
+with covalent radii from Cordero \emph{et al.} and a tolerance $t$ you
+control. With a periodic cell the minimum-image convention applies, so
+bonds across cell boundaries are found and drawn correctly.
+
+\menu{Edit}\menusep\menu{Bond Editor} (\kbd{Ctrl}+\kbd{B}) exposes both the
+automatic rule and manual overrides:
+
+\begin{description}
+  \item[\ui{Automatic bond detection}] Turn it off to draw \emph{only}
+    manually added bonds --- the right choice for coarse-grained or
+    schematic figures.
+  \item[\ui{Covalent cutoff multiplier}] The tolerance $t$, 0.50--2.50,
+    default 1.15. Applied live, so you can dial it until the picture is
+    right.
+  \item[\ui{Manual Bonds}] Two 1-based atom-index spin boxes, or
+    \ui{From Selection} to fill them from a two-atom viewport selection.
+    The info line shows the current pair's distance next to the automatic
+    cutoff for that pair, which makes it obvious whether a bond is
+    borderline.
+  \item[\ui{Add Bond}] Forces a bond regardless of distance.
+  \item[\ui{Suppress Bond}] Removes an automatically perceived bond.
+  \item[\ui{Active overrides}] Lists every override as \emph{added} or
+    \emph{suppressed}, with the pair and its distance.
+    \ui{Clear Override} and \ui{Clear All} undo them.
+\end{description}
+
+Overrides live on the structure and are saved in the project file.
+
+\section{Bond orders}
+\label{sec:bond-orders}
+
+Calango never guesses multiple bonds. Every perceived bond starts as a
+single bond, and orders are assigned deliberately --- distance-based
+perception of double and triple bonds is unreliable, particularly for
+inorganic and metallic systems where short contacts are common.
+
+To assign one, select exactly two atoms in the viewport
+(\kbd{Ctrl}+click the second) and use the \ui{Bond order} buttons in the
+\ui{Representation} panel: \ui{Single}, \ui{Double}, \ui{Triple}. The
+buttons are disabled until a pair is selected.
+
+An order of two or three renders as that many parallel cylinders, and also
+forces the bond to exist even if the pair lies outside the automatic
+cutoff. Orders persist in project files.
+
+\begin{calnote}
+A consequence worth knowing: molecules like benzene or CO$_2$ render with
+all-single bonds when first opened. Assign the orders you want to display;
+they are a presentation property, not an input to any calculation.
+\end{calnote}

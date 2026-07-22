@@ -1,0 +1,360 @@
+\chapter{The Analysis Toolbox}
+\label{ch:analysis}
+
+Every tool in this chapter opens from the \menu{Analysis} menu. Most
+compute as soon as they open, run on a worker thread so the interface stays
+responsive, and export their data as CSV or whitespace-separated
+\file{.dat} --- the format is chosen by the extension you type.
+
+\section{Radial distribution function}
+\label{sec:rdf}
+
+\menu{Analysis}\menusep\menu{Radial Distribution Function} computes $g(r)$,
+the probability of finding an atom at distance $r$ relative to a uniform
+density.
+
+\begin{description}
+  \item[\ui{Element pair}] Two combos, each \ui{Any} or a specific element.
+    \ui{Any}--\ui{Any} gives the total RDF; a specific pair gives the
+    partial.
+  \item[\ui{r max}] Default 10\,\AA.
+  \item[\ui{Bins}] Default 200.
+  \item[\ui{Periodic boundary conditions}] Enabled and checked when the
+    structure has a cell.
+  \item[\ui{Frames}] For trajectories: \ui{start}, \ui{end} and
+    \ui{stride}, giving a frame-averaged $g(r)$ over any sub-range.
+\end{description}
+
+\begin{calnote}
+With periodicity enabled, all periodic images within $r_\text{max}$ are
+enumerated explicitly rather than relying on the minimum-image convention.
+The result is therefore valid beyond $L/2$ and correct for triclinic cells
+--- both places where a naive implementation quietly produces artefacts.
+\end{calnote}
+
+\section{Bond length and angle distributions}
+
+\menu{Analysis}\menusep\menu{Bond Length / Angle Distributions} histograms
+either pair distances or three-body angles $j$--$i$--$k$ within a cutoff.
+
+\begin{description}
+  \item[\ui{Distribution}] \ui{Bond length distribution} or
+    \ui{Bond angle distribution (j--i--k)}.
+  \item[\ui{Species (pair / center--neighbor)}] Two element filters. For
+    angles the first is the central atom.
+  \item[\ui{Cutoff}] Default 3\,\AA.
+  \item[\ui{Bins}] Default 90.
+\end{description}
+
+Angles are in degrees, lengths in \AA{}; both handle periodic images
+exactly.
+
+\section{Coordination numbers (CN / GCN)}
+\label{sec:coordination}
+
+\menu{Analysis}\menusep\menu{Coordination Numbers (CN / GCN)} computes
+per-atom coordination and generalised coordination numbers.
+
+\begin{description}
+  \item[\ui{Neighbor cutoff}] \ui{Covalent radii $\times$ tolerance}
+    (default tolerance 1.15) or \ui{Fixed cutoff radius} (default 3\,\AA).
+  \item[\ui{Bulk CN reference}] The $\mathrm{cn_{max}}$ normalising the GCN
+    --- 12 for fcc/hcp, 8 for bcc, 4 for diamond, or
+    \ui{Auto (max CN found)}.
+\end{description}
+
+Results appear as a per-atom table (index, element, CN, GCN) with a summary
+line giving the ranges and means. Two buttons push the result onto the
+structure: \ui{Color Viewport by CN} and \ui{Color Viewport by GCN}.
+
+\begin{calnote}
+The generalised coordination number weights each neighbour by its own
+coordination, which distinguishes sites that plain CN cannot: a terrace
+atom, a step-edge atom and a vertex atom on a nanoparticle can share the
+same CN but have clearly different GCN. This is what makes GCN such a good
+descriptor for catalytic activity.
+
+Periodic images are enumerated explicitly, so a primitive fcc cell
+correctly reports CN\,=\,12 even though all twelve neighbours are images of
+the single atom in the cell.
+\end{calnote}
+
+\section{Static structure factor}
+
+\menu{Analysis}\menusep\menu{Structure Factor S(q)} computes $S(q)$ from
+the (frame-averaged) pair distribution via a Lorch-windowed Fourier
+transform.
+
+\begin{description}
+  \item[\ui{q range}] Defaults 0.3 to 12\,\AA$^{-1}$.
+  \item[\ui{q points}] Default 400.
+  \item[\ui{g(r) r max}] Upper bound of the Fourier integral, default
+    10\,\AA{}. Larger values improve low-$q$ fidelity.
+  \item[\ui{g(r) bins}] Default 400.
+  \item[\ui{Frames}] Start/end/stride, as for the RDF.
+\end{description}
+
+\section{X-ray diffraction}
+
+\menu{Analysis}\menusep\menu{X-Ray Diffraction (XRD)} simulates a powder
+pattern with the Debye scattering equation.
+
+\begin{description}
+  \item[\ui{Wavelength}] Presets for Cu\,K$\alpha$ (1.54056\,\AA),
+    Co\,K$\alpha$, Mo\,K$\alpha$, Cr\,K$\alpha$, or \ui{Custom} to type
+    your own.
+  \item[\ui{2$\theta$ range}] Defaults 10--90\textdegree.
+  \item[\ui{Points}] Default 800.
+  \item[\ui{Supercell repeat}] Periodic structures are repeated before the
+    Debye sum, default 3. More repeats sharpen the Bragg peaks, but the
+    cost grows as $N^2$ in atoms.
+\end{description}
+
+Unlike the other analysis dialogs, this one waits for you to press
+\ui{Simulate}. The status line then reports which form factors were used:
+Waasmaier-Kirfel factors when every species is tabulated, otherwise a
+constant $f = Z$ approximation --- in which case peak \emph{positions}
+remain exact but high-angle \emph{intensities} are approximate.
+
+Two exports: \ui{Export Curve\ldots} writes the $2\theta$--intensity
+pattern, and \ui{Export Peaks\ldots} writes detected peaks (those above
+2\,\% of the maximum) with their $d$-spacings from
+$d = \lambda / (2\sin\theta)$.
+
+\section{Warren-Cowley chemical order}
+\label{sec:warren-cowley}
+
+\menu{Analysis}\menusep\menu{Warren-Cowley analysis} quantifies chemical
+short-range order in multicomponent alloys through
+\[
+  \alpha_{ij} = 1 - \frac{p_{ij}}{c_j},
+\]
+where $p_{ij}$ is the probability that a neighbour of an $i$-type atom is
+of type $j$, and $c_j$ is the overall concentration of $j$.
+
+\begin{description}
+  \item[$\alpha = 0$] The ideal random alloy.
+  \item[$\alpha < 0$] Ordering --- unlike pairs preferred.
+  \item[$\alpha > 0$] Clustering or segregation of like species.
+\end{description}
+
+Set \ui{First shell cutoff} (default 3.2\,\AA) and, optionally,
+\ui{Second shell cutoff} (default 4.8\,\AA). The dialog reports the
+concentrations, the mean coordination of each shell, and the full
+$\alpha_{ij}$ matrix for every ordered species pair, exportable as CSV.
+
+\begin{caltip}
+A quick sanity check: a perfectly ordered B2 (CsCl-type) binary gives
+$\alpha_{AB} = -1$ in the first shell and $+1$ in the second, while a
+random decoration of the same lattice gives values near zero.
+\end{caltip}
+
+\section{Local entropy}
+
+\menu{Analysis}\menusep\menu{Local Entropy Analysis} computes the per-atom
+pair-entropy fingerprint of Piaggi and Parrinello, in units of $k_B$:
+\[
+  s_S^i = -2\pi\rho \int_0^{r_c}
+    \bigl[\, g_i(r)\ln g_i(r) - g_i(r) + 1 \,\bigr] r^2\,\mathrm{d}r ,
+\]
+with $g_i(r)$ the Gaussian-smoothed radial distribution around atom $i$.
+
+\begin{description}
+  \item[\ui{Cutoff}] Integration cutoff, default 5\,\AA{} --- three or four
+    coordination shells works well.
+  \item[\ui{Broadening $\sigma$}] Gaussian width, default 0.15\,\AA.
+  \item[\ui{Radial grid points}] Default 100.
+  \item[\ui{Average over neighbors}] Smooths $s_i$ over each atom's
+    neighbourhood, sharpening the contrast between ordered and disordered
+    regions.
+\end{description}
+
+The result is stored as the per-atom field \texttt{local\_entropy} and
+mapped onto the atoms immediately, with a distribution histogram in the
+dialog. \emph{Lower} (more negative) values mark more ordered,
+crystal-like environments; higher values mark disordered, liquid-like ones.
+This makes it an effective order parameter for melting, solid-liquid
+interfaces and grain boundaries.
+
+\section{Raman modes}
+
+\menu{Analysis}\menusep\menu{Raman Modes} performs a $\Gamma$-point
+factor-group analysis: which optical phonons are Raman-active, IR-active or
+silent, by symmetry alone.
+
+The method uses no hard-coded character tables. spglib supplies the space
+group operations of the primitive cell; the character table of the isogonal
+point group is computed numerically from the class-sum algebra; the
+mechanical representation $\chi(R) = (\pm 1 + 2\cos\theta)\,N_\text{unmoved}(R)$
+is reduced into irreducible representations; the acoustic translations are
+subtracted; and activity follows from the vector (IR) and symmetric
+polarizability (Raman) representations.
+
+The dialog reports the space group, point group, number of atoms in the
+primitive cell, and a table of irreps with their degeneracy, optical mode
+count and activity.
+
+\begin{caltip}
+For silicon in the diamond structure the result is the textbook
+$\Gamma = T_{2g} + T_{1u}$: one triply degenerate Raman-active optical
+mode, and the acoustic branch.
+\end{caltip}
+
+\begin{calnote}
+Mulliken subscripts are assigned from Cartesian axis geometry. In
+low-symmetry orthorhombic groups the subscript convention can be permuted
+relative to a particular textbook's axis choice --- the activities and
+degeneracies are unaffected.
+\end{calnote}
+
+\begin{calwarn}
+Needs \texttt{spglib} and a periodic structure.
+\end{calwarn}
+
+\section{Volumetric data}
+\label{sec:volumetric}
+
+\menu{Analysis}\menusep\menu{Volumetric Data} visualises 3D scalar fields:
+charge densities, electrostatic potentials, wavefunctions, ELF.
+
+\subsection{Loading fields}
+
+\ui{Load Field A\ldots} and \ui{Load Field B\ldots} read Gaussian
+\file{.cube} (including files written by Quantum ESPRESSO's \texttt{pp.x}),
+VASP \file{CHGCAR} / \file{LOCPOT} / \file{PARCHG} / \file{ELFCAR}, and
+XCrySDen \file{.xsf} grids. Each is reported with its grid dimensions and
+value range.
+
+Field A defines the geometry; Field B is optional and colours it.
+
+\subsection{Isosurfaces}
+
+The isovalue slider and numeric box re-extract the surface in real time.
+Extraction uses a marching-cubes-family algorithm on a tetrahedral
+decomposition of each grid cell, which is topologically unambiguous, with
+smooth normals from the field gradient and periodic stitching so surfaces
+close correctly across cell boundaries.
+
+\subsection{Electrostatic potential maps}
+
+Check \ui{Color by Field B (potential map)} to make an EPM: Field A (say
+the electron density) shapes the surface, and Field B (say the Hartree
+potential) is interpolated at every surface vertex and mapped through the
+chosen colormap. The value range is reported so the colour scale is
+quantitative.
+
+\begin{caltip}
+The classic recipe: load the charge density as Field A, the local potential
+as Field B, pick an isovalue on the density that traces the molecular
+surface, and choose \ui{Coolwarm} --- the diverging palette puts the
+neutral potential at white, so electron-rich and electron-poor regions read
+immediately.
+\end{caltip}
+
+\subsection{Slice planes}
+
+\ui{Slice plane} cuts through the volume with a colour-mapped plane:
+\ui{XY}, \ui{XZ}, \ui{YZ}, or \ui{Custom normal} with an arbitrary
+direction and an offset slider. Slices can sample either field.
+
+\subsection{Export}
+
+\ui{Export Isosurface (OBJ)\ldots} writes the triangle mesh with normals
+for external rendering; \ui{Export Slice (CSV)\ldots} writes the sampled
+plane as $x, y, z$, value.
+
+\section{Adsorption and catalysis}
+\label{sec:adsorption}
+
+\menu{Analysis}\menusep\menu{Adsorption \& Catalysis} finds high-symmetry
+adsorption sites on a slab and populates them.
+
+\subsection{Site detection}
+
+Opening the dialog detects sites on the top surface automatically and
+reports a census, for example \emph{4 top, 12 bridge, 4 fcc, 4 hcp}:
+
+\begin{description}
+  \item[\texttt{top}] Directly above a surface atom.
+  \item[\texttt{bridge}] Midway between nearest-neighbour surface atoms.
+  \item[\texttt{fcc}, \texttt{hcp}] Threefold hollows, distinguished by
+    whether a second-layer atom sits directly underneath (hcp) or not
+    (fcc).
+  \item[\texttt{hollow}] A threefold hollow that could not be classified,
+    typically because there is no second layer.
+\end{description}
+
+Neighbour vectors are enumerated over periodic images, so the census is
+correct even for a small $p(1\times1)$ cell where surface atoms bond to
+their own periodic copies. The table lists every site with its in-plane
+coordinates and can be filtered by type.
+
+\subsection{Placing adsorbates}
+
+\begin{description}
+  \item[\ui{Adsorbate}] \texttt{OH}, \texttt{O}, \texttt{H}, \texttt{CO},
+    \texttt{CHO}, \texttt{H2O}, \texttt{N2}, \texttt{O2}, \texttt{NH3},
+    \texttt{CH4}, or any \texttt{ase.build.molecule} name or chemical
+    formula you type.
+  \item[\ui{Height}] Anchor-atom height above the surface layer, default
+    2\,\AA.
+  \item[\ui{Place on Selected Sites}] Adds one copy per selected table row.
+\end{description}
+
+Molecules are anchored by the chemically sensible atom and oriented
+upright: O down for \texttt{OH} and \texttt{H2O}, C down for \texttt{CO}
+and \texttt{CHO}, N down for \texttt{NH3}.
+
+\subsection{Coverage series}
+
+The \ui{Coverage series} group generates a systematic set in one step:
+choose a \ui{Site family} and check the coverages you want --- 0.25, 0.50,
+0.75, 1.00\,ML. Calango places evenly strided subsets of that site family
+and opens one labelled tab per coverage, ready for a batch of adsorption
+energy calculations.
+
+\section{Brillouin zone and k-path builder}
+\label{sec:bz}
+
+\menu{Analysis}\menusep\menu{Brillouin Zone / k-Path} shows the first
+Brillouin zone as a Wigner-Seitz cell of the reciprocal lattice, with
+high-symmetry points labelled from ASE's Bravais lattice detection.
+
+Drag to rotate, \kbd{Shift}+drag to pan, wheel to zoom;
+\ui{Orthographic projection} removes perspective foreshortening when you
+need to read the zone geometry.
+
+\subsection{Building a path}
+
+Click high-symmetry points in the 3D view to append them to the path. The
+list shows the sequence with fractional coordinates.
+
+\begin{description}
+  \item[\ui{Suggested}] Loads ASE's suggested path for the lattice.
+  \item[\ui{Break}] Starts a new discontinuous section, giving paths like
+    $\Gamma \rightarrow X \,|\, M \rightarrow R$.
+  \item[\ui{Undo}, \ui{Clear}] Remove the last point, or start over.
+  \item[\ui{Points per segment}] Sampling density, default 40.
+\end{description}
+
+\subsection{Export}
+
+\ui{Export k-Path\ldots} writes the path for an external code:
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Format & Typical file \\
+\midrule
+VASP \texttt{KPOINTS} (line mode)          & \file{KPOINTS} \\
+Quantum ESPRESSO \texttt{K\_POINTS crystal\_b} & \file{kpath\_qe.in} \\
+CASTEP \texttt{SPECTRAL\_KPOINT\_PATH}     & \file{kpath\_castep.cell} \\
+SIESTA \texttt{BandLines}                  & \file{kpath\_siesta.fdf} \\
+ASE / Python script                        & \file{kpath\_ase.py} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\ui{Export Figure (PNG/SVG)\ldots} renders the zone at high resolution;
+the SVG output is vector and drops straight into a paper figure.

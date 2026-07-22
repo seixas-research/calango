@@ -28,6 +28,8 @@
 #include "gui/AdsorptionDialog.hpp"
 #include "gui/BandPdosWindow.hpp"
 #include "gui/NanoparticleDialog.hpp"
+#include "gui/SimulationDialogs.hpp"
+#include "gui/SupercellDialog.hpp"
 #include "gui/DatasetManagerDialog.hpp"
 #include "gui/ProcessManagerPanel.hpp"
 #include "gui/RamanDialog.hpp"
@@ -570,8 +572,10 @@ void MainWindow::createMenusAndDocks()
     // ----- Build: generators and structure sources -------------------------
     QMenu* buildMenu = menuBar()->addMenu(tr("&Build"));
     buildMenu->addAction(tr("&Nanomaterial Builder…"), this, &MainWindow::openNanoBuilder);
+    buildMenu->addAction(tr("&Supercell (Transformation Matrix)…"),
+                         this, &MainWindow::openSupercellBuilder);
     buildMenu->addAction(tr("&Surface Slab…"), this, &MainWindow::cleaveSurface);
-    buildMenu->addAction(tr("Metallic Nano&particle (Wulff)…"),
+    buildMenu->addAction(tr("Nano&particle && Cluster Builder…"),
                          this, &MainWindow::openNanoparticleBuilder);
     buildMenu->addAction(tr("Special &Quasirandom Structure (SQS)…"),
                          this, &MainWindow::openSqsBuilder);
@@ -583,9 +587,16 @@ void MainWindow::createMenusAndDocks()
 
     // ----- Simulation: local/remote jobs and ML datasets -------------------
     QMenu* simulationMenu = menuBar()->addMenu(tr("&Simulation"));
-    simulationMenu->addAction(tr("&New Calculation (ASE)…"),
+    simulationMenu->addAction(tr("&Single-point Calculation…"),
                               QKeySequence(tr("Ctrl+R")),
-                              this, &MainWindow::newCalculation);
+                              this, &MainWindow::singlePointCalculation);
+    simulationMenu->addAction(tr("&Geometry Optimization…"),
+                              this, &MainWindow::geometryOptimization);
+    simulationMenu->addAction(tr("&Molecular Dynamics…"),
+                              this, &MainWindow::molecularDynamics);
+    simulationMenu->addAction(tr("&Phonon Calculation…"),
+                              this, &MainWindow::openPhononBuilder);
+    simulationMenu->addSeparator();
     simulationMenu->addAction(tr("New &Remote Calculation…"),
                               QKeySequence(tr("Ctrl+Shift+R")),
                               this, &MainWindow::newRemoteCalculation);
@@ -1848,6 +1859,38 @@ void MainWindow::createSupercell()
     }
 }
 
+void MainWindow::openSupercellBuilder()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()
+        || !doc->structure->cell().isDefined()) {
+        QMessageBox::information(
+            this, tr("Supercell"),
+            tr("Open a periodic structure with a defined unit cell first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    SupercellDialog dialog(doc->structure, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    int p[3][3];
+    dialog.matrix(p);
+    try {
+        auto transformed = std::make_shared<core::Structure>(
+            pybridge::AseBridge::makeSupercellMatrix(*doc->structure, p));
+        pushUndo();
+        replaceCurrentStructure(std::move(transformed),
+                                tr("%1 (supercell)").arg(doc->fileName));
+        statusBar()->showMessage(
+            tr("Supercell created: %1 atoms").arg(doc->structure->size()));
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, tr("Supercell"), QString::fromUtf8(e.what()));
+    }
+}
+
 void MainWindow::cleaveSurface()
 {
     Document* doc = currentDocument();
@@ -2430,12 +2473,11 @@ void MainWindow::openNanoparticleBuilder()
 void MainWindow::showAdsorption()
 {
     Document* doc = currentDocument();
-    if (!doc || !doc->structure || doc->structure->empty()
-        || !doc->structure->cell().isDefined()) {
+    if (!doc || !doc->structure || doc->structure->empty()) {
         QMessageBox::information(
             this, tr("Adsorption & Catalysis"),
-            tr("Open a periodic slab structure first (e.g. from the "
-               "Surface Slab wizard)."));
+            tr("Open a surface first — a periodic slab (e.g. from the Surface "
+               "Slab wizard) or a nanoparticle/cluster."));
         return;
     }
     if (!ensureAseAvailable())
@@ -2755,6 +2797,54 @@ void MainWindow::newCalculation()
     CalculatorDialog dialog(this);
     if (dialog.exec() == QDialog::Accepted)
         runScript(dialog.script(), dialog.pythonExecutable());
+}
+
+bool MainWindow::prepareSimulation(const QString& title)
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, title,
+                                 tr("Open or build a structure first."));
+        return false;
+    }
+    if (!ensureAseAvailable())
+        return false;
+    if (jobRunner_->isRunning()) {
+        QMessageBox::information(this, title,
+                                 tr("A job is already running — kill it first."));
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::singlePointCalculation()
+{
+    if (!prepareSimulation(tr("Single-point Calculation")))
+        return;
+    SinglePointDialog dialog(this);
+    if (dialog.exec() == QDialog::Accepted)
+        runScript(dialog.script(), dialog.pythonExecutable(),
+                  tr("Single-point"), /*expectFrames=*/false);
+}
+
+void MainWindow::geometryOptimization()
+{
+    if (!prepareSimulation(tr("Geometry Optimization")))
+        return;
+    GeometryOptimizationDialog dialog(this);
+    if (dialog.exec() == QDialog::Accepted)
+        runScript(dialog.script(), dialog.pythonExecutable(),
+                  tr("Geometry optimization"), /*expectFrames=*/true);
+}
+
+void MainWindow::molecularDynamics()
+{
+    if (!prepareSimulation(tr("Molecular Dynamics")))
+        return;
+    MolecularDynamicsDialog dialog(this);
+    if (dialog.exec() == QDialog::Accepted)
+        runScript(dialog.script(), dialog.pythonExecutable(),
+                  tr("Molecular dynamics"), /*expectFrames=*/true);
 }
 
 QString MainWindow::stageJob(const QString& script)

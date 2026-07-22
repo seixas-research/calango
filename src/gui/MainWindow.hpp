@@ -62,6 +62,7 @@ private Q_SLOTS:
     void exportAnimation();
 
     void createSupercell();
+    void openSupercellBuilder();
     void cleaveSurface();
     void addAtom();
     void changeElementOfSelection();
@@ -74,6 +75,9 @@ private Q_SLOTS:
     void redo();
 
     void newCalculation();
+    void singlePointCalculation();
+    void geometryOptimization();
+    void molecularDynamics();
     void newRemoteCalculation();
     void onRemoteResultsReady(const QString& localDir);
     void onJobFinished(int exitCode, bool crashed);
@@ -148,6 +152,10 @@ private:
                    const QString& taskLabel = {}, bool expectFrames = true);
     int indexOfDocument(const Document* document) const;
     bool ensureAseAvailable();
+    /// Shared preconditions for the dedicated Simulation dialogs: a non-empty
+    /// current structure, ASE available, and no job already running. Shows the
+    /// appropriate message (titled `title`) and returns false if not ready.
+    bool prepareSimulation(const QString& title);
 
     // -- .calproj project workspace persistence ----------------------------
     /// Serialize the whole session (documents, tabs, viewport color

@@ -1,0 +1,56 @@
+\chapter*{About this guide}
+\addcontentsline{toc}{chapter}{About this guide}
+\markboth{About this guide}{}
+
+Calango is a desktop application for building, visualizing, simulating and
+analysing atomic structures. It pairs a C++20 / OpenGL core --- fast enough
+to orbit tens of thousands of atoms in real time --- with an embedded
+CPython interpreter running the Atomic Simulation Environment (ASE), so
+every structure you see on screen can be handed to a real calculator
+without leaving the program.
+
+This guide is written for the person using Calango, not the person
+building it. It walks through the workspace, then covers each menu in the
+order you are likely to need it: getting data in, building and editing
+structures, making them look right, running simulations locally or on a
+cluster, and analysing the results. Chapter~\ref{ch:reference} is a
+reference you can jump straight to --- keyboard shortcuts, the complete
+menu map, file formats and troubleshooting.
+
+\section*{Conventions}
+
+\begin{description}
+  \item[\menu{Analysis}\menusep\menu{Raman Modes}] A menu path. Each
+    \menusep{} step is one level deeper.
+  \item[\ui{Compute}] A button, field, checkbox or tab label exactly as it
+    appears in the interface.
+  \item[\kbd{Ctrl}+\kbd{R}] A keyboard shortcut. On macOS, \kbd{Ctrl}
+    means \kbd{Cmd} wherever the shortcut is a standard editing action
+    (open, save, quit, undo); single-letter viewport shortcuts have no
+    modifier on any platform.
+  \item[\file{run.py}] A file, directory or path.
+\end{description}
+
+Three kinds of callout appear throughout:
+
+\begin{calnote}
+Background you do not strictly need, but that explains why something
+behaves the way it does.
+\end{calnote}
+
+\begin{caltip}
+A shortcut or working habit that saves time.
+\end{caltip}
+
+\begin{calwarn}
+An external dependency --- a Python package, a solver binary, a network
+connection --- that the feature cannot work without.
+\end{calwarn}
+
+\Needspace{6\baselineskip}
+\section*{Version}
+
+This guide documents Calango \textbf{26.7.26}. The version you are running
+is shown in \menu{Help}\menusep\menu{About Calango}, together with the
+Python and ASE versions actually in use --- worth checking first whenever
+something behaves unexpectedly.

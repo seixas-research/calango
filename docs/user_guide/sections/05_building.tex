@@ -1,0 +1,231 @@
+\chapter{Building Structures}
+\label{ch:building}
+
+Everything in the \menu{Build} menu produces a new structure, either
+replacing the active one or opening in a new tab. All of it runs through
+ASE, so a working Python environment is a prerequisite throughout this
+chapter.
+
+\section{Supercells}
+
+\menu{Edit}\menusep\menu{Unit Cell}\menusep\menu{Create Supercell} repeats
+the active structure along its lattice vectors. Three spin boxes,
+\ui{Repeat along a/b/c}, each 1--20, default $2 \times 1 \times 1$. The
+operation is undoable and requires a defined cell along every repeated
+direction.
+
+\section{The surface slab wizard}
+\label{sec:slab-wizard}
+
+\menu{Build}\menusep\menu{Surface Slab} cleaves a slab from the active bulk
+structure in three guided stages. Unlike a plain Miller-index dialog, each
+stage shows you the consequence of your choice before you commit.
+
+\subsection{Stage 1 --- surface orientation}
+
+Set the Miller indices $(h\,k\,l)$ with three spin boxes ($-9$ to $9$), or
+work the other way round: drag the red \textbf{u} and green \textbf{v}
+handles on the interactive lattice canvas to any two lattice points, and
+Calango computes the nearest integer $(h\,k\,l)$ for the plane they span.
+The header shows the current vectors and resulting indices live, and the
+info line reports $|u|$, $|v|$ and the angle between them.
+
+Rotate the axonometric view by dragging; only non-collinear handle pairs
+are accepted. \ui{Next} unlocks once a test cut succeeds --- $(0\,0\,0)$ is
+rejected as not a plane.
+
+\subsection{Stage 2 --- cut, thickness and terminations}
+
+Calango builds a reference stack of eight bulk repeats and clusters the
+atoms into atomic layers (0.10\,\AA{} tolerance). The cross-section canvas
+draws each layer as a dashed line labelled with its $z$ coordinate, with
+the current selection band highlighted between an orange \emph{top
+termination} and a teal \emph{bottom termination}.
+
+\begin{description}
+  \item[Click a layer] Moves whichever boundary is nearer the click, so you
+    can set either termination directly.
+  \item[\ui{Layers in slab}] Sets the count numerically.
+  \item[\ui{Thickness}] The same choice in \AA{}; it snaps to whole atomic
+    layers above the bottom termination.
+\end{description}
+
+The info line reads back the selection, for example \emph{layers 1--8 of
+16 (8 layers, 12.45\,\AA)}.
+
+\subsection{Stage 3 --- vacuum and preview}
+
+\ui{Top vacuum} and \ui{Bottom vacuum} (0--80\,\AA{}, default 10 each) pad
+the cell along the surface normal. \ui{Symmetric vacuum (centered slab)},
+checked by default, mirrors the top value to the bottom. A live 3D preview
+shows the finished slab, with atom count, slab thickness and total cell
+height. \ui{Finish} inserts it as a new tab labelled, for example,
+\emph{(1 1 1) slab, 8 layers}.
+
+\section{Nanomaterials}
+
+\menu{Build}\menusep\menu{Nanomaterial Builder} generates four families of
+low-dimensional carbon and TMD structures. Pick the type at the top; the
+form below changes to match.
+
+\begin{description}
+  \item[Graphene sheet] Lattice constant $a$ (default 2.46\,\AA), repeats
+    $n_x \times n_y$ (default $4 \times 4$), vacuum (default 10\,\AA).
+  \item[Graphene nanoribbon] Width and length in unit cells (default 6 each),
+    \ui{Edge type} \ui{Zigzag} or \ui{Armchair}, and
+    \ui{Hydrogen-terminate edges} (on by default).
+  \item[Carbon nanotube] Chiral indices $n$ and $m$ (default 6, 6), length
+    in unit cells, C--C bond length (default 1.42\,\AA), vacuum (default
+    8\,\AA). $(0,0)$ is rejected.
+  \item[TMD monolayer (MX$_2$)] An editable formula combo --- \texttt{MoS2},
+    \texttt{MoSe2}, \texttt{WS2}, \texttt{WSe2}, \texttt{MoTe2},
+    \texttt{NbSe2}, or anything else you type --- \ui{Phase} \texttt{2H} or
+    \texttt{1T}, lattice constant (default 3.16\,\AA), X--X thickness
+    (default 3.19\,\AA), repeats and vacuum.
+\end{description}
+
+\section{Metallic nanoparticles}
+\label{sec:nanoparticle}
+
+\menu{Build}\menusep\menu{Metallic Nanoparticle (Wulff)} builds clusters
+two ways. Choose the element from the periodic table, then a mode.
+
+\subsection{Wulff construction}
+
+The equilibrium shape of a crystal is the one minimising total surface
+energy at fixed volume; the Wulff construction produces it from the
+relative surface energies of the exposed facets.
+
+\begin{description}
+  \item[Facet table] One row per facet: $h$, $k$, $l$ and
+    $\gamma$ (relative surface energy). Defaults are $(111)\!=\!1.0$,
+    $(100)\!=\!1.1$, $(110)\!=\!1.2$. \ui{Add Facet} and
+    \ui{Remove Selected} edit the list.
+  \item[\ui{Target atoms}] The requested size, default 200. The
+    construction lands on the nearest achievable closed shape.
+  \item[\ui{Size rounding}] \texttt{closest}, \texttt{above} or
+    \texttt{below}.
+  \item[\ui{Lattice}] \texttt{fcc}, \texttt{bcc} or \texttt{sc}.
+\end{description}
+
+Only the \emph{ratios} of the $\gamma$ values matter. Lowering
+$\gamma(111)$ relative to $\gamma(100)$ grows the $(111)$ facets and drives
+an fcc metal from a cube towards a truncated octahedron.
+
+\subsection{Spherical cluster}
+
+Carves every atom within a cutoff radius of the centre out of a bulk
+lattice --- \texttt{fcc}, \texttt{bcc}, \texttt{sc} or \texttt{hcp}. Set
+\ui{Radius} (default 10\,\AA). Useful when you want a specific diameter
+rather than a thermodynamic shape.
+
+Both modes centre the cluster with 6\,\AA{} of vacuum and clear periodicity.
+\ui{Lattice constant} may be left at \ui{ASE default} to use the tabulated
+value for the element.
+
+\section{Special quasirandom structures}
+\label{sec:sqs}
+
+\menu{Build}\menusep\menu{Special Quasirandom Structure (SQS)} builds a
+substitutional alloy whose short-range order approximates a truly random
+solid solution --- the standard way to model a disordered alloy in a small
+periodic cell.
+
+\begin{description}
+  \item[\ui{Supercell}] Repetitions $n_1 \times n_2 \times n_3$, default
+    $2 \times 2 \times 2$.
+  \item[\ui{Replace element}] Whose sites form the alloy sublattice.
+  \item[\ui{Composition}] Target occupancies as symbol:fraction pairs, e.g.
+    \texttt{Cu:0.75, Au:0.25}. Fractions are normalised and rounded to
+    whole atoms by largest remainder.
+  \item[\ui{First shell cutoff}, \ui{Second shell cutoff}] The pair shells
+    whose Warren-Cowley parameters are driven toward zero. Defaults 3.2 and
+    4.8\,\AA; set the second to \ui{off} to use one shell.
+  \item[\ui{MC steps}, \ui{Random seed}] Anneal length and reproducibility.
+\end{description}
+
+If \texttt{icet} is importable, Calango uses its \texttt{generate\_sqs};
+otherwise it falls back to a built-in simulated annealer that minimises
+$\sum \alpha^2$ over the chosen shells using only NumPy and ASE neighbour
+lists. The resulting tab is labelled with the backend that produced it, and
+the internal backend also reports its residual objective --- a value near
+zero means the decoration is essentially ideal.
+
+\begin{caltip}
+Verify the result with \menu{Analysis}\menusep\menu{Warren-Cowley analysis}
+(Section~\ref{sec:warren-cowley}): a good SQS shows $\alpha \approx 0$ for
+the shells you optimised.
+\end{caltip}
+
+\section{Normal modes and phonons}
+\label{sec:phonon-builder}
+
+\menu{Build}\menusep\menu{Normal Modes / Phonon Builder} sets up a
+finite-displacement vibrational calculation. Calango detects whether the
+structure is periodic and adapts:
+
+\begin{description}
+  \item[Periodic] Supercell finite displacements via \texttt{ase.phonons},
+    giving dispersion and DOS.
+  \item[Isolated molecule] $\Gamma$-point normal modes via
+    \texttt{ase.vibrations}, giving frequencies and per-mode animation
+    trajectories that Calango opens directly.
+\end{description}
+
+\subsection{Parameters}
+
+\begin{description}
+  \item[\ui{Mode}] \ui{Run vibrational calculation}, or
+    \ui{Generate displaced structures only (new tab)} to export the
+    displacement set for an external DFT code.
+  \item[\ui{Supercell (a $\times$ b $\times$ c)}] Default $2\times2\times2$,
+    periodic structures only.
+  \item[\ui{Displacement $\delta$}] Default 0.01\,\AA.
+  \item[\ui{Displaced structures}] A read-only count: $6N+1$ for $N$
+    supercell atoms.
+  \item[\ui{Calculator}] EMT, Lennard-Jones or MACE --- deliberately
+    limited to calculators needing no external binary or pseudopotentials.
+  \item[\ui{Band-path points}, \ui{DOS k-grid}] Sampling for the dispersion
+    and the phonon density of states (defaults 100 and 20).
+\end{description}
+
+Like the calculator dialog, the generated ASE script is shown in an
+editable pane and can be saved with \ui{Save Script\ldots}.
+
+Outputs are $\Gamma$-point frequencies in the job console, plus
+\file{phonon\_bands.csv} and \file{phonon\_dos.csv} in the job directory.
+
+\begin{calnote}
+Displacements are applied to every atom of the expanded supercell
+($6N_\text{supercell}+1$ configurations), following the standard
+finite-displacement recipe without symmetry reduction. For large
+supercells this is the dominant cost; symmetry-reduced displacement sets
+are a planned improvement.
+\end{calnote}
+
+\section{Structure perturbation and noise}
+\label{sec:noise}
+
+\menu{Build}\menusep\menu{Structure Perturbation / Noise} adds random
+displacements --- for shaking a structure out of a symmetric saddle point,
+or for generating training ensembles for machine-learning potentials.
+
+\begin{description}
+  \item[\ui{Distribution}] \ui{Gaussian (normal)} or \ui{Uniform}.
+  \item[\ui{Amplitude}] Default 0.05\,\AA. For Gaussian this is $\sigma$
+    per component; for uniform it is the half-width.
+  \item[\ui{Random seed}] Default 42, for reproducibility.
+  \item[\ui{Perturb atomic positions}] On by default.
+  \item[\ui{Perturb unit cell vectors (random strain)}] Atoms follow the
+    cell affinely, preserving fractional coordinates.
+  \item[\ui{Frames}] 1 perturbs in place; more generates a trajectory.
+  \item[\ui{Accumulation}] \ui{Independent} draws each frame from the
+    original structure; \ui{Cumulative} performs a random walk from the
+    previous frame.
+\end{description}
+
+A multi-frame run opens as a trajectory whose frame 0 is the unperturbed
+original, is registered in the process manager, and is checkpointed to
+\file{perturbed.extxyz} in the managed temporary directory
+(Section~\ref{sec:calango-tmp}) --- so the ensemble can be reloaded later
+and fed to the analysis or dataset tools.

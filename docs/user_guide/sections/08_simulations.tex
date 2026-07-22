@@ -1,0 +1,299 @@
+\chapter{Running Simulations}
+\label{ch:simulations}
+
+\section{The calculation dialog}
+
+\menu{Simulation}\menusep\menu{New Calculation (ASE)} (\kbd{Ctrl}+\kbd{R})
+is the main entry point. The left half is a form; the right half is the ASE
+script that form produces, live and editable.
+
+\subsection{Calculators}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{8.4cm}@{}}
+\toprule
+Calculator & Notes \\
+\midrule
+EMT             & Effective medium theory. Fast, ships with ASE, useful for
+                  testing a workflow before committing compute. \\
+Lennard-Jones   & Ships with ASE. \\
+Quantum ESPRESSO& DFT; needs \texttt{pw.x} and pseudopotentials. \\
+VASP            & DFT; needs a license and POTCARs. \\
+MACE            & Machine-learning potential; needs \texttt{mace-torch}. \\
+GPAW            & DFT as a Python package. \\
+SIESTA          & DFT; needs the \texttt{siesta} binary and pseudopotentials. \\
+ORCA            & Quantum chemistry; needs the ORCA binaries. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The DFT entries generate working script skeletons with clearly marked
+\texttt{EDIT ME} lines where you must supply pseudopotential paths or
+launch commands.
+
+\subsection{Tasks}
+
+\begin{description}
+  \item[\ui{Single-point energy}] One energy and force evaluation.
+  \item[\ui{Geometry optimization (BFGS)}] Controlled by
+    \ui{Force convergence (fmax)} (default 0.05\,eV/\AA) and
+    \ui{Max optimization steps} (default 200). Writes \file{opt.traj}.
+  \item[\ui{Molecular dynamics}] See below. Writes \file{md.traj}.
+\end{description}
+
+\subsection{Molecular dynamics ensembles}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{5.6cm}@{}}
+\toprule
+Ensemble & Thermostat / barostat & Key parameters \\
+\midrule
+NVE  & Velocity Verlet                    & timestep \\
+NVT  & Langevin (default)                 & temperature, friction \\
+NVT  & Andersen                           & temperature, collision probability \\
+NVT  & Berendsen                          & temperature, $\tau_T$ \\
+NVT  & Nos\'e--Hoover chain               & temperature, $\tau_T$ \\
+NPT  & Berendsen                          & temperature, pressure, $\tau_T$, $\tau_P$ \\
+NPT  & Nos\'e--Hoover / Parrinello--Rahman & temperature, pressure, $\tau_T$, $\tau_P$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Shared parameters: \ui{Temperature} (default 300\,K), \ui{Timestep}
+(default 1\,fs), \ui{MD steps} (default 1000),
+\ui{Thermostat coupling} (default 100\,fs), \ui{Barostat coupling}
+(default 1000\,fs) and \ui{Pressure} (default 0\,GPa). Fields enable
+themselves only for the ensembles that use them.
+
+\begin{calnote}
+Every MD run initialises velocities from a Maxwell-Boltzmann distribution
+and then removes the net centre-of-mass momentum, so the system does not
+drift as a whole. For isolated (non-periodic) systems the net angular
+momentum is removed as well. Without this, a slow overall translation
+contaminates every subsequent analysis --- diffusion coefficients most of
+all.
+\end{calnote}
+
+\subsection{DFT and ORCA parameters}
+
+DFT calculators expose \ui{Plane-wave cutoff} (default 550\,eV) and a
+\ui{k-point grid} (default $4\times4\times4$).
+
+ORCA has its own group:
+
+\begin{description}
+  \item[\ui{ORCA method}] Editable: \texttt{B3LYP}, \texttt{PBE0},
+    \texttt{r2SCAN}, \texttt{wB97X-D3}, \texttt{HF}, \texttt{MP2}, or any
+    ORCA keyword you type.
+  \item[\ui{ORCA basis}] Editable: \texttt{def2-SVP}, \texttt{def2-TZVP},
+    \texttt{def2-TZVPP}, \texttt{cc-pVDZ}, \texttt{cc-pVTZ}, \ldots
+  \item[\ui{Charge}] $-10$ to 10.
+  \item[\ui{Multiplicity}] $2S+1$, 1 to 11.
+  \item[\ui{Solvation}] \ui{None (gas phase)}, \ui{CPCM} or \ui{SMD}, with
+    \ui{Solvent} naming the medium (water, acetonitrile, toluene, \ldots).
+\end{description}
+
+ASE writes the ORCA \file{.inp} file into the job directory and parses the
+output. The generated script contains an \texttt{EDIT ME} line for the path
+to your \texttt{orca} binary.
+
+\subsection{MACE models}
+
+\begin{description}
+  \item[\ui{MACE model}] \ui{MACE-MP-0 (universal, materials)},
+    \ui{MACE-OFF (universal, organic molecules)}, or
+    \ui{Custom trained model (file)}.
+  \item[\ui{MACE model size}] \texttt{small}, \texttt{medium} (default),
+    \texttt{large}.
+  \item[\ui{Custom model file}] A \file{.model} or \file{.pt} checkpoint.
+  \item[\ui{MACE device}] \texttt{cpu}, \texttt{cuda} or \texttt{mps}.
+\end{description}
+
+Foundation models download automatically on first use and are cached in
+\file{\textasciitilde/.cache/mace}.
+
+\section{The script editor}
+
+The right-hand pane always shows the complete, standalone ASE script the
+form describes --- syntax-highlighted and fully editable.
+
+Start typing in it and Calango shows \emph{edited --- form sync paused} in
+amber: from then on the form no longer overwrites your text, so hand edits
+are never silently lost. \ui{Regenerate} discards them and re-syncs.
+\ui{Save Script\ldots} writes the current text to a \file{.py} file.
+
+\begin{caltip}
+This is the intended escape hatch for anything the GUI does not expose.
+Configure what you can in the form, then edit the script for the rest ---
+constraints, custom observers, a different optimiser. The script is
+ordinary ASE and runs unmodified on a cluster.
+\end{caltip}
+
+\section{Execution environments}
+\label{sec:exec-env}
+
+The \ui{Execution Environment} group decides which Python actually runs the
+job --- independent of the interpreter Calango embeds.
+
+\begin{description}
+  \item[Leave it empty] The job uses the embedded interpreter. The status
+    line names it.
+  \item[\ui{Env Folder\ldots}] Point at a Conda environment directory;
+    Calango finds \file{bin/python} inside it.
+  \item[\ui{Python\ldots}] Point directly at an interpreter.
+\end{description}
+
+The status line confirms the resolution live, turning red when no
+interpreter can be found at the given path. The setting is remembered
+between sessions, and the same selector appears in the phonon builder and
+the band-structure dialog.
+
+\begin{caltip}
+This is how you keep heavyweight solver stacks isolated: a GPAW environment
+for band structures, a \texttt{mace-torch} environment with CUDA for ML
+potentials, and a minimal ASE environment for Calango itself.
+\end{caltip}
+
+\section{The Job panel}
+\label{sec:job-panel}
+
+Jobs run as separate processes in their own directory, so a crashing solver
+cannot take the GUI with it. The \ui{Job} dock (zone 10) has five tabs.
+
+\subsection{Log}
+
+A status label (\emph{Idle}, \emph{Running\ldots}, \emph{Finished (exit
+N)}, \emph{Crashed}), a progress bar, a \ui{Kill} button, and the live
+output. Standard error is coloured red, the start line blue, and a clean
+exit green.
+
+\subsection{Metric plots}
+
+Four tabs plot job observables live, parsed from markers the generated
+scripts print:
+
+\begin{center}
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+Tab & Quantity & Unit & Reference line \\
+\midrule
+\ui{Energy}      & Total energy    & eV      & --- \\
+\ui{Temperature} & Ionic temperature & K     & thermostat setpoint \\
+\ui{Force}       & Max $|F|$       & eV/\AA  & --- \\
+\ui{Pressure}    & Scalar pressure & GPa     & barostat setpoint \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Each plot shows the running series with the latest value read out
+numerically, and a dashed reference line at the setpoint for thermostatted
+or barostatted runs --- so drift away from the target is visible at a
+glance. Every tab has its own \ui{Export Data\ldots} button writing CSV or
+whitespace-separated \file{.dat}. The series are saved in the project file,
+so a reopened project shows the plots from the run that produced it.
+
+\section{Live trajectory streaming}
+\label{sec:live-streaming}
+
+MD runs and geometry relaxations do not make you wait. The moment the job
+starts, Calango opens a trajectory tab marked \emph{(live)} and streams
+each newly computed geometry into it as the simulation produces it.
+
+\begin{itemize}
+  \item The timeline grows as frames arrive, and follows the newest frame
+    automatically.
+  \item Scrub back to an earlier frame and the view stays there --- Calango
+    stops following so you can inspect while the run continues.
+  \item Everything else works normally on the partial trajectory:
+    measurement, colour mapping, representation changes.
+  \item When the job finishes the \emph{(live)} marker is dropped and the
+    tab becomes an ordinary trajectory.
+\end{itemize}
+
+Relaxations stream every step; MD streams at an interval chosen so a run
+produces at most about 400 streamed frames, keeping long simulations
+responsive. The complete trajectory is still written to
+\file{opt.traj} or \file{md.traj} in the job directory.
+
+\section{What happens when a job finishes}
+
+Calango inspects the job directory and does the useful thing:
+
+\begin{itemize}
+  \item A live-streamed run keeps the tab it already built.
+  \item An electronic-structure run opens the band/PDOS viewer
+    (Chapter~\ref{ch:electronic}).
+  \item A trajectory (\file{md.traj}, \file{opt.traj}) opens in a new tab.
+  \item Otherwise, if a final geometry exists
+    (\file{optimized.extxyz}), Calango offers to load it.
+\end{itemize}
+
+The process manager entry switches to \emph{completed} or \emph{failed},
+and its directory link remains available for the rest of the session and
+beyond.
+
+\section{The MLIP dataset manager}
+\label{sec:dataset-manager}
+
+\menu{Simulation}\menusep\menu{Dataset Manager (MLIP)} assembles training
+datasets for machine-learning interatomic potentials from the trajectories
+you have generated --- MD runs, noise ensembles, relaxation paths --- and
+partitions them reproducibly.
+
+\subsection{Loading structures}
+
+\ui{Add Files\ldots} accepts multiple files of mixed provenance:
+\file{.extxyz}, \file{.traj}, \file{.cif}, VASP files, ASE databases. Each
+is listed with its frame count and the chemical formulas it contains, so a
+heterogeneous dataset stays legible. The summary line reports the total.
+
+\subsection{Splitting}
+
+\begin{description}
+  \item[\ui{Training}, \ui{Validation}] Percentages; \ui{Test} is the
+    remainder, shown live.
+  \item[\ui{Random seed}] Default 42.
+\end{description}
+
+The split is deterministic: the same frame count, percentages and seed
+always produce exactly the same partition, and the three subsets are
+disjoint and cover every frame.
+
+\subsection{Query-by-Committee ensembles}
+
+Active learning needs an ensemble of models trained on different data, so
+their disagreement can be used as an uncertainty estimate.
+
+\begin{description}
+  \item[\ui{Committee members}] 1 exports a single dataset; $N > 1$ adds
+    \file{committee\_01}\ldots\file{committee\_N} subdirectories, each with
+    its own training set.
+  \item[\ui{Diversity}] How the members are made to differ:
+    \begin{itemize}
+      \item \ui{Independent splits (seed + k)} re-splits the non-test pool
+        with a different seed per member, keeping one common test set.
+      \item \ui{Bootstrap resampling of the training set} draws each
+        member's training set with replacement --- the classical bagging
+        construction, which reuses roughly 63\,\% of the original frames
+        per member.
+    \end{itemize}
+\end{description}
+
+\subsection{Export}
+
+\begin{description}
+  \item[\ui{Extended XYZ (MACE-ready)}] Writes \file{train.extxyz},
+    \file{valid.extxyz} and \file{test.extxyz} (plus committee
+    subdirectories), the layout MACE and most training scripts expect.
+  \item[\ui{ASE database (.db)}] One SQLite database per subset.
+\end{description}
+
+\begin{calnote}
+Export goes through \texttt{ase.io} directly rather than Calango's internal
+structure model, specifically so that energies, forces and stresses
+attached to the frames survive into the training files. A dataset exported
+from a finished MD run carries the labels a potential needs to train on.
+\end{calnote}

@@ -159,7 +159,7 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
                                    ? tr("Assign this bond order to the "
                                         "selected atom pair")
                                    : tr("Select exactly two atoms in the "
-                                        "viewport first (Shift+click)"));
+                                        "viewport first (Ctrl+click)"));
         }
     };
     connect(viewport_, &ViewportWidget::selectionChanged,

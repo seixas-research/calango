@@ -1,0 +1,106 @@
+\chapter{Publication Output}
+\label{ch:output}
+
+\section{Still images}
+
+\menu{File}\menusep\menu{Import / Export}\menusep\menu{Export Image}
+(\kbd{Ctrl}+\kbd{E}) renders the current view off-screen at any resolution,
+independent of the window size, with 8$\times$ multisample anti-aliasing.
+
+\begin{description}
+  \item[\ui{Resolution preset}] 720p, 1080p, 4K, or custom width and
+    height up to 8192\,px.
+  \item[\ui{Background}] \ui{Transparent (PNG only)}, \ui{Solid white}, or
+    a custom colour.
+  \item[Format] PNG or JPEG, chosen by the extension.
+\end{description}
+
+\begin{caltip}
+Transparent PNG is the right choice for figures that will sit on a coloured
+background in a paper or slide. Combine it with an orthographic, axis
+aligned view (\kbd{O}, then an alignment button) for a clean, reproducible
+result.
+\end{caltip}
+
+\section{Animations}
+
+\menu{File}\menusep\menu{Import / Export}\menusep\menu{Export Animation
+(GIF/MP4)} writes either a turntable rotation of a static structure or a
+playback of a trajectory.
+
+\begin{description}
+  \item[Source] \ui{Turntable rotation (360\textdegree)} or the current
+    trajectory.
+  \item[\ui{Resolution preset}] Up to 4K.
+  \item[\ui{Frames per second}] Playback rate.
+  \item[\ui{Background}] Including \ui{Transparent (GIF only)}.
+  \item[Format] Animated GIF or H.264 MP4.
+\end{description}
+
+\begin{calwarn}
+GIF export needs \texttt{pillow}; MP4 needs \texttt{imageio} and
+\texttt{imageio-ffmpeg}. MP4 has no alpha channel --- asking for a
+transparent MP4 falls back to a solid background.
+\end{calwarn}
+
+\section{Ray-traced rendering}
+
+\menu{File}\menusep\menu{Import / Export}\menusep\menu{Ray-Traced Render}
+exports the active scene --- camera, lights, representation, colours,
+multiple bonds, unit cell --- to an external ray tracer for
+publication-quality output with true shadows and reflections.
+
+\begin{description}
+  \item[\ui{Engine}] \ui{POV-Ray} or \ui{Tachyon}.
+  \item[\ui{Width (px)}, \ui{Height (px)}] Default $1920 \times 1440$.
+  \item[\ui{Background}] \ui{Solid white} or \ui{Viewport color}.
+  \item[\ui{Renderer binary}] Path to the executable; the bare names
+    \texttt{povray} and \texttt{tachyon} are resolved on \opt{PATH}. The
+    path is remembered per engine.
+\end{description}
+
+Two ways to use it:
+
+\begin{description}
+  \item[\ui{Save Scene File\ldots}] Writes just the scene
+    (\file{.pov} or \file{.dat}) for you to render elsewhere, or to edit by
+    hand before rendering.
+  \item[\ui{Render\ldots}] Writes the scene next to your chosen PNG output
+    and invokes the renderer, streaming its output into the log pane so you
+    can watch progress and diagnose failures.
+\end{description}
+
+\begin{calwarn}
+Needs POV-Ray or Tachyon installed separately. If the binary cannot be
+started, the log says so explicitly rather than failing silently.
+\end{calwarn}
+
+\section{Data exports at a glance}
+
+Nearly every analysis tool exports its numbers, so figures can be
+regenerated in your own plotting stack.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Source & Formats & Typical file \\
+\midrule
+RDF                     & CSV, DAT & \file{rdf.csv} \\
+Bond length / angle     & CSV, DAT & \file{bond\_lengths.csv} \\
+Structure factor        & CSV, DAT & \file{structure\_factor.csv} \\
+XRD pattern             & CSV, DAT & \file{xrd\_pattern.csv} \\
+XRD peak list           & CSV, DAT & \file{xrd\_peaks.csv} \\
+Warren-Cowley           & CSV      & \file{warren\_cowley.csv} \\
+Job metric series       & CSV, DAT & \file{energy.csv} \ldots \\
+Band structure          & CSV, DAT & \file{bands.csv} \\
+PDOS                    & CSV, DAT & \file{pdos.csv} \\
+Isosurface mesh         & OBJ      & \file{isosurface.obj} \\
+Volumetric slice        & CSV      & \file{slice.csv} \\
+Phonon bands / DOS      & CSV      & \file{phonon\_bands.csv} \\
+k-path                  & 5 codes  & Section~\ref{sec:bz} \\
+ML datasets             & extxyz, ASE db & Section~\ref{sec:dataset-manager} \\
+Brillouin zone figure   & PNG, SVG & \file{brillouin\_zone.svg} \\
+\bottomrule
+\end{tabular}
+\end{center}

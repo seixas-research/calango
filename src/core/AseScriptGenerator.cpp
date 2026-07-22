@@ -29,6 +29,18 @@ std::string toString(TaskKind kind)
     return "?";
 }
 
+std::string toString(Optimizer optimizer)
+{
+    switch (optimizer) {
+    case Optimizer::BFGS: return "BFGS";
+    case Optimizer::LBFGS: return "LBFGS";
+    case Optimizer::FIRE: return "FIRE";
+    case Optimizer::GPMin: return "GPMin";
+    case Optimizer::MDMin: return "MDMin";
+    }
+    return "BFGS";
+}
+
 namespace {
 
 /// Live viewport streaming: one "CALANGO_CELL … / CALANGO_FRAME n /
@@ -197,19 +209,35 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
 
 void emitTask(std::ostringstream& out, const CalculatorConfig& c)
 {
+    const bool isDft = c.calculator == CalculatorKind::QuantumEspresso
+        || c.calculator == CalculatorKind::Vasp
+        || c.calculator == CalculatorKind::Gpaw
+        || c.calculator == CalculatorKind::Siesta;
+
     switch (c.task) {
     case TaskKind::SinglePoint:
+        if (isDft) {
+            // The DFT calculator blocks are user-completed hooks; surface the
+            // electronic-convergence targets the dialog collected so they can
+            // be wired into the backend (nelm/ediff, electron_maxstep/conv_thr,
+            // convergence={'energy': ...}, ...).
+            out << "# Electronic convergence targets (apply in the calculator block above):\n"
+                << "#   max SCF iterations : " << c.scfMaxSteps << "\n"
+                << "#   energy tolerance   : " << c.scfEnergyTolEv << " eV\n";
+        }
         out << "energy = atoms.get_potential_energy()\n"
                "fmax = abs(atoms.get_forces()).max()\n"
                "print(f\"CALANGO_RESULT energy_eV={energy:.6f}\", flush=True)\n"
                "print(f\"CALANGO_RESULT fmax_eV_per_A={fmax:.6f}\", flush=True)\n";
         break;
 
-    case TaskKind::GeometryOptimization:
-        out << "from ase.optimize import BFGS\n"
+    case TaskKind::GeometryOptimization: {
+        const std::string opt = toString(c.optimizer);
+        out << "from ase.optimize import " << opt << "\n"
                "\n"
             << "max_steps = " << c.maxSteps << "\n"
-               "opt = BFGS(atoms, trajectory=\"opt.traj\", logfile=\"-\")\n"
+            << "opt = " << opt
+            << "(atoms, trajectory=\"opt.traj\", logfile=\"-\")\n"
                "\n"
             << kStreamFrameHelper
             << "def _report():\n"
@@ -228,6 +256,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "energy = atoms.get_potential_energy()\n"
                "print(f\"CALANGO_RESULT converged={converged} energy_eV={energy:.6f}\", flush=True)\n";
         break;
+    }
 
     case TaskKind::MolecularDynamics:
         out << "from ase import units\n"

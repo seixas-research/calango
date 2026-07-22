@@ -1,5 +1,6 @@
 #include "python_bridge/SurfaceScience.hpp"
 
+#include "core/AdsorptionSites.hpp"
 #include "python_bridge/AseBridge.hpp"
 
 #include <pybind11/embed.h>
@@ -18,108 +19,13 @@ namespace {
     throw std::runtime_error(std::string(what) + ":\n" + e.what());
 }
 
-/// Site detection + placement helpers, executed with a single dict as
-/// both globals and locals (function bodies must see the script names).
-constexpr const char* kSiteScript = R"PY(
-import numpy as np
-
-pos = atoms.get_positions()
-cell = np.array(atoms.cell[:])
-inv_cell = np.linalg.inv(cell)
-
-def mic(vecs):
-    """In-plane minimum image (slab: periodic along a and b only)."""
-    frac = vecs @ inv_cell
-    frac[:, :2] -= np.round(frac[:, :2])
-    return frac @ cell
-
-ztol = 0.6
-ztop = pos[:, 2].max()
-top_idx = np.flatnonzero(pos[:, 2] > ztop - ztol)
-below = pos[pos[:, 2] <= ztop - ztol]
-second = None
-if len(below):
-    zsecond = below[:, 2].max()
-    second = below[np.abs(below[:, 2] - zsecond) < ztol]
-
-top = pos[top_idx]
-n = len(top)
-if n == 0:
-    raise RuntimeError("no surface layer found")
-
-# Neighbor VECTORS per top atom over explicit in-plane images: small
-# cells connect atoms through several images (including an atom to its
-# own periodic copy), so a plain pair graph undercounts bonds. Duplicate
-# sites from double-counted bonds collapse in the dedup pass below.
-images = [da * cell[0] + db * cell[1]
-          for da in (-1, 0, 1) for db in (-1, 0, 1)]
-distances = []
-for i in range(n):
-    for j in range(n):
-        for image in images:
-            d = np.linalg.norm((top[j] + image - top[i])[:2])
-            if d > 1e-6:
-                distances.append(d)
-if not distances:
-    raise RuntimeError("need at least two surface atoms for bridge/hollow "
-                       "sites — repeat the slab in-plane first")
-dmin = min(distances)
-nbr = [[] for _ in range(n)]
-for i in range(n):
-    for j in range(n):
-        for image in images:
-            v = top[j] + image - top[i]
-            if 1e-6 < np.linalg.norm(v[:2]) < dmin * 1.15:
-                nbr[i].append(v)
-
-sites = []  # (type, x, y)
-for i in range(n):
-    sites.append(("top", top[i, 0], top[i, 1]))
-for i in range(n):
-    for v in nbr[i]:
-        mid = top[i] + 0.5 * v
-        sites.append(("bridge", mid[0], mid[1]))
-
-# Threefold hollows: neighbor-vector pairs of one atom whose tips are
-# themselves nearest neighbors; fcc vs hcp decided by a second-layer
-# atom directly underneath the centroid.
-for i in range(n):
-    for a_idx in range(len(nbr[i])):
-        for b_idx in range(a_idx + 1, len(nbr[i])):
-            v1, v2 = nbr[i][a_idx], nbr[i][b_idx]
-            if np.linalg.norm((v2 - v1)[:2]) > dmin * 1.15:
-                continue
-            centroid = top[i] + (v1 + v2) / 3.0
-            kind = "hollow"
-            if second is not None and len(second):
-                d2 = mic(second - centroid)
-                if np.min(np.linalg.norm(d2[:, :2], axis=1)) < 0.5 * dmin:
-                    kind = "hcp"
-                else:
-                    kind = "fcc"
-            sites.append((kind, centroid[0], centroid[1]))
-
-# Wrap in-plane into the home cell and deduplicate periodic copies.
-unique = []
-seen = []
-for kind, x, y in sites:
-    frac = np.array([x, y, 0.0]) @ inv_cell
-    frac[:2] %= 1.0
-    cart = frac @ cell
-    key_new = True
-    for kk, cc in seen:
-        if kk == kind:
-            d = mic(np.array([cart - cc]))[0]
-            if np.linalg.norm(d[:2]) < 0.15:
-                key_new = False
-                break
-    if key_new:
-        seen.append((kind, cart))
-        unique.append((kind, float(cart[0]), float(cart[1]), float(ztop)))
-result_sites = unique
-)PY";
-
-constexpr const char* kPlaceScript = R"PY(
+/// Adsorbate molecule template: resolve the name and hand back the ASE
+/// molecule as an Atoms object plus the index of the anchor atom (the atom
+/// that binds to the surface). Only the molecular *database* is Python —
+/// the anchor map mirrors the classic ACAT conventions. All placement
+/// geometry happens natively in core::placeAdsorbate. Executed with a
+/// single dict as both globals and locals so the helper sees script names.
+constexpr const char* kMoleculeScript = R"PY(
 import numpy as np
 from ase import Atoms
 from ase.build import molecule
@@ -140,21 +46,12 @@ anchor_symbol = _ANCHORS.get(name)
 if anchor_symbol and anchor_symbol in symbols:
     anchor = symbols.index(anchor_symbol)
 else:
+    # Fall back to the "lowest" atom in ASE's standard orientation, which is
+    # the surface-facing one for the common hydride/oxide adsorbates.
     anchor = int(np.argmin(mol.get_positions()[:, 2]))
 
-mol.translate(-mol.get_positions()[anchor])
-if len(mol) > 1:
-    others = np.delete(mol.get_positions(), anchor, axis=0)
-    if others[:, 2].mean() < 0:  # molecule points down — flip upright
-        mol.rotate(180, "x")
-        mol.translate(-mol.get_positions()[anchor])
-
-combined = atoms.copy()
-for x, y, z in site_positions:
-    copy = mol.copy()
-    copy.translate((x, y, z + height))
-    combined += copy
-result_atoms = combined
+result_molecule = mol
+result_anchor = int(anchor)
 )PY";
 
 } // namespace
@@ -231,44 +128,111 @@ result_atoms = cluster
     }
 }
 
-std::vector<SurfaceScience::AdsorptionSite>
-SurfaceScience::detectSites(const core::Structure& slab)
+core::Structure SurfaceScience::polyhedralNanoparticle(
+    const std::string& symbol, const std::string& shape, int size, int p, int q,
+    int r, double latticeConstant)
 {
     try {
         py::dict scope;
-        scope["atoms"] = AseBridge::toAtoms(slab);
-        py::exec(kSiteScript, scope, scope);
-        std::vector<AdsorptionSite> sites;
-        for (const auto& entry : scope["result_sites"].cast<py::list>()) {
-            const auto tuple = entry.cast<py::tuple>();
-            sites.push_back({tuple[0].cast<std::string>(),
-                             tuple[1].cast<double>(), tuple[2].cast<double>(),
-                             tuple[3].cast<double>()});
-        }
-        return sites;
+        scope["symbol"] = symbol;
+        scope["shape"] = shape;
+        scope["size"] = size;
+        scope["p"] = p;
+        scope["q"] = q;
+        scope["r"] = r;
+        scope["a"] = latticeConstant;
+        py::exec(R"PY(
+from ase.cluster import Icosahedron, Octahedron, Decahedron
+from ase.cluster.cubic import FaceCenteredCubic
+
+lc = a if a > 0 else None
+n = int(size)
+if shape == 'icosahedron':
+    if n < 1:
+        raise RuntimeError("icosahedron needs at least 1 shell")
+    cluster = Icosahedron(symbol, noshells=n, latticeconstant=lc)
+elif shape == 'octahedron':
+    if n < 2:
+        raise RuntimeError("octahedron edge length must be >= 2")
+    cluster = Octahedron(symbol, length=n, cutoff=0, latticeconstant=lc)
+elif shape == 'cuboctahedron':
+    if n < 2:
+        raise RuntimeError("cuboctahedron edge length must be >= 2")
+    # A regular cuboctahedron is an octahedron truncated exactly halfway
+    # along each edge: cutoff = (length - 1) // 2.
+    cluster = Octahedron(symbol, length=n, cutoff=(n - 1) // 2, latticeconstant=lc)
+elif shape == 'decahedron':
+    if int(p) < 1 or int(q) < 1:
+        raise RuntimeError("decahedron needs p >= 1 and q >= 1")
+    cluster = Decahedron(symbol, int(p), int(q), int(r), latticeconstant=lc)
+elif shape == 'rhombic-dodecahedron':
+    if n < 1:
+        raise RuntimeError("rhombic dodecahedron needs at least 1 layer")
+    # The FCC equilibrium form bounded solely by {110} facets is the
+    # rhombic dodecahedron; a single symmetric layer count carves it.
+    cluster = FaceCenteredCubic(symbol, surfaces=[(1, 1, 0)], layers=[n],
+                                latticeconstant=lc)
+else:
+    raise RuntimeError("unknown cluster shape: " + str(shape))
+
+if len(cluster) == 0:
+    raise RuntimeError("the requested size produced an empty cluster")
+cluster.center(vacuum=6.0)
+cluster.pbc = False
+result_atoms = cluster
+)PY",
+                 scope, scope);
+        return AseBridge::fromAtoms(scope["result_atoms"]);
     } catch (const py::error_already_set& e) {
-        rethrow(e, "Adsorption site detection failed");
+        rethrow(e, "Faceted cluster construction failed");
     }
+}
+
+std::vector<SurfaceScience::AdsorptionSite>
+SurfaceScience::detectSites(const core::Structure& slab)
+{
+    // Native C++ site detection (no Python) — see core::detectAdsorptionSites.
+    const auto coreSites = core::detectAdsorptionSites(slab);
+    if (coreSites.empty())
+        throw std::runtime_error(
+            "No adsorption sites found. Provide a surface with an outer layer "
+            "of undercoordinated atoms (a slab or a nanoparticle); repeat a "
+            "very small slab in-plane so bridge/hollow sites can form.");
+    std::vector<AdsorptionSite> sites;
+    sites.reserve(coreSites.size());
+    for (const auto& s : coreSites)
+        sites.push_back({s.type, s.position.x, s.position.y, s.position.z,
+                         s.normal.x, s.normal.y, s.normal.z});
+    return sites;
 }
 
 core::Structure SurfaceScience::placeAdsorbates(
     const core::Structure& slab, const std::vector<AdsorptionSite>& sites,
     const std::string& adsorbate, double height)
 {
+    // The adsorbate molecule template + anchor come from ASE's molecule
+    // database; all placement geometry is native C++ (core::placeAdsorbate),
+    // so adsorbates follow each site's outward normal.
+    core::Structure molecule;
+    int anchor = 0;
     try {
         py::dict scope;
-        scope["atoms"] = AseBridge::toAtoms(slab);
         scope["adsorbate"] = adsorbate;
-        scope["height"] = height;
-        py::list positions;
-        for (const auto& site : sites)
-            positions.append(py::make_tuple(site.x, site.y, site.z));
-        scope["site_positions"] = positions;
-        py::exec(kPlaceScript, scope, scope);
-        return AseBridge::fromAtoms(scope["result_atoms"]);
+        py::exec(kMoleculeScript, scope, scope);
+        molecule = AseBridge::fromAtoms(scope["result_molecule"]);
+        anchor = scope["result_anchor"].cast<int>();
     } catch (const py::error_already_set& e) {
-        rethrow(e, "Adsorbate placement failed");
+        rethrow(e, "Could not build the adsorbate molecule");
     }
+
+    std::vector<core::AdsorptionSite> coreSites;
+    coreSites.reserve(sites.size());
+    for (const auto& s : sites)
+        coreSites.push_back({s.type,
+                             {s.x, s.y, s.z},
+                             {s.nx, s.ny, s.nz},
+                             {}});
+    return core::placeAdsorbate(slab, coreSites, molecule, anchor, height);
 }
 
 } // namespace calango::pybridge

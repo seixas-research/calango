@@ -1,0 +1,195 @@
+\chapter{The 3D Viewport}
+\label{ch:viewport}
+
+The viewport is an OpenGL 3.3 core-profile canvas using instanced rendering
+--- one draw call per mesh type --- so structures with tens of thousands of
+atoms stay interactive.
+
+\section{Interaction modes}
+\label{sec:modes}
+
+What a left-drag does depends on the active \emph{interaction mode}. The
+six modes are the first group of buttons on the frame toolbar, each with a
+single-letter shortcut:
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{8.4cm}@{}}
+\toprule
+Key & Mode & Left mouse button \\
+\midrule
+\kbd{R} & Rotation   & Drag orbits the camera around the structure.
+                       The default. \\
+\kbd{T} & Translation & Drag pans the scene. \\
+\kbd{S} & Selection  & Drag draws a rubber-band box and selects every atom
+                       inside it. \\
+\kbd{I} & Insertion  & Click empty space to add an atom; drag from one atom
+                       to another to bond them. \\
+\kbd{D} & Distance   & Click two atoms to measure their separation. \\
+\kbd{A} & Angle      & Click three atoms (vertex second) to measure the
+                       angle. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Three gestures work in \emph{every} mode, so navigation never requires
+switching back:
+
+\begin{description}
+  \item[Middle-drag, or \kbd{Shift}+left-drag] Pan.
+  \item[Wheel] Zoom.
+  \item[Double-click] Reframe the structure.
+\end{description}
+
+The mouse cursor changes with the mode --- an arrow for rotation, an open
+hand for panning, a crosshair for selection, insertion and measurement.
+
+\section{Selecting atoms}
+
+A left \emph{click} (no drag) picks the atom under the cursor by ray-cast,
+in any mode. \kbd{Ctrl}+click (\kbd{Cmd}+click on macOS) toggles an atom in
+or out of the selection, so you can build up a set one atom at a time.
+Clicking empty space clears the selection.
+
+In \textbf{Selection} mode a rubber-band drag selects every atom whose
+centre falls inside the box; holding \kbd{Ctrl} adds the boxed atoms to the
+existing selection instead of replacing it. With the viewport focused,
+\kbd{Delete} or \kbd{Backspace} removes the selected atoms and the bond
+network is rebuilt immediately.
+
+The status bar reports the selection size, and several tools act on it: the
+bond-order buttons need exactly two atoms, the bond editor can pull a pair
+straight from the selection, and \menu{Edit}\menusep\menu{Selection} can
+change the element of, or translate, whatever is selected.
+
+\section{Measuring distances and angles}
+\label{sec:measure}
+
+Measurement modes accumulate clicks on atoms and draw the result directly
+on the canvas --- markers on the chosen atoms, dashed connecting lines, and
+the value in a floating label. The same value is written to the status bar,
+for example:
+
+\begin{lstlisting}
+Distance Si(0) - Si(4): 2.351 A
+Angle O(2) - Si(0) - O(5): 109.47 deg
+\end{lstlisting}
+
+\begin{description}
+  \item[Distance] Two atoms; result in \AA{} to three decimals.
+  \item[Angle] Three atoms; the \emph{second} atom clicked is the vertex.
+    Result in degrees to two decimals.
+\end{description}
+
+Clicking empty space clears the current measurement, and clicking again
+after a completed one starts fresh. Dragging still orbits the camera, so
+you can rotate the structure between clicks to reach an atom hidden behind
+another. Measurements are cleared automatically when you switch modes or
+load a different structure.
+
+\section{Fixed-angle rotations}
+
+The toolbar's rotation cluster turns the scene by exact increments about
+the world axes --- useful for reproducible figure orientations.
+
+\begin{description}
+  \item[Angle step] An editable spin box, 1--180\textdegree, default
+    15\textdegree.
+  \item[\ui{X+} \ui{X$-$} \ui{Y+} \ui{Y$-$} \ui{Z+} \ui{Z$-$}]
+    Counter-clockwise and clockwise rotation about each axis by exactly
+    that step.
+\end{description}
+
+Each click animates smoothly over about 200\,ms, and rapid clicks compose
+exactly: four presses of \ui{Z+} at 90\textdegree{} return the scene to
+where it started. The axes triad follows the rotation, and picking,
+selection and measurements all stay consistent with what you see.
+
+\section{Framing, alignment and projection}
+
+\begin{description}
+  \item[\kbd{F}] Frame the structure: centre it and back the camera off far
+    enough to see all of it. Also on the toolbar and in
+    \menu{View}\menusep\menu{Alignment}.
+  \item[Align with XY / XZ / YZ] Look straight down the remaining
+    Cartesian axis. Toolbar buttons, or
+    \menu{View}\menusep\menu{Alignment}. Alignment clears any accumulated
+    fixed-angle rotation, so the result is a true axis-aligned view.
+  \item[\kbd{O}] Toggle orthographic versus perspective projection. The
+    orthographic frustum is matched to the perspective field of view at the
+    camera's target distance, so the structure keeps its apparent size
+    across the switch --- and zoom keeps working in both.
+\end{description}
+
+\begin{caltip}
+Orthographic projection is what you want for figures where lattice
+directions must read as parallel: perspective foreshortening makes a
+supercell look subtly sheared.
+\end{caltip}
+
+\section{Inserting atoms and bonds}
+
+In \textbf{Insertion} mode (\kbd{I}) the toolbar's element button --- which
+shows the active symbol, \texttt{C} by default --- selects what gets
+placed. Click it to choose any element from the graphical periodic table.
+
+\begin{description}
+  \item[Click on empty space] Inserts one atom of the active element there.
+    The atom lands on the plane through the camera's target point facing
+    the viewer, so what you click is where it appears.
+  \item[Drag from one atom to another] Creates a bond between them, added
+    as a manual bond override.
+  \item[Click on an existing atom] Selects it, as in any other mode.
+\end{description}
+
+Both operations are single undo steps.
+
+\begin{calnote}
+Because inserted atoms land on the camera-target plane, the depth of a new
+atom depends on the current view. Place atoms from an aligned, orthographic
+view when the exact coordinate matters, or insert roughly and then set
+exact coordinates with \menu{Edit}\menusep\menu{Add Atom}, which takes
+numeric $x$, $y$, $z$.
+\end{calnote}
+
+\section{Visual effects}
+\label{sec:visual-effects}
+
+\menu{View}\menusep\menu{Visual Effects} opens a modeless dialog --- the
+scene stays interactive while you tune it --- with two depth cues.
+
+\subsection{Distance fog}
+
+Fades distant geometry into the background colour, which makes the depth
+ordering of a thick slab or a large nanoparticle immediately readable.
+
+\begin{description}
+  \item[\ui{Mode}] \ui{Linear (start $\rightarrow$ end)} fades uniformly
+    between two distances; \ui{Exponential (density)} follows
+    $e^{-\rho d}$.
+  \item[\ui{Start distance}, \ui{End distance}] The linear ramp, in \AA{}.
+    Defaults 15 and 80.
+  \item[\ui{Density}] The exponential coefficient, default 0.03.
+\end{description}
+
+The fog colour tracks the viewport background automatically, so geometry
+always fades into whatever backdrop you have chosen.
+
+\subsection{Depth of field}
+
+A post-processing pass that blurs geometry away from the focal plane, in
+proportion to its circle of confusion.
+
+\begin{description}
+  \item[\ui{Blur strength}] Maximum blur radius in pixels, 1--20.
+  \item[\ui{Focus range}] The depth band that stays sharp, in \AA{}.
+  \item[\ui{Focus offset}] Shifts the focal plane relative to the camera
+    target, in \AA{}.
+\end{description}
+
+\begin{calnote}
+Depth of field renders the scene into an offscreen buffer before
+compositing, which means multisample anti-aliasing is unavailable while it
+is enabled. For final figures, decide which of the two matters more ---
+crisp edges or the depth cue.
+\end{calnote}

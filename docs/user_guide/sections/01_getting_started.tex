@@ -1,0 +1,121 @@
+\chapter{Getting Started}
+\label{ch:getting-started}
+
+\section{Installing Calango}
+
+Calango ships as a native installer for each desktop platform:
+
+\begin{description}
+  \item[macOS] A drag-and-drop \file{.dmg}. Mount it and drag
+    \file{calango.app} onto the \file{Applications} shortcut.
+  \item[Linux] A Debian package. Install it with \opt{apt} so dependencies
+    resolve automatically:
+    \begin{lstlisting}
+sudo apt install ./calango_26.7.26_amd64.deb
+    \end{lstlisting}
+    The package registers a desktop launcher, an application icon, and a
+    MIME type for \file{.calproj} files, so double-clicking a project in
+    your file manager opens the workspace.
+\end{description}
+
+Building from source is covered in the companion \emph{Calango Packaging
+Guide} (\file{docs/packaging.pdf}), which also documents how the installers
+are produced.
+
+\section{The Python environment}
+\label{sec:python-env}
+
+Calango embeds a CPython interpreter and drives ASE through it. Almost
+everything that touches chemistry --- reading a CIF, building a slab,
+running a calculation --- goes through that interpreter, so pointing
+Calango at a Python that has ASE installed is the single most important
+piece of setup.
+
+\subsection{How the interpreter is chosen}
+
+An embedded interpreter does not inherit an activated virtual environment
+the way a shell does, so Calango resolves one explicitly, in this order:
+
+\begin{enumerate}
+  \item \opt{\$CALANGO\_PYTHON} --- an explicit path to a Python
+    executable. Highest priority; use this to override everything else.
+  \item \opt{\$VIRTUAL\_ENV} --- an activated virtual environment, if
+    Calango was launched from that shell.
+  \item A Python bundled inside the installed application
+    (\file{Contents/Resources/python} on macOS,
+    \file{\textless prefix\textgreater/lib/calango/python} on Linux), when the installer
+    was built with one.
+  \item The interpreter the build was configured against.
+\end{enumerate}
+
+\begin{calwarn}
+Calango needs \texttt{ase} and \texttt{numpy} at minimum. Individual
+features add their own requirements: \texttt{spglib} (symmetry, Raman
+modes), \texttt{paramiko} (remote access), \texttt{pillow} /
+\texttt{imageio} / \texttt{imageio-ffmpeg} (animation export),
+\texttt{mace-torch} (ML potentials), \texttt{gpaw} (DFT bands and PDOS),
+\texttt{icet} (optional, improves SQS generation). A complete environment:
+\begin{lstlisting}
+python3 -m venv .venv
+.venv/bin/pip install ase numpy spglib paramiko pillow imageio \
+                      imageio-ffmpeg
+\end{lstlisting}
+\end{calwarn}
+
+\subsection{Checking the environment}
+
+Before opening any structure, confirm the interpreter is the one you
+expect:
+
+\begin{lstlisting}
+calango --probe-python
+\end{lstlisting}
+
+This runs headlessly and prints the resolved interpreter, the Python
+version and the ASE version, exiting with status 0 only when ASE imports
+successfully. It is the first thing to run when structure loading fails.
+
+If ASE cannot be imported at launch, Calango still starts --- so you can
+adjust settings --- but structure I/O and job features are disabled, and a
+warning explains how to point at a working interpreter.
+
+\begin{caltip}
+Simulation jobs do not have to use the embedded interpreter. The
+calculator, phonon and band-structure dialogs each carry an
+\ui{Execution Environment} selector that routes the job to any Conda
+environment or interpreter path (Section~\ref{sec:exec-env}). This is how
+you keep, say, a GPAW environment separate from the one Calango itself
+uses.
+\end{caltip}
+
+\subsection{The environment file}
+\label{sec:envfile}
+
+At launch Calango reads an environment file --- \file{\textasciitilde/.env}
+by default --- and exports \opt{MP\_API\_KEY}, the Materials Project API
+key, into the process environment. A key already present in your shell
+takes precedence at startup.
+
+Point Calango at a different file, or re-read it on demand, in
+\menu{Edit}\menusep\menu{Preferences}. The dialog reports whether the file
+exists and whether it actually defines a key. The same controls are
+mirrored in the \ui{Materials Project} tab of the database browser.
+
+\section{First launch}
+
+Calango opens with an empty workspace. Three quick ways to get something
+on screen:
+
+\begin{enumerate}
+  \item \menu{File}\menusep\menu{Open}\menusep\menu{Structure} and pick any
+    structure file (Section~\ref{sec:formats} lists the formats).
+  \item \menu{Build}\menusep\menu{From Database} and load one of the
+    bundled presets --- diamond, bulk and monolayer MoS$_2$, graphene,
+    benzene, naphthalene, coronene.
+  \item Pass a file on the command line: \lstinline|calango structure.cif|.
+    Each file argument opens in its own tab; a \file{.calproj} argument
+    restores a whole saved session.
+\end{enumerate}
+
+Once a structure is loaded, \kbd{F} frames it in the viewport and the
+\ui{Structure} panel fills in with formula, cell parameters and symmetry.

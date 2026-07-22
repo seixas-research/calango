@@ -1,0 +1,120 @@
+\chapter{Appearance and Representation}
+\label{ch:appearance}
+
+\section{The Representation panel}
+
+\subsection{Representation mode}
+
+\ui{Mode} selects how atoms and bonds are drawn:
+
+\begin{description}
+  \item[\ui{Ball-and-Stick}] Spheres at a fraction of the covalent radius,
+    bonds as cylinders. The default.
+  \item[\ui{Space-filling (CPK)}] Spheres at approximately the van der
+    Waals radius; bonds are hidden inside the atoms.
+  \item[\ui{Wireframe}] Bonds only, drawn as lines with points at the atom
+    positions --- the cheapest mode for very large systems.
+\end{description}
+
+\ui{Atom radius} and \ui{Bond width} scale everything globally, 0.20--3.00,
+each with a slider and a synchronised spin box for exact values.
+
+\subsection{Colouring atoms}
+\label{sec:color-modes}
+
+\ui{Color by} offers four mappings, applied consistently to atoms and to
+their halves of each bond:
+
+\begin{description}
+  \item[\ui{Element (CPK)}] The Jmol palette, with per-element overrides.
+  \item[\ui{Coordination number (CN)}] Discrete coordination numbers on a
+    gradient.
+  \item[\ui{Generalized CN (GCN)}] Continuous generalised coordination
+    numbers --- excellent for distinguishing terraces, steps, edges and
+    vertices on nanoparticles and slabs.
+  \item[\ui{Custom property}] Any per-atom scalar field the structure
+    carries: charges, force magnitudes, extended-XYZ columns, or a computed
+    field such as \texttt{local\_entropy}. \ui{Property} selects which.
+\end{description}
+
+For the three scalar modes, \ui{Gradient} chooses the colour map ---
+\ui{Viridis}, \ui{Plasma}, \ui{Turbo}, \ui{Inferno}, \ui{Magma},
+\ui{Cividis}, \ui{Hot}, \ui{Afmhot}, \ui{Coolwarm}, \ui{Rainbow} --- and
+\ui{Invert palette} reverses the scalar-to-colour mapping, matching
+matplotlib's \texttt{\_r} variants. \ui{Range} reads back the min and max
+of the active field, so the legend is never ambiguous.
+
+\begin{caltip}
+Viridis and Cividis are perceptually uniform and colour-vision safe;
+Coolwarm is the right choice for signed quantities such as charges or
+potentials, where the zero point should read as neutral. Rainbow is
+included because reviewers sometimes ask for it, not because it is a good
+default.
+\end{caltip}
+
+Colour mapping is recomputed for every frame during trajectory playback, so
+CN, GCN and property maps stay live throughout an animation.
+
+\subsection{Bonds and vectors}
+
+\begin{description}
+  \item[\ui{Gradient bond coloring}] Blends each bond smoothly from one
+    atom's colour to the other's, instead of the classic half-and-half
+    split.
+  \item[\ui{Force vectors}, \ui{Velocity vectors}] Draw per-atom vectors as
+    lit 3D arrows. Each is enabled only when the structure actually carries
+    that field; the tooltip explains what is missing when it does not.
+  \item[\ui{Vector scale}] Arrow length in \AA{} per field unit,
+    0.05--200, default 10.
+\end{description}
+
+\subsection{Per-element styling}
+
+\ui{Element Settings\ldots} opens a table of the elements present in the
+structure. Each row offers a colour swatch and a radius scale
+(10--300\,\%, where exactly 100\,\% means "no override"), plus a
+\ui{Reset} button. \ui{Reset All} clears every override at once.
+
+\ui{Background} sets the viewport background colour. Distance fog, if
+enabled, automatically fades into whatever you choose.
+
+\section{Unit cell and axes}
+
+The \ui{Unit Cell \& Axes} panel (zone 12):
+
+\begin{description}
+  \item[\ui{Show unit cell}] Also on \menu{View}\menusep\menu{Overlays}.
+  \item[\ui{Cell color}] Wireframe colour.
+  \item[\ui{Cell line width}] 1.0--8.0, default 2.0. A width of 1 draws
+    plain GL lines; anything larger renders the edges as lit tubes.
+  \item[\ui{Show axes triad}] The corner orientation indicator.
+  \item[\ui{Axes style}] \ui{Cartesian (X, Y, Z)} or
+    \ui{Lattice vectors (a1, a2, a3)}.
+  \item[\ui{Axes size}] On-screen size of the triad, 48--240\,px.
+\end{description}
+
+\begin{calnote}
+Core-profile OpenGL clamps hardware line width to one pixel, which is why
+thick cell edges are drawn as tube geometry rather than wide lines. The
+tubes are lit like the rest of the scene, so they also read correctly in
+ray-traced exports.
+\end{calnote}
+
+\section{Lighting}
+
+The \ui{Lighting} panel (zone 9) edits up to four directional lights with
+Blinn-Phong shading. The default studio setup is three lights: a warm key
+carrying the speculars, a cooler fill from the opposite side, and a back
+(rim) light that separates atom silhouettes from the background.
+
+Select a light in the list, then edit:
+
+\begin{description}
+  \item[\ui{Direction (view space)}] Three components, $-5$ to $5$. Because
+    directions are in view space, the lighting stays fixed relative to the
+    viewer as you orbit --- the structure turns, the studio does not.
+  \item[\ui{Ambient}, \ui{Diffuse}, \ui{Specular}] Per-light colours.
+\end{description}
+
+\ui{Add} appends a fill light from the opposite side; \ui{Remove} deletes
+the selected one. At least one light always remains.

@@ -5,6 +5,7 @@
 #include <QDialog>
 
 #include <optional>
+#include <string>
 
 class QComboBox;
 class QDoubleSpinBox;
@@ -43,7 +44,20 @@ private:
     QSpinBox* sizeSpin_;
     QComboBox* roundingCombo_;
     QDoubleSpinBox* radiusSpin_;
+
+    // Faceted ase.cluster shapes: `shellSpin_` is shells (icosahedron),
+    // edge length (octahedron / cuboctahedron) or {110} layers (rhombic
+    // dodecahedron); the decahedron uses its own p/q/r triple.
+    QSpinBox* shellSpin_;
+    QSpinBox* decaPSpin_;
+    QSpinBox* decaQSpin_;
+    QSpinBox* decaRSpin_;
+
     QLabel* statusLabel_;
+
+    /// The ase.cluster shape keyword for a faceted mode index, or "" for the
+    /// non-faceted Wulff/spherical modes.
+    std::string shapeForMode(int mode) const;
 };
 
 } // namespace calango::gui

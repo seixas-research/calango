@@ -1,0 +1,183 @@
+% =========================================================================
+% Calango User Guide
+% Build:  pdflatex calango_user_guide.tex   (run twice for the ToC)
+% Style follows docs/packaging.tex, extended with callouts and diagrams.
+% =========================================================================
+\documentclass[11pt,a4paper]{report}
+
+\usepackage[margin=2.5cm,headheight=26pt,headsep=16pt]{geometry}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{tcolorbox}
+\usepackage{tikz}
+\usepackage{needspace}
+\usepackage{parskip}
+\usepackage[colorlinks=true,linkcolor=calangoteal,urlcolor=calangoteal,
+            citecolor=calangoteal]{hyperref}
+
+\tcbuselibrary{skins,breakable}
+\usetikzlibrary{positioning,fit,backgrounds}
+
+% --- Brand palette (shared with docs/packaging.tex) ------------------------
+\definecolor{calangoteal}{RGB}{0,110,110}
+\definecolor{calangodark}{RGB}{30,34,40}
+\definecolor{codebg}{RGB}{245,246,248}
+\definecolor{shadegray}{RGB}{90,96,104}
+\definecolor{tipgreen}{RGB}{22,120,80}
+\definecolor{warnamber}{RGB}{176,125,42}
+\definecolor{panelgray}{RGB}{232,235,239}
+
+% --- Chapter / section typography -----------------------------------------
+\titleformat{\chapter}[display]
+  {\bfseries\color{calangodark}}
+  {\raggedright\large\color{shadegray}\MakeUppercase{\chaptertitlename}\ \Huge\color{calangoteal}\thechapter}
+  {6pt}
+  {\Huge\raggedright}
+  [\vspace{4pt}{\color{calangoteal}\rule{\textwidth}{1.6pt}}]
+\titlespacing*{\chapter}{0pt}{-18pt}{22pt}
+
+\titleformat{\section}
+  {\Large\bfseries\color{calangodark}}
+  {\textcolor{calangoteal}{\thesection}}{0.8em}{}
+  [\vspace{-6pt}{\color{calangoteal!35}\rule{\textwidth}{0.8pt}}]
+\titleformat{\subsection}
+  {\large\bfseries\color{calangodark}}
+  {\textcolor{calangoteal}{\thesubsection}}{0.8em}{}
+\titleformat{\subsubsection}
+  {\normalsize\bfseries\color{calangodark}}
+  {\textcolor{calangoteal}{\thesubsubsection}}{0.7em}{}
+\titlespacing*{\section}{0pt}{18pt}{10pt}
+\titlespacing*{\subsection}{0pt}{12pt}{6pt}
+
+\setcounter{tocdepth}{1}
+\setcounter{secnumdepth}{3}
+
+% --- Running header / footer ----------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\raisebox{-4pt}{%
+  \includegraphics[height=18pt]{../../assets/calango/logo_light.png}}}
+\fancyhead[R]{\small\color{shadegray}\nouppercase{\leftmark}}
+\fancyfoot[L]{\small\color{shadegray}Calango User Guide}
+\fancyfoot[R]{\small\color{shadegray}\thepage}
+\renewcommand{\headrulewidth}{0.8pt}
+\renewcommand{\headrule}{{\color{calangoteal}%
+  \hrule width\headwidth height\headrulewidth}}
+\renewcommand{\footrulewidth}{0pt}
+\renewcommand{\chaptermark}[1]{\markboth{\thechapter.\ #1}{}}
+\fancypagestyle{plain}{\fancyhf{}%
+  \fancyfoot[R]{\small\color{shadegray}\thepage}%
+  \renewcommand{\headrulewidth}{0pt}}
+
+% --- Code listings: teal accent bar ---------------------------------------
+\lstdefinestyle{shell}{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=leftline,
+  framerule=2.4pt,
+  rulecolor=\color{calangoteal},
+  framesep=8pt,
+  xleftmargin=12pt,
+  xrightmargin=6pt,
+  aboveskip=10pt,
+  belowskip=10pt,
+  breaklines=true,
+  breakatwhitespace=true,
+  postbreak=\mbox{\textcolor{shadegray}{$\hookrightarrow$}\space},
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  upquote=true,
+}
+\lstset{style=shell}
+
+% --- Semantic inline markup ------------------------------------------------
+\newcommand{\file}[1]{\texttt{#1}}
+\newcommand{\opt}[1]{\texttt{#1}}
+% A UI control (button, field, checkbox label).
+\newcommand{\ui}[1]{\textcolor{calangodark}{\textsf{\textbf{#1}}}}
+% A menu path: \menu{Analysis}{Raman Modes}
+\newcommand{\menusep}{\,\textcolor{calangoteal}{$\rangle$}\,}
+\newcommand{\menu}[1]{\textsf{\textbf{\textcolor{calangodark}{#1}}}}
+% A keyboard key.
+\newcommand{\kbd}[1]{%
+  \tikz[baseline=(k.base)]{\node[draw=shadegray,fill=panelgray,rounded corners=2pt,
+    inner xsep=4pt,inner ysep=1.5pt,line width=0.4pt](k){\small\textsf{#1}};}}
+
+% --- Callout boxes ---------------------------------------------------------
+\newtcolorbox{calnote}[1][]{%
+  breakable, enhanced, colback=calangoteal!5, colframe=calangoteal,
+  boxrule=0pt, leftrule=3pt, arc=1pt, left=8pt, right=8pt, top=6pt, bottom=6pt,
+  fonttitle=\bfseries\small, title={Note}, coltitle=calangoteal,
+  attach title to upper=\par\vspace{2pt}, #1}
+\newtcolorbox{caltip}[1][]{%
+  breakable, enhanced, colback=tipgreen!5, colframe=tipgreen,
+  boxrule=0pt, leftrule=3pt, arc=1pt, left=8pt, right=8pt, top=6pt, bottom=6pt,
+  fonttitle=\bfseries\small, title={Tip}, coltitle=tipgreen,
+  attach title to upper=\par\vspace{2pt}, #1}
+\newtcolorbox{calwarn}[1][]{%
+  breakable, enhanced, colback=warnamber!7, colframe=warnamber,
+  boxrule=0pt, leftrule=3pt, arc=1pt, left=8pt, right=8pt, top=6pt, bottom=6pt,
+  fonttitle=\bfseries\small, title={Requires}, coltitle=warnamber,
+  attach title to upper=\par\vspace{2pt}, #1}
+
+% Compact description lists used throughout the reference sections.
+\setlist[description]{style=unboxed,leftmargin=1.2em,itemsep=3pt,topsep=4pt}
+\setlist[itemize]{itemsep=2pt,topsep=4pt}
+\setlist[enumerate]{itemsep=3pt,topsep=4pt}
+
+\begin{document}
+
+% =========================== TITLE PAGE ===================================
+\begin{titlepage}
+\centering
+\vspace*{2.0cm}
+\includegraphics[width=0.55\textwidth]{../../assets/calango/logo_light.png}\par
+\vspace{1.3cm}
+{\color{calangoteal}\rule{0.74\textwidth}{1.6pt}}\par
+\vspace{0.9cm}
+{\Huge\bfseries User Guide\par}
+\vspace{0.5cm}
+{\Large Visual atomistic modeling, simulation and analysis\par}
+\vspace{0.9cm}
+{\color{calangoteal}\rule{0.74\textwidth}{1.6pt}}\par
+\vspace{1.5cm}
+{\large\bfseries Leandro Seixas\par}
+\vspace{0.3cm}
+{\large\color{shadegray}Seixas Research\par}
+\vfill
+{\large July 2026 --- Calango 26.7.26\par}
+\vspace*{1.2cm}
+\end{titlepage}
+
+\input{sections/00_preface}
+
+\tableofcontents
+
+\input{sections/01_getting_started}
+\input{sections/02_workspace}
+\input{sections/03_viewport}
+\input{sections/04_data}
+\input{sections/05_building}
+\input{sections/06_editing}
+\input{sections/07_appearance}
+\input{sections/08_simulations}
+\input{sections/09_remote}
+\input{sections/10_electronic}
+\input{sections/11_analysis}
+\input{sections/12_output}
+\input{sections/13_reference}
+
+\end{document}

@@ -46,6 +46,14 @@ public:
     static core::Structure makeSupercell(const core::Structure& structure,
                                          int nx, int ny, int nz);
 
+    /// General (possibly non-diagonal) supercell via ase.build.make_supercell:
+    /// the new cell is P · (old cell), with P a 3×3 integer transformation
+    /// matrix given row-major (p[i] is row i). |det P| must be a nonzero
+    /// integer (it equals the number of primitive cells in the supercell).
+    /// Requires a fully defined cell. Throws on a singular / zero-determinant P.
+    static core::Structure makeSupercellMatrix(const core::Structure& structure,
+                                               const int p[3][3]);
+
     /// Cleave a surface slab via ase.build.surface: (h k l) Miller indices,
     /// number of layers, vacuum padding in Å on each side.
     static core::Structure makeSlab(const core::Structure& structure,

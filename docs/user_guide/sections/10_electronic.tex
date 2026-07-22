@@ -1,0 +1,93 @@
+\chapter{Electronic Structure}
+\label{ch:electronic}
+
+\menu{Simulation}\menusep\menu{Electronic Bands / PDOS} computes a band
+structure along a high-symmetry $k$-path and, where the backend supports
+it, an element- and orbital-resolved projected density of states.
+
+\section{Setting up the calculation}
+
+\begin{description}
+  \item[\ui{Backend}] \ui{Free electrons (ASE --- bands only)},
+    \ui{GPAW (DFT, bands + PDOS)} or
+    \ui{Quantum ESPRESSO (needs pw.x + pseudos)}. The GPAW entry is
+    disabled when the package is not importable in the selected
+    environment.
+  \item[\ui{k-path}] Pre-filled with ASE's suggestion for the structure's
+    Bravais lattice, e.g.\ \texttt{GXWKGLUWLK,UX}. Edit it freely; leave it
+    empty to accept the suggestion.
+  \item[\ui{k-points}] Total points along the whole path, default 80.
+  \item[\ui{Valence electrons}] Electrons per cell, free-electron backend
+    only.
+  \item[\ui{PW cutoff}] Plane-wave cutoff, default 340\,eV.
+  \item[\ui{SCF k-grid}] Monkhorst-Pack $n^3$ grid for the self-consistent
+    step, default 4.
+  \item[\ui{Compute element/orbital PDOS (GPAW backend)}] Adds the
+    projected DOS.
+  \item[\ui{Environment}] The Conda environment or interpreter that runs
+    the job (Section~\ref{sec:exec-env}).
+\end{description}
+
+\begin{caltip}
+The free-electron backend needs nothing beyond ASE and finishes in seconds.
+It computes empty-lattice bands --- the exact free-electron dispersion
+folded into your Brillouin zone --- which is genuinely useful for checking
+that a $k$-path is the one you meant, and for teaching band folding, before
+committing a DFT run.
+\end{caltip}
+
+\begin{calwarn}
+Real bands need a real solver: \texttt{gpaw} installed in the selected
+environment, or \texttt{pw.x} plus pseudopotentials for the Quantum
+ESPRESSO route. The QE script is a scaffold with an \texttt{EDIT ME} line
+for your pseudopotential set.
+\end{calwarn}
+
+The job runs like any other --- console, progress markers, process-manager
+entry --- and writes \file{bands.json} and, when computed,
+\file{pdos.json} into the job directory. The viewer opens automatically on
+completion, and can be reopened any time with \ui{Load Result} in the
+process manager.
+
+\section{Reading the plots}
+
+The viewer shows the band structure and, when present, the PDOS side by
+side on a shared energy axis.
+
+\subsection{Band structure}
+
+Energy versus $k$-path distance, with vertical lines and labels at every
+high-symmetry point (ASE's \texttt{G} is rendered as $\Gamma$). Spin
+channels are drawn in different colours. A dashed horizontal line marks the
+reference energy at $E - E_\text{ref} = 0$.
+
+\subsection{Projected density of states}
+
+Density of states versus the same energy axis, one curve per element and
+orbital projection --- \texttt{Si s}, \texttt{Si p}, \texttt{O p} and so on
+--- accumulated over all atoms of each species and colour-keyed to the
+legend.
+
+\section{Controls and export}
+
+\begin{description}
+  \item[\ui{Fermi level}] The reference energy, pre-filled from the
+    calculation. Plots show $E - E_\text{ref}$, so shifting it moves the
+    zero line --- useful for aligning against a reference calculation or a
+    measured spectrum.
+  \item[\ui{E min}, \ui{E max}] The energy window, defaults $-10$ and
+    $+10$\,eV.
+  \item[\ui{Projections}] A checklist of the PDOS curves. Uncheck the ones
+    that clutter the picture; the vertical scale re-normalises to what
+    remains visible.
+  \item[\ui{Export Bands\ldots}] CSV or \file{.dat}: one row per $k$-point,
+    with the path distance followed by every band (and spin channel).
+  \item[\ui{Export PDOS\ldots}] CSV or \file{.dat}: one row per energy, one
+    column per projection.
+\end{description}
+
+\begin{calnote}
+Exported bands use the same $k$-path distance as the $x$ axis, so the
+columns drop straight into an external plotting script and reproduce the
+figure you see.
+\end{calnote}

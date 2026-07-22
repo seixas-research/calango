@@ -1,0 +1,101 @@
+\chapter{Remote HPC Execution}
+\label{ch:remote}
+
+The \ui{Remote Access} panel (zone 11) submits calculations to a cluster
+over SSH, monitors the queue, and brings the results back --- without
+leaving Calango.
+
+\begin{calwarn}
+Needs \texttt{paramiko} in Calango's Python environment, and SSH access to
+a cluster running SLURM, PBS or SGE.
+\end{calwarn}
+
+\begin{calnote}
+All network traffic runs in a separate helper process driven over a JSON
+protocol, mirroring how local jobs are isolated: the interface never blocks
+on the network, and a hung connection can always be resolved by killing
+the helper rather than the application.
+\end{calnote}
+
+\section{Connection}
+
+The \ui{Connection} tab holds the cluster credentials:
+
+\begin{description}
+  \item[\ui{Host}, \ui{Port}] Hostname and port (default 22).
+  \item[\ui{User}] Your account name on the cluster.
+  \item[\ui{Auth}] \ui{SSH key} or \ui{Password}.
+  \item[\ui{Key file}] Path to a private key, e.g.\
+    \file{\textasciitilde/.ssh/id\_rsa}. Leave empty to let your SSH agent
+    or default keys authenticate.
+  \item[\ui{Password}] The password, or the passphrase for an encrypted
+    key.
+  \item[\ui{Remote dir}] Working directory on the cluster, relative to
+    \opt{\$HOME} (default \file{calango\_jobs}).
+  \item[\ui{Test Connection}] Verifies everything, reports your remote
+    \opt{\$HOME}, and auto-detects the scheduler.
+\end{description}
+
+\begin{calwarn}
+Passwords and key passphrases are kept in memory only --- never written to
+disk, never placed on a command line where \texttt{ps} could see them.
+Everything else (host, user, key path, scheduler settings) is remembered
+between sessions.
+\end{calwarn}
+
+\section{Scheduler settings}
+
+The \ui{Scheduler} tab describes the batch job:
+
+\begin{description}
+  \item[\ui{Scheduler}] \ui{SLURM}, \ui{PBS} or \ui{SGE}.
+  \item[\ui{Queue}] Partition or queue name; empty uses the cluster default.
+  \item[\ui{Tasks / cores}] Requested cores.
+  \item[\ui{Walltime}] \texttt{HH:MM:SS}, default \texttt{01:00:00}.
+  \item[\ui{Setup}] Shell lines executed before the payload --- module
+    loads, \texttt{conda activate}, anything your site needs:
+    \begin{lstlisting}
+module load python
+source ~/venvs/ase/bin/activate
+    \end{lstlisting}
+  \item[\ui{Submit Calculation\ldots}] Opens the usual calculator dialog,
+    then submits the result.
+\end{description}
+
+The generated wrapper carries the right directives for your scheduler ---
+\texttt{\#SBATCH}, \texttt{\#PBS} or \texttt{\#\$} --- and always redirects
+output to fixed file names so the monitor knows what to tail.
+
+\section{Submitting and monitoring}
+
+\menu{Simulation}\menusep\menu{New Remote Calculation}
+(\kbd{Ctrl}+\kbd{Shift}+\kbd{R}) --- or \ui{Submit Calculation\ldots} in
+the panel --- runs the full sequence:
+
+\begin{enumerate}
+  \item Stage \file{run.py} and \file{structure.extxyz} into a local job
+    directory, exactly as a local run would.
+  \item Generate \file{job.sh} from the scheduler settings.
+  \item Upload the directory over SFTP, creating the remote path as needed.
+  \item Submit with \texttt{sbatch} or \texttt{qsub} and capture the job ID.
+  \item Start monitoring.
+\end{enumerate}
+
+The \ui{Queue \& Logs} tab then shows the job ID and remote directory, the
+live queue state polled with \texttt{squeue} or \texttt{qstat}, and the
+remote standard output and error streamed incrementally into the console
+(errors in red). \ui{Cancel Job} issues \texttt{scancel} or \texttt{qdel}.
+
+\section{Retrieving results}
+
+When the job leaves the queue, Calango downloads the results automatically
+--- structures, trajectories, logs and CSV metric files --- into the same
+local job directory the inputs came from. Trajectories and final geometries
+open directly in a new tab.
+
+\ui{Download Results} repeats the transfer manually, which is useful for
+pulling intermediate output from a long-running job without waiting for it
+to finish.
+
+The task appears in the process manager like any other, so its directory
+stays one click away for later analysis.

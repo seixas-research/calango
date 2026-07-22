@@ -34,6 +34,17 @@ enum class TaskKind {
     MolecularDynamics,
 };
 
+/// Local optimizers ASE ships for structural relaxation. Enum order is the
+/// optimizer combo order in the Geometry Optimization dialog; the value maps
+/// directly to the `ase.optimize` class name via toString(Optimizer).
+enum class Optimizer {
+    BFGS,   ///< quasi-Newton, robust general default
+    LBFGS,  ///< limited-memory BFGS, cheaper for large systems
+    FIRE,   ///< fast inertial relaxation engine (MD-like, no Hessian)
+    GPMin,  ///< Gaussian-process minimizer (few, expensive steps)
+    MDMin,  ///< velocity-quench molecular-dynamics minimizer
+};
+
 /// The full set of MD integrators/thermostats ASE ships. Enum order is
 /// the ensemble combo order in the calculator dialog.
 enum class MdEnsemble {
@@ -70,8 +81,15 @@ struct CalculatorConfig {
     TaskKind task = TaskKind::SinglePoint;
 
     // Geometry optimization
+    Optimizer optimizer = Optimizer::BFGS;
     double fmax = 0.05;      ///< eV/Å convergence criterion
     int maxSteps = 200;
+
+    // Single-point / electronic convergence (DFT backends only; ignored by
+    // the classical potentials). scfMaxSteps caps SCF iterations;
+    // scfEnergyTolEv is the electronic-energy convergence threshold.
+    int scfMaxSteps = 100;
+    double scfEnergyTolEv = 1e-4;
 
     // Molecular dynamics
     MdEnsemble ensemble = MdEnsemble::LangevinNVT;
@@ -107,5 +125,7 @@ struct CalculatorConfig {
 
 std::string toString(CalculatorKind kind);
 std::string toString(TaskKind kind);
+/// The `ase.optimize` class name for the optimizer (e.g. "BFGS", "LBFGS").
+std::string toString(Optimizer optimizer);
 
 } // namespace calango::core
