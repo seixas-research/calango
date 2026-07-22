@@ -28,11 +28,16 @@ public:
     /// Update a task's working directory after it has been staged.
     void setTaskDirectory(int id, const QString& directory);
     void setTaskStatus(int id, Status status);
+    /// Remove a task's row (the controller purges its data first).
+    void removeTask(int id);
 
 Q_SIGNALS:
     /// "Load Result" on a task — MainWindow decides what the directory
     /// contains (trajectory, band data, ...) and opens it.
     void loadResultRequested(const QString& directory);
+    /// "Delete Process" on a task — MainWindow confirms, stops it if running,
+    /// purges its proc_<id> directory, then calls removeTask(id).
+    void deleteRequested(int id);
 
 private:
     QTreeWidgetItem* itemForId(int id) const;

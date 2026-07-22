@@ -24,7 +24,11 @@ struct PhononConfig {
     double deltaAngstrom = 0.01;  ///< ± displacement per atom and direction
 
     int bandPathPoints = 100; ///< k-points along the ASE-suggested path
-    int dosKptGrid = 20;      ///< Monkhorst-Pack n×n×n grid for the DOS
+    int dosKptGrid = 20;      ///< Monkhorst-Pack n×n×n grid for the DOS (mesh)
+
+    /// Enforce the acoustic sum rule when reading the force constants, so the
+    /// three acoustic branches vanish at Γ (ase.phonons Phonons.read(acoustic=…)).
+    bool acousticSumRule = true;
 };
 
 /// Generates the standalone ASE Python script for a PhononConfig, in the

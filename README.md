@@ -2,9 +2,9 @@
 
 <a href="https://github.com/seixas-research/calango" target="_blank" rel="noopener noreferrer">
   <picture>
-    <source srcset="https://raw.githubusercontent.com/seixas-research/calango/refs/heads/main/assets/calango/logo_dark.png" media="(prefers-color-scheme: dark)">
-    <source srcset="https://raw.githubusercontent.com/seixas-research/calango/refs/heads/main/assets/calango/logo_light.png" media="(prefers-color-scheme: light)">
-    <img src="https://raw.githubusercontent.com/seixas-research/carcara/refs/heads/main/assets/calango/logo_light.png" alt="Carcará logo" style="height: auto; width: auto; max-height: 100px;">
+    <source srcset="https://raw.githubusercontent.com/seixas-research/calango/refs/heads/main/assets/.internal/logo_dark.png" media="(prefers-color-scheme: dark)">
+    <source srcset="https://raw.githubusercontent.com/seixas-research/calango/refs/heads/main/assets/.internal/logo_light.png" media="(prefers-color-scheme: light)">
+    <img src="https://raw.githubusercontent.com/seixas-research/carcara/refs/heads/main/assets/.internal/logo_light.png" alt="Carcará logo" style="height: auto; width: auto; max-height: 100px;">
   </picture>
 </a>
 </h1> 

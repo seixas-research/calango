@@ -18,7 +18,7 @@ void BrandingPanel::paintEvent(QPaintEvent*)
     // to the larger dimension (cover), center-cropped, at device
     // resolution so it stays crisp on high-DPI displays.
     static const QPixmap source(
-        QStringLiteral(":/assets/calango/panel.png"));
+        QStringLiteral(":/assets/.internal/panel.png"));
     if (source.isNull())
         return;
 

@@ -25,6 +25,7 @@ namespace calango::gui {
 
 class JobLogWidget;
 class NebDialog;
+class SimulationWizardBase;
 class MetricPlotWidget;
 class ProcessManagerPanel;
 class RemoteAccessPanel;
@@ -118,6 +119,9 @@ private Q_SLOTS:
     /// "Load Result" from the Process panel: band data, trajectory or
     /// final structure — whatever the task directory contains.
     void onProcessResultRequested(const QString& directory);
+    /// "Delete Process": confirm, stop it if running, purge proc_<id>/, drop
+    /// its record + selector entry + panel row.
+    void onDeleteProcessRequested(int id);
     void showFrame(int index);
     void showBrillouinZone();
     void showRdf();
@@ -195,6 +199,9 @@ private:
     /// current structure, ASE available, and no job already running. Shows the
     /// appropriate message (titled `title`) and returns false if not ready.
     bool prepareSimulation(const QString& title);
+    /// Run a 4-stage simulation wizard: exec it, then launch its script
+    /// locally or submit it remotely per the chosen action.
+    void runSimulationWizard(SimulationWizardBase& wizard, const QString& label);
 
     // -- .calproj project workspace persistence ----------------------------
     /// Serialize the whole session (documents, tabs, viewport color

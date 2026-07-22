@@ -1,12 +1,8 @@
 #include "gui/StructureInfoWidget.hpp"
 
 #include "core/Structure.hpp"
-#include "python_bridge/AseBridge.hpp"
-#include "python_bridge/PythonEngine.hpp"
 
-#include <QDoubleSpinBox>
 #include <QFormLayout>
-#include <QPushButton>
 
 #include <algorithm>
 #include <cmath>
@@ -34,12 +30,9 @@ StructureInfoWidget::StructureInfoWidget(QWidget* parent)
     , anglesLabel_(new QLabel(this))
     , cellLabel_(new QLabel(this))
     , pbcLabel_(new QLabel(this))
-    , symprecSpin_(new QDoubleSpinBox(this))
-    , detectButton_(new QPushButton(tr("Detect Symmetry"), this))
-    , spaceGroupLabel_(new QLabel(this))
-    , pointGroupLabel_(new QLabel(this))
-    , crystalSystemLabel_(new QLabel(this))
 {
+    // Symmetry detection lives in its own dialog (Analysis → Detect
+    // Symmetry…); this panel stays a lean read-only structure summary.
     auto* layout = new QFormLayout(this);
     layout->addRow(tr("Formula:"), formulaLabel_);
     layout->addRow(tr("Atoms:"), atomCountLabel_);
@@ -48,22 +41,7 @@ StructureInfoWidget::StructureInfoWidget(QWidget* parent)
     layout->addRow(tr("α, β, γ:"), anglesLabel_);
     layout->addRow(tr("Cell volume:"), cellLabel_);
     layout->addRow(tr("Periodic:"), pbcLabel_);
-
-    symprecSpin_->setRange(0.0001, 1.0);
-    symprecSpin_->setDecimals(4); // display at most 4 decimal places
-    symprecSpin_->setSingleStep(0.001);
-    symprecSpin_->setValue(0.001);
-    symprecSpin_->setSuffix(tr(" Å"));
-    symprecSpin_->setToolTip(tr("spglib symmetry tolerance (symprec)"));
-    layout->addRow(tr("Tolerance:"), symprecSpin_);
-    layout->addRow(detectButton_);
-    connect(detectButton_, &QPushButton::clicked,
-            this, &StructureInfoWidget::detectSymmetry);
-
-    layout->addRow(tr("Space group:"), spaceGroupLabel_);
-    layout->addRow(tr("Point group:"), pointGroupLabel_);
-    layout->addRow(tr("Crystal system:"), crystalSystemLabel_);
-    for (QLabel* label : {lengthsLabel_, anglesLabel_, spaceGroupLabel_})
+    for (QLabel* label : {lengthsLabel_, anglesLabel_})
         label->setWordWrap(true);
     updateFromStructure(nullptr);
 }
@@ -72,16 +50,10 @@ void StructureInfoWidget::updateFromStructure(const core::Structure* structure)
 {
     structure_ = structure;
 
-    // Symmetry results are on-demand and become stale on any structure
-    // change — clear them rather than showing yesterday's space group.
-    for (QLabel* label : {spaceGroupLabel_, pointGroupLabel_, crystalSystemLabel_})
-        label->setText(QStringLiteral("—"));
-
     if (!structure || structure->empty()) {
         for (QLabel* label : {formulaLabel_, atomCountLabel_, bondCountLabel_,
                               lengthsLabel_, anglesLabel_, cellLabel_, pbcLabel_})
             label->setText(QStringLiteral("—"));
-        detectButton_->setEnabled(false);
         return;
     }
 
@@ -106,42 +78,11 @@ void StructureInfoWidget::updateFromStructure(const core::Structure* structure)
         pbcLabel_->setText(QStringLiteral("%1 %2 %3")
                                .arg(pbc[0] ? "T" : "F", pbc[1] ? "T" : "F",
                                     pbc[2] ? "T" : "F"));
-        detectButton_->setEnabled(true);
     } else {
         lengthsLabel_->setText(tr("none"));
         anglesLabel_->setText(QStringLiteral("—"));
         cellLabel_->setText(tr("none"));
         pbcLabel_->setText(QStringLiteral("F F F"));
-        for (QLabel* label : {spaceGroupLabel_, pointGroupLabel_, crystalSystemLabel_})
-            label->setText(tr("aperiodic"));
-        detectButton_->setEnabled(false);
-    }
-}
-
-void StructureInfoWidget::detectSymmetry()
-{
-    if (!structure_ || structure_->empty() || !structure_->cell().isDefined())
-        return;
-    if (!pybridge::PythonEngine::instance().aseAvailable()) {
-        spaceGroupLabel_->setText(tr("ASE unavailable"));
-        return;
-    }
-
-    const auto symmetry =
-        pybridge::AseBridge::symmetryInfo(*structure_, symprecSpin_->value());
-    if (symmetry.error.empty()) {
-        // The tolerance is already visible in its own spinbox — the space
-        // group shows only symbol and number.
-        spaceGroupLabel_->setText(
-            QStringLiteral("%1 (%2)")
-                .arg(QString::fromStdString(symmetry.spaceGroupSymbol))
-                .arg(symmetry.spaceGroupNumber));
-        pointGroupLabel_->setText(QString::fromStdString(symmetry.pointGroup));
-        crystalSystemLabel_->setText(QString::fromStdString(symmetry.crystalSystem));
-    } else {
-        spaceGroupLabel_->setText(QString::fromStdString(symmetry.error));
-        pointGroupLabel_->setText(QStringLiteral("—"));
-        crystalSystemLabel_->setText(QStringLiteral("—"));
     }
 }
 

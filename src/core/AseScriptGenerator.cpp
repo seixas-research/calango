@@ -241,11 +241,29 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
 
     case TaskKind::GeometryOptimization: {
         const std::string opt = toString(c.optimizer);
-        out << "from ase.optimize import " << opt << "\n"
-               "\n"
-            << "max_steps = " << c.maxSteps << "\n"
-            << "opt = " << opt
-            << "(atoms, trajectory=\"opt.traj\", logfile=\"-\")\n"
+        out << "from ase.optimize import " << opt << "\n";
+        if (c.relaxCell) {
+            const char* filter = c.cellFilter == CellFilter::UnitCell
+                ? "UnitCellFilter"
+                : "FrechetCellFilter";
+            out << "try:\n"
+                << "    from ase.filters import " << filter << " as _CellFilter\n"
+                   "except ImportError:  # ASE < 3.23\n"
+                   "    from ase.constraints import UnitCellFilter as _CellFilter\n";
+        }
+        out << "\n"
+            << "max_steps = " << c.maxSteps << "\n";
+        if (c.relaxCell)
+            out << "# Variable-cell relaxation: relax atomic positions AND the\n"
+                   "# unit cell under "
+                << (c.cellHydrostatic ? "hydrostatic (isotropic)"
+                                      : "full anisotropic")
+                << " stress.\n"
+                << "_target = _CellFilter(atoms, hydrostatic_strain="
+                << (c.cellHydrostatic ? "True" : "False") << ")\n";
+        out << "opt = " << opt << "("
+            << (c.relaxCell ? "_target" : "atoms")
+            << ", trajectory=\"opt.traj\", logfile=\"-\")\n"
                "\n"
             << kStreamFrameHelper
             << "def _report():\n"

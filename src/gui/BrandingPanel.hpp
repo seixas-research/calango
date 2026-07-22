@@ -5,7 +5,7 @@
 
 namespace calango::gui {
 
-/// Zone-1 branding card: the panel banner (assets/calango/panel.png)
+/// Zone-1 branding card: the panel banner (assets/.internal/panel.png)
 /// painted edge-to-edge — scaled to cover the whole panel (aspect
 /// preserved, center-cropped) and re-rendered at device resolution
 /// whenever the zone is resized.

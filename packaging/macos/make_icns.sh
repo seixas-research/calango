@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Render a .icns icon from a square source PNG using the stock macOS
 # tools (sips + iconutil). Invoked by CMake when the repository does not
-# ship a pre-built assets/calango/calango.icns.
+# ship a pre-built assets/.internal/calango.icns.
 #
 #   make_icns.sh <source.png> <output.icns>
 set -euo pipefail

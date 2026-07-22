@@ -47,7 +47,7 @@ int main(int argc, char* argv[])
     // Window / taskbar / dock icon (embedded high-resolution brand icon,
     // transparent-background variant).
     QApplication::setWindowIcon(
-        QIcon(QStringLiteral(":/assets/calango/icon_transparent.png")));
+        QIcon(QStringLiteral(":/assets/.internal/icon_transparent.png")));
 
     calango::pybridge::PythonEngine python;
     if (!python.aseAvailable()) {

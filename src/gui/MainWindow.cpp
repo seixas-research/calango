@@ -28,8 +28,11 @@
 #include "gui/AdsorptionDialog.hpp"
 #include "gui/BandPdosWindow.hpp"
 #include "gui/ClusterExpansionDialog.hpp"
+#include "gui/GeometryOptimizationWizard.hpp"
 #include "gui/MolecularDynamicsWizard.hpp"
 #include "gui/MonteCarloDialog.hpp"
+#include "gui/PhononWizard.hpp"
+#include "gui/SimulationWizardBase.hpp"
 #include "gui/NanoparticleDialog.hpp"
 #include "gui/NebDialog.hpp"
 #include "gui/PhononPlotWindow.hpp"
@@ -472,6 +475,36 @@ MainWindow::MainWindow(QWidget* parent)
                 notifyStructureChanged(false);
                 statusBar()->showMessage(tr("Bond %1–%2 created").arg(i).arg(j));
             });
+    // Insert mode Shift+click: substitute the clicked atom's element.
+    connect(viewport_, &ViewportWidget::atomReplaceRequested, this,
+            [this](int index) {
+                Document* doc = currentDocument();
+                if (!doc || !doc->structure || index < 0
+                    || index >= static_cast<int>(doc->structure->size()))
+                    return;
+                pushUndo();
+                doc->structure->atoms()[static_cast<std::size_t>(index)]
+                    .atomicNumber = activeElementZ_;
+                notifyStructureChanged(false);
+                statusBar()->showMessage(
+                    tr("Replaced atom %1 with %2").arg(index).arg(
+                        QLatin1String(core::Elements::data(activeElementZ_).symbol)));
+            });
+    // Translation (Pan) mode Shift+drag: move a single atom (one undo/drag).
+    connect(viewport_, &ViewportWidget::atomTranslateRequested, this,
+            [this](int index, const core::Vec3& position, bool begin) {
+                Document* doc = currentDocument();
+                if (!doc || !doc->structure || index < 0
+                    || index >= static_cast<int>(doc->structure->size()))
+                    return;
+                if (begin)
+                    pushUndo();
+                doc->structure->atoms()[static_cast<std::size_t>(index)].position =
+                    position;
+                viewport_->refreshStructure(); // fast, keeps camera + selection
+                if (begin)
+                    statusBar()->showMessage(tr("Translating atom %1…").arg(index));
+            });
 
     statusBar()->showMessage(tr("Ready — open a structure to begin (File → Open)"));
 }
@@ -590,8 +623,6 @@ void MainWindow::createMenusAndDocks()
                          this, &MainWindow::openSqsBuilder);
     buildMenu->addAction(tr("Cluster &Expansion…"),
                          this, &MainWindow::openClusterExpansion);
-    buildMenu->addAction(tr("&Normal Modes / Phonon Builder…"),
-                         this, &MainWindow::openPhononBuilder);
     buildMenu->addAction(tr("From &Database…"), this, &MainWindow::openExamplesBrowser);
     buildMenu->addAction(tr("Structure Perturbation / &Noise…"),
                          this, &MainWindow::addRandomNoise);
@@ -605,7 +636,7 @@ void MainWindow::createMenusAndDocks()
                               this, &MainWindow::geometryOptimization);
     simulationMenu->addAction(tr("&Molecular Dynamics…"),
                               this, &MainWindow::molecularDynamics);
-    simulationMenu->addAction(tr("&Phonon Calculation…"),
+    simulationMenu->addAction(tr("&Phonon Calculator…"),
                               this, &MainWindow::openPhononBuilder);
     simulationMenu->addAction(tr("&Monte Carlo Simulation…"),
                               this, &MainWindow::openMonteCarlo);
@@ -702,6 +733,8 @@ void MainWindow::createMenusAndDocks()
     splitDockWidget(brandingDock, processDock, Qt::Vertical);
     connect(processPanel_, &ProcessManagerPanel::loadResultRequested,
             this, &MainWindow::onProcessResultRequested);
+    connect(processPanel_, &ProcessManagerPanel::deleteRequested,
+            this, &MainWindow::onDeleteProcessRequested);
 
     auto* infoDock = new QDockWidget(tr("Structure"), this); // zone 5
     infoDock->setObjectName(QStringLiteral("structureDock"));
@@ -2456,6 +2489,64 @@ void MainWindow::openPhononResults(const QString& directory)
     window->show();
 }
 
+void MainWindow::onDeleteProcessRequested(int id)
+{
+    const auto it = processRecords_.find(id);
+    const QString label = it != processRecords_.end() ? it->second.label
+                                                       : tr("this process");
+    const bool running = id == currentTaskId_;
+
+    const auto choice = QMessageBox::question(
+        this, tr("Delete Process"),
+        running
+            ? tr("Process #%1 (%2) is still running. Stop it and permanently "
+                 "delete its data folder?").arg(id).arg(label)
+            : tr("Permanently delete process #%1 (%2) and its data folder?")
+                  .arg(id).arg(label),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (choice != QMessageBox::Yes)
+        return;
+
+    // Stop the subprocess first so it releases the directory before we purge.
+    if (running) {
+        jobRunner_->terminate();
+        currentTaskId_ = -1; // its finish must not write metrics back
+        liveDoc_ = nullptr;
+    }
+
+    // Purge the managed .calango_tmp/proc_<id>/ folder.
+    QString directory = it != processRecords_.end() ? it->second.directory
+                                                    : QString();
+    if (!directory.isEmpty())
+        QDir(directory).removeRecursively();
+
+    processRecords_.erase(id);
+
+    // Drop the selector entry; if it was showing, fall back to another process
+    // or clear the tabs when none remain.
+    if (processSelector_) {
+        const int comboIndex = processSelector_->findData(id);
+        if (comboIndex >= 0) {
+            const QSignalBlocker block(processSelector_);
+            processSelector_->removeItem(comboIndex);
+        }
+        if (processSelector_->count() == 0) {
+            selectedProcessId_ = -1;
+            energyPlot_->clear();
+            temperaturePlot_->clear();
+            forcePlot_->clear();
+            pressurePlot_->clear();
+            jobLogWidget_->restoreLog(QString());
+        } else if (selectedProcessId_ == id) {
+            processSelector_->setCurrentIndex(processSelector_->count() - 1);
+            onProcessSelected(processSelector_->currentIndex());
+        }
+    }
+
+    processPanel_->removeTask(id);
+    statusBar()->showMessage(tr("Deleted process #%1").arg(id));
+}
+
 void MainWindow::onProcessResultRequested(const QString& directory)
 {
     if (QFile::exists(directory + QStringLiteral("/bands.json"))) {
@@ -2715,41 +2806,17 @@ void MainWindow::openPhononBuilder()
 {
     Document* doc = currentDocument();
     if (!doc || !doc->structure || doc->structure->empty()) {
-        QMessageBox::information(this, tr("Phonon Builder"),
+        QMessageBox::information(this, tr("Phonon Calculator"),
                                  tr("Open or build a structure first."));
         return;
     }
     if (!ensureAseAvailable())
         return;
-
-    PhononBuilderDialog dialog(doc->structure, this);
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-
-    if (dialog.generateDisplacementsOnly()) {
-        try {
-            auto frames = dialog.buildDisplacedFrames();
-            const auto frameCount = frames.size();
-            auto reference = frames.front();
-            addDocument(std::move(reference),
-                        tr("%1 (displacements)").arg(doc->fileName),
-                        std::move(frames));
-            statusBar()->showMessage(
-                tr("Generated %1 displaced structures (δ scrubbed on the timeline; "
-                   "save frames for external codes via File → Save Structure As)")
-                    .arg(frameCount));
-        } catch (const std::exception& e) {
-            QMessageBox::critical(this, tr("Phonon Builder"), QString::fromUtf8(e.what()));
-        }
-        return;
-    }
-
-    if (jobRunner_->isRunning()) {
-        QMessageBox::information(this, tr("Phonon Builder"),
-                                 tr("A calculation is already running — kill it first."));
-        return;
-    }
-    runScript(dialog.script(), dialog.pythonExecutable());
+    const auto pbc = doc->structure->cell().pbc();
+    const bool periodic = doc->structure->cell().isDefined()
+        && (pbc[0] || pbc[1] || pbc[2]);
+    PhononWizard wizard(periodic, this);
+    runSimulationWizard(wizard, tr("Phonon calculation"));
 }
 
 void MainWindow::openNanoBuilder()
@@ -3004,14 +3071,50 @@ void MainWindow::singlePointCalculation()
                   tr("Single-point"), /*expectFrames=*/false);
 }
 
+void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
+                                     const QString& label)
+{
+    if (wizard.exec() != QDialog::Accepted)
+        return;
+
+    if (wizard.action() == SimulationWizardBase::Action::RunRemote) {
+        // Zone-11 Remote Access manager: stage the script and submit it.
+        const QString jobDir = stageJob(wizard.script());
+        if (jobDir.isEmpty())
+            return;
+        Document* doc = currentDocument();
+        remoteDock_->show();
+        remoteDock_->raise();
+        const int taskId =
+            processPanel_->registerTask(tr("Remote %1").arg(label), jobDir);
+        processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
+        remotePanel_->submitStagedJob(
+            jobDir, doc ? QFileInfo(doc->fileName).completeBaseName() : label);
+        statusBar()->showMessage(tr("Submitting %1 run to the cluster…").arg(label));
+        return;
+    }
+
+    if (jobRunner_->isRunning()) {
+        QMessageBox::information(this, label,
+                                 tr("A calculation is already running — kill it first."));
+        return;
+    }
+    runScript(wizard.script(), wizard.pythonExecutable(), label,
+              /*expectFrames=*/true);
+}
+
 void MainWindow::geometryOptimization()
 {
-    if (!prepareSimulation(tr("Geometry Optimization")))
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Geometry Optimization"),
+                                 tr("Open or build a structure first."));
         return;
-    GeometryOptimizationDialog dialog(this);
-    if (dialog.exec() == QDialog::Accepted)
-        runScript(dialog.script(), dialog.pythonExecutable(),
-                  tr("Geometry optimization"), /*expectFrames=*/true);
+    }
+    if (!ensureAseAvailable())
+        return;
+    GeometryOptimizationWizard wizard(this);
+    runSimulationWizard(wizard, tr("Geometry optimization"));
 }
 
 void MainWindow::molecularDynamics()
@@ -3024,33 +3127,8 @@ void MainWindow::molecularDynamics()
     }
     if (!ensureAseAvailable())
         return;
-
     MolecularDynamicsWizard wizard(this);
-    if (wizard.exec() != QDialog::Accepted)
-        return;
-
-    if (wizard.action() == MolecularDynamicsWizard::Action::RunRemote) {
-        // Zone-11 Remote Access manager: stage the script and submit it.
-        const QString jobDir = stageJob(wizard.script());
-        if (jobDir.isEmpty())
-            return;
-        remoteDock_->show();
-        remoteDock_->raise();
-        const int taskId = processPanel_->registerTask(tr("Remote MD"), jobDir);
-        processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
-        remotePanel_->submitStagedJob(
-            jobDir, QFileInfo(doc->fileName).completeBaseName());
-        statusBar()->showMessage(tr("Submitting MD run %1 to the cluster…").arg(jobDir));
-        return;
-    }
-
-    if (jobRunner_->isRunning()) {
-        QMessageBox::information(this, tr("Molecular Dynamics"),
-                                 tr("A calculation is already running — kill it first."));
-        return;
-    }
-    runScript(wizard.script(), wizard.pythonExecutable(),
-              tr("Molecular dynamics"), /*expectFrames=*/true);
+    runSimulationWizard(wizard, tr("Molecular dynamics"));
 }
 
 void MainWindow::openMonteCarlo()
@@ -3608,7 +3686,7 @@ void MainWindow::about()
     box.setWindowTitle(tr("About Calango"));
     // Brand banner: the transparent icon variant, scaled for the dialog.
     box.setIconPixmap(
-        QPixmap(QStringLiteral(":/assets/calango/icon_transparent.png"))
+        QPixmap(QStringLiteral(":/assets/.internal/icon_transparent.png"))
             .scaled(140, 140, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     box.setText(
         tr("<h3>Calango %1</h3>"

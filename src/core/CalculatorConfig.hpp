@@ -46,6 +46,12 @@ enum class Optimizer {
     MDMin,  ///< velocity-quench molecular-dynamics minimizer
 };
 
+/// Cell filter used for variable-cell (stress) relaxation.
+enum class CellFilter {
+    FrechetCell, ///< ase.filters.FrechetCellFilter (recommended, well-behaved)
+    UnitCell,    ///< ase.filters.UnitCellFilter (classic)
+};
+
 /// The full set of MD integrators/thermostats ASE ships. Enum order is
 /// the ensemble combo order in the calculator dialog.
 enum class MdEnsemble {
@@ -85,6 +91,12 @@ struct CalculatorConfig {
     Optimizer optimizer = Optimizer::BFGS;
     double fmax = 0.05;      ///< eV/Å convergence criterion
     int maxSteps = 200;
+    /// Variable-cell relaxation: also relax the unit cell via a cell filter.
+    bool relaxCell = false;
+    CellFilter cellFilter = CellFilter::FrechetCell;
+    /// Constrain the cell strain to hydrostatic (isotropic) rather than the
+    /// full anisotropic stress relaxation.
+    bool cellHydrostatic = false;
 
     // Single-point / electronic convergence (DFT backends only; ignored by
     // the classical potentials). scfMaxSteps caps SCF iterations;

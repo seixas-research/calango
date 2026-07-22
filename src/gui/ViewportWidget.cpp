@@ -520,10 +520,28 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event)
 {
     lastMousePos_ = event->position();
     pressPos_ = event->position();
+    shiftDragAtom_ = -1;
+    shiftDragBegan_ = false;
 
-    if (event->button() != Qt::LeftButton
-        || event->modifiers().testFlag(Qt::ShiftModifier))
+    if (event->button() != Qt::LeftButton)
         return;
+
+    if (event->modifiers().testFlag(Qt::ShiftModifier)) {
+        // Translation (Pan) mode: Shift+drag on an atom grabs it for a
+        // single-atom move instead of panning. Anywhere else, Shift stays a
+        // camera-pan override handled in mouseMoveEvent.
+        if (interactionMode_ == InteractionMode::Pan && structure_) {
+            const int atom = pickAtom(pressPos_);
+            if (atom >= 0 && atom < static_cast<int>(structure_->size())) {
+                shiftDragAtom_ = atom;
+                shiftDragAtomStart_ =
+                    structure_->atoms()[static_cast<std::size_t>(atom)].position;
+                unprojectToPlane(pressPos_, shiftDragAtomStart_,
+                                 shiftDragPlaneStart_);
+            }
+        }
+        return;
+    }
 
     if (interactionMode_ == InteractionMode::Select) {
         if (!rubberBand_)
@@ -540,6 +558,21 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
 {
     const QPointF delta = event->position() - lastMousePos_;
     lastMousePos_ = event->position();
+
+    // Translation (Pan) mode Shift+drag on a grabbed atom: move only that atom,
+    // following the cursor in the viewer-facing plane through its start depth.
+    if (shiftDragAtom_ >= 0 && event->buttons().testFlag(Qt::LeftButton)) {
+        core::Vec3 planeNow;
+        if (unprojectToPlane(event->position(), shiftDragAtomStart_, planeNow)) {
+            const core::Vec3 newPos{
+                shiftDragAtomStart_.x + (planeNow.x - shiftDragPlaneStart_.x),
+                shiftDragAtomStart_.y + (planeNow.y - shiftDragPlaneStart_.y),
+                shiftDragAtomStart_.z + (planeNow.z - shiftDragPlaneStart_.z)};
+            Q_EMIT atomTranslateRequested(shiftDragAtom_, newPos, !shiftDragBegan_);
+            shiftDragBegan_ = true;
+        }
+        return; // consume the drag — do not pan the camera
+    }
 
     // Middle-drag / Shift+left-drag pans in every mode (muscle memory).
     const bool forcePan = event->buttons().testFlag(Qt::MiddleButton)
@@ -581,6 +614,12 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent* event)
 {
     if (event->button() != Qt::LeftButton)
         return;
+    // A single-atom Shift+drag already applied its moves live — just end it.
+    if (shiftDragAtom_ >= 0) {
+        shiftDragAtom_ = -1;
+        shiftDragBegan_ = false;
+        return;
+    }
     const QPointF drag = event->position() - pressPos_;
     const bool wasClick = std::abs(drag.x()) + std::abs(drag.y()) <= 4.0;
     const bool toggle = event->modifiers().testFlag(Qt::ControlModifier)
@@ -628,8 +667,24 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent* event)
 
     if (!wasClick)
         return; // camera drag
-    if (event->modifiers().testFlag(Qt::ShiftModifier))
+
+    // Shift+click on an atom: substitute it (Insert mode) or append it to the
+    // selection (Select mode). Other modes fall through to the pan early-out.
+    if (event->modifiers().testFlag(Qt::ShiftModifier)) {
+        const int picked = pickAtom(event->position());
+        if (picked >= 0 && interactionMode_ == InteractionMode::Insert) {
+            Q_EMIT atomReplaceRequested(picked);
+            return;
+        }
+        if (picked >= 0 && interactionMode_ == InteractionMode::Select) {
+            selection_.insert(picked); // append without resetting the group
+            Q_EMIT selectionChanged(static_cast<int>(selection_.size()));
+            structureDirty_ = true;
+            update();
+            return;
+        }
         return;
+    }
 
     // --- Measurement modes: clicks accumulate atoms ------------------------
     if (interactionMode_ == InteractionMode::MeasureDistance
@@ -724,6 +779,28 @@ bool ViewportWidget::unprojectToTargetPlane(const QPointF& screenPos,
         QVector3D::dotProduct(camera_.target() - origin, normal) / denom;
     if (t < 0.0f)
         return false;
+    const QVector3D hit = origin + direction * t;
+    out = {static_cast<double>(hit.x()), static_cast<double>(hit.y()),
+           static_cast<double>(hit.z())};
+    return true;
+}
+
+bool ViewportWidget::unprojectToPlane(const QPointF& screenPos,
+                                      const core::Vec3& planePoint,
+                                      core::Vec3& out) const
+{
+    QVector3D origin, direction;
+    if (!screenRay(screenPos, origin, direction))
+        return false;
+    const QVector3D plane(static_cast<float>(planePoint.x),
+                          static_cast<float>(planePoint.y),
+                          static_cast<float>(planePoint.z));
+    const QVector3D normal =
+        (camera_.target() - camera_.worldPosition()).normalized();
+    const float denom = QVector3D::dotProduct(direction, normal);
+    if (qFuzzyIsNull(denom))
+        return false;
+    const float t = QVector3D::dotProduct(plane - origin, normal) / denom;
     const QVector3D hit = origin + direction * t;
     out = {static_cast<double>(hit.x()), static_cast<double>(hit.y()),
            static_cast<double>(hit.z())};

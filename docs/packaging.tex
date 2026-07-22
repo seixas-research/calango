@@ -35,7 +35,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\raisebox{-4pt}{%
-  \includegraphics[height=18pt]{../assets/calango/logo_light.png}}}
+  \includegraphics[height=18pt]{../assets/.internal/logo_light.png}}}
 \fancyhead[R]{\small\color{shadegray}Calango Packaging Guide}
 \fancyfoot[L]{\small\color{shadegray}Leandro Seixas}
 \fancyfoot[R]{\small\color{shadegray}\thepage}
@@ -75,7 +75,7 @@
 \begin{titlepage}
 \centering
 \vspace*{2.2cm}
-\includegraphics[width=0.52\textwidth]{../assets/calango/logo_light.png}\par
+\includegraphics[width=0.52\textwidth]{../assets/.internal/logo_light.png}\par
 \vspace{1.4cm}
 {\color{calangoteal}\rule{0.72\textwidth}{1.6pt}}\par
 \vspace{0.9cm}
@@ -138,7 +138,7 @@ The supporting files are:
 \begin{itemize}[itemsep=2pt]
   \item \file{packaging/macos/make\_icns.sh} --- renders
         \file{calango.icns} from the master PNG icon in
-        \file{assets/calango/} (used when no committed \file{.icns}
+        \file{assets/.internal/} (used when no committed \file{.icns}
         exists).
   \item \file{packaging/macos/embed\_python\_framework.sh} --- makes the
         \file{.app} independent of the build machine's Python

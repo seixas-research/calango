@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.29
+    VERSION 26.7.30
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -254,8 +254,14 @@ qt_add_executable(calango
     src/gui/SupercellDialog.cpp
     src/gui/SymmetryDialog.hpp
     src/gui/SymmetryDialog.cpp
+    src/gui/SimulationWizardBase.hpp
+    src/gui/SimulationWizardBase.cpp
     src/gui/MolecularDynamicsWizard.hpp
     src/gui/MolecularDynamicsWizard.cpp
+    src/gui/GeometryOptimizationWizard.hpp
+    src/gui/GeometryOptimizationWizard.cpp
+    src/gui/PhononWizard.hpp
+    src/gui/PhononWizard.cpp
     src/gui/SimulationDialogs.hpp
     src/gui/SimulationDialogs.cpp
     src/gui/ClusterExpansionDialog.hpp
@@ -284,8 +290,8 @@ qt_add_resources(calango "shaders"
 qt_add_resources(calango "branding"
     PREFIX "/"
     FILES
-        assets/calango/icon_transparent.png
-        assets/calango/panel.png
+        assets/.internal/icon_transparent.png
+        assets/.internal/panel.png
 )
 
 qt_add_resources(calango "remote"
@@ -297,7 +303,7 @@ qt_add_resources(calango "remote"
 # Distributable macOS bundle: configure with -DCALANGO_MACOS_BUNDLE=ON.
 # The default plain binary keeps the familiar ./build/calango developer
 # workflow, with the window/dock icon set at runtime from the embedded
-# resource. The bundle icon uses a committed assets/calango/calango.icns
+# resource. The bundle icon uses a committed assets/.internal/calango.icns
 # when present, otherwise it is rendered at build time from
 # icon_transparent.png with the stock sips/iconutil tools.
 option(CALANGO_MACOS_BUNDLE "Build calango as a macOS .app bundle" OFF)
@@ -310,8 +316,8 @@ if(APPLE AND CALANGO_MACOS_BUNDLE)
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
 
     set(CALANGO_ICNS "")
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/calango.icns")
-        set(CALANGO_ICNS "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/calango.icns")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/.internal/calango.icns")
+        set(CALANGO_ICNS "${CMAKE_CURRENT_SOURCE_DIR}/assets/.internal/calango.icns")
     else()
         find_program(SIPS_EXECUTABLE sips)
         find_program(ICONUTIL_EXECUTABLE iconutil)
@@ -321,9 +327,9 @@ if(APPLE AND CALANGO_MACOS_BUNDLE)
             # executable bit from the script.
             add_custom_command(OUTPUT "${CALANGO_ICNS}"
                 COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/make_icns.sh"
-                        "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/icon_transparent.png"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/assets/.internal/icon_transparent.png"
                         "${CALANGO_ICNS}"
-                DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/icon_transparent.png"
+                DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/.internal/icon_transparent.png"
                         "${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/make_icns.sh"
                 COMMENT "Rendering calango.icns from icon_transparent.png")
         else()
@@ -614,7 +620,7 @@ elseif(UNIX AND NOT APPLE)
     # PNG as the pixmaps icon — it resolves the .desktop "Icon=calango"
     # lookup. Add a hicolor/scalable/apps/calango.svg install here if a real
     # SVG is committed later.
-    install(FILES assets/calango/icon_transparent.png
+    install(FILES assets/.internal/icon_transparent.png
             DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps
             RENAME calango.png)
 

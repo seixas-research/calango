@@ -173,6 +173,12 @@ Q_SIGNALS:
     void atomInsertRequested(const core::Vec3& position);
     /// Insert mode: the user dragged from atom i to atom j — bond them.
     void bondInsertRequested(int i, int j);
+    /// Insert mode: Shift+click on an existing atom — substitute it with the
+    /// element currently selected in the insertion element picker.
+    void atomReplaceRequested(int index);
+    /// Translation (Pan) mode: Shift+drag on an atom — move that single atom to
+    /// `position`. `begin` is true on the first move of a drag (push one undo).
+    void atomTranslateRequested(int index, const core::Vec3& position, bool begin);
     /// A distance/angle measurement completed — `text` is the
     /// human-readable result for the status/log console (the viewport
     /// itself overlays the value on the canvas).
@@ -208,6 +214,10 @@ private:
     /// Intersection of that ray with the plane through the camera target
     /// perpendicular to the view direction (where inserted atoms land).
     bool unprojectToTargetPlane(const QPointF& screenPos, core::Vec3& out) const;
+    /// Intersection of that ray with a viewer-facing plane through an arbitrary
+    /// world point (used to drag an atom in the plane through its own depth).
+    bool unprojectToPlane(const QPointF& screenPos, const core::Vec3& planePoint,
+                          core::Vec3& out) const;
     /// Atoms whose projected centers fall inside the screen-space rect.
     std::set<int> atomsInRect(const QRectF& rect) const;
 
@@ -254,6 +264,13 @@ private:
     InteractionMode interactionMode_ = InteractionMode::Rotate;
     QRubberBand* rubberBand_ = nullptr; ///< Select-mode drag box
     int insertDragFromAtom_ = -1;       ///< Insert mode: drag start atom
+    /// Translation (Pan) mode Shift+drag: the grabbed atom (-1 = none), its
+    /// world position at press, the unprojected drag anchor on that plane, and
+    /// whether the first move (and undo push) has happened yet.
+    int shiftDragAtom_ = -1;
+    core::Vec3 shiftDragAtomStart_;
+    core::Vec3 shiftDragPlaneStart_;
+    bool shiftDragBegan_ = false;
     /// Atoms clicked so far in a measurement (2 = distance, 3 = angle);
     /// kept after completion so the overlay stays until the next click.
     std::vector<int> measureAtoms_;

@@ -35,8 +35,13 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
     auto* buttons = new QHBoxLayout;
     auto* openButton = new QPushButton(tr("Open Folder"), this);
     auto* loadButton = new QPushButton(tr("Load Result"), this);
+    auto* deleteButton = new QPushButton(tr("Delete Process"), this);
+    deleteButton->setToolTip(
+        tr("Stop the task if running, delete its temporary data folder, and "
+           "remove it from the list."));
     buttons->addWidget(openButton);
     buttons->addWidget(loadButton);
+    buttons->addWidget(deleteButton);
     buttons->addStretch(1);
     layout->addLayout(buttons);
 
@@ -51,6 +56,10 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
     connect(loadButton, &QPushButton::clicked, this, [this, selectedDir] {
         if (const QString dir = selectedDir(); !dir.isEmpty())
             Q_EMIT loadResultRequested(dir);
+    });
+    connect(deleteButton, &QPushButton::clicked, this, [this] {
+        if (const auto* item = tree_->currentItem())
+            Q_EMIT deleteRequested(item->data(0, kIdRole).toInt());
     });
     connect(tree_, &QTreeWidget::itemDoubleClicked, this,
             [this](QTreeWidgetItem* item, int) {
@@ -90,6 +99,12 @@ void ProcessManagerPanel::setTaskDirectory(int id, const QString& directory)
         return;
     item->setData(0, kDirRole, directory);
     item->setToolTip(0, directory.isEmpty() ? item->text(0) : directory);
+}
+
+void ProcessManagerPanel::removeTask(int id)
+{
+    if (QTreeWidgetItem* item = itemForId(id))
+        delete tree_->takeTopLevelItem(tree_->indexOfTopLevelItem(item));
 }
 
 void ProcessManagerPanel::setTaskStatus(int id, Status status)
