@@ -13,8 +13,6 @@ source:
 build:
   number: 0
   # GUI desktop app — one architecture-specific binary, not noarch.
-  script_env:
-    - CALANGO_VERSION
   # Skip Windows: the app targets macOS + Linux.
   skip: true  # [win]
 
@@ -26,27 +24,29 @@ requirements:
     - ninja
     - pkg-config
 
-  # Libraries linked/headers used at build time.
+  # Libraries linked / headers compiled against at build time. numpy is a
+  # runtime-only dep (used by the embedded Python scripts, not compiled
+  # against), so it lives in `run`, not here.
   host:
     - qt6-main >=6.4                 # Widgets / OpenGLWidgets / Concurrent / Svg
-    - qcustomplot                    # optional plotting lib (recipe spec)
     - pybind11 >=2.12
-    - nlohmann_json                  # JSON (recipe spec)
-    - python >=3.9
-    - numpy >=1.23
+    - python
+    # NOTE: Calango uses custom QPainter plot widgets (not QCustomPlot) and
+    # Qt's own QJson (not nlohmann_json), so neither is a dependency. They were
+    # in the original spec but are dropped here — qcustomplot in particular is
+    # not packaged on conda-forge for osx-arm64, which fails the solve.
 
   # Runtime dependencies pulled into the environment when Calango is installed.
   run:
-    - python >=3.9
+    - python
     - qt6-main >=6.4
-    - {{ pin_compatible('numpy') }}
+    - numpy >=1.23
     - ase >=3.22                     # structure I/O + calculators
     - gpaw >=24.1                    # PAW/PW DFT back-end (single-point/opt/bands)
     - mace-torch >=0.3               # MLIP training / inference
     - pytorch >=2.0                  # MACE backend
     - spglib >=2.0                   # symmetry detection
     - pymatgen                       # Materials Project / structure interop
-    - nlohmann_json
     - scipy >=1.9
     - paramiko >=3.0                 # Remote Access SSH/SFTP panel
 

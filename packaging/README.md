@@ -55,12 +55,13 @@ from the same environment automatically.
 Build it:
 
 ```sh
-# 1. Get conda-build (and, ideally, mamba's faster solver) in the base env.
-conda install -n base -c conda-forge conda-build
+# 1. Get conda-build AND the libmamba solver in the build env.
+conda install -n base -c conda-forge conda-build conda-libmamba-solver
 
-# 2. Build the package from the repo root. -c conda-forge provides qt6-main,
-#    gpaw, mace-torch, pytorch, etc.
-conda build packaging/conda/ -c conda-forge
+# 2. Build the package from the repo root, using the libmamba solver.
+#    -c conda-forge provides qt6-main, gpaw, mace-torch, pytorch, etc.
+CONDA_SOLVER=libmamba conda build packaging/conda/ -c conda-forge
+#    (equivalently:  conda build packaging/conda/ -c conda-forge --solver=libmamba)
 
 # 3. Install the freshly built package into a new environment to test it.
 conda create -n calango -c conda-forge --use-local calango
@@ -69,13 +70,23 @@ calango --probe-python        # exit 0 == embedded ASE import works
 calango                        # launch the GUI
 ```
 
+**Use the libmamba solver.** The classic solver in conda 26.x fails this recipe
+with `Unsatisfiable dependencies … {'__conda', '__osx', '__unix', '__archspec'}`
+— it does not inject the platform virtual packages into the build/host solve.
+libmamba resolves it. Set it per-invocation as above, or make it the default
+with `conda config --set solver libmamba`.
+
 Notes:
 - The version is read from the `CALANGO_VERSION` env var if set, else the
   default pinned in `meta.yaml` — keep it in sync with `CMakeLists.txt`, e.g.
   `CALANGO_VERSION=$(grep -m1 VERSION CMakeLists.txt | grep -oE '[0-9.]+') \
-   conda build packaging/conda/ -c conda-forge`.
-- Build deps: `cmake`, `ninja`, a C++20 `cxx-compiler`, `qt6-main`,
-  `qcustomplot`, `pybind11`, `nlohmann_json`.
-- Run deps: `ase`, `gpaw`, `mace-torch`, `pytorch`, `spglib`, `pymatgen`,
-  `nlohmann_json`, `scipy`, `paramiko` (see `packaging/dependencies.txt` for the
-  complete annotated list and version constraints).
+   CONDA_SOLVER=libmamba conda build packaging/conda/ -c conda-forge`.
+- Build/host deps: `cmake`, `ninja`, a C++20 `cxx-compiler`, `pkg-config`,
+  `qt6-main`, `pybind11`, `python`.
+- Run deps: `qt6-main`, `numpy`, `ase`, `gpaw`, `mace-torch`, `pytorch`,
+  `spglib`, `pymatgen`, `scipy`, `paramiko` (see `packaging/dependencies.txt`
+  for the complete annotated list and version constraints).
+- `qcustomplot` and `nlohmann_json` from the original spec were dropped:
+  Calango uses custom QPainter plot widgets and Qt's own QJson, so neither is a
+  real dependency — and `qcustomplot` isn't packaged on conda-forge for
+  osx-arm64, which made the solve unsatisfiable.
