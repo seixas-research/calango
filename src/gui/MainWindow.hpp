@@ -3,10 +3,14 @@
 #include <QMainWindow>
 
 #include <deque>
+#include <map>
 #include <memory>
+#include <utility>
 #include <vector>
 
+class QComboBox;
 class QDockWidget;
+class QMenu;
 class QTabBar;
 class QToolButton;
 
@@ -57,6 +61,10 @@ private Q_SLOTS:
     bool saveProjectAs();
     void openStructure();
     void openTrajectory();
+    /// Record a successfully opened path in the persistent recent-files list
+    /// and refresh the "Open Recent" submenu.
+    void addRecentFile(const QString& path);
+    void updateRecentFilesMenu();
     void saveStructureAs();
     void saveTrajectoryAs();
     void exportImage();
@@ -84,6 +92,22 @@ private Q_SLOTS:
     void newRemoteCalculation();
     void onRemoteResultsReady(const QString& localDir);
     void onJobFinished(int exitCode, bool crashed);
+    // -- Per-process metric routing (Results panel) ------------------------
+    // Live jobRunner samples/lines are buffered into the running process's
+    // record and only mirrored to the shared plots/log when that process is
+    // the one currently selected, so a new run never overwrites an old run's
+    // metrics.
+    void onEnergySample(int step, double value);
+    void onTemperatureSample(int step, double value);
+    void onForceSample(int step, double value);
+    void onPressureSample(int step, double value);
+    void onTargetTemperature(double value);
+    void onTargetPressure(double value);
+    void onJobOutputLine(const QString& line);
+    void onJobErrorLine(const QString& line);
+    void onJobProgress(int step, int total);
+    /// Results panel process selector changed — repopulate the tabs.
+    void onProcessSelected(int comboIndex);
     /// One live trajectory frame from the running job's stdout stream.
     void onFrameStreamed(const std::shared_ptr<core::Structure>& frame);
     void showBandStructure();
@@ -100,6 +124,7 @@ private Q_SLOTS:
     void showCoordination();
     void showDistributions();
     void showStructureFactor();
+    void showSymmetry();
     void showXrd();
     void openNanoBuilder();
     void openPhononBuilder();
@@ -147,10 +172,18 @@ private:
     void notifyStructureChanged(bool frameCamera = true);
     void pushUndo();
     void updateUndoActions();
-    /// Write run.py + structure.extxyz into a fresh job directory under
-    /// app-data; returns the directory ("" on failure). Shared by local
-    /// runs (JobRunner) and remote submissions (RemoteAccessPanel).
-    QString stageJob(const QString& script);
+    /// Write run.py + structure.extxyz into a fresh job directory; returns
+    /// the directory ("" on failure). Shared by local runs (JobRunner) and
+    /// remote submissions (RemoteAccessPanel). `procId >= 0` names the dir
+    /// `proc_<id>` (per-process metric store); -1 falls back to a timestamp.
+    QString stageJob(const QString& script, int procId = -1);
+    /// Repaint the Results tabs from process `id`'s buffered (or on-disk)
+    /// metrics; add a process to the selector; dump/reload a process's
+    /// metrics to/from its proc_<id> directory.
+    void syncResultsToProcess(int id);
+    void addProcessToSelector(int id, const QString& label);
+    void writeProcessMetrics(int id);
+    void loadProcessMetrics(int id);
     /// Launch a staged local job. `taskLabel` names it in the Process
     /// panel; `expectFrames` opens a live trajectory tab that streamed
     /// CALANGO_FRAME blocks append to while the job runs.
@@ -180,8 +213,29 @@ private:
     bool isDirty_ = false;
     QString projectPath_; ///< current .calproj file ("" until saved/opened)
 
+    /// Buffered metrics + console log of one background process, keyed by its
+    /// Process Manager id, so the Results panel can show any run's history and
+    /// live runs never overwrite an earlier run's series.
+    struct ProcessRecord {
+        QString label;
+        QString directory;
+        QString log;
+        std::vector<std::pair<int, double>> energy;
+        std::vector<std::pair<int, double>> temperature;
+        std::vector<std::pair<int, double>> force;
+        std::vector<std::pair<int, double>> pressure;
+        bool hasTempTarget = false;
+        double tempTarget = 0.0;
+        bool hasPressTarget = false;
+        double pressTarget = 0.0;
+    };
+    std::map<int, ProcessRecord> processRecords_;
+    int selectedProcessId_ = -1; ///< process whose data the Results tabs show
+
     QTabBar* tabBar_ = nullptr;
     ViewportWidget* viewport_ = nullptr;
+    QMenu* recentMenu_ = nullptr; ///< File → Open → Open Recent (dynamic)
+    QComboBox* processSelector_ = nullptr; ///< Results-panel process dropdown
     StructureInfoWidget* infoWidget_ = nullptr;
     JobLogWidget* jobLogWidget_ = nullptr;
     MetricPlotWidget* energyPlot_ = nullptr;

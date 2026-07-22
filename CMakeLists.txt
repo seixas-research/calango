@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.28
+    VERSION 26.7.29
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -252,6 +252,10 @@ qt_add_executable(calango
     src/gui/AdsorptionDialog.cpp
     src/gui/SupercellDialog.hpp
     src/gui/SupercellDialog.cpp
+    src/gui/SymmetryDialog.hpp
+    src/gui/SymmetryDialog.cpp
+    src/gui/MolecularDynamicsWizard.hpp
+    src/gui/MolecularDynamicsWizard.cpp
     src/gui/SimulationDialogs.hpp
     src/gui/SimulationDialogs.cpp
     src/gui/ClusterExpansionDialog.hpp

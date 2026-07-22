@@ -17,6 +17,7 @@ enum class CalculatorKind {
     Gpaw,
     Siesta,
     Orca, ///< quantum chemistry (requires the ORCA binary)
+    Asap, ///< asap3 fast C++ EMT / OpenKIM (requires the asap3 package)
 };
 
 /// Which MACE model the calculator loads. Foundation models are fetched
@@ -101,6 +102,9 @@ struct CalculatorConfig {
     double tautFs = 100.0;       ///< thermostat coupling time (Berendsen/NHC)
     double taupFs = 1000.0;      ///< barostat coupling time (NPT)
     double pressureGPa = 0.0;    ///< external pressure (NPT; 0 ≈ ambient)
+    /// Trajectory / metric sampling frequency (record every N MD steps).
+    /// 0 means auto (~400 streamed frames over the whole run).
+    int mdSampleInterval = 0;
 
     // DFT common knobs (used by the QE/VASP templates)
     double planeWaveCutoffEv = 550.0;

@@ -138,7 +138,7 @@ void MetricPlotWidget::exportData()
     const QString title = tr("Export %1 Data").arg(spec_.quantity);
     if (samples_.empty()) {
         QMessageBox::information(this, title,
-                                 tr("No samples recorded yet — run a job first."));
+                                 tr("No samples recorded yet — run a calculation first."));
         return;
     }
     const QString path = QFileDialog::getSaveFileName(

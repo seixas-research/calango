@@ -115,10 +115,25 @@ public:
         int spaceGroupNumber = 0;
         std::string pointGroup;
         std::string crystalSystem;
+        int hallNumber = 0;
+        /// Per-atom Wyckoff letter and equivalence-class representative index,
+        /// index-aligned to the structure's atoms; uniqueSites is the number
+        /// of distinct classes (symmetry-inequivalent sites).
+        std::vector<std::string> wyckoffLetters;
+        std::vector<int> equivalentAtoms;
+        int uniqueSites = 0;
         std::string error;
     };
     static SymmetryInfo symmetryInfo(const core::Structure& structure,
                                      double symprec = 1e-3);
+
+    /// Standardized conventional (or primitive) cell via
+    /// spglib.standardize_cell. `toPrimitive` reduces to the primitive cell;
+    /// `idealize` snaps the lattice to its ideal symmetric form. Throws on an
+    /// undefined cell or a spglib failure.
+    static core::Structure standardizeCell(const core::Structure& structure,
+                                           double symprec, bool toPrimitive,
+                                           bool idealize);
 
     /// core::Structure -> ase.Atoms (positions, symbols, cell, pbc).
     static pybind11::object toAtoms(const core::Structure& structure);

@@ -5,6 +5,7 @@
 #include <pybind11/stl.h>
 
 #include <algorithm>
+#include <set>
 #include <cmath>
 #include <stdexcept>
 #include <utility>
@@ -393,6 +394,18 @@ else:
         result = {"symbol": str(field("international")), "number": number,
                   "pointgroup": str(field("pointgroup")), "system": crystal,
                   "error": ""}
+        # Per-atom Wyckoff letters and equivalence classes come back in the
+        # same dataset — no extra spglib call. Guard for API differences.
+        try:
+            result["wyckoffs"] = [str(w) for w in field("wyckoffs")]
+            result["equivalent_atoms"] = [int(x) for x in field("equivalent_atoms")]
+        except Exception:
+            result["wyckoffs"] = []
+            result["equivalent_atoms"] = []
+        try:
+            result["hall"] = int(field("hall_number"))
+        except Exception:
+            result["hall"] = 0
 )PY",
                  // One dict as BOTH globals and locals: with separate
                  // dicts, field()'s body cannot see `dataset` (function
@@ -408,10 +421,53 @@ else:
         info.spaceGroupNumber = result["number"].cast<int>();
         info.pointGroup = result["pointgroup"].cast<std::string>();
         info.crystalSystem = result["system"].cast<std::string>();
+        if (result.contains("hall"))
+            info.hallNumber = result["hall"].cast<int>();
+        if (result.contains("wyckoffs"))
+            info.wyckoffLetters = result["wyckoffs"].cast<std::vector<std::string>>();
+        if (result.contains("equivalent_atoms"))
+            info.equivalentAtoms = result["equivalent_atoms"].cast<std::vector<int>>();
+        std::set<int> classes(info.equivalentAtoms.begin(),
+                              info.equivalentAtoms.end());
+        info.uniqueSites = static_cast<int>(classes.size());
         return info;
     } catch (const py::error_already_set& e) {
         info.error = std::string("symmetry query failed: ") + e.what();
         return info;
+    }
+}
+
+core::Structure AseBridge::standardizeCell(const core::Structure& structure,
+                                           double symprec, bool toPrimitive,
+                                           bool idealize)
+{
+    if (!structure.cell().isDefined())
+        throw std::runtime_error(
+            "Cell standardization needs a defined periodic unit cell.");
+    try {
+        py::dict scope;
+        scope["atoms"] = toAtoms(structure);
+        scope["symprec"] = symprec;
+        scope["to_primitive"] = toPrimitive;
+        scope["no_idealize"] = !idealize;
+        py::exec(R"PY(
+import spglib
+from ase import Atoms
+
+cell = (atoms.cell[:], atoms.get_scaled_positions(), atoms.numbers)
+res = spglib.standardize_cell(cell, to_primitive=to_primitive,
+                              no_idealize=no_idealize, symprec=symprec)
+if res is None:
+    raise RuntimeError("spglib.standardize_cell failed (symmetry undetectable "
+                       "at this tolerance?)")
+lattice, scaled, numbers = res
+result_atoms = Atoms(numbers=numbers, scaled_positions=scaled, cell=lattice,
+                     pbc=True)
+)PY",
+                 scope, scope);
+        return fromAtoms(scope["result_atoms"]);
+    } catch (const py::error_already_set& e) {
+        rethrow(e, "Cell standardization failed (is spglib installed?)");
     }
 }
 

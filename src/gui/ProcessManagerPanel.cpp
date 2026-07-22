@@ -83,6 +83,15 @@ QTreeWidgetItem* ProcessManagerPanel::itemForId(int id) const
     return nullptr;
 }
 
+void ProcessManagerPanel::setTaskDirectory(int id, const QString& directory)
+{
+    QTreeWidgetItem* item = itemForId(id);
+    if (!item)
+        return;
+    item->setData(0, kDirRole, directory);
+    item->setToolTip(0, directory.isEmpty() ? item->text(0) : directory);
+}
+
 void ProcessManagerPanel::setTaskStatus(int id, Status status)
 {
     QTreeWidgetItem* item = itemForId(id);

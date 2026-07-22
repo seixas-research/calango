@@ -15,6 +15,7 @@ std::string toString(CalculatorKind kind)
     case CalculatorKind::Gpaw: return "GPAW";
     case CalculatorKind::Siesta: return "SIESTA";
     case CalculatorKind::Orca: return "ORCA";
+    case CalculatorKind::Asap: return "ASAP";
     }
     return "?";
 }
@@ -75,6 +76,13 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
         out << "from ase.calculators.lj import LennardJones\n"
                "\n"
                "atoms.calc = LennardJones()\n";
+        break;
+
+    case CalculatorKind::Asap:
+        out << "# ASAP — fast C++ EMT / OpenKIM potentials (pip install asap3).\n"
+               "from asap3 import EMT\n"
+               "\n"
+               "atoms.calc = EMT()\n";
         break;
 
     case CalculatorKind::QuantumEspresso:
@@ -265,6 +273,10 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "\n"
             << "temperature_K = " << c.temperatureK << "\n"
             << "md_steps = " << c.mdSteps << "\n"
+            << "sample_interval = "
+            << (c.mdSampleInterval > 0 ? std::to_string(c.mdSampleInterval)
+                                       : std::string("max(1, md_steps // 400)"))
+            << "  # record every N steps\n"
                "\n"
                "MaxwellBoltzmannDistribution(atoms, temperature_K=temperature_K)\n"
                "# Remove the net center-of-mass momentum the random velocities\n"
@@ -370,7 +382,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
         out << "\n"
             << kStreamFrameHelper
             << "_stream_frame()\n"
-               "dyn.attach(_stream_frame, interval=max(1, md_steps // 400))\n";
+               "dyn.attach(_stream_frame, interval=sample_interval)\n";
 
         if (isConstantTemperature(c.ensemble))
             out << "\n"
@@ -406,7 +418,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
         out << "    print(f\"CALANGO_MD step={dyn.nsteps} epot_eV={epot:.4f} ekin_eV={ekin:.4f}"
                " T_K={temp:.1f}\", flush=True)\n"
                "\n"
-               "dyn.attach(_report, interval=10)\n"
+               "dyn.attach(_report, interval=sample_interval)\n"
                "dyn.run(md_steps)\n"
                "\n"
                "write(\"md_final.extxyz\", atoms)\n"

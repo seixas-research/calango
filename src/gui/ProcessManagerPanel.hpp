@@ -25,6 +25,8 @@ public:
     /// Register a task; returns its id. `directory` is the task's
     /// working/staging directory ("" for tasks without one).
     int registerTask(const QString& name, const QString& directory);
+    /// Update a task's working directory after it has been staged.
+    void setTaskDirectory(int id, const QString& directory);
     void setTaskStatus(int id, Status status);
 
 Q_SIGNALS:

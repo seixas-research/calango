@@ -28,12 +28,14 @@
 #include "gui/AdsorptionDialog.hpp"
 #include "gui/BandPdosWindow.hpp"
 #include "gui/ClusterExpansionDialog.hpp"
+#include "gui/MolecularDynamicsWizard.hpp"
 #include "gui/MonteCarloDialog.hpp"
 #include "gui/NanoparticleDialog.hpp"
 #include "gui/NebDialog.hpp"
 #include "gui/PhononPlotWindow.hpp"
 #include "gui/SimulationDialogs.hpp"
 #include "gui/SupercellDialog.hpp"
+#include "gui/SymmetryDialog.hpp"
 #include "gui/DatasetManagerDialog.hpp"
 #include "gui/ProcessManagerPanel.hpp"
 #include "gui/RamanDialog.hpp"
@@ -107,8 +109,9 @@ constexpr std::size_t kMaxUndoDepth = 50;
 /// Version tag for saveState/restoreState. Bumped when the default dock
 /// grid changes so stale saved layouts don't override the new default
 /// (v2 = the 8-zone grid workspace, v3 = the 12-zone grid with the
-/// branding and Remote Access panels).
-constexpr int kLayoutVersion = 3;
+/// branding and Remote Access panels, v4 = the "Job" dock renamed to
+/// "Results" with a process selector).
+constexpr int kLayoutVersion = 4;
 
 /// Painted icons for the frame-panel camera toolbar (icon-only buttons).
 /// Plane icons use the axes-triad colors: x red, y green, z blue.
@@ -399,30 +402,30 @@ MainWindow::MainWindow(QWidget* parent)
 
     createMenusAndDocks();
 
+    // The log widget shows the running job directly (it always clears on
+    // start); its output/error/progress are routed through MainWindow so they
+    // are buffered per process and only mirrored when that process is
+    // selected. Metric samples are likewise routed for per-process isolation.
     connect(jobRunner_, &jobs::JobRunner::started,
             jobLogWidget_, &JobLogWidget::onJobStarted);
-    for (MetricPlotWidget* plot :
-         {energyPlot_, temperaturePlot_, forcePlot_, pressurePlot_})
-        connect(jobRunner_, &jobs::JobRunner::started,
-                plot, &MetricPlotWidget::clear);
     connect(jobRunner_, &jobs::JobRunner::outputLine,
-            jobLogWidget_, &JobLogWidget::onOutputLine);
+            this, &MainWindow::onJobOutputLine);
     connect(jobRunner_, &jobs::JobRunner::errorLine,
-            jobLogWidget_, &JobLogWidget::onErrorLine);
+            this, &MainWindow::onJobErrorLine);
     connect(jobRunner_, &jobs::JobRunner::progress,
-            jobLogWidget_, &JobLogWidget::onProgress);
+            this, &MainWindow::onJobProgress);
     connect(jobRunner_, &jobs::JobRunner::energySample,
-            energyPlot_, &MetricPlotWidget::addSample);
+            this, &MainWindow::onEnergySample);
     connect(jobRunner_, &jobs::JobRunner::temperatureSample,
-            temperaturePlot_, &MetricPlotWidget::addSample);
+            this, &MainWindow::onTemperatureSample);
     connect(jobRunner_, &jobs::JobRunner::targetTemperature,
-            temperaturePlot_, &MetricPlotWidget::setTarget);
+            this, &MainWindow::onTargetTemperature);
     connect(jobRunner_, &jobs::JobRunner::maxForceSample,
-            forcePlot_, &MetricPlotWidget::addSample);
+            this, &MainWindow::onForceSample);
     connect(jobRunner_, &jobs::JobRunner::pressureSample,
-            pressurePlot_, &MetricPlotWidget::addSample);
+            this, &MainWindow::onPressureSample);
     connect(jobRunner_, &jobs::JobRunner::targetPressure,
-            pressurePlot_, &MetricPlotWidget::setTarget);
+            this, &MainWindow::onTargetPressure);
     connect(jobRunner_, &jobs::JobRunner::finished,
             jobLogWidget_, &JobLogWidget::onJobFinished);
     connect(jobRunner_, &jobs::JobRunner::finished,
@@ -492,6 +495,8 @@ void MainWindow::createMenusAndDocks()
                         this, &MainWindow::openStructure);
     openMenu->addAction(tr("&Trajectory…"), QKeySequence(tr("Ctrl+T")),
                         this, &MainWindow::openTrajectory);
+    recentMenu_ = openMenu->addMenu(tr("Open &Recent"));
+    updateRecentFilesMenu();
     QMenu* saveMenu = fileMenu->addMenu(tr("&Save"));
     saveMenu->addAction(tr("Structure &As…"), QKeySequence::SaveAs,
                         this, &MainWindow::saveStructureAs);
@@ -618,6 +623,8 @@ void MainWindow::createMenusAndDocks()
 
     // ----- Analysis: spec order, reciprocal-space tools at the end ---------
     QMenu* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
+    analysisMenu->addAction(tr("Detect &Symmetry…"),
+                            this, &MainWindow::showSymmetry);
     analysisMenu->addAction(tr("Structure &Factor S(q)…"),
                             this, &MainWindow::showStructureFactor);
     analysisMenu->addAction(tr("&X-Ray Diffraction (XRD)…"),
@@ -715,8 +722,8 @@ void MainWindow::createMenusAndDocks()
     lightingDock->setWidget(new LightingPanel(viewport_, lightingDock));
     addDockWidget(Qt::BottomDockWidgetArea, lightingDock);
 
-    jobDock_ = new QDockWidget(tr("Job"), this); // zone 10
-    jobDock_->setObjectName(QStringLiteral("jobDock"));
+    jobDock_ = new QDockWidget(tr("Results"), this); // zone 10
+    jobDock_->setObjectName(QStringLiteral("resultsDock"));
     auto* jobTabs = new QTabWidget(jobDock_);
     jobLogWidget_ = new JobLogWidget(jobTabs);
 
@@ -728,7 +735,7 @@ void MainWindow::createMenusAndDocks()
     energySpec.xAxisLabel = tr("MD/optimization step");
     energySpec.valueSymbol = QStringLiteral("E");
     energySpec.unit = tr("eV");
-    energySpec.placeholder = tr("Energy vs. step will appear here during a job");
+    energySpec.placeholder = tr("Energy vs. step will appear here during a run");
     energySpec.marker = QStringLiteral("CALANGO_ENERGY");
     energySpec.csvColumn = QStringLiteral("total_energy_eV");
     energySpec.exportBaseName = QStringLiteral("energy.csv");
@@ -816,7 +823,19 @@ void MainWindow::createMenusAndDocks()
     auto* jobContainer = new QWidget(jobDock_);
     auto* jobLayout = new QVBoxLayout(jobContainer);
     jobLayout->setContentsMargins(4, 8, 4, 4);
-    jobLayout->setSpacing(0);
+    jobLayout->setSpacing(4);
+    // Process selector: each background run keeps its own metric history, so
+    // switching processes here repopulates every tab with that run's data.
+    auto* selectorRow = new QHBoxLayout;
+    selectorRow->setContentsMargins(0, 0, 0, 0);
+    selectorRow->addWidget(new QLabel(tr("Process:"), jobContainer));
+    processSelector_ = new QComboBox(jobContainer);
+    processSelector_->setToolTip(
+        tr("Select a background run to view its logged metrics."));
+    selectorRow->addWidget(processSelector_, 1);
+    jobLayout->addLayout(selectorRow);
+    connect(processSelector_, &QComboBox::currentIndexChanged, this,
+            &MainWindow::onProcessSelected);
     jobLayout->addWidget(jobTabs);
     jobTabs->setDocumentMode(true); // flat tab bar, no frame to overlap
     jobDock_->setWidget(jobContainer);
@@ -1110,14 +1129,72 @@ QString formatHintFor(const QString& path)
 
 } // namespace
 
+namespace {
+const auto kRecentFilesKey = QStringLiteral("recent/files");
+constexpr int kMaxRecentFiles = 10;
+} // namespace
+
+void MainWindow::addRecentFile(const QString& path)
+{
+    const QString absolute = QFileInfo(path).absoluteFilePath();
+    QSettings settings;
+    QStringList recent = settings.value(kRecentFilesKey).toStringList();
+    recent.removeAll(absolute); // de-duplicate; the newest goes to the front
+    recent.prepend(absolute);
+    while (recent.size() > kMaxRecentFiles)
+        recent.removeLast();
+    settings.setValue(kRecentFilesKey, recent);
+    updateRecentFilesMenu();
+}
+
+void MainWindow::updateRecentFilesMenu()
+{
+    if (!recentMenu_)
+        return;
+    recentMenu_->clear();
+
+    QStringList recent = QSettings().value(kRecentFilesKey).toStringList();
+    // Drop entries whose files no longer exist so the list stays trustworthy.
+    recent.erase(std::remove_if(recent.begin(), recent.end(),
+                                [](const QString& p) { return !QFileInfo::exists(p); }),
+                 recent.end());
+
+    if (recent.isEmpty()) {
+        QAction* empty = recentMenu_->addAction(tr("(no recent files)"));
+        empty->setEnabled(false);
+        return;
+    }
+
+    int index = 1;
+    for (const QString& path : recent) {
+        // "&1 name" gives Alt-number mnemonics for the first nine entries.
+        const QString label = index <= 9
+            ? tr("&%1  %2").arg(index).arg(QFileInfo(path).fileName())
+            : QFileInfo(path).fileName();
+        QAction* action = recentMenu_->addAction(label);
+        action->setData(path);
+        action->setToolTip(path);
+        connect(action, &QAction::triggered, this,
+                [this, path] { loadFile(path); });
+        ++index;
+    }
+    recentMenu_->addSeparator();
+    recentMenu_->addAction(tr("&Clear Recent Files"), this, [this] {
+        QSettings().remove(kRecentFilesKey);
+        updateRecentFilesMenu();
+    });
+}
+
 void MainWindow::loadFile(const QString& path)
 {
     // Project workspaces (double-click / "Open with" via the installer's
     // MIME association, or a CLI argument) restore the whole session
     // instead of loading a structure through ASE.
     if (path.endsWith(QStringLiteral(".calproj"), Qt::CaseInsensitive)) {
-        if (readProject(path))
+        if (readProject(path)) {
             projectPath_ = path;
+            addRecentFile(path);
+        }
         return;
     }
     if (!ensureAseAvailable())
@@ -1136,6 +1213,7 @@ void MainWindow::loadFile(const QString& path)
             const auto atomCount = structure->size();
             addDocument(std::move(structure), QFileInfo(path).fileName());
             statusBar()->showMessage(tr("Loaded %1 (%2 atoms)").arg(path).arg(atomCount));
+            addRecentFile(path);
         } else {
             std::vector<std::shared_ptr<core::Structure>> frames;
             frames.reserve(rawFrames.size());
@@ -1145,6 +1223,7 @@ void MainWindow::loadFile(const QString& path)
             addDocument(frames.front(), QFileInfo(path).fileName(), std::move(frames));
             statusBar()->showMessage(
                 tr("Loaded %1 (%2 frames)").arg(path).arg(frameCount));
+            addRecentFile(path);
         }
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Open Structure"),
@@ -1512,7 +1591,7 @@ void MainWindow::openProject()
 {
     if (jobRunner_->isRunning()) {
         QMessageBox::information(this, tr("Open Project"),
-                                 tr("A job is running — kill it before "
+                                 tr("A calculation is running — kill it before "
                                     "switching projects."));
         return;
     }
@@ -2203,7 +2282,7 @@ void MainWindow::showBandStructure()
         return;
     if (jobRunner_->isRunning()) {
         QMessageBox::information(this, tr("Electronic Bands / PDOS"),
-                                 tr("A job is already running — kill it first."));
+                                 tr("A calculation is already running — kill it first."));
         return;
     }
 
@@ -2297,7 +2376,7 @@ void MainWindow::showBandStructure()
                        CalculatorDialog::resolveEnvironmentPython(text);
                    !python.isEmpty()) {
             envStatus->setText(
-                QObject::tr("Job will run with: %1").arg(python));
+                QObject::tr("Runs will use: %1").arg(python));
             envStatus->setStyleSheet(QString());
         } else {
             envStatus->setText(
@@ -2607,6 +2686,31 @@ void MainWindow::showCoordination()
     dialog.exec();
 }
 
+void MainWindow::showSymmetry()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()
+        || !doc->structure->cell().isDefined()) {
+        QMessageBox::information(
+            this, tr("Detect Symmetry"),
+            tr("Open a periodic structure with a defined unit cell first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    SymmetryDialog dialog(doc->structure, this);
+    if (dialog.exec() != QDialog::Accepted || !dialog.result())
+        return;
+    // A standardize / primitive transform: present the result in a new tab.
+    const int tab = addDocument(
+        std::make_shared<core::Structure>(*dialog.result()),
+        tr("%1 (%2)").arg(doc->fileName, dialog.resultName()));
+    tabBar_->setCurrentIndex(tab);
+    statusBar()->showMessage(
+        tr("%1: %2 atoms").arg(dialog.resultName()).arg(dialog.result()->size()));
+}
+
 void MainWindow::openPhononBuilder()
 {
     Document* doc = currentDocument();
@@ -2642,7 +2746,7 @@ void MainWindow::openPhononBuilder()
 
     if (jobRunner_->isRunning()) {
         QMessageBox::information(this, tr("Phonon Builder"),
-                                 tr("A job is already running — kill it first."));
+                                 tr("A calculation is already running — kill it first."));
         return;
     }
     runScript(dialog.script(), dialog.pythonExecutable());
@@ -2863,7 +2967,7 @@ void MainWindow::newCalculation()
         return;
     if (jobRunner_->isRunning()) {
         QMessageBox::information(this, tr("New Calculation"),
-                                 tr("A job is already running — kill it first."));
+                                 tr("A calculation is already running — kill it first."));
         return;
     }
 
@@ -2884,7 +2988,7 @@ bool MainWindow::prepareSimulation(const QString& title)
         return false;
     if (jobRunner_->isRunning()) {
         QMessageBox::information(this, title,
-                                 tr("A job is already running — kill it first."));
+                                 tr("A calculation is already running — kill it first."));
         return false;
     }
     return true;
@@ -2912,12 +3016,41 @@ void MainWindow::geometryOptimization()
 
 void MainWindow::molecularDynamics()
 {
-    if (!prepareSimulation(tr("Molecular Dynamics")))
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Molecular Dynamics"),
+                                 tr("Open or build a structure first."));
         return;
-    MolecularDynamicsDialog dialog(this);
-    if (dialog.exec() == QDialog::Accepted)
-        runScript(dialog.script(), dialog.pythonExecutable(),
-                  tr("Molecular dynamics"), /*expectFrames=*/true);
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    MolecularDynamicsWizard wizard(this);
+    if (wizard.exec() != QDialog::Accepted)
+        return;
+
+    if (wizard.action() == MolecularDynamicsWizard::Action::RunRemote) {
+        // Zone-11 Remote Access manager: stage the script and submit it.
+        const QString jobDir = stageJob(wizard.script());
+        if (jobDir.isEmpty())
+            return;
+        remoteDock_->show();
+        remoteDock_->raise();
+        const int taskId = processPanel_->registerTask(tr("Remote MD"), jobDir);
+        processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
+        remotePanel_->submitStagedJob(
+            jobDir, QFileInfo(doc->fileName).completeBaseName());
+        statusBar()->showMessage(tr("Submitting MD run %1 to the cluster…").arg(jobDir));
+        return;
+    }
+
+    if (jobRunner_->isRunning()) {
+        QMessageBox::information(this, tr("Molecular Dynamics"),
+                                 tr("A calculation is already running — kill it first."));
+        return;
+    }
+    runScript(wizard.script(), wizard.pythonExecutable(),
+              tr("Molecular dynamics"), /*expectFrames=*/true);
 }
 
 void MainWindow::openMonteCarlo()
@@ -2938,7 +3071,7 @@ void MainWindow::openMonteCarlo()
             return;
         if (jobRunner_->isRunning()) {
             QMessageBox::information(this, tr("Monte Carlo Simulation"),
-                                     tr("A job is already running — kill it first."));
+                                     tr("A calculation is already running — kill it first."));
             return;
         }
         runScript(dialog.script(), dialog.pythonExecutable(),
@@ -3014,7 +3147,7 @@ void MainWindow::openNudgedElasticBand()
             return;
         if (jobRunner_->isRunning()) {
             QMessageBox::information(this, tr("Nudged Elastic Band"),
-                                     tr("A job is already running — kill it first."));
+                                     tr("A calculation is already running — kill it first."));
             return;
         }
         stagedBandFrames_ = nebDialog_->band();
@@ -3025,7 +3158,191 @@ void MainWindow::openNudgedElasticBand()
     nebDialog_->show();
 }
 
-QString MainWindow::stageJob(const QString& script)
+void MainWindow::addProcessToSelector(int id, const QString& label)
+{
+    if (!processSelector_)
+        return;
+    const QSignalBlocker block(processSelector_);
+    processSelector_->addItem(QStringLiteral("#%1: %2").arg(id).arg(label), id);
+    processSelector_->setCurrentIndex(processSelector_->count() - 1);
+    selectedProcessId_ = id;
+    syncResultsToProcess(id);
+}
+
+void MainWindow::onProcessSelected(int comboIndex)
+{
+    if (!processSelector_ || comboIndex < 0)
+        return;
+    selectedProcessId_ = processSelector_->itemData(comboIndex).toInt();
+    syncResultsToProcess(selectedProcessId_);
+}
+
+void MainWindow::syncResultsToProcess(int id)
+{
+    auto it = processRecords_.find(id);
+    if (it == processRecords_.end())
+        return;
+    ProcessRecord& r = it->second;
+    // Lazily hydrate a record with no in-memory samples from its proc_<id>
+    // directory (e.g. after reopening a project).
+    if (r.energy.empty() && r.temperature.empty() && r.force.empty()
+        && r.pressure.empty() && r.log.isEmpty() && !r.directory.isEmpty())
+        loadProcessMetrics(id);
+
+    const auto toSamples = [](const std::vector<std::pair<int, double>>& v) {
+        std::vector<MetricPlotWidget::Sample> s;
+        s.reserve(v.size());
+        for (const auto& [step, value] : v)
+            s.push_back({step, value});
+        return s;
+    };
+    energyPlot_->clear();
+    energyPlot_->setSamples(toSamples(r.energy));
+    temperaturePlot_->clear();
+    temperaturePlot_->setSamples(toSamples(r.temperature));
+    if (r.hasTempTarget)
+        temperaturePlot_->setTarget(r.tempTarget);
+    forcePlot_->clear();
+    forcePlot_->setSamples(toSamples(r.force));
+    pressurePlot_->clear();
+    pressurePlot_->setSamples(toSamples(r.pressure));
+    if (r.hasPressTarget)
+        pressurePlot_->setTarget(r.pressTarget);
+    jobLogWidget_->restoreLog(r.log);
+}
+
+void MainWindow::onEnergySample(int step, double value)
+{
+    if (auto it = processRecords_.find(currentTaskId_); it != processRecords_.end())
+        it->second.energy.emplace_back(step, value);
+    if (currentTaskId_ == selectedProcessId_)
+        energyPlot_->addSample(step, value);
+}
+
+void MainWindow::onTemperatureSample(int step, double value)
+{
+    if (auto it = processRecords_.find(currentTaskId_); it != processRecords_.end())
+        it->second.temperature.emplace_back(step, value);
+    if (currentTaskId_ == selectedProcessId_)
+        temperaturePlot_->addSample(step, value);
+}
+
+void MainWindow::onForceSample(int step, double value)
+{
+    if (auto it = processRecords_.find(currentTaskId_); it != processRecords_.end())
+        it->second.force.emplace_back(step, value);
+    if (currentTaskId_ == selectedProcessId_)
+        forcePlot_->addSample(step, value);
+}
+
+void MainWindow::onPressureSample(int step, double value)
+{
+    if (auto it = processRecords_.find(currentTaskId_); it != processRecords_.end())
+        it->second.pressure.emplace_back(step, value);
+    if (currentTaskId_ == selectedProcessId_)
+        pressurePlot_->addSample(step, value);
+}
+
+void MainWindow::onTargetTemperature(double value)
+{
+    if (auto it = processRecords_.find(currentTaskId_); it != processRecords_.end()) {
+        it->second.hasTempTarget = true;
+        it->second.tempTarget = value;
+    }
+    if (currentTaskId_ == selectedProcessId_)
+        temperaturePlot_->setTarget(value);
+}
+
+void MainWindow::onTargetPressure(double value)
+{
+    if (auto it = processRecords_.find(currentTaskId_); it != processRecords_.end()) {
+        it->second.hasPressTarget = true;
+        it->second.pressTarget = value;
+    }
+    if (currentTaskId_ == selectedProcessId_)
+        pressurePlot_->setTarget(value);
+}
+
+void MainWindow::onJobOutputLine(const QString& line)
+{
+    if (auto it = processRecords_.find(currentTaskId_); it != processRecords_.end())
+        it->second.log += line + QLatin1Char('\n');
+    if (currentTaskId_ == selectedProcessId_)
+        jobLogWidget_->onOutputLine(line);
+}
+
+void MainWindow::onJobErrorLine(const QString& line)
+{
+    if (auto it = processRecords_.find(currentTaskId_); it != processRecords_.end())
+        it->second.log += line + QLatin1Char('\n');
+    if (currentTaskId_ == selectedProcessId_)
+        jobLogWidget_->onErrorLine(line);
+}
+
+void MainWindow::onJobProgress(int step, int total)
+{
+    if (currentTaskId_ == selectedProcessId_)
+        jobLogWidget_->onProgress(step, total);
+}
+
+void MainWindow::writeProcessMetrics(int id)
+{
+    auto it = processRecords_.find(id);
+    if (it == processRecords_.end() || it->second.directory.isEmpty())
+        return;
+    const ProcessRecord& r = it->second;
+    const auto writeCsv = [&](const QString& name, const char* column,
+                              const std::vector<std::pair<int, double>>& v) {
+        if (v.empty())
+            return;
+        QFile file(r.directory + QLatin1Char('/') + name);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+            return;
+        QTextStream out(&file);
+        out << "step," << column << "\n";
+        for (const auto& [step, value] : v)
+            out << step << ',' << QString::number(value, 'g', 8) << '\n';
+    };
+    writeCsv(QStringLiteral("energy.csv"), "total_energy_eV", r.energy);
+    writeCsv(QStringLiteral("temperature.csv"), "temperature_K", r.temperature);
+    writeCsv(QStringLiteral("max_force.csv"), "max_force_eV_per_A", r.force);
+    writeCsv(QStringLiteral("pressure.csv"), "pressure_GPa", r.pressure);
+    if (!r.log.isEmpty()) {
+        QFile file(r.directory + QStringLiteral("/log.txt"));
+        if (file.open(QIODevice::WriteOnly | QIODevice::Text))
+            QTextStream(&file) << r.log;
+    }
+}
+
+void MainWindow::loadProcessMetrics(int id)
+{
+    auto it = processRecords_.find(id);
+    if (it == processRecords_.end() || it->second.directory.isEmpty())
+        return;
+    ProcessRecord& r = it->second;
+    const auto readCsv = [&](const QString& name,
+                             std::vector<std::pair<int, double>>& v) {
+        QFile file(r.directory + QLatin1Char('/') + name);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+            return;
+        QTextStream in(&file);
+        in.readLine(); // header
+        while (!in.atEnd()) {
+            const QStringList parts = in.readLine().split(QLatin1Char(','));
+            if (parts.size() >= 2)
+                v.emplace_back(parts[0].toInt(), parts[1].toDouble());
+        }
+    };
+    readCsv(QStringLiteral("energy.csv"), r.energy);
+    readCsv(QStringLiteral("temperature.csv"), r.temperature);
+    readCsv(QStringLiteral("max_force.csv"), r.force);
+    readCsv(QStringLiteral("pressure.csv"), r.pressure);
+    QFile logFile(r.directory + QStringLiteral("/log.txt"));
+    if (logFile.open(QIODevice::ReadOnly | QIODevice::Text))
+        r.log = QString::fromUtf8(logFile.readAll());
+}
+
+QString MainWindow::stageJob(const QString& script, int procId)
 {
     Document* doc = currentDocument();
     if (!doc || !doc->structure)
@@ -3040,11 +3357,15 @@ QString MainWindow::stageJob(const QString& script)
             + QStringLiteral("/jobs")
         : QFileInfo(projectPath_).absolutePath()
             + QStringLiteral("/.calango_tmp");
-    const QString jobDir = jobsRoot + QStringLiteral("/job_")
-        + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
+    // Per-process metric store: proc_<id> keeps each run's outputs isolated;
+    // paths without a process id (e.g. remote submissions) keep a timestamp.
+    const QString jobDir = procId >= 0
+        ? jobsRoot + QStringLiteral("/proc_%1").arg(procId)
+        : jobsRoot + QStringLiteral("/job_")
+            + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
     if (!QDir().mkpath(jobDir)) {
-        QMessageBox::critical(this, tr("Run Job"),
-                              tr("Could not create job directory %1").arg(jobDir));
+        QMessageBox::critical(this, tr("Run Calculation"),
+                              tr("Could not create run directory %1").arg(jobDir));
         return {};
     }
 
@@ -3070,7 +3391,7 @@ QString MainWindow::stageJob(const QString& script)
         QTextStream(&scriptFile) << script;
         scriptFile.close();
     } catch (const std::exception& e) {
-        QMessageBox::critical(this, tr("Run Job"), QString::fromUtf8(e.what()));
+        QMessageBox::critical(this, tr("Run Calculation"), QString::fromUtf8(e.what()));
         return {};
     }
     return jobDir;
@@ -3079,16 +3400,28 @@ QString MainWindow::stageJob(const QString& script)
 void MainWindow::runScript(const QString& script, const QString& pythonExe,
                            const QString& taskLabel, bool expectFrames)
 {
-    const QString jobDir = stageJob(script);
-    if (jobDir.isEmpty())
+    const QString label = taskLabel.isEmpty() ? tr("Local calculation") : taskLabel;
+    // Allocate the process id first so the run stages into proc_<id>/ and its
+    // metrics are recorded under that id.
+    const int procId = processPanel_->registerTask(label, QString());
+    const QString jobDir = stageJob(script, procId);
+    if (jobDir.isEmpty()) {
+        processPanel_->setTaskStatus(procId, ProcessManagerPanel::Status::Failed);
         return;
+    }
+    processPanel_->setTaskDirectory(procId, jobDir);
 
     lastJobDir_ = jobDir;
-    isDirty_ = true; // the job console + metric series persist in .calproj
-    currentTaskId_ = processPanel_->registerTask(
-        taskLabel.isEmpty() ? tr("Local calculation") : taskLabel, jobDir);
-    processPanel_->setTaskStatus(currentTaskId_,
-                                 ProcessManagerPanel::Status::Running);
+    isDirty_ = true; // the run console + metric series persist in .calproj
+    currentTaskId_ = procId;
+    ProcessRecord record;
+    record.label = label;
+    record.directory = jobDir;
+    processRecords_[procId] = std::move(record);
+    // Adding + selecting the process repopulates (clears) the tabs for the
+    // fresh run; its live samples then flow into the now-selected process.
+    addProcessToSelector(procId, label);
+    processPanel_->setTaskStatus(procId, ProcessManagerPanel::Status::Running);
 
     // Live viewport streaming: MD/relaxation scripts emit CALANGO_FRAME
     // blocks — open the trajectory tab NOW and let frames pour in.
@@ -3109,7 +3442,7 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe,
     jobDock_->show();
     jobDock_->raise();
     jobRunner_->start(pythonExe, QStringLiteral("run.py"), jobDir);
-    statusBar()->showMessage(tr("Job running in %1 (%2)").arg(jobDir, pythonExe));
+    statusBar()->showMessage(tr("Running in %1 (%2)").arg(jobDir, pythonExe));
 }
 
 int MainWindow::indexOfDocument(const Document* document) const
@@ -3184,7 +3517,7 @@ void MainWindow::onRemoteResultsReady(const QString& localDir)
         }
     }
     statusBar()->showMessage(
-        tr("Remote job finished — results in %1").arg(localDir));
+        tr("Remote run finished — results in %1").arg(localDir));
 }
 
 void MainWindow::onJobFinished(int exitCode, bool crashed)
@@ -3194,6 +3527,9 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         processPanel_->setTaskStatus(currentTaskId_,
                                      failed ? ProcessManagerPanel::Status::Failed
                                             : ProcessManagerPanel::Status::Completed);
+        // Persist this process's metrics + log to proc_<id>/ so they survive
+        // subsequent runs and can be reloaded from the Results selector.
+        writeProcessMetrics(currentTaskId_);
         currentTaskId_ = -1;
     }
 
@@ -3210,7 +3546,7 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
                 syncViewsToCurrent(false);
             if (!failed)
                 statusBar()->showMessage(
-                    tr("Job finished — %n streamed frame(s)", nullptr,
+                    tr("Run finished — %n streamed frame(s)", nullptr,
                        static_cast<int>(streamed->frames.size())));
             return;
         }
@@ -3242,7 +3578,7 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
             continue;
         loadFile(trajectoryPath);
         statusBar()->showMessage(
-            tr("Job finished — trajectory %1 opened in a new tab")
+            tr("Run finished — trajectory %1 opened in a new tab")
                 .arg(QLatin1String(trajectory)),
             8000);
         return;
@@ -3255,8 +3591,8 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         if (!QFile::exists(resultPath))
             continue;
         const auto answer = QMessageBox::question(
-            this, tr("Job Finished"),
-            tr("The job produced %1.\nLoad it into a new tab?")
+            this, tr("Run Finished"),
+            tr("The run produced %1.\nLoad it into a new tab?")
                 .arg(QLatin1String(candidate)));
         if (answer == QMessageBox::Yes)
             loadFile(resultPath);

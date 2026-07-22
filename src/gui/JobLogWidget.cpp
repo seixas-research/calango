@@ -78,10 +78,10 @@ void JobLogWidget::onJobFinished(int exitCode, bool crashed)
         progressBar_->setRange(0, 1); // stop the indeterminate animation
     if (crashed) {
         statusLabel_->setText(tr("Crashed"));
-        appendColored(tr("Job crashed."), QStringLiteral("#ff6b6b"));
+        appendColored(tr("Calculation crashed."), QStringLiteral("#ff6b6b"));
     } else {
         statusLabel_->setText(tr("Finished (exit %1)").arg(exitCode));
-        appendColored(tr("Job finished with exit code %1.").arg(exitCode),
+        appendColored(tr("Calculation finished with exit code %1.").arg(exitCode),
                       exitCode == 0 ? QStringLiteral("#51cf66") : QStringLiteral("#ff6b6b"));
         if (exitCode == 0)
             progressBar_->setValue(progressBar_->maximum());
