@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.27
+    VERSION 26.7.28
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -116,6 +116,10 @@ qt_add_executable(calango
     src/core/ElectronicScriptGenerator.cpp
     src/core/AdsorptionSites.hpp
     src/core/AdsorptionSites.cpp
+    src/core/ClusterExpansion.hpp
+    src/core/ClusterExpansion.cpp
+    src/core/MonteCarlo.hpp
+    src/core/MonteCarlo.cpp
 
     # python_bridge — embedded CPython + ASE interop
     src/python_bridge/PythonEngine.hpp
@@ -132,6 +136,8 @@ qt_add_executable(calango
     src/python_bridge/RamanAnalysis.cpp
     src/python_bridge/SurfaceScience.hpp
     src/python_bridge/SurfaceScience.cpp
+    src/python_bridge/NebBuilder.hpp
+    src/python_bridge/NebBuilder.cpp
 
     # render — OpenGL "View" over core::Structure (read-only access)
     src/render/Camera.hpp
@@ -238,6 +244,8 @@ qt_add_executable(calango
     src/gui/BandPdosView.cpp
     src/gui/BandPdosWindow.hpp
     src/gui/BandPdosWindow.cpp
+    src/gui/PhononPlotWindow.hpp
+    src/gui/PhononPlotWindow.cpp
     src/gui/NanoparticleDialog.hpp
     src/gui/NanoparticleDialog.cpp
     src/gui/AdsorptionDialog.hpp
@@ -246,6 +254,12 @@ qt_add_executable(calango
     src/gui/SupercellDialog.cpp
     src/gui/SimulationDialogs.hpp
     src/gui/SimulationDialogs.cpp
+    src/gui/ClusterExpansionDialog.hpp
+    src/gui/ClusterExpansionDialog.cpp
+    src/gui/MonteCarloDialog.hpp
+    src/gui/MonteCarloDialog.cpp
+    src/gui/NebDialog.hpp
+    src/gui/NebDialog.cpp
 )
 
 qt_add_resources(calango "shaders"
@@ -409,6 +423,41 @@ if(CALANGO_BUILD_TESTS)
         CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}")
     target_link_libraries(calango_adsorption_test PRIVATE pybind11::embed)
     add_test(NAME adsorption_nanoparticle COMMAND calango_adsorption_test)
+
+    add_executable(calango_phonon_test
+        tests/PhononDiamondTest.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/python_bridge/PythonEngine.cpp
+        src/python_bridge/AseBridge.cpp
+    )
+    target_include_directories(calango_phonon_test PRIVATE src)
+    target_compile_definitions(calango_phonon_test PRIVATE
+        CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}")
+    target_link_libraries(calango_phonon_test PRIVATE pybind11::embed)
+    add_test(NAME phonon_diamond COMMAND calango_phonon_test)
+
+    # Native cores (no embedded Python needed).
+    add_executable(calango_cluster_expansion_test
+        tests/ClusterExpansionTest.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/core/ClusterExpansion.cpp
+    )
+    target_include_directories(calango_cluster_expansion_test PRIVATE src)
+    add_test(NAME cluster_expansion COMMAND calango_cluster_expansion_test)
+
+    add_executable(calango_monte_carlo_test
+        tests/MonteCarloTest.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/core/MonteCarlo.cpp
+    )
+    target_include_directories(calango_monte_carlo_test PRIVATE src)
+    add_test(NAME monte_carlo_swap COMMAND calango_monte_carlo_test)
 
     add_executable(calango_symmetry_test
         tests/SymmetrySiTest.cpp

@@ -80,6 +80,14 @@ void BandPdosView::setProjectionVisible(const QString& label, bool visible)
     update();
 }
 
+void BandPdosView::setPhononMode(bool on)
+{
+    phonon_ = on;
+    if (on)
+        reference_ = 0.0; // frequencies are absolute; ω = 0 is the acoustic line
+    update();
+}
+
 void BandPdosView::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
@@ -143,14 +151,14 @@ void BandPdosView::paintBands(QPainter& painter, const QRectF& rect)
         painter.setPen(QPen(kGrid, 1.0, Qt::DotLine));
         painter.drawLine(QPointF(rect.left(), py), QPointF(rect.right(), py));
         painter.setPen(kText);
-        painter.drawText(QRectF(rect.left() - 36, py - 8, 32, 16),
+        painter.drawText(QRectF(rect.left() - 40, py - 8, 36, 16),
                          Qt::AlignRight | Qt::AlignVCenter,
-                         QString::number(e, 'f', 1));
+                         QString::number(e, 'f', phonon_ ? 0 : 1));
     }
 
-    // Fermi reference (E - reference = 0).
+    // Reference line: E − E_F = 0 for electrons, ω = 0 (acoustic) for phonons.
     if (eMin_ < 0.0 && eMax_ > 0.0) {
-        painter.setPen(QPen(kFermi, 1.4, Qt::DashLine));
+        painter.setPen(QPen(phonon_ ? kGrid : kFermi, 1.4, Qt::DashLine));
         painter.drawLine(QPointF(rect.left(), mapY(0.0)),
                          QPointF(rect.right(), mapY(0.0)));
     }
@@ -180,7 +188,7 @@ void BandPdosView::paintBands(QPainter& painter, const QRectF& rect)
     painter.setPen(kText);
     painter.drawText(QRectF(rect.left(), rect.top() - 2, rect.width(), 16),
                      Qt::AlignLeft | Qt::AlignTop,
-                     tr("E − E_ref (eV)"));
+                     phonon_ ? tr("Frequency (cm⁻¹)") : tr("E − E_ref (eV)"));
 }
 
 void BandPdosView::paintPdos(QPainter& painter, const QRectF& rect)
@@ -210,7 +218,7 @@ void BandPdosView::paintPdos(QPainter& painter, const QRectF& rect)
     painter.setPen(QPen(kFrame, 1.2));
     painter.drawRect(rect);
     if (eMin_ < 0.0 && eMax_ > 0.0) {
-        painter.setPen(QPen(kFermi, 1.4, Qt::DashLine));
+        painter.setPen(QPen(phonon_ ? kGrid : kFermi, 1.4, Qt::DashLine));
         painter.drawLine(QPointF(rect.left(), mapY(0.0)),
                          QPointF(rect.right(), mapY(0.0)));
     }
@@ -242,7 +250,8 @@ void BandPdosView::paintPdos(QPainter& painter, const QRectF& rect)
 
     painter.setPen(kText);
     painter.drawText(QRectF(rect.left(), rect.bottom() + 2, rect.width(), 18),
-                     Qt::AlignHCenter | Qt::AlignTop, tr("PDOS (states/eV)"));
+                     Qt::AlignHCenter | Qt::AlignTop,
+                     phonon_ ? tr("PhDOS (states/cm⁻¹)") : tr("PDOS (states/eV)"));
 }
 
 } // namespace calango::gui

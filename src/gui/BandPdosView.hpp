@@ -44,6 +44,12 @@ public:
     void setEnergyWindow(double minEv, double maxEv); ///< relative to reference
     void setProjectionVisible(const QString& label, bool visible);
 
+    /// Switch to phonon semantics: the vertical axis is frequency in cm⁻¹
+    /// (not energy relative to a Fermi level), the reference is 0, and the
+    /// horizontal reference line marks ω = 0 (the acoustic modes). The band
+    /// energies are then interpreted as frequencies and the PDOS as PhDOS.
+    void setPhononMode(bool on);
+
     /// Color used for a projection curve (legend checkboxes reuse it).
     static QColor projectionColor(int index);
 
@@ -60,6 +66,7 @@ private:
     double reference_ = 0.0;
     double eMin_ = -10.0;
     double eMax_ = 10.0;
+    bool phonon_ = false; ///< frequency (cm⁻¹) semantics instead of energy/eV
 };
 
 } // namespace calango::gui

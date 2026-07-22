@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QDialogButtonBox>
 #include <QFont>
+#include <QFontMetrics>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -111,13 +112,22 @@ void LatticePreviewWidget::paintEvent(QPaintEvent* /*event*/)
         maxY = std::max(maxY, p.y());
     }
 
-    const double margin = 44.0;
+    // Reserve room for the outward label pills and the two-line legend so
+    // nothing is clipped or drawn on top of the vectors.
+    QFont labelFont = font();
+    labelFont.setBold(true);
+    const QFontMetrics fm(labelFont);
+    const int legendHeight = 2 * fm.height() + 10;
+    const double margin = fm.height() + 26.0;
     const double spanX = std::max(maxX - minX, 1e-6);
     const double spanY = std::max(maxY - minY, 1e-6);
-    const double scale = std::min((width() - 2 * margin) / spanX,
-                                  (height() - 2 * margin) / spanY);
+    const double scale =
+        std::min((width() - 2 * margin) / spanX,
+                 (height() - 2 * margin - legendHeight) / spanY);
     const QPointF center((minX + maxX) / 2.0, (minY + maxY) / 2.0);
-    const QPointF screenCenter(width() / 2.0, height() / 2.0);
+    // Bias the drawing upward so the legend band at the bottom stays clear.
+    const QPointF screenCenter(width() / 2.0,
+                               (height() - legendHeight) / 2.0);
 
     auto toScreen = [&](const core::Vec3& v) {
         const QPointF q = project(v);
@@ -126,6 +136,26 @@ void LatticePreviewWidget::paintEvent(QPaintEvent* /*event*/)
     };
 
     const QPointF origin = toScreen({0, 0, 0});
+    const QColor pillBg = palette().color(QPalette::Base);
+
+    // Draws a text pill centered at `at`, with a filled rounded background so
+    // labels stay legible where they cross a vector or another label.
+    auto drawPill = [&](const QPointF& at, const QColor& color, const QString& text) {
+        const QRectF textRect = fm.boundingRect(text);
+        QRectF pill(0, 0, textRect.width() + 10, fm.height() + 4);
+        pill.moveCenter(at);
+        // Keep the pill fully inside the canvas.
+        const double x = std::clamp(pill.left(), 2.0, width() - pill.width() - 2.0);
+        const double y = std::clamp(pill.top(), 2.0,
+                                    height() - legendHeight - pill.height() - 2.0);
+        pill.moveTopLeft({x, y});
+        painter.setBrush(pillBg);
+        painter.setPen(QPen(color, 1.0));
+        painter.drawRoundedRect(pill, 4, 4);
+        painter.setFont(labelFont);
+        painter.setPen(color);
+        painter.drawText(pill, Qt::AlignCenter, text);
+    };
 
     auto drawArrow = [&](const core::Vec3& v, const QColor& color, const QString& label,
                          bool dashed) {
@@ -134,44 +164,50 @@ void LatticePreviewWidget::paintEvent(QPaintEvent* /*event*/)
         if (dashed)
             pen.setStyle(Qt::DashLine);
         painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
         painter.drawLine(origin, tip);
 
-        // Arrowhead (skip for near-zero vectors, whose direction is undefined).
         const double dx = tip.x() - origin.x();
         const double dy = tip.y() - origin.y();
         const double len = std::hypot(dx, dy);
-        if (len > 4.0) {
-            const double ang = std::atan2(dy, dx);
-            const double head = 9.0;
-            const double spread = 0.42;
-            QPainterPath path;
-            path.moveTo(tip);
-            path.lineTo(tip.x() - head * std::cos(ang - spread),
-                        tip.y() - head * std::sin(ang - spread));
-            path.lineTo(tip.x() - head * std::cos(ang + spread),
-                        tip.y() - head * std::sin(ang + spread));
-            path.closeSubpath();
-            painter.fillPath(path, color);
+        if (len <= 4.0)
+            return; // near-zero vector: direction (and arrowhead/label) undefined
+        const double ang = std::atan2(dy, dx);
+        const double head = 9.0;
+        const double spread = 0.42;
+        QPainterPath path;
+        path.moveTo(tip);
+        path.lineTo(tip.x() - head * std::cos(ang - spread),
+                    tip.y() - head * std::sin(ang - spread));
+        path.lineTo(tip.x() - head * std::cos(ang + spread),
+                    tip.y() - head * std::sin(ang + spread));
+        path.closeSubpath();
+        painter.fillPath(path, color);
 
-            painter.setPen(color);
-            painter.drawText(QRectF(tip.x() - 40, tip.y() - 26, 80, 20),
-                             Qt::AlignCenter, label);
-        }
+        // Label sits just beyond the tip, along the vector direction, so the
+        // six labels fan outward instead of piling onto the arrow tips.
+        const QPointF labelPos(tip.x() + std::cos(ang) * (head + 12.0),
+                               tip.y() + std::sin(ang) * (head + 12.0));
+        drawPill(labelPos, color, label);
     };
 
-    // Supercell first (thicker feel underneath), original on top so both read.
-    drawArrow(superVecs[0], kSuperColor, QStringLiteral("a′"), false);
-    drawArrow(superVecs[1], kSuperColor, QStringLiteral("b′"), false);
-    drawArrow(superVecs[2], kSuperColor, QStringLiteral("c′"), false);
-    drawArrow(cell_[0], kOriginalColor, QStringLiteral("a"), true);
-    drawArrow(cell_[1], kOriginalColor, QStringLiteral("b"), true);
-    drawArrow(cell_[2], kOriginalColor, QStringLiteral("c"), true);
+    // Supercell underneath (solid), original on top (dashed) so both read.
+    drawArrow(superVecs[0], kSuperColor, QStringLiteral("A₁"), false);
+    drawArrow(superVecs[1], kSuperColor, QStringLiteral("A₂"), false);
+    drawArrow(superVecs[2], kSuperColor, QStringLiteral("A₃"), false);
+    drawArrow(cell_[0], kOriginalColor, QStringLiteral("a₁"), true);
+    drawArrow(cell_[1], kOriginalColor, QStringLiteral("a₂"), true);
+    drawArrow(cell_[2], kOriginalColor, QStringLiteral("a₃"), true);
 
-    // Legend.
+    // Two-line legend in the reserved bottom band.
+    painter.setFont(font());
+    const QFontMetrics lfm(font());
+    const int line2 = height() - 6;
+    const int line1 = line2 - lfm.height();
     painter.setPen(kOriginalColor);
-    painter.drawText(10, height() - 24, tr("— original cell (a, b, c)"));
+    painter.drawText(10, line1, tr("— — original cell (a₁, a₂, a₃)"));
     painter.setPen(kSuperColor);
-    painter.drawText(10, height() - 8, tr("— supercell (a′, b′, c′)"));
+    painter.drawText(10, line2, tr("——— supercell (A₁, A₂, A₃)"));
 }
 
 // ---------------------------------------------------------------------------
@@ -188,8 +224,8 @@ SupercellDialog::SupercellDialog(std::shared_ptr<const core::Structure> structur
 
     auto* intro = new QLabel(
         tr("Build a supercell from an integer transformation matrix P. Each "
-           "row is a new lattice vector expressed in the original vectors "
-           "(a, b, c): new aᵢ = Pᵢ₁·a + Pᵢ₂·b + Pᵢ₃·c. Off-diagonal terms "
+           "row is a new lattice vector Aᵢ expressed in the original vectors "
+           "(a₁, a₂, a₃): Aᵢ = Pᵢ₁·a₁ + Pᵢ₂·a₂ + Pᵢ₃·a₃. Off-diagonal terms "
            "give sheared, non-diagonal supercells."),
         this);
     intro->setWordWrap(true);

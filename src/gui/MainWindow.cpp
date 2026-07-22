@@ -27,7 +27,11 @@
 #include "core/ElectronicScriptGenerator.hpp"
 #include "gui/AdsorptionDialog.hpp"
 #include "gui/BandPdosWindow.hpp"
+#include "gui/ClusterExpansionDialog.hpp"
+#include "gui/MonteCarloDialog.hpp"
 #include "gui/NanoparticleDialog.hpp"
+#include "gui/NebDialog.hpp"
+#include "gui/PhononPlotWindow.hpp"
 #include "gui/SimulationDialogs.hpp"
 #include "gui/SupercellDialog.hpp"
 #include "gui/DatasetManagerDialog.hpp"
@@ -579,6 +583,8 @@ void MainWindow::createMenusAndDocks()
                          this, &MainWindow::openNanoparticleBuilder);
     buildMenu->addAction(tr("Special &Quasirandom Structure (SQS)…"),
                          this, &MainWindow::openSqsBuilder);
+    buildMenu->addAction(tr("Cluster &Expansion…"),
+                         this, &MainWindow::openClusterExpansion);
     buildMenu->addAction(tr("&Normal Modes / Phonon Builder…"),
                          this, &MainWindow::openPhononBuilder);
     buildMenu->addAction(tr("From &Database…"), this, &MainWindow::openExamplesBrowser);
@@ -596,6 +602,10 @@ void MainWindow::createMenusAndDocks()
                               this, &MainWindow::molecularDynamics);
     simulationMenu->addAction(tr("&Phonon Calculation…"),
                               this, &MainWindow::openPhononBuilder);
+    simulationMenu->addAction(tr("&Monte Carlo Simulation…"),
+                              this, &MainWindow::openMonteCarlo);
+    simulationMenu->addAction(tr("&Nudged Elastic Band (NEB)…"),
+                              this, &MainWindow::openNudgedElasticBand);
     simulationMenu->addSeparator();
     simulationMenu->addAction(tr("New &Remote Calculation…"),
                               QKeySequence(tr("Ctrl+Shift+R")),
@@ -2353,10 +2363,28 @@ void MainWindow::openBandResults(const QString& directory)
     window->show();
 }
 
+void MainWindow::openPhononResults(const QString& directory)
+{
+    auto* window = new PhononPlotWindow(directory, this);
+    if (!window->hasData()) {
+        delete window;
+        QMessageBox::information(
+            this, tr("Phonon Band Structure"),
+            tr("No phonon_band.json found in %1").arg(directory));
+        return;
+    }
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    window->show();
+}
+
 void MainWindow::onProcessResultRequested(const QString& directory)
 {
     if (QFile::exists(directory + QStringLiteral("/bands.json"))) {
         openBandResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/phonon_band.json"))) {
+        openPhononResults(directory);
         return;
     }
     for (const auto* candidate :
@@ -2520,6 +2548,51 @@ void MainWindow::openSqsBuilder()
             ? tr("SQS generated with icet")
             : tr("SQS generated (internal annealer, residual Σα² = %1)")
                   .arg(generated.objective, 0, 'f', 4));
+}
+
+void MainWindow::openClusterExpansion()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()
+        || !doc->structure->cell().isDefined()) {
+        QMessageBox::information(
+            this, tr("Cluster Expansion"),
+            tr("Open a periodic parent structure with a defined unit cell first."));
+        return;
+    }
+
+    ClusterExpansionDialog dialog(doc->structure, this);
+    if (dialog.exec() != QDialog::Accepted || !dialog.result())
+        return;
+
+    const auto& res = *dialog.result();
+    // Present the whole inequivalent ensemble as one scrubbable multi-frame
+    // document (Save Trajectory As… exports it for the Dataset Manager).
+    std::vector<std::shared_ptr<core::Structure>> frames;
+    frames.reserve(res.configs.size());
+    for (const auto& cfg : res.configs)
+        frames.push_back(std::make_shared<core::Structure>(cfg.structure));
+
+    const int tab = addDocument(frames.front(),
+                                tr("Cluster Expansion (%1 configs)")
+                                    .arg(res.configs.size()),
+                                frames);
+    tabBar_->setCurrentIndex(tab);
+
+    int pairO = 0, tripO = 0, quadO = 0;
+    for (const auto& o : res.orbits) {
+        if (o.order == 2) ++pairO;
+        else if (o.order == 3) ++tripO;
+        else if (o.order == 4) ++quadO;
+    }
+    statusBar()->showMessage(
+        tr("Cluster Expansion: %1 inequivalent configs from %2 decorations "
+           "(%3 active sites; orbits %4 pair / %5 triplet / %6 quad)%7")
+            .arg(res.configs.size())
+            .arg(res.enumerated)
+            .arg(res.activeSites)
+            .arg(pairO).arg(tripO).arg(quadO)
+            .arg(res.sampled ? tr(" — occupation space sub-sampled") : QString()));
 }
 
 void MainWindow::showCoordination()
@@ -2847,6 +2920,111 @@ void MainWindow::molecularDynamics()
                   tr("Molecular dynamics"), /*expectFrames=*/true);
 }
 
+void MainWindow::openMonteCarlo()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Monte Carlo Simulation"),
+                                 tr("Open or build a structure first."));
+        return;
+    }
+
+    MonteCarloDialog dialog(doc->structure, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    if (dialog.method() == MonteCarloDialog::Method::BasinHopping) {
+        if (!ensureAseAvailable())
+            return;
+        if (jobRunner_->isRunning()) {
+            QMessageBox::information(this, tr("Monte Carlo Simulation"),
+                                     tr("A job is already running — kill it first."));
+            return;
+        }
+        runScript(dialog.script(), dialog.pythonExecutable(),
+                  tr("Basin Hopping"), /*expectFrames=*/true);
+        return;
+    }
+
+    // Swap-atoms: the native run already happened in the dialog. Present the
+    // trajectory of snapshots and echo the energy trace into the Job panel's
+    // Energy plot.
+    const auto& res = *dialog.swapResult();
+    std::vector<std::shared_ptr<core::Structure>> frames;
+    frames.reserve(res.snapshots.size());
+    for (const auto& s : res.snapshots)
+        frames.push_back(std::make_shared<core::Structure>(s));
+    const int tab = addDocument(frames.back(),
+                                tr("Swap MC (%1 configs)").arg(frames.size()),
+                                frames);
+    tabBar_->setCurrentIndex(tab);
+
+    if (energyPlot_) {
+        energyPlot_->clear();
+        for (std::size_t i = 0; i < res.energyTrace.size(); ++i)
+            energyPlot_->addSample(res.stepTrace[i], res.energyTrace[i]);
+        jobDock_->show();
+        jobDock_->raise();
+    }
+    statusBar()->showMessage(
+        tr("Swap MC: E %1 → %2 eV (best %3), %4 moves accepted, "
+           "unlike-bond fraction %5")
+            .arg(res.initialEnergy, 0, 'f', 4)
+            .arg(res.finalEnergy, 0, 'f', 4)
+            .arg(res.bestEnergy, 0, 'f', 4)
+            .arg(res.acceptedMoves)
+            .arg(res.finalUnlikeFraction, 0, 'f', 3));
+}
+
+void MainWindow::openNudgedElasticBand()
+{
+    if (!ensureAseAvailable())
+        return;
+    if (documents_.empty()) {
+        QMessageBox::information(
+            this, tr("Nudged Elastic Band"),
+            tr("Open the reactant and product structures first (as tabs), "
+               "or load them from files inside the dialog."));
+        return;
+    }
+    if (nebDialog_) { // non-modal: one instance, just resurface it
+        nebDialog_->raise();
+        nebDialog_->activateWindow();
+        return;
+    }
+
+    std::vector<NebDialog::NamedStructure> docs;
+    for (const auto& d : documents_)
+        if (d->structure)
+            docs.push_back({d->fileName, d->structure});
+
+    nebDialog_ = new NebDialog(std::move(docs), this);
+    connect(nebDialog_, &NebDialog::previewRequested, this,
+            [this](const std::vector<std::shared_ptr<core::Structure>>& band) {
+                if (band.empty())
+                    return;
+                std::vector<std::shared_ptr<core::Structure>> frames = band;
+                const int tab = addDocument(
+                    frames.front(),
+                    tr("NEB preview (%1 images)").arg(frames.size()), frames);
+                tabBar_->setCurrentIndex(tab);
+            });
+    connect(nebDialog_, &NebDialog::runRequested, this, [this] {
+        if (!nebDialog_)
+            return;
+        if (jobRunner_->isRunning()) {
+            QMessageBox::information(this, tr("Nudged Elastic Band"),
+                                     tr("A job is already running — kill it first."));
+            return;
+        }
+        stagedBandFrames_ = nebDialog_->band();
+        runScript(nebDialog_->script(), nebDialog_->pythonExecutable(),
+                  tr("NEB"), /*expectFrames=*/true);
+    });
+    connect(nebDialog_, &QObject::destroyed, this, [this] { nebDialog_ = nullptr; });
+    nebDialog_->show();
+}
+
 QString MainWindow::stageJob(const QString& script)
 {
     Document* doc = currentDocument();
@@ -2875,6 +3053,15 @@ QString MainWindow::stageJob(const QString& script)
         pybridge::AseBridge::writeStructure(
             *doc->structure, (jobDir + QStringLiteral("/structure.extxyz")).toStdString(),
             "extxyz");
+
+        // NEB and other band jobs also stage the full image band as
+        // band.extxyz; the member is consumed (cleared) per staging.
+        if (!stagedBandFrames_.empty()) {
+            pybridge::AseBridge::writeTrajectory(
+                stagedBandFrames_,
+                (jobDir + QStringLiteral("/band.extxyz")).toStdString(), "extxyz");
+            stagedBandFrames_.clear();
+        }
 
         const QString scriptPath = jobDir + QStringLiteral("/run.py");
         QFile scriptFile(scriptPath);
@@ -3038,6 +3225,11 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     // Electronic-structure runs: open the band/PDOS viewer directly.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/bands.json"))) {
         openBandResults(lastJobDir_);
+        return;
+    }
+    // Phonon runs: open the phonon band structure + PhDOS viewer.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/phonon_band.json"))) {
+        openPhononResults(lastJobDir_);
         return;
     }
 

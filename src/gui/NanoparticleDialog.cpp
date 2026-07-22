@@ -5,34 +5,87 @@
 #include "python_bridge/SurfaceScience.hpp"
 
 #include <QApplication>
+#include <QButtonGroup>
 #include <QComboBox>
-#include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QSpinBox>
+#include <QStackedWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
 namespace calango::gui {
 
-NanoparticleDialog::NanoparticleDialog(QWidget* parent)
-    : QDialog(parent)
+NanoparticleDialog::NanoparticleDialog(QWidget* parent) : QDialog(parent)
 {
     setWindowTitle(tr("Nanoparticle & Cluster Builder"));
-    resize(460, 560);
+    resize(480, 580);
 
-    auto* layout = new QVBoxLayout(this);
-    auto* form = new QFormLayout;
-    layout->addLayout(form);
+    auto* root = new QVBoxLayout(this);
+    stack_ = new QStackedWidget(this);
+    root->addWidget(stack_, 1);
 
-    elementButton_ = new QPushButton(this);
+    // ======================= Stage 1: method ==============================
+    auto* methodPage = new QWidget(this);
+    auto* methodLayout = new QVBoxLayout(methodPage);
+    auto* methodTitle = new QLabel(tr("<b>Stage 1 of 2 — Choose a method</b>"),
+                                   methodPage);
+    methodLayout->addWidget(methodTitle);
+
+    wulffRadio_ = new QRadioButton(
+        tr("Wulff Construction (Thermodynamic Equilibrium)"), methodPage);
+    wulffRadio_->setChecked(true);
+    auto* wulffHelp = new QLabel(
+        tr("Equilibrium crystal shape minimizing total surface energy, built "
+           "from per-facet surface-energy ratios γ(hkl) and a target size."),
+        methodPage);
+    wulffHelp->setWordWrap(true);
+    wulffHelp->setIndent(24);
+    wulffHelp->setEnabled(false);
+
+    clusterRadio_ = new QRadioButton(tr("Symmetric Crystal Cluster"), methodPage);
+    auto* clusterHelp = new QLabel(
+        tr("Closed-shell magic clusters and carved crystallites: icosahedron, "
+           "dodecahedron, cuboctahedron, octahedron, decahedron, or a "
+           "spherical FCC/BCC/HCP cluster, sized by shell / layer count."),
+        methodPage);
+    clusterHelp->setWordWrap(true);
+    clusterHelp->setIndent(24);
+    clusterHelp->setEnabled(false);
+
+    auto* methodGroup = new QButtonGroup(this);
+    methodGroup->addButton(wulffRadio_);
+    methodGroup->addButton(clusterRadio_);
+
+    methodLayout->addSpacing(6);
+    methodLayout->addWidget(wulffRadio_);
+    methodLayout->addWidget(wulffHelp);
+    methodLayout->addSpacing(10);
+    methodLayout->addWidget(clusterRadio_);
+    methodLayout->addWidget(clusterHelp);
+    methodLayout->addStretch(1);
+    stack_->addWidget(methodPage);
+
+    // ======================= Stage 2: parameters ==========================
+    auto* paramPage = new QWidget(this);
+    auto* paramLayout = new QVBoxLayout(paramPage);
+    stageTitle_ = new QLabel(paramPage);
+    paramLayout->addWidget(stageTitle_);
+
+    auto* sharedForm = new QFormLayout;
+    paramLayout->addLayout(sharedForm);
+    elementButton_ = new QPushButton(paramPage);
     const auto updateElement = [this] {
-        elementButton_->setText(QStringLiteral("%1  (Z = %2)").arg(
-            QLatin1String(core::Elements::data(elementZ_).symbol)).arg(elementZ_));
+        elementButton_->setText(
+            QStringLiteral("%1  (Z = %2)")
+                .arg(QLatin1String(core::Elements::data(elementZ_).symbol))
+                .arg(elementZ_));
     };
     updateElement();
     connect(elementButton_, &QPushButton::clicked, this, [this, updateElement] {
@@ -41,37 +94,25 @@ NanoparticleDialog::NanoparticleDialog(QWidget* parent)
             updateElement();
         }
     });
-    form->addRow(tr("Element:"), elementButton_);
+    sharedForm->addRow(tr("Element:"), elementButton_);
 
-    modeCombo_ = new QComboBox(this);
-    // Order must match shapeForMode(): 0 Wulff, 1 spherical, then the faceted
-    // ase.cluster shapes.
-    modeCombo_->addItems({tr("Wulff construction (equilibrium shape)"),
-                          tr("Spherical cluster (cutoff radius)"),
-                          tr("Icosahedron (ase.cluster)"),
-                          tr("Octahedron (ase.cluster)"),
-                          tr("Cuboctahedron (truncated octahedron)"),
-                          tr("Decahedron (ase.cluster)"),
-                          tr("Rhombic dodecahedron ({110} facets)")});
-    form->addRow(tr("Mode:"), modeCombo_);
-
-    latticeCombo_ = new QComboBox(this);
-    latticeCombo_->addItems({QStringLiteral("fcc"), QStringLiteral("bcc"),
-                             QStringLiteral("sc"), QStringLiteral("hcp")});
-    latticeCombo_->setToolTip(tr("Wulff construction supports fcc/bcc/sc; "
-                                 "spherical clusters also hcp"));
-    form->addRow(tr("Lattice:"), latticeCombo_);
-
-    latticeConstantSpin_ = new QDoubleSpinBox(this);
+    latticeConstantSpin_ = new QDoubleSpinBox(paramPage);
     latticeConstantSpin_->setRange(0.0, 12.0);
     latticeConstantSpin_->setDecimals(4);
-    latticeConstantSpin_->setSpecialValueText(tr("ASE default"));
+    latticeConstantSpin_->setSpecialValueText(tr("default"));
     latticeConstantSpin_->setValue(0.0);
     latticeConstantSpin_->setSuffix(QStringLiteral(" Å"));
-    form->addRow(tr("Lattice constant:"), latticeConstantSpin_);
+    latticeConstantSpin_->setToolTip(
+        tr("Cubic lattice constant; leave at default to use the tabulated "
+           "reference value for the element."));
+    sharedForm->addRow(tr("Lattice constant:"), latticeConstantSpin_);
 
-    // --- Wulff facets ------------------------------------------------------
-    facetTable_ = new QTableWidget(3, 4, this);
+    // --- Wulff section -----------------------------------------------------
+    wulffSection_ = new QGroupBox(tr("Surface energies & target size"), paramPage);
+    auto* wulffLayout = new QVBoxLayout(wulffSection_);
+    wulffLayout->addWidget(new QLabel(
+        tr("Facet surface energies γ(h k l) — only ratios matter:"), wulffSection_));
+    facetTable_ = new QTableWidget(3, 4, wulffSection_);
     facetTable_->setHorizontalHeaderLabels(
         {QStringLiteral("h"), QStringLiteral("k"), QStringLiteral("l"),
          tr("γ (relative)")});
@@ -81,145 +122,194 @@ NanoparticleDialog::NanoparticleDialog(QWidget* parent)
     const double energies[3] = {1.0, 1.1, 1.2};
     for (int row = 0; row < 3; ++row) {
         for (int col = 0; col < 3; ++col)
-            facetTable_->setItem(row, col,
-                                 new QTableWidgetItem(
-                                     QString::number(defaults[row][col])));
-        facetTable_->setItem(row, 3,
-                             new QTableWidgetItem(
-                                 QString::number(energies[row], 'f', 2)));
+            facetTable_->setItem(
+                row, col, new QTableWidgetItem(QString::number(defaults[row][col])));
+        facetTable_->setItem(
+            row, 3, new QTableWidgetItem(QString::number(energies[row], 'f', 2)));
     }
-    layout->addWidget(new QLabel(tr("Facet surface energies (Wulff):"), this));
-    layout->addWidget(facetTable_, 1);
+    wulffLayout->addWidget(facetTable_);
     auto* facetButtons = new QHBoxLayout;
-    auto* addFacet = new QPushButton(tr("Add Facet"), this);
-    auto* removeFacet = new QPushButton(tr("Remove Selected"), this);
+    auto* addFacet = new QPushButton(tr("Add Facet"), wulffSection_);
+    auto* removeFacet = new QPushButton(tr("Remove Selected"), wulffSection_);
     facetButtons->addWidget(addFacet);
     facetButtons->addWidget(removeFacet);
     facetButtons->addStretch(1);
-    layout->addLayout(facetButtons);
+    wulffLayout->addLayout(facetButtons);
     connect(addFacet, &QPushButton::clicked, this, [this] {
         const int row = facetTable_->rowCount();
         facetTable_->insertRow(row);
         for (int col = 0; col < 3; ++col)
-            facetTable_->setItem(row, col,
-                                 new QTableWidgetItem(QStringLiteral("1")));
-        facetTable_->setItem(row, 3,
-                             new QTableWidgetItem(QStringLiteral("1.00")));
+            facetTable_->setItem(row, col, new QTableWidgetItem(QStringLiteral("1")));
+        facetTable_->setItem(row, 3, new QTableWidgetItem(QStringLiteral("1.00")));
     });
     connect(removeFacet, &QPushButton::clicked, this, [this] {
         if (facetTable_->currentRow() >= 0 && facetTable_->rowCount() > 1)
             facetTable_->removeRow(facetTable_->currentRow());
     });
-
-    auto* sizeForm = new QFormLayout;
-    layout->addLayout(sizeForm);
-    sizeSpin_ = new QSpinBox(this);
+    auto* wulffForm = new QFormLayout;
+    wulffLayout->addLayout(wulffForm);
+    wulffLatticeCombo_ = new QComboBox(wulffSection_);
+    wulffLatticeCombo_->addItems({QStringLiteral("fcc"), QStringLiteral("bcc"),
+                                  QStringLiteral("sc")});
+    wulffForm->addRow(tr("Crystal structure:"), wulffLatticeCombo_);
+    sizeSpin_ = new QSpinBox(wulffSection_);
     sizeSpin_->setRange(10, 100000);
     sizeSpin_->setValue(200);
-    sizeForm->addRow(tr("Target atoms (Wulff):"), sizeSpin_);
-    roundingCombo_ = new QComboBox(this);
+    wulffForm->addRow(tr("Target size (atoms):"), sizeSpin_);
+    roundingCombo_ = new QComboBox(wulffSection_);
     roundingCombo_->addItems({QStringLiteral("closest"), QStringLiteral("above"),
                               QStringLiteral("below")});
-    sizeForm->addRow(tr("Size rounding:"), roundingCombo_);
-    radiusSpin_ = new QDoubleSpinBox(this);
+    wulffForm->addRow(tr("Size rounding:"), roundingCombo_);
+    paramLayout->addWidget(wulffSection_);
+
+    // --- Cluster section ---------------------------------------------------
+    clusterSection_ = new QGroupBox(tr("Cluster geometry"), paramPage);
+    auto* clusterForm = new QFormLayout(clusterSection_);
+    clusterShapeCombo_ = new QComboBox(clusterSection_);
+    clusterShapeCombo_->addItem(tr("Icosahedron"), QStringLiteral("icosahedron"));
+    clusterShapeCombo_->addItem(tr("Dodecahedron"),
+                                QStringLiteral("rhombic-dodecahedron"));
+    clusterShapeCombo_->addItem(tr("Cuboctahedron"),
+                                QStringLiteral("cuboctahedron"));
+    clusterShapeCombo_->addItem(tr("Octahedron"), QStringLiteral("octahedron"));
+    clusterShapeCombo_->addItem(tr("Decahedron"), QStringLiteral("decahedron"));
+    clusterShapeCombo_->addItem(tr("Spherical cluster (FCC / BCC / HCP)"),
+                                QString());
+    clusterForm->addRow(tr("Shape:"), clusterShapeCombo_);
+
+    shellSpin_ = new QSpinBox(clusterSection_);
+    shellSpin_->setRange(1, 60);
+    shellSpin_->setValue(3);
+    shellSpin_->setToolTip(tr("Number of atomic shells / edge length / layers "
+                              "that sets the cluster size."));
+    clusterForm->addRow(tr("Shells / layers:"), shellSpin_);
+
+    auto* decaWidget = new QWidget(clusterSection_);
+    auto* decaRow = new QHBoxLayout(decaWidget);
+    decaRow->setContentsMargins(0, 0, 0, 0);
+    decaPSpin_ = new QSpinBox(decaWidget);
+    decaPSpin_->setRange(1, 40);
+    decaPSpin_->setValue(3);
+    decaQSpin_ = new QSpinBox(decaWidget);
+    decaQSpin_->setRange(1, 40);
+    decaQSpin_->setValue(3);
+    decaRSpin_ = new QSpinBox(decaWidget);
+    decaRSpin_->setRange(0, 40);
+    decaRSpin_->setValue(0);
+    decaRow->addWidget(new QLabel(QStringLiteral("p"), decaWidget));
+    decaRow->addWidget(decaPSpin_);
+    decaRow->addWidget(new QLabel(QStringLiteral("q"), decaWidget));
+    decaRow->addWidget(decaQSpin_);
+    decaRow->addWidget(new QLabel(QStringLiteral("r"), decaWidget));
+    decaRow->addWidget(decaRSpin_);
+    clusterForm->addRow(tr("Decahedron p / q / r:"), decaWidget);
+
+    sphericalLatticeCombo_ = new QComboBox(clusterSection_);
+    sphericalLatticeCombo_->addItems({QStringLiteral("fcc"), QStringLiteral("bcc"),
+                                      QStringLiteral("hcp")});
+    clusterForm->addRow(tr("Crystal structure:"), sphericalLatticeCombo_);
+    radiusSpin_ = new QDoubleSpinBox(clusterSection_);
     radiusSpin_->setRange(2.0, 100.0);
     radiusSpin_->setValue(10.0);
     radiusSpin_->setSuffix(QStringLiteral(" Å"));
-    sizeForm->addRow(tr("Radius (spherical):"), radiusSpin_);
+    clusterForm->addRow(tr("Radius:"), radiusSpin_);
+    paramLayout->addWidget(clusterSection_);
 
-    // --- Faceted ase.cluster shapes ---------------------------------------
-    shellSpin_ = new QSpinBox(this);
-    shellSpin_->setRange(1, 60);
-    shellSpin_->setValue(3);
-    shellSpin_->setToolTip(tr("Shells (icosahedron), edge length in atoms "
-                              "(octahedron / cuboctahedron), or {110} layer "
-                              "count (rhombic dodecahedron)."));
-    sizeForm->addRow(tr("Shells / edge / layers:"), shellSpin_);
+    connect(clusterShapeCombo_, &QComboBox::currentIndexChanged, this,
+            &NanoparticleDialog::syncClusterControls);
 
-    auto* decaRow = new QHBoxLayout;
-    decaPSpin_ = new QSpinBox(this);
-    decaPSpin_->setRange(1, 40);
-    decaPSpin_->setValue(3);
-    decaQSpin_ = new QSpinBox(this);
-    decaQSpin_->setRange(1, 40);
-    decaQSpin_->setValue(3);
-    decaRSpin_ = new QSpinBox(this);
-    decaRSpin_->setRange(0, 40);
-    decaRSpin_->setValue(0);
-    decaRow->addWidget(new QLabel(QStringLiteral("p"), this));
-    decaRow->addWidget(decaPSpin_);
-    decaRow->addWidget(new QLabel(QStringLiteral("q"), this));
-    decaRow->addWidget(decaQSpin_);
-    decaRow->addWidget(new QLabel(QStringLiteral("r"), this));
-    decaRow->addWidget(decaRSpin_);
-    sizeForm->addRow(tr("Decahedron p / q / r:"), decaRow);
-
-    statusLabel_ = new QLabel(this);
+    statusLabel_ = new QLabel(paramPage);
     statusLabel_->setWordWrap(true);
-    layout->addWidget(statusLabel_);
+    paramLayout->addWidget(statusLabel_);
+    paramLayout->addStretch(1);
+    stack_->addWidget(paramPage);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, this);
-    auto* generateButton =
-        buttons->addButton(tr("Generate"), QDialogButtonBox::AcceptRole);
-    generateButton->setDefault(true);
-    layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-    disconnect(buttons, &QDialogButtonBox::accepted, nullptr, nullptr);
-    connect(generateButton, &QPushButton::clicked,
-            this, &NanoparticleDialog::generate);
+    // ======================= Navigation bar ===============================
+    auto* navRow = new QHBoxLayout;
+    backButton_ = new QPushButton(tr("‹ Back"), this);
+    nextButton_ = new QPushButton(tr("Next ›"), this);
+    generateButton_ = new QPushButton(tr("Generate"), this);
+    generateButton_->setDefault(true);
+    auto* cancelButton = new QPushButton(tr("Cancel"), this);
+    navRow->addWidget(backButton_);
+    navRow->addStretch(1);
+    navRow->addWidget(cancelButton);
+    navRow->addWidget(nextButton_);
+    navRow->addWidget(generateButton_);
+    root->addLayout(navRow);
 
-    const auto syncMode = [this](int mode) {
-        const bool wulff = mode == 0;
-        const bool spherical = mode == 1;
-        const std::string shape = shapeForMode(mode);
-        const bool faceted = !shape.empty();
-        const bool decahedron = shape == "decahedron";
-        // Icosahedron/octa/cubocta/rhombic-dodeca take the single "shells /
-        // edge / layers" count; the decahedron takes p/q/r instead.
-        const bool usesShell = faceted && !decahedron;
+    connect(cancelButton, &QPushButton::clicked, this, &QDialog::reject);
+    connect(nextButton_, &QPushButton::clicked, this,
+            &NanoparticleDialog::showParameters);
+    connect(backButton_, &QPushButton::clicked, this,
+            &NanoparticleDialog::showMethod);
+    connect(generateButton_, &QPushButton::clicked, this,
+            &NanoparticleDialog::generate);
 
-        facetTable_->setEnabled(wulff);
-        sizeSpin_->setEnabled(wulff);
-        roundingCombo_->setEnabled(wulff);
-        radiusSpin_->setEnabled(spherical);
-        // The faceted ase.cluster shapes are all FCC references — lock the
-        // lattice selector, which only matters for Wulff/spherical.
-        latticeCombo_->setEnabled(wulff || spherical);
-        shellSpin_->setEnabled(usesShell);
-        decaPSpin_->setEnabled(decahedron);
-        decaQSpin_->setEnabled(decahedron);
-        decaRSpin_->setEnabled(decahedron);
-    };
-    connect(modeCombo_, &QComboBox::currentIndexChanged, this, syncMode);
-    syncMode(0);
+    showMethod(); // start on Stage 1
 }
 
-std::string NanoparticleDialog::shapeForMode(int mode) const
+void NanoparticleDialog::syncClusterControls()
 {
-    switch (mode) {
-    case 2: return "icosahedron";
-    case 3: return "octahedron";
-    case 4: return "cuboctahedron";
-    case 5: return "decahedron";
-    case 6: return "rhombic-dodecahedron";
-    default: return {}; // 0 = Wulff, 1 = spherical
+    const std::string shape = clusterShape();
+    const bool spherical = shape.empty();
+    const bool decahedron = shape == "decahedron";
+    const bool usesShell = !spherical && !decahedron;
+
+    auto* form = qobject_cast<QFormLayout*>(clusterSection_->layout());
+    if (form) {
+        form->setRowVisible(shellSpin_, usesShell);
+        form->setRowVisible(decaPSpin_->parentWidget(), decahedron);
+        form->setRowVisible(sphericalLatticeCombo_, spherical);
+        form->setRowVisible(radiusSpin_, spherical);
     }
+}
+
+void NanoparticleDialog::showMethod()
+{
+    stack_->setCurrentIndex(0);
+    backButton_->setVisible(false);
+    nextButton_->setVisible(true);
+    generateButton_->setVisible(false);
+}
+
+void NanoparticleDialog::showParameters()
+{
+    const bool wulff = wulffChosen();
+    stageTitle_->setText(
+        wulff ? tr("<b>Stage 2 of 2 — Wulff construction parameters</b>")
+              : tr("<b>Stage 2 of 2 — Symmetric cluster parameters</b>"));
+    wulffSection_->setVisible(wulff);
+    clusterSection_->setVisible(!wulff);
+    if (!wulff)
+        syncClusterControls();
+    statusLabel_->clear();
+
+    stack_->setCurrentIndex(1);
+    backButton_->setVisible(true);
+    nextButton_->setVisible(false);
+    generateButton_->setVisible(true);
+}
+
+bool NanoparticleDialog::wulffChosen() const
+{
+    return wulffRadio_->isChecked();
+}
+
+std::string NanoparticleDialog::clusterShape() const
+{
+    return clusterShapeCombo_->currentData().toString().toStdString();
 }
 
 QString NanoparticleDialog::resultName() const
 {
-    const int mode = modeCombo_->currentIndex();
     QString shapeName;
-    switch (mode) {
-    case 0: shapeName = tr("Wulff"); break;
-    case 1: shapeName = tr("spherical"); break;
-    case 2: shapeName = tr("icosahedron"); break;
-    case 3: shapeName = tr("octahedron"); break;
-    case 4: shapeName = tr("cuboctahedron"); break;
-    case 5: shapeName = tr("decahedron"); break;
-    case 6: shapeName = tr("rhombic dodecahedron"); break;
-    default: shapeName = tr("cluster"); break;
-    }
+    if (wulffChosen())
+        shapeName = tr("Wulff");
+    else if (clusterShape().empty())
+        shapeName = tr("spherical");
+    else
+        shapeName = clusterShapeCombo_->currentText();
     return tr("%1 nanoparticle (%2, %3 atoms)")
         .arg(QLatin1String(core::Elements::data(elementZ_).symbol), shapeName)
         .arg(result_ ? static_cast<int>(result_->size()) : 0);
@@ -228,24 +318,9 @@ QString NanoparticleDialog::resultName() const
 void NanoparticleDialog::generate()
 {
     const std::string symbol = core::Elements::data(elementZ_).symbol;
-    const std::string lattice = latticeCombo_->currentText().toStdString();
-    const int mode = modeCombo_->currentIndex();
-    const bool wulff = mode == 0;
-    const std::string shape = shapeForMode(mode);
-    if (wulff && lattice == "hcp") {
-        statusLabel_->setText(tr("Wulff construction supports fcc/bcc/sc — "
-                                 "use the spherical mode for hcp."));
-        return;
-    }
-
     QApplication::setOverrideCursor(Qt::WaitCursor);
     try {
-        if (!shape.empty()) {
-            result_ = pybridge::SurfaceScience::polyhedralNanoparticle(
-                symbol, shape, shellSpin_->value(), decaPSpin_->value(),
-                decaQSpin_->value(), decaRSpin_->value(),
-                latticeConstantSpin_->value());
-        } else if (wulff) {
+        if (wulffChosen()) {
             std::vector<pybridge::SurfaceScience::WulffFacet> facets;
             for (int row = 0; row < facetTable_->rowCount(); ++row) {
                 pybridge::SurfaceScience::WulffFacet facet;
@@ -261,13 +336,18 @@ void NanoparticleDialog::generate()
                 throw std::runtime_error(
                     "enter at least one facet with a positive energy");
             result_ = pybridge::SurfaceScience::wulffNanoparticle(
-                symbol, lattice, facets, sizeSpin_->value(),
-                latticeConstantSpin_->value(),
+                symbol, wulffLatticeCombo_->currentText().toStdString(), facets,
+                sizeSpin_->value(), latticeConstantSpin_->value(),
                 roundingCombo_->currentText().toStdString());
+        } else if (const std::string shape = clusterShape(); !shape.empty()) {
+            result_ = pybridge::SurfaceScience::polyhedralNanoparticle(
+                symbol, shape, shellSpin_->value(), decaPSpin_->value(),
+                decaQSpin_->value(), decaRSpin_->value(),
+                latticeConstantSpin_->value());
         } else {
             result_ = pybridge::SurfaceScience::sphericalNanoparticle(
-                symbol, lattice, radiusSpin_->value(),
-                latticeConstantSpin_->value());
+                symbol, sphericalLatticeCombo_->currentText().toStdString(),
+                radiusSpin_->value(), latticeConstantSpin_->value());
         }
         QApplication::restoreOverrideCursor();
         accept();

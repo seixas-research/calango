@@ -20,6 +20,7 @@ class JobRunner;
 namespace calango::gui {
 
 class JobLogWidget;
+class NebDialog;
 class MetricPlotWidget;
 class ProcessManagerPanel;
 class RemoteAccessPanel;
@@ -78,6 +79,8 @@ private Q_SLOTS:
     void singlePointCalculation();
     void geometryOptimization();
     void molecularDynamics();
+    void openMonteCarlo();
+    void openNudgedElasticBand();
     void newRemoteCalculation();
     void onRemoteResultsReady(const QString& localDir);
     void onJobFinished(int exitCode, bool crashed);
@@ -86,6 +89,8 @@ private Q_SLOTS:
     void showBandStructure();
     /// Open the band/PDOS viewer for a finished job directory.
     void openBandResults(const QString& directory);
+    /// Open the phonon band structure + PhDOS viewer for a finished job dir.
+    void openPhononResults(const QString& directory);
     /// "Load Result" from the Process panel: band data, trajectory or
     /// final structure — whatever the task directory contains.
     void onProcessResultRequested(const QString& directory);
@@ -99,6 +104,7 @@ private Q_SLOTS:
     void openNanoBuilder();
     void openPhononBuilder();
     void openSqsBuilder();
+    void openClusterExpansion();
     void openNanoparticleBuilder();
     void showAdsorption();
     void showWarrenCowley();
@@ -192,6 +198,11 @@ private:
     /// Document receiving live streamed frames (null outside runs;
     /// cleared when its tab is closed mid-run).
     Document* liveDoc_ = nullptr;
+    /// Band of images staged as band.extxyz on the next stageJob (NEB);
+    /// consumed and cleared by stageJob.
+    std::vector<std::shared_ptr<core::Structure>> stagedBandFrames_;
+    /// Non-modal NEB builder window (owned via WA_DeleteOnClose; nulled on close).
+    NebDialog* nebDialog_ = nullptr;
     jobs::JobRunner* jobRunner_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;
