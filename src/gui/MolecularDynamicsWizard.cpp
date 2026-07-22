@@ -94,7 +94,7 @@ QWidget* MolecularDynamicsWizard::buildSettingsPage()
 
     sampleSpin_ = new QSpinBox(page);
     sampleSpin_->setRange(0, 1000000);
-    sampleSpin_->setValue(0);
+    sampleSpin_->setValue(10);
     sampleSpin_->setSpecialValueText(tr("auto (~400 frames)"));
     sampleSpin_->setToolTip(tr("Record a trajectory frame + metrics every N "
                                "steps (0 = auto)."));

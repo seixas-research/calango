@@ -9,28 +9,28 @@ class QTimer;
 namespace calango::gui {
 
 /// Small load meter: a black track with a green→yellow→red gradient fill
-/// proportional to a 0–100 value. Used for the total-system-CPU indicator.
+/// proportional to a 0–100 value. A negative value renders an empty track
+/// ("no data", e.g. GPU/VRAM where no metric source exists).
 class MiniLoadBar : public QWidget {
     Q_OBJECT
 
 public:
     explicit MiniLoadBar(QWidget* parent = nullptr);
-    void setValue(double percent); ///< clamped to [0, 100]
+    /// Fill fraction 0–100; a negative value shows an empty ("no data") track.
+    void setValue(double percent);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
 
 private:
-    double value_ = 0.0;
+    double value_ = -1.0;
 };
 
-/// Permanent status-bar widget with two clearly separated logical groups:
-///   Group 1 (Calango) — this application's CPU %, RAM (MB), and the active
-///     OMP_NUM_THREADS.
-///   Group 2 (Host) — total system CPU % (mini gradient bar + readout),
-///     used/total system RAM (MB), GPU %, and VRAM used/total (MB).
-/// A vertical separator divides the groups. Sampled on a strict 1.0 s timer
-/// via mach APIs on macOS; unavailable metrics (GPU/VRAM) show N/A.
+/// Permanent status-bar widget showing EXCLUSIVELY Calango's own resource
+/// usage (no host-machine totals): CPU %, RAM (MB + % of system RAM), GPU %,
+/// and VRAM (MB) — each in a mini gradient progress bar — plus the active
+/// thread count. GPU/VRAM show N/A where no per-process metric source exists
+/// (e.g. Metal on macOS). Sampled on a strict 1.0 s timer.
 class SystemStatusBar : public QWidget {
     Q_OBJECT
 
@@ -43,31 +43,26 @@ public Q_SLOTS:
 
 private:
     void refresh();
-    /// Total host CPU utilization since the previous call (-1 on first sample
-    /// or if unavailable).
-    double sampleSystemCpuPercent();
     /// This process's CPU utilization since the previous call, summed across
     /// cores (like Activity Monitor; can exceed 100). -1 if unavailable.
     double sampleProcessCpuPercent();
     /// Resident memory of this process in MiB (-1 if unavailable).
     double sampleProcessMemoryMiB();
-    /// System used / total physical memory in MiB (false if unavailable).
-    bool sampleSystemMemoryMiB(double& used, double& total);
+    /// Total physical system memory in MiB (0 if unavailable) — the RAM-bar
+    /// denominator.
+    double systemMemoryTotalMiB();
 
-    // Group 1 — Calango application metrics.
-    QLabel* appCpuLabel_;
-    QLabel* appMemLabel_;
-    QLabel* threadsLabel_;
-    // Group 2 — host machine metrics.
     MiniLoadBar* cpuBar_;
-    QLabel* sysCpuLabel_;
-    QLabel* sysMemLabel_;
+    QLabel* cpuLabel_;
+    MiniLoadBar* ramBar_;
+    QLabel* ramLabel_;
+    MiniLoadBar* gpuBar_;
     QLabel* gpuLabel_;
+    MiniLoadBar* vramBar_;
     QLabel* vramLabel_;
+    QLabel* threadsLabel_;
     QTimer* timer_;
 
-    unsigned long long prevCpuBusy_ = 0;
-    unsigned long long prevCpuTotal_ = 0;
     double prevProcCpuSeconds_ = -1.0;
     QElapsedTimer procWallClock_;
 };

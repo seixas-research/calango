@@ -1,5 +1,8 @@
 #include "gui/WelcomeDialog.hpp"
 
+#include "gui/SettingsManager.hpp"
+#include "gui/ThemeManager.hpp"
+
 #include <QCheckBox>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -30,8 +33,12 @@ WelcomeDialog::WelcomeDialog(const QStringList& recentProjects, QWidget* parent)
     auto* layout = new QVBoxLayout(this);
     layout->setSpacing(14);
 
-    // Banner header — the brand panel, centered, aspect preserved.
-    const QPixmap banner(QStringLiteral(":/assets/.internal/panel.png"));
+    // Banner header — the Zone-1 brand logo matching the active theme, so the
+    // Welcome Screen and the branding panel always show the same asset.
+    const bool dark = ThemeManager::isEffectivelyDark(ThemeManager::current());
+    const QPixmap banner(dark
+                             ? QStringLiteral(":/assets/.internal/logo_dark.png")
+                             : QStringLiteral(":/assets/.internal/logo_light.png"));
     if (!banner.isNull()) {
         auto* bannerLabel = new QLabel(this);
         bannerLabel->setAlignment(Qt::AlignCenter);
@@ -86,12 +93,14 @@ WelcomeDialog::WelcomeDialog(const QStringList& recentProjects, QWidget* parent)
     connect(geometryButton, &QPushButton::clicked, this,
             [this] { chooseAndAccept(Choice::OpenGeometry); });
 
-    // Persisted "show at startup" toggle.
+    // Persisted "show at startup" toggle — bound to the `show_welcome_screen`
+    // property in ~/.calango/settings.json, saved immediately on every change.
     auto* showCheck = new QCheckBox(tr("Show Welcome Screen on startup"), this);
     showCheck->setChecked(showAtStartupEnabled());
     layout->addWidget(showCheck);
     connect(showCheck, &QCheckBox::toggled, this, [](bool on) {
         QSettings().setValue(kShowAtStartupKey, on);
+        SettingsManager::save(); // flush to settings.json right away
     });
 }
 

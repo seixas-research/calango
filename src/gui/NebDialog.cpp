@@ -342,7 +342,8 @@ QString NebDialog::buildNebScript() const
            "except ImportError:\n"
            "    from ase.neb import NEB\n"
            "from ase.optimize import " << optimizer << "\n\n"
-           "images = read(\"band.extxyz\", index=\":\")\n"
+        << core::AseScriptGenerator::jsonLoggerPreamble()
+        << "images = read(\"band.extxyz\", index=\":\")\n"
            "n_images = len(images)\n\n"
            "def _attach(atoms):\n"
         << calcAttach
@@ -393,7 +394,7 @@ QString NebDialog::buildNebScript() const
             << ", method=\"improvedtangent\")\n"
             << "opt = " << optimizer << "(neb, logfile=\"-\")\n\n"
                "def _report():\n"
-               "    print(f\"CALANGO_PROGRESS {opt.nsteps} {max_steps}\", flush=True)\n"
+               "    _calango_log.progress(opt.nsteps, max_steps)\n"
                "    _stream_band()\n\n"
                "opt.attach(_report)\n"
                "_stream_band()\n"
@@ -405,7 +406,7 @@ QString NebDialog::buildNebScript() const
            "energies = [img.get_potential_energy() for img in images]\n"
            "e0 = energies[0]\n"
            "for i, e in enumerate(energies):\n"
-           "    print(f\"CALANGO_ENERGY {i} {e - e0:.6f}\", flush=True)\n"
+           "    _calango_log.metric(i, energy=e - e0)\n"
            "barrier = max(energies) - e0\n"
            "print(f\"CALANGO_RESULT barrier_eV={barrier:.6f}\", flush=True)\n"
            "print(\"CALANGO_DONE\", flush=True)\n";

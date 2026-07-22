@@ -15,11 +15,13 @@ namespace calango::gui {
 
 namespace {
 
-/// One managed preference: its "group/key" and the default value (whose type
-/// also drives JSON ↔ QVariant conversion).
+/// One managed preference: its "group/key" (the QSettings key), the default
+/// value (whose type also drives JSON ↔ QVariant conversion), and an optional
+/// top-level JSON member name that overrides the group/key nesting.
 struct Managed {
     const char* key;
     QVariant defaultValue;
+    const char* jsonName = nullptr;
 };
 
 std::array<Managed, 7> managedKeys()
@@ -30,7 +32,8 @@ std::array<Managed, 7> managedKeys()
         {SettingsManager::kOmpThreads, QThread::idealThreadCount()},
         {SettingsManager::kCondaDir, QString()},
         {SettingsManager::kEnvironmentPath, QString()},
-        {SettingsManager::kShowWelcome, true},
+        // Exposed as a top-level `show_welcome_screen` boolean in settings.json.
+        {SettingsManager::kShowWelcome, true, "show_welcome_screen"},
         {SettingsManager::kEnvFilePath, QString()},
         {SettingsManager::kMaterialsProjectApiKey, QString()},
     }};
@@ -95,9 +98,10 @@ void SettingsManager::loadOrInitialize()
     if (!file.exists()) {
         // First run: seed QSettings with any missing defaults, then persist.
         QSettings settings;
-        for (const auto& [key, def] : managedKeys()) {
-            if (!settings.contains(QString::fromUtf8(key)))
-                settings.setValue(QString::fromUtf8(key), def);
+        for (const auto& managed : managedKeys()) {
+            const QString key = QString::fromUtf8(managed.key);
+            if (!settings.contains(key))
+                settings.setValue(key, managed.defaultValue);
         }
         save();
         return;
@@ -113,16 +117,21 @@ void SettingsManager::loadOrInitialize()
     // JSON is authoritative: apply each present key into QSettings.
     const QJsonObject root = doc.object();
     QSettings settings;
-    for (const auto& [keyC, def] : managedKeys()) {
-        const QString key = QString::fromUtf8(keyC);
-        const auto [group, name] = splitKey(key);
-        const QJsonValue groupValue = root.value(group);
-        if (!groupValue.isObject())
-            continue;
-        const QJsonValue value = groupValue.toObject().value(name);
+    for (const auto& managed : managedKeys()) {
+        const QString key = QString::fromUtf8(managed.key);
+        QJsonValue value;
+        if (managed.jsonName) {
+            value = root.value(QString::fromUtf8(managed.jsonName));
+        } else {
+            const auto [group, name] = splitKey(key);
+            const QJsonValue groupValue = root.value(group);
+            if (!groupValue.isObject())
+                continue;
+            value = groupValue.toObject().value(name);
+        }
         if (value.isUndefined() || value.isNull())
             continue;
-        settings.setValue(key, jsonToVariant(value, def));
+        settings.setValue(key, jsonToVariant(value, managed.defaultValue));
     }
 }
 
@@ -132,12 +141,19 @@ void SettingsManager::save()
 
     QSettings settings;
     QJsonObject root;
-    for (const auto& [keyC, def] : managedKeys()) {
-        const QString key = QString::fromUtf8(keyC);
-        const auto [group, name] = splitKey(key);
-        QJsonObject groupObject = root.value(group).toObject();
-        groupObject.insert(name, variantToJson(settings.value(key, def), def));
-        root.insert(group, groupObject);
+    for (const auto& managed : managedKeys()) {
+        const QString key = QString::fromUtf8(managed.key);
+        const QJsonValue json =
+            variantToJson(settings.value(key, managed.defaultValue),
+                          managed.defaultValue);
+        if (managed.jsonName) {
+            root.insert(QString::fromUtf8(managed.jsonName), json);
+        } else {
+            const auto [group, name] = splitKey(key);
+            QJsonObject groupObject = root.value(group).toObject();
+            groupObject.insert(name, json);
+            root.insert(group, groupObject);
+        }
     }
 
     QFile file(filePath());

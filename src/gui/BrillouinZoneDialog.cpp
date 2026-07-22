@@ -17,6 +17,7 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPushButton>
+#include <QStyle>
 #include <QSvgGenerator>
 #include <QTextStream>
 #include <QVBoxLayout>
@@ -117,23 +118,42 @@ BrillouinZoneDialog::BrillouinZoneDialog(const core::BrillouinZoneData& zone,
     side->addWidget(new QLabel(tr("k-path sequence:"), this));
     side->addWidget(pathList_, 1);
 
+    // Icon-only action bar (Suggested · Break · Undo · Remove · Clear) with
+    // hover tooltips — glyphs come from the active style, matching the rest of
+    // the app's icon buttons.
     auto* pathButtons = new QHBoxLayout;
-    auto* suggestedButton = new QPushButton(tr("Suggested"), this);
-    suggestedButton->setToolTip(tr("Load ASE's suggested path: %1").arg(suggestedPath_));
-    auto* breakButton = new QPushButton(tr("Break"), this);
-    breakButton->setToolTip(tr("Start a new discontinuous section "
-                               "(e.g. Γ → X | M → R)"));
-    auto* undoButton = new QPushButton(tr("Undo"), this);
-    auto* clearButton = new QPushButton(tr("Clear"), this);
+    const auto iconButton = [this](QStyle::StandardPixmap sp, const QString& tip) {
+        auto* button = new QPushButton(this);
+        button->setIcon(style()->standardIcon(sp));
+        button->setToolTip(tip);
+        button->setFocusPolicy(Qt::NoFocus);
+        return button;
+    };
+    auto* suggestedButton = iconButton(
+        QStyle::SP_BrowserReload,
+        tr("Suggested — load ASE's suggested path: %1").arg(suggestedPath_));
+    auto* breakButton = iconButton(
+        QStyle::SP_MediaSkipForward,
+        tr("Break — start a new discontinuous section (e.g. Γ → X | M → R)"));
+    auto* undoButton = iconButton(QStyle::SP_ArrowBack,
+                                  tr("Undo — remove the last point in the path"));
+    auto* removeButton = iconButton(
+        QStyle::SP_LineEditClearButton,
+        tr("Remove — delete the selected k-point / break from the path"));
+    auto* clearButton = iconButton(QStyle::SP_TrashIcon,
+                                   tr("Clear — remove the entire path"));
     pathButtons->addWidget(suggestedButton);
     pathButtons->addWidget(breakButton);
     pathButtons->addWidget(undoButton);
+    pathButtons->addWidget(removeButton);
     pathButtons->addWidget(clearButton);
     side->addLayout(pathButtons);
     connect(suggestedButton, &QPushButton::clicked,
             this, &BrillouinZoneDialog::useSuggestedPath);
     connect(breakButton, &QPushButton::clicked, this, &BrillouinZoneDialog::addBreak);
     connect(undoButton, &QPushButton::clicked, this, &BrillouinZoneDialog::undoLastPoint);
+    connect(removeButton, &QPushButton::clicked,
+            this, &BrillouinZoneDialog::removeSelectedPoint);
     connect(clearButton, &QPushButton::clicked, this, &BrillouinZoneDialog::clearPath);
 
     auto* divisionsRow = new QHBoxLayout;
@@ -194,6 +214,30 @@ void BrillouinZoneDialog::undoLastPoint()
         return;
     path_.pop_back();
     syncPathViews();
+}
+
+void BrillouinZoneDialog::removeSelectedPoint()
+{
+    // List rows are 1:1 with path_ (breaks included), so currentRow() indexes
+    // path_ directly.
+    const int row = pathList_->currentRow();
+    if (row < 0 || row >= static_cast<int>(path_.size()))
+        return;
+    path_.erase(path_.begin() + row);
+    // Drop a break left dangling at the front, or a break now doubled/at the
+    // end, so the path stays well-formed.
+    while (!path_.empty() && path_.front() < 0)
+        path_.erase(path_.begin());
+    for (std::size_t i = path_.size(); i-- > 0;) {
+        const bool danglingEnd = path_[i] < 0 && i + 1 == path_.size();
+        const bool doubledBreak = path_[i] < 0 && i > 0 && path_[i - 1] < 0;
+        if (danglingEnd || doubledBreak)
+            path_.erase(path_.begin() + static_cast<std::ptrdiff_t>(i));
+    }
+    syncPathViews();
+    if (!path_.empty())
+        pathList_->setCurrentRow(
+            std::min(row, static_cast<int>(path_.size()) - 1));
 }
 
 void BrillouinZoneDialog::clearPath()

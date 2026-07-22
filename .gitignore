@@ -71,6 +71,7 @@ __pycache__/
 build/
 build-deb/
 build-dmg/
+build-macos-bundle/
 develop-eggs/
 dist/
 downloads/

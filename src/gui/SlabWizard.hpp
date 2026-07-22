@@ -98,6 +98,37 @@ private:
     double xMin_ = 0.0, xMax_ = 1.0, zMin_ = 0.0, zMax_ = 1.0;
 };
 
+/// Stage-2 canvas: the surface unit cell viewed looking straight down the
+/// surface normal (ase.build.surface aligns the normal with +z, so the
+/// in-plane vectors a_slab, b_slab lie in the x-y plane). Draws the primitive
+/// surface cell, the na×nb in-plane supercell outline, and one layer of atoms
+/// projected onto the plane.
+class InPlaneCanvas : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit InPlaneCanvas(QWidget* parent = nullptr);
+
+    void setSurface(const core::Vec3& a, const core::Vec3& b,
+                    std::vector<core::Vec3> atoms, std::vector<int> atomicNumbers);
+    void setSupercell(int na, int nb);
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+private:
+    QPointF map(double x, double y) const;
+    void updateFit();
+
+    core::Vec3 a_{1, 0, 0};
+    core::Vec3 b_{0, 1, 0};
+    std::vector<core::Vec3> atoms_;
+    std::vector<int> atomicNumbers_;
+    int na_ = 1, nb_ = 1;
+    double scale_ = 1.0;
+    QPointF offset_;
+};
+
 /// Stage 1: surface orientation. Miller spinboxes synchronized with the
 /// interactive vector canvas; "Next" locks the orientation.
 class OrientationPage : public QWizardPage {
@@ -122,7 +153,31 @@ private:
     bool valid_ = false;
 };
 
-/// Stage 2: out-of-plane cut. Cross-section view with clickable layer
+/// Stage 2: in-plane cell vectors. A projection down the surface normal with
+/// adjustable in-plane supercell repeats (na × nb) that set the surface unit
+/// cell's orientation and area.
+class InPlanePage : public QWizardPage {
+    Q_OBJECT
+
+public:
+    explicit InPlanePage(SlabWizard* wizard);
+
+    void initializePage() override;
+
+private Q_SLOTS:
+    void onSupercellEdited();
+
+private:
+    SlabWizard* wizard_;
+    InPlaneCanvas* canvas_;
+    QSpinBox* naSpin_;
+    QSpinBox* nbSpin_;
+    QLabel* infoLabel_;
+    core::Vec3 a_{1, 0, 0};
+    core::Vec3 b_{0, 1, 0};
+};
+
+/// Stage 3: out-of-plane cut. Cross-section view with clickable layer
 /// terminations plus layer-count and Ångström thickness controls.
 class TerminationPage : public QWizardPage {
     Q_OBJECT
@@ -170,17 +225,20 @@ private:
     QDoubleSpinBox* topVacuumSpin_;
     QDoubleSpinBox* bottomVacuumSpin_;
     QCheckBox* centeredCheck_;
+    QCheckBox* orthogonalizeCheck_;
     QLabel* infoLabel_;
     ViewportWidget* preview_;
     bool updating_ = false;
 };
 
-/// "Build → Surface Slab": interactive 3-stage slab construction.
-///   1. Orientation — Miller indices + draggable in-plane cell vectors
-///   2. Cut — termination layers and thickness on a cross-section view
-///   3. Vacuum — top/bottom spacing (or centered) + full 3D preview
-/// The tall reference stack comes from ase.build.surface; the cut and
-/// vacuum stages slice and re-cell it in C++.
+/// "Build → Surface Slab": interactive 4-stage slab construction.
+///   1. Miller Index & Surface Normal Vector — h/k/l + 3D cell/plane preview
+///   2. In-Plane Cell Vectors Projection — normal-down view + na×nb supercell
+///   3. Thickness and Terminations — layers/thickness on a cross-section view
+///   4. Vacuum Layer & Orthogonalization — vacuum, centering, orthogonalize +
+///      full 3D preview
+/// The tall reference stack comes from ase.build.surface; the in-plane
+/// supercell, cut and vacuum stages tile, slice and re-cell it in C++.
 class SlabWizard : public QWizard {
     Q_OBJECT
 
@@ -194,13 +252,15 @@ public:
     // -- Shared wizard state (owned here, edited by the pages) -------------
     std::shared_ptr<const core::Structure> bulk;
     int h = 0, k = 0, l = 1;
+    int inPlaneA = 1, inPlaneB = 1; ///< in-plane supercell repeats (Stage 2)
     core::Structure tallSlab;      ///< many-layer stack, no vacuum
     bool tallSlabValid = false;
     std::vector<double> layerZ;    ///< sorted distinct layer heights (Å)
     int bottomLayer = 0;
     int topLayer = 0;
-    double vacuumTop = 10.0;
-    double vacuumBottom = 10.0;
+    double vacuumTop = 15.0;
+    double vacuumBottom = 15.0;
+    bool orthogonalize = true;     ///< force an orthogonal (box) c-axis
 
     /// Rebuild `tallSlab` + `layerZ` for the current (h, k, l); returns
     /// false (with tallSlabValid unset) if ASE rejects the cut.

@@ -12,6 +12,7 @@ class QComboBox;
 class QDockWidget;
 class QMenu;
 class QTabBar;
+class QTimer;
 class QToolButton;
 
 namespace calango::core {
@@ -156,6 +157,8 @@ private Q_SLOTS:
     void newProject();
     void showVolumetricData();
     void showDatasetManager();
+    /// MLIP → Trainer…: MACE training-config (YAML) builder + launcher.
+    void openMaceTrainer();
     void openExamplesBrowser();
     void openRayTraceDialog();
     void addRandomNoise();
@@ -174,6 +177,8 @@ private:
         std::deque<std::shared_ptr<core::Structure>> redoStack;
         QString fileName;
     };
+
+    struct ProcessRecord; // full definition below
 
     void createMenusAndDocks();
     Document* currentDocument();
@@ -201,6 +206,12 @@ private:
     void addProcessToSelector(int id, const QString& label);
     void writeProcessMetrics(int id);
     void loadProcessMetrics(int id);
+    /// Parse `<directory>/metrics.json` (written live by the generated ASE
+    /// scripts) into a record's metric series. Returns false if absent/invalid.
+    bool readMetricsJson(const QString& directory, ProcessRecord& record) const;
+    /// Timer tick during a local run: re-read the running process's
+    /// metrics.json and repaint the Results plots if it's the selected process.
+    void pollLiveMetrics();
     /// Launch a staged local job. `taskLabel` names it in the Process
     /// panel; `expectFrames` opens a live trajectory tab that streamed
     /// CALANGO_FRAME blocks append to while the job runs.
@@ -251,6 +262,9 @@ private:
         double tempTarget = 0.0;
         bool hasPressTarget = false;
         double pressTarget = 0.0;
+        /// Latest progress from metrics.json ("progress":{step,total}); -1 = none.
+        int progressStep = -1;
+        int progressTotal = -1;
     };
     std::map<int, ProcessRecord> processRecords_;
     int selectedProcessId_ = -1; ///< process whose data the Results tabs show
@@ -284,6 +298,8 @@ private:
     /// Non-modal NEB builder window (owned via WA_DeleteOnClose; nulled on close).
     NebDialog* nebDialog_ = nullptr;
     jobs::JobRunner* jobRunner_ = nullptr;
+    /// Polls the running process's metrics.json for live Results-graph updates.
+    QTimer* metricsTimer_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;
     /// Element placed by the viewport's Insertion mode (toolbar selector).

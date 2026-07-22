@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.31
+    VERSION 26.7.32
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -258,6 +258,8 @@ qt_add_executable(calango
     src/gui/CondaEnvs.cpp
     src/gui/KPathSelector.hpp
     src/gui/KPathSelector.cpp
+    src/gui/MaceTrainerDialog.hpp
+    src/gui/MaceTrainerDialog.cpp
     src/gui/BandPdosView.hpp
     src/gui/BandPdosView.cpp
     src/gui/BandPdosWindow.hpp
@@ -374,13 +376,13 @@ endif()
 qt_add_resources(calango "examples"
     PREFIX "/"
     FILES
-        assets/examples/diamond.vasp
-        assets/examples/mos2_2h_bulk.vasp
-        assets/examples/graphene.vasp
-        assets/examples/mos2_1h_monolayer.vasp
-        assets/examples/benzene.xyz
-        assets/examples/naphthalene.xyz
-        assets/examples/coronene.xyz
+        examples/diamond.vasp
+        examples/mos2_2h_bulk.vasp
+        examples/graphene.vasp
+        examples/mos2_1h_monolayer.vasp
+        examples/benzene.xyz
+        examples/naphthalene.xyz
+        examples/coronene.xyz
 )
 
 target_include_directories(calango PRIVATE src)
@@ -507,7 +509,7 @@ if(CALANGO_BUILD_TESTS)
     target_link_libraries(calango_symmetry_test PRIVATE pybind11::embed)
     add_test(NAME symmetry_si_diamond
              COMMAND calango_symmetry_test
-                     "${CMAKE_CURRENT_SOURCE_DIR}/assets/examples/Si_diamond.vasp")
+                     "${CMAKE_CURRENT_SOURCE_DIR}/examples/Si_diamond.vasp")
 
     # Live network test — skipped (exit 77) when MP_API_KEY is neither in
     # the environment nor in ~/.env.
@@ -543,7 +545,7 @@ if(CALANGO_BUILD_TESTS)
     target_link_libraries(calango_raman_test PRIVATE pybind11::embed)
     add_test(NAME raman_si_diamond
              COMMAND calango_raman_test
-                     "${CMAKE_CURRENT_SOURCE_DIR}/assets/examples/Si_diamond.vasp")
+                     "${CMAKE_CURRENT_SOURCE_DIR}/examples/Si_diamond.vasp")
 
     add_executable(calango_stream_test
         tests/StreamingTest.cpp

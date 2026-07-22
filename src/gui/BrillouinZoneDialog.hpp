@@ -39,6 +39,8 @@ private Q_SLOTS:
     void appendPoint(int index);
     void addBreak();
     void undoLastPoint();
+    /// Delete the currently selected k-point / break row from the path.
+    void removeSelectedPoint();
     void clearPath();
     void useSuggestedPath();
     /// One entry point for every k-path format: pops a format-selection

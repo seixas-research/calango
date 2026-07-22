@@ -43,6 +43,7 @@
 #include "gui/ProcessManagerPanel.hpp"
 #include "gui/ScriptViewerDialog.hpp"
 #include "gui/SettingsManager.hpp"
+#include "gui/MaceTrainerDialog.hpp"
 #include "gui/SystemStatusBar.hpp"
 #include "gui/ThemeManager.hpp"
 #include "gui/WelcomeDialog.hpp"
@@ -86,6 +87,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QTimer>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenuBar>
@@ -232,9 +234,14 @@ QIcon cameraToolbarIcon(const QString& kind)
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
     , jobRunner_(new jobs::JobRunner(this))
+    , metricsTimer_(new QTimer(this))
 {
     setWindowTitle(QStringLiteral("Calango"));
     resize(1360, 860);
+
+    // Live Results-graph updates read the running job's metrics.json (~1 s).
+    metricsTimer_->setInterval(1000);
+    connect(metricsTimer_, &QTimer::timeout, this, &MainWindow::pollLiveMetrics);
 
     // Publish MP_API_KEY (Materials Project) from the configured .env file
     // — ~/.env by default, overridable in Edit → Preferences.
@@ -660,9 +667,7 @@ void MainWindow::createMenusAndDocks()
                               this, &MainWindow::newRemoteCalculation);
     simulationMenu->addAction(tr("Electronic &Structure…"),
                               this, &MainWindow::showBandStructure);
-    simulationMenu->addSeparator();
-    simulationMenu->addAction(tr("&Dataset Manager (MLIP)…"),
-                              this, &MainWindow::showDatasetManager);
+    // Dataset Manager moved to the new MLIP menu.
 
     // ----- Analysis: spec order, reciprocal-space tools at the end ---------
     QMenu* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
@@ -689,6 +694,12 @@ void MainWindow::createMenusAndDocks()
     analysisMenu->addAction(tr("Adsorption && Catal&ysis…"),
                             this, &MainWindow::showAdsorption);
     // Brillouin Zone Builder moved to the Build menu.
+
+    // ----- MLIP: machine-learning interatomic potential workflows ----------
+    QMenu* mlipMenu = menuBar()->addMenu(tr("&MLIP"));
+    mlipMenu->addAction(tr("&Trainer…"), this, &MainWindow::openMaceTrainer);
+    mlipMenu->addAction(tr("&Dataset Manager…"),
+                        this, &MainWindow::showDatasetManager);
 
     // Help trails the menu bar: online resources first, About last (as is
     // conventional). New documentation/support links belong in kHelpLinks.
@@ -2507,6 +2518,38 @@ void MainWindow::showDatasetManager()
     dialog.exec();
 }
 
+void MainWindow::openMaceTrainer()
+{
+    // MACE training runs in the user-selected environment (needs mace-torch),
+    // reads its own dataset file, and needs no open structure.
+    MaceTrainerDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted)
+        return; // Close, or an Export (handled inside the dialog)
+
+    const QString label = tr("MACE training");
+    if (dialog.action() == MaceTrainerDialog::Action::RunRemote) {
+        const QString jobDir = stageJob(dialog.runnerScript());
+        if (jobDir.isEmpty())
+            return;
+        remoteDock_->show();
+        remoteDock_->raise();
+        const int taskId =
+            processPanel_->registerTask(tr("Remote %1").arg(label), jobDir);
+        processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
+        remotePanel_->submitStagedJob(jobDir, label);
+        statusBar()->showMessage(tr("Submitting %1 to the cluster…").arg(label));
+        return;
+    }
+
+    if (jobRunner_->isRunning()) {
+        QMessageBox::information(this, label,
+                                 tr("A calculation is already running — kill it first."));
+        return;
+    }
+    runScript(dialog.runnerScript(), dialog.pythonExecutable(), label,
+              /*expectFrames=*/false);
+}
+
 void MainWindow::showRamanModes()
 {
     Document* doc = currentDocument();
@@ -3199,6 +3242,26 @@ void MainWindow::onJobOutputLine(const QString& line)
 
 void MainWindow::onJobErrorLine(const QString& line)
 {
+    // Keep the Results "Log" tab clean: Python runtime warnings (UserWarning,
+    // DeprecationWarning, ResourceWarning, … from ASE/PyTorch/SciPy/GPAW) are
+    // redirected to warnings.log rather than shown as errors. The generated
+    // scripts already route the `warnings` module to warnings.log; this is the
+    // backstop for warnings other libraries write straight to stderr.
+    static const QRegularExpression warningRe(
+        QStringLiteral(R"((?:\bUserWarning\b|\bDeprecationWarning\b|)"
+                       R"(\bResourceWarning\b|\bFutureWarning\b|)"
+                       R"(\bRuntimeWarning\b|\bPendingDeprecationWarning\b|)"
+                       R"(\bImportWarning\b|Warning:|warnings\.warn))"));
+    if (warningRe.match(line).hasMatch()) {
+        if (auto it = processRecords_.find(currentTaskId_);
+            it != processRecords_.end() && !it->second.directory.isEmpty()) {
+            QFile warnFile(it->second.directory + QStringLiteral("/warnings.log"));
+            if (warnFile.open(QIODevice::Append | QIODevice::Text))
+                warnFile.write((line + QLatin1Char('\n')).toUtf8());
+        }
+        return; // never render warnings in the Log tab
+    }
+
     if (auto it = processRecords_.find(currentTaskId_); it != processRecords_.end())
         it->second.log += line + QLatin1Char('\n');
     if (currentTaskId_ == selectedProcessId_)
@@ -3240,12 +3303,88 @@ void MainWindow::writeProcessMetrics(int id)
     }
 }
 
+bool MainWindow::readMetricsJson(const QString& directory,
+                                 ProcessRecord& record) const
+{
+    QFile file(directory + QStringLiteral("/metrics.json"));
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+    if (!doc.isObject())
+        return false;
+    const QJsonObject root = doc.object();
+    const QJsonArray metrics = root.value(QStringLiteral("metrics")).toArray();
+
+    // Progress (step counts / percentage completion) now lives in metrics.json
+    // rather than a CALANGO_PROGRESS stdout line.
+    if (const QJsonObject p = root.value(QStringLiteral("progress")).toObject();
+        !p.isEmpty()) {
+        record.progressStep = p.value(QStringLiteral("step")).toInt();
+        record.progressTotal = p.value(QStringLiteral("total")).toInt();
+    }
+
+    // Rebuild the series from scratch (metrics.json is the full history).
+    record.energy.clear();
+    record.temperature.clear();
+    record.force.clear();
+    record.pressure.clear();
+    for (const QJsonValue& value : metrics) {
+        const QJsonObject entry = value.toObject();
+        const int step = entry.value(QStringLiteral("step")).toInt();
+        const auto add = [&](const char* key,
+                             std::vector<std::pair<int, double>>& series) {
+            const QJsonValue v = entry.value(QLatin1String(key));
+            if (v.isDouble())
+                series.emplace_back(step, v.toDouble());
+        };
+        add("energy", record.energy);
+        add("temperature", record.temperature);
+        add("max_force", record.force);
+        add("pressure", record.pressure);
+    }
+    return true;
+}
+
+void MainWindow::pollLiveMetrics()
+{
+    auto it = processRecords_.find(currentTaskId_);
+    if (it == processRecords_.end() || it->second.directory.isEmpty())
+        return;
+    if (!readMetricsJson(it->second.directory, it->second))
+        return;
+    if (currentTaskId_ != selectedProcessId_)
+        return;
+    // Repaint the four metric plots + progress bar from the freshly-read data.
+    const ProcessRecord& r = it->second;
+    if (r.progressTotal > 0)
+        jobLogWidget_->onProgress(r.progressStep, r.progressTotal);
+    const auto toSamples = [](const std::vector<std::pair<int, double>>& v) {
+        std::vector<MetricPlotWidget::Sample> s;
+        s.reserve(v.size());
+        for (const auto& [step, value] : v)
+            s.push_back({step, value});
+        return s;
+    };
+    energyPlot_->setSamples(toSamples(r.energy));
+    temperaturePlot_->setSamples(toSamples(r.temperature));
+    forcePlot_->setSamples(toSamples(r.force));
+    pressurePlot_->setSamples(toSamples(r.pressure));
+}
+
 void MainWindow::loadProcessMetrics(int id)
 {
     auto it = processRecords_.find(id);
     if (it == processRecords_.end() || it->second.directory.isEmpty())
         return;
     ProcessRecord& r = it->second;
+    // metrics.json (written by the generated scripts) is the primary source;
+    // fall back to the legacy per-series CSVs for older/other job types.
+    if (readMetricsJson(r.directory, r)) {
+        QFile logFile(r.directory + QStringLiteral("/log.txt"));
+        if (logFile.open(QIODevice::ReadOnly | QIODevice::Text))
+            r.log = QString::fromUtf8(logFile.readAll());
+        return;
+    }
     const auto readCsv = [&](const QString& name,
                              std::vector<std::pair<int, double>>& v) {
         QFile file(r.directory + QLatin1Char('/') + name);
@@ -3270,9 +3409,9 @@ void MainWindow::loadProcessMetrics(int id)
 
 QString MainWindow::stageJob(const QString& script, int procId)
 {
+    // Most jobs stage the current structure as structure.extxyz; a few
+    // (e.g. MACE training, which reads its own dataset) run without one.
     Document* doc = currentDocument();
-    if (!doc || !doc->structure)
-        return {};
 
     // Managed session storage: jobs of a saved project live in a
     // .calango_tmp/ folder next to the .calproj (checkpoints, trajectory
@@ -3311,9 +3450,11 @@ QString MainWindow::stageJob(const QString& script, int procId)
 
     try {
         // Stage inputs: structure (extxyz round-trips everything) + script.
-        pybridge::AseBridge::writeStructure(
-            *doc->structure, (jobDir + QStringLiteral("/structure.extxyz")).toStdString(),
-            "extxyz");
+        if (doc && doc->structure)
+            pybridge::AseBridge::writeStructure(
+                *doc->structure,
+                (jobDir + QStringLiteral("/structure.extxyz")).toStdString(),
+                "extxyz");
 
         // NEB and other band jobs also stage the full image band as
         // band.extxyz; the member is consumed (cleared) per staging.
@@ -3382,6 +3523,7 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe,
     jobDock_->show();
     jobDock_->raise();
     jobRunner_->start(pythonExe, QStringLiteral("run.py"), jobDir);
+    metricsTimer_->start(); // poll metrics.json for live Results-graph updates
     statusBar()->showMessage(tr("Running in %1 (%2)").arg(jobDir, pythonExe));
 }
 
@@ -3462,13 +3604,16 @@ void MainWindow::onRemoteResultsReady(const QString& localDir)
 
 void MainWindow::onJobFinished(int exitCode, bool crashed)
 {
+    metricsTimer_->stop();
     const bool failed = crashed || exitCode != 0;
     if (currentTaskId_ >= 0) {
         processPanel_->setTaskStatus(currentTaskId_,
                                      failed ? ProcessManagerPanel::Status::Failed
                                             : ProcessManagerPanel::Status::Completed);
-        // Persist this process's metrics + log to proc_<id>/ so they survive
+        // Final read of metrics.json so the last steps are captured, then
+        // persist this process's metrics + log to proc_<id>/ so they survive
         // subsequent runs and can be reloaded from the Results selector.
+        pollLiveMetrics();
         writeProcessMetrics(currentTaskId_);
         currentTaskId_ = -1;
     }

@@ -1,0 +1,110 @@
+==============================================================================
+ Calango — Dependency Analysis
+==============================================================================
+Atomistic modeling & simulation GUI (C++/Qt6 + OpenGL, with an embedded
+CPython/ASE interpreter). This file documents every build-time and runtime
+dependency, grouped by layer, with the version constraints Calango relies on.
+
+Legend:  [required] must be present   [optional] enables a feature subset
+         [build]    needed to compile  [runtime] needed to run
+
+------------------------------------------------------------------------------
+1. Toolchain / build system
+------------------------------------------------------------------------------
+[build][required] CMake .................... >= 3.21   (qt_add_executable, qt_add_resources)
+[build][required] C++ compiler ............. C++20     (clang 14+/gcc 11+/AppleClang 14+)
+                                             CMAKE_CXX_STANDARD 20, extensions OFF
+[build][optional] sips + iconutil .......... macOS only, renders calango.icns from
+                                             assets/.internal/icon.png (bundle builds)
+[build][optional] macdeployqt .............. macOS, bundles Qt frameworks into Calango.app
+[build][optional] linuxdeployqt / dpkg ..... Linux .deb packaging (packaging/linux)
+
+------------------------------------------------------------------------------
+2. C++ / native libraries
+------------------------------------------------------------------------------
+[build+runtime][required] Qt6 .............. >= 6.4   (developed/tested against 6.9)
+    Components (find_package(Qt6 ... COMPONENTS ...)):
+      - Widgets ............ core GUI toolkit
+      - OpenGLWidgets ...... accelerated 3D structure viewport (QOpenGLWidget)
+      - Concurrent ......... background sampling / off-thread work
+      - Svg ................ Brillouin-zone figure export (SVG)
+    NOTE: QStyleHints::colorScheme() (System theme detection) needs Qt >= 6.5;
+          guarded with QT_VERSION_CHECK so 6.4 still builds.
+
+[build+runtime][required] OpenGL ........... 3.3 core profile
+                                             (macOS provides 4.1 core; Linux via libGL)
+
+[build+runtime][required] pybind11 ......... >= 2.12   (scoped_interpreter(PyConfig*))
+                                             System package if found, else fetched
+                                             (FetchContent, pinned v2.13.6).
+                                             PYBIND11_FINDPYTHON=ON so it reuses the
+                                             interpreter found by FindPython3.
+
+    NOTE: Plotting uses Calango's own lightweight widgets (LinePlotWidget /
+          MetricPlotWidget / PhononPlotWindow) drawn with QPainter. QCustomPlot
+          is NOT a dependency (only referenced as a possible future swap-in).
+
+------------------------------------------------------------------------------
+3. Embedded Python interpreter (the .venv Calango ships/points at)
+------------------------------------------------------------------------------
+Calango embeds CPython and resolves its interpreter via CALANGO_PYTHON env ->
+VIRTUAL_ENV env -> build-time CALANGO_DEFAULT_PYTHON. Verify with:
+    ./calango --probe-python
+
+[build][required]   Python ................. >= 3.9   (Development.Embed; tested 3.14)
+[runtime][required] ASE (atomic-sim-env) ... >= 3.22  (tested 3.29.0)
+                                             structure I/O, calculators, band paths
+[runtime][required] NumPy .................. >= 1.23  (tested 2.5.1)   arrays / linear algebra
+[runtime][optional] SciPy .................. >= 1.9   (tested 1.18.0)  interpolation / signal
+[runtime][optional] spglib ................. >= 2.0   (tested 2.7.0)   symmetry detection
+                                             (supports both the <2.5 dict and >=2.5
+                                             dataclass dataset APIs)
+[runtime][optional] matplotlib ............. >= 3.6   (tested 3.11.1)  offline figure export
+[runtime][optional] paramiko ............... >= 3.0   (tested 5.0.0)   Remote Access SSH/SFTP panel
+
+  Core DFT / MLIP stack (required for the electronic-structure and MLIP
+  workflows — the conda package pulls these in as run dependencies):
+[runtime][required] GPAW .................... >= 24.1  (tested 25.7.0)  PAW/PW DFT: single-point,
+                                              geometry-opt, band structure + PDOS
+[runtime][required] mace-torch ............. >= 0.3   MACE MLIP training / inference
+[runtime][required] PyTorch (torch) ........ >= 2.0   MACE backend (CPU / CUDA / MPS)
+[runtime][required] torch-geometric ........ >= 2.4   graph message-passing for MACE
+[runtime][required] e3nn ................... >= 0.4   E(3)-equivariant tensor ops for MACE
+
+------------------------------------------------------------------------------
+4. Optional job / calculator environments (user-selected conda env, NOT the
+   embedded interpreter — chosen per run in the wizards / Preferences)
+------------------------------------------------------------------------------
+Additional DFT back-ends (GPAW is listed as core-required in section 3):
+[runtime][optional] Quantum ESPRESSO ....... pw.x workflow (needs pseudopotentials)
+[runtime][optional] SIESTA ................. ASE Siesta calculator (LCAO DFT)
+[runtime][optional] VASP ................... ASE Vasp calculator (needs VASP_PP_PATH)
+
+Interop / data sources (optional helpers):
+[runtime][optional] pymatgen ............... Materials Project / structure interop
+[runtime][optional] mp-api / Materials Project API key ... From Database browser
+[runtime][optional] pubchempy or REST ...... PubChem molecule import
+
+------------------------------------------------------------------------------
+5. Version-pin quick reference (constraints Calango is validated against)
+------------------------------------------------------------------------------
+CMake            >= 3.21
+C++              C++20
+Qt6              >= 6.4  (System theme needs 6.5+)
+pybind11         >= 2.12 (fetch fallback 2.13.6)
+Python           >= 3.9
+ASE              >= 3.22
+NumPy            >= 1.23
+SciPy            >= 1.9   (optional)
+spglib           >= 2.0   (optional)
+matplotlib       >= 3.6   (optional)
+paramiko         >= 3.0   (optional, remote)
+GPAW             >= 24.1  (required, DFT; tested 25.7.0)
+mace-torch       >= 0.3   (required, MLIP)
+torch            >= 2.0   (required, MLIP)
+torch-geometric  >= 2.4   (required, MLIP)
+e3nn             >= 0.4   (required, MLIP)
+
+Regenerate the embedded-env portion with:
+    ./.venv/bin/python -m pip freeze
+==============================================================================

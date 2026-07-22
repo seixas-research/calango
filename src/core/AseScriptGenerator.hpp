@@ -23,6 +23,13 @@ public:
     /// Just the calculator-construction block (imports + `atoms.calc = ...`),
     /// for embedding in other generated scripts (e.g. the phonon builder).
     static std::string calculatorSnippet(const CalculatorConfig& config);
+
+    /// The structured-logging preamble shared by every generated script:
+    /// routes Python warnings to warnings.log and installs `_calango_log`, a
+    /// thread-safe JSON logger writing step metrics to metrics.json and events
+    /// to log.json. Other generators (Monte Carlo, NEB) prepend this and call
+    /// `_calango_log.metric(step, energy=..., ...)` instead of printing.
+    static std::string jsonLoggerPreamble();
 };
 
 } // namespace calango::core

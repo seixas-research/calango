@@ -1,0 +1,70 @@
+{% set name = "calango" %}
+{% set version = environ.get("CALANGO_VERSION", "26.7.32") %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  # Build from the working tree (run conda-build from the repo root, or point
+  # `path` at a checkout). Swap for a `git_url`/`url`+`sha256` for releases.
+  path: ../..
+
+build:
+  number: 0
+  # GUI desktop app — one architecture-specific binary, not noarch.
+  script_env:
+    - CALANGO_VERSION
+  # Skip Windows: the app targets macOS + Linux.
+  skip: true  # [win]
+
+requirements:
+  # Tools needed to compile Calango.
+  build:
+    - {{ compiler('cxx') }}          # cxx-compiler (C++20)
+    - cmake >=3.21
+    - ninja
+    - pkg-config
+
+  # Libraries linked/headers used at build time.
+  host:
+    - qt6-main >=6.4                 # Widgets / OpenGLWidgets / Concurrent / Svg
+    - qcustomplot                    # optional plotting lib (recipe spec)
+    - pybind11 >=2.12
+    - nlohmann_json                  # JSON (recipe spec)
+    - python >=3.9
+    - numpy >=1.23
+
+  # Runtime dependencies pulled into the environment when Calango is installed.
+  run:
+    - python >=3.9
+    - qt6-main >=6.4
+    - {{ pin_compatible('numpy') }}
+    - ase >=3.22                     # structure I/O + calculators
+    - gpaw >=24.1                    # PAW/PW DFT back-end (single-point/opt/bands)
+    - mace-torch >=0.3               # MLIP training / inference
+    - pytorch >=2.0                  # MACE backend
+    - spglib >=2.0                   # symmetry detection
+    - pymatgen                       # Materials Project / structure interop
+    - nlohmann_json
+    - scipy >=1.9
+    - paramiko >=3.0                 # Remote Access SSH/SFTP panel
+
+test:
+  commands:
+    # ASE-importable embedded interpreter probe (exit 0 == ASE available).
+    - calango --probe-python
+
+about:
+  home: https://github.com/seixas-research/calango
+  license: MIT
+  license_file: LICENSE
+  summary: Atomistic modeling & simulation GUI (Qt6 + OpenGL + embedded ASE)
+  description: |
+    Calango is a C++/Qt6 desktop suite for building, visualizing and running
+    atomistic simulations (DFT via GPAW, MLIP via MACE, MD, phonons, band
+    structure) on top of an embedded CPython/ASE interpreter.
+
+extra:
+  recipe-maintainers:
+    - seixas-research

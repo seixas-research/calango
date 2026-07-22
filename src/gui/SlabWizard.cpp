@@ -482,10 +482,11 @@ OrientationPage::OrientationPage(SlabWizard* wizard)
     , canvas_(new OrientationCanvas(this))
     , infoLabel_(new QLabel(this))
 {
-    setTitle(tr("Surface Orientation"));
-    setSubTitle(tr("Choose Miller indices, or drag the u / v vector handles to "
-                   "another lattice point — the nearest integer (h k l) is "
-                   "computed automatically."));
+    setTitle(tr("Miller Index && Surface Normal Vector"));
+    setSubTitle(tr("Choose Miller indices (h k l) — the surface normal and "
+                   "cutting plane are shown in 3D — or drag the u / v vector "
+                   "handles to another lattice point; the nearest integer "
+                   "(h k l) is computed automatically."));
 
     auto* form = new QFormLayout;
     const char* names[3] = {"h", "k", "l"};
@@ -597,7 +598,7 @@ TerminationPage::TerminationPage(SlabWizard* wizard)
     , infoLabel_(new QLabel(this))
     , statusLabel_(new QLabel(this))
 {
-    setTitle(tr("Cut, Thickness && Terminations"));
+    setTitle(tr("Thickness and Terminations"));
     setSubTitle(tr("Click atomic layers in the cross-section to set the top and "
                    "bottom termination, or dial in a layer count / thickness."));
 
@@ -730,18 +731,21 @@ VacuumPage::VacuumPage(SlabWizard* wizard)
     , topVacuumSpin_(new QDoubleSpinBox(this))
     , bottomVacuumSpin_(new QDoubleSpinBox(this))
     , centeredCheck_(new QCheckBox(tr("Symmetric vacuum (centered slab)"), this))
+    , orthogonalizeCheck_(
+          new QCheckBox(tr("Orthogonalize c-axis (box cell)"), this))
     , infoLabel_(new QLabel(this))
     , preview_(new ViewportWidget(this))
 {
-    setTitle(tr("Vacuum && Final Slab"));
-    setSubTitle(tr("Set the vacuum spacing above and below the slab, check the "
-                   "3D preview, then Finish to insert it into the workspace."));
+    setTitle(tr("Vacuum Layer && Orthogonalization"));
+    setSubTitle(tr("Set the vacuum spacing along the surface normal, choose "
+                   "centering / orthogonalization, check the 3D preview, then "
+                   "Finish to insert the slab into the workspace."));
 
     for (auto* spin : {topVacuumSpin_, bottomVacuumSpin_}) {
         spin->setRange(0.0, 80.0);
         spin->setDecimals(2);
         spin->setSingleStep(0.5);
-        spin->setValue(10.0);
+        spin->setValue(15.0);
         spin->setSuffix(tr(" Å"));
         connect(spin, &QDoubleSpinBox::valueChanged, this, &VacuumPage::rebuild);
     }
@@ -752,11 +756,17 @@ VacuumPage::VacuumPage(SlabWizard* wizard)
         bottomVacuumSpin_->setEnabled(!on);
         rebuild();
     });
+    orthogonalizeCheck_->setChecked(true);
+    orthogonalizeCheck_->setToolTip(
+        tr("Force the c-axis perpendicular to the surface (a rectangular box "
+           "cell). Uncheck to keep ASE's native cell orientation."));
+    connect(orthogonalizeCheck_, &QCheckBox::toggled, this, &VacuumPage::rebuild);
 
     auto* form = new QFormLayout;
-    form->addRow(tr("Top vacuum:"), topVacuumSpin_);
+    form->addRow(tr("Vacuum spacing:"), topVacuumSpin_);
     form->addRow(tr("Bottom vacuum:"), bottomVacuumSpin_);
     form->addRow(centeredCheck_);
+    form->addRow(orthogonalizeCheck_);
     infoLabel_->setWordWrap(true);
     form->addRow(infoLabel_);
 
@@ -785,6 +795,7 @@ void VacuumPage::rebuild()
     wizard_->vacuumTop = topVacuumSpin_->value();
     wizard_->vacuumBottom = centeredCheck_->isChecked() ? topVacuumSpin_->value()
                                                         : bottomVacuumSpin_->value();
+    wizard_->orthogonalize = orthogonalizeCheck_->isChecked();
     if (centeredCheck_->isChecked()) {
         const QSignalBlocker blocker(bottomVacuumSpin_);
         bottomVacuumSpin_->setValue(wizard_->vacuumBottom);
@@ -816,6 +827,184 @@ bool VacuumPage::isComplete() const
 }
 
 // ---------------------------------------------------------------------------
+// InPlaneCanvas (Stage 2)
+// ---------------------------------------------------------------------------
+
+InPlaneCanvas::InPlaneCanvas(QWidget* parent) : QWidget(parent)
+{
+    setMinimumSize(360, 360);
+}
+
+void InPlaneCanvas::setSurface(const core::Vec3& a, const core::Vec3& b,
+                               std::vector<core::Vec3> atoms,
+                               std::vector<int> atomicNumbers)
+{
+    a_ = a;
+    b_ = b;
+    atoms_ = std::move(atoms);
+    atomicNumbers_ = std::move(atomicNumbers);
+    update();
+}
+
+void InPlaneCanvas::setSupercell(int na, int nb)
+{
+    na_ = std::max(1, na);
+    nb_ = std::max(1, nb);
+    update();
+}
+
+void InPlaneCanvas::updateFit()
+{
+    // Fit the na×nb supercell parallelogram into the widget with a margin.
+    double minX = 0, minY = 0, maxX = 0, maxY = 0;
+    const auto consider = [&](double x, double y) {
+        minX = std::min(minX, x);
+        maxX = std::max(maxX, x);
+        minY = std::min(minY, y);
+        maxY = std::max(maxY, y);
+    };
+    consider(na_ * a_.x, na_ * a_.y);
+    consider(nb_ * b_.x, nb_ * b_.y);
+    consider(na_ * a_.x + nb_ * b_.x, na_ * a_.y + nb_ * b_.y);
+    const double w = std::max(1e-6, maxX - minX);
+    const double h = std::max(1e-6, maxY - minY);
+    scale_ = std::min((width() - 48) / w, (height() - 48) / h);
+    const double cx = (minX + maxX) / 2.0, cy = (minY + maxY) / 2.0;
+    offset_ = QPointF(width() / 2.0 - scale_ * cx, height() / 2.0 + scale_ * cy);
+}
+
+QPointF InPlaneCanvas::map(double x, double y) const
+{
+    return {offset_.x() + scale_ * x, offset_.y() - scale_ * y}; // screen y down
+}
+
+void InPlaneCanvas::paintEvent(QPaintEvent*)
+{
+    updateFit();
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.fillRect(rect(), QColor(24, 26, 30));
+
+    // Atoms of the single surface layer, tiled over the na×nb supercell.
+    for (int i = 0; i < na_; ++i)
+        for (int j = 0; j < nb_; ++j)
+            for (std::size_t idx = 0; idx < atoms_.size(); ++idx) {
+                const QPointF s = map(atoms_[idx].x + i * a_.x + j * b_.x,
+                                      atoms_[idx].y + i * a_.y + j * b_.y);
+                p.setPen(Qt::NoPen);
+                p.setBrush(elementColor(atomicNumbers_[idx]));
+                p.drawEllipse(s, 4.0, 4.0);
+            }
+
+    const auto parallelogram = [&](const core::Vec3& A, const core::Vec3& B,
+                                   const QColor& color, double lineWidth) {
+        QPolygonF poly;
+        poly << map(0, 0) << map(A.x, A.y) << map(A.x + B.x, A.y + B.y)
+             << map(B.x, B.y);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(color, lineWidth));
+        p.drawPolygon(poly);
+    };
+    // na×nb supercell (blue) then the primitive surface cell (orange).
+    parallelogram({na_ * a_.x, na_ * a_.y, 0.0}, {nb_ * b_.x, nb_ * b_.y, 0.0},
+                  QColor(110, 190, 255), 2.0);
+    parallelogram(a_, b_, QColor(255, 180, 60), 1.4);
+
+    p.setPen(QColor(255, 200, 120));
+    p.drawText(map(a_.x * 0.55, a_.y * 0.55), QStringLiteral("a_slab"));
+    p.drawText(map(b_.x * 0.55, b_.y * 0.55), QStringLiteral("b_slab"));
+}
+
+// ---------------------------------------------------------------------------
+// InPlanePage (Stage 2)
+// ---------------------------------------------------------------------------
+
+InPlanePage::InPlanePage(SlabWizard* wizard)
+    : QWizardPage(wizard)
+    , wizard_(wizard)
+    , canvas_(new InPlaneCanvas(this))
+    , naSpin_(new QSpinBox(this))
+    , nbSpin_(new QSpinBox(this))
+    , infoLabel_(new QLabel(this))
+{
+    setTitle(tr("In-Plane Cell Vectors Projection"));
+    setSubTitle(tr("Looking down the surface normal. Adjust the in-plane "
+                   "supercell (na × nb) to set the surface unit cell "
+                   "orientation and area."));
+
+    for (auto* spin : {naSpin_, nbSpin_}) {
+        spin->setRange(1, 20);
+        spin->setValue(1);
+        connect(spin, &QSpinBox::valueChanged, this,
+                &InPlanePage::onSupercellEdited);
+    }
+    auto* form = new QFormLayout;
+    form->addRow(tr("Repeat a_slab (na):"), naSpin_);
+    form->addRow(tr("Repeat b_slab (nb):"), nbSpin_);
+    infoLabel_->setWordWrap(true);
+    form->addRow(infoLabel_);
+
+    auto* side = new QVBoxLayout;
+    side->addLayout(form);
+    side->addStretch(1);
+    auto* sideWidget = new QWidget(this);
+    sideWidget->setLayout(side);
+    sideWidget->setFixedWidth(250);
+
+    auto* layout = new QHBoxLayout(this);
+    layout->addWidget(sideWidget);
+    layout->addWidget(canvas_, 1);
+}
+
+void InPlanePage::initializePage()
+{
+    // A one-layer, zero-vacuum slab yields the in-plane surface cell vectors
+    // (ASE aligns the surface normal with +z) and a layer of atoms to project.
+    try {
+        const auto surface = pybridge::AseBridge::makeSlab(
+            *wizard_->bulk, wizard_->h, wizard_->k, wizard_->l, 1, 0.0);
+        const auto& v = surface.cell().vectors();
+        a_ = v[0];
+        b_ = v[1];
+        std::vector<core::Vec3> positions;
+        std::vector<int> numbers;
+        for (const core::Atom& atom : surface.atoms()) {
+            positions.push_back(atom.position);
+            numbers.push_back(atom.atomicNumber);
+        }
+        canvas_->setSurface(a_, b_, std::move(positions), std::move(numbers));
+    } catch (const std::exception&) {
+        a_ = {1, 0, 0};
+        b_ = {0, 1, 0};
+    }
+    const QSignalBlocker ba(naSpin_), bb(nbSpin_);
+    naSpin_->setValue(wizard_->inPlaneA);
+    nbSpin_->setValue(wizard_->inPlaneB);
+    onSupercellEdited();
+}
+
+void InPlanePage::onSupercellEdited()
+{
+    wizard_->inPlaneA = naSpin_->value();
+    wizard_->inPlaneB = nbSpin_->value();
+    canvas_->setSupercell(wizard_->inPlaneA, wizard_->inPlaneB);
+
+    const double na = wizard_->inPlaneA, nb = wizard_->inPlaneB;
+    const double cellArea = std::abs(a_.x * b_.y - a_.y * b_.x);
+    const double denom = a_.norm() * b_.norm();
+    const double angle = denom > 1e-9
+        ? std::acos(std::clamp(a_.dot(b_) / denom, -1.0, 1.0)) * 57.29577951308232
+        : 90.0;
+    infoLabel_->setText(
+        tr("|a_slab| = %1 Å · |b_slab| = %2 Å · ∠(a,b) = %3° · "
+           "surface area = %4 Å²")
+            .arg(a_.norm() * na, 0, 'f', 3)
+            .arg(b_.norm() * nb, 0, 'f', 3)
+            .arg(angle, 0, 'f', 1)
+            .arg(cellArea * na * nb, 0, 'f', 2));
+}
+
+// ---------------------------------------------------------------------------
 // SlabWizard
 // ---------------------------------------------------------------------------
 
@@ -828,18 +1017,19 @@ SlabWizard::SlabWizard(std::shared_ptr<const core::Structure> bulkStructure,
     setWizardStyle(QWizard::ModernStyle);
     resize(1000, 620);
 
-    addPage(new OrientationPage(this));
-    addPage(new TerminationPage(this));
-    addPage(new VacuumPage(this));
+    addPage(new OrientationPage(this));   // 1. Miller Index & Surface Normal
+    addPage(new InPlanePage(this));       // 2. In-Plane Cell Vectors Projection
+    addPage(new TerminationPage(this));   // 3. Thickness and Terminations
+    addPage(new VacuumPage(this));        // 4. Vacuum Layer & Orthogonalization
 }
 
 QString SlabWizard::resultLabel() const
 {
-    return tr("(%1%2%3) slab, %4 layers")
-        .arg(h)
-        .arg(k)
-        .arg(l)
-        .arg(topLayer - bottomLayer + 1);
+    QString label = tr("(%1%2%3) slab, %4 layers").arg(h).arg(k).arg(l)
+                        .arg(topLayer - bottomLayer + 1);
+    if (inPlaneA > 1 || inPlaneB > 1)
+        label += tr(", %1×%2 supercell").arg(inPlaneA).arg(inPlaneB);
+    return label;
 }
 
 bool SlabWizard::buildTallSlab()
@@ -869,23 +1059,37 @@ std::shared_ptr<core::Structure> SlabWizard::buildResult()
     const double zBottom = layerZ[static_cast<std::size_t>(bottomLayer)];
     const double zTop = layerZ[static_cast<std::size_t>(topLayer)];
     const double tolerance = kLayerTol * 0.75;
+    const auto& v = tallSlab.cell().vectors();
+    const core::Vec3 a = v[0], b = v[1];
+    const int na = std::max(1, inPlaneA), nb = std::max(1, inPlaneB);
 
     core::Structure out;
     for (const core::Atom& atom : tallSlab.atoms()) {
         if (atom.position.z < zBottom - tolerance
             || atom.position.z > zTop + tolerance)
             continue;
-        core::Atom shifted = atom;
-        shifted.position.z += vacuumBottom - zBottom;
-        out.addAtom(shifted);
+        // Tile the atom over the in-plane na×nb supercell (Stage 2).
+        for (int i = 0; i < na; ++i)
+            for (int j = 0; j < nb; ++j) {
+                core::Atom shifted = atom;
+                shifted.position.x += i * a.x + j * b.x;
+                shifted.position.y += i * a.y + j * b.y;
+                shifted.position.z += (i * a.z + j * b.z) + (vacuumBottom - zBottom);
+                out.addAtom(shifted);
+            }
     }
     if (out.empty())
         return nullptr;
 
-    const double height = (zTop - zBottom) + vacuumBottom + vacuumTop;
-    const auto& v = tallSlab.cell().vectors();
-    out.setCell(core::UnitCell(v[0], v[1], {0.0, 0.0, std::max(height, 1.0)},
-                               {true, true, true}));
+    const double height = std::max((zTop - zBottom) + vacuumBottom + vacuumTop, 1.0);
+    const core::Vec3 A{na * a.x, na * a.y, na * a.z};
+    const core::Vec3 B{nb * b.x, nb * b.y, nb * b.z};
+    // Orthogonalization (Stage 4): a box c-axis normal to the surface, or —
+    // when unchecked — ASE's native c direction stretched to the slab height.
+    core::Vec3 C{0.0, 0.0, height};
+    if (!orthogonalize && std::abs(v[2].z) > 1e-6)
+        C = v[2] * (height / v[2].z);
+    out.setCell(core::UnitCell(A, B, C, {true, true, true}));
     result_ = std::make_shared<core::Structure>(std::move(out));
     return result_;
 }

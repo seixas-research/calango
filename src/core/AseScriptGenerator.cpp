@@ -74,6 +74,69 @@ constexpr const char* kStreamFrameHelper =
     "    _sys.stdout.flush()\n"
     "\n";
 
+/// Structured logging preamble, emitted once near the top of every generated
+/// script. It (1) routes Python warnings (UserWarning/DeprecationWarning/
+/// ResourceWarning from ASE, PyTorch, SciPy, GPAW, …) to warnings.log so the
+/// Results "Log" tab stays clean, and (2) provides a thread-safe JSON logger
+/// that writes step metrics to metrics.json and events to log.json in the
+/// per-process working directory. The C++ Results panel reads metrics.json for
+/// live graph updates.
+constexpr const char* kJsonLoggerHelper =
+    "import json as _json\n"
+    "import os as _os\n"
+    "import threading as _threading\n"
+    "import warnings as _warnings\n"
+    "import logging as _logging\n"
+    "\n"
+    "# Warnings -> warnings.log only (kept off stdout/stderr).\n"
+    "_wlogger = _logging.getLogger(\"py.warnings\")\n"
+    "_wlogger.handlers.clear()\n"
+    "_wlogger.addHandler(_logging.FileHandler(\"warnings.log\", mode=\"w\"))\n"
+    "_wlogger.propagate = False\n"
+    "_logging.captureWarnings(True)\n"
+    "_warnings.simplefilter(\"default\")\n"
+    "\n"
+    "class _CalangoLog:\n"
+    "    def __init__(self):\n"
+    "        self._lock = _threading.Lock()\n"
+    "        self._metrics = []\n"
+    "        self._events = []\n"
+    "        self._progress = None\n"
+    "    @staticmethod\n"
+    "    def _flush(path, data):\n"
+    "        tmp = path + \".tmp\"\n"
+    "        with open(tmp, \"w\") as _fh:\n"
+    "            _json.dump(data, _fh)\n"
+    "        _os.replace(tmp, path)  # atomic\n"
+    "    def _write_metrics(self):\n"
+    "        data = {\"metrics\": self._metrics}\n"
+    "        if self._progress is not None:\n"
+    "            data[\"progress\"] = self._progress\n"
+    "        self._flush(\"metrics.json\", data)\n"
+    "    def metric(self, step, **fields):\n"
+    "        entry = {\"step\": int(step)}\n"
+    "        for _k, _v in fields.items():\n"
+    "            if _v is not None:\n"
+    "                entry[_k] = float(_v)\n"
+    "        with self._lock:\n"
+    "            self._metrics.append(entry)\n"
+    "            self._write_metrics()\n"
+    "    def progress(self, step, total):\n"
+    "        step, total = int(step), int(total)\n"
+    "        pct = (100.0 * step / total) if total > 0 else 0.0\n"
+    "        with self._lock:\n"
+    "            self._progress = {\"step\": step, \"total\": total,\n"
+    "                              \"percent\": pct}\n"
+    "            self._write_metrics()\n"
+    "    def event(self, level, message):\n"
+    "        with self._lock:\n"
+    "            self._events.append({\"level\": str(level),\n"
+    "                                 \"message\": str(message)})\n"
+    "            self._flush(\"log.json\", {\"log\": self._events})\n"
+    "\n"
+    "_calango_log = _CalangoLog()\n"
+    "\n";
+
 void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
 {
     switch (c.calculator) {
@@ -250,6 +313,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
         }
         out << "energy = atoms.get_potential_energy()\n"
                "fmax = abs(atoms.get_forces()).max()\n"
+               "_calango_log.metric(0, energy=energy, max_force=fmax)\n"
                "print(f\"CALANGO_RESULT energy_eV={energy:.6f}\", flush=True)\n"
                "print(f\"CALANGO_RESULT fmax_eV_per_A={fmax:.6f}\", flush=True)\n";
         break;
@@ -288,11 +352,10 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "\n"
             << kStreamFrameHelper
             << "def _report():\n"
-               "    print(f\"CALANGO_PROGRESS {opt.nsteps} {max_steps}\", flush=True)\n"
+               "    _calango_log.progress(opt.nsteps, max_steps)\n"
                "    energy = atoms.get_potential_energy()\n"
                "    fmax_now = abs(atoms.get_forces()).max()\n"
-               "    print(f\"CALANGO_ENERGY {opt.nsteps} {energy:.6f}\", flush=True)\n"
-               "    print(f\"CALANGO_FMAX {opt.nsteps} {fmax_now:.6f}\", flush=True)\n"
+               "    _calango_log.metric(opt.nsteps, energy=energy, max_force=fmax_now)\n"
                "    _stream_frame()\n"
                "\n"
                "_stream_frame()\n"
@@ -447,17 +510,18 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "    ekin = atoms.get_kinetic_energy()\n"
                "    temp = atoms.get_temperature()\n"
                "    fmax_now = abs(atoms.get_forces()).max()\n"
-               "    print(f\"CALANGO_PROGRESS {dyn.nsteps} {md_steps}\", flush=True)\n"
-               "    print(f\"CALANGO_ENERGY {dyn.nsteps} {epot:.6f}\", flush=True)\n"
-               "    print(f\"CALANGO_TEMP {dyn.nsteps} {temp:.2f}\", flush=True)\n"
-               "    print(f\"CALANGO_FMAX {dyn.nsteps} {fmax_now:.6f}\", flush=True)\n";
+               "    _calango_log.progress(dyn.nsteps, md_steps)\n";
 
         if (isConstantPressure(c.ensemble))
             out << "    # Scalar pressure P = -tr(σ)/3 from the full stress tensor\n"
                    "    # (eV/Å³ → GPa); only meaningful with a barostatted cell.\n"
                    "    stress = atoms.get_stress(voigt=True)\n"
                    "    pressure_GPa = -(stress[0] + stress[1] + stress[2]) / 3.0 / units.GPa\n"
-                   "    print(f\"CALANGO_PRESSURE {dyn.nsteps} {pressure_GPa:.6f}\", flush=True)\n";
+                   "    _calango_log.metric(dyn.nsteps, energy=epot, temperature=temp,\n"
+                   "                        max_force=fmax_now, pressure=pressure_GPa)\n";
+        else
+            out << "    _calango_log.metric(dyn.nsteps, energy=epot, temperature=temp,\n"
+                   "                        max_force=fmax_now)\n";
 
         out << "    print(f\"CALANGO_MD step={dyn.nsteps} epot_eV={epot:.4f} ekin_eV={ekin:.4f}"
                " T_K={temp:.1f}\", flush=True)\n"
@@ -480,6 +544,11 @@ std::string AseScriptGenerator::calculatorSnippet(const CalculatorConfig& config
     return out.str();
 }
 
+std::string AseScriptGenerator::jsonLoggerPreamble()
+{
+    return kJsonLoggerHelper;
+}
+
 std::string AseScriptGenerator::generate(const CalculatorConfig& config,
                                          const std::string& structureFile)
 {
@@ -491,6 +560,7 @@ std::string AseScriptGenerator::generate(const CalculatorConfig& config,
            "\n"
            "from ase.io import read, write\n"
            "\n"
+        << kJsonLoggerHelper
         << "atoms = read(r\"" << structureFile << "\")\n"
         << "print(f\"CALANGO_INFO natoms={len(atoms)}\", flush=True)\n"
            "\n";

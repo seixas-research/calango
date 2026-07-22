@@ -5,6 +5,7 @@
 #include "gui/SettingsManager.hpp"
 #include "gui/ThemeManager.hpp"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFileDialog>
@@ -125,7 +126,25 @@ PreferencesDialog::PreferencesDialog(QWidget* parent)
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
+    // -- General ------------------------------------------------------------
+    auto* generalGroup = new QGroupBox(tr("General"), this);
+    auto* generalLayout = new QVBoxLayout(generalGroup);
+    auto* welcomeCheck = new QCheckBox(tr("Show Welcome Screen on Startup"),
+                                       generalGroup);
+    welcomeCheck->setToolTip(
+        tr("Re-enable the Welcome Screen if you previously dismissed it. Bound "
+           "to show_welcome_screen in ~/.calango/settings.json."));
+    welcomeCheck->setChecked(
+        QSettings().value(QLatin1String(SettingsManager::kShowWelcome), true)
+            .toBool());
+    generalLayout->addWidget(welcomeCheck);
+    connect(welcomeCheck, &QCheckBox::toggled, this, [](bool on) {
+        QSettings().setValue(QLatin1String(SettingsManager::kShowWelcome), on);
+        SettingsManager::save(); // flush to settings.json immediately
+    });
+
     auto* layout = new QVBoxLayout(this);
+    layout->addWidget(generalGroup);
     layout->addWidget(envGroup);
     layout->addWidget(appearanceGroup);
     layout->addWidget(computeGroup);
