@@ -312,11 +312,45 @@ void ViewportWidget::frameStructure()
 {
     if (!structure_ || structure_->empty())
         return;
+
+    // Intelligent auto-zoom. Periodic crystals: fit the whole unit-cell box
+    // (its 8 corners) into ~90% of the view so the full lattice is visible.
+    // Isolated molecules/clusters (no cell): size the structure to span
+    // exactly 50% of the viewport's vertical height so it reads comfortably
+    // rather than filling the frame edge-to-edge.
+    if (structure_->cell().isDefined()) {
+        const auto corners = structure_->cell().corners();
+        core::Vec3 center{0.0, 0.0, 0.0};
+        for (const auto& c : corners) {
+            center.x += c.x;
+            center.y += c.y;
+            center.z += c.z;
+        }
+        center.x /= 8.0;
+        center.y /= 8.0;
+        center.z /= 8.0;
+        double radius = 0.0;
+        for (const auto& c : corners) {
+            const double dx = c.x - center.x, dy = c.y - center.y,
+                         dz = c.z - center.z;
+            radius = std::max(radius, std::sqrt(dx * dx + dy * dy + dz * dz));
+        }
+        // Guard against atoms that spill outside the drawn cell box.
+        radius = std::max(radius, structure_->boundingRadius(center));
+        camera_.frameToFraction(
+            {static_cast<float>(center.x), static_cast<float>(center.y),
+             static_cast<float>(center.z)},
+            std::max(static_cast<float>(radius), 2.0f), 0.9f);
+        update();
+        return;
+    }
+
     const core::Vec3 center = structure_->centroid();
     const auto radius = static_cast<float>(structure_->boundingRadius(center));
-    camera_.frame({static_cast<float>(center.x), static_cast<float>(center.y),
-                   static_cast<float>(center.z)},
-                  std::max(radius, 2.0f));
+    camera_.frameToFraction({static_cast<float>(center.x),
+                             static_cast<float>(center.y),
+                             static_cast<float>(center.z)},
+                            std::max(radius, 1.5f), 0.5f);
     update();
 }
 

@@ -29,6 +29,12 @@ public:
                         const pybridge::AseBridge::BandPathInfo& bandPath,
                         QWidget* parent = nullptr);
 
+    /// The currently built k-path as an ASE path string (concatenated
+    /// high-symmetry labels, ',' between discontinuous sections, e.g.
+    /// "GXWK,UX"). Empty when no path is defined. Lets a caller (the bands
+    /// wizard) reuse this graphical builder to define its k-path.
+    QString asePathString() const;
+
 private Q_SLOTS:
     void appendPoint(int index);
     void addBreak();
@@ -41,6 +47,12 @@ private Q_SLOTS:
     void exportFigure();
 
 private:
+    /// Calango's native k-path interchange format (kpath.json): the
+    /// high-symmetry point coordinates plus the explicit sequential path
+    /// segments (labels + fractional coordinates + cumulative distance).
+    /// This is the primary export format and the one the Phonon / Electronic
+    /// Structure wizards load.
+    void exportKpathJson();
     void exportVaspKpoints();
     void exportQeKpoints();
     void exportCastepPath();

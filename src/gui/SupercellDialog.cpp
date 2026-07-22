@@ -234,17 +234,21 @@ SupercellDialog::SupercellDialog(std::shared_ptr<const core::Structure> structur
     auto* midLayout = new QHBoxLayout;
 
     // --- Left: 3×3 integer matrix grid -------------------------------------
+    // Just the input fields inside clean matrix brackets — no row/column text
+    // labels (they cluttered and overlapped the compact spin boxes). The intro
+    // above explains P; the volume readout and lattice preview stay below.
     auto* matrixBox = new QGroupBox(tr("Transformation matrix P"), this);
     auto* grid = new QGridLayout(matrixBox);
-    const char* rowLabels[3] = {"a′ =", "b′ =", "c′ ="};
-    const char* colLabels[3] = {"·a", "·b", "·c"};
-    for (int j = 0; j < 3; ++j) {
-        auto* header = new QLabel(QLatin1String(colLabels[j]), matrixBox);
-        header->setAlignment(Qt::AlignCenter);
-        grid->addWidget(header, 0, j + 1);
-    }
+    const auto makeBracket = [matrixBox](const QString& glyph) {
+        auto* bracket = new QLabel(glyph, matrixBox);
+        QFont f = bracket->font();
+        f.setPointSizeF(f.pointSizeF() * 3.2);
+        bracket->setFont(f);
+        bracket->setAlignment(Qt::AlignCenter);
+        return bracket;
+    };
+    grid->addWidget(makeBracket(QStringLiteral("[")), 0, 0, 3, 1);
     for (int i = 0; i < 3; ++i) {
-        grid->addWidget(new QLabel(QLatin1String(rowLabels[i]), matrixBox), i + 1, 0);
         for (int j = 0; j < 3; ++j) {
             auto* spin = new QSpinBox(matrixBox);
             spin->setRange(-20, 20);
@@ -253,16 +257,18 @@ SupercellDialog::SupercellDialog(std::shared_ptr<const core::Structure> structur
             spin->setFixedWidth(56);
             connect(spin, &QSpinBox::valueChanged, this, &SupercellDialog::onMatrixChanged);
             spins_[i][j] = spin;
-            grid->addWidget(spin, i + 1, j + 1);
+            grid->addWidget(spin, i, j + 1);
         }
     }
+    grid->addWidget(makeBracket(QStringLiteral("]")), 0, 4, 3, 1);
+
     auto* resetButton = new QPushButton(tr("Reset to identity"), matrixBox);
     connect(resetButton, &QPushButton::clicked, this, &SupercellDialog::resetToIdentity);
-    grid->addWidget(resetButton, 4, 0, 1, 4);
+    grid->addWidget(resetButton, 3, 0, 1, 5);
 
     detLabel_ = new QLabel(matrixBox);
     detLabel_->setWordWrap(true);
-    grid->addWidget(detLabel_, 5, 0, 1, 4);
+    grid->addWidget(detLabel_, 4, 0, 1, 5);
 
     auto* matrixColumn = new QVBoxLayout;
     matrixColumn->addWidget(matrixBox);

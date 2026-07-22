@@ -23,6 +23,7 @@ class JobRunner;
 
 namespace calango::gui {
 
+class BrandingPanel;
 class JobLogWidget;
 class NebDialog;
 class SimulationWizardBase;
@@ -30,6 +31,7 @@ class MetricPlotWidget;
 class ProcessManagerPanel;
 class RemoteAccessPanel;
 class StructureInfoWidget;
+class SystemStatusBar;
 class TimelineWidget;
 class ViewportWidget;
 
@@ -47,6 +49,16 @@ public:
 
     /// Load any ASE-readable structure file into a new tab.
     void loadFile(const QString& path);
+
+    /// Show the startup Welcome Screen (banner + recent projects + quick
+    /// actions) and act on the user's choice. No-op semantics are the
+    /// caller's job (it checks WelcomeDialog::showAtStartupEnabled()).
+    void showWelcomeScreen();
+
+    /// (Re)apply the persisted appearance theme (QSettings "appearance/theme"):
+    /// palette/stylesheet via ThemeManager plus the Zone-1 logo variant and the
+    /// status-bar thread readout. Called at startup and after Preferences edits.
+    void applyAppearanceTheme();
 
 protected:
     /// Persists the window geometry and dock layout before shutdown; the
@@ -71,7 +83,6 @@ private Q_SLOTS:
     void exportImage();
     void exportAnimation();
 
-    void createSupercell();
     void openSupercellBuilder();
     void cleaveSurface();
     void addAtom();
@@ -119,6 +130,9 @@ private Q_SLOTS:
     /// "Load Result" from the Process panel: band data, trajectory or
     /// final structure — whatever the task directory contains.
     void onProcessResultRequested(const QString& directory);
+    /// "View ASE Script": open the task directory's run.py in a
+    /// syntax-highlighted, copyable viewer.
+    void onViewScriptRequested(const QString& directory);
     /// "Delete Process": confirm, stop it if running, purge proc_<id>/, drop
     /// its record + selector entry + panel row.
     void onDeleteProcessRequested(int id);
@@ -140,7 +154,6 @@ private Q_SLOTS:
     void showLocalEntropy();
     void showRamanModes();
     void newProject();
-    void showVisualEffects();
     void showVolumetricData();
     void showDatasetManager();
     void openExamplesBrowser();
@@ -200,8 +213,11 @@ private:
     /// appropriate message (titled `title`) and returns false if not ready.
     bool prepareSimulation(const QString& title);
     /// Run a 4-stage simulation wizard: exec it, then launch its script
-    /// locally or submit it remotely per the chosen action.
-    void runSimulationWizard(SimulationWizardBase& wizard, const QString& label);
+    /// locally or submit it remotely per the chosen action. `expectFrames`
+    /// is false for runs that produce no trajectory (single-point, bands),
+    /// so no live trajectory tab is opened.
+    void runSimulationWizard(SimulationWizardBase& wizard, const QString& label,
+                             bool expectFrames = true);
 
     // -- .calproj project workspace persistence ----------------------------
     /// Serialize the whole session (documents, tabs, viewport color
@@ -241,6 +257,8 @@ private:
 
     QTabBar* tabBar_ = nullptr;
     ViewportWidget* viewport_ = nullptr;
+    BrandingPanel* brandingPanel_ = nullptr;      ///< zone 1 (theme-aware logo)
+    SystemStatusBar* systemStatusBar_ = nullptr;  ///< permanent status widgets
     QMenu* recentMenu_ = nullptr; ///< File → Open → Open Recent (dynamic)
     QComboBox* processSelector_ = nullptr; ///< Results-panel process dropdown
     StructureInfoWidget* infoWidget_ = nullptr;
@@ -251,6 +269,7 @@ private:
     MetricPlotWidget* pressurePlot_ = nullptr;
     TimelineWidget* timeline_ = nullptr;
     QDockWidget* jobDock_ = nullptr;
+    QDockWidget* visualEffectsDock_ = nullptr; ///< zone 9 (Lighting + effects)
     QDockWidget* remoteDock_ = nullptr;
     RemoteAccessPanel* remotePanel_ = nullptr;
     ProcessManagerPanel* processPanel_ = nullptr;

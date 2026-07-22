@@ -55,6 +55,13 @@ public:
     /// Center on a bounding sphere and back off far enough to see it all.
     void frame(const QVector3D& center, float radius);
 
+    /// Center on a bounding sphere and set the distance so the sphere's
+    /// diameter spans `verticalFraction` (0..1) of the viewport's vertical
+    /// extent, given the fixed 40° field of view. Used for intelligent
+    /// auto-zoom: ~0.9 fits a unit cell, 0.5 sizes a molecule to half-height.
+    void frameToFraction(const QVector3D& center, float radius,
+                         float verticalFraction);
+
     QMatrix4x4 view() const;
     QMatrix4x4 projection(float aspectRatio) const;
 

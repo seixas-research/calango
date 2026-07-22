@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QProcessEnvironment>
+#include <QSettings>
 #include <QRegularExpression>
 #include <QTimer>
 
@@ -50,6 +51,20 @@ void JobRunner::start(const QString& pythonExe, const QString& scriptPath, const
 
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
+
+    // Thread control (Preferences → Multi-Threading). A value > 0 pins the
+    // per-process thread pools used by numpy/BLAS and OpenMP-parallel solvers;
+    // 0 leaves the environment untouched (let the libraries auto-detect). Set
+    // before the interpreter starts so it takes effect ahead of numpy import.
+    const int ompThreads = QSettings().value(QStringLiteral("jobs/ompThreads"),
+                                             0).toInt();
+    if (ompThreads > 0) {
+        const QString value = QString::number(ompThreads);
+        for (const auto* var : {"OMP_NUM_THREADS", "MKL_NUM_THREADS",
+                                "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS",
+                                "VECLIB_MAXIMUM_THREADS"})
+            env.insert(QLatin1String(var), value);
+    }
 
     // Make the selected environment self-contained: its bin directory wins
     // over any globally installed solver binaries.

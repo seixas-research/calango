@@ -2,7 +2,9 @@
 
 #include "gui/EnvFile.hpp"
 #include "python_bridge/MaterialsProject.hpp"
+#include "python_bridge/PubChem.hpp"
 
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -18,54 +20,15 @@ namespace {
 
 const auto kApiKeySetting = QStringLiteral("materialsProject/apiKey");
 
-struct Preset {
-    const char* title;
-    const char* file;
-    const char* recommendation;
-};
-
-constexpr Preset kPresets[] = {
-    {"Diamond (bulk C)", "diamond.vasp", "MACE-MP-0"},
-    {"MoS₂ 2H (bulk)", "mos2_2h_bulk.vasp", "MACE-MP-0"},
-    {"Graphene monolayer", "graphene.vasp", "MACE-MP-0"},
-    {"MoS₂ 1H (monolayer)", "mos2_1h_monolayer.vasp", "MACE-MP-0"},
-    {"Benzene", "benzene.xyz", "MACE-OFF (or EMT for quick tests)"},
-    {"Naphthalene", "naphthalene.xyz", "MACE-OFF"},
-    {"Coronene", "coronene.xyz", "MACE-OFF"},
-};
-
 } // namespace
 
 ExamplesDialog::ExamplesDialog(QWidget* parent)
     : QDialog(parent)
 {
-    setWindowTitle(tr("Database & Preset Browser"));
+    setWindowTitle(tr("Database Browser"));
     resize(520, 420);
 
     auto* tabs = new QTabWidget(this);
-
-    // --- Presets tab --------------------------------------------------------
-    auto* presetsPage = new QWidget(this);
-    auto* presetsLayout = new QVBoxLayout(presetsPage);
-    presetList_ = new QListWidget(presetsPage);
-    for (const Preset& preset : kPresets) {
-        auto* item = new QListWidgetItem(
-            QStringLiteral("%1   —   %2").arg(QString::fromUtf8(preset.title),
-                                              QLatin1String(preset.recommendation)),
-            presetList_);
-        item->setData(Qt::UserRole,
-                      QStringLiteral(":/assets/examples/")
-                          + QLatin1String(preset.file));
-        item->setData(Qt::UserRole + 1, QLatin1String(preset.recommendation));
-    }
-    presetsLayout->addWidget(presetList_);
-    auto* loadPresetButton = new QPushButton(tr("Load Selected"), presetsPage);
-    presetsLayout->addWidget(loadPresetButton);
-    connect(loadPresetButton, &QPushButton::clicked,
-            this, &ExamplesDialog::loadSelectedPreset);
-    connect(presetList_, &QListWidget::itemDoubleClicked,
-            this, &ExamplesDialog::loadSelectedPreset);
-    tabs->addTab(presetsPage, tr("Presets"));
 
     // --- Materials Project tab ----------------------------------------------
     auto* mpPage = new QWidget(this);
@@ -134,6 +97,35 @@ ExamplesDialog::ExamplesDialog(QWidget* parent)
             this, &ExamplesDialog::fetchFromMaterialsProject);
     tabs->addTab(mpPage, tr("Materials Project"));
 
+    // --- PubChem tab --------------------------------------------------------
+    auto* pubchemPage = new QWidget(this);
+    auto* pubchemLayout = new QVBoxLayout(pubchemPage);
+    auto* pubchemForm = new QFormLayout;
+    pubchemFieldCombo_ = new QComboBox(pubchemPage);
+    pubchemFieldCombo_->addItem(tr("Name"), QStringLiteral("name"));
+    pubchemFieldCombo_->addItem(tr("SMILES"), QStringLiteral("smiles"));
+    pubchemFieldCombo_->addItem(tr("CID"), QStringLiteral("cid"));
+    pubchemQueryEdit_ = new QLineEdit(pubchemPage);
+    pubchemQueryEdit_->setPlaceholderText(
+        tr("e.g. benzene, or c1ccccc1, or 241"));
+    pubchemForm->addRow(tr("Search by:"), pubchemFieldCombo_);
+    pubchemForm->addRow(tr("Query:"), pubchemQueryEdit_);
+    pubchemLayout->addLayout(pubchemForm);
+    pubchemButton_ = new QPushButton(tr("Fetch 3D Conformer"), pubchemPage);
+    pubchemLayout->addWidget(pubchemButton_);
+    pubchemStatus_ = new QLabel(
+        tr("Retrieves the 3D molecular geometry from the online PubChem "
+           "database (no API key required)."),
+        pubchemPage);
+    pubchemStatus_->setWordWrap(true);
+    pubchemLayout->addWidget(pubchemStatus_);
+    pubchemLayout->addStretch(1);
+    connect(pubchemButton_, &QPushButton::clicked,
+            this, &ExamplesDialog::fetchFromPubChem);
+    connect(pubchemQueryEdit_, &QLineEdit::returnPressed,
+            this, &ExamplesDialog::fetchFromPubChem);
+    tabs->addTab(pubchemPage, tr("PubChem"));
+
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
@@ -142,13 +134,32 @@ ExamplesDialog::ExamplesDialog(QWidget* parent)
     layout->addWidget(buttons);
 }
 
-void ExamplesDialog::loadSelectedPreset()
+void ExamplesDialog::fetchFromPubChem()
 {
-    QListWidgetItem* item = presetList_->currentItem();
-    if (!item)
-        return;
-    Q_EMIT presetChosen(item->data(Qt::UserRole).toString(),
-                        item->data(Qt::UserRole + 1).toString());
+    const QString query = pubchemQueryEdit_->text().trimmed();
+    const QString field = pubchemFieldCombo_->currentData().toString();
+    pubchemButton_->setEnabled(false);
+    pubchemStatus_->setStyleSheet(QString());
+    pubchemStatus_->setText(tr("Searching PubChem for “%1”…").arg(query));
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    QGuiApplication::processEvents();
+
+    try {
+        auto structure = std::make_shared<core::Structure>(
+            pybridge::PubChem::fetchStructure(query.toStdString(),
+                                              field.toStdString()));
+        const QString name = QString::fromStdString(structure->chemicalFormula());
+        pubchemStatus_->setText(tr("Fetched %1 (%2 atoms)")
+                                    .arg(name)
+                                    .arg(structure->size()));
+        Q_EMIT structureFetched(std::move(structure),
+                                query.isEmpty() ? name : query);
+    } catch (const std::exception& e) {
+        pubchemStatus_->setStyleSheet(QStringLiteral("color: #d9534f;"));
+        pubchemStatus_->setText(QString::fromUtf8(e.what()));
+    }
+    QGuiApplication::restoreOverrideCursor();
+    pubchemButton_->setEnabled(true);
 }
 
 void ExamplesDialog::fetchFromMaterialsProject()

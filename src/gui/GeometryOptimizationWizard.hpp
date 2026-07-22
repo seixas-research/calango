@@ -38,7 +38,9 @@ private:
     QSpinBox* maxStepsSpin_;
     QCheckBox* relaxCellCheck_;
     QComboBox* cellFilterCombo_;
-    QComboBox* stressMaskCombo_; // anisotropic vs hydrostatic
+    QComboBox* stressMaskCombo_;   // anisotropic / hydrostatic / custom
+    QWidget* voigtRow_;            // custom Voigt mask checkbox row
+    QCheckBox* voigtChecks_[6];    // [xx, yy, zz, yz, xz, xy]
 };
 
 } // namespace calango::gui

@@ -35,6 +35,9 @@ Q_SIGNALS:
     /// "Load Result" on a task — MainWindow decides what the directory
     /// contains (trajectory, band data, ...) and opens it.
     void loadResultRequested(const QString& directory);
+    /// "View ASE Script" — MainWindow opens the run.py in that directory in a
+    /// syntax-highlighted viewer.
+    void viewScriptRequested(const QString& directory);
     /// "Delete Process" on a task — MainWindow confirms, stops it if running,
     /// purges its proc_<id> directory, then calls removeTask(id).
     void deleteRequested(int id);

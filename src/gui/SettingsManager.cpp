@@ -1,0 +1,150 @@
+#include "gui/SettingsManager.hpp"
+
+#include <QDir>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
+#include <QSettings>
+#include <QThread>
+#include <QVariant>
+
+#include <array>
+
+namespace calango::gui {
+
+namespace {
+
+/// One managed preference: its "group/key" and the default value (whose type
+/// also drives JSON ↔ QVariant conversion).
+struct Managed {
+    const char* key;
+    QVariant defaultValue;
+};
+
+std::array<Managed, 7> managedKeys()
+{
+    return {{
+        {SettingsManager::kTheme, QStringLiteral("system")},
+        // 0 = "auto" (leave the environment untouched); >0 pins OMP_NUM_THREADS.
+        {SettingsManager::kOmpThreads, QThread::idealThreadCount()},
+        {SettingsManager::kCondaDir, QString()},
+        {SettingsManager::kEnvironmentPath, QString()},
+        {SettingsManager::kShowWelcome, true},
+        {SettingsManager::kEnvFilePath, QString()},
+        {SettingsManager::kMaterialsProjectApiKey, QString()},
+    }};
+}
+
+/// Split "group/key" into its two JSON nesting levels.
+QPair<QString, QString> splitKey(const QString& key)
+{
+    const int slash = key.indexOf(QLatin1Char('/'));
+    if (slash < 0)
+        return {QStringLiteral("misc"), key};
+    return {key.left(slash), key.mid(slash + 1)};
+}
+
+QVariant jsonToVariant(const QJsonValue& value, const QVariant& prototype)
+{
+    switch (prototype.typeId()) {
+    case QMetaType::Bool:
+        return value.toBool(prototype.toBool());
+    case QMetaType::Int:
+        return value.toInt(prototype.toInt());
+    case QMetaType::Double:
+        return value.toDouble(prototype.toDouble());
+    default:
+        return value.toString();
+    }
+}
+
+/// Serialize `value` to JSON using `prototype`'s type (QVariant's own string
+/// parsing coerces values the native QSettings backend hands back as strings).
+QJsonValue variantToJson(const QVariant& value, const QVariant& prototype)
+{
+    switch (prototype.typeId()) {
+    case QMetaType::Bool:
+        return value.toBool();
+    case QMetaType::Int:
+        return value.toInt();
+    case QMetaType::Double:
+        return value.toDouble();
+    default:
+        return value.toString();
+    }
+}
+
+} // namespace
+
+QString SettingsManager::directory()
+{
+    return QDir::homePath() + QStringLiteral("/.calango");
+}
+
+QString SettingsManager::filePath()
+{
+    return directory() + QStringLiteral("/settings.json");
+}
+
+void SettingsManager::loadOrInitialize()
+{
+    QDir().mkpath(directory());
+
+    QFile file(filePath());
+    if (!file.exists()) {
+        // First run: seed QSettings with any missing defaults, then persist.
+        QSettings settings;
+        for (const auto& [key, def] : managedKeys()) {
+            if (!settings.contains(QString::fromUtf8(key)))
+                settings.setValue(QString::fromUtf8(key), def);
+        }
+        save();
+        return;
+    }
+
+    if (!file.open(QIODevice::ReadOnly))
+        return;
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+    file.close();
+    if (!doc.isObject())
+        return;
+
+    // JSON is authoritative: apply each present key into QSettings.
+    const QJsonObject root = doc.object();
+    QSettings settings;
+    for (const auto& [keyC, def] : managedKeys()) {
+        const QString key = QString::fromUtf8(keyC);
+        const auto [group, name] = splitKey(key);
+        const QJsonValue groupValue = root.value(group);
+        if (!groupValue.isObject())
+            continue;
+        const QJsonValue value = groupValue.toObject().value(name);
+        if (value.isUndefined() || value.isNull())
+            continue;
+        settings.setValue(key, jsonToVariant(value, def));
+    }
+}
+
+void SettingsManager::save()
+{
+    QDir().mkpath(directory());
+
+    QSettings settings;
+    QJsonObject root;
+    for (const auto& [keyC, def] : managedKeys()) {
+        const QString key = QString::fromUtf8(keyC);
+        const auto [group, name] = splitKey(key);
+        QJsonObject groupObject = root.value(group).toObject();
+        groupObject.insert(name, variantToJson(settings.value(key, def), def));
+        root.insert(group, groupObject);
+    }
+
+    QFile file(filePath());
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return;
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    file.close();
+}
+
+} // namespace calango::gui

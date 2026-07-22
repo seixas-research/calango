@@ -48,6 +48,33 @@ protected:
     virtual QString generateScript() const = 0;   ///< full ASE script
     virtual QString exportFileName() const { return QStringLiteral("run.py"); }
 
+    /// Whether a calculator kind should appear in the Stage-2 engine combo.
+    /// Default allows every kind; the Electronic Bands wizard overrides this
+    /// to expose only DFT-capable electronic-structure calculators.
+    virtual bool calculatorAllowed(core::CalculatorKind) const { return true; }
+
+    /// When false the dedicated task-settings stage (Stage 1) is omitted,
+    /// producing a 3-stage flow (Environment → Calculator Settings → Review).
+    /// A wizard that returns false should merge its task controls into the
+    /// calculator-settings page via buildCalculatorExtras().
+    virtual bool hasTaskSettingsStage() const { return true; }
+
+    /// Header for the calculator-settings stage. A wizard that folds its
+    /// convergence controls in here (Single-point) overrides this to
+    /// "Calculator & Convergence Settings".
+    virtual QString calculatorSettingsHeader() const
+    {
+        return tr("Calculator Settings");
+    }
+
+    /// Extra widget appended to the calculator-settings page (e.g. the
+    /// Single-point convergence group). Null adds nothing.
+    virtual QWidget* buildCalculatorExtras() { return nullptr; }
+
+    /// Notify the subclass that the selected engine changed, so it can show /
+    /// hide or retune its buildCalculatorExtras() widgets for that engine.
+    virtual void updateCalculatorExtras(core::CalculatorKind) {}
+
     /// Calculator kind + backend knobs (DFT cutoff/k-points, MACE, ORCA) from
     /// Stages 2–3; the subclass adds its task fields to build the final config.
     core::CalculatorConfig baseCalculatorConfig() const;
@@ -70,6 +97,8 @@ private:
 
     Action action_ = Action::None;
     int stage_ = 0;
+    bool hasSettingsStage_ = true; ///< resolved from hasTaskSettingsStage()
+    int reviewStage_ = 3;          ///< index of the final (review) stage
     bool manuallyEdited_ = false;
     bool updatingPreview_ = false;
 

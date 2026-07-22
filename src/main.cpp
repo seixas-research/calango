@@ -9,6 +9,9 @@
 //      declaration order below guarantees destruction order.
 
 #include "gui/MainWindow.hpp"
+#include "gui/SettingsManager.hpp"
+#include "gui/ThemeManager.hpp"
+#include "gui/WelcomeDialog.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
 #include <QApplication>
@@ -47,7 +50,13 @@ int main(int argc, char* argv[])
     // Window / taskbar / dock icon (embedded high-resolution brand icon,
     // transparent-background variant).
     QApplication::setWindowIcon(
-        QIcon(QStringLiteral(":/assets/.internal/icon_transparent.png")));
+        QIcon(QStringLiteral(":/assets/.internal/icon.png")));
+
+    // Centralized settings (~/.calango/settings.json): create-with-defaults on
+    // first run, otherwise load and apply into QSettings (JSON authoritative).
+    calango::gui::SettingsManager::loadOrInitialize();
+    // Apply the persisted appearance theme before any widget is constructed.
+    calango::gui::ThemeManager::apply(calango::gui::ThemeManager::current());
 
     calango::pybridge::PythonEngine python;
     if (!python.aseAvailable()) {
@@ -65,8 +74,14 @@ int main(int argc, char* argv[])
     calango::gui::MainWindow window;
     window.show();
 
-    for (int i = 1; i < argc; ++i) // each file opens in its own tab
-        window.loadFile(QString::fromLocal8Bit(argv[i]));
+    if (argc > 1) {
+        for (int i = 1; i < argc; ++i) // each file opens in its own tab
+            window.loadFile(QString::fromLocal8Bit(argv[i]));
+    } else if (calango::gui::WelcomeDialog::showAtStartupEnabled()) {
+        // No files on the command line: greet the user with the welcome
+        // screen (recent projects + quick actions), unless they turned it off.
+        window.showWelcomeScreen();
+    }
 
     return QApplication::exec();
 }

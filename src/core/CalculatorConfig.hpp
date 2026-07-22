@@ -35,6 +35,15 @@ enum class TaskKind {
     MolecularDynamics,
 };
 
+/// Occupation-number broadening for the electronic states (DFT backends).
+/// Enum order is the smearing-method combo order in the Single-point wizard.
+enum class SmearingMethod {
+    None,             ///< fixed occupations (insulators / molecules)
+    Gaussian,
+    FermiDirac,
+    MethfesselPaxton,
+};
+
 /// Local optimizers ASE ships for structural relaxation. Enum order is the
 /// optimizer combo order in the Geometry Optimization dialog; the value maps
 /// directly to the `ase.optimize` class name via toString(Optimizer).
@@ -97,12 +106,25 @@ struct CalculatorConfig {
     /// Constrain the cell strain to hydrostatic (isotropic) rather than the
     /// full anisotropic stress relaxation.
     bool cellHydrostatic = false;
+    /// Use a custom per-component Voigt stress mask instead of the isotropic /
+    /// anisotropic presets (e.g. relax only the z axis for 2D materials).
+    bool cellCustomMask = false;
+    /// Voigt-order mask [xx, yy, zz, yz, xz, xy]: true = relax that component.
+    bool cellMask[6] = {true, true, true, true, true, true};
 
     // Single-point / electronic convergence (DFT backends only; ignored by
     // the classical potentials). scfMaxSteps caps SCF iterations;
     // scfEnergyTolEv is the electronic-energy convergence threshold.
     int scfMaxSteps = 100;
     double scfEnergyTolEv = 1e-4;
+    /// Spin polarization: seed every atom with an initial magnetic moment so
+    /// the SCF can converge to a magnetic solution.
+    bool spinPolarized = false;
+    double initialMagMoment = 1.0; ///< initial moment per atom (μB)
+    /// Electronic occupation smearing (DFT backends; classical potentials
+    /// ignore it). smearingWidthEv is the broadening / electronic temperature.
+    SmearingMethod smearing = SmearingMethod::Gaussian;
+    double smearingWidthEv = 0.1;
 
     // Molecular dynamics
     MdEnsemble ensemble = MdEnsemble::LangevinNVT;
@@ -141,6 +163,8 @@ struct CalculatorConfig {
 
 std::string toString(CalculatorKind kind);
 std::string toString(TaskKind kind);
+/// Human-readable smearing-method name for script comments/labels.
+std::string toString(SmearingMethod method);
 /// The `ase.optimize` class name for the optimizer (e.g. "BFGS", "LBFGS").
 std::string toString(Optimizer optimizer);
 

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.30
+    VERSION 26.7.31
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -130,6 +130,8 @@ qt_add_executable(calango
     src/python_bridge/AnimationExporter.cpp
     src/python_bridge/MaterialsProject.hpp
     src/python_bridge/MaterialsProject.cpp
+    src/python_bridge/PubChem.hpp
+    src/python_bridge/PubChem.cpp
     src/python_bridge/SqsBuilder.hpp
     src/python_bridge/SqsBuilder.cpp
     src/python_bridge/RamanAnalysis.hpp
@@ -188,6 +190,8 @@ qt_add_executable(calango
     src/gui/BrillouinZoneView.cpp
     src/gui/BrillouinZoneDialog.hpp
     src/gui/BrillouinZoneDialog.cpp
+    src/gui/BrillouinZoneStyleDialog.hpp
+    src/gui/BrillouinZoneStyleDialog.cpp
     src/gui/LinePlotWidget.hpp
     src/gui/LinePlotWidget.cpp
     src/gui/RdfDialog.hpp
@@ -234,12 +238,26 @@ qt_add_executable(calango
     src/gui/VolumeViewWidget.cpp
     src/gui/VolumetricDialog.hpp
     src/gui/VolumetricDialog.cpp
-    src/gui/VisualEffectsDialog.hpp
-    src/gui/VisualEffectsDialog.cpp
+    src/gui/VisualEffectsPanel.hpp
+    src/gui/VisualEffectsPanel.cpp
     src/gui/DatasetManagerDialog.hpp
     src/gui/DatasetManagerDialog.cpp
     src/gui/ProcessManagerPanel.hpp
     src/gui/ProcessManagerPanel.cpp
+    src/gui/ScriptViewerDialog.hpp
+    src/gui/ScriptViewerDialog.cpp
+    src/gui/WelcomeDialog.hpp
+    src/gui/WelcomeDialog.cpp
+    src/gui/SettingsManager.hpp
+    src/gui/SettingsManager.cpp
+    src/gui/ThemeManager.hpp
+    src/gui/ThemeManager.cpp
+    src/gui/SystemStatusBar.hpp
+    src/gui/SystemStatusBar.cpp
+    src/gui/CondaEnvs.hpp
+    src/gui/CondaEnvs.cpp
+    src/gui/KPathSelector.hpp
+    src/gui/KPathSelector.cpp
     src/gui/BandPdosView.hpp
     src/gui/BandPdosView.cpp
     src/gui/BandPdosWindow.hpp
@@ -258,16 +276,20 @@ qt_add_executable(calango
     src/gui/SimulationWizardBase.cpp
     src/gui/MolecularDynamicsWizard.hpp
     src/gui/MolecularDynamicsWizard.cpp
+    src/gui/SinglePointWizard.hpp
+    src/gui/SinglePointWizard.cpp
+    src/gui/ElectronicBandsWizard.hpp
+    src/gui/ElectronicBandsWizard.cpp
     src/gui/GeometryOptimizationWizard.hpp
     src/gui/GeometryOptimizationWizard.cpp
     src/gui/PhononWizard.hpp
     src/gui/PhononWizard.cpp
-    src/gui/SimulationDialogs.hpp
-    src/gui/SimulationDialogs.cpp
     src/gui/ClusterExpansionDialog.hpp
     src/gui/ClusterExpansionDialog.cpp
     src/gui/MonteCarloDialog.hpp
     src/gui/MonteCarloDialog.cpp
+    src/gui/MonteCarloWizard.hpp
+    src/gui/MonteCarloWizard.cpp
     src/gui/NebDialog.hpp
     src/gui/NebDialog.cpp
 )
@@ -290,8 +312,10 @@ qt_add_resources(calango "shaders"
 qt_add_resources(calango "branding"
     PREFIX "/"
     FILES
-        assets/.internal/icon_transparent.png
+        assets/.internal/icon.png
         assets/.internal/panel.png
+        assets/.internal/logo_dark.png
+        assets/.internal/logo_light.png
 )
 
 qt_add_resources(calango "remote"
@@ -305,7 +329,7 @@ qt_add_resources(calango "remote"
 # workflow, with the window/dock icon set at runtime from the embedded
 # resource. The bundle icon uses a committed assets/.internal/calango.icns
 # when present, otherwise it is rendered at build time from
-# icon_transparent.png with the stock sips/iconutil tools.
+# icon.png with the stock sips/iconutil tools.
 option(CALANGO_MACOS_BUNDLE "Build calango as a macOS .app bundle" OFF)
 if(APPLE AND CALANGO_MACOS_BUNDLE)
     set_target_properties(calango PROPERTIES
@@ -327,11 +351,11 @@ if(APPLE AND CALANGO_MACOS_BUNDLE)
             # executable bit from the script.
             add_custom_command(OUTPUT "${CALANGO_ICNS}"
                 COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/make_icns.sh"
-                        "${CMAKE_CURRENT_SOURCE_DIR}/assets/.internal/icon_transparent.png"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/assets/.internal/icon.png"
                         "${CALANGO_ICNS}"
-                DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/.internal/icon_transparent.png"
+                DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/.internal/icon.png"
                         "${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/make_icns.sh"
-                COMMENT "Rendering calango.icns from icon_transparent.png")
+                COMMENT "Rendering calango.icns from icon.png")
         else()
             message(WARNING "sips/iconutil not found — the .app bundle will "
                             "have no Finder icon")
@@ -620,7 +644,7 @@ elseif(UNIX AND NOT APPLE)
     # PNG as the pixmaps icon — it resolves the .desktop "Icon=calango"
     # lookup. Add a hicolor/scalable/apps/calango.svg install here if a real
     # SVG is committed later.
-    install(FILES assets/.internal/icon_transparent.png
+    install(FILES assets/.internal/icon.png
             DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps
             RENAME calango.png)
 

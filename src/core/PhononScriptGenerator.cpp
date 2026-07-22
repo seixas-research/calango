@@ -41,8 +41,11 @@ void emitPeriodicPhonons(std::ostringstream& out, const PhononConfig& c)
            "    print(f\"CALANGO_RESULT mode={i:3d} freq_cm1={freq / invcm:10.2f} \"\n"
            "          f\"freq_meV={freq * 1e3:9.3f}\", flush=True)\n"
            "\n"
-           "# Dispersion along the ASE-suggested Brillouin-zone path.\n"
-        << "path = atoms.cell.bandpath(npoints=" << c.bandPathPoints << ")\n"
+           "# Dispersion along the requested (or ASE-suggested) BZ path.\n"
+        << "path_str = " << (c.kpath.empty() ? "None" : "\"" + c.kpath + "\"")
+        << "\n"
+        << "path = atoms.cell.bandpath(path_str, npoints=" << c.bandPathPoints
+        << ")\n"
         << "print(f\"CALANGO_INFO bandpath={path.path}\", flush=True)\n"
            "bands = np.asarray(ph.band_structure(path.kpts))  # (nk, nmodes) eV\n"
            "xcoords, special_x, labels = path.get_linear_kpoint_axis()\n"

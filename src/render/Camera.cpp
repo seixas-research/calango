@@ -42,6 +42,20 @@ void OrbitCamera::frame(const QVector3D& center, float radius)
     distance_ = std::max(2.0f, radius * 2.8f);
 }
 
+void OrbitCamera::frameToFraction(const QVector3D& center, float radius,
+                                  float verticalFraction)
+{
+    target_ = center;
+    // The perspective FOV is 40° (half-angle 20°): at distance d the viewport
+    // spans a vertical world height of 2·d·tan(20°). To make the sphere's
+    // diameter (2·radius) occupy `verticalFraction` of that height:
+    //   2·radius = fraction · 2·d·tan(20°)  ⇒  d = radius / (fraction·tan20°).
+    constexpr float kHalfFovTan = 0.36397023f; // tan(20°)
+    const float fraction = std::max(verticalFraction, 0.05f);
+    const float d = radius / (fraction * kHalfFovTan);
+    distance_ = std::clamp(d, 2.0f, 5000.0f);
+}
+
 QMatrix4x4 OrbitCamera::view() const
 {
     QMatrix4x4 m;

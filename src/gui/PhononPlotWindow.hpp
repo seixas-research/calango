@@ -22,6 +22,11 @@ public:
 
     bool hasData() const { return hasData_; }
 
+private Q_SLOTS:
+    /// Write the band structure (k-distance + per-branch frequencies) and the
+    /// PhDOS (frequency + intensity) to a single structured .csv file.
+    void exportCsv();
+
 private:
     void loadDirectory(const QString& directory);
 

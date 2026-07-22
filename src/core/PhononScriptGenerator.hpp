@@ -23,7 +23,11 @@ struct PhononConfig {
     int supercell[3] = {2, 2, 2}; ///< finite-displacement supercell
     double deltaAngstrom = 0.01;  ///< ± displacement per atom and direction
 
-    int bandPathPoints = 100; ///< k-points along the ASE-suggested path
+    int bandPathPoints = 100; ///< k-points along the path
+    /// High-symmetry q-path string ("GXMG", …); empty lets ASE suggest the
+    /// path for the structure's Bravais lattice (same convention as the
+    /// electronic band path).
+    std::string kpath;
     int dosKptGrid = 20;      ///< Monkhorst-Pack n×n×n grid for the DOS (mesh)
 
     /// Enforce the acoustic sum rule when reading the force constants, so the

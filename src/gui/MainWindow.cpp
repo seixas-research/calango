@@ -17,33 +17,37 @@
 #include "gui/BondEditorDialog.hpp"
 #include "gui/CellAxesPanel.hpp"
 #include "gui/EnvFile.hpp"
-#include "gui/LightingPanel.hpp"
+#include "gui/VisualEffectsPanel.hpp"
 #include "gui/PeriodicTableDialog.hpp"
 #include "gui/PreferencesDialog.hpp"
 #include "gui/BrandingPanel.hpp"
 #include "gui/RemoteAccessPanel.hpp"
 #include "gui/RepresentationPanel.hpp"
 #include "gui/SlabWizard.hpp"
-#include "core/ElectronicScriptGenerator.hpp"
 #include "gui/AdsorptionDialog.hpp"
 #include "gui/BandPdosWindow.hpp"
 #include "gui/ClusterExpansionDialog.hpp"
 #include "gui/GeometryOptimizationWizard.hpp"
+#include "gui/ElectronicBandsWizard.hpp"
 #include "gui/MolecularDynamicsWizard.hpp"
-#include "gui/MonteCarloDialog.hpp"
+#include "gui/SinglePointWizard.hpp"
+#include "gui/MonteCarloWizard.hpp"
 #include "gui/PhononWizard.hpp"
 #include "gui/SimulationWizardBase.hpp"
 #include "gui/NanoparticleDialog.hpp"
 #include "gui/NebDialog.hpp"
 #include "gui/PhononPlotWindow.hpp"
-#include "gui/SimulationDialogs.hpp"
 #include "gui/SupercellDialog.hpp"
 #include "gui/SymmetryDialog.hpp"
 #include "gui/DatasetManagerDialog.hpp"
 #include "gui/ProcessManagerPanel.hpp"
+#include "gui/ScriptViewerDialog.hpp"
+#include "gui/SettingsManager.hpp"
+#include "gui/SystemStatusBar.hpp"
+#include "gui/ThemeManager.hpp"
+#include "gui/WelcomeDialog.hpp"
 #include "gui/RamanDialog.hpp"
 #include "gui/SqsDialog.hpp"
-#include "gui/VisualEffectsDialog.hpp"
 #include "gui/VolumetricDialog.hpp"
 #include "gui/WarrenCowleyDialog.hpp"
 #include "gui/LocalEntropyDialog.hpp"
@@ -60,6 +64,8 @@
 
 #include <QActionGroup>
 #include <QApplication>
+#include <QGuiApplication>
+#include <QStyleHints>
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QColorDialog>
@@ -89,7 +95,6 @@
 #include <QSaveFile>
 #include <QSettings>
 #include <QSpinBox>
-#include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabBar>
@@ -113,8 +118,9 @@ constexpr std::size_t kMaxUndoDepth = 50;
 /// grid changes so stale saved layouts don't override the new default
 /// (v2 = the 8-zone grid workspace, v3 = the 12-zone grid with the
 /// branding and Remote Access panels, v4 = the "Job" dock renamed to
-/// "Results" with a process selector).
-constexpr int kLayoutVersion = 4;
+/// "Results" with a process selector, v5 = the "Lighting" dock renamed to
+/// the tabbed "Visual Effects" panel).
+constexpr int kLayoutVersion = 5;
 
 /// Painted icons for the frame-panel camera toolbar (icon-only buttons).
 /// Plane icons use the axes-triad colors: x red, y green, z blue.
@@ -245,8 +251,8 @@ MainWindow::MainWindow(QWidget* parent)
     timeline_->hide(); // appears when the current document has frames
 
     // Compact icon-only camera toolbar living inside the frame panel
-    // (replaces the old top application toolbar). The orthographic action
-    // is shared with View → Orthographic so both stay in sync.
+    // (replaces the old top application toolbar). Projection toggling lives
+    // solely here on the 'O' toolbar button (no View-menu duplicate).
     orthoAction_ = new QAction(cameraToolbarIcon(QStringLiteral("ortho")),
                                tr("Orthographic"), this);
     orthoAction_->setCheckable(true);
@@ -336,7 +342,9 @@ MainWindow::MainWindow(QWidget* parent)
 
     QAction* resetAction = frameToolbar->addAction(
         cameraToolbarIcon(QStringLiteral("reset")),
-        tr("Reset camera (center and frame the structure)"));
+        tr("Reset camera (center and frame the structure)  [F]"));
+    // The 'F' shortcut lives here now that the View → Alignment submenu is gone.
+    resetAction->setShortcut(QKeySequence(Qt::Key_F));
     connect(resetAction, &QAction::triggered,
             viewport_, &ViewportWidget::frameStructure);
     frameToolbar->addAction(orthoAction_);
@@ -506,6 +514,18 @@ MainWindow::MainWindow(QWidget* parent)
                     statusBar()->showMessage(tr("Translating atom %1…").arg(index));
             });
 
+    // Palette + Zone-1 logo for the persisted theme. main() already applied the
+    // palette pre-construction; this seeds the logo variant and, for the
+    // System theme, keeps the app in sync if the OS scheme changes at runtime.
+    applyAppearanceTheme();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this,
+            [this] {
+                if (ThemeManager::current() == ThemeManager::Theme::System)
+                    applyAppearanceTheme();
+            });
+#endif
+
     statusBar()->showMessage(tr("Ready — open a structure to begin (File → Open)"));
 }
 
@@ -583,33 +603,22 @@ void MainWindow::createMenusAndDocks()
     editMenu->addSeparator();
     editMenu->addAction(tr("&Bond Editor…"), QKeySequence(tr("Ctrl+B")),
                         this, &MainWindow::showBondEditor);
-    QMenu* cellMenu = editMenu->addMenu(tr("Unit &Cell"));
-    cellMenu->addAction(tr("Create &Supercell…"),
-                        this, &MainWindow::createSupercell);
+    // Supercell creation is unified under Build → Supercell (Transformation
+    // Matrix); the old Edit → Unit Cell → Create Supercell entry was removed.
     editMenu->addSeparator();
     editMenu->addAction(tr("&Preferences…"), QKeySequence::Preferences,
                         this, &MainWindow::showPreferences);
     updateUndoActions();
 
-    // ----- View: projection | overlays | alignment | effects | panels ------
+    // ----- View: effects | panels ------------------------------------------
+    // Projection (perspective/orthographic) lives solely on the frame-panel
+    // toolbar 'O' button; unit-cell visibility + wireframe styling live in the
+    // "Unit Cell & Axes" dock (zone 12). Camera alignment (frame [F], XY/XZ/YZ)
+    // lives entirely on the 3D-viewport toolbar — the View → Alignment submenu
+    // was removed as redundant.
     QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
-    viewMenu->addAction(orthoAction_); // shared with the frame-panel toolbar
-    QMenu* overlaysMenu = viewMenu->addMenu(tr("&Overlays"));
-    QAction* cellAction = overlaysMenu->addAction(tr("Show Unit &Cell"));
-    cellAction->setCheckable(true);
-    cellAction->setChecked(true);
-    connect(cellAction, &QAction::toggled, viewport_, &ViewportWidget::setShowCell);
-    QMenu* alignMenu = viewMenu->addMenu(tr("&Alignment"));
-    alignMenu->addAction(tr("&Frame Structure"), QKeySequence(tr("F")),
-                         viewport_, &ViewportWidget::frameStructure);
-    alignMenu->addAction(tr("Align with &XY Plane"),
-                         viewport_, &ViewportWidget::alignWithXY);
-    alignMenu->addAction(tr("Align with X&Z Plane"),
-                         viewport_, &ViewportWidget::alignWithXZ);
-    alignMenu->addAction(tr("Align with &YZ Plane"),
-                         viewport_, &ViewportWidget::alignWithYZ);
-    viewMenu->addAction(tr("Visual &Effects…"),
-                        this, &MainWindow::showVisualEffects);
+    // Visual effects (fog, depth blur, lighting) live entirely in the Zone-9
+    // "Visual Effects" dock; the dock's own toggle is in View → the docks.
 
     // ----- Build: generators and structure sources -------------------------
     QMenu* buildMenu = menuBar()->addMenu(tr("&Build"));
@@ -626,6 +635,9 @@ void MainWindow::createMenusAndDocks()
     buildMenu->addAction(tr("From &Database…"), this, &MainWindow::openExamplesBrowser);
     buildMenu->addAction(tr("Structure Perturbation / &Noise…"),
                          this, &MainWindow::addRandomNoise);
+    buildMenu->addSeparator();
+    buildMenu->addAction(tr("&Brillouin Zone Builder…"),
+                         this, &MainWindow::showBrillouinZone);
 
     // ----- Simulation: local/remote jobs and ML datasets -------------------
     QMenu* simulationMenu = menuBar()->addMenu(tr("&Simulation"));
@@ -636,7 +648,7 @@ void MainWindow::createMenusAndDocks()
                               this, &MainWindow::geometryOptimization);
     simulationMenu->addAction(tr("&Molecular Dynamics…"),
                               this, &MainWindow::molecularDynamics);
-    simulationMenu->addAction(tr("&Phonon Calculator…"),
+    simulationMenu->addAction(tr("&Phonon…"),
                               this, &MainWindow::openPhononBuilder);
     simulationMenu->addAction(tr("&Monte Carlo Simulation…"),
                               this, &MainWindow::openMonteCarlo);
@@ -646,7 +658,7 @@ void MainWindow::createMenusAndDocks()
     simulationMenu->addAction(tr("New &Remote Calculation…"),
                               QKeySequence(tr("Ctrl+Shift+R")),
                               this, &MainWindow::newRemoteCalculation);
-    simulationMenu->addAction(tr("Electronic &Bands / PDOS…"),
+    simulationMenu->addAction(tr("Electronic &Structure…"),
                               this, &MainWindow::showBandStructure);
     simulationMenu->addSeparator();
     simulationMenu->addAction(tr("&Dataset Manager (MLIP)…"),
@@ -676,9 +688,7 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showVolumetricData);
     analysisMenu->addAction(tr("Adsorption && Catal&ysis…"),
                             this, &MainWindow::showAdsorption);
-    analysisMenu->addSeparator();
-    analysisMenu->addAction(tr("&Brillouin Zone / k-Path…"),
-                            this, &MainWindow::showBrillouinZone);
+    // Brillouin Zone Builder moved to the Build menu.
 
     // Help trails the menu bar: online resources first, About last (as is
     // conventional). New documentation/support links belong in kHelpLinks.
@@ -718,7 +728,8 @@ void MainWindow::createMenusAndDocks()
 
     auto* brandingDock = new QDockWidget(tr("Calango"), this); // zone 1
     brandingDock->setObjectName(QStringLiteral("brandingDock"));
-    brandingDock->setWidget(new BrandingPanel(brandingDock));
+    brandingPanel_ = new BrandingPanel(brandingDock);
+    brandingDock->setWidget(brandingPanel_);
     // No title bar: zone 1 shows only the centered logo. (The dock title
     // still names the View-menu toggle; an empty title widget removes
     // the header without disabling the dock.)
@@ -733,6 +744,8 @@ void MainWindow::createMenusAndDocks()
     splitDockWidget(brandingDock, processDock, Qt::Vertical);
     connect(processPanel_, &ProcessManagerPanel::loadResultRequested,
             this, &MainWindow::onProcessResultRequested);
+    connect(processPanel_, &ProcessManagerPanel::viewScriptRequested,
+            this, &MainWindow::onViewScriptRequested);
     connect(processPanel_, &ProcessManagerPanel::deleteRequested,
             this, &MainWindow::onDeleteProcessRequested);
 
@@ -750,10 +763,10 @@ void MainWindow::createMenusAndDocks()
     connect(reprPanel, &RepresentationPanel::bondOrderAssignRequested,
             this, &MainWindow::assignBondOrderToSelection);
 
-    auto* lightingDock = new QDockWidget(tr("Lighting"), this); // zone 9
-    lightingDock->setObjectName(QStringLiteral("lightingDock"));
-    lightingDock->setWidget(new LightingPanel(viewport_, lightingDock));
-    addDockWidget(Qt::BottomDockWidgetArea, lightingDock);
+    visualEffectsDock_ = new QDockWidget(tr("Visual Effects"), this); // zone 9
+    visualEffectsDock_->setObjectName(QStringLiteral("visualEffectsDock"));
+    visualEffectsDock_->setWidget(new VisualEffectsPanel(viewport_, visualEffectsDock_));
+    addDockWidget(Qt::BottomDockWidgetArea, visualEffectsDock_);
 
     jobDock_ = new QDockWidget(tr("Results"), this); // zone 10
     jobDock_->setObjectName(QStringLiteral("resultsDock"));
@@ -872,7 +885,7 @@ void MainWindow::createMenusAndDocks()
     jobLayout->addWidget(jobTabs);
     jobTabs->setDocumentMode(true); // flat tab bar, no frame to overlap
     jobDock_->setWidget(jobContainer);
-    splitDockWidget(lightingDock, jobDock_, Qt::Horizontal);
+    splitDockWidget(visualEffectsDock_, jobDock_, Qt::Horizontal);
 
     remoteDock_ = new QDockWidget(tr("Remote Access"), this); // zone 11
     remoteDock_->setObjectName(QStringLiteral("remoteDock"));
@@ -898,11 +911,14 @@ void MainWindow::createMenusAndDocks()
     resizeDocks({brandingDock, processDock, infoDock}, {290, 290, 290},
                 Qt::Horizontal);
     resizeDocks({reprDock}, {290}, Qt::Horizontal);
-    resizeDocks({brandingDock, processDock, infoDock}, {150, 150, 430},
+    // Left column heights: shrink the compact Structure summary (its ~7
+    // property rows fit comfortably) and hand the freed space to the
+    // Processes panel so live task lists / logs get more room.
+    resizeDocks({brandingDock, processDock, infoDock}, {150, 340, 240},
                 Qt::Vertical);
-    resizeDocks({lightingDock, jobDock_, remoteDock_, cellAxesDock},
+    resizeDocks({visualEffectsDock_, jobDock_, remoteDock_, cellAxesDock},
                 {250, 250, 250, 250}, Qt::Vertical);
-    resizeDocks({lightingDock, jobDock_, remoteDock_, cellAxesDock},
+    resizeDocks({visualEffectsDock_, jobDock_, remoteDock_, cellAxesDock},
                 {280, 560, 430, 290}, Qt::Horizontal);
 
     // Dock titles at 1.2× the theme default across all zones (the earlier
@@ -924,9 +940,20 @@ void MainWindow::createMenusAndDocks()
     viewMenu->addAction(infoDock->toggleViewAction());
     viewMenu->addAction(reprDock->toggleViewAction());
     viewMenu->addAction(cellAxesDock->toggleViewAction());
-    viewMenu->addAction(lightingDock->toggleViewAction());
+    viewMenu->addAction(visualEffectsDock_->toggleViewAction());
     viewMenu->addAction(jobDock_->toggleViewAction());
     viewMenu->addAction(remoteDock_->toggleViewAction());
+
+    // Bottom system status bar (CPU / GPU / Memory / ASE threads) + its
+    // View-menu visibility toggle.
+    systemStatusBar_ = new SystemStatusBar(this);
+    statusBar()->addPermanentWidget(systemStatusBar_);
+    viewMenu->addSeparator();
+    auto* statusBarAction = viewMenu->addAction(tr("&Status Bar"));
+    statusBarAction->setCheckable(true);
+    statusBarAction->setChecked(true);
+    connect(statusBarAction, &QAction::toggled, statusBar(),
+            &QWidget::setVisible);
 
     // Reapply the layout the user left behind last session. The version
     // tag rejects layouts saved before the 8-zone grid existed, so the
@@ -1937,50 +1964,6 @@ void MainWindow::exportAnimation()
 // Builder tools
 // ---------------------------------------------------------------------------
 
-void MainWindow::createSupercell()
-{
-    Document* doc = currentDocument();
-    if (!doc || !doc->structure) {
-        statusBar()->showMessage(tr("Open a structure first."));
-        return;
-    }
-    if (!ensureAseAvailable())
-        return;
-
-    QDialog dialog(this);
-    dialog.setWindowTitle(tr("Create Supercell"));
-    auto* form = new QFormLayout(&dialog);
-    QSpinBox* repeats[3];
-    const char* axes[3] = {"a", "b", "c"};
-    for (int i = 0; i < 3; ++i) {
-        repeats[i] = new QSpinBox(&dialog);
-        repeats[i]->setRange(1, 20);
-        repeats[i]->setValue(i == 0 ? 2 : 1);
-        form->addRow(tr("Repeat along %1:").arg(QLatin1String(axes[i])), repeats[i]);
-    }
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
-                                         &dialog);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    form->addRow(buttons);
-
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-
-    try {
-        auto repeated = std::make_shared<core::Structure>(pybridge::AseBridge::makeSupercell(
-            *doc->structure, repeats[0]->value(), repeats[1]->value(),
-            repeats[2]->value()));
-        pushUndo();
-        replaceCurrentStructure(std::move(repeated),
-                                tr("%1 (supercell)").arg(doc->fileName));
-        statusBar()->showMessage(
-            tr("Supercell created: %1 atoms").arg(doc->structure->size()));
-    } catch (const std::exception& e) {
-        QMessageBox::critical(this, tr("Create Supercell"), QString::fromUtf8(e.what()));
-    }
-}
-
 void MainWindow::openSupercellBuilder()
 {
     Document* doc = currentDocument();
@@ -2225,6 +2208,10 @@ void MainWindow::showPreferences()
 {
     PreferencesDialog dialog(this);
     dialog.exec();
+    // Persist the curated settings to ~/.calango/settings.json and apply any
+    // appearance/thread changes live (theme palette + Zone-1 logo + status bar).
+    SettingsManager::save();
+    applyAppearanceTheme();
 }
 
 // ---------------------------------------------------------------------------
@@ -2307,159 +2294,15 @@ void MainWindow::showBandStructure()
     Document* doc = currentDocument();
     if (!doc || !doc->structure || doc->structure->empty()
         || !doc->structure->cell().isDefined()) {
-        QMessageBox::information(this, tr("Electronic Bands / PDOS"),
+        QMessageBox::information(this, tr("Electronic Structure"),
                                  tr("Open a periodic structure first."));
         return;
     }
     if (!ensureAseAvailable())
         return;
-    if (jobRunner_->isRunning()) {
-        QMessageBox::information(this, tr("Electronic Bands / PDOS"),
-                                 tr("A calculation is already running — kill it first."));
-        return;
-    }
 
-    // Suggested path from ASE's Bravais-lattice detection.
-    QString suggestedPath;
-    try {
-        suggestedPath = QString::fromStdString(
-            pybridge::AseBridge::bandPathInfo(*doc->structure).suggestedPath);
-    } catch (const std::exception&) {
-        suggestedPath.clear();
-    }
-    const bool gpawAvailable = [] {
-        try {
-            pybind11::module_::import("gpaw");
-            return true;
-        } catch (const pybind11::error_already_set&) {
-            return false;
-        }
-    }();
-
-    QDialog dialog(this);
-    dialog.setWindowTitle(tr("Electronic Bands / PDOS"));
-    auto* form = new QFormLayout(&dialog);
-    auto* backendCombo = new QComboBox(&dialog);
-    backendCombo->addItem(tr("Free electrons (ASE — bands only)"));
-    backendCombo->addItem(gpawAvailable
-                              ? tr("GPAW (DFT, bands + PDOS)")
-                              : tr("GPAW (not installed)"));
-    backendCombo->addItem(tr("Quantum ESPRESSO (needs pw.x + pseudos)"));
-    if (!gpawAvailable) {
-        auto* model = qobject_cast<QStandardItemModel*>(backendCombo->model());
-        if (model)
-            model->item(1)->setEnabled(false);
-    }
-    form->addRow(tr("Backend:"), backendCombo);
-    auto* pathEdit = new QLineEdit(suggestedPath, &dialog);
-    pathEdit->setPlaceholderText(tr("empty = ASE suggestion"));
-    form->addRow(tr("k-path:"), pathEdit);
-    auto* npointsSpin = new QSpinBox(&dialog);
-    npointsSpin->setRange(20, 2000);
-    npointsSpin->setValue(80);
-    form->addRow(tr("k-points:"), npointsSpin);
-    auto* valenceSpin = new QSpinBox(&dialog);
-    valenceSpin->setRange(1, 200);
-    valenceSpin->setValue(4);
-    valenceSpin->setToolTip(tr("Electrons per cell (free-electron backend)"));
-    form->addRow(tr("Valence electrons:"), valenceSpin);
-    auto* ecutSpin = new QDoubleSpinBox(&dialog);
-    ecutSpin->setRange(50.0, 2000.0);
-    ecutSpin->setValue(340.0);
-    ecutSpin->setSuffix(QStringLiteral(" eV"));
-    form->addRow(tr("PW cutoff:"), ecutSpin);
-    auto* kgridSpin = new QSpinBox(&dialog);
-    kgridSpin->setRange(1, 16);
-    kgridSpin->setValue(4);
-    form->addRow(tr("SCF k-grid (n³):"), kgridSpin);
-    auto* pdosCheck = new QCheckBox(tr("Compute element/orbital PDOS "
-                                       "(GPAW backend)"),
-                                    &dialog);
-    pdosCheck->setChecked(true);
-    form->addRow(pdosCheck);
-
-    // Execution environment: solvers like GPAW/QE/SIESTA usually live in
-    // dedicated conda envs — same selector as the ASE input generator.
-    const auto kBandsEnvKey = QStringLiteral("jobs/bandsEnvironmentPath");
-    auto* envRow = new QWidget(&dialog);
-    auto* envLayout = new QHBoxLayout(envRow);
-    envLayout->setContentsMargins(0, 0, 0, 0);
-    auto* envEdit = new QLineEdit(QSettings().value(kBandsEnvKey).toString(),
-                                  envRow);
-    envEdit->setPlaceholderText(
-        tr("conda env folder or python executable (empty = embedded)"));
-    auto* envDirButton = new QPushButton(tr("Env Folder…"), envRow);
-    auto* envFileButton = new QPushButton(tr("Python…"), envRow);
-    envLayout->addWidget(envEdit, 1);
-    envLayout->addWidget(envDirButton);
-    envLayout->addWidget(envFileButton);
-    form->addRow(tr("Environment:"), envRow);
-    auto* envStatus = new QLabel(&dialog);
-    envStatus->setWordWrap(true);
-    form->addRow(QString(), envStatus);
-    const auto updateEnvStatus = [envEdit, envStatus] {
-        const QString text = envEdit->text().trimmed();
-        if (text.isEmpty()) {
-            envStatus->setText(
-                QObject::tr("Using embedded interpreter: %1")
-                    .arg(QString::fromStdString(
-                        pybridge::PythonEngine::instance().executable())));
-            envStatus->setStyleSheet(QString());
-        } else if (const QString python =
-                       CalculatorDialog::resolveEnvironmentPython(text);
-                   !python.isEmpty()) {
-            envStatus->setText(
-                QObject::tr("Runs will use: %1").arg(python));
-            envStatus->setStyleSheet(QString());
-        } else {
-            envStatus->setText(
-                QObject::tr("No python interpreter found at this path."));
-            envStatus->setStyleSheet(QStringLiteral("color: #d9534f;"));
-        }
-    };
-    connect(envEdit, &QLineEdit::textChanged, &dialog, updateEnvStatus);
-    connect(envDirButton, &QPushButton::clicked, &dialog, [envEdit, &dialog] {
-        const QString dir = QFileDialog::getExistingDirectory(
-            &dialog, tr("Select Conda Environment Folder"));
-        if (!dir.isEmpty())
-            envEdit->setText(dir);
-    });
-    connect(envFileButton, &QPushButton::clicked, &dialog, [envEdit, &dialog] {
-        const QString file = QFileDialog::getOpenFileName(
-            &dialog, tr("Select Python Interpreter"));
-        if (!file.isEmpty())
-            envEdit->setText(file);
-    });
-    updateEnvStatus();
-
-    auto* buttons = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    form->addRow(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-    QSettings().setValue(kBandsEnvKey, envEdit->text());
-
-    core::ElectronicConfig config;
-    config.backend = backendCombo->currentIndex() == 1
-        ? core::ElectronicBackend::Gpaw
-        : backendCombo->currentIndex() == 2 ? core::ElectronicBackend::Espresso
-                                            : core::ElectronicBackend::FreeElectrons;
-    config.kpath = pathEdit->text().trimmed().remove(QLatin1Char(',')).toStdString();
-    config.npoints = npointsSpin->value();
-    config.nvalence = valenceSpin->value();
-    config.ecutEv = ecutSpin->value();
-    config.scfKpts = kgridSpin->value();
-    config.pdos = pdosCheck->isChecked();
-
-    QString python =
-        CalculatorDialog::resolveEnvironmentPython(envEdit->text());
-    if (python.isEmpty())
-        python = QString::fromStdString(
-            pybridge::PythonEngine::instance().executable());
-    runScript(QString::fromStdString(core::generateElectronicScript(config)),
-              python, tr("Band structure"), /*expectFrames=*/false);
+    ElectronicBandsWizard wizard(doc->structure, this);
+    runSimulationWizard(wizard, tr("Electronic structure"), /*expectFrames=*/false);
 }
 
 void MainWindow::openBandResults(const QString& directory)
@@ -2571,6 +2414,66 @@ void MainWindow::onProcessResultRequested(const QString& directory)
         tr("No loadable result in %1 yet — try Open Folder").arg(directory));
 }
 
+void MainWindow::onViewScriptRequested(const QString& directory)
+{
+    const QString path = directory + QStringLiteral("/run.py");
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QMessageBox::information(
+            this, tr("View ASE Script"),
+            tr("No run.py script was found in\n%1").arg(directory));
+        return;
+    }
+    const QString script = QString::fromUtf8(file.readAll());
+    auto* viewer = new ScriptViewerDialog(tr("ASE Script Viewer"), script, this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    viewer->show();
+}
+
+void MainWindow::applyAppearanceTheme()
+{
+    const ThemeManager::Theme theme = ThemeManager::current();
+    const bool dark = ThemeManager::apply(theme);
+    if (brandingPanel_)
+        brandingPanel_->setDarkVariant(dark);
+    if (systemStatusBar_)
+        systemStatusBar_->refreshThreads();
+}
+
+void MainWindow::showWelcomeScreen()
+{
+    // Recent *projects* only: filter the shared recent-files list to workspace
+    // files that still exist.
+    QStringList recentProjects;
+    for (const QString& path : QSettings().value(kRecentFilesKey).toStringList()) {
+        if ((path.endsWith(QStringLiteral(".calproj"), Qt::CaseInsensitive)
+             || path.endsWith(QStringLiteral(".calango"), Qt::CaseInsensitive))
+            && QFileInfo::exists(path))
+            recentProjects << path;
+    }
+
+    WelcomeDialog dialog(recentProjects, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return; // dismissed — start with the empty workspace
+    switch (dialog.choice()) {
+    case WelcomeDialog::Choice::NewProject:
+        newProject();
+        break;
+    case WelcomeDialog::Choice::OpenProject:
+        openProject();
+        break;
+    case WelcomeDialog::Choice::OpenGeometry:
+        openStructure();
+        break;
+    case WelcomeDialog::Choice::OpenRecent:
+        if (!dialog.selectedPath().isEmpty())
+            loadFile(dialog.selectedPath());
+        break;
+    case WelcomeDialog::Choice::None:
+        break;
+    }
+}
+
 void MainWindow::newProject()
 {
     if (isDirty_) {
@@ -2588,14 +2491,6 @@ void MainWindow::newProject()
     projectPath_.clear();
     isDirty_ = false;
     statusBar()->showMessage(tr("New workspace"));
-}
-
-void MainWindow::showVisualEffects()
-{
-    // Modeless so the scene can be orbited while tuning the sliders.
-    auto* dialog = new VisualEffectsDialog(viewport_, this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->show();
 }
 
 void MainWindow::showVolumetricData()
@@ -2806,7 +2701,7 @@ void MainWindow::openPhononBuilder()
 {
     Document* doc = currentDocument();
     if (!doc || !doc->structure || doc->structure->empty()) {
-        QMessageBox::information(this, tr("Phonon Calculator"),
+        QMessageBox::information(this, tr("Phonon"),
                                  tr("Open or build a structure first."));
         return;
     }
@@ -2815,7 +2710,7 @@ void MainWindow::openPhononBuilder()
     const auto pbc = doc->structure->cell().pbc();
     const bool periodic = doc->structure->cell().isDefined()
         && (pbc[0] || pbc[1] || pbc[2]);
-    PhononWizard wizard(periodic, this);
+    PhononWizard wizard(periodic, doc->structure, this);
     runSimulationWizard(wizard, tr("Phonon calculation"));
 }
 
@@ -2993,16 +2888,14 @@ void MainWindow::openExamplesBrowser()
     if (!ensureAseAvailable())
         return;
     ExamplesDialog dialog(this);
-    connect(&dialog, &ExamplesDialog::presetChosen,
-            this, &MainWindow::loadExample);
     connect(&dialog, &ExamplesDialog::structureFetched, this,
             [this](std::shared_ptr<core::Structure> structure, const QString& name) {
                 const auto atomCount = structure->size();
                 addDocument(std::move(structure), name);
-                statusBar()->showMessage(tr("Fetched %1 (%2 atoms) from the "
-                                            "Materials Project")
-                                             .arg(name)
-                                             .arg(atomCount));
+                statusBar()->showMessage(
+                    tr("Fetched %1 (%2 atoms) from the database")
+                        .arg(name)
+                        .arg(atomCount));
             });
     dialog.exec();
 }
@@ -3065,14 +2958,12 @@ void MainWindow::singlePointCalculation()
 {
     if (!prepareSimulation(tr("Single-point Calculation")))
         return;
-    SinglePointDialog dialog(this);
-    if (dialog.exec() == QDialog::Accepted)
-        runScript(dialog.script(), dialog.pythonExecutable(),
-                  tr("Single-point"), /*expectFrames=*/false);
+    SinglePointWizard wizard(this);
+    runSimulationWizard(wizard, tr("Single-point"), /*expectFrames=*/false);
 }
 
 void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
-                                     const QString& label)
+                                     const QString& label, bool expectFrames)
 {
     if (wizard.exec() != QDialog::Accepted)
         return;
@@ -3099,8 +2990,7 @@ void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
                                  tr("A calculation is already running — kill it first."));
         return;
     }
-    runScript(wizard.script(), wizard.pythonExecutable(), label,
-              /*expectFrames=*/true);
+    runScript(wizard.script(), wizard.pythonExecutable(), label, expectFrames);
 }
 
 void MainWindow::geometryOptimization()
@@ -3139,52 +3029,10 @@ void MainWindow::openMonteCarlo()
                                  tr("Open or build a structure first."));
         return;
     }
-
-    MonteCarloDialog dialog(doc->structure, this);
-    if (dialog.exec() != QDialog::Accepted)
+    if (!ensureAseAvailable())
         return;
-
-    if (dialog.method() == MonteCarloDialog::Method::BasinHopping) {
-        if (!ensureAseAvailable())
-            return;
-        if (jobRunner_->isRunning()) {
-            QMessageBox::information(this, tr("Monte Carlo Simulation"),
-                                     tr("A calculation is already running — kill it first."));
-            return;
-        }
-        runScript(dialog.script(), dialog.pythonExecutable(),
-                  tr("Basin Hopping"), /*expectFrames=*/true);
-        return;
-    }
-
-    // Swap-atoms: the native run already happened in the dialog. Present the
-    // trajectory of snapshots and echo the energy trace into the Job panel's
-    // Energy plot.
-    const auto& res = *dialog.swapResult();
-    std::vector<std::shared_ptr<core::Structure>> frames;
-    frames.reserve(res.snapshots.size());
-    for (const auto& s : res.snapshots)
-        frames.push_back(std::make_shared<core::Structure>(s));
-    const int tab = addDocument(frames.back(),
-                                tr("Swap MC (%1 configs)").arg(frames.size()),
-                                frames);
-    tabBar_->setCurrentIndex(tab);
-
-    if (energyPlot_) {
-        energyPlot_->clear();
-        for (std::size_t i = 0; i < res.energyTrace.size(); ++i)
-            energyPlot_->addSample(res.stepTrace[i], res.energyTrace[i]);
-        jobDock_->show();
-        jobDock_->raise();
-    }
-    statusBar()->showMessage(
-        tr("Swap MC: E %1 → %2 eV (best %3), %4 moves accepted, "
-           "unlike-bond fraction %5")
-            .arg(res.initialEnergy, 0, 'f', 4)
-            .arg(res.finalEnergy, 0, 'f', 4)
-            .arg(res.bestEnergy, 0, 'f', 4)
-            .arg(res.acceptedMoves)
-            .arg(res.finalUnlikeFraction, 0, 'f', 3));
+    MonteCarloWizard wizard(this);
+    runSimulationWizard(wizard, tr("Monte Carlo"));
 }
 
 void MainWindow::openNudgedElasticBand()
@@ -3435,12 +3283,26 @@ QString MainWindow::stageJob(const QString& script, int procId)
             + QStringLiteral("/jobs")
         : QFileInfo(projectPath_).absolutePath()
             + QStringLiteral("/.calango_tmp");
-    // Per-process metric store: proc_<id> keeps each run's outputs isolated;
+    // Per-process metric store: proc_<id> keeps each run's outputs (energy.csv,
+    // max_force.csv, temperature.csv, pressure.csv, run.py, log.txt) isolated;
     // paths without a process id (e.g. remote submissions) keep a timestamp.
-    const QString jobDir = procId >= 0
-        ? jobsRoot + QStringLiteral("/proc_%1").arg(procId)
-        : jobsRoot + QStringLiteral("/job_")
+    //
+    // The Process-panel id counter resets to 0 each launch, so on a project
+    // reopened with proc_0/, proc_1/ already on disk a fresh run would reuse
+    // proc_0 and overwrite the earlier run's CSVs. Guard against that: if the
+    // proc_<id> directory already exists, advance to the next free proc_<n> so
+    // no prior run's metrics are ever clobbered.
+    QString jobDir;
+    if (procId >= 0) {
+        int suffix = procId;
+        do {
+            jobDir = jobsRoot + QStringLiteral("/proc_%1").arg(suffix);
+            ++suffix;
+        } while (QDir(jobDir).exists());
+    } else {
+        jobDir = jobsRoot + QStringLiteral("/job_")
             + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
+    }
     if (!QDir().mkpath(jobDir)) {
         QMessageBox::critical(this, tr("Run Calculation"),
                               tr("Could not create run directory %1").arg(jobDir));
@@ -3684,9 +3546,9 @@ void MainWindow::about()
     const auto& python = pybridge::PythonEngine::instance();
     QMessageBox box(this);
     box.setWindowTitle(tr("About Calango"));
-    // Brand banner: the transparent icon variant, scaled for the dialog.
+    // Brand banner: the app icon, scaled for the dialog.
     box.setIconPixmap(
-        QPixmap(QStringLiteral(":/assets/.internal/icon_transparent.png"))
+        QPixmap(QStringLiteral(":/assets/.internal/icon.png"))
             .scaled(140, 140, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     box.setText(
         tr("<h3>Calango %1</h3>"

@@ -8,11 +8,14 @@ namespace calango::core {
 /// the always-available reference backend (empty-lattice bands, no
 /// projections); GPAW adds real DFT bands plus element/orbital-resolved
 /// PDOS when the package is importable; Espresso generates a pw.x
-/// workflow that requires user-supplied pseudopotentials.
+/// workflow that requires user-supplied pseudopotentials; Siesta and Vasp
+/// emit editable ASE-calculator DFT band templates for those codes.
 enum class ElectronicBackend {
     FreeElectrons,
     Gpaw,
     Espresso,
+    Siesta,
+    Vasp,
 };
 
 struct ElectronicConfig {

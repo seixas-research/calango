@@ -1,7 +1,7 @@
 #include "gui/AdsorptionDialog.hpp"
 
 #include <QApplication>
-#include <QCheckBox>
+#include <QSlider>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -85,18 +85,35 @@ AdsorptionDialog::AdsorptionDialog(std::shared_ptr<const core::Structure> slab,
                                   QStringLiteral("bridge"),
                                   QStringLiteral("hollow")});
     coverageForm->addRow(tr("Site family:"), coverageSiteCombo_);
+
+    // Continuous coverage: a spin box and slider kept in sync, so the user can
+    // dial in (or type) any fractional monolayer coverage from 0 to 1 ML.
+    coverageSpin_ = new QDoubleSpinBox(coverageGroup);
+    coverageSpin_->setRange(0.0, 1.0);
+    coverageSpin_->setDecimals(2);
+    coverageSpin_->setSingleStep(0.05);
+    coverageSpin_->setValue(0.25);
+    coverageSpin_->setSuffix(tr(" ML"));
+    coverageSlider_ = new QSlider(Qt::Horizontal, coverageGroup);
+    coverageSlider_->setRange(0, 100); // hundredths of a monolayer
+    coverageSlider_->setValue(25);
+    auto* coverageRow = new QHBoxLayout;
+    coverageRow->addWidget(coverageSlider_, 1);
+    coverageRow->addWidget(coverageSpin_);
+    coverageForm->addRow(tr("Coverage:"), coverageRow);
     coverageLayout->addLayout(coverageForm);
-    auto* checksRow = new QHBoxLayout;
-    const char* coverageNames[4] = {"0.25 ML", "0.50 ML", "0.75 ML", "1.00 ML"};
-    for (int i = 0; i < 4; ++i) {
-        coverageChecks_[i] = new QCheckBox(QLatin1String(coverageNames[i]),
-                                           coverageGroup);
-        coverageChecks_[i]->setChecked(true);
-        checksRow->addWidget(coverageChecks_[i]);
-    }
-    coverageLayout->addLayout(checksRow);
-    auto* seriesButton = new QPushButton(tr("Generate Coverage Series"),
-                                         coverageGroup);
+
+    // Two-way binding (guarded against feedback loops by Qt's no-op-on-equal
+    // value semantics; the slider is integer hundredths of the spin value).
+    connect(coverageSlider_, &QSlider::valueChanged, this, [this](int v) {
+        coverageSpin_->setValue(v / 100.0);
+    });
+    connect(coverageSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double v) {
+                coverageSlider_->setValue(static_cast<int>(std::lround(v * 100.0)));
+            });
+
+    auto* seriesButton = new QPushButton(tr("Generate Coverage"), coverageGroup);
     coverageLayout->addWidget(seriesButton);
     connect(seriesButton, &QPushButton::clicked,
             this, &AdsorptionDialog::generateCoverageSeries);
@@ -222,34 +239,31 @@ void AdsorptionDialog::generateCoverageSeries()
         return;
     }
 
-    static constexpr double kCoverages[4] = {0.25, 0.50, 0.75, 1.00};
+    const double coverage = coverageSpin_->value();
+    if (coverage <= 0.0) {
+        statusLabel_->setText(tr("Set a coverage greater than 0 ML."));
+        return;
+    }
     QApplication::setOverrideCursor(Qt::WaitCursor);
     try {
-        for (int i = 0; i < 4; ++i) {
-            if (!coverageChecks_[i]->isChecked())
-                continue;
-            const auto want = std::max<std::size_t>(
-                1, static_cast<std::size_t>(
-                       std::llround(kCoverages[i] * pool.size())));
-            // Evenly strided subset spreads the adsorbates over the cell.
-            std::vector<pybridge::SurfaceScience::AdsorptionSite> subset;
-            for (std::size_t k = 0; k < want; ++k)
-                subset.push_back(pool[k * pool.size() / want]);
-            auto structure = std::make_shared<core::Structure>(
-                pybridge::SurfaceScience::placeAdsorbates(
-                    *slab_, subset, adsorbateName().toStdString(),
-                    heightSpin_->value()));
-            outputs_.push_back(
-                {tr("%1/%2 %3 ML").arg(adsorbateName(),
-                                       QString::fromStdString(family))
-                     .arg(kCoverages[i], 0, 'f', 2),
-                 std::move(structure)});
-        }
+        const auto want = std::max<std::size_t>(
+            1, static_cast<std::size_t>(std::llround(coverage * pool.size())));
+        // Evenly strided subset spreads the adsorbates over the cell.
+        std::vector<pybridge::SurfaceScience::AdsorptionSite> subset;
+        for (std::size_t k = 0; k < want; ++k)
+            subset.push_back(pool[k * pool.size() / want]);
+        auto structure = std::make_shared<core::Structure>(
+            pybridge::SurfaceScience::placeAdsorbates(
+                *slab_, subset, adsorbateName().toStdString(),
+                heightSpin_->value()));
+        outputs_.push_back(
+            {tr("%1/%2 %3 ML").arg(adsorbateName(),
+                                   QString::fromStdString(family))
+                 .arg(coverage, 0, 'f', 2),
+             std::move(structure)});
         QApplication::restoreOverrideCursor();
         if (!outputs_.empty())
             accept();
-        else
-            statusLabel_->setText(tr("Check at least one coverage."));
     } catch (const std::exception& e) {
         QApplication::restoreOverrideCursor();
         statusLabel_->setText(QString::fromUtf8(e.what()));

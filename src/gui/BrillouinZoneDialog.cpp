@@ -1,5 +1,6 @@
 #include "gui/BrillouinZoneDialog.hpp"
 
+#include "gui/BrillouinZoneStyleDialog.hpp"
 #include "gui/BrillouinZoneView.hpp"
 
 #include <QCheckBox>
@@ -9,6 +10,9 @@
 #include <QHBoxLayout>
 #include <QImage>
 #include <QInputDialog>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPainter>
@@ -18,6 +22,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 
 namespace calango::gui {
 
@@ -60,7 +65,7 @@ BrillouinZoneDialog::BrillouinZoneDialog(const core::BrillouinZoneData& zone,
     , pathList_(new QListWidget(this))
     , divisionsSpin_(new QSpinBox(this))
 {
-    setWindowTitle(tr("Brillouin Zone & k-Path Builder"));
+    setWindowTitle(tr("Brillouin Zone Builder"));
     resize(900, 560);
 
     // Cartesian positions of the special points: frac · (b1, b2, b3).
@@ -92,6 +97,22 @@ BrillouinZoneDialog::BrillouinZoneDialog(const core::BrillouinZoneData& zone,
     side->addWidget(orthoCheck);
     connect(orthoCheck, &QCheckBox::toggled,
             view_, &BrillouinZoneView::setOrthographic);
+    // Default to orthographic: symmetric zone geometry reads more clearly
+    // without perspective foreshortening.
+    orthoCheck->setChecked(true);
+    view_->setOrthographic(true);
+
+    auto* styleButton = new QPushButton(tr("Customize Appearance…"), this);
+    styleButton->setToolTip(tr("Colors, transparency, line thickness and label "
+                               "toggles for the zone and k-path"));
+    side->addWidget(styleButton);
+    connect(styleButton, &QPushButton::clicked, this, [this] {
+        auto* dialog = new BrillouinZoneStyleDialog(view_->style(), this);
+        connect(dialog, &BrillouinZoneStyleDialog::styleChanged, view_,
+                &BrillouinZoneView::setStyle);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->show();
+    });
 
     side->addWidget(new QLabel(tr("k-path sequence:"), this));
     side->addWidget(pathList_, 1);
@@ -221,6 +242,24 @@ void BrillouinZoneDialog::syncPathViews()
     view_->setPath(path_);
 }
 
+QString BrillouinZoneDialog::asePathString() const
+{
+    QString result;
+    for (const int entry : path_) {
+        if (entry < 0) {
+            // Only a real break between two labelled points.
+            if (!result.isEmpty() && !result.endsWith(QLatin1Char(',')))
+                result += QLatin1Char(',');
+            continue;
+        }
+        result += QString::fromStdString(
+            specialPoints_[static_cast<std::size_t>(entry)].label);
+    }
+    if (result.endsWith(QLatin1Char(',')))
+        result.chop(1);
+    return result;
+}
+
 core::KPathSegments BrillouinZoneDialog::segments() const
 {
     core::KPathSegments sections;
@@ -269,7 +308,10 @@ void BrillouinZoneDialog::exportKPath()
         return;
     }
 
-    const QStringList formats = {tr("VASP KPOINTS (line mode)"),
+    // JSON (kpath.json) is the primary/default format; the code-specific
+    // formats follow.
+    const QStringList formats = {tr("Calango k-path (kpath.json)"),
+                                 tr("VASP KPOINTS (line mode)"),
                                  tr("Quantum ESPRESSO K_POINTS (crystal_b)"),
                                  tr("CASTEP SPECTRAL_KPOINT_PATH"),
                                  tr("SIESTA BandLines"),
@@ -281,13 +323,95 @@ void BrillouinZoneDialog::exportKPath()
     if (!ok)
         return;
     switch (formats.indexOf(chosen)) {
-    case 0: exportVaspKpoints(); break;
-    case 1: exportQeKpoints(); break;
-    case 2: exportCastepPath(); break;
-    case 3: exportSiestaBands(); break;
-    case 4: exportAseScript(); break;
+    case 0: exportKpathJson(); break;
+    case 1: exportVaspKpoints(); break;
+    case 2: exportQeKpoints(); break;
+    case 3: exportCastepPath(); break;
+    case 4: exportSiestaBands(); break;
+    case 5: exportAseScript(); break;
     default: break;
     }
+}
+
+void BrillouinZoneDialog::exportKpathJson()
+{
+    // Cartesian (Å⁻¹) position of a fractional reciprocal-space coordinate.
+    const auto toCartesian = [this](const core::Vec3& f) {
+        return zone_.reciprocal[0] * f.x + zone_.reciprocal[1] * f.y
+            + zone_.reciprocal[2] * f.z;
+    };
+    // JSON-friendly label ("G" → "Gamma", others unchanged).
+    const auto jsonLabel = [](const std::string& label) {
+        return label == "G" ? QStringLiteral("Gamma")
+                            : QString::fromStdString(label);
+    };
+    const auto jsonVec = [](const core::Vec3& v) {
+        QJsonArray a;
+        a << v.x << v.y << v.z;
+        return a;
+    };
+
+    const core::KPathSegments sections = segments();
+
+    // High-symmetry point coordinates (unique labels used in the path).
+    QJsonObject points;
+    for (const auto& section : sections)
+        for (const auto& point : section)
+            points.insert(jsonLabel(point.label), jsonVec(point.fractional));
+
+    // Explicit sequential segments: labels + fractional coords + cumulative
+    // reciprocal-space distance (Å⁻¹) from the start of each segment.
+    QJsonArray segmentsJson;
+    for (const auto& section : sections) {
+        QJsonArray labels;
+        QJsonArray pointArray;
+        double distance = 0.0;
+        core::Vec3 prevCart{};
+        bool first = true;
+        for (const auto& point : section) {
+            const core::Vec3 cart = toCartesian(point.fractional);
+            if (!first) {
+                const core::Vec3 d{cart.x - prevCart.x, cart.y - prevCart.y,
+                                   cart.z - prevCart.z};
+                distance += std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+            }
+            first = false;
+            prevCart = cart;
+
+            labels.append(jsonLabel(point.label));
+            QJsonObject entry;
+            entry.insert(QStringLiteral("label"), jsonLabel(point.label));
+            entry.insert(QStringLiteral("fractional"), jsonVec(point.fractional));
+            entry.insert(QStringLiteral("distance"), distance);
+            pointArray.append(entry);
+        }
+        QJsonObject segment;
+        segment.insert(QStringLiteral("labels"), labels);
+        segment.insert(QStringLiteral("points"), pointArray);
+        segmentsJson.append(segment);
+    }
+
+    QJsonObject root;
+    root.insert(QStringLiteral("format"), QStringLiteral("calango-kpath"));
+    root.insert(QStringLiteral("version"), 1);
+    // ASE path string (letters, ',' between sections) for direct round-trip.
+    root.insert(QStringLiteral("path"), asePathString());
+    root.insert(QStringLiteral("divisions"), divisionsSpin_->value());
+    root.insert(QStringLiteral("high_symmetry_points"), points);
+    root.insert(QStringLiteral("segments"), segmentsJson);
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export k-Path (JSON)"), QStringLiteral("kpath.json"),
+        tr("k-path JSON (*.json);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, tr("Export k-Path"),
+                              tr("Could not write %1").arg(path));
+        return;
+    }
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
 }
 
 void BrillouinZoneDialog::exportVaspKpoints()

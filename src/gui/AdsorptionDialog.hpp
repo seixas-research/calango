@@ -8,7 +8,7 @@
 #include <memory>
 #include <vector>
 
-class QCheckBox;
+class QSlider;
 class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
@@ -55,7 +55,8 @@ private:
     QComboBox* adsorbateCombo_;
     QDoubleSpinBox* heightSpin_;
     QComboBox* coverageSiteCombo_;
-    QCheckBox* coverageChecks_[4];
+    QDoubleSpinBox* coverageSpin_;
+    QSlider* coverageSlider_;
     QLabel* statusLabel_;
 };
 

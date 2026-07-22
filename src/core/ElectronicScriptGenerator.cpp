@@ -113,6 +113,55 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                "bs._reference = efermi\n"
                "print(\"CALANGO_PROGRESS 3 4\", flush=True)\n";
         break;
+
+    case ElectronicBackend::Siesta:
+        out << "# SIESTA workflow (requires the siesta binary + SIESTA_PP_PATH).\n"
+               "# EDIT ME: set the pseudopotential family / basis set.\n"
+               "from ase.calculators.siesta import Siesta\n"
+               "from ase.units import Ry\n"
+               "\n"
+            << "kgrid = " << c.scfKpts << "\n"
+            << "scf = Siesta(xc=\"PBE\", mesh_cutoff=200 * Ry,\n"
+               "             energy_shift=0.01 * Ry,\n"
+               "             kpts=[kgrid, kgrid, kgrid])\n"
+               "atoms.calc = scf\n"
+               "atoms.get_potential_energy()\n"
+               "efermi = float(atoms.calc.get_fermi_level())\n"
+               "print(\"CALANGO_PROGRESS 2 4\", flush=True)\n"
+               "\n"
+               "# Non-self-consistent band run along the path.\n"
+               "bands = Siesta(xc=\"PBE\", mesh_cutoff=200 * Ry,\n"
+               "               energy_shift=0.01 * Ry, kpts=bandpath)\n"
+               "atoms.calc = bands\n"
+               "atoms.get_potential_energy()\n"
+               "bs = atoms.calc.band_structure()\n"
+               "bs._reference = efermi\n"
+               "print(\"CALANGO_PROGRESS 3 4\", flush=True)\n";
+        break;
+
+    case ElectronicBackend::Vasp:
+        out << "# VASP workflow (requires VASP_PP_PATH + ASE_VASP_COMMAND).\n"
+               "# EDIT ME: adjust the INCAR tags for your system.\n"
+               "from ase.calculators.vasp import Vasp\n"
+               "\n"
+            << "kgrid = " << c.scfKpts << "\n"
+            << "scf = Vasp(xc=\"PBE\", encut=" << c.ecutEv << ",\n"
+               "           kpts=(kgrid, kgrid, kgrid), ismear=0, sigma=0.05,\n"
+               "           directory=\".\")\n"
+               "atoms.calc = scf\n"
+               "atoms.get_potential_energy()\n"
+               "efermi = float(atoms.calc.get_fermi_level())\n"
+               "print(\"CALANGO_PROGRESS 2 4\", flush=True)\n"
+               "\n"
+               "# Non-self-consistent band run (ICHARG=11 reuses the SCF density).\n"
+            << "bands = Vasp(xc=\"PBE\", encut=" << c.ecutEv << ", icharg=11,\n"
+               "             directory=\".\", kpts=bandpath)\n"
+               "atoms.calc = bands\n"
+               "atoms.get_potential_energy()\n"
+               "bs = atoms.calc.band_structure()\n"
+               "bs._reference = efermi\n"
+               "print(\"CALANGO_PROGRESS 3 4\", flush=True)\n";
+        break;
     }
 
     out << "\n"

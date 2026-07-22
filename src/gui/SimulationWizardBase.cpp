@@ -1,6 +1,7 @@
 #include "gui/SimulationWizardBase.hpp"
 
 #include "gui/CalculatorDialog.hpp" // resolveEnvironmentPython (shared)
+#include "gui/CondaEnvs.hpp"
 #include "gui/PythonHighlighter.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
@@ -21,6 +22,7 @@
 #include <QSettings>
 #include <QSpinBox>
 #include <QStackedWidget>
+#include <QStringList>
 #include <QTextStream>
 #include <QVBoxLayout>
 
@@ -45,11 +47,14 @@ void SimulationWizardBase::buildUi()
     headerLabel_->setFont(hf);
     root->addWidget(headerLabel_);
 
+    hasSettingsStage_ = hasTaskSettingsStage();
     stack_ = new QStackedWidget(this);
-    stack_->addWidget(buildSettingsPage()); // Stage 1 (subclass)
+    if (hasSettingsStage_)
+        stack_->addWidget(buildSettingsPage()); // Stage 1 (subclass)
     stack_->addWidget(buildEnvironmentPage());
     stack_->addWidget(buildCalculatorPage());
     stack_->addWidget(buildReviewPage());
+    reviewStage_ = stack_->count() - 1;
     root->addWidget(stack_, 1);
 
     auto* bar = new QHBoxLayout;
@@ -98,30 +103,49 @@ QWidget* SimulationWizardBase::buildEnvironmentPage()
     layout->addLayout(form);
 
     calcCombo_ = new QComboBox(page);
-    calcCombo_->addItem(tr("MACE (ML potential)"),
-                        static_cast<int>(core::CalculatorKind::Mace));
-    calcCombo_->addItem(tr("Quantum ESPRESSO (DFT)"),
-                        static_cast<int>(core::CalculatorKind::QuantumEspresso));
-    calcCombo_->addItem(tr("SIESTA (DFT)"),
-                        static_cast<int>(core::CalculatorKind::Siesta));
-    calcCombo_->addItem(tr("ORCA (quantum chemistry)"),
-                        static_cast<int>(core::CalculatorKind::Orca));
-    calcCombo_->addItem(tr("GPAW (DFT)"),
-                        static_cast<int>(core::CalculatorKind::Gpaw));
-    calcCombo_->addItem(tr("VASP (DFT)"),
-                        static_cast<int>(core::CalculatorKind::Vasp));
-    calcCombo_->addItem(tr("EMT (fast test potential)"),
-                        static_cast<int>(core::CalculatorKind::EMT));
-    calcCombo_->addItem(tr("ASAP (fast EMT / OpenKIM)"),
-                        static_cast<int>(core::CalculatorKind::Asap));
-    calcCombo_->addItem(tr("Lennard-Jones"),
-                        static_cast<int>(core::CalculatorKind::LennardJones));
+    // A subclass may restrict the engine list (e.g. the Electronic Bands
+    // wizard offers only DFT-capable calculators). Only allowed kinds appear.
+    const auto addCalc = [this](const QString& label, core::CalculatorKind kind) {
+        if (calculatorAllowed(kind))
+            calcCombo_->addItem(label, static_cast<int>(kind));
+    };
+    addCalc(tr("MACE (ML potential)"), core::CalculatorKind::Mace);
+    addCalc(tr("Quantum ESPRESSO (DFT)"), core::CalculatorKind::QuantumEspresso);
+    addCalc(tr("SIESTA (DFT)"), core::CalculatorKind::Siesta);
+    addCalc(tr("ORCA (quantum chemistry)"), core::CalculatorKind::Orca);
+    addCalc(tr("GPAW (DFT)"), core::CalculatorKind::Gpaw);
+    addCalc(tr("VASP (DFT)"), core::CalculatorKind::Vasp);
+    addCalc(tr("EMT (fast test potential)"), core::CalculatorKind::EMT);
+    addCalc(tr("ASAP (fast EMT / OpenKIM)"), core::CalculatorKind::Asap);
+    addCalc(tr("Lennard-Jones"), core::CalculatorKind::LennardJones);
     form->addRow(tr("Calculation engine:"), calcCombo_);
     connect(calcCombo_, &QComboBox::currentIndexChanged, this,
             &SimulationWizardBase::updateCalculatorEnabled);
 
     auto* envGroup = new QGroupBox(tr("Execution environment"), page);
     auto* envLayout = new QVBoxLayout(envGroup);
+
+    // Conda environments auto-discovered from the Preferences "Conda Directory
+    // Path" (or common install locations). Picking one fills the field below.
+    const auto condaEnvs = CondaEnvs::discover();
+    if (!condaEnvs.isEmpty()) {
+        auto* condaRow = new QHBoxLayout;
+        condaRow->addWidget(new QLabel(tr("Conda environment:"), envGroup));
+        auto* condaCombo = new QComboBox(envGroup);
+        condaCombo->addItem(tr("(custom / embedded — use field below)"),
+                            QString());
+        for (const auto& env : condaEnvs)
+            condaCombo->addItem(env.name, env.path);
+        condaRow->addWidget(condaCombo, 1);
+        envLayout->addLayout(condaRow);
+        connect(condaCombo, &QComboBox::currentIndexChanged, this,
+                [this, condaCombo](int) {
+                    const QString path = condaCombo->currentData().toString();
+                    if (!path.isEmpty())
+                        envEdit_->setText(path);
+                });
+    }
+
     auto* envRow = new QHBoxLayout;
     envEdit_ = new QLineEdit(envGroup);
     envEdit_->setPlaceholderText(
@@ -244,6 +268,11 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     orcaForm->addRow(tr("Multiplicity:"), multiplicitySpin_);
     layout->addWidget(orcaGroup_);
 
+    // Subclass-supplied extra settings (e.g. Single-point's convergence group,
+    // folded in here when it has no separate Stage 1).
+    if (QWidget* extras = buildCalculatorExtras())
+        layout->addWidget(extras);
+
     layout->addStretch(1);
     return page;
 }
@@ -293,6 +322,7 @@ void SimulationWizardBase::updateCalculatorEnabled()
                 ? tr("Settings for %1:").arg(calcCombo_->currentText())
                 : tr("%1 has no additional settings — continue to the script "
                      "review.").arg(calcCombo_->currentText()));
+    updateCalculatorExtras(kind);
 }
 
 core::CalculatorKind SimulationWizardBase::selectedCalculator() const
@@ -332,14 +362,19 @@ void SimulationWizardBase::refreshPreview()
 void SimulationWizardBase::updateStage()
 {
     stack_->setCurrentIndex(stage_);
-    const QString stageTitles[] = {
-        tr("Stage 1 of 4 — %1").arg(settingsHeader()),
-        tr("Stage 2 of 4 — Calculator & Execution Environment"),
-        tr("Stage 3 of 4 — Calculator Settings"),
-        tr("Stage 4 of 4 — ASE Script Review")};
-    headerLabel_->setText(stageTitles[stage_]);
 
-    const bool onReview = stage_ == 3;
+    QStringList titles;
+    if (hasSettingsStage_)
+        titles << settingsHeader();
+    titles << tr("Calculator & Execution Environment");
+    titles << calculatorSettingsHeader();
+    titles << tr("ASE Script Review");
+    headerLabel_->setText(tr("Stage %1 of %2 — %3")
+                              .arg(stage_ + 1)
+                              .arg(titles.size())
+                              .arg(titles.at(stage_)));
+
+    const bool onReview = stage_ == reviewStage_;
     backButton_->setEnabled(stage_ > 0);
     nextButton_->setVisible(!onReview);
     exportButton_->setVisible(onReview);
@@ -354,9 +389,9 @@ void SimulationWizardBase::updateStage()
 
 void SimulationWizardBase::goNext()
 {
-    if (stage_ < 3) {
+    if (stage_ < reviewStage_) {
         ++stage_;
-        if (stage_ == 3)
+        if (stage_ == reviewStage_)
             refreshPreview(); // (re)generate on arriving at the review stage
         updateStage();
     }

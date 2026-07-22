@@ -5,6 +5,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QPushButton>
+#include <QStyle>
 #include <QTreeWidget>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -32,16 +33,36 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
     tree_->setSelectionMode(QAbstractItemView::SingleSelection);
     layout->addWidget(tree_, 1);
 
+    // Icon-only action bar: intuitive glyphs from the active style, with the
+    // former text labels moved to descriptive hover tooltips.
     auto* buttons = new QHBoxLayout;
-    auto* openButton = new QPushButton(tr("Open Folder"), this);
-    auto* loadButton = new QPushButton(tr("Load Result"), this);
-    auto* deleteButton = new QPushButton(tr("Delete Process"), this);
-    deleteButton->setToolTip(
-        tr("Stop the task if running, delete its temporary data folder, and "
-           "remove it from the list."));
-    buttons->addWidget(openButton);
-    buttons->addWidget(loadButton);
-    buttons->addWidget(deleteButton);
+    const auto icon = [this](QStyle::StandardPixmap sp) {
+        return style()->standardIcon(sp);
+    };
+    const auto makeButton = [&](QStyle::StandardPixmap sp, const QString& tip) {
+        auto* button = new QPushButton(this);
+        button->setIcon(icon(sp));
+        button->setToolTip(tip);
+        button->setFocusPolicy(Qt::NoFocus);
+        button->setFlat(false);
+        buttons->addWidget(button);
+        return button;
+    };
+    auto* openButton = makeButton(
+        QStyle::SP_DirOpenIcon,
+        tr("Open Folder — reveal this task's working directory."));
+    auto* loadButton = makeButton(
+        QStyle::SP_FileDialogContentsView,
+        tr("Load Result — open this task's trajectory / bands / final "
+           "structure in the workspace."));
+    auto* scriptButton = makeButton(
+        QStyle::SP_FileIcon,
+        tr("View ASE Script — show the exact Python/ASE run.py that was "
+           "executed."));
+    auto* deleteButton = makeButton(
+        QStyle::SP_TrashIcon,
+        tr("Delete Process — stop it if running, delete its temporary data "
+           "folder, and remove it from the list."));
     buttons->addStretch(1);
     layout->addLayout(buttons);
 
@@ -52,6 +73,10 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
     connect(openButton, &QPushButton::clicked, this, [selectedDir] {
         if (const QString dir = selectedDir(); !dir.isEmpty())
             QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+    });
+    connect(scriptButton, &QPushButton::clicked, this, [this, selectedDir] {
+        if (const QString dir = selectedDir(); !dir.isEmpty())
+            Q_EMIT viewScriptRequested(dir);
     });
     connect(loadButton, &QPushButton::clicked, this, [this, selectedDir] {
         if (const QString dir = selectedDir(); !dir.isEmpty())

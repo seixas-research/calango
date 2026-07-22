@@ -1,6 +1,7 @@
 #include "gui/PhononWizard.hpp"
 
 #include "core/PhononScriptGenerator.hpp"
+#include "gui/KPathSelector.hpp"
 
 #include <QCheckBox>
 #include <QDoubleSpinBox>
@@ -12,15 +13,19 @@
 
 namespace calango::gui {
 
-PhononWizard::PhononWizard(bool periodic, QWidget* parent)
-    : SimulationWizardBase(parent), periodic_(periodic)
+PhononWizard::PhononWizard(bool periodic,
+                           std::shared_ptr<const core::Structure> structure,
+                           QWidget* parent)
+    : SimulationWizardBase(parent)
+    , periodic_(periodic)
+    , structure_(std::move(structure))
 {
     buildUi();
 }
 
 QString PhononWizard::wizardTitle() const
 {
-    return tr("Phonon Calculator Setup");
+    return tr("Phonon Setup");
 }
 
 QString PhononWizard::settingsHeader() const
@@ -78,6 +83,13 @@ QWidget* PhononWizard::buildSettingsPage()
     bandPointsSpin_->setToolTip(tr("k-points along the band-structure path."));
     bandPointsSpin_->setEnabled(periodic_);
     form->addRow(tr("Band-path points:"), bandPointsSpin_);
+
+    // q-path definition for the dispersion plot (periodic systems only),
+    // identical to the Electronic Bands workflow (interactive BZ builder).
+    if (periodic_) {
+        kpath_ = new KPathSelector(structure_, page);
+        form->addRow(tr("q-path:"), kpath_);
+    }
     return page;
 }
 
@@ -90,6 +102,8 @@ QString PhononWizard::generateScript() const
         pc.supercell[i] = supercellSpins_[i]->value();
     pc.deltaAngstrom = deltaSpin_->value();
     pc.bandPathPoints = bandPointsSpin_->value();
+    if (kpath_)
+        pc.kpath = kpath_->path().toStdString();
     pc.dosKptGrid = meshSpin_->value();
     pc.acousticSumRule = acousticCheck_->isChecked();
     return QString::fromStdString(

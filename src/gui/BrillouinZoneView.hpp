@@ -3,6 +3,7 @@
 #include "core/BrillouinZone.hpp"
 #include "render/Camera.hpp"
 
+#include <QColor>
 #include <QOpenGLBuffer>
 #include <QOpenGLFunctions_3_3_Core>
 #include <QOpenGLShaderProgram>
@@ -31,6 +32,22 @@ public:
         QString label;     ///< display label ("Γ", "X", ...)
         QVector3D cartesian; ///< Å⁻¹
     };
+
+    /// User-controllable appearance of the zone and k-path (driven by the
+    /// "Customize Appearance…" dialog). Defaults reproduce the built-in look.
+    struct Style {
+        QColor surfaceColor{93, 140, 235};   ///< Wigner-Seitz face fill
+        float surfaceAlpha = 0.16f;          ///< face transparency (0..1)
+        QColor edgeColor{150, 156, 166};     ///< zone border wireframe
+        QColor pathColor{240, 150, 30};      ///< k-path line + on-path points
+        float pathThickness = 2.4f;          ///< k-path line width (px)
+        bool showLabels = true;              ///< high-symmetry point labels
+        bool showOrderNumbers = false;       ///< sequential badges along path
+        bool showPathArrows = true;          ///< directional arrows along legs
+    };
+
+    void setStyle(const Style& style);
+    const Style& style() const { return style_; }
 
     void setZone(const core::BrillouinZoneData& zone,
                  const std::vector<LabeledPoint>& points);
@@ -73,6 +90,7 @@ private:
 
     render::OrbitCamera camera_;
     core::BrillouinZoneData zone_;
+    Style style_;
     std::vector<LabeledPoint> points_;
     std::vector<int> path_;
     float zoneRadius_ = 1.0f;

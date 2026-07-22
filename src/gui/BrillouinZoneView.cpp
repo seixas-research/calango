@@ -46,6 +46,12 @@ QVector3D toQt(const calango::core::Vec3& v)
     return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)};
 }
 
+QVector4D colorVec(const QColor& c, float alpha = 1.0f)
+{
+    return {static_cast<float>(c.redF()), static_cast<float>(c.greenF()),
+            static_cast<float>(c.blueF()), alpha};
+}
+
 void setupPositionVao(QOpenGLVertexArrayObject& vao, QOpenGLBuffer& vbo,
                       QOpenGLFunctions_3_3_Core* gl)
 {
@@ -93,6 +99,12 @@ void BrillouinZoneView::setPath(const std::vector<int>& path)
 {
     path_ = path;
     pathDirty_ = true;
+    update();
+}
+
+void BrillouinZoneView::setStyle(const Style& style)
+{
+    style_ = style;
     update();
 }
 
@@ -255,20 +267,18 @@ void BrillouinZoneView::paintGL()
     flatProgram_.setUniformValue("uMvp", transform);
 
     if (edgeVertexCount_ > 0) {
-        flatProgram_.setUniformValue("uColor", QVector4D(0.78f, 0.80f, 0.84f, 1.0f));
+        flatProgram_.setUniformValue("uColor", colorVec(style_.edgeColor));
         edgeVao_.bind();
         glDrawArrays(GL_LINES, 0, edgeVertexCount_);
         edgeVao_.release();
     }
-    if (pathVertexCount_ > 0) {
-        flatProgram_.setUniformValue("uColor", QVector4D(1.0f, 0.62f, 0.12f, 1.0f));
-        pathVao_.bind();
-        glDrawArrays(GL_LINES, 0, pathVertexCount_);
-        pathVao_.release();
-    }
+    // NB: the k-path lines are NOT drawn here. glLineWidth > 1 is unreliable
+    // in a 3.3 core profile (macOS clamps it to 1.0), so k-path legs and their
+    // direction arrows are drawn in the QPainter overlay below, where the pen
+    // width honors style_.pathThickness exactly.
     flatProgram_.release();
 
-    // High-symmetry points: path members highlighted orange.
+    // High-symmetry points: path members highlighted in the k-path color.
     if (!points_.empty()) {
         pointProgram_.bind();
         pointProgram_.setUniformValue("uMvp", transform);
@@ -277,7 +287,7 @@ void BrillouinZoneView::paintGL()
             const bool onPath = std::find(path_.begin(), path_.end(), i) != path_.end();
             pointProgram_.setUniformValue("uPointSize", onPath ? 17.0f : 12.0f);
             pointProgram_.setUniformValue(
-                "uColor", onPath ? QVector4D(1.0f, 0.62f, 0.12f, 1.0f)
+                "uColor", onPath ? colorVec(style_.pathColor)
                                  : QVector4D(0.35f, 0.75f, 1.0f, 1.0f));
             glDrawArrays(GL_POINTS, i, 1);
         }
@@ -292,7 +302,8 @@ void BrillouinZoneView::paintGL()
         glDepthMask(GL_FALSE);
         flatProgram_.bind();
         flatProgram_.setUniformValue("uMvp", transform);
-        flatProgram_.setUniformValue("uColor", QVector4D(0.36f, 0.55f, 0.92f, 0.16f));
+        flatProgram_.setUniformValue(
+            "uColor", colorVec(style_.surfaceColor, style_.surfaceAlpha));
         faceVao_.bind();
         glDrawArrays(GL_TRIANGLES, 0, faceVertexCount_);
         faceVao_.release();
@@ -301,9 +312,49 @@ void BrillouinZoneView::paintGL()
         glDisable(GL_BLEND);
     }
 
-    // Text overlay: labels and path order numbers.
+    // Overlay (QPainter): k-path legs + direction arrows, then labels and
+    // path order numbers. Drawing the path here (rather than in GL) lets the
+    // pen width follow style_.pathThickness on every platform.
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
+
+    const double penWidth = std::max(0.5, static_cast<double>(style_.pathThickness));
+    painter.setPen(QPen(style_.pathColor, penWidth, Qt::SolidLine, Qt::RoundCap,
+                        Qt::RoundJoin));
+    for (std::size_t i = 0; i + 1 < path_.size(); ++i) {
+        if (path_[i] < 0 || path_[i + 1] < 0)
+            continue; // discontinuous section break
+        QPointF from, to;
+        if (!project(points_[static_cast<std::size_t>(path_[i])].cartesian,
+                     transform, from)
+            || !project(points_[static_cast<std::size_t>(path_[i + 1])].cartesian,
+                        transform, to))
+            continue;
+        painter.setPen(QPen(style_.pathColor, penWidth, Qt::SolidLine,
+                            Qt::RoundCap, Qt::RoundJoin));
+        painter.drawLine(from, to);
+
+        if (!style_.showPathArrows)
+            continue;
+        // Directional arrowhead at 60% along the leg, showing the navigation
+        // order between high-symmetry points.
+        const QPointF delta = to - from;
+        const double length = std::hypot(delta.x(), delta.y());
+        if (length < 8.0)
+            continue;
+        const QPointF dir = delta / length;
+        const QPointF normal(-dir.y(), dir.x());
+        const QPointF tip = from + delta * 0.6;
+        const double wing = std::min(9.0 + penWidth * 2.0, length * 0.3);
+        QPolygonF arrow;
+        arrow << tip << tip - dir * wing + normal * (wing * 0.5)
+              << tip - dir * wing - normal * (wing * 0.5);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(style_.pathColor);
+        painter.drawPolygon(arrow);
+    }
+    painter.setBrush(Qt::NoBrush);
+
     QFont font = painter.font();
     font.setPointSizeF(font.pointSizeF() + 1.5);
     font.setBold(true);
@@ -312,9 +363,13 @@ void BrillouinZoneView::paintGL()
         QPointF screen;
         if (!project(points_[i].cartesian, transform, screen))
             continue;
-        painter.setPen(QColor(235, 238, 245));
-        painter.drawText(screen + QPointF(9, -7), points_[i].label);
+        if (style_.showLabels) {
+            painter.setPen(QColor(235, 238, 245));
+            painter.drawText(screen + QPointF(9, -7), points_[i].label);
+        }
 
+        if (!style_.showOrderNumbers)
+            continue;
         // Order badge(s) for path membership, e.g. "1,4" — breaks (-1) do
         // not consume an order number.
         QStringList orders;
@@ -327,7 +382,7 @@ void BrillouinZoneView::paintGL()
                 orders << QString::number(order);
         }
         if (!orders.isEmpty()) {
-            painter.setPen(QColor(255, 158, 31));
+            painter.setPen(style_.pathColor);
             painter.drawText(screen + QPointF(9, 14), orders.join(QLatin1Char(',')));
         }
     }
@@ -358,8 +413,10 @@ void BrillouinZoneView::paintFigure(QPainter& painter, const QSize& size) const
     std::sort(ordered.begin(), ordered.end(),
               [](const auto& a, const auto& b) { return a.first < b.first; });
 
+    QColor surfaceFill = style_.surfaceColor;
+    surfaceFill.setAlphaF(style_.surfaceAlpha);
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(93, 140, 235, 32));
+    painter.setBrush(surfaceFill);
     for (const auto& [depth, face] : ordered) {
         (void)depth;
         QPolygonF polygon;
@@ -385,7 +442,7 @@ void BrillouinZoneView::paintFigure(QPainter& painter, const QSize& size) const
             const int b = face[(i + 1) % face.size()];
             edges.insert({std::min(a, b), std::max(a, b)});
         }
-    painter.setPen(QPen(QColor(96, 102, 112), 1.4 * scale));
+    painter.setPen(QPen(style_.edgeColor, 1.4 * scale));
     painter.setBrush(Qt::NoBrush);
     for (const auto& [a, b] : edges) {
         QPointF from, to;
@@ -397,8 +454,9 @@ void BrillouinZoneView::paintFigure(QPainter& painter, const QSize& size) const
     }
 
     // k-path legs with 2D arrowheads at 60% of each leg.
-    const QColor pathColor(232, 130, 20);
-    painter.setPen(QPen(pathColor, 2.4 * scale, Qt::SolidLine, Qt::RoundCap));
+    const QColor pathColor = style_.pathColor;
+    const double pathWidth = style_.pathThickness * scale;
+    painter.setPen(QPen(pathColor, pathWidth, Qt::SolidLine, Qt::RoundCap));
     for (std::size_t i = 0; i + 1 < path_.size(); ++i) {
         if (path_[i] < 0 || path_[i + 1] < 0)
             continue;
@@ -410,6 +468,8 @@ void BrillouinZoneView::paintFigure(QPainter& painter, const QSize& size) const
             continue;
         painter.drawLine(from, to);
 
+        if (!style_.showPathArrows)
+            continue;
         const QPointF delta = to - from;
         const double length = std::hypot(delta.x(), delta.y());
         if (length < 8.0)
@@ -424,7 +484,7 @@ void BrillouinZoneView::paintFigure(QPainter& painter, const QSize& size) const
         painter.setPen(Qt::NoPen);
         painter.setBrush(pathColor);
         painter.drawPolygon(arrow);
-        painter.setPen(QPen(pathColor, 2.4 * scale, Qt::SolidLine, Qt::RoundCap));
+        painter.setPen(QPen(pathColor, pathWidth, Qt::SolidLine, Qt::RoundCap));
     }
 
     // High-symmetry points, labels and order badges.
@@ -443,9 +503,14 @@ void BrillouinZoneView::paintFigure(QPainter& painter, const QSize& size) const
         painter.drawEllipse(screen, (onPath ? 5.5 : 4.0) * scale,
                             (onPath ? 5.5 : 4.0) * scale);
 
-        painter.setPen(QColor(32, 36, 42));
-        painter.drawText(screen + QPointF(8 * scale, -6 * scale), points_[i].label);
+        if (style_.showLabels) {
+            painter.setPen(QColor(32, 36, 42));
+            painter.drawText(screen + QPointF(8 * scale, -6 * scale),
+                             points_[i].label);
+        }
 
+        if (!style_.showOrderNumbers)
+            continue;
         QStringList orders;
         int order = 0;
         for (const int entry : path_) {

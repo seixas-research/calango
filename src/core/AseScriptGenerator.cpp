@@ -42,6 +42,17 @@ std::string toString(Optimizer optimizer)
     return "BFGS";
 }
 
+std::string toString(SmearingMethod method)
+{
+    switch (method) {
+    case SmearingMethod::None: return "None (fixed occupations)";
+    case SmearingMethod::Gaussian: return "Gaussian";
+    case SmearingMethod::FermiDirac: return "Fermi-Dirac";
+    case SmearingMethod::MethfesselPaxton: return "Methfessel-Paxton";
+    }
+    return "Gaussian";
+}
+
 namespace {
 
 /// Live viewport streaming: one "CALANGO_CELL … / CALANGO_FRAME n /
@@ -231,7 +242,11 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
             // convergence={'energy': ...}, ...).
             out << "# Electronic convergence targets (apply in the calculator block above):\n"
                 << "#   max SCF iterations : " << c.scfMaxSteps << "\n"
-                << "#   energy tolerance   : " << c.scfEnergyTolEv << " eV\n";
+                << "#   energy tolerance   : " << c.scfEnergyTolEv << " eV\n"
+                << "#   spin polarization  : "
+                << (c.spinPolarized ? "on" : "off") << "\n"
+                << "#   smearing           : " << toString(c.smearing)
+                << " (width " << c.smearingWidthEv << " eV)\n";
         }
         out << "energy = atoms.get_potential_energy()\n"
                "fmax = abs(atoms.get_forces()).max()\n"
@@ -253,14 +268,20 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
         }
         out << "\n"
             << "max_steps = " << c.maxSteps << "\n";
-        if (c.relaxCell)
+        if (c.relaxCell) {
             out << "# Variable-cell relaxation: relax atomic positions AND the\n"
-                   "# unit cell under "
-                << (c.cellHydrostatic ? "hydrostatic (isotropic)"
-                                      : "full anisotropic")
-                << " stress.\n"
-                << "_target = _CellFilter(atoms, hydrostatic_strain="
-                << (c.cellHydrostatic ? "True" : "False") << ")\n";
+                   "# unit cell.\n";
+            if (c.cellCustomMask) {
+                // Voigt-order mask [xx, yy, zz, yz, xz, xy]: 1 = relax.
+                out << "_target = _CellFilter(atoms, mask=[";
+                for (int i = 0; i < 6; ++i)
+                    out << (c.cellMask[i] ? "1" : "0") << (i < 5 ? ", " : "");
+                out << "])\n";
+            } else {
+                out << "_target = _CellFilter(atoms, hydrostatic_strain="
+                    << (c.cellHydrostatic ? "True" : "False") << ")\n";
+            }
+        }
         out << "opt = " << opt << "("
             << (c.relaxCell ? "_target" : "atoms")
             << ", trajectory=\"opt.traj\", logfile=\"-\")\n"
@@ -396,11 +417,16 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
         }
 
         // Live viewport trajectory: stream a frame every few MD steps
-        // (capped at ~400 streamed frames per run) plus the initial one.
+        // (capped at ~400 streamed frames per run). The t=0 frame is already
+        // seeded on the C++ side from the starting structure, so the observer
+        // must NOT emit its own t=0 frame — ASE calls attached observers once
+        // at nsteps==0 (before the first step) and again after every step, so
+        // we guard on dyn.nsteps > 0. An N-step run then yields exactly N+1
+        // frames (seed at t=0 plus one per integrated step).
         out << "\n"
             << kStreamFrameHelper
-            << "_stream_frame()\n"
-               "dyn.attach(_stream_frame, interval=sample_interval)\n";
+            << "dyn.attach(lambda: _stream_frame() if dyn.nsteps > 0 else None,\n"
+               "           interval=sample_interval)\n";
 
         if (isConstantTemperature(c.ensemble))
             out << "\n"
@@ -468,6 +494,12 @@ std::string AseScriptGenerator::generate(const CalculatorConfig& config,
         << "atoms = read(r\"" << structureFile << "\")\n"
         << "print(f\"CALANGO_INFO natoms={len(atoms)}\", flush=True)\n"
            "\n";
+    if (config.spinPolarized) {
+        out << "# Spin polarization: seed every atom with an initial magnetic\n"
+               "# moment so the SCF can find a magnetic solution.\n"
+            << "atoms.set_initial_magnetic_moments([" << config.initialMagMoment
+            << "] * len(atoms))\n\n";
+    }
     emitCalculator(out, config);
     out << "\n";
     emitTask(out, config);
