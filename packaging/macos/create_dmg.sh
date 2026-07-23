@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# create_dmg.sh — build and package Calango as a drag-and-install macOS .dmg.
+# create_dmg.sh — build and package Calango as a drag-and-install macOS .dmg,
+# saved as packaging/macos/dist/Calango-<version>-macOS.dmg.
 #
 # Pipeline:
 #   1. Configure + build the .app bundle (-DCALANGO_MACOS_BUNDLE=ON).
@@ -9,6 +10,7 @@
 #      /Applications symlink and the volume icon, and compresses the image.
 #   3. Fall back to a manual `cmake --install` + create-dmg/hdiutil assembly
 #      when cpack is unavailable or `--manual` is passed.
+#   4. Move the result to dist/Calango-<version>-macOS.dmg and verify it.
 #
 # Usage:  packaging/macos/create_dmg.sh [--manual] [--skip-build]
 #
@@ -31,6 +33,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
 BUILD_DIR="${BUILD_DIR:-build-macos-bundle}"
+DIST_DIR="${DIST_DIR:-$SCRIPT_DIR/dist}"
 QT_PREFIX="${CMAKE_PREFIX_PATH:-/opt/homebrew/opt/qt}"
 PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
 EMBED_PY="${CALANGO_EMBEDDED_PYTHON_DIR:-}"
@@ -118,15 +121,23 @@ if [[ -z "$DMG" ]]; then
     DMG="$(make_dmg_manual | tail -1)"
 fi
 
-# --- Verify ----------------------------------------------------------------
-if [[ -n "$DMG" && -f "$DMG" ]]; then
-    echo "==> Created: $DMG"
-    if hdiutil imageinfo "$DMG" >/dev/null 2>&1; then
-        echo "==> Verified: valid disk image ($(du -h "$DMG" | cut -f1))."
-    else
-        echo "warning: could not verify the disk image" >&2
-    fi
-else
+# --- Finalize: place the artifact at dist/Calango-<version>-macOS.dmg -------
+if [[ -z "$DMG" || ! -f "$DMG" ]]; then
     echo "error: no .dmg was produced" >&2
+    exit 1
+fi
+mkdir -p "$DIST_DIR"
+FINAL="$DIST_DIR/Calango-${VERSION}-macOS.dmg"
+mv -f "$DMG" "$FINAL"
+
+# --- Verify ----------------------------------------------------------------
+if hdiutil imageinfo "$FINAL" >/dev/null 2>&1; then
+    echo ""
+    echo "==> SUCCESS"
+    echo "    Artifact : $FINAL"
+    echo "    Size     : $(du -h "$FINAL" | cut -f1)"
+    echo "    Verified : valid macOS disk image (hdiutil imageinfo)"
+else
+    echo "error: produced $FINAL but it is not a valid disk image" >&2
     exit 1
 fi

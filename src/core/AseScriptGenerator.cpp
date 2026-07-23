@@ -1,5 +1,7 @@
 #include "core/AseScriptGenerator.hpp"
 
+#include "core/CalangoLogModule.hpp" // generated from calango_log.py by CMake
+
 #include <sstream>
 
 namespace calango::core {
@@ -42,6 +44,32 @@ std::string toString(Optimizer optimizer)
     return "BFGS";
 }
 
+std::string toString(MacePrecision precision)
+{
+    return precision == MacePrecision::Float32 ? "float32" : "float64";
+}
+
+std::string toString(GpawEigensolver solver)
+{
+    switch (solver) {
+    case GpawEigensolver::Davidson: return "dav";
+    case GpawEigensolver::ConjugateGradient: return "cg";
+    case GpawEigensolver::RmmDiis: return "rmm-diis";
+    case GpawEigensolver::Direct: return "direct";
+    }
+    return "dav";
+}
+
+std::string toString(GpawMixerKind mixer)
+{
+    switch (mixer) {
+    case GpawMixerKind::Mixer: return "Mixer";
+    case GpawMixerKind::MixerSum: return "MixerSum";
+    case GpawMixerKind::MixerDif: return "MixerDif";
+    }
+    return "Mixer";
+}
+
 std::string toString(SmearingMethod method)
 {
     switch (method) {
@@ -75,66 +103,22 @@ constexpr const char* kStreamFrameHelper =
     "\n";
 
 /// Structured logging preamble, emitted once near the top of every generated
-/// script. It (1) routes Python warnings (UserWarning/DeprecationWarning/
-/// ResourceWarning from ASE, PyTorch, SciPy, GPAW, …) to warnings.log so the
-/// Results "Log" tab stays clean, and (2) provides a thread-safe JSON logger
-/// that writes step metrics to metrics.json and events to log.json in the
-/// per-process working directory. The C++ Results panel reads metrics.json for
-/// live graph updates.
+/// script. The logger itself lives in calango_log.py (staged beside run.py by
+/// MainWindow::stageJob and beside an exported script by the wizards' Export
+/// action), so the ~55 lines of class definition no longer get pasted into
+/// every generated script. Constructing CalangoLog also installs the warning
+/// routing (Python warnings from ASE, PyTorch, SciPy, GPAW … go to
+/// warnings.log instead of stdout, keeping the Results "Log" tab readable).
+///
+/// The instance keeps its historical `_calango_log` name so every existing
+/// call site (`_calango_log.metric(...)`) is unaffected.
 constexpr const char* kJsonLoggerHelper =
-    "import json as _json\n"
-    "import os as _os\n"
-    "import threading as _threading\n"
-    "import warnings as _warnings\n"
-    "import logging as _logging\n"
+    "# Structured job logging. calango_log.py is staged next to this script;\n"
+    "# it writes metrics.json / log.json (read live by Calango's Results\n"
+    "# panel) and routes Python warnings to warnings.log.\n"
+    "from calango_log import CalangoLog\n"
     "\n"
-    "# Warnings -> warnings.log only (kept off stdout/stderr).\n"
-    "_wlogger = _logging.getLogger(\"py.warnings\")\n"
-    "_wlogger.handlers.clear()\n"
-    "_wlogger.addHandler(_logging.FileHandler(\"warnings.log\", mode=\"w\"))\n"
-    "_wlogger.propagate = False\n"
-    "_logging.captureWarnings(True)\n"
-    "_warnings.simplefilter(\"default\")\n"
-    "\n"
-    "class _CalangoLog:\n"
-    "    def __init__(self):\n"
-    "        self._lock = _threading.Lock()\n"
-    "        self._metrics = []\n"
-    "        self._events = []\n"
-    "        self._progress = None\n"
-    "    @staticmethod\n"
-    "    def _flush(path, data):\n"
-    "        tmp = path + \".tmp\"\n"
-    "        with open(tmp, \"w\") as _fh:\n"
-    "            _json.dump(data, _fh)\n"
-    "        _os.replace(tmp, path)  # atomic\n"
-    "    def _write_metrics(self):\n"
-    "        data = {\"metrics\": self._metrics}\n"
-    "        if self._progress is not None:\n"
-    "            data[\"progress\"] = self._progress\n"
-    "        self._flush(\"metrics.json\", data)\n"
-    "    def metric(self, step, **fields):\n"
-    "        entry = {\"step\": int(step)}\n"
-    "        for _k, _v in fields.items():\n"
-    "            if _v is not None:\n"
-    "                entry[_k] = float(_v)\n"
-    "        with self._lock:\n"
-    "            self._metrics.append(entry)\n"
-    "            self._write_metrics()\n"
-    "    def progress(self, step, total):\n"
-    "        step, total = int(step), int(total)\n"
-    "        pct = (100.0 * step / total) if total > 0 else 0.0\n"
-    "        with self._lock:\n"
-    "            self._progress = {\"step\": step, \"total\": total,\n"
-    "                              \"percent\": pct}\n"
-    "            self._write_metrics()\n"
-    "    def event(self, level, message):\n"
-    "        with self._lock:\n"
-    "            self._events.append({\"level\": str(level),\n"
-    "                                 \"message\": str(message)})\n"
-    "            self._flush(\"log.json\", {\"log\": self._events})\n"
-    "\n"
-    "_calango_log = _CalangoLog()\n"
+    "_calango_log = CalangoLog()\n"
     "\n";
 
 void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
@@ -182,27 +166,45 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
                ")\n";
         break;
 
-    case CalculatorKind::Mace:
+    case CalculatorKind::Mace: {
+        // A foundation entry point (mace_mp / mace_off) accepts either a size
+        // keyword or a path in `model`; passing an explicit checkpoint pins
+        // the weights so a run is reproducible even if the cached foundation
+        // model is later updated upstream.
+        const std::string precision = toString(c.macePrecision);
+        const bool pinnedFile = !c.maceModelPath.empty();
         out << "# MACE machine-learning interatomic potential.\n"
                "# Requires:  pip install mace-torch   (in the interpreter running this job)\n";
+        if (c.macePrecision == MacePrecision::Float32)
+            out << "# float32: ~2x lighter/faster than float64 (especially on GPU),\n"
+                   "# at the cost of ~1e-4 eV/A noise in the forces — tighten fmax\n"
+                   "# accordingly, or switch to float64 for vibrational work.\n";
         switch (c.maceSource) {
         case MaceModelSource::FoundationMP:
-            out << "# The MACE-MP-0 foundation model is downloaded automatically on\n"
-                   "# first use and cached under ~/.cache/mace.\n"
-                   "from mace.calculators import mace_mp\n"
+            if (pinnedFile)
+                out << "# MACE-MP foundation family, pinned to a local checkpoint.\n";
+            else
+                out << "# The MACE-MP-0 foundation model is downloaded automatically on\n"
+                       "# first use and cached under ~/.cache/mace.\n";
+            out << "from mace.calculators import mace_mp\n"
                    "\n"
-                << "atoms.calc = mace_mp(model=\"" << c.maceSize
-                << "\", device=\"" << c.maceDevice
-                << "\", default_dtype=\"float64\")\n";
+                << "atoms.calc = mace_mp(model="
+                << (pinnedFile ? "r\"" + c.maceModelPath + "\"" : "\"" + c.maceSize + "\"")
+                << ", device=\"" << c.maceDevice
+                << "\", default_dtype=\"" << precision << "\")\n";
             break;
         case MaceModelSource::FoundationOFF:
-            out << "# The MACE-OFF foundation model (organic molecules) is downloaded\n"
-                   "# automatically on first use and cached under ~/.cache/mace.\n"
-                   "from mace.calculators import mace_off\n"
+            if (pinnedFile)
+                out << "# MACE-OFF foundation family, pinned to a local checkpoint.\n";
+            else
+                out << "# The MACE-OFF foundation model (organic molecules) is downloaded\n"
+                       "# automatically on first use and cached under ~/.cache/mace.\n";
+            out << "from mace.calculators import mace_off\n"
                    "\n"
-                << "atoms.calc = mace_off(model=\"" << c.maceSize
-                << "\", device=\"" << c.maceDevice
-                << "\", default_dtype=\"float64\")\n";
+                << "atoms.calc = mace_off(model="
+                << (pinnedFile ? "r\"" + c.maceModelPath + "\"" : "\"" + c.maceSize + "\"")
+                << ", device=\"" << c.maceDevice
+                << "\", default_dtype=\"" << precision << "\")\n";
             break;
         case MaceModelSource::CustomFile:
             out << "# User-trained MACE model checkpoint.\n"
@@ -210,23 +212,76 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
                    "\n"
                 << "atoms.calc = MACECalculator(model_paths=r\"" << c.maceModelPath
                 << "\", device=\"" << c.maceDevice
-                << "\", default_dtype=\"float64\")\n";
+                << "\", default_dtype=\"" << precision << "\")\n";
             break;
         }
         break;
+    }
 
-    case CalculatorKind::Gpaw:
+    case CalculatorKind::Gpaw: {
         out << "# GPAW DFT — requires the gpaw package and its PAW datasets in the\n"
-               "# job environment (e.g. conda install -c conda-forge gpaw).\n"
-               "from gpaw import GPAW, PW\n"
-               "\n"
-               "atoms.calc = GPAW(\n"
-            << "    mode=PW(" << c.planeWaveCutoffEv << "),  # eV\n"
-               "    xc=\"PBE\",\n"
-            << "    kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2] << "),\n"
-               "    txt=\"gpaw.out\",\n"
+               "# job environment (e.g. conda install -c conda-forge gpaw).\n";
+        // Only the imports the chosen mode actually needs, so the script stays
+        // clean and an unavailable symbol never breaks an unrelated run.
+        switch (c.gpawMode) {
+        case GpawMode::PlaneWave:
+            out << "from gpaw import GPAW, PW, " << toString(c.gpawMixer) << "\n";
+            break;
+        case GpawMode::FiniteDifference:
+        case GpawMode::Lcao:
+            out << "from gpaw import GPAW, " << toString(c.gpawMixer) << "\n";
+            break;
+        }
+        out << "\n"
+               "atoms.calc = GPAW(\n";
+        switch (c.gpawMode) {
+        case GpawMode::PlaneWave:
+            out << "    mode=PW(" << c.planeWaveCutoffEv << "),  # plane-wave cutoff, eV\n";
+            break;
+        case GpawMode::FiniteDifference:
+            // In FD mode the real-space grid spacing h replaces the cutoff.
+            out << "    mode=\"fd\",\n"
+                << "    h=" << c.gpawGridSpacing << ",  # real-space grid spacing, Ang\n";
+            break;
+        case GpawMode::Lcao:
+            out << "    mode=\"lcao\",\n"
+                << "    basis=\"" << c.gpawBasis << "\",\n";
+            break;
+        }
+        out << "    xc=\"" << c.gpawXc << "\",\n"
+            << "    kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2]
+            << "),  # Monkhorst-Pack grid\n"
+            << "    eigensolver=\"" << toString(c.gpawEigensolver) << "\",\n"
+            // Mixer(beta, nmaxold, weight) — GPAW's positional signature.
+            << "    mixer=" << toString(c.gpawMixer) << "(" << c.gpawMixerBeta << ", "
+            << c.gpawMixerNmaxold << ", " << c.gpawMixerWeight << "),\n"
+            << "    convergence={\n"
+            << "        \"energy\": " << c.scfEnergyTolEv << ",       # eV/electron\n"
+            << "        \"eigenstates\": " << c.gpawConvEigenstates
+            << ",  # eV^2/electron\n"
+            << "        \"density\": " << c.gpawConvDensity
+            << ",      # electrons/valence electron\n"
+            << "    },\n"
+            << "    maxiter=" << c.scfMaxSteps << ",\n";
+        if (c.spinPolarized)
+            out << "    spinpol=True,\n";
+        if (c.smearing != SmearingMethod::None) {
+            // GPAW exposes only Fermi-Dirac / Marzari-Vanderbilt broadening;
+            // the Gaussian and Methfessel-Paxton choices in the shared
+            // smearing combo have no GPAW equivalent, so they map onto
+            // Fermi-Dirac at the requested width and say so.
+            out << "    occupations={\"name\": \"fermi-dirac\", \"width\": "
+                << c.smearingWidthEv << "},\n";
+            if (c.smearing != SmearingMethod::FermiDirac)
+                out << "    # (" << toString(c.smearing)
+                    << " has no GPAW equivalent — using Fermi-Dirac at the same width.)\n";
+        } else {
+            out << "    occupations={\"name\": \"fermi-dirac\", \"width\": 0.0},\n";
+        }
+        out << "    txt=\"gpaw.out\",\n"
                ")\n";
         break;
+    }
 
     case CalculatorKind::Siesta:
         out << "# SIESTA — requires the siesta binary and pseudopotentials\n"
@@ -298,11 +353,13 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
 
     switch (c.task) {
     case TaskKind::SinglePoint:
-        if (isDft) {
-            // The DFT calculator blocks are user-completed hooks; surface the
-            // electronic-convergence targets the dialog collected so they can
-            // be wired into the backend (nelm/ediff, electron_maxstep/conv_thr,
-            // convergence={'energy': ...}, ...).
+        // GPAW is fully parameterized above (mode, xc, eigensolver, mixer,
+        // convergence dict, maxiter), so it needs no hand-off comment.
+        if (isDft && c.calculator != CalculatorKind::Gpaw) {
+            // The other DFT calculator blocks are user-completed hooks;
+            // surface the electronic-convergence targets the wizard collected
+            // so they can be wired into the backend (nelm/ediff,
+            // electron_maxstep/conv_thr, ...).
             out << "# Electronic convergence targets (apply in the calculator block above):\n"
                 << "#   max SCF iterations : " << c.scfMaxSteps << "\n"
                 << "#   energy tolerance   : " << c.scfEnergyTolEv << " eV\n"
@@ -547,6 +604,16 @@ std::string AseScriptGenerator::calculatorSnippet(const CalculatorConfig& config
 std::string AseScriptGenerator::jsonLoggerPreamble()
 {
     return kJsonLoggerHelper;
+}
+
+std::string AseScriptGenerator::loggerModuleSource()
+{
+    return generated::kCalangoLogModule;
+}
+
+const char* AseScriptGenerator::loggerModuleFileName()
+{
+    return "calango_log.py";
 }
 
 std::string AseScriptGenerator::generate(const CalculatorConfig& config,

@@ -1,12 +1,13 @@
 #include "gui/SimulationWizardBase.hpp"
 
-#include "gui/CalculatorDialog.hpp" // resolveEnvironmentPython (shared)
 #include "gui/CondaEnvs.hpp"
 #include "gui/PythonHighlighter.hpp"
+#include "gui/ScriptStaging.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QDoubleValidator>
 #include <QFile>
 #include <QFileDialog>
 #include <QFontDatabase>
@@ -167,7 +168,7 @@ QWidget* SimulationWizardBase::buildEnvironmentPage()
     });
     connect(envEdit_, &QLineEdit::textChanged, this, [this] {
         const QString python =
-            CalculatorDialog::resolveEnvironmentPython(envEdit_->text());
+            CondaEnvs::resolvePython(envEdit_->text());
         if (envEdit_->text().trimmed().isEmpty())
             envStatus_->setText(tr("Using embedded interpreter: %1")
                                     .arg(QString::fromStdString(
@@ -228,23 +229,8 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
         dftGroup_));
     layout->addWidget(dftGroup_);
 
-    maceGroup_ = new QGroupBox(tr("MACE settings"), page);
-    auto* maceForm = new QFormLayout(maceGroup_);
-    maceModelCombo_ = new QComboBox(maceGroup_);
-    maceModelCombo_->addItems({tr("MACE-MP-0 (materials)"),
-                               tr("MACE-OFF (organic molecules)"),
-                               tr("Custom trained model")});
-    maceForm->addRow(tr("Model:"), maceModelCombo_);
-    maceSizeCombo_ = new QComboBox(maceGroup_);
-    maceSizeCombo_->addItems({QStringLiteral("small"), QStringLiteral("medium"),
-                              QStringLiteral("large")});
-    maceSizeCombo_->setCurrentIndex(1);
-    maceForm->addRow(tr("Model size:"), maceSizeCombo_);
-    maceDeviceCombo_ = new QComboBox(maceGroup_);
-    maceDeviceCombo_->addItems({QStringLiteral("cpu"), QStringLiteral("cuda (GPU)"),
-                                QStringLiteral("mps (Apple GPU)")});
-    maceForm->addRow(tr("Device / GPU:"), maceDeviceCombo_);
-    layout->addWidget(maceGroup_);
+    layout->addWidget(buildMaceGroup(page));
+    layout->addWidget(buildGpawGroup(page));
 
     orcaGroup_ = new QGroupBox(tr("ORCA settings"), page);
     auto* orcaForm = new QFormLayout(orcaGroup_);
@@ -275,6 +261,290 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
 
     layout->addStretch(1);
     return page;
+}
+
+QWidget* SimulationWizardBase::buildMaceGroup(QWidget* parent)
+{
+    maceGroup_ = new QGroupBox(tr("MACE settings"), parent);
+    auto* form = new QFormLayout(maceGroup_);
+
+    maceModelCombo_ = new QComboBox(maceGroup_);
+    // Order matches core::MaceModelSource.
+    maceModelCombo_->addItems({tr("MACE-MP-0 (materials)"),
+                               tr("MACE-OFF (organic molecules)"),
+                               tr("Custom trained model")});
+    form->addRow(tr("Model:"), maceModelCombo_);
+
+    maceSizeCombo_ = new QComboBox(maceGroup_);
+    maceSizeCombo_->addItems({QStringLiteral("small"), QStringLiteral("medium"),
+                              QStringLiteral("large")});
+    maceSizeCombo_->setCurrentIndex(1);
+    form->addRow(tr("Model size:"), maceSizeCombo_);
+
+    // Weights file: required for "Custom trained model", optional for the
+    // foundation families (where it pins a downloaded checkpoint so a run
+    // does not silently change when the cached model is updated upstream).
+    maceModelPathEdit_ = new QLineEdit(maceGroup_);
+    maceModelPathEdit_->setPlaceholderText(
+        tr("path/to/weights.model or .pt (e.g. mace-off23-small.model)"));
+    maceBrowseButton_ = new QPushButton(tr("Browse…"), maceGroup_);
+    auto* pathRow = new QHBoxLayout;
+    pathRow->addWidget(maceModelPathEdit_, 1);
+    pathRow->addWidget(maceBrowseButton_);
+    form->addRow(tr("Model file:"), pathRow);
+    connect(maceBrowseButton_, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, tr("Select MACE Model File"), maceModelPathEdit_->text(),
+            tr("MACE models (*.model *.pt *.pth);;All files (*)"));
+        if (!path.isEmpty()) {
+            maceModelPathEdit_->setText(path);
+            refreshPreview();
+        }
+    });
+    maceModelPathHint_ = new QLabel(maceGroup_);
+    maceModelPathHint_->setWordWrap(true);
+    form->addRow(QString(), maceModelPathHint_);
+
+    macePrecisionCombo_ = new QComboBox(maceGroup_);
+    // Order matches core::MacePrecision.
+    macePrecisionCombo_->addItem(tr("float64 (double — default)"));
+    macePrecisionCombo_->addItem(tr("float32 (single — faster, lower memory)"));
+    macePrecisionCombo_->setToolTip(
+        tr("MACE's default_dtype. float64 reproduces the training checkpoint "
+           "exactly and is what tight force convergence and vibrational "
+           "analysis need; float32 is roughly twice as fast (especially on "
+           "GPU) with ~1e-4 eV/Å noise in the forces."));
+    form->addRow(tr("Precision:"), macePrecisionCombo_);
+
+    maceDeviceCombo_ = new QComboBox(maceGroup_);
+    maceDeviceCombo_->addItems({QStringLiteral("cpu"), QStringLiteral("cuda (GPU)"),
+                                QStringLiteral("mps (Apple GPU)")});
+    maceDeviceCombo_->setToolTip(
+        tr("cuda: NVIDIA GPU (needs a CUDA build of PyTorch).\n"
+           "mps: Apple-silicon GPU — note that PyTorch's MPS backend has no "
+           "float64 support, so pair it with float32."));
+    form->addRow(tr("Device / GPU:"), maceDeviceCombo_);
+
+    // Any of these changes the generated calculator block.
+    for (QComboBox* combo : {maceModelCombo_, maceSizeCombo_, macePrecisionCombo_,
+                             maceDeviceCombo_}) {
+        connect(combo, &QComboBox::currentIndexChanged, this, [this] {
+            updateMaceRows();
+            refreshPreview();
+        });
+    }
+    connect(maceModelPathEdit_, &QLineEdit::textChanged, this,
+            [this] { refreshPreview(); });
+
+    updateMaceRows();
+    return maceGroup_;
+}
+
+void SimulationWizardBase::updateMaceRows()
+{
+    const bool custom = maceModelCombo_->currentIndex()
+        == static_cast<int>(core::MaceModelSource::CustomFile);
+    // A custom checkpoint carries its own architecture — the size keyword is
+    // meaningless there.
+    maceSizeCombo_->setEnabled(!custom);
+    maceModelPathHint_->setText(
+        custom ? tr("Required: MACECalculator loads these weights directly.")
+               : tr("Optional: leave empty to download and cache the "
+                    "foundation model, or point at a checkpoint to pin it."));
+
+    // MPS has no float64 kernels in PyTorch; warn rather than silently
+    // generating a script that dies at the first forward pass.
+    const bool mps = maceDeviceCombo_->currentText().startsWith(QStringLiteral("mps"));
+    const bool float64 = macePrecisionCombo_->currentIndex()
+        == static_cast<int>(core::MacePrecision::Float64);
+    macePrecisionCombo_->setStyleSheet(mps && float64
+                                           ? QStringLiteral("color: #d9534f;")
+                                           : QString());
+    macePrecisionCombo_->setToolTip(
+        mps && float64
+            ? tr("PyTorch's MPS backend does not implement float64 — select "
+                 "float32, or run on the CPU.")
+            : tr("MACE's default_dtype. float64 reproduces the training "
+                 "checkpoint exactly; float32 is roughly twice as fast."));
+}
+
+QWidget* SimulationWizardBase::buildGpawGroup(QWidget* parent)
+{
+    gpawGroup_ = new QGroupBox(tr("GPAW settings"), parent);
+    auto* form = new QFormLayout(gpawGroup_);
+
+    gpawModeCombo_ = new QComboBox(gpawGroup_);
+    // Order matches core::GpawMode.
+    gpawModeCombo_->addItem(tr("FD — finite difference (real-space grid)"));
+    gpawModeCombo_->addItem(tr("PW — plane waves"));
+    gpawModeCombo_->addItem(tr("LCAO — atomic-orbital basis"));
+    gpawModeCombo_->setCurrentIndex(static_cast<int>(core::GpawMode::PlaneWave));
+    gpawModeCombo_->setToolTip(
+        tr("FD: robust for molecules and slabs, no cutoff to converge.\n"
+           "PW: the usual choice for periodic solids (uses the plane-wave "
+           "cutoff from the DFT settings above).\n"
+           "LCAO: fastest and lightest, least accurate — good for large "
+           "systems and pre-relaxation."));
+    form->addRow(tr("Mode:"), gpawModeCombo_);
+
+    gpawGridSpacingSpin_ = new QDoubleSpinBox(gpawGroup_);
+    gpawGridSpacingSpin_->setRange(0.05, 0.50);
+    gpawGridSpacingSpin_->setDecimals(3);
+    gpawGridSpacingSpin_->setSingleStep(0.01);
+    gpawGridSpacingSpin_->setValue(0.20);
+    gpawGridSpacingSpin_->setSuffix(tr(" Å"));
+    gpawGridSpacingSpin_->setToolTip(
+        tr("Real-space grid spacing h (FD mode). Smaller is more accurate and "
+           "more expensive; 0.18–0.20 Å is a typical converged value."));
+    form->addRow(tr("Grid spacing h:"), gpawGridSpacingSpin_);
+
+    gpawBasisCombo_ = new QComboBox(gpawGroup_);
+    gpawBasisCombo_->setEditable(true);
+    gpawBasisCombo_->addItems({QStringLiteral("dzp"), QStringLiteral("dz"),
+                               QStringLiteral("sz"), QStringLiteral("szp")});
+    form->addRow(tr("LCAO basis:"), gpawBasisCombo_);
+
+    gpawXcCombo_ = new QComboBox(gpawGroup_);
+    gpawXcCombo_->setEditable(true); // GPAW accepts many more than we list
+    gpawXcCombo_->addItems({QStringLiteral("PBE"), QStringLiteral("LDA"),
+                            QStringLiteral("revPBE"), QStringLiteral("RPBE"),
+                            QStringLiteral("PBEsol"), QStringLiteral("HSE06"),
+                            QStringLiteral("B3LYP"), QStringLiteral("SCAN"),
+                            QStringLiteral("r2SCAN")});
+    gpawXcCombo_->setToolTip(
+        tr("The hybrids (HSE06, B3LYP) and meta-GGAs (SCAN, r2SCAN) need a "
+           "GPAW build with libxc, and are far more expensive than the GGAs."));
+    form->addRow(tr("XC functional:"), gpawXcCombo_);
+
+    gpawEigensolverCombo_ = new QComboBox(gpawGroup_);
+    // Order matches core::GpawEigensolver.
+    gpawEigensolverCombo_->addItems({QStringLiteral("davidson"),
+                                     QStringLiteral("cg"),
+                                     QStringLiteral("rmm-diis"),
+                                     QStringLiteral("direct")});
+    gpawEigensolverCombo_->setToolTip(
+        tr("davidson: robust general default.\n"
+           "cg: slower but very stable — try it when the SCF oscillates.\n"
+           "rmm-diis: cheapest per step for large metallic systems.\n"
+           "direct: exact diagonalization (LCAO / small systems)."));
+    form->addRow(tr("Eigensolver:"), gpawEigensolverCombo_);
+
+    // -- Density mixing ----------------------------------------------------
+    gpawMixerCombo_ = new QComboBox(gpawGroup_);
+    // Order matches core::GpawMixerKind.
+    gpawMixerCombo_->addItems({QStringLiteral("Mixer"), QStringLiteral("MixerSum"),
+                               QStringLiteral("MixerDif")});
+    gpawMixerCombo_->setToolTip(
+        tr("Mixer: non-magnetic systems.\n"
+           "MixerSum: spin-polarized — mixes the total density.\n"
+           "MixerDif: spin-polarized — mixes total density and magnetization "
+           "separately (best for systems whose moment is hard to converge)."));
+    form->addRow(tr("Density mixer:"), gpawMixerCombo_);
+
+    gpawBetaSpin_ = new QDoubleSpinBox(gpawGroup_);
+    gpawBetaSpin_->setRange(0.001, 1.0);
+    gpawBetaSpin_->setDecimals(3);
+    gpawBetaSpin_->setSingleStep(0.01);
+    gpawBetaSpin_->setValue(0.05);
+    gpawBetaSpin_->setToolTip(
+        tr("Linear mixing (damping) parameter. Lower is more stable and "
+           "slower; metals and magnetic systems often need 0.02–0.05."));
+    gpawNmaxoldSpin_ = new QSpinBox(gpawGroup_);
+    gpawNmaxoldSpin_->setRange(1, 20);
+    gpawNmaxoldSpin_->setValue(5);
+    gpawNmaxoldSpin_->setToolTip(
+        tr("Number of previous densities kept for the Pulay mixing history."));
+    gpawWeightSpin_ = new QDoubleSpinBox(gpawGroup_);
+    gpawWeightSpin_->setRange(1.0, 500.0);
+    gpawWeightSpin_->setDecimals(1);
+    gpawWeightSpin_->setValue(50.0);
+    gpawWeightSpin_->setToolTip(
+        tr("Metric weight damping long-wavelength charge sloshing. Larger "
+           "helps big or metallic cells converge."));
+    auto* mixerRow = new QHBoxLayout;
+    mixerRow->addWidget(new QLabel(tr("beta"), gpawGroup_));
+    mixerRow->addWidget(gpawBetaSpin_);
+    mixerRow->addWidget(new QLabel(tr("nmaxold"), gpawGroup_));
+    mixerRow->addWidget(gpawNmaxoldSpin_);
+    mixerRow->addWidget(new QLabel(tr("weight"), gpawGroup_));
+    mixerRow->addWidget(gpawWeightSpin_);
+    mixerRow->addStretch(1);
+    form->addRow(tr("Mixer parameters:"), mixerRow);
+
+    // -- Convergence -------------------------------------------------------
+    // Scientific notation throughout: these live at 1e-8..1e-4, where a
+    // fixed-decimal spin box is unreadable and unusable.
+    const auto toleranceEdit = [this](double initial, double minimum,
+                                      double maximum, const QString& tip) {
+        auto* edit = new QLineEdit(QString::number(initial, 'g', 6), gpawGroup_);
+        auto* validator = new QDoubleValidator(minimum, maximum, 12, edit);
+        validator->setNotation(QDoubleValidator::ScientificNotation);
+        // GPAW's own docs write these as 4e-8 / 1e-4; the C locale keeps the
+        // typed text and the generated Python identical.
+        validator->setLocale(QLocale::c());
+        edit->setValidator(validator);
+        edit->setToolTip(tip);
+        return edit;
+    };
+    gpawEigenTolEdit_ = toleranceEdit(
+        4e-8, 1e-12, 1e-2,
+        tr("GPAW convergence['eigenstates'] — integrated eigenstate residual, "
+           "in eV² per valence electron (e.g. 4e-8)."));
+    form->addRow(tr("Eigenstate tolerance:"), gpawEigenTolEdit_);
+
+    gpawDensityTolEdit_ = toleranceEdit(
+        1e-4, 1e-9, 1e-1,
+        tr("GPAW convergence['density'] — change in the density integrated "
+           "over the cell, in electrons per valence electron (e.g. 1e-4)."));
+    form->addRow(tr("Density tolerance:"), gpawDensityTolEdit_);
+
+    form->addRow(new QLabel(
+        tr("The plane-wave cutoff, k-point grid, SCF iteration cap and "
+           "smearing come from the DFT settings above."),
+        gpawGroup_));
+
+    connect(gpawModeCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        updateGpawRows();
+        refreshPreview();
+    });
+    for (QComboBox* combo : {gpawBasisCombo_, gpawXcCombo_, gpawEigensolverCombo_,
+                             gpawMixerCombo_}) {
+        connect(combo, &QComboBox::currentTextChanged, this,
+                [this] { refreshPreview(); });
+    }
+    for (QDoubleSpinBox* spin : {gpawGridSpacingSpin_, gpawBetaSpin_,
+                                 gpawWeightSpin_}) {
+        connect(spin, &QDoubleSpinBox::valueChanged, this,
+                [this] { refreshPreview(); });
+    }
+    for (QLineEdit* edit : {gpawEigenTolEdit_, gpawDensityTolEdit_}) {
+        connect(edit, &QLineEdit::textChanged, this, [this] { refreshPreview(); });
+    }
+    connect(gpawNmaxoldSpin_, &QSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+
+    updateGpawRows();
+    return gpawGroup_;
+}
+
+void SimulationWizardBase::updateGpawRows()
+{
+    // GPAW takes exactly one of ecut / h / basis; show the one in play.
+    const auto mode = static_cast<core::GpawMode>(gpawModeCombo_->currentIndex());
+    const bool fd = mode == core::GpawMode::FiniteDifference;
+    const bool lcao = mode == core::GpawMode::Lcao;
+    auto* form = qobject_cast<QFormLayout*>(gpawGroup_->layout());
+    if (!form)
+        return;
+    const auto setRowVisible = [form](QWidget* field, bool visible) {
+        int row = -1;
+        QFormLayout::ItemRole role{};
+        form->getWidgetPosition(field, &row, &role);
+        if (row >= 0)
+            form->setRowVisible(row, visible);
+    };
+    setRowVisible(gpawGridSpacingSpin_, fd);
+    setRowVisible(gpawBasisCombo_, lcao);
 }
 
 // ---------------------------------------------------------------------------
@@ -313,8 +583,12 @@ void SimulationWizardBase::updateCalculatorEnabled()
         || kind == core::CalculatorKind::Siesta;
     const bool isMace = kind == core::CalculatorKind::Mace;
     const bool isOrca = kind == core::CalculatorKind::Orca;
+    const bool isGpaw = kind == core::CalculatorKind::Gpaw;
+    // GPAW keeps the shared DFT group visible (cutoff + k-points feed its PW
+    // mode and Monkhorst-Pack grid) and adds its own group underneath.
     dftGroup_->setVisible(isDft);
     maceGroup_->setVisible(isMace);
+    gpawGroup_->setVisible(isGpaw);
     orcaGroup_->setVisible(isOrca);
     if (calcSettingsHint_)
         calcSettingsHint_->setText(
@@ -340,9 +614,31 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
     c.maceSource =
         static_cast<core::MaceModelSource>(maceModelCombo_->currentIndex());
     c.maceSize = maceSizeCombo_->currentText().toStdString();
+    c.maceModelPath = maceModelPathEdit_->text().trimmed().toStdString();
     // Device combo carries a friendly suffix; keep only the device token.
     c.maceDevice =
         maceDeviceCombo_->currentText().section(QLatin1Char(' '), 0, 0).toStdString();
+    c.macePrecision =
+        static_cast<core::MacePrecision>(macePrecisionCombo_->currentIndex());
+
+    c.gpawMode = static_cast<core::GpawMode>(gpawModeCombo_->currentIndex());
+    c.gpawGridSpacing = gpawGridSpacingSpin_->value();
+    c.gpawBasis = gpawBasisCombo_->currentText().trimmed().toStdString();
+    c.gpawXc = gpawXcCombo_->currentText().trimmed().toStdString();
+    c.gpawEigensolver =
+        static_cast<core::GpawEigensolver>(gpawEigensolverCombo_->currentIndex());
+    c.gpawMixer = static_cast<core::GpawMixerKind>(gpawMixerCombo_->currentIndex());
+    c.gpawMixerBeta = gpawBetaSpin_->value();
+    c.gpawMixerNmaxold = gpawNmaxoldSpin_->value();
+    c.gpawMixerWeight = gpawWeightSpin_->value();
+    // An in-progress edit ("1e-") is not a number yet; keep the last valid
+    // value rather than writing 0 into the script.
+    bool ok = false;
+    if (const double v = gpawEigenTolEdit_->text().toDouble(&ok); ok && v > 0.0)
+        c.gpawConvEigenstates = v;
+    if (const double v = gpawDensityTolEdit_->text().toDouble(&ok); ok && v > 0.0)
+        c.gpawConvDensity = v;
+
     c.orcaMethod = orcaMethodCombo_->currentText().trimmed().toStdString();
     c.orcaBasis = orcaBasisCombo_->currentText().trimmed().toStdString();
     c.charge = chargeSpin_->value();
@@ -411,13 +707,11 @@ void SimulationWizardBase::exportScript()
         this, tr("Export Script"), exportFileName(), tr("Python scripts (*.py)"));
     if (path.isEmpty())
         return;
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("Export Script"),
-                             tr("Could not write %1").arg(path));
-        return;
-    }
-    QTextStream(&file) << script();
+    // The script imports CalangoLog, so the helper module is exported beside
+    // it — an exported script stays runnable standalone.
+    QString error;
+    if (!writeScriptWithLogger(path, script(), &error))
+        QMessageBox::warning(this, tr("Export Script"), error);
 }
 
 QString SimulationWizardBase::script() const
@@ -428,7 +722,7 @@ QString SimulationWizardBase::script() const
 QString SimulationWizardBase::pythonExecutable() const
 {
     const QString resolved =
-        CalculatorDialog::resolveEnvironmentPython(envEdit_->text());
+        CondaEnvs::resolvePython(envEdit_->text());
     if (!resolved.isEmpty())
         return resolved;
     return QString::fromStdString(pybridge::PythonEngine::instance().executable());

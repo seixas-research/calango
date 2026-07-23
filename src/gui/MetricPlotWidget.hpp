@@ -36,6 +36,16 @@ public:
         int decimals = 3;       ///< axis / readout precision
         int exportDecimals = 6; ///< file export precision
         double flatPadding = 0.5; ///< y-range half-width for constant series
+        /// Pin the y-axis lower bound to 0 instead of auto-scaling to the
+        /// data minimum. Right for quantities that are physically
+        /// non-negative and whose distance from zero is the point
+        /// (temperature, |force|): an auto-scaled axis makes a 299–301 K
+        /// thermostat look like wild oscillation. Wrong for signed
+        /// quantities (energy, pressure), where it would flatten the signal.
+        bool yAxisFromZero = false;
+        /// Short label drawn next to the setpoint line, "%1" replaced by the
+        /// formatted value (e.g. "T = %1 K"). Empty = value + unit.
+        QString targetLabelFormat;
     };
 
     explicit MetricPlotWidget(MetricSpec spec, QWidget* parent = nullptr);

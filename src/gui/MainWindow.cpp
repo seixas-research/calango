@@ -4,7 +4,6 @@
 #include "core/Noise.hpp"
 #include "core/Structure.hpp"
 #include "gui/BrillouinZoneDialog.hpp"
-#include "gui/CalculatorDialog.hpp"
 #include "gui/CoordinationDialog.hpp"
 #include "gui/DistributionDialog.hpp"
 #include "gui/StructureFactorDialog.hpp"
@@ -55,6 +54,8 @@
 #include "gui/JobLogWidget.hpp"
 #include "gui/MetricPlotWidget.hpp"
 #include "gui/ProjectSerializer.hpp"
+#include "gui/ScriptStaging.hpp"
+#include "gui/StructureEditorDialog.hpp"
 #include "gui/StructureInfoWidget.hpp"
 #include "gui/TimelineWidget.hpp"
 #include "gui/ViewportWidget.hpp"
@@ -121,8 +122,9 @@ constexpr std::size_t kMaxUndoDepth = 50;
 /// (v2 = the 8-zone grid workspace, v3 = the 12-zone grid with the
 /// branding and Remote Access panels, v4 = the "Job" dock renamed to
 /// "Results" with a process selector, v5 = the "Lighting" dock renamed to
-/// the tabbed "Visual Effects" panel).
-constexpr int kLayoutVersion = 5;
+/// the tabbed "Visual Effects" panel, v6 = zones 9/12 width-locked to the
+/// side columns and the branding card hidden by default).
+constexpr int kLayoutVersion = 6;
 
 /// Painted icons for the frame-panel camera toolbar (icon-only buttons).
 /// Plane icons use the axes-triad colors: x red, y green, z blue.
@@ -628,19 +630,28 @@ void MainWindow::createMenusAndDocks()
     // "Visual Effects" dock; the dock's own toggle is in View → the docks.
 
     // ----- Build: generators and structure sources -------------------------
+    // Ordered by workflow rather than by when each builder was added:
+    // structure *sources* first (the database browser is where most sessions
+    // start), then the builders that grow a structure from an existing one,
+    // roughly by increasing dimensionality/complexity, with the reciprocal-
+    // space tool last behind a separator.
     QMenu* buildMenu = menuBar()->addMenu(tr("&Build"));
-    buildMenu->addAction(tr("&Nanomaterial Builder…"), this, &MainWindow::openNanoBuilder);
-    buildMenu->addAction(tr("&Supercell (Transformation Matrix)…"),
-                         this, &MainWindow::openSupercellBuilder);
-    buildMenu->addAction(tr("&Surface Slab…"), this, &MainWindow::cleaveSurface);
-    buildMenu->addAction(tr("Nano&particle && Cluster Builder…"),
+    buildMenu->addAction(tr("From &Database…"), this, &MainWindow::openExamplesBrowser)
+        ->setToolTip(tr("Bulk crystals (ase.build.bulk), Materials Project, PubChem"));
+    buildMenu->addAction(tr("Nano&particle Builder…"),
                          this, &MainWindow::openNanoparticleBuilder);
-    buildMenu->addAction(tr("Special &Quasirandom Structure (SQS)…"),
-                         this, &MainWindow::openSqsBuilder);
+    buildMenu->addAction(tr("&Surface Slab…"), this, &MainWindow::cleaveSurface);
+    buildMenu->addAction(tr("&Nanomaterials…"), this, &MainWindow::openNanoBuilder);
+    buildMenu->addAction(tr("Su&percell (Transformation Matrix)…"),
+                         this, &MainWindow::openSupercellBuilder);
     buildMenu->addAction(tr("Cluster &Expansion…"),
                          this, &MainWindow::openClusterExpansion);
-    buildMenu->addAction(tr("From &Database…"), this, &MainWindow::openExamplesBrowser);
-    buildMenu->addAction(tr("Structure Perturbation / &Noise…"),
+    buildMenu->addSeparator();
+    // Not part of the requested top-level ordering, but still Build tools:
+    // grouped below the separator so the seven primary entries read cleanly.
+    buildMenu->addAction(tr("Special &Quasirandom Structure (SQS)…"),
+                         this, &MainWindow::openSqsBuilder);
+    buildMenu->addAction(tr("Structure Perturbation / N&oise…"),
                          this, &MainWindow::addRandomNoise);
     buildMenu->addSeparator();
     buildMenu->addAction(tr("&Brillouin Zone Builder…"),
@@ -662,9 +673,11 @@ void MainWindow::createMenusAndDocks()
     simulationMenu->addAction(tr("&Nudged Elastic Band (NEB)…"),
                               this, &MainWindow::openNudgedElasticBand);
     simulationMenu->addSeparator();
-    simulationMenu->addAction(tr("New &Remote Calculation…"),
-                              QKeySequence(tr("Ctrl+Shift+R")),
-                              this, &MainWindow::newRemoteCalculation);
+    // "New Remote Calculation…" was removed along with the legacy calculator
+    // dialog it opened: remote execution is now chosen inside each wizard
+    // (Stage 2 execution mode + the Stage-4 "Run (Remote)" button) and
+    // monitored in the Zone-11 Remote Access manager, so a second, parallel
+    // entry point would generate scripts the wizards no longer own.
     simulationMenu->addAction(tr("Electronic &Structure…"),
                               this, &MainWindow::showBandStructure);
     // Dataset Manager moved to the new MLIP menu.
@@ -746,6 +759,13 @@ void MainWindow::createMenusAndDocks()
     // the header without disabling the dock.)
     brandingDock->setTitleBarWidget(new QWidget(brandingDock));
     addDockWidget(Qt::LeftDockWidgetArea, brandingDock);
+    // Hidden by default: the logo card is decorative, and the ~150 px it
+    // occupies is worth more to the Processes and Structure docks below it.
+    // This is only the *default* — restoreState() at the end of this function
+    // reinstates whatever the user left behind (kLayoutVersion was bumped so
+    // the new default appears once for existing installs), and View → Calango
+    // brings it back.
+    brandingDock->setVisible(false);
 
     // Compact Process Manager between the branding card and Structure.
     auto* processDock = new QDockWidget(tr("Processes"), this);
@@ -765,6 +785,8 @@ void MainWindow::createMenusAndDocks()
     infoWidget_ = new StructureInfoWidget(infoDock);
     infoDock->setWidget(infoWidget_);
     splitDockWidget(processDock, infoDock, Qt::Vertical);
+    connect(infoWidget_, &StructureInfoWidget::editStructureRequested,
+            this, &MainWindow::editStructure);
 
     auto* reprDock = new QDockWidget(tr("Representation"), this); // zones 4 & 8
     reprDock->setObjectName(QStringLiteral("representationDock"));
@@ -815,6 +837,10 @@ void MainWindow::createMenusAndDocks()
     temperatureSpec.decimals = 1;
     temperatureSpec.exportDecimals = 2;
     temperatureSpec.flatPadding = 5.0;
+    // Absolute temperature is read against 0 K: an auto-scaled axis turns a
+    // well-behaved 299–301 K thermostat into apparent wild oscillation.
+    temperatureSpec.yAxisFromZero = true;
+    temperatureSpec.targetLabelFormat = tr("T = %1 K");
 
     MetricPlotWidget::MetricSpec forceSpec;
     forceSpec.quantity = tr("Force");
@@ -830,6 +856,9 @@ void MainWindow::createMenusAndDocks()
     forceSpec.lineColor = QColor(110, 210, 130);
     forceSpec.decimals = 3;
     forceSpec.flatPadding = 0.05;
+    // max|F| is non-negative and converges *to* zero — the distance from the
+    // origin is the whole signal during a relaxation.
+    forceSpec.yAxisFromZero = true;
 
     MetricPlotWidget::MetricSpec pressureSpec;
     pressureSpec.quantity = tr("Pressure");
@@ -847,6 +876,9 @@ void MainWindow::createMenusAndDocks()
     pressureSpec.lineColor = QColor(188, 140, 255);
     pressureSpec.decimals = 3;
     pressureSpec.flatPadding = 0.1;
+    // Pressure is signed (a cell under tension reports negative P), so its
+    // axis stays auto-scaled — only the barostat setpoint gets annotated.
+    pressureSpec.targetLabelFormat = tr("P = %1 GPa");
 
     energyPlot_ = new MetricPlotWidget(energySpec, jobTabs);
     temperaturePlot_ = new MetricPlotWidget(temperatureSpec, jobTabs);
@@ -911,17 +943,28 @@ void MainWindow::createMenusAndDocks()
     cellAxesDock->setWidget(new CellAxesPanel(viewport_, cellAxesDock));
     splitDockWidget(remoteDock_, cellAxesDock, Qt::Horizontal);
 
-    connect(remotePanel_, &RemoteAccessPanel::submitCalculationRequested,
-            this, &MainWindow::newRemoteCalculation);
     connect(remotePanel_, &RemoteAccessPanel::resultsReady,
             this, &MainWindow::onRemoteResultsReady);
 
-    // Default grid proportions: side columns ~290 px wide with a compact
-    // branding card; the full-width bottom row is ~250 px tall, its four
-    // zones sized so the Job console keeps the most room.
-    resizeDocks({brandingDock, processDock, infoDock}, {290, 290, 290},
-                Qt::Horizontal);
-    resizeDocks({reprDock}, {290}, Qt::Horizontal);
+    // Default grid proportions: side columns kColumnWidth px wide with a
+    // compact branding card; the full-width bottom row is ~250 px tall.
+    //
+    // The bottom row's outer zones are locked to the same width as the
+    // column above them so the layout reads as a grid: zone 9 (Visual
+    // Effects) lines up with zones 1/5/10 on the left, zone 12 (Unit Cell &
+    // Axes) with the Representation dock on the right. resizeDocks() alone
+    // is only a *hint* — Qt re-solves it against each widget's size hint on
+    // the first show and whenever a dock is toggled — so the two aligned
+    // zones also carry a hard minimum width; the middle zones (Results,
+    // Remote Access) stay elastic and absorb every resize.
+    constexpr int kColumnWidth = 290;
+    resizeDocks({brandingDock, processDock, infoDock},
+                {kColumnWidth, kColumnWidth, kColumnWidth}, Qt::Horizontal);
+    resizeDocks({reprDock}, {kColumnWidth}, Qt::Horizontal);
+    for (QDockWidget* dock : {visualEffectsDock_, cellAxesDock}) {
+        if (QWidget* panel = dock->widget())
+            panel->setMinimumWidth(kColumnWidth);
+    }
     // Left column heights: shrink the compact Structure summary (its ~7
     // property rows fit comfortably) and hand the freed space to the
     // Processes panel so live task lists / logs get more room.
@@ -930,7 +973,7 @@ void MainWindow::createMenusAndDocks()
     resizeDocks({visualEffectsDock_, jobDock_, remoteDock_, cellAxesDock},
                 {250, 250, 250, 250}, Qt::Vertical);
     resizeDocks({visualEffectsDock_, jobDock_, remoteDock_, cellAxesDock},
-                {280, 560, 430, 290}, Qt::Horizontal);
+                {kColumnWidth, 560, 430, kColumnWidth}, Qt::Horizontal);
 
     // Dock titles at 1.2× the theme default across all zones (the earlier
     // 1.5× reduced by 0.8×). The font is set on the QDockWidget (whose
@@ -2215,6 +2258,39 @@ void MainWindow::showBondEditor()
     dialog.exec();
 }
 
+void MainWindow::editStructure()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        statusBar()->showMessage(tr("Open a structure first."));
+        return;
+    }
+
+    StructureEditorDialog dialog(*doc->structure, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    auto edited = dialog.result();
+    if (!edited)
+        return;
+
+    pushUndo();
+    // In a trajectory the displayed frame *is* one of doc->frames — replace
+    // it there too, or scrubbing away and back would silently revert the
+    // edit. (frames holds shared_ptrs to the same objects; identity, not
+    // index, is what identifies the current one.)
+    const auto previous = doc->structure;
+    for (auto& frame : doc->frames) {
+        if (frame == previous)
+            frame = edited;
+    }
+    doc->structure = std::move(edited);
+    // Keep the camera where the user left it: an edited cell or a vacuum
+    // layer would otherwise jump the view.
+    notifyStructureChanged(/*frameCamera=*/false);
+    statusBar()->showMessage(tr("Structure updated (%1 atoms)")
+                                 .arg(doc->structure->size()));
+}
+
 void MainWindow::showPreferences()
 {
     PreferencesDialog dialog(this);
@@ -2940,6 +3016,20 @@ void MainWindow::openExamplesBrowser()
                         .arg(name)
                         .arg(atomCount));
             });
+    // "Group Selected into Single Trajectory File": several database entries
+    // land in one multi-frame document, scrubable on the timeline and
+    // saveable via File → Save Trajectory As.
+    connect(&dialog, &ExamplesDialog::trajectoryFetched, this,
+            [this](std::vector<std::shared_ptr<core::Structure>> frames,
+                   const QString& name) {
+                if (frames.empty())
+                    return;
+                const auto frameCount = frames.size();
+                auto first = frames.front();
+                addDocument(std::move(first), name, std::move(frames));
+                statusBar()->showMessage(
+                    tr("Grouped %1 structures into one trajectory").arg(frameCount));
+            });
     dialog.exec();
 }
 
@@ -2951,33 +3041,20 @@ void MainWindow::openRayTraceDialog()
         return;
     }
     RayTraceDialog dialog(viewport_, this);
+    // Frames are borrowed for the dialog's lifetime; it is modal, so the
+    // document cannot be closed underneath it.
+    dialog.setTrajectory(doc->frames);
     dialog.exec();
+    // The dialog scrubs the viewport through the trajectory while rendering
+    // and restores what it found; re-binding the document's own frame here
+    // is the belt-and-braces version (and covers an aborted run). Deliberately
+    // not syncViewsToCurrent(), which would reset the timeline playhead.
+    viewport_->setStructure(doc->structure, /*frameCamera=*/false);
 }
 
 // ---------------------------------------------------------------------------
 // Simulation
 // ---------------------------------------------------------------------------
-
-void MainWindow::newCalculation()
-{
-    Document* doc = currentDocument();
-    if (!doc || !doc->structure || doc->structure->empty()) {
-        QMessageBox::information(this, tr("New Calculation"),
-                                 tr("Open or build a structure first."));
-        return;
-    }
-    if (!ensureAseAvailable())
-        return;
-    if (jobRunner_->isRunning()) {
-        QMessageBox::information(this, tr("New Calculation"),
-                                 tr("A calculation is already running — kill it first."));
-        return;
-    }
-
-    CalculatorDialog dialog(this);
-    if (dialog.exec() == QDialog::Accepted)
-        runScript(dialog.script(), dialog.pythonExecutable());
-}
 
 bool MainWindow::prepareSimulation(const QString& title)
 {
@@ -3471,6 +3548,16 @@ QString MainWindow::stageJob(const QString& script, int procId)
             throw std::runtime_error("Could not write " + scriptPath.toStdString());
         QTextStream(&scriptFile) << script;
         scriptFile.close();
+
+        // The generated script does `from calango_log import CalangoLog`;
+        // Python puts the script's own directory first on sys.path, so the
+        // module resolves from here for local runs. Remote submissions upload
+        // every file in this directory, so it travels with the job too.
+        if (!writeLoggerModule(jobDir)) {
+            throw std::runtime_error(
+                "Could not write the calango_log.py helper module into "
+                + jobDir.toStdString());
+        }
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Run Calculation"), QString::fromUtf8(e.what()));
         return {};
@@ -3552,36 +3639,6 @@ void MainWindow::onFrameStreamed(const std::shared_ptr<core::Structure>& frame)
     timeline_->show();
     if (followTail) // keep tracking the newest frame unless the user scrubbed
         timeline_->setCurrentFrame(static_cast<int>(doc.frames.size()) - 1);
-}
-
-void MainWindow::newRemoteCalculation()
-{
-    Document* doc = currentDocument();
-    if (!doc || !doc->structure || doc->structure->empty()) {
-        QMessageBox::information(this, tr("New Remote Calculation"),
-                                 tr("Open or build a structure first."));
-        return;
-    }
-    if (!ensureAseAvailable())
-        return;
-
-    CalculatorDialog dialog(this);
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-
-    const QString jobDir = stageJob(dialog.script());
-    if (jobDir.isEmpty())
-        return;
-
-    remoteDock_->show();
-    remoteDock_->raise();
-    // Remote tasks are tracked too; the staging dir receives the
-    // downloaded results, so "Load Result" works after completion.
-    const int taskId = processPanel_->registerTask(tr("Remote calculation"), jobDir);
-    processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
-    remotePanel_->submitStagedJob(
-        jobDir, QFileInfo(doc->fileName).completeBaseName());
-    statusBar()->showMessage(tr("Submitting %1 to the cluster…").arg(jobDir));
 }
 
 void MainWindow::onRemoteResultsReady(const QString& localDir)

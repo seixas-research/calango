@@ -3,6 +3,7 @@
 #include "core/Structure.hpp"
 
 #include <QFormLayout>
+#include <QVBoxLayout>
 
 #include <algorithm>
 #include <cmath>
@@ -23,6 +24,7 @@ double vectorAngleDeg(const core::Vec3& a, const core::Vec3& b)
 
 StructureInfoWidget::StructureInfoWidget(QWidget* parent)
     : QWidget(parent)
+    , editButton_(new QPushButton(tr("Edit Structure…"), this))
     , formulaLabel_(new QLabel(this))
     , atomCountLabel_(new QLabel(this))
     , bondCountLabel_(new QLabel(this))
@@ -32,8 +34,23 @@ StructureInfoWidget::StructureInfoWidget(QWidget* parent)
     , pbcLabel_(new QLabel(this))
 {
     // Symmetry detection lives in its own dialog (Analysis → Detect
-    // Symmetry…); this panel stays a lean read-only structure summary.
-    auto* layout = new QFormLayout(this);
+    // Symmetry…); this panel stays a lean read-only *summary* — the one
+    // action it offers hands editing off to a dedicated dialog rather than
+    // making the labels editable in place.
+    auto* outer = new QVBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+    auto* form = new QFormLayout;
+    outer->addLayout(form);
+    editButton_->setToolTip(
+        tr("Edit lattice parameters, lattice vectors and atomic positions; "
+           "center the structure or add a vacuum layer."));
+    editButton_->setEnabled(false);
+    connect(editButton_, &QPushButton::clicked,
+            this, &StructureInfoWidget::editStructureRequested);
+    outer->addWidget(editButton_);
+    outer->addStretch(1);
+
+    QFormLayout* layout = form;
     layout->addRow(tr("Formula:"), formulaLabel_);
     layout->addRow(tr("Atoms:"), atomCountLabel_);
     layout->addRow(tr("Bonds:"), bondCountLabel_);
@@ -49,6 +66,7 @@ StructureInfoWidget::StructureInfoWidget(QWidget* parent)
 void StructureInfoWidget::updateFromStructure(const core::Structure* structure)
 {
     structure_ = structure;
+    editButton_->setEnabled(structure != nullptr && !structure->empty());
 
     if (!structure || structure->empty()) {
         for (QLabel* label : {formulaLabel_, atomCountLabel_, bondCountLabel_,

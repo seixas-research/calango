@@ -20,10 +20,11 @@ namespace calango::gui {
 /// download. Three compact tabs (Connection / Scheduler / Queue & Logs)
 /// keep it usable at bottom-row height.
 ///
-/// The submission flow is driven by MainWindow: this panel emits
-/// submitCalculationRequested(), MainWindow stages run.py +
-/// structure.extxyz into a fresh job directory (same staging as local
-/// jobs) and hands it to submitStagedJob().
+/// The submission flow is driven by MainWindow: a simulation wizard's
+/// Stage-4 "Run (Remote)" makes it stage run.py + calango_log.py +
+/// structure.extxyz into a fresh job directory (same staging as local jobs)
+/// and hand it to submitStagedJob(). This panel supplies the scheduler
+/// settings that submission is wrapped with, and monitors the result.
 class RemoteAccessPanel : public QWidget {
     Q_OBJECT
 
@@ -36,9 +37,6 @@ public:
     void submitStagedJob(const QString& localJobDir, const QString& jobName);
 
 Q_SIGNALS:
-    /// The user pressed "Submit Calculation…" — MainWindow opens the
-    /// calculator dialog and stages the job.
-    void submitCalculationRequested();
     /// Results were downloaded into `localDir` (after job completion).
     void resultsReady(const QString& localDir);
 
@@ -79,7 +77,6 @@ private:
     QSpinBox* tasksSpin_;
     QLineEdit* walltimeEdit_;
     QPlainTextEdit* setupEdit_;
-    QPushButton* submitButton_;
 
     // Queue & Logs tab
     QLabel* jobLabel_;

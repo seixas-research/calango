@@ -113,6 +113,34 @@ QString rgb(const QColor& c)
     return QStringLiteral("%1, %2, %3").arg(c.redF()).arg(c.greenF()).arg(c.blueF());
 }
 
+// Tachyon's parser reads whitespace-separated floats. Emitting the triples
+// directly (rather than building "a, b, c" and replacing the commas) keeps
+// the two backends' formatting independent and avoids any chance of a
+// stray separator ending up in a .dat scene.
+QString xyz(const QVector3D& v)
+{
+    return QStringLiteral("%1 %2 %3")
+        .arg(static_cast<double>(v.x()), 0, 'f', 6)
+        .arg(static_cast<double>(v.y()), 0, 'f', 6)
+        .arg(static_cast<double>(v.z()), 0, 'f', 6);
+}
+
+QString rgbTriple(const QColor& c)
+{
+    return QStringLiteral("%1 %2 %3")
+        .arg(c.redF(), 0, 'f', 4)
+        .arg(c.greenF(), 0, 'f', 4)
+        .arg(c.blueF(), 0, 'f', 4);
+}
+
+/// Half-angle of the shared 40° vertical field of view (OrbitCamera).
+constexpr double kHalfFovDeg = 20.0;
+
+double halfFovTan()
+{
+    return std::tan(kHalfFovDeg * M_PI / 180.0);
+}
+
 } // namespace
 
 QString RayTraceExporter::povray(const SceneInputs& in)
@@ -126,6 +154,20 @@ QString RayTraceExporter::povray(const SceneInputs& in)
     const QVector3D up = in.camera.worldUp();
     const QMatrix4x4 invView = in.camera.view().inverted();
 
+    // POV-Ray's `angle` is the *horizontal* field of view measured across the
+    // `right` vector, whereas OrbitCamera's 40° is vertical. Emitting a flat
+    // 40 therefore cropped every non-square render (the wider the image, the
+    // more it zoomed in). Convert: tan(h/2) = aspect · tan(v/2).
+    const double horizontalFovDeg =
+        2.0 * std::atan(static_cast<double>(in.aspect) * halfFovTan()) * 180.0 / M_PI;
+    // Orthographic cameras ignore `angle`; POV-Ray sizes them from the
+    // up/right vector lengths instead, matched here to OrbitCamera's frustum
+    // (half-height = distance · tan 20°).
+    const double orthoHalfHeight =
+        static_cast<double>(in.camera.distance()) * halfFovTan();
+    const bool orthographic =
+        in.camera.projectionMode() == CameraProjection::Orthographic;
+
     QString out;
     QTextStream s(&out);
     s << "// Scene exported from Calango — matches the active viewport.\n"
@@ -133,17 +175,26 @@ QString RayTraceExporter::povray(const SceneInputs& in)
          "global_settings { assumed_gamma 1.0 }\n"
       << "background { rgb <" << rgb(in.background) << "> }\n"
       << "camera {\n"
-      << (in.camera.projectionMode() == CameraProjection::Orthographic
-              ? "    orthographic\n"
-              : "    perspective\n")
+      << (orthographic ? "    orthographic\n" : "    perspective\n")
       << "    location <" << vec(eye) << ">\n"
       << "    look_at <" << vec(target) << ">\n"
-      << "    sky <" << vec(up) << ">\n"
-      // Negated right vector keeps POV-Ray's left-handed system aligned
-      // with our right-handed OpenGL scene.
-      << "    right -x*" << in.aspect << "\n"
-      << "    angle 40\n"
-      << "}\n";
+      << "    sky <" << vec(up) << ">\n";
+    if (orthographic) {
+        // An orthographic POV camera is sized by the *lengths* of up/right
+        // (angle is ignored). `look_at` reorients both while preserving those
+        // lengths, so the same -x / +y convention as below still applies and
+        // the visible extent matches OrbitCamera's frustum
+        // (half-height = distance · tan 20°).
+        s << "    right -x*" << 2.0 * orthoHalfHeight * static_cast<double>(in.aspect)
+          << "\n"
+          << "    up y*" << 2.0 * orthoHalfHeight << "\n";
+    } else {
+        // Negated right vector keeps POV-Ray's left-handed system aligned
+        // with our right-handed OpenGL scene.
+        s << "    right -x*" << in.aspect << "\n"
+          << "    angle " << horizontalFovDeg << "\n";
+    }
+    s << "}\n";
 
     for (const auto& light : in.lights) {
         const QVector3D dirWorld =
@@ -177,54 +228,116 @@ QString RayTraceExporter::tachyon(const SceneInputs& in)
 
     const QVector3D eye = in.camera.worldPosition();
     const QVector3D target = in.camera.target();
-    const QVector3D up = in.camera.worldUp();
     const QVector3D viewDir = (target - eye).normalized();
     const QMatrix4x4 invView = in.camera.view().inverted();
-    // Tachyon Zoom = 1 / tan(vertical_fov / 2); our FOV is 40°.
-    const double zoom = 1.0 / std::tan(20.0 * M_PI / 180.0);
+
+    // Tachyon wants an Updir orthogonal to Viewdir; re-orthogonalize instead
+    // of trusting the camera's up vector (they agree today, but a future
+    // free-look camera would silently skew the image plane otherwise).
+    QVector3D up = in.camera.worldUp();
+    up = (up - viewDir * QVector3D::dotProduct(up, viewDir)).normalized();
+    if (up.isNull())
+        up = perpendicularTo(viewDir);
+
+    const bool orthographic =
+        in.camera.projectionMode() == CameraProjection::Orthographic;
+
+    // Tachyon places its image plane one `Zoom` unit down Viewdir with a
+    // half-height of 0.5, so the vertical field of view is 2·atan(0.5/zoom)
+    // — i.e. zoom = 0.5 / tan(fov/2), NOT 1/tan(fov/2). The old formula was
+    // exactly 2× too large and cropped every render to the middle of the
+    // viewport. (Sanity check: VMD's 53.13° default FOV ⇒ zoom 1.0.)
+    //
+    // Under an orthographic camera Tachyon reads the same field as a direct
+    // world-space extent, so it has to be matched to OrbitCamera's frustum
+    // (half-height = distance · tan 20°) rather than to the FOV.
+    const double orthoHalfHeight =
+        static_cast<double>(in.camera.distance()) * halfFovTan();
+    const double zoom = orthographic
+        ? 0.5 / std::max(1e-6, orthoHalfHeight)
+        : 0.5 / halfFovTan();
+
+    // Ambient/diffuse weights come from the scene lights so the ray-traced
+    // image reproduces the viewport's lighting balance instead of a fixed
+    // guess. Tachyon applies Ambient as a flat term, matching our shader.
+    double ambient = 0.0;
+    double diffuse = 0.0;
+    for (const auto& light : in.lights) {
+        ambient = std::max(ambient, static_cast<double>(light.ambient.valueF()));
+        diffuse = std::max(diffuse, static_cast<double>(light.diffuse.valueF()));
+    }
+    if (in.lights.empty()) { // no lights configured: fall back to a headlight
+        ambient = 0.25;
+        diffuse = 0.75;
+    }
+    ambient = std::clamp(ambient, 0.05, 0.9);
+    diffuse = std::clamp(diffuse, 0.1, 1.0);
 
     QString out;
     QTextStream s(&out);
     s << "# Scene exported from Calango — matches the active viewport.\n"
          "Begin_Scene\n"
       << "Resolution " << in.width << " " << in.height << "\n"
-      << "Begin_Camera\n"
-      << "  Projection "
-      << (in.camera.projectionMode() == CameraProjection::Orthographic
-              ? "ORTHOGRAPHIC" : "PERSPECTIVE")
-      << "\n"
-      << "  Zoom " << zoom << "\n"
-         "  Aspectratio 1.0\n"
-         "  Antialiasing 8\n"
+      // Full shading (shadows, Phong highlights, transparency) — the default
+      // shader mode skips the specular term our textures rely on.
+      << "Shader_Mode Full\n"
+         "End_Shader_Mode\n"
+      // The block keyword is `Camera`, not `Begin_Camera`: Tachyon's parser
+      // treats an unknown leading token as an object type and aborts the
+      // whole file with a parse error, which is why Tachyon renders used to
+      // fail outright while the POV-Ray path worked.
+      << "Camera\n"
+      << "  Projection " << (orthographic ? "Orthographic" : "Perspective") << "\n"
+      << "  Zoom " << QString::number(zoom, 'f', 6) << "\n"
+      // Aspectratio is a *pixel* aspect (1.0 = square pixels); the image
+      // aspect already follows from Resolution, so this must stay 1.0 —
+      // passing width/height here would stretch the render.
+      << "  Aspectratio 1.0\n"
+      << "  Antialiasing " << std::max(0, in.antialiasing) << "\n"
          "  Raydepth 8\n"
-      << "  Center " << vec(eye).replace(',', ' ') << "\n"
-      << "  Viewdir " << vec(viewDir).replace(',', ' ') << "\n"
-      << "  Updir " << vec(up).replace(',', ' ') << "\n"
+      << "  Center " << xyz(eye) << "\n"
+      << "  Viewdir " << xyz(viewDir) << "\n"
+      << "  Updir " << xyz(up) << "\n"
       << "End_Camera\n"
-      << "Background " << rgb(in.background).replace(',', ' ') << "\n";
+      << "Background " << rgbTriple(in.background) << "\n";
 
-    for (const auto& light : in.lights) {
-        const QVector3D dirWorld = invView.mapVector(light.direction.normalized());
-        s << "Directional_Light Direction " << vec(dirWorld).replace(',', ' ')
-          << " Color " << rgb(light.diffuse).replace(',', ' ') << "\n";
+    if (in.lights.empty()) {
+        s << "Directional_Light Direction " << xyz(viewDir) << " Color 1 1 1\n";
+    } else {
+        for (const auto& light : in.lights) {
+            // Lights are stored in view space; Direction is the direction the
+            // light *travels*, matching both our shader and Tachyon.
+            const QVector3D dirWorld =
+                invView.mapVector(light.direction.normalized()).normalized();
+            s << "Directional_Light Direction " << xyz(dirWorld) << " Color "
+              << rgbTriple(light.diffuse) << "\n";
+        }
     }
 
-    const auto texture = [](const QColor& color) {
+    const auto texture = [ambient, diffuse](const QColor& color) {
         return QStringLiteral(
-                   "  Texture Ambient 0.25 Diffuse 0.75 Specular 0.2 Opacity 1\n"
-                   "  Phong Plastic 0.4 Phong_size 45 Color %1 TexFunc 0\n")
-            .arg(rgb(color).replace(',', ' '));
+                   "  Texture Ambient %1 Diffuse %2 Specular 0.2 Opacity 1\n"
+                   "  Phong Plastic 0.4 Phong_size 45 Color %3 TexFunc 0\n")
+            .arg(ambient, 0, 'f', 3)
+            .arg(diffuse, 0, 'f', 3)
+            .arg(rgbTriple(color));
     };
     for (const auto& sphere : spheres) {
-        s << "Sphere Center " << vec(sphere.center).replace(',', ' ') << " Rad "
-          << sphere.radius << "\n"
+        // A zero/negative radius is a hard parse error in Tachyon; the
+        // viewport just draws nothing, so guard rather than emit it.
+        if (sphere.radius <= 1e-6f)
+            continue;
+        s << "Sphere Center " << xyz(sphere.center) << " Rad "
+          << QString::number(static_cast<double>(sphere.radius), 'f', 6) << "\n"
           << texture(sphere.color);
     }
     for (const auto& cylinder : cylinders) {
-        if (cylinder.from.distanceToPoint(cylinder.to) < 1e-5f)
+        if (cylinder.from.distanceToPoint(cylinder.to) < 1e-5f
+            || cylinder.radius <= 1e-6f)
             continue;
-        s << "FCylinder Base " << vec(cylinder.from).replace(',', ' ') << " Apex "
-          << vec(cylinder.to).replace(',', ' ') << " Rad " << cylinder.radius << "\n"
+        s << "FCylinder Base " << xyz(cylinder.from) << " Apex "
+          << xyz(cylinder.to) << " Rad "
+          << QString::number(static_cast<double>(cylinder.radius), 'f', 6) << "\n"
           << texture(cylinder.color);
     }
     s << "End_Scene\n";

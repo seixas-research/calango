@@ -1,7 +1,7 @@
+#include "gui/CondaEnvs.hpp"
 #include "gui/MonteCarloDialog.hpp"
 
 #include "core/AseScriptGenerator.hpp"
-#include "gui/CalculatorDialog.hpp" // resolveEnvironmentPython
 #include "gui/PythonHighlighter.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
@@ -260,7 +260,7 @@ MonteCarloDialog::MonteCarloDialog(std::shared_ptr<const core::Structure> struct
     envEdit_->setText(QSettings().value(kEnvSettingsKey).toString());
     connect(envEdit_, &QLineEdit::textChanged, this, [this] {
         const QString python =
-            CalculatorDialog::resolveEnvironmentPython(envEdit_->text());
+            CondaEnvs::resolvePython(envEdit_->text());
         if (envEdit_->text().trimmed().isEmpty())
             envStatus_->setText(tr("Using embedded interpreter: %1")
                                     .arg(QString::fromStdString(
@@ -391,7 +391,7 @@ QString MonteCarloDialog::script() const
 QString MonteCarloDialog::pythonExecutable() const
 {
     const QString resolved =
-        CalculatorDialog::resolveEnvironmentPython(envEdit_->text());
+        CondaEnvs::resolvePython(envEdit_->text());
     if (!resolved.isEmpty())
         return resolved;
     return QString::fromStdString(pybridge::PythonEngine::instance().executable());

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QSlider>
@@ -12,8 +13,8 @@ namespace calango::gui {
 /// Interactive playback timeline for MD / optimization trajectories,
 /// embedded below the 3D viewport (above the job console). Transport
 /// controls (first / previous / play-pause / next / last), a tick-marked
-/// scrubber and a playback-speed selector. Pure View: it only reports the
-/// requested frame index; the controller owns the frames.
+/// scrubber, a loop toggle and a playback-speed selector. Pure View: it only
+/// reports the requested frame index; the controller owns the frames.
 class TimelineWidget : public QWidget {
     Q_OBJECT
 
@@ -36,7 +37,13 @@ Q_SIGNALS:
     void frameChanged(int index);
 
 private:
+    /// Manual transport step (next / previous buttons): always wraps, so the
+    /// user can walk off either end of the trajectory and come back.
     void step(int delta);
+    /// One playback timer tick. Unlike step() this honors the loop toggle:
+    /// with looping off it stops playback on the last frame instead of
+    /// wrapping to frame 0.
+    void advancePlayback();
     void updateLabel();
     void applySpeed();
 
@@ -46,6 +53,7 @@ private:
     QToolButton* nextButton_;
     QToolButton* lastButton_;
     QSlider* slider_;
+    QCheckBox* loopCheck_;    ///< restart at frame 0 after the last frame
     QDoubleSpinBox* fpsSpin_; ///< exact numeric playback rate
     QLabel* frameLabel_;
     QTimer timer_;

@@ -92,4 +92,32 @@ QList<CondaEnv> CondaEnvs::discover()
     return envs;
 }
 
+QString CondaEnvs::resolvePython(const QString& input)
+{
+    const QString trimmed = input.trimmed();
+    if (trimmed.isEmpty())
+        return {};
+    const QFileInfo info(trimmed);
+    // A direct path to an interpreter is taken at face value: the user may be
+    // pointing at a wrapper script or a differently-named build.
+    if (info.isFile())
+        return info.absoluteFilePath();
+    if (info.isDir()) {
+        const QDir dir(trimmed);
+        // Ordered by likelihood: a conda/venv root first, then the case where
+        // the user picked the bin/ (or Scripts/) directory itself.
+        const QStringList candidates = {
+#ifdef Q_OS_WIN
+            QStringLiteral("python.exe"), QStringLiteral("Scripts/python.exe"),
+#endif
+            QStringLiteral("bin/python"), QStringLiteral("bin/python3"),
+            QStringLiteral("python"), QStringLiteral("python3")};
+        for (const QString& candidate : candidates) {
+            if (QFileInfo::exists(dir.filePath(candidate)))
+                return QFileInfo(dir.filePath(candidate)).absoluteFilePath();
+        }
+    }
+    return {};
+}
+
 } // namespace calango::gui

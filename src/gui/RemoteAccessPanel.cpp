@@ -146,13 +146,19 @@ RemoteAccessPanel::RemoteAccessPanel(const QString& pythonExe, QWidget* parent)
     setupEdit_->setMaximumHeight(64);
     schedulerForm->addRow(tr("Setup:"), setupEdit_);
 
-    submitButton_ = new QPushButton(tr("Submit Calculation…"), schedulerPage);
-    submitButton_->setToolTip(
-        tr("Configure an ASE calculation and run it on the cluster\n"
-           "(uploads run.py, the structure and a job.sh wrapper, then submits)"));
-    schedulerForm->addRow(QString(), submitButton_);
-    connect(submitButton_, &QPushButton::clicked,
-            this, &RemoteAccessPanel::submitCalculationRequested);
+    // Jobs are no longer composed here. Every simulation wizard picks the
+    // execution mode in Stage 2 and submits from Stage 4's "Run (Remote)",
+    // which stages run.py + the structure and calls submitStagedJob() — the
+    // settings above are what that submission is wrapped with.
+    auto* submitHint = new QLabel(
+        tr("These settings apply to jobs submitted from a simulation wizard: "
+           "pick <b>Remote</b> in Stage 2, then <b>Run (Remote)</b> in Stage 4. "
+           "Calango uploads run.py, the structure and a generated job.sh, "
+           "submits, and tracks the job in the Queue &amp; Logs tab."),
+        schedulerPage);
+    submitHint->setWordWrap(true);
+    submitHint->setTextFormat(Qt::RichText);
+    schedulerForm->addRow(QString(), submitHint);
 
     tabs->addTab(schedulerPage, tr("Scheduler"));
 
@@ -198,7 +204,6 @@ RemoteAccessPanel::RemoteAccessPanel(const QString& pythonExe, QWidget* parent)
             this, &RemoteAccessPanel::onProbeFinished);
     connect(client_, &remote::RemoteClient::busyChanged, this, [this](bool busy) {
         testButton_->setEnabled(!busy);
-        submitButton_->setEnabled(!busy);
     });
     connect(client_, &remote::RemoteClient::fileUploaded, this, [this](const QString& f) {
         appendLog(tr("uploaded %1\n").arg(f));

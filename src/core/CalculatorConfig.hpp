@@ -29,6 +29,38 @@ enum class MaceModelSource {
     CustomFile,
 };
 
+/// Floating-point precision MACE runs in. float64 matches the training
+/// checkpoints exactly and is what ASE's optimizers/vibrations expect for
+/// tight force convergence; float32 roughly halves memory and is markedly
+/// faster on GPUs, at ~1e-4 eV/Å noise in the forces.
+enum class MacePrecision {
+    Float64,
+    Float32,
+};
+
+/// GPAW's three discretizations of the wavefunctions.
+enum class GpawMode {
+    FiniteDifference, ///< real-space grid — robust, good for molecules/slabs
+    PlaneWave,        ///< PW(ecut) — the usual choice for periodic solids
+    Lcao,             ///< atomic-orbital basis — fastest, least accurate
+};
+
+/// GPAW SCF eigensolvers. Enum order is the combo order in the wizard.
+enum class GpawEigensolver {
+    Davidson,
+    ConjugateGradient,
+    RmmDiis,
+    Direct,
+};
+
+/// GPAW density-mixing scheme. MixerSum/MixerDif are the spin-polarized
+/// variants (sum = mix total density, dif = also mix the magnetization).
+enum class GpawMixerKind {
+    Mixer,
+    MixerSum,
+    MixerDif,
+};
+
 enum class TaskKind {
     SinglePoint,
     GeometryOptimization,
@@ -89,7 +121,7 @@ constexpr bool isConstantPressure(MdEnsemble ensemble)
         || ensemble == MdEnsemble::MelchionnaNPT;
 }
 
-/// Plain parameter bag filled in by CalculatorDialog and consumed by
+/// Plain parameter bag filled in by the simulation wizards and consumed by
 /// AseScriptGenerator. Deliberately UI-free so scripts can also be
 /// generated headlessly (e.g. future batch/CLI mode).
 struct CalculatorConfig {
@@ -147,8 +179,31 @@ struct CalculatorConfig {
     // MACE machine-learning potential
     MaceModelSource maceSource = MaceModelSource::FoundationMP;
     std::string maceSize = "medium";   ///< "small" | "medium" | "large"
-    std::string maceModelPath;         ///< custom checkpoint (CustomFile)
+    /// Custom checkpoint (.model / .pt). Used when maceSource is CustomFile;
+    /// may also name a downloaded foundation checkpoint
+    /// (e.g. "mace-off23-small.model") the user wants to pin.
+    std::string maceModelPath;
     std::string maceDevice = "cpu";    ///< "cpu" | "cuda" | "mps"
+    MacePrecision macePrecision = MacePrecision::Float64;
+
+    // -- GPAW (DFT) ---------------------------------------------------------
+    // planeWaveCutoffEv above is the PW() cutoff; gpawGridSpacing is the FD
+    // grid spacing (h) and gpawBasis the LCAO basis — GPAW takes exactly one
+    // of the three, selected by gpawMode.
+    GpawMode gpawMode = GpawMode::PlaneWave;
+    double gpawGridSpacing = 0.20;   ///< Å, FD mode
+    std::string gpawBasis = "dzp";   ///< LCAO mode
+    std::string gpawXc = "PBE";
+    GpawEigensolver gpawEigensolver = GpawEigensolver::Davidson;
+    GpawMixerKind gpawMixer = GpawMixerKind::Mixer;
+    double gpawMixerBeta = 0.05;     ///< linear mixing (damping) parameter
+    int gpawMixerNmaxold = 5;        ///< densities kept for Pulay mixing
+    double gpawMixerWeight = 50.0;   ///< metric weight for long-wavelength modes
+    /// SCF convergence targets. GPAW's convergence dict takes them per
+    /// electron / per valence electron; 0 leaves that criterion at GPAW's
+    /// default rather than writing an explicit value.
+    double gpawConvEigenstates = 4e-8; ///< eV²/electron
+    double gpawConvDensity = 1e-4;     ///< electrons/valence electron
 
     // -- ORCA (quantum chemistry) ------------------------------------------
     std::string orcaMethod = "B3LYP";   ///< functional / method keyword
@@ -163,6 +218,12 @@ struct CalculatorConfig {
 
 std::string toString(CalculatorKind kind);
 std::string toString(TaskKind kind);
+/// MACE's `default_dtype` keyword ("float64" / "float32").
+std::string toString(MacePrecision precision);
+/// GPAW's eigensolver keyword ("dav", "cg", "rmm-diis", "direct").
+std::string toString(GpawEigensolver solver);
+/// GPAW's mixer class name ("Mixer", "MixerSum", "MixerDif").
+std::string toString(GpawMixerKind mixer);
 /// Human-readable smearing-method name for script comments/labels.
 std::string toString(SmearingMethod method);
 /// The `ase.optimize` class name for the optimizer (e.g. "BFGS", "LBFGS").

@@ -42,13 +42,18 @@ requirements:
     - qt6-main >=6.4
     - numpy >=1.23
     - ase >=3.22                     # structure I/O + calculators
-    - gpaw >=24.1                    # PAW/PW DFT back-end (single-point/opt/bands)
-    - mace-torch >=0.3               # MLIP training / inference
-    - pytorch >=2.0                  # MACE backend
+    - scipy >=1.9
     - spglib >=2.0                   # symmetry detection
     - pymatgen                       # Materials Project / structure interop
-    - scipy >=1.9
     - paramiko >=3.0                 # Remote Access SSH/SFTP panel
+    # MLIP: MACE is packaged on conda-forge as `pymace`, which pulls its full
+    # backend (pytorch, e3nn, cuequivariance-torch, torch-ema, torchmetrics).
+    - pymace >=0.3
+    # DFT: GPAW is a conda-forge package on x86_64 (linux-64 / osx-64) but is
+    # NOT yet built for osx-arm64 (Apple Silicon), where it must be pip-installed
+    # (`pip install gpaw`). gpaw-data ships the PAW datasets on every platform.
+    - gpaw           # [x86_64]
+    - gpaw-data
 
 test:
   commands:

@@ -137,4 +137,199 @@ finally:
     }
 }
 
+namespace {
+
+/// Decode one animation frame from disk, with the frame index in the error
+/// message: a ray-traced animation that silently loses frame 137 of 400 is
+/// far harder to diagnose than one that refuses to encode.
+QImage loadFrameOrThrow(const QStringList& paths, int index)
+{
+    const QString& path = paths.at(index);
+    QImage image(path);
+    if (image.isNull()) {
+        throw std::runtime_error(
+            QStringLiteral("Frame %1 of %2 could not be read back (%3).\n"
+                           "The renderer may have failed or been interrupted "
+                           "on that frame.")
+                .arg(index + 1)
+                .arg(paths.size())
+                .arg(path)
+                .toStdString());
+    }
+    return image;
+}
+
+} // namespace
+
+void AnimationExporter::exportGifFromFiles(const QStringList& framePaths,
+                                           const QString& path,
+                                           int fps,
+                                           bool transparent)
+{
+    if (framePaths.isEmpty())
+        throw std::runtime_error("No frames to export");
+
+    py::module_ pil;
+    try {
+        pil = py::module_::import("PIL.Image");
+    } catch (const py::error_already_set&) {
+        throw std::runtime_error(
+            "GIF export needs Pillow in the embedded Python environment.\n"
+            "Install it with:  pip install pillow");
+    }
+
+    try {
+        py::dict locals;
+        locals["path"] = path.toStdString();
+        locals["duration_ms"] = std::max(20, 1000 / std::max(1, fps));
+        locals["transparent"] = transparent;
+
+        // Quantize frame by frame so only the (small) palettized frames are
+        // retained; the full-resolution RGBA decode is released each round.
+        py::exec(R"PY(
+from PIL import Image
+
+processed = []
+
+def add_frame(raw, width, height):
+    frame = Image.frombytes("RGBA", (width, height), raw)
+    if transparent:
+        alpha = frame.getchannel("A")
+        mask = alpha.point(lambda a: 255 if a <= 128 else 0)
+        pal = frame.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=255)
+        pal.paste(255, mask)
+        processed.append(pal)
+    else:
+        processed.append(
+            frame.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=256))
+    frame.close()
+)PY",
+                 // locals doubles as globals: script-defined functions must
+                 // see the script's own names (see AseBridge::symmetryInfo).
+                 locals, locals);
+
+        auto addFrame = locals["add_frame"];
+        for (int i = 0; i < framePaths.size(); ++i) {
+            const QImage rgba =
+                loadFrameOrThrow(framePaths, i).convertToFormat(QImage::Format_RGBA8888);
+            addFrame(py::bytes(reinterpret_cast<const char*>(rgba.constBits()),
+                               static_cast<std::size_t>(rgba.sizeInBytes())),
+                     rgba.width(), rgba.height());
+        }
+
+        py::exec(R"PY(
+kwargs = dict(save_all=True, append_images=processed[1:], duration=duration_ms, loop=0)
+if transparent:
+    kwargs.update(transparency=255, disposal=2)
+processed[0].save(path, **kwargs)
+for frame in processed:
+    frame.close()
+processed.clear()
+)PY",
+                 locals, locals);
+    } catch (const py::error_already_set& e) {
+        throw std::runtime_error(std::string("GIF export failed:\n") + e.what());
+    }
+}
+
+void AnimationExporter::exportMp4FromFiles(const QStringList& framePaths,
+                                           const QString& path,
+                                           int fps)
+{
+    if (framePaths.isEmpty())
+        throw std::runtime_error("No frames to export");
+
+    try {
+        py::module_::import("imageio");
+        py::module_::import("imageio_ffmpeg");
+    } catch (const py::error_already_set&) {
+        throw std::runtime_error(
+            "MP4 export needs imageio with its bundled ffmpeg in the embedded\n"
+            "Python environment. Install with:  pip install imageio imageio-ffmpeg");
+    }
+
+    // The whole stream is sized from frame 0; yuv420p requires even
+    // dimensions, so crop a pixel where needed (as the in-memory path does).
+    const QImage first = loadFrameOrThrow(framePaths, 0);
+    const int width = first.width() & ~1;
+    const int height = first.height() & ~1;
+    if (width < 2 || height < 2)
+        throw std::runtime_error("Frames too small for video export");
+
+    py::dict locals;
+    locals["path"] = path.toStdString();
+    locals["fps"] = std::max(1, fps);
+    locals["width"] = width;
+    locals["height"] = height;
+
+    try {
+        py::exec(R"PY(
+import numpy as np
+import imageio
+
+writer = imageio.get_writer(
+    path, fps=fps, codec="libx264", quality=8, pixelformat="yuv420p")
+
+def add_frame(raw):
+    writer.append_data(np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3))
+
+def close_writer():
+    writer.close()
+)PY",
+                 // locals doubles as globals: script-defined functions must
+                 // see the script's own names (see AseBridge::symmetryInfo).
+                 locals, locals);
+    } catch (const py::error_already_set& e) {
+        throw std::runtime_error(std::string("MP4 export failed:\n") + e.what());
+    }
+
+    // From here the ffmpeg writer owns a subprocess and a partially written
+    // file: every exit path has to close it, or the process leaks and the
+    // .mp4 is left unplayable.
+    const auto closeWriter = [&locals] {
+        try {
+            locals["close_writer"]();
+        } catch (const py::error_already_set&) {
+            // Already reporting a more useful failure; don't mask it.
+        }
+    };
+
+    try {
+        auto addFrame = locals["add_frame"];
+        for (int i = 0; i < framePaths.size(); ++i) {
+            const QImage source = (i == 0) ? first : loadFrameOrThrow(framePaths, i);
+            if (source.width() < width || source.height() < height) {
+                // catch(...) below closes the writer on the way out.
+                throw std::runtime_error(
+                    QStringLiteral("Frame %1 is %2×%3 but the video is %4×%5 — "
+                                   "every frame must be rendered at the same "
+                                   "resolution.")
+                        .arg(i + 1)
+                        .arg(source.width())
+                        .arg(source.height())
+                        .arg(width)
+                        .arg(height)
+                        .toStdString());
+            }
+            const QImage rgb =
+                source.copy(0, 0, width, height).convertToFormat(QImage::Format_RGB888);
+            // QImage pads scanlines to 4 bytes; repack rows densely.
+            QByteArray packed;
+            packed.reserve(width * height * 3);
+            for (int y = 0; y < height; ++y)
+                packed.append(reinterpret_cast<const char*>(rgb.constScanLine(y)),
+                              width * 3);
+            addFrame(py::bytes(packed.constData(),
+                               static_cast<std::size_t>(packed.size())));
+        }
+    } catch (const py::error_already_set& e) {
+        closeWriter();
+        throw std::runtime_error(std::string("MP4 export failed:\n") + e.what());
+    } catch (...) {
+        closeWriter();
+        throw;
+    }
+    closeWriter();
+}
+
 } // namespace calango::pybridge

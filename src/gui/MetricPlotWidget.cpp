@@ -2,6 +2,7 @@
 
 #include <QFile>
 #include <QFileDialog>
+#include <QFontMetricsF>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
@@ -71,6 +72,15 @@ void MetricPlotWidget::paintEvent(QPaintEvent*)
         lo -= spec_.flatPadding;
         hi += spec_.flatPadding;
     }
+    if (spec_.yAxisFromZero) {
+        // Origin-locked axis: T and |F| are read against zero, so the curve's
+        // height on screen should mean "how far from zero", not "where in the
+        // sampled range". Applied after the flat-series padding so a constant
+        // series still gets headroom above the line rather than pinning it to
+        // the top edge.
+        lo = 0.0;
+        hi = std::max(hi, 1e-9); // never a zero-height plot
+    }
     const int firstStep = samples_.front().step;
     const int lastStep = std::max(samples_.back().step, firstStep + 1);
 
@@ -111,12 +121,36 @@ void MetricPlotWidget::paintEvent(QPaintEvent*)
     painter.drawText(QRectF(-90, -8, 180, 16), Qt::AlignCenter, spec_.yAxisLabel);
     painter.restore();
 
-    // Setpoint reference (thermostat / barostat targets only).
+    // Setpoint reference (thermostat / barostat targets only): dashed line
+    // plus an annotated value, so the setpoint is readable without hunting
+    // for it in the axis caption below.
     if (hasTarget_) {
-        QPen dashed(QColor(255, 158, 26), 1.6, Qt::DashLine);
-        painter.setPen(dashed);
+        const QColor targetColor(255, 158, 26);
+        painter.setPen(QPen(targetColor, 1.6, Qt::DashLine));
         const double y = toY(target_);
         painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
+
+        const QString value = QString::number(target_, 'f', spec_.decimals);
+        const QString label = spec_.targetLabelFormat.isEmpty()
+            ? QStringLiteral("%1 %2").arg(value, spec_.unit)
+            : spec_.targetLabelFormat.arg(value);
+
+        const QFontMetricsF metrics(painter.font());
+        const QSizeF size(metrics.horizontalAdvance(label) + 8.0,
+                          metrics.height() + 2.0);
+        // Sit just above the line, flipping below it when the line is close
+        // to the top edge so the annotation is never clipped.
+        const bool below = y - size.height() - 2.0 < plot.top();
+        const QRectF box(plot.right() - size.width() - 4.0,
+                         below ? y + 2.0 : y - size.height() - 2.0,
+                         size.width(), size.height());
+        // Opaque backing: the label often overlaps the data curve.
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(28, 30, 34, 220));
+        painter.drawRoundedRect(box, 3.0, 3.0);
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(targetColor);
+        painter.drawText(box, Qt::AlignCenter, label);
     }
 
     QPainterPath path;

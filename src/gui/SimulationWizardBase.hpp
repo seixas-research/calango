@@ -92,8 +92,14 @@ private Q_SLOTS:
 private:
     QWidget* buildEnvironmentPage();
     QWidget* buildCalculatorPage();
+    QWidget* buildMaceGroup(QWidget* parent);
+    QWidget* buildGpawGroup(QWidget* parent);
     QWidget* buildReviewPage();
     void updateStage();
+    /// Show only the MACE rows that apply to the selected model source.
+    void updateMaceRows();
+    /// Show only the GPAW rows that apply to the selected discretization.
+    void updateGpawRows();
 
     Action action_ = Action::None;
     int stage_ = 0;
@@ -120,6 +126,27 @@ private:
     QComboBox* maceModelCombo_ = nullptr;
     QComboBox* maceSizeCombo_ = nullptr;
     QComboBox* maceDeviceCombo_ = nullptr;
+    QComboBox* macePrecisionCombo_ = nullptr;
+    QLineEdit* maceModelPathEdit_ = nullptr;
+    QPushButton* maceBrowseButton_ = nullptr;
+    QLabel* maceModelPathHint_ = nullptr;
+
+    // Stage 3 — GPAW (shares cutoff/k-points with dftGroup_ above)
+    QGroupBox* gpawGroup_ = nullptr;
+    QComboBox* gpawModeCombo_ = nullptr;
+    QDoubleSpinBox* gpawGridSpacingSpin_ = nullptr;
+    QComboBox* gpawBasisCombo_ = nullptr;
+    QComboBox* gpawXcCombo_ = nullptr;
+    QComboBox* gpawEigensolverCombo_ = nullptr;
+    QComboBox* gpawMixerCombo_ = nullptr;
+    QDoubleSpinBox* gpawBetaSpin_ = nullptr;
+    QSpinBox* gpawNmaxoldSpin_ = nullptr;
+    QDoubleSpinBox* gpawWeightSpin_ = nullptr;
+    /// Convergence thresholds are ~1e-8..1e-4, which a QDoubleSpinBox can
+    /// only show as "0.000000040000" — plain line edits with a
+    /// scientific-notation validator keep them readable and typable.
+    QLineEdit* gpawEigenTolEdit_ = nullptr;
+    QLineEdit* gpawDensityTolEdit_ = nullptr;
     QGroupBox* orcaGroup_ = nullptr;
     QComboBox* orcaMethodCombo_ = nullptr;
     QComboBox* orcaBasisCombo_ = nullptr;

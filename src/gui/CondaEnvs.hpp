@@ -7,7 +7,7 @@ namespace calango::gui {
 
 /// One discovered Conda environment: its short name and the absolute env
 /// directory (which contains bin/python), suitable to hand to
-/// CalculatorDialog::resolveEnvironmentPython.
+/// CondaEnvs::resolvePython.
 struct CondaEnv {
     QString name;
     QString path;
@@ -26,6 +26,13 @@ public:
     /// Environments found under envsDirectory() that contain a python
     /// interpreter, sorted by name. Empty when nothing is configured/found.
     static QList<CondaEnv> discover();
+
+    /// Accepts a python executable path, a conda environment root, or its
+    /// bin/ directory; returns the interpreter path, or "" if none is found
+    /// there (also for empty input, which every caller reads as "use the
+    /// embedded interpreter"). Shared by every job-launching dialog — it used
+    /// to live on the removed CalculatorDialog.
+    static QString resolvePython(const QString& input);
 };
 
 } // namespace calango::gui

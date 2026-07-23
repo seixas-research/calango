@@ -30,6 +30,9 @@ public:
         QColor background = Qt::white;
         int width = 1600;  ///< embedded in Tachyon scenes
         int height = 1200;
+        /// Tachyon per-pixel antialiasing samples (0 disables). Kept low for
+        /// animation frames, where the cost is paid once per frame.
+        int antialiasing = 8;
     };
 
     static QString povray(const SceneInputs& inputs);

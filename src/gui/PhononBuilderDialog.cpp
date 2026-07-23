@@ -1,6 +1,7 @@
 #include "gui/PhononBuilderDialog.hpp"
 
-#include "gui/CalculatorDialog.hpp"
+#include "gui/CondaEnvs.hpp"
+#include "gui/ScriptStaging.hpp"
 #include "gui/PythonHighlighter.hpp"
 #include "python_bridge/AseBridge.hpp"
 #include "python_bridge/PythonEngine.hpp"
@@ -147,7 +148,7 @@ PhononBuilderDialog::PhononBuilderDialog(
                         pybridge::PythonEngine::instance().executable())));
             envStatusLabel_->setStyleSheet(QString());
         } else if (const QString python =
-                       CalculatorDialog::resolveEnvironmentPython(text);
+                       CondaEnvs::resolvePython(text);
                    !python.isEmpty()) {
             envStatusLabel_->setText(tr("Jobs will run with: %1").arg(python));
             envStatusLabel_->setStyleSheet(QString());
@@ -259,7 +260,7 @@ QString PhononBuilderDialog::script() const
 QString PhononBuilderDialog::pythonExecutable() const
 {
     const QString resolved =
-        CalculatorDialog::resolveEnvironmentPython(envPathEdit_->text());
+        CondaEnvs::resolvePython(envPathEdit_->text());
     if (!resolved.isEmpty())
         return resolved;
     return QString::fromStdString(pybridge::PythonEngine::instance().executable());
@@ -367,13 +368,10 @@ void PhononBuilderDialog::saveScript()
     if (path.isEmpty())
         return;
 
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("Save Script"),
-                             tr("Could not write %1").arg(path));
-        return;
-    }
-    QTextStream(&file) << script();
+    // Stages calango_log.py beside the script (it imports CalangoLog).
+    QString error;
+    if (!writeScriptWithLogger(path, script(), &error))
+        QMessageBox::warning(this, tr("Save Script"), error);
 }
 
 } // namespace calango::gui

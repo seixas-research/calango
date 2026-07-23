@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.33
+    VERSION 26.7.34
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -64,6 +64,37 @@ if(NOT pybind11_FOUND)
     )
     FetchContent_MakeAvailable(pybind11)
 endif()
+
+# ---------------------------------------------------------------------------
+# Embedded Python helper modules
+# ---------------------------------------------------------------------------
+# assets/.internal/scripts/calango_log.py is the ONE copy of the job logger.
+# Generated ASE scripts `from calango_log import CalangoLog`, and the module
+# is staged next to run.py (and next to an exported script) at run time.
+# Baking its text into a header lets the Qt-free core/ layer hand it out
+# without a Qt resource; CONFIGURE_DEPENDS-style re-runs come from listing
+# the .py as a configure dependency below.
+set(CALANGO_LOG_MODULE_PY
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/.internal/scripts/calango_log.py")
+if(NOT EXISTS "${CALANGO_LOG_MODULE_PY}")
+    message(FATAL_ERROR
+        "Missing ${CALANGO_LOG_MODULE_PY} — generated ASE scripts import it. "
+        "If this is a Dropbox online-only placeholder, download the file first.")
+endif()
+file(READ "${CALANGO_LOG_MODULE_PY}" CALANGO_LOG_MODULE_SOURCE)
+# The header embeds the text in an R"CALANGOPY(...)CALANGOPY" literal; that
+# delimiter must not appear in the module itself.
+string(FIND "${CALANGO_LOG_MODULE_SOURCE}" ")CALANGOPY" _calango_log_clash)
+if(NOT _calango_log_clash EQUAL -1)
+    message(FATAL_ERROR
+        "calango_log.py contains the raw-string delimiter )CALANGOPY")
+endif()
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CalangoLogModule.hpp.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/core/CalangoLogModule.hpp"
+    @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CALANGO_LOG_MODULE_PY}")
 
 # ---------------------------------------------------------------------------
 # Target
@@ -130,6 +161,8 @@ qt_add_executable(calango
     src/python_bridge/AnimationExporter.cpp
     src/python_bridge/MaterialsProject.hpp
     src/python_bridge/MaterialsProject.cpp
+    src/python_bridge/BulkBuilder.hpp
+    src/python_bridge/BulkBuilder.cpp
     src/python_bridge/PubChem.hpp
     src/python_bridge/PubChem.cpp
     src/python_bridge/SqsBuilder.hpp
@@ -166,8 +199,8 @@ qt_add_executable(calango
     src/gui/ViewportWidget.cpp
     src/gui/StructureInfoWidget.hpp
     src/gui/StructureInfoWidget.cpp
-    src/gui/CalculatorDialog.hpp
-    src/gui/CalculatorDialog.cpp
+    src/gui/StructureEditorDialog.hpp
+    src/gui/StructureEditorDialog.cpp
     src/gui/JobLogWidget.hpp
     src/gui/JobLogWidget.cpp
     src/gui/TimelineWidget.hpp
@@ -176,6 +209,8 @@ qt_add_executable(calango
     src/gui/MetricPlotWidget.cpp
     src/gui/ProjectSerializer.hpp
     src/gui/ProjectSerializer.cpp
+    src/gui/ScriptStaging.hpp
+    src/gui/ScriptStaging.cpp
     src/gui/RepresentationPanel.hpp
     src/gui/RepresentationPanel.cpp
     src/gui/CellAxesPanel.hpp
@@ -385,7 +420,8 @@ qt_add_resources(calango "examples"
         examples/coronene.xyz
 )
 
-target_include_directories(calango PRIVATE src)
+target_include_directories(calango PRIVATE src
+    "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 # QT_NO_KEYWORDS: pybind11/CPython headers and Qt's lowercase `slots`/`signals`
 # macros collide. We therefore use Q_SIGNALS / Q_SLOTS / Q_EMIT everywhere.
@@ -560,6 +596,40 @@ if(CALANGO_BUILD_TESTS)
         CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}")
     target_link_libraries(calango_stream_test PRIVATE Qt6::Core)
     add_test(NAME frame_streaming COMMAND calango_stream_test)
+
+    # Ray-tracer scene generation. No Python and no renderer binary needed:
+    # it asserts the emitted POV-Ray/Tachyon text (keywords, camera zoom and
+    # FOV conversion, numeric hygiene) — the layer where the Tachyon parse
+    # failure and the 2x zoom regression lived.
+    add_executable(calango_raytrace_test
+        tests/RayTraceSceneTest.cpp
+        src/render/RayTraceExporter.cpp
+        src/render/StructureRenderer.cpp
+        src/render/ColorMap.cpp
+        src/render/Camera.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_raytrace_test PRIVATE src)
+    target_compile_definitions(calango_raytrace_test PRIVATE QT_NO_KEYWORDS)
+    # Qt6::OpenGL only for StructureRenderer's headers; no GL context is
+    # created (only its static color/radius helpers are exercised).
+    target_link_libraries(calango_raytrace_test PRIVATE Qt6::Gui Qt6::OpenGL)
+    add_test(NAME raytrace_scene_files COMMAND calango_raytrace_test)
+
+    # Generated ASE scripts: logger-module import (rather than an inline copy)
+    # and the MACE / GPAW calculator parameters. No Qt, no Python, no network.
+    # `--dump <dir>` writes the scripts out for an external py_compile check.
+    add_executable(calango_script_test
+        tests/ScriptGenerationTest.cpp
+        src/core/AseScriptGenerator.cpp
+    )
+    target_include_directories(calango_script_test PRIVATE src
+        "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_compile_definitions(calango_script_test PRIVATE
+        CALANGO_VERSION="${PROJECT_VERSION}")
+    add_test(NAME generated_ase_scripts COMMAND calango_script_test)
 endif()
 
 # ---------------------------------------------------------------------------

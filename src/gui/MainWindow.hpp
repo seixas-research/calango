@@ -91,18 +91,19 @@ private Q_SLOTS:
     void translateSelection();
     void deleteSelectedAtoms();
     void showBondEditor();
+    /// Structure panel → "Edit Structure…": unit cell + atomic positions
+    /// editor, applied through the document's undo stack.
+    void editStructure();
     void assignBondOrderToSelection(int order);
     void showPreferences();
     void undo();
     void redo();
 
-    void newCalculation();
     void singlePointCalculation();
     void geometryOptimization();
     void molecularDynamics();
     void openMonteCarlo();
     void openNudgedElasticBand();
-    void newRemoteCalculation();
     void onRemoteResultsReady(const QString& localDir);
     void onJobFinished(int exitCode, bool crashed);
     // -- Per-process metric routing (Results panel) ------------------------

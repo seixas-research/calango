@@ -63,13 +63,17 @@ VIRTUAL_ENV env -> build-time CALANGO_DEFAULT_PYTHON. Verify with:
 [runtime][optional] paramiko ............... >= 3.0   (tested 5.0.0)   Remote Access SSH/SFTP panel
 
   Core DFT / MLIP stack (required for the electronic-structure and MLIP
-  workflows — the conda package pulls these in as run dependencies):
+  workflows). The conda package pulls these in as run deps: MACE via the
+  conda-forge `pymace` package (which pulls its whole backend), and GPAW as a
+  conda dep on x86_64 (linux-64 / osx-64). GPAW has no conda-forge osx-arm64
+  build yet, so on Apple Silicon add it with `pip install gpaw`.
+[runtime][required] MACE (conda: pymace) ... >= 0.3   (tested 0.3.16)  MLIP training / inference;
+                                              pulls pytorch >=1.12, e3nn 0.4.4, cuequivariance-torch,
+                                              torch-ema, torchmetrics
 [runtime][required] GPAW .................... >= 24.1  (tested 25.7.0)  PAW/PW DFT: single-point,
                                               geometry-opt, band structure + PDOS
-[runtime][required] mace-torch ............. >= 0.3   MACE MLIP training / inference
-[runtime][required] PyTorch (torch) ........ >= 2.0   MACE backend (CPU / CUDA / MPS)
-[runtime][required] torch-geometric ........ >= 2.4   graph message-passing for MACE
-[runtime][required] e3nn ................... >= 0.4   E(3)-equivariant tensor ops for MACE
+                                              (conda on x86_64; pip on osx-arm64)
+[runtime][required] gpaw-data .............. PAW datasets for GPAW (conda-forge, all platforms)
 
 ------------------------------------------------------------------------------
 4. Optional job / calculator environments (user-selected conda env, NOT the

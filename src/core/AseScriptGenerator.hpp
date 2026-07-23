@@ -25,11 +25,27 @@ public:
     static std::string calculatorSnippet(const CalculatorConfig& config);
 
     /// The structured-logging preamble shared by every generated script:
-    /// routes Python warnings to warnings.log and installs `_calango_log`, a
-    /// thread-safe JSON logger writing step metrics to metrics.json and events
-    /// to log.json. Other generators (Monte Carlo, NEB) prepend this and call
-    /// `_calango_log.metric(step, energy=..., ...)` instead of printing.
+    /// imports CalangoLog from the staged `calango_log.py` module and installs
+    /// it as `_calango_log`, a thread-safe JSON logger writing step metrics to
+    /// metrics.json and events to log.json (and routing Python warnings to
+    /// warnings.log). Other generators (Monte Carlo, NEB, MACE trainer)
+    /// prepend this and call `_calango_log.metric(step, energy=..., ...)`
+    /// instead of printing.
+    ///
+    /// Every caller that *writes a script somewhere* must also write
+    /// loggerModuleSource() as loggerModuleFileName() beside it, or the
+    /// import fails at run time.
     static std::string jsonLoggerPreamble();
+
+    /// Full text of the `calango_log.py` helper module (the single copy lives
+    /// at assets/.internal/scripts/calango_log.py and is baked in at build
+    /// time). Staged next to run.py by the job launcher and next to an
+    /// exported script by the wizards' Export action.
+    static std::string loggerModuleSource();
+
+    /// File name the module must be written under for the generated
+    /// `from calango_log import CalangoLog` to resolve.
+    static const char* loggerModuleFileName();
 };
 
 } // namespace calango::core

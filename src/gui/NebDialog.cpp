@@ -1,7 +1,7 @@
+#include "gui/CondaEnvs.hpp"
 #include "gui/NebDialog.hpp"
 
 #include "core/AseScriptGenerator.hpp"
-#include "gui/CalculatorDialog.hpp"
 #include "python_bridge/AseBridge.hpp"
 #include "python_bridge/NebBuilder.hpp"
 #include "python_bridge/PythonEngine.hpp"
@@ -425,7 +425,7 @@ void NebDialog::doRun()
 QString NebDialog::pythonExecutable() const
 {
     const QString resolved =
-        CalculatorDialog::resolveEnvironmentPython(envEdit_->text());
+        CondaEnvs::resolvePython(envEdit_->text());
     if (!resolved.isEmpty())
         return resolved;
     return QString::fromStdString(pybridge::PythonEngine::instance().executable());

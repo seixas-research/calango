@@ -1,7 +1,6 @@
 #include "gui/MaceTrainerDialog.hpp"
 
 #include "core/AseScriptGenerator.hpp"
-#include "gui/CalculatorDialog.hpp" // resolveEnvironmentPython
 #include "gui/CondaEnvs.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
@@ -349,7 +348,7 @@ QString MaceTrainerDialog::runnerScript() const
 QString MaceTrainerDialog::pythonExecutable() const
 {
     const QString resolved =
-        CalculatorDialog::resolveEnvironmentPython(envEdit_->text());
+        CondaEnvs::resolvePython(envEdit_->text());
     if (!resolved.isEmpty())
         return resolved;
     return QString::fromStdString(pybridge::PythonEngine::instance().executable());

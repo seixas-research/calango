@@ -2,6 +2,7 @@
 
 #include <QImage>
 #include <QString>
+#include <QStringList>
 
 #include <vector>
 
@@ -31,6 +32,31 @@ public:
     static void exportMp4(const std::vector<QImage>& frames,
                           const QString& path,
                           int fps);
+
+    // -- Disk-backed variants (ray-traced trajectory animations) -----------
+    //
+    // The in-memory overloads above need every frame resident at once, which
+    // is fine for a 72-frame turntable at 640×480 (~66 MB) but not for a
+    // 500-frame Tachyon render at 1920×1440 (~5.5 GB). The external
+    // ray-tracer already writes one PNG per frame, so these overloads stream
+    // straight off disk: each image is decoded, encoded and released before
+    // the next is read, so peak memory stays at a single frame.
+    //
+    // `framePaths` is used in the given order — the caller owns frame
+    // ordering, and every path must exist and decode, otherwise the export
+    // throws naming the offending frame rather than silently dropping it.
+
+    /// GIF from PNG (or any Qt-readable) files on disk.
+    static void exportGifFromFiles(const QStringList& framePaths,
+                                   const QString& path,
+                                   int fps,
+                                   bool transparent);
+
+    /// H.264 MP4 from PNG (or any Qt-readable) files on disk. All frames
+    /// must share the first frame's dimensions.
+    static void exportMp4FromFiles(const QStringList& framePaths,
+                                   const QString& path,
+                                   int fps);
 };
 
 } // namespace calango::pybridge

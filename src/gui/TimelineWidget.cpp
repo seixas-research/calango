@@ -16,6 +16,7 @@ TimelineWidget::TimelineWidget(QWidget* parent)
     , nextButton_(new QToolButton(this))
     , lastButton_(new QToolButton(this))
     , slider_(new QSlider(Qt::Horizontal, this))
+    , loopCheck_(new QCheckBox(tr("Loop"), this))
     , fpsSpin_(new QDoubleSpinBox(this))
     , frameLabel_(new QLabel(this))
 {
@@ -27,6 +28,14 @@ TimelineWidget::TimelineWidget(QWidget* parent)
     lastButton_->setIcon(style()->standardIcon(QStyle::SP_MediaSkipForward));
 
     slider_->setTickPosition(QSlider::TicksBelow);
+
+    // Looping is the default: a trajectory is usually inspected as a
+    // repeating animation. Unchecked, playback halts on the last frame so
+    // the end state stays on screen.
+    loopCheck_->setChecked(true);
+    loopCheck_->setToolTip(
+        tr("Restart from the first frame when playback reaches the end.\n"
+           "Unchecked, playback stops on the last frame."));
 
     // Exact numeric playback rate (typed or stepped), instead of a fixed
     // set of speed multipliers.
@@ -43,6 +52,7 @@ TimelineWidget::TimelineWidget(QWidget* parent)
         layout->addWidget(button);
     layout->addWidget(slider_, 1);
     layout->addWidget(frameLabel_);
+    layout->addWidget(loopCheck_); // immediately before the playback rate
     layout->addWidget(fpsSpin_);
 
     connect(firstButton_, &QToolButton::clicked, this, [this] { slider_->setValue(0); });
@@ -54,13 +64,18 @@ TimelineWidget::TimelineWidget(QWidget* parent)
     connect(playButton_, &QToolButton::toggled, this, [this](bool playing) {
         playButton_->setIcon(style()->standardIcon(
             playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
-        if (playing && frameCount_ > 1)
+        if (playing && frameCount_ > 1) {
+            // Pressing play while parked on the last frame with looping off
+            // would otherwise stop instantly; restart from the beginning.
+            if (!loopCheck_->isChecked() && slider_->value() >= frameCount_ - 1)
+                slider_->setValue(0);
             timer_.start();
-        else
+        } else {
             timer_.stop();
+        }
     });
 
-    connect(&timer_, &QTimer::timeout, this, [this] { step(+1); }); // wraps around
+    connect(&timer_, &QTimer::timeout, this, &TimelineWidget::advancePlayback);
 
     connect(slider_, &QSlider::valueChanged, this, [this](int value) {
         updateLabel();
@@ -80,7 +95,7 @@ void TimelineWidget::extendFrameCount(int count)
     const bool usable = count > 1;
     for (QWidget* widget : std::initializer_list<QWidget*>{
              firstButton_, prevButton_, playButton_, nextButton_, lastButton_,
-             slider_, fpsSpin_})
+             slider_, loopCheck_, fpsSpin_})
         widget->setEnabled(usable);
     slider_->setRange(0, std::max(0, count - 1));
     slider_->setTickInterval(std::max(1, count / 20));
@@ -94,7 +109,7 @@ void TimelineWidget::setFrameCount(int count)
     const bool usable = count > 1;
     for (QWidget* widget : std::initializer_list<QWidget*>{
              firstButton_, prevButton_, playButton_, nextButton_, lastButton_,
-             slider_, fpsSpin_})
+             slider_, loopCheck_, fpsSpin_})
         widget->setEnabled(usable);
 
     slider_->setRange(0, std::max(0, count - 1));
@@ -116,6 +131,23 @@ void TimelineWidget::step(int delta)
     if (frameCount_ < 1)
         return;
     slider_->setValue((slider_->value() + delta + frameCount_) % frameCount_);
+}
+
+void TimelineWidget::advancePlayback()
+{
+    if (frameCount_ < 1)
+        return;
+    if (slider_->value() >= frameCount_ - 1) {
+        if (!loopCheck_->isChecked()) {
+            // Park on the last frame and release the play button so the icon
+            // returns to ▶ (the toggled handler stops the timer).
+            playButton_->setChecked(false);
+            return;
+        }
+        slider_->setValue(0);
+        return;
+    }
+    slider_->setValue(slider_->value() + 1);
 }
 
 void TimelineWidget::updateLabel()
