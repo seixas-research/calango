@@ -95,6 +95,16 @@ public:
         /// structure's vector fields "forces" / "velocities".
         VectorOverlay vectorOverlay = VectorOverlay::None;
         SurfaceFinish surfaceFinish = SurfaceFinish::Standard;
+        // -- Directional shadow mapping (Visual Effects -> Shadow) ---------
+        /// Off by default: the depth pass roughly doubles draw calls, and
+        /// shadows help far more in a figure than while orbiting a structure.
+        bool shadowsEnabled = false;
+        /// How dark an occluded fragment becomes (0 = no visible shadow,
+        /// 1 = full loss of direct light; ambient is never attenuated).
+        float shadowStrength = 0.55f;
+        /// PCF kernel half-width in shadow-map texels. 0 = hard edges,
+        /// larger = softer and more expensive ((2r+1)^2 taps per fragment).
+        int shadowSoftness = 2;
         /// Base opacity of the Glassy finish at face-on incidence (the
         /// Fresnel term drives edges toward opaque). Ignored otherwise.
         float glassOpacity = 0.45f;
@@ -197,7 +207,17 @@ private:
     float scalarMin_ = 0.0f;
     float scalarMax_ = 1.0f;
 
+    /// Fit an orthographic light frustum around the current scene and return
+    /// the world -> light-clip matrix used by both the depth pass and the
+    /// lookup in mesh.frag.
+    QMatrix4x4 lightSpaceMatrix() const;
+    /// Lazily create the depth FBO + texture; returns false if unavailable.
+    bool ensureShadowTarget();
+    /// Depth-only pass over every instanced mesh from the light's viewpoint.
+    void renderShadowMap(const QMatrix4x4& lightSpace);
+
     QOpenGLShaderProgram meshProgram_;
+    QOpenGLShaderProgram shadowProgram_; ///< depth-only, light's-eye pass
     QOpenGLShaderProgram lineProgram_; ///< uniform-color lines (unit cell)
     QOpenGLShaderProgram wireProgram_; ///< per-vertex-color lines/points
 
@@ -207,6 +227,23 @@ private:
     InstancedMesh cellTube_; ///< thick cell wireframe (cellLineWidth > 1)
     ColoredVertexBuffer wireBonds_;  ///< GL_LINES
     ColoredVertexBuffer wireAtoms_;  ///< GL_POINTS (isolated atoms visible)
+
+    // -- Shadow map --------------------------------------------------------
+    /// 2048² is the sweet spot here: structures are compact, so the fitted
+    /// light frustum is small and this resolves individual atoms cleanly
+    /// without the memory of a 4k map.
+    static constexpr int kShadowMapSize = 2048;
+    unsigned shadowFbo_ = 0;
+    /// Per-frame shadow state, produced by render() and consumed by
+    /// uploadLights() (which runs once per mesh-program pass).
+    bool shadowsActive_ = false;
+    QMatrix4x4 lightSpace_;
+    unsigned shadowTexture_ = 0;
+    /// Scene bounds in world space, refreshed on every setStructure(); the
+    /// light frustum is fitted to this sphere so the map's depth precision
+    /// tracks the actual model rather than a fixed guess.
+    QVector3D sceneCenter_;
+    float sceneRadius_ = 1.0f;
 
     QOpenGLVertexArrayObject cellVao_;
     QOpenGLBuffer cellVbo_{QOpenGLBuffer::VertexBuffer};

@@ -79,6 +79,15 @@ protected:
     /// Single-point convergence group). Null adds nothing.
     virtual QWidget* buildCalculatorExtras() { return nullptr; }
 
+    /// Extra widget placed ABOVE the script preview on the review stage,
+    /// sharing it through a splitter. Used by the Effective Bands wizard,
+    /// whose k-path is defined on the primitive lattice and so belongs with
+    /// the script that consumes it. Null keeps the review stage as-is.
+    virtual QWidget* buildReviewExtras() { return nullptr; }
+    /// Review-stage header, so a wizard folding another concern in there can
+    /// say so ("k-Path & ASE Script Review").
+    virtual QString reviewHeader() const { return tr("ASE Script Review"); }
+
     /// Notify the subclass that the selected engine changed, so it can show /
     /// hide or retune its buildCalculatorExtras() widgets for that engine.
     virtual void updateCalculatorExtras(core::CalculatorKind) {}

@@ -22,6 +22,7 @@
 #include <QRadioButton>
 #include <QSettings>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QStackedWidget>
 #include <QStringList>
 #include <QTextStream>
@@ -560,16 +561,38 @@ QWidget* SimulationWizardBase::buildReviewPage()
 {
     auto* page = new QWidget(this);
     auto* layout = new QVBoxLayout(page);
+
+    // A wizard may fold another control into this stage (the Effective Bands
+    // k-path). A splitter rather than a fixed split: the two want very
+    // different amounts of room depending on what the user is doing.
+    QWidget* extras = buildReviewExtras();
+    QSplitter* splitter = nullptr;
+    if (extras) {
+        splitter = new QSplitter(Qt::Vertical, page);
+        splitter->addWidget(extras);
+        layout->addWidget(splitter, 1);
+    }
+
+    auto* scriptPane = new QWidget(page);
+    auto* scriptLayout = new QVBoxLayout(scriptPane);
+    scriptLayout->setContentsMargins(0, 0, 0, 0);
     auto* header = new QHBoxLayout;
     header->addWidget(new QLabel(tr("Generated ASE script (editable):"), page));
     header->addStretch(1);
     auto* regenerate = new QPushButton(tr("Regenerate"), page);
     header->addWidget(regenerate);
-    layout->addLayout(header);
-    preview_ = new QPlainTextEdit(page);
+    scriptLayout->addLayout(header);
+    preview_ = new QPlainTextEdit(scriptPane);
     preview_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     new PythonHighlighter(preview_->document());
-    layout->addWidget(preview_, 1);
+    scriptLayout->addWidget(preview_, 1);
+    if (splitter) {
+        splitter->addWidget(scriptPane);
+        splitter->setStretchFactor(0, 3); // the 3D picker wants the room
+        splitter->setStretchFactor(1, 2);
+    } else {
+        layout->addWidget(scriptPane, 1);
+    }
     connect(preview_, &QPlainTextEdit::textChanged, this, [this] {
         if (!updatingPreview_)
             manuallyEdited_ = true;
@@ -672,7 +695,7 @@ void SimulationWizardBase::updateStage()
     titles << calculatorSettingsHeader();
     if (hasSettingsStage_ && !settingsFirst_)
         titles << settingsHeader();
-    titles << tr("ASE Script Review");
+    titles << reviewHeader();
     headerLabel_->setText(tr("Stage %1 of %2 — %3")
                               .arg(stage_ + 1)
                               .arg(titles.size())

@@ -16,6 +16,19 @@
 [![CMake 3.21+](https://img.shields.io/badge/CMake-3.21%2B-064F8C?style=for-the-badge&logo=cmake&logoColor=white)](https://cmake.org/)
 [![Qt 6.4+](https://img.shields.io/badge/Qt-6.4%2B-41CD52?style=for-the-badge&logo=qt&logoColor=white)](https://www.qt.io/)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-fcbc2c?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![macOS .dmg](https://img.shields.io/badge/macOS-.dmg-000000?style=for-the-badge&logo=apple&logoColor=white)](docs/Calango_Packaging_Guide.md#2-macos-dmg)
+[![Conda](https://img.shields.io/badge/Conda-package-44A833?style=for-the-badge&logo=anaconda&logoColor=white)](docs/Calango_Packaging_Guide.md#3-conda-package)
+[![Debian](https://img.shields.io/badge/Debian%2FUbuntu-.deb-A81D33?style=for-the-badge&logo=debian&logoColor=white)](docs/Calango_Packaging_Guide.md#4-debian--ubuntu-deb)
+[![ASE](https://img.shields.io/badge/ASE-3.2x-4B8BBE?style=for-the-badge)](https://wiki.fysik.dtu.dk/ase/)
+
+---
+
+## Documentation
+
+| Guide | Covers |
+|---|---|
+| [User Guide](docs/Calango_User_Guide.md) | the four-stage wizards, interactive Brillouin zone / k-paths, cluster expansion and convex hulls, slab and nanoparticle builders, effective band structure (unfolding), run monitoring |
+| [Packaging Guide](docs/Calango_Packaging_Guide.md) | macOS `.dmg`, Conda package, Debian/Ubuntu `.deb`, and managing core vs optional Python dependencies |
 
 ---
 
@@ -59,6 +72,11 @@
 - **Tabbed Workspace and Timeline:** Every structure or trajectory opens in its own tab with per-document undo history; a playback timeline (0.1 to 120 fps) scrubs MD runs, optimization paths, and generated displacement sets.
 
 ### Simulation and Machine-Learning Potentials
+- **Four-Stage Setup Wizards:** Every workflow (Single-point, Geometry Optimization, Molecular Dynamics, Phonon, Electronic Structure, Monte Carlo, Cluster Expansion, Effective Bands) runs through one stepper shell — Calculator & Execution Environment, Calculator Settings, the workflow's own task stage, and an editable ASE Script Review that doubles as the run/export launcher. The k-path workflows place their task stage after the engine choice, since a path is only meaningful once the calculator is known.
+- **MACE Machine-Learning Potentials:** MACE-MP-0 and MACE-OFF foundation models by size keyword, or a pinned `.model`/`.pt` checkpoint; selectable `float32`/`float64` precision and `cpu`/`cuda`/`mps` device, with a guard against the float64-on-MPS combination PyTorch cannot execute.
+- **Full GPAW Parameter Set:** Mode (PW / FD / LCAO), XC functional (PBE, LDA, revPBE, RPBE, PBEsol, HSE06, B3LYP, SCAN, r2SCAN), eigensolver (Davidson, CG, RMM-DIIS, direct), density mixer class with beta / nmaxold / weight, SCF convergence thresholds, smearing and Monkhorst-Pack grid — the identical control set across Single-point, Geometry Optimization, Electronic Structure and Band Unfolding.
+- **Effective Band Structure (Band Unfolding):** Popescu-Zunger unfolding of defect, dopant and alloy supercells back onto the primitive Brillouin zone, with automatic supercell-matrix deduction (and a commensurability check that refuses incommensurate cell pairs), spectral weights P_Km(k), and a Gaussian-broadened A(k, E) intensity heatmap in the Results panel.
+- **Live System Metrics:** A permanent status bar reports CPU, GPU and memory load plus the ASE thread count, so a long DFT run's resource use is visible without leaving the app.
 - **Calculators Supported:** Empirical potentials (EMT, Lennard-Jones), machine-learning interatomic potentials (MACE-MP-0 and MACE-OFF foundation models or custom `.model`/`.pt` checkpoints on CPU, CUDA, or MPS), DFT script templates for Quantum ESPRESSO, VASP, GPAW, and SIESTA, and ORCA quantum chemistry (method/functional, basis set, charge, multiplicity, CPCM/SMD solvation — ASE writes the `.inp` and parses the results).
 - **Tasks:** Single-point energies/forces, BFGS geometry optimization, and molecular dynamics across the full ASE ensemble matrix — NVE (velocity Verlet), NVT (Langevin, Andersen, Berendsen, Nose-Hoover chains), and NPT (Berendsen, Nose-Hoover/Parrinello-Rahman) — with thermostat/barostat coupling and pressure controls.
 - **Live MD Monitoring:** The Job panel tracks the log, energy convergence, and ionic temperature vs. step, with a dashed thermostat-setpoint reference line for constant-temperature ensembles.
@@ -197,10 +215,18 @@ Project fetch (skipped automatically when no `MP_API_KEY` is configured).
 
 ### Installers
 
-CPack builds native installers — a drag-and-drop macOS `.dmg` (configure
-with `-DCALANGO_MACOS_BUNDLE=ON`, then `cpack`) and a Linux `.deb` with
-desktop, MIME (`.calproj`) and icon integration. See
-`docs/packaging.pdf` for the full guide.
+CPack builds native installers. One-shot scripts:
+
+```bash
+bash packaging/macos/create_dmg.sh              # drag-and-drop macOS .dmg
+bash packaging/conda/create_conda_osx-arm64.sh  # Conda package
+bash packaging/linux/build_deb.sh               # Debian/Ubuntu .deb
+```
+
+The `.deb` registers a desktop entry, the `application/x-calango-project`
+MIME type for `.calproj`, and icons. Full instructions — including bundling a
+relocatable Python interpreter so the app ships self-contained — are in the
+[Packaging Guide](docs/Calango_Packaging_Guide.md).
 
 ---
 

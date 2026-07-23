@@ -7,7 +7,9 @@
 #include <vector>
 
 class QJsonArray;
+class QPainter;
 class QPushButton;
+class QRectF;
 
 namespace calango::gui {
 
@@ -24,6 +26,15 @@ void setButtonColor(QPushButton* button, const QColor& color);
 /// (the result viewers are opened against job directories that may legally
 /// be missing a given artifact).
 QJsonObject readJsonObject(const QString& path);
+
+/// Draw `text` centered in `box`, rendering "_x" (or "_{xy}") as a
+/// typographic subscript — smaller font, dropped baseline. Qt ships no LaTeX
+/// engine and this project carries no QCustomPlot/MathJax dependency, so this
+/// two-run layout is what actually produces "E − E_F (eV)" with a real
+/// subscript rather than a literal underscore. Shared by the band/PDOS plot
+/// and the effective-band heatmap.
+void drawWithSubscripts(QPainter& painter, const QRectF& box,
+                        const QString& text);
 
 /// JSON number array -> std::vector<double>. Non-numeric entries become 0.0,
 /// matching QJsonValue::toDouble()'s contract.

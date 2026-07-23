@@ -263,6 +263,12 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     lineProgram_.addShaderFromSourceFile(QOpenGLShader::Fragment, ":/assets/shaders/line.frag");
     lineProgram_.link();
 
+    shadowProgram_.addShaderFromSourceFile(QOpenGLShader::Vertex,
+                                           ":/assets/shaders/shadow.vert");
+    shadowProgram_.addShaderFromSourceFile(QOpenGLShader::Fragment,
+                                           ":/assets/shaders/shadow.frag");
+    shadowProgram_.link();
+
     wireProgram_.addShaderFromSourceFile(QOpenGLShader::Vertex, ":/assets/shaders/wire.vert");
     wireProgram_.addShaderFromSourceFile(QOpenGLShader::Fragment, ":/assets/shaders/wire.frag");
     wireProgram_.link();
@@ -373,6 +379,32 @@ void StructureRenderer::setStructure(const core::Structure* structure,
 {
     if (!initialized_)
         return;
+
+    // Scene bounds drive the shadow frustum. Recomputed here rather than per
+    // frame: the geometry only changes when the structure does.
+    if (structure && !structure->empty()) {
+        const core::Vec3 centroid = structure->centroid();
+        sceneCenter_ = QVector3D(static_cast<float>(centroid.x),
+                                 static_cast<float>(centroid.y),
+                                 static_cast<float>(centroid.z));
+        // Pad by a couple of Angstrom so atom radii and bond caps at the rim
+        // are inside the frustum, not clipped out of the depth map.
+        sceneRadius_ = static_cast<float>(structure->boundingRadius(centroid)) + 2.0f;
+        if (structure->cell().isDefined()) {
+            // A cell wireframe can extend past the atoms; include its corners.
+            for (const core::Vec3& corner : structure->cell().corners()) {
+                const QVector3D p(static_cast<float>(corner.x),
+                                  static_cast<float>(corner.y),
+                                  static_cast<float>(corner.z));
+                sceneRadius_ = std::max(sceneRadius_,
+                                        (p - sceneCenter_).length() + 1.0f);
+            }
+        }
+        sceneRadius_ = std::max(sceneRadius_, 1.0f);
+    } else {
+        sceneCenter_ = QVector3D();
+        sceneRadius_ = 1.0f;
+    }
 
     std::vector<float> atomInstances;
     std::vector<float> bondInstances;
@@ -634,12 +666,151 @@ void StructureRenderer::uploadLights()
     meshProgram_.setUniformValue("uFogStart", style_.fogStart);
     meshProgram_.setUniformValue("uFogEnd", style_.fogEnd);
     meshProgram_.setUniformValue("uFogDensity", style_.fogDensity);
+
+    // Shadow lookup. Bound here so every mesh-program pass (structure meshes
+    // and the cell tubes) receives a consistent set.
+    meshProgram_.setUniformValue("uLightSpace", lightSpace_);
+    meshProgram_.setUniformValue("uShadowEnabled", shadowsActive_ ? 1 : 0);
+    meshProgram_.setUniformValue("uShadowStrength", style_.shadowStrength);
+    meshProgram_.setUniformValue("uShadowRadius", style_.shadowSoftness);
+    meshProgram_.setUniformValue("uShadowTexelSize",
+                                 1.0f / static_cast<float>(kShadowMapSize));
+    meshProgram_.setUniformValue("uShadowMap", 0); // texture unit 0
+    if (shadowsActive_) {
+        gl_->glActiveTexture(GL_TEXTURE0);
+        gl_->glBindTexture(GL_TEXTURE_2D, shadowTexture_);
+    }
+}
+
+QMatrix4x4 StructureRenderer::lightSpaceMatrix() const
+{
+    // Lights are stored in VIEW space (they follow the camera), but the shadow
+    // map must be built in WORLD space or the shadows would swim as the user
+    // orbits. The caller passes the view matrix in via render(); here the
+    // primary light direction is taken as-is and the frustum is fitted around
+    // the scene sphere, so the projection stays tight whatever the model size.
+    const QVector3D direction =
+        lights_.empty() ? QVector3D(-0.4f, -0.5f, -1.0f)
+                        : lights_.front().direction.normalized();
+    const QVector3D safeDirection =
+        direction.isNull() ? QVector3D(0.0f, 0.0f, -1.0f) : direction.normalized();
+
+    // Place the light outside the scene sphere, looking at its center.
+    const QVector3D eye = sceneCenter_ - safeDirection * (sceneRadius_ * 2.0f);
+    // Any up vector not parallel to the light direction works; swap axes when
+    // the light is near-vertical so the cross product never degenerates.
+    const QVector3D up = std::abs(safeDirection.y()) > 0.95f
+        ? QVector3D(0.0f, 0.0f, 1.0f)
+        : QVector3D(0.0f, 1.0f, 0.0f);
+
+    QMatrix4x4 view;
+    view.lookAt(eye, sceneCenter_, up);
+
+    QMatrix4x4 projection;
+    // Orthographic: a directional light has parallel rays. The near/far span
+    // brackets the whole sphere from the eye placed above.
+    projection.ortho(-sceneRadius_, sceneRadius_, -sceneRadius_, sceneRadius_,
+                     0.05f, sceneRadius_ * 4.0f);
+    return projection * view;
+}
+
+bool StructureRenderer::ensureShadowTarget()
+{
+    if (shadowFbo_ != 0)
+        return true;
+    if (!gl_)
+        return false;
+
+    gl_->glGenTextures(1, &shadowTexture_);
+    gl_->glBindTexture(GL_TEXTURE_2D, shadowTexture_);
+    gl_->glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, kShadowMapSize,
+                      kShadowMapSize, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    // Clamp to a white (fully lit) border so geometry sampling outside the
+    // map is never spuriously shadowed.
+    gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+    gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+    const float border[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    gl_->glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
+
+    gl_->glGenFramebuffers(1, &shadowFbo_);
+    gl_->glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
+    gl_->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                GL_TEXTURE_2D, shadowTexture_, 0);
+    // Depth-only: no color attachment exists, so both buffers must be off or
+    // the FBO is incomplete.
+    gl_->glDrawBuffer(GL_NONE);
+    gl_->glReadBuffer(GL_NONE);
+    const bool complete =
+        gl_->glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    gl_->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (!complete) {
+        // Leave shadows disabled rather than rendering through a broken FBO.
+        gl_->glDeleteFramebuffers(1, &shadowFbo_);
+        gl_->glDeleteTextures(1, &shadowTexture_);
+        shadowFbo_ = 0;
+        shadowTexture_ = 0;
+        return false;
+    }
+    return true;
+}
+
+void StructureRenderer::renderShadowMap(const QMatrix4x4& lightSpace)
+{
+    // The caller restores the previous framebuffer binding: inside a
+    // QOpenGLWidget the "default" target is the widget's own FBO, not 0.
+    GLint previousFbo = 0;
+    gl_->glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFbo);
+    GLint viewport[4] = {0, 0, 0, 0};
+    gl_->glGetIntegerv(GL_VIEWPORT, viewport);
+
+    gl_->glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
+    gl_->glViewport(0, 0, kShadowMapSize, kShadowMapSize);
+    gl_->glClear(GL_DEPTH_BUFFER_BIT);
+    // Front-face culling during the depth pass pushes the stored depth to the
+    // back faces of solid geometry, which removes most self-shadowing acne on
+    // the closed sphere/cylinder meshes used here.
+    gl_->glEnable(GL_CULL_FACE);
+    gl_->glCullFace(GL_FRONT);
+
+    shadowProgram_.bind();
+    shadowProgram_.setUniformValue("uLightSpace", lightSpace);
+    for (InstancedMesh* mesh : {&sphere_, &cylinder_, &cone_, &cellTube_}) {
+        if (mesh->instanceCount == 0)
+            continue;
+        mesh->vao.bind();
+        gl_->glDrawElementsInstanced(GL_TRIANGLES, mesh->indexCount,
+                                     GL_UNSIGNED_INT, nullptr,
+                                     mesh->instanceCount);
+        mesh->vao.release();
+    }
+    shadowProgram_.release();
+
+    gl_->glCullFace(GL_BACK);
+    gl_->glDisable(GL_CULL_FACE);
+    gl_->glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(previousFbo));
+    gl_->glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
 }
 
 void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& projection)
 {
     if (!initialized_)
         return;
+
+    // Depth pass first: the shadow map must exist before the shading pass
+    // samples it. Wireframe mode has no solid geometry to occlude anything,
+    // so it skips the whole thing.
+    QMatrix4x4 lightSpace;
+    bool shadowsActive = false;
+    if (style_.shadowsEnabled && style_.mode != RepresentationMode::Wireframe
+        && ensureShadowTarget()) {
+        lightSpace = lightSpaceMatrix();
+        renderShadowMap(lightSpace);
+        shadowsActive = true;
+    }
+    shadowsActive_ = shadowsActive;
+    lightSpace_ = lightSpace;
 
     if (style_.mode == RepresentationMode::Wireframe) {
         wireProgram_.bind();

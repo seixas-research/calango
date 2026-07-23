@@ -21,6 +21,7 @@ public:
 private:
     QWidget* buildFogTab();
     QWidget* buildDepthBlurTab();
+    QWidget* buildShadowTab();
 
     ViewportWidget* viewport_;
 };

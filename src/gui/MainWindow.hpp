@@ -29,6 +29,7 @@ class JobLogWidget;
 class NebDialog;
 class SimulationWizardBase;
 class ConvexHullPlotWidget;
+class SpectralHeatmapWidget;
 class MetricPlotWidget;
 class ProcessManagerPanel;
 class RemoteAccessPanel;
@@ -154,6 +155,9 @@ private Q_SLOTS:
     /// Simulation → "Cluster Expansion Calculation…": batch-relax the current
     /// document's ensemble and build a formation-energy convex hull.
     void clusterExpansionCalculation();
+    /// Simulation → "Effective Bands…": Popescu-Zunger unfolding of the
+    /// active supercell onto a reference primitive cell.
+    void effectiveBandsCalculation();
     void openNanoparticleBuilder();
     void showAdsorption();
     void showWarrenCowley();
@@ -287,6 +291,7 @@ private:
     MetricPlotWidget* forcePlot_ = nullptr;
     MetricPlotWidget* pressurePlot_ = nullptr;
     ConvexHullPlotWidget* convexHullPlot_ = nullptr;
+    SpectralHeatmapWidget* spectralPlot_ = nullptr;
     TimelineWidget* timeline_ = nullptr;
     QDockWidget* jobDock_ = nullptr;
     QDockWidget* visualEffectsDock_ = nullptr; ///< zone 9 (Lighting + effects)
@@ -304,6 +309,9 @@ private:
     /// Cluster-expansion ensemble staged as configs.extxyz on the next
     /// stageJob; consumed and cleared there, like stagedBandFrames_.
     std::vector<std::shared_ptr<core::Structure>> stagedEnsembleFrames_;
+    /// Primitive reference cell staged as primitive.extxyz on the next
+    /// stageJob (band unfolding); consumed and cleared there.
+    std::shared_ptr<const core::Structure> stagedPrimitive_;
     /// Non-modal NEB builder window (owned via WA_DeleteOnClose; nulled on close).
     NebDialog* nebDialog_ = nullptr;
     jobs::JobRunner* jobRunner_ = nullptr;

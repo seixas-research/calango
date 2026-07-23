@@ -28,6 +28,8 @@
 #include "gui/ClusterExpansionDialog.hpp"
 #include "gui/ClusterExpansionWizard.hpp"
 #include "gui/ConvexHullPlotWidget.hpp"
+#include "gui/EffectiveBandsWizard.hpp"
+#include "gui/SpectralHeatmapWidget.hpp"
 #include "gui/GeometryOptimizationWizard.hpp"
 #include "gui/ElectronicBandsWizard.hpp"
 #include "gui/MolecularDynamicsWizard.hpp"
@@ -676,6 +678,8 @@ void MainWindow::createMenusAndDocks()
                               this, &MainWindow::openNudgedElasticBand);
     simulationMenu->addAction(tr("Cl&uster Expansion Calculation…"),
                               this, &MainWindow::clusterExpansionCalculation);
+    simulationMenu->addAction(tr("&Effective Bands (Unfolding)…"),
+                              this, &MainWindow::effectiveBandsCalculation);
     simulationMenu->addSeparator();
     // "New Remote Calculation…" was removed along with the legacy calculator
     // dialog it opened: remote execution is now chosen inside each wizard
@@ -928,6 +932,87 @@ void MainWindow::createMenusAndDocks()
         connect(exportHull, &QPushButton::clicked, convexHullPlot_,
                 &ConvexHullPlotWidget::exportData);
         jobTabs->addTab(page, tr("Convex Hull"));
+    }
+
+    // Effective Bands: the unfolded spectral function A(k, E). Its controls
+    // are view-side only — sigma, threshold and the Fermi shift all re-derive
+    // from the stored weights, so none of them needs the job re-run.
+    spectralPlot_ = new SpectralHeatmapWidget(jobTabs);
+    {
+        auto* page = new QWidget(jobTabs);
+        auto* pageLayout = new QVBoxLayout(page);
+        pageLayout->setContentsMargins(0, 0, 0, 2);
+        pageLayout->setSpacing(2);
+        pageLayout->addWidget(spectralPlot_, 1);
+
+        auto* row = new QHBoxLayout;
+        row->addWidget(new QLabel(tr("Colormap:"), page));
+        auto* gradientCombo = new QComboBox(page);
+        // Values are render::ColorGradient; Greys is served by the inverted
+        // Hot ramp, so the four the workflow calls for are all available.
+        gradientCombo->addItem(tr("Viridis"),
+                               static_cast<int>(render::ColorGradient::Viridis));
+        gradientCombo->addItem(tr("Plasma"),
+                               static_cast<int>(render::ColorGradient::Plasma));
+        gradientCombo->addItem(tr("Coolwarm"),
+                               static_cast<int>(render::ColorGradient::Coolwarm));
+        gradientCombo->addItem(tr("Inferno"),
+                               static_cast<int>(render::ColorGradient::Inferno));
+        gradientCombo->addItem(tr("Cividis"),
+                               static_cast<int>(render::ColorGradient::Cividis));
+        row->addWidget(gradientCombo);
+        connect(gradientCombo, &QComboBox::currentIndexChanged, this,
+                [this, gradientCombo](int) {
+                    spectralPlot_->setGradient(static_cast<render::ColorGradient>(
+                        gradientCombo->currentData().toInt()));
+                });
+
+        row->addWidget(new QLabel(tr("Threshold:"), page));
+        auto* thresholdSpin = new QDoubleSpinBox(page);
+        thresholdSpin->setRange(0.0, 0.95);
+        thresholdSpin->setDecimals(3);
+        thresholdSpin->setSingleStep(0.01);
+        thresholdSpin->setValue(0.02);
+        thresholdSpin->setToolTip(
+            tr("Intensity below this fraction of the maximum is not drawn. "
+               "Unfolding always produces a low-weight haze; raising this "
+               "isolates the host-like bands."));
+        row->addWidget(thresholdSpin);
+        connect(thresholdSpin, &QDoubleSpinBox::valueChanged, this,
+                [this](double v) { spectralPlot_->setIntensityThreshold(v); });
+
+        row->addWidget(new QLabel(tr("σ:"), page));
+        auto* sigmaSpin = new QDoubleSpinBox(page);
+        sigmaSpin->setRange(0.001, 2.0);
+        sigmaSpin->setDecimals(3);
+        sigmaSpin->setSingleStep(0.01);
+        sigmaSpin->setValue(0.05);
+        sigmaSpin->setSuffix(tr(" eV"));
+        sigmaSpin->setToolTip(
+            tr("Gaussian broadening, re-applied to the stored spectral "
+               "weights — adjustable without re-running the calculation."));
+        row->addWidget(sigmaSpin);
+        connect(sigmaSpin, &QDoubleSpinBox::valueChanged, this,
+                [this](double v) { spectralPlot_->setSigma(v); });
+
+        auto* shiftCheck = new QCheckBox(tr("E − E_F"), page);
+        shiftCheck->setChecked(true);
+        shiftCheck->setToolTip(tr("Plot energies relative to the Fermi level."));
+        row->addWidget(shiftCheck);
+        connect(shiftCheck, &QCheckBox::toggled, this,
+                [this](bool on) { spectralPlot_->setShiftFermiToZero(on); });
+
+        row->addStretch(1);
+        auto* exportImage = new QPushButton(tr("Export Image…"), page);
+        connect(exportImage, &QPushButton::clicked, this,
+                [this] { spectralPlot_->exportImage(this); });
+        row->addWidget(exportImage);
+        auto* exportData = new QPushButton(tr("Export Data…"), page);
+        connect(exportData, &QPushButton::clicked, this,
+                [this] { spectralPlot_->exportData(this); });
+        row->addWidget(exportData);
+        pageLayout->addLayout(row);
+        jobTabs->addTab(page, tr("Effective Bands"));
     }
     // Double-clicking a configuration jumps the viewport to that frame of the
     // optimized trajectory (once it has been loaded into a tab).
@@ -2530,6 +2615,16 @@ void MainWindow::onProcessResultRequested(const QString& directory)
                     .arg(convexHullPlot_->result().hullIndices.size()));
         }
     }
+    if (QFile::exists(directory + QStringLiteral("/effective_bands.json"))) {
+        if (spectralPlot_->loadFromJson(
+                directory + QStringLiteral("/effective_bands.json"))) {
+            jobDock_->show();
+            jobDock_->raise();
+            statusBar()->showMessage(
+                tr("Effective band structure loaded from %1").arg(directory));
+            return;
+        }
+    }
     if (QFile::exists(directory + QStringLiteral("/bands.json"))) {
         openBandResults(directory);
         return;
@@ -2786,6 +2881,78 @@ void MainWindow::openSqsBuilder()
             ? tr("SQS generated with icet")
             : tr("SQS generated (internal annealer, residual Σα² = %1)")
                   .arg(generated.objective, 0, 'f', 4));
+}
+
+void MainWindow::effectiveBandsCalculation()
+{
+    if (!prepareSimulation(tr("Effective Bands")))
+        return;
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure)
+        return;
+    if (!doc->structure->cell().isDefined()) {
+        QMessageBox::information(
+            this, tr("Effective Bands"),
+            tr("Band unfolding needs a periodic supercell — this structure "
+               "has no unit cell."));
+        return;
+    }
+
+    // Every OTHER open document is a candidate primitive reference. Excluding
+    // the active one is deliberate: a cell cannot be its own primitive cell,
+    // and offering it would only invite an identity matrix.
+    std::vector<EffectiveBandsWizard::NamedStructure> candidates;
+    for (std::size_t i = 0; i < documents_.size(); ++i) {
+        const Document* other = documents_[i].get();
+        if (other == doc || !other->structure
+            || !other->structure->cell().isDefined()) {
+            continue;
+        }
+        candidates.push_back(
+            {other->fileName.isEmpty() ? tr("Tab %1").arg(i + 1) : other->fileName,
+             other->structure});
+    }
+    if (candidates.empty()) {
+        QMessageBox::information(
+            this, tr("Effective Bands"),
+            tr("Open the pristine primitive cell in another tab first — "
+               "unfolding projects the supercell's bands onto its Brillouin "
+               "zone, so both structures are needed."));
+        return;
+    }
+
+    EffectiveBandsWizard wizard(doc->structure, std::move(candidates), this);
+    // stageJob writes this as primitive.extxyz next to run.py. Set before the
+    // wizard runs so both the local and remote paths pick it up.
+    if (wizard.exec() != QDialog::Accepted)
+        return;
+    stagedPrimitive_ = wizard.primitiveStructure();
+    if (wizard.action() == SimulationWizardBase::Action::RunRemote) {
+        const QString jobDir = stageJob(wizard.script());
+        if (jobDir.isEmpty()) {
+            stagedPrimitive_.reset();
+            return;
+        }
+        remoteDock_->show();
+        remoteDock_->raise();
+        const int taskId =
+            processPanel_->registerTask(tr("Remote effective bands"), jobDir);
+        processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
+        remotePanel_->submitStagedJob(
+            jobDir, QFileInfo(doc->fileName).completeBaseName());
+        statusBar()->showMessage(tr("Submitting unfolding run to the cluster…"));
+        return;
+    }
+    if (jobRunner_->isRunning()) {
+        QMessageBox::information(this, tr("Effective Bands"),
+                                 tr("A calculation is already running — kill "
+                                    "it first."));
+        stagedPrimitive_.reset();
+        return;
+    }
+    runScript(wizard.script(), wizard.pythonExecutable(), tr("Effective bands"),
+              /*expectFrames=*/false);
+    stagedPrimitive_.reset(); // consumed by stageJob, or dropped on failure
 }
 
 void MainWindow::clusterExpansionCalculation()
@@ -3626,6 +3793,16 @@ QString MainWindow::stageJob(const QString& script, int procId)
                 stagedBandFrames_,
                 (jobDir + QStringLiteral("/band.extxyz")).toStdString(), "extxyz");
             stagedBandFrames_.clear();
+        }
+
+        // Band unfolding: the pristine primitive cell the supercell's bands
+        // are projected back onto.
+        if (stagedPrimitive_) {
+            pybridge::AseBridge::writeStructure(
+                *stagedPrimitive_,
+                (jobDir + QStringLiteral("/primitive.extxyz")).toStdString(),
+                "extxyz");
+            stagedPrimitive_.reset();
         }
 
         // Cluster-expansion ensemble: the unrelaxed decorated configurations

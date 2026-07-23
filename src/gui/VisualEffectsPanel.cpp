@@ -10,6 +10,9 @@
 #include <QGroupBox>
 #include <QPushButton>
 #include <QSlider>
+#include <QSpinBox>
+#include <QLabel>
+#include <QSignalBlocker>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -26,7 +29,92 @@ VisualEffectsPanel::VisualEffectsPanel(ViewportWidget* viewport, QWidget* parent
     tabs->addTab(new LightingPanel(viewport_, tabs), tr("Lighting"));
     tabs->addTab(buildFogTab(), tr("Distance Fog"));
     tabs->addTab(buildDepthBlurTab(), tr("Depth Blur"));
+    tabs->addTab(buildShadowTab(), tr("Shadow"));
     layout->addWidget(tabs);
+}
+
+QWidget* VisualEffectsPanel::buildShadowTab()
+{
+    auto* page = new QWidget(this);
+    auto* pageLayout = new QVBoxLayout(page);
+    auto& style = viewport_->style();
+
+    auto* group = new QGroupBox(tr("Directional shadows"), page);
+    group->setCheckable(true);
+    group->setChecked(style.shadowsEnabled);
+    group->setToolTip(
+        tr("Real-time shadow mapping with percentage-closer filtering: atoms "
+           "and bonds cast shadows onto neighbouring geometry. Adds a "
+           "depth-only pass per frame, so it costs roughly one extra draw of "
+           "the scene."));
+    auto* form = new QFormLayout(group);
+
+    auto* intensitySpin = new QDoubleSpinBox(group);
+    intensitySpin->setRange(0.0, 1.0);
+    intensitySpin->setDecimals(2);
+    intensitySpin->setSingleStep(0.05);
+    intensitySpin->setValue(style.shadowStrength);
+    auto* intensitySlider = new QSlider(Qt::Horizontal, group);
+    intensitySlider->setRange(0, 100);
+    intensitySlider->setValue(static_cast<int>(style.shadowStrength * 100.0f));
+    intensitySpin->setToolTip(
+        tr("How much direct light an occluded surface loses. Ambient light is "
+           "never attenuated, so even at 1.0 shadowed geometry stays readable "
+           "rather than going black."));
+    auto* intensityRow = new QWidget(group);
+    auto* intensityLayout = new QHBoxLayout(intensityRow);
+    intensityLayout->setContentsMargins(0, 0, 0, 0);
+    intensityLayout->addWidget(intensitySlider, 1);
+    intensityLayout->addWidget(intensitySpin);
+    form->addRow(tr("Intensity:"), intensityRow);
+
+    auto* softnessSpin = new QSpinBox(group);
+    softnessSpin->setRange(0, 6);
+    softnessSpin->setValue(style.shadowSoftness);
+    softnessSpin->setToolTip(
+        tr("PCF blur radius in shadow-map texels.\n"
+           "0 gives hard, aliased edges; each step averages a wider "
+           "neighbourhood — (2r+1)² samples per fragment — so quality and "
+           "cost both rise with it. 2–3 suits most structures."));
+    form->addRow(tr("Softness / blur radius:"), softnessSpin);
+
+    auto* bindingNote = new QLabel(
+        tr("The shadow projection follows the <b>primary light</b> (the first "
+           "entry under the Lighting tab). Re-aiming that light re-aims the "
+           "shadows; fill lights stay unshadowed, which is what keeps "
+           "occluded regions legible."),
+        group);
+    bindingNote->setWordWrap(true);
+    bindingNote->setTextFormat(Qt::RichText);
+    form->addRow(bindingNote);
+
+    pageLayout->addWidget(group);
+    pageLayout->addStretch(1);
+
+    // Shadows change only shading uniforms and the depth pass — no instance
+    // buffers to rebuild, so every control is a plain repaint.
+    connect(group, &QGroupBox::toggled, this, [this](bool on) {
+        viewport_->style().shadowsEnabled = on;
+        viewport_->styleChanged(false);
+    });
+    connect(intensitySlider, &QSlider::valueChanged, this, [this, intensitySpin](int v) {
+        const QSignalBlocker blocker(intensitySpin);
+        intensitySpin->setValue(v / 100.0);
+        viewport_->style().shadowStrength = static_cast<float>(v) / 100.0f;
+        viewport_->styleChanged(false);
+    });
+    connect(intensitySpin, &QDoubleSpinBox::valueChanged, this,
+            [this, intensitySlider](double value) {
+                const QSignalBlocker blocker(intensitySlider);
+                intensitySlider->setValue(static_cast<int>(value * 100.0));
+                viewport_->style().shadowStrength = static_cast<float>(value);
+                viewport_->styleChanged(false);
+            });
+    connect(softnessSpin, &QSpinBox::valueChanged, this, [this](int radius) {
+        viewport_->style().shadowSoftness = radius;
+        viewport_->styleChanged(false);
+    });
+    return page;
 }
 
 QWidget* VisualEffectsPanel::buildFogTab()

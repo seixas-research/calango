@@ -8,10 +8,15 @@ layout(location = 7) in vec4 iColor2;  // per-instance, color at z = 1
 
 uniform mat4 uView;
 uniform mat4 uProj;
+/// World -> light clip space, for the shadow lookup in mesh.frag. The
+/// fragment needs the LIGHT-space position, which cannot be recovered from
+/// the view-space one without the inverse view, so it is computed here.
+uniform mat4 uLightSpace;
 
 out vec3 vNormalView;
 out vec3 vPosView;
 out vec4 vColor;
+out vec4 vPosLight;
 
 void main()
 {
@@ -24,5 +29,6 @@ void main()
     // bond instances blend iColor -> iColor2 end to end; spheres and other
     // meshes pass identical colors and stay uniform.
     vColor = mix(iColor, iColor2, clamp(aPos.z, 0.0, 1.0));
+    vPosLight = uLightSpace * iModel * vec4(aPos, 1.0);
     gl_Position = uProj * posView;
 }

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.36
+    VERSION 26.7.37
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -166,6 +166,10 @@ qt_add_executable(calango
     src/core/ClusterExpansion.cpp
     src/core/BandGap.hpp
     src/core/BandGap.cpp
+    src/core/BandUnfolding.hpp
+    src/core/BandUnfolding.cpp
+    src/core/UnfoldingScriptGenerator.hpp
+    src/core/UnfoldingScriptGenerator.cpp
     src/core/ConvexHull.hpp
     src/core/ConvexHull.cpp
     src/core/ClusterExpansionScriptGenerator.hpp
@@ -345,6 +349,8 @@ qt_add_executable(calango
     src/gui/SinglePointWizard.cpp
     src/gui/ElectronicBandsWizard.hpp
     src/gui/ElectronicBandsWizard.cpp
+    src/gui/EffectiveBandsWizard.hpp
+    src/gui/EffectiveBandsWizard.cpp
     src/gui/GeometryOptimizationWizard.hpp
     src/gui/GeometryOptimizationWizard.cpp
     src/gui/PhononWizard.hpp
@@ -355,6 +361,8 @@ qt_add_executable(calango
     src/gui/ClusterExpansionWizard.cpp
     src/gui/ConvexHullPlotWidget.hpp
     src/gui/ConvexHullPlotWidget.cpp
+    src/gui/SpectralHeatmapWidget.hpp
+    src/gui/SpectralHeatmapWidget.cpp
     src/gui/MonteCarloDialog.hpp
     src/gui/MonteCarloDialog.cpp
     src/gui/MonteCarloWizard.hpp
@@ -368,6 +376,8 @@ qt_add_resources(calango "shaders"
     FILES
         assets/shaders/mesh.vert
         assets/shaders/mesh.frag
+        assets/shaders/shadow.vert
+        assets/shaders/shadow.frag
         assets/shaders/line.vert
         assets/shaders/line.frag
         assets/shaders/wire.vert
@@ -707,6 +717,16 @@ if(CALANGO_BUILD_TESTS)
     )
     target_include_directories(calango_bandgap_test PRIVATE src)
     add_test(NAME band_gap COMMAND calango_bandgap_test)
+
+    # Popescu-Zunger unfolding geometry: supercell matrix deduction, the
+    # reciprocal fold (M-transpose), and spectral-weight broadening.
+    add_executable(calango_unfolding_test
+        tests/BandUnfoldingTest.cpp
+        src/core/BandUnfolding.cpp
+        src/core/UnitCell.cpp
+    )
+    target_include_directories(calango_unfolding_test PRIVATE src)
+    add_test(NAME band_unfolding COMMAND calango_unfolding_test)
 endif()
 
 # ---------------------------------------------------------------------------

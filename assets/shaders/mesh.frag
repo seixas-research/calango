@@ -15,6 +15,7 @@
 in vec3 vNormalView;
 in vec3 vPosView;
 in vec4 vColor;
+in vec4 vPosLight;
 
 uniform int   uLightCount;
 uniform vec3  uLightDir[MAX_LIGHTS];      // direction the light travels
@@ -42,6 +43,54 @@ uniform float uShininess;
 #define FINISH_GLASSY   3
 uniform int   uSurfaceFinish;
 uniform float uSurfaceOpacity;   // Glassy base alpha
+
+// Directional shadow mapping (Visual Effects -> Shadow). The depth map is
+// rendered from the primary light's point of view by shadow.vert; here each
+// fragment re-projects into that light space and compares its depth against
+// the stored one. uShadowStrength scales how dark an occluded fragment gets
+// (0 = shadows off), and uShadowRadius is the PCF kernel half-width in
+// texels: a wider kernel averages more neighbours and softens the edge.
+uniform sampler2D uShadowMap;
+uniform int   uShadowEnabled;
+uniform float uShadowStrength;
+uniform int   uShadowRadius;
+uniform float uShadowTexelSize;
+
+/// Fraction of the PCF kernel that is lit, in [0, 1].
+float shadowVisibility(vec3 normal)
+{
+    if (uShadowEnabled == 0)
+        return 1.0;
+    // Perspective divide is a no-op for the orthographic light projection but
+    // keeps this correct if the light ever becomes a spot light.
+    vec3 proj = vPosLight.xyz / vPosLight.w;
+    proj = proj * 0.5 + 0.5;                 // NDC [-1,1] -> texture [0,1]
+    if (proj.z > 1.0)
+        return 1.0;                          // beyond the light's far plane
+    // Outside the shadow frustum there is no occlusion information; treating
+    // those fragments as lit avoids a hard dark band at the map's edge.
+    if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0)
+        return 1.0;
+
+    // Slope-scaled bias: surfaces nearly edge-on to the light need a larger
+    // offset or they self-shadow into acne stripes.
+    vec3 lightDir = normalize(-uLightDir[0]);
+    float cosTheta = clamp(dot(normalize(normal), lightDir), 0.0, 1.0);
+    float bias = max(0.0035 * (1.0 - cosTheta), 0.0008);
+
+    int radius = clamp(uShadowRadius, 0, 6);
+    float lit = 0.0;
+    float samples = 0.0;
+    for (int x = -radius; x <= radius; ++x) {
+        for (int y = -radius; y <= radius; ++y) {
+            float stored = texture(uShadowMap,
+                                   proj.xy + vec2(x, y) * uShadowTexelSize).r;
+            lit += (proj.z - bias) > stored ? 0.0 : 1.0;
+            samples += 1.0;
+        }
+    }
+    return samples > 0.0 ? lit / samples : 1.0;
+}
 
 // Distance fog (View -> Visual Effects): 0 = off, 1 = linear between
 // uFogStart/uFogEnd, 2 = exponential with uFogDensity. uFogColor tracks
@@ -78,15 +127,24 @@ void main()
         shininess      = uShininess * 2.5; // tighter, glassier highlight
     }
 
+    // Only the primary light (index 0) casts shadows — it is the one the
+    // depth map was rendered from. Fill lights stay unshadowed, which is also
+    // what keeps shadowed regions readable rather than black.
+    float visibility = shadowVisibility(n);
+    float primaryFactor = mix(1.0, visibility, clamp(uShadowStrength, 0.0, 1.0));
+
     vec3 color = vec3(0.0);
     for (int i = 0; i < uLightCount; ++i) {
         vec3 l = normalize(-uLightDir[i]);
         vec3 h = normalize(l + v);
         float ndl = max(dot(n, l), 0.0);
         float spec = ndl > 0.0 ? pow(max(dot(n, h), 0.0), shininess) : 0.0;
+        // Ambient is never shadowed: it stands in for bounced light, and
+        // attenuating it would drive occluded geometry to pure black.
+        float direct = (i == 0) ? primaryFactor : 1.0;
         color += vColor.rgb * uLightAmbient[i]
-               + vColor.rgb * uLightDiffuse[i] * ndl * diffuseWeight
-               + uLightSpecular[i] * spec * specularWeight;
+               + vColor.rgb * uLightDiffuse[i] * ndl * diffuseWeight * direct
+               + uLightSpecular[i] * spec * specularWeight * direct;
     }
 
     float alpha = vColor.a;
