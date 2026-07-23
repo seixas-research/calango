@@ -1,4 +1,5 @@
 #include "gui/LightingPanel.hpp"
+#include "gui/GuiUtils.hpp"
 
 #include "gui/ViewportWidget.hpp"
 
@@ -12,12 +13,6 @@
 namespace calango::gui {
 
 namespace {
-
-void setButtonColor(QPushButton* button, const QColor& color)
-{
-    button->setStyleSheet(QStringLiteral("background-color: %1; border: 1px solid #666;")
-                              .arg(color.name()));
-}
 
 } // namespace
 

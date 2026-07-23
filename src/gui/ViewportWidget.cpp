@@ -173,6 +173,14 @@ void ViewportWidget::setShowAxes(bool show)
     update();
 }
 
+void ViewportWidget::setShowAxesArrows(bool show)
+{
+    if (axesArrows_ == show)
+        return;
+    axesArrows_ = show;
+    update(); // overlay-only: no GPU buffers to rebuild
+}
+
 void ViewportWidget::setAxesLatticeMode(bool lattice)
 {
     axesLatticeMode_ = lattice;
@@ -229,13 +237,43 @@ void ViewportWidget::drawAxesOverlay(QPainter& painter)
     // 2.4 px logical strokes ≈ double the old 1-device-px GL lines and
     // stay crisp (properly scaled) on high-DPI displays.
     constexpr qreal kAxisStrokeWidth = 2.4;
+    // Arrowhead size scales with the triad so it stays proportional as the
+    // user resizes it; ~9% of the triad box is small enough not to swallow
+    // short (foreshortened) axes.
+    const qreal headLength = axesSizePx_ * 0.09;
+    const qreal headHalfWidth = headLength * 0.42;
+
     for (int i = 0; i < 3; ++i) {
         const QVector3D& axis = axes[static_cast<std::size_t>(i)].first;
+        const QPointF tip = toScreen(axis);
         painter.setPen(QPen(colors[i], kAxisStrokeWidth, Qt::SolidLine,
                             Qt::RoundCap));
-        painter.drawLine(origin, toScreen(axis));
+        painter.drawLine(origin, tip);
+
+        if (axesArrows_) {
+            // Head is built in the axis's *projected* 2D direction, so it
+            // stays aligned with the drawn segment under any camera
+            // orientation. An axis pointing nearly at the viewer projects to
+            // (almost) a point — skip it rather than draw a head with an
+            // undefined direction.
+            const QPointF along = tip - origin;
+            const qreal length = std::hypot(along.x(), along.y());
+            if (length > headLength) {
+                const QPointF unit = along / length;
+                const QPointF normal(-unit.y(), unit.x());
+                const QPointF base = tip - unit * headLength;
+                const QPolygonF head({tip, base + normal * headHalfWidth,
+                                      base - normal * headHalfWidth});
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(colors[i]);
+                painter.drawPolygon(head);
+                painter.setBrush(Qt::NoBrush);
+            }
+        }
+
         painter.setPen(colors[i]);
-        painter.drawText(toScreen(axis * 1.12f),
+        // Push the label past the arrowhead so the two never overlap.
+        painter.drawText(toScreen(axis * (axesArrows_ ? 1.22f : 1.12f)),
                          axes[static_cast<std::size_t>(i)].second);
     }
 }

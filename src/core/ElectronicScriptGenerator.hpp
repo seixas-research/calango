@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/CalculatorConfig.hpp"
+
 #include <string>
 
 namespace calango::core {
@@ -23,11 +25,21 @@ struct ElectronicConfig {
     /// High-symmetry path string ("GXWKG", "GMKG", ...); empty lets ASE
     /// suggest the path for the structure's Bravais lattice.
     std::string kpath;
-    int npoints = 80;   ///< k-points along the whole path
+    /// k-points sampled along the whole path. Derived from the k-path
+    /// builder's "points per segment" times the number of segments — the
+    /// wizard no longer offers a second, independent control that could
+    /// disagree with it.
+    int npoints = 80;
     int nvalence = 4;   ///< electrons per cell (FreeElectrons backend)
     // -- SCF settings (GPAW / Espresso) --
     double ecutEv = 340.0;  ///< plane-wave cutoff (eV)
     int scfKpts = 4;        ///< Monkhorst-Pack k-grid (n x n x n)
+    /// Full GPAW parameter set (mode, xc, eigensolver, mixer, convergence,
+    /// smearing, k-grid), shared with Geometry Optimization and Single-point
+    /// so the same wizard controls drive all three. Only read by the Gpaw
+    /// backend; `ecutEv`/`scfKpts` above remain the knobs the other DFT
+    /// templates use.
+    CalculatorConfig gpaw;
     // -- PDOS (GPAW) --
     bool pdos = true;
     double pdosWidthEv = 0.1;

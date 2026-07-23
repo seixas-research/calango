@@ -1,4 +1,5 @@
 #include "core/ClusterExpansion.hpp"
+#include "core/PeriodicImages.hpp"
 
 #include "core/UnitCell.hpp"
 
@@ -28,23 +29,6 @@ Structure repeat(const Structure& s, int nx, int ny, int nz)
             }
     out.setCell(UnitCell(v[0] * nx, v[1] * ny, v[2] * nz, s.cell().pbc()));
     return out;
-}
-
-std::array<int, 3> imageRange(const UnitCell& cell, double rMax)
-{
-    const auto& a = cell.vectors();
-    const double volume = std::abs(a[0].dot(a[1].cross(a[2])));
-    std::array<int, 3> range{0, 0, 0};
-    const auto pbc = cell.pbc();
-    for (int i = 0; i < 3; ++i) {
-        if (!pbc[static_cast<std::size_t>(i)] || volume < 1e-9)
-            continue;
-        const Vec3 crossArea = a[(i + 1) % 3].cross(a[(i + 2) % 3]);
-        const double width = volume / crossArea.norm();
-        range[static_cast<std::size_t>(i)] =
-            static_cast<int>(std::ceil(rMax / width));
-    }
-    return range;
 }
 
 /// A cluster: the active-site indices it spans and its orbit id (within order).

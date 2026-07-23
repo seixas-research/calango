@@ -94,6 +94,78 @@ core::Structure AseBridge::fromAtoms(const py::handle& atoms)
         }
     }
 
+    // Calculator results. ASE's extended-XYZ reader does NOT put `forces`,
+    // `magmoms`, `energies` etc. into atoms.arrays — it recognizes them as
+    // computed properties and attaches a SinglePointCalculator instead.
+    // Scanning only atoms.arrays (as this bridge used to) therefore dropped
+    // exactly the columns a finished calculation cares about.
+    try {
+        const py::object calc = atoms.attr("calc");
+        if (!calc.is_none()) {
+            for (const auto& item : calc.attr("results").cast<py::dict>()) {
+                const auto name = item.first.cast<std::string>();
+                try {
+                    const auto values =
+                        np.attr("asarray")(item.second, py::arg("dtype") = "float64")
+                            .cast<py::array_t<double>>();
+                    if (values.ndim() == 1
+                        && static_cast<std::size_t>(values.shape(0)) == n) {
+                        const auto v = values.unchecked<1>();
+                        std::vector<double> field(n);
+                        for (std::size_t i = 0; i < n; ++i)
+                            field[i] = v(static_cast<py::ssize_t>(i));
+                        structure.setScalarField(name, std::move(field));
+                    } else if (values.ndim() == 2
+                               && static_cast<std::size_t>(values.shape(0)) == n
+                               && values.shape(1) == 3) {
+                        const auto v = values.unchecked<2>();
+                        std::vector<core::Vec3> vectors(n);
+                        std::vector<double> magnitude(n);
+                        for (std::size_t i = 0; i < n; ++i) {
+                            const auto row = static_cast<py::ssize_t>(i);
+                            vectors[i] = {v(row, 0), v(row, 1), v(row, 2)};
+                            magnitude[i] = vectors[i].norm();
+                        }
+                        structure.setVectorField(name, std::move(vectors));
+                        structure.setScalarField("|" + name + "|",
+                                                 std::move(magnitude));
+                    }
+                    // Scalars that are not per-atom (total energy, stress)
+                    // are not per-site data and are skipped.
+                } catch (const py::error_already_set&) {
+                    continue;
+                }
+            }
+        }
+    } catch (const py::error_already_set&) {
+        // No calculator attached — the common case for a plain structure.
+    }
+
+    // Collinear spin: calculators report one scalar moment per atom, but the
+    // viewport's vector overlay needs a direction. Promote m -> (0, 0, m) so
+    // spin-up and spin-down render as opposite arrows along z, the axis a
+    // collinear calculation implicitly quantizes along. Non-collinear runs
+    // already supplied an (N, 3) array and are left alone.
+    //
+    // Only the *computed* moments are promoted, never `initial_magmoms`:
+    // those are an input guess (ASE seeds bulk Fe with 2.3 μB whether or not
+    // anything was ever calculated) and drawing them as results would be
+    // actively misleading.
+    if (structure.vectorFields().count("magmoms") == 0) {
+        const auto scalar = structure.scalarFields().find("magmoms");
+        if (scalar != structure.scalarFields().end()
+            && scalar->second.size() == n) {
+            std::vector<core::Vec3> vectors(n);
+            double largest = 0.0;
+            for (std::size_t i = 0; i < n; ++i) {
+                vectors[i] = {0.0, 0.0, scalar->second[i]};
+                largest = std::max(largest, std::abs(scalar->second[i]));
+            }
+            if (largest > 1e-9)
+                structure.setVectorField("magmoms", std::move(vectors));
+        }
+    }
+
     // Velocities derived from momenta/masses (ase get_velocities); only
     // stored when they carry information.
     try {
@@ -142,6 +214,48 @@ py::object AseBridge::toAtoms(const core::Structure& structure)
             py::make_tuple(v[2].x, v[2].y, v[2].z)));
         const auto pbc = cell.pbc();
         atoms.attr("set_pbc")(py::make_tuple(pbc[0], pbc[1], pbc[2]));
+    }
+
+    // Per-atom properties -> ase.Atoms.arrays, which the extended-XYZ writer
+    // turns into named columns (`forces:R:3`, `magmoms:R:1`, ...). Without
+    // this, every Calango-written trajectory silently dropped the forces and
+    // magnetic moments it had just read in.
+    const py::module_ np = py::module_::import("numpy");
+    const auto atomCount = structure.size();
+
+    for (const auto& [name, vectors] : structure.vectorFields()) {
+        if (vectors.size() != atomCount)
+            continue;
+        // A vector field that shadows a same-named scalar is this bridge's
+        // display-side promotion (collinear magmoms -> (0, 0, m)). Writing it
+        // as an (N, 3) column would silently reinterpret a collinear result
+        // as a non-collinear one; the scalar loop below emits the real data.
+        if (structure.scalarFields().count(name) > 0)
+            continue;
+        py::list rows;
+        for (const core::Vec3& v : vectors)
+            rows.append(py::make_tuple(v.x, v.y, v.z));
+        py::object array = np.attr("asarray")(rows, py::arg("dtype") = "float64");
+        if (name == "velocities") {
+            // ASE stores velocities as momenta (v · m); going through the
+            // setter keeps that relationship intact so a reader recovers the
+            // same velocities rather than treating them as a raw column.
+            atoms.attr("set_velocities")(array);
+        } else {
+            atoms.attr("arrays")[py::str(name)] = std::move(array);
+        }
+    }
+
+    for (const auto& [name, values] : structure.scalarFields()) {
+        if (values.size() != atomCount)
+            continue;
+        // "|forces|"-style entries are magnitudes this bridge derives on
+        // import; re-emitting them would both duplicate data and produce a
+        // column name extended XYZ cannot represent.
+        if (!name.empty() && name.front() == '|')
+            continue;
+        atoms.attr("arrays")[py::str(name)] =
+            np.attr("asarray")(py::cast(values), py::arg("dtype") = "float64");
     }
     return atoms;
 }

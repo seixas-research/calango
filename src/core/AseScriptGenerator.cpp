@@ -95,9 +95,32 @@ constexpr const char* kStreamFrameHelper =
     "        cell = atoms.cell[:]\n"
     "        lines.append(\"CALANGO_CELL \" + \" \".join(\n"
     "            f\"{v:.8f}\" for row in cell for v in row))\n"
-    "    lines.append(f\"CALANGO_FRAME {len(atoms)}\")\n"
-    "    for s, p in zip(atoms.get_chemical_symbols(), atoms.get_positions()):\n"
-    "        lines.append(f\"{s} {p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\")\n"
+    "    # Per-atom vectors travel with the frame so the viewport's Vector\n"
+    "    # overlay works DURING the run, not only after reloading the saved\n"
+    "    # trajectory. Both are already computed at this point (the\n"
+    "    # integrator just used them), so reading them costs nothing; the\n"
+    "    # try/except covers calculators that cannot supply forces.\n"
+    "    try:\n"
+    "        _f = atoms.get_forces()\n"
+    "    except Exception:\n"
+    "        _f = None\n"
+    "    try:\n"
+    "        _v = atoms.get_velocities()\n"
+    "    except Exception:\n"
+    "        _v = None\n"
+    "    # 'FV' marks the extended 10-column atom lines; a bare count keeps\n"
+    "    # the original positions-only form for readers that predate this.\n"
+    "    _extended = _f is not None and _v is not None\n"
+    "    lines.append(f\"CALANGO_FRAME {len(atoms)}\" + (\" FV\" if _extended else \"\"))\n"
+    "    _sym = atoms.get_chemical_symbols()\n"
+    "    _pos = atoms.get_positions()\n"
+    "    for _i in range(len(atoms)):\n"
+    "        s, p = _sym[_i], _pos[_i]\n"
+    "        row = f\"{s} {p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\"\n"
+    "        if _extended:\n"
+    "            row += (f\" {_f[_i][0]:.6e} {_f[_i][1]:.6e} {_f[_i][2]:.6e}\"\n"
+    "                    f\" {_v[_i][0]:.6e} {_v[_i][1]:.6e} {_v[_i][2]:.6e}\")\n"
+    "        lines.append(row)\n"
     "    _sys.stdout.write(\"\\n\".join(lines) + \"\\n\")\n"
     "    _sys.stdout.flush()\n"
     "\n";
@@ -220,65 +243,11 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
 
     case CalculatorKind::Gpaw: {
         out << "# GPAW DFT — requires the gpaw package and its PAW datasets in the\n"
-               "# job environment (e.g. conda install -c conda-forge gpaw).\n";
-        // Only the imports the chosen mode actually needs, so the script stays
-        // clean and an unavailable symbol never breaks an unrelated run.
-        switch (c.gpawMode) {
-        case GpawMode::PlaneWave:
-            out << "from gpaw import GPAW, PW, " << toString(c.gpawMixer) << "\n";
-            break;
-        case GpawMode::FiniteDifference:
-        case GpawMode::Lcao:
-            out << "from gpaw import GPAW, " << toString(c.gpawMixer) << "\n";
-            break;
-        }
-        out << "\n"
-               "atoms.calc = GPAW(\n";
-        switch (c.gpawMode) {
-        case GpawMode::PlaneWave:
-            out << "    mode=PW(" << c.planeWaveCutoffEv << "),  # plane-wave cutoff, eV\n";
-            break;
-        case GpawMode::FiniteDifference:
-            // In FD mode the real-space grid spacing h replaces the cutoff.
-            out << "    mode=\"fd\",\n"
-                << "    h=" << c.gpawGridSpacing << ",  # real-space grid spacing, Ang\n";
-            break;
-        case GpawMode::Lcao:
-            out << "    mode=\"lcao\",\n"
-                << "    basis=\"" << c.gpawBasis << "\",\n";
-            break;
-        }
-        out << "    xc=\"" << c.gpawXc << "\",\n"
-            << "    kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2]
-            << "),  # Monkhorst-Pack grid\n"
-            << "    eigensolver=\"" << toString(c.gpawEigensolver) << "\",\n"
-            // Mixer(beta, nmaxold, weight) — GPAW's positional signature.
-            << "    mixer=" << toString(c.gpawMixer) << "(" << c.gpawMixerBeta << ", "
-            << c.gpawMixerNmaxold << ", " << c.gpawMixerWeight << "),\n"
-            << "    convergence={\n"
-            << "        \"energy\": " << c.scfEnergyTolEv << ",       # eV/electron\n"
-            << "        \"eigenstates\": " << c.gpawConvEigenstates
-            << ",  # eV^2/electron\n"
-            << "        \"density\": " << c.gpawConvDensity
-            << ",      # electrons/valence electron\n"
-            << "    },\n"
-            << "    maxiter=" << c.scfMaxSteps << ",\n";
-        if (c.spinPolarized)
-            out << "    spinpol=True,\n";
-        if (c.smearing != SmearingMethod::None) {
-            // GPAW exposes only Fermi-Dirac / Marzari-Vanderbilt broadening;
-            // the Gaussian and Methfessel-Paxton choices in the shared
-            // smearing combo have no GPAW equivalent, so they map onto
-            // Fermi-Dirac at the requested width and say so.
-            out << "    occupations={\"name\": \"fermi-dirac\", \"width\": "
-                << c.smearingWidthEv << "},\n";
-            if (c.smearing != SmearingMethod::FermiDirac)
-                out << "    # (" << toString(c.smearing)
-                    << " has no GPAW equivalent — using Fermi-Dirac at the same width.)\n";
-        } else {
-            out << "    occupations={\"name\": \"fermi-dirac\", \"width\": 0.0},\n";
-        }
-        out << "    txt=\"gpaw.out\",\n"
+               "# job environment (e.g. conda install -c conda-forge gpaw).\n"
+            << AseScriptGenerator::gpawImports(c) << "\n"
+               "atoms.calc = GPAW(\n"
+            << AseScriptGenerator::gpawKeywordArguments(c, "    ")
+            << "    txt=\"gpaw.out\",\n"
                ")\n";
         break;
     }
@@ -403,22 +372,35 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                     << (c.cellHydrostatic ? "True" : "False") << ")\n";
             }
         }
+        // The trajectory is written by an observer rather than the
+        // optimizer's own `trajectory=` argument: that writer always records
+        // step 0, the raw input geometry, whose forces are not yet the
+        // relaxation's own and which carries no velocities at all. Scrubbing
+        // onto it showed an empty vector overlay between frames that had one.
+        // Every recorded frame now comes from an evaluated step.
         out << "opt = " << opt << "("
             << (c.relaxCell ? "_target" : "atoms")
-            << ", trajectory=\"opt.traj\", logfile=\"-\")\n"
+            << ", logfile=\"-\")\n"
+               "\n"
+               "from ase.io.trajectory import Trajectory\n"
+               "\n"
+               "_opt_traj = Trajectory(\"opt.traj\", \"w\", atoms)\n"
                "\n"
             << kStreamFrameHelper
             << "def _report():\n"
+               "    if opt.nsteps == 0:\n"
+               "        return  # skip the unevaluated input geometry\n"
                "    _calango_log.progress(opt.nsteps, max_steps)\n"
                "    energy = atoms.get_potential_energy()\n"
                "    fmax_now = abs(atoms.get_forces()).max()\n"
                "    _calango_log.metric(opt.nsteps, energy=energy, max_force=fmax_now)\n"
+               "    _opt_traj.write()\n"
                "    _stream_frame()\n"
                "\n"
-               "_stream_frame()\n"
                "opt.attach(_report)\n"
             << "converged = opt.run(fmax=" << c.fmax << ", steps=max_steps)\n"
                "\n"
+               "_opt_traj.close()\n"
                "write(\"optimized.extxyz\", atoms)\n"
                "energy = atoms.get_potential_energy()\n"
                "print(f\"CALANGO_RESULT converged={converged} energy_eV={energy:.6f}\", flush=True)\n";
@@ -452,7 +434,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                    "dyn = VelocityVerlet(\n"
                    "    atoms,\n"
                 << "    timestep=" << c.timestepFs << " * units.fs,\n"
-                   "    trajectory=\"md.traj\",\n"
+    
                    ")\n";
             break;
         case MdEnsemble::LangevinNVT:
@@ -463,7 +445,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                 << "    timestep=" << c.timestepFs << " * units.fs,\n"
                    "    temperature_K=temperature_K,\n"
                 << "    friction=" << c.frictionPerFs << " / units.fs,\n"
-                   "    trajectory=\"md.traj\",\n"
+    
                    ")\n";
             break;
         case MdEnsemble::AndersenNVT:
@@ -474,7 +456,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                 << "    timestep=" << c.timestepFs << " * units.fs,\n"
                    "    temperature_K=temperature_K,\n"
                 << "    andersen_prob=" << c.andersenProb << ",\n"
-                   "    trajectory=\"md.traj\",\n"
+    
                    ")\n";
             break;
         case MdEnsemble::BerendsenNVT:
@@ -485,7 +467,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                 << "    timestep=" << c.timestepFs << " * units.fs,\n"
                    "    temperature_K=temperature_K,\n"
                 << "    taut=" << c.tautFs << " * units.fs,\n"
-                   "    trajectory=\"md.traj\",\n"
+    
                    ")\n";
             break;
         case MdEnsemble::NoseHooverChainNVT:
@@ -496,7 +478,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                 << "    timestep=" << c.timestepFs << " * units.fs,\n"
                    "    temperature_K=temperature_K,\n"
                 << "    tdamp=" << c.tautFs << " * units.fs,\n"
-                   "    trajectory=\"md.traj\",\n"
+    
                    ")\n";
             break;
         case MdEnsemble::BerendsenNPT:
@@ -513,7 +495,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                 << "    pressure_au=" << c.pressureGPa << " * units.GPa,\n"
                 << "    taup=" << c.taupFs << " * units.fs,\n"
                    "    compressibility_au=4.57e-5 / units.bar,\n"
-                   "    trajectory=\"md.traj\",\n"
+    
                    ")\n";
             break;
         case MdEnsemble::MelchionnaNPT:
@@ -531,7 +513,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                 << "    externalstress=" << c.pressureGPa << " * units.GPa,\n"
                 << "    ttime=" << c.tautFs << " * units.fs,\n"
                 << "    pfactor=(" << c.taupFs << " * units.fs) ** 2 * 100 * units.GPa,\n"
-                   "    trajectory=\"md.traj\",\n"
+    
                    ")\n";
             break;
         }
@@ -543,9 +525,54 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
         // at nsteps==0 (before the first step) and again after every step, so
         // we guard on dyn.nsteps > 0. An N-step run then yields exactly N+1
         // frames (seed at t=0 plus one per integrated step).
+        // md.traj is written by an observer instead of the integrator's
+        // `trajectory=` argument: that writer always records step 0 — the raw
+        // input geometry, before any force evaluation or thermalization —
+        // which is exactly the frame that showed an empty vector overlay when
+        // scrubbing.
         out << "\n"
+               "from ase.io.trajectory import Trajectory\n"
+               "\n"
+               "_md_traj = Trajectory(\"md.traj\", \"w\", atoms)\n"
+               "dyn.attach(lambda: _md_traj.write() if dyn.nsteps > 0 else None,\n"
+               "           interval=sample_interval)\n"
+               "\n"
             << kStreamFrameHelper
             << "dyn.attach(lambda: _stream_frame() if dyn.nsteps > 0 else None,\n"
+               "           interval=sample_interval)\n"
+               "\n"
+               "# Extended-XYZ trajectory alongside md.traj. ASE's binary .traj\n"
+               "# already stores forces and momenta, but .extxyz is the format\n"
+               "# that is portable, diff-able and readable by other tools — and\n"
+               "# it is what carries the per-atom vectors the viewport's Vector\n"
+               "# overlay draws. Forces and velocities are written explicitly on\n"
+               "# every dump so they are present in every frame, not only where\n"
+               "# a calculator happened to leave results attached.\n"
+               "from ase.calculators.singlepoint import SinglePointCalculator\n"
+               "\n"
+               "_md_xyz = \"md.extxyz\"\n"
+               "open(_md_xyz, \"w\").close()  # truncate any previous run\n"
+               "\n"
+               "def _dump_extxyz():\n"
+               "    snapshot = atoms.copy()\n"
+               "    snapshot.set_velocities(atoms.get_velocities())\n"
+               "    try:\n"
+               "        # A SinglePointCalculator is how ASE round-trips computed\n"
+               "        # properties through extended XYZ; assigning to\n"
+               "        # snapshot.arrays would not survive the writer.\n"
+               "        snapshot.calc = SinglePointCalculator(\n"
+               "            snapshot, energy=atoms.get_potential_energy(),\n"
+               "            forces=atoms.get_forces())\n"
+               "    except Exception as error:\n"
+               "        _calango_log.event(\"warning\",\n"
+               "                           f\"no forces for the extxyz dump: {error}\")\n"
+               "    write(_md_xyz, snapshot, format=\"extxyz\", append=True)\n"
+               "\n"
+               "# No t = 0 dump: the raw input geometry has no evaluated\n"
+               "# forces of its own and no thermalized velocities yet, so it\n"
+               "# would be the one frame in the trajectory without a vector\n"
+               "# overlay. Recording starts at the first integrated step.\n"
+               "dyn.attach(lambda: _dump_extxyz() if dyn.nsteps > 0 else None,\n"
                "           interval=sample_interval)\n";
 
         if (isConstantTemperature(c.ensemble))
@@ -586,6 +613,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "dyn.attach(_report, interval=sample_interval)\n"
                "dyn.run(md_steps)\n"
                "\n"
+               "_md_traj.close()\n"
                "write(\"md_final.extxyz\", atoms)\n"
                "print(f\"CALANGO_RESULT epot_eV={atoms.get_potential_energy():.6f}\", flush=True)\n";
         break;
@@ -593,6 +621,72 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
 }
 
 } // namespace
+
+std::string AseScriptGenerator::gpawImports(const CalculatorConfig& c)
+{
+    // Only what the chosen mode needs, so an unavailable symbol never breaks
+    // an unrelated run.
+    std::string line = "from gpaw import GPAW";
+    if (c.gpawMode == GpawMode::PlaneWave)
+        line += ", PW";
+    line += ", " + toString(c.gpawMixer);
+    return line + "\n";
+}
+
+std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,
+                                                     const std::string& indent)
+{
+    std::ostringstream out;
+    switch (c.gpawMode) {
+    case GpawMode::PlaneWave:
+        out << indent << "mode=PW(" << c.planeWaveCutoffEv
+            << "),  # plane-wave cutoff, eV\n";
+        break;
+    case GpawMode::FiniteDifference:
+        // In FD mode the real-space grid spacing h replaces the cutoff.
+        out << indent << "mode=\"fd\",\n"
+            << indent << "h=" << c.gpawGridSpacing
+            << ",  # real-space grid spacing, Ang\n";
+        break;
+    case GpawMode::Lcao:
+        out << indent << "mode=\"lcao\",\n"
+            << indent << "basis=\"" << c.gpawBasis << "\",\n";
+        break;
+    }
+    out << indent << "xc=\"" << c.gpawXc << "\",\n"
+        << indent << "kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", "
+        << c.kpts[2] << "),  # Monkhorst-Pack grid\n"
+        << indent << "eigensolver=\"" << toString(c.gpawEigensolver) << "\",\n"
+        // Mixer(beta, nmaxold, weight) — GPAW's positional signature.
+        << indent << "mixer=" << toString(c.gpawMixer) << "(" << c.gpawMixerBeta
+        << ", " << c.gpawMixerNmaxold << ", " << c.gpawMixerWeight << "),\n"
+        << indent << "convergence={\n"
+        << indent << "    \"energy\": " << c.scfEnergyTolEv
+        << ",       # eV/electron\n"
+        << indent << "    \"eigenstates\": " << c.gpawConvEigenstates
+        << ",  # eV^2/electron\n"
+        << indent << "    \"density\": " << c.gpawConvDensity
+        << ",      # electrons/valence electron\n"
+        << indent << "},\n"
+        << indent << "maxiter=" << c.scfMaxSteps << ",\n";
+    if (c.spinPolarized)
+        out << indent << "spinpol=True,\n";
+    if (c.smearing != SmearingMethod::None) {
+        // GPAW exposes only Fermi-Dirac / Marzari-Vanderbilt broadening; the
+        // Gaussian and Methfessel-Paxton choices in the shared smearing combo
+        // have no GPAW equivalent, so they map onto Fermi-Dirac and say so.
+        out << indent << "occupations={\"name\": \"fermi-dirac\", \"width\": "
+            << c.smearingWidthEv << "},\n";
+        if (c.smearing != SmearingMethod::FermiDirac)
+            out << indent << "# (" << toString(c.smearing)
+                << " has no GPAW equivalent — using Fermi-Dirac at the same "
+                   "width.)\n";
+    } else {
+        out << indent
+            << "occupations={\"name\": \"fermi-dirac\", \"width\": 0.0},\n";
+    }
+    return out.str();
+}
 
 std::string AseScriptGenerator::calculatorSnippet(const CalculatorConfig& config)
 {

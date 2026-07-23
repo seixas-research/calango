@@ -1,4 +1,5 @@
 #include "render/StructureRenderer.hpp"
+#include "render/RenderGeometry.hpp"
 
 #include "core/Structure.hpp"
 
@@ -11,6 +12,17 @@
 #include <vector>
 
 namespace calango::render {
+
+const char* vectorFieldName(VectorOverlay overlay)
+{
+    switch (overlay) {
+    case VectorOverlay::Velocity: return "velocities";
+    case VectorOverlay::Force: return "forces";
+    case VectorOverlay::MagneticMoment: return "magmoms";
+    case VectorOverlay::None: break;
+    }
+    return "";
+}
 
 namespace {
 
@@ -60,11 +72,6 @@ void appendColoredVertex(std::vector<float>& data, const QVector3D& pos, const Q
     data.insert(data.end(),
                 {pos.x(), pos.y(), pos.z(), static_cast<float>(color.redF()),
                  static_cast<float>(color.greenF()), static_cast<float>(color.blueF())});
-}
-
-QVector3D toQt(const calango::core::Vec3& v)
-{
-    return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)};
 }
 
 /// Interleaved position+normal unit sphere (radius 1, centered at origin).
@@ -161,36 +168,7 @@ QMatrix4x4 bondTransform(const QVector3D& from, const QVector3D& direction,
     return m;
 }
 
-/// Any unit vector perpendicular to `axis` — the offset direction for
-/// parallel cylinders of double/triple bonds. Camera-independent so the
-/// instance buffer stays static while orbiting.
-QVector3D perpendicularTo(const QVector3D& axis)
-{
-    const QVector3D reference = std::abs(axis.z()) < 0.9f
-        ? QVector3D(0.0f, 0.0f, 1.0f)
-        : QVector3D(1.0f, 0.0f, 0.0f);
-    return QVector3D::crossProduct(axis, reference).normalized();
-}
 
-/// Lateral center offsets (in units of the single-bond radius) and the
-/// per-cylinder radius shrink for a bond of the given order.
-void multiBondLayout(int order, std::vector<float>& offsets, float& radiusScale)
-{
-    switch (std::clamp(order, 1, 3)) {
-    case 2:
-        offsets = {-0.8f, 0.8f};
-        radiusScale = 0.55f;
-        break;
-    case 3:
-        offsets = {-1.5f, 0.0f, 1.5f};
-        radiusScale = 0.45f;
-        break;
-    default:
-        offsets = {0.0f};
-        radiusScale = 1.0f;
-        break;
-    }
-}
 
 } // namespace
 
@@ -511,9 +489,9 @@ void StructureRenderer::setStructure(const core::Structure* structure,
             }
         }
 
-        // Force / velocity arrows: shaft (cylinder) + head (cone) per atom,
+        // Vector overlay arrows: shaft (cylinder) + head (cone) per atom,
         // sharing the lit instanced pipeline. Skipped in wireframe mode.
-        if (!wireframe && (style_.showForces || style_.showVelocities)) {
+        if (!wireframe && style_.vectorOverlay != VectorOverlay::None) {
             const auto addArrows = [&](const std::string& fieldName,
                                        const QColor& color) {
                 const auto& fields = structure->vectorFields();
@@ -544,10 +522,23 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                                    color);
                 }
             };
-            if (style_.showForces)
-                addArrows("forces", style_.forceColor);
-            if (style_.showVelocities)
+            switch (style_.vectorOverlay) {
+            case VectorOverlay::Velocity:
                 addArrows("velocities", style_.velocityColor);
+                break;
+            case VectorOverlay::Force:
+                addArrows("forces", style_.forceColor);
+                break;
+            case VectorOverlay::MagneticMoment:
+                // Collinear runs write a scalar magmom per atom; AseBridge
+                // promotes those to (0, 0, m) so the same arrow path shows
+                // spin up/down along z. Non-collinear (N,3) magmoms import
+                // directly.
+                addArrows("magmoms", style_.magmomColor);
+                break;
+            case VectorOverlay::None:
+                break;
+            }
         }
 
         if (structure->cell().isDefined()) {
@@ -630,6 +621,9 @@ void StructureRenderer::uploadLights()
     meshProgram_.setUniformValueArray("uLightDiffuse", diffuse, kMaxLights);
     meshProgram_.setUniformValueArray("uLightSpecular", specular, kMaxLights);
     meshProgram_.setUniformValue("uShininess", 48.0f);
+    meshProgram_.setUniformValue("uSurfaceFinish",
+                                 static_cast<int>(style_.surfaceFinish));
+    meshProgram_.setUniformValue("uSurfaceOpacity", style_.glassOpacity);
 
     meshProgram_.setUniformValue("uFogMode", style_.fogMode);
     meshProgram_.setUniformValue(
@@ -667,6 +661,19 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
         meshProgram_.setUniformValue("uProj", projection);
         uploadLights();
 
+        // Glassy is the only translucent finish. Blend it, and stop writing
+        // depth so spheres behind other spheres remain visible — without
+        // that, the first sphere drawn would occlude everything behind it and
+        // the result would look opaque but dim. Order-independent
+        // transparency is out of scope here; the Fresnel rim in mesh.frag is
+        // what keeps overlapping shapes readable despite the unsorted draw.
+        const bool translucent = style_.surfaceFinish == SurfaceFinish::Glassy;
+        if (translucent) {
+            gl_->glEnable(GL_BLEND);
+            gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            gl_->glDepthMask(GL_FALSE);
+        }
+
         for (InstancedMesh* mesh : {&sphere_, &cylinder_, &cone_}) {
             if (mesh->instanceCount == 0)
                 continue;
@@ -674,6 +681,11 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
             gl_->glDrawElementsInstanced(GL_TRIANGLES, mesh->indexCount, GL_UNSIGNED_INT,
                                          nullptr, mesh->instanceCount);
             mesh->vao.release();
+        }
+
+        if (translucent) {
+            gl_->glDepthMask(GL_TRUE);
+            gl_->glDisable(GL_BLEND);
         }
         meshProgram_.release();
     }

@@ -21,6 +21,32 @@ class QOpenGLFunctions_3_3_Core;
 
 namespace calango::render {
 
+/// Per-atom vector property drawn as 3D arrows over the atomic sites.
+/// Enum order is the "Vector overlay" combo order in the Representation
+/// panel; each entry names one of the structure's vector fields, populated
+/// from the extended-XYZ per-atom columns (or from ASE momenta, for
+/// velocities).
+enum class VectorOverlay {
+    None,
+    Velocity,       ///< "velocities" (Å/fs·√amu)
+    Force,          ///< "forces" (eV/Å)
+    MagneticMoment, ///< "magmoms" (μB) — non-collinear (N,3), see below
+};
+
+/// Vector field backing an overlay, and the label/unit used in the UI.
+/// Empty field name for None.
+const char* vectorFieldName(VectorOverlay overlay);
+
+/// Surface material for the instanced meshes (atoms, bonds, cell tubes).
+/// Enum order is the "Surface finish" combo order in the Representation
+/// panel and matches the FINISH_* constants in mesh.frag.
+enum class SurfaceFinish {
+    Standard, ///< Blinn-Phong with specular highlights, opaque
+    Shiny,    ///< high specular, tight highlight (low roughness)
+    Matte,    ///< diffuse only, no specular ("fosco")
+    Glassy,   ///< alpha-blended, tight highlight, Fresnel rim
+};
+
 enum class RepresentationMode {
     BallAndStick,
     SpaceFilling, ///< CPK: van-der-Waals-sized spheres, no bonds
@@ -67,11 +93,15 @@ public:
         /// Per-atom vector overlays drawn as 3D arrows from each atom
         /// center (mesh representations only). Data comes from the
         /// structure's vector fields "forces" / "velocities".
-        bool showForces = false;
-        bool showVelocities = false;
+        VectorOverlay vectorOverlay = VectorOverlay::None;
+        SurfaceFinish surfaceFinish = SurfaceFinish::Standard;
+        /// Base opacity of the Glassy finish at face-on incidence (the
+        /// Fresnel term drives edges toward opaque). Ignored otherwise.
+        float glassOpacity = 0.45f;
         float vectorScale = 10.0f; ///< Å of arrow length per field unit
         QColor forceColor{242, 92, 54};
         QColor velocityColor{54, 166, 242};
+        QColor magmomColor{168, 120, 240};
         bool showCell = true;
         QColor cellColor{166, 166, 178};
         /// 1 = plain GL lines; > 1 renders the edges as thin lit tubes

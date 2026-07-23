@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.34
+    VERSION 26.7.35
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -15,6 +15,20 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Without an explicit build type CMake passes no optimization flags at all, so
+# a plain `cmake -B build` produced an unoptimized binary that looked like a
+# performance problem in the app (isosurface extraction and neighbor searches
+# are several times slower). Default to Release; multi-config generators
+# (Xcode / Visual Studio) pick per-build and must not be overridden here.
+get_property(_calango_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(NOT _calango_multi_config AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING
+        "Build type (Debug, Release, RelWithDebInfo, MinSizeRel)" FORCE)
+    message(STATUS "No CMAKE_BUILD_TYPE set — defaulting to Release")
+endif()
+set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+    Debug Release RelWithDebInfo MinSizeRel)
 
 # ---------------------------------------------------------------------------
 # Dependencies
@@ -110,6 +124,7 @@ qt_add_executable(calango
     src/core/Atom.hpp
     src/core/UnitCell.hpp
     src/core/UnitCell.cpp
+    src/core/PeriodicImages.hpp
     src/core/Structure.hpp
     src/core/Structure.cpp
     src/core/CalculatorConfig.hpp
@@ -149,6 +164,12 @@ qt_add_executable(calango
     src/core/AdsorptionSites.cpp
     src/core/ClusterExpansion.hpp
     src/core/ClusterExpansion.cpp
+    src/core/BandGap.hpp
+    src/core/BandGap.cpp
+    src/core/ConvexHull.hpp
+    src/core/ConvexHull.cpp
+    src/core/ClusterExpansionScriptGenerator.hpp
+    src/core/ClusterExpansionScriptGenerator.cpp
     src/core/MonteCarlo.hpp
     src/core/MonteCarlo.cpp
 
@@ -179,6 +200,7 @@ qt_add_executable(calango
     src/render/Camera.cpp
     src/render/ColorMap.hpp
     src/render/ColorMap.cpp
+    src/render/RenderGeometry.hpp
     src/render/StructureRenderer.hpp
     src/render/StructureRenderer.cpp
     src/render/RayTraceExporter.hpp
@@ -211,6 +233,8 @@ qt_add_executable(calango
     src/gui/ProjectSerializer.cpp
     src/gui/ScriptStaging.hpp
     src/gui/ScriptStaging.cpp
+    src/gui/GuiUtils.hpp
+    src/gui/GuiUtils.cpp
     src/gui/RepresentationPanel.hpp
     src/gui/RepresentationPanel.cpp
     src/gui/CellAxesPanel.hpp
@@ -225,6 +249,10 @@ qt_add_executable(calango
     src/gui/BrillouinZoneView.cpp
     src/gui/BrillouinZoneDialog.hpp
     src/gui/BrillouinZoneDialog.cpp
+    src/gui/BrillouinZoneWidget.hpp
+    src/gui/BrillouinZoneWidget.cpp
+    src/gui/EmbeddedKPathEditor.hpp
+    src/gui/EmbeddedKPathEditor.cpp
     src/gui/BrillouinZoneStyleDialog.hpp
     src/gui/BrillouinZoneStyleDialog.cpp
     src/gui/LinePlotWidget.hpp
@@ -291,8 +319,6 @@ qt_add_executable(calango
     src/gui/SystemStatusBar.cpp
     src/gui/CondaEnvs.hpp
     src/gui/CondaEnvs.cpp
-    src/gui/KPathSelector.hpp
-    src/gui/KPathSelector.cpp
     src/gui/MaceTrainerDialog.hpp
     src/gui/MaceTrainerDialog.cpp
     src/gui/BandPdosView.hpp
@@ -323,6 +349,10 @@ qt_add_executable(calango
     src/gui/PhononWizard.cpp
     src/gui/ClusterExpansionDialog.hpp
     src/gui/ClusterExpansionDialog.cpp
+    src/gui/ClusterExpansionWizard.hpp
+    src/gui/ClusterExpansionWizard.cpp
+    src/gui/ConvexHullPlotWidget.hpp
+    src/gui/ConvexHullPlotWidget.cpp
     src/gui/MonteCarloDialog.hpp
     src/gui/MonteCarloDialog.cpp
     src/gui/MonteCarloWizard.hpp
@@ -630,6 +660,51 @@ if(CALANGO_BUILD_TESTS)
     target_compile_definitions(calango_script_test PRIVATE
         CALANGO_VERSION="${PROJECT_VERSION}")
     add_test(NAME generated_ase_scripts COMMAND calango_script_test)
+
+    # Periodic-image bound: the degenerate-cell guard that five of the seven
+    # former private copies of imageRange() were missing.
+    add_executable(calango_periodic_images_test
+        tests/PeriodicImagesTest.cpp
+        src/core/UnitCell.cpp
+    )
+    target_include_directories(calango_periodic_images_test PRIVATE src)
+    add_test(NAME periodic_image_range COMMAND calango_periodic_images_test)
+
+    # Extended-XYZ per-atom attributes (forces / magmoms / velocities) survive
+    # the read -> model -> write round trip, and collinear magmoms surface as
+    # vectors for the viewport overlay.
+    add_executable(calango_extxyz_test
+        tests/ExtxyzAttributesTest.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/core/KPath.cpp
+        src/python_bridge/PythonEngine.cpp
+        src/python_bridge/AseBridge.cpp
+    )
+    target_include_directories(calango_extxyz_test PRIVATE src)
+    target_compile_definitions(calango_extxyz_test PRIVATE
+        CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}")
+    target_link_libraries(calango_extxyz_test PRIVATE pybind11::embed)
+    add_test(NAME extxyz_attributes COMMAND calango_extxyz_test)
+
+    # Formation-energy convex hull backing the Cluster Expansion Calculation
+    # results plot (lower-hull semantics, energy above hull, degenerate input).
+    add_executable(calango_convex_hull_test
+        tests/ConvexHullTest.cpp
+        src/core/ConvexHull.cpp
+    )
+    target_include_directories(calango_convex_hull_test PRIVATE src)
+    add_test(NAME convex_hull COMMAND calango_convex_hull_test)
+
+    # Automated band-gap detection (direct / indirect / metallic) behind the
+    # Electronic Structure summary box.
+    add_executable(calango_bandgap_test
+        tests/BandGapTest.cpp
+        src/core/BandGap.cpp
+    )
+    target_include_directories(calango_bandgap_test PRIVATE src)
+    add_test(NAME band_gap COMMAND calango_bandgap_test)
 endif()
 
 # ---------------------------------------------------------------------------

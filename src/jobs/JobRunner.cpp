@@ -47,6 +47,9 @@ void JobRunner::start(const QString& pythonExe, const QString& scriptPath, const
     stderrBuffer_.clear();
     pendingFrame_.reset();
     pendingAtoms_ = 0;
+    pendingVectors_ = false;
+    pendingForces_.clear();
+    pendingVelocities_.clear();
     pendingCellValid_ = false;
 
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -120,23 +123,44 @@ void JobRunner::handleLine(const QString& line, bool isStderr)
 
     // --- Live geometry stream (CALANGO_CELL / CALANGO_FRAME) ---------------
     if (pendingAtoms_ > 0) {
-        // Expecting "<symbol> <x> <y> <z>" — consumed silently.
+        // "<symbol> <x> <y> <z>", optionally followed by the per-atom force
+        // and velocity components when the frame header carried "FV".
         const QStringList parts =
             line.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        const int expected = pendingVectors_ ? 10 : 4;
         bool okX = false, okY = false, okZ = false;
-        const int z = parts.size() == 4
+        const int z = parts.size() == expected
             ? core::Elements::atomicNumber(parts[0].toStdString())
             : 0;
+        bool vectorsOk = true;
         if (z > 0) {
             const core::Vec3 position{parts[1].toDouble(&okX),
                                       parts[2].toDouble(&okY),
                                       parts[3].toDouble(&okZ)};
             if (okX && okY && okZ)
                 pendingFrame_->addAtom({z, position});
+            if (pendingVectors_) {
+                bool ok[6] = {};
+                const core::Vec3 force{parts[4].toDouble(&ok[0]),
+                                       parts[5].toDouble(&ok[1]),
+                                       parts[6].toDouble(&ok[2])};
+                const core::Vec3 velocity{parts[7].toDouble(&ok[3]),
+                                          parts[8].toDouble(&ok[4]),
+                                          parts[9].toDouble(&ok[5])};
+                for (const bool component : ok)
+                    vectorsOk = vectorsOk && component;
+                if (vectorsOk) {
+                    pendingForces_.push_back(force);
+                    pendingVelocities_.push_back(velocity);
+                }
+            }
         }
-        if (z <= 0 || !okX || !okY || !okZ) { // malformed — abandon frame
+        if (z <= 0 || !okX || !okY || !okZ || !vectorsOk) { // malformed
             pendingFrame_.reset();
+            pendingForces_.clear();
+            pendingVelocities_.clear();
             pendingAtoms_ = 0;
+            pendingVectors_ = false;
             Q_EMIT outputLine(line);
             return;
         }
@@ -149,6 +173,23 @@ void JobRunner::handleLine(const QString& line, bool isStderr)
                     {true, true, true}));
                 pendingCellValid_ = false;
             }
+            // Attach the per-atom vectors so the viewport can draw arrows on
+            // this frame immediately; the magnitudes double as scalar
+            // color-mapping fields, matching what AseBridge produces when the
+            // same trajectory is later re-read from disk.
+            if (pendingVectors_
+                && pendingForces_.size() == pendingFrame_->size()) {
+                pendingFrame_->setVectorField("forces", pendingForces_);
+                pendingFrame_->setVectorField("velocities", pendingVelocities_);
+                std::vector<double> forceMagnitude(pendingForces_.size());
+                for (std::size_t i = 0; i < pendingForces_.size(); ++i)
+                    forceMagnitude[i] = pendingForces_[i].norm();
+                pendingFrame_->setScalarField("|forces|",
+                                              std::move(forceMagnitude));
+            }
+            pendingForces_.clear();
+            pendingVelocities_.clear();
+            pendingVectors_ = false;
             Q_EMIT frameStreamed(
                 std::shared_ptr<core::Structure>(std::move(pendingFrame_)));
         }
@@ -164,14 +205,24 @@ void JobRunner::handleLine(const QString& line, bool isStderr)
         pendingCellValid_ = true;
         return;
     }
+    // "CALANGO_FRAME <natoms>" or "CALANGO_FRAME <natoms> FV", the latter
+    // announcing 10-column atom lines (position + force + velocity).
     static const QRegularExpression frameRe(
-        QStringLiteral(R"(^CALANGO_FRAME (\d+)\s*$)"));
+        QStringLiteral(R"(^CALANGO_FRAME (\d+)(?: (FV))?\s*$)"));
     if (const auto match = frameRe.match(line); match.hasMatch()) {
         pendingAtoms_ = match.captured(1).toInt();
+        pendingVectors_ = match.captured(2) == QLatin1String("FV");
         pendingFrame_ = std::make_unique<core::Structure>();
+        pendingForces_.clear();
+        pendingVelocities_.clear();
+        if (pendingVectors_) {
+            pendingForces_.reserve(static_cast<std::size_t>(pendingAtoms_));
+            pendingVelocities_.reserve(static_cast<std::size_t>(pendingAtoms_));
+        }
         if (pendingAtoms_ <= 0) {
             pendingFrame_.reset();
             pendingAtoms_ = 0;
+            pendingVectors_ = false;
         }
         return;
     }

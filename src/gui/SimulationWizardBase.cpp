@@ -49,11 +49,17 @@ void SimulationWizardBase::buildUi()
     root->addWidget(headerLabel_);
 
     hasSettingsStage_ = hasTaskSettingsStage();
+    settingsFirst_ = settingsStageFirst();
     stack_ = new QStackedWidget(this);
-    if (hasSettingsStage_)
-        stack_->addWidget(buildSettingsPage()); // Stage 1 (subclass)
+    // Build order matters beyond layout: buildSettingsPage() may query
+    // controls the calculator page owns, so a wizard that places its settings
+    // page later also gets it constructed later.
+    if (hasSettingsStage_ && settingsFirst_)
+        stack_->addWidget(buildSettingsPage());
     stack_->addWidget(buildEnvironmentPage());
     stack_->addWidget(buildCalculatorPage());
+    if (hasSettingsStage_ && !settingsFirst_)
+        stack_->addWidget(buildSettingsPage());
     stack_->addWidget(buildReviewPage());
     reviewStage_ = stack_->count() - 1;
     root->addWidget(stack_, 1);
@@ -660,10 +666,12 @@ void SimulationWizardBase::updateStage()
     stack_->setCurrentIndex(stage_);
 
     QStringList titles;
-    if (hasSettingsStage_)
+    if (hasSettingsStage_ && settingsFirst_)
         titles << settingsHeader();
     titles << tr("Calculator & Execution Environment");
     titles << calculatorSettingsHeader();
+    if (hasSettingsStage_ && !settingsFirst_)
+        titles << settingsHeader();
     titles << tr("ASE Script Review");
     headerLabel_->setText(tr("Stage %1 of %2 — %3")
                               .arg(stage_ + 1)

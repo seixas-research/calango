@@ -1,4 +1,5 @@
 #include "gui/BrillouinZoneView.hpp"
+#include "render/RenderGeometry.hpp"
 
 #include <QMouseEvent>
 #include <QPainter>
@@ -41,10 +42,10 @@ void main() {
 }
 )";
 
-QVector3D toQt(const calango::core::Vec3& v)
-{
-    return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)};
-}
+/// The Vec3 -> QVector3D conversion is shared with the OpenGL structure
+/// renderer and the ray-tracer exporters (render/RenderGeometry.hpp); pull it
+/// into scope so the call sites below stay unqualified.
+using render::toQt;
 
 QVector4D colorVec(const QColor& c, float alpha = 1.0f)
 {

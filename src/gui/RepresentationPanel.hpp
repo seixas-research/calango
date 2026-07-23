@@ -50,8 +50,8 @@ private:
     QDoubleSpinBox* bondWidthSpin_;
     QCheckBox* gradientBondsCheck_;
     std::array<QPushButton*, 3> bondOrderButtons_{};
-    QCheckBox* forcesCheck_;
-    QCheckBox* velocitiesCheck_;
+    QComboBox* vectorOverlayCombo_;
+    QComboBox* surfaceFinishCombo_;
     QSlider* vectorScaleSlider_;
     QDoubleSpinBox* vectorScaleSpin_;
 };

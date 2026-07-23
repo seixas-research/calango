@@ -14,7 +14,7 @@ class Structure;
 
 namespace calango::gui {
 
-class KPathSelector;
+class EmbeddedKPathEditor;
 
 /// Simulation → "Phonon Calculator…": the standardized 4-stage wizard. Stage 1
 /// is the phonon settings (finite-displacement δ, supercell expansion, acoustic
@@ -34,6 +34,10 @@ protected:
     QString wizardTitle() const override;
     QString settingsHeader() const override;
     QWidget* buildSettingsPage() override;
+    QWidget* buildCalculatorExtras() override;
+    /// Same flow as Electronic Structure: the q-path is defined once the
+    /// engine is chosen, so this page is Stage 3.
+    bool settingsStageFirst() const override { return false; }
     QString generateScript() const override;
     QString exportFileName() const override { return QStringLiteral("phonon.py"); }
 
@@ -45,8 +49,9 @@ private:
     QSpinBox* supercellSpins_[3];
     QCheckBox* acousticCheck_;
     QSpinBox* meshSpin_;
+    QDoubleSpinBox* dosWidthSpin_;
     QSpinBox* bandPointsSpin_;
-    KPathSelector* kpath_ = nullptr;
+    EmbeddedKPathEditor* kpath_ = nullptr;
 };
 
 } // namespace calango::gui

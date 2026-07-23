@@ -2,9 +2,11 @@
 
 #include "core/ElectronicScriptGenerator.hpp"
 #include "core/Structure.hpp"
-#include "gui/KPathSelector.hpp"
+#include "gui/EmbeddedKPathEditor.hpp"
 
+#include <QGroupBox>
 #include <QCheckBox>
+#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QLabel>
 #include <QSpinBox>
@@ -45,17 +47,16 @@ QWidget* ElectronicBandsWizard::buildSettingsPage()
     intro->setWordWrap(true);
     layout->addWidget(intro);
 
+    // The interactive Brillouin zone is the stage, not a dialog launched
+    // from it: clicking Γ, X, M… here updates the wizard's path immediately,
+    // and "Next ›" carries it straight into Stage 2.
+    kpath_ = new EmbeddedKPathEditor(structure_, page);
+    layout->addWidget(kpath_, 1);
+    connect(kpath_, &EmbeddedKPathEditor::pathChanged, this,
+            [this] { refreshPreview(); });
+
     auto* form = new QFormLayout;
     layout->addLayout(form);
-
-    kpath_ = new KPathSelector(structure_, page);
-    form->addRow(tr("k-path:"), kpath_);
-
-    npointsSpin_ = new QSpinBox(page);
-    npointsSpin_->setRange(20, 2000);
-    npointsSpin_->setValue(80);
-    npointsSpin_->setToolTip(tr("Total k-points sampled along the whole path."));
-    form->addRow(tr("k-points along path:"), npointsSpin_);
 
     valenceSpin_ = new QSpinBox(page);
     valenceSpin_->setRange(1, 200);
@@ -64,13 +65,50 @@ QWidget* ElectronicBandsWizard::buildSettingsPage()
         tr("Electrons per cell — used only by the free-electron backend."));
     form->addRow(tr("Valence electrons:"), valenceSpin_);
 
+    layout->addStretch(1);
+    return page;
+}
+
+QWidget* ElectronicBandsWizard::buildCalculatorExtras()
+{
+    // PDOS and its broadening describe how the *calculator* samples the
+    // density of states, so they live with the other calculator settings
+    // rather than on the k-path page.
+    pdosGroup_ = new QGroupBox(tr("Density of states"), this);
+    auto* form = new QFormLayout(pdosGroup_);
+
     pdosCheck_ = new QCheckBox(
-        tr("Compute element/orbital PDOS (GPAW backend)"), page);
+        tr("Compute element/orbital PDOS (GPAW backend)"), pdosGroup_);
     pdosCheck_->setChecked(true);
     form->addRow(QString(), pdosCheck_);
 
-    layout->addStretch(1);
-    return page;
+    pdosWidthSpin_ = new QDoubleSpinBox(pdosGroup_);
+    pdosWidthSpin_->setRange(0.001, 5.0);
+    pdosWidthSpin_->setDecimals(3);
+    pdosWidthSpin_->setSingleStep(0.01);
+    pdosWidthSpin_->setValue(0.1);
+    pdosWidthSpin_->setSuffix(tr(" eV"));
+    pdosWidthSpin_->setToolTip(
+        tr("Gaussian broadening σ applied to the projected DOS.\n"
+           "The raw PDOS is a sum of delta functions at the eigenvalues; σ "
+           "turns it into a smooth curve. ~0.05–0.2 eV is typical — smaller "
+           "resolves sharp d-band features but needs a denser k-mesh."));
+    form->addRow(tr("Gaussian smearing σ:"), pdosWidthSpin_);
+    connect(pdosCheck_, &QCheckBox::toggled, pdosWidthSpin_,
+            &QDoubleSpinBox::setEnabled);
+    connect(pdosCheck_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
+    connect(pdosWidthSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+    return pdosGroup_;
+}
+
+void ElectronicBandsWizard::updateCalculatorExtras(core::CalculatorKind kind)
+{
+    // Only the GPAW backend produces a projected DOS; showing the controls
+    // for the others would promise output they cannot generate.
+    if (pdosGroup_)
+        pdosGroup_->setVisible(kind == core::CalculatorKind::Gpaw);
 }
 
 bool ElectronicBandsWizard::calculatorAllowed(core::CalculatorKind kind) const
@@ -111,9 +149,18 @@ QString ElectronicBandsWizard::generateScript() const
 
     // Keep the ',' section breaks; ASE's cell.bandpath() understands them.
     config.kpath = kpath_->path().toStdString();
-    config.npoints = npointsSpin_->value();
+    // Single source of truth for path sampling: the k-path builder's
+    // "points per segment" times the number of segments. The wizard used to
+    // carry a second, independent "k-points along path" box that could
+    // silently disagree with it.
+    config.npoints = kpath_->pointsPerSegment() * kpath_->segmentCount();
     config.nvalence = valenceSpin_->value();
     config.pdos = pdosCheck_->isChecked();
+    config.pdosWidthEv = pdosWidthSpin_->value();
+    // Full GPAW parameter set from Stage 2 (mode, xc, eigensolver, mixer,
+    // convergence, smearing, k-grid) — the same controls Geometry
+    // Optimization and Single-point use.
+    config.gpaw = baseCalculatorConfig();
 
     // SCF baseline from the shared Stage-3 DFT knobs.
     const core::CalculatorConfig base = baseCalculatorConfig();

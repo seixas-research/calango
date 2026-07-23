@@ -28,6 +28,7 @@ class BrandingPanel;
 class JobLogWidget;
 class NebDialog;
 class SimulationWizardBase;
+class ConvexHullPlotWidget;
 class MetricPlotWidget;
 class ProcessManagerPanel;
 class RemoteAccessPanel;
@@ -150,6 +151,9 @@ private Q_SLOTS:
     void openPhononBuilder();
     void openSqsBuilder();
     void openClusterExpansion();
+    /// Simulation → "Cluster Expansion Calculation…": batch-relax the current
+    /// document's ensemble and build a formation-energy convex hull.
+    void clusterExpansionCalculation();
     void openNanoparticleBuilder();
     void showAdsorption();
     void showWarrenCowley();
@@ -282,6 +286,7 @@ private:
     MetricPlotWidget* temperaturePlot_ = nullptr;
     MetricPlotWidget* forcePlot_ = nullptr;
     MetricPlotWidget* pressurePlot_ = nullptr;
+    ConvexHullPlotWidget* convexHullPlot_ = nullptr;
     TimelineWidget* timeline_ = nullptr;
     QDockWidget* jobDock_ = nullptr;
     QDockWidget* visualEffectsDock_ = nullptr; ///< zone 9 (Lighting + effects)
@@ -296,6 +301,9 @@ private:
     /// Band of images staged as band.extxyz on the next stageJob (NEB);
     /// consumed and cleared by stageJob.
     std::vector<std::shared_ptr<core::Structure>> stagedBandFrames_;
+    /// Cluster-expansion ensemble staged as configs.extxyz on the next
+    /// stageJob; consumed and cleared there, like stagedBandFrames_.
+    std::vector<std::shared_ptr<core::Structure>> stagedEnsembleFrames_;
     /// Non-modal NEB builder window (owned via WA_DeleteOnClose; nulled on close).
     NebDialog* nebDialog_ = nullptr;
     jobs::JobRunner* jobRunner_ = nullptr;

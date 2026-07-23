@@ -9,15 +9,53 @@
 #include <QTextStream>
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace calango::gui {
+
+namespace {
+
+/// "Nice" tick spacing for a range: the 1/2/5·10ⁿ step closest to (but not
+/// finer than) `range / maxTicks`. This is the standard axis heuristic — it
+/// keeps labels on round numbers (0, 250, 500 …) regardless of whether the
+/// run has 37 steps or 120 000, instead of slicing the range into a fixed
+/// count and printing values like 4133.7.
+double niceTickStep(double range, int maxTicks)
+{
+    if (range <= 0.0 || maxTicks < 1)
+        return 0.0;
+    const double rough = range / maxTicks;
+    const double magnitude = std::pow(10.0, std::floor(std::log10(rough)));
+    const double normalized = rough / magnitude; // in [1, 10)
+    // Round *up* to the next nice value so the tick count never exceeds
+    // maxTicks (which is what guarantees labels cannot overlap).
+    const double nice = normalized <= 1.0 ? 1.0
+        : normalized <= 2.0              ? 2.0
+        : normalized <= 5.0              ? 5.0
+                                         : 10.0;
+    return nice * magnitude;
+}
+
+/// Decimal places needed to render `step` without two adjacent ticks
+/// collapsing to the same label (0 for integral steps).
+int decimalsForStep(double step)
+{
+    if (step <= 0.0)
+        return 0;
+    const int digits = static_cast<int>(std::ceil(-std::log10(step)));
+    return std::clamp(digits, 0, 6);
+}
+
+} // namespace
 
 MetricPlotWidget::MetricPlotWidget(MetricSpec spec, QWidget* parent)
     : QWidget(parent)
     , spec_(std::move(spec))
 {
-    setMinimumHeight(120);
+    // Three label rows below the axis plus the frame need this much to stay
+    // legible in the Results dock.
+    setMinimumHeight(150);
 }
 
 void MetricPlotWidget::clear()
@@ -84,7 +122,9 @@ void MetricPlotWidget::paintEvent(QPaintEvent*)
     const int firstStep = samples_.front().step;
     const int lastStep = std::max(samples_.back().step, firstStep + 1);
 
-    const QRectF plot = rect().adjusted(86, 12, -12, -40);
+    // Left margin holds the y tick labels; the bottom holds three stacked
+    // rows: x tick labels, the live-value caption, and the axis title.
+    const QRectF plot = rect().adjusted(86, 12, -12, -56);
 
     const auto toX = [&](int step) {
         return plot.left()
@@ -94,18 +134,80 @@ void MetricPlotWidget::paintEvent(QPaintEvent*)
         return plot.bottom() - plot.height() * (value - lo) / (hi - lo);
     };
 
-    // Frame + min/max readouts + descriptive axis labels.
+    // Frame.
     painter.setPen(QColor(90, 95, 105));
     painter.drawRect(plot);
+
+    // --- Axis ticks --------------------------------------------------------
+    // Tick counts are derived from the available pixels, not fixed, so the
+    // same code produces a readable axis in the ~200 px Results dock and in a
+    // maximized window. The label width estimate below is what actually
+    // guarantees non-overlap.
+    const QFontMetricsF metrics(painter.font());
+    const QColor gridColor(52, 56, 63);
+    const QColor tickColor(140, 146, 156);
+
+    // X (simulation step): steps are integers, so never emit a fractional
+    // tick — a step axis labelled "1250.5" is meaningless.
+    {
+        const double span = lastStep - firstStep;
+        // Widest plausible label ("120000") plus padding sets the tick budget.
+        const double labelWidth =
+            metrics.horizontalAdvance(QString::number(lastStep)) + 24.0;
+        const int maxTicks =
+            std::clamp(static_cast<int>(plot.width() / std::max(labelWidth, 1.0)),
+                       2, 12);
+        double step = niceTickStep(span, maxTicks);
+        step = std::max(1.0, std::round(step)); // integral steps only
+        const double firstTick = std::ceil(firstStep / step) * step;
+        for (double t = firstTick; t <= lastStep + 1e-9; t += step) {
+            const double x = toX(static_cast<int>(std::llround(t)));
+            if (x < plot.left() - 0.5 || x > plot.right() + 0.5)
+                continue;
+            painter.setPen(gridColor);
+            painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
+            painter.setPen(tickColor);
+            painter.drawLine(QPointF(x, plot.bottom()),
+                             QPointF(x, plot.bottom() + 4));
+            const QString label = QString::number(static_cast<qlonglong>(t));
+            painter.drawText(
+                QRectF(x - labelWidth / 2.0, plot.bottom() + 5, labelWidth, 13),
+                Qt::AlignHCenter | Qt::AlignTop, label);
+        }
+    }
+
+    // Y (the metric): same treatment, budgeted on row height instead.
+    {
+        const double rowHeight = metrics.height() + 8.0;
+        const int maxTicks =
+            std::clamp(static_cast<int>(plot.height() / std::max(rowHeight, 1.0)),
+                       2, 10);
+        const double step = niceTickStep(hi - lo, maxTicks);
+        if (step > 0.0) {
+            const int decimals = std::max(decimalsForStep(step), 0);
+            const double firstTick = std::ceil(lo / step) * step;
+            for (double t = firstTick; t <= hi + step * 1e-9; t += step) {
+                const double y = toY(t);
+                if (y < plot.top() - 0.5 || y > plot.bottom() + 0.5)
+                    continue;
+                painter.setPen(gridColor);
+                painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
+                painter.setPen(tickColor);
+                painter.drawLine(QPointF(plot.left() - 4, y), QPointF(plot.left(), y));
+                // -0.0 is a real double and prints with a leading minus.
+                const double shown = std::abs(t) < step * 1e-9 ? 0.0 : t;
+                painter.drawText(QRectF(6, y - 7, plot.left() - 12, 14),
+                                 Qt::AlignRight | Qt::AlignVCenter,
+                                 QString::number(shown, 'f', decimals));
+            }
+        }
+    }
+
     painter.setPen(QColor(170, 175, 185));
-    painter.drawText(QRectF(16, plot.top() - 7, 66, 14), Qt::AlignRight,
-                     QString::number(hi, 'f', spec_.decimals));
-    painter.drawText(QRectF(16, plot.bottom() - 7, 66, 14), Qt::AlignRight,
-                     QString::number(lo, 'f', spec_.decimals));
     const QString lastValue =
         QString::number(samples_.back().value, 'f', spec_.decimals);
     painter.drawText(
-        QRectF(plot.left(), plot.bottom() + 4, plot.width(), 16), Qt::AlignHCenter,
+        QRectF(plot.left(), plot.bottom() + 20, plot.width(), 16), Qt::AlignHCenter,
         hasTarget_ ? tr("Step   (last: %1, %2 = %3 %4, target %5 %4)")
                          .arg(samples_.back().step)
                          .arg(spec_.valueSymbol, lastValue, spec_.unit)
@@ -113,7 +215,7 @@ void MetricPlotWidget::paintEvent(QPaintEvent*)
                    : tr("Step   (last: %1, %2 = %3 %4)")
                          .arg(samples_.back().step)
                          .arg(spec_.valueSymbol, lastValue, spec_.unit));
-    painter.drawText(QRectF(plot.left(), plot.bottom() + 20, plot.width(), 16),
+    painter.drawText(QRectF(plot.left(), plot.bottom() + 36, plot.width(), 16),
                      Qt::AlignHCenter, spec_.xAxisLabel);
     painter.save();
     painter.translate(12, plot.center().y());

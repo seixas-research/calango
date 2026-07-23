@@ -1,13 +1,25 @@
 #include "gui/BandPdosView.hpp"
 
+#include <QFontMetricsF>
 #include <QPainter>
 #include <QPainterPath>
 
 #include <algorithm>
+#include <cmath>
+#include <vector>
 
 namespace calango::gui {
 
 namespace {
+
+/// Axis titles and tick labels are drawn 1.5x larger than Qt's default for
+/// legibility (these plots are read in presentations and printed figures).
+/// Every margin and label box below is derived from this so the geometry
+/// scales with the type rather than clipping it.
+constexpr double kLabelScale = 1.5;
+/// Tick labels were 10 pt before scaling.
+constexpr double kTickPointSize = 10.0 * kLabelScale;
+
 
 const QColor kBackground(24, 26, 30);
 const QColor kFrame(120, 124, 134);
@@ -15,6 +27,66 @@ const QColor kGrid(70, 74, 84);
 const QColor kText(210, 213, 220);
 const QColor kFermi(255, 199, 88);
 const QColor kSpinColors[2] = {QColor(102, 163, 255), QColor(235, 110, 96)};
+
+/// Draw `text` centered in `box`, rendering "_x" as a typographic subscript
+/// (smaller font, dropped baseline). Qt ships no LaTeX engine and this
+/// project has no QCustomPlot / MathJax dependency, so the two-run layout
+/// below is what actually produces "E − E_F (eV)" with a proper subscript
+/// instead of a literal underscore.
+void drawWithSubscripts(QPainter& painter, const QRectF& box,
+                        const QString& text)
+{
+    // Split into (run, isSubscript) pairs: "_" introduces a one-character
+    // subscript, "_{...}" a braced multi-character one.
+    struct Run {
+        QString text;
+        bool subscript;
+    };
+    std::vector<Run> runs;
+    for (int i = 0; i < text.size(); ++i) {
+        if (text.at(i) == QLatin1Char('_') && i + 1 < text.size()) {
+            if (text.at(i + 1) == QLatin1Char('{')) {
+                const int close = text.indexOf(QLatin1Char('}'), i + 2);
+                if (close > 0) {
+                    runs.push_back({text.mid(i + 2, close - i - 2), true});
+                    i = close;
+                    continue;
+                }
+            }
+            runs.push_back({text.mid(i + 1, 1), true});
+            ++i;
+            continue;
+        }
+        if (runs.empty() || runs.back().subscript)
+            runs.push_back({QString(), false});
+        runs.back().text.append(text.at(i));
+    }
+
+    const QFont baseFont = painter.font();
+    QFont subFont = baseFont;
+    subFont.setPointSizeF(std::max(baseFont.pointSizeF() * 0.72, 6.0));
+    const QFontMetricsF baseMetrics(baseFont);
+    const QFontMetricsF subMetrics(subFont);
+
+    double width = 0.0;
+    for (const Run& run : runs) {
+        width += (run.subscript ? subMetrics : baseMetrics)
+                     .horizontalAdvance(run.text);
+    }
+
+    double x = box.center().x() - width / 2.0;
+    const double baseline = box.center().y() + baseMetrics.ascent() / 2.0
+        - baseMetrics.descent() / 2.0;
+    const double drop = baseMetrics.descent() * 0.75;
+    for (const Run& run : runs) {
+        painter.setFont(run.subscript ? subFont : baseFont);
+        painter.drawText(QPointF(x, run.subscript ? baseline + drop : baseline),
+                         run.text);
+        x += (run.subscript ? subMetrics : baseMetrics)
+                 .horizontalAdvance(run.text);
+    }
+    painter.setFont(baseFont);
+}
 
 QString prettyLabel(const QString& raw)
 {
@@ -67,6 +139,14 @@ void BandPdosView::setReference(double referenceEv)
     update();
 }
 
+void BandPdosView::setReferenceIsFermi(bool fermiRelative)
+{
+    if (referenceIsFermi_ == fermiRelative)
+        return;
+    referenceIsFermi_ = fermiRelative;
+    update();
+}
+
 void BandPdosView::setEnergyWindow(double minEv, double maxEv)
 {
     eMin_ = std::min(minEv, maxEv - 0.1);
@@ -95,7 +175,13 @@ void BandPdosView::paintEvent(QPaintEvent*)
     painter.fillRect(rect(), kBackground);
 
     const double margin = 8.0;
-    QRectF area = rect().adjusted(margin + 34, margin, -margin, -margin - 22);
+    // Left gutter: 34 px of numeric tick labels plus kAxisTitleStrip for the
+    // rotated axis title outside them.
+    constexpr double kAxisTitleStrip = 20.0 * kLabelScale;
+    constexpr double kTickGutter = 34.0 * kLabelScale;
+    constexpr double kBottomStrip = 22.0 * kLabelScale;
+    QRectF area = rect().adjusted(margin + kTickGutter + kAxisTitleStrip, margin,
+                                  -margin, -margin - kBottomStrip);
     if (pdos_.valid()) {
         const double bandWidth = bands_.valid() ? area.width() * 0.62
                                                 : 0.0;
@@ -112,7 +198,27 @@ void BandPdosView::paintEvent(QPaintEvent*)
         painter.setPen(kText);
         painter.drawText(rect(), Qt::AlignCenter,
                          tr("No band-structure data loaded"));
+        return;
     }
+
+    // Vertical axis title, strictly left of the plot and rotated 90°
+    // counter-clockwise so it reads bottom-to-top. Both panels share the
+    // energy axis, so it is drawn once for the pair. "E_F" is typeset with a
+    // real subscript by drawWithSubscripts (Qt has no LaTeX engine, and this
+    // project carries no QCustomPlot/MathJax dependency).
+    painter.setPen(kText);
+    painter.save();
+    QFont titleFont = painter.font();
+    titleFont.setPointSizeF(titleFont.pointSizeF() * kLabelScale);
+    painter.setFont(titleFont);
+    painter.translate(margin + kAxisTitleStrip * 0.5, area.center().y());
+    painter.rotate(-90.0);
+    drawWithSubscripts(painter, QRectF(-area.height() / 2.0, -9.0,
+                                       area.height(), 18.0),
+                       phonon_ ? tr("Frequency (cm⁻¹)")
+                               : referenceIsFermi_ ? tr("E − E_F (eV)")
+                                                   : tr("E (eV)"));
+    painter.restore();
 }
 
 void BandPdosView::paintBands(QPainter& painter, const QRectF& rect)
@@ -130,7 +236,9 @@ void BandPdosView::paintBands(QPainter& painter, const QRectF& rect)
     painter.drawRect(rect);
 
     // High-symmetry verticals + labels.
-    painter.setFont(QFont(painter.font().family(), 10));
+    QFont tickFont = painter.font();
+    tickFont.setPointSizeF(kTickPointSize);
+    painter.setFont(tickFont);
     for (std::size_t i = 0; i < bands_.specialX.size(); ++i) {
         const double px = mapX(bands_.specialX[i]);
         painter.setPen(QPen(kGrid, 1.0));
@@ -140,7 +248,8 @@ void BandPdosView::paintBands(QPainter& painter, const QRectF& rect)
             i < static_cast<std::size_t>(bands_.specialLabels.size())
                 ? bands_.specialLabels[static_cast<int>(i)]
                 : QString());
-        painter.drawText(QRectF(px - 20, rect.bottom() + 2, 40, 18),
+        painter.drawText(QRectF(px - 30 * kLabelScale, rect.bottom() + 2,
+                                60 * kLabelScale, 18 * kLabelScale),
                          Qt::AlignHCenter | Qt::AlignTop, label);
     }
 
@@ -151,7 +260,9 @@ void BandPdosView::paintBands(QPainter& painter, const QRectF& rect)
         painter.setPen(QPen(kGrid, 1.0, Qt::DotLine));
         painter.drawLine(QPointF(rect.left(), py), QPointF(rect.right(), py));
         painter.setPen(kText);
-        painter.drawText(QRectF(rect.left() - 40, py - 8, 36, 16),
+        painter.drawText(QRectF(rect.left() - 44 * kLabelScale,
+                                py - 8 * kLabelScale, 38 * kLabelScale,
+                                16 * kLabelScale),
                          Qt::AlignRight | Qt::AlignVCenter,
                          QString::number(e, 'f', phonon_ ? 0 : 1));
     }
@@ -185,10 +296,8 @@ void BandPdosView::paintBands(QPainter& painter, const QRectF& rect)
     }
     painter.setClipping(false);
 
-    painter.setPen(kText);
-    painter.drawText(QRectF(rect.left(), rect.top() - 2, rect.width(), 16),
-                     Qt::AlignLeft | Qt::AlignTop,
-                     phonon_ ? tr("Frequency (cm⁻¹)") : tr("E − E_ref (eV)"));
+    // The energy-axis title is drawn once, rotated, in paintEvent's left
+    // strip — see the note there.
 }
 
 void BandPdosView::paintPdos(QPainter& painter, const QRectF& rect)
@@ -249,7 +358,11 @@ void BandPdosView::paintPdos(QPainter& painter, const QRectF& rect)
     painter.setClipping(false);
 
     painter.setPen(kText);
-    painter.drawText(QRectF(rect.left(), rect.bottom() + 2, rect.width(), 18),
+    QFont pdosTitleFont = painter.font();
+    pdosTitleFont.setPointSizeF(pdosTitleFont.pointSizeF() * kLabelScale);
+    painter.setFont(pdosTitleFont);
+    painter.drawText(QRectF(rect.left(), rect.bottom() + 2, rect.width(),
+                            18 * kLabelScale),
                      Qt::AlignHCenter | Qt::AlignTop,
                      phonon_ ? tr("PhDOS (states/cm⁻¹)") : tr("PDOS (states/eV)"));
 }

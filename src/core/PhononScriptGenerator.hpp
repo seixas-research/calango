@@ -29,6 +29,12 @@ struct PhononConfig {
     /// electronic band path).
     std::string kpath;
     int dosKptGrid = 20;      ///< Monkhorst-Pack n×n×n grid for the DOS (mesh)
+    /// Gaussian broadening applied when sampling the phonon DOS onto its
+    /// frequency grid (cm⁻¹). Too small and the DOS is a comb of delta
+    /// spikes from the finite k-mesh; too large and real van Hove features
+    /// wash out. Scale it with the mesh: a denser kgrid supports a sharper
+    /// sigma.
+    double dosWidthCm = 2.0;
 
     /// Enforce the acoustic sum rule when reading the force constants, so the
     /// three acoustic branches vanish at Γ (ase.phonons Phonons.read(acoustic=…)).

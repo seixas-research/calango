@@ -1,12 +1,15 @@
 #include "gui/RepresentationPanel.hpp"
+#include "gui/GuiUtils.hpp"
 
 #include "gui/ElementSettingsDialog.hpp"
 #include "gui/ViewportWidget.hpp"
 
 #include <QColorDialog>
+#include <QComboBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QSignalBlocker>
+#include <QStandardItemModel>
 #include <QVBoxLayout>
 
 #include <cmath>
@@ -16,12 +19,6 @@ namespace calango::gui {
 
 namespace {
 
-void setButtonColor(QPushButton* button, const QColor& color)
-{
-    button->setStyleSheet(QStringLiteral("background-color: %1; border: 1px solid #666;")
-                              .arg(color.name()));
-}
-
 } // namespace
 
 RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* parent)
@@ -29,6 +26,35 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     , viewport_(viewport)
 {
     auto* form = new QFormLayout(this);
+
+    // --- Style (surface material) ------------------------------------------
+    // First control in the panel: the material decides how everything below
+    // it reads on screen, and it is the setting most often changed when
+    // preparing a figure. Applies to every lit mesh (atom spheres, bond
+    // cylinders, cell tubes) so a figure reads as one material.
+    surfaceFinishCombo_ = new QComboBox(this);
+    // Order matches render::SurfaceFinish.
+    surfaceFinishCombo_->addItem(tr("Standard"));
+    surfaceFinishCombo_->addItem(tr("Shiny"));
+    surfaceFinishCombo_->addItem(tr("Matte"));
+    surfaceFinishCombo_->addItem(tr("Glassy"));
+    surfaceFinishCombo_->setToolTip(
+        tr("Standard: Blinn-Phong with moderate highlights.\n"
+           "Shiny: polished — strong, small, crisp highlights (low "
+           "roughness).\n"
+           "Matte (fosco): diffuse only — best for print figures, where "
+           "highlights read as artifacts.\n"
+           "Glassy: alpha-blended with a Fresnel rim, so inner atoms stay "
+           "visible through outer shells."));
+    form->addRow(tr("Style:"), surfaceFinishCombo_);
+    connect(surfaceFinishCombo_, &QComboBox::currentIndexChanged, this,
+            [this](int index) {
+                viewport_->style().surfaceFinish =
+                    static_cast<render::SurfaceFinish>(index);
+                // Geometry is unchanged — only the shading uniforms — so this
+                // is a repaint, not an instance-buffer rebuild.
+                viewport_->styleChanged(false);
+            });
 
     modeCombo_ = new QComboBox(this);
     modeCombo_->addItems({tr("Ball-and-Stick"), tr("Space-filling (CPK)"),
@@ -177,19 +203,23 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
         viewport_->styleChanged(true);
     });
 
-    // --- Force / velocity vector arrows ------------------------------------
-    forcesCheck_ = new QCheckBox(tr("Force vectors"), this);
-    velocitiesCheck_ = new QCheckBox(tr("Velocity vectors"), this);
-    form->addRow(forcesCheck_);
-    form->addRow(velocitiesCheck_);
-    connect(forcesCheck_, &QCheckBox::toggled, this, [this](bool on) {
-        viewport_->style().showForces = on;
-        viewport_->styleChanged(true);
-    });
-    connect(velocitiesCheck_, &QCheckBox::toggled, this, [this](bool on) {
-        viewport_->style().showVelocities = on;
-        viewport_->styleChanged(true);
-    });
+    // --- Per-atom vector overlay -------------------------------------------
+    // One selector rather than a checkbox per property: the arrows share a
+    // single scale and would overlap illegibly if two were drawn at once, and
+    // the list grows naturally as extended-XYZ files carry more columns.
+    vectorOverlayCombo_ = new QComboBox(this);
+    // Order matches render::VectorOverlay.
+    vectorOverlayCombo_->addItem(tr("None"));
+    vectorOverlayCombo_->addItem(tr("Velocity"));
+    vectorOverlayCombo_->addItem(tr("Force"));
+    vectorOverlayCombo_->addItem(tr("Magnetic moment"));
+    form->addRow(tr("Vector overlay:"), vectorOverlayCombo_);
+    connect(vectorOverlayCombo_, &QComboBox::currentIndexChanged, this,
+            [this](int index) {
+                viewport_->style().vectorOverlay =
+                    static_cast<render::VectorOverlay>(index);
+                viewport_->styleChanged(true);
+            });
 
     // Arrow scale: slider (coarse) + spinbox (exact), Å per field unit.
     auto* vectorRow = new QWidget(this);
@@ -205,11 +235,12 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     vectorScaleSpin_->setValue(10.00);
     vectorScaleSpin_->setSuffix(QStringLiteral("×"));
     vectorScaleSpin_->setToolTip(tr("Arrow length in Å per field unit\n"
-                                    "(eV/Å for forces, Å/fs·√(amu) units for "
-                                    "velocities)"));
+                                    "(eV/Å for forces, Å/fs·√(amu) for "
+                                    "velocities, μB for magnetic moments)"));
     vectorLayout->addWidget(vectorScaleSlider_, 1);
     vectorLayout->addWidget(vectorScaleSpin_);
     form->addRow(tr("Vector scale:"), vectorRow);
+
     connect(vectorScaleSlider_, &QSlider::valueChanged, this, [this](int hundredths) {
         const float factor = static_cast<float>(hundredths) / 100.0f;
         {
@@ -264,34 +295,55 @@ void RepresentationPanel::refreshPropertyList()
     const QSignalBlocker blocker(propertyCombo_);
     const QString previous = propertyCombo_->currentText();
     propertyCombo_->clear();
-    bool hasForces = false;
-    bool hasVelocities = false;
-    if (const auto structure = viewport_->structure()) {
+    const core::Structure* structure = nullptr;
+    const auto held = viewport_->structure();
+    if (held) {
+        structure = held.get();
         for (const auto& [name, values] : structure->scalarFields()) {
             (void)values;
             propertyCombo_->addItem(QString::fromStdString(name));
         }
-        const auto& vectors = structure->vectorFields();
-        hasForces = vectors.count("forces") > 0;
-        hasVelocities = vectors.count("velocities") > 0;
     }
     const int index = propertyCombo_->findText(previous);
     if (index >= 0)
         propertyCombo_->setCurrentIndex(index);
 
-    // Arrow toggles only make sense when the structure carries the data.
-    forcesCheck_->setEnabled(hasForces);
-    forcesCheck_->setToolTip(hasForces
-                                 ? QString()
-                                 : tr("No per-atom \"forces\" data in this "
-                                      "structure (load an extxyz with a "
-                                      "forces column)"));
-    velocitiesCheck_->setEnabled(hasVelocities);
-    velocitiesCheck_->setToolTip(hasVelocities
-                                     ? QString()
-                                     : tr("No velocities/momenta in this "
-                                          "structure (e.g. an MD .traj "
-                                          "frame)"));
+    // Grey out overlay entries the current frame has no data for, rather than
+    // hiding them: a fixed list keeps the indices aligned with
+    // render::VectorOverlay, and the disabled tooltip explains what is
+    // missing instead of silently offering nothing.
+    {
+        const QSignalBlocker overlayBlocker(vectorOverlayCombo_);
+        bool currentStillValid = true;
+        for (int i = 1; i < vectorOverlayCombo_->count(); ++i) {
+            const auto overlay = static_cast<render::VectorOverlay>(i);
+            const std::string field = render::vectorFieldName(overlay);
+            const bool available =
+                structure && structure->vectorFields().count(field) > 0;
+            auto* model = qobject_cast<QStandardItemModel*>(
+                vectorOverlayCombo_->model());
+            if (model) {
+                if (QStandardItem* item = model->item(i)) {
+                    item->setEnabled(available);
+                    item->setToolTip(
+                        available
+                            ? QString()
+                            : tr("This frame carries no per-atom \"%1\" data "
+                                 "(load an extended-XYZ trajectory whose "
+                                 "frames include that column)")
+                                  .arg(QString::fromStdString(field)));
+                }
+            }
+            if (!available && vectorOverlayCombo_->currentIndex() == i)
+                currentStillValid = false;
+        }
+        // Scrubbing to a frame without the selected property must not leave a
+        // stale selection pointing at nothing.
+        if (!currentStillValid) {
+            vectorOverlayCombo_->setCurrentIndex(0);
+            viewport_->style().vectorOverlay = render::VectorOverlay::None;
+        }
+    }
 }
 
 void RepresentationPanel::syncColoringFromViewport()

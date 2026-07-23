@@ -72,6 +72,7 @@ build/
 build-deb/
 build-dmg/
 build-macos-bundle/
+build-verify/
 develop-eggs/
 dist/
 downloads/
@@ -282,3 +283,6 @@ __marimo__/
 
 # macOS
 .DS_Store
+
+# AGY
+agy-report/

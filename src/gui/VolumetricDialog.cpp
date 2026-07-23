@@ -20,6 +20,7 @@
 #include <QSlider>
 #include <QTextStream>
 #include <QVBoxLayout>
+#include <QtConcurrent>
 
 #include <algorithm>
 #include <array>
@@ -182,6 +183,20 @@ VolumetricDialog::VolumetricDialog(QWidget* parent)
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     side->addWidget(buttons);
+
+    connect(&isoWatcher_, &QFutureWatcher<core::IsoMesh>::finished,
+            this, &VolumetricDialog::onIsoExtractionFinished);
+}
+
+VolumetricDialog::~VolumetricDialog()
+{
+    // QFutureWatcher's destructor does not wait, and the running lambda holds
+    // shared_ptrs into members that are about to die. Detach from the signal
+    // (so no slot fires into a half-destroyed dialog) and block until the
+    // worker is done.
+    isoWatcher_.disconnect(this);
+    if (isoWatcher_.isRunning())
+        isoWatcher_.waitForFinished();
 }
 
 double VolumetricDialog::isovalueFromSlider() const
@@ -195,12 +210,12 @@ double VolumetricDialog::isovalueFromSlider() const
 const core::VolumetricData* VolumetricDialog::sliceField() const
 {
     if (sliceFieldCombo_->currentIndex() == 1)
-        return fieldB_ ? &*fieldB_ : nullptr;
-    return fieldA_ ? &*fieldA_ : nullptr;
+        return fieldB_.get();
+    return fieldA_.get();
 }
 
-void VolumetricDialog::loadField(std::optional<core::VolumetricData>& field,
-                                 QLabel* label, const QString& role)
+void VolumetricDialog::loadField(FieldPtr& field, QLabel* label,
+                                 const QString& role)
 {
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Load Volumetric %1").arg(role), QString(),
@@ -210,7 +225,10 @@ void VolumetricDialog::loadField(std::optional<core::VolumetricData>& field,
         return;
     QApplication::setOverrideCursor(Qt::WaitCursor);
     try {
-        field = core::VolumetricData::load(path.toStdString());
+        // Freshly allocated each load: the previous grid stays alive as long
+        // as an in-flight extraction still references it.
+        field = std::make_shared<const core::VolumetricData>(
+            core::VolumetricData::load(path.toStdString()));
         QApplication::restoreOverrideCursor();
     } catch (const std::exception& e) {
         QApplication::restoreOverrideCursor();
@@ -253,13 +271,54 @@ void VolumetricDialog::loadFieldB()
 void VolumetricDialog::rebuildIso()
 {
     if (!fieldA_ || !isoGroup_->isChecked()) {
+        // Bump the generation so any in-flight extraction's result is
+        // discarded rather than drawn over the cleared view.
+        ++isoGeneration_;
+        isoRequestPending_ = false;
         isoMesh_ = {};
         view_->clearIsoMesh();
         return;
     }
-    const bool epm = epmCheck_->isChecked() && fieldB_.has_value();
-    isoMesh_ = core::extractIsosurface(*fieldA_, isoSpin_->value(),
-                                       epm ? &*fieldB_ : nullptr);
+    isoRequestPending_ = true;
+    startIsoExtraction();
+}
+
+void VolumetricDialog::startIsoExtraction()
+{
+    // One at a time: a slider drag would otherwise spawn an extraction per
+    // pixel of travel. The newest request wins when the current one lands.
+    if (!isoRequestPending_ || isoWatcher_.isRunning())
+        return;
+    isoRequestPending_ = false;
+    isoRunningGeneration_ = ++isoGeneration_;
+
+    // Capture shared_ptr copies (a refcount bump, not a grid copy) so the
+    // worker's inputs stay alive and unchanged even if the user loads a new
+    // file or toggles EPM while it runs.
+    FieldPtr field = fieldA_;
+    FieldPtr colorField = (epmCheck_->isChecked() && fieldB_) ? fieldB_ : nullptr;
+    const double isovalue = isoSpin_->value();
+
+    isoWatcher_.setFuture(QtConcurrent::run(
+        [field = std::move(field), colorField = std::move(colorField), isovalue] {
+            return core::extractIsosurface(*field, isovalue, colorField.get());
+        }));
+}
+
+void VolumetricDialog::onIsoExtractionFinished()
+{
+    // Stale result: its inputs changed (or the surface was switched off)
+    // while it ran. Drop it and serve whatever is queued now.
+    if (isoRunningGeneration_ != isoGeneration_) {
+        startIsoExtraction();
+        return;
+    }
+
+    isoMesh_ = isoWatcher_.result();
+    // The color range is recomputed here rather than in the worker: it is
+    // O(vertices) on an already-materialized vector, and keeping it on this
+    // side means the worker returns exactly one value.
+    const bool epm = epmCheck_->isChecked() && fieldB_ != nullptr;
     double lo = 0.0, hi = 1.0;
     if (epm && !isoMesh_.colorValues.empty()) {
         lo = *std::min_element(isoMesh_.colorValues.begin(),
@@ -274,6 +333,8 @@ void VolumetricDialog::rebuildIso()
     }
     view_->setIsoMesh(isoMesh_, kMaps[isoColormapCombo_->currentIndex()], lo, hi,
                       epm);
+
+    startIsoExtraction(); // serve a request that arrived while we were busy
 }
 
 void VolumetricDialog::rebuildSlice()

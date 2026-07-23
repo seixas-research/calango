@@ -26,6 +26,8 @@
 #include "gui/AdsorptionDialog.hpp"
 #include "gui/BandPdosWindow.hpp"
 #include "gui/ClusterExpansionDialog.hpp"
+#include "gui/ClusterExpansionWizard.hpp"
+#include "gui/ConvexHullPlotWidget.hpp"
 #include "gui/GeometryOptimizationWizard.hpp"
 #include "gui/ElectronicBandsWizard.hpp"
 #include "gui/MolecularDynamicsWizard.hpp"
@@ -672,6 +674,8 @@ void MainWindow::createMenusAndDocks()
                               this, &MainWindow::openMonteCarlo);
     simulationMenu->addAction(tr("&Nudged Elastic Band (NEB)…"),
                               this, &MainWindow::openNudgedElasticBand);
+    simulationMenu->addAction(tr("Cl&uster Expansion Calculation…"),
+                              this, &MainWindow::clusterExpansionCalculation);
     simulationMenu->addSeparator();
     // "New Remote Calculation…" was removed along with the legacy calculator
     // dialog it opened: remote execution is now chosen inside each wizard
@@ -906,6 +910,40 @@ void MainWindow::createMenusAndDocks()
     jobTabs->addTab(plotPage(temperaturePlot_), tr("Temperature"));
     jobTabs->addTab(plotPage(forcePlot_), tr("Force"));
     jobTabs->addTab(plotPage(pressurePlot_), tr("Pressure"));
+
+    // Convex Hull: populated only by a Cluster Expansion Calculation, so it
+    // shows its own empty-state hint until one finishes.
+    convexHullPlot_ = new ConvexHullPlotWidget(jobTabs);
+    {
+        auto* page = new QWidget(jobTabs);
+        auto* pageLayout = new QVBoxLayout(page);
+        pageLayout->setContentsMargins(0, 0, 0, 2);
+        pageLayout->setSpacing(2);
+        pageLayout->addWidget(convexHullPlot_, 1);
+        auto* row = new QHBoxLayout;
+        row->addStretch(1);
+        auto* exportHull = new QPushButton(tr("Export Data…"), page);
+        row->addWidget(exportHull);
+        pageLayout->addLayout(row);
+        connect(exportHull, &QPushButton::clicked, convexHullPlot_,
+                &ConvexHullPlotWidget::exportData);
+        jobTabs->addTab(page, tr("Convex Hull"));
+    }
+    // Double-clicking a configuration jumps the viewport to that frame of the
+    // optimized trajectory (once it has been loaded into a tab).
+    connect(convexHullPlot_, &ConvexHullPlotWidget::frameActivated, this,
+            [this](int frame) {
+                if (Document* doc = currentDocument();
+                    doc && frame >= 0
+                    && frame < static_cast<int>(doc->frames.size())) {
+                    timeline_->setCurrentFrame(frame);
+                } else {
+                    statusBar()->showMessage(
+                        tr("Load the optimized ensemble (Process panel → Load "
+                           "Result) to inspect configuration %1")
+                            .arg(frame));
+                }
+            });
     // Wrap the tab widget with a small top margin: without it the tab
     // titles (Log/Energy/...) render flush against the dock's title bar
     // and visually collide with it (zone-10 overflow).
@@ -2479,6 +2517,19 @@ void MainWindow::onDeleteProcessRequested(int id)
 
 void MainWindow::onProcessResultRequested(const QString& directory)
 {
+    // A cluster-expansion run produces both a hull and a trajectory: show the
+    // hull, then fall through so the optimized structures open in a tab too.
+    if (QFile::exists(directory + QStringLiteral("/cluster_expansion.json"))) {
+        if (convexHullPlot_->loadFromJson(
+                directory + QStringLiteral("/cluster_expansion.json"))) {
+            jobDock_->show();
+            jobDock_->raise();
+            statusBar()->showMessage(
+                tr("Convex hull loaded — %1 configurations, %2 on the hull")
+                    .arg(convexHullPlot_->result().points.size())
+                    .arg(convexHullPlot_->result().hullIndices.size()));
+        }
+    }
     if (QFile::exists(directory + QStringLiteral("/bands.json"))) {
         openBandResults(directory);
         return;
@@ -2488,8 +2539,11 @@ void MainWindow::onProcessResultRequested(const QString& directory)
         return;
     }
     for (const auto* candidate :
-         {"md.traj", "opt.traj", "optimized.extxyz", "md_final.extxyz",
-          "perturbed.extxyz"}) {
+         // md.extxyz first: it carries the per-atom forces and velocities
+         // the Vector overlay needs, which the binary md.traj only exposes
+         // where the calculator left results attached.
+         {"optimized_configs.extxyz", "md.extxyz", "md.traj", "opt.traj",
+          "optimized.extxyz", "md_final.extxyz", "perturbed.extxyz"}) {
         const QString path = directory + QLatin1Char('/')
             + QLatin1String(candidate);
         if (QFile::exists(path)) {
@@ -2732,6 +2786,38 @@ void MainWindow::openSqsBuilder()
             ? tr("SQS generated with icet")
             : tr("SQS generated (internal annealer, residual Σα² = %1)")
                   .arg(generated.objective, 0, 'f', 4));
+}
+
+void MainWindow::clusterExpansionCalculation()
+{
+    if (!prepareSimulation(tr("Cluster Expansion Calculation")))
+        return;
+    Document* doc = currentDocument();
+    if (!doc)
+        return;
+
+    // The ensemble is the document's trajectory when it has one; a plain
+    // single structure is still accepted (the wizard says why that limits the
+    // hull) so the workflow can be tried on one configuration.
+    std::vector<std::shared_ptr<core::Structure>> ensemble = doc->frames;
+    if (ensemble.empty() && doc->structure)
+        ensemble.push_back(doc->structure);
+    if (ensemble.empty()) {
+        QMessageBox::information(this, tr("Cluster Expansion Calculation"),
+                                 tr("Open the configuration ensemble first "
+                                    "(Build → Cluster Expansion…)."));
+        return;
+    }
+
+    ClusterExpansionWizard wizard(ensemble, this);
+    // stageJob writes these as configs.extxyz, which the generated script
+    // reads; set it before running the wizard's action so both the local and
+    // the remote path pick it up.
+    stagedEnsembleFrames_ = std::move(ensemble);
+    runSimulationWizard(wizard, tr("Cluster expansion"), /*expectFrames=*/false);
+    // Not consumed (the user cancelled) — do not leak the staging into the
+    // next unrelated job.
+    stagedEnsembleFrames_.clear();
 }
 
 void MainWindow::openClusterExpansion()
@@ -3542,6 +3628,16 @@ QString MainWindow::stageJob(const QString& script, int procId)
             stagedBandFrames_.clear();
         }
 
+        // Cluster-expansion ensemble: the unrelaxed decorated configurations
+        // the batch job iterates over.
+        if (!stagedEnsembleFrames_.empty()) {
+            pybridge::AseBridge::writeTrajectory(
+                stagedEnsembleFrames_,
+                (jobDir + QStringLiteral("/configs.extxyz")).toStdString(),
+                "extxyz");
+            stagedEnsembleFrames_.clear();
+        }
+
         const QString scriptPath = jobDir + QStringLiteral("/run.py");
         QFile scriptFile(scriptPath);
         if (!scriptFile.open(QIODevice::WriteOnly | QIODevice::Text))
@@ -3597,11 +3693,15 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe,
     if (expectFrames) {
         Document* doc = currentDocument();
         if (doc && doc->structure) {
+            // The input geometry is shown while the first frame is computed,
+            // but it is NOT seeded as trajectory frame 0: it carries no
+            // evaluated forces or velocities, so scrubbing onto it blanked the
+            // vector overlay that every other frame has. The trajectory starts
+            // empty and the run's first streamed frame becomes frame 0.
             auto first = std::make_shared<core::Structure>(*doc->structure);
             const int tab = addDocument(
                 first,
-                tr("%1 (live)").arg(taskLabel.isEmpty() ? tr("run") : taskLabel),
-                {first});
+                tr("%1 (live)").arg(taskLabel.isEmpty() ? tr("run") : taskLabel));
             liveDoc_ = documents_[static_cast<std::size_t>(tab)].get();
             tabBar_->setCurrentIndex(tab);
         }
@@ -3637,6 +3737,14 @@ void MainWindow::onFrameStreamed(const std::shared_ptr<core::Structure>& frame)
         return; // tab exists and accumulates; views update on switch
     timeline_->extendFrameCount(static_cast<int>(doc.frames.size()));
     timeline_->show();
+    if (doc.frames.size() == 1) {
+        // First frame of the run. The playhead is already at 0, so
+        // setCurrentFrame(0) would emit nothing and the viewport would keep
+        // showing the (unevaluated) input geometry until frame 2 arrived —
+        // visible now that the input is no longer seeded as frame 0.
+        showFrame(0);
+        return;
+    }
     if (followTail) // keep tracking the newest frame unless the user scrubbed
         timeline_->setCurrentFrame(static_cast<int>(doc.frames.size()) - 1);
 }

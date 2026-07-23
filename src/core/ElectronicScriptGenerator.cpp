@@ -2,6 +2,8 @@
 
 #include "core/AseScriptGenerator.hpp"
 
+#include "core/AseScriptGenerator.hpp"
+
 #include <sstream>
 
 namespace calango::core {
@@ -44,12 +46,15 @@ std::string generateElectronicScript(const ElectronicConfig& c)
         break;
 
     case ElectronicBackend::Gpaw:
-        out << "from gpaw import GPAW, PW\n"
-               "\n"
-            << "kgrid = " << c.scfKpts << "\n"
-            << "calc = GPAW(mode=PW(" << c.ecutEv << "), xc=\"PBE\",\n"
-               "            kpts=(kgrid, kgrid, kgrid),\n"
-               "            txt=\"gpaw_scf.txt\")\n"
+        // Same GPAW keyword set as Geometry Optimization / Single-point: the
+        // bands path used to hardcode PW + PBE and silently drop the
+        // eigensolver, mixer and convergence settings the wizard collected.
+        out << AseScriptGenerator::gpawImports(c.gpaw)
+            << "\n"
+               "calc = GPAW(\n"
+            << AseScriptGenerator::gpawKeywordArguments(c.gpaw, "    ")
+            << "    txt=\"gpaw_scf.txt\",\n"
+               ")\n"
                "atoms.calc = calc\n"
                "atoms.get_potential_energy()\n"
                "efermi = float(calc.get_fermi_level())\n"

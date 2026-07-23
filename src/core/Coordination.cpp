@@ -1,31 +1,11 @@
 #include "core/Coordination.hpp"
+#include "core/PeriodicImages.hpp"
 
 #include <algorithm>
 #include <cmath>
 
 namespace calango::core {
 
-namespace {
-
-/// Periodic repeats needed along each axis so that every image within
-/// `rMax` is covered (same slab-width criterion as the RDF).
-std::array<int, 3> imageRange(const UnitCell& cell, double rMax)
-{
-    const auto& a = cell.vectors();
-    const double volume = std::abs(a[0].dot(a[1].cross(a[2])));
-    std::array<int, 3> range{0, 0, 0};
-    const auto pbc = cell.pbc();
-    for (int i = 0; i < 3; ++i) {
-        if (!pbc[static_cast<std::size_t>(i)])
-            continue;
-        const Vec3 crossArea = a[(i + 1) % 3].cross(a[(i + 2) % 3]);
-        const double width = volume / crossArea.norm();
-        range[static_cast<std::size_t>(i)] = static_cast<int>(std::ceil(rMax / width));
-    }
-    return range;
-}
-
-} // namespace
 
 CoordinationResult computeCoordination(const Structure& structure,
                                        const CoordinationOptions& options)

@@ -41,6 +41,11 @@ public:
 
     /// Reference energy: plots show E − reference (default: file E_F).
     void setReference(double referenceEv);
+    /// Whether the vertical axis is captioned as an E_F-relative energy
+    /// ("E − E_F (eV)") or an absolute one ("E (eV)"). Purely a label
+    /// concern — the shift itself is setReference(). Ignored in phonon mode,
+    /// where the axis is a frequency with no Fermi level.
+    void setReferenceIsFermi(bool fermiRelative);
     void setEnergyWindow(double minEv, double maxEv); ///< relative to reference
     void setProjectionVisible(const QString& label, bool visible);
 
@@ -67,6 +72,8 @@ private:
     double eMin_ = -10.0;
     double eMax_ = 10.0;
     bool phonon_ = false; ///< frequency (cm⁻¹) semantics instead of energy/eV
+    /// Caption the energy axis relative to E_F (true) or absolute (false).
+    bool referenceIsFermi_ = true;
 };
 
 } // namespace calango::gui

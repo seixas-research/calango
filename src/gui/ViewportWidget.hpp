@@ -73,10 +73,6 @@ public:
     void setGradientInverted(bool inverted);
     QString customScalarField() const { return customField_; }
 
-    /// Neighbor-cutoff settings the CN/GCN color modes use.
-    const core::CoordinationOptions& coordinationOptions() const {
-        return coordinationOptions_;
-    }
     void setCoordinationOptions(const core::CoordinationOptions& options);
 
     /// Min/max of the active scalar mapping (legend range); `valid` is
@@ -98,6 +94,12 @@ public Q_SLOTS:
 
     /// Corner coordinate-triad overlay.
     void setShowAxes(bool show);
+    /// Draw arrowheads at the tips of the orientation triad. Off by default:
+    /// plain segments read more cleanly at the triad's small on-screen size,
+    /// and arrowheads mainly help when the figure must state axis *direction*
+    /// unambiguously (e.g. a printed figure).
+    void setShowAxesArrows(bool show);
+    bool showAxesArrows() const { return axesArrows_; }
     /// false = Cartesian X/Y/Z, true = lattice vectors a1/a2/a3
     /// (falls back to Cartesian when the structure has no cell).
     void setAxesLatticeMode(bool lattice);
@@ -128,7 +130,6 @@ public:
         MeasureAngle,    ///< click three atoms -> angle at the middle one (°)
     };
     void setInteractionMode(InteractionMode mode);
-    InteractionMode interactionMode() const { return interactionMode_; }
 
     /// Depth-of-field post-processing (View -> Visual Effects). Fog lives
     /// in the renderer Style; DoF is a viewport-level composite pass.
@@ -259,6 +260,7 @@ private:
     bool structureDirty_ = false;
     bool showAxes_ = true;
     bool axesLatticeMode_ = false;
+    bool axesArrows_ = false;
     int axesSizePx_ = 92;
     QPointF lastMousePos_;
     InteractionMode interactionMode_ = InteractionMode::Rotate;

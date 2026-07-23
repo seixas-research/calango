@@ -1,4 +1,5 @@
 #include "core/MonteCarlo.hpp"
+#include "core/PeriodicImages.hpp"
 
 #include "core/UnitCell.hpp"
 
@@ -12,22 +13,6 @@ namespace calango::core {
 namespace {
 
 constexpr double kBoltzmann = 8.617333262e-5; // eV/K
-
-std::array<int, 3> imageRange(const UnitCell& cell, double rMax)
-{
-    const auto& a = cell.vectors();
-    const double volume = std::abs(a[0].dot(a[1].cross(a[2])));
-    std::array<int, 3> range{0, 0, 0};
-    const auto pbc = cell.pbc();
-    for (int i = 0; i < 3; ++i) {
-        if (!pbc[static_cast<std::size_t>(i)] || volume < 1e-9)
-            continue;
-        const Vec3 crossArea = a[(i + 1) % 3].cross(a[(i + 2) % 3]);
-        range[static_cast<std::size_t>(i)] =
-            static_cast<int>(std::ceil(rMax / (volume / crossArea.norm())));
-    }
-    return range;
-}
 
 } // namespace
 

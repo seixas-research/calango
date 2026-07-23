@@ -1,4 +1,5 @@
 #include "render/RayTraceExporter.hpp"
+#include "render/RenderGeometry.hpp"
 
 #include <QTextStream>
 
@@ -22,29 +23,6 @@ struct SceneCylinder {
     QColor color;
 };
 
-QVector3D toQt(const calango::core::Vec3& v)
-{
-    return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)};
-}
-
-QVector3D perpendicularTo(const QVector3D& axis)
-{
-    const QVector3D reference = std::abs(axis.z()) < 0.9f
-        ? QVector3D(0.0f, 0.0f, 1.0f)
-        : QVector3D(1.0f, 0.0f, 0.0f);
-    return QVector3D::crossProduct(axis, reference).normalized();
-}
-
-/// Mirrors StructureRenderer's multi-bond layout so ray-traced images
-/// match the viewport (offsets in units of the single-bond radius).
-void multiBondLayout(int order, std::vector<float>& offsets, float& radiusScale)
-{
-    switch (std::clamp(order, 1, 3)) {
-    case 2: offsets = {-0.8f, 0.8f}; radiusScale = 0.55f; break;
-    case 3: offsets = {-1.5f, 0.0f, 1.5f}; radiusScale = 0.45f; break;
-    default: offsets = {0.0f}; radiusScale = 1.0f; break;
-    }
-}
 
 /// Scene geometry shared by both backends, derived exactly like the
 /// viewport's instance buffers.

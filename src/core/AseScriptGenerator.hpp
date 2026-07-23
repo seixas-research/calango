@@ -43,6 +43,18 @@ public:
     /// exported script by the wizards' Export action.
     static std::string loggerModuleSource();
 
+    /// GPAW import line for the configured mode/mixer, and the keyword
+    /// arguments of a GPAW(...) call (mode, xc, k-points, eigensolver, mixer,
+    /// convergence, smearing), each line prefixed with `indent`.
+    ///
+    /// Shared so the Electronic Structure generator builds its SCF calculator
+    /// from exactly the same parameter set as Geometry Optimization and
+    /// Single-point — the two used to diverge, with the bands path hardcoding
+    /// PW/PBE and ignoring every other GPAW setting the wizard collected.
+    static std::string gpawImports(const CalculatorConfig& config);
+    static std::string gpawKeywordArguments(const CalculatorConfig& config,
+                                            const std::string& indent);
+
     /// File name the module must be written under for the generated
     /// `from calango_log import CalangoLog` to resolve.
     static const char* loggerModuleFileName();

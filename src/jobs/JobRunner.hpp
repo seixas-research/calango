@@ -74,7 +74,13 @@ private:
 
     // Frame-streaming state machine (CALANGO_CELL / CALANGO_FRAME).
     std::unique_ptr<core::Structure> pendingFrame_;
-    int pendingAtoms_ = 0; ///< atom lines still expected for the frame
+    int pendingAtoms_ = 0;
+    /// The in-flight frame declared "FV": its atom lines carry force and
+    /// velocity components after the position, accumulated here and attached
+    /// to the structure once the last atom arrives.
+    bool pendingVectors_ = false;
+    std::vector<core::Vec3> pendingForces_;
+    std::vector<core::Vec3> pendingVelocities_; ///< atom lines still expected for the frame
     bool pendingCellValid_ = false;
     double pendingCell_[9] = {};
 };

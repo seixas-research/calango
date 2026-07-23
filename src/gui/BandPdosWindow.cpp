@@ -1,7 +1,12 @@
 #include "gui/BandPdosWindow.hpp"
+#include "gui/GuiUtils.hpp"
 
+#include "core/BandGap.hpp"
 #include "gui/BandPdosView.hpp"
 
+#include <QFrame>
+#include <cmath>
+#include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -23,23 +28,6 @@ namespace calango::gui {
 
 namespace {
 
-QJsonObject readJson(const QString& path)
-{
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly))
-        return {};
-    return QJsonDocument::fromJson(file.readAll()).object();
-}
-
-std::vector<double> toVector(const QJsonArray& array)
-{
-    std::vector<double> values;
-    values.reserve(static_cast<std::size_t>(array.size()));
-    for (const auto& value : array)
-        values.push_back(value.toDouble());
-    return values;
-}
-
 } // namespace
 
 BandPdosWindow::BandPdosWindow(const QString& directory, QWidget* parent)
@@ -57,13 +45,34 @@ BandPdosWindow::BandPdosWindow(const QString& directory, QWidget* parent)
     auto* form = new QFormLayout;
     side->addLayout(form);
 
-    fermiSpin_ = new QDoubleSpinBox(this);
-    fermiSpin_->setRange(-1000.0, 1000.0);
-    fermiSpin_->setDecimals(4);
-    fermiSpin_->setSuffix(QStringLiteral(" eV"));
-    fermiSpin_->setToolTip(tr("Reference energy — plots show E − E_ref, "
-                              "with the dashed line at zero"));
-    form->addRow(tr("Fermi level:"), fermiSpin_);
+    fermiLabel_ = new QLabel(tr("—"), this);
+    fermiLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    fermiLabel_->setToolTip(
+        tr("Fermi level as computed and written to bands.json. It is a result "
+           "of the run, not a display setting, so it is shown rather than "
+           "edited."));
+    form->addRow(tr("Fermi level E_F:"), fermiLabel_);
+
+    // The view always plots E − reference; the toggle simply chooses whether
+    // the reference is E_F (bands sit around zero, the conventional
+    // presentation) or 0 (raw eigenvalues on the calculator's own scale,
+    // which is what you need when comparing against another code's output).
+    shiftFermiCheck_ = new QCheckBox(tr("Shift Fermi level to zero (E − E_F)"), this);
+    shiftFermiCheck_->setChecked(true);
+    shiftFermiCheck_->setToolTip(
+        tr("On: energies are plotted relative to E_F, which is drawn as the "
+           "dashed line at zero.\nOff: absolute eigenvalues, with the dashed "
+           "line at the Fermi level itself."));
+    form->addRow(QString(), shiftFermiCheck_);
+
+    // Directly below the Fermi readout and its shift toggle: the gap is read
+    // against E_F, so the three belong together.
+    gapLabel_ = new QLabel(this);
+    gapLabel_->setTextFormat(Qt::RichText);
+    gapLabel_->setWordWrap(true);
+    gapLabel_->setFrameShape(QFrame::StyledPanel);
+    gapLabel_->setContentsMargins(8, 6, 8, 6);
+    form->addRow(gapLabel_);
 
     minSpin_ = new QDoubleSpinBox(this);
     minSpin_->setRange(-100.0, 0.0);
@@ -89,8 +98,8 @@ BandPdosWindow::BandPdosWindow(const QString& directory, QWidget* parent)
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     side->addWidget(buttons);
 
-    connect(fermiSpin_, &QDoubleSpinBox::valueChanged, this,
-            [this](double value) { view_->setReference(value); });
+    connect(shiftFermiCheck_, &QCheckBox::toggled, this,
+            [this] { applyFermiShift(); });
     const auto applyWindow = [this] {
         view_->setEnergyWindow(minSpin_->value(), maxSpin_->value());
     };
@@ -111,36 +120,39 @@ BandPdosWindow::BandPdosWindow(const QString& directory, QWidget* parent)
 
 void BandPdosWindow::loadDirectory(const QString& directory)
 {
-    const QJsonObject bands = readJson(directory + QStringLiteral("/bands.json"));
+    const QJsonObject bands = readJsonObject(directory + QStringLiteral("/bands.json"));
     if (bands.isEmpty())
         return;
 
     BandPdosView::BandData data;
-    data.x = toVector(bands[QStringLiteral("x")].toArray());
-    data.specialX = toVector(bands[QStringLiteral("special_x")].toArray());
+    data.x = toDoubleVector(bands[QStringLiteral("x")].toArray());
+    data.specialX = toDoubleVector(bands[QStringLiteral("special_x")].toArray());
     for (const auto& label : bands[QStringLiteral("special_labels")].toArray())
         data.specialLabels << label.toString();
     data.efermi = bands[QStringLiteral("efermi")].toDouble();
     for (const auto& spin : bands[QStringLiteral("energies")].toArray()) {
         std::vector<std::vector<double>> kpts;
         for (const auto& kpt : spin.toArray())
-            kpts.push_back(toVector(kpt.toArray()));
+            kpts.push_back(toDoubleVector(kpt.toArray()));
         data.energies.push_back(std::move(kpts));
     }
-    fermiSpin_->setValue(data.efermi);
+    fermiLevel_ = data.efermi;
+    fermiLabel_->setText(QStringLiteral("%1 eV").arg(fermiLevel_, 0, 'f', 4));
+    applyFermiShift();
     view_->setBandData(std::move(data));
+    refreshBandGap();
     view_->setEnergyWindow(minSpin_->value(), maxSpin_->value());
     hasData_ = true;
 
-    const QJsonObject pdos = readJson(directory + QStringLiteral("/pdos.json"));
+    const QJsonObject pdos = readJsonObject(directory + QStringLiteral("/pdos.json"));
     if (!pdos.isEmpty()) {
         BandPdosView::PdosData pdosData;
-        pdosData.energies = toVector(pdos[QStringLiteral("energies")].toArray());
+        pdosData.energies = toDoubleVector(pdos[QStringLiteral("energies")].toArray());
         const QJsonObject projections =
             pdos[QStringLiteral("projections")].toObject();
         for (auto it = projections.begin(); it != projections.end(); ++it)
             pdosData.projections.emplace_back(it.key(),
-                                              toVector(it.value().toArray()));
+                                              toDoubleVector(it.value().toArray()));
         int index = 0;
         for (const auto& [label, curve] : pdosData.projections) {
             (void)curve;
@@ -231,6 +243,90 @@ void BandPdosWindow::exportPdos()
         out << "\n";
     }
     file.commit();
+}
+
+void BandPdosWindow::refreshBandGap()
+{
+    const auto& bands = view_->bandData();
+    if (!bands.valid()) {
+        gapLabel_->setText(tr("No band data loaded."));
+        return;
+    }
+    // Analyzed against the Fermi level currently in the spin box, not the one
+    // baked into the file: correcting E_F is exactly why that field is
+    // editable, and the gap must follow the correction.
+    const auto info =
+        core::analyzeBandGap(bands.energies, fermiLevel_);
+
+    if (!info.valid) {
+        gapLabel_->setText(
+            tr("<b>Band gap:</b> not determinable — the plotted bands lie "
+               "entirely on one side of E_F."));
+        return;
+    }
+    if (info.metallic) {
+        gapLabel_->setText(
+            tr("<b>Metallic</b> — a band crosses E_F, so there is no gap."));
+        return;
+    }
+
+    // Both gaps are always listed, not just the one that happens to be the
+    // fundamental one:
+    //   indirect / fundamental = CBM - VBM, wherever those sit on the path;
+    //   direct                 = smallest SAME-k separation (optical onset).
+    // For a direct-gap material the two coincide by definition — showing both
+    // makes that agreement visible instead of leaving the reader to infer it.
+    const QString nature = info.direct ? tr("direct") : tr("indirect");
+    QString text =
+        tr("<b>Band gap &nbsp; %1 eV</b> &nbsp; (%2)<br>"
+           "E<sub>g, indirect</sub> = %3 eV<br>"
+           "E<sub>g, direct</sub> &nbsp;&nbsp;= %4 eV")
+            .arg(info.gap, 0, 'f', 3)
+            .arg(nature)
+            .arg(info.gap, 0, 'f', 3)
+            .arg(info.directGap, 0, 'f', 3);
+
+    // Name the k-points where the extrema sit when the path labels them.
+    const auto labelFor = [&bands](std::size_t k) -> QString {
+        if (k >= bands.x.size() || bands.specialLabels.isEmpty())
+            return {};
+        for (int i = 0; i < bands.specialLabels.size()
+             && i < static_cast<int>(bands.specialX.size()); ++i) {
+            if (std::abs(bands.specialX[static_cast<std::size_t>(i)] - bands.x[k])
+                < 1e-9) {
+                const QString raw = bands.specialLabels.at(i);
+                return raw == QLatin1String("G") ? QString::fromUtf8("Γ") : raw;
+            }
+        }
+        return {};
+    };
+    const QString vbmAt = labelFor(info.vbmKPoint);
+    const QString cbmAt = labelFor(info.cbmKPoint);
+    text += tr("<br>VBM %1 eV%2 &rarr; CBM %3 eV%4")
+                .arg(info.vbm, 0, 'f', 3)
+                .arg(vbmAt.isEmpty() ? QString() : QStringLiteral(" @ %1").arg(vbmAt))
+                .arg(info.cbm, 0, 'f', 3)
+                .arg(cbmAt.isEmpty() ? QString() : QStringLiteral(" @ %1").arg(cbmAt));
+    text += tr("<br><span style='color:#909090'>Evaluated on the plotted "
+               "k-path only.</span>");
+    gapLabel_->setText(text);
+}
+
+void BandPdosWindow::applyFermiShift()
+{
+    const bool shift = shiftFermiCheck_->isChecked();
+    view_->setReference(shift ? fermiLevel_ : 0.0);
+    view_->setReferenceIsFermi(shift);
+    if (gapLabel_ && view_->bandData().valid())
+        refreshBandGap();
+    // The E min / E max window is expressed in the *displayed* coordinate, so
+    // its sensible defaults differ: ±10 eV around E_F when shifted, but a
+    // window that still brackets E_F when showing absolute energies.
+    minSpin_->setToolTip(shift ? tr("Lower edge of the plotted window, "
+                                    "relative to E_F")
+                               : tr("Lower edge of the plotted window, on the "
+                                    "absolute energy scale"));
+    maxSpin_->setToolTip(minSpin_->toolTip());
 }
 
 } // namespace calango::gui

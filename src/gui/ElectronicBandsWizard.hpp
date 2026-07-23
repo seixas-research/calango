@@ -6,6 +6,8 @@
 
 class QCheckBox;
 class QLabel;
+class QDoubleSpinBox;
+class QGroupBox;
 class QSpinBox;
 
 namespace calango::core {
@@ -38,14 +40,20 @@ protected:
     /// Only DFT-capable electronic-structure engines (GPAW, SIESTA, VASP,
     /// Quantum ESPRESSO); the empirical/ML calculators can't produce bands.
     bool calculatorAllowed(core::CalculatorKind kind) const override;
+    /// k-Path Definition comes AFTER the engine is chosen (Stage 3).
+    bool settingsStageFirst() const override { return false; }
+    /// PDOS + smearing belong with the calculator, not the k-path.
+    QWidget* buildCalculatorExtras() override;
+    void updateCalculatorExtras(core::CalculatorKind kind) override;
 
 private:
     std::shared_ptr<const core::Structure> structure_;
 
-    class KPathSelector* kpath_ = nullptr;
-    QSpinBox* npointsSpin_ = nullptr;
+    class EmbeddedKPathEditor* kpath_ = nullptr;
     QSpinBox* valenceSpin_ = nullptr;
+    QGroupBox* pdosGroup_ = nullptr;
     QCheckBox* pdosCheck_ = nullptr;
+    QDoubleSpinBox* pdosWidthSpin_ = nullptr;
 };
 
 } // namespace calango::gui

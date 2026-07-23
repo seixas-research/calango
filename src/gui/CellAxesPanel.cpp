@@ -1,4 +1,5 @@
 #include "gui/CellAxesPanel.hpp"
+#include "gui/GuiUtils.hpp"
 
 #include "gui/ViewportWidget.hpp"
 
@@ -16,12 +17,6 @@
 namespace calango::gui {
 
 namespace {
-
-void setButtonColor(QPushButton* button, const QColor& color)
-{
-    button->setStyleSheet(QStringLiteral("background-color: %1; border: 1px solid #666;")
-                              .arg(color.name()));
-}
 
 } // namespace
 
@@ -66,6 +61,22 @@ CellAxesPanel::CellAxesPanel(ViewportWidget* viewport, QWidget* parent)
     axesCheck->setChecked(true);
     form->addRow(axesCheck);
     connect(axesCheck, &QCheckBox::toggled, viewport_, &ViewportWidget::setShowAxes);
+
+    // Directly below "Show axes triad" and styled the same way — it is a
+    // refinement of that triad, not an independent overlay.
+    auto* axesArrowsCheck = new QCheckBox(tr("Show axes triad with arrows"), this);
+    axesArrowsCheck->setChecked(viewport_->showAxesArrows());
+    axesArrowsCheck->setToolTip(
+        tr("Draw arrowheads at the tips of X, Y and Z. Useful when a figure "
+           "must state axis direction unambiguously; plain segments read more "
+           "cleanly at small triad sizes."));
+    form->addRow(axesArrowsCheck);
+    connect(axesArrowsCheck, &QCheckBox::toggled,
+            viewport_, &ViewportWidget::setShowAxesArrows);
+    // Arrowheads are part of the triad: hiding the triad disables the option.
+    axesArrowsCheck->setEnabled(axesCheck->isChecked());
+    connect(axesCheck, &QCheckBox::toggled,
+            axesArrowsCheck, &QCheckBox::setEnabled);
 
     auto* axesModeCombo = new QComboBox(this);
     axesModeCombo->addItems({tr("Cartesian (X, Y, Z)"),

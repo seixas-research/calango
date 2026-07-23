@@ -1,4 +1,5 @@
 #include "gui/PhononPlotWindow.hpp"
+#include "gui/GuiUtils.hpp"
 
 #include "gui/BandPdosView.hpp"
 
@@ -22,23 +23,6 @@
 namespace calango::gui {
 
 namespace {
-
-QJsonObject readJson(const QString& path)
-{
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly))
-        return {};
-    return QJsonDocument::fromJson(file.readAll()).object();
-}
-
-std::vector<double> toVector(const QJsonArray& array)
-{
-    std::vector<double> values;
-    values.reserve(static_cast<std::size_t>(array.size()));
-    for (const auto& value : array)
-        values.push_back(value.toDouble());
-    return values;
-}
 
 } // namespace
 
@@ -99,13 +83,13 @@ PhononPlotWindow::PhononPlotWindow(const QString& directory, QWidget* parent)
 void PhononPlotWindow::loadDirectory(const QString& directory)
 {
     const QJsonObject band =
-        readJson(directory + QStringLiteral("/phonon_band.json"));
+        readJsonObject(directory + QStringLiteral("/phonon_band.json"));
     if (band.isEmpty())
         return;
 
     BandPdosView::BandData data;
-    data.x = toVector(band[QStringLiteral("x")].toArray());
-    data.specialX = toVector(band[QStringLiteral("special_x")].toArray());
+    data.x = toDoubleVector(band[QStringLiteral("x")].toArray());
+    data.specialX = toDoubleVector(band[QStringLiteral("special_x")].toArray());
     for (const auto& label : band[QStringLiteral("special_labels")].toArray())
         data.specialLabels << label.toString();
     data.efermi = 0.0;
@@ -114,7 +98,7 @@ void PhononPlotWindow::loadDirectory(const QString& directory)
     double maxFreq = 0.0;
     double minFreq = 0.0;
     for (const auto& row : band[QStringLiteral("frequencies")].toArray()) {
-        std::vector<double> modes = toVector(row.toArray());
+        std::vector<double> modes = toDoubleVector(row.toArray());
         for (double f : modes) {
             maxFreq = std::max(maxFreq, f);
             minFreq = std::min(minFreq, f);
@@ -132,12 +116,12 @@ void PhononPlotWindow::loadDirectory(const QString& directory)
     view_->setEnergyWindow(minSpin_->value(), maxSpin_->value());
 
     const QJsonObject dos =
-        readJson(directory + QStringLiteral("/phonon_dos.json"));
+        readJsonObject(directory + QStringLiteral("/phonon_dos.json"));
     if (!dos.isEmpty()) {
         BandPdosView::PdosData pdosData;
-        pdosData.energies = toVector(dos[QStringLiteral("frequencies")].toArray());
+        pdosData.energies = toDoubleVector(dos[QStringLiteral("frequencies")].toArray());
         pdosData.projections.emplace_back(
-            tr("PhDOS"), toVector(dos[QStringLiteral("dos")].toArray()));
+            tr("PhDOS"), toDoubleVector(dos[QStringLiteral("dos")].toArray()));
         view_->setPdosData(std::move(pdosData));
     }
 }

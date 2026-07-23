@@ -53,7 +53,15 @@ protected:
     /// to expose only DFT-capable electronic-structure calculators.
     virtual bool calculatorAllowed(core::CalculatorKind) const { return true; }
 
-    /// When false the dedicated task-settings stage (Stage 1) is omitted,
+    /// Where the subclass's own settings page sits in the flow. Most wizards
+    /// define the *task* first (what to compute), so their page leads. The
+    /// Electronic Structure and Phonon wizards instead define a k-path, which
+    /// only makes sense once the engine is chosen — their page therefore comes
+    /// after Calculator Settings, giving:
+    ///   Environment -> Calculator Settings -> k-Path -> Script Review.
+    virtual bool settingsStageFirst() const { return true; }
+
+    /// When false the dedicated task-settings stage is omitted,
     /// producing a 3-stage flow (Environment → Calculator Settings → Review).
     /// A wizard that returns false should merge its task controls into the
     /// calculator-settings page via buildCalculatorExtras().
@@ -104,6 +112,7 @@ private:
     Action action_ = Action::None;
     int stage_ = 0;
     bool hasSettingsStage_ = true; ///< resolved from hasTaskSettingsStage()
+    bool settingsFirst_ = true;    ///< resolved from settingsStageFirst()
     int reviewStage_ = 3;          ///< index of the final (review) stage
     bool manuallyEdited_ = false;
     bool updatingPreview_ = false;

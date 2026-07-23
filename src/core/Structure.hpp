@@ -106,7 +106,6 @@ public:
     }
     /// Stores (or replaces) a field; ignored unless values.size() == size().
     void setScalarField(const std::string& name, std::vector<double> values);
-    void removeScalarField(const std::string& name) { scalarFields_.erase(name); }
 
     // -- Per-atom vector fields (forces, velocities, dipoles, ...) ---------
     //
@@ -118,7 +117,6 @@ public:
     }
     /// Stores (or replaces) a field; ignored unless values.size() == size().
     void setVectorField(const std::string& name, std::vector<Vec3> values);
-    void removeVectorField(const std::string& name) { vectorFields_.erase(name); }
 
 private:
     std::vector<Atom> atoms_;

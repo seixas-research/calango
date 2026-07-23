@@ -5,19 +5,17 @@
 #include "python_bridge/AseBridge.hpp"
 
 #include <QDialog>
-#include <QListWidget>
-#include <QSpinBox>
-
-#include <vector>
 
 namespace calango::gui {
 
-class BrillouinZoneView;
+class BrillouinZoneWidget;
 
-/// Reciprocal-space analytics: renders the first Brillouin zone with its
-/// high-symmetry points and lets the user build a band-structure k-path by
-/// clicking points in order (or loading ASE's suggested path). Paths may
-/// contain discontinuous sections ("Break", e.g. Γ→X | M→R) and export to
+/// Standalone host for BrillouinZoneWidget (Build → Brillouin Zone Builder),
+/// adding the export actions the wizards do not need. The interactive zone,
+/// path table and action bar all live in the widget, which the Electronic
+/// Structure and Phonon wizards embed directly in Stage 1.
+///
+/// Paths may contain discontinuous sections ("Break", e.g. Γ→X | M→R) and export to
 /// VASP KPOINTS (line mode), Quantum ESPRESSO K_POINTS (crystal_b), CASTEP
 /// SPECTRAL_KPOINT_PATH, SIESTA BandLines, and standalone ASE/Python
 /// scripts; the annotated 3D figure exports to PNG or SVG.
@@ -29,20 +27,12 @@ public:
                         const pybridge::AseBridge::BandPathInfo& bandPath,
                         QWidget* parent = nullptr);
 
-    /// The currently built k-path as an ASE path string (concatenated
-    /// high-symmetry labels, ',' between discontinuous sections, e.g.
-    /// "GXWK,UX"). Empty when no path is defined. Lets a caller (the bands
-    /// wizard) reuse this graphical builder to define its k-path.
+    /// The currently built k-path as an ASE path string. Retained for
+    /// callers that open the builder standalone; the wizards embed
+    /// BrillouinZoneWidget directly instead.
     QString asePathString() const;
 
 private Q_SLOTS:
-    void appendPoint(int index);
-    void addBreak();
-    void undoLastPoint();
-    /// Delete the currently selected k-point / break row from the path.
-    void removeSelectedPoint();
-    void clearPath();
-    void useSuggestedPath();
     /// One entry point for every k-path format: pops a format-selection
     /// dialog (VASP / QE / CASTEP / SIESTA / ASE script) and dispatches.
     void exportKPath();
@@ -62,22 +52,12 @@ private:
     void exportAseScript();
 
 private:
-    void syncPathViews();
-    /// Continuous sections of the current path (breaks split; sections
-    /// with < 2 points are kept for display but skipped by exporters).
-    core::KPathSegments segments() const;
-    bool hasExportablePath() const;
     void saveTextFile(const QString& text, const QString& caption,
                       const QString& defaultName);
 
-    core::BrillouinZoneData zone_;
-    std::vector<core::KPathPoint> specialPoints_;
-    QString suggestedPath_;
-    std::vector<int> path_; ///< indices into specialPoints_; -1 = break
-
-    BrillouinZoneView* view_;
-    QListWidget* pathList_;
-    QSpinBox* divisionsSpin_;
+    /// All zone rendering, path state and editing lives here; the dialog adds
+    /// only the export actions and a Close button.
+    BrillouinZoneWidget* builder_;
 };
 
 } // namespace calango::gui
