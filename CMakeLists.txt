@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.35
+    VERSION 26.7.36
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -325,6 +325,8 @@ qt_add_executable(calango
     src/gui/BandPdosView.cpp
     src/gui/BandPdosWindow.hpp
     src/gui/BandPdosWindow.cpp
+    src/gui/PlotStyleDialog.hpp
+    src/gui/PlotStyleDialog.cpp
     src/gui/PhononPlotWindow.hpp
     src/gui/PhononPlotWindow.cpp
     src/gui/NanoparticleDialog.hpp

@@ -36,6 +36,12 @@ private Q_SLOTS:
     void syncColoringFromViewport();
 
 private:
+    /// Style field holding the arrow color of the active vector overlay, or
+    /// null when the overlay is None.
+    QColor* vectorOverlayColor();
+    /// Refresh the swatch + enablement after the overlay selection changes.
+    void syncVectorColorButton();
+
     ViewportWidget* viewport_;
 
     QComboBox* modeCombo_;
@@ -52,6 +58,7 @@ private:
     std::array<QPushButton*, 3> bondOrderButtons_{};
     QComboBox* vectorOverlayCombo_;
     QComboBox* surfaceFinishCombo_;
+    QPushButton* vectorColorButton_;
     QSlider* vectorScaleSlider_;
     QDoubleSpinBox* vectorScaleSpin_;
 };

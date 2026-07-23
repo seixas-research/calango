@@ -50,7 +50,6 @@ private:
     QCheckBox* acousticCheck_;
     QSpinBox* meshSpin_;
     QDoubleSpinBox* dosWidthSpin_;
-    QSpinBox* bandPointsSpin_;
     EmbeddedKPathEditor* kpath_ = nullptr;
 };
 

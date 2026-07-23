@@ -23,12 +23,17 @@ public:
     bool hasData() const { return hasData_; }
 
 private Q_SLOTS:
-    /// Write the band structure (k-distance + per-branch frequencies) and the
-    /// PhDOS (frequency + intensity) to a single structured .csv file.
-    void exportCsv();
+    /// Dispersion only: k-distance + one column per phonon branch.
+    void exportBandsCsv();
+    /// PhDOS only: frequency + intensity per projection.
+    void exportPhdosCsv();
 
 private:
     void loadDirectory(const QString& directory);
+    /// Shared writer for the two exporters above; `bands`/`dos` select which
+    /// sections are emitted.
+    void writeCsv(const QString& caption, const QString& defaultName,
+                  bool bands, bool dos);
 
     BandPdosView* view_;
     QDoubleSpinBox* minSpin_;

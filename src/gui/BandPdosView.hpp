@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QColor>
+#include <QPen>
 #include <QWidget>
 
 #include <map>
@@ -32,7 +34,57 @@ public:
         bool valid() const { return !energies.empty() && !projections.empty(); }
     };
 
+    /// Everything the "Customize Appearance…" dialog exposes. Defaults
+    /// reproduce the plot's previous hardcoded look, so an untouched viewer
+    /// is unchanged.
+    struct Style {
+        // -- Typography (points) -------------------------------------------
+        /// Axis titles match the tick labels by default: a title set larger
+        /// than the numbers it labels reads as a mismatch, and both are
+        /// already scaled up for presentation legibility.
+        double tickPointSize = 15.0;
+        double axisTitlePointSize = 15.0;
+        double annotationPointSize = 13.0; ///< high-symmetry labels, gap notes
+
+        // -- Dispersion curves ---------------------------------------------
+        /// One color per spin channel (electronic) or a two-tone palette for
+        /// phonon branches.
+        QColor bandColors[2] = {QColor(102, 163, 255), QColor(235, 110, 96)};
+        Qt::PenStyle bandPenStyle = Qt::SolidLine;
+        double bandLineWidth = 1.4;
+
+        // -- Reference line (E_F for electrons, omega = 0 for phonons) ------
+        bool showFermi = true;
+        QColor fermiColor{255, 199, 88};
+        Qt::PenStyle fermiPenStyle = Qt::DashLine;
+        double fermiLineWidth = 1.4;
+
+        // -- Plot chrome ----------------------------------------------------
+        QColor background{24, 26, 30};
+        QColor spineColor{120, 124, 134};
+        double spineWidth = 1.2;
+        double tickWidth = 1.0;
+        QColor gridColor{70, 74, 84};
+        QColor textColor{210, 213, 220};
+
+        /// Fill under the DOS curves (phonon PhDOS reads better filled).
+        bool fillDos = false;
+        int dosFillAlpha = 70;
+    };
+
     explicit BandPdosView(QWidget* parent = nullptr);
+
+    const Style& style() const { return style_; }
+    void setStyle(const Style& style);
+
+    /// Render the whole figure (both panels) at an arbitrary size onto any
+    /// paint device — used by paintEvent and by the image exporters, so a
+    /// PNG/PDF/SVG is pixel-identical to what is on screen.
+    void renderTo(QPainter& painter, const QSizeF& size);
+
+    /// Save the figure as PNG / JPEG / PDF / SVG. Raster formats are rendered
+    /// at `scale` times the on-screen size for print resolution.
+    void exportImage(QWidget* dialogParent);
 
     void setBandData(BandData data);
     void setPdosData(PdosData data);
@@ -74,6 +126,7 @@ private:
     bool phonon_ = false; ///< frequency (cm⁻¹) semantics instead of energy/eV
     /// Caption the energy axis relative to E_F (true) or absolute (false).
     bool referenceIsFermi_ = true;
+    Style style_;
 };
 
 } // namespace calango::gui

@@ -2,6 +2,7 @@
 #include "gui/GuiUtils.hpp"
 
 #include "gui/BandPdosView.hpp"
+#include "gui/PlotStyleDialog.hpp"
 
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -13,6 +14,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QMessageBox>
+#include <QSignalBlocker>
 #include <QPushButton>
 #include <QTextStream>
 #include <QVBoxLayout>
@@ -63,9 +66,52 @@ PhononPlotWindow::PhononPlotWindow(const QString& directory, QWidget* parent)
                                this));
     side->addStretch(1);
 
-    auto* exportButton = new QPushButton(tr("Export Data (.csv)"), this);
-    connect(exportButton, &QPushButton::clicked, this, &PhononPlotWindow::exportCsv);
-    side->addWidget(exportButton);
+    auto* customizeButton = new QPushButton(tr("Customize Appearance…"), this);
+    customizeButton->setToolTip(
+        tr("Branch colors and stroke, PhDOS fill, background, spine and tick "
+           "thickness, fonts, and the frequency-axis window."));
+    side->addWidget(customizeButton);
+    connect(customizeButton, &QPushButton::clicked, this, [this] {
+        auto* dialog = new PlotStyleDialog(view_->style(), /*phonon=*/true, this);
+        dialog->setBounds(minSpin_->value(), maxSpin_->value());
+        connect(dialog, &PlotStyleDialog::styleChanged, view_,
+                &BandPdosView::setStyle);
+        // The dialog owns the frequency window while it is open; mirror the
+        // change back onto the spin boxes so the two stay consistent.
+        connect(dialog, &PlotStyleDialog::boundsChanged, this,
+                [this](double minimum, double maximum) {
+                    const QSignalBlocker blockMin(minSpin_);
+                    const QSignalBlocker blockMax(maxSpin_);
+                    minSpin_->setValue(minimum);
+                    maxSpin_->setValue(maximum);
+                    view_->setEnergyWindow(minimum, maximum);
+                });
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->show();
+    });
+
+    auto* exportImageButton = new QPushButton(tr("Export Image…"), this);
+    exportImageButton->setToolTip(
+        tr("PNG / JPEG at 3x for print, or PDF / SVG vector art. Exports the "
+           "dispersion and PhDOS panels exactly as displayed."));
+    side->addWidget(exportImageButton);
+    connect(exportImageButton, &QPushButton::clicked, this,
+            [this] { view_->exportImage(this); });
+
+    // Two granular exporters rather than one combined file: the dispersion and
+    // the DOS have different independent variables (k-distance vs frequency),
+    // so a single CSV had to concatenate two differently-shaped tables that
+    // most tools will not read back.
+    auto* exportBandsButton =
+        new QPushButton(tr("Export Phonon Bands (.csv)"), this);
+    connect(exportBandsButton, &QPushButton::clicked,
+            this, &PhononPlotWindow::exportBandsCsv);
+    side->addWidget(exportBandsButton);
+
+    auto* exportPhdosButton = new QPushButton(tr("Export PhDOS (.csv)"), this);
+    connect(exportPhdosButton, &QPushButton::clicked,
+            this, &PhononPlotWindow::exportPhdosCsv);
+    side->addWidget(exportPhdosButton);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -126,16 +172,34 @@ void PhononPlotWindow::loadDirectory(const QString& directory)
     }
 }
 
-void PhononPlotWindow::exportCsv()
+void PhononPlotWindow::exportBandsCsv()
+{
+    writeCsv(tr("Export Phonon Bands"), QStringLiteral("phonon_bands.csv"),
+             /*bands=*/true, /*dos=*/false);
+}
+
+void PhononPlotWindow::exportPhdosCsv()
+{
+    writeCsv(tr("Export PhDOS"), QStringLiteral("phonon_dos.csv"),
+             /*bands=*/false, /*dos=*/true);
+}
+
+void PhononPlotWindow::writeCsv(const QString& caption,
+                                const QString& defaultName, bool wantBands,
+                                bool wantDos)
 {
     const BandPdosView::BandData& band = view_->bandData();
     const BandPdosView::PdosData& dos = view_->pdosData();
-    if (!band.valid() && !dos.valid())
+    if ((wantBands && !band.valid()) || (wantDos && !dos.valid())) {
+        QMessageBox::information(
+            this, caption,
+            wantBands ? tr("No phonon band data was loaded from this job.")
+                      : tr("No phonon DOS data was loaded from this job."));
         return;
+    }
 
-    const QString path = QFileDialog::getSaveFileName(
-        this, tr("Export Phonon Data"), QStringLiteral("phonon_data.csv"),
-        tr("CSV (*.csv)"));
+    const QString path = QFileDialog::getSaveFileName(this, caption, defaultName,
+                                                      tr("CSV (*.csv)"));
     if (path.isEmpty())
         return;
     QFile file(path);
@@ -144,7 +208,8 @@ void PhononPlotWindow::exportCsv()
     QTextStream out(&file);
 
     // --- Band structure: k-distance + one column per phonon branch ---------
-    if (band.valid() && !band.energies.empty() && !band.energies.front().empty()) {
+    if (wantBands && band.valid() && !band.energies.empty()
+        && !band.energies.front().empty()) {
         const auto& kpts = band.energies.front(); // single (non-spin) channel
         const std::size_t branches = kpts.front().size();
         out << "# Phonon band structure (frequency in cm^-1)\n";
@@ -172,8 +237,8 @@ void PhononPlotWindow::exportCsv()
     }
 
     // --- Phonon DOS: frequency + intensity ---------------------------------
-    if (dos.valid()) {
-        out << "\n# Phonon density of states\n";
+    if (wantDos && dos.valid()) {
+        out << "# Phonon density of states\n";
         out << "frequency_cm1";
         for (const auto& [label, curve] : dos.projections) {
             (void)curve;

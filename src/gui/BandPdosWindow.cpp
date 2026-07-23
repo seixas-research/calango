@@ -3,10 +3,12 @@
 
 #include "core/BandGap.hpp"
 #include "gui/BandPdosView.hpp"
+#include "gui/PlotStyleDialog.hpp"
 
 #include <QFrame>
 #include <cmath>
 #include <QCheckBox>
+#include <QSignalBlocker>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -51,13 +53,35 @@ BandPdosWindow::BandPdosWindow(const QString& directory, QWidget* parent)
         tr("Fermi level as computed and written to bands.json. It is a result "
            "of the run, not a display setting, so it is shown rather than "
            "edited."));
-    form->addRow(tr("Fermi level E_F:"), fermiLabel_);
+    {
+        // A QFormLayout row header is a QLabel, so the subscript can be typeset
+        // properly here (the plot's axis title does the same via
+        // drawWithSubscripts; a QCheckBox is plain-text only, so the shift
+        // toggle below keeps the conventional "E_F" spelling).
+        auto* fermiCaption = new QLabel(tr("Fermi level E<sub>F</sub>:"), this);
+        fermiCaption->setTextFormat(Qt::RichText);
+        form->addRow(fermiCaption, fermiLabel_);
+    }
+
+    showFermiCheck_ = new QCheckBox(tr("Show Fermi level"), this);
+    showFermiCheck_->setChecked(true);
+    showFermiCheck_->setToolTip(
+        tr("Visibility of the dashed E_F reference line. Independent of the "
+           "shift below: you can plot E − E_F without drawing the line at "
+           "zero, or show absolute energies with the line marking E_F."));
+    form->addRow(QString(), showFermiCheck_);
+    connect(showFermiCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        auto style = view_->style();
+        style.showFermi = on;
+        view_->setStyle(style);
+    });
 
     // The view always plots E − reference; the toggle simply chooses whether
     // the reference is E_F (bands sit around zero, the conventional
     // presentation) or 0 (raw eigenvalues on the calculator's own scale,
     // which is what you need when comparing against another code's output).
-    shiftFermiCheck_ = new QCheckBox(tr("Shift Fermi level to zero (E − E_F)"), this);
+    shiftFermiCheck_ =
+        new QCheckBox(tr("Shift Fermi level to zero (E − E_F = 0)"), this);
     shiftFermiCheck_->setChecked(true);
     shiftFermiCheck_->setToolTip(
         tr("On: energies are plotted relative to E_F, which is drawn as the "
@@ -89,6 +113,34 @@ BandPdosWindow::BandPdosWindow(const QString& directory, QWidget* parent)
     projectionList_ = new QListWidget(this);
     projectionList_->setMaximumWidth(190);
     side->addWidget(projectionList_, 1);
+
+    auto* customizeButton = new QPushButton(tr("Customize Appearance…"), this);
+    customizeButton->setToolTip(
+        tr("Fonts, curve and reference-line styling, plot background, borders "
+           "and tick strokes."));
+    side->addWidget(customizeButton);
+    connect(customizeButton, &QPushButton::clicked, this, [this] {
+        auto* dialog = new PlotStyleDialog(view_->style(), /*phonon=*/false, this);
+        connect(dialog, &PlotStyleDialog::styleChanged, view_,
+                &BandPdosView::setStyle);
+        // Keep the standalone checkbox in step when the dialog toggles the
+        // same property, so the two never disagree.
+        connect(dialog, &PlotStyleDialog::styleChanged, this,
+                [this](const BandPdosView::Style& style) {
+                    const QSignalBlocker blocker(showFermiCheck_);
+                    showFermiCheck_->setChecked(style.showFermi);
+                });
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->show();
+    });
+
+    auto* exportImageButton = new QPushButton(tr("Export Image…"), this);
+    exportImageButton->setToolTip(
+        tr("PNG / JPEG at 3x for print, or PDF / SVG as resolution-independent "
+           "vector art. Exports both panels exactly as displayed."));
+    side->addWidget(exportImageButton);
+    connect(exportImageButton, &QPushButton::clicked, this,
+            [this] { view_->exportImage(this); });
 
     auto* exportBandsButton = new QPushButton(tr("Export Bands…"), this);
     auto* exportPdosButton = new QPushButton(tr("Export PDOS…"), this);

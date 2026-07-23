@@ -40,6 +40,7 @@ private:
 
     BandPdosView* view_;
     QLabel* gapLabel_;
+    QCheckBox* showFermiCheck_;
     QCheckBox* shiftFermiCheck_;
     /// Read-only readout of the Fermi level the calculation reported. It is
     /// a property of the finished run, not a viewing preference, so it is

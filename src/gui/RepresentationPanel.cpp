@@ -6,6 +6,7 @@
 
 #include <QColorDialog>
 #include <QComboBox>
+#include <QPushButton>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QSignalBlocker>
@@ -71,6 +72,15 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
                                tr("Generalized CN (GCN)"),
                                tr("Custom property")});
     form->addRow(tr("Color by:"), colorModeCombo_);
+
+    // Per-element colors and radii are what "Color by: Element (CPK)" maps,
+    // so the editor for them belongs immediately under that selector.
+    auto* elementsButton = new QPushButton(tr("Element Settings…"), this);
+    form->addRow(elementsButton);
+    connect(elementsButton, &QPushButton::clicked, this, [this] {
+        ElementSettingsDialog dialog(viewport_, this);
+        dialog.exec();
+    });
     connect(colorModeCombo_, &QComboBox::currentIndexChanged,
             this, &RepresentationPanel::applyColorMode);
 
@@ -218,6 +228,7 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
             [this](int index) {
                 viewport_->style().vectorOverlay =
                     static_cast<render::VectorOverlay>(index);
+                syncVectorColorButton();
                 viewport_->styleChanged(true);
             });
 
@@ -241,6 +252,29 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     vectorLayout->addWidget(vectorScaleSpin_);
     form->addRow(tr("Vector scale:"), vectorRow);
 
+    // One picker that edits whichever overlay is selected: each property
+    // keeps its own color (so switching Force -> Velocity restores that
+    // property's color rather than carrying one over), and the button always
+    // shows the color currently in use.
+    vectorColorButton_ = new QPushButton(this);
+    vectorColorButton_->setToolTip(
+        tr("Arrow color for the selected vector overlay. Each property "
+           "(velocity, force, magnetic moment) remembers its own color."));
+    form->addRow(tr("Vector color:"), vectorColorButton_);
+    connect(vectorColorButton_, &QPushButton::clicked, this, [this] {
+        QColor* target = vectorOverlayColor();
+        if (!target)
+            return;
+        const QColor chosen = QColorDialog::getColor(
+            *target, this, tr("Vector Overlay Color"));
+        if (!chosen.isValid())
+            return;
+        *target = chosen;
+        setButtonColor(vectorColorButton_, chosen);
+        viewport_->styleChanged(true); // arrow colors live in the instance buffer
+    });
+    syncVectorColorButton(); // seed the swatch for the initial selection
+
     connect(vectorScaleSlider_, &QSlider::valueChanged, this, [this](int hundredths) {
         const float factor = static_cast<float>(hundredths) / 100.0f;
         {
@@ -259,12 +293,6 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
         viewport_->styleChanged(true);
     });
 
-    auto* elementsButton = new QPushButton(tr("Element Settings…"), this);
-    form->addRow(elementsButton);
-    connect(elementsButton, &QPushButton::clicked, this, [this] {
-        ElementSettingsDialog dialog(viewport_, this);
-        dialog.exec();
-    });
 
     auto* backgroundButton = new QPushButton(this);
     backgroundButton->setFixedHeight(22);
@@ -344,6 +372,29 @@ void RepresentationPanel::refreshPropertyList()
             viewport_->style().vectorOverlay = render::VectorOverlay::None;
         }
     }
+}
+
+QColor* RepresentationPanel::vectorOverlayColor()
+{
+    auto& style = viewport_->style();
+    switch (style.vectorOverlay) {
+    case render::VectorOverlay::Velocity: return &style.velocityColor;
+    case render::VectorOverlay::Force: return &style.forceColor;
+    case render::VectorOverlay::MagneticMoment: return &style.magmomColor;
+    case render::VectorOverlay::None: break;
+    }
+    return nullptr; // nothing is drawn, so there is no color to edit
+}
+
+void RepresentationPanel::syncVectorColorButton()
+{
+    const QColor* color = vectorOverlayColor();
+    vectorColorButton_->setEnabled(color != nullptr);
+    setButtonColor(vectorColorButton_,
+                   color ? *color : palette().color(QPalette::Button));
+    if (!color)
+        vectorColorButton_->setToolTip(
+            tr("Select a vector overlay above to choose its arrow color."));
 }
 
 void RepresentationPanel::syncColoringFromViewport()

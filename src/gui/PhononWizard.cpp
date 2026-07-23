@@ -97,19 +97,11 @@ QWidget* PhononWizard::buildCalculatorExtras()
            "Hove features — raise the mesh density before lowering σ."));
     form->addRow(tr("Gaussian smearing σ:"), dosWidthSpin_);
 
-    bandPointsSpin_ = new QSpinBox(group);
-    bandPointsSpin_->setRange(20, 1000);
-    bandPointsSpin_->setValue(100);
-    bandPointsSpin_->setToolTip(tr("q-points along the dispersion path."));
-    bandPointsSpin_->setEnabled(periodic_);
-    form->addRow(tr("Band-path points:"), bandPointsSpin_);
-
     for (QDoubleSpinBox* spin : {deltaSpin_, dosWidthSpin_})
         connect(spin, &QDoubleSpinBox::valueChanged, this,
                 [this] { refreshPreview(); });
-    for (QSpinBox* spin : {meshSpin_, bandPointsSpin_})
-        connect(spin, &QSpinBox::valueChanged, this,
-                [this] { refreshPreview(); });
+    connect(meshSpin_, &QSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
     connect(acousticCheck_, &QCheckBox::toggled, this,
             [this] { refreshPreview(); });
     return group;
@@ -148,7 +140,12 @@ QString PhononWizard::generateScript() const
     for (int i = 0; i < 3; ++i)
         pc.supercell[i] = supercellSpins_[i]->value();
     pc.deltaAngstrom = deltaSpin_->value();
-    pc.bandPathPoints = bandPointsSpin_->value();
+    // Single source of truth for path sampling, same as the Electronic
+    // Structure wizard: the k-path builder's "points per segment" times the
+    // number of segments. The old Stage-2 "Band-path points" box was a second,
+    // independent control that could silently disagree with it.
+    pc.bandPathPoints = kpath_ ? kpath_->pointsPerSegment() * kpath_->segmentCount()
+                               : 100;
     if (kpath_)
         pc.kpath = kpath_->path().toStdString();
     pc.dosKptGrid = meshSpin_->value();
