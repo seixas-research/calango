@@ -39,19 +39,31 @@ PartialChargeDialog::PartialChargeDialog(std::shared_ptr<core::Structure> struct
     layout->addWidget(infoLabel_);
 
     auto* form = new QFormLayout;
+
+    // Density source: the completed process whose charge density feeds the
+    // partitioning. The engine is auto-detected from that directory; the
+    // density is standardized to a common 3D grid before partitioning.
+    baselineCombo_ = new QComboBox(this);
+    baselineCombo_->addItem(tr("(none — run a fresh GPAW single-point)"),
+                            QString());
+    baselineCombo_->setToolTip(
+        tr("Pick the process / workspace tab that holds the calculated charge "
+           "density (GPAW .gpw, a .cube, …). Its engine is detected "
+           "automatically and the density is converted to a unified grid."));
+    form->addRow(tr("Charge-density source:"), baselineCombo_);
+
     methodCombo_ = new QComboBox(this);
-    methodCombo_->addItem(tr("Bader (bader / pymatgen)"),
+    methodCombo_->addItem(tr("Bader (grid zero-flux basins)"),
                           static_cast<int>(Method::Bader));
     methodCombo_->addItem(tr("Voronoi (density partition)"),
                           static_cast<int>(Method::Voronoi));
-    methodCombo_->addItem(tr("Hirshfeld (GPAW)"),
+    methodCombo_->addItem(tr("Hirshfeld (stockholder)"),
                           static_cast<int>(Method::Hirshfeld));
     methodCombo_->setToolTip(
         tr("Bader: topological basins of the total electron density.\n"
            "Voronoi: density integrated in each atom's nearest-neighbour cell.\n"
            "Hirshfeld: stockholder partitioning against promolecule densities.\n"
-           "All three run a GPAW single-point to obtain the density (Bader also "
-           "needs the 'bader' executable)."));
+           "All three run on the same standardized density grid."));
     form->addRow(tr("Partitioning scheme:"), methodCombo_);
     layout->addLayout(form);
 
@@ -86,6 +98,15 @@ PartialChargeDialog::PartialChargeDialog(std::shared_ptr<core::Structure> struct
 PartialChargeDialog::Method PartialChargeDialog::currentMethod() const
 {
     return static_cast<Method>(methodCombo_->currentData().toInt());
+}
+
+void PartialChargeDialog::setDensityBaselines(
+    const QList<QPair<QString, QString>>& baselines)
+{
+    if (!baselineCombo_)
+        return;
+    for (const auto& [label, dir] : baselines)
+        baselineCombo_->addItem(label, dir);
 }
 
 void PartialChargeDialog::runAnalysis()
@@ -160,34 +181,79 @@ void PartialChargeDialog::loadResultsFile(const QString& path)
 
 QString PartialChargeDialog::generateScript(Method method) const
 {
-    // Shared preamble: read the staged geometry and converge a GPAW density.
-    // (structure.extxyz is written into the job directory by the controller.)
     const QString preamble = QStringLiteral(
         "import json\n"
+        "import os\n"
+        "import glob\n"
         "import numpy as np\n"
         "from ase.io import read\n"
         "from calango_log import CalangoLog\n"
-        "_log = CalangoLog()\n"
-        "atoms = read('structure.extxyz')\n"
-        "_log.progress(1, 3)\n");
+        "_log = CalangoLog()\n");
 
-    const QString gpawScf = QStringLiteral(
-        "from gpaw import GPAW, PW\n"
-        "calc = GPAW(mode=PW(400), xc='PBE', kpts=(3, 3, 3), txt='gpaw.txt')\n"
-        "atoms.calc = calc\n"
-        "atoms.get_potential_energy()\n"
-        "_log.progress(2, 3)\n");
+    // Density acquisition. Either load & standardize a baseline process's
+    // charge density (unified pipeline), or — when none is selected — run a
+    // fresh GPAW single-point. Both define `atoms` and a 3D `rho` grid.
+    const QString baseline =
+        baselineCombo_ ? baselineCombo_->currentData().toString() : QString();
+    QString acquisition;
+    if (!baseline.isEmpty()) {
+        acquisition = QStringLiteral(
+            "_base = r\"%1\"\n"
+            "# Auto-detect the calculator engine from the origin process files\n"
+            "# and standardize its density to a common 3D scalar grid (+ .cube).\n"
+            "_gpw = sorted(glob.glob(os.path.join(_base, '*.gpw')))\n"
+            "_cube = sorted(glob.glob(os.path.join(_base, '*.cube')))\n"
+            "_qe = (glob.glob(os.path.join(_base, '*.save'))\n"
+            "       + glob.glob(os.path.join(_base, '**', 'data-file-schema.xml'),\n"
+            "                   recursive=True))\n"
+            "_siesta = glob.glob(os.path.join(_base, '*.RHO*'))\n"
+            "if _gpw:\n"
+            "    engine = 'GPAW'\n"
+            "    from gpaw import GPAW\n"
+            "    calc = GPAW(_gpw[0], txt=None)\n"
+            "    atoms = calc.get_atoms()\n"
+            "    rho = np.ascontiguousarray(\n"
+            "        calc.get_all_electron_density(gridrefinement=2), dtype=float)\n"
+            "elif _cube:\n"
+            "    engine = 'cube'\n"
+            "    from ase.io.cube import read_cube\n"
+            "    with open(_cube[0]) as _fh:\n"
+            "        _cd = read_cube(_fh)\n"
+            "    atoms = _cd['atoms']\n"
+            "    rho = np.ascontiguousarray(_cd['data'], dtype=float)\n"
+            "elif _qe:\n"
+            "    raise RuntimeError('Detected a Quantum ESPRESSO run in ' + _base\n"
+            "        + '. Export its density to a .cube (pp.x, plot_num=0) into '\n"
+            "        + 'the process folder, then re-run.')\n"
+            "elif _siesta:\n"
+            "    raise RuntimeError('Detected a SIESTA run in ' + _base\n"
+            "        + '. Convert its .RHO grid to a .cube (grid2cube / rho2xsf) '\n"
+            "        + 'into the process folder, then re-run.')\n"
+            "else:\n"
+            "    raise RuntimeError('No supported charge density (.gpw or .cube) '\n"
+            "                       'found in ' + _base)\n"
+            "print('CALANGO_INFO engine=' + engine, flush=True)\n"
+            "from ase.io.cube import write_cube\n"
+            "with open('density.cube', 'w') as _fh:\n"
+            "    write_cube(_fh, atoms, data=rho)\n"
+            "_log.progress(1, 3)\n").arg(baseline);
+    } else {
+        acquisition = QStringLiteral(
+            "atoms = read('structure.extxyz')\n"
+            "_log.progress(1, 3)\n"
+            "from gpaw import GPAW, PW\n"
+            "calc = GPAW(mode=PW(400), xc='PBE', kpts=(3, 3, 3), txt='gpaw.txt')\n"
+            "atoms.calc = calc\n"
+            "atoms.get_potential_energy()\n"
+            "rho = np.ascontiguousarray(\n"
+            "    calc.get_all_electron_density(gridrefinement=2), dtype=float)\n"
+            "_log.progress(2, 3)\n");
+    }
 
-    // Shared grid setup: the all-electron density and per-atom minimum-image
-    // Cartesian distances to every grid point. All three schemes are native —
-    // they read the GPAW density grid directly, no external executables.
+    // Shared grid setup: consumes the standardized `rho` grid + `atoms` from the
+    // acquisition step. All three schemes are native — they operate directly on
+    // the unified density grid, no external executables.
     const QString gridSetup = QStringLiteral(
-        "try:\n"
-        "    rho = np.ascontiguousarray(\n"
-        "        calc.get_all_electron_density(gridrefinement=2), dtype=float)\n"
-        "except Exception as _e:\n"
-        "    raise RuntimeError('Could not read the GPAW all-electron density: '\n"
-        "                       + str(_e))\n"
         "if rho.ndim != 3 or rho.size == 0:\n"
         "    raise RuntimeError('Unexpected density grid shape: %r' % (rho.shape,))\n"
         "ng = rho.shape\n"
@@ -312,7 +378,7 @@ QString PartialChargeDialog::generateScript(Method method) const
         "print('CALANGO_RESULT partial_charges=partial_charges.json', flush=True)\n"
         "_log.progress(3, 3)\n");
 
-    return preamble + gpawScf + body + tail;
+    return preamble + acquisition + body + tail;
 }
 
 } // namespace calango::gui

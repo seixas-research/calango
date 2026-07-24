@@ -31,6 +31,12 @@ public:
     /// Remove a task's row (the controller purges its data first).
     void removeTask(int id);
 
+protected:
+    /// Delete / Backspace (also ⌘⌫ on macOS) on the tree deletes the selected
+    /// process — routed through deleteRequested(), which the controller
+    /// confirms and then purges from `.calango_tmp/`.
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 Q_SIGNALS:
     /// "Load Result" on a task — MainWindow decides what the directory
     /// contains (trajectory, band data, ...) and opens it.

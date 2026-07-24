@@ -341,24 +341,11 @@ MainWindow::MainWindow(QWidget* parent)
                      "bond them"),
                   ViewportWidget::InteractionMode::Insert,
                   QKeySequence(Qt::Key_I));
-    // Visual break: navigation/editing modes | measurement modes.
-    frameToolbar->addSeparator();
-    addModeAction(QStringLiteral("ruler-2-line"),
-                  tr("Distance measurement — click two atoms to read their "
-                     "separation in Å\n(click empty space to reset)"),
-                  ViewportWidget::InteractionMode::MeasureDistance,
-                  QKeySequence(Qt::Key_D));
-    addModeAction(QStringLiteral("compasses-2-line"),
-                  tr("Angle measurement — click three atoms (vertex second) "
-                     "to read the angle in degrees\n(click empty space to "
-                     "reset)"),
-                  ViewportWidget::InteractionMode::MeasureAngle,
-                  QKeySequence(Qt::Key_A));
-    rotateMode->setChecked(true);
 
-    // Chemical Element Selector: opens the periodic table and shows the active
-    // element symbol in bold white over a prominent red background, so the
-    // element that Insertion mode will place is always obvious.
+    // Chemical Element Selector, placed directly after the Insert toggle:
+    // opens the periodic table and shows the active element symbol in bold
+    // white over a prominent red background, so the element Insertion mode
+    // will place is always obvious.
     elementButton_ = new QToolButton(frameToolbar);
     elementButton_->setToolButtonStyle(Qt::ToolButtonTextOnly);
     elementButton_->setToolTip(tr("Element inserted by Insertion mode — "
@@ -382,6 +369,21 @@ MainWindow::MainWindow(QWidget* parent)
                 }
             });
     frameToolbar->addWidget(elementButton_);
+
+    // Visual break: navigation/editing + element selector | measurement modes.
+    frameToolbar->addSeparator();
+    addModeAction(QStringLiteral("ruler-2-line"),
+                  tr("Distance measurement — click two atoms to read their "
+                     "separation in Å\n(click empty space to reset)"),
+                  ViewportWidget::InteractionMode::MeasureDistance,
+                  QKeySequence(Qt::Key_D));
+    addModeAction(QStringLiteral("compasses-2-line"),
+                  tr("Angle measurement — click three atoms (vertex second) "
+                     "to read the angle in degrees\n(click empty space to "
+                     "reset)"),
+                  ViewportWidget::InteractionMode::MeasureAngle,
+                  QKeySequence(Qt::Key_A));
+    rotateMode->setChecked(true);
     frameToolbar->addSeparator();
 
     QAction* resetAction = frameToolbar->addAction(
@@ -2963,6 +2965,30 @@ void MainWindow::showPartialCharge()
     // again afterwards to load the results and colour the atoms.
     auto* dialog = new PartialChargeDialog(doc->structure, viewport_, this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    // Offer every completed process whose directory holds a charge density as a
+    // density source, tagging the auto-detected engine.
+    QList<QPair<QString, QString>> baselines;
+    for (const auto& [id, record] : processRecords_) {
+        if (record.directory.isEmpty())
+            continue;
+        const QDir dir(record.directory);
+        QString engine;
+        if (!dir.entryList({QStringLiteral("*.gpw")}, QDir::Files).isEmpty())
+            engine = QStringLiteral("GPAW");
+        else if (!dir.entryList({QStringLiteral("*.cube")}, QDir::Files).isEmpty())
+            engine = QStringLiteral("cube");
+        else if (!dir.entryList({QStringLiteral("*.save"),
+                                 QStringLiteral("data-file-schema.xml")},
+                                QDir::Files | QDir::Dirs).isEmpty())
+            engine = QStringLiteral("Quantum ESPRESSO");
+        else if (!dir.entryList({QStringLiteral("*.RHO*")}, QDir::Files).isEmpty())
+            engine = QStringLiteral("SIESTA");
+        if (!engine.isEmpty())
+            baselines.append({tr("#%1 — %2 [%3]").arg(id).arg(record.label, engine),
+                              record.directory});
+    }
+    dialog->setDensityBaselines(baselines);
     connect(dialog, &PartialChargeDialog::runRequested, this,
             [this](const QString& script, const QString& label) {
                 if (jobRunner_->isRunning()) {

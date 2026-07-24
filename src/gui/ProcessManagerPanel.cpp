@@ -4,6 +4,7 @@
 #include <QDesktopServices>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QKeyEvent>
 #include <QPushButton>
 #include <QStyle>
 #include <QTreeWidget>
@@ -31,6 +32,9 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
     tree_->header()->setStretchLastSection(false);
     tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     tree_->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Delete / Backspace on a selected process triggers deletion (see
+    // eventFilter); the tree has keyboard focus, so we filter its events.
+    tree_->installEventFilter(this);
     layout->addWidget(tree_, 1);
 
     // Icon-only action bar: intuitive glyphs from the active style, with the
@@ -92,6 +96,21 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
                 if (!dir.isEmpty())
                     Q_EMIT loadResultRequested(dir);
             });
+}
+
+bool ProcessManagerPanel::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == tree_ && event->type() == QEvent::KeyPress) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        // Delete, Backspace, and ⌘⌫ (Backspace + Control on macOS) all delete.
+        if (key->key() == Qt::Key_Delete || key->key() == Qt::Key_Backspace) {
+            if (const auto* item = tree_->currentItem()) {
+                Q_EMIT deleteRequested(item->data(0, kIdRole).toInt());
+                return true; // consume so the tree doesn't also handle it
+            }
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 int ProcessManagerPanel::registerTask(const QString& name,

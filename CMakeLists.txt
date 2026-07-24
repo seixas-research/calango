@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.39
-    DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
+    VERSION 26.7.40
+    DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
 
@@ -243,6 +243,8 @@ qt_add_executable(calango
     src/gui/GuiUtils.cpp
     src/gui/RepresentationPanel.hpp
     src/gui/RepresentationPanel.cpp
+    src/gui/CollapsibleSection.hpp
+    src/gui/CollapsibleSection.cpp
     src/gui/CellAxesPanel.hpp
     src/gui/CellAxesPanel.cpp
     src/gui/LightingPanel.hpp

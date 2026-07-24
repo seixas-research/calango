@@ -3,6 +3,9 @@
 #include "core/Structure.hpp"
 
 #include <QDialog>
+#include <QList>
+#include <QPair>
+#include <QString>
 
 #include <memory>
 
@@ -31,6 +34,12 @@ public:
     PartialChargeDialog(std::shared_ptr<core::Structure> structure,
                         ViewportWidget* viewport, QWidget* parent = nullptr);
 
+    /// Populate the density-source selector with completed processes that hold
+    /// a calculated charge density. Each entry is (display label, absolute path
+    /// to the origin process directory); the generated script auto-detects the
+    /// engine and standardizes the density from that directory.
+    void setDensityBaselines(const QList<QPair<QString, QString>>& baselines);
+
 Q_SIGNALS:
     /// Generated analysis script + a task label; the controller stages and
     /// runs it through the normal local-job path.
@@ -53,6 +62,7 @@ private:
     std::shared_ptr<core::Structure> structure_;
     ViewportWidget* viewport_;
 
+    QComboBox* baselineCombo_ = nullptr; ///< density-source (origin process)
     QComboBox* methodCombo_ = nullptr;
     QLabel* infoLabel_ = nullptr;
     QTableWidget* table_ = nullptr;
