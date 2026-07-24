@@ -2,6 +2,7 @@
 
 #include "gui/BrillouinZoneStyleDialog.hpp"
 #include "gui/BrillouinZoneView.hpp"
+#include "ui/IconManager.hpp"
 
 #include <QCheckBox>
 #include <QHBoxLayout>
@@ -9,7 +10,6 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QSpinBox>
-#include <QStyle>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -72,41 +72,48 @@ BrillouinZoneWidget::BrillouinZoneWidget(
             this, &BrillouinZoneWidget::appendPoint);
 
     auto* side = new QVBoxLayout;
-    auto* hint = new QLabel(
-        compact ? tr("Click high-symmetry points to build the k-path · drag "
-                     "rotates · wheel zooms.")
-                : tr("Click high-symmetry points to build the k-path.\n"
-                     "Drag rotates · Shift+drag pans · wheel zooms."),
-        this);
-    hint->setWordWrap(true);
-    side->addWidget(hint);
+    // The embedded (compact) wizard stage keeps only the interactive controls;
+    // the introductory hint text is shown solely in the standalone builder.
+    if (!compact) {
+        auto* hint = new QLabel(
+            tr("Click high-symmetry points to build the k-path.\n"
+               "Drag rotates · Shift+drag pans · wheel zooms."),
+            this);
+        hint->setWordWrap(true);
+        side->addWidget(hint);
+    }
 
-    auto* orthoCheck = new QCheckBox(tr("Orthographic projection"), this);
-    orthoCheck->setToolTip(tr("Parallel projection — useful for reading "
-                              "symmetric zone geometry without perspective "
-                              "foreshortening"));
-    side->addWidget(orthoCheck);
-    connect(orthoCheck, &QCheckBox::toggled,
-            view_, &BrillouinZoneView::setOrthographic);
     // Default to orthographic: symmetric zone geometry reads more clearly
-    // without perspective foreshortening.
-    orthoCheck->setChecked(true);
+    // without perspective foreshortening. In the embedded (compact) wizard the
+    // toggle is suppressed entirely — orthographic stays on, no control shown.
     view_->setOrthographic(true);
+    if (!compact) {
+        auto* orthoCheck = new QCheckBox(tr("Orthographic projection"), this);
+        orthoCheck->setToolTip(tr("Parallel projection — useful for reading "
+                                  "symmetric zone geometry without perspective "
+                                  "foreshortening"));
+        orthoCheck->setChecked(true);
+        side->addWidget(orthoCheck);
+        connect(orthoCheck, &QCheckBox::toggled,
+                view_, &BrillouinZoneView::setOrthographic);
+    }
 
-    // Appearance is a styling concern, not a path-building one — offered here
-    // (rather than only in the standalone dialog) because a wizard user
-    // preparing a figure wants it too.
-    auto* styleButton = new QPushButton(tr("Customize Appearance…"), this);
-    styleButton->setToolTip(tr("Colors, transparency, line thickness and label "
-                               "toggles for the zone and k-path"));
-    side->addWidget(styleButton);
-    connect(styleButton, &QPushButton::clicked, this, [this] {
-        auto* dialog = new BrillouinZoneStyleDialog(view_->style(), this);
-        connect(dialog, &BrillouinZoneStyleDialog::styleChanged, view_,
-                &BrillouinZoneView::setStyle);
-        dialog->setAttribute(Qt::WA_DeleteOnClose);
-        dialog->show();
-    });
+    // Appearance is a styling concern, not a path-building one — it is offered
+    // only in the standalone Brillouin Zone Builder, not in the embedded wizard
+    // stage, which stays focused on defining the path.
+    if (!compact) {
+        auto* styleButton = new QPushButton(tr("Customize Appearance…"), this);
+        styleButton->setToolTip(tr("Colors, transparency, line thickness and "
+                                   "label toggles for the zone and k-path"));
+        side->addWidget(styleButton);
+        connect(styleButton, &QPushButton::clicked, this, [this] {
+            auto* dialog = new BrillouinZoneStyleDialog(view_->style(), this);
+            connect(dialog, &BrillouinZoneStyleDialog::styleChanged, view_,
+                    &BrillouinZoneView::setStyle);
+            dialog->setAttribute(Qt::WA_DeleteOnClose);
+            dialog->show();
+        });
+    }
 
     side->addWidget(new QLabel(tr("k-path sequence:"), this));
     if (compact)
@@ -114,28 +121,28 @@ BrillouinZoneWidget::BrillouinZoneWidget(
     side->addWidget(pathList_, 1);
 
     // Icon-only action bar (Suggested · Break · Undo · Remove · Clear) with
-    // hover tooltips — glyphs come from the active style, matching the rest of
-    // the app's icon buttons.
+    // hover tooltips — modern RemixIcon glyphs (theme-tinted via IconManager),
+    // matching the rest of the app's icon buttons.
     auto* pathButtons = new QHBoxLayout;
-    const auto iconButton = [this](QStyle::StandardPixmap sp, const QString& tip) {
+    const auto iconButton = [this](const QString& iconName, const QString& tip) {
         auto* button = new QPushButton(this);
-        button->setIcon(style()->standardIcon(sp));
+        button->setIcon(ui::IconManager::icon(iconName));
         button->setToolTip(tip);
         button->setFocusPolicy(Qt::NoFocus);
         return button;
     };
     auto* suggestedButton = iconButton(
-        QStyle::SP_BrowserReload,
+        QStringLiteral("magic-line"),
         tr("Suggested — load ASE's suggested path: %1").arg(suggestedPath_));
     auto* breakButton = iconButton(
-        QStyle::SP_MediaSkipForward,
+        QStringLiteral("scissors-cut-line"),
         tr("Break — start a new discontinuous section (e.g. Γ → X | M → R)"));
-    auto* undoButton = iconButton(QStyle::SP_ArrowBack,
+    auto* undoButton = iconButton(QStringLiteral("arrow-go-back-line"),
                                   tr("Undo — remove the last point in the path"));
     auto* removeButton = iconButton(
-        QStyle::SP_LineEditClearButton,
+        QStringLiteral("close-line"),
         tr("Remove — delete the selected k-point / break from the path"));
-    auto* clearButton = iconButton(QStyle::SP_TrashIcon,
+    auto* clearButton = iconButton(QStringLiteral("delete-bin-line"),
                                    tr("Clear — remove the entire path"));
     pathButtons->addWidget(suggestedButton);
     pathButtons->addWidget(breakButton);

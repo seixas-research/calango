@@ -22,6 +22,10 @@ ElectronicBandsWizard::ElectronicBandsWizard(
     , structure_(std::move(structure))
 {
     buildUi();
+    // The NSCF-from-baseline workflow (mandatory density, cutoff/XC/mode
+    // inheritance, PDOS) is GPAW-specific, so open on GPAW rather than the
+    // first allowed engine.
+    selectCalculator(core::CalculatorKind::Gpaw);
 }
 
 QString ElectronicBandsWizard::wizardTitle() const
@@ -29,67 +33,25 @@ QString ElectronicBandsWizard::wizardTitle() const
     return tr("Electronic Structure Setup");
 }
 
-QString ElectronicBandsWizard::settingsHeader() const
-{
-    return tr("k-Path Definition");
-}
-
-QWidget* ElectronicBandsWizard::buildSettingsPage()
-{
-    auto* page = new QWidget(this);
-    auto* layout = new QVBoxLayout(page);
-
-    auto* intro = new QLabel(
-        tr("Define the high-symmetry k-path for the band structure. This run "
-           "builds on a single-point (SCF) baseline: the ground-state density "
-           "is converged first, then the bands are evaluated along the path "
-           "below. The SCF cutoff and k-grid are set in Stage 3."),
-        page);
-    intro->setWordWrap(true);
-    layout->addWidget(intro);
-
-    // The interactive Brillouin zone is the stage, not a dialog launched
-    // from it: clicking Γ, X, M… here updates the wizard's path immediately,
-    // and "Next ›" carries it straight into Stage 2.
-    kpath_ = new EmbeddedKPathEditor(structure_, page);
-    layout->addWidget(kpath_, 1);
-    connect(kpath_, &EmbeddedKPathEditor::pathChanged, this,
-            [this] { refreshPreview(); });
-
-    auto* form = new QFormLayout;
-    layout->addLayout(form);
-
-    valenceSpin_ = new QSpinBox(page);
-    valenceSpin_->setRange(1, 200);
-    valenceSpin_->setValue(4);
-    valenceSpin_->setToolTip(
-        tr("Electrons per cell — used only by the free-electron backend."));
-    form->addRow(tr("Valence electrons:"), valenceSpin_);
-
-    layout->addStretch(1);
-    return page;
-}
-
 QWidget* ElectronicBandsWizard::buildCalculatorExtras()
 {
-    // PDOS and its broadening describe how the *calculator* samples the
-    // density of states, so they live with the other calculator settings
-    // rather than on the k-path page.
+    // The former separate k-Path stage is merged here: this single page hosts
+    // baseline selection + PDOS settings + the interactive k-path builder.
     pdosGroup_ = new QGroupBox(tr("Density of states"), this);
     auto* form = new QFormLayout(pdosGroup_);
 
     // Charge-density baseline: a completed Single-Point Calculation whose
     // converged density (.gpw) the bands/PDOS run reuses non-self-consistently
-    // (GPAW calc.fixed_density). Populated by the controller via
-    // setDensityBaselines(); "(none)" keeps the self-contained inline-SCF path.
+    // (GPAW calc.fixed_density). This is MANDATORY — the controller
+    // (MainWindow::showBandStructure) refuses to open the wizard when no
+    // completed SCF baseline exists, so there is no inline-SCF fallback option.
     baselineCombo_ = new QComboBox(pdosGroup_);
-    baselineCombo_->addItem(tr("(none — run a self-consistent SCF inline)"),
-                            QString());
     baselineCombo_->setToolTip(
-        tr("Load the converged charge density saved by a completed Single-Point "
-           "Calculation and evaluate the band structure and PDOS at fixed "
-           "density (NSCF). Requires the GPAW backend."));
-    form->addRow(tr("Charge-density baseline:"), baselineCombo_);
+        tr("The completed Single-Point Calculation whose converged charge "
+           "density this run restarts from. The band structure and PDOS are "
+           "evaluated at fixed density (NSCF); cutoff, XC and mode are inherited "
+           "from it."));
+    form->addRow(tr("Baseline SCF density:"), baselineCombo_);
     connect(baselineCombo_, &QComboBox::currentIndexChanged, this,
             [this] { refreshPreview(); });
 
@@ -97,6 +59,34 @@ QWidget* ElectronicBandsWizard::buildCalculatorExtras()
         tr("Compute element/orbital PDOS (GPAW backend)"), pdosGroup_);
     pdosCheck_->setChecked(true);
     form->addRow(QString(), pdosCheck_);
+
+    // Fixed-density PDOS k-mesh, defaulted to 2× the baseline SCF grid along
+    // each non-vacuum direction (a vacuum direction sampled with 1 k-point
+    // stays 1). The PDOS is re-sampled at this denser mesh via fixed_density.
+    auto* pdosKptRow = new QHBoxLayout;
+    for (auto*& spin : pdosKptsSpin_) {
+        spin = new QSpinBox(pdosGroup_);
+        spin->setRange(1, 128);
+        spin->setValue(14);
+        pdosKptRow->addWidget(spin);
+        connect(spin, &QSpinBox::valueChanged, this, [this] {
+            // A manual edit freezes the auto-scaling.
+            pdosKptsUserEdited_ = true;
+            refreshPreview();
+        });
+    }
+    form->addRow(tr("PDOS k-mesh:"), pdosKptRow);
+
+    energyPointsSpin_ = new QSpinBox(pdosGroup_);
+    energyPointsSpin_->setRange(50, 20000);
+    energyPointsSpin_->setValue(401);
+    energyPointsSpin_->setSingleStep(50);
+    energyPointsSpin_->setToolTip(
+        tr("Number of energy sampling points for the projected DOS; higher "
+           "values give a finer energy grid."));
+    form->addRow(tr("Energy points (N):"), energyPointsSpin_);
+    connect(energyPointsSpin_, &QSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
 
     pdosWidthSpin_ = new QDoubleSpinBox(pdosGroup_);
     pdosWidthSpin_->setRange(0.001, 5.0);
@@ -110,13 +100,61 @@ QWidget* ElectronicBandsWizard::buildCalculatorExtras()
            "turns it into a smooth curve. ~0.05–0.2 eV is typical — smaller "
            "resolves sharp d-band features but needs a denser k-mesh."));
     form->addRow(tr("Gaussian smearing σ:"), pdosWidthSpin_);
-    connect(pdosCheck_, &QCheckBox::toggled, pdosWidthSpin_,
-            &QDoubleSpinBox::setEnabled);
+    // The PDOS controls only make sense when PDOS is requested.
+    for (QWidget* w : {static_cast<QWidget*>(pdosKptsSpin_[0]),
+                       static_cast<QWidget*>(pdosKptsSpin_[1]),
+                       static_cast<QWidget*>(pdosKptsSpin_[2]),
+                       static_cast<QWidget*>(energyPointsSpin_),
+                       static_cast<QWidget*>(pdosWidthSpin_)}) {
+        connect(pdosCheck_, &QCheckBox::toggled, w, &QWidget::setEnabled);
+    }
     connect(pdosCheck_, &QCheckBox::toggled, this,
             [this] { refreshPreview(); });
     connect(pdosWidthSpin_, &QDoubleSpinBox::valueChanged, this,
             [this] { refreshPreview(); });
-    return pdosGroup_;
+
+    // Seed the PDOS k-mesh from the (default) SCF k-grid now that the base DFT
+    // controls exist.
+    applyPdosKmeshDefault();
+
+    // Merged stage: the interactive Brillouin-zone / k-path builder comes
+    // first, with the PDOS configuration below it, in one container so the
+    // wizard has a single setup stage.
+    auto* container = new QWidget(this);
+    auto* vbox = new QVBoxLayout(container);
+    vbox->setContentsMargins(0, 0, 0, 0);
+
+    vbox->addWidget(new QLabel(tr("High-symmetry k-path:"), container));
+    kpath_ = new EmbeddedKPathEditor(structure_, container);
+    vbox->addWidget(kpath_, 1);
+    connect(kpath_, &EmbeddedKPathEditor::pathChanged, this,
+            [this] { refreshPreview(); });
+
+    vbox->addWidget(pdosGroup_);
+
+    return container;
+}
+
+void ElectronicBandsWizard::applyPdosKmeshDefault()
+{
+    if (pdosKptsUserEdited_)
+        return;
+    for (int axis = 0; axis < 3; ++axis) {
+        if (!pdosKptsSpin_[axis])
+            continue;
+        const int base = calculatorKpoint(axis);
+        // Vacuum directions (single k-point) stay at 1; everything else ×2.
+        const int scaled = base <= 1 ? base : base * 2;
+        const QSignalBlocker blocker(pdosKptsSpin_[axis]);
+        pdosKptsSpin_[axis]->setValue(scaled);
+    }
+}
+
+void ElectronicBandsWizard::calculatorKgridChanged()
+{
+    // The baseline SCF k-grid changed — rescale the PDOS mesh default unless
+    // the user has taken it over.
+    applyPdosKmeshDefault();
 }
 
 void ElectronicBandsWizard::updateCalculatorExtras(core::CalculatorKind kind)
@@ -170,9 +208,11 @@ QString ElectronicBandsWizard::generateScript() const
     // carry a second, independent "k-points along path" box that could
     // silently disagree with it.
     config.npoints = kpath_->pointsPerSegment() * kpath_->segmentCount();
-    config.nvalence = valenceSpin_->value();
     config.pdos = pdosCheck_->isChecked();
     config.pdosWidthEv = pdosWidthSpin_->value();
+    config.pdosPoints = energyPointsSpin_->value();
+    for (int axis = 0; axis < 3; ++axis)
+        config.pdosKpts[axis] = pdosKptsSpin_[axis]->value();
     // Full GPAW parameter set from Stage 2 (mode, xc, eigensolver, mixer,
     // convergence, smearing, k-grid) — the same controls Geometry
     // Optimization and Single-point use.

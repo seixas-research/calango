@@ -49,8 +49,12 @@ struct ElectronicConfig {
     std::string baselineDensityPath;
     // -- PDOS (GPAW) --
     bool pdos = true;
-    double pdosWidthEv = 0.1;
-    int pdosPoints = 401;
+    double pdosWidthEv = 0.1;   ///< Gaussian smearing σ (eV)
+    int pdosPoints = 401;       ///< number of energy sampling points
+    /// Fixed-density k-mesh for the projected DOS, typically denser than the
+    /// baseline SCF grid (the wizard defaults it to 2× along non-vacuum axes).
+    /// The PDOS is re-evaluated at this mesh via calc.fixed_density.
+    int pdosKpts[3] = {14, 14, 14};
 };
 
 /// Standalone run.py: reads structure.extxyz from the job directory,

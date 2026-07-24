@@ -539,6 +539,61 @@ void ViewportWidget::ensureUploaded()
         renderer_.setStructure(structure_.get(), &selection_);
         structureDirty_ = false;
     }
+    if (latticePlaneDirty_) {
+        renderer_.setLatticePlane(latticePlaneFaces_, latticePlaneEdges_,
+                                  latticePlaneAlpha_, latticePlaneVisible_,
+                                  latticePlaneEdgesOn_);
+        latticePlaneDirty_ = false;
+    }
+    if (customOverlayDirty_) {
+        renderer_.setCustomOverlay(customOverlayFaces_, customOverlayEdges_,
+                                   customOverlayRanges_, customOverlayVisible_);
+        customOverlayDirty_ = false;
+    }
+}
+
+void ViewportWidget::setCustomOverlay(
+    std::vector<float> faceTris, std::vector<float> edgeLines,
+    std::vector<render::StructureRenderer::OverlayRange> faceRanges, bool visible)
+{
+    customOverlayFaces_ = std::move(faceTris);
+    customOverlayEdges_ = std::move(edgeLines);
+    customOverlayRanges_ = std::move(faceRanges);
+    customOverlayVisible_ = visible;
+    customOverlayDirty_ = true;
+    update();
+}
+
+void ViewportWidget::clearCustomOverlay()
+{
+    customOverlayFaces_.clear();
+    customOverlayEdges_.clear();
+    customOverlayRanges_.clear();
+    customOverlayVisible_ = false;
+    customOverlayDirty_ = true;
+    update();
+}
+
+void ViewportWidget::setLatticePlane(std::vector<float> faceTris,
+                                     std::vector<float> edgeLines, float alpha,
+                                     bool visible, bool showEdges)
+{
+    latticePlaneFaces_ = std::move(faceTris);
+    latticePlaneEdges_ = std::move(edgeLines);
+    latticePlaneAlpha_ = alpha;
+    latticePlaneVisible_ = visible;
+    latticePlaneEdgesOn_ = showEdges;
+    latticePlaneDirty_ = true;
+    update();
+}
+
+void ViewportWidget::clearLatticePlane()
+{
+    latticePlaneFaces_.clear();
+    latticePlaneEdges_.clear();
+    latticePlaneVisible_ = false;
+    latticePlaneDirty_ = true;
+    update();
 }
 
 void ViewportWidget::renderScene()

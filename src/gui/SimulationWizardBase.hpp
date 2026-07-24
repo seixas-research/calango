@@ -94,10 +94,34 @@ protected:
     /// hide or retune its buildCalculatorExtras() widgets for that engine.
     virtual void updateCalculatorExtras(core::CalculatorKind) {}
 
+    /// When true, the plane-wave cutoff, XC functional and GPAW mode are
+    /// inherited from a mandatory baseline SCF (.gpw) and hidden from the GPAW
+    /// calculator page — the run restarts from that density, so those knobs are
+    /// locked to the baseline. The Electronic Structure wizard overrides this.
+    virtual bool inheritsCalculatorFromBaseline() const { return false; }
+
+    /// When false, the whole standard calculator chrome (engine dropdown, DFT
+    /// and per-engine backend groups, hint labels) is hidden, leaving only the
+    /// subclass's buildCalculatorExtras() content. The Electronic Structure
+    /// wizard uses this to present a single streamlined page (baseline + PDOS +
+    /// k-path) with every locked SCF knob suppressed.
+    virtual bool showsEngineAndDftControls() const { return true; }
+
+    /// Fired when the DFT k-point grid changes, so a subclass can rescale a
+    /// derived mesh default (e.g. the PDOS k-mesh at 2× the SCF grid).
+    virtual void calculatorKgridChanged() {}
+
+    /// The SCF k-point grid value along an axis (0..2). Lets a subclass derive
+    /// a denser mesh from the (baseline) SCF sampling.
+    int calculatorKpoint(int axis) const;
+
     /// Calculator kind + backend knobs (DFT cutoff/k-points, MACE, ORCA) from
     /// Stages 2–3; the subclass adds its task fields to build the final config.
     core::CalculatorConfig baseCalculatorConfig() const;
     core::CalculatorKind selectedCalculator() const;
+    /// Preselect the engine combo (no-op if the kind isn't offered). Call after
+    /// buildUi() to open a wizard on a specific default engine.
+    void selectCalculator(core::CalculatorKind kind);
 
 protected Q_SLOTS:
     void refreshPreview();
@@ -129,8 +153,13 @@ private:
 
     QStackedWidget* stack_ = nullptr;
     QLabel* headerLabel_ = nullptr;
+    /// Shown on the GPAW calculator page when the cutoff/XC/mode are hidden
+    /// because they are inherited from a baseline SCF (see
+    /// inheritsCalculatorFromBaseline()).
+    QLabel* baselineInheritNote_ = nullptr;
 
     // Calculator Settings — engine selection (env is resolved from Preferences)
+    QWidget* engineWidget_ = nullptr; ///< container for the engine-selector row
     QComboBox* calcCombo_ = nullptr;
 
     // Per-calculator settings

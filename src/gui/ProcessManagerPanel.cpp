@@ -1,12 +1,14 @@
 #include "gui/ProcessManagerPanel.hpp"
 
+#include "ui/IconManager.hpp"
+
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QKeyEvent>
 #include <QPushButton>
-#include <QStyle>
+#include <QSize>
 #include <QTreeWidget>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -16,6 +18,27 @@ namespace calango::gui {
 namespace {
 constexpr int kIdRole = Qt::UserRole;
 constexpr int kDirRole = Qt::UserRole + 1;
+
+// RemixIcon stems + per-status tint for the Status column. Colors match the
+// status text so the glyph and label read as one.
+struct StatusVisual {
+    const char* iconName;
+    QColor color;
+};
+StatusVisual statusVisual(ProcessManagerPanel::Status status)
+{
+    switch (status) {
+    case ProcessManagerPanel::Status::Queued:
+        return {"time-line", QColor(160, 160, 170)};
+    case ProcessManagerPanel::Status::Running:
+        return {"loader-4-line", QColor(102, 153, 255)};
+    case ProcessManagerPanel::Status::Completed:
+        return {"checkbox-circle-line", QColor(110, 210, 130)};
+    case ProcessManagerPanel::Status::Failed:
+        return {"close-circle-line", QColor(224, 108, 96)};
+    }
+    return {"time-line", QColor(160, 160, 170)};
+}
 } // namespace
 
 ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
@@ -28,6 +51,9 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
     tree_ = new QTreeWidget(this);
     tree_->setColumnCount(3);
     tree_->setHeaderLabels({tr("Task"), tr("Status"), tr("Started")});
+    // Tree-item icons enlarged 20% (default 16 → 17-ish; the status glyphs are
+    // rendered at 17 px to match).
+    tree_->setIconSize(QSize(17, 17));
     tree_->setRootIsDecorated(false);
     tree_->header()->setStretchLastSection(false);
     tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
@@ -37,15 +63,14 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
     tree_->installEventFilter(this);
     layout->addWidget(tree_, 1);
 
-    // Icon-only action bar: intuitive glyphs from the active style, with the
-    // former text labels moved to descriptive hover tooltips.
+    // Icon-only action bar: clean RemixIcon glyphs (theme-tinted via
+    // IconManager), with the former text labels moved to descriptive tooltips.
     auto* buttons = new QHBoxLayout;
-    const auto icon = [this](QStyle::StandardPixmap sp) {
-        return style()->standardIcon(sp);
-    };
-    const auto makeButton = [&](QStyle::StandardPixmap sp, const QString& tip) {
+    const auto makeButton = [&](const QString& iconName, const QString& tip) {
         auto* button = new QPushButton(this);
-        button->setIcon(icon(sp));
+        button->setIcon(ui::IconManager::icon(iconName));
+        // Action-button icons enlarged 20% (16 → 20) for visual clarity.
+        button->setIconSize(QSize(20, 20));
         button->setToolTip(tip);
         button->setFocusPolicy(Qt::NoFocus);
         button->setFlat(false);
@@ -53,18 +78,18 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
         return button;
     };
     auto* openButton = makeButton(
-        QStyle::SP_DirOpenIcon,
+        QStringLiteral("folder-open-line"),
         tr("Open Folder — reveal this task's working directory."));
     auto* loadButton = makeButton(
-        QStyle::SP_FileDialogContentsView,
+        QStringLiteral("folder-received-line"),
         tr("Load Result — open this task's trajectory / bands / final "
            "structure in the workspace."));
     auto* scriptButton = makeButton(
-        QStyle::SP_FileIcon,
+        QStringLiteral("file-code-line"),
         tr("View ASE Script — show the exact Python/ASE run.py that was "
            "executed."));
     auto* deleteButton = makeButton(
-        QStyle::SP_TrashIcon,
+        QStringLiteral("delete-bin-line"),
         tr("Delete Process — stop it if running, delete its temporary data "
            "folder, and remove it from the list."));
     buttons->addStretch(1);
@@ -119,6 +144,11 @@ int ProcessManagerPanel::registerTask(const QString& name,
     auto* item = new QTreeWidgetItem(
         {name, tr("queued"),
          QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"))});
+    const auto queued = statusVisual(Status::Queued);
+    // Status glyph enlarged 20% (14 → 17).
+    item->setIcon(1, ui::IconManager::icon(QLatin1String(queued.iconName),
+                                           queued.color, 17));
+    item->setForeground(1, QBrush(queued.color));
     item->setData(0, kIdRole, nextId_);
     item->setData(0, kDirRole, directory);
     item->setToolTip(0, directory.isEmpty() ? name : directory);
@@ -156,24 +186,18 @@ void ProcessManagerPanel::setTaskStatus(int id, Status status)
     QTreeWidgetItem* item = itemForId(id);
     if (!item)
         return;
+    QString label;
     switch (status) {
-    case Status::Queued:
-        item->setText(1, tr("queued"));
-        item->setForeground(1, QBrush(QColor(160, 160, 170)));
-        break;
-    case Status::Running:
-        item->setText(1, tr("running"));
-        item->setForeground(1, QBrush(QColor(102, 153, 255)));
-        break;
-    case Status::Completed:
-        item->setText(1, tr("completed"));
-        item->setForeground(1, QBrush(QColor(110, 210, 130)));
-        break;
-    case Status::Failed:
-        item->setText(1, tr("failed"));
-        item->setForeground(1, QBrush(QColor(224, 108, 96)));
-        break;
+    case Status::Queued:    label = tr("queued");    break;
+    case Status::Running:   label = tr("running");   break;
+    case Status::Completed: label = tr("completed"); break;
+    case Status::Failed:    label = tr("failed");    break;
     }
+    const auto visual = statusVisual(status);
+    item->setText(1, label);
+    item->setForeground(1, QBrush(visual.color));
+    item->setIcon(1, ui::IconManager::icon(QLatin1String(visual.iconName),
+                                           visual.color, 17));
 }
 
 } // namespace calango::gui

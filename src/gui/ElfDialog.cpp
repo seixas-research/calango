@@ -441,6 +441,9 @@ QString ElfDialog::generateScript() const
         "import json\n"
         "import os\n"
         "import glob\n"
+        "# GPAW 25.x computes the ELF (kinetic-energy density) only in its new\n"
+        "# engine, so enable it before importing gpaw.\n"
+        "os.environ.setdefault('GPAW_NEW', '1')\n"
         "import numpy as np\n"
         "from ase.io import read\n"
         "from calango_log import CalangoLog\n"
@@ -479,15 +482,29 @@ QString ElfDialog::generateScript() const
     // ELF evaluation. The gpaw.elf.ELF path is preferred; API names have shifted
     // across GPAW versions, so fall back to the calculator method and, failing
     // both, surface a RuntimeError carrying the underlying messages.
+    // ELF evaluation, hardened against GPAW version drift and grid-layout /
+    // spin-shape mismatches:
+    //   * ELF.update() takes (wfs) in some versions and no arg in others;
+    //   * get_electronic_localization_function() accepts gridrefinement/spin
+    //     only in some versions;
+    //   * the result may come back spin-resolved (leading spin axis) or as a
+    //     non-contiguous / non-float array — normalize to one contiguous
+    //     C-ordered float64 3D grid before write_cube.
     const QString compute = QStringLiteral(
         "elf_grid = None\n"
         "_errs = []\n"
         "try:\n"
         "    from gpaw.elf import ELF\n"
         "    elf = ELF(calc)\n"
-        "    elf.update(calc.wfs)\n"
-        "    elf_grid = elf.get_electronic_localization_function(\n"
-        "        gridrefinement=2, spin=0)\n"
+        "    try:\n"
+        "        elf.update(calc.wfs)\n"
+        "    except TypeError:\n"
+        "        elf.update()\n"
+        "    try:\n"
+        "        elf_grid = elf.get_electronic_localization_function(\n"
+        "            gridrefinement=2)\n"
+        "    except TypeError:\n"
+        "        elf_grid = elf.get_electronic_localization_function()\n"
         "except Exception as _e:\n"
         "    _errs.append('gpaw.elf.ELF: ' + repr(_e))\n"
         "    try:\n"
@@ -498,6 +515,9 @@ QString ElfDialog::generateScript() const
         "if elf_grid is None:\n"
         "    raise RuntimeError('Could not evaluate the ELF with this GPAW '\n"
         "                       'version: ' + ' | '.join(_errs))\n"
+        "elf_grid = np.asarray(elf_grid, dtype=float)\n"
+        "if elf_grid.ndim == 4:  # (spin, nx, ny, nz) -> collapse the spin axis\n"
+        "    elf_grid = elf_grid[0]\n"
         "elf_grid = np.ascontiguousarray(elf_grid, dtype=float)\n"
         "_log.progress(3, 3)\n");
 

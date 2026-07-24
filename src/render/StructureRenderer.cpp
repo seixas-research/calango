@@ -406,6 +406,10 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     createColoredBuffer(wireAtoms_);
     createColoredBuffer(polyhedronFaces_);
     createColoredBuffer(polyhedronEdges_);
+    createColoredBuffer(latticePlaneFaces_);
+    createColoredBuffer(latticePlaneEdges_);
+    createColoredBuffer(customOverlayFaces_);
+    createColoredBuffer(customOverlayEdges_);
 
     cellVao_.create();
     cellVao_.bind();
@@ -485,6 +489,32 @@ void StructureRenderer::uploadColoredBuffer(ColoredVertexBuffer& buffer,
     buffer.vertexCount = static_cast<int>(data.size()) / 6;
     buffer.vbo.bind();
     buffer.vbo.allocate(data.data(), static_cast<int>(data.size() * sizeof(float)));
+}
+
+void StructureRenderer::setLatticePlane(const std::vector<float>& faceTris,
+                                        const std::vector<float>& edgeLines,
+                                        float alpha, bool visible, bool showEdges)
+{
+    if (!initialized_)
+        return;
+    uploadColoredBuffer(latticePlaneFaces_, faceTris);
+    uploadColoredBuffer(latticePlaneEdges_, edgeLines);
+    latticePlaneAlpha_ = alpha;
+    latticePlaneVisible_ = visible;
+    latticePlaneEdgesOn_ = showEdges;
+}
+
+void StructureRenderer::setCustomOverlay(const std::vector<float>& faces,
+                                         const std::vector<float>& edges,
+                                         const std::vector<OverlayRange>& faceRanges,
+                                         bool visible)
+{
+    if (!initialized_)
+        return;
+    uploadColoredBuffer(customOverlayFaces_, faces);
+    uploadColoredBuffer(customOverlayEdges_, edges);
+    customOverlayRanges_ = faceRanges;
+    customOverlayVisible_ = visible;
 }
 
 void StructureRenderer::buildPolyhedra(const core::Structure* structure,
@@ -1090,6 +1120,64 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
         gl_->glDrawArrays(GL_LINES, 0, cellVertexCount_);
         cellVao_.release();
         lineProgram_.release();
+    }
+
+    // Interactive Lattice Plane overlay: a translucent, per-vertex-colored quad
+    // (Miller-index plane / volumetric color-slice) drawn last so it blends
+    // over the opaque scene. Same unlit per-vertex-color path as the polyhedra
+    // faces; blend without writing depth so it never occludes the atoms behind.
+    if (latticePlaneVisible_ && latticePlaneFaces_.vertexCount > 0) {
+        wireProgram_.bind();
+        wireProgram_.setUniformValue("uMvp", projection * view);
+        wireProgram_.setUniformValue("uAlpha", latticePlaneAlpha_);
+        gl_->glEnable(GL_BLEND);
+        gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        gl_->glDepthMask(GL_FALSE);
+        latticePlaneFaces_.vao.bind();
+        gl_->glDrawArrays(GL_TRIANGLES, 0, latticePlaneFaces_.vertexCount);
+        latticePlaneFaces_.vao.release();
+        gl_->glDepthMask(GL_TRUE);
+        gl_->glDisable(GL_BLEND);
+        if (latticePlaneEdgesOn_ && latticePlaneEdges_.vertexCount > 0) {
+            wireProgram_.setUniformValue("uAlpha", 1.0f);
+            latticePlaneEdges_.vao.bind();
+            gl_->glDrawArrays(GL_LINES, 0, latticePlaneEdges_.vertexCount);
+            latticePlaneEdges_.vao.release();
+        }
+        wireProgram_.release();
+    }
+
+    // Custom Overlay primitives: each face run blends at its own opacity, so
+    // draw them range by range (opaque ones first would be ideal, but convex
+    // primitives read fine without a global sort). Wireframes render opaque.
+    if (customOverlayVisible_
+        && (customOverlayFaces_.vertexCount > 0
+            || customOverlayEdges_.vertexCount > 0)) {
+        wireProgram_.bind();
+        wireProgram_.setUniformValue("uMvp", projection * view);
+        if (customOverlayFaces_.vertexCount > 0 && !customOverlayRanges_.empty()) {
+            gl_->glEnable(GL_BLEND);
+            gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            gl_->glDepthMask(GL_FALSE);
+            customOverlayFaces_.vao.bind();
+            for (const OverlayRange& r : customOverlayRanges_) {
+                if (r.count <= 0 || r.first < 0
+                    || r.first + r.count > customOverlayFaces_.vertexCount)
+                    continue;
+                wireProgram_.setUniformValue("uAlpha", r.alpha);
+                gl_->glDrawArrays(GL_TRIANGLES, r.first, r.count);
+            }
+            customOverlayFaces_.vao.release();
+            gl_->glDepthMask(GL_TRUE);
+            gl_->glDisable(GL_BLEND);
+        }
+        if (customOverlayEdges_.vertexCount > 0) {
+            wireProgram_.setUniformValue("uAlpha", 1.0f);
+            customOverlayEdges_.vao.bind();
+            gl_->glDrawArrays(GL_LINES, 0, customOverlayEdges_.vertexCount);
+            customOverlayEdges_.vao.release();
+        }
+        wireProgram_.release();
     }
 }
 

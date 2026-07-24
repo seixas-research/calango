@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.41
+    VERSION 26.7.42
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -359,6 +359,12 @@ qt_add_executable(calango
     src/gui/PartialChargeDialog.cpp
     src/gui/ElfDialog.hpp
     src/gui/ElfDialog.cpp
+    src/gui/WannierDialog.hpp
+    src/gui/WannierDialog.cpp
+    src/gui/LatticePlaneDialog.hpp
+    src/gui/LatticePlaneDialog.cpp
+    src/gui/CustomOverlayDialog.hpp
+    src/gui/CustomOverlayDialog.cpp
     src/gui/VacfDialog.hpp
     src/gui/VacfDialog.cpp
     src/gui/SimulationWizardBase.hpp
@@ -430,20 +436,33 @@ qt_add_resources(calango "icons"
     FILES
         assets/.internal/icons/add-circle-line.svg
         assets/.internal/icons/anticlockwise-2-line.svg
+        assets/.internal/icons/arrow-go-back-line.svg
         assets/.internal/icons/box-3-line.svg
+        assets/.internal/icons/checkbox-circle-line.svg
+        assets/.internal/icons/close-circle-line.svg
+        assets/.internal/icons/close-line.svg
         assets/.internal/icons/compasses-2-line.svg
         assets/.internal/icons/computer-line.svg
         assets/.internal/icons/cpu-line.svg
         assets/.internal/icons/cursor-line.svg
+        assets/.internal/icons/delete-bin-line.svg
         assets/.internal/icons/drag-move-2-line.svg
+        assets/.internal/icons/file-code-line.svg
         assets/.internal/icons/file-copy-line.svg
         assets/.internal/icons/focus-3-line.svg
+        assets/.internal/icons/folder-open-line.svg
+        assets/.internal/icons/folder-received-line.svg
         assets/.internal/icons/font-size-2.svg
         assets/.internal/icons/hard-drive-2-line.svg
         assets/.internal/icons/hashtag.svg
+        assets/.internal/icons/loader-4-line.svg
+        assets/.internal/icons/magic-line.svg
         assets/.internal/icons/ram-line.svg
         assets/.internal/icons/ruler-2-line.svg
+        assets/.internal/icons/scissors-cut-line.svg
+        assets/.internal/icons/shape-line.svg
         assets/.internal/icons/stack-line.svg
+        assets/.internal/icons/time-line.svg
 )
 
 qt_add_resources(calango "remote"
@@ -783,6 +802,36 @@ if(CALANGO_BUILD_TESTS)
     add_test(NAME partial_charge_si
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/partial_charge_si_benchmark.py)
+
+    # GPAW linear-optics validation on diamond (C): SCF (500 eV, 7×7×7, PBE) →
+    # fixed-density NSCF → DielectricFunction, verifying the ε₁/ε₂ CSV+JSON
+    # output without runtime exceptions. Pure Python; self-skips (exit 0) when
+    # the GPAW response stack is not importable.
+    add_test(NAME optics_c_diamond
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/optics_diamond_benchmark.py)
+
+    # Native MLWF (Marzari-Vanderbilt) validation on bulk Si: GPAW SCF →
+    # ase.dft.wannier localization, verifying the total Wannier spread Ω
+    # converges. Saves test_mlwf_silicon.png (per-function spread bar chart) at
+    # the repo root. Pure Python; self-skips (exit 0) without GPAW/Wannier.
+    add_test(NAME wannier_silicon
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/wannier_silicon_benchmark.py)
+
+    # ELF validation on bulk Si: GPAW SCF → gpaw.elf.ELF, verifying a finite
+    # 3D η ∈ [0,1] field. Saves test_elf_silicon.png (2D slice contour) at the
+    # repo root. Self-skips (exit 0) without GPAW/gpaw.elf.
+    add_test(NAME elf_silicon
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/elf_silicon_benchmark.py)
+
+    # Optics validation on bulk Si: GPAW SCF → NSCF → DielectricFunction,
+    # verifying ε₁/ε₂. Saves test_optics_silicon.png (ε₁(ω)/ε₂(ω) vs eV) at the
+    # repo root. Self-skips (exit 0) without the GPAW response stack.
+    add_test(NAME optics_silicon
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/optics_silicon_benchmark.py)
 endif()
 
 # ---------------------------------------------------------------------------

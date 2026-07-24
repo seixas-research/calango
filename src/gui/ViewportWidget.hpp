@@ -87,6 +87,27 @@ public:
     QColor backgroundColor() const { return backgroundColor_; }
     void setBackgroundColor(const QColor& color);
 
+    // -- Lattice Plane / volumetric color-slice overlay --------------------
+    /// Push a translucent lattice plane (optionally color-mapped from a
+    /// volumetric scalar field) into the 3D scene. `faceTris` / `edgeLines` are
+    /// interleaved pos(3)+color(3) streams (GL_TRIANGLES / GL_LINES) built by
+    /// LatticePlaneDialog. Passing visible=false (or empty streams) hides it.
+    void setLatticePlane(std::vector<float> faceTris, std::vector<float> edgeLines,
+                         float alpha, bool visible, bool showEdges);
+    /// Remove the lattice-plane overlay.
+    void clearLatticePlane();
+
+    /// Push the "Custom Overlay" geometric primitives into the 3D scene.
+    /// `faceTris` / `edgeLines` are interleaved pos(3)+color(3) streams;
+    /// `faceRanges` slices `faceTris` into per-primitive runs so each blends at
+    /// its own opacity. visible=false (or empty streams) hides the overlay.
+    void setCustomOverlay(
+        std::vector<float> faceTris, std::vector<float> edgeLines,
+        std::vector<render::StructureRenderer::OverlayRange> faceRanges,
+        bool visible);
+    /// Remove the custom-overlay primitives.
+    void clearCustomOverlay();
+
 public Q_SLOTS:
     /// Perspective (default) vs. orthographic projection; the transition
     /// preserves apparent scale (see OrbitCamera::projection).
@@ -268,6 +289,21 @@ private:
     ScalarRange scalarRange_;
     QColor backgroundColor_{26, 28, 33};
     bool structureDirty_ = false;
+
+    // Lattice-plane overlay geometry, uploaded lazily in ensureUploaded().
+    std::vector<float> latticePlaneFaces_;
+    std::vector<float> latticePlaneEdges_;
+    float latticePlaneAlpha_ = 0.4f;
+    bool latticePlaneVisible_ = false;
+    bool latticePlaneEdgesOn_ = true;
+    bool latticePlaneDirty_ = false;
+
+    // Custom-overlay primitive geometry, uploaded lazily in ensureUploaded().
+    std::vector<float> customOverlayFaces_;
+    std::vector<float> customOverlayEdges_;
+    std::vector<render::StructureRenderer::OverlayRange> customOverlayRanges_;
+    bool customOverlayVisible_ = false;
+    bool customOverlayDirty_ = false;
     bool showAxes_ = true;
     bool axesLatticeMode_ = false;
     bool axesArrows_ = false;

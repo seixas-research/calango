@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Structure.hpp"
+#include "python_bridge/BulkBuilder.hpp"
 
 #include <QDialog>
 #include <QLabel>
@@ -18,6 +19,8 @@ class QTableWidget;
 class QTableWidgetItem;
 
 namespace calango::gui {
+
+class ViewportWidget;
 
 /// "Database Browser" (Build → From Database…):
 ///   - Bulk tab: generate a crystal locally with ase.build.bulk (by
@@ -63,6 +66,12 @@ private:
     /// structure + lattice constant(s) from ASE's tabulated ground-state
     /// reference (e.g. Cu → fcc a≈3.61, Fe → bcc, C/Si → diamond).
     void autoFillBulkReference();
+    /// Read the prototype-mode widgets into an ase.build.bulk spec.
+    pybridge::BulkBuilder::PrototypeSpec currentPrototypeSpec() const;
+    /// Rebuild the embedded 3D preview from the current prototype parameters
+    /// (no-op / cleared in space-group mode; silently keeps the last valid
+    /// preview when the parameters are mid-edit / invalid).
+    void refreshBulkPreview();
     /// Wire a "Periodic Table…" button that appends/sets an element symbol
     /// on `target`.
     QPushButton* makePeriodicTableButton(QWidget* parent, QLineEdit* target,
@@ -138,6 +147,7 @@ private:
     QWidget* bulkSpaceGroupPage_ = nullptr;
     QPushButton* bulkBuildButton_ = nullptr;
     QLabel* bulkStatus_ = nullptr;
+    ViewportWidget* bulkPreview_ = nullptr; ///< live 3D preview of the target cell
     /// Guards autoFillBulkReference()'s programmatic combo/spin writes from
     /// being treated as user edits.
     bool loadingBulkReference_ = false;

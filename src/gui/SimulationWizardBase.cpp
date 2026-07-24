@@ -36,6 +36,23 @@ namespace calango::gui {
 
 namespace {
 const auto kEnvSettingsKey = QStringLiteral("jobs/environmentPath");
+
+/// Hide/show the QFormLayout row (label + field) that `field` occupies inside
+/// `group`'s form layout. No-op if the group has no form layout or the field
+/// isn't in it.
+void setFormRowVisible(QGroupBox* group, QWidget* field, bool visible)
+{
+    if (!group || !field)
+        return;
+    auto* form = qobject_cast<QFormLayout*>(group->layout());
+    if (!form)
+        return;
+    int row = -1;
+    QFormLayout::ItemRole role{};
+    form->getWidgetPosition(field, &row, &role);
+    if (row >= 0)
+        form->setRowVisible(row, visible);
+}
 } // namespace
 
 SimulationWizardBase::SimulationWizardBase(QWidget* parent) : QDialog(parent) {}
@@ -116,9 +133,13 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     // Engine selection now lives at the top of this page (the separate
     // "Calculator & Execution Environment" stage was removed). The Conda
     // environment for the chosen engine is resolved silently from Preferences
-    // → "Python & Environments" (see pythonExecutable()).
-    auto* engineForm = new QFormLayout;
-    calcCombo_ = new QComboBox(page);
+    // → "Python & Environments" (see pythonExecutable()). Wrapped in a container
+    // so a wizard that locks the engine (Electronic Structure) can hide it
+    // wholesale via showsEngineAndDftControls().
+    engineWidget_ = new QWidget(page);
+    auto* engineForm = new QFormLayout(engineWidget_);
+    engineForm->setContentsMargins(0, 0, 0, 0);
+    calcCombo_ = new QComboBox(engineWidget_);
     // A subclass may restrict the engine list (e.g. the Electronic Bands
     // wizard offers only DFT-capable calculators). Only allowed kinds appear.
     const auto addCalc = [this](const QString& label, core::CalculatorKind kind) {
@@ -135,7 +156,7 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     addCalc(tr("ASAP (fast EMT / OpenKIM)"), core::CalculatorKind::Asap);
     addCalc(tr("Lennard-Jones"), core::CalculatorKind::LennardJones);
     engineForm->addRow(tr("Calculation engine:"), calcCombo_);
-    layout->addLayout(engineForm);
+    layout->addWidget(engineWidget_);
     connect(calcCombo_, &QComboBox::currentIndexChanged, this,
             &SimulationWizardBase::updateCalculatorEnabled);
 
@@ -156,8 +177,14 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
         spin->setRange(1, 64);
         spin->setValue(7);
         kptRow->addWidget(spin);
+        connect(spin, &QSpinBox::valueChanged, this, [this] {
+            calculatorKgridChanged();
+            refreshPreview();
+        });
     }
     dftForm->addRow(tr("k-point grid:"), kptRow);
+    connect(cutoffSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
     // Only the script-template DFT backends (Espresso/VASP/Siesta) edit XC in
     // the generated script; GPAW exposes an XC dropdown in its own group, so
     // this note is hidden when GPAW is selected (see updateCalculatorEnabled).
@@ -169,6 +196,16 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
 
     layout->addWidget(buildMaceGroup(page));
     layout->addWidget(buildGpawGroup(page));
+
+    // Shown only when the cutoff/XC/mode are inherited from a baseline SCF
+    // (Electronic Structure wizard); hidden otherwise.
+    baselineInheritNote_ = new QLabel(
+        tr("Plane-wave cutoff, XC functional and mode are inherited from the "
+           "selected baseline SCF and cannot be changed here."),
+        page);
+    baselineInheritNote_->setWordWrap(true);
+    baselineInheritNote_->setVisible(false);
+    layout->addWidget(baselineInheritNote_);
 
     orcaGroup_ = new QGroupBox(tr("ORCA settings"), page);
     auto* orcaForm = new QFormLayout(orcaGroup_);
@@ -538,6 +575,22 @@ QWidget* SimulationWizardBase::buildReviewPage()
 void SimulationWizardBase::updateCalculatorEnabled()
 {
     const auto kind = selectedCalculator();
+
+    // A wizard that locks the engine (Electronic Structure) hides the entire
+    // standard calculator chrome — only its buildCalculatorExtras() content
+    // (baseline + PDOS + k-path) is shown.
+    if (!showsEngineAndDftControls()) {
+        if (engineWidget_) engineWidget_->setVisible(false);
+        if (calcSettingsHint_) calcSettingsHint_->setVisible(false);
+        if (dftGroup_) dftGroup_->setVisible(false);
+        if (maceGroup_) maceGroup_->setVisible(false);
+        if (gpawGroup_) gpawGroup_->setVisible(false);
+        if (orcaGroup_) orcaGroup_->setVisible(false);
+        if (baselineInheritNote_) baselineInheritNote_->setVisible(false);
+        updateCalculatorExtras(kind);
+        return;
+    }
+
     const bool isDft = kind == core::CalculatorKind::QuantumEspresso
         || kind == core::CalculatorKind::Vasp || kind == core::CalculatorKind::Gpaw
         || kind == core::CalculatorKind::Siesta;
@@ -554,6 +607,17 @@ void SimulationWizardBase::updateCalculatorEnabled()
     maceGroup_->setVisible(isMace);
     gpawGroup_->setVisible(isGpaw);
     orcaGroup_->setVisible(isOrca);
+
+    // Baseline inheritance (Electronic Structure): the run restarts from a
+    // completed SCF density, so its plane-wave cutoff, XC functional and mode
+    // are fixed by that .gpw — hide those controls and show a note instead.
+    const bool inheritGpaw = isGpaw && inheritsCalculatorFromBaseline();
+    setFormRowVisible(dftGroup_, cutoffSpin_, !inheritGpaw);
+    setFormRowVisible(gpawGroup_, gpawXcCombo_, !inheritGpaw);
+    setFormRowVisible(gpawGroup_, gpawModeCombo_, !inheritGpaw);
+    if (baselineInheritNote_)
+        baselineInheritNote_->setVisible(inheritGpaw);
+
     if (calcSettingsHint_)
         calcSettingsHint_->setText(
             (isDft || isMace || isOrca)
@@ -563,9 +627,25 @@ void SimulationWizardBase::updateCalculatorEnabled()
     updateCalculatorExtras(kind);
 }
 
+int SimulationWizardBase::calculatorKpoint(int axis) const
+{
+    if (axis < 0 || axis >= 3 || !kptSpins_[axis])
+        return 1;
+    return kptSpins_[axis]->value();
+}
+
 core::CalculatorKind SimulationWizardBase::selectedCalculator() const
 {
     return static_cast<core::CalculatorKind>(calcCombo_->currentData().toInt());
+}
+
+void SimulationWizardBase::selectCalculator(core::CalculatorKind kind)
+{
+    if (!calcCombo_)
+        return;
+    const int index = calcCombo_->findData(static_cast<int>(kind));
+    if (index >= 0)
+        calcCombo_->setCurrentIndex(index);
 }
 
 core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const

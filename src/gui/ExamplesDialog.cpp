@@ -3,6 +3,7 @@
 #include "core/Element.hpp"
 #include "gui/EnvFile.hpp"
 #include "gui/PeriodicTableDialog.hpp"
+#include "gui/ViewportWidget.hpp"
 #include "python_bridge/BulkBuilder.hpp"
 #include "python_bridge/MaterialsProject.hpp"
 #include "python_bridge/PubChem.hpp"
@@ -384,6 +385,14 @@ QWidget* ExamplesDialog::createBulkTab()
     connect(bulkStructureCombo_, &QComboBox::currentTextChanged, this,
             [this] { updateBulkParameterVisibility(); });
 
+    // Instant 3D preview of the target unit cell — refreshes live as the
+    // element / structure / lattice parameters change.
+    auto* previewLabel = new QLabel(tr("Preview:"), page);
+    layout->addWidget(previewLabel);
+    bulkPreview_ = new ViewportWidget(page);
+    bulkPreview_->setMinimumHeight(220);
+    layout->addWidget(bulkPreview_, 1);
+
     bulkBuildButton_ = new QPushButton(tr("Build Crystal"), page);
     layout->addWidget(bulkBuildButton_);
     bulkStatus_ = new QLabel(page);
@@ -391,17 +400,32 @@ QWidget* ExamplesDialog::createBulkTab()
     layout->addWidget(bulkStatus_);
     connect(bulkBuildButton_, &QPushButton::clicked,
             this, &ExamplesDialog::buildBulkCrystal);
-    // Auto-configure structure + lattice constant from the chosen element when
-    // the user leaves the formula field.
-    connect(bulkFormulaEdit_, &QLineEdit::editingFinished,
-            this, &ExamplesDialog::autoFillBulkReference);
-    // Enter both applies the reference (so the build uses it) and builds.
-    connect(bulkFormulaEdit_, &QLineEdit::returnPressed, this, [this] {
+    // Auto-configure structure + lattice constant whenever the element changes.
+    // textChanged (not editingFinished) fires for BOTH typing and the periodic-
+    // table picker, whose setText() emits textChanged but never editingFinished.
+    connect(bulkFormulaEdit_, &QLineEdit::textChanged, this, [this] {
         autoFillBulkReference();
-        buildBulkCrystal();
+        refreshBulkPreview();
     });
+    // Enter builds immediately (the reference is already applied above).
+    connect(bulkFormulaEdit_, &QLineEdit::returnPressed,
+            this, &ExamplesDialog::buildBulkCrystal);
+    // Any parameter edit refreshes the instant 3D preview of the target cell.
+    connect(bulkStructureCombo_, &QComboBox::currentTextChanged, this,
+            [this] { refreshBulkPreview(); });
+    connect(bulkASpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshBulkPreview(); });
+    connect(bulkCoveraSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshBulkPreview(); });
+    connect(bulkCSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshBulkPreview(); });
+    connect(bulkBLatticeSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshBulkPreview(); });
+    connect(bulkModeCombo_, &QComboBox::currentIndexChanged, this,
+            [this] { refreshBulkPreview(); });
 
     updateBulkParameterVisibility();
+    refreshBulkPreview();
     return page;
 }
 
@@ -437,6 +461,44 @@ void ExamplesDialog::autoFillBulkReference()
     loadingBulkReference_ = false;
     // Structure may have changed which parameter rows are relevant.
     updateBulkParameterVisibility();
+}
+
+pybridge::BulkBuilder::PrototypeSpec ExamplesDialog::currentPrototypeSpec() const
+{
+    pybridge::BulkBuilder::PrototypeSpec spec;
+    spec.name = bulkFormulaEdit_->text().trimmed().toStdString();
+    spec.crystalStructure = bulkStructureCombo_->currentText().toStdString();
+    spec.a = bulkASpin_->value();
+    spec.hasB = bulkUseB_->isChecked();
+    spec.b = bulkBLatticeSpin_->value();
+    spec.hasC = bulkUseC_->isChecked();
+    spec.c = bulkCSpin_->value();
+    spec.hasCovera = bulkUseCovera_->isChecked();
+    spec.covera = bulkCoveraSpin_->value();
+    spec.cubic = bulkCubicCheck_->isChecked();
+    spec.orthorhombic = bulkOrthoCheck_->isChecked();
+    return spec;
+}
+
+void ExamplesDialog::refreshBulkPreview()
+{
+    if (!bulkPreview_)
+        return;
+    // Only the prototype mode has a single-formula quick preview; the
+    // space-group builder needs a full Wyckoff basis, so its preview waits for
+    // an explicit Build.
+    if (bulkModeCombo_->currentIndex() != 0) {
+        bulkPreview_->setStructure(nullptr);
+        return;
+    }
+    try {
+        auto structure = std::make_shared<core::Structure>(
+            pybridge::BulkBuilder::buildPrototype(currentPrototypeSpec()));
+        bulkPreview_->setStructure(structure);
+    } catch (const std::exception&) {
+        // Incomplete / invalid parameters mid-edit (e.g. an unknown element):
+        // leave the last valid preview rather than flashing an error.
+    }
 }
 
 void ExamplesDialog::updateBulkParameterVisibility()
@@ -484,20 +546,8 @@ void ExamplesDialog::buildBulkCrystal()
         QString name;
 
         if (bulkModeCombo_->currentIndex() == 0) {
-            pybridge::BulkBuilder::PrototypeSpec spec;
-            spec.name = bulkFormulaEdit_->text().trimmed().toStdString();
-            spec.crystalStructure = bulkStructureCombo_->currentText().toStdString();
-            spec.a = bulkASpin_->value();
-            spec.hasB = bulkUseB_->isChecked();
-            spec.b = bulkBLatticeSpin_->value();
-            spec.hasC = bulkUseC_->isChecked();
-            spec.c = bulkCSpin_->value();
-            spec.hasCovera = bulkUseCovera_->isChecked();
-            spec.covera = bulkCoveraSpin_->value();
-            spec.cubic = bulkCubicCheck_->isChecked();
-            spec.orthorhombic = bulkOrthoCheck_->isChecked();
             structure = std::make_shared<core::Structure>(
-                pybridge::BulkBuilder::buildPrototype(spec));
+                pybridge::BulkBuilder::buildPrototype(currentPrototypeSpec()));
             name = QStringLiteral("%1 (%2)")
                        .arg(bulkFormulaEdit_->text().trimmed(),
                             bulkStructureCombo_->currentText());

@@ -42,9 +42,12 @@
 #include "gui/PhononPlotWindow.hpp"
 #include "gui/SupercellDialog.hpp"
 #include "gui/PartialChargeDialog.hpp"
+#include "gui/CustomOverlayDialog.hpp"
 #include "gui/ElfDialog.hpp"
+#include "gui/LatticePlaneDialog.hpp"
 #include "gui/OpticsWizard.hpp"
 #include "gui/OpticsResultsWindow.hpp"
+#include "gui/WannierDialog.hpp"
 #include "gui/SymmetryDialog.hpp"
 #include "gui/VacfDialog.hpp"
 #include "gui/DatasetManagerDialog.hpp"
@@ -302,7 +305,8 @@ MainWindow::MainWindow(QWidget* parent)
 
     auto* frameToolbar = new QToolBar(this);
     frameToolbar->setObjectName(QStringLiteral("frameToolbar"));
-    frameToolbar->setIconSize(QSize(18, 18));
+    // Icons enlarged 20% (18 → 22) for clearer viewport-header glyphs.
+    frameToolbar->setIconSize(QSize(22, 22));
     frameToolbar->setMovable(false);
     frameToolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
 
@@ -485,6 +489,28 @@ MainWindow::MainWindow(QWidget* parent)
            "on the 3D canvas"));
     connect(indexLabelsAction, &QAction::toggled, viewport_,
             &ViewportWidget::setShowAtomIndexLabels);
+
+    // --- Lattice Plane / volumetric color-slice overlay -------------------
+    frameToolbar->addSeparator();
+    QAction* latticePlaneAction = frameToolbar->addAction(
+        ui::IconManager::icon(QStringLiteral("shape-line")),
+        tr("Lattice Plane…"));
+    latticePlaneAction->setToolTip(
+        tr("Lattice Plane… — overlay a translucent Miller-index (h k l) plane, "
+           "optionally color-sliced through a loaded volumetric field "
+           "(charge density / ELF)"));
+    connect(latticePlaneAction, &QAction::triggered, this,
+            &MainWindow::showLatticePlane);
+
+    QAction* customOverlayAction = frameToolbar->addAction(
+        ui::IconManager::icon(QStringLiteral("stack-line")),
+        tr("Custom overlay…"));
+    customOverlayAction->setToolTip(
+        tr("Custom overlay… — add geometric primitives (spheres, boxes, "
+           "cylinders, planes…) with custom textures and opacity over the "
+           "structure"));
+    connect(customOverlayAction, &QAction::triggered, this,
+            &MainWindow::showCustomOverlay);
 
     auto* central = new QWidget(this);
     auto* centralLayout = new QVBoxLayout(central);
@@ -816,6 +842,9 @@ void MainWindow::createMenusAndDocks()
     // Data since it shares the isosurface / slice viewer.
     analysisMenu->addAction(tr("&Electron Localization Function (ELF)…"),
                             this, &MainWindow::showElf);
+    analysisMenu->addAction(
+        tr("Maximally Localized &Wannier Functions (MLWF)…"),
+        this, &MainWindow::showWannier);
     analysisMenu->addAction(tr("Adsorption && Catal&ysis…"),
                             this, &MainWindow::showAdsorption);
     // Brillouin Zone Builder moved to the Build menu.
@@ -2623,10 +2652,9 @@ void MainWindow::showBandStructure()
     if (!ensureAseAvailable())
         return;
 
-    ElectronicBandsWizard wizard(doc->structure, this);
-    // Offer every completed Single-Point Calculation that saved a converged
-    // charge density (single_point.gpw) as an NSCF baseline. Selecting one runs
-    // the bands/PDOS at fixed density instead of a fresh inline SCF.
+    // Electronic Structure runs strictly non-self-consistently off a completed
+    // Single-Point Calculation's saved charge density (single_point.gpw), so a
+    // baseline SCF is mandatory. Gather the candidates first.
     QList<QPair<QString, QString>> baselines;
     for (const auto& [id, record] : processRecords_) {
         const QString gpw =
@@ -2635,12 +2663,17 @@ void MainWindow::showBandStructure()
             baselines.append({tr("#%1 — %2").arg(id).arg(record.label), gpw});
         }
     }
-    wizard.setDensityBaselines(baselines);
     if (baselines.isEmpty()) {
-        statusBar()->showMessage(
-            tr("Tip: run a GPAW Single-Point Calculation first to reuse its "
-               "charge density for a non-self-consistent band structure."));
+        QMessageBox::critical(
+            this, tr("Electronic Structure"),
+            tr("Error: Electronic Structure calculations require a completed "
+               "baseline SCF process with saved charge density. Please run a "
+               "Single-Point Calculation first."));
+        return;
     }
+
+    ElectronicBandsWizard wizard(doc->structure, this);
+    wizard.setDensityBaselines(baselines);
     runSimulationWizard(wizard, tr("Electronic Structure"), /*expectFrames=*/false);
 }
 
@@ -3053,6 +3086,29 @@ void MainWindow::showPartialCharge()
     dialog->show();
 }
 
+void MainWindow::showLatticePlane()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Lattice Plane"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    // Modeless: the plane updates live in the viewport while the user orbits
+    // and adjusts the Miller indices / offset / slice field.
+    auto* dialog = new LatticePlaneDialog(doc->structure, viewport_, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
+}
+
+void MainWindow::showCustomOverlay()
+{
+    // Overlays are independent of the atomic structure, so no structure guard.
+    auto* dialog = new CustomOverlayDialog(viewport_, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
+}
+
 void MainWindow::showElf()
 {
     Document* doc = currentDocument();
@@ -3081,6 +3137,49 @@ void MainWindow::showElf()
     }
     dialog->setDensityBaselines(baselines);
     connect(dialog, &ElfDialog::runRequested, this,
+            [this](const QString& script, const QString& label) {
+                if (jobRunner_->isRunning()) {
+                    QMessageBox::information(
+                        this, label,
+                        tr("A calculation is already running — kill it first."));
+                    return;
+                }
+                runScript(script,
+                          QString::fromStdString(
+                              pybridge::PythonEngine::instance().executable()),
+                          label, /*expectFrames=*/false);
+            });
+    dialog->show();
+}
+
+void MainWindow::showWannier()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Maximally Localized Wannier Functions"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+    // Modeless: MLWF localization runs as a background GPAW job; the centers /
+    // spreads table and the real-space orbital isosurfaces load back in.
+    auto* dialog = new WannierDialog(doc->structure, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    // Completed processes with saved GPAW wavefunctions (.gpw) are the SCF
+    // baselines the Wannier functions are built from.
+    QList<QPair<QString, QString>> baselines;
+    for (const auto& [id, record] : processRecords_) {
+        if (record.directory.isEmpty())
+            continue;
+        const QDir dir(record.directory);
+        if (!dir.entryList({QStringLiteral("*.gpw")}, QDir::Files).isEmpty())
+            baselines.append({tr("#%1 — %2 [GPAW]").arg(id).arg(record.label),
+                              record.directory});
+    }
+    dialog->setDensityBaselines(baselines);
+    connect(dialog, &WannierDialog::runRequested, this,
             [this](const QString& script, const QString& label) {
                 if (jobRunner_->isRunning()) {
                     QMessageBox::information(

@@ -166,6 +166,33 @@ public:
 
     void render(const QMatrix4x4& view, const QMatrix4x4& projection);
 
+    /// Interactive "Lattice Plane" overlay: a translucent, per-vertex-colored
+    /// quad (a Miller-index plane, optionally color-mapped from a volumetric
+    /// scalar field) plus its edge outline. `faceTris` / `edgeLines` are
+    /// interleaved pos(3)+color(3) streams (GL_TRIANGLES / GL_LINES). Pass empty
+    /// streams (or visible=false) to hide it. Requires a current GL context.
+    void setLatticePlane(const std::vector<float>& faceTris,
+                         const std::vector<float>& edgeLines, float alpha,
+                         bool visible, bool showEdges);
+
+    /// A contiguous run of triangles in the custom-overlay face buffer that
+    /// share one opacity — one per user primitive, so each can blend
+    /// independently.
+    struct OverlayRange {
+        int first = 0;    ///< first vertex (not byte / not float) in the buffer
+        int count = 0;    ///< number of vertices
+        float alpha = 1.0f;
+    };
+
+    /// "Custom Overlay" geometric primitives (spheres, boxes, cylinders,
+    /// planes…) drawn over the structure. `faces`/`edges` are interleaved
+    /// pos(3)+color(3) streams; `faceRanges` slices `faces` into per-primitive
+    /// runs so each blends at its own opacity. Edges render opaque.
+    void setCustomOverlay(const std::vector<float>& faces,
+                          const std::vector<float>& edges,
+                          const std::vector<OverlayRange>& faceRanges,
+                          bool visible);
+
     Style& style() { return style_; }
     const Style& style() const { return style_; }
 
@@ -240,6 +267,15 @@ private:
     ColoredVertexBuffer wireAtoms_;  ///< GL_POINTS (isolated atoms visible)
     ColoredVertexBuffer polyhedronFaces_; ///< GL_TRIANGLES (translucent)
     ColoredVertexBuffer polyhedronEdges_; ///< GL_LINES (opaque outline)
+    ColoredVertexBuffer latticePlaneFaces_; ///< GL_TRIANGLES (translucent slice)
+    ColoredVertexBuffer latticePlaneEdges_; ///< GL_LINES (plane border)
+    float latticePlaneAlpha_ = 0.4f;
+    bool latticePlaneVisible_ = false;
+    bool latticePlaneEdgesOn_ = true;
+    ColoredVertexBuffer customOverlayFaces_; ///< GL_TRIANGLES (custom primitives)
+    ColoredVertexBuffer customOverlayEdges_; ///< GL_LINES (primitive wireframes)
+    std::vector<OverlayRange> customOverlayRanges_;
+    bool customOverlayVisible_ = false;
 
     // -- Shadow map --------------------------------------------------------
     /// 2048² is the sweet spot here: structures are compact, so the fitted

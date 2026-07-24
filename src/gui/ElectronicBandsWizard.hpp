@@ -21,14 +21,14 @@ class Structure;
 
 namespace calango::gui {
 
-/// Simulation → "Electronic Bands / PDOS…": the standardized 4-stage wizard
-/// built on a prior single-point (SCF) baseline. Stage 1 is a dedicated
-/// k-Path Definition stage — it embeds the Brillouin Zone & k-Path Builder
-/// (via "Define with Brillouin Zone Builder…") to lay out the high-symmetry
-/// pathway (Γ → X → M → Γ …). Stages 2–4 are the shared calculator /
-/// environment (backend), calculator settings (SCF cutoff + k-grid) and ASE
-/// script review. The engine choice maps to the electronic backend:
-/// GPAW → GPAW, Quantum ESPRESSO → Espresso, everything else → free electrons.
+/// Simulation → "Electronic Structure…": a bands + PDOS wizard built on a
+/// mandatory prior single-point (SCF) baseline. The run restarts from the
+/// baseline's saved charge density (.gpw) and evaluates the bands / PDOS
+/// non-self-consistently, so the plane-wave cutoff, XC functional and mode are
+/// inherited from that baseline and hidden. Stages: Calculator Settings (engine
+/// + PDOS k-mesh / energy points / smearing) → k-Path Definition (embedded
+/// Brillouin-zone builder) → ASE script review. The engine choice maps to the
+/// electronic backend: GPAW → GPAW, Quantum ESPRESSO → Espresso, etc.
 class ElectronicBandsWizard : public SimulationWizardBase {
     Q_OBJECT
 
@@ -45,28 +45,50 @@ public:
 
 protected:
     QString wizardTitle() const override;
-    QString settingsHeader() const override;
-    QWidget* buildSettingsPage() override;
+    QString settingsHeader() const override { return QString(); } // unused (merged)
+    QWidget* buildSettingsPage() override { return nullptr; }      // unused (merged)
+    /// The former k-Path Definition stage is merged into the calculator page:
+    /// there is no separate task-settings stage.
+    bool hasTaskSettingsStage() const override { return false; }
     QString generateScript() const override;
     QString exportFileName() const override { return QStringLiteral("bands.py"); }
     /// Only DFT-capable electronic-structure engines (GPAW, SIESTA, VASP,
     /// Quantum ESPRESSO); the empirical/ML calculators can't produce bands.
     bool calculatorAllowed(core::CalculatorKind kind) const override;
-    /// k-Path Definition comes AFTER the engine is chosen (Stage 3).
-    bool settingsStageFirst() const override { return false; }
-    /// PDOS + smearing belong with the calculator, not the k-path.
+    /// One merged setup stage: baseline selection + PDOS settings + k-path.
+    QString calculatorSettingsHeader() const override
+    {
+        return tr("Configuration & k-Path Definition");
+    }
+    /// The whole engine/DFT/GPAW chrome is hidden: the SCF state (cutoff, XC,
+    /// mode, SCF k-grid, execution mode) is inherited from the baseline and
+    /// never shown. Only baseline selection + PDOS + k-path appear.
+    bool showsEngineAndDftControls() const override { return false; }
+    /// Baseline + PDOS + the embedded k-path builder, all on the merged stage.
     QWidget* buildCalculatorExtras() override;
     void updateCalculatorExtras(core::CalculatorKind kind) override;
+    /// Cutoff / XC / mode are locked to the selected baseline SCF density.
+    bool inheritsCalculatorFromBaseline() const override { return true; }
+    /// Rescale the PDOS k-mesh default to 2× the (baseline) SCF k-grid.
+    void calculatorKgridChanged() override;
 
 private:
+    /// Set the PDOS k-mesh spinboxes to 2× the SCF k-grid along each
+    /// non-vacuum direction (a direction sampled with a single k-point stays 1),
+    /// unless the user has already edited them.
+    void applyPdosKmeshDefault();
+
     std::shared_ptr<const core::Structure> structure_;
 
     class EmbeddedKPathEditor* kpath_ = nullptr;
-    QSpinBox* valenceSpin_ = nullptr;
     QComboBox* baselineCombo_ = nullptr; ///< charge-density baseline selector
     QGroupBox* pdosGroup_ = nullptr;
     QCheckBox* pdosCheck_ = nullptr;
     QDoubleSpinBox* pdosWidthSpin_ = nullptr;
+    QSpinBox* pdosKptsSpin_[3] = {nullptr, nullptr, nullptr};
+    QSpinBox* energyPointsSpin_ = nullptr;
+    /// Once the user edits the PDOS k-mesh, stop auto-rescaling it.
+    bool pdosKptsUserEdited_ = false;
 };
 
 } // namespace calango::gui

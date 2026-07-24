@@ -176,6 +176,14 @@ private Q_SLOTS:
     /// Analysis → "Electron Localization Function (ELF)…": compute η(r) via GPAW
     /// (or load an existing ELF grid) and view it as an isosurface / slice.
     void showElf();
+    /// Viewport toolbar → "Lattice Plane…": interactive Miller-index plane +
+    /// volumetric color-slice overlay in the main 3D viewport.
+    void showLatticePlane();
+    /// Viewport toolbar → "Custom overlay…": geometric-primitive overlay manager.
+    void showCustomOverlay();
+    /// Analysis → "Maximally Localized Wannier Functions (MLWF)…": native GPAW
+    /// Wannier localization from a completed SCF baseline.
+    void showWannier();
     void showDatasetManager();
     /// MLIP → Trainer…: MACE training-config (YAML) builder + launcher.
     void openMaceTrainer();
