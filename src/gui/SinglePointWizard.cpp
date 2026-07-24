@@ -25,49 +25,14 @@ QString SinglePointWizard::wizardTitle() const
     return tr("Single-point Calculation Setup");
 }
 
-QWidget* SinglePointWizard::buildCalculatorExtras()
+void SinglePointWizard::buildConvergenceRows(QFormLayout* form)
 {
-    // Electronic-convergence controls, folded into the calculator-settings
-    // page (shown for DFT engines via updateCalculatorExtras()).
-    convergenceGroup_ = new QGroupBox(tr("Electronic convergence"), this);
-    auto* page = convergenceGroup_;
-    auto* form = new QFormLayout(page);
+    // Smearing (σ) + SCF tolerance / max steps → "Electronic Convergence &
+    // Smearing" group. Widgets are parented to the group's container via the
+    // form layout.
+    QWidget* parent = form->parentWidget();
 
-    scfTolSpin_ = new QDoubleSpinBox(page);
-    scfTolSpin_->setDecimals(8);
-    scfTolSpin_->setRange(1e-8, 1.0);
-    scfTolSpin_->setValue(1e-4);
-    scfTolSpin_->setSuffix(tr(" eV"));
-    scfTolSpin_->setToolTip(
-        tr("Electronic-energy convergence threshold for the SCF cycle."));
-    form->addRow(tr("Energy convergence:"), scfTolSpin_);
-
-    scfStepsSpin_ = new QSpinBox(page);
-    scfStepsSpin_->setRange(1, 100000);
-    scfStepsSpin_->setValue(100);
-    scfStepsSpin_->setToolTip(
-        tr("Maximum number of self-consistent-field iterations."));
-    form->addRow(tr("Max electronic (SCF) steps:"), scfStepsSpin_);
-
-    spinCheck_ = new QCheckBox(tr("Spin-polarized (collinear)"), page);
-    spinCheck_->setToolTip(
-        tr("Seed each atom with an initial magnetic moment so the SCF can "
-           "converge to a magnetic solution."));
-    form->addRow(tr("Spin polarization:"), spinCheck_);
-    connect(spinCheck_, &QCheckBox::toggled, this,
-            &SinglePointWizard::updateSpinEnabled);
-
-    magMomentEdit_ = new QLineEdit(page);
-    magMomentEdit_->setPlaceholderText(QStringLiteral("e.g. 2.2, -2.2, 0, 0"));
-    magMomentEdit_->setText(QStringLiteral("1.0"));
-    magMomentEdit_->setToolTip(
-        tr("Explicit initial magnetic moments (μB) per atom, comma- or "
-           "space-separated and in atom order.\nIf fewer values than atoms are "
-           "given, the rest are padded with 0.0 automatically; a single value "
-           "seeds only the first atom (others 0)."));
-    form->addRow(tr("Initial magnetic moments:"), magMomentEdit_);
-
-    smearingCombo_ = new QComboBox(page);
+    smearingCombo_ = new QComboBox(parent);
     // Order mirrors core::SmearingMethod.
     smearingCombo_->addItems({tr("None (fixed occupations)"), tr("Gaussian"),
                               tr("Fermi-Dirac"), tr("Methfessel-Paxton")});
@@ -80,30 +45,57 @@ QWidget* SinglePointWizard::buildCalculatorExtras()
     connect(smearingCombo_, &QComboBox::currentIndexChanged, this,
             &SinglePointWizard::updateSpinEnabled);
 
-    smearingWidthSpin_ = new QDoubleSpinBox(page);
+    smearingWidthSpin_ = new QDoubleSpinBox(parent);
     smearingWidthSpin_->setDecimals(3);
     smearingWidthSpin_->setRange(0.0, 5.0);
     smearingWidthSpin_->setSingleStep(0.05);
     smearingWidthSpin_->setValue(0.1);
     smearingWidthSpin_->setSuffix(tr(" eV"));
     smearingWidthSpin_->setToolTip(
-        tr("Broadening width (electronic temperature) for the smearing."));
-    form->addRow(tr("Smearing width:"), smearingWidthSpin_);
+        tr("Broadening width σ (electronic temperature) for the smearing."));
+    form->addRow(tr("Smearing width σ:"), smearingWidthSpin_);
 
-    updateSpinEnabled();
-    return page;
+    scfTolSpin_ = new QDoubleSpinBox(parent);
+    scfTolSpin_->setDecimals(8);
+    scfTolSpin_->setRange(1e-8, 1.0);
+    scfTolSpin_->setValue(1e-4);
+    scfTolSpin_->setSuffix(tr(" eV"));
+    scfTolSpin_->setToolTip(
+        tr("Electronic-energy convergence threshold for the SCF cycle."));
+    form->addRow(tr("Energy convergence:"), scfTolSpin_);
+
+    scfStepsSpin_ = new QSpinBox(parent);
+    scfStepsSpin_->setRange(1, 100000);
+    scfStepsSpin_->setValue(100);
+    scfStepsSpin_->setToolTip(
+        tr("Maximum number of self-consistent-field iterations."));
+    form->addRow(tr("Max electronic (SCF) steps:"), scfStepsSpin_);
 }
 
-void SinglePointWizard::updateCalculatorExtras(core::CalculatorKind kind)
+void SinglePointWizard::buildOutputRows(QFormLayout* form)
 {
-    // SCF convergence, spin and smearing are DFT concepts — only relevant for
-    // the DFT engines (the classical/ML potentials do a single evaluation).
-    const bool isDft = kind == core::CalculatorKind::QuantumEspresso
-        || kind == core::CalculatorKind::Vasp
-        || kind == core::CalculatorKind::Gpaw
-        || kind == core::CalculatorKind::Siesta;
-    if (convergenceGroup_)
-        convergenceGroup_->setVisible(isDft);
+    // Spin polarization + initial magnetic moments → "Output & Exports" group.
+    QWidget* parent = form->parentWidget();
+
+    spinCheck_ = new QCheckBox(tr("Spin-polarized (collinear)"), parent);
+    spinCheck_->setToolTip(
+        tr("Seed each atom with an initial magnetic moment so the SCF can "
+           "converge to a magnetic solution."));
+    form->addRow(tr("Spin polarization:"), spinCheck_);
+    connect(spinCheck_, &QCheckBox::toggled, this,
+            &SinglePointWizard::updateSpinEnabled);
+
+    magMomentEdit_ = new QLineEdit(parent);
+    magMomentEdit_->setPlaceholderText(QStringLiteral("e.g. 2.2, -2.2, 0, 0"));
+    magMomentEdit_->setText(QStringLiteral("1.0"));
+    magMomentEdit_->setToolTip(
+        tr("Explicit initial magnetic moments (μB) per atom, comma- or "
+           "space-separated and in atom order.\nIf fewer values than atoms are "
+           "given, the rest are padded with 0.0 automatically; a single value "
+           "seeds only the first atom (others 0)."));
+    form->addRow(tr("Initial magnetic moments:"), magMomentEdit_);
+
+    updateSpinEnabled();
 }
 
 void SinglePointWizard::updateSpinEnabled()

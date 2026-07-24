@@ -27,6 +27,7 @@ enum class ColorGradient {
     Afmhot,
     Coolwarm, ///< diverging blue-white-red (potentials, signed fields)
     Rainbow,  ///< classic violet-to-red spectral ramp
+    Greys,    ///< perceptual light-to-dark grayscale (matplotlib "Greys")
 };
 
 namespace ColorMap {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validation benchmark for the GPAW optics pipeline on silicon + figure.
+"""Validation benchmark for the GPAW optics pipeline on silicon.
 
 Mirrors ``core::OpticsScriptGenerator`` and the "Simulation → Optics…" wizard:
 
@@ -10,11 +10,10 @@ Mirrors ``core::OpticsScriptGenerator`` and the "Simulation → Optics…" wizar
 
 It applies the same robustness the GUI generator uses (per-direction guard,
 non-finite scrubbing) and asserts a physically sane result (finite spectra,
-static ε₁(0) > 1, non-zero absorption), then saves a high-resolution
-ε₁(ω)/ε₂(ω) curve to the repository root as ``test_optics_silicon.png``.
+static ε₁(0) > 1, non-zero absorption).
 
 Skips cleanly (exit 0) without the GPAW response stack. Runs the DFT part in a
-temporary directory; the figure is written to the repo root.
+temporary directory.
 """
 import os
 import sys
@@ -25,18 +24,13 @@ ECUT_EV = 300.0
 KPTS = (6, 6, 6)          # a reasonably dense grid for the optical response
 XC = "PBE"
 LATTICE_A = 5.43          # diamond-cubic Si (Å)
-PLOT_MAX_EV = 12.0        # energy window shown in the figure
 BROADENING_EV = 0.1
-
-
-def _repo_root() -> str:
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 def _bootstrap_gpaw_env() -> None:
     """Re-exec under the GPAW conda env from ~/.calango/settings.json when the
     current interpreter (e.g. CTest's embedded python) has no GPAW, so the
-    benchmark really runs and writes its figure. No-op if GPAW is importable or
+    benchmark really runs.  No-op if GPAW is importable or
     no env is configured (main() then SKIPs cleanly)."""
     try:
         import gpaw  # noqa: F401
@@ -124,31 +118,6 @@ def main() -> int:
         assert float(eps1[0]) > 1.0, (
             f"static ε₁(0)={float(eps1[0]):.3f} is not > 1")
         assert float(eps2.max()) > 0.5, "ε₂(ω) shows no absorption"
-
-        try:
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-
-            fig, ax = plt.subplots(figsize=(7.0, 4.6), dpi=200)
-            ax.plot(frequencies, eps1, label=r"$\varepsilon_1(\omega)$",
-                    color="#1f6fd6", lw=1.8)
-            ax.plot(frequencies, eps2, label=r"$\varepsilon_2(\omega)$",
-                    color="#d64545", lw=1.8)
-            ax.axhline(0.0, color="#888", lw=0.6)
-            ax.set_xlabel(r"Photon energy $\hbar\omega$ (eV)")
-            ax.set_ylabel(r"Dielectric function $\varepsilon(\omega)$")
-            ax.set_title("Dielectric function — bulk Si (x-polarization)")
-            ax.set_xlim(0.0, PLOT_MAX_EV)
-            ax.legend()
-            ax.grid(alpha=0.3)
-            out = os.path.join(_repo_root(), "test_optics_silicon.png")
-            fig.tight_layout()
-            fig.savefig(out)
-            plt.close(fig)
-            print(f"Saved figure: {out}")
-        except Exception as exc:
-            print(f"NOTE: figure skipped (matplotlib unavailable: {exc})")
 
         print(f"PASS: silicon optics — ε₁(0)={float(eps1[0]):.3f}, "
               f"max ε₂={float(eps2.max()):.3f} over {len(frequencies)} points.")

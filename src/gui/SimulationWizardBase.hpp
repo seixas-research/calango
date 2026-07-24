@@ -10,6 +10,7 @@
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
+class QFormLayout;
 class QGroupBox;
 class QLabel;
 class QLineEdit;
@@ -18,6 +19,7 @@ class QPushButton;
 class QRadioButton;
 class QSpinBox;
 class QStackedWidget;
+class QVBoxLayout;
 
 namespace calango::gui {
 
@@ -151,6 +153,23 @@ protected:
     /// with symmetry off is the recommended baseline for an MLWF localization.
     virtual bool showsGpawSymmetryToggle() const { return false; }
 
+    /// When true a "Export Electron Density (.cube)" checkbox is shown in the
+    /// GPAW "Output & Exports" group. Only the Single-Point wizard exposes it.
+    virtual bool showsGpawDensityExport() const { return false; }
+
+    /// Hooks letting a subclass inject its own rows into the shared thematic
+    /// GPAW group boxes: convergence/smearing rows into "Electronic Convergence
+    /// & Smearing" and output rows (spin, magnetic moments) into "Output &
+    /// Exports". Used by the Single-Point wizard so its electronic-structure
+    /// controls sit in the right physical-domain group. Default: no rows.
+    virtual void buildConvergenceRows(QFormLayout*) {}
+    virtual void buildOutputRows(QFormLayout*) {}
+    /// Whether the subclass added any rows via the hooks above — drives the
+    /// visibility of the two groups for non-GPAW DFT engines (which otherwise
+    /// have nothing to show there).
+    virtual bool hasConvergenceExtras() const { return false; }
+    virtual bool hasOutputExtras() const { return false; }
+
     /// Fired when the DFT k-point grid changes, so a subclass can rescale a
     /// derived mesh default (e.g. the PDOS k-mesh at 2× the SCF grid).
     virtual void calculatorKgridChanged() {}
@@ -179,7 +198,11 @@ private Q_SLOTS:
 private:
     QWidget* buildCalculatorPage();
     QWidget* buildMaceGroup(QWidget* parent);
-    QWidget* buildGpawGroup(QWidget* parent);
+    /// Build the four thematic DFT/GPAW group boxes (Mode & Basis Set;
+    /// Brillouin Zone & k-Points; Electronic Convergence & Smearing; Output &
+    /// Exports) and add them to `layout`. Shared cutoff/k-points live in the
+    /// first two so a single set of widgets serves every DFT engine.
+    void buildDftGpawGroups(QWidget* parent, QVBoxLayout* layout);
     QWidget* buildReviewPage();
     void updateStage();
     /// Show only the MACE rows that apply to the selected model source.
@@ -207,8 +230,13 @@ private:
     QWidget* engineWidget_ = nullptr; ///< container for the engine-selector row
     QComboBox* calcCombo_ = nullptr;
 
-    // Per-calculator settings
-    QGroupBox* dftGroup_ = nullptr;
+    // Per-calculator settings. The DFT/GPAW controls are laid out in four
+    // thematic group boxes (see buildDftGpawGroups). Shared cutoff/k-points
+    // live in the first two, so a single widget set serves every DFT engine.
+    QGroupBox* modeBasisGroup_ = nullptr;  ///< Mode & Basis Set (+ cutoff, XC)
+    QGroupBox* bzGroup_ = nullptr;         ///< Brillouin Zone & k-Points
+    QGroupBox* convGroup_ = nullptr;       ///< Electronic Convergence & Smearing
+    QGroupBox* outputGroup_ = nullptr;     ///< Output & Exports
     /// "XC defaults to PBE (editable in Stage 4)" note — only meaningful for the
     /// script-template DFT backends; hidden for GPAW, which has its own XC combo.
     QLabel* dftXcNote_ = nullptr;
@@ -223,8 +251,7 @@ private:
     QPushButton* maceBrowseButton_ = nullptr;
     QLabel* maceModelPathHint_ = nullptr;
 
-    // Stage 3 — GPAW (shares cutoff/k-points with dftGroup_ above)
-    QGroupBox* gpawGroup_ = nullptr;
+    // GPAW controls (distributed across the four thematic groups above).
     QComboBox* gpawModeCombo_ = nullptr;
     QDoubleSpinBox* gpawGridSpacingSpin_ = nullptr;
     QComboBox* gpawBasisCombo_ = nullptr;
@@ -234,6 +261,9 @@ private:
     QDoubleSpinBox* gpawBetaSpin_ = nullptr;
     QSpinBox* gpawNmaxoldSpin_ = nullptr;
     QDoubleSpinBox* gpawWeightSpin_ = nullptr;
+    /// Container for the beta/nmaxold/weight row so it can be hidden as a unit
+    /// (its widgets sit in a sub-layout getWidgetPosition can't resolve).
+    QWidget* gpawMixerParamsRow_ = nullptr;
     /// Convergence thresholds are ~1e-8..1e-4, which a QDoubleSpinBox can
     /// only show as "0.000000040000" — plain line edits with a
     /// scientific-notation validator keep them readable and typable.
@@ -242,6 +272,9 @@ private:
     /// "Symmetry: off" — emits symmetry="off" (no point-group k-point
     /// reduction). Shown only when showsGpawSymmetryToggle() is true.
     QCheckBox* gpawSymmetryOffCheck_ = nullptr;
+    /// "Export Electron Density (.cube)" — shown only when
+    /// showsGpawDensityExport() is true (Single-Point).
+    QCheckBox* gpawDensityExportCheck_ = nullptr;
     QGroupBox* orcaGroup_ = nullptr;
     QComboBox* orcaMethodCombo_ = nullptr;
     QComboBox* orcaBasisCombo_ = nullptr;

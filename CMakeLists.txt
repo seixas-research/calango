@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.47
+    VERSION 26.7.48
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -365,6 +365,19 @@ qt_add_executable(calango
     src/gui/ElfDialog.cpp
     src/gui/WannierDialog.hpp
     src/gui/WannierDialog.cpp
+    src/gui/SinglePointViewer.hpp
+    src/gui/SinglePointViewer.cpp
+    src/gui/MlwfViewer.hpp
+    src/gui/MlwfViewer.cpp
+    src/gui/WannierInterpolationDialog.hpp
+    src/gui/WannierInterpolationDialog.cpp
+    src/gui/VolumetricStyle.hpp
+    src/gui/VolumetricPanel.hpp
+    src/gui/VolumetricPanel.cpp
+    src/gui/VolumetricMetadataDialog.hpp
+    src/gui/VolumetricMetadataDialog.cpp
+    src/gui/EditVolumetricRenderDialog.hpp
+    src/gui/EditVolumetricRenderDialog.cpp
     src/gui/LatticePlaneDialog.hpp
     src/gui/LatticePlaneDialog.cpp
     src/gui/CustomOverlayDialog.hpp
@@ -463,8 +476,10 @@ qt_add_resources(calango "icons"
         assets/.internal/icons/font-size-2.svg
         assets/.internal/icons/hard-drive-2-line.svg
         assets/.internal/icons/hashtag.svg
+        assets/.internal/icons/information-line.svg
         assets/.internal/icons/loader-4-line.svg
         assets/.internal/icons/magic-line.svg
+        assets/.internal/icons/palette-line.svg
         assets/.internal/icons/ram-line.svg
         assets/.internal/icons/ruler-2-line.svg
         assets/.internal/icons/scissors-cut-line.svg
@@ -821,22 +836,19 @@ if(CALANGO_BUILD_TESTS)
 
     # Native MLWF (Marzari-Vanderbilt) validation on bulk Si: GPAW SCF →
     # ase.dft.wannier localization, verifying the total Wannier spread Ω
-    # converges. Saves test_mlwf_silicon.png (per-function spread bar chart) at
-    # the repo root. Pure Python; self-skips (exit 0) without GPAW/Wannier.
+    # converges. Pure Python; self-skips (exit 0) without GPAW/Wannier.
     add_test(NAME wannier_silicon
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/wannier_silicon_benchmark.py)
 
     # ELF validation on bulk Si: GPAW SCF → gpaw.elf.ELF, verifying a finite
-    # 3D η ∈ [0,1] field. Saves test_elf_silicon.png (2D slice contour) at the
-    # repo root. Self-skips (exit 0) without GPAW/gpaw.elf.
+    # 3D η ∈ [0,1] field. Self-skips (exit 0) without GPAW/gpaw.elf.
     add_test(NAME elf_silicon
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/elf_silicon_benchmark.py)
 
     # Optics validation on bulk Si: GPAW SCF → NSCF → DielectricFunction,
-    # verifying ε₁/ε₂. Saves test_optics_silicon.png (ε₁(ω)/ε₂(ω) vs eV) at the
-    # repo root. Self-skips (exit 0) without the GPAW response stack.
+    # verifying ε₁/ε₂. Self-skips (exit 0) without the GPAW response stack.
     add_test(NAME optics_silicon
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/optics_silicon_benchmark.py)

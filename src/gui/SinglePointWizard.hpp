@@ -5,7 +5,7 @@
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
-class QGroupBox;
+class QFormLayout;
 class QLineEdit;
 class QSpinBox;
 
@@ -33,11 +33,17 @@ protected:
     {
         return tr("Calculator & Convergence Settings");
     }
-    QWidget* buildCalculatorExtras() override;
-    void updateCalculatorExtras(core::CalculatorKind kind) override;
-    /// Expose the GPAW "Symmetry: off" checkbox — a Single-Point run with
-    /// symmetry off is the recommended baseline for an MLWF localization.
+    /// The electronic controls fold into the shared thematic GPAW group boxes:
+    /// smearing + SCF tolerance/steps into "Electronic Convergence & Smearing",
+    /// spin polarization + magnetic moments into "Output & Exports".
+    void buildConvergenceRows(QFormLayout* form) override;
+    void buildOutputRows(QFormLayout* form) override;
+    bool hasConvergenceExtras() const override { return true; }
+    bool hasOutputExtras() const override { return true; }
+    /// Expose the GPAW "Symmetry: off" and "Export Electron Density" toggles —
+    /// a symmetry-off Single-Point is the recommended MLWF baseline.
     bool showsGpawSymmetryToggle() const override { return true; }
+    bool showsGpawDensityExport() const override { return true; }
     QString generateScript() const override;
     QString exportFileName() const override
     {
@@ -50,7 +56,6 @@ private Q_SLOTS:
 private:
     core::CalculatorConfig config() const;
 
-    QGroupBox* convergenceGroup_ = nullptr;
     QSpinBox* scfStepsSpin_ = nullptr;
     QDoubleSpinBox* scfTolSpin_ = nullptr;
     QCheckBox* spinCheck_ = nullptr;

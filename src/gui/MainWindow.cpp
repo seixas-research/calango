@@ -49,6 +49,9 @@
 #include "gui/OpticsWizard.hpp"
 #include "gui/OpticsResultsWindow.hpp"
 #include "gui/WannierDialog.hpp"
+#include "gui/MlwfViewer.hpp"
+#include "gui/SinglePointViewer.hpp"
+#include "gui/VolumetricPanel.hpp"
 #include "gui/WannierWizard.hpp"
 #include "gui/SymmetryDialog.hpp"
 #include "gui/VacfDialog.hpp"
@@ -140,7 +143,7 @@ constexpr std::size_t kMaxUndoDepth = 50;
 /// "Results" with a process selector, v5 = the "Lighting" dock renamed to
 /// the tabbed "Visual Effects" panel, v6 = zones 9/12 width-locked to the
 /// side columns and the branding card hidden by default).
-constexpr int kLayoutVersion = 6;
+constexpr int kLayoutVersion = 8;
 
 /// Painted icons for the frame-panel camera toolbar (icon-only buttons).
 /// Plane icons use the axes-triad colors: x red, y green, z blue.
@@ -855,6 +858,16 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showAdsorption);
     // Brillouin Zone Builder moved to the Build menu.
 
+    // ----- Results: dedicated viewers for completed calculations -----------
+    // Sits between Analysis and Modules. The viewers read the selected (or most
+    // recent) process's result files; they also open automatically when a run
+    // finishes.
+    QMenu* resultsMenu = menuBar()->addMenu(tr("&Results"));
+    resultsMenu->addAction(tr("&Single-Point Viewer…"),
+                           this, &MainWindow::showSinglePointViewer);
+    resultsMenu->addAction(tr("&MLWF Viewer…"),
+                           this, &MainWindow::showMlwfViewer);
+
     // ----- Modules: MLIP + Alloys tool families (between Analysis and Help) -
     // "Modules" gathers the machine-learning-potential workflow and the alloy
     // toolchain (cluster expansion, SQS, short-range order) that were formerly
@@ -929,26 +942,39 @@ void MainWindow::createMenusAndDocks()
     // brings it back.
     brandingDock->setVisible(false);
 
-    // Compact Process Manager between the branding card and Structure.
+    // Left column, top → bottom: Structure, Volumetric Data, then Processes.
+    // (Structure and its related Volumetric Data panel sit at the prominent top
+    // of the left column, directly under the branding card; the transient
+    // Processes monitor moves to the foot of the column.)
+    auto* infoDock = new QDockWidget(tr("Structure"), this); // zone 5
+    infoDock->setObjectName(QStringLiteral("structureDock"));
+    infoWidget_ = new StructureInfoWidget(infoDock);
+    infoDock->setWidget(infoWidget_);
+    splitDockWidget(brandingDock, infoDock, Qt::Vertical);
+    connect(infoWidget_, &StructureInfoWidget::editStructureRequested,
+            this, &MainWindow::editStructure);
+
+    // Zone 13 — "Volumetric Data": stacked directly below Zone 5 "Structure" in
+    // the left column. It renders 3D scalar fields (cube/xsf/CHGCAR) as
+    // isosurface / color-slice overlays on the main viewport.
+    auto* volumetricDock = new QDockWidget(tr("Volumetric Data"), this); // zone 13
+    volumetricDock->setObjectName(QStringLiteral("volumetricDock"));
+    volumetricPanel_ = new VolumetricPanel(viewport_, volumetricDock);
+    volumetricDock->setWidget(volumetricPanel_);
+    splitDockWidget(infoDock, volumetricDock, Qt::Vertical);
+
+    // Compact Process Manager at the foot of the left column.
     auto* processDock = new QDockWidget(tr("Processes"), this);
     processDock->setObjectName(QStringLiteral("processDock"));
     processPanel_ = new ProcessManagerPanel(processDock);
     processDock->setWidget(processPanel_);
-    splitDockWidget(brandingDock, processDock, Qt::Vertical);
+    splitDockWidget(volumetricDock, processDock, Qt::Vertical);
     connect(processPanel_, &ProcessManagerPanel::loadResultRequested,
             this, &MainWindow::onProcessResultRequested);
     connect(processPanel_, &ProcessManagerPanel::viewScriptRequested,
             this, &MainWindow::onViewScriptRequested);
     connect(processPanel_, &ProcessManagerPanel::deleteRequested,
             this, &MainWindow::onDeleteProcessRequested);
-
-    auto* infoDock = new QDockWidget(tr("Structure"), this); // zone 5
-    infoDock->setObjectName(QStringLiteral("structureDock"));
-    infoWidget_ = new StructureInfoWidget(infoDock);
-    infoDock->setWidget(infoWidget_);
-    splitDockWidget(processDock, infoDock, Qt::Vertical);
-    connect(infoWidget_, &StructureInfoWidget::editStructureRequested,
-            this, &MainWindow::editStructure);
 
     auto* reprDock = new QDockWidget(tr("Representation"), this); // zones 4 & 8
     reprDock->setObjectName(QStringLiteral("representationDock"));
@@ -1126,8 +1152,9 @@ void MainWindow::createMenusAndDocks()
     // zones also carry a hard minimum width; the middle zones (Results,
     // Remote Access) stay elastic and absorb every resize.
     constexpr int kColumnWidth = 290;
-    resizeDocks({brandingDock, processDock, infoDock},
-                {kColumnWidth, kColumnWidth, kColumnWidth}, Qt::Horizontal);
+    resizeDocks({brandingDock, infoDock, volumetricDock, processDock},
+                {kColumnWidth, kColumnWidth, kColumnWidth, kColumnWidth},
+                Qt::Horizontal);
     resizeDocks({reprDock}, {kColumnWidth}, Qt::Horizontal);
     for (QDockWidget* dock : {visualEffectsDock_, cellAxesDock}) {
         if (QWidget* panel = dock->widget())
@@ -1136,11 +1163,12 @@ void MainWindow::createMenusAndDocks()
             // they stay fully visible, and that must win over the column width.
             panel->setMinimumWidth(qMax(kColumnWidth, panel->minimumWidth()));
     }
-    // Left column heights: shrink the compact Structure summary (its ~7
-    // property rows fit comfortably) and hand the freed space to the
-    // Processes panel so live task lists / logs get more room.
-    resizeDocks({brandingDock, processDock, infoDock}, {150, 340, 240},
-                Qt::Vertical);
+    // Left column heights (top → bottom: Structure, Volumetric Data,
+    // Processes): keep the compact Structure summary small (its ~7 property
+    // rows fit comfortably) and hand the freed space to the Volumetric Data and
+    // Processes panels below it.
+    resizeDocks({brandingDock, infoDock, volumetricDock, processDock},
+                {150, 220, 300, 300}, Qt::Vertical);
     resizeDocks({visualEffectsDock_, jobDock_, remoteDock_, cellAxesDock},
                 {250, 250, 250, 250}, Qt::Vertical);
     resizeDocks({visualEffectsDock_, jobDock_, remoteDock_, cellAxesDock},
@@ -1161,8 +1189,9 @@ void MainWindow::createMenusAndDocks()
 
     viewMenu->addSeparator();
     viewMenu->addAction(brandingDock->toggleViewAction());
-    viewMenu->addAction(processDock->toggleViewAction());
     viewMenu->addAction(infoDock->toggleViewAction());
+    viewMenu->addAction(volumetricDock->toggleViewAction());
+    viewMenu->addAction(processDock->toggleViewAction());
     viewMenu->addAction(reprDock->toggleViewAction());
     viewMenu->addAction(cellAxesDock->toggleViewAction());
     viewMenu->addAction(visualEffectsDock_->toggleViewAction());
@@ -2759,6 +2788,121 @@ void MainWindow::openWannierResults(const QString& directory)
     dialog->loadResults(directory + QStringLiteral("/wannier.json"));
 }
 
+void MainWindow::openSinglePointResults(const QString& directory)
+{
+    auto* viewer = new SinglePointViewer(this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    if (!viewer->loadResults(directory + QStringLiteral("/single_point.json"))) {
+        delete viewer;
+        return;
+    }
+    viewer->show();
+}
+
+void MainWindow::registerWannierOrbitals(const QString& directory)
+{
+    if (!volumetricPanel_)
+        return;
+    QFile file(directory + QStringLiteral("/wannier.json"));
+    if (!file.open(QIODevice::ReadOnly))
+        return;
+    const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+    Document* doc = currentDocument();
+    const QString structLabel = (doc && doc->structure)
+        ? QString::fromStdString(doc->structure->chemicalFormula())
+        : QString();
+
+    // Prefer the cube filenames recorded in wannier.json; fall back to the
+    // conventional wannier_<n>.cube naming keyed off the centres count.
+    QStringList cubes;
+    for (const QJsonValue& c : root.value(QStringLiteral("cubes")).toArray())
+        cubes << c.toString();
+    if (cubes.isEmpty()) {
+        const int n = root.value(QStringLiteral("centers")).toArray().size();
+        for (int i = 0; i < n; ++i)
+            cubes << QStringLiteral("wannier_%1.cube").arg(i);
+    }
+    int index = 0;
+    for (const QString& name : cubes) {
+        if (name.isEmpty())
+            continue;
+        const QString path = QFileInfo(name).isAbsolute()
+            ? name
+            : directory + QLatin1Char('/') + name;
+        if (QFile::exists(path))
+            volumetricPanel_->registerResultFile(
+                path, tr("Wannier ψ%1").arg(index), structLabel);
+        ++index;
+    }
+}
+
+void MainWindow::openMlwfResults(const QString& directory)
+{
+    // Auto-register each Wannier orbital's real-space mesh in the Volumetric
+    // Data dock so it can be visualized on demand (spec: MLWF volume pipeline).
+    registerWannierOrbitals(directory);
+
+    // The MLWF viewer overlays orbital isosurfaces on the main viewport and can
+    // launch a Wannier interpolation (bands + PDOS), which runs through the
+    // normal local-job path (its bands.json/pdos.json then open the band/PDOS
+    // viewer).
+    Document* doc = currentDocument();
+    auto* viewer = new MlwfViewer(doc ? doc->structure : nullptr, viewport_,
+                                  this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    connect(viewer, &MlwfViewer::runRequested, this,
+            [this](const QString& script, const QString& label) {
+                if (jobRunner_->isRunning()) {
+                    QMessageBox::information(
+                        this, label,
+                        tr("A calculation is already running — kill it first."));
+                    return;
+                }
+                runScript(script,
+                          QString::fromStdString(
+                              pybridge::PythonEngine::instance().executable()),
+                          label, /*expectFrames=*/false);
+            });
+    viewer->show();
+    viewer->loadResults(directory + QStringLiteral("/wannier.json"));
+}
+
+QString MainWindow::selectedProcessDirectory() const
+{
+    // The process the Results tabs currently track, else the most recent run.
+    const auto it = processRecords_.find(selectedProcessId_);
+    if (it != processRecords_.end() && !it->second.directory.isEmpty())
+        return it->second.directory;
+    return lastJobDir_;
+}
+
+void MainWindow::showSinglePointViewer()
+{
+    const QString dir = selectedProcessDirectory();
+    if (dir.isEmpty()
+        || !QFile::exists(dir + QStringLiteral("/single_point.json"))) {
+        QMessageBox::information(
+            this, tr("Single-Point Viewer"),
+            tr("Select a completed Single-Point calculation in the Processes "
+               "panel first (its results include single_point.json)."));
+        return;
+    }
+    openSinglePointResults(dir);
+}
+
+void MainWindow::showMlwfViewer()
+{
+    const QString dir = selectedProcessDirectory();
+    if (dir.isEmpty() || !QFile::exists(dir + QStringLiteral("/wannier.json"))) {
+        QMessageBox::information(
+            this, tr("MLWF Viewer"),
+            tr("Select a completed Maximally Localized Wannier Functions run in "
+               "the Processes panel first (its results include wannier.json)."));
+        return;
+    }
+    openMlwfResults(dir);
+}
+
 void MainWindow::onDeleteProcessRequested(int id)
 {
     const auto it = processRecords_.find(id);
@@ -2868,6 +3012,21 @@ void MainWindow::onProcessResultRequested(const QString& directory)
     }
     if (QFile::exists(directory + QStringLiteral("/optics.json"))) {
         openOpticsResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/wannier.json"))) {
+        openMlwfResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/elf.cube"))) {
+        if (volumetricPanel_)
+            volumetricPanel_->registerResultFile(
+                directory + QStringLiteral("/elf.cube"), tr("ELF η(r)"));
+        openElfResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/single_point.json"))) {
+        openSinglePointResults(directory);
         return;
     }
     for (const auto* candidate :
@@ -4417,14 +4576,24 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         openOpticsResults(lastJobDir_);
         return;
     }
-    // ELF runs: open the isosurface / slice viewer on the produced grid.
+    // ELF runs: register the grid in the Volumetric Data dock, then open the
+    // isosurface / slice viewer on it.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/elf.cube"))) {
+        if (volumetricPanel_)
+            volumetricPanel_->registerResultFile(
+                lastJobDir_ + QStringLiteral("/elf.cube"), tr("ELF η(r)"));
         openElfResults(lastJobDir_);
         return;
     }
-    // MLWF runs: open the centres table + orbital viewer.
+    // MLWF runs: open the dedicated MLWF viewer (centres/spreads table, orbital
+    // isosurface overlays on the viewport, band-interpolation launcher).
     if (QFile::exists(lastJobDir_ + QStringLiteral("/wannier.json"))) {
-        openWannierResults(lastJobDir_);
+        openMlwfResults(lastJobDir_);
+        return;
+    }
+    // Single-point runs: open the dedicated summary viewer.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/single_point.json"))) {
+        openSinglePointResults(lastJobDir_);
         return;
     }
 

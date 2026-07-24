@@ -41,15 +41,10 @@ LATTICE_A = 5.43
 N_WANNIER = 4
 
 
-def _repo_root() -> str:
-    """Absolute path to the repository root (this file lives in tests/)."""
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-
-
 def _bootstrap_gpaw_env() -> None:
     """Re-exec under the GPAW conda env from ~/.calango/settings.json when the
     current interpreter (e.g. CTest's embedded python) has no GPAW, so the
-    benchmark really runs and writes its figure. No-op if GPAW is importable or
+    benchmark really runs.  No-op if GPAW is importable or
     no env is configured (main() then SKIPs cleanly)."""
     try:
         import gpaw  # noqa: F401
@@ -147,30 +142,6 @@ def main() -> int:
         }
         with open("wannier.json", "w") as handle:
             json.dump(result, handle, indent=2)
-
-        # High-resolution validation figure at the repository root: a bar chart
-        # of the per-function Wannier spreads Ω_n across the WF index.
-        try:
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-
-            fig, ax = plt.subplots(figsize=(6.5, 4.2), dpi=200)
-            idx = list(range(len(spreads)))
-            ax.bar(idx, spreads, color="#3b7dd8", edgecolor="#1f3a66")
-            ax.set_xlabel("Wannier function index $n$")
-            ax.set_ylabel(r"Spread $\Omega_n$ (Å$^2$)")
-            ax.set_title(r"Maximally Localized Wannier spreads — bulk Si"
-                         f"  ($\\Omega={omega:.3f}$)")
-            ax.set_xticks(idx)
-            ax.grid(axis="y", alpha=0.3)
-            out = os.path.join(_repo_root(), "test_mlwf_silicon.png")
-            fig.tight_layout()
-            fig.savefig(out)
-            plt.close(fig)
-            print(f"Saved figure: {out}")
-        except Exception as exc:
-            print(f"NOTE: figure skipped (matplotlib unavailable: {exc})")
 
         # --- Verification -------------------------------------------------
         assert math.isfinite(initial_functional), "initial functional not finite"

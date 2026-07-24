@@ -139,6 +139,19 @@ constexpr std::array<Rgb, 9> kRainbow{{
     {1.000f, 0.000f, 0.000f},
 }};
 
+// matplotlib "Greys": near-white at t=0 to near-black at t=1.
+constexpr std::array<Rgb, 9> kGreys{{
+    {1.000f, 1.000f, 1.000f},
+    {0.941f, 0.941f, 0.941f},
+    {0.851f, 0.851f, 0.851f},
+    {0.741f, 0.741f, 0.741f},
+    {0.588f, 0.588f, 0.588f},
+    {0.451f, 0.451f, 0.451f},
+    {0.322f, 0.322f, 0.322f},
+    {0.145f, 0.145f, 0.145f},
+    {0.000f, 0.000f, 0.000f},
+}};
+
 const std::array<Rgb, 9>& anchors(ColorGradient gradient)
 {
     switch (gradient) {
@@ -160,6 +173,8 @@ const std::array<Rgb, 9>& anchors(ColorGradient gradient)
         return kCoolwarm;
     case ColorGradient::Rainbow:
         return kRainbow;
+    case ColorGradient::Greys:
+        return kGreys;
     case ColorGradient::Viridis:
         break;
     }

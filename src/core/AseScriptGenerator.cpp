@@ -337,11 +337,51 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                 << "#   smearing           : " << toString(c.smearing)
                 << " (width " << c.smearingWidthEv << " eV)\n";
         }
-        out << "energy = atoms.get_potential_energy()\n"
-               "fmax = abs(atoms.get_forces()).max()\n"
+        out << "import numpy as _np\n"
+               "import json\n"
+               "energy = atoms.get_potential_energy()\n"
+               "_forces = _np.asarray(atoms.get_forces(), dtype=float)\n"
+               "_fnorms = _np.linalg.norm(_forces, axis=1) if _forces.size "
+               "else _np.zeros(0)\n"
+               "fmax = float(_fnorms.max()) if _fnorms.size else 0.0\n"
+               "_fmax_atom = int(_fnorms.argmax()) if _fnorms.size else -1\n"
                "_calango_log.metric(0, energy=energy, max_force=fmax)\n"
                "print(f\"CALANGO_RESULT energy_eV={energy:.6f}\", flush=True)\n"
-               "print(f\"CALANGO_RESULT fmax_eV_per_A={fmax:.6f}\", flush=True)\n";
+               "print(f\"CALANGO_RESULT fmax_eV_per_A={fmax:.6f}\", flush=True)\n"
+               "# Fermi level: defined for periodic / smeared DFT; many\n"
+               "# molecular or classical calculators do not expose one.\n"
+               "try:\n"
+               "    _fermi = float(atoms.calc.get_fermi_level())\n"
+               "except Exception:\n"
+               "    _fermi = None\n"
+               "# SCF iteration count, where the backend reports it.\n"
+               "try:\n"
+               "    _nscf = int(atoms.calc.get_number_of_iterations())\n"
+               "except Exception:\n"
+               "    _nscf = None\n";
+        // 1 Hartree = 27.211386245988 eV (CODATA). The convergence targets the
+        // wizard collected are echoed into the summary so the viewer can show
+        // the tolerance the run was held to.
+        out << "_summary = {\n"
+               "    \"energy_eV\": float(energy),\n"
+               "    \"energy_Hartree\": float(energy) / 27.211386245988,\n"
+               "    \"fermi_eV\": _fermi,\n"
+               "    \"fmax_eV_per_A\": fmax,\n"
+               "    \"fmax_atom\": _fmax_atom,\n"
+               "    \"natoms\": int(len(atoms)),\n"
+               "    \"forces_eV_per_A\": [[float(v) for v in row] "
+               "for row in _forces],\n"
+               "    \"scf\": {\n"
+               "        \"completed\": True,\n"
+               "        \"iterations\": _nscf,\n"
+            << "        \"energy_tol_eV\": " << c.scfEnergyTolEv << ",\n"
+            << "        \"max_steps\": " << c.scfMaxSteps << ",\n"
+               "    },\n"
+               "}\n"
+               "with open(\"single_point.json\", \"w\") as _fh:\n"
+               "    json.dump(_summary, _fh, indent=2)\n"
+               "print(\"CALANGO_RESULT single_point=single_point.json\", "
+               "flush=True)\n";
         if (c.calculator == CalculatorKind::Gpaw) {
             // Save the converged charge density so a later Electronic Structure
             // run can load it and evaluate bands/PDOS non-self-consistently
@@ -350,6 +390,21 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
             out << "atoms.calc.write(\"single_point.gpw\", mode=\"all\")\n"
                    "print(\"CALANGO_RESULT density_file=single_point.gpw\", "
                    "flush=True)\n";
+            if (c.gpawExportDensity) {
+                // All-electron density → a standard Gaussian cube. The new GPAW
+                // engine returns a (possibly distributed) array-like; normalize
+                // it to a contiguous float64 grid before write_cube.
+                out << "_ae_density = atoms.calc.get_all_electron_density("
+                       "gridrefinement=2)\n"
+                       "_ae_density = _np.ascontiguousarray(\n"
+                       "    _np.asarray(getattr(_ae_density, \"data\", "
+                       "_ae_density), dtype=float))\n"
+                       "from ase.io.cube import write_cube\n"
+                       "with open(\"density.cube\", \"w\") as _dfh:\n"
+                       "    write_cube(_dfh, atoms, data=_ae_density)\n"
+                       "print(\"CALANGO_RESULT density_cube=density.cube\", "
+                       "flush=True)\n";
+            }
         }
         break;
 

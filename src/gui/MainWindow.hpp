@@ -35,6 +35,7 @@ class MetricPlotWidget;
 class ProcessManagerPanel;
 class RemoteAccessPanel;
 class StructureInfoWidget;
+class VolumetricPanel;
 class SystemStatusBar;
 class TimelineWidget;
 class ViewportWidget;
@@ -140,6 +141,24 @@ private Q_SLOTS:
     void openElfResults(const QString& directory);
     /// Open the MLWF centres table + orbital viewer for a finished job dir.
     void openWannierResults(const QString& directory);
+    /// Open the dedicated Single-Point Viewer on a finished job directory
+    /// (reads its single_point.json summary).
+    void openSinglePointResults(const QString& directory);
+    /// Open the dedicated MLWF Viewer (viewport orbital overlays + Wannier
+    /// interpolation launcher) on a finished job directory.
+    void openMlwfResults(const QString& directory);
+    /// Register each Wannier orbital cube from a finished MLWF job's
+    /// wannier.json into the Volumetric Data dock's "Data" tab.
+    void registerWannierOrbitals(const QString& directory);
+    /// Results menu → "Single-Point Viewer…": open the viewer on the selected
+    /// (or most recent) completed Single-Point process.
+    void showSinglePointViewer();
+    /// Results menu → "MLWF Viewer…": open the viewer on the selected (or most
+    /// recent) completed MLWF process.
+    void showMlwfViewer();
+    /// Directory of the process the Results tabs track, else the most recent
+    /// run — the default target for the Results-menu viewers.
+    QString selectedProcessDirectory() const;
     /// "Load Result" from the Process panel: band data, trajectory or
     /// final structure — whatever the task directory contains.
     void onProcessResultRequested(const QString& directory);
@@ -337,6 +356,7 @@ private:
     QMenu* recentMenu_ = nullptr; ///< File → Open → Open Recent (dynamic)
     QComboBox* processSelector_ = nullptr; ///< Results-panel process dropdown
     StructureInfoWidget* infoWidget_ = nullptr;
+    VolumetricPanel* volumetricPanel_ = nullptr; ///< zone 13 (Volumetric Data)
     JobLogWidget* jobLogWidget_ = nullptr;
     MetricPlotWidget* energyPlot_ = nullptr;
     MetricPlotWidget* temperaturePlot_ = nullptr;

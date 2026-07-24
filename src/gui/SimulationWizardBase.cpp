@@ -174,38 +174,11 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     calcSettingsHint_->setWordWrap(true);
     layout->addWidget(calcSettingsHint_);
 
-    dftGroup_ = new QGroupBox(tr("DFT settings"), page);
-    auto* dftForm = new QFormLayout(dftGroup_);
-    cutoffSpin_ = new QDoubleSpinBox(dftGroup_);
-    cutoffSpin_->setRange(100.0, 2000.0);
-    cutoffSpin_->setValue(500.0);
-    cutoffSpin_->setSuffix(tr(" eV"));
-    dftForm->addRow(tr("Plane-wave cutoff:"), cutoffSpin_);
-    auto* kptRow = new QHBoxLayout;
-    for (auto*& spin : kptSpins_) {
-        spin = new QSpinBox(dftGroup_);
-        spin->setRange(1, 64);
-        spin->setValue(7);
-        kptRow->addWidget(spin);
-        connect(spin, &QSpinBox::valueChanged, this, [this] {
-            calculatorKgridChanged();
-            refreshPreview();
-        });
-    }
-    dftForm->addRow(tr("k-point grid:"), kptRow);
-    connect(cutoffSpin_, &QDoubleSpinBox::valueChanged, this,
-            [this] { refreshPreview(); });
-    // Only the script-template DFT backends (Espresso/VASP/Siesta) edit XC in
-    // the generated script; GPAW exposes an XC dropdown in its own group, so
-    // this note is hidden when GPAW is selected (see updateCalculatorEnabled).
-    dftXcNote_ = new QLabel(
-        tr("XC functional defaults to PBE in the script (editable in Stage 4)."),
-        dftGroup_);
-    dftForm->addRow(dftXcNote_);
-    layout->addWidget(dftGroup_);
-
     layout->addWidget(buildMaceGroup(page));
-    layout->addWidget(buildGpawGroup(page));
+    // Thematic DFT/GPAW group boxes (Mode & Basis Set; Brillouin Zone &
+    // k-Points; Electronic Convergence & Smearing; Output & Exports). Shared
+    // cutoff/k-points live in the first two groups.
+    buildDftGpawGroups(page, layout);
 
     // Shown only when the cutoff/XC/mode are inherited from a baseline SCF
     // (Electronic Structure wizard); hidden otherwise.
@@ -353,13 +326,14 @@ void SimulationWizardBase::updateMaceRows()
                  "checkpoint exactly; float32 is roughly twice as fast."));
 }
 
-QWidget* SimulationWizardBase::buildGpawGroup(QWidget* parent)
+void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
+                                              QVBoxLayout* layout)
 {
-    gpawGroup_ = new QGroupBox(tr("GPAW settings"), parent);
-    auto* form = new QFormLayout(gpawGroup_);
+    // ===== 1. Mode & Basis Set ============================================
+    modeBasisGroup_ = new QGroupBox(tr("Mode & Basis Set"), parent);
+    auto* modeForm = new QFormLayout(modeBasisGroup_);
 
-    gpawModeCombo_ = new QComboBox(gpawGroup_);
-    // Order matches core::GpawMode.
+    gpawModeCombo_ = new QComboBox(modeBasisGroup_);
     gpawModeCombo_->addItem(tr("FD — finite difference (real-space grid)"));
     gpawModeCombo_->addItem(tr("PW — plane waves"));
     gpawModeCombo_->addItem(tr("LCAO — atomic-orbital basis"));
@@ -367,30 +341,37 @@ QWidget* SimulationWizardBase::buildGpawGroup(QWidget* parent)
     gpawModeCombo_->setToolTip(
         tr("FD: robust for molecules and slabs, no cutoff to converge.\n"
            "PW: the usual choice for periodic solids (uses the plane-wave "
-           "cutoff from the DFT settings above).\n"
-           "LCAO: fastest and lightest, least accurate — good for large "
-           "systems and pre-relaxation."));
-    form->addRow(tr("Mode:"), gpawModeCombo_);
+           "cutoff below).\n"
+           "LCAO: fastest and lightest, least accurate."));
+    modeForm->addRow(tr("Mode:"), gpawModeCombo_);
 
-    gpawGridSpacingSpin_ = new QDoubleSpinBox(gpawGroup_);
+    // Plane-wave cutoff — shared with the other DFT engines (their PW cutoff).
+    cutoffSpin_ = new QDoubleSpinBox(modeBasisGroup_);
+    cutoffSpin_->setRange(100.0, 2000.0);
+    cutoffSpin_->setValue(500.0);
+    cutoffSpin_->setSuffix(tr(" eV"));
+    modeForm->addRow(tr("Plane-wave cutoff:"), cutoffSpin_);
+    connect(cutoffSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+
+    gpawGridSpacingSpin_ = new QDoubleSpinBox(modeBasisGroup_);
     gpawGridSpacingSpin_->setRange(0.05, 0.50);
     gpawGridSpacingSpin_->setDecimals(3);
     gpawGridSpacingSpin_->setSingleStep(0.01);
     gpawGridSpacingSpin_->setValue(0.20);
     gpawGridSpacingSpin_->setSuffix(tr(" Å"));
     gpawGridSpacingSpin_->setToolTip(
-        tr("Real-space grid spacing h (FD mode). Smaller is more accurate and "
-           "more expensive; 0.18–0.20 Å is a typical converged value."));
-    form->addRow(tr("Grid spacing h:"), gpawGridSpacingSpin_);
+        tr("Real-space grid spacing h (FD mode). 0.18–0.20 Å is typical."));
+    modeForm->addRow(tr("Grid spacing h:"), gpawGridSpacingSpin_);
 
-    gpawBasisCombo_ = new QComboBox(gpawGroup_);
+    gpawBasisCombo_ = new QComboBox(modeBasisGroup_);
     gpawBasisCombo_->setEditable(true);
     gpawBasisCombo_->addItems({QStringLiteral("dzp"), QStringLiteral("dz"),
                                QStringLiteral("sz"), QStringLiteral("szp")});
-    form->addRow(tr("LCAO basis:"), gpawBasisCombo_);
+    modeForm->addRow(tr("LCAO basis:"), gpawBasisCombo_);
 
-    gpawXcCombo_ = new QComboBox(gpawGroup_);
-    gpawXcCombo_->setEditable(true); // GPAW accepts many more than we list
+    gpawXcCombo_ = new QComboBox(modeBasisGroup_);
+    gpawXcCombo_->setEditable(true);
     gpawXcCombo_->addItems({QStringLiteral("PBE"), QStringLiteral("LDA"),
                             QStringLiteral("revPBE"), QStringLiteral("RPBE"),
                             QStringLiteral("PBEsol"), QStringLiteral("HSE06"),
@@ -399,10 +380,62 @@ QWidget* SimulationWizardBase::buildGpawGroup(QWidget* parent)
     gpawXcCombo_->setToolTip(
         tr("The hybrids (HSE06, B3LYP) and meta-GGAs (SCAN, r2SCAN) need a "
            "GPAW build with libxc, and are far more expensive than the GGAs."));
-    form->addRow(tr("XC functional:"), gpawXcCombo_);
+    modeForm->addRow(tr("XC functional:"), gpawXcCombo_);
 
-    gpawEigensolverCombo_ = new QComboBox(gpawGroup_);
-    // Order matches core::GpawEigensolver.
+    // For the script-template DFT backends (Espresso/VASP/Siesta) XC is edited
+    // in the generated script; shown for them, hidden for GPAW.
+    dftXcNote_ = new QLabel(
+        tr("XC functional defaults to PBE in the script (editable in Stage 4)."),
+        modeBasisGroup_);
+    dftXcNote_->setWordWrap(true);
+    modeForm->addRow(dftXcNote_);
+    layout->addWidget(modeBasisGroup_);
+
+    // ===== 2. Brillouin Zone & k-Points ===================================
+    bzGroup_ = new QGroupBox(tr("Brillouin Zone & k-Points"), parent);
+    auto* bzForm = new QFormLayout(bzGroup_);
+
+    auto* kptRow = new QHBoxLayout;
+    for (int i = 0; i < 3; ++i) {
+        kptSpins_[i] = new QSpinBox(bzGroup_);
+        kptSpins_[i]->setRange(1, 64);
+        kptSpins_[i]->setValue(7);
+        kptRow->addWidget(kptSpins_[i]);
+        if (i < 2)
+            kptRow->addWidget(new QLabel(QStringLiteral("×"), bzGroup_));
+        connect(kptSpins_[i], &QSpinBox::valueChanged, this, [this] {
+            calculatorKgridChanged();
+            refreshPreview();
+        });
+    }
+    kptRow->addStretch(1);
+    bzForm->addRow(tr("k-point grid (Monkhorst-Pack):"), kptRow);
+
+    // "Symmetry: off" — GPAW only, and only when the wizard opts in
+    // (Single-Point): a symmetry-off run is the recommended MLWF baseline.
+    gpawSymmetryOffCheck_ = new QCheckBox(
+        tr("Symmetry: off  (symmetry=\"off\")"), bzGroup_);
+    gpawSymmetryOffCheck_->setToolTip(
+        tr("Disable point-group symmetry reduction of the k-point set — sample "
+           "the full, unsymmetrized Brillouin zone (required when the "
+           "wavefunctions feed a Maximally Localized Wannier Functions run)."));
+    connect(gpawSymmetryOffCheck_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
+    if (showsGpawSymmetryToggle())
+        bzForm->addRow(tr("k-point symmetry:"), gpawSymmetryOffCheck_);
+    else
+        gpawSymmetryOffCheck_->hide();
+    layout->addWidget(bzGroup_);
+
+    // ===== 3. Electronic Convergence & Smearing ===========================
+    convGroup_ = new QGroupBox(tr("Electronic Convergence & Smearing"), parent);
+    auto* convForm = new QFormLayout(convGroup_);
+
+    // Subclass smearing / SCF rows first (e.g. Single-point's Fermi-Dirac /
+    // Gaussian smearing and SCF tolerance / max steps).
+    buildConvergenceRows(convForm);
+
+    gpawEigensolverCombo_ = new QComboBox(convGroup_);
     gpawEigensolverCombo_->addItems({QStringLiteral("davidson"),
                                      QStringLiteral("cg"),
                                      QStringLiteral("rmm-diis"),
@@ -412,60 +445,55 @@ QWidget* SimulationWizardBase::buildGpawGroup(QWidget* parent)
            "cg: slower but very stable — try it when the SCF oscillates.\n"
            "rmm-diis: cheapest per step for large metallic systems.\n"
            "direct: exact diagonalization (LCAO / small systems)."));
-    form->addRow(tr("Eigensolver:"), gpawEigensolverCombo_);
+    convForm->addRow(tr("Eigensolver:"), gpawEigensolverCombo_);
 
-    // -- Density mixing ----------------------------------------------------
-    gpawMixerCombo_ = new QComboBox(gpawGroup_);
-    // Order matches core::GpawMixerKind.
+    gpawMixerCombo_ = new QComboBox(convGroup_);
     gpawMixerCombo_->addItems({QStringLiteral("Mixer"), QStringLiteral("MixerSum"),
                                QStringLiteral("MixerDif")});
     gpawMixerCombo_->setToolTip(
         tr("Mixer: non-magnetic systems.\n"
            "MixerSum: spin-polarized — mixes the total density.\n"
-           "MixerDif: spin-polarized — mixes total density and magnetization "
-           "separately (best for systems whose moment is hard to converge)."));
-    form->addRow(tr("Density mixer:"), gpawMixerCombo_);
+           "MixerDif: spin-polarized — total density + magnetization "
+           "separately."));
+    convForm->addRow(tr("Density mixer:"), gpawMixerCombo_);
 
-    gpawBetaSpin_ = new QDoubleSpinBox(gpawGroup_);
+    gpawBetaSpin_ = new QDoubleSpinBox(convGroup_);
     gpawBetaSpin_->setRange(0.001, 1.0);
     gpawBetaSpin_->setDecimals(3);
     gpawBetaSpin_->setSingleStep(0.01);
     gpawBetaSpin_->setValue(0.05);
     gpawBetaSpin_->setToolTip(
-        tr("Linear mixing (damping) parameter. Lower is more stable and "
-           "slower; metals and magnetic systems often need 0.02–0.05."));
-    gpawNmaxoldSpin_ = new QSpinBox(gpawGroup_);
+        tr("Linear mixing (damping) parameter. Metals and magnetic systems "
+           "often need 0.02–0.05."));
+    gpawNmaxoldSpin_ = new QSpinBox(convGroup_);
     gpawNmaxoldSpin_->setRange(1, 20);
     gpawNmaxoldSpin_->setValue(5);
     gpawNmaxoldSpin_->setToolTip(
         tr("Number of previous densities kept for the Pulay mixing history."));
-    gpawWeightSpin_ = new QDoubleSpinBox(gpawGroup_);
+    gpawWeightSpin_ = new QDoubleSpinBox(convGroup_);
     gpawWeightSpin_->setRange(1.0, 500.0);
     gpawWeightSpin_->setDecimals(1);
     gpawWeightSpin_->setValue(50.0);
     gpawWeightSpin_->setToolTip(
-        tr("Metric weight damping long-wavelength charge sloshing. Larger "
-           "helps big or metallic cells converge."));
-    auto* mixerRow = new QHBoxLayout;
-    mixerRow->addWidget(new QLabel(tr("beta"), gpawGroup_));
+        tr("Metric weight damping long-wavelength charge sloshing."));
+    gpawMixerParamsRow_ = new QWidget(convGroup_);
+    auto* mixerRow = new QHBoxLayout(gpawMixerParamsRow_);
+    mixerRow->setContentsMargins(0, 0, 0, 0);
+    mixerRow->addWidget(new QLabel(tr("beta"), gpawMixerParamsRow_));
     mixerRow->addWidget(gpawBetaSpin_);
-    mixerRow->addWidget(new QLabel(tr("nmaxold"), gpawGroup_));
+    mixerRow->addWidget(new QLabel(tr("nmaxold"), gpawMixerParamsRow_));
     mixerRow->addWidget(gpawNmaxoldSpin_);
-    mixerRow->addWidget(new QLabel(tr("weight"), gpawGroup_));
+    mixerRow->addWidget(new QLabel(tr("weight"), gpawMixerParamsRow_));
     mixerRow->addWidget(gpawWeightSpin_);
     mixerRow->addStretch(1);
-    form->addRow(tr("Mixer parameters:"), mixerRow);
+    convForm->addRow(tr("Mixer parameters:"), gpawMixerParamsRow_);
 
-    // -- Convergence -------------------------------------------------------
-    // Scientific notation throughout: these live at 1e-8..1e-4, where a
-    // fixed-decimal spin box is unreadable and unusable.
     const auto toleranceEdit = [this](double initial, double minimum,
                                       double maximum, const QString& tip) {
-        auto* edit = new QLineEdit(QString::number(initial, 'g', 6), gpawGroup_);
+        auto* edit =
+            new QLineEdit(QString::number(initial, 'g', 6), convGroup_);
         auto* validator = new QDoubleValidator(minimum, maximum, 12, edit);
         validator->setNotation(QDoubleValidator::ScientificNotation);
-        // GPAW's own docs write these as 4e-8 / 1e-4; the C locale keeps the
-        // typed text and the generated Python identical.
         validator->setLocale(QLocale::c());
         edit->setValidator(validator);
         edit->setToolTip(tip);
@@ -475,40 +503,35 @@ QWidget* SimulationWizardBase::buildGpawGroup(QWidget* parent)
         4e-8, 1e-12, 1e-2,
         tr("GPAW convergence['eigenstates'] — integrated eigenstate residual, "
            "in eV² per valence electron (e.g. 4e-8)."));
-    form->addRow(tr("Eigenstate tolerance:"), gpawEigenTolEdit_);
-
+    convForm->addRow(tr("Eigenstate tolerance:"), gpawEigenTolEdit_);
     gpawDensityTolEdit_ = toleranceEdit(
         1e-4, 1e-9, 1e-1,
         tr("GPAW convergence['density'] — change in the density integrated "
            "over the cell, in electrons per valence electron (e.g. 1e-4)."));
-    form->addRow(tr("Density tolerance:"), gpawDensityTolEdit_);
+    convForm->addRow(tr("Density tolerance:"), gpawDensityTolEdit_);
+    layout->addWidget(convGroup_);
 
-    // -- k-point symmetry --------------------------------------------------
-    // Only meaningful for wizards that opt in (Single-Point): a Single-Point
-    // run with symmetry off is the recommended baseline for an MLWF
-    // localization, which needs the full (unfolded) Brillouin zone.
-    gpawSymmetryOffCheck_ = new QCheckBox(
-        tr("Symmetry: off  (symmetry=\"off\")"), gpawGroup_);
-    gpawSymmetryOffCheck_->setToolTip(
-        tr("Disable point-group symmetry reduction of the k-point set. GPAW "
-           "folds the k-points by symmetry by default; turn this off to sample "
-           "the full, unsymmetrized Brillouin zone — required when the "
-           "wavefunctions feed a Maximally Localized Wannier Functions run."));
-    connect(gpawSymmetryOffCheck_, &QCheckBox::toggled, this,
+    // ===== 4. Output & Exports ============================================
+    outputGroup_ = new QGroupBox(tr("Output & Exports"), parent);
+    auto* outForm = new QFormLayout(outputGroup_);
+
+    // Subclass output rows first (spin polarization, magnetic moments).
+    buildOutputRows(outForm);
+
+    gpawDensityExportCheck_ = new QCheckBox(
+        tr("Export Electron Density (.cube)"), outputGroup_);
+    gpawDensityExportCheck_->setToolTip(
+        tr("After the SCF, write the all-electron density to density.cube "
+           "(a standard Gaussian cube volumetric file)."));
+    connect(gpawDensityExportCheck_, &QCheckBox::toggled, this,
             [this] { refreshPreview(); });
-    // The control only makes sense for the Single-Point wizard; when not opted
-    // in the checkbox still exists (baseCalculatorConfig reads it, harmlessly
-    // unchecked) but no row is added so no stray label appears.
-    if (showsGpawSymmetryToggle())
-        form->addRow(tr("k-point symmetry:"), gpawSymmetryOffCheck_);
+    if (showsGpawDensityExport())
+        outForm->addRow(tr("Density export:"), gpawDensityExportCheck_);
     else
-        gpawSymmetryOffCheck_->hide();
+        gpawDensityExportCheck_->hide();
+    layout->addWidget(outputGroup_);
 
-    form->addRow(new QLabel(
-        tr("The plane-wave cutoff, k-point grid, SCF iteration cap and "
-           "smearing come from the DFT settings above."),
-        gpawGroup_));
-
+    // -- Live preview wiring for the GPAW controls -------------------------
     connect(gpawModeCombo_, &QComboBox::currentIndexChanged, this, [this] {
         updateGpawRows();
         refreshPreview();
@@ -530,7 +553,6 @@ QWidget* SimulationWizardBase::buildGpawGroup(QWidget* parent)
             [this] { refreshPreview(); });
 
     updateGpawRows();
-    return gpawGroup_;
 }
 
 void SimulationWizardBase::updateGpawRows()
@@ -539,7 +561,8 @@ void SimulationWizardBase::updateGpawRows()
     const auto mode = static_cast<core::GpawMode>(gpawModeCombo_->currentIndex());
     const bool fd = mode == core::GpawMode::FiniteDifference;
     const bool lcao = mode == core::GpawMode::Lcao;
-    auto* form = qobject_cast<QFormLayout*>(gpawGroup_->layout());
+    // Grid spacing (FD) and LCAO basis live in the "Mode & Basis Set" group.
+    auto* form = qobject_cast<QFormLayout*>(modeBasisGroup_->layout());
     if (!form)
         return;
     const auto setRowVisible = [form](QWidget* field, bool visible) {
@@ -610,12 +633,16 @@ void SimulationWizardBase::updateCalculatorEnabled()
     // A wizard that locks the engine (Electronic Structure) hides the entire
     // standard calculator chrome — only its buildCalculatorExtras() content
     // (baseline + PDOS + k-path) is shown.
+    const auto setGroups = [this](bool v) {
+        for (QGroupBox* g : {modeBasisGroup_, bzGroup_, convGroup_, outputGroup_})
+            if (g)
+                g->setVisible(v);
+    };
     if (!showsEngineAndDftControls()) {
         if (engineWidget_) engineWidget_->setVisible(false);
         if (calcSettingsHint_) calcSettingsHint_->setVisible(false);
-        if (dftGroup_) dftGroup_->setVisible(false);
+        setGroups(false);
         if (maceGroup_) maceGroup_->setVisible(false);
-        if (gpawGroup_) gpawGroup_->setVisible(false);
         if (orcaGroup_) orcaGroup_->setVisible(false);
         if (baselineInheritNote_) baselineInheritNote_->setVisible(false);
         updateCalculatorExtras(kind);
@@ -628,24 +655,48 @@ void SimulationWizardBase::updateCalculatorEnabled()
     const bool isMace = kind == core::CalculatorKind::Mace;
     const bool isOrca = kind == core::CalculatorKind::Orca;
     const bool isGpaw = kind == core::CalculatorKind::Gpaw;
-    // GPAW keeps the shared DFT group visible (cutoff + k-points feed its PW
-    // mode and Monkhorst-Pack grid) and adds its own group underneath.
-    dftGroup_->setVisible(isDft);
-    // The "XC defaults to PBE (Stage 4)" note is redundant for GPAW, whose XC
-    // functional is chosen directly in its own group here in Stage 2.
-    if (dftXcNote_)
-        dftXcNote_->setVisible(isDft && !isGpaw);
+
+    // Mode & Basis Set and Brillouin Zone & k-Points host the shared cutoff /
+    // k-points, so they show for every DFT engine. Convergence & Output carry
+    // GPAW-only or subclass-injected rows, so they show for GPAW or when the
+    // subclass contributed rows (e.g. Single-point's smearing / spin).
+    modeBasisGroup_->setVisible(isDft);
+    bzGroup_->setVisible(isDft);
+    convGroup_->setVisible(isGpaw || (isDft && hasConvergenceExtras()));
+    outputGroup_->setVisible((isGpaw && showsGpawDensityExport())
+                             || (isDft && hasOutputExtras()));
     maceGroup_->setVisible(isMace);
-    gpawGroup_->setVisible(isGpaw);
     orcaGroup_->setVisible(isOrca);
+
+    // The XC note applies only to the script-template DFT backends; GPAW picks
+    // XC in its own combo. Mode / grid / basis / XC combo and the density
+    // export are GPAW-only rows.
+    if (dftXcNote_)
+        setFormRowVisible(modeBasisGroup_, dftXcNote_, isDft && !isGpaw);
+    setFormRowVisible(modeBasisGroup_, gpawModeCombo_, isGpaw);
+    setFormRowVisible(modeBasisGroup_, gpawXcCombo_, isGpaw);
+    // Grid spacing / LCAO basis are GPAW-only *and* mode-dependent; hide them
+    // wholesale for non-GPAW, then let updateGpawRows pick the right one.
+    setFormRowVisible(modeBasisGroup_, gpawGridSpacingSpin_, isGpaw);
+    setFormRowVisible(modeBasisGroup_, gpawBasisCombo_, isGpaw);
+    for (QWidget* w : {static_cast<QWidget*>(gpawEigensolverCombo_),
+                       static_cast<QWidget*>(gpawMixerCombo_),
+                       static_cast<QWidget*>(gpawEigenTolEdit_),
+                       static_cast<QWidget*>(gpawDensityTolEdit_)})
+        setFormRowVisible(convGroup_, w, isGpaw);
+    setFormRowVisible(convGroup_, gpawMixerParamsRow_, isGpaw);
+    if (isGpaw)
+        updateGpawRows();
 
     // Baseline inheritance (Electronic Structure): the run restarts from a
     // completed SCF density, so its plane-wave cutoff, XC functional and mode
     // are fixed by that .gpw — hide those controls and show a note instead.
     const bool inheritGpaw = isGpaw && inheritsCalculatorFromBaseline();
-    setFormRowVisible(dftGroup_, cutoffSpin_, !inheritGpaw);
-    setFormRowVisible(gpawGroup_, gpawXcCombo_, !inheritGpaw);
-    setFormRowVisible(gpawGroup_, gpawModeCombo_, !inheritGpaw);
+    setFormRowVisible(modeBasisGroup_, cutoffSpin_, !inheritGpaw);
+    if (inheritGpaw) {
+        setFormRowVisible(modeBasisGroup_, gpawXcCombo_, false);
+        setFormRowVisible(modeBasisGroup_, gpawModeCombo_, false);
+    }
     if (baselineInheritNote_)
         baselineInheritNote_->setVisible(inheritGpaw);
 
@@ -715,6 +766,8 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
         c.gpawConvDensity = v;
     c.gpawSymmetryOff =
         gpawSymmetryOffCheck_ && gpawSymmetryOffCheck_->isChecked();
+    c.gpawExportDensity =
+        gpawDensityExportCheck_ && gpawDensityExportCheck_->isChecked();
 
     c.orcaMethod = orcaMethodCombo_->currentText().trimmed().toStdString();
     c.orcaBasis = orcaBasisCombo_->currentText().trimmed().toStdString();

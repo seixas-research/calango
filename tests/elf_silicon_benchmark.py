@@ -11,12 +11,10 @@ before importing gpaw. The returned ``UGArray`` is gathered to a contiguous
 float64 NumPy grid (this is exactly the array-shape / boundary / memory-layout
 handling the GUI script performs).
 
-It asserts the ELF is a finite 3D field with η ∈ [0, 1], then saves a
-high-resolution 2D contour slice to the repository root as
-``test_elf_silicon.png``.
+It asserts the ELF is a finite 3D field with η ∈ [0, 1].
 
 Skips cleanly (exit 0) when GPAW is not importable. Runs the DFT part inside a
-temporary directory; the figure is written to the repo root.
+temporary directory.
 """
 import os
 import sys
@@ -32,14 +30,10 @@ XC = "PBE"
 LATTICE_A = 5.43  # diamond-cubic Si (Å)
 
 
-def _repo_root() -> str:
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-
-
 def _bootstrap_gpaw_env() -> None:
     """Re-exec under the GPAW conda env from ~/.calango/settings.json when the
     current interpreter (e.g. CTest's embedded python) has no GPAW, so the
-    benchmark really runs and writes its figure. No-op if GPAW is importable or
+    benchmark really runs.  No-op if GPAW is importable or
     no env is configured (main() then SKIPs cleanly)."""
     try:
         import gpaw  # noqa: F401
@@ -103,30 +97,6 @@ def main() -> int:
         assert np.all(np.isfinite(grid)), "non-finite ELF values"
         assert grid.min() >= -1e-4 and grid.max() <= 1.0 + 1e-3, (
             f"ELF outside [0,1]: [{grid.min():.4f}, {grid.max():.4f}]")
-
-        # 2D slice through the (100) mid-plane (the Si–Si bond ELF maxima).
-        sl = grid[:, :, grid.shape[2] // 2]
-
-        try:
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-
-            fig, ax = plt.subplots(figsize=(6.0, 5.2), dpi=200)
-            cf = ax.contourf(sl.T, levels=np.linspace(0.0, 1.0, 51),
-                             cmap="viridis")
-            fig.colorbar(cf, ax=ax, label=r"$\eta(\mathbf{r})$")
-            ax.set_title("Electron Localization Function — bulk Si (mid-plane)")
-            ax.set_xlabel("grid index $i$")
-            ax.set_ylabel("grid index $j$")
-            ax.set_aspect("equal")
-            out = os.path.join(_repo_root(), "test_elf_silicon.png")
-            fig.tight_layout()
-            fig.savefig(out)
-            plt.close(fig)
-            print(f"Saved figure: {out}")
-        except Exception as exc:
-            print(f"NOTE: figure skipped (matplotlib unavailable: {exc})")
 
         print(f"PASS: silicon ELF — grid {grid.shape}, "
               f"eta in [{grid.min():.3f}, {grid.max():.3f}], no exceptions.")

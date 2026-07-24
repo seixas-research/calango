@@ -49,4 +49,48 @@ struct WannierConfig {
 /// watches for.
 std::string generateWannierScript(const WannierConfig& cfg);
 
+/// ASE/GPAW script for a Wannier-interpolated band structure. It restarts GPAW
+/// from the completed MLWF run's saved wavefunctions (`*.gpw` in `mlwfDir`),
+/// rebuilds the localization using the parameters recorded in that run's
+/// `wannier.json` (number of Wannier functions + trial projection), then
+/// interpolates the eigenvalues along an automatic band path via the Wannier
+/// Hamiltonian and writes `bands.json` in the same schema as the Electronic
+/// Structure workflow — so the standard band viewer opens it. `mlwfDir` is the
+/// absolute directory of the finished MLWF job (baked in so the script can run
+/// from a fresh job directory).
+std::string generateWannierBandScript(const std::string& mlwfDir);
+
+/// Configuration for the interactive Wannier-interpolation dialog: a band path
+/// (E_n(k)) plus a dense k-mesh (PDOS), and the frozen/disentanglement energy
+/// windows. UI-free so the script can be generated headlessly.
+struct WannierInterpolationConfig {
+    /// ASE band-path string ("GXWK,UX"); empty ⇒ ASE's suggested path.
+    std::string kpath;
+    int bandPoints = 200;      ///< samples along the band path
+    int kmesh[3] = {8, 8, 8};  ///< Monkhorst-Pack grid for the PDOS
+    double pdosWidth = 0.1;     ///< Gaussian broadening of the PDOS (eV)
+
+    /// Frozen energy window → ASE's Wannier(fixedenergy=…): states up to this
+    /// energy (eV, relative to E_F) stay frozen in the localization.
+    bool useFrozenWindow = false;
+    double frozenEnergyEv = 0.0;
+
+    /// Inner / outer disentanglement windows (eV, relative to E_F). ASE's
+    /// Wannier has only a limited disentanglement, so these are recorded in the
+    /// script header and bound the energy range shown; full Wannier90-style
+    /// disentanglement is out of scope.
+    bool useDisentangle = false;
+    double innerWindowEv = 0.0; ///< inner (frozen) window upper bound
+    double outerWindowEv = 5.0; ///< outer (disentanglement) window upper bound
+};
+
+/// ASE/GPAW script for Wannier-interpolated electronic properties: it restarts
+/// from the MLWF run's `*.gpw` in `mlwfDir`, rebuilds the localization (with the
+/// requested frozen window), interpolates the band structure H(R)→H(k) along
+/// `cfg.kpath` into `bands.json`, and builds a Wannier-projected PDOS on the
+/// `cfg.kmesh` into `pdos.json` — both in the schema the standard band/PDOS
+/// viewer reads.
+std::string generateWannierInterpolationScript(
+    const std::string& mlwfDir, const WannierInterpolationConfig& cfg);
+
 } // namespace calango::core

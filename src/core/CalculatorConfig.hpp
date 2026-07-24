@@ -215,6 +215,9 @@ struct CalculatorConfig {
     /// zone is required downstream — e.g. a Single-Point whose .gpw feeds an
     /// MLWF localization (ase.dft.wannier needs the unfolded BZ).
     bool gpawSymmetryOff = false;
+    /// Export the all-electron density to `density.cube` after the SCF
+    /// (GPAW single-point only). Off by default.
+    bool gpawExportDensity = false;
 
     // -- ORCA (quantum chemistry) ------------------------------------------
     std::string orcaMethod = "B3LYP";   ///< functional / method keyword
