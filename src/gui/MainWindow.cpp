@@ -3730,6 +3730,12 @@ void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
     if (wizard.exec() != QDialog::Accepted)
         return;
 
+    // Persist the calculator provenance next to the job so a downstream
+    // post-process (the MLWF wizard) can inherit the engine + parameters from
+    // this completed run. stageJob() writes it as calculator.json and clears
+    // the pending value.
+    pendingCalculatorProvenance_ = wizard.calculatorProvenanceJson();
+
     if (wizard.action() == SimulationWizardBase::Action::RunRemote) {
         // Zone-11 Remote Access manager: stage the script and submit it.
         const QString jobDir = stageJob(wizard.script());
@@ -4219,6 +4225,18 @@ QString MainWindow::stageJob(const QString& script, int procId)
             throw std::runtime_error(
                 "Could not write the calango_log.py helper module into "
                 + jobDir.toStdString());
+        }
+
+        // Calculator provenance sidecar: lets the MLWF wizard inherit the
+        // engine + parameters + Conda env from this completed baseline. Written
+        // only when the launcher supplied it (simulation wizards); consumed
+        // (cleared) up front so an unrelated job never carries a stale copy.
+        const QString provenance = pendingCalculatorProvenance_;
+        pendingCalculatorProvenance_.clear();
+        if (!provenance.isEmpty()) {
+            QFile provenanceFile(jobDir + QStringLiteral("/calculator.json"));
+            if (provenanceFile.open(QIODevice::WriteOnly | QIODevice::Text))
+                QTextStream(&provenanceFile) << provenance;
         }
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Run Calculation"), QString::fromUtf8(e.what()));

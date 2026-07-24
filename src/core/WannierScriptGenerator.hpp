@@ -29,6 +29,18 @@ struct WannierConfig {
     /// The atomic sets (s, p, d, sp3, …) collapse to "orbitals"; "bloch" and
     /// "random" pass straight through.
     std::string initialWannier = "orbitals";
+
+    /// Disentanglement energy window: when true, states up to `energyWindowEv`
+    /// (in eV, relative to the Fermi level) are kept fixed in the localization,
+    /// which is ASE's `Wannier(fixedenergy=…)`. This is the outer/disentangle
+    /// bound separating the frozen occupied manifold from the states that are
+    /// allowed to mix. When false ASE picks the window from `nWannier`.
+    bool useEnergyWindow = false;
+    double energyWindowEv = 0.0;
+
+    /// Maximum Marzari-Vanderbilt minimization iterations (the localize() loop
+    /// cap). The loop still exits early once the spread functional converges.
+    int maxIterations = 50;
 };
 
 /// Turns a WannierConfig into a standalone ASE/GPAW script that writes

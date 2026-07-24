@@ -44,14 +44,18 @@ std::string groundState(const WannierConfig& cfg)
            "_log.progress(1, 3)\n";
 
     if (cfg.calculator.calculator == CalculatorKind::Gpaw) {
-        out << AseScriptGenerator::gpawImports(cfg.calculator)
-            << "# symmetry='off' — ASE's Wannier requires the full "
+        // ASE's Wannier requires the full (unsymmetrized) Brillouin zone, so
+        // force symmetry="off" through the shared GPAW keyword emitter (a
+        // single source of truth — no hand-written duplicate keyword).
+        CalculatorConfig scf = cfg.calculator;
+        scf.gpawSymmetryOff = true;
+        out << AseScriptGenerator::gpawImports(scf)
+            << "# symmetry=\"off\" — ASE's Wannier needs the full "
                "(unsymmetrized)\n"
                "# Brillouin zone; it raises otherwise.\n"
                "calc = GPAW(\n"
-            << AseScriptGenerator::gpawKeywordArguments(cfg.calculator, "    ")
-            << "    symmetry='off',\n"
-               "    txt='gpaw.txt',\n"
+            << AseScriptGenerator::gpawKeywordArguments(scf, "    ")
+            << "    txt='gpaw.txt',\n"
                ")\n"
                "atoms.calc = calc\n"
                "atoms.get_potential_energy()\n"
@@ -91,6 +95,19 @@ std::string generateWannierScript(const WannierConfig& cfg)
                                  ? cfg.initialWannier
                                  : std::string("orbitals");
 
+    const int maxIter = cfg.maxIterations > 0 ? cfg.maxIterations : 50;
+
+    // Optional disentanglement window → ASE's Wannier(fixedenergy=…). Keeps the
+    // occupied states up to `energyWindowEv` (eV, relative to E_F) frozen while
+    // the remaining manifold mixes.
+    std::string fixedEnergyKw;
+    if (cfg.useEnergyWindow) {
+        std::ostringstream fe;
+        fe << "              fixedenergy=" << cfg.energyWindowEv
+           << ",  # eV above E_F; disentanglement outer window\n";
+        fixedEnergyKw = fe.str();
+    }
+
     // Marzari-Vanderbilt localization via ASE. Guard the import so a missing
     // ase.dft.wannier surfaces a clear error rather than a bare ImportError.
     std::ostringstream computeStream;
@@ -105,14 +122,14 @@ std::string generateWannierScript(const WannierConfig& cfg)
         << "# initialwannier seeds the trial projections (atomic orbitals give\n"
            "# good initial overlaps + centre estimates).\n"
            "wan = Wannier(nwannier=nwannier, calc=calc,\n"
+        << fixedEnergyKw
         << "              initialwannier='" << init << "')\n"
         << "# Iterative Marzari-Vanderbilt minimization (Omega = Omega_I +\n"
            "# Omega_tilde_D). Repeat localize() until the spread functional\n"
-           "# stops decreasing, so convergence of Omega is guaranteed rather\n"
-           "# than relying on a single fixed-iteration call.\n"
+           "# stops decreasing (early exit), capped at the requested maximum.\n"
            "_prev = None\n"
-           "for _it in range(50):\n"
-           "    wan.localize(step=0.25, tolerance=1e-6)\n"
+        << "for _it in range(" << maxIter << "):\n"
+        << "    wan.localize(step=0.25, tolerance=1e-6)\n"
            "    _val = float(wan.get_functional_value())\n"
            "    if _prev is not None and abs(_val - _prev) < 1e-6:\n"
            "        break\n"

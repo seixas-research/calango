@@ -362,6 +362,10 @@ private:
     /// Primitive reference cell staged as primitive.extxyz on the next
     /// stageJob (band unfolding); consumed and cleared there.
     std::shared_ptr<const core::Structure> stagedPrimitive_;
+    /// Calculator provenance JSON staged as calculator.json on the next
+    /// stageJob (set by runSimulationWizard); consumed and cleared there. Lets
+    /// the MLWF wizard inherit a completed baseline's engine + parameters.
+    QString pendingCalculatorProvenance_;
     /// Non-modal NEB builder window (owned via WA_DeleteOnClose; nulled on close).
     NebDialog* nebDialog_ = nullptr;
     jobs::JobRunner* jobRunner_ = nullptr;

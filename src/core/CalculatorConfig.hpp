@@ -209,6 +209,12 @@ struct CalculatorConfig {
     /// default rather than writing an explicit value.
     double gpawConvEigenstates = 4e-8; ///< eV²/electron
     double gpawConvDensity = 1e-4;     ///< electrons/valence electron
+    /// Disable point-group symmetry reduction of the k-point set: emits
+    /// `symmetry="off"` in the GPAW constructor. Off by default (GPAW folds the
+    /// k-points by symmetry). Needed when the full, unsymmetrized Brillouin
+    /// zone is required downstream — e.g. a Single-Point whose .gpw feeds an
+    /// MLWF localization (ase.dft.wannier needs the unfolded BZ).
+    bool gpawSymmetryOff = false;
 
     // -- ORCA (quantum chemistry) ------------------------------------------
     std::string orcaMethod = "B3LYP";   ///< functional / method keyword

@@ -35,6 +35,9 @@ protected:
     }
     QWidget* buildCalculatorExtras() override;
     void updateCalculatorExtras(core::CalculatorKind kind) override;
+    /// Expose the GPAW "Symmetry: off" checkbox — a Single-Point run with
+    /// symmetry off is the recommended baseline for an MLWF localization.
+    bool showsGpawSymmetryToggle() const override { return true; }
     QString generateScript() const override;
     QString exportFileName() const override
     {

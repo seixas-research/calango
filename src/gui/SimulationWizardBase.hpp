@@ -3,7 +3,11 @@
 #include "core/CalculatorConfig.hpp"
 
 #include <QDialog>
+#include <QString>
 
+#include <optional>
+
+class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
 class QGroupBox;
@@ -34,7 +38,34 @@ public:
 
     Action action() const { return action_; }
     QString script() const;            ///< the (possibly edited) preview text
-    QString pythonExecutable() const;  ///< selected env python, else embedded
+    virtual QString pythonExecutable() const; ///< selected env python, else embedded
+
+    /// A compact JSON record of the calculator this run uses — engine, XC,
+    /// cutoff, GPAW mode/grid, k-points, the symmetry flag, plus the resolved
+    /// interpreter and Conda env preset. The host persists it next to the job
+    /// as `calculator.json` so a downstream post-process (the MLWF wizard) can
+    /// inherit the calculator from a completed baseline without re-prompting.
+    QString calculatorProvenanceJson() const;
+
+    /// The inheritance-relevant calculator description read back from a job
+    /// directory's `calculator.json`. Empty optional when the file is absent or
+    /// unreadable (e.g. a baseline produced by an older Calango release).
+    struct InheritedCalculator {
+        QString engine;            ///< human name, e.g. "GPAW"
+        int engineKind = -1;       ///< core::CalculatorKind as int (-1 = unknown)
+        QString xc;
+        double cutoffEv = 0.0;
+        QString mode;              ///< "PW" / "FD" / "LCAO"
+        double gridSpacing = 0.0;
+        int kpts[3] = {0, 0, 0};
+        bool symmetryOff = false;
+        QString pythonExecutable;  ///< interpreter the baseline ran under
+        QString condaEnv;          ///< engine's env preset string (may be empty)
+        /// One-line, human-readable description for the inheritance note.
+        QString summary() const;
+    };
+    static std::optional<InheritedCalculator> readCalculatorProvenance(
+        const QString& jobDir);
 
 protected:
     explicit SimulationWizardBase(QWidget* parent = nullptr);
@@ -107,6 +138,19 @@ protected:
     /// k-path) with every locked SCF knob suppressed.
     virtual bool showsEngineAndDftControls() const { return true; }
 
+    /// When false the Calculator Settings stage is dropped from the flow
+    /// entirely (the page is still constructed so the shared config accessors
+    /// stay valid, but it never appears as a stage). The MLWF wizard uses this
+    /// to inherit the calculator from a completed baseline instead of asking
+    /// the user to redefine it, giving a strict 2-stage wizard.
+    virtual bool showsCalculatorStage() const { return true; }
+
+    /// When true a "Symmetry: off" checkbox is shown in the GPAW settings group,
+    /// letting the user emit `symmetry="off"` (no point-group k-point
+    /// reduction). Only the Single-Point wizard exposes it — a Single-Point run
+    /// with symmetry off is the recommended baseline for an MLWF localization.
+    virtual bool showsGpawSymmetryToggle() const { return false; }
+
     /// Fired when the DFT k-point grid changes, so a subclass can rescale a
     /// derived mesh default (e.g. the PDOS k-mesh at 2× the SCF grid).
     virtual void calculatorKgridChanged() {}
@@ -147,6 +191,7 @@ private:
     int stage_ = 0;
     bool hasSettingsStage_ = true; ///< resolved from hasTaskSettingsStage()
     bool settingsFirst_ = true;    ///< resolved from settingsStageFirst()
+    bool showsCalculatorStage_ = true; ///< resolved from showsCalculatorStage()
     int reviewStage_ = 3;          ///< index of the final (review) stage
     bool manuallyEdited_ = false;
     bool updatingPreview_ = false;
@@ -194,6 +239,9 @@ private:
     /// scientific-notation validator keep them readable and typable.
     QLineEdit* gpawEigenTolEdit_ = nullptr;
     QLineEdit* gpawDensityTolEdit_ = nullptr;
+    /// "Symmetry: off" — emits symmetry="off" (no point-group k-point
+    /// reduction). Shown only when showsGpawSymmetryToggle() is true.
+    QCheckBox* gpawSymmetryOffCheck_ = nullptr;
     QGroupBox* orcaGroup_ = nullptr;
     QComboBox* orcaMethodCombo_ = nullptr;
     QComboBox* orcaBasisCombo_ = nullptr;

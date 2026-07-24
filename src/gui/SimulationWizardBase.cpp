@@ -6,11 +6,13 @@
 #include "gui/ScriptStaging.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QDoubleValidator>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QFileDialog>
@@ -76,11 +78,19 @@ void SimulationWizardBase::buildUi()
     // Build order matters beyond layout: buildSettingsPage() may query
     // controls the calculator page owns, so a wizard that places its settings
     // page later also gets it constructed later.
+    showsCalculatorStage_ = showsCalculatorStage();
     if (hasSettingsStage_ && settingsFirst_)
         stack_->addWidget(buildSettingsPage());
     // The engine is selected at the top of the Calculator Settings stage; the
     // Conda environment is resolved silently from Preferences (no env stage).
-    stack_->addWidget(buildCalculatorPage());
+    // The page is always constructed (the shared config accessors read its
+    // widgets), but a wizard that inherits its calculator from a baseline
+    // (MLWF) drops it from the stack for a strict 2-stage flow.
+    QWidget* calculatorPage = buildCalculatorPage();
+    if (showsCalculatorStage_)
+        stack_->addWidget(calculatorPage);
+    else
+        calculatorPage->hide();
     if (hasSettingsStage_ && !settingsFirst_)
         stack_->addWidget(buildSettingsPage());
     stack_->addWidget(buildReviewPage());
@@ -473,6 +483,27 @@ QWidget* SimulationWizardBase::buildGpawGroup(QWidget* parent)
            "over the cell, in electrons per valence electron (e.g. 1e-4)."));
     form->addRow(tr("Density tolerance:"), gpawDensityTolEdit_);
 
+    // -- k-point symmetry --------------------------------------------------
+    // Only meaningful for wizards that opt in (Single-Point): a Single-Point
+    // run with symmetry off is the recommended baseline for an MLWF
+    // localization, which needs the full (unfolded) Brillouin zone.
+    gpawSymmetryOffCheck_ = new QCheckBox(
+        tr("Symmetry: off  (symmetry=\"off\")"), gpawGroup_);
+    gpawSymmetryOffCheck_->setToolTip(
+        tr("Disable point-group symmetry reduction of the k-point set. GPAW "
+           "folds the k-points by symmetry by default; turn this off to sample "
+           "the full, unsymmetrized Brillouin zone — required when the "
+           "wavefunctions feed a Maximally Localized Wannier Functions run."));
+    connect(gpawSymmetryOffCheck_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
+    // The control only makes sense for the Single-Point wizard; when not opted
+    // in the checkbox still exists (baseCalculatorConfig reads it, harmlessly
+    // unchecked) but no row is added so no stray label appears.
+    if (showsGpawSymmetryToggle())
+        form->addRow(tr("k-point symmetry:"), gpawSymmetryOffCheck_);
+    else
+        gpawSymmetryOffCheck_->hide();
+
     form->addRow(new QLabel(
         tr("The plane-wave cutoff, k-point grid, SCF iteration cap and "
            "smearing come from the DFT settings above."),
@@ -682,6 +713,8 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
         c.gpawConvEigenstates = v;
     if (const double v = gpawDensityTolEdit_->text().toDouble(&ok); ok && v > 0.0)
         c.gpawConvDensity = v;
+    c.gpawSymmetryOff =
+        gpawSymmetryOffCheck_ && gpawSymmetryOffCheck_->isChecked();
 
     c.orcaMethod = orcaMethodCombo_->currentText().trimmed().toStdString();
     c.orcaBasis = orcaBasisCombo_->currentText().trimmed().toStdString();
@@ -706,7 +739,8 @@ void SimulationWizardBase::updateStage()
     QStringList titles;
     if (hasSettingsStage_ && settingsFirst_)
         titles << settingsHeader();
-    titles << calculatorSettingsHeader();
+    if (showsCalculatorStage_)
+        titles << calculatorSettingsHeader();
     if (hasSettingsStage_ && !settingsFirst_)
         titles << settingsHeader();
     titles << reviewHeader();
@@ -775,6 +809,88 @@ QString SimulationWizardBase::pythonExecutable() const
     if (!resolved.isEmpty())
         return resolved;
     return QString::fromStdString(pybridge::PythonEngine::instance().executable());
+}
+
+namespace {
+const char* gpawModeTag(core::GpawMode mode)
+{
+    switch (mode) {
+    case core::GpawMode::PlaneWave:
+        return "PW";
+    case core::GpawMode::FiniteDifference:
+        return "FD";
+    case core::GpawMode::Lcao:
+        return "LCAO";
+    }
+    return "PW";
+}
+} // namespace
+
+QString SimulationWizardBase::calculatorProvenanceJson() const
+{
+    const core::CalculatorConfig c = baseCalculatorConfig();
+    QJsonObject o;
+    o.insert(QStringLiteral("engine"),
+             QString::fromStdString(core::toString(c.calculator)));
+    o.insert(QStringLiteral("engine_kind"), static_cast<int>(c.calculator));
+    o.insert(QStringLiteral("xc"), QString::fromStdString(c.gpawXc));
+    o.insert(QStringLiteral("cutoff_ev"), c.planeWaveCutoffEv);
+    o.insert(QStringLiteral("mode"), QLatin1String(gpawModeTag(c.gpawMode)));
+    o.insert(QStringLiteral("grid_spacing"), c.gpawGridSpacing);
+    o.insert(QStringLiteral("kpts"),
+             QJsonArray{c.kpts[0], c.kpts[1], c.kpts[2]});
+    o.insert(QStringLiteral("symmetry_off"), c.gpawSymmetryOff);
+    o.insert(QStringLiteral("python"), pythonExecutable());
+    o.insert(QStringLiteral("conda_env"),
+             EnginePresets::envFor(c.calculator));
+    return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
+}
+
+std::optional<SimulationWizardBase::InheritedCalculator>
+SimulationWizardBase::readCalculatorProvenance(const QString& jobDir)
+{
+    QFile file(jobDir + QStringLiteral("/calculator.json"));
+    if (!file.open(QIODevice::ReadOnly))
+        return std::nullopt;
+    const QJsonObject o = QJsonDocument::fromJson(file.readAll()).object();
+    if (o.isEmpty())
+        return std::nullopt;
+
+    InheritedCalculator ic;
+    ic.engine = o.value(QStringLiteral("engine")).toString();
+    ic.engineKind = o.value(QStringLiteral("engine_kind")).toInt(-1);
+    ic.xc = o.value(QStringLiteral("xc")).toString();
+    ic.cutoffEv = o.value(QStringLiteral("cutoff_ev")).toDouble();
+    ic.mode = o.value(QStringLiteral("mode")).toString();
+    ic.gridSpacing = o.value(QStringLiteral("grid_spacing")).toDouble();
+    const QJsonArray k = o.value(QStringLiteral("kpts")).toArray();
+    for (int i = 0; i < 3 && i < k.size(); ++i)
+        ic.kpts[i] = k.at(i).toInt();
+    ic.symmetryOff = o.value(QStringLiteral("symmetry_off")).toBool();
+    ic.pythonExecutable = o.value(QStringLiteral("python")).toString();
+    ic.condaEnv = o.value(QStringLiteral("conda_env")).toString();
+    return ic;
+}
+
+QString SimulationWizardBase::InheritedCalculator::summary() const
+{
+    QString s = engine.isEmpty() ? QStringLiteral("calculator") : engine;
+    if (!xc.isEmpty())
+        s += QStringLiteral(" · XC %1").arg(xc);
+    if (mode == QLatin1String("PW") && cutoffEv > 0.0)
+        s += QStringLiteral(" · PW %1 eV").arg(cutoffEv, 0, 'g', 4);
+    else if (mode == QLatin1String("FD") && gridSpacing > 0.0)
+        s += QStringLiteral(" · FD h=%1 Å").arg(gridSpacing, 0, 'g', 3);
+    else if (mode == QLatin1String("LCAO"))
+        s += QStringLiteral(" · LCAO");
+    if (kpts[0] > 0)
+        s += QStringLiteral(" · k %1×%2×%3")
+                 .arg(kpts[0])
+                 .arg(kpts[1])
+                 .arg(kpts[2]);
+    if (symmetryOff)
+        s += QStringLiteral(" · symmetry off");
+    return s;
 }
 
 } // namespace calango::gui

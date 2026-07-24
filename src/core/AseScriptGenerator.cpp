@@ -664,8 +664,14 @@ std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,
     }
     out << indent << "xc=\"" << c.gpawXc << "\",\n"
         << indent << "kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", "
-        << c.kpts[2] << "),  # Monkhorst-Pack grid\n"
-        << indent << "eigensolver=\"" << toString(c.gpawEigensolver) << "\",\n"
+        << c.kpts[2] << "),  # Monkhorst-Pack grid\n";
+    // Point-group symmetry reduction of the k-points is on by default; only
+    // write the keyword when the user turned it off (e.g. to expose the full
+    // Brillouin zone for a downstream Wannier localization).
+    if (c.gpawSymmetryOff)
+        out << indent
+            << "symmetry=\"off\",  # no point-group reduction of the k-points\n";
+    out << indent << "eigensolver=\"" << toString(c.gpawEigensolver) << "\",\n"
         // Mixer(beta, nmaxold, weight) — GPAW's positional signature.
         << indent << "mixer=" << toString(c.gpawMixer) << "(" << c.gpawMixerBeta
         << ", " << c.gpawMixerNmaxold << ", " << c.gpawMixerWeight << "),\n"
