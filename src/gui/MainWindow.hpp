@@ -129,6 +129,10 @@ private Q_SLOTS:
     void openBandResults(const QString& directory);
     /// Open the phonon band structure + PhDOS viewer for a finished job dir.
     void openPhononResults(const QString& directory);
+    /// Simulation → "Optics…": linear optical-response wizard (GPAW response).
+    void showOptics();
+    /// Open the optical-spectra viewer for a finished job directory.
+    void openOpticsResults(const QString& directory);
     /// "Load Result" from the Process panel: band data, trajectory or
     /// final structure — whatever the task directory contains.
     void onProcessResultRequested(const QString& directory);
@@ -169,6 +173,9 @@ private Q_SLOTS:
     void showRamanModes();
     void newProject();
     void showVolumetricData();
+    /// Analysis → "Electron Localization Function (ELF)…": compute η(r) via GPAW
+    /// (or load an existing ELF grid) and view it as an isosurface / slice.
+    void showElf();
     void showDatasetManager();
     /// MLIP → Trainer…: MACE training-config (YAML) builder + launcher.
     void openMaceTrainer();

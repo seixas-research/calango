@@ -17,13 +17,15 @@ class QStackedWidget;
 
 namespace calango::gui {
 
-/// Shared four-stage stepper shell for the simulation wizards (Molecular
-/// Dynamics, Geometry Optimization, Phonon Calculator). It owns the
-/// standardized Stages 2–4 (Calculator & Execution Environment, Calculator
-/// Settings, ASE Script Review) plus the navigation + action bar
+/// Shared multi-stage stepper shell for the simulation wizards (Molecular
+/// Dynamics, Geometry Optimization, Phonon Calculator, …). It owns the
+/// standardized Calculator Settings stage (engine selection + backend knobs)
+/// and the ASE Script Review stage, plus the navigation + action bar
 /// (Back / Cancel / Next / Export Script / Run Remote / Run Local). Each
-/// concrete wizard supplies Stage 1 (its task settings) and the script
-/// generation via the virtual hooks. The host inspects action() after exec().
+/// concrete wizard supplies its task-settings stage and the script generation
+/// via the virtual hooks. The Conda environment is no longer chosen here — it
+/// is resolved silently per engine from the Preferences "Python & Environments"
+/// mapping (see pythonExecutable()). The host inspects action() after exec().
 class SimulationWizardBase : public QDialog {
     Q_OBJECT
 
@@ -107,7 +109,6 @@ private Q_SLOTS:
     void updateCalculatorEnabled();
 
 private:
-    QWidget* buildEnvironmentPage();
     QWidget* buildCalculatorPage();
     QWidget* buildMaceGroup(QWidget* parent);
     QWidget* buildGpawGroup(QWidget* parent);
@@ -129,17 +130,10 @@ private:
     QStackedWidget* stack_ = nullptr;
     QLabel* headerLabel_ = nullptr;
 
-    // Stage 2 — calculator + environment
+    // Calculator Settings — engine selection (env is resolved from Preferences)
     QComboBox* calcCombo_ = nullptr;
-    QLineEdit* envEdit_ = nullptr;
-    QLabel* envStatus_ = nullptr;
-    /// Execution mode chosen on the Script Review stage's "Execution Settings…"
-    /// launcher; biases which Run button is the default (both remain available).
-    bool preferRemote_ = false;
-    /// Guards the env-preset auto-fill from re-saving during programmatic edits.
-    bool loadingEnvPreset_ = false;
 
-    // Stage 3 — per-calculator settings
+    // Per-calculator settings
     QGroupBox* dftGroup_ = nullptr;
     /// "XC defaults to PBE (editable in Stage 4)" note — only meaningful for the
     /// script-template DFT backends; hidden for GPAW, which has its own XC combo.
@@ -185,16 +179,8 @@ private:
     QPushButton* backButton_ = nullptr;
     QPushButton* nextButton_ = nullptr;
     QPushButton* exportButton_ = nullptr;
-    QPushButton* execSettingsButton_ = nullptr; ///< review-stage exec launcher
     QPushButton* runRemoteButton_ = nullptr;
     QPushButton* runLocalButton_ = nullptr;
-
-    /// Review-stage "Execution Settings…" popup: choose Local/Remote and edit
-    /// the environment, replacing the removed Execution Mode stage controls.
-    void showExecutionSettings();
-    /// Auto-fill the environment field from the selected calculator's saved
-    /// preset (`~/.calango/settings.json`), and persist edits back per engine.
-    void applyEnvPresetForCalculator();
 };
 
 } // namespace calango::gui

@@ -1,7 +1,6 @@
 #include "gui/RepresentationPanel.hpp"
 #include "gui/GuiUtils.hpp"
 
-#include "gui/CollapsibleSection.hpp"
 #include "gui/ElementSettingsDialog.hpp"
 #include "gui/ViewportWidget.hpp"
 
@@ -216,11 +215,12 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     });
 
     // --- Per-atom vector overlay -------------------------------------------
-    // Collapsible accordion section grouping the vector-overlay selector, its
-    // scale and its colour, so the panel stays compact and scannable.
-    auto* vectorSection = new CollapsibleSection(tr("Vector Overlay"), this);
-    auto* vectorForm = new QFormLayout;
-    vectorForm->setContentsMargins(8, 4, 0, 4);
+    // Rendered inline in the main panel (preceded by a horizontal separator)
+    // rather than tucked inside a collapsible accordion.
+    auto* vectorSeparator = new QFrame(this);
+    vectorSeparator->setFrameShape(QFrame::HLine);
+    vectorSeparator->setFrameShadow(QFrame::Sunken);
+    form->addRow(vectorSeparator);
     // One selector rather than a checkbox per property: the arrows share a
     // single scale and would overlap illegibly if two were drawn at once, and
     // the list grows naturally as extended-XYZ files carry more columns.
@@ -230,7 +230,7 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     vectorOverlayCombo_->addItem(tr("Velocity"));
     vectorOverlayCombo_->addItem(tr("Force"));
     vectorOverlayCombo_->addItem(tr("Magnetic moment"));
-    vectorForm->addRow(tr("Vector overlay:"), vectorOverlayCombo_);
+    form->addRow(tr("Vector overlay:"), vectorOverlayCombo_);
     connect(vectorOverlayCombo_, &QComboBox::currentIndexChanged, this,
             [this](int index) {
                 viewport_->style().vectorOverlay =
@@ -257,7 +257,7 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
                                     "velocities, μB for magnetic moments)"));
     vectorLayout->addWidget(vectorScaleSlider_, 1);
     vectorLayout->addWidget(vectorScaleSpin_);
-    vectorForm->addRow(tr("Vector scale:"), vectorRow);
+    form->addRow(tr("Vector scale:"), vectorRow);
 
     // One picker that edits whichever overlay is selected: each property
     // keeps its own color (so switching Force -> Velocity restores that
@@ -267,10 +267,7 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     vectorColorButton_->setToolTip(
         tr("Arrow color for the selected vector overlay. Each property "
            "(velocity, force, magnetic moment) remembers its own color."));
-    vectorForm->addRow(tr("Vector color:"), vectorColorButton_);
-    // Install the grouped controls into the accordion and add it to the panel.
-    vectorSection->setContentLayout(vectorForm);
-    form->addRow(vectorSection);
+    form->addRow(tr("Vector color:"), vectorColorButton_);
     connect(vectorColorButton_, &QPushButton::clicked, this, [this] {
         QColor* target = vectorOverlayColor();
         if (!target)

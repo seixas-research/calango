@@ -6,14 +6,19 @@
 
 class QComboBox;
 class QSpinBox;
+class QTableWidget;
+class QWidget;
 
 namespace calango::gui {
 
-/// Application preferences: the environment-file (.env) location used to
-/// auto-load the Materials Project API key (MP_API_KEY), plus Appearance
-/// (theme) and Computation (OMP thread count, Conda environments directory)
-/// settings. Values persist through QSettings, which SettingsManager mirrors
-/// to ~/.calango/settings.json; the theme + thread readout apply live when the
+/// Application preferences, organized into tabs:
+///   • "General" — the environment-file (.env) location used to auto-load the
+///     Materials Project API key (MP_API_KEY), Appearance (theme), and
+///     Computation (OMP thread count, Conda environments directory).
+///   • "Python & Environments" — the per-engine Conda environment mapping
+///     (GPAW/MACE/QE/SIESTA/…) that the simulation wizards resolve silently.
+/// Values persist through QSettings, which SettingsManager mirrors to
+/// ~/.calango/settings.json; the theme + thread readout apply live when the
 /// dialog closes (MainWindow::showPreferences).
 class PreferencesDialog : public QDialog {
     Q_OBJECT
@@ -29,6 +34,8 @@ private Q_SLOTS:
 private:
     void updateStatus();
     void updateCondaStatus();
+    /// Build the "Python & Environments" tab (engine → Conda env table).
+    QWidget* buildPythonEnvTab();
 
     QLineEdit* envPathEdit_;
     QLabel* statusLabel_;
@@ -36,6 +43,7 @@ private:
     QSpinBox* threadsSpin_ = nullptr;
     QLineEdit* condaDirEdit_ = nullptr;
     QLabel* condaStatusLabel_ = nullptr;
+    QTableWidget* engineEnvTable_ = nullptr;
 };
 
 } // namespace calango::gui

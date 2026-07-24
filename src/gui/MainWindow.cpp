@@ -42,6 +42,9 @@
 #include "gui/PhononPlotWindow.hpp"
 #include "gui/SupercellDialog.hpp"
 #include "gui/PartialChargeDialog.hpp"
+#include "gui/ElfDialog.hpp"
+#include "gui/OpticsWizard.hpp"
+#include "gui/OpticsResultsWindow.hpp"
 #include "gui/SymmetryDialog.hpp"
 #include "gui/VacfDialog.hpp"
 #include "gui/DatasetManagerDialog.hpp"
@@ -778,6 +781,10 @@ void MainWindow::createMenusAndDocks()
     // structure run, so it sits immediately after "Electronic Structure…".
     simulationMenu->addAction(tr("&Effective Bands (Unfolding)…"),
                               this, &MainWindow::effectiveBandsCalculation);
+    // Linear optical response (dielectric function, absorption, reflectivity,
+    // refractive index, energy loss) via GPAW's response module.
+    simulationMenu->addAction(tr("&Optics…"),
+                              this, &MainWindow::showOptics);
     // Dataset Manager and Trainer moved to Modules → MLIP.
 
     // ----- Analysis: spec order, reciprocal-space tools at the end ---------
@@ -805,6 +812,10 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showRamanModes);
     analysisMenu->addAction(tr("&Volumetric Data…"),
                             this, &MainWindow::showVolumetricData);
+    // ELF is a volumetric scalar field (η ∈ [0,1]); it sits next to Volumetric
+    // Data since it shares the isosurface / slice viewer.
+    analysisMenu->addAction(tr("&Electron Localization Function (ELF)…"),
+                            this, &MainWindow::showElf);
     analysisMenu->addAction(tr("Adsorption && Catal&ysis…"),
                             this, &MainWindow::showAdsorption);
     // Brillouin Zone Builder moved to the Build menu.
@@ -2660,6 +2671,35 @@ void MainWindow::openPhononResults(const QString& directory)
     window->show();
 }
 
+void MainWindow::showOptics()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()
+        || !doc->structure->cell().isDefined()) {
+        QMessageBox::information(this, tr("Optical Properties"),
+                                 tr("Open a periodic structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    OpticsWizard wizard(doc->structure, this);
+    runSimulationWizard(wizard, tr("Optical Properties"), /*expectFrames=*/false);
+}
+
+void MainWindow::openOpticsResults(const QString& directory)
+{
+    auto* window = new OpticsResultsWindow(directory, this);
+    if (!window->hasData()) {
+        delete window;
+        QMessageBox::information(this, tr("Optical Properties"),
+                                 tr("No optics.json found in %1").arg(directory));
+        return;
+    }
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    window->show();
+}
+
 void MainWindow::onDeleteProcessRequested(int id)
 {
     const auto it = processRecords_.find(id);
@@ -2765,6 +2805,10 @@ void MainWindow::onProcessResultRequested(const QString& directory)
     }
     if (QFile::exists(directory + QStringLiteral("/phonon_band.json"))) {
         openPhononResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/optics.json"))) {
+        openOpticsResults(directory);
         return;
     }
     for (const auto* candidate :
@@ -3006,6 +3050,49 @@ void MainWindow::showPartialCharge()
     // the property combo / info panel pick it up.
     connect(dialog, &QDialog::finished, this,
             [this] { notifyStructureChanged(false); });
+    dialog->show();
+}
+
+void MainWindow::showElf()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Electron Localization Function (ELF)"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+    // Modeless: the ELF grid is produced by a background GPAW job, then loaded
+    // back into the dialog's isosurface / slice viewer.
+    auto* dialog = new ElfDialog(doc->structure, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    // Offer every completed process that saved GPAW wavefunctions (.gpw) as a
+    // source to restart the ELF evaluation from.
+    QList<QPair<QString, QString>> baselines;
+    for (const auto& [id, record] : processRecords_) {
+        if (record.directory.isEmpty())
+            continue;
+        const QDir dir(record.directory);
+        if (!dir.entryList({QStringLiteral("*.gpw")}, QDir::Files).isEmpty())
+            baselines.append({tr("#%1 — %2 [GPAW]").arg(id).arg(record.label),
+                              record.directory});
+    }
+    dialog->setDensityBaselines(baselines);
+    connect(dialog, &ElfDialog::runRequested, this,
+            [this](const QString& script, const QString& label) {
+                if (jobRunner_->isRunning()) {
+                    QMessageBox::information(
+                        this, label,
+                        tr("A calculation is already running — kill it first."));
+                    return;
+                }
+                runScript(script,
+                          QString::fromStdString(
+                              pybridge::PythonEngine::instance().executable()),
+                          label, /*expectFrames=*/false);
+            });
     dialog->show();
 }
 
@@ -4224,6 +4311,11 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     // Phonon runs: open the phonon band structure + PhDOS viewer.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/phonon_band.json"))) {
         openPhononResults(lastJobDir_);
+        return;
+    }
+    // Optics runs: open the optical-spectra viewer.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/optics.json"))) {
+        openOpticsResults(lastJobDir_);
         return;
     }
 

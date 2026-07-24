@@ -242,7 +242,7 @@ QString PartialChargeDialog::generateScript(Method method) const
             "atoms = read('structure.extxyz')\n"
             "_log.progress(1, 3)\n"
             "from gpaw import GPAW, PW\n"
-            "calc = GPAW(mode=PW(400), xc='PBE', kpts=(3, 3, 3), txt='gpaw.txt')\n"
+            "calc = GPAW(mode=PW(500), xc='PBE', kpts=(7, 7, 7), txt='gpaw.txt')\n"
             "atoms.calc = calc\n"
             "atoms.get_potential_energy()\n"
             "rho = np.ascontiguousarray(\n"

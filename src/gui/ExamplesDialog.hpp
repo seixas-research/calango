@@ -59,6 +59,10 @@ private:
     QWidget* createBulkTab();
     /// Show/hide the parameter rows the selected build mode / prototype uses.
     void updateBulkParameterVisibility();
+    /// When the formula field holds a single element, auto-set the crystal
+    /// structure + lattice constant(s) from ASE's tabulated ground-state
+    /// reference (e.g. Cu → fcc a≈3.61, Fe → bcc, C/Si → diamond).
+    void autoFillBulkReference();
     /// Wire a "Periodic Table…" button that appends/sets an element symbol
     /// on `target`.
     QPushButton* makePeriodicTableButton(QWidget* parent, QLineEdit* target,
@@ -134,6 +138,9 @@ private:
     QWidget* bulkSpaceGroupPage_ = nullptr;
     QPushButton* bulkBuildButton_ = nullptr;
     QLabel* bulkStatus_ = nullptr;
+    /// Guards autoFillBulkReference()'s programmatic combo/spin writes from
+    /// being treated as user edits.
+    bool loadingBulkReference_ = false;
 };
 
 } // namespace calango::gui

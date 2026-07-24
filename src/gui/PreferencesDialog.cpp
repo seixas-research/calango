@@ -1,10 +1,12 @@
 #include "gui/PreferencesDialog.hpp"
 
 #include "gui/CondaEnvs.hpp"
+#include "gui/EnginePresets.hpp"
 #include "gui/EnvFile.hpp"
 #include "gui/SettingsManager.hpp"
 #include "gui/ThemeManager.hpp"
 
+#include <QAbstractItemView>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -13,9 +15,13 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QHeaderView>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QSettings>
 #include <QSpinBox>
+#include <QTableWidget>
+#include <QTabWidget>
 #include <QThread>
 #include <QVBoxLayout>
 
@@ -143,16 +149,98 @@ PreferencesDialog::PreferencesDialog(QWidget* parent)
         SettingsManager::save(); // flush to settings.json immediately
     });
 
+    // Group the existing setting boxes into a "General" tab page.
+    auto* generalPage = new QWidget(this);
+    auto* generalPageLayout = new QVBoxLayout(generalPage);
+    generalPageLayout->addWidget(generalGroup);
+    generalPageLayout->addWidget(envGroup);
+    generalPageLayout->addWidget(appearanceGroup);
+    generalPageLayout->addWidget(computeGroup);
+    generalPageLayout->addStretch(1);
+
+    auto* tabs = new QTabWidget(this);
+    tabs->addTab(generalPage, tr("General"));
+    tabs->addTab(buildPythonEnvTab(), tr("Python && Environments"));
+
     auto* layout = new QVBoxLayout(this);
-    layout->addWidget(generalGroup);
-    layout->addWidget(envGroup);
-    layout->addWidget(appearanceGroup);
-    layout->addWidget(computeGroup);
-    layout->addStretch(1);
+    layout->addWidget(tabs, 1);
     layout->addWidget(buttons);
 
     updateStatus();
     updateCondaStatus();
+}
+
+QWidget* PreferencesDialog::buildPythonEnvTab()
+{
+    auto* page = new QWidget(this);
+    auto* layout = new QVBoxLayout(page);
+
+    auto* note = new QLabel(
+        tr("Map each calculator engine to the Conda environment (or python "
+           "executable) its jobs should run in. The simulation wizards resolve "
+           "these automatically — no per-run prompting. Leave a row blank to "
+           "fall back to the active $PATH / embedded interpreter."),
+        page);
+    note->setWordWrap(true);
+    layout->addWidget(note);
+
+    const auto& engines = EnginePresets::configurableEngines();
+    const auto discovered = CondaEnvs::discover();
+
+    engineEnvTable_ = new QTableWidget(engines.size(), 2, page);
+    engineEnvTable_->setHorizontalHeaderLabels(
+        {tr("Engine"), tr("Conda environment / python (blank = system $PATH)")});
+    engineEnvTable_->verticalHeader()->setVisible(false);
+    engineEnvTable_->setSelectionMode(QAbstractItemView::NoSelection);
+    engineEnvTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    engineEnvTable_->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::ResizeToContents);
+    engineEnvTable_->horizontalHeader()->setSectionResizeMode(
+        1, QHeaderView::Stretch);
+
+    for (int row = 0; row < engines.size(); ++row) {
+        const core::CalculatorKind kind = engines.at(row);
+
+        auto* nameItem =
+            new QTableWidgetItem(EnginePresets::displayName(kind));
+        nameItem->setFlags(Qt::ItemIsEnabled);
+        engineEnvTable_->setItem(row, 0, nameItem);
+
+        // An editable combo per row: free-text path plus the discovered envs as
+        // quick-pick entries. currentText is the persisted value.
+        auto* combo = new QComboBox(engineEnvTable_);
+        combo->setEditable(true);
+        combo->addItem(QString()); // empty = system / embedded
+        for (const auto& env : discovered)
+            combo->addItem(env.path);
+        combo->setCurrentText(EnginePresets::envFor(kind));
+        combo->lineEdit()->setPlaceholderText(
+            tr("e.g. ~/miniconda3/envs/gpaw_env (blank = system $PATH)"));
+
+        // Persist on any edit (typed or picked).
+        connect(combo, &QComboBox::currentTextChanged, this,
+                [kind](const QString& text) {
+                    EnginePresets::setEnvFor(kind, text.trimmed());
+                });
+
+        auto* cellWidget = new QWidget(engineEnvTable_);
+        auto* cellLayout = new QHBoxLayout(cellWidget);
+        cellLayout->setContentsMargins(2, 2, 2, 2);
+        cellLayout->addWidget(combo, 1);
+        auto* browse = new QPushButton(tr("Browse…"), cellWidget);
+        cellLayout->addWidget(browse);
+        connect(browse, &QPushButton::clicked, this, [this, combo] {
+            const QString dir = QFileDialog::getExistingDirectory(
+                this, tr("Select Conda Environment Folder"),
+                combo->currentText());
+            if (!dir.isEmpty())
+                combo->setCurrentText(dir);
+        });
+        engineEnvTable_->setCellWidget(row, 1, cellWidget);
+    }
+
+    layout->addWidget(engineEnvTable_, 1);
+    return page;
 }
 
 void PreferencesDialog::browseEnvFile()

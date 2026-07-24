@@ -147,14 +147,14 @@ NebDialog::NebDialog(std::vector<NamedStructure> openDocs, QWidget* parent)
     calcForm->addRow(tr("MACE device:"), maceDeviceCombo_);
     cutoffSpin_ = new QDoubleSpinBox(calcBox);
     cutoffSpin_->setRange(100.0, 2000.0);
-    cutoffSpin_->setValue(550.0);
+    cutoffSpin_->setValue(500.0);
     cutoffSpin_->setSuffix(tr(" eV"));
     calcForm->addRow(tr("Plane-wave cutoff:"), cutoffSpin_);
     auto* kptRow = new QHBoxLayout;
     for (auto*& spin : kptSpins_) {
         spin = new QSpinBox(calcBox);
         spin->setRange(1, 32);
-        spin->setValue(1);
+        spin->setValue(7);
         kptRow->addWidget(spin);
     }
     calcForm->addRow(tr("k-point grid:"), kptRow);

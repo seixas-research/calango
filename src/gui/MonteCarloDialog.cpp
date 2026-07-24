@@ -139,7 +139,7 @@ MonteCarloDialog::MonteCarloDialog(std::shared_ptr<const core::Structure> struct
 
     bhCutoffSpin_ = new QDoubleSpinBox(bhPage);
     bhCutoffSpin_->setRange(100.0, 2000.0);
-    bhCutoffSpin_->setValue(550.0);
+    bhCutoffSpin_->setValue(500.0);
     bhCutoffSpin_->setSuffix(tr(" eV"));
     bhForm->addRow(tr("Plane-wave cutoff:"), bhCutoffSpin_);
 
@@ -147,7 +147,7 @@ MonteCarloDialog::MonteCarloDialog(std::shared_ptr<const core::Structure> struct
     for (auto*& spin : kptSpins_) {
         spin = new QSpinBox(bhPage);
         spin->setRange(1, 32);
-        spin->setValue(1);
+        spin->setValue(7);
         kptRow->addWidget(spin);
     }
     bhForm->addRow(tr("k-point grid:"), kptRow);

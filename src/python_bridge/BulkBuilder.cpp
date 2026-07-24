@@ -5,6 +5,7 @@
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace py = pybind11;
@@ -41,6 +42,59 @@ bool BulkBuilder::usesB(const std::string& crystalStructure)
     // other one derives b from a (and ASE errors out with b=nan if it is
     // omitted for this one).
     return crystalStructure == "orthorhombic";
+}
+
+BulkBuilder::ReferenceState BulkBuilder::referenceState(const std::string& symbol)
+{
+    ReferenceState result;
+    if (symbol.empty())
+        return result;
+
+    // Only structure names Calango offers as prototypes can be auto-selected;
+    // ASE also uses names like "cubic"/"tetragonal"/"rhombohedral" for complex
+    // elemental ground states, for which we keep the user's current structure
+    // but still report the lattice constant.
+    const auto& allowed = prototypes();
+
+    try {
+        py::dict locals;
+        locals["symbol"] = symbol;
+        py::exec(R"PY(
+import ase.data as _d
+
+found = False
+structure = ""
+a = 0.0
+covera = 0.0
+has_covera = False
+
+_z = _d.atomic_numbers.get(symbol)
+if _z is not None and 0 < _z < len(_d.reference_states):
+    _state = _d.reference_states[_z]
+    if _state is not None:
+        found = True
+        structure = str(_state.get("symbol", "") or "")
+        if _state.get("a") is not None:
+            a = float(_state["a"])
+        if _state.get("c/a") is not None:
+            covera = float(_state["c/a"])
+            has_covera = True
+)PY",
+                 // locals doubles as globals (see buildPrototype).
+                 locals, locals);
+
+        result.found = locals["found"].cast<bool>();
+        result.a = locals["a"].cast<double>();
+        result.covera = locals["covera"].cast<double>();
+        result.hasCovera = locals["has_covera"].cast<bool>();
+        const std::string aseName = locals["structure"].cast<std::string>();
+        if (std::find(allowed.begin(), allowed.end(), aseName) != allowed.end())
+            result.crystalStructure = aseName;
+    } catch (const py::error_already_set&) {
+        // A lookup failure is non-fatal: the caller simply gets no auto-fill.
+        return ReferenceState{};
+    }
+    return result;
 }
 
 core::Structure BulkBuilder::buildPrototype(const PrototypeSpec& spec)

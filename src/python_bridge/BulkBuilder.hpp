@@ -61,8 +61,27 @@ public:
         bool primitive = false;     ///< reduce to the primitive cell
     };
 
+    /// Ground-state crystallographic reference for a single element, taken from
+    /// ASE's tabulated `ase.data.reference_states`. Used to auto-configure the
+    /// Bulk builder when the user picks an element (e.g. Cu → fcc a≈3.61,
+    /// Fe → bcc, C/Si → diamond).
+    struct ReferenceState {
+        bool found = false;             ///< the element has ASE reference data
+        std::string crystalStructure;   ///< mapped onto prototypes(); empty when
+                                        ///< ASE's structure isn't an offered
+                                        ///< prototype (leave the combo as-is)
+        double a = 0.0;                 ///< lattice constant a (Å); 0 = unknown
+        double covera = 0.0;            ///< c/a ratio (hcp-like); valid iff
+        bool hasCovera = false;         ///< hasCovera is true
+    };
+
     static core::Structure buildPrototype(const PrototypeSpec& spec);
     static core::Structure buildFromSpaceGroup(const SpaceGroupSpec& spec);
+
+    /// Look up `symbol`'s ground-state reference crystal (structure + lattice
+    /// constants) from ASE. Returns `found == false` for unknown symbols or
+    /// elements ASE has no reference state for. GUI-thread only.
+    static ReferenceState referenceState(const std::string& symbol);
 
     /// The crystal-structure names `buildPrototype` accepts, in the order
     /// they should be offered in the UI. Kept here (not in the dialog) so

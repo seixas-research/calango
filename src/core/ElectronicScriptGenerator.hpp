@@ -32,8 +32,8 @@ struct ElectronicConfig {
     int npoints = 80;
     int nvalence = 4;   ///< electrons per cell (FreeElectrons backend)
     // -- SCF settings (GPAW / Espresso) --
-    double ecutEv = 340.0;  ///< plane-wave cutoff (eV)
-    int scfKpts = 4;        ///< Monkhorst-Pack k-grid (n x n x n)
+    double ecutEv = 500.0;  ///< plane-wave cutoff (eV)
+    int scfKpts = 7;        ///< Monkhorst-Pack k-grid (n x n x n)
     /// Full GPAW parameter set (mode, xc, eigensolver, mixer, convergence,
     /// smearing, k-grid), shared with Geometry Optimization and Single-point
     /// so the same wizard controls drive all three. Only read by the Gpaw

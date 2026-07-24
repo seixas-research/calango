@@ -1,9 +1,9 @@
 #include "gui/SimulationWizardBase.hpp"
 
 #include "gui/CondaEnvs.hpp"
+#include "gui/EnginePresets.hpp"
 #include "gui/PythonHighlighter.hpp"
 #include "gui/ScriptStaging.hpp"
-#include "gui/SettingsManager.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
 #include <QComboBox>
@@ -36,47 +36,6 @@ namespace calango::gui {
 
 namespace {
 const auto kEnvSettingsKey = QStringLiteral("jobs/environmentPath");
-
-/// Stable, untranslated name used as the per-calculator env-preset key.
-QString calcPresetName(core::CalculatorKind kind)
-{
-    switch (kind) {
-    case core::CalculatorKind::Gpaw: return QStringLiteral("GPAW");
-    case core::CalculatorKind::Mace: return QStringLiteral("MACE");
-    case core::CalculatorKind::QuantumEspresso:
-        return QStringLiteral("QuantumEspresso");
-    case core::CalculatorKind::Siesta: return QStringLiteral("SIESTA");
-    case core::CalculatorKind::Orca: return QStringLiteral("ORCA");
-    case core::CalculatorKind::Vasp: return QStringLiteral("VASP");
-    case core::CalculatorKind::EMT: return QStringLiteral("EMT");
-    case core::CalculatorKind::Asap: return QStringLiteral("ASAP");
-    case core::CalculatorKind::LennardJones:
-        return QStringLiteral("LennardJones");
-    }
-    return QStringLiteral("default");
-}
-
-/// The per-calculator env-preset map, parsed from settings.json / QSettings.
-QJsonObject envPresets()
-{
-    const QString raw =
-        QSettings().value(SettingsManager::kEnvironmentPresets).toString();
-    return QJsonDocument::fromJson(raw.toUtf8()).object();
-}
-
-QString loadEnvPreset(core::CalculatorKind kind)
-{
-    return envPresets().value(calcPresetName(kind)).toString();
-}
-
-void saveEnvPreset(core::CalculatorKind kind, const QString& env)
-{
-    QJsonObject obj = envPresets();
-    obj[calcPresetName(kind)] = env;
-    QSettings().setValue(
-        SettingsManager::kEnvironmentPresets,
-        QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact)));
-}
 } // namespace
 
 SimulationWizardBase::SimulationWizardBase(QWidget* parent) : QDialog(parent) {}
@@ -102,7 +61,8 @@ void SimulationWizardBase::buildUi()
     // page later also gets it constructed later.
     if (hasSettingsStage_ && settingsFirst_)
         stack_->addWidget(buildSettingsPage());
-    stack_->addWidget(buildEnvironmentPage());
+    // The engine is selected at the top of the Calculator Settings stage; the
+    // Conda environment is resolved silently from Preferences (no env stage).
     stack_->addWidget(buildCalculatorPage());
     if (hasSettingsStage_ && !settingsFirst_)
         stack_->addWidget(buildSettingsPage());
@@ -115,23 +75,17 @@ void SimulationWizardBase::buildUi()
     auto* cancelButton = new QPushButton(tr("Cancel"), this);
     nextButton_ = new QPushButton(tr("Next ›"), this);
     exportButton_ = new QPushButton(tr("Export Script…"), this);
-    execSettingsButton_ = new QPushButton(tr("Execution Settings…"), this);
-    execSettingsButton_->setToolTip(
-        tr("Choose Local vs Remote execution and review the environment."));
     runRemoteButton_ = new QPushButton(tr("Run (Remote)"), this);
     runLocalButton_ = new QPushButton(tr("Run (Local)"), this);
     runLocalButton_->setDefault(true);
     bar->addWidget(backButton_);
     bar->addStretch(1);
     bar->addWidget(cancelButton);
-    bar->addWidget(execSettingsButton_);
     bar->addWidget(exportButton_);
     bar->addWidget(runRemoteButton_);
     bar->addWidget(nextButton_);
     bar->addWidget(runLocalButton_);
     root->addLayout(bar);
-    connect(execSettingsButton_, &QPushButton::clicked, this,
-            &SimulationWizardBase::showExecutionSettings);
 
     connect(backButton_, &QPushButton::clicked, this, &SimulationWizardBase::goBack);
     connect(nextButton_, &QPushButton::clicked, this, &SimulationWizardBase::goNext);
@@ -152,15 +106,18 @@ void SimulationWizardBase::buildUi()
 }
 
 // ---------------------------------------------------------------------------
-// Stage 2 — Calculator & Execution Environment
+// Calculator Settings — engine selection + per-engine backend knobs
 // ---------------------------------------------------------------------------
-QWidget* SimulationWizardBase::buildEnvironmentPage()
+QWidget* SimulationWizardBase::buildCalculatorPage()
 {
     auto* page = new QWidget(this);
     auto* layout = new QVBoxLayout(page);
-    auto* form = new QFormLayout;
-    layout->addLayout(form);
 
+    // Engine selection now lives at the top of this page (the separate
+    // "Calculator & Execution Environment" stage was removed). The Conda
+    // environment for the chosen engine is resolved silently from Preferences
+    // → "Python & Environments" (see pythonExecutable()).
+    auto* engineForm = new QFormLayout;
     calcCombo_ = new QComboBox(page);
     // A subclass may restrict the engine list (e.g. the Electronic Bands
     // wizard offers only DFT-capable calculators). Only allowed kinds appear.
@@ -177,94 +134,10 @@ QWidget* SimulationWizardBase::buildEnvironmentPage()
     addCalc(tr("EMT (fast test potential)"), core::CalculatorKind::EMT);
     addCalc(tr("ASAP (fast EMT / OpenKIM)"), core::CalculatorKind::Asap);
     addCalc(tr("Lennard-Jones"), core::CalculatorKind::LennardJones);
-    form->addRow(tr("Calculation engine:"), calcCombo_);
+    engineForm->addRow(tr("Calculation engine:"), calcCombo_);
+    layout->addLayout(engineForm);
     connect(calcCombo_, &QComboBox::currentIndexChanged, this,
             &SimulationWizardBase::updateCalculatorEnabled);
-
-    auto* envGroup = new QGroupBox(tr("Execution environment"), page);
-    auto* envLayout = new QVBoxLayout(envGroup);
-
-    // Conda environments auto-discovered from the Preferences "Conda Directory
-    // Path" (or common install locations). Picking one fills the field below.
-    const auto condaEnvs = CondaEnvs::discover();
-    if (!condaEnvs.isEmpty()) {
-        auto* condaRow = new QHBoxLayout;
-        condaRow->addWidget(new QLabel(tr("Conda environment:"), envGroup));
-        auto* condaCombo = new QComboBox(envGroup);
-        condaCombo->addItem(tr("(custom / embedded — use field below)"),
-                            QString());
-        for (const auto& env : condaEnvs)
-            condaCombo->addItem(env.name, env.path);
-        condaRow->addWidget(condaCombo, 1);
-        envLayout->addLayout(condaRow);
-        connect(condaCombo, &QComboBox::currentIndexChanged, this,
-                [this, condaCombo](int) {
-                    const QString path = condaCombo->currentData().toString();
-                    if (!path.isEmpty())
-                        envEdit_->setText(path);
-                });
-    }
-
-    auto* envRow = new QHBoxLayout;
-    envEdit_ = new QLineEdit(envGroup);
-    envEdit_->setPlaceholderText(
-        tr("Conda env folder or python executable (empty = embedded)"));
-    // Auto-fill from the current calculator's saved preset, falling back to the
-    // last global env for first-time use of a given engine.
-    {
-        const QString preset = loadEnvPreset(selectedCalculator());
-        envEdit_->setText(preset.isEmpty()
-                              ? QSettings().value(kEnvSettingsKey).toString()
-                              : preset);
-    }
-    auto* envButton = new QPushButton(tr("Browse…"), envGroup);
-    envRow->addWidget(envEdit_, 1);
-    envRow->addWidget(envButton);
-    envLayout->addLayout(envRow);
-    envStatus_ = new QLabel(envGroup);
-    envStatus_->setWordWrap(true);
-    envLayout->addWidget(envStatus_);
-    layout->addWidget(envGroup);
-    connect(envButton, &QPushButton::clicked, this, [this] {
-        const QString dir = QFileDialog::getExistingDirectory(
-            this, tr("Select Conda Environment Folder"));
-        if (!dir.isEmpty())
-            envEdit_->setText(dir);
-    });
-    connect(envEdit_, &QLineEdit::textChanged, this, [this] {
-        const QString python =
-            CondaEnvs::resolvePython(envEdit_->text());
-        if (envEdit_->text().trimmed().isEmpty())
-            envStatus_->setText(tr("Using embedded interpreter: %1")
-                                    .arg(QString::fromStdString(
-                                        pybridge::PythonEngine::instance().executable())));
-        else if (!python.isEmpty())
-            envStatus_->setText(tr("Runs will use: %1").arg(python));
-        else
-            envStatus_->setText(tr("No python interpreter found at this path."));
-        // Persist as this calculator's preset (and keep the global fallback in
-        // sync), unless this change came from a programmatic preset auto-fill.
-        QSettings().setValue(kEnvSettingsKey, envEdit_->text());
-        if (!loadingEnvPreset_)
-            saveEnvPreset(selectedCalculator(), envEdit_->text());
-    });
-
-    // The Execution Mode (Local vs Remote) selection was removed from this
-    // stage; the mode is now chosen via "Execution Settings…" on the Script
-    // Review stage (both Run buttons remain available there regardless).
-
-    layout->addStretch(1);
-    envEdit_->textChanged(envEdit_->text()); // seed the status label
-    return page;
-}
-
-// ---------------------------------------------------------------------------
-// Stage 3 — Calculator Settings
-// ---------------------------------------------------------------------------
-QWidget* SimulationWizardBase::buildCalculatorPage()
-{
-    auto* page = new QWidget(this);
-    auto* layout = new QVBoxLayout(page);
 
     calcSettingsHint_ = new QLabel(page);
     calcSettingsHint_->setWordWrap(true);
@@ -274,14 +147,14 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     auto* dftForm = new QFormLayout(dftGroup_);
     cutoffSpin_ = new QDoubleSpinBox(dftGroup_);
     cutoffSpin_->setRange(100.0, 2000.0);
-    cutoffSpin_->setValue(550.0);
+    cutoffSpin_->setValue(500.0);
     cutoffSpin_->setSuffix(tr(" eV"));
     dftForm->addRow(tr("Plane-wave cutoff:"), cutoffSpin_);
     auto* kptRow = new QHBoxLayout;
     for (auto*& spin : kptSpins_) {
         spin = new QSpinBox(dftGroup_);
         spin->setRange(1, 64);
-        spin->setValue(4);
+        spin->setValue(7);
         kptRow->addWidget(spin);
     }
     dftForm->addRow(tr("k-point grid:"), kptRow);
@@ -662,56 +535,8 @@ QWidget* SimulationWizardBase::buildReviewPage()
     return page;
 }
 
-void SimulationWizardBase::applyEnvPresetForCalculator()
-{
-    if (!envEdit_)
-        return;
-    // Load the newly-selected engine's saved env; guard the textChanged handler
-    // so the auto-fill isn't itself re-persisted as a user edit.
-    loadingEnvPreset_ = true;
-    const QString preset = loadEnvPreset(selectedCalculator());
-    envEdit_->setText(preset.isEmpty()
-                          ? QSettings().value(kEnvSettingsKey).toString()
-                          : preset);
-    loadingEnvPreset_ = false;
-}
-
-void SimulationWizardBase::showExecutionSettings()
-{
-    QDialog dlg(this);
-    dlg.setWindowTitle(tr("Execution Settings"));
-    auto* form = new QFormLayout(&dlg);
-
-    auto* localRadio =
-        new QRadioButton(tr("Local (background process on this machine)"), &dlg);
-    auto* remoteRadio = new QRadioButton(
-        tr("Remote (submit to the Remote Access manager / HPC queue)"), &dlg);
-    (preferRemote_ ? remoteRadio : localRadio)->setChecked(true);
-    form->addRow(tr("Execution mode:"), localRadio);
-    form->addRow(QString(), remoteRadio);
-
-    auto* env = new QLineEdit(envEdit_ ? envEdit_->text() : QString(), &dlg);
-    env->setPlaceholderText(
-        tr("Conda env folder or python executable (empty = embedded)"));
-    form->addRow(tr("Environment:"), env);
-
-    auto* box = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    connect(box, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(box, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    form->addRow(box);
-
-    if (dlg.exec() == QDialog::Accepted) {
-        preferRemote_ = remoteRadio->isChecked();
-        if (envEdit_)
-            envEdit_->setText(env->text()); // persists per-calculator
-        updateStage();                      // refresh the default Run button
-    }
-}
-
 void SimulationWizardBase::updateCalculatorEnabled()
 {
-    applyEnvPresetForCalculator();
     const auto kind = selectedCalculator();
     const bool isDft = kind == core::CalculatorKind::QuantumEspresso
         || kind == core::CalculatorKind::Vasp || kind == core::CalculatorKind::Gpaw
@@ -801,7 +626,6 @@ void SimulationWizardBase::updateStage()
     QStringList titles;
     if (hasSettingsStage_ && settingsFirst_)
         titles << settingsHeader();
-    titles << tr("Calculator & Execution Environment");
     titles << calculatorSettingsHeader();
     if (hasSettingsStage_ && !settingsFirst_)
         titles << settingsHeader();
@@ -815,14 +639,10 @@ void SimulationWizardBase::updateStage()
     backButton_->setEnabled(stage_ > 0);
     nextButton_->setVisible(!onReview);
     exportButton_->setVisible(onReview);
-    if (execSettingsButton_)
-        execSettingsButton_->setVisible(onReview);
     runLocalButton_->setVisible(onReview);
     runRemoteButton_->setVisible(onReview);
-    if (onReview) {
-        runLocalButton_->setDefault(!preferRemote_);
-        runRemoteButton_->setDefault(preferRemote_);
-    }
+    if (onReview)
+        runLocalButton_->setDefault(true);
 }
 
 void SimulationWizardBase::goNext()
@@ -863,8 +683,15 @@ QString SimulationWizardBase::script() const
 
 QString SimulationWizardBase::pythonExecutable() const
 {
-    const QString resolved =
-        CondaEnvs::resolvePython(envEdit_->text());
+    // Environment is bound silently from the Preferences → "Python &
+    // Environments" per-engine mapping. Resolution order: the engine's preset,
+    // then the last global env, then the embedded interpreter. An unset preset
+    // resolves to "" (CondaEnvs::resolvePython), i.e. the active $PATH / embedded
+    // python.
+    QString env = EnginePresets::envFor(selectedCalculator());
+    if (env.trimmed().isEmpty())
+        env = QSettings().value(kEnvSettingsKey).toString();
+    const QString resolved = CondaEnvs::resolvePython(env);
     if (!resolved.isEmpty())
         return resolved;
     return QString::fromStdString(pybridge::PythonEngine::instance().executable());

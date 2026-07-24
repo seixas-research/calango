@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.40
+    VERSION 26.7.41
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -160,6 +160,8 @@ qt_add_executable(calango
     src/core/DatasetSplit.cpp
     src/core/ElectronicScriptGenerator.hpp
     src/core/ElectronicScriptGenerator.cpp
+    src/core/OpticsScriptGenerator.hpp
+    src/core/OpticsScriptGenerator.cpp
     src/core/AdsorptionSites.hpp
     src/core/AdsorptionSites.cpp
     src/core/ClusterExpansion.hpp
@@ -287,6 +289,8 @@ qt_add_executable(calango
     src/gui/SlabWizard.cpp
     src/gui/PreferencesDialog.hpp
     src/gui/PreferencesDialog.cpp
+    src/gui/EnginePresets.hpp
+    src/gui/EnginePresets.cpp
     src/gui/EnvFile.hpp
     src/gui/EnvFile.cpp
     src/gui/ExamplesDialog.hpp
@@ -353,6 +357,8 @@ qt_add_executable(calango
     src/gui/SymmetryDialog.cpp
     src/gui/PartialChargeDialog.hpp
     src/gui/PartialChargeDialog.cpp
+    src/gui/ElfDialog.hpp
+    src/gui/ElfDialog.cpp
     src/gui/VacfDialog.hpp
     src/gui/VacfDialog.cpp
     src/gui/SimulationWizardBase.hpp
@@ -363,6 +369,10 @@ qt_add_executable(calango
     src/gui/SinglePointWizard.cpp
     src/gui/ElectronicBandsWizard.hpp
     src/gui/ElectronicBandsWizard.cpp
+    src/gui/OpticsWizard.hpp
+    src/gui/OpticsWizard.cpp
+    src/gui/OpticsResultsWindow.hpp
+    src/gui/OpticsResultsWindow.cpp
     src/gui/EffectiveBandsWizard.hpp
     src/gui/EffectiveBandsWizard.cpp
     src/gui/GeometryOptimizationWizard.hpp

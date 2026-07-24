@@ -19,6 +19,7 @@
 #include <QHeaderView>
 #include <QMessageBox>
 #include <QProgressDialog>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QSpinBox>
 #include <QStackedWidget>
@@ -390,11 +391,52 @@ QWidget* ExamplesDialog::createBulkTab()
     layout->addWidget(bulkStatus_);
     connect(bulkBuildButton_, &QPushButton::clicked,
             this, &ExamplesDialog::buildBulkCrystal);
-    connect(bulkFormulaEdit_, &QLineEdit::returnPressed,
-            this, &ExamplesDialog::buildBulkCrystal);
+    // Auto-configure structure + lattice constant from the chosen element when
+    // the user leaves the formula field.
+    connect(bulkFormulaEdit_, &QLineEdit::editingFinished,
+            this, &ExamplesDialog::autoFillBulkReference);
+    // Enter both applies the reference (so the build uses it) and builds.
+    connect(bulkFormulaEdit_, &QLineEdit::returnPressed, this, [this] {
+        autoFillBulkReference();
+        buildBulkCrystal();
+    });
 
     updateBulkParameterVisibility();
     return page;
+}
+
+void ExamplesDialog::autoFillBulkReference()
+{
+    if (loadingBulkReference_)
+        return;
+    // Only meaningful in prototype mode and for a single chemical element —
+    // a compound formula ("NaCl", "GaAs") has no single ground-state entry.
+    if (bulkModeCombo_->currentIndex() != 0)
+        return;
+    const QString formula = bulkFormulaEdit_->text().trimmed();
+    static const QRegularExpression kElement(
+        QStringLiteral("^[A-Z][a-z]?$"));
+    if (!kElement.match(formula).hasMatch())
+        return;
+
+    const auto ref =
+        pybridge::BulkBuilder::referenceState(formula.toStdString());
+    if (!ref.found)
+        return;
+
+    loadingBulkReference_ = true;
+    if (!ref.crystalStructure.empty())
+        bulkStructureCombo_->setCurrentText(
+            QString::fromStdString(ref.crystalStructure));
+    if (ref.a > 0.0)
+        bulkASpin_->setValue(ref.a);
+    if (ref.hasCovera && ref.covera > 0.0) {
+        bulkUseCovera_->setChecked(true);
+        bulkCoveraSpin_->setValue(ref.covera);
+    }
+    loadingBulkReference_ = false;
+    // Structure may have changed which parameter rows are relevant.
+    updateBulkParameterVisibility();
 }
 
 void ExamplesDialog::updateBulkParameterVisibility()

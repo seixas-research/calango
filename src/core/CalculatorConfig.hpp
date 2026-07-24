@@ -178,8 +178,8 @@ struct CalculatorConfig {
     int mdSampleInterval = 0;
 
     // DFT common knobs (used by the QE/VASP templates)
-    double planeWaveCutoffEv = 550.0;
-    int kpts[3] = {4, 4, 4};
+    double planeWaveCutoffEv = 500.0;
+    int kpts[3] = {7, 7, 7};
 
     // MACE machine-learning potential
     MaceModelSource maceSource = MaceModelSource::FoundationMP;
