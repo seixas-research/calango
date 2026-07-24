@@ -1,5 +1,7 @@
 #include "gui/SystemStatusBar.hpp"
 
+#include "ui/IconManager.hpp"
+
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLinearGradient>
@@ -89,20 +91,38 @@ SystemStatusBar::SystemStatusBar(QWidget* parent)
     tag->setFont(bold);
     layout->addWidget(tag);
 
-    const auto addMetric = [&](const QString& name, MiniLoadBar* bar,
-                               QLabel* label, const QString& tip) {
+    // Theme-tinted RemixIcon in front of each indicator's name. Small (14 px)
+    // to sit comfortably in the status bar; the text name is kept for clarity.
+    const auto iconLabel = [this](const QString& remixName) {
+        auto* label = new QLabel(this);
+        label->setPixmap(ui::IconManager::pixmap(
+            remixName, ui::IconManager::color(ui::IconManager::State::Active),
+            /*px=*/14));
+        return label;
+    };
+    const auto addMetric = [&](const QString& iconName, const QString& name,
+                               MiniLoadBar* bar, QLabel* label,
+                               const QString& tip) {
+        auto* icon = iconLabel(iconName);
+        icon->setToolTip(tip);
+        layout->addWidget(icon);
         layout->addWidget(new QLabel(name, this));
         layout->addWidget(bar);
         layout->addWidget(label);
         bar->setToolTip(tip);
         label->setToolTip(tip);
     };
-    addMetric(tr("CPU"), cpuBar_, cpuLabel_, tr("Calango CPU usage"));
-    addMetric(tr("RAM"), ramBar_, ramLabel_,
+    addMetric(QStringLiteral("cpu-line"), tr("CPU"), cpuBar_, cpuLabel_,
+              tr("Calango CPU usage"));
+    addMetric(QStringLiteral("ram-line"), tr("RAM"), ramBar_, ramLabel_,
               tr("Calango memory (MB and % of system RAM)"));
-    addMetric(tr("GPU"), gpuBar_, gpuLabel_,
+    addMetric(QStringLiteral("computer-line"), tr("GPU"), gpuBar_, gpuLabel_,
               tr("Calango GPU utilization (when GPU execution is active)"));
-    addMetric(tr("VRAM"), vramBar_, vramLabel_, tr("Calango VRAM usage"));
+    addMetric(QStringLiteral("hard-drive-2-line"), tr("VRAM"), vramBar_,
+              vramLabel_, tr("Calango VRAM usage"));
+    auto* threadsIcon = iconLabel(QStringLiteral("stack-line"));
+    threadsIcon->setToolTip(tr("Active thread count (OMP_NUM_THREADS)"));
+    layout->addWidget(threadsIcon);
     layout->addWidget(threadsLabel_);
     threadsLabel_->setToolTip(tr("Active thread count (OMP_NUM_THREADS)"));
 

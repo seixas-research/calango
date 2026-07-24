@@ -193,6 +193,74 @@ void ViewportWidget::setAxesSize(int px)
     update();
 }
 
+void ViewportWidget::setShowElementLabels(bool show)
+{
+    if (showElementLabels_ == show)
+        return;
+    showElementLabels_ = show;
+    update(); // overlay-only: no GPU buffers to rebuild
+}
+
+void ViewportWidget::setShowAtomIndexLabels(bool show)
+{
+    if (showIndexLabels_ == show)
+        return;
+    showIndexLabels_ = show;
+    update();
+}
+
+void ViewportWidget::drawAtomLabelsOverlay(QPainter& painter)
+{
+    if (!structure_ || structure_->empty())
+        return;
+    const auto& atoms = structure_->atoms();
+    // Per-atom text is only legible for modestly sized systems; past this the
+    // labels overlap into an unreadable smear and cost a QPainter text layout
+    // per atom every frame. Skip rather than choke on large structures.
+    constexpr std::size_t kMaxLabelledAtoms = 600;
+    if (atoms.size() > kMaxLabelledAtoms)
+        return;
+
+    QFont font = painter.font();
+    font.setBold(true);
+    painter.setFont(font);
+    const QFontMetricsF metrics(font);
+
+    // High-contrast text tinted to the background so labels read on either a
+    // light or a dark canvas, with a translucent pill behind each for legibility
+    // over busy geometry.
+    const bool darkBg = backgroundColor_.lightnessF() < 0.5;
+    const QColor textColor = darkBg ? QColor(238, 240, 244) : QColor(24, 26, 30);
+    const QColor pillColor = darkBg ? QColor(20, 22, 26, 170)
+                                    : QColor(245, 246, 248, 190);
+
+    for (std::size_t i = 0; i < atoms.size(); ++i) {
+        QPointF center;
+        if (!projectAtomToScreen(static_cast<int>(i), center))
+            continue; // behind the camera
+
+        QString label;
+        if (showElementLabels_)
+            label = QLatin1String(atoms[i].symbol());
+        if (showIndexLabels_) {
+            // 1-based, matching the atom numbering used in tables and the
+            // Bond Editor; prefixed so it never reads as an element symbol.
+            const QString idx = QStringLiteral("#%1").arg(i + 1);
+            label = label.isEmpty() ? idx : label + QLatin1Char(' ') + idx;
+        }
+        if (label.isEmpty())
+            continue;
+
+        QRectF pill = metrics.boundingRect(label).adjusted(-4, -2, 4, 2);
+        pill.moveCenter(center);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(pillColor);
+        painter.drawRoundedRect(pill, 4, 4);
+        painter.setPen(textColor);
+        painter.drawText(pill, Qt::AlignCenter, label);
+    }
+}
+
 std::array<std::pair<QVector3D, QString>, 3> ViewportWidget::axesVectors() const
 {
     if (axesLatticeMode_ && structure_ && structure_->cell().isDefined()) {
@@ -526,11 +594,14 @@ void ViewportWidget::paintGL()
         glActiveTexture(GL_TEXTURE0);
     }
 
-    if (showAxes_ || !measureAtoms_.empty()) {
+    if (showAxes_ || showElementLabels_ || showIndexLabels_
+        || !measureAtoms_.empty()) {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
         if (showAxes_)
             drawAxesOverlay(painter);
+        if (showElementLabels_ || showIndexLabels_)
+            drawAtomLabelsOverlay(painter);
         drawMeasurementOverlay(painter);
     }
 }

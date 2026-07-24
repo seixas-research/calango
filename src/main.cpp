@@ -17,10 +17,36 @@
 #include <QApplication>
 #include <QIcon>
 #include <QMessageBox>
+#include <QSettings>
 #include <QSurfaceFormat>
 
 #include <cstdio>
 #include <cstring>
+
+#ifdef Q_OS_MACOS
+namespace {
+/// Keep the top-level "Edit" menu developer-defined on macOS. AppKit injects
+/// its own text-editing items into any menu titled "Edit": "Start Dictation…",
+/// "Emoji & Symbols", and (on macOS 15 Sequoia) "Writing Tools"/"AutoFill".
+/// These are suppressed by user-defaults keys that AppKit reads while building
+/// the menu bar, so they must be set BEFORE the QApplication builds any menus.
+/// Writing directly into the application's own defaults domain (QSettings
+/// NativeFormat) reaches [NSUserDefaults standardUserDefaults] for the bundled
+/// .app; the Qt-side QAction menu-role overrides in MainWindow complete the
+/// cleanup.
+void disableMacEditMenuInjections()
+{
+    QSettings defaults;
+    // Documented AppKit keys.
+    defaults.setValue(QStringLiteral("NSDisabledDictationMenuItem"), true);
+    defaults.setValue(QStringLiteral("NSDisabledCharacterPaletteMenuItem"), true);
+    // Best-effort for the Sequoia additions (no long-documented public keys).
+    defaults.setValue(QStringLiteral("NSDisabledWritingToolsMenuItem"), true);
+    defaults.setValue(QStringLiteral("NSDisabledAutoFillMenuItem"), true);
+    defaults.sync();
+}
+} // namespace
+#endif
 
 int main(int argc, char* argv[])
 {
@@ -47,6 +73,10 @@ int main(int argc, char* argv[])
     QApplication::setApplicationName(QStringLiteral("Calango"));
     QApplication::setApplicationVersion(QStringLiteral(CALANGO_VERSION));
     QApplication::setOrganizationName(QStringLiteral("Seixas Research"));
+#ifdef Q_OS_MACOS
+    // Suppress AppKit's auto-injected Edit-menu items before menus are built.
+    disableMacEditMenuInjections();
+#endif
     // Window / taskbar / dock icon (embedded high-resolution brand icon,
     // transparent-background variant).
     QApplication::setWindowIcon(

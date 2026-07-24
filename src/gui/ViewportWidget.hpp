@@ -107,6 +107,14 @@ public Q_SLOTS:
     void setAxesSize(int px);
     int axesSize() const { return axesSizePx_; }
 
+    /// Per-atom text overlays drawn over the sphere centers (QPainter, like
+    /// the axes triad and measurement labels). Independent toggles: the
+    /// element symbol ("Fe", "O") and/or the 1-based atom index ("#12").
+    void setShowElementLabels(bool show);
+    void setShowAtomIndexLabels(bool show);
+    bool showElementLabels() const { return showElementLabels_; }
+    bool showAtomIndexLabels() const { return showIndexLabels_; }
+
     /// Live style access for UI panels. Call styleChanged() afterwards:
     /// geometry-affecting edits (scales, colors, mode) rebuild the GPU
     /// buffers; light-only edits just repaint.
@@ -234,6 +242,8 @@ private:
     /// Markers, connecting lines and the value label of the running
     /// distance/angle measurement.
     void drawMeasurementOverlay(QPainter& painter);
+    /// Per-atom element-symbol and/or index text over the sphere centers.
+    void drawAtomLabelsOverlay(QPainter& painter);
 
     /// Re-upload instance buffers if dirty (requires a current context).
     void ensureUploaded();
@@ -261,6 +271,8 @@ private:
     bool showAxes_ = true;
     bool axesLatticeMode_ = false;
     bool axesArrows_ = false;
+    bool showElementLabels_ = false; ///< overlay element symbols on atoms
+    bool showIndexLabels_ = false;   ///< overlay 1-based atom indices
     int axesSizePx_ = 92;
     QPointF lastMousePos_;
     InteractionMode interactionMode_ = InteractionMode::Rotate;

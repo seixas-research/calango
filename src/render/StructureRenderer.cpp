@@ -8,6 +8,8 @@
 #include <QtMath>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <utility>
 #include <vector>
 
@@ -72,6 +74,110 @@ void appendColoredVertex(std::vector<float>& data, const QVector3D& pos, const Q
     data.insert(data.end(),
                 {pos.x(), pos.y(), pos.z(), static_cast<float>(color.redF()),
                  static_cast<float>(color.greenF()), static_cast<float>(color.blueF())});
+}
+
+/// Convex hull of a small point set (coordination neighbors). Returns the hull
+/// faces as fan-triangulated convex polygons (`tris`, index triples into
+/// `pts`) and the unique hull boundary edges (`edges`). Robust and simple for
+/// the small N (≤ ~14) of a coordination shell: enumerate candidate face
+/// planes from point triples, keep those with every other point on one side,
+/// then group co-planar points into one polygon each. Empty output if the
+/// points are (near-)coplanar or degenerate (no enclosing volume).
+void convexHull(const std::vector<QVector3D>& pts,
+                std::vector<std::array<int, 3>>& tris,
+                std::vector<std::pair<int, int>>& edges)
+{
+    const int n = static_cast<int>(pts.size());
+    if (n < 4)
+        return;
+    QVector3D centroid;
+    for (const QVector3D& p : pts)
+        centroid += p;
+    centroid /= static_cast<float>(n);
+
+    struct Plane {
+        QVector3D normal; // outward
+        float d;          // plane: dot(normal, x) = d
+    };
+    std::vector<Plane> planes;
+    for (int i = 0; i < n; ++i) {
+        for (int j = i + 1; j < n; ++j) {
+            for (int k = j + 1; k < n; ++k) {
+                QVector3D nrm =
+                    QVector3D::crossProduct(pts[j] - pts[i], pts[k] - pts[i]);
+                const float len = nrm.length();
+                if (len < 1e-5f)
+                    continue; // collinear triple
+                nrm /= len;
+                float d = QVector3D::dotProduct(nrm, pts[i]);
+                bool pos = false, neg = false;
+                for (int m = 0; m < n; ++m) {
+                    if (m == i || m == j || m == k)
+                        continue;
+                    const float s = QVector3D::dotProduct(nrm, pts[m]) - d;
+                    if (s > 1e-3f)
+                        pos = true;
+                    else if (s < -1e-3f)
+                        neg = true;
+                }
+                if (pos && neg)
+                    continue; // interior plane, not on the hull
+                if (pos) {    // flip so the interior sits on the negative side
+                    nrm = -nrm;
+                    d = -d;
+                }
+                bool dup = false;
+                for (const Plane& p : planes) {
+                    if (QVector3D::dotProduct(p.normal, nrm) > 0.999f
+                        && std::abs(p.d - d) < 1e-2f) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (!dup)
+                    planes.push_back({nrm, d});
+            }
+        }
+    }
+
+    for (const Plane& plane : planes) {
+        // Gather every point lying on this face plane.
+        std::vector<int> face;
+        for (int m = 0; m < n; ++m) {
+            if (std::abs(QVector3D::dotProduct(plane.normal, pts[m]) - plane.d)
+                < 1e-2f)
+                face.push_back(m);
+        }
+        if (face.size() < 3)
+            continue;
+        // Order the face vertices CCW around their centroid in the plane.
+        QVector3D fc;
+        for (int idx : face)
+            fc += pts[idx];
+        fc /= static_cast<float>(face.size());
+        const QVector3D u = (pts[face[0]] - fc).normalized();
+        const QVector3D v = QVector3D::crossProduct(plane.normal, u);
+        std::sort(face.begin(), face.end(), [&](int a, int b) {
+            const QVector3D da = pts[a] - fc;
+            const QVector3D db = pts[b] - fc;
+            return std::atan2(QVector3D::dotProduct(da, v),
+                              QVector3D::dotProduct(da, u))
+                 < std::atan2(QVector3D::dotProduct(db, v),
+                              QVector3D::dotProduct(db, u));
+        });
+        // Fan-triangulate the convex polygon and record its boundary edges.
+        for (std::size_t t = 1; t + 1 < face.size(); ++t)
+            tris.push_back({face[0], face[t], face[t + 1]});
+        for (std::size_t e = 0; e < face.size(); ++e) {
+            int a = face[e];
+            int b = face[(e + 1) % face.size()];
+            if (a > b)
+                std::swap(a, b);
+            if (std::find(edges.begin(), edges.end(), std::pair{a, b})
+                == edges.end())
+                edges.emplace_back(a, b);
+        }
+    }
 }
 
 /// Interleaved position+normal unit sphere (radius 1, centered at origin).
@@ -212,6 +318,11 @@ float StructureRenderer::displayRadius(int atomicNumber, const Style& style)
     case RepresentationMode::Wireframe:
         radius = 0.25f; // used by picking only
         break;
+    case RepresentationMode::Polyhedral:
+        // Compact nodes so the coordination polyhedra read as the primary
+        // shape, with atoms still visible at the vertices/centers.
+        radius = std::max(0.18f, covalent * 0.3f);
+        break;
     }
     float perElement = 1.0f;
     if (const auto it = style.radiusScaleOverrides.find(atomicNumber);
@@ -293,6 +404,8 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
 
     createColoredBuffer(wireBonds_);
     createColoredBuffer(wireAtoms_);
+    createColoredBuffer(polyhedronFaces_);
+    createColoredBuffer(polyhedronEdges_);
 
     cellVao_.create();
     cellVao_.bind();
@@ -374,6 +487,54 @@ void StructureRenderer::uploadColoredBuffer(ColoredVertexBuffer& buffer,
     buffer.vbo.allocate(data.data(), static_cast<int>(data.size() * sizeof(float)));
 }
 
+void StructureRenderer::buildPolyhedra(const core::Structure* structure,
+                                       const std::set<int>* selection,
+                                       std::vector<float>& faceVertices,
+                                       std::vector<float>& edgeVertices) const
+{
+    if (!structure || structure->empty())
+        return;
+    const auto& atoms = structure->atoms();
+    const std::size_t count = atoms.size();
+
+    // Bonded-neighbor positions per atom in world coordinates, honoring
+    // periodic image offsets so a polyhedron straddling a cell boundary stays
+    // whole rather than collapsing to the in-cell images.
+    std::vector<std::vector<QVector3D>> neighbors(count);
+    for (const core::Bond& bond :
+         structure->detectBonds(style_.bondTolerance, style_.autoBonds)) {
+        const auto i = static_cast<std::size_t>(bond.i);
+        const auto j = static_cast<std::size_t>(bond.j);
+        neighbors[i].push_back(toQt(atoms[j].position + bond.imageOffset));
+        neighbors[j].push_back(toQt(atoms[i].position - bond.imageOffset));
+    }
+
+    for (std::size_t c = 0; c < count; ++c) {
+        // A coordination polyhedron needs at least four vertices to enclose a
+        // volume; fewer neighbors (edges/triangles) are left to the spheres.
+        if (neighbors[c].size() < 4)
+            continue;
+        std::vector<std::array<int, 3>> tris;
+        std::vector<std::pair<int, int>> edges;
+        convexHull(neighbors[c], tris, edges);
+        if (tris.empty())
+            continue; // coplanar coordination shell (no volume)
+
+        QColor color = resolvedAtomColor(c, atoms[c].atomicNumber);
+        if (selection && selection->count(static_cast<int>(c)) > 0)
+            color = selectionTint(color);
+        const QColor edgeColor = color.darker(170);
+
+        for (const auto& tri : tris)
+            for (int vi : tri)
+                appendColoredVertex(faceVertices, neighbors[c][vi], color);
+        for (const auto& [a, b] : edges) {
+            appendColoredVertex(edgeVertices, neighbors[c][a], edgeColor);
+            appendColoredVertex(edgeVertices, neighbors[c][b], edgeColor);
+        }
+    }
+}
+
 void StructureRenderer::setStructure(const core::Structure* structure,
                                      const std::set<int>* selection)
 {
@@ -414,7 +575,11 @@ void StructureRenderer::setStructure(const core::Structure* structure,
     std::vector<float> cellVertices;
     std::vector<float> cellTubeInstances;
 
-    const bool wantBonds = style_.mode != RepresentationMode::SpaceFilling;
+    const bool polyhedral = style_.mode == RepresentationMode::Polyhedral;
+    // Space-filling has no bonds; polyhedral replaces bonds with the coordination
+    // polyhedra (their edges read as the connectivity), so it skips them too.
+    const bool wantBonds =
+        style_.mode != RepresentationMode::SpaceFilling && !polyhedral;
     const bool wireframe = style_.mode == RepresentationMode::Wireframe;
 
     if (structure && !structure->empty()) {
@@ -611,6 +776,14 @@ void StructureRenderer::setStructure(const core::Structure* structure,
 
     uploadColoredBuffer(wireBonds_, wireBondVertices);
     uploadColoredBuffer(wireAtoms_, wireAtomVertices);
+
+    // Coordination polyhedra (Polyhedral mode only).
+    std::vector<float> polyFaceVertices;
+    std::vector<float> polyEdgeVertices;
+    if (polyhedral)
+        buildPolyhedra(structure, selection, polyFaceVertices, polyEdgeVertices);
+    uploadColoredBuffer(polyhedronFaces_, polyFaceVertices);
+    uploadColoredBuffer(polyhedronEdges_, polyEdgeVertices);
 
     cellTube_.instanceCount =
         static_cast<int>(cellTubeInstances.size()) / kFloatsPerInstance;
@@ -815,6 +988,7 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
     if (style_.mode == RepresentationMode::Wireframe) {
         wireProgram_.bind();
         wireProgram_.setUniformValue("uMvp", projection * view);
+        wireProgram_.setUniformValue("uAlpha", 1.0f);
         if (wireBonds_.vertexCount > 0) {
             wireBonds_.vao.bind();
             gl_->glDrawArrays(GL_LINES, 0, wireBonds_.vertexCount);
@@ -859,6 +1033,34 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
             gl_->glDisable(GL_BLEND);
         }
         meshProgram_.release();
+    }
+
+    // Coordination polyhedra: translucent hull faces over the opaque spheres,
+    // then their solid edge outline. Faces blend without writing depth (no
+    // order-independent sort here) so overlapping polyhedra stay readable;
+    // edges write depth normally so the wireframe reads crisply.
+    if (style_.mode == RepresentationMode::Polyhedral
+        && (polyhedronFaces_.vertexCount > 0 || polyhedronEdges_.vertexCount > 0)) {
+        wireProgram_.bind();
+        wireProgram_.setUniformValue("uMvp", projection * view);
+        if (polyhedronFaces_.vertexCount > 0) {
+            wireProgram_.setUniformValue("uAlpha", 0.38f);
+            gl_->glEnable(GL_BLEND);
+            gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            gl_->glDepthMask(GL_FALSE);
+            polyhedronFaces_.vao.bind();
+            gl_->glDrawArrays(GL_TRIANGLES, 0, polyhedronFaces_.vertexCount);
+            polyhedronFaces_.vao.release();
+            gl_->glDepthMask(GL_TRUE);
+            gl_->glDisable(GL_BLEND);
+        }
+        if (polyhedronEdges_.vertexCount > 0) {
+            wireProgram_.setUniformValue("uAlpha", 1.0f);
+            polyhedronEdges_.vao.bind();
+            gl_->glDrawArrays(GL_LINES, 0, polyhedronEdges_.vertexCount);
+            polyhedronEdges_.vao.release();
+        }
+        wireProgram_.release();
     }
 
     if (style_.showCell && cellTube_.instanceCount > 0) {

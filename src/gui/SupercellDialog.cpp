@@ -218,7 +218,7 @@ SupercellDialog::SupercellDialog(std::shared_ptr<const core::Structure> structur
                                  QWidget* parent)
     : QDialog(parent), structure_(std::move(structure))
 {
-    setWindowTitle(tr("Supercell — Transformation Matrix"));
+    setWindowTitle(tr("Supercell"));
 
     auto* rootLayout = new QVBoxLayout(this);
 

@@ -72,22 +72,11 @@ SymmetryDialog::SymmetryDialog(std::shared_ptr<const core::Structure> structure,
     statusLabel_->setWordWrap(true);
     layout->addWidget(statusLabel_);
 
+    // Inspection only: the "Standardize Cell" / "Reduce to Primitive Cell"
+    // transforms moved to the Edit Structure dialog, which owns cell editing.
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
-    standardizeButton_ =
-        buttons->addButton(tr("Standardize Cell"), QDialogButtonBox::ActionRole);
-    primitiveButton_ = buttons->addButton(tr("Reduce to Primitive Cell"),
-                                          QDialogButtonBox::ActionRole);
-    standardizeButton_->setToolTip(
-        tr("Replace the structure with its standardized conventional cell "
-           "(opens in a new tab)."));
-    primitiveButton_->setToolTip(
-        tr("Replace the structure with its primitive cell (opens in a new tab)."));
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-    connect(standardizeButton_, &QPushButton::clicked, this,
-            [this] { standardize(false); });
-    connect(primitiveButton_, &QPushButton::clicked, this,
-            [this] { standardize(true); });
 
     detect();
 }
@@ -100,8 +89,6 @@ void SymmetryDialog::detect()
     QApplication::restoreOverrideCursor();
 
     const bool ok = info.error.empty();
-    standardizeButton_->setEnabled(ok);
-    primitiveButton_->setEnabled(ok);
     if (!ok) {
         const QString reason = QString::fromStdString(info.error);
         for (QLabel* l : {spaceGroupLabel_, pointGroupLabel_, crystalLabel_,
@@ -144,21 +131,6 @@ void SymmetryDialog::detect()
             ? info.equivalentAtoms[static_cast<std::size_t>(i)]
             : -1;
         set(5, cls >= 0 ? tr("%1  (class %2)").arg(wyckoff).arg(cls) : wyckoff);
-    }
-}
-
-void SymmetryDialog::standardize(bool toPrimitive)
-{
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    try {
-        result_ = pybridge::AseBridge::standardizeCell(
-            *structure_, tolSpin_->value(), toPrimitive, /*idealize=*/true);
-        resultName_ = toPrimitive ? tr("Primitive cell") : tr("Standardized cell");
-        QApplication::restoreOverrideCursor();
-        accept();
-    } catch (const std::exception& e) {
-        QApplication::restoreOverrideCursor();
-        statusLabel_->setText(QString::fromUtf8(e.what()));
     }
 }
 

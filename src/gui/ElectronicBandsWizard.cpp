@@ -6,6 +6,7 @@
 
 #include <QGroupBox>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QLabel>
@@ -76,6 +77,21 @@ QWidget* ElectronicBandsWizard::buildCalculatorExtras()
     // rather than on the k-path page.
     pdosGroup_ = new QGroupBox(tr("Density of states"), this);
     auto* form = new QFormLayout(pdosGroup_);
+
+    // Charge-density baseline: a completed Single-Point Calculation whose
+    // converged density (.gpw) the bands/PDOS run reuses non-self-consistently
+    // (GPAW calc.fixed_density). Populated by the controller via
+    // setDensityBaselines(); "(none)" keeps the self-contained inline-SCF path.
+    baselineCombo_ = new QComboBox(pdosGroup_);
+    baselineCombo_->addItem(tr("(none — run a self-consistent SCF inline)"),
+                            QString());
+    baselineCombo_->setToolTip(
+        tr("Load the converged charge density saved by a completed Single-Point "
+           "Calculation and evaluate the band structure and PDOS at fixed "
+           "density (NSCF). Requires the GPAW backend."));
+    form->addRow(tr("Charge-density baseline:"), baselineCombo_);
+    connect(baselineCombo_, &QComboBox::currentIndexChanged, this,
+            [this] { refreshPreview(); });
 
     pdosCheck_ = new QCheckBox(
         tr("Compute element/orbital PDOS (GPAW backend)"), pdosGroup_);
@@ -167,7 +183,25 @@ QString ElectronicBandsWizard::generateScript() const
     config.ecutEv = base.planeWaveCutoffEv;
     config.scfKpts = base.kpts[0];
 
+    // A selected charge-density baseline (GPAW only) turns the run NSCF: load
+    // that .gpw and evaluate bands/PDOS at fixed density. The path is absolute,
+    // so the NSCF job reads the prior run's density in place — no staging.
+    if (baselineCombo_ && config.backend == core::ElectronicBackend::Gpaw) {
+        const QString path = baselineCombo_->currentData().toString();
+        if (!path.isEmpty())
+            config.baselineDensityPath = path.toStdString();
+    }
+
     return QString::fromStdString(core::generateElectronicScript(config));
+}
+
+void ElectronicBandsWizard::setDensityBaselines(
+    const QList<QPair<QString, QString>>& baselines)
+{
+    if (!baselineCombo_)
+        return;
+    for (const auto& [label, path] : baselines)
+        baselineCombo_->addItem(label, path);
 }
 
 } // namespace calango::gui

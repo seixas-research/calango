@@ -51,6 +51,8 @@ enum class RepresentationMode {
     BallAndStick,
     SpaceFilling, ///< CPK: van-der-Waals-sized spheres, no bonds
     Wireframe,    ///< bonds as colored lines, isolated atoms as points
+    Polyhedral,   ///< coordination polyhedra (translucent faces + edges) on
+                  ///< atoms with >= 4 bonded neighbors, plus atom spheres
 };
 
 /// One directional light, defined in VIEW space (camera-relative), so the
@@ -130,11 +132,12 @@ public:
         bool invertGradient = false;
         /// Distance fog (View -> Visual Effects): 0 = off, 1 = linear
         /// between fogStart/fogEnd, 2 = exponential with fogDensity.
-        /// fogColor tracks the viewport background.
-        int fogMode = 0;
+        /// fogColor tracks the viewport background. Enabled by default in the
+        /// exponential mode so structures gain depth cueing out of the box.
+        int fogMode = 2;
         float fogStart = 15.0f; ///< Å (view-space distance)
         float fogEnd = 80.0f;   ///< Å
-        float fogDensity = 0.03f;
+        float fogDensity = 0.300f;
         QColor fogColor{26, 28, 33};
     };
 
@@ -192,6 +195,13 @@ private:
     void createMesh(InstancedMesh& mesh,
                     const std::vector<float>& vertices,
                     const std::vector<unsigned int>& indices);
+    /// Coordination-polyhedra geometry (Polyhedral mode): translucent hull
+    /// faces (pos+color triangles) and solid hull edges (pos+color lines) for
+    /// every atom with >= 4 bonded neighbors. Emits into the two vertex vectors.
+    void buildPolyhedra(const core::Structure* structure,
+                        const std::set<int>* selection,
+                        std::vector<float>& faceVertices,
+                        std::vector<float>& edgeVertices) const;
     void createColoredBuffer(ColoredVertexBuffer& buffer);
     void uploadColoredBuffer(ColoredVertexBuffer& buffer, const std::vector<float>& data);
     void uploadLights();
@@ -227,6 +237,8 @@ private:
     InstancedMesh cellTube_; ///< thick cell wireframe (cellLineWidth > 1)
     ColoredVertexBuffer wireBonds_;  ///< GL_LINES
     ColoredVertexBuffer wireAtoms_;  ///< GL_POINTS (isolated atoms visible)
+    ColoredVertexBuffer polyhedronFaces_; ///< GL_TRIANGLES (translucent)
+    ColoredVertexBuffer polyhedronEdges_; ///< GL_LINES (opaque outline)
 
     // -- Shadow map --------------------------------------------------------
     /// 2048² is the sweet spot here: structures are compact, so the fitted

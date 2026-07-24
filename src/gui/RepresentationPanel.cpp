@@ -6,6 +6,7 @@
 
 #include <QColorDialog>
 #include <QComboBox>
+#include <QFrame>
 #include <QPushButton>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -59,7 +60,7 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
 
     modeCombo_ = new QComboBox(this);
     modeCombo_->addItems({tr("Ball-and-Stick"), tr("Space-filling (CPK)"),
-                          tr("Wireframe")});
+                          tr("Wireframe"), tr("Polyhedral")});
     form->addRow(tr("Mode:"), modeCombo_);
     connect(modeCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
         viewport_->setRepresentation(static_cast<render::RepresentationMode>(index));
@@ -214,6 +215,12 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     });
 
     // --- Per-atom vector overlay -------------------------------------------
+    // Horizontal divider marking the boundary between the atom/bond styling
+    // above and the vector-overlay section below.
+    auto* vectorSeparator = new QFrame(this);
+    vectorSeparator->setFrameShape(QFrame::HLine);
+    vectorSeparator->setFrameShadow(QFrame::Sunken);
+    form->addRow(vectorSeparator);
     // One selector rather than a checkbox per property: the arrows share a
     // single scale and would overlap illegibly if two were drawn at once, and
     // the list grows naturally as extended-XYZ files carry more columns.
@@ -297,7 +304,10 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     auto* backgroundButton = new QPushButton(this);
     backgroundButton->setFixedHeight(22);
     setButtonColor(backgroundButton, viewport_->backgroundColor());
-    form->addRow(tr("Background:"), backgroundButton);
+    // Background is the first control in the panel: it frames how every atom,
+    // bond and overlay colour below reads, so it belongs at the very top even
+    // though it is constructed last (insertRow(0) places it there regardless).
+    form->insertRow(0, tr("Background:"), backgroundButton);
     connect(backgroundButton, &QPushButton::clicked, this, [this, backgroundButton] {
         const QColor chosen = QColorDialog::getColor(
             viewport_->backgroundColor(), this, tr("Viewport Background Color"));

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.37
+    VERSION 26.7.38
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -319,6 +319,12 @@ qt_add_executable(calango
     src/gui/SettingsManager.cpp
     src/gui/ThemeManager.hpp
     src/gui/ThemeManager.cpp
+    src/ui/IconManager.hpp
+    src/ui/IconManager.cpp
+    src/gui/ConvexHullWindow.hpp
+    src/gui/ConvexHullWindow.cpp
+    src/gui/EffectiveBandsWindow.hpp
+    src/gui/EffectiveBandsWindow.cpp
     src/gui/SystemStatusBar.hpp
     src/gui/SystemStatusBar.cpp
     src/gui/CondaEnvs.hpp
@@ -341,6 +347,8 @@ qt_add_executable(calango
     src/gui/SupercellDialog.cpp
     src/gui/SymmetryDialog.hpp
     src/gui/SymmetryDialog.cpp
+    src/gui/PartialChargeDialog.hpp
+    src/gui/PartialChargeDialog.cpp
     src/gui/SimulationWizardBase.hpp
     src/gui/SimulationWizardBase.cpp
     src/gui/MolecularDynamicsWizard.hpp
@@ -395,6 +403,31 @@ qt_add_resources(calango "branding"
         assets/.internal/panel.png
         assets/.internal/logo_dark.png
         assets/.internal/logo_light.png
+)
+
+# RemixIcon UI icons (monochrome SVG, runtime-tinted by calango::ui::IconManager
+# for theme + widget state). One asset per glyph; the file stem is the logical
+# name passed to IconManager::icon(). See assets/.internal/icons/README.md.
+# Add the new file's path here when bundling another RemixIcon.
+qt_add_resources(calango "icons"
+    PREFIX "/"
+    FILES
+        assets/.internal/icons/add-circle-line.svg
+        assets/.internal/icons/anticlockwise-2-line.svg
+        assets/.internal/icons/box-3-line.svg
+        assets/.internal/icons/compasses-2-line.svg
+        assets/.internal/icons/computer-line.svg
+        assets/.internal/icons/cpu-line.svg
+        assets/.internal/icons/cursor-line.svg
+        assets/.internal/icons/drag-move-2-line.svg
+        assets/.internal/icons/file-copy-line.svg
+        assets/.internal/icons/focus-3-line.svg
+        assets/.internal/icons/font-size-2.svg
+        assets/.internal/icons/hard-drive-2-line.svg
+        assets/.internal/icons/hashtag.svg
+        assets/.internal/icons/ram-line.svg
+        assets/.internal/icons/ruler-2-line.svg
+        assets/.internal/icons/stack-line.svg
 )
 
 qt_add_resources(calango "remote"

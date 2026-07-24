@@ -284,5 +284,8 @@ __marimo__/
 # macOS
 .DS_Store
 
+# Icons
+RemixIcon/
+
 # AGY
 agy-report/

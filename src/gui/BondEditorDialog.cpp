@@ -2,13 +2,17 @@
 
 #include "gui/ViewportWidget.hpp"
 
+#include "core/Element.hpp"
+
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QTabWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <set>
 
 namespace calango::gui {
 
@@ -26,7 +30,7 @@ BondEditorDialog::BondEditorDialog(std::shared_ptr<core::Structure> structure,
     , overrideList_(new QListWidget(this))
 {
     setWindowTitle(tr("Bond Editor"));
-    resize(480, 520);
+    resize(520, 620);
 
     // --- Automatic perception ---------------------------------------------
     auto* autoGroup = new QGroupBox(tr("Automatic Perception"), this);
@@ -52,12 +56,84 @@ BondEditorDialog::BondEditorDialog(std::shared_ptr<core::Structure> structure,
         viewport_->styleChanged(true);
     });
 
-    // --- Manual bonds ------------------------------------------------------
+    // --- Manual bonds: two operational modes ------------------------------
     auto* manualGroup = new QGroupBox(tr("Manual Bonds"), this);
     auto* manualLayout = new QVBoxLayout(manualGroup);
+    auto* modeTabs = new QTabWidget(manualGroup);
+
+    // ----- Mode 1: By Chemical Elements -----------------------------------
+    auto* elementTab = new QWidget(modeTabs);
+    auto* elementForm = new QFormLayout(elementTab);
+    elementACombo_ = makeElementCombo();
+    elementBCombo_ = makeElementCombo();
+    // Sensible default second element: the next distinct species when there is
+    // more than one, so the pair does not start as a homonuclear A–A.
+    if (elementBCombo_->count() > 1)
+        elementBCombo_->setCurrentIndex(1);
+    auto* elementPairRow = new QHBoxLayout;
+    elementPairRow->addWidget(elementACombo_, 1);
+    elementPairRow->addWidget(new QLabel(QStringLiteral("–"), elementTab));
+    elementPairRow->addWidget(elementBCombo_, 1);
+    elementForm->addRow(tr("Element pair:"), elementPairRow);
+
+    minCutoffSpin_ = new QDoubleSpinBox(elementTab);
+    minCutoffSpin_->setRange(0.0, 20.0);
+    minCutoffSpin_->setDecimals(2);
+    minCutoffSpin_->setSingleStep(0.1);
+    minCutoffSpin_->setValue(0.0);
+    minCutoffSpin_->setSuffix(tr(" Å"));
+    elementForm->addRow(tr("Min. distance:"), minCutoffSpin_);
+
+    maxCutoffSpin_ = new QDoubleSpinBox(elementTab);
+    maxCutoffSpin_->setRange(0.1, 20.0);
+    maxCutoffSpin_->setDecimals(2);
+    maxCutoffSpin_->setSingleStep(0.1);
+    maxCutoffSpin_->setValue(2.0);
+    maxCutoffSpin_->setSuffix(tr(" Å"));
+    maxCutoffSpin_->setToolTip(
+        tr("Bond every pair of the chosen elements whose separation lies in "
+           "the [min, max] window. Distances are direct (no periodic images)."));
+    elementForm->addRow(tr("Max. distance:"), maxCutoffSpin_);
+
+    elementMatchLabel_ = new QLabel(elementTab);
+    elementMatchLabel_->setWordWrap(true);
+    elementForm->addRow(elementMatchLabel_);
+
+    auto* elementActionRow = new QHBoxLayout;
+    auto* addElementsButton = new QPushButton(tr("Bond Matching Pairs"), elementTab);
+    auto* removeElementsButton =
+        new QPushButton(tr("Unbond Matching Pairs"), elementTab);
+    elementActionRow->addWidget(addElementsButton);
+    elementActionRow->addWidget(removeElementsButton);
+    elementActionRow->addStretch(1);
+    elementForm->addRow(elementActionRow);
+    connect(addElementsButton, &QPushButton::clicked, this,
+            &BondEditorDialog::addBondsByElements);
+    connect(removeElementsButton, &QPushButton::clicked, this,
+            &BondEditorDialog::removeBondsByElements);
+    // Live count of how many pairs the current selection/window would affect.
+    const auto refreshElementMatch = [this] {
+        const std::size_t n = matchingElementPairs().size();
+        elementMatchLabel_->setText(
+            tr("%1 atom pair(s) match the current element/distance window.")
+                .arg(n));
+    };
+    for (QComboBox* combo : {elementACombo_, elementBCombo_})
+        connect(combo, &QComboBox::currentIndexChanged, this,
+                [refreshElementMatch](int) { refreshElementMatch(); });
+    for (QDoubleSpinBox* spin : {minCutoffSpin_, maxCutoffSpin_})
+        connect(spin, &QDoubleSpinBox::valueChanged, this,
+                [refreshElementMatch](double) { refreshElementMatch(); });
+    refreshElementMatch();
+    modeTabs->addTab(elementTab, tr("By Chemical Elements"));
+
+    // ----- Mode 2: By Atomic Indices --------------------------------------
+    auto* indexTab = new QWidget(modeTabs);
+    auto* indexLayout = new QVBoxLayout(indexTab);
 
     const int atomCount = static_cast<int>(structure_->size());
     auto* pairRow = new QHBoxLayout;
+    pairRow->addWidget(new QLabel(tr("Atom"), indexTab));
     for (auto* spin : {atomISpin_, atomJSpin_}) {
         spin->setRange(1, std::max(1, atomCount)); // 1-based, as displayed in tables
         pairRow->addWidget(spin, 1);
@@ -66,23 +142,40 @@ BondEditorDialog::BondEditorDialog(std::shared_ptr<core::Structure> structure,
     }
     atomJSpin_->setValue(std::min(2, std::max(1, atomCount)));
     pairRow->addWidget(useSelectionButton_);
-    manualLayout->addLayout(pairRow);
+    indexLayout->addLayout(pairRow);
+
+    auto* orderRow = new QHBoxLayout;
+    orderRow->addWidget(new QLabel(tr("Bond order:"), indexTab));
+    bondOrderCombo_ = new QComboBox(indexTab);
+    bondOrderCombo_->addItem(tr("Single"), 1);
+    bondOrderCombo_->addItem(tr("Double"), 2);
+    bondOrderCombo_->addItem(tr("Triple"), 3);
+    bondOrderCombo_->setToolTip(
+        tr("Order-n bonds render as n parallel cylinders."));
+    orderRow->addWidget(bondOrderCombo_, 1);
+    orderRow->addStretch(1);
+    indexLayout->addLayout(orderRow);
 
     pairInfoLabel_->setWordWrap(true);
-    manualLayout->addWidget(pairInfoLabel_);
+    indexLayout->addWidget(pairInfoLabel_);
 
     auto* actionRow = new QHBoxLayout;
-    auto* addButton = new QPushButton(tr("Add Bond"), manualGroup);
-    auto* suppressButton = new QPushButton(tr("Suppress Bond"), manualGroup);
+    auto* addButton = new QPushButton(tr("Create Bond"), indexTab);
+    auto* suppressButton = new QPushButton(tr("Suppress Bond"), indexTab);
     actionRow->addWidget(addButton);
     actionRow->addWidget(suppressButton);
     actionRow->addStretch(1);
-    manualLayout->addLayout(actionRow);
+    indexLayout->addLayout(actionRow);
+    indexLayout->addStretch(1);
     connect(addButton, &QPushButton::clicked, this, &BondEditorDialog::addBond);
     connect(suppressButton, &QPushButton::clicked, this, &BondEditorDialog::suppressBond);
     connect(useSelectionButton_, &QPushButton::clicked,
             this, &BondEditorDialog::useSelection);
+    modeTabs->addTab(indexTab, tr("By Atomic Indices"));
 
+    manualLayout->addWidget(modeTabs);
+
+    // ----- Shared override list -------------------------------------------
     manualLayout->addWidget(new QLabel(tr("Active overrides:"), manualGroup));
     manualLayout->addWidget(overrideList_, 1);
 
@@ -118,6 +211,68 @@ BondEditorDialog::BondEditorDialog(std::shared_ptr<core::Structure> structure,
     refreshOverrideList();
 }
 
+QComboBox* BondEditorDialog::makeElementCombo()
+{
+    auto* combo = new QComboBox(this);
+    // Distinct species actually present, sorted by atomic number, each item
+    // carrying its Z in the user-role data.
+    std::set<int> species;
+    for (const auto& atom : structure_->atoms())
+        species.insert(atom.atomicNumber);
+    for (const int z : species)
+        combo->addItem(QLatin1String(core::Elements::data(z).symbol), z);
+    return combo;
+}
+
+std::vector<std::pair<int, int>> BondEditorDialog::matchingElementPairs() const
+{
+    std::vector<std::pair<int, int>> pairs;
+    if (!elementACombo_ || !elementBCombo_ || elementACombo_->count() == 0)
+        return pairs;
+    const int za = elementACombo_->currentData().toInt();
+    const int zb = elementBCombo_->currentData().toInt();
+    const double dmin = minCutoffSpin_->value();
+    const double dmax = maxCutoffSpin_->value();
+    const auto& atoms = structure_->atoms();
+    for (std::size_t i = 0; i + 1 < atoms.size(); ++i) {
+        for (std::size_t j = i + 1; j < atoms.size(); ++j) {
+            const int zi = atoms[i].atomicNumber;
+            const int zj = atoms[j].atomicNumber;
+            const bool match = (zi == za && zj == zb) || (zi == zb && zj == za);
+            if (!match)
+                continue;
+            const double d = (atoms[j].position - atoms[i].position).norm();
+            if (d >= dmin && d <= dmax)
+                pairs.emplace_back(static_cast<int>(i), static_cast<int>(j));
+        }
+    }
+    return pairs;
+}
+
+void BondEditorDialog::addBondsByElements()
+{
+    const auto pairs = matchingElementPairs();
+    for (const auto& [i, j] : pairs)
+        structure_->addBondOverride(i, j);
+    refreshOverrideList();
+    if (!pairs.empty())
+        Q_EMIT bondsEdited();
+}
+
+void BondEditorDialog::removeBondsByElements()
+{
+    const auto pairs = matchingElementPairs();
+    for (const auto& [i, j] : pairs) {
+        // Both directions: drop an explicit "added" override and, failing that,
+        // suppress the auto-perceived bond so the window truly unbonds the pair.
+        structure_->clearBondOverride(i, j);
+        structure_->removeBondOverride(i, j);
+    }
+    refreshOverrideList();
+    if (!pairs.empty())
+        Q_EMIT bondsEdited();
+}
+
 std::pair<int, int> BondEditorDialog::currentPair() const
 {
     return {atomISpin_->value() - 1, atomJSpin_->value() - 1};
@@ -136,7 +291,11 @@ void BondEditorDialog::useSelection()
 void BondEditorDialog::addBond()
 {
     const auto [i, j] = currentPair();
+    if (i == j)
+        return;
+    const int order = bondOrderCombo_ ? bondOrderCombo_->currentData().toInt() : 1;
     structure_->addBondOverride(i, j);
+    structure_->setBondOrder(i, j, order);
     refreshOverrideList();
     Q_EMIT bondsEdited();
 }
@@ -177,12 +336,16 @@ void BondEditorDialog::refreshOverrideList()
             && j < static_cast<int>(atoms.size())) {
             const core::Vec3 d = atoms[static_cast<std::size_t>(j)].position
                 - atoms[static_cast<std::size_t>(i)].position;
-            text += QStringLiteral("   (%1%2 – %3%4, %5 Å)")
+            const int order = structure_->bondOrder(i, j);
+            text += QStringLiteral("   (%1%2 – %3%4, %5 Å")
                         .arg(QLatin1String(atoms[static_cast<std::size_t>(i)].symbol()))
                         .arg(i + 1)
                         .arg(QLatin1String(atoms[static_cast<std::size_t>(j)].symbol()))
                         .arg(j + 1)
                         .arg(d.norm(), 0, 'f', 3);
+            if (order > 1)
+                text += QStringLiteral(", order %1").arg(order);
+            text += QLatin1Char(')');
         }
         return text;
     };

@@ -40,6 +40,13 @@ struct ElectronicConfig {
     /// backend; `ecutEv`/`scfKpts` above remain the knobs the other DFT
     /// templates use.
     CalculatorConfig gpaw;
+    /// Filename (relative to the job directory) of a baseline GPAW restart file
+    /// (`.gpw`, written with mode="all") produced by a prior Single-Point
+    /// Calculation. When non-empty the GPAW backend loads this converged charge
+    /// density and runs the bands/PDOS strictly non-self-consistently
+    /// (calc.fixed_density) instead of re-running the SCF cycle inline. Empty
+    /// keeps the legacy self-contained SCF+NSCF script.
+    std::string baselineDensityPath;
     // -- PDOS (GPAW) --
     bool pdos = true;
     double pdosWidthEv = 0.1;

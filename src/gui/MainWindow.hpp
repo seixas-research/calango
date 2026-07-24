@@ -28,8 +28,6 @@ class BrandingPanel;
 class JobLogWidget;
 class NebDialog;
 class SimulationWizardBase;
-class ConvexHullPlotWidget;
-class SpectralHeatmapWidget;
 class MetricPlotWidget;
 class ProcessManagerPanel;
 class RemoteAccessPanel;
@@ -162,6 +160,9 @@ private Q_SLOTS:
     void showAdsorption();
     void showWarrenCowley();
     void showLocalEntropy();
+    /// Analysis → "Partial Charge Analysis…": Bader / Voronoi / Hirshfeld
+    /// partitioning as a background DFT job, tabulated and colour-mapped.
+    void showPartialCharge();
     void showRamanModes();
     void newProject();
     void showVolumetricData();
@@ -175,6 +176,18 @@ private Q_SLOTS:
 
     void onTabChanged(int index);
     void onTabCloseRequested(int index);
+    /// Keep documents_ in the same order as the (movable) tab bar and re-index
+    /// the two-digit sequence numbers after a drag reorder.
+    void onTabMoved(int from, int to);
+    /// Viewport toolbar / tab context menu → "Duplicate Workspace / Extract
+    /// Frame to New Tab". Clones the geometry currently on screen into a new,
+    /// independent static workspace tab. For a trajectory this extracts only
+    /// the frame the timeline is parked on, leaving the source tab's full
+    /// timeline intact.
+    void duplicateOrExtractFrame();
+    /// Right-click handler for the workspace tab bar: a context menu with the
+    /// duplicate/extract action and Close Tab, targeting the clicked tab.
+    void showTabContextMenu(const QPoint& pos);
 
     void about();
 
@@ -185,6 +198,9 @@ private:
         std::deque<std::shared_ptr<core::Structure>> undoStack;
         std::deque<std::shared_ptr<core::Structure>> redoStack;
         QString fileName;
+        /// Process / task descriptor shown in the tab title's third field
+        /// (e.g. "Single-Point Calculation"); empty for a plain structure.
+        QString task;
     };
 
     struct ProcessRecord; // full definition below
@@ -194,7 +210,12 @@ private:
     /// Creates an empty "Untitled" tab when none exists (for Add Atom).
     Document& ensureDocument();
     int addDocument(std::shared_ptr<core::Structure> structure, const QString& name,
-                    std::vector<std::shared_ptr<core::Structure>> frames = {});
+                    std::vector<std::shared_ptr<core::Structure>> frames = {},
+                    const QString& task = {});
+    /// Re-derive every tab's title as "NN - Formula - Task" with a zero-padded
+    /// two-digit sequence number, kept in sync as tabs are added, closed or
+    /// reordered. Formula is read live from each document's structure.
+    void refreshTabTitles();
     /// Push the current document's state into all views.
     void syncViewsToCurrent(bool frameCamera);
     /// Replace the current document's structure (supercell, slab, undo...).
@@ -290,8 +311,6 @@ private:
     MetricPlotWidget* temperaturePlot_ = nullptr;
     MetricPlotWidget* forcePlot_ = nullptr;
     MetricPlotWidget* pressurePlot_ = nullptr;
-    ConvexHullPlotWidget* convexHullPlot_ = nullptr;
-    SpectralHeatmapWidget* spectralPlot_ = nullptr;
     TimelineWidget* timeline_ = nullptr;
     QDockWidget* jobDock_ = nullptr;
     QDockWidget* visualEffectsDock_ = nullptr; ///< zone 9 (Lighting + effects)
@@ -322,6 +341,9 @@ private:
     /// Element placed by the viewport's Insertion mode (toolbar selector).
     int activeElementZ_ = 6;
     QToolButton* elementButton_ = nullptr;
+    /// The red "Add/Insert Atom" mode toggle; its label tracks the active
+    /// element symbol (white bold on red).
+    QToolButton* insertModeButton_ = nullptr;
     /// Shared between View → Orthographic and the frame-panel toolbar.
     QAction* orthoAction_ = nullptr;
 };

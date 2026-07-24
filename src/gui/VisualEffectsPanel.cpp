@@ -13,6 +13,7 @@
 #include <QSpinBox>
 #include <QLabel>
 #include <QSignalBlocker>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -26,11 +27,26 @@ VisualEffectsPanel::VisualEffectsPanel(ViewportWidget* viewport, QWidget* parent
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     auto* tabs = new QTabWidget(this);
+    // All four headers must stay fully visible: disable the scroll buttons and
+    // label elision so the tab bar always reports the width it truly needs,
+    // then feed that back into the panel's minimum width below.
+    tabs->setUsesScrollButtons(false);
+    tabs->setElideMode(Qt::ElideNone);
+    tabs->tabBar()->setExpanding(false);
+    // Logical sequence: Lighting → Shadow → Distance Fog → Depth Blur.
     tabs->addTab(new LightingPanel(viewport_, tabs), tr("Lighting"));
+    tabs->addTab(buildShadowTab(), tr("Shadow"));
     tabs->addTab(buildFogTab(), tr("Distance Fog"));
     tabs->addTab(buildDepthBlurTab(), tr("Depth Blur"));
-    tabs->addTab(buildShadowTab(), tr("Shadow"));
     layout->addWidget(tabs);
+
+    // Zone-9 dock width constraint: size the panel so the tab bar shows every
+    // header without horizontal scrolling or clipped text. The tab bar's size
+    // hint sums the four labels for the current font/style; the margin covers
+    // the tab-widget frame and the dock's own borders. Computed dynamically so
+    // it tracks font/DPI/translation changes rather than a hard-coded number.
+    const int headerWidth = tabs->tabBar()->sizeHint().width();
+    setMinimumWidth(headerWidth + 24);
 }
 
 QWidget* VisualEffectsPanel::buildShadowTab()

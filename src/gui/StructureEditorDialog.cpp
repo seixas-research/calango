@@ -2,6 +2,7 @@
 
 #include "core/Element.hpp"
 #include "gui/PeriodicTableDialog.hpp"
+#include "python_bridge/AseBridge.hpp"
 
 #include <QCheckBox>
 #include <QDialogButtonBox>
@@ -215,6 +216,26 @@ void StructureEditorDialog::buildCellSection(QVBoxLayout* parent)
             this, &StructureEditorDialog::centerInUnitCell);
     connect(vacuumButton_, &QPushButton::clicked,
             this, &StructureEditorDialog::addVacuumLayer);
+
+    // Spglib crystallographic cell transforms (moved here from Detect
+    // Symmetry): both replace the working structure in place.
+    auto* symmetryRow = new QHBoxLayout;
+    standardizeButton_ = new QPushButton(tr("Standardize Cell"), cellPage);
+    standardizeButton_->setToolTip(
+        tr("Convert lattice vectors and site positions to the standard "
+           "crystallographic convention (spglib.standardize_cell)."));
+    primitiveButton_ = new QPushButton(tr("Reduce to Primitive Cell"), cellPage);
+    primitiveButton_->setToolTip(
+        tr("Transform the cell into its minimal primitive representation "
+           "(spglib.find_primitive)."));
+    symmetryRow->addWidget(standardizeButton_);
+    symmetryRow->addWidget(primitiveButton_);
+    symmetryRow->addStretch(1);
+    cellLayout->addLayout(symmetryRow);
+    connect(standardizeButton_, &QPushButton::clicked,
+            this, &StructureEditorDialog::standardizeCell);
+    connect(primitiveButton_, &QPushButton::clicked,
+            this, &StructureEditorDialog::reduceToPrimitiveCell);
 
     cellStack_->addWidget(cellPage);
     groupLayout->addWidget(cellStack_);
@@ -478,6 +499,49 @@ void StructureEditorDialog::addVacuumLayer()
     refreshAll();
 }
 
+void StructureEditorDialog::standardizeCell()
+{
+    if (!hasCell()) {
+        QMessageBox::information(
+            this, windowTitle(),
+            tr("Define a unit cell first — cell standardization needs a "
+               "periodic lattice."));
+        return;
+    }
+    try {
+        // idealize=true snaps the lattice to its ideal symmetric form.
+        working_ = std::make_shared<core::Structure>(
+            pybridge::AseBridge::standardizeCell(*working_, /*symprec=*/1e-3,
+                                                 /*toPrimitive=*/false,
+                                                 /*idealize=*/true));
+        refreshAll();
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, tr("Standardize Cell"),
+                              QString::fromUtf8(e.what()));
+    }
+}
+
+void StructureEditorDialog::reduceToPrimitiveCell()
+{
+    if (!hasCell()) {
+        QMessageBox::information(
+            this, windowTitle(),
+            tr("Define a unit cell first — primitive-cell reduction needs a "
+               "periodic lattice."));
+        return;
+    }
+    try {
+        working_ = std::make_shared<core::Structure>(
+            pybridge::AseBridge::standardizeCell(*working_, /*symprec=*/1e-3,
+                                                 /*toPrimitive=*/true,
+                                                 /*idealize=*/false));
+        refreshAll();
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, tr("Reduce to Primitive Cell"),
+                              QString::fromUtf8(e.what()));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Section 2 — Atomic positions & elements
 // ---------------------------------------------------------------------------
@@ -633,6 +697,10 @@ void StructureEditorDialog::refreshCellWidgets()
     cellStack_->setCurrentIndex(defined ? 1 : 0);
     centerButton_->setEnabled(defined);
     vacuumButton_->setEnabled(defined);
+    if (standardizeButton_)
+        standardizeButton_->setEnabled(defined);
+    if (primitiveButton_)
+        primitiveButton_->setEnabled(defined);
     if (!defined)
         return;
 

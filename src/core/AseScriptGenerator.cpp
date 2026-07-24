@@ -342,6 +342,15 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "_calango_log.metric(0, energy=energy, max_force=fmax)\n"
                "print(f\"CALANGO_RESULT energy_eV={energy:.6f}\", flush=True)\n"
                "print(f\"CALANGO_RESULT fmax_eV_per_A={fmax:.6f}\", flush=True)\n";
+        if (c.calculator == CalculatorKind::Gpaw) {
+            // Save the converged charge density so a later Electronic Structure
+            // run can load it and evaluate bands/PDOS non-self-consistently
+            // (mode="all" writes the density + wavefunctions). This file is what
+            // the Electronic Structure wizard's baseline selector looks for.
+            out << "atoms.calc.write(\"single_point.gpw\", mode=\"all\")\n"
+                   "print(\"CALANGO_RESULT density_file=single_point.gpw\", "
+                   "flush=True)\n";
+        }
         break;
 
     case TaskKind::GeometryOptimization: {

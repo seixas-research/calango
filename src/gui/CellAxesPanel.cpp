@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -56,6 +57,13 @@ CellAxesPanel::CellAxesPanel(ViewportWidget* viewport, QWidget* parent)
         viewport_->style().cellLineWidth = static_cast<float>(value);
         viewport_->styleChanged(true);
     });
+
+    // Horizontal divider separating the unit-cell controls above from the
+    // axes-triad controls below.
+    auto* axesSeparator = new QFrame(this);
+    axesSeparator->setFrameShape(QFrame::HLine);
+    axesSeparator->setFrameShadow(QFrame::Sunken);
+    form->addRow(axesSeparator);
 
     auto* axesCheck = new QCheckBox(tr("Show axes triad"), this);
     axesCheck->setChecked(true);

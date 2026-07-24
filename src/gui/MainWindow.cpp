@@ -27,9 +27,9 @@
 #include "gui/BandPdosWindow.hpp"
 #include "gui/ClusterExpansionDialog.hpp"
 #include "gui/ClusterExpansionWizard.hpp"
-#include "gui/ConvexHullPlotWidget.hpp"
+#include "gui/ConvexHullWindow.hpp"
 #include "gui/EffectiveBandsWizard.hpp"
-#include "gui/SpectralHeatmapWidget.hpp"
+#include "gui/EffectiveBandsWindow.hpp"
 #include "gui/GeometryOptimizationWizard.hpp"
 #include "gui/ElectronicBandsWizard.hpp"
 #include "gui/MolecularDynamicsWizard.hpp"
@@ -41,6 +41,7 @@
 #include "gui/NebDialog.hpp"
 #include "gui/PhononPlotWindow.hpp"
 #include "gui/SupercellDialog.hpp"
+#include "gui/PartialChargeDialog.hpp"
 #include "gui/SymmetryDialog.hpp"
 #include "gui/DatasetManagerDialog.hpp"
 #include "gui/ProcessManagerPanel.hpp"
@@ -49,6 +50,7 @@
 #include "gui/MaceTrainerDialog.hpp"
 #include "gui/SystemStatusBar.hpp"
 #include "gui/ThemeManager.hpp"
+#include "ui/IconManager.hpp"
 #include "gui/WelcomeDialog.hpp"
 #include "gui/RamanDialog.hpp"
 #include "gui/SqsDialog.hpp"
@@ -95,6 +97,7 @@
 #include <QTimer>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPainter>
@@ -235,6 +238,24 @@ QIcon cameraToolbarIcon(const QString& kind)
     }
     return QIcon(pixmap);
 }
+
+/// Human-readable identifier for the C/C++ compiler that built this binary,
+/// derived from the standard predefined macros. Clang is checked before GCC
+/// because Clang also defines __GNUC__ for compatibility.
+QString compilerVersionString()
+{
+#if defined(__clang__)
+    return QStringLiteral("Clang %1.%2.%3")
+        .arg(__clang_major__).arg(__clang_minor__).arg(__clang_patchlevel__);
+#elif defined(__GNUC__)
+    return QStringLiteral("GCC %1.%2.%3")
+        .arg(__GNUC__).arg(__GNUC_MINOR__).arg(__GNUC_PATCHLEVEL__);
+#elif defined(_MSC_VER)
+    return QStringLiteral("MSVC %1").arg(_MSC_VER);
+#else
+    return QStringLiteral("unknown");
+#endif
+}
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent)
@@ -259,6 +280,7 @@ MainWindow::MainWindow(QWidget* parent)
     tabBar_->setDocumentMode(true);
     tabBar_->setTabsClosable(true);
     tabBar_->setExpanding(false);
+    tabBar_->setMovable(true); // drag-reorder; documents_ follows via onTabMoved
     viewport_ = new ViewportWidget(this);
     timeline_ = new TimelineWidget(this);
     timeline_->hide(); // appears when the current document has frames
@@ -266,7 +288,7 @@ MainWindow::MainWindow(QWidget* parent)
     // Compact icon-only camera toolbar living inside the frame panel
     // (replaces the old top application toolbar). Projection toggling lives
     // solely here on the 'O' toolbar button (no View-menu duplicate).
-    orthoAction_ = new QAction(cameraToolbarIcon(QStringLiteral("ortho")),
+    orthoAction_ = new QAction(ui::IconManager::icon(QStringLiteral("box-3-line")),
                                tr("Orthographic"), this);
     orthoAction_->setCheckable(true);
     orthoAction_->setShortcut(QKeySequence(Qt::Key_O));
@@ -285,12 +307,13 @@ MainWindow::MainWindow(QWidget* parent)
     // widgets keep the keys while typing (same as the View menu's "F").
     auto* modeGroup = new QActionGroup(this);
     modeGroup->setExclusive(true);
+    // `iconName` is a RemixIcon file stem, tinted to the theme by IconManager.
     const auto addModeAction =
-        [this, frameToolbar, modeGroup](const QString& icon, const QString& text,
+        [this, frameToolbar, modeGroup](const QString& iconName, const QString& text,
                                         ViewportWidget::InteractionMode mode,
                                         const QKeySequence& key) {
             QAction* action = frameToolbar->addAction(
-                cameraToolbarIcon(icon),
+                ui::IconManager::icon(iconName),
                 tr("%1  [%2]").arg(text, key.toString(QKeySequence::NativeText)));
             action->setCheckable(true);
             action->setShortcut(key);
@@ -300,31 +323,50 @@ MainWindow::MainWindow(QWidget* parent)
             return action;
         };
     QAction* rotateMode = addModeAction(
-        QStringLiteral("rotate"),
+        QStringLiteral("anticlockwise-2-line"),
         tr("Rotation mode — drag orbits the camera around the structure"),
         ViewportWidget::InteractionMode::Rotate, QKeySequence(Qt::Key_R));
-    addModeAction(QStringLiteral("pan"),
+    addModeAction(QStringLiteral("drag-move-2-line"),
                   tr("Translation mode — drag pans the scene"),
                   ViewportWidget::InteractionMode::Pan, QKeySequence(Qt::Key_T));
-    addModeAction(QStringLiteral("select"),
+    addModeAction(QStringLiteral("cursor-line"),
                   tr("Selection mode — drag a box to select multiple atoms "
                      "(and their bonds); Delete/Backspace removes them"),
                   ViewportWidget::InteractionMode::Select,
                   QKeySequence(Qt::Key_S));
-    addModeAction(QStringLiteral("insert"),
-                  tr("Insertion mode — click empty space to add an atom of "
-                     "the active element;\ndrag from one atom to another to "
-                     "bond them"),
-                  ViewportWidget::InteractionMode::Insert,
-                  QKeySequence(Qt::Key_I));
+    // "Add/Insert Atom" mode gets a prominent red button overlaid with the
+    // active element symbol in bold white, so the element about to be placed is
+    // always visible. Driven by a checkable action in the exclusive mode group
+    // (like the icon modes) but rendered as a styled text button.
+    auto* insertAction = new QAction(this);
+    insertAction->setCheckable(true);
+    insertAction->setShortcut(QKeySequence(Qt::Key_I));
+    insertAction->setToolTip(
+        tr("Insertion mode — click empty space to add an atom of the active "
+           "element;\ndrag from one atom to another to bond them  [I]"));
+    modeGroup->addAction(insertAction);
+    connect(insertAction, &QAction::triggered, this, [this] {
+        viewport_->setInteractionMode(ViewportWidget::InteractionMode::Insert);
+    });
+    insertModeButton_ = new QToolButton(frameToolbar);
+    insertModeButton_->setDefaultAction(insertAction);
+    insertModeButton_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    insertModeButton_->setStyleSheet(QStringLiteral(
+        "QToolButton { background-color: #D32F2F; color: white;"
+        " font-weight: bold; border: 1px solid #B71C1C;"
+        " border-radius: 3px; padding: 1px 6px; }"
+        "QToolButton:hover { background-color: #E53935; }"
+        "QToolButton:checked { background-color: #E53935;"
+        " border: 2px solid white; }"));
+    frameToolbar->addWidget(insertModeButton_);
     // Visual break: navigation/editing modes | measurement modes.
     frameToolbar->addSeparator();
-    addModeAction(QStringLiteral("distance"),
+    addModeAction(QStringLiteral("ruler-2-line"),
                   tr("Distance measurement — click two atoms to read their "
                      "separation in Å\n(click empty space to reset)"),
                   ViewportWidget::InteractionMode::MeasureDistance,
                   QKeySequence(Qt::Key_D));
-    addModeAction(QStringLiteral("angle"),
+    addModeAction(QStringLiteral("compasses-2-line"),
                   tr("Angle measurement — click three atoms (vertex second) "
                      "to read the angle in degrees\n(click empty space to "
                      "reset)"),
@@ -338,8 +380,12 @@ MainWindow::MainWindow(QWidget* parent)
     elementButton_->setToolTip(tr("Element inserted by Insertion mode — "
                                   "click to choose from the periodic table"));
     const auto updateElementButton = [this] {
-        elementButton_->setText(
-            QLatin1String(core::Elements::data(activeElementZ_).symbol));
+        const QString symbol =
+            QLatin1String(core::Elements::data(activeElementZ_).symbol);
+        elementButton_->setText(symbol);
+        // The red insert-mode button overlays the same active element symbol.
+        if (insertModeButton_)
+            insertModeButton_->setText(symbol);
     };
     updateElementButton();
     connect(elementButton_, &QToolButton::clicked, this,
@@ -354,7 +400,7 @@ MainWindow::MainWindow(QWidget* parent)
     frameToolbar->addSeparator();
 
     QAction* resetAction = frameToolbar->addAction(
-        cameraToolbarIcon(QStringLiteral("reset")),
+        ui::IconManager::icon(QStringLiteral("focus-3-line")),
         tr("Reset camera (center and frame the structure)  [F]"));
     // The 'F' shortcut lives here now that the View → Alignment submenu is gone.
     resetAction->setShortcut(QKeySequence(Qt::Key_F));
@@ -410,6 +456,46 @@ MainWindow::MainWindow(QWidget* parent)
         }
     }
 
+    // --- Workspace duplication / frame extraction -------------------------
+    // Clones the on-screen geometry into a new tab (a trajectory yields just
+    // its current frame as a static structure). Theme-tinted RemixIcon; also
+    // reachable from the tab bar's right-click menu.
+    frameToolbar->addSeparator();
+    QAction* duplicateAction = frameToolbar->addAction(
+        ui::IconManager::icon(QStringLiteral("file-copy-line")),
+        tr("Duplicate Workspace / Extract Frame to New Tab"));
+    duplicateAction->setToolTip(
+        tr("Duplicate the active workspace into a new tab. For a trajectory, "
+           "extract the frame currently shown as a standalone structure "
+           "(the original timeline stays in this tab)."));
+    connect(duplicateAction, &QAction::triggered, this,
+            &MainWindow::duplicateOrExtractFrame);
+
+    // --- Atom label overlays ----------------------------------------------
+    // Two independent checkable toggles that overlay per-atom text on the 3D
+    // canvas: element symbols (font-size glyph) and/or 1-based atom indices
+    // (hashtag glyph), both theme-tinted RemixIcons.
+    frameToolbar->addSeparator();
+    QAction* elementLabelsAction = frameToolbar->addAction(
+        ui::IconManager::icon(QStringLiteral("font-size-2")),
+        tr("Show element symbols"));
+    elementLabelsAction->setCheckable(true);
+    elementLabelsAction->setToolTip(
+        tr("Show element symbols — overlay each atom's chemical symbol "
+           "(Fe, O, Si…) on the 3D canvas"));
+    connect(elementLabelsAction, &QAction::toggled, viewport_,
+            &ViewportWidget::setShowElementLabels);
+
+    QAction* indexLabelsAction = frameToolbar->addAction(
+        ui::IconManager::icon(QStringLiteral("hashtag")),
+        tr("Show atomic indices"));
+    indexLabelsAction->setCheckable(true);
+    indexLabelsAction->setToolTip(
+        tr("Show atomic indices — overlay each atom's 1-based index (#1, #2…) "
+           "on the 3D canvas"));
+    connect(indexLabelsAction, &QAction::toggled, viewport_,
+            &ViewportWidget::setShowAtomIndexLabels);
+
     auto* central = new QWidget(this);
     auto* centralLayout = new QVBoxLayout(central);
     centralLayout->setContentsMargins(0, 0, 0, 0);
@@ -422,6 +508,11 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(tabBar_, &QTabBar::currentChanged, this, &MainWindow::onTabChanged);
     connect(tabBar_, &QTabBar::tabCloseRequested, this, &MainWindow::onTabCloseRequested);
+    connect(tabBar_, &QTabBar::tabMoved, this, &MainWindow::onTabMoved);
+    // Workspace context menu (Duplicate / Extract Frame, Close) on right-click.
+    tabBar_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(tabBar_, &QTabBar::customContextMenuRequested, this,
+            &MainWindow::showTabContextMenu);
     connect(timeline_, &TimelineWidget::frameChanged, this, &MainWindow::showFrame);
 
     createMenusAndDocks();
@@ -551,7 +642,8 @@ void MainWindow::createMenusAndDocks()
                    | QMainWindow::AllowTabbedDocks);
 
     // Menu bar order is fixed: File, Edit, View, Build, Simulation,
-    // Analysis (Help trails as is conventional).
+    // Analysis, Modules (Help trails as is conventional). "Modules" collects
+    // the MLIP and Alloys tool families between Analysis and Help.
     // ----- File: New | Open | Save | Import/Export | Workspace | Quit ------
     QMenu* fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(tr("&New Workspace"), QKeySequence::New,
@@ -623,6 +715,19 @@ void MainWindow::createMenusAndDocks()
                         this, &MainWindow::showPreferences);
     updateUndoActions();
 
+#ifdef Q_OS_MACOS
+    // Keep the Edit menu strictly developer-defined on macOS. Qt otherwise
+    // auto-assigns Mac menu *roles* to actions it recognises by text (e.g.
+    // "Preferences…" would be hoisted into the application menu); forcing
+    // NoRole keeps every entry where it was declared. AppKit *also* injects
+    // its own text-editing items ("Start Dictation…", "Emoji & Symbols", and
+    // on Sequoia "Writing Tools"/"AutoFill") into any menu titled "Edit";
+    // those are disabled via the user-defaults keys set in main() before the
+    // menu bar is built (see disableMacEditMenuInjections()).
+    for (QAction* action : editMenu->actions())
+        action->setMenuRole(QAction::NoRole);
+#endif
+
     // ----- View: effects | panels ------------------------------------------
     // Projection (perspective/orthographic) lives solely on the frame-panel
     // toolbar 'O' button; unit-cell visibility + wireframe styling live in the
@@ -646,15 +751,12 @@ void MainWindow::createMenusAndDocks()
                          this, &MainWindow::openNanoparticleBuilder);
     buildMenu->addAction(tr("&Surface Slab…"), this, &MainWindow::cleaveSurface);
     buildMenu->addAction(tr("&Nanomaterials…"), this, &MainWindow::openNanoBuilder);
-    buildMenu->addAction(tr("Su&percell (Transformation Matrix)…"),
+    buildMenu->addAction(tr("Su&percell…"),
                          this, &MainWindow::openSupercellBuilder);
-    buildMenu->addAction(tr("Cluster &Expansion…"),
-                         this, &MainWindow::openClusterExpansion);
+    // Cluster Expansion, SQS and Warren-Cowley now live under Modules → Alloys;
+    // the alloy toolchain is grouped there rather than split across Build /
+    // Simulation / Analysis.
     buildMenu->addSeparator();
-    // Not part of the requested top-level ordering, but still Build tools:
-    // grouped below the separator so the seven primary entries read cleanly.
-    buildMenu->addAction(tr("Special &Quasirandom Structure (SQS)…"),
-                         this, &MainWindow::openSqsBuilder);
     buildMenu->addAction(tr("Structure Perturbation / N&oise…"),
                          this, &MainWindow::addRandomNoise);
     buildMenu->addSeparator();
@@ -676,10 +778,7 @@ void MainWindow::createMenusAndDocks()
                               this, &MainWindow::openMonteCarlo);
     simulationMenu->addAction(tr("&Nudged Elastic Band (NEB)…"),
                               this, &MainWindow::openNudgedElasticBand);
-    simulationMenu->addAction(tr("Cl&uster Expansion Calculation…"),
-                              this, &MainWindow::clusterExpansionCalculation);
-    simulationMenu->addAction(tr("&Effective Bands (Unfolding)…"),
-                              this, &MainWindow::effectiveBandsCalculation);
+    // Cluster Expansion Calculation moved to Modules → Alloys.
     simulationMenu->addSeparator();
     // "New Remote Calculation…" was removed along with the legacy calculator
     // dialog it opened: remote execution is now chosen inside each wizard
@@ -688,7 +787,11 @@ void MainWindow::createMenusAndDocks()
     // entry point would generate scripts the wizards no longer own.
     simulationMenu->addAction(tr("Electronic &Structure…"),
                               this, &MainWindow::showBandStructure);
-    // Dataset Manager moved to the new MLIP menu.
+    // Effective Bands (Popescu-Zunger unfolding) reads out of an electronic
+    // structure run, so it sits immediately after "Electronic Structure…".
+    simulationMenu->addAction(tr("&Effective Bands (Unfolding)…"),
+                              this, &MainWindow::effectiveBandsCalculation);
+    // Dataset Manager and Trainer moved to Modules → MLIP.
 
     // ----- Analysis: spec order, reciprocal-space tools at the end ---------
     QMenu* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
@@ -704,10 +807,11 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showDistributions);
     analysisMenu->addAction(tr("&Coordination Numbers (CN / GCN)…"),
                             this, &MainWindow::showCoordination);
-    analysisMenu->addAction(tr("&Warren-Cowley analysis"),
-                            this, &MainWindow::showWarrenCowley);
+    // Warren-Cowley (short-range order) moved to Modules → Alloys.
     analysisMenu->addAction(tr("Local &Entropy Analysis…"),
                             this, &MainWindow::showLocalEntropy);
+    analysisMenu->addAction(tr("Partial &Charge Analysis…"),
+                            this, &MainWindow::showPartialCharge);
     analysisMenu->addAction(tr("Ra&man Modes…"),
                             this, &MainWindow::showRamanModes);
     analysisMenu->addAction(tr("&Volumetric Data…"),
@@ -716,11 +820,26 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showAdsorption);
     // Brillouin Zone Builder moved to the Build menu.
 
-    // ----- MLIP: machine-learning interatomic potential workflows ----------
-    QMenu* mlipMenu = menuBar()->addMenu(tr("&MLIP"));
+    // ----- Modules: MLIP + Alloys tool families (between Analysis and Help) -
+    // "Modules" gathers the machine-learning-potential workflow and the alloy
+    // toolchain (cluster expansion, SQS, short-range order) that were formerly
+    // scattered across Build / Simulation / Analysis.
+    QMenu* modulesMenu = menuBar()->addMenu(tr("&Modules"));
+
+    QMenu* mlipMenu = modulesMenu->addMenu(tr("&MLIP"));
     mlipMenu->addAction(tr("&Trainer…"), this, &MainWindow::openMaceTrainer);
     mlipMenu->addAction(tr("&Dataset Manager…"),
                         this, &MainWindow::showDatasetManager);
+
+    QMenu* alloysMenu = modulesMenu->addMenu(tr("&Alloys"));
+    alloysMenu->addAction(tr("Cluster &Expansion Builder…"),
+                          this, &MainWindow::openClusterExpansion);
+    alloysMenu->addAction(tr("Cluster Expansion &Calculation…"),
+                          this, &MainWindow::clusterExpansionCalculation);
+    alloysMenu->addAction(tr("Special &Quasirandom Structure (SQS)…"),
+                          this, &MainWindow::openSqsBuilder);
+    alloysMenu->addAction(tr("&Warren-Cowley Analysis…"),
+                          this, &MainWindow::showWarrenCowley);
 
     // Help trails the menu bar: online resources first, About last (as is
     // conventional). New documentation/support links belong in kHelpLinks.
@@ -915,120 +1034,11 @@ void MainWindow::createMenusAndDocks()
     jobTabs->addTab(plotPage(forcePlot_), tr("Force"));
     jobTabs->addTab(plotPage(pressurePlot_), tr("Pressure"));
 
-    // Convex Hull: populated only by a Cluster Expansion Calculation, so it
-    // shows its own empty-state hint until one finishes.
-    convexHullPlot_ = new ConvexHullPlotWidget(jobTabs);
-    {
-        auto* page = new QWidget(jobTabs);
-        auto* pageLayout = new QVBoxLayout(page);
-        pageLayout->setContentsMargins(0, 0, 0, 2);
-        pageLayout->setSpacing(2);
-        pageLayout->addWidget(convexHullPlot_, 1);
-        auto* row = new QHBoxLayout;
-        row->addStretch(1);
-        auto* exportHull = new QPushButton(tr("Export Data…"), page);
-        row->addWidget(exportHull);
-        pageLayout->addLayout(row);
-        connect(exportHull, &QPushButton::clicked, convexHullPlot_,
-                &ConvexHullPlotWidget::exportData);
-        jobTabs->addTab(page, tr("Convex Hull"));
-    }
+    // Convex Hull and Effective Bands no longer live in the Results dock:
+    // each opens in its own standalone window (ConvexHullWindow /
+    // EffectiveBandsWindow) from onProcessResultRequested, so the analytics
+    // get a resizable canvas instead of a cramped zone-10 tab.
 
-    // Effective Bands: the unfolded spectral function A(k, E). Its controls
-    // are view-side only — sigma, threshold and the Fermi shift all re-derive
-    // from the stored weights, so none of them needs the job re-run.
-    spectralPlot_ = new SpectralHeatmapWidget(jobTabs);
-    {
-        auto* page = new QWidget(jobTabs);
-        auto* pageLayout = new QVBoxLayout(page);
-        pageLayout->setContentsMargins(0, 0, 0, 2);
-        pageLayout->setSpacing(2);
-        pageLayout->addWidget(spectralPlot_, 1);
-
-        auto* row = new QHBoxLayout;
-        row->addWidget(new QLabel(tr("Colormap:"), page));
-        auto* gradientCombo = new QComboBox(page);
-        // Values are render::ColorGradient; Greys is served by the inverted
-        // Hot ramp, so the four the workflow calls for are all available.
-        gradientCombo->addItem(tr("Viridis"),
-                               static_cast<int>(render::ColorGradient::Viridis));
-        gradientCombo->addItem(tr("Plasma"),
-                               static_cast<int>(render::ColorGradient::Plasma));
-        gradientCombo->addItem(tr("Coolwarm"),
-                               static_cast<int>(render::ColorGradient::Coolwarm));
-        gradientCombo->addItem(tr("Inferno"),
-                               static_cast<int>(render::ColorGradient::Inferno));
-        gradientCombo->addItem(tr("Cividis"),
-                               static_cast<int>(render::ColorGradient::Cividis));
-        row->addWidget(gradientCombo);
-        connect(gradientCombo, &QComboBox::currentIndexChanged, this,
-                [this, gradientCombo](int) {
-                    spectralPlot_->setGradient(static_cast<render::ColorGradient>(
-                        gradientCombo->currentData().toInt()));
-                });
-
-        row->addWidget(new QLabel(tr("Threshold:"), page));
-        auto* thresholdSpin = new QDoubleSpinBox(page);
-        thresholdSpin->setRange(0.0, 0.95);
-        thresholdSpin->setDecimals(3);
-        thresholdSpin->setSingleStep(0.01);
-        thresholdSpin->setValue(0.02);
-        thresholdSpin->setToolTip(
-            tr("Intensity below this fraction of the maximum is not drawn. "
-               "Unfolding always produces a low-weight haze; raising this "
-               "isolates the host-like bands."));
-        row->addWidget(thresholdSpin);
-        connect(thresholdSpin, &QDoubleSpinBox::valueChanged, this,
-                [this](double v) { spectralPlot_->setIntensityThreshold(v); });
-
-        row->addWidget(new QLabel(tr("σ:"), page));
-        auto* sigmaSpin = new QDoubleSpinBox(page);
-        sigmaSpin->setRange(0.001, 2.0);
-        sigmaSpin->setDecimals(3);
-        sigmaSpin->setSingleStep(0.01);
-        sigmaSpin->setValue(0.05);
-        sigmaSpin->setSuffix(tr(" eV"));
-        sigmaSpin->setToolTip(
-            tr("Gaussian broadening, re-applied to the stored spectral "
-               "weights — adjustable without re-running the calculation."));
-        row->addWidget(sigmaSpin);
-        connect(sigmaSpin, &QDoubleSpinBox::valueChanged, this,
-                [this](double v) { spectralPlot_->setSigma(v); });
-
-        auto* shiftCheck = new QCheckBox(tr("E − E_F"), page);
-        shiftCheck->setChecked(true);
-        shiftCheck->setToolTip(tr("Plot energies relative to the Fermi level."));
-        row->addWidget(shiftCheck);
-        connect(shiftCheck, &QCheckBox::toggled, this,
-                [this](bool on) { spectralPlot_->setShiftFermiToZero(on); });
-
-        row->addStretch(1);
-        auto* exportImage = new QPushButton(tr("Export Image…"), page);
-        connect(exportImage, &QPushButton::clicked, this,
-                [this] { spectralPlot_->exportImage(this); });
-        row->addWidget(exportImage);
-        auto* exportData = new QPushButton(tr("Export Data…"), page);
-        connect(exportData, &QPushButton::clicked, this,
-                [this] { spectralPlot_->exportData(this); });
-        row->addWidget(exportData);
-        pageLayout->addLayout(row);
-        jobTabs->addTab(page, tr("Effective Bands"));
-    }
-    // Double-clicking a configuration jumps the viewport to that frame of the
-    // optimized trajectory (once it has been loaded into a tab).
-    connect(convexHullPlot_, &ConvexHullPlotWidget::frameActivated, this,
-            [this](int frame) {
-                if (Document* doc = currentDocument();
-                    doc && frame >= 0
-                    && frame < static_cast<int>(doc->frames.size())) {
-                    timeline_->setCurrentFrame(frame);
-                } else {
-                    statusBar()->showMessage(
-                        tr("Load the optimized ensemble (Process panel → Load "
-                           "Result) to inspect configuration %1")
-                            .arg(frame));
-                }
-            });
     // Wrap the tab widget with a small top margin: without it the tab
     // titles (Log/Energy/...) render flush against the dock's title bar
     // and visually collide with it (zone-10 overflow).
@@ -1086,7 +1096,10 @@ void MainWindow::createMenusAndDocks()
     resizeDocks({reprDock}, {kColumnWidth}, Qt::Horizontal);
     for (QDockWidget* dock : {visualEffectsDock_, cellAxesDock}) {
         if (QWidget* panel = dock->widget())
-            panel->setMinimumWidth(kColumnWidth);
+            // Never shrink below a panel's own minimum: the Visual Effects
+            // panel derives a wider minimum from its four sub-tab headers so
+            // they stay fully visible, and that must win over the column width.
+            panel->setMinimumWidth(qMax(kColumnWidth, panel->minimumWidth()));
     }
     // Left column heights: shrink the compact Structure summary (its ~7
     // property rows fit comfortably) and hand the freed space to the
@@ -1204,19 +1217,60 @@ MainWindow::Document& MainWindow::ensureDocument()
 
 int MainWindow::addDocument(std::shared_ptr<core::Structure> structure,
                             const QString& name,
-                            std::vector<std::shared_ptr<core::Structure>> frames)
+                            std::vector<std::shared_ptr<core::Structure>> frames,
+                            const QString& task)
 {
     auto document = std::make_unique<Document>();
     document->structure = std::move(structure);
     document->frames = std::move(frames);
     document->fileName = name;
+    document->task = task;
     documents_.push_back(std::move(document));
 
+    // The tab text is derived by refreshTabTitles(); the placeholder is only
+    // shown for the instant before it runs.
     const int index = tabBar_->addTab(name);
+    refreshTabTitles();
     tabBar_->setCurrentIndex(index); // triggers onTabChanged -> sync
     if (tabBar_->currentIndex() == index)
         syncViewsToCurrent(true); // first tab: currentChanged may not fire
     return index;
+}
+
+void MainWindow::refreshTabTitles()
+{
+    for (std::size_t i = 0; i < documents_.size(); ++i) {
+        const Document* doc = documents_[i].get();
+        // Field 1: zero-padded two-digit sequence number (01, 02, …).
+        QStringList fields{
+            QStringLiteral("%1").arg(static_cast<int>(i) + 1, 2, 10,
+                                     QLatin1Char('0'))};
+        // Field 2: live chemical formula, falling back to the file/source name.
+        QString formula;
+        if (doc->structure && !doc->structure->empty())
+            formula = QString::fromStdString(doc->structure->chemicalFormula());
+        fields << (formula.isEmpty()
+                       ? (doc->fileName.isEmpty() ? tr("Untitled") : doc->fileName)
+                       : formula);
+        // Field 3: process / task name, when the document has one.
+        if (!doc->task.isEmpty())
+            fields << doc->task;
+        tabBar_->setTabText(static_cast<int>(i),
+                            fields.join(QStringLiteral(" - ")));
+    }
+}
+
+void MainWindow::onTabMoved(int from, int to)
+{
+    if (from < 0 || to < 0 || from >= static_cast<int>(documents_.size())
+        || to >= static_cast<int>(documents_.size()) || from == to)
+        return;
+    // Mirror the drag in documents_ so index-based lookups stay aligned with
+    // the tab bar, then re-number the sequence field.
+    auto moved = std::move(documents_[static_cast<std::size_t>(from)]);
+    documents_.erase(documents_.begin() + from);
+    documents_.insert(documents_.begin() + to, std::move(moved));
+    refreshTabTitles();
 }
 
 void MainWindow::onTabChanged(int index)
@@ -1241,7 +1295,58 @@ void MainWindow::onTabCloseRequested(int index)
         liveDoc_ = nullptr; // stream continues, frames just aren't shown
     documents_.erase(documents_.begin() + index);
     tabBar_->removeTab(index); // currentChanged fires and re-syncs
+    refreshTabTitles();        // re-number the remaining tabs (01, 02, …)
     isDirty_ = true;
+}
+
+void MainWindow::duplicateOrExtractFrame()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(
+            this, tr("Duplicate Workspace"),
+            tr("Open a structure or trajectory in the active tab first."));
+        return;
+    }
+    // Snapshot the geometry currently on screen. showFrame() keeps
+    // doc->structure pointed at the displayed trajectory frame, so this one
+    // clone covers both cases: a static structure is duplicated wholesale, and
+    // a trajectory yields exactly its current frame as an independent static
+    // structure. Either way the source tab keeps its own structure and (for a
+    // trajectory) its full timeline — the extraction is non-destructive.
+    const bool isTrajectory = doc->frames.size() > 1;
+    auto snapshot = std::make_shared<core::Structure>(*doc->structure);
+    const QString baseName =
+        doc->fileName.isEmpty() ? tr("Untitled") : doc->fileName;
+    const QString newName =
+        isTrajectory
+            ? tr("%1 (frame %2)").arg(baseName).arg(timeline_->currentFrame() + 1)
+            : tr("%1 (copy)").arg(baseName);
+
+    // A new tab with no frames: an independent, static workspace.
+    addDocument(std::move(snapshot), newName);
+    isDirty_ = true;
+    statusBar()->showMessage(
+        isTrajectory ? tr("Extracted frame into a new tab: %1").arg(newName)
+                     : tr("Duplicated workspace into a new tab: %1").arg(newName));
+}
+
+void MainWindow::showTabContextMenu(const QPoint& pos)
+{
+    const int index = tabBar_->tabAt(pos);
+    if (index < 0)
+        return;
+    // Act on the right-clicked tab, not merely the active one.
+    tabBar_->setCurrentIndex(index);
+
+    QMenu menu(this);
+    menu.addAction(ui::IconManager::icon(QStringLiteral("file-copy-line")),
+                   tr("Duplicate Workspace / Extract Frame to New Tab"), this,
+                   &MainWindow::duplicateOrExtractFrame);
+    menu.addSeparator();
+    menu.addAction(tr("Close Tab"), this,
+                   [this, index] { onTabCloseRequested(index); });
+    menu.exec(tabBar_->mapToGlobal(pos));
 }
 
 void MainWindow::syncViewsToCurrent(bool frameCamera)
@@ -1251,6 +1356,7 @@ void MainWindow::syncViewsToCurrent(bool frameCamera)
         return;
     viewport_->setStructure(doc->structure, frameCamera);
     infoWidget_->updateFromStructure(doc->structure.get());
+    refreshTabTitles(); // formula may have changed since the last sync
     setWindowTitle(doc->fileName.isEmpty()
                        ? QStringLiteral("Calango")
                        : QStringLiteral("Calango — %1").arg(doc->fileName));
@@ -1273,7 +1379,7 @@ void MainWindow::replaceCurrentStructure(std::shared_ptr<core::Structure> struct
     doc->structure = std::move(structure);
     doc->fileName = name;
     doc->frames.clear();
-    tabBar_->setTabText(tabBar_->currentIndex(), name);
+    refreshTabTitles(); // formula (and thus the title) may have changed
     syncViewsToCurrent(true);
 }
 
@@ -2163,11 +2269,17 @@ void MainWindow::openSupercellBuilder()
     try {
         auto transformed = std::make_shared<core::Structure>(
             pybridge::AseBridge::makeSupercellMatrix(*doc->structure, p));
-        pushUndo();
-        replaceCurrentStructure(std::move(transformed),
-                                tr("%1 (supercell)").arg(doc->fileName));
+        // Non-destructive: the supercell opens as an independent workspace tab
+        // and the original unit-cell tab is left untouched, so P can be
+        // re-applied or compared against the primitive cell.
+        const std::size_t atoms = transformed->size();
+        const QString baseName = doc->fileName.isEmpty() ? tr("Untitled")
+                                                         : doc->fileName;
+        addDocument(std::move(transformed),
+                    tr("%1 (supercell)").arg(baseName));
+        isDirty_ = true;
         statusBar()->showMessage(
-            tr("Supercell created: %1 atoms").arg(doc->structure->size()));
+            tr("Supercell created in a new tab: %1 atoms").arg(atoms));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Supercell"), QString::fromUtf8(e.what()));
     }
@@ -2512,7 +2624,24 @@ void MainWindow::showBandStructure()
         return;
 
     ElectronicBandsWizard wizard(doc->structure, this);
-    runSimulationWizard(wizard, tr("Electronic structure"), /*expectFrames=*/false);
+    // Offer every completed Single-Point Calculation that saved a converged
+    // charge density (single_point.gpw) as an NSCF baseline. Selecting one runs
+    // the bands/PDOS at fixed density instead of a fresh inline SCF.
+    QList<QPair<QString, QString>> baselines;
+    for (const auto& [id, record] : processRecords_) {
+        const QString gpw =
+            record.directory + QStringLiteral("/single_point.gpw");
+        if (!record.directory.isEmpty() && QFile::exists(gpw)) {
+            baselines.append({tr("#%1 — %2").arg(id).arg(record.label), gpw});
+        }
+    }
+    wizard.setDensityBaselines(baselines);
+    if (baselines.isEmpty()) {
+        statusBar()->showMessage(
+            tr("Tip: run a GPAW Single-Point Calculation first to reuse its "
+               "charge density for a non-self-consistent band structure."));
+    }
+    runSimulationWizard(wizard, tr("Electronic Structure"), /*expectFrames=*/false);
 }
 
 void MainWindow::openBandResults(const QString& directory)
@@ -2602,28 +2731,44 @@ void MainWindow::onDeleteProcessRequested(int id)
 
 void MainWindow::onProcessResultRequested(const QString& directory)
 {
-    // A cluster-expansion run produces both a hull and a trajectory: show the
-    // hull, then fall through so the optimized structures open in a tab too.
+    // A cluster-expansion run produces both a hull and a trajectory: open the
+    // hull in its standalone window, then fall through so the optimized
+    // structures open in a tab too.
     if (QFile::exists(directory + QStringLiteral("/cluster_expansion.json"))) {
-        if (convexHullPlot_->loadFromJson(
-                directory + QStringLiteral("/cluster_expansion.json"))) {
-            jobDock_->show();
-            jobDock_->raise();
-            statusBar()->showMessage(
-                tr("Convex hull loaded — %1 configurations, %2 on the hull")
-                    .arg(convexHullPlot_->result().points.size())
-                    .arg(convexHullPlot_->result().hullIndices.size()));
+        auto* window = new ConvexHullWindow(directory, this);
+        if (window->hasData()) {
+            // Double-clicking a configuration jumps the viewport to that frame
+            // of the optimized trajectory (once it has been loaded into a tab).
+            connect(window, &ConvexHullWindow::frameActivated, this,
+                    [this](int frame) {
+                        if (Document* doc = currentDocument();
+                            doc && frame >= 0
+                            && frame < static_cast<int>(doc->frames.size())) {
+                            timeline_->setCurrentFrame(frame);
+                        } else {
+                            statusBar()->showMessage(
+                                tr("Load the optimized ensemble (Process panel → "
+                                   "Load Result) to inspect configuration %1")
+                                    .arg(frame));
+                        }
+                    });
+            window->setAttribute(Qt::WA_DeleteOnClose);
+            window->show();
+            statusBar()->showMessage(tr("Convex hull analytics opened"));
+        } else {
+            delete window;
         }
     }
     if (QFile::exists(directory + QStringLiteral("/effective_bands.json"))) {
-        if (spectralPlot_->loadFromJson(
-                directory + QStringLiteral("/effective_bands.json"))) {
-            jobDock_->show();
-            jobDock_->raise();
+        auto* window = new EffectiveBandsWindow(directory, this);
+        if (window->hasData()) {
+            window->setAttribute(Qt::WA_DeleteOnClose);
+            window->show();
             statusBar()->showMessage(
-                tr("Effective band structure loaded from %1").arg(directory));
+                tr("Effective band structure opened from %1").arg(directory));
             return;
         }
+        delete window;
     }
     if (QFile::exists(directory + QStringLiteral("/bands.json"))) {
         openBandResults(directory);
@@ -2817,6 +2962,40 @@ void MainWindow::showLocalEntropy()
     dialog.exec();
 }
 
+void MainWindow::showPartialCharge()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Partial Charge Analysis"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+    // Modeless: the analysis runs as a background job, and the dialog is used
+    // again afterwards to load the results and colour the atoms.
+    auto* dialog = new PartialChargeDialog(doc->structure, viewport_, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dialog, &PartialChargeDialog::runRequested, this,
+            [this](const QString& script, const QString& label) {
+                if (jobRunner_->isRunning()) {
+                    QMessageBox::information(
+                        this, label,
+                        tr("A calculation is already running — kill it first."));
+                    return;
+                }
+                runScript(script,
+                          QString::fromStdString(
+                              pybridge::PythonEngine::instance().executable()),
+                          label, /*expectFrames=*/false);
+            });
+    // Recolouring by charge writes a scalar field on the structure; make sure
+    // the property combo / info panel pick it up.
+    connect(dialog, &QDialog::finished, this,
+            [this] { notifyStructureChanged(false); });
+    dialog->show();
+}
+
 void MainWindow::openNanoparticleBuilder()
 {
     if (!ensureAseAvailable())
@@ -2950,7 +3129,7 @@ void MainWindow::effectiveBandsCalculation()
         stagedPrimitive_.reset();
         return;
     }
-    runScript(wizard.script(), wizard.pythonExecutable(), tr("Effective bands"),
+    runScript(wizard.script(), wizard.pythonExecutable(), tr("Effective Bands"),
               /*expectFrames=*/false);
     stagedPrimitive_.reset(); // consumed by stageJob, or dropped on failure
 }
@@ -2981,7 +3160,7 @@ void MainWindow::clusterExpansionCalculation()
     // reads; set it before running the wizard's action so both the local and
     // the remote path pick it up.
     stagedEnsembleFrames_ = std::move(ensemble);
-    runSimulationWizard(wizard, tr("Cluster expansion"), /*expectFrames=*/false);
+    runSimulationWizard(wizard, tr("Cluster Expansion"), /*expectFrames=*/false);
     // Not consumed (the user cancelled) — do not leak the staging into the
     // next unrelated job.
     stagedEnsembleFrames_.clear();
@@ -3057,16 +3236,10 @@ void MainWindow::showSymmetry()
     if (!ensureAseAvailable())
         return;
 
+    // Inspection only: the cell transforms moved to Edit Structure, so the
+    // dialog no longer returns a structure.
     SymmetryDialog dialog(doc->structure, this);
-    if (dialog.exec() != QDialog::Accepted || !dialog.result())
-        return;
-    // A standardize / primitive transform: present the result in a new tab.
-    const int tab = addDocument(
-        std::make_shared<core::Structure>(*dialog.result()),
-        tr("%1 (%2)").arg(doc->fileName, dialog.resultName()));
-    tabBar_->setCurrentIndex(tab);
-    statusBar()->showMessage(
-        tr("%1: %2 atoms").arg(dialog.resultName()).arg(dialog.result()->size()));
+    dialog.exec();
 }
 
 void MainWindow::openPhononBuilder()
@@ -3083,7 +3256,7 @@ void MainWindow::openPhononBuilder()
     const bool periodic = doc->structure->cell().isDefined()
         && (pbc[0] || pbc[1] || pbc[2]);
     PhononWizard wizard(periodic, doc->structure, this);
-    runSimulationWizard(wizard, tr("Phonon calculation"));
+    runSimulationWizard(wizard, tr("Phonon Calculation"));
 }
 
 void MainWindow::openNanoBuilder()
@@ -3332,7 +3505,7 @@ void MainWindow::singlePointCalculation()
     if (!prepareSimulation(tr("Single-point Calculation")))
         return;
     SinglePointWizard wizard(this);
-    runSimulationWizard(wizard, tr("Single-point"), /*expectFrames=*/false);
+    runSimulationWizard(wizard, tr("Single-Point Calculation"), /*expectFrames=*/false);
 }
 
 void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
@@ -3377,7 +3550,7 @@ void MainWindow::geometryOptimization()
     if (!ensureAseAvailable())
         return;
     GeometryOptimizationWizard wizard(this);
-    runSimulationWizard(wizard, tr("Geometry optimization"));
+    runSimulationWizard(wizard, tr("Geometry Optimization"));
 }
 
 void MainWindow::molecularDynamics()
@@ -3391,7 +3564,7 @@ void MainWindow::molecularDynamics()
     if (!ensureAseAvailable())
         return;
     MolecularDynamicsWizard wizard(this);
-    runSimulationWizard(wizard, tr("Molecular dynamics"));
+    runSimulationWizard(wizard, tr("Molecular Dynamics"));
 }
 
 void MainWindow::openMonteCarlo()
@@ -3405,7 +3578,7 @@ void MainWindow::openMonteCarlo()
     if (!ensureAseAvailable())
         return;
     MonteCarloWizard wizard(this);
-    runSimulationWizard(wizard, tr("Monte Carlo"));
+    runSimulationWizard(wizard, tr("Monte Carlo Simulation"));
 }
 
 void MainWindow::openNudgedElasticBand()
@@ -3842,6 +4015,15 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe,
                            const QString& taskLabel, bool expectFrames)
 {
     const QString label = taskLabel.isEmpty() ? tr("Local calculation") : taskLabel;
+    // Stamp the task onto the tab the run launches from. For frame-producing
+    // runs (MD/relaxation) the live trajectory tab created below carries the
+    // task instead, so the input tab keeps its own identity.
+    if (!expectFrames) {
+        if (Document* launchDoc = currentDocument()) {
+            launchDoc->task = label;
+            refreshTabTitles();
+        }
+    }
     // Allocate the process id first so the run stages into proc_<id>/ and its
     // metrics are recorded under that id.
     const int procId = processPanel_->registerTask(label, QString());
@@ -3878,7 +4060,8 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe,
             auto first = std::make_shared<core::Structure>(*doc->structure);
             const int tab = addDocument(
                 first,
-                tr("%1 (live)").arg(taskLabel.isEmpty() ? tr("run") : taskLabel));
+                tr("%1 (live)").arg(taskLabel.isEmpty() ? tr("run") : taskLabel),
+                {}, label);
             liveDoc_ = documents_[static_cast<std::size_t>(tab)].get();
             tabBar_->setCurrentIndex(tab);
         }
@@ -4031,21 +4214,49 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
 void MainWindow::about()
 {
     const auto& python = pybridge::PythonEngine::instance();
+
+    // Runtime diagnostics as aligned key/value rows. An HTML table keeps the
+    // values column-aligned regardless of key length (a <pre> block would need
+    // hand-padding); the labels below match the requested matrix exactly.
+    //
+    // sys.version reads e.g. "3.12.2 (main, ...) [Clang ...]" — take just the
+    // leading whitespace-delimited token so only the clean semantic version is
+    // shown (the compiler/build metadata is redundant with the Compiler row).
+    const QString pythonVersion = QString::fromStdString(python.pythonVersion())
+                                      .section('\n', 0, 0)
+                                      .simplified()
+                                      .section(' ', 0, 0);
+    const QString aseVersion = python.aseAvailable()
+                                   ? QString::fromStdString(python.aseVersion())
+                                   : tr("not available");
+
+    const auto row = [](const QString& key, const QString& value) {
+        return QStringLiteral(
+                   "<tr><td style='padding-right:14px; white-space:nowrap;'>"
+                   "<b>%1</b></td><td>%2</td></tr>")
+            .arg(key.toHtmlEscaped(), value.toHtmlEscaped());
+    };
+    const QString diagnostics =
+        QStringLiteral("<table cellspacing='0' cellpadding='0'>%1%2%3%4</table>")
+            .arg(row(tr("Python"), pythonVersion),
+                 row(tr("C/C++ Compiler"), compilerVersionString()),
+                 row(tr("Qt Framework"), QStringLiteral(QT_VERSION_STR)),
+                 row(tr("ASE (Atomic Simulation Environment)"), aseVersion));
+
     QMessageBox box(this);
     box.setWindowTitle(tr("About Calango"));
     // Brand banner: the app icon, scaled for the dialog.
     box.setIconPixmap(
         QPixmap(QStringLiteral(":/assets/.internal/icon.png"))
             .scaled(140, 140, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    box.setTextFormat(Qt::RichText);
     box.setText(
         tr("<h3>Calango %1</h3>"
            "<p>For visual atomistic modeling</p>"
-           "<p>Python: %2<br>ASE: %3</p>")
-            .arg(QStringLiteral(CALANGO_VERSION),
-                 QString::fromStdString(python.pythonVersion()).section('\n', 0, 0),
-                 python.aseAvailable()
-                     ? QString::fromStdString(python.aseVersion())
-                     : tr("not available")));
+           "<p><b>Lead Developer / Creator</b><br>Leandro Seixas Rocha</p>"
+           "<p><b>Runtime &amp; build diagnostics</b></p>"
+           "%2")
+            .arg(QStringLiteral(CALANGO_VERSION), diagnostics));
     box.setStandardButtons(QMessageBox::Ok);
     box.exec();
 }

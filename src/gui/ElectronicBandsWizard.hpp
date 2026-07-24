@@ -5,10 +5,15 @@
 #include <memory>
 
 class QCheckBox;
+class QComboBox;
 class QLabel;
 class QDoubleSpinBox;
 class QGroupBox;
 class QSpinBox;
+
+#include <QList>
+#include <QPair>
+#include <QString>
 
 namespace calango::core {
 class Structure;
@@ -31,6 +36,13 @@ public:
     ElectronicBandsWizard(std::shared_ptr<const core::Structure> structure,
                           QWidget* parent = nullptr);
 
+    /// Populate the Stage-1 charge-density baseline selector with completed
+    /// Single-Point Calculations that saved a density (`.gpw`). Each entry is
+    /// (display label, absolute path to the density file). When the GPAW
+    /// backend is chosen, selecting one runs the bands/PDOS non-self-
+    /// consistently off that fixed density.
+    void setDensityBaselines(const QList<QPair<QString, QString>>& baselines);
+
 protected:
     QString wizardTitle() const override;
     QString settingsHeader() const override;
@@ -51,6 +63,7 @@ private:
 
     class EmbeddedKPathEditor* kpath_ = nullptr;
     QSpinBox* valenceSpin_ = nullptr;
+    QComboBox* baselineCombo_ = nullptr; ///< charge-density baseline selector
     QGroupBox* pdosGroup_ = nullptr;
     QCheckBox* pdosCheck_ = nullptr;
     QDoubleSpinBox* pdosWidthSpin_ = nullptr;

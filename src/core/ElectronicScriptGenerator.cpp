@@ -46,24 +46,42 @@ std::string generateElectronicScript(const ElectronicConfig& c)
         break;
 
     case ElectronicBackend::Gpaw:
-        // Same GPAW keyword set as Geometry Optimization / Single-point: the
-        // bands path used to hardcode PW + PBE and silently drop the
-        // eigensolver, mixer and convergence settings the wizard collected.
-        out << AseScriptGenerator::gpawImports(c.gpaw)
-            << "\n"
-               "calc = GPAW(\n"
-            << AseScriptGenerator::gpawKeywordArguments(c.gpaw, "    ")
-            << "    txt=\"gpaw_scf.txt\",\n"
-               ")\n"
-               "atoms.calc = calc\n"
-               "atoms.get_potential_energy()\n"
-               "efermi = float(calc.get_fermi_level())\n"
-               "_calango_log.progress(2, 4)\n"
-               "\n"
-               "band_calc = calc.fixed_density(kpts=bandpath, symmetry=\"off\",\n"
-               "                               txt=\"gpaw_bands.txt\")\n"
-               "bs = band_calc.band_structure()\n"
-               "_calango_log.progress(3, 4)\n";
+        out << AseScriptGenerator::gpawImports(c.gpaw) << "\n";
+        if (!c.baselineDensityPath.empty()) {
+            // Non-self-consistent (NSCF) run off a converged baseline density:
+            // load the .gpw the Single-Point Calculation saved and evaluate the
+            // band dispersion + PDOS at fixed charge density. No inline SCF.
+            out << "# NSCF band structure from a fixed baseline charge density\n"
+                   "# (produced by a prior Single-Point Calculation).\n"
+                << "calc = GPAW(\"" << c.baselineDensityPath
+                << "\", txt=\"gpaw_bands.txt\")\n"
+                   "atoms = calc.get_atoms()\n"
+                   "efermi = float(calc.get_fermi_level())\n"
+                   "_calango_log.progress(2, 4)\n"
+                   "\n"
+                   "band_calc = calc.fixed_density(kpts=bandpath, "
+                   "symmetry=\"off\",\n"
+                   "                               txt=\"gpaw_bands.txt\")\n"
+                   "bs = band_calc.band_structure()\n"
+                   "_calango_log.progress(3, 4)\n";
+        } else {
+            // Legacy self-contained path: converge the SCF density inline, then
+            // the NSCF band run reuses it via fixed_density.
+            out << "calc = GPAW(\n"
+                << AseScriptGenerator::gpawKeywordArguments(c.gpaw, "    ")
+                << "    txt=\"gpaw_scf.txt\",\n"
+                   ")\n"
+                   "atoms.calc = calc\n"
+                   "atoms.get_potential_energy()\n"
+                   "efermi = float(calc.get_fermi_level())\n"
+                   "_calango_log.progress(2, 4)\n"
+                   "\n"
+                   "band_calc = calc.fixed_density(kpts=bandpath, "
+                   "symmetry=\"off\",\n"
+                   "                               txt=\"gpaw_bands.txt\")\n"
+                   "bs = band_calc.band_structure()\n"
+                   "_calango_log.progress(3, 4)\n";
+        }
         if (c.pdos)
             out << "\n"
                    "# Element/orbital-projected DOS from the SCF wavefunctions.\n"

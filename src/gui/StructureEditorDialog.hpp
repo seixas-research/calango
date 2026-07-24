@@ -51,6 +51,12 @@ private Q_SLOTS:
     void defineUnitCell();
     void centerInUnitCell();
     void addVacuumLayer();
+    /// Crystallographic cell transforms via Spglib (through AseBridge):
+    /// "Standardize Cell" (spglib.standardize_cell) and "Reduce to Primitive
+    /// Cell" (spglib.find_primitive). Both replace the working structure and
+    /// refresh the dialog; on accept the caller installs it via undo.
+    void standardizeCell();
+    void reduceToPrimitiveCell();
     /// One cell of the atom table was edited by the user.
     void onAtomCellChanged(int row, int column);
 
@@ -81,6 +87,8 @@ private:
     QPushButton* defineCellButton_ = nullptr;
     QPushButton* centerButton_ = nullptr;
     QPushButton* vacuumButton_ = nullptr;
+    QPushButton* standardizeButton_ = nullptr;
+    QPushButton* primitiveButton_ = nullptr;
     QTableWidget* atomTable_ = nullptr;
     QLabel* summaryLabel_ = nullptr;
 };
