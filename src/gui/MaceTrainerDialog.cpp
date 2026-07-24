@@ -39,7 +39,7 @@ MaceTrainerDialog::MaceTrainerDialog(QWidget* parent) : QDialog(parent)
     auto* settings = new QVBoxLayout;
     root->addLayout(settings, 0);
 
-    auto* dataGroup = new QGroupBox(tr("Dataset & Architecture"), this);
+    auto* dataGroup = new QGroupBox(tr("Dataset && Architecture"), this);
     auto* dataForm = new QFormLayout(dataGroup);
     auto* trainRow = new QHBoxLayout;
     trainFileEdit_ = new QLineEdit(dataGroup);
@@ -78,7 +78,7 @@ MaceTrainerDialog::MaceTrainerDialog(QWidget* parent) : QDialog(parent)
     dataForm->addRow(tr("Device:"), deviceCombo_);
     settings->addWidget(dataGroup);
 
-    auto* optGroup = new QGroupBox(tr("Optimization & Loss"), this);
+    auto* optGroup = new QGroupBox(tr("Optimization && Loss"), this);
     auto* optForm = new QFormLayout(optGroup);
     lrSpin_ = new QDoubleSpinBox(optGroup);
     lrSpin_->setDecimals(5);

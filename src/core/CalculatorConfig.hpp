@@ -76,6 +76,20 @@ enum class SmearingMethod {
     MethfesselPaxton,
 };
 
+/// Spin treatment for the DFT SCF. Enum order is the "Spin Configurations"
+/// dropdown order in the Single-point wizard.
+enum class SpinMode {
+    Unpolarized,   ///< spin-restricted (no spin degree of freedom)
+    Collinear,     ///< spin-polarized, ↑/↓ densities (scalar magmoms)
+    NonCollinear,  ///< spinor / non-collinear magnetism (vector magmoms)
+};
+
+/// Which density GPAW writes when exporting a `.cube` (charge-density export).
+enum class GpawDensityType {
+    Pseudo,       ///< calc.get_pseudo_density() — smooth valence pseudodensity
+    AllElectron,  ///< calc.get_all_electron_density() — full nuclear-cusp density
+};
+
 /// Local optimizers ASE ships for structural relaxation. Enum order is the
 /// optimizer combo order in the Geometry Optimization dialog; the value maps
 /// directly to the `ase.optimize` class name via toString(Optimizer).
@@ -149,6 +163,10 @@ struct CalculatorConfig {
     // scfEnergyTolEv is the electronic-energy convergence threshold.
     int scfMaxSteps = 100;
     double scfEnergyTolEv = 1e-4;
+    /// Spin treatment (unpolarized / collinear / non-collinear). `spinPolarized`
+    /// is kept in sync (true for collinear + non-collinear) for the many callers
+    /// that only need the boolean; `spinMode` carries the finer distinction.
+    SpinMode spinMode = SpinMode::Unpolarized;
     /// Spin polarization: seed every atom with an initial magnetic moment so
     /// the SCF can converge to a magnetic solution.
     bool spinPolarized = false;
@@ -215,9 +233,14 @@ struct CalculatorConfig {
     /// zone is required downstream — e.g. a Single-Point whose .gpw feeds an
     /// MLWF localization (ase.dft.wannier needs the unfolded BZ).
     bool gpawSymmetryOff = false;
-    /// Export the all-electron density to `density.cube` after the SCF
-    /// (GPAW single-point only). Off by default.
+    /// Gamma-centered k-point mesh: emits `kpts={'size': (...), 'gamma': True}`
+    /// so the Monkhorst-Pack grid is shifted to include Γ. Off by default.
+    bool gpawGammaCentered = false;
+    /// Export the charge density to `density.cube` after the SCF (GPAW
+    /// single-point only). Off by default; `gpawDensityType` picks pseudo vs
+    /// all-electron.
     bool gpawExportDensity = false;
+    GpawDensityType gpawDensityType = GpawDensityType::AllElectron;
 
     // -- ORCA (quantum chemistry) ------------------------------------------
     std::string orcaMethod = "B3LYP";   ///< functional / method keyword

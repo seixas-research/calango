@@ -58,6 +58,15 @@ public:
     /// File name the module must be written under for the generated
     /// `from calango_log import CalangoLog` to resolve.
     static const char* loggerModuleFileName();
+
+    /// Standalone script that restarts GPAW from the `*.gpw` in `gpwDir` and
+    /// writes the charge density to `density.cube` (all-electron when
+    /// `allElectron`, else the pseudo density). Used by the Single-Point
+    /// Viewer's "Get Volumetric Data" action to export a density on demand from
+    /// a completed run that did not already write one. `gpwDir` is baked in as
+    /// an absolute path so the script can run from a fresh job directory.
+    static std::string densityCubeScript(const std::string& gpwDir,
+                                         bool allElectron);
 };
 
 } // namespace calango::core

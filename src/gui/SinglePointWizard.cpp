@@ -72,17 +72,24 @@ void SinglePointWizard::buildConvergenceRows(QFormLayout* form)
     form->addRow(tr("Max electronic (SCF) steps:"), scfStepsSpin_);
 }
 
-void SinglePointWizard::buildOutputRows(QFormLayout* form)
+void SinglePointWizard::buildSpinRows(QFormLayout* form)
 {
-    // Spin polarization + initial magnetic moments → "Output & Exports" group.
+    // Spin treatment + initial magnetic moments → "Spin Configurations" group.
     QWidget* parent = form->parentWidget();
 
-    spinCheck_ = new QCheckBox(tr("Spin-polarized (collinear)"), parent);
-    spinCheck_->setToolTip(
-        tr("Seed each atom with an initial magnetic moment so the SCF can "
-           "converge to a magnetic solution."));
-    form->addRow(tr("Spin polarization:"), spinCheck_);
-    connect(spinCheck_, &QCheckBox::toggled, this,
+    spinModeCombo_ = new QComboBox(parent);
+    // Order matches core::SpinMode.
+    spinModeCombo_->addItem(tr("Unpolarized (spin-restricted)"));
+    spinModeCombo_->addItem(tr("Collinear Spin-Polarized (↑/↓)"));
+    spinModeCombo_->addItem(tr("Non-Collinear Spin (spinors)"));
+    spinModeCombo_->setToolTip(
+        tr("Unpolarized: no spin degree of freedom.\n"
+           "Collinear: spin-up / spin-down densities (scalar magnetic "
+           "moments).\n"
+           "Non-Collinear: spinor magnetism (vector moments; the list below is "
+           "applied along +z)."));
+    form->addRow(tr("Spin polarization:"), spinModeCombo_);
+    connect(spinModeCombo_, &QComboBox::currentIndexChanged, this,
             &SinglePointWizard::updateSpinEnabled);
 
     magMomentEdit_ = new QLineEdit(parent);
@@ -100,7 +107,11 @@ void SinglePointWizard::buildOutputRows(QFormLayout* form)
 
 void SinglePointWizard::updateSpinEnabled()
 {
-    const bool spin = spinCheck_ && spinCheck_->isChecked();
+    // Magnetic moments are only meaningful when spin is enabled (collinear or
+    // non-collinear, i.e. any mode past Unpolarized).
+    const bool spin = spinModeCombo_
+        && spinModeCombo_->currentIndex()
+            != static_cast<int>(core::SpinMode::Unpolarized);
     if (magMomentEdit_)
         magMomentEdit_->setEnabled(spin);
     const bool smeared = smearingCombo_
@@ -116,7 +127,9 @@ core::CalculatorConfig SinglePointWizard::config() const
     c.task = core::TaskKind::SinglePoint;
     c.scfMaxSteps = scfStepsSpin_->value();
     c.scfEnergyTolEv = scfTolSpin_->value();
-    c.spinPolarized = spinCheck_->isChecked();
+    c.spinMode = static_cast<core::SpinMode>(spinModeCombo_->currentIndex());
+    // Keep the boolean in sync for the many callers that only read it.
+    c.spinPolarized = c.spinMode != core::SpinMode::Unpolarized;
     c.initialMagMomentsCsv = magMomentEdit_->text().trimmed().toStdString();
     c.smearing = static_cast<core::SmearingMethod>(smearingCombo_->currentIndex());
     c.smearingWidthEv = smearingWidthSpin_->value();

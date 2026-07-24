@@ -34,13 +34,13 @@ protected:
         return tr("Calculator & Convergence Settings");
     }
     /// The electronic controls fold into the shared thematic GPAW group boxes:
-    /// smearing + SCF tolerance/steps into "Electronic Convergence & Smearing",
-    /// spin polarization + magnetic moments into "Output & Exports".
+    /// smearing + SCF tolerance/steps into "Electronic Convergence && Smearing",
+    /// spin polarization mode + magnetic moments into "Spin Configurations".
     void buildConvergenceRows(QFormLayout* form) override;
-    void buildOutputRows(QFormLayout* form) override;
+    void buildSpinRows(QFormLayout* form) override;
     bool hasConvergenceExtras() const override { return true; }
-    bool hasOutputExtras() const override { return true; }
-    /// Expose the GPAW "Symmetry: off" and "Export Electron Density" toggles —
+    bool hasSpinExtras() const override { return true; }
+    /// Expose the GPAW "Symmetry: off" and "Export Charge Density" toggles —
     /// a symmetry-off Single-Point is the recommended MLWF baseline.
     bool showsGpawSymmetryToggle() const override { return true; }
     bool showsGpawDensityExport() const override { return true; }
@@ -58,7 +58,7 @@ private:
 
     QSpinBox* scfStepsSpin_ = nullptr;
     QDoubleSpinBox* scfTolSpin_ = nullptr;
-    QCheckBox* spinCheck_ = nullptr;
+    QComboBox* spinModeCombo_ = nullptr; ///< Unpolarized / Collinear / Non-collinear
     QLineEdit* magMomentEdit_ = nullptr;
     QComboBox* smearingCombo_ = nullptr;
     QDoubleSpinBox* smearingWidthSpin_ = nullptr;

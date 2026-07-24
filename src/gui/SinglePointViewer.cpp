@@ -48,15 +48,21 @@ SinglePointViewer::SinglePointViewer(QWidget* parent) : QDialog(parent)
 
     energyLabel_ = new QLabel(this);
     energyLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    form->addRow(tr("Total energy E_tot:"), energyLabel_);
+    form->addRow(tr("Total Energy:"), energyLabel_);
 
     fermiLabel_ = new QLabel(this);
     fermiLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    form->addRow(tr("Fermi energy E_F:"), fermiLabel_);
+    form->addRow(tr("Fermi Energy:"), fermiLabel_);
 
     forceLabel_ = new QLabel(this);
     forceLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    form->addRow(tr("Max. atomic force f_max:"), forceLabel_);
+    form->addRow(tr("Max. Atomic Force:"), forceLabel_);
+
+    // Total magnetic moment — only shown for spin-polarized runs (row hidden
+    // otherwise; see loadResults).
+    magmomLabel_ = new QLabel(this);
+    magmomLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    form->addRow(tr("Total Magnetic Moment:"), magmomLabel_);
 
     scfLabel_ = new QLabel(this);
     scfLabel_->setWordWrap(true);
@@ -80,10 +86,19 @@ SinglePointViewer::SinglePointViewer(QWidget* parent) : QDialog(parent)
 
     // --- Actions -----------------------------------------------------------
     auto* actionRow = new QHBoxLayout;
+    volumetricButton_ = new QPushButton(tr("Get Volumetric Data"), this);
+    volumetricButton_->setToolTip(
+        tr("Export the charge density (.cube) from this run and register it in "
+           "the Volumetric Data dock for 3D rendering."));
+    connect(volumetricButton_, &QPushButton::clicked, this, [this] {
+        if (!directory_.isEmpty())
+            Q_EMIT getVolumetricDataRequested(directory_);
+    });
     auto* copyButton = new QPushButton(tr("Copy metrics"), this);
     copyButton->setToolTip(tr("Copy the physical summary to the clipboard."));
     auto* exportJsonButton = new QPushButton(tr("Export JSON…"), this);
     auto* exportCsvButton = new QPushButton(tr("Export CSV…"), this);
+    actionRow->addWidget(volumetricButton_);
     actionRow->addWidget(copyButton);
     actionRow->addWidget(exportJsonButton);
     actionRow->addWidget(exportCsvButton);
@@ -119,24 +134,31 @@ bool SinglePointViewer::loadResults(const QString& jsonPath)
     }
     data_ = doc.object();
     sourcePath_ = jsonPath;
+    directory_ = QFileInfo(jsonPath).absolutePath();
 
     const double eV = data_.value(QStringLiteral("energy_eV")).toDouble();
     const double ha = data_.contains(QStringLiteral("energy_Hartree"))
         ? data_.value(QStringLiteral("energy_Hartree")).toDouble()
         : eV / 27.211386245988;
     energyLabel_->setText(
-        tr("%1 eV   (%2 Ha)").arg(eV, 0, 'f', 6).arg(ha, 0, 'f', 6));
+        tr("%1 eV (%2 Ha)").arg(eV, 0, 'f', 3).arg(ha, 0, 'f', 3));
 
     fermiLabel_->setText(
         optionalNumber(data_.value(QStringLiteral("fermi_eV")),
-                       QStringLiteral(" eV"), 4));
+                       QStringLiteral(" eV"), 3));
 
     const double fmax = data_.value(QStringLiteral("fmax_eV_per_A")).toDouble();
     const int fmaxAtom = data_.value(QStringLiteral("fmax_atom")).toInt(-1);
     forceLabel_->setText(
         fmaxAtom >= 0
-            ? tr("%1 eV/Å   (on atom #%2)").arg(fmax, 0, 'f', 6).arg(fmaxAtom)
-            : tr("%1 eV/Å").arg(fmax, 0, 'f', 6));
+            ? tr("%1 eV/Å (Atom #%2)").arg(fmax, 0, 'f', 3).arg(fmaxAtom)
+            : tr("%1 eV/Å").arg(fmax, 0, 'f', 3));
+
+    // Total magnetic moment: a number for spin-polarized runs, "—" otherwise
+    // (absent / null for unpolarized or non-collinear-vector results).
+    magmomLabel_->setText(
+        optionalNumber(data_.value(QStringLiteral("total_magnetic_moment")),
+                       QStringLiteral(" μB"), 3));
 
     const QJsonObject scf = data_.value(QStringLiteral("scf")).toObject();
     QString scfText =
@@ -197,6 +219,10 @@ QString SinglePointViewer::plainTextSummary() const
                          'f', 6)
       << " eV/A  (atom #"
       << data_.value(QStringLiteral("fmax_atom")).toInt(-1) << ")\n"
+      << "Total moment : "
+      << optionalNumber(data_.value(QStringLiteral("total_magnetic_moment")),
+                        QStringLiteral(" uB"), 4)
+      << "\n"
       << "SCF steps    : "
       << optionalNumber(scf.value(QStringLiteral("iterations")), QString(), 0)
       << "\n"
@@ -258,6 +284,9 @@ void SinglePointViewer::exportCsv()
         << ",eV/A\n";
     out << "max_force_atom," << data_.value(QStringLiteral("fmax_atom")).toInt(-1)
         << ",index\n";
+    const QJsonValue magmom = data_.value(QStringLiteral("total_magnetic_moment"));
+    if (!magmom.isNull() && !magmom.isUndefined())
+        out << "total_magnetic_moment," << magmom.toDouble() << ",bohr_magneton\n";
     out << "scf_iterations,"
         << scf.value(QStringLiteral("iterations")).toInt(-1) << ",count\n";
     out << "energy_tolerance,"

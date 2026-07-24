@@ -5,6 +5,7 @@
 #include <QString>
 
 class QLabel;
+class QPushButton;
 class QTableWidget;
 
 namespace calango::gui {
@@ -26,8 +27,16 @@ public:
     explicit SinglePointViewer(QWidget* parent = nullptr);
 
     /// Parse a `single_point.json` summary and fill the read-outs. Returns
-    /// false (and shows nothing) when the file is missing or malformed.
+    /// false (and shows nothing) when the file is missing or malformed. The
+    /// JSON's directory is remembered as the process directory for the
+    /// "Get Volumetric Data" action.
     bool loadResults(const QString& jsonPath);
+
+Q_SIGNALS:
+    /// "Get Volumetric Data": the host should export the charge density from
+    /// `directory` (or register an existing density.cube there) into the
+    /// Volumetric Data dock.
+    void getVolumetricDataRequested(const QString& directory);
 
 private Q_SLOTS:
     void copyToClipboard();
@@ -41,12 +50,15 @@ private:
 
     QJsonObject data_;   ///< parsed single_point.json
     QString sourcePath_; ///< where it was loaded from (for export defaults)
+    QString directory_;  ///< the process directory (for Get Volumetric Data)
 
     QLabel* energyLabel_ = nullptr;
     QLabel* fermiLabel_ = nullptr;
     QLabel* forceLabel_ = nullptr;
+    QLabel* magmomLabel_ = nullptr;
     QLabel* scfLabel_ = nullptr;
     QTableWidget* forcesTable_ = nullptr;
+    QPushButton* volumetricButton_ = nullptr;
 };
 
 } // namespace calango::gui

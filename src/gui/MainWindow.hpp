@@ -150,6 +150,10 @@ private Q_SLOTS:
     /// Register each Wannier orbital cube from a finished MLWF job's
     /// wannier.json into the Volumetric Data dock's "Data" tab.
     void registerWannierOrbitals(const QString& directory);
+    /// Single-Point Viewer → "Get Volumetric Data": register an existing
+    /// density.cube from `directory` into the Volumetric Data dock, or export
+    /// one from the run's saved .gpw as a job when none exists yet.
+    void onGetVolumetricData(const QString& directory);
     /// Results menu → "Single-Point Viewer…": open the viewer on the selected
     /// (or most recent) completed Single-Point process.
     void showSinglePointViewer();

@@ -134,7 +134,7 @@ QWidget* ClusterExpansionWizard::buildSettingsPage()
     });
 
     // --- Formation energy ---------------------------------------------------
-    auto* hullGroup = new QGroupBox(tr("Formation energy & convex hull"), page);
+    auto* hullGroup = new QGroupBox(tr("Formation energy && convex hull"), page);
     auto* hullForm = new QFormLayout(hullGroup);
 
     concentrationCombo_ = new QComboBox(hullGroup);

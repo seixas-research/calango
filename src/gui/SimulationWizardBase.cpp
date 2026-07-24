@@ -330,7 +330,7 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
                                               QVBoxLayout* layout)
 {
     // ===== 1. Mode & Basis Set ============================================
-    modeBasisGroup_ = new QGroupBox(tr("Mode & Basis Set"), parent);
+    modeBasisGroup_ = new QGroupBox(tr("Mode && Basis Set"), parent);
     auto* modeForm = new QFormLayout(modeBasisGroup_);
 
     gpawModeCombo_ = new QComboBox(modeBasisGroup_);
@@ -392,7 +392,7 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
     layout->addWidget(modeBasisGroup_);
 
     // ===== 2. Brillouin Zone & k-Points ===================================
-    bzGroup_ = new QGroupBox(tr("Brillouin Zone & k-Points"), parent);
+    bzGroup_ = new QGroupBox(tr("Brillouin Zone && k-Points"), parent);
     auto* bzForm = new QFormLayout(bzGroup_);
 
     auto* kptRow = new QHBoxLayout;
@@ -411,10 +411,24 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
     kptRow->addStretch(1);
     bzForm->addRow(tr("k-point grid (Monkhorst-Pack):"), kptRow);
 
-    // "Symmetry: off" — GPAW only, and only when the wizard opts in
-    // (Single-Point): a symmetry-off run is the recommended MLWF baseline.
+    // Γ-centered mesh (gamma=True) — GPAW k-point option, offered for every
+    // GPAW wizard.
+    gpawGammaCheck_ = new QCheckBox(
+        tr("Gamma-centered Grid  (gamma=True)"), bzGroup_);
+    gpawGammaCheck_->setToolTip(
+        tr("Shift the Monkhorst-Pack mesh so it includes the Γ point "
+           "(kpts={'size': …, 'gamma': True})."));
+    connect(gpawGammaCheck_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
+    bzForm->addRow(gpawGammaCheck_);
+
+    // Single, clean "Symmetry: off" checkbox (spans the row — its own text is
+    // self-describing, so no separate "k-point symmetry" label is duplicated).
+    // GPAW only, and only when the wizard opts in (Single-Point): a symmetry-off
+    // run is the recommended MLWF baseline.
     gpawSymmetryOffCheck_ = new QCheckBox(
-        tr("Symmetry: off  (symmetry=\"off\")"), bzGroup_);
+        tr("Symmetry: off  (symmetry=\"off\", no point-group reduction)"),
+        bzGroup_);
     gpawSymmetryOffCheck_->setToolTip(
         tr("Disable point-group symmetry reduction of the k-point set — sample "
            "the full, unsymmetrized Brillouin zone (required when the "
@@ -422,13 +436,13 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
     connect(gpawSymmetryOffCheck_, &QCheckBox::toggled, this,
             [this] { refreshPreview(); });
     if (showsGpawSymmetryToggle())
-        bzForm->addRow(tr("k-point symmetry:"), gpawSymmetryOffCheck_);
+        bzForm->addRow(gpawSymmetryOffCheck_);
     else
         gpawSymmetryOffCheck_->hide();
     layout->addWidget(bzGroup_);
 
     // ===== 3. Electronic Convergence & Smearing ===========================
-    convGroup_ = new QGroupBox(tr("Electronic Convergence & Smearing"), parent);
+    convGroup_ = new QGroupBox(tr("Electronic Convergence && Smearing"), parent);
     auto* convForm = new QFormLayout(convGroup_);
 
     // Subclass smearing / SCF rows first (e.g. Single-point's Fermi-Dirac /
@@ -511,24 +525,46 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
     convForm->addRow(tr("Density tolerance:"), gpawDensityTolEdit_);
     layout->addWidget(convGroup_);
 
-    // ===== 4. Output & Exports ============================================
-    outputGroup_ = new QGroupBox(tr("Output & Exports"), parent);
+    // ===== 4. Spin Configurations =========================================
+    spinGroup_ = new QGroupBox(tr("Spin Configurations"), parent);
+    auto* spinForm = new QFormLayout(spinGroup_);
+    // Subclass spin rows (polarization mode + initial magnetic moments).
+    buildSpinRows(spinForm);
+    layout->addWidget(spinGroup_);
+
+    // ===== 5. Output Files & Density Exports ==============================
+    outputGroup_ = new QGroupBox(tr("Output Files && Density Exports"), parent);
     auto* outForm = new QFormLayout(outputGroup_);
 
-    // Subclass output rows first (spin polarization, magnetic moments).
-    buildOutputRows(outForm);
-
     gpawDensityExportCheck_ = new QCheckBox(
-        tr("Export Electron Density (.cube)"), outputGroup_);
+        tr("Export Charge Density (.cube)"), outputGroup_);
     gpawDensityExportCheck_->setToolTip(
-        tr("After the SCF, write the all-electron density to density.cube "
+        tr("After the SCF, write the charge density to density.cube "
            "(a standard Gaussian cube volumetric file)."));
     connect(gpawDensityExportCheck_, &QCheckBox::toggled, this,
             [this] { refreshPreview(); });
-    if (showsGpawDensityExport())
-        outForm->addRow(tr("Density export:"), gpawDensityExportCheck_);
-    else
+
+    gpawDensityTypeCombo_ = new QComboBox(outputGroup_);
+    // Order matches core::GpawDensityType.
+    gpawDensityTypeCombo_->addItem(tr("Pseudodensity"));
+    gpawDensityTypeCombo_->addItem(tr("All-electron Density"));
+    gpawDensityTypeCombo_->setCurrentIndex(
+        static_cast<int>(core::GpawDensityType::AllElectron));
+    gpawDensityTypeCombo_->setToolTip(
+        tr("Pseudodensity: calc.get_pseudo_density() (smooth valence "
+           "density).\n"
+           "All-electron: calc.get_all_electron_density() (full nuclear-cusp "
+           "density)."));
+    connect(gpawDensityTypeCombo_, &QComboBox::currentIndexChanged, this,
+            [this] { refreshPreview(); });
+
+    if (showsGpawDensityExport()) {
+        outForm->addRow(gpawDensityExportCheck_);
+        outForm->addRow(tr("Density type:"), gpawDensityTypeCombo_);
+    } else {
         gpawDensityExportCheck_->hide();
+        gpawDensityTypeCombo_->hide();
+    }
     layout->addWidget(outputGroup_);
 
     // -- Live preview wiring for the GPAW controls -------------------------
@@ -657,16 +693,21 @@ void SimulationWizardBase::updateCalculatorEnabled()
     const bool isGpaw = kind == core::CalculatorKind::Gpaw;
 
     // Mode & Basis Set and Brillouin Zone & k-Points host the shared cutoff /
-    // k-points, so they show for every DFT engine. Convergence & Output carry
-    // GPAW-only or subclass-injected rows, so they show for GPAW or when the
-    // subclass contributed rows (e.g. Single-point's smearing / spin).
+    // k-points, so they show for every DFT engine. Convergence / Spin carry
+    // GPAW-only or subclass-injected rows; Output (density export) is
+    // GPAW-only.
     modeBasisGroup_->setVisible(isDft);
     bzGroup_->setVisible(isDft);
     convGroup_->setVisible(isGpaw || (isDft && hasConvergenceExtras()));
-    outputGroup_->setVisible((isGpaw && showsGpawDensityExport())
-                             || (isDft && hasOutputExtras()));
+    spinGroup_->setVisible(isDft && hasSpinExtras());
+    outputGroup_->setVisible(isGpaw && showsGpawDensityExport());
     maceGroup_->setVisible(isMace);
     orcaGroup_->setVisible(isOrca);
+
+    // GPAW-only Brillouin-zone options: Γ-centering and the symmetry toggle.
+    setFormRowVisible(bzGroup_, gpawGammaCheck_, isGpaw);
+    if (showsGpawSymmetryToggle())
+        setFormRowVisible(bzGroup_, gpawSymmetryOffCheck_, isGpaw);
 
     // The XC note applies only to the script-template DFT backends; GPAW picks
     // XC in its own combo. Mode / grid / basis / XC combo and the density
@@ -766,8 +807,12 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
         c.gpawConvDensity = v;
     c.gpawSymmetryOff =
         gpawSymmetryOffCheck_ && gpawSymmetryOffCheck_->isChecked();
+    c.gpawGammaCentered = gpawGammaCheck_ && gpawGammaCheck_->isChecked();
     c.gpawExportDensity =
         gpawDensityExportCheck_ && gpawDensityExportCheck_->isChecked();
+    if (gpawDensityTypeCombo_)
+        c.gpawDensityType = static_cast<core::GpawDensityType>(
+            gpawDensityTypeCombo_->currentIndex());
 
     c.orcaMethod = orcaMethodCombo_->currentText().trimmed().toStdString();
     c.orcaBasis = orcaBasisCombo_->currentText().trimmed().toStdString();

@@ -358,7 +358,13 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "try:\n"
                "    _nscf = int(atoms.calc.get_number_of_iterations())\n"
                "except Exception:\n"
-               "    _nscf = None\n";
+               "    _nscf = None\n"
+               "# Total magnetic moment (μB) for spin-polarized runs; scalar for\n"
+               "# collinear, undefined/vector for others -> None.\n"
+               "try:\n"
+               "    _magmom = float(atoms.get_magnetic_moment())\n"
+               "except Exception:\n"
+               "    _magmom = None\n";
         // 1 Hartree = 27.211386245988 eV (CODATA). The convergence targets the
         // wizard collected are echoed into the summary so the viewer can show
         // the tolerance the run was held to.
@@ -368,6 +374,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "    \"fermi_eV\": _fermi,\n"
                "    \"fmax_eV_per_A\": fmax,\n"
                "    \"fmax_atom\": _fmax_atom,\n"
+               "    \"total_magnetic_moment\": _magmom,\n"
                "    \"natoms\": int(len(atoms)),\n"
                "    \"forces_eV_per_A\": [[float(v) for v in row] "
                "for row in _forces],\n"
@@ -391,19 +398,23 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                    "print(\"CALANGO_RESULT density_file=single_point.gpw\", "
                    "flush=True)\n";
             if (c.gpawExportDensity) {
-                // All-electron density → a standard Gaussian cube. The new GPAW
-                // engine returns a (possibly distributed) array-like; normalize
-                // it to a contiguous float64 grid before write_cube.
-                out << "_ae_density = atoms.calc.get_all_electron_density("
-                       "gridrefinement=2)\n"
-                       "_ae_density = _np.ascontiguousarray(\n"
-                       "    _np.asarray(getattr(_ae_density, \"data\", "
-                       "_ae_density), dtype=float))\n"
+                // Charge density → a standard Gaussian cube. The new GPAW engine
+                // returns a (possibly distributed) array-like; normalize it to a
+                // contiguous float64 grid before write_cube.
+                const bool ae =
+                    c.gpawDensityType == GpawDensityType::AllElectron;
+                out << "_density = atoms.calc."
+                    << (ae ? "get_all_electron_density(gridrefinement=2)"
+                           : "get_pseudo_density()")
+                    << "\n"
+                       "_density = _np.ascontiguousarray(\n"
+                       "    _np.asarray(getattr(_density, \"data\", "
+                       "_density), dtype=float))\n"
                        "from ase.io.cube import write_cube\n"
                        "with open(\"density.cube\", \"w\") as _dfh:\n"
-                       "    write_cube(_dfh, atoms, data=_ae_density)\n"
-                       "print(\"CALANGO_RESULT density_cube=density.cube\", "
-                       "flush=True)\n";
+                       "    write_cube(_dfh, atoms, data=_density)\n"
+                    << "print(\"CALANGO_RESULT density_cube=density.cube "
+                    << (ae ? "all_electron" : "pseudo") << "\", flush=True)\n";
             }
         }
         break;
@@ -717,9 +728,14 @@ std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,
             << indent << "basis=\"" << c.gpawBasis << "\",\n";
         break;
     }
-    out << indent << "xc=\"" << c.gpawXc << "\",\n"
-        << indent << "kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", "
-        << c.kpts[2] << "),  # Monkhorst-Pack grid\n";
+    out << indent << "xc=\"" << c.gpawXc << "\",\n";
+    if (c.gpawGammaCentered)
+        // Γ-centered Monkhorst-Pack grid: the {'size', 'gamma'} dict form.
+        out << indent << "kpts={\"size\": (" << c.kpts[0] << ", " << c.kpts[1]
+            << ", " << c.kpts[2] << "), \"gamma\": True},  # Γ-centered\n";
+    else
+        out << indent << "kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", "
+            << c.kpts[2] << "),  # Monkhorst-Pack grid\n";
     // Point-group symmetry reduction of the k-points is on by default; only
     // write the keyword when the user turned it off (e.g. to expose the full
     // Brillouin zone for a downstream Wannier localization).
@@ -739,7 +755,14 @@ std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,
         << ",      # electrons/valence electron\n"
         << indent << "},\n"
         << indent << "maxiter=" << c.scfMaxSteps << ",\n";
-    if (c.spinPolarized)
+    // Spin: collinear sets spinpol=True; non-collinear is driven by the vector
+    // initial moments seeded in the preamble, so no spinpol keyword is written
+    // (GPAW infers the spinor treatment from the (N,3) magmoms). `spinPolarized`
+    // is honored as a collinear fallback for configs that only set the boolean.
+    if (c.spinMode == SpinMode::NonCollinear)
+        out << indent << "# non-collinear spin: driven by the vector initial "
+                         "magnetic moments\n";
+    else if (c.spinMode == SpinMode::Collinear || c.spinPolarized)
         out << indent << "spinpol=True,\n";
     if (c.smearing != SmearingMethod::None) {
         // GPAW exposes only Fermi-Dirac / Marzari-Vanderbilt broadening; the
@@ -780,6 +803,43 @@ const char* AseScriptGenerator::loggerModuleFileName()
     return "calango_log.py";
 }
 
+std::string AseScriptGenerator::densityCubeScript(const std::string& gpwDir,
+                                                  bool allElectron)
+{
+    std::ostringstream out;
+    out << "# Charge-density export — generated by Calango\n"
+           "import os\n"
+           "import glob\n"
+           "import numpy as _np\n"
+           "from calango_log import CalangoLog\n"
+           "_log = CalangoLog()\n"
+        << "_base = r\"" << gpwDir << "\"\n"
+        << "_gpw = sorted(glob.glob(os.path.join(_base, '*.gpw')))\n"
+           "if not _gpw:\n"
+           "    raise RuntimeError('No GPAW wavefunction (.gpw) found in ' + "
+           "_base +\n"
+           "                       '. Re-run the single-point so it saves the "
+           "density.')\n"
+           "os.environ.setdefault('GPAW_NEW', '1')\n"
+           "from gpaw import GPAW\n"
+           "calc = GPAW(_gpw[0], txt='gpaw_density.txt')\n"
+           "atoms = calc.get_atoms()\n"
+           "_log.progress(1, 2)\n"
+        << "_density = calc."
+        << (allElectron ? "get_all_electron_density(gridrefinement=2)"
+                        : "get_pseudo_density()")
+        << "\n"
+           "_density = _np.ascontiguousarray(\n"
+           "    _np.asarray(getattr(_density, 'data', _density), dtype=float))\n"
+           "from ase.io.cube import write_cube\n"
+           "with open('density.cube', 'w') as _dfh:\n"
+           "    write_cube(_dfh, atoms, data=_density)\n"
+           "_log.progress(2, 2)\n"
+        << "print('CALANGO_RESULT density_cube=density.cube "
+        << (allElectron ? "all_electron" : "pseudo") << "', flush=True)\n";
+    return out.str();
+}
+
 std::string AseScriptGenerator::generate(const CalculatorConfig& config,
                                          const std::string& structureFile)
 {
@@ -795,7 +855,10 @@ std::string AseScriptGenerator::generate(const CalculatorConfig& config,
         << "atoms = read(r\"" << structureFile << "\")\n"
         << "print(f\"CALANGO_INFO natoms={len(atoms)}\", flush=True)\n"
            "\n";
-    if (config.spinPolarized) {
+    if (config.spinMode != SpinMode::Unpolarized || config.spinPolarized) {
+        // Non-collinear needs vector moments (N,3); a scalar list is applied
+        // along +z so a magnitude-only entry still seeds a spinor calculation.
+        const bool nc = config.spinMode == SpinMode::NonCollinear;
         out << "# Spin polarization: seed each atom with an initial magnetic\n"
                "# moment so the SCF can find a magnetic solution.\n";
         if (!config.initialMagMomentsCsv.empty()) {
@@ -805,7 +868,15 @@ std::string AseScriptGenerator::generate(const CalculatorConfig& config,
                 << config.initialMagMomentsCsv
                 << "\".replace(\",\", \" \").split()]\n"
                    "_moments += [0.0] * (len(atoms) - len(_moments))\n"
-                   "atoms.set_initial_magnetic_moments(_moments[:len(atoms)])\n\n";
+                   "_moments = _moments[:len(atoms)]\n";
+            if (nc)
+                out << "atoms.set_initial_magnetic_moments("
+                       "[[0.0, 0.0, _m] for _m in _moments])\n\n";
+            else
+                out << "atoms.set_initial_magnetic_moments(_moments)\n\n";
+        } else if (nc) {
+            out << "atoms.set_initial_magnetic_moments([[0.0, 0.0, "
+                << config.initialMagMoment << "]] * len(atoms))\n\n";
         } else {
             out << "atoms.set_initial_magnetic_moments([" << config.initialMagMoment
                 << "] * len(atoms))\n\n";

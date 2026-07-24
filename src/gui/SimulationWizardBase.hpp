@@ -159,16 +159,17 @@ protected:
 
     /// Hooks letting a subclass inject its own rows into the shared thematic
     /// GPAW group boxes: convergence/smearing rows into "Electronic Convergence
-    /// & Smearing" and output rows (spin, magnetic moments) into "Output &
-    /// Exports". Used by the Single-Point wizard so its electronic-structure
-    /// controls sit in the right physical-domain group. Default: no rows.
+    /// && Smearing" and spin rows (polarization mode, magnetic moments) into
+    /// "Spin Configurations". Used by the Single-Point wizard so its
+    /// electronic-structure controls sit in the right physical-domain group.
+    /// Default: no rows.
     virtual void buildConvergenceRows(QFormLayout*) {}
-    virtual void buildOutputRows(QFormLayout*) {}
+    virtual void buildSpinRows(QFormLayout*) {}
     /// Whether the subclass added any rows via the hooks above — drives the
     /// visibility of the two groups for non-GPAW DFT engines (which otherwise
     /// have nothing to show there).
     virtual bool hasConvergenceExtras() const { return false; }
-    virtual bool hasOutputExtras() const { return false; }
+    virtual bool hasSpinExtras() const { return false; }
 
     /// Fired when the DFT k-point grid changes, so a subclass can rescale a
     /// derived mesh default (e.g. the PDOS k-mesh at 2× the SCF grid).
@@ -236,7 +237,8 @@ private:
     QGroupBox* modeBasisGroup_ = nullptr;  ///< Mode & Basis Set (+ cutoff, XC)
     QGroupBox* bzGroup_ = nullptr;         ///< Brillouin Zone & k-Points
     QGroupBox* convGroup_ = nullptr;       ///< Electronic Convergence & Smearing
-    QGroupBox* outputGroup_ = nullptr;     ///< Output & Exports
+    QGroupBox* spinGroup_ = nullptr;       ///< Spin Configurations
+    QGroupBox* outputGroup_ = nullptr;     ///< Output Files & Density Exports
     /// "XC defaults to PBE (editable in Stage 4)" note — only meaningful for the
     /// script-template DFT backends; hidden for GPAW, which has its own XC combo.
     QLabel* dftXcNote_ = nullptr;
@@ -272,9 +274,12 @@ private:
     /// "Symmetry: off" — emits symmetry="off" (no point-group k-point
     /// reduction). Shown only when showsGpawSymmetryToggle() is true.
     QCheckBox* gpawSymmetryOffCheck_ = nullptr;
-    /// "Export Electron Density (.cube)" — shown only when
-    /// showsGpawDensityExport() is true (Single-Point).
+    /// "Gamma-centered Grid" — emits kpts={'size':…,'gamma':True}. GPAW only.
+    QCheckBox* gpawGammaCheck_ = nullptr;
+    /// "Export Charge Density (.cube)" + pseudo/all-electron type — shown only
+    /// when showsGpawDensityExport() is true (Single-Point).
     QCheckBox* gpawDensityExportCheck_ = nullptr;
+    QComboBox* gpawDensityTypeCombo_ = nullptr;
     QGroupBox* orcaGroup_ = nullptr;
     QComboBox* orcaMethodCombo_ = nullptr;
     QComboBox* orcaBasisCombo_ = nullptr;

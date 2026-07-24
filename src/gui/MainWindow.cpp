@@ -1,5 +1,6 @@
 #include "gui/MainWindow.hpp"
 
+#include "core/AseScriptGenerator.hpp"
 #include "core/BrillouinZone.hpp"
 #include "core/Noise.hpp"
 #include "core/Structure.hpp"
@@ -2796,7 +2797,56 @@ void MainWindow::openSinglePointResults(const QString& directory)
         delete viewer;
         return;
     }
+    connect(viewer, &SinglePointViewer::getVolumetricDataRequested, this,
+            &MainWindow::onGetVolumetricData);
     viewer->show();
+}
+
+void MainWindow::onGetVolumetricData(const QString& directory)
+{
+    if (!volumetricPanel_)
+        return;
+    Document* doc = currentDocument();
+    const QString structLabel = (doc && doc->structure)
+        ? QString::fromStdString(doc->structure->chemicalFormula())
+        : QString();
+
+    // If the run already exported density.cube, register it immediately.
+    const QString cube = directory + QStringLiteral("/density.cube");
+    if (QFile::exists(cube)) {
+        volumetricPanel_->registerResultFile(cube, tr("Charge density"),
+                                             structLabel);
+        statusBar()->showMessage(
+            tr("Charge density added to the Volumetric Data dock."), 6000);
+        return;
+    }
+
+    // Otherwise export it from the saved GPAW wavefunctions (.gpw) as a job;
+    // onJobFinished registers the resulting density.cube.
+    const QDir dir(directory);
+    if (dir.entryList({QStringLiteral("*.gpw")}, QDir::Files).isEmpty()) {
+        QMessageBox::information(
+            this, tr("Get Volumetric Data"),
+            tr("This run saved no charge density. Re-run the Single-Point with "
+               "\"Export Charge Density\" enabled (GPAW), or from a run that "
+               "wrote a .gpw file."));
+        return;
+    }
+    if (jobRunner_->isRunning()) {
+        QMessageBox::information(
+            this, tr("Get Volumetric Data"),
+            tr("A calculation is already running — kill it first."));
+        return;
+    }
+    // All-electron by default; the pseudo/all-electron choice was made at run
+    // time and is not recoverable post-hoc, so use the fuller density.
+    const QString script = QString::fromStdString(
+        core::AseScriptGenerator::densityCubeScript(directory.toStdString(),
+                                                    /*allElectron=*/true));
+    runScript(script,
+              QString::fromStdString(
+                  pybridge::PythonEngine::instance().executable()),
+              tr("Charge Density Export"), /*expectFrames=*/false);
 }
 
 void MainWindow::registerWannierOrbitals(const QString& directory)
@@ -4590,6 +4640,25 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     if (QFile::exists(lastJobDir_ + QStringLiteral("/wannier.json"))) {
         openMlwfResults(lastJobDir_);
         return;
+    }
+    // Charge-density export (from a single-point run with the export toggle,
+    // or the viewer's "Get Volumetric Data" action): register the cube in the
+    // Volumetric Data dock for instant rendering.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/density.cube"))) {
+        if (volumetricPanel_) {
+            Document* doc = currentDocument();
+            volumetricPanel_->registerResultFile(
+                lastJobDir_ + QStringLiteral("/density.cube"),
+                tr("Charge density"),
+                doc && doc->structure
+                    ? QString::fromStdString(doc->structure->chemicalFormula())
+                    : QString());
+        }
+        statusBar()->showMessage(
+            tr("Charge density added to the Volumetric Data dock."), 6000);
+        // A density-only export has nothing else to open.
+        if (!QFile::exists(lastJobDir_ + QStringLiteral("/single_point.json")))
+            return;
     }
     // Single-point runs: open the dedicated summary viewer.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/single_point.json"))) {

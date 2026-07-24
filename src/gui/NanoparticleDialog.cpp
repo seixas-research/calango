@@ -108,7 +108,7 @@ NanoparticleDialog::NanoparticleDialog(QWidget* parent) : QDialog(parent)
     sharedForm->addRow(tr("Lattice constant:"), latticeConstantSpin_);
 
     // --- Wulff section -----------------------------------------------------
-    wulffSection_ = new QGroupBox(tr("Surface energies & target size"), paramPage);
+    wulffSection_ = new QGroupBox(tr("Surface energies && target size"), paramPage);
     auto* wulffLayout = new QVBoxLayout(wulffSection_);
     wulffLayout->addWidget(new QLabel(
         tr("Facet surface energies γ(h k l) — only ratios matter:"), wulffSection_));

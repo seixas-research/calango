@@ -271,7 +271,7 @@ void EffectiveBandsWizard::refreshMatrix()
 
 QWidget* EffectiveBandsWizard::buildCalculatorExtras()
 {
-    auto* group = new QGroupBox(tr("Unfolding & spectral function"), this);
+    auto* group = new QGroupBox(tr("Unfolding && spectral function"), this);
     auto* form = new QFormLayout(group);
 
     energyMinSpin_ = new QDoubleSpinBox(group);
