@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.49
+    VERSION 26.7.50
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -156,6 +156,8 @@ qt_add_executable(calango
     src/core/VolumetricData.cpp
     src/core/MarchingCubes.hpp
     src/core/MarchingCubes.cpp
+    src/core/GridInterpolation.hpp
+    src/core/GridInterpolation.cpp
     src/core/DatasetSplit.hpp
     src/core/DatasetSplit.cpp
     src/core/ElectronicScriptGenerator.hpp
@@ -466,6 +468,7 @@ qt_add_resources(calango "icons"
         assets/.internal/icons/computer-line.svg
         assets/.internal/icons/cpu-line.svg
         assets/.internal/icons/cursor-line.svg
+        assets/.internal/icons/delete.svg
         assets/.internal/icons/delete-bin-line.svg
         assets/.internal/icons/drag-move-2-line.svg
         assets/.internal/icons/file-code-line.svg
@@ -840,6 +843,13 @@ if(CALANGO_BUILD_TESTS)
     add_test(NAME wannier_silicon
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/wannier_silicon_benchmark.py)
+
+    # Wannier interpolation validation on bulk Si: MLWF localization → H(R)→H(k)
+    # Fourier interpolation along Γ-X-L-Γ, verifying smooth artifact-free bands
+    # and a fundamental gap. Self-skips (exit 0) without GPAW/Wannier.
+    add_test(NAME wannier_interpolation_silicon
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/wannier_interpolation_silicon_benchmark.py)
 
     # ELF validation on bulk Si: GPAW SCF → gpaw.elf.ELF, verifying a finite
     # 3D η ∈ [0,1] field. Self-skips (exit 0) without GPAW/gpaw.elf.

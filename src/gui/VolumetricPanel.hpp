@@ -6,6 +6,7 @@
 
 #include <QFutureWatcher>
 #include <QString>
+#include <QStringList>
 #include <QWidget>
 
 #include <memory>
@@ -24,12 +25,10 @@ class EditVolumetricRenderDialog;
 /// overlays on the MAIN 3D viewport, aligned with the atoms.
 ///
 /// Layout: the tree registry of active fields over a compact icon-only action
-/// bar (RemixIcon glyphs) —
-///   * "Load External Files…" — import a scalar volumetric dataset from disk;
-///   * "Show Metadata…"       — the read-only VolumetricMetadataDialog;
-///   * "Edit Render…"         — the multi-tab EditVolumetricRenderDialog
-///     (Isosurfaces / Color Slice / Potential Map), which also selects the
-///     active render mode.
+/// bar (RemixIcon glyphs) — Load External Files, Show Metadata, Edit Render and
+/// Remove Dataset. A selected dataset can also be removed with Delete /
+/// Backspace. "Edit Render…" opens the EditVolumetricRenderDialog whose mode
+/// dropdown (Isosurfaces / Color Slice / Potential Map) drives the viewport.
 ///
 /// Isosurface extraction runs off the GUI thread (coalesced). The panel owns no
 /// canvas; it drives the injected ViewportWidget through
@@ -53,10 +52,16 @@ public Q_SLOTS:
     /// Detach any volumetric overlay from the viewport.
     void clearViewportOverlay();
 
+protected:
+    /// Delete / Backspace on the focused registry tree removes the selection.
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 private Q_SLOTS:
     void loadExternalFile();
     void showMetadata();
     void openEditDialog();
+    /// Remove the selected dataset from memory and unload its viewport overlay.
+    void removeCurrentDataset();
     void onSelectionChanged();
     void onShowToggled(bool on);
     void onIsoExtractionFinished();
@@ -68,11 +73,13 @@ private:
         QString path;
         QString structureLabel;
     };
-    /// Positive- and negative-phase isosurfaces for a signed field (the
-    /// negative mesh is empty for an all-positive field).
-    struct PhaseMeshes {
+    /// Result of one off-thread extraction. For an isosurface, `positive` /
+    /// `negative` are the ± phase lobes. For a potential map, `positive` is the
+    /// base isosurface with its `colorValues` sampled from the secondary field.
+    struct ExtractResult {
         core::IsoMesh positive;
         core::IsoMesh negative;
+        bool potential = false;
     };
 
     void addEntry(std::shared_ptr<const core::VolumetricData> field,
@@ -81,13 +88,20 @@ private:
     const Entry* currentEntry() const;
     const core::VolumetricData* currentField() const;
     int currentRow() const;
+    /// Labels of every registered dataset, in registry order (for the dialog's
+    /// base/secondary field selectors).
+    QStringList datasetLabels() const;
+    /// The field a style dataset index refers to (-1 ⇒ the current selection);
+    /// null when out of range.
+    std::shared_ptr<const core::VolumetricData> fieldForIndex(int index) const;
     void defaultIsovalueForField();
+    void syncEditDialogDatasets();
 
     void render();               ///< dispatch by mode for the selection
-    void renderSlice(bool potentialRamp); ///< build + push a color slice
-    void requestIsosurface();    ///< queue an off-thread isosurface extraction
+    void renderSlice();          ///< build + push a color slice (synchronous)
+    void requestExtraction();    ///< queue an off-thread isosurface extraction
     void pumpIsoExtraction();
-    void pushPhaseMeshes(const PhaseMeshes& meshes);
+    void pushResult(const ExtractResult& result);
 
     ViewportWidget* viewport_ = nullptr;
     std::vector<Entry> entries_;
@@ -98,8 +112,8 @@ private:
     QTreeWidget* registry_ = nullptr;
     QCheckBox* showCheck_ = nullptr;
 
-    // Off-thread isosurface extraction (coalesced, generation-tagged).
-    QFutureWatcher<PhaseMeshes> isoWatcher_;
+    // Off-thread extraction (coalesced, generation-tagged).
+    QFutureWatcher<ExtractResult> isoWatcher_;
     bool isoPending_ = false;
     unsigned isoGeneration_ = 0;
     unsigned isoRunningGeneration_ = 0;

@@ -1,16 +1,16 @@
 #include "gui/EditVolumetricRenderDialog.hpp"
 
+#include <QCheckBox>
 #include <QColorDialog>
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
-#include <QCheckBox>
-#include <QComboBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QSlider>
-#include <QTabWidget>
+#include <QStackedWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -39,18 +39,30 @@ EditVolumetricRenderDialog::EditVolumetricRenderDialog(
     , fieldMax_(std::max(fieldMax, fieldMin + 1e-30))
 {
     setWindowTitle(tr("Edit Volumetric Render"));
-    resize(420, 460);
+    resize(430, 470);
 
     auto* layout = new QVBoxLayout(this);
-    tabs_ = new QTabWidget(this);
-    tabs_->addTab(buildIsosurfaceTab(), tr("Isosurfaces"));
-    tabs_->addTab(buildColorSliceTab(), tr("Color Slice"));
-    tabs_->addTab(buildPotentialTab(), tr("Potential Map"));
-    tabs_->setCurrentIndex(static_cast<int>(mode));
-    layout->addWidget(tabs_);
-    // Switching tab switches the active render mode.
-    connect(tabs_, &QTabWidget::currentChanged, this,
-            [this] { emitChange(); });
+
+    // Central mode selector (replaces the former tab widget).
+    auto* modeRow = new QFormLayout;
+    modeCombo_ = new QComboBox(this);
+    modeCombo_->addItems(
+        {tr("Isosurfaces"), tr("Color Slice"), tr("Potential Map")});
+    modeCombo_->setCurrentIndex(static_cast<int>(mode));
+    modeRow->addRow(tr("Render Mode:"), modeCombo_);
+    layout->addLayout(modeRow);
+
+    stack_ = new QStackedWidget(this);
+    stack_->addWidget(buildIsosurfacePage());  // index 0 = Isosurface
+    stack_->addWidget(buildColorSlicePage());  // index 1 = ColorSlice
+    stack_->addWidget(buildPotentialPage());   // index 2 = PotentialMap
+    stack_->setCurrentIndex(static_cast<int>(mode));
+    layout->addWidget(stack_, 1);
+
+    connect(modeCombo_, &QComboBox::currentIndexChanged, this, [this](int i) {
+        stack_->setCurrentIndex(i);
+        emitChange(); // the active mode changed
+    });
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -59,7 +71,7 @@ EditVolumetricRenderDialog::EditVolumetricRenderDialog(
 
 VolumetricRenderMode EditVolumetricRenderDialog::mode() const
 {
-    return static_cast<VolumetricRenderMode>(tabs_->currentIndex());
+    return static_cast<VolumetricRenderMode>(modeCombo_->currentIndex());
 }
 
 void EditVolumetricRenderDialog::emitChange()
@@ -68,21 +80,12 @@ void EditVolumetricRenderDialog::emitChange()
         Q_EMIT styleChanged(style_, mode());
 }
 
-QWidget* EditVolumetricRenderDialog::buildIsosurfaceTab()
+QWidget* EditVolumetricRenderDialog::buildIsosurfacePage()
 {
     auto* page = new QWidget(this);
     auto* form = new QFormLayout(page);
 
-    isoGradientCombo_ = gradientCombo(page, style_.gradient);
-    form->addRow(tr("Colormap:"), isoGradientCombo_);
-    connect(isoGradientCombo_, &QComboBox::currentIndexChanged, this,
-            [this](int i) {
-                const auto& g = volumetricGradients();
-                if (i >= 0 && i < g.size())
-                    style_.gradient = g.at(i);
-                emitChange();
-            });
-
+    // Isovalue slider + numeric input.
     auto* isoRow = new QWidget(page);
     auto* isoRowLayout = new QHBoxLayout(isoRow);
     isoRowLayout->setContentsMargins(0, 0, 0, 0);
@@ -139,6 +142,7 @@ QWidget* EditVolumetricRenderDialog::buildIsosurfaceTab()
 
     posColorButton_ = new QPushButton(page);
     updateColorButton(posColorButton_, style_.positiveColor);
+    posColorButton_->setToolTip(tr("Uniform fill color of the positive lobe."));
     form->addRow(tr("Positive phase color:"), posColorButton_);
     connect(posColorButton_, &QPushButton::clicked, this, [this] {
         const QColor c = QColorDialog::getColor(style_.positiveColor, this,
@@ -153,8 +157,8 @@ QWidget* EditVolumetricRenderDialog::buildIsosurfaceTab()
     negColorButton_ = new QPushButton(page);
     updateColorButton(negColorButton_, style_.negativeColor);
     negColorButton_->setToolTip(
-        tr("Color of the negative-phase lobe for signed fields (e.g. Wannier "
-           "orbitals ψ<0)."));
+        tr("Fill color of the negative-phase lobe for signed fields (e.g. "
+           "Wannier orbitals ψ<0)."));
     form->addRow(tr("Negative phase color:"), negColorButton_);
     connect(negColorButton_, &QPushButton::clicked, this, [this] {
         const QColor c = QColorDialog::getColor(style_.negativeColor, this,
@@ -166,10 +170,28 @@ QWidget* EditVolumetricRenderDialog::buildIsosurfaceTab()
         }
     });
 
+    // 3D grid scalar interpolation applied before marching cubes.
+    isoInterpCombo_ = new QComboBox(page);
+    // Order matches core::GridInterpolation.
+    isoInterpCombo_->addItem(tr("None (Raw Voxel Grid)"));
+    isoInterpCombo_->addItem(tr("Linear Spline Interpolation (Trilinear)"));
+    isoInterpCombo_->addItem(tr("Cubic Spline Interpolation (Tricubic)"));
+    isoInterpCombo_->setCurrentIndex(static_cast<int>(style_.gridInterpolation));
+    isoInterpCombo_->setToolTip(
+        tr("Refine the voxel grid before surface extraction for a smoother "
+           "mesh (2× upsampling)."));
+    form->addRow(tr("Grid Interpolation:"), isoInterpCombo_);
+    connect(isoInterpCombo_, &QComboBox::currentIndexChanged, this,
+            [this](int i) {
+                style_.gridInterpolation =
+                    static_cast<core::GridInterpolation>(i);
+                emitChange();
+            });
+
     return page;
 }
 
-QWidget* EditVolumetricRenderDialog::buildColorSliceTab()
+QWidget* EditVolumetricRenderDialog::buildColorSlicePage()
 {
     auto* page = new QWidget(this);
     auto* form = new QFormLayout(page);
@@ -219,18 +241,47 @@ QWidget* EditVolumetricRenderDialog::buildColorSliceTab()
     return page;
 }
 
-QWidget* EditVolumetricRenderDialog::buildPotentialTab()
+QWidget* EditVolumetricRenderDialog::buildPotentialPage()
 {
     auto* page = new QWidget(this);
     auto* form = new QFormLayout(page);
 
     auto* intro = new QLabel(
-        tr("Project an electrostatic / work-function potential as a "
-           "color-mapped plane, with an explicit color-ramp window and a 1D "
-           "planar-average profile V̄ along the chosen axis."),
+        tr("Color a base geometric isosurface (e.g. the charge density ρ(r)) "
+           "by a secondary scalar field (e.g. the electrostatic potential "
+           "V(r)) mapped onto its vertices."),
         page);
     intro->setWordWrap(true);
     form->addRow(intro);
+
+    // Base isosurface geometry (isovalue comes from the Isosurfaces panel).
+    potentialBaseCombo_ = new QComboBox(page);
+    potentialBaseCombo_->setToolTip(
+        tr("Dataset whose isosurface provides the surface geometry ρ(r)."));
+    form->addRow(tr("Base isosurface:"), potentialBaseCombo_);
+    connect(potentialBaseCombo_, &QComboBox::currentIndexChanged, this,
+            [this] {
+                if (updating_)
+                    return;
+                style_.potentialBaseIndex =
+                    potentialBaseCombo_->currentData().toInt();
+                emitChange();
+            });
+
+    // Secondary scalar field mapped onto the surface.
+    potentialSecondaryCombo_ = new QComboBox(page);
+    potentialSecondaryCombo_->setToolTip(
+        tr("Scalar field V(r) sampled at each surface vertex and mapped to "
+           "color through the ramp below."));
+    form->addRow(tr("Secondary scalar:"), potentialSecondaryCombo_);
+    connect(potentialSecondaryCombo_, &QComboBox::currentIndexChanged, this,
+            [this] {
+                if (updating_)
+                    return;
+                style_.potentialSecondaryIndex =
+                    potentialSecondaryCombo_->currentData().toInt();
+                emitChange();
+            });
 
     potentialGradientCombo_ = gradientCombo(page, style_.gradient);
     form->addRow(tr("Color ramp:"), potentialGradientCombo_);
@@ -251,22 +302,12 @@ QWidget* EditVolumetricRenderDialog::buildPotentialTab()
     potentialMinSpin_->setDecimals(4);
     potentialMinSpin_->setRange(-1e6, 1e6);
     potentialMinSpin_->setValue(style_.potentialMin);
-    potentialMinSpin_->setSuffix(tr(" eV"));
     form->addRow(tr("Ramp min:"), potentialMinSpin_);
     potentialMaxSpin_ = new QDoubleSpinBox(page);
     potentialMaxSpin_->setDecimals(4);
     potentialMaxSpin_->setRange(-1e6, 1e6);
     potentialMaxSpin_->setValue(style_.potentialMax);
-    potentialMaxSpin_->setSuffix(tr(" eV"));
     form->addRow(tr("Ramp max:"), potentialMaxSpin_);
-
-    potentialAxisCombo_ = new QComboBox(page);
-    potentialAxisCombo_->addItems(
-        {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("z")});
-    potentialAxisCombo_->setCurrentIndex(std::clamp(style_.potentialAxis, 0, 2));
-    potentialAxisCombo_->setToolTip(
-        tr("Axis the 1D planar-average profile V̄ is taken along."));
-    form->addRow(tr("Planar-average axis:"), potentialAxisCombo_);
 
     const auto syncEnabled = [this] {
         const bool on = potentialBoundsCheck_->isChecked();
@@ -291,13 +332,45 @@ QWidget* EditVolumetricRenderDialog::buildPotentialTab()
                 style_.potentialMax = v;
                 emitChange();
             });
-    connect(potentialAxisCombo_, &QComboBox::currentIndexChanged, this,
-            [this](int i) {
-                style_.potentialAxis = i;
-                emitChange();
-            });
 
     return page;
+}
+
+void EditVolumetricRenderDialog::setDatasets(const QStringList& labels,
+                                             int currentIndex)
+{
+    if (!potentialBaseCombo_)
+        return;
+    updating_ = true;
+    const int prevBase = style_.potentialBaseIndex;
+    const int prevSecondary = style_.potentialSecondaryIndex;
+
+    potentialBaseCombo_->clear();
+    potentialBaseCombo_->addItem(tr("Current selection"), -1);
+    potentialSecondaryCombo_->clear();
+    potentialSecondaryCombo_->addItem(tr("None"), -1);
+    for (int i = 0; i < labels.size(); ++i) {
+        potentialBaseCombo_->addItem(labels.at(i), i);
+        potentialSecondaryCombo_->addItem(labels.at(i), i);
+    }
+
+    const auto selectData = [](QComboBox* combo, int value) {
+        const int idx = combo->findData(value);
+        combo->setCurrentIndex(idx >= 0 ? idx : 0);
+    };
+    // Preserve the prior selections when still valid; default base to the
+    // current tree selection.
+    selectData(potentialBaseCombo_,
+               prevBase >= 0 && prevBase < labels.size() ? prevBase
+                                                         : currentIndex);
+    selectData(potentialSecondaryCombo_,
+               prevSecondary >= 0 && prevSecondary < labels.size()
+                   ? prevSecondary
+                   : -1);
+    style_.potentialBaseIndex = potentialBaseCombo_->currentData().toInt();
+    style_.potentialSecondaryIndex =
+        potentialSecondaryCombo_->currentData().toInt();
+    updating_ = false;
 }
 
 void EditVolumetricRenderDialog::setFieldRange(double fieldMin, double fieldMax)

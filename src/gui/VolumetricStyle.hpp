@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/GridInterpolation.hpp"
 #include "render/ColorMap.hpp"
 
 #include <QColor>
@@ -24,6 +25,8 @@ struct VolumetricStyle {
     double specular = 0.30;     ///< specular material term (lit viewers only)
     QColor positiveColor = QColor(0xff, 0xb3, 0x47); ///< positive phase (+ψ)
     QColor negativeColor = QColor(0x47, 0x82, 0xff); ///< negative phase (−ψ)
+    /// Grid refinement applied before marching cubes (smoother meshes).
+    core::GridInterpolation gridInterpolation = core::GridInterpolation::None;
 
     // -- Color slice -------------------------------------------------------
     int slicePlane = 0;         ///< 0 = XY, 1 = XZ, 2 = YZ
@@ -31,14 +34,18 @@ struct VolumetricStyle {
     double sliceOpacity = 0.70; ///< 0 (transparent) … 1 (opaque)
 
     // -- Potential map -----------------------------------------------------
+    // A base isosurface (geometry) colored by a secondary scalar field mapped
+    // onto its vertices via `gradient`. Indices are into the panel's dataset
+    // registry; -1 for the base means "the current selection", -1 for the
+    // secondary means "none" (uniform positive color).
+    int potentialBaseIndex = -1;
+    int potentialSecondaryIndex = -1;
     /// When true the color ramp uses [potentialMin, potentialMax] instead of
-    /// the field's own min/max — for electrostatic / work-function maps whose
-    /// meaningful range is a chosen window.
+    /// the secondary field's own min/max — for electrostatic / work-function
+    /// maps whose meaningful range is a chosen window.
     bool potentialUseBounds = false;
     double potentialMin = 0.0;
     double potentialMax = 1.0;
-    /// Axis the 1D planar-average profile V̄(z) is taken along (0=x,1=y,2=z).
-    int potentialAxis = 2;
 };
 
 /// The gradients offered in the Volumetric appearance controls, in combo order:

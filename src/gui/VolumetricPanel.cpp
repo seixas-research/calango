@@ -1,5 +1,6 @@
 #include "gui/VolumetricPanel.hpp"
 
+#include "core/GridInterpolation.hpp"
 #include "gui/EditVolumetricRenderDialog.hpp"
 #include "gui/ViewportWidget.hpp"
 #include "gui/VolumetricMetadataDialog.hpp"
@@ -12,8 +13,10 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QKeyEvent>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QtConcurrent>
@@ -40,6 +43,10 @@ QStringList volumetricGradientNames()
             QStringLiteral("Greys")};
 }
 
+namespace {
+constexpr int kRefineFactor = 2; // upsampling factor for grid interpolation
+}
+
 VolumetricPanel::VolumetricPanel(ViewportWidget* viewport, QWidget* parent)
     : QWidget(parent), viewport_(viewport)
 {
@@ -54,7 +61,9 @@ VolumetricPanel::VolumetricPanel(ViewportWidget* viewport, QWidget* parent)
     registry_->setRootIsDecorated(false);
     registry_->setToolTip(
         tr("Active 3D scalar volumetric grids — loaded from disk or produced by "
-           "a calculation (e.g. MLWF orbitals). Select one to visualize it."));
+           "a calculation (e.g. MLWF orbitals). Select one to visualize it; "
+           "press Delete to remove it."));
+    registry_->installEventFilter(this); // Delete / Backspace removal
     layout->addWidget(registry_, 1);
     connect(registry_, &QTreeWidget::currentItemChanged, this,
             &VolumetricPanel::onSelectionChanged);
@@ -81,6 +90,10 @@ VolumetricPanel::VolumetricPanel(ViewportWidget* viewport, QWidget* parent)
     auto* editButton = makeButton(
         QStringLiteral("palette-line"),
         tr("Edit Render… — isosurface, color-slice and potential-map styling."));
+    auto* removeButton = makeButton(
+        QStringLiteral("delete"),
+        tr("Remove Dataset — unload the selected field from memory and the 3D "
+           "viewport (or press Delete)."));
     bar->addStretch(1);
     showCheck_ = new QCheckBox(tr("Show"), this);
     showCheck_->setChecked(true);
@@ -94,10 +107,12 @@ VolumetricPanel::VolumetricPanel(ViewportWidget* viewport, QWidget* parent)
             &VolumetricPanel::showMetadata);
     connect(editButton, &QPushButton::clicked, this,
             &VolumetricPanel::openEditDialog);
+    connect(removeButton, &QPushButton::clicked, this,
+            &VolumetricPanel::removeCurrentDataset);
     connect(showCheck_, &QCheckBox::toggled, this,
             &VolumetricPanel::onShowToggled);
 
-    connect(&isoWatcher_, &QFutureWatcher<PhaseMeshes>::finished, this,
+    connect(&isoWatcher_, &QFutureWatcher<ExtractResult>::finished, this,
             &VolumetricPanel::onIsoExtractionFinished);
 
     onSelectionChanged(); // disables actions with an empty registry
@@ -108,6 +123,18 @@ VolumetricPanel::~VolumetricPanel()
     isoWatcher_.disconnect(this);
     if (isoWatcher_.isRunning())
         isoWatcher_.waitForFinished();
+}
+
+bool VolumetricPanel::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == registry_ && event->type() == QEvent::KeyPress) {
+        const int key = static_cast<QKeyEvent*>(event)->key();
+        if (key == Qt::Key_Delete || key == Qt::Key_Backspace) {
+            removeCurrentDataset();
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void VolumetricPanel::loadExternalFile()
@@ -156,6 +183,38 @@ void VolumetricPanel::addEntry(
     item->setToolTip(0, path);
     item->setData(0, Qt::UserRole, index);
     registry_->setCurrentItem(item); // selects → onSelectionChanged → render
+    syncEditDialogDatasets();
+}
+
+void VolumetricPanel::removeCurrentDataset()
+{
+    const int row = currentRow();
+    if (row < 0) {
+        QMessageBox::information(this, tr("Remove Dataset"),
+                                 tr("Select a volumetric field first."));
+        return;
+    }
+    {
+        // Mutate the registry with signals blocked so the intermediate empty /
+        // stale-index states never reach onSelectionChanged.
+        const QSignalBlocker blocker(registry_);
+        delete registry_->takeTopLevelItem(row); // items mirror entries_ order
+        entries_.erase(entries_.begin() + row);
+        // Re-index the remaining items to their new positions.
+        for (int i = 0; i < registry_->topLevelItemCount(); ++i)
+            registry_->topLevelItem(i)->setData(0, Qt::UserRole, i);
+        // Select a sensible neighbor (or nothing when the list is now empty).
+        if (registry_->topLevelItemCount() > 0)
+            registry_->setCurrentItem(registry_->topLevelItem(
+                std::min(row, registry_->topLevelItemCount() - 1)));
+    }
+    // Drop any in-flight extraction result and refresh the viewport for the new
+    // selection (or clear it when nothing remains).
+    ++isoGeneration_;
+    isoPending_ = false;
+    clearViewportOverlay();
+    syncEditDialogDatasets();
+    onSelectionChanged();
 }
 
 int VolumetricPanel::currentRow() const
@@ -178,6 +237,28 @@ const core::VolumetricData* VolumetricPanel::currentField() const
 {
     const Entry* e = currentEntry();
     return e ? e->field.get() : nullptr;
+}
+
+QStringList VolumetricPanel::datasetLabels() const
+{
+    QStringList labels;
+    for (const Entry& e : entries_)
+        labels << e.label;
+    return labels;
+}
+
+std::shared_ptr<const core::VolumetricData>
+VolumetricPanel::fieldForIndex(int index) const
+{
+    if (index >= 0 && index < static_cast<int>(entries_.size()))
+        return entries_.at(index).field;
+    return nullptr;
+}
+
+void VolumetricPanel::syncEditDialogDatasets()
+{
+    if (editDialog_)
+        editDialog_->setDatasets(datasetLabels(), currentRow());
 }
 
 void VolumetricPanel::defaultIsovalueForField()
@@ -250,6 +331,7 @@ void VolumetricPanel::openEditDialog()
     } else {
         editDialog_->setFieldRange(lo, hi);
     }
+    syncEditDialogDatasets();
     editDialog_->show();
     editDialog_->raise();
     editDialog_->activateWindow();
@@ -274,29 +356,24 @@ void VolumetricPanel::render()
         isoPending_ = false;
         return;
     }
-    if (mode_ == VolumetricRenderMode::Isosurface) {
-        viewport_->clearLatticePlane();
-        requestIsosurface();
-    } else {
-        ++isoGeneration_; // cancel any queued/served isosurface
+    if (mode_ == VolumetricRenderMode::ColorSlice) {
+        ++isoGeneration_; // cancel any queued/served extraction
         isoPending_ = false;
         viewport_->clearCustomOverlay();
-        renderSlice(mode_ == VolumetricRenderMode::PotentialMap);
+        renderSlice();
+    } else { // Isosurface or Potential Map — both extract a surface off-thread
+        viewport_->clearLatticePlane();
+        requestExtraction();
     }
 }
 
-void VolumetricPanel::renderSlice(bool potentialRamp)
+void VolumetricPanel::renderSlice()
 {
     const core::VolumetricData* field = currentField();
     if (!field || !viewport_)
         return;
 
-    // Color normalization: the potential map may use an explicit ramp window.
-    double lo = field->minValue(), hi = field->maxValue();
-    if (potentialRamp && style_.potentialUseBounds) {
-        lo = style_.potentialMin;
-        hi = style_.potentialMax;
-    }
+    const double lo = field->minValue(), hi = field->maxValue();
     const double range = std::max(hi - lo, 1e-30);
     const int plane = std::clamp(style_.slicePlane, 0, 2);
 
@@ -344,7 +421,7 @@ void VolumetricPanel::renderSlice(bool potentialRamp)
                                /*visible=*/true, /*showEdges=*/false);
 }
 
-void VolumetricPanel::requestIsosurface()
+void VolumetricPanel::requestExtraction()
 {
     isoPending_ = true;
     pumpIsoExtraction();
@@ -354,22 +431,54 @@ void VolumetricPanel::pumpIsoExtraction()
 {
     if (!isoPending_ || isoWatcher_.isRunning())
         return;
-    const int row = currentRow();
-    if (row < 0)
+
+    const bool potential = mode_ == VolumetricRenderMode::PotentialMap;
+    // Base geometry: the chosen potential base, else the current selection.
+    std::shared_ptr<const core::VolumetricData> base;
+    if (potential && style_.potentialBaseIndex >= 0)
+        base = fieldForIndex(style_.potentialBaseIndex);
+    if (!base) {
+        const int row = currentRow();
+        if (row >= 0)
+            base = entries_.at(row).field;
+    }
+    if (!base)
         return;
+    std::shared_ptr<const core::VolumetricData> secondary =
+        potential ? fieldForIndex(style_.potentialSecondaryIndex) : nullptr;
+
     isoPending_ = false;
     isoRunningGeneration_ = ++isoGeneration_;
 
-    std::shared_ptr<const core::VolumetricData> field = entries_.at(row).field;
-    const double iso = std::abs(style_.isovalue);
-    const bool signedField = field->minValue() < 0.0;
+    double iso = std::abs(style_.isovalue);
+    const double bmin = base->minValue(), bmax = base->maxValue();
+    if (iso < bmin || iso > bmax) // a different base may not span this isovalue
+        iso = bmin + 0.5 * (bmax - bmin);
+    const bool signedField = bmin < 0.0;
+    const core::GridInterpolation interp = style_.gridInterpolation;
+
     isoWatcher_.setFuture(QtConcurrent::run(
-        [field = std::move(field), iso, signedField]() -> PhaseMeshes {
-            PhaseMeshes m;
-            m.positive = core::extractIsosurface(*field, iso, nullptr);
-            if (signedField && iso > 0.0)
-                m.negative = core::extractIsosurface(*field, -iso, nullptr);
-            return m;
+        [base = std::move(base), secondary = std::move(secondary), iso,
+         signedField, potential, interp]() -> ExtractResult {
+            ExtractResult r;
+            r.potential = potential;
+            // Refine the base grid before marching cubes when requested; skip
+            // the copy entirely for None.
+            const core::VolumetricData refined =
+                interp == core::GridInterpolation::None
+                    ? core::VolumetricData{}
+                    : core::refineGrid(*base, kRefineFactor, interp);
+            const core::VolumetricData& bf =
+                interp == core::GridInterpolation::None ? *base : refined;
+            if (potential) {
+                r.positive =
+                    core::extractIsosurface(bf, iso, secondary.get());
+            } else {
+                r.positive = core::extractIsosurface(bf, iso, nullptr);
+                if (signedField && iso > 0.0)
+                    r.negative = core::extractIsosurface(bf, -iso, nullptr);
+            }
+            return r;
         }));
 }
 
@@ -379,15 +488,16 @@ void VolumetricPanel::onIsoExtractionFinished()
         pumpIsoExtraction();
         return;
     }
-    pushPhaseMeshes(isoWatcher_.result());
+    pushResult(isoWatcher_.result());
     pumpIsoExtraction();
 }
 
-void VolumetricPanel::pushPhaseMeshes(const PhaseMeshes& meshes)
+void VolumetricPanel::pushResult(const ExtractResult& result)
 {
     if (!viewport_)
         return;
-    if (meshes.positive.positions.empty() && meshes.negative.positions.empty()) {
+    if (result.positive.positions.empty()
+        && result.negative.positions.empty()) {
         viewport_->clearCustomOverlay();
         return;
     }
@@ -395,22 +505,61 @@ void VolumetricPanel::pushPhaseMeshes(const PhaseMeshes& meshes)
     std::vector<render::StructureRenderer::OverlayRange> ranges;
     const float alpha = static_cast<float>(style_.isoOpacity);
 
-    const auto appendLobe = [&](const core::IsoMesh& mesh, const QColor& color) {
-        if (mesh.positions.empty())
-            return;
-        const float r = static_cast<float>(color.redF());
-        const float g = static_cast<float>(color.greenF());
-        const float b = static_cast<float>(color.blueF());
-        const int first = static_cast<int>(faces.size() / 6);
-        for (const core::Vec3& p : mesh.positions)
+    if (result.potential) {
+        // Color each vertex of the base isosurface by the secondary scalar
+        // field (colorValues), mapped through the chosen colormap + bounds.
+        const core::IsoMesh& mesh = result.positive;
+        double lo = style_.potentialMin, hi = style_.potentialMax;
+        if (!style_.potentialUseBounds) {
+            if (!mesh.colorValues.empty()) {
+                const auto [mn, mx] = std::minmax_element(
+                    mesh.colorValues.begin(), mesh.colorValues.end());
+                lo = *mn;
+                hi = *mx;
+            } else {
+                lo = 0.0;
+                hi = 1.0;
+            }
+        }
+        const double range = std::max(hi - lo, 1e-30);
+        faces.reserve(mesh.positions.size() * 6);
+        for (std::size_t i = 0; i < mesh.positions.size(); ++i) {
+            const core::Vec3& p = mesh.positions[i];
+            QColor c;
+            if (i < mesh.colorValues.size())
+                c = render::ColorMap::sample(
+                    style_.gradient,
+                    static_cast<float>(
+                        std::clamp((mesh.colorValues[i] - lo) / range, 0.0, 1.0)));
+            else
+                c = style_.positiveColor; // no secondary field → uniform
             faces.insert(faces.end(),
                          {static_cast<float>(p.x), static_cast<float>(p.y),
-                          static_cast<float>(p.z), r, g, b});
+                          static_cast<float>(p.z), static_cast<float>(c.redF()),
+                          static_cast<float>(c.greenF()),
+                          static_cast<float>(c.blueF())});
+        }
         ranges.push_back(
-            {first, static_cast<int>(mesh.positions.size()), alpha});
-    };
-    appendLobe(meshes.positive, style_.positiveColor);
-    appendLobe(meshes.negative, style_.negativeColor);
+            {0, static_cast<int>(mesh.positions.size()), alpha});
+    } else {
+        const auto appendLobe = [&](const core::IsoMesh& mesh,
+                                    const QColor& color) {
+            if (mesh.positions.empty())
+                return;
+            const float r = static_cast<float>(color.redF());
+            const float g = static_cast<float>(color.greenF());
+            const float b = static_cast<float>(color.blueF());
+            const int first = static_cast<int>(faces.size() / 6);
+            for (const core::Vec3& p : mesh.positions)
+                faces.insert(faces.end(),
+                             {static_cast<float>(p.x), static_cast<float>(p.y),
+                              static_cast<float>(p.z), r, g, b});
+            ranges.push_back(
+                {first, static_cast<int>(mesh.positions.size()), alpha});
+        };
+        appendLobe(result.positive, style_.positiveColor);
+        appendLobe(result.negative, style_.negativeColor);
+    }
 
     viewport_->setCustomOverlay(std::move(faces), {}, std::move(ranges),
                                 /*visible=*/true);

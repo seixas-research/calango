@@ -2,6 +2,8 @@
 
 #include "gui/VolumetricStyle.hpp"
 
+#include <QStringList>
+
 #include <QDialog>
 
 class QCheckBox;
@@ -9,21 +11,23 @@ class QComboBox;
 class QDoubleSpinBox;
 class QPushButton;
 class QSlider;
-class QTabWidget;
+class QStackedWidget;
 
 namespace calango::gui {
 
-/// "Edit Volumetric Render" — the multi-tab styling window opened from the
-/// Volumetric Data panel's toolbar. Its three tabs map to the panel's render
-/// modes; the active tab selects what the viewport shows:
+/// "Edit Volumetric Render" — the styling window opened from the Volumetric
+/// Data panel's toolbar. A central "Render Mode" dropdown selects one of three
+/// configuration panels (shown via a QStackedWidget); the active mode drives
+/// what the viewport renders:
 ///   * Isosurfaces  — isovalue, opacity, specular, positive/negative phase
-///     colors, colormap.
+///     colors, and a grid-interpolation scheme (no colormap: isosurfaces are
+///     uniform single-color / phase fills).
 ///   * Color Slice  — plane orientation, offset, colormap, transparency.
-///   * Potential Map — color-ramp bounds and the planar-average profile axis
-///     for electrostatic / work-function projections.
+///   * Potential Map — a base isosurface colored by a secondary scalar field
+///     (colormap + min/max ramp bounds).
 ///
 /// Edits apply live: styleChanged(style, mode) fires as controls move and when
-/// the active tab changes, so the viewport tracks the dialog immediately.
+/// the mode changes, so the viewport tracks the dialog immediately.
 class EditVolumetricRenderDialog : public QDialog {
     Q_OBJECT
 
@@ -39,13 +43,18 @@ public:
     /// value range (no signal emitted).
     void setFieldRange(double fieldMin, double fieldMax);
 
+    /// Populate the Potential-Map base / secondary field selectors from the
+    /// panel's dataset labels; `currentIndex` is the tree's current selection
+    /// (offered as the default base). No signal emitted.
+    void setDatasets(const QStringList& labels, int currentIndex);
+
 Q_SIGNALS:
     void styleChanged(const VolumetricStyle& style, VolumetricRenderMode mode);
 
 private:
-    QWidget* buildIsosurfaceTab();
-    QWidget* buildColorSliceTab();
-    QWidget* buildPotentialTab();
+    QWidget* buildIsosurfacePage();
+    QWidget* buildColorSlicePage();
+    QWidget* buildPotentialPage();
     void emitChange();
     double isovalueFromSlider() const;
     void syncIsoSlider();
@@ -56,16 +65,17 @@ private:
     double fieldMax_ = 1.0;
     bool updating_ = false;
 
-    QTabWidget* tabs_ = nullptr;
+    QComboBox* modeCombo_ = nullptr;
+    QStackedWidget* stack_ = nullptr;
 
     // Isosurfaces
-    QComboBox* isoGradientCombo_ = nullptr;
     QSlider* isoSlider_ = nullptr;
     QDoubleSpinBox* isoSpin_ = nullptr;
     QDoubleSpinBox* isoOpacitySpin_ = nullptr;
     QDoubleSpinBox* specularSpin_ = nullptr;
     QPushButton* posColorButton_ = nullptr;
     QPushButton* negColorButton_ = nullptr;
+    QComboBox* isoInterpCombo_ = nullptr;
 
     // Color slice
     QComboBox* planeCombo_ = nullptr;
@@ -74,11 +84,12 @@ private:
     QDoubleSpinBox* sliceOpacitySpin_ = nullptr;
 
     // Potential map
+    QComboBox* potentialBaseCombo_ = nullptr;
+    QComboBox* potentialSecondaryCombo_ = nullptr;
+    QComboBox* potentialGradientCombo_ = nullptr;
     QCheckBox* potentialBoundsCheck_ = nullptr;
     QDoubleSpinBox* potentialMinSpin_ = nullptr;
     QDoubleSpinBox* potentialMaxSpin_ = nullptr;
-    QComboBox* potentialAxisCombo_ = nullptr;
-    QComboBox* potentialGradientCombo_ = nullptr;
 };
 
 } // namespace calango::gui
