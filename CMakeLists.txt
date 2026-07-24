@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.45
+    VERSION 26.7.46
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -162,6 +162,10 @@ qt_add_executable(calango
     src/core/ElectronicScriptGenerator.cpp
     src/core/OpticsScriptGenerator.hpp
     src/core/OpticsScriptGenerator.cpp
+    src/core/ElfScriptGenerator.hpp
+    src/core/ElfScriptGenerator.cpp
+    src/core/WannierScriptGenerator.hpp
+    src/core/WannierScriptGenerator.cpp
     src/core/AdsorptionSites.hpp
     src/core/AdsorptionSites.cpp
     src/core/ClusterExpansion.hpp
@@ -377,6 +381,10 @@ qt_add_executable(calango
     src/gui/ElectronicBandsWizard.cpp
     src/gui/OpticsWizard.hpp
     src/gui/OpticsWizard.cpp
+    src/gui/ElfWizard.hpp
+    src/gui/ElfWizard.cpp
+    src/gui/WannierWizard.hpp
+    src/gui/WannierWizard.cpp
     src/gui/OpticsResultsWindow.hpp
     src/gui/OpticsResultsWindow.cpp
     src/gui/EffectiveBandsWizard.hpp

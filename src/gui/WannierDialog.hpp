@@ -24,18 +24,16 @@ namespace calango::gui {
 
 class VolumeViewWidget;
 
-/// Analysis → "Maximally Localized Wannier Functions (MLWF)…": run the
-/// Marzari-Vanderbilt localization on top of a converged GPAW calculation,
-/// tabulate the resulting Wannier centres and spreads, and visualise each
-/// real-space orbital ψ_n(r) as an isosurface (plus an axis-aligned slice).
+/// Result viewer for the Maximally Localized Wannier Functions: tabulates the
+/// Wannier centres and spreads and visualises each real-space orbital ψ_n(r) as
+/// an isosurface (plus an axis-aligned slice).
 ///
-/// MLWF is a DFT post-process, so — exactly like ElfDialog — the dialog only
-/// *generates* the ASE/GPAW script and emits runRequested() for the controller
-/// to stage & run. When the job's wannier.json + wannier_<n>.cube files are
-/// ready the user loads the JSON back in ("Load results…") to fill the table
-/// and pick which orbital to render. A completed single-point that already
-/// holds the Bloch wavefunctions (.gpw) is reused as the baseline so no fresh
-/// SCF is needed.
+/// MLWF is a DFT post-process set up and launched from the MLWF *wizard*
+/// (Simulation → "Maximally Localized Wannier Functions (MLWF)…"); this dialog
+/// only *visualises* the results. It is opened automatically when the job's
+/// wannier.json + wannier_<n>.cube files are ready (see
+/// MainWindow::onJobFinished) and can also load a wannier.json on demand
+/// ("Load results…").
 class WannierDialog : public QDialog {
     Q_OBJECT
 
@@ -44,25 +42,13 @@ public:
                            QWidget* parent = nullptr);
     ~WannierDialog() override;
 
-    /// Populate the baseline source selector with completed single-point
-    /// processes that hold the calculated Bloch wavefunctions (GPAW .gpw). Each
-    /// entry is (display label, absolute path to the origin process directory);
-    /// the generated script restarts GPAW from the auto-detected .gpw there.
-    void setDensityBaselines(const QList<QPair<QString, QString>>& baselines);
-
     /// Parse a wannier.json results file (centres, spreads, total spread, cube
     /// list) to fill the table and the per-orbital selector. The cubes are
     /// resolved relative to the JSON's directory. Used by the "Load results…"
     /// button and callable externally once a job finishes.
     void loadResults(const QString& jsonPath);
 
-Q_SIGNALS:
-    /// Generated analysis script + a task label; the controller stages and
-    /// runs it through the normal local-job path.
-    void runRequested(const QString& script, const QString& label);
-
 private Q_SLOTS:
-    void computeMlwf();
     void loadResultsDialog();
     /// Load wannier_<n>.cube (from the results directory) into the viewer.
     void orbitalSelected(int index);
@@ -76,10 +62,6 @@ private:
     /// valid even if the user loads a different orbital mid-extraction, and
     /// neither side ever mutates it.
     using FieldPtr = std::shared_ptr<const core::VolumetricData>;
-
-    /// ASE/GPAW script running the MLWF localization and writing wannier.json
-    /// plus the per-orbital wannier_<n>.cube files into the job directory.
-    QString generateScript() const;
 
     /// Load one Wannier orbital cube into the viewer (shared by the orbital
     /// selector). Rebuilds the isosurface / slice for the new grid.
@@ -110,9 +92,6 @@ private:
     unsigned isoRunningGeneration_ = 0;
 
     VolumeViewWidget* view_ = nullptr;
-    QComboBox* baselineCombo_ = nullptr; ///< wavefunction source (origin process)
-    QSpinBox* nWannier_ = nullptr;       ///< number of Wannier functions
-    QComboBox* projectionCombo_ = nullptr; ///< trial-orbital initialization
     QLabel* infoLabel_ = nullptr;
 
     QTableWidget* table_ = nullptr;         ///< centres + spreads

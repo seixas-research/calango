@@ -44,10 +44,12 @@
 #include "gui/PartialChargeDialog.hpp"
 #include "gui/CustomOverlayDialog.hpp"
 #include "gui/ElfDialog.hpp"
+#include "gui/ElfWizard.hpp"
 #include "gui/LatticePlaneDialog.hpp"
 #include "gui/OpticsWizard.hpp"
 #include "gui/OpticsResultsWindow.hpp"
 #include "gui/WannierDialog.hpp"
+#include "gui/WannierWizard.hpp"
 #include "gui/SymmetryDialog.hpp"
 #include "gui/VacfDialog.hpp"
 #include "gui/DatasetManagerDialog.hpp"
@@ -811,6 +813,14 @@ void MainWindow::createMenusAndDocks()
     // refractive index, energy loss) via GPAW's response module.
     simulationMenu->addAction(tr("&Optics…"),
                               this, &MainWindow::showOptics);
+    // ELF and MLWF are DFT post-processes staged & run through the standardized
+    // wizard (engine selection + auto-bound Conda env); their result viewers
+    // open when the job finishes.
+    simulationMenu->addAction(tr("&Electron Localization Function (ELF)…"),
+                              this, &MainWindow::showElf);
+    simulationMenu->addAction(
+        tr("Maximally Localized &Wannier Functions (MLWF)…"),
+        this, &MainWindow::showWannier);
     // Dataset Manager and Trainer moved to Modules → MLIP.
 
     // ----- Analysis: spec order, reciprocal-space tools at the end ---------
@@ -838,13 +848,9 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showRamanModes);
     analysisMenu->addAction(tr("&Volumetric Data…"),
                             this, &MainWindow::showVolumetricData);
-    // ELF is a volumetric scalar field (η ∈ [0,1]); it sits next to Volumetric
-    // Data since it shares the isosurface / slice viewer.
-    analysisMenu->addAction(tr("&Electron Localization Function (ELF)…"),
-                            this, &MainWindow::showElf);
-    analysisMenu->addAction(
-        tr("Maximally Localized &Wannier Functions (MLWF)…"),
-        this, &MainWindow::showWannier);
+    // ELF and MLWF are DFT post-processes: their setup + run now lives in the
+    // Simulation menu (as multi-stage wizards); their result viewers open
+    // automatically when the job finishes.
     analysisMenu->addAction(tr("Adsorption && Catal&ysis…"),
                             this, &MainWindow::showAdsorption);
     // Brillouin Zone Builder moved to the Build menu.
@@ -2733,6 +2739,26 @@ void MainWindow::openOpticsResults(const QString& directory)
     window->show();
 }
 
+void MainWindow::openElfResults(const QString& directory)
+{
+    Document* doc = currentDocument();
+    auto* dialog =
+        new ElfDialog(doc ? doc->structure : nullptr, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
+    dialog->loadGrid(directory + QStringLiteral("/elf.cube"));
+}
+
+void MainWindow::openWannierResults(const QString& directory)
+{
+    Document* doc = currentDocument();
+    auto* dialog =
+        new WannierDialog(doc ? doc->structure : nullptr, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
+    dialog->loadResults(directory + QStringLiteral("/wannier.json"));
+}
+
 void MainWindow::onDeleteProcessRequested(int id)
 {
     const auto it = processRecords_.find(id);
@@ -3109,23 +3135,10 @@ void MainWindow::showCustomOverlay()
     dialog->show();
 }
 
-void MainWindow::showElf()
+// Completed processes that saved GPAW wavefunctions (.gpw) — the baselines the
+// ELF / MLWF post-processes can restart from. Shared by both wizards.
+QList<QPair<QString, QString>> MainWindow::gpawBaselines() const
 {
-    Document* doc = currentDocument();
-    if (!doc || !doc->structure || doc->structure->empty()) {
-        QMessageBox::information(this, tr("Electron Localization Function (ELF)"),
-                                 tr("Open a structure first."));
-        return;
-    }
-    if (!ensureAseAvailable())
-        return;
-    // Modeless: the ELF grid is produced by a background GPAW job, then loaded
-    // back into the dialog's isosurface / slice viewer.
-    auto* dialog = new ElfDialog(doc->structure, this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-
-    // Offer every completed process that saved GPAW wavefunctions (.gpw) as a
-    // source to restart the ELF evaluation from.
     QList<QPair<QString, QString>> baselines;
     for (const auto& [id, record] : processRecords_) {
         if (record.directory.isEmpty())
@@ -3135,64 +3148,33 @@ void MainWindow::showElf()
             baselines.append({tr("#%1 — %2 [GPAW]").arg(id).arg(record.label),
                               record.directory});
     }
-    dialog->setDensityBaselines(baselines);
-    connect(dialog, &ElfDialog::runRequested, this,
-            [this](const QString& script, const QString& label) {
-                if (jobRunner_->isRunning()) {
-                    QMessageBox::information(
-                        this, label,
-                        tr("A calculation is already running — kill it first."));
-                    return;
-                }
-                runScript(script,
-                          QString::fromStdString(
-                              pybridge::PythonEngine::instance().executable()),
-                          label, /*expectFrames=*/false);
-            });
-    dialog->show();
+    return baselines;
+}
+
+void MainWindow::showElf()
+{
+    if (!prepareSimulation(tr("Electron Localization Function (ELF)")))
+        return;
+    // The ELF is set up + launched through the standardized wizard (engine
+    // selection + per-engine Conda env). It writes elf.cube into the job
+    // directory; onJobFinished() opens the isosurface / slice viewer.
+    ElfWizard wizard(currentDocument()->structure, this);
+    wizard.setDensityBaselines(gpawBaselines());
+    runSimulationWizard(wizard, tr("Electron Localization Function"),
+                        /*expectFrames=*/false);
 }
 
 void MainWindow::showWannier()
 {
-    Document* doc = currentDocument();
-    if (!doc || !doc->structure || doc->structure->empty()) {
-        QMessageBox::information(this, tr("Maximally Localized Wannier Functions"),
-                                 tr("Open a structure first."));
+    if (!prepareSimulation(tr("Maximally Localized Wannier Functions")))
         return;
-    }
-    if (!ensureAseAvailable())
-        return;
-    // Modeless: MLWF localization runs as a background GPAW job; the centers /
-    // spreads table and the real-space orbital isosurfaces load back in.
-    auto* dialog = new WannierDialog(doc->structure, this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-
-    // Completed processes with saved GPAW wavefunctions (.gpw) are the SCF
-    // baselines the Wannier functions are built from.
-    QList<QPair<QString, QString>> baselines;
-    for (const auto& [id, record] : processRecords_) {
-        if (record.directory.isEmpty())
-            continue;
-        const QDir dir(record.directory);
-        if (!dir.entryList({QStringLiteral("*.gpw")}, QDir::Files).isEmpty())
-            baselines.append({tr("#%1 — %2 [GPAW]").arg(id).arg(record.label),
-                              record.directory});
-    }
-    dialog->setDensityBaselines(baselines);
-    connect(dialog, &WannierDialog::runRequested, this,
-            [this](const QString& script, const QString& label) {
-                if (jobRunner_->isRunning()) {
-                    QMessageBox::information(
-                        this, label,
-                        tr("A calculation is already running — kill it first."));
-                    return;
-                }
-                runScript(script,
-                          QString::fromStdString(
-                              pybridge::PythonEngine::instance().executable()),
-                          label, /*expectFrames=*/false);
-            });
-    dialog->show();
+    // MLWF localization is set up + launched through the standardized wizard
+    // (engine selection + per-engine Conda env). It writes wannier.json (+
+    // per-orbital cubes); onJobFinished() opens the centres table + viewer.
+    WannierWizard wizard(currentDocument()->structure, this);
+    wizard.setDensityBaselines(gpawBaselines());
+    runSimulationWizard(wizard, tr("Maximally Localized Wannier Functions"),
+                        /*expectFrames=*/false);
 }
 
 void MainWindow::showVacf()
@@ -4415,6 +4397,16 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     // Optics runs: open the optical-spectra viewer.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/optics.json"))) {
         openOpticsResults(lastJobDir_);
+        return;
+    }
+    // ELF runs: open the isosurface / slice viewer on the produced grid.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/elf.cube"))) {
+        openElfResults(lastJobDir_);
+        return;
+    }
+    // MLWF runs: open the centres table + orbital viewer.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/wannier.json"))) {
+        openWannierResults(lastJobDir_);
         return;
     }
 

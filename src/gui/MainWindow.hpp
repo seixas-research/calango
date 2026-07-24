@@ -1,6 +1,9 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QList>
+#include <QPair>
+#include <QString>
 
 #include <deque>
 #include <map>
@@ -133,6 +136,10 @@ private Q_SLOTS:
     void showOptics();
     /// Open the optical-spectra viewer for a finished job directory.
     void openOpticsResults(const QString& directory);
+    /// Open the ELF isosurface / slice viewer for a finished job directory.
+    void openElfResults(const QString& directory);
+    /// Open the MLWF centres table + orbital viewer for a finished job dir.
+    void openWannierResults(const QString& directory);
     /// "Load Result" from the Process panel: band data, trajectory or
     /// final structure — whatever the task directory contains.
     void onProcessResultRequested(const QString& directory);
@@ -173,17 +180,23 @@ private Q_SLOTS:
     void showRamanModes();
     void newProject();
     void showVolumetricData();
-    /// Analysis → "Electron Localization Function (ELF)…": compute η(r) via GPAW
-    /// (or load an existing ELF grid) and view it as an isosurface / slice.
+    /// Simulation → "Electron Localization Function (ELF)…": set up + launch the
+    /// ELF post-process through the standardized wizard (engine selection +
+    /// per-engine Conda env). The viewer opens when the job finishes.
     void showElf();
     /// Viewport toolbar → "Lattice Plane…": interactive Miller-index plane +
     /// volumetric color-slice overlay in the main 3D viewport.
     void showLatticePlane();
     /// Viewport toolbar → "Custom overlay…": geometric-primitive overlay manager.
     void showCustomOverlay();
-    /// Analysis → "Maximally Localized Wannier Functions (MLWF)…": native GPAW
-    /// Wannier localization from a completed SCF baseline.
+    /// Simulation → "Maximally Localized Wannier Functions (MLWF)…": set up +
+    /// launch the localization through the standardized wizard (engine
+    /// selection + per-engine Conda env). The viewer opens when the job
+    /// finishes.
     void showWannier();
+    /// Completed processes that saved GPAW wavefunctions (.gpw), as (label,
+    /// directory) pairs — the baselines the ELF / MLWF wizards can restart from.
+    QList<QPair<QString, QString>> gpawBaselines() const;
     void showDatasetManager();
     /// MLIP → Trainer…: MACE training-config (YAML) builder + launcher.
     void openMaceTrainer();

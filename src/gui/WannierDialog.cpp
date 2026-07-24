@@ -74,57 +74,6 @@ WannierDialog::WannierDialog(std::shared_ptr<core::Structure> structure,
     infoLabel_->setWordWrap(true);
     side->addWidget(infoLabel_);
 
-    // --- Compute (GPAW MLWF) ----------------------------------------------
-    auto* computeGroup = new QGroupBox(tr("Compute (GPAW MLWF)"), this);
-    auto* computeForm = new QFormLayout(computeGroup);
-
-    // Baseline source: a completed single-point whose Bloch wavefunctions
-    // (.gpw) are restarted to run the localization. When none is selected the
-    // script runs a fresh GPAW SCF first (Wannier needs a converged calc).
-    baselineCombo_ = new QComboBox(computeGroup);
-    baselineCombo_->addItem(tr("(none — run a fresh GPAW SCF)"), QString());
-    baselineCombo_->setToolTip(
-        tr("Pick the single-point calculation that holds the Bloch "
-           "wavefunctions (GPAW .gpw). The localization restarts GPAW from "
-           "that directory; otherwise a fresh SCF is run first."));
-    computeForm->addRow(tr("Wavefunction source:"), baselineCombo_);
-
-    nWannier_ = new QSpinBox(computeGroup);
-    nWannier_->setRange(1, 512);
-    nWannier_->setValue(4);
-    nWannier_->setToolTip(
-        tr("Number of Wannier functions to localize (typically the number of "
-           "occupied bands / valence orbitals)."));
-    computeForm->addRow(tr("Wannier functions:"), nWannier_);
-
-    // Trial-orbital initialization. The untranslated key stored as itemData is
-    // what generateScript() maps onto ASE's `initialwannier` argument.
-    projectionCombo_ = new QComboBox(computeGroup);
-    projectionCombo_->addItem(tr("Automatic (orbitals)"),
-                              QStringLiteral("orbitals"));
-    projectionCombo_->addItem(tr("Bloch"), QStringLiteral("bloch"));
-    projectionCombo_->addItem(tr("Random"), QStringLiteral("random"));
-    projectionCombo_->addItem(QStringLiteral("s"), QStringLiteral("s"));
-    projectionCombo_->addItem(QStringLiteral("p"), QStringLiteral("p"));
-    projectionCombo_->addItem(QStringLiteral("d"), QStringLiteral("d"));
-    projectionCombo_->addItem(QStringLiteral("sp3"), QStringLiteral("sp3"));
-    projectionCombo_->addItem(QStringLiteral("dxy"), QStringLiteral("dxy"));
-    projectionCombo_->setToolTip(
-        tr("Trial-orbital guess used to seed the localization. The atomic sets "
-           "(s, p, d, sp3, dxy) fall back to ASE's 'orbitals' initializer, "
-           "which derives the projections from the atomic orbitals."));
-    computeForm->addRow(tr("Initial projection:"), projectionCombo_);
-
-    auto* computeButton = new QPushButton(tr("Compute MLWF"), computeGroup);
-    computeButton->setToolTip(
-        tr("Stage and launch the GPAW/ASE Wannier job. When it completes, click "
-           "\"Load results…\" and select the wannier.json in its task "
-           "directory."));
-    connect(computeButton, &QPushButton::clicked, this,
-            &WannierDialog::computeMlwf);
-    computeForm->addRow(computeButton);
-    side->addWidget(computeGroup);
-
     // --- Wannier functions (results) --------------------------------------
     auto* resultsGroup = new QGroupBox(tr("Wannier functions"), this);
     auto* resultsLayout = new QVBoxLayout(resultsGroup);
@@ -250,33 +199,9 @@ WannierDialog::~WannierDialog()
         isoWatcher_.waitForFinished();
 }
 
-void WannierDialog::setDensityBaselines(
-    const QList<QPair<QString, QString>>& baselines)
-{
-    if (!baselineCombo_)
-        return;
-    for (const auto& [label, dir] : baselines)
-        baselineCombo_->addItem(label, dir);
-}
-
 double WannierDialog::isovalueFromSlider() const
 {
     return isoSlider_->value() / 1000.0 * fieldMax_;
-}
-
-void WannierDialog::computeMlwf()
-{
-    if (!structure_ || structure_->empty()) {
-        QMessageBox::information(this, windowTitle(),
-                                 tr("Open a structure first."));
-        return;
-    }
-    Q_EMIT runRequested(generateScript(),
-                        tr("Maximally Localized Wannier Functions"));
-    QMessageBox::information(
-        this, windowTitle(),
-        tr("MLWF job launched. When it completes, click \"Load results…\" and "
-           "select the wannier.json in its task directory."));
 }
 
 void WannierDialog::loadResultsDialog()
@@ -505,137 +430,6 @@ void WannierDialog::rebuildSlice()
         }
     }
     view_->setSlice(stream);
-}
-
-QString WannierDialog::generateScript() const
-{
-    // Preamble mirrors ElfDialog/PartialChargeDialog: JSON/np helpers, the ASE
-    // reader and the CalangoLog progress logger the controller scrapes.
-    const QString preamble = QStringLiteral(
-        "import json\n"
-        "import os\n"
-        "import glob\n"
-        "import numpy as np\n"
-        "from ase.io import read\n"
-        "from calango_log import CalangoLog\n"
-        "_log = CalangoLog()\n");
-
-    // Wavefunction acquisition. Either restart GPAW from a baseline process's
-    // .gpw, or — when none is selected — run a fresh SCF. Both define `calc`
-    // (a GPAW calculator holding the Bloch wavefunctions) and `atoms`.
-    const QString baseline =
-        baselineCombo_ ? baselineCombo_->currentData().toString() : QString();
-    QString acquisition;
-    if (!baseline.isEmpty()) {
-        acquisition = QStringLiteral(
-            "_base = r\"%1\"\n"
-            "_gpw = sorted(glob.glob(os.path.join(_base, '*.gpw')))\n"
-            "if not _gpw:\n"
-            "    raise RuntimeError('No GPAW wavefunction (.gpw) found in '\n"
-            "                       + _base + '. The MLWF localization needs '\n"
-            "                       'the Bloch wavefunctions — re-run the '\n"
-            "                       'single-point with '\n"
-            "                       \"calc.write('single_point.gpw', \"\n"
-            "                       \"mode='all').\")\n"
-            "from gpaw import GPAW\n"
-            "calc = GPAW(_gpw[0], txt='gpaw_wannier.txt')\n"
-            "atoms = calc.get_atoms()\n"
-            "_log.progress(1, 3)\n").arg(baseline);
-    } else {
-        acquisition = QStringLiteral(
-            "atoms = read('structure.extxyz')\n"
-            "_log.progress(1, 3)\n"
-            "from gpaw import GPAW, PW\n"
-            "# symmetry='off' — ASE's Wannier requires the full (unsymmetrized)\n"
-            "# Brillouin zone; it raises otherwise.\n"
-            "calc = GPAW(mode=PW(500), xc='PBE', kpts=(7, 7, 7),\n"
-            "            symmetry='off', txt='gpaw.txt')\n"
-            "atoms.calc = calc\n"
-            "atoms.get_potential_energy()\n"
-            "calc.write('wannier.gpw', mode='all')\n"
-            "_log.progress(2, 3)\n");
-    }
-
-    const QString nWan = QString::number(nWannier_ ? nWannier_->value() : 4);
-
-    // Map the (untranslated) projection key onto ASE's `initialwannier` arg.
-    // The atomic sets fall back to 'orbitals', from which ASE derives the
-    // projections; 'bloch' / 'random' pass straight through.
-    const QString key =
-        projectionCombo_ ? projectionCombo_->currentData().toString()
-                         : QStringLiteral("orbitals");
-    const QString init = (key == QLatin1String("bloch")
-                          || key == QLatin1String("random"))
-                             ? key
-                             : QStringLiteral("orbitals");
-
-    // Marzari-Vanderbilt localization via ASE. Guard the import so a missing
-    // ase.dft.wannier surfaces a clear error rather than a bare ImportError.
-    const QString compute =
-        QStringLiteral(
-            "try:\n"
-            "    from ase.dft.wannier import Wannier\n"
-            "except Exception as _e:\n"
-            "    raise RuntimeError('Maximally Localized Wannier Functions '\n"
-            "                       'require ase.dft.wannier, which is not '\n"
-            "                       'available in this ASE install: ' "
-            "+ repr(_e))\n"
-            "nwannier = %1\n"
-            "# initialwannier='orbitals' seeds the trial projections from the\n"
-            "# atomic orbitals (good initial overlaps + centre estimates).\n"
-            "wan = Wannier(nwannier=nwannier, calc=calc,\n"
-            "              initialwannier='%2')\n"
-            "# Iterative Marzari-Vanderbilt minimization (Omega = Omega_I +\n"
-            "# Omega_tilde_D). Repeat localize() until the spread functional\n"
-            "# stops decreasing, so convergence of Omega is guaranteed rather\n"
-            "# than relying on a single fixed-iteration call.\n"
-            "_prev = None\n"
-            "for _it in range(50):\n"
-            "    wan.localize(step=0.25, tolerance=1e-6)\n"
-            "    _val = float(wan.get_functional_value())\n"
-            "    if _prev is not None and abs(_val - _prev) < 1e-6:\n"
-            "        break\n"
-            "    _prev = _val\n"
-            "_log.progress(3, 3)\n")
-            .arg(nWan, init);
-
-    // Evaluation. Centres are in Å; the total spread comes from the localization
-    // functional. Per-orbital spreads use get_radii() (Å) squared as an Ω-in-Å²
-    // proxy; every optional API is guarded so version drift degrades gracefully.
-    const QString evaluate = QStringLiteral(
-        "centers = np.asarray(wan.get_centers(), dtype=float)\n"
-        "# Per-Wannier spread Ω_n (Å²): get_spreads() is the physical spread;\n"
-        "# get_radii() returns the (often zero) trial-projection radii and\n"
-        "# get_functional_value() is the localization functional, not Ω.\n"
-        "try:\n"
-        "    spreads = [float(s) for s in np.asarray(wan.get_spreads(),\n"
-        "                                            dtype=float)]\n"
-        "except Exception:\n"
-        "    try:\n"
-        "        _radii = np.asarray(wan.get_radii(), dtype=float)\n"
-        "        spreads = [float(r * r) for r in _radii]\n"
-        "    except Exception:\n"
-        "        spreads = [float('nan')] * nwannier\n"
-        "# Total spread Ω = Σ_n Ω_n.\n"
-        "total_spread = float(np.nansum(spreads))\n"
-        "cubes = []\n"
-        "for _i in range(nwannier):\n"
-        "    _fn = 'wannier_%d.cube' % _i\n"
-        "    wan.write_cube(_i, _fn)\n"
-        "    cubes.append(_fn)\n");
-
-    // Write wannier.json and emit the result marker the controller watches for.
-    const QString tail = QStringLiteral(
-        "result = {\n"
-        "    'total_spread': total_spread,\n"
-        "    'centers': [[float(v) for v in row] for row in centers],\n"
-        "    'spreads': [float(s) for s in spreads],\n"
-        "    'cubes': cubes,\n"
-        "}\n"
-        "json.dump(result, open('wannier.json', 'w'), indent=2)\n"
-        "print('CALANGO_RESULT wannier=wannier.json', flush=True)\n");
-
-    return preamble + acquisition + compute + evaluate + tail;
 }
 
 } // namespace calango::gui

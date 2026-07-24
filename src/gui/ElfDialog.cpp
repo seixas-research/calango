@@ -67,37 +67,6 @@ ElfDialog::ElfDialog(std::shared_ptr<core::Structure> structure, QWidget* parent
     infoLabel_->setWordWrap(true);
     side->addWidget(infoLabel_);
 
-    // --- Compute (GPAW) ----------------------------------------------------
-    auto* computeGroup = new QGroupBox(tr("Compute (GPAW)"), this);
-    auto* computeForm = new QFormLayout(computeGroup);
-
-    // Baseline source: a completed process whose wavefunction/density (.gpw)
-    // is restarted to build the ELF. When none is selected the script runs a
-    // fresh GPAW single-point first.
-    baselineCombo_ = new QComboBox(computeGroup);
-    baselineCombo_->addItem(tr("(none — run a fresh GPAW single-point)"),
-                            QString());
-    baselineCombo_->setToolTip(
-        tr("Pick the process / workspace tab that holds a calculated "
-           "wavefunction (GPAW .gpw). The ELF is built by restarting GPAW from "
-           "that directory; otherwise a fresh single-point is run."));
-    computeForm->addRow(tr("Wavefunction source:"), baselineCombo_);
-
-    auto* computeHint = new QLabel(
-        tr("Generates the ELF η(r) with GPAW and writes elf.cube into the task "
-           "directory. When it finishes, load it below."),
-        computeGroup);
-    computeHint->setWordWrap(true);
-    computeForm->addRow(computeHint);
-
-    auto* computeButton = new QPushButton(tr("Compute ELF"), computeGroup);
-    computeButton->setToolTip(
-        tr("Stage and launch the GPAW ELF job. When it completes, click "
-           "\"Load ELF grid…\" and select the elf.cube in its task directory."));
-    connect(computeButton, &QPushButton::clicked, this, &ElfDialog::computeElf);
-    computeForm->addRow(computeButton);
-    side->addWidget(computeGroup);
-
     // --- Load --------------------------------------------------------------
     auto* loadGroup = new QGroupBox(tr("Load"), this);
     auto* loadLayout = new QVBoxLayout(loadGroup);
@@ -201,32 +170,9 @@ ElfDialog::~ElfDialog()
         isoWatcher_.waitForFinished();
 }
 
-void ElfDialog::setDensityBaselines(
-    const QList<QPair<QString, QString>>& baselines)
-{
-    if (!baselineCombo_)
-        return;
-    for (const auto& [label, dir] : baselines)
-        baselineCombo_->addItem(label, dir);
-}
-
 double ElfDialog::isovalueFromSlider() const
 {
     return isoSlider_->value() / 1000.0;
-}
-
-void ElfDialog::computeElf()
-{
-    if (!structure_ || structure_->empty()) {
-        QMessageBox::information(this, windowTitle(),
-                                 tr("Open a structure first."));
-        return;
-    }
-    Q_EMIT runRequested(generateScript(), tr("Electron Localization Function"));
-    QMessageBox::information(
-        this, windowTitle(),
-        tr("ELF job launched. When it completes, click \"Load ELF grid…\" and "
-           "select the elf.cube in its task directory."));
 }
 
 void ElfDialog::loadGridDialog()
@@ -431,105 +377,6 @@ void ElfDialog::exportSlice()
     for (const auto& s : sliceSamples_)
         out << s[0] << ',' << s[1] << ',' << s[2] << ',' << s[3] << '\n';
     file.commit();
-}
-
-QString ElfDialog::generateScript() const
-{
-    // Preamble mirrors PartialChargeDialog: JSON/np helpers, ASE reader and the
-    // CalangoLog progress logger the controller scrapes for progress markers.
-    const QString preamble = QStringLiteral(
-        "import json\n"
-        "import os\n"
-        "import glob\n"
-        "# GPAW 25.x computes the ELF (kinetic-energy density) only in its new\n"
-        "# engine, so enable it before importing gpaw.\n"
-        "os.environ.setdefault('GPAW_NEW', '1')\n"
-        "import numpy as np\n"
-        "from ase.io import read\n"
-        "from calango_log import CalangoLog\n"
-        "_log = CalangoLog()\n");
-
-    // Wavefunction acquisition. Either restart GPAW from a baseline process's
-    // .gpw, or — when none is selected — run a fresh single-point. Both define
-    // `calc` (a GPAW calculator with wavefunctions) and `atoms`.
-    const QString baseline =
-        baselineCombo_ ? baselineCombo_->currentData().toString() : QString();
-    QString acquisition;
-    if (!baseline.isEmpty()) {
-        acquisition = QStringLiteral(
-            "_base = r\"%1\"\n"
-            "_gpw = sorted(glob.glob(os.path.join(_base, '*.gpw')))\n"
-            "if not _gpw:\n"
-            "    raise RuntimeError('No GPAW wavefunction (.gpw) found in '\n"
-            "                       + _base + '. The ELF needs the full '\n"
-            "                       'wavefunctions — re-run GPAW with '\n"
-            "                       \"calc.write('wfs.gpw', mode='all').\")\n"
-            "from gpaw import GPAW\n"
-            "calc = GPAW(_gpw[0], txt=None)\n"
-            "atoms = calc.get_atoms()\n"
-            "_log.progress(1, 3)\n").arg(baseline);
-    } else {
-        acquisition = QStringLiteral(
-            "atoms = read('structure.extxyz')\n"
-            "_log.progress(1, 3)\n"
-            "from gpaw import GPAW, PW\n"
-            "calc = GPAW(mode=PW(500), xc='PBE', kpts=(7, 7, 7), txt='gpaw.txt')\n"
-            "atoms.calc = calc\n"
-            "atoms.get_potential_energy()\n"
-            "_log.progress(2, 3)\n");
-    }
-
-    // ELF evaluation. The gpaw.elf.ELF path is preferred; API names have shifted
-    // across GPAW versions, so fall back to the calculator method and, failing
-    // both, surface a RuntimeError carrying the underlying messages.
-    // ELF evaluation, hardened against GPAW version drift and grid-layout /
-    // spin-shape mismatches:
-    //   * ELF.update() takes (wfs) in some versions and no arg in others;
-    //   * get_electronic_localization_function() accepts gridrefinement/spin
-    //     only in some versions;
-    //   * the result may come back spin-resolved (leading spin axis) or as a
-    //     non-contiguous / non-float array — normalize to one contiguous
-    //     C-ordered float64 3D grid before write_cube.
-    const QString compute = QStringLiteral(
-        "elf_grid = None\n"
-        "_errs = []\n"
-        "try:\n"
-        "    from gpaw.elf import ELF\n"
-        "    elf = ELF(calc)\n"
-        "    try:\n"
-        "        elf.update(calc.wfs)\n"
-        "    except TypeError:\n"
-        "        elf.update()\n"
-        "    try:\n"
-        "        elf_grid = elf.get_electronic_localization_function(\n"
-        "            gridrefinement=2)\n"
-        "    except TypeError:\n"
-        "        elf_grid = elf.get_electronic_localization_function()\n"
-        "except Exception as _e:\n"
-        "    _errs.append('gpaw.elf.ELF: ' + repr(_e))\n"
-        "    try:\n"
-        "        elf_grid = calc.get_electronic_localization_function()\n"
-        "    except Exception as _e2:\n"
-        "        _errs.append('calc.get_electronic_localization_function: '\n"
-        "                     + repr(_e2))\n"
-        "if elf_grid is None:\n"
-        "    raise RuntimeError('Could not evaluate the ELF with this GPAW '\n"
-        "                       'version: ' + ' | '.join(_errs))\n"
-        "elf_grid = np.asarray(elf_grid, dtype=float)\n"
-        "if elf_grid.ndim == 4:  # (spin, nx, ny, nz) -> collapse the spin axis\n"
-        "    elf_grid = elf_grid[0]\n"
-        "elf_grid = np.ascontiguousarray(elf_grid, dtype=float)\n"
-        "_log.progress(3, 3)\n");
-
-    // Write elf.cube on the ELF grid and emit the result marker the controller
-    // watches for. `atoms` is always defined by the acquisition step.
-    const QString tail = QStringLiteral(
-        "from ase.io.cube import write_cube\n"
-        "with open('elf.cube', 'w') as _fh:\n"
-        "    write_cube(_fh, atoms, data=elf_grid)\n"
-        "print('CALANGO_RESULT elf=elf.cube', flush=True)\n");
-
-    return preamble + acquisition + compute + tail;
 }
 
 } // namespace calango::gui
