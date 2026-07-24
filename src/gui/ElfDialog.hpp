@@ -22,16 +22,14 @@ namespace calango::gui {
 
 class VolumeViewWidget;
 
-/// Analysis → "Electron Localization Function (ELF)…": compute the ELF η(r)
-/// with GPAW as a background job, then visualise the resulting grid as an
-/// isosurface (η ∈ [0, 1]) plus an axis-aligned color-mapped slice.
+/// Result viewer for the Electron Localization Function η(r): an isosurface
+/// (η ∈ [0, 1]) plus an axis-aligned color-mapped slice of the ELF grid.
 ///
-/// The ELF is a DFT post-process, so — exactly like PartialChargeDialog — the
-/// dialog only *generates* the ASE/GPAW script and emits runRequested() for the
-/// controller to stage & run. When the job's elf.cube is ready the user loads
-/// it back in ("Load ELF grid…") to populate the viewer. A completed process
-/// that already holds a wavefunction/density (.gpw) can be reused as the
-/// baseline so no fresh single-point is needed.
+/// The ELF is a DFT post-process set up and launched from the ELF *wizard*
+/// (Simulation → "Electron Localization Function (ELF)…"); this dialog only
+/// *visualises* the resulting grid. It is opened automatically when the job's
+/// elf.cube is ready (see MainWindow::onJobFinished) and can also load any grid
+/// on demand ("Load ELF grid…").
 class ElfDialog : public QDialog {
     Q_OBJECT
 
@@ -40,23 +38,11 @@ public:
                        QWidget* parent = nullptr);
     ~ElfDialog() override;
 
-    /// Populate the baseline source selector with completed processes that hold
-    /// a calculated wavefunction/density (GPAW .gpw). Each entry is (display
-    /// label, absolute path to the origin process directory); the generated
-    /// script restarts GPAW from the auto-detected .gpw in that directory.
-    void setDensityBaselines(const QList<QPair<QString, QString>>& baselines);
-
     /// Load an ELF grid file (.cube / ELFCAR / .xsf) into the viewer. Used by
     /// the "Load ELF grid…" button and callable externally once a job finishes.
     void loadGrid(const QString& path);
 
-Q_SIGNALS:
-    /// Generated analysis script + a task label; the controller stages and
-    /// runs it through the normal local-job path.
-    void runRequested(const QString& script, const QString& label);
-
 private Q_SLOTS:
-    void computeElf();
     void loadGridDialog();
     /// Request an isosurface for the current isovalue. Cheap and non-blocking:
     /// it schedules the extraction (see isoWatcher_) rather than performing it.
@@ -70,9 +56,6 @@ private:
     /// valid even if the user loads a different file mid-extraction, and neither
     /// side ever mutates it.
     using FieldPtr = std::shared_ptr<const core::VolumetricData>;
-
-    /// GPAW script writing elf.cube into the job directory.
-    QString generateScript() const;
 
     double isovalueFromSlider() const;
 
@@ -100,7 +83,6 @@ private:
     unsigned isoRunningGeneration_ = 0;
 
     VolumeViewWidget* view_ = nullptr;
-    QComboBox* baselineCombo_ = nullptr; ///< wavefunction source (origin process)
     QLabel* infoLabel_ = nullptr;
     QGroupBox* isoGroup_ = nullptr;
     QSlider* isoSlider_ = nullptr;
