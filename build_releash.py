@@ -6,6 +6,16 @@ import datetime
 import subprocess
 
 def main():
+    # Verify if there are any changes to be committed
+    try:
+        status_check = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=True)
+        if not status_check.stdout.strip():
+            print("No changes to commit. Aborting version bump.")
+            sys.exit(0)
+    except subprocess.CalledProcessError as e:
+        print(f"Error checking git status: {e}", file=sys.stderr)
+        sys.exit(1)
+
     cmake_file = "CMakeLists.txt"
     
     if not os.path.exists(cmake_file):
@@ -82,5 +92,15 @@ def main():
         print(f"Error during 'git commit': {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Git actions: git push
+    try:
+        print("Running: git push")
+        subprocess.run(["git", "push"], check=True)
+        print("Git push completed successfully!")
+    except subprocess.CalledProcessError as e:
+        print(f"Error during 'git push': {e}", file=sys.stderr)
+        sys.exit(1)
+
 if __name__ == "__main__":
     main()
+
