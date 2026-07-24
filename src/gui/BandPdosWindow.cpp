@@ -35,7 +35,7 @@ namespace {
 BandPdosWindow::BandPdosWindow(const QString& directory, QWidget* parent)
     : QDialog(parent)
 {
-    setWindowTitle(tr("Band Structure / PDOS — %1").arg(directory));
+    setWindowTitle(tr("Electronic Structure Viewer — %1").arg(directory));
     resize(980, 620);
 
     auto* layout = new QHBoxLayout(this);

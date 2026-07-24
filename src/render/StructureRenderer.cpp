@@ -576,10 +576,10 @@ void StructureRenderer::setStructure(const core::Structure* structure,
     std::vector<float> cellTubeInstances;
 
     const bool polyhedral = style_.mode == RepresentationMode::Polyhedral;
-    // Space-filling has no bonds; polyhedral replaces bonds with the coordination
-    // polyhedra (their edges read as the connectivity), so it skips them too.
-    const bool wantBonds =
-        style_.mode != RepresentationMode::SpaceFilling && !polyhedral;
+    // Space-filling is the only mode without bonds. Polyhedral is a hybrid: it
+    // draws the coordination polyhedra AND the ball-and-stick bond cylinders,
+    // so the opaque bonds read through the translucent faces.
+    const bool wantBonds = style_.mode != RepresentationMode::SpaceFilling;
     const bool wireframe = style_.mode == RepresentationMode::Wireframe;
 
     if (structure && !structure->empty()) {
@@ -689,6 +689,11 @@ void StructureRenderer::setStructure(const core::Structure* structure,
         // Vector overlay arrows: shaft (cylinder) + head (cone) per atom,
         // sharing the lit instanced pipeline. Skipped in wireframe mode.
         if (!wireframe && style_.vectorOverlay != VectorOverlay::None) {
+            // Velocities are tiny (Å/fs·√amu) next to forces/moments, so the
+            // Velocity overlay gets a 20× visual multiplier to render at a
+            // clearly visible magnitude (scale = vectorScale × 20).
+            const double effectiveScale = style_.vectorScale
+                * (style_.vectorOverlay == VectorOverlay::Velocity ? 20.0 : 1.0);
             const auto addArrows = [&](const std::string& fieldName,
                                        const QColor& color) {
                 const auto& fields = structure->vectorFields();
@@ -698,7 +703,7 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                 const float shaftRadius = 0.045f;
                 for (std::size_t index = 0; index < atoms.size(); ++index) {
                     const core::Vec3& v = it->second[index];
-                    const double length = v.norm() * style_.vectorScale;
+                    const double length = v.norm() * effectiveScale;
                     if (length < 0.05)
                         continue; // invisible / zero vector
                     const QVector3D origin = toQt(atoms[index].position);

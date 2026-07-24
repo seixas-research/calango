@@ -735,10 +735,20 @@ std::string AseScriptGenerator::generate(const CalculatorConfig& config,
         << "print(f\"CALANGO_INFO natoms={len(atoms)}\", flush=True)\n"
            "\n";
     if (config.spinPolarized) {
-        out << "# Spin polarization: seed every atom with an initial magnetic\n"
-               "# moment so the SCF can find a magnetic solution.\n"
-            << "atoms.set_initial_magnetic_moments([" << config.initialMagMoment
-            << "] * len(atoms))\n\n";
+        out << "# Spin polarization: seed each atom with an initial magnetic\n"
+               "# moment so the SCF can find a magnetic solution.\n";
+        if (!config.initialMagMomentsCsv.empty()) {
+            // Explicit per-atom moments, zero-padded to the atom count so a
+            // short list still applies (remaining atoms start non-magnetic).
+            out << "_moments = [float(_m) for _m in \""
+                << config.initialMagMomentsCsv
+                << "\".replace(\",\", \" \").split()]\n"
+                   "_moments += [0.0] * (len(atoms) - len(_moments))\n"
+                   "atoms.set_initial_magnetic_moments(_moments[:len(atoms)])\n\n";
+        } else {
+            out << "atoms.set_initial_magnetic_moments([" << config.initialMagMoment
+                << "] * len(atoms))\n\n";
+        }
     }
     emitCalculator(out, config);
     out << "\n";

@@ -133,11 +133,17 @@ private:
     QComboBox* calcCombo_ = nullptr;
     QLineEdit* envEdit_ = nullptr;
     QLabel* envStatus_ = nullptr;
-    QRadioButton* localRadio_ = nullptr;
-    QRadioButton* remoteRadio_ = nullptr;
+    /// Execution mode chosen on the Script Review stage's "Execution Settings…"
+    /// launcher; biases which Run button is the default (both remain available).
+    bool preferRemote_ = false;
+    /// Guards the env-preset auto-fill from re-saving during programmatic edits.
+    bool loadingEnvPreset_ = false;
 
     // Stage 3 — per-calculator settings
     QGroupBox* dftGroup_ = nullptr;
+    /// "XC defaults to PBE (editable in Stage 4)" note — only meaningful for the
+    /// script-template DFT backends; hidden for GPAW, which has its own XC combo.
+    QLabel* dftXcNote_ = nullptr;
     QDoubleSpinBox* cutoffSpin_ = nullptr;
     QSpinBox* kptSpins_[3] = {nullptr, nullptr, nullptr};
     QGroupBox* maceGroup_ = nullptr;
@@ -179,8 +185,16 @@ private:
     QPushButton* backButton_ = nullptr;
     QPushButton* nextButton_ = nullptr;
     QPushButton* exportButton_ = nullptr;
+    QPushButton* execSettingsButton_ = nullptr; ///< review-stage exec launcher
     QPushButton* runRemoteButton_ = nullptr;
     QPushButton* runLocalButton_ = nullptr;
+
+    /// Review-stage "Execution Settings…" popup: choose Local/Remote and edit
+    /// the environment, replacing the removed Execution Mode stage controls.
+    void showExecutionSettings();
+    /// Auto-fill the environment field from the selected calculator's saved
+    /// preset (`~/.calango/settings.json`), and persist edits back per engine.
+    void applyEnvPresetForCalculator();
 };
 
 } // namespace calango::gui

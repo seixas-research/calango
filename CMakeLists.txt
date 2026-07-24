@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.38
+    VERSION 26.7.39
     DESCRIPTION "Calango — atomistic modeling and simulation GUI built on Qt6, OpenGL and ASE"
     LANGUAGES CXX
 )
@@ -176,6 +176,8 @@ qt_add_executable(calango
     src/core/ClusterExpansionScriptGenerator.cpp
     src/core/MonteCarlo.hpp
     src/core/MonteCarlo.cpp
+    src/core/Vacf.hpp
+    src/core/Vacf.cpp
 
     # python_bridge — embedded CPython + ASE interop
     src/python_bridge/PythonEngine.hpp
@@ -349,6 +351,8 @@ qt_add_executable(calango
     src/gui/SymmetryDialog.cpp
     src/gui/PartialChargeDialog.hpp
     src/gui/PartialChargeDialog.cpp
+    src/gui/VacfDialog.hpp
+    src/gui/VacfDialog.cpp
     src/gui/SimulationWizardBase.hpp
     src/gui/SimulationWizardBase.cpp
     src/gui/MolecularDynamicsWizard.hpp
@@ -760,6 +764,13 @@ if(CALANGO_BUILD_TESTS)
     )
     target_include_directories(calango_unfolding_test PRIVATE src)
     add_test(NAME band_unfolding COMMAND calango_unfolding_test)
+
+    # Native GPAW partial-charge partitioning benchmark on bulk Si. Pure Python
+    # (runs against the embedded interpreter's environment); it self-skips with
+    # exit 0 when GPAW is not importable, so it is safe to register here.
+    add_test(NAME partial_charge_si
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/partial_charge_si_benchmark.py)
 endif()
 
 # ---------------------------------------------------------------------------

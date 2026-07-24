@@ -45,6 +45,16 @@ public:
             QQuaternion::fromAxisAndAngle(axis, degrees) * sceneRotation_;
     }
 
+    /// Restore the default view orientation (Reset Camera): the default
+    /// yaw/pitch and an identity scene rotation. Target/distance are set
+    /// separately by frame()/frameToFraction().
+    void resetOrientation()
+    {
+        yawDeg_ = 0.0f;
+        pitchDeg_ = 20.0f;
+        sceneRotation_ = QQuaternion();
+    }
+
     /// Pan in screen space; dx/dy are in pixels, scaled by distance so the
     /// scene appears to follow the cursor.
     void pan(float dxPixels, float dyPixels, int viewportHeight);

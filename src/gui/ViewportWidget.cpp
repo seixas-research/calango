@@ -419,6 +419,12 @@ void ViewportWidget::frameStructure()
     if (!structure_ || structure_->empty())
         return;
 
+    // Reset Camera fully restores the default view: clear any accumulated
+    // orbit/scene rotation (from dragging or the X/Y/Z buttons) before
+    // re-centering and re-zooming, so the structure returns to its initial
+    // orientation and bounding-box fit rather than staying tilted.
+    camera_.resetOrientation();
+
     // Intelligent auto-zoom. Periodic crystals: fit the whole unit-cell box
     // (its 8 corners) into ~90% of the view so the full lattice is visible.
     // Isolated molecules/clusters (no cell): size the structure to span
@@ -717,7 +723,23 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
         return; // consume the drag — do not pan the camera
     }
 
-    // Middle-drag / Shift+left-drag pans in every mode (muscle memory).
+    // Rotation mode + Shift: roll the structure about the screen normal (the
+    // view direction), i.e. a 2D in-plane rotation. Dragging up or right rolls
+    // clockwise; down or left rolls counter-clockwise.
+    if (interactionMode_ == InteractionMode::Rotate
+        && event->buttons().testFlag(Qt::LeftButton)
+        && event->modifiers().testFlag(Qt::ShiftModifier)) {
+        const QVector3D viewDir =
+            (camera_.target() - camera_.worldPosition()).normalized();
+        // right (+x) and up (−y screen) both contribute positively → clockwise.
+        const float angle =
+            static_cast<float>(delta.x() - delta.y()) * 0.4f;
+        camera_.rotateScene(viewDir, angle);
+        update();
+        return;
+    }
+
+    // Middle-drag / Shift+left-drag pans in the other modes (muscle memory).
     const bool forcePan = event->buttons().testFlag(Qt::MiddleButton)
         || (event->buttons().testFlag(Qt::LeftButton)
             && event->modifiers().testFlag(Qt::ShiftModifier));

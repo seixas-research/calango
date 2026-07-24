@@ -178,70 +178,127 @@ QString PartialChargeDialog::generateScript(Method method) const
         "atoms.get_potential_energy()\n"
         "_log.progress(2, 3)\n");
 
+    // Shared grid setup: the all-electron density and per-atom minimum-image
+    // Cartesian distances to every grid point. All three schemes are native —
+    // they read the GPAW density grid directly, no external executables.
+    const QString gridSetup = QStringLiteral(
+        "try:\n"
+        "    rho = np.ascontiguousarray(\n"
+        "        calc.get_all_electron_density(gridrefinement=2), dtype=float)\n"
+        "except Exception as _e:\n"
+        "    raise RuntimeError('Could not read the GPAW all-electron density: '\n"
+        "                       + str(_e))\n"
+        "if rho.ndim != 3 or rho.size == 0:\n"
+        "    raise RuntimeError('Unexpected density grid shape: %r' % (rho.shape,))\n"
+        "ng = rho.shape\n"
+        "cell = np.asarray(atoms.get_cell(), dtype=float)\n"
+        "inv = np.linalg.inv(cell)\n"
+        "dV = atoms.get_volume() / float(rho.size)\n"
+        "pos = np.asarray(atoms.get_positions(), dtype=float)\n"
+        "zval = atoms.get_atomic_numbers()\n"
+        "rflat = rho.reshape(-1)\n"
+        "# GPAW real-space grid points sit at i/N along each axis (not centred);\n"
+        "# a half-cell offset would mis-assign points to the wrong atom.\n"
+        "frac = np.stack(np.meshgrid(\n"
+        "    *[np.arange(n) / float(n) for n in ng], indexing='ij'),\n"
+        "    axis=-1).reshape(-1, 3)\n"
+        "grid = frac @ cell\n"
+        "npts = grid.shape[0]\n"
+        "CHUNK = 100000  # bound peak memory on fine density grids\n"
+        "def _mic_dist(i, lo, hi):\n"
+        "    df = (grid[lo:hi] - pos[i]) @ inv\n"
+        "    df -= np.round(df)\n"
+        "    return np.linalg.norm(df @ cell, axis=1)\n");
+
     QString body;
     switch (method) {
     case Method::Bader:
-        // Total (all-electron) density → cube → the 'bader' executable → ACF.dat.
-        body = QStringLiteral(
-            "from ase.io.cube import write_cube\n"
-            "import subprocess\n"
-            "rho = calc.get_all_electron_density(gridrefinement=4)\n"
-            "with open('density.cube', 'w') as fh:\n"
-            "    write_cube(fh, atoms, data=rho)\n"
-            "subprocess.run(['bader', 'density.cube'], check=True)\n"
-            "# ACF.dat columns: id X Y Z CHARGE MIN_DIST ATOMIC_VOL\n"
-            "acf = np.loadtxt('ACF.dat', skiprows=2, max_rows=len(atoms))\n"
-            "zval = atoms.get_atomic_numbers()\n"
-            "out = []\n"
-            "for i, atom in enumerate(atoms):\n"
-            "    q = float(zval[i] - acf[i, 4])  # net charge = Z - Bader pop.\n"
-            "    vol = float(acf[i, 6])\n"
-            "    out.append({'index': i, 'element': atom.symbol,\n"
-            "                'charge': q, 'volume': vol})\n"
+        // On-grid (Henkelman) Bader: follow each grid point's steepest-ascent
+        // path to a density maximum, group points into basins, assign each
+        // basin to its nearest atom, and integrate the density per atom.
+        body = gridSetup + QStringLiteral(
+            "labels = -np.ones(rho.shape, dtype=np.int64)\n"
+            "maxima = []\n"
+            "offs = [(a, b, c) for a in (-1, 0, 1) for b in (-1, 0, 1)\n"
+            "        for c in (-1, 0, 1) if (a, b, c) != (0, 0, 0)]\n"
+            "def _climb(start):\n"
+            "    path = []\n"
+            "    idx = start\n"
+            "    while True:\n"
+            "        if labels[idx] >= 0:\n"
+            "            basin = labels[idx]; break\n"
+            "        path.append(idx)\n"
+            "        best, bestv = None, rho[idx]\n"
+            "        for o in offs:\n"
+            "            n = ((idx[0]+o[0]) % ng[0], (idx[1]+o[1]) % ng[1],\n"
+            "                 (idx[2]+o[2]) % ng[2])\n"
+            "            if rho[n] > bestv:\n"
+            "                bestv, best = rho[n], n\n"
+            "        if best is None:\n"
+            "            basin = len(maxima); maxima.append(idx)\n"
+            "            labels[idx] = basin; break\n"
+            "        idx = best\n"
+            "    for p in path:\n"
+            "        labels[p] = basin\n"
+            "    return basin\n"
+            "for idx in np.ndindex(rho.shape):\n"
+            "    if labels[idx] < 0:\n"
+            "        _climb(idx)\n"
+            "# Nearest atom (minimum image) for each basin maximum.\n"
+            "basin_atom = []\n"
+            "for m in maxima:\n"
+            "    cart = (np.array(m, dtype=float) / ng) @ cell\n"
+            "    df = (cart - pos) @ inv; df -= np.round(df)\n"
+            "    basin_atom.append(int(np.argmin(\n"
+            "        np.linalg.norm(df @ cell, axis=1))))\n"
+            "elec = np.zeros(len(atoms)); vol = np.zeros(len(atoms))\n"
+            "for b in range(len(maxima)):\n"
+            "    mask = labels == b; a = basin_atom[b]\n"
+            "    elec[a] += rho[mask].sum() * dV\n"
+            "    vol[a] += int(mask.sum()) * dV\n"
+            "out = [{'index': i, 'element': atoms[i].symbol,\n"
+            "        'charge': float(zval[i] - elec[i]), 'volume': float(vol[i])}\n"
+            "       for i in range(len(atoms))]\n"
             "method = 'Bader'\n");
         break;
     case Method::Hirshfeld:
-        body = QStringLiteral(
-            "from gpaw.analyse.hirshfeld import HirshfeldPartitioning\n"
-            "hp = HirshfeldPartitioning(calc)\n"
-            "q = hp.get_charges()\n"
-            "try:\n"
-            "    vols = hp.get_effective_volume_ratios()\n"
-            "except Exception:\n"
-            "    vols = [0.0] * len(atoms)\n"
+        // Stockholder partitioning: build a promolecule from isolated spherical
+        // atom references (exponential ρ_i^0 ∝ Z·exp(-r/λ), λ from the covalent
+        // radius) and weight the density by w_i = ρ_i^0 / Σ_j ρ_j^0.
+        body = gridSetup + QStringLiteral(
+            "from ase.data import covalent_radii\n"
+            "lam = np.array([max(covalent_radii[z], 0.3) for z in zval])\n"
+            "elec = np.zeros(len(atoms)); vol = np.zeros(len(atoms))\n"
+            "for lo in range(0, npts, CHUNK):\n"
+            "    hi = min(lo + CHUNK, npts)\n"
+            "    refs = np.stack([zval[i] * np.exp(-_mic_dist(i, lo, hi) / lam[i])\n"
+            "                     for i in range(len(atoms))], axis=1)\n"
+            "    den = refs.sum(axis=1); den[den == 0.0] = 1e-30\n"
+            "    w = refs / den[:, None]\n"
+            "    r = rflat[lo:hi]\n"
+            "    elec += (w * r[:, None]).sum(axis=0) * dV\n"
+            "    vol += w.sum(axis=0) * dV\n"
             "out = [{'index': i, 'element': atoms[i].symbol,\n"
-            "        'charge': float(q[i]), 'volume': float(vols[i])}\n"
+            "        'charge': float(zval[i] - elec[i]), 'volume': float(vol[i])}\n"
             "       for i in range(len(atoms))]\n"
             "method = 'Hirshfeld'\n");
         break;
     case Method::Voronoi:
-        // Assign every real-space grid point of the all-electron density to its
-        // nearest atom (a Voronoi partition) and integrate the density in each
-        // cell; the cell volume follows from the grid-point count.
-        body = QStringLiteral(
-            "rho = calc.get_all_electron_density(gridrefinement=2)\n"
-            "ng = rho.shape\n"
-            "cell = atoms.get_cell()\n"
-            "dV = atoms.get_volume() / (ng[0] * ng[1] * ng[2])\n"
-            "pos = atoms.get_positions()\n"
-            "frac = np.stack(np.meshgrid(\n"
-            "    np.arange(ng[0]) / ng[0], np.arange(ng[1]) / ng[1],\n"
-            "    np.arange(ng[2]) / ng[2], indexing='ij'), axis=-1)\n"
-            "grid = frac @ np.asarray(cell)\n"
-            "gflat = grid.reshape(-1, 3)\n"
-            "rflat = rho.reshape(-1)\n"
-            "elec = np.zeros(len(atoms))\n"
-            "vol = np.zeros(len(atoms))\n"
-            "# Chunk the nearest-atom search to keep memory bounded.\n"
-            "for s in range(0, gflat.shape[0], 200000):\n"
-            "    chunk = gflat[s:s + 200000]\n"
-            "    d = np.linalg.norm(chunk[:, None, :] - pos[None, :, :], axis=2)\n"
+        // Assign every grid point to its nearest atom (a 3D Voronoi cell over
+        // the density grid) and integrate the density in each cell. Chunked so
+        // the (grid × atoms) distance matrix never exceeds bounded memory.
+        body = gridSetup + QStringLiteral(
+            "elec = np.zeros(len(atoms)); vol = np.zeros(len(atoms))\n"
+            "for lo in range(0, npts, CHUNK):\n"
+            "    hi = min(lo + CHUNK, npts)\n"
+            "    d = np.stack([_mic_dist(i, lo, hi) for i in range(len(atoms))],\n"
+            "                 axis=1)\n"
             "    owner = np.argmin(d, axis=1)\n"
+            "    r = rflat[lo:hi]\n"
             "    for i in range(len(atoms)):\n"
             "        m = owner == i\n"
-            "        elec[i] += rflat[s:s + 200000][m].sum() * dV\n"
-            "        vol[i] += int(m.sum()) * dV\n"
-            "zval = atoms.get_atomic_numbers()\n"
+            "        elec[i] += float(r[m].sum() * dV)\n"
+            "        vol[i] += float(int(m.sum()) * dV)\n"
             "out = [{'index': i, 'element': atoms[i].symbol,\n"
             "        'charge': float(zval[i] - elec[i]), 'volume': float(vol[i])}\n"
             "       for i in range(len(atoms))]\n"

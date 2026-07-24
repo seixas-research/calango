@@ -80,7 +80,7 @@ PlotStyleDialog::PlotStyleDialog(const BandPdosView::Style& style, bool phonon,
     , phonon_(phonon)
 {
     setWindowTitle(phonon_ ? tr("Phonon Plot Appearance")
-                           : tr("Band Structure / PDOS Appearance"));
+                           : tr("Electronic Structure Viewer Appearance"));
 
     auto* layout = new QVBoxLayout(this);
 

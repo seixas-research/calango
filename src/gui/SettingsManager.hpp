@@ -20,6 +20,9 @@ public:
     static constexpr auto kOmpThreads = "jobs/ompThreads";   ///< int (OMP_NUM_THREADS)
     static constexpr auto kCondaDir = "jobs/condaDir";       ///< conda envs directory
     static constexpr auto kEnvironmentPath = "jobs/environmentPath";
+    /// Per-calculator environment presets: a JSON-object string mapping a
+    /// calculator name ("GPAW", "MACE", …) to its last-used Python/Conda env.
+    static constexpr auto kEnvironmentPresets = "jobs/environmentPresets";
     static constexpr auto kShowWelcome = "welcome/showAtStartup";
     static constexpr auto kEnvFilePath = "config/envFilePath";
     static constexpr auto kMaterialsProjectApiKey = "materialsProject/apiKey";

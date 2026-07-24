@@ -3,12 +3,16 @@
 #include "gui/CondaEnvs.hpp"
 #include "gui/PythonHighlighter.hpp"
 #include "gui/ScriptStaging.hpp"
+#include "gui/SettingsManager.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
 #include <QComboBox>
+#include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QDoubleValidator>
 #include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QFileDialog>
 #include <QFontDatabase>
 #include <QFormLayout>
@@ -32,6 +36,47 @@ namespace calango::gui {
 
 namespace {
 const auto kEnvSettingsKey = QStringLiteral("jobs/environmentPath");
+
+/// Stable, untranslated name used as the per-calculator env-preset key.
+QString calcPresetName(core::CalculatorKind kind)
+{
+    switch (kind) {
+    case core::CalculatorKind::Gpaw: return QStringLiteral("GPAW");
+    case core::CalculatorKind::Mace: return QStringLiteral("MACE");
+    case core::CalculatorKind::QuantumEspresso:
+        return QStringLiteral("QuantumEspresso");
+    case core::CalculatorKind::Siesta: return QStringLiteral("SIESTA");
+    case core::CalculatorKind::Orca: return QStringLiteral("ORCA");
+    case core::CalculatorKind::Vasp: return QStringLiteral("VASP");
+    case core::CalculatorKind::EMT: return QStringLiteral("EMT");
+    case core::CalculatorKind::Asap: return QStringLiteral("ASAP");
+    case core::CalculatorKind::LennardJones:
+        return QStringLiteral("LennardJones");
+    }
+    return QStringLiteral("default");
+}
+
+/// The per-calculator env-preset map, parsed from settings.json / QSettings.
+QJsonObject envPresets()
+{
+    const QString raw =
+        QSettings().value(SettingsManager::kEnvironmentPresets).toString();
+    return QJsonDocument::fromJson(raw.toUtf8()).object();
+}
+
+QString loadEnvPreset(core::CalculatorKind kind)
+{
+    return envPresets().value(calcPresetName(kind)).toString();
+}
+
+void saveEnvPreset(core::CalculatorKind kind, const QString& env)
+{
+    QJsonObject obj = envPresets();
+    obj[calcPresetName(kind)] = env;
+    QSettings().setValue(
+        SettingsManager::kEnvironmentPresets,
+        QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact)));
+}
 } // namespace
 
 SimulationWizardBase::SimulationWizardBase(QWidget* parent) : QDialog(parent) {}
@@ -70,17 +115,23 @@ void SimulationWizardBase::buildUi()
     auto* cancelButton = new QPushButton(tr("Cancel"), this);
     nextButton_ = new QPushButton(tr("Next ›"), this);
     exportButton_ = new QPushButton(tr("Export Script…"), this);
+    execSettingsButton_ = new QPushButton(tr("Execution Settings…"), this);
+    execSettingsButton_->setToolTip(
+        tr("Choose Local vs Remote execution and review the environment."));
     runRemoteButton_ = new QPushButton(tr("Run (Remote)"), this);
     runLocalButton_ = new QPushButton(tr("Run (Local)"), this);
     runLocalButton_->setDefault(true);
     bar->addWidget(backButton_);
     bar->addStretch(1);
     bar->addWidget(cancelButton);
+    bar->addWidget(execSettingsButton_);
     bar->addWidget(exportButton_);
     bar->addWidget(runRemoteButton_);
     bar->addWidget(nextButton_);
     bar->addWidget(runLocalButton_);
     root->addLayout(bar);
+    connect(execSettingsButton_, &QPushButton::clicked, this,
+            &SimulationWizardBase::showExecutionSettings);
 
     connect(backButton_, &QPushButton::clicked, this, &SimulationWizardBase::goBack);
     connect(nextButton_, &QPushButton::clicked, this, &SimulationWizardBase::goNext);
@@ -158,7 +209,14 @@ QWidget* SimulationWizardBase::buildEnvironmentPage()
     envEdit_ = new QLineEdit(envGroup);
     envEdit_->setPlaceholderText(
         tr("Conda env folder or python executable (empty = embedded)"));
-    envEdit_->setText(QSettings().value(kEnvSettingsKey).toString());
+    // Auto-fill from the current calculator's saved preset, falling back to the
+    // last global env for first-time use of a given engine.
+    {
+        const QString preset = loadEnvPreset(selectedCalculator());
+        envEdit_->setText(preset.isEmpty()
+                              ? QSettings().value(kEnvSettingsKey).toString()
+                              : preset);
+    }
     auto* envButton = new QPushButton(tr("Browse…"), envGroup);
     envRow->addWidget(envEdit_, 1);
     envRow->addWidget(envButton);
@@ -184,20 +242,16 @@ QWidget* SimulationWizardBase::buildEnvironmentPage()
             envStatus_->setText(tr("Runs will use: %1").arg(python));
         else
             envStatus_->setText(tr("No python interpreter found at this path."));
+        // Persist as this calculator's preset (and keep the global fallback in
+        // sync), unless this change came from a programmatic preset auto-fill.
         QSettings().setValue(kEnvSettingsKey, envEdit_->text());
+        if (!loadingEnvPreset_)
+            saveEnvPreset(selectedCalculator(), envEdit_->text());
     });
 
-    auto* modeGroup = new QGroupBox(tr("Execution mode"), page);
-    auto* modeLayout = new QVBoxLayout(modeGroup);
-    localRadio_ = new QRadioButton(tr("Local (background process on this machine)"),
-                                   modeGroup);
-    remoteRadio_ = new QRadioButton(
-        tr("Remote (submit to the Remote Access manager / HPC queue)"), modeGroup);
-    localRadio_->setChecked(true);
-    modeLayout->addWidget(localRadio_);
-    modeLayout->addWidget(remoteRadio_);
-    layout->addWidget(modeGroup);
-    connect(localRadio_, &QRadioButton::toggled, this, [this] { updateStage(); });
+    // The Execution Mode (Local vs Remote) selection was removed from this
+    // stage; the mode is now chosen via "Execution Settings…" on the Script
+    // Review stage (both Run buttons remain available there regardless).
 
     layout->addStretch(1);
     envEdit_->textChanged(envEdit_->text()); // seed the status label
@@ -231,9 +285,13 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
         kptRow->addWidget(spin);
     }
     dftForm->addRow(tr("k-point grid:"), kptRow);
-    dftForm->addRow(new QLabel(
+    // Only the script-template DFT backends (Espresso/VASP/Siesta) edit XC in
+    // the generated script; GPAW exposes an XC dropdown in its own group, so
+    // this note is hidden when GPAW is selected (see updateCalculatorEnabled).
+    dftXcNote_ = new QLabel(
         tr("XC functional defaults to PBE in the script (editable in Stage 4)."),
-        dftGroup_));
+        dftGroup_);
+    dftForm->addRow(dftXcNote_);
     layout->addWidget(dftGroup_);
 
     layout->addWidget(buildMaceGroup(page));
@@ -604,8 +662,56 @@ QWidget* SimulationWizardBase::buildReviewPage()
     return page;
 }
 
+void SimulationWizardBase::applyEnvPresetForCalculator()
+{
+    if (!envEdit_)
+        return;
+    // Load the newly-selected engine's saved env; guard the textChanged handler
+    // so the auto-fill isn't itself re-persisted as a user edit.
+    loadingEnvPreset_ = true;
+    const QString preset = loadEnvPreset(selectedCalculator());
+    envEdit_->setText(preset.isEmpty()
+                          ? QSettings().value(kEnvSettingsKey).toString()
+                          : preset);
+    loadingEnvPreset_ = false;
+}
+
+void SimulationWizardBase::showExecutionSettings()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Execution Settings"));
+    auto* form = new QFormLayout(&dlg);
+
+    auto* localRadio =
+        new QRadioButton(tr("Local (background process on this machine)"), &dlg);
+    auto* remoteRadio = new QRadioButton(
+        tr("Remote (submit to the Remote Access manager / HPC queue)"), &dlg);
+    (preferRemote_ ? remoteRadio : localRadio)->setChecked(true);
+    form->addRow(tr("Execution mode:"), localRadio);
+    form->addRow(QString(), remoteRadio);
+
+    auto* env = new QLineEdit(envEdit_ ? envEdit_->text() : QString(), &dlg);
+    env->setPlaceholderText(
+        tr("Conda env folder or python executable (empty = embedded)"));
+    form->addRow(tr("Environment:"), env);
+
+    auto* box = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    connect(box, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(box, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    form->addRow(box);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        preferRemote_ = remoteRadio->isChecked();
+        if (envEdit_)
+            envEdit_->setText(env->text()); // persists per-calculator
+        updateStage();                      // refresh the default Run button
+    }
+}
+
 void SimulationWizardBase::updateCalculatorEnabled()
 {
+    applyEnvPresetForCalculator();
     const auto kind = selectedCalculator();
     const bool isDft = kind == core::CalculatorKind::QuantumEspresso
         || kind == core::CalculatorKind::Vasp || kind == core::CalculatorKind::Gpaw
@@ -616,6 +722,10 @@ void SimulationWizardBase::updateCalculatorEnabled()
     // GPAW keeps the shared DFT group visible (cutoff + k-points feed its PW
     // mode and Monkhorst-Pack grid) and adds its own group underneath.
     dftGroup_->setVisible(isDft);
+    // The "XC defaults to PBE (Stage 4)" note is redundant for GPAW, whose XC
+    // functional is chosen directly in its own group here in Stage 2.
+    if (dftXcNote_)
+        dftXcNote_->setVisible(isDft && !isGpaw);
     maceGroup_->setVisible(isMace);
     gpawGroup_->setVisible(isGpaw);
     orcaGroup_->setVisible(isOrca);
@@ -705,12 +815,13 @@ void SimulationWizardBase::updateStage()
     backButton_->setEnabled(stage_ > 0);
     nextButton_->setVisible(!onReview);
     exportButton_->setVisible(onReview);
+    if (execSettingsButton_)
+        execSettingsButton_->setVisible(onReview);
     runLocalButton_->setVisible(onReview);
     runRemoteButton_->setVisible(onReview);
     if (onReview) {
-        const bool local = localRadio_->isChecked();
-        runLocalButton_->setDefault(local);
-        runRemoteButton_->setDefault(!local);
+        runLocalButton_->setDefault(!preferRemote_);
+        runRemoteButton_->setDefault(preferRemote_);
     }
 }
 

@@ -152,7 +152,12 @@ struct CalculatorConfig {
     /// Spin polarization: seed every atom with an initial magnetic moment so
     /// the SCF can converge to a magnetic solution.
     bool spinPolarized = false;
-    double initialMagMoment = 1.0; ///< initial moment per atom (μB)
+    double initialMagMoment = 1.0; ///< uniform fallback moment per atom (μB)
+    /// Explicit per-atom initial moments as a comma/space-separated list
+    /// ("2.2, -2.2, 0, 0"). When non-empty it overrides `initialMagMoment`;
+    /// the generated script zero-pads it to the atom count. Empty falls back to
+    /// the uniform scalar above.
+    std::string initialMagMomentsCsv;
     /// Electronic occupation smearing (DFT backends; classical potentials
     /// ignore it). smearingWidthEv is the broadening / electronic temperature.
     SmearingMethod smearing = SmearingMethod::Gaussian;

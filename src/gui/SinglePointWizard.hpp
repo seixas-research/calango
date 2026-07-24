@@ -6,6 +6,7 @@ class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
 class QGroupBox;
+class QLineEdit;
 class QSpinBox;
 
 namespace calango::gui {
@@ -50,7 +51,7 @@ private:
     QSpinBox* scfStepsSpin_ = nullptr;
     QDoubleSpinBox* scfTolSpin_ = nullptr;
     QCheckBox* spinCheck_ = nullptr;
-    QDoubleSpinBox* magMomentSpin_ = nullptr;
+    QLineEdit* magMomentEdit_ = nullptr;
     QComboBox* smearingCombo_ = nullptr;
     QDoubleSpinBox* smearingWidthSpin_ = nullptr;
 };

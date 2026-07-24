@@ -110,7 +110,7 @@ public:
         /// Base opacity of the Glassy finish at face-on incidence (the
         /// Fresnel term drives edges toward opaque). Ignored otherwise.
         float glassOpacity = 0.45f;
-        float vectorScale = 10.0f; ///< Å of arrow length per field unit
+        float vectorScale = 1.0f; ///< Å of arrow length per field unit
         QColor forceColor{242, 92, 54};
         QColor velocityColor{54, 166, 242};
         QColor magmomColor{168, 120, 240};
@@ -132,9 +132,10 @@ public:
         bool invertGradient = false;
         /// Distance fog (View -> Visual Effects): 0 = off, 1 = linear
         /// between fogStart/fogEnd, 2 = exponential with fogDensity.
-        /// fogColor tracks the viewport background. Enabled by default in the
-        /// exponential mode so structures gain depth cueing out of the box.
-        int fogMode = 2;
+        /// fogColor tracks the viewport background. Off by default; the
+        /// exponential density/start/end below are the values used once the
+        /// user enables it in the Visual Effects panel.
+        int fogMode = 0;
         float fogStart = 15.0f; ///< Å (view-space distance)
         float fogEnd = 80.0f;   ///< Å
         float fogDensity = 0.300f;

@@ -34,10 +34,22 @@ constexpr double kLabelScale = 1.5;
 QString prettyLabel(const QString& raw)
 {
     // ASE spells Gamma as "G"; band plots conventionally use the glyph.
-    if (raw == QLatin1String("G") || raw.compare(QLatin1String("Gamma"),
-                                                 Qt::CaseInsensitive) == 0)
-        return QStringLiteral("Γ");
-    return raw;
+    const auto single = [](const QString& s) -> QString {
+        if (s == QLatin1String("G")
+            || s.compare(QLatin1String("Gamma"), Qt::CaseInsensitive) == 0)
+            return QStringLiteral("Γ");
+        return s;
+    };
+    // A path discontinuity is a single tick where two high-symmetry points meet
+    // (ASE joins them with a comma, e.g. "X,U"). Render them as one clean
+    // comma-separated pair on a single line rather than two stacked symbols.
+    if (raw.contains(QLatin1Char(','))) {
+        QStringList parts;
+        for (const QString& part : raw.split(QLatin1Char(','), Qt::SkipEmptyParts))
+            parts << single(part.trimmed());
+        return parts.join(QStringLiteral(", "));
+    }
+    return single(raw);
 }
 
 } // namespace
@@ -265,18 +277,31 @@ void BandPdosView::paintBands(QPainter& painter, const QRectF& rect)
     QFont tickFont = painter.font();
     tickFont.setPointSizeF(style_.tickPointSize);
     painter.setFont(tickFont);
+    const auto rawLabel = [&](std::size_t i) {
+        return i < static_cast<std::size_t>(bands_.specialLabels.size())
+                   ? bands_.specialLabels[static_cast<int>(i)]
+                   : QString();
+    };
     for (std::size_t i = 0; i < bands_.specialX.size(); ++i) {
         const double px = mapX(bands_.specialX[i]);
         painter.setPen(QPen(style_.gridColor, style_.tickWidth));
         painter.drawLine(QPointF(px, rect.top()), QPointF(px, rect.bottom()));
         painter.setPen(style_.textColor);
-        const QString label = prettyLabel(
-            i < static_cast<std::size_t>(bands_.specialLabels.size())
-                ? bands_.specialLabels[static_cast<int>(i)]
-                : QString());
-        painter.drawText(QRectF(px - 30 * kLabelScale, rect.bottom() + 2,
-                                60 * kLabelScale, 18 * kLabelScale),
-                         Qt::AlignHCenter | Qt::AlignTop, label);
+        // A path break can arrive as two special points at (essentially) the
+        // same x with distinct labels ("X" then "U"). Fold the next one into a
+        // single "X, U" tick and skip drawing it separately so the two symbols
+        // never stack on top of each other.
+        QString raw = rawLabel(i);
+        while (i + 1 < bands_.specialX.size()
+               && std::abs(bands_.specialX[i + 1] - bands_.specialX[i]) < 1e-6) {
+            const QString next = rawLabel(i + 1);
+            if (!next.isEmpty())
+                raw = raw.isEmpty() ? next : raw + QLatin1Char(',') + next;
+            ++i;
+        }
+        painter.drawText(QRectF(px - 40 * kLabelScale, rect.bottom() + 2,
+                                80 * kLabelScale, 18 * kLabelScale),
+                         Qt::AlignHCenter | Qt::AlignTop, prettyLabel(raw));
     }
 
     // Energy ticks every ~2 eV-ish (5 divisions).

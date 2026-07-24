@@ -163,6 +163,9 @@ private Q_SLOTS:
     /// Analysis → "Partial Charge Analysis…": Bader / Voronoi / Hirshfeld
     /// partitioning as a background DFT job, tabulated and colour-mapped.
     void showPartialCharge();
+    /// Analysis → "Velocity Autocorrelation Function (VACF)…": VACF, VDOS,
+    /// Green-Kubo diffusion and relaxation time from the current trajectory.
+    void showVacf();
     void showRamanModes();
     void newProject();
     void showVolumetricData();
@@ -341,9 +344,6 @@ private:
     /// Element placed by the viewport's Insertion mode (toolbar selector).
     int activeElementZ_ = 6;
     QToolButton* elementButton_ = nullptr;
-    /// The red "Add/Insert Atom" mode toggle; its label tracks the active
-    /// element symbol (white bold on red).
-    QToolButton* insertModeButton_ = nullptr;
     /// Shared between View → Orthographic and the frame-panel toolbar.
     QAction* orthoAction_ = nullptr;
 };

@@ -43,6 +43,7 @@
 #include "gui/SupercellDialog.hpp"
 #include "gui/PartialChargeDialog.hpp"
 #include "gui/SymmetryDialog.hpp"
+#include "gui/VacfDialog.hpp"
 #include "gui/DatasetManagerDialog.hpp"
 #include "gui/ProcessManagerPanel.hpp"
 #include "gui/ScriptViewerDialog.hpp"
@@ -334,31 +335,12 @@ MainWindow::MainWindow(QWidget* parent)
                      "(and their bonds); Delete/Backspace removes them"),
                   ViewportWidget::InteractionMode::Select,
                   QKeySequence(Qt::Key_S));
-    // "Add/Insert Atom" mode gets a prominent red button overlaid with the
-    // active element symbol in bold white, so the element about to be placed is
-    // always visible. Driven by a checkable action in the exclusive mode group
-    // (like the icon modes) but rendered as a styled text button.
-    auto* insertAction = new QAction(this);
-    insertAction->setCheckable(true);
-    insertAction->setShortcut(QKeySequence(Qt::Key_I));
-    insertAction->setToolTip(
-        tr("Insertion mode — click empty space to add an atom of the active "
-           "element;\ndrag from one atom to another to bond them  [I]"));
-    modeGroup->addAction(insertAction);
-    connect(insertAction, &QAction::triggered, this, [this] {
-        viewport_->setInteractionMode(ViewportWidget::InteractionMode::Insert);
-    });
-    insertModeButton_ = new QToolButton(frameToolbar);
-    insertModeButton_->setDefaultAction(insertAction);
-    insertModeButton_->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    insertModeButton_->setStyleSheet(QStringLiteral(
-        "QToolButton { background-color: #D32F2F; color: white;"
-        " font-weight: bold; border: 1px solid #B71C1C;"
-        " border-radius: 3px; padding: 1px 6px; }"
-        "QToolButton:hover { background-color: #E53935; }"
-        "QToolButton:checked { background-color: #E53935;"
-        " border: 2px solid white; }"));
-    frameToolbar->addWidget(insertModeButton_);
+    addModeAction(QStringLiteral("add-circle-line"),
+                  tr("Insertion mode — click empty space to add an atom of "
+                     "the active element;\ndrag from one atom to another to "
+                     "bond them"),
+                  ViewportWidget::InteractionMode::Insert,
+                  QKeySequence(Qt::Key_I));
     // Visual break: navigation/editing modes | measurement modes.
     frameToolbar->addSeparator();
     addModeAction(QStringLiteral("ruler-2-line"),
@@ -374,18 +356,21 @@ MainWindow::MainWindow(QWidget* parent)
                   QKeySequence(Qt::Key_A));
     rotateMode->setChecked(true);
 
-    // Active element for Insertion mode; opens the periodic table.
+    // Chemical Element Selector: opens the periodic table and shows the active
+    // element symbol in bold white over a prominent red background, so the
+    // element that Insertion mode will place is always obvious.
     elementButton_ = new QToolButton(frameToolbar);
     elementButton_->setToolButtonStyle(Qt::ToolButtonTextOnly);
     elementButton_->setToolTip(tr("Element inserted by Insertion mode — "
                                   "click to choose from the periodic table"));
+    elementButton_->setStyleSheet(QStringLiteral(
+        "QToolButton { background-color: #D32F2F; color: white;"
+        " font-weight: bold; border: 1px solid #B71C1C;"
+        " border-radius: 3px; padding: 1px 6px; }"
+        "QToolButton:hover { background-color: #E53935; }"));
     const auto updateElementButton = [this] {
-        const QString symbol =
-            QLatin1String(core::Elements::data(activeElementZ_).symbol);
-        elementButton_->setText(symbol);
-        // The red insert-mode button overlays the same active element symbol.
-        if (insertModeButton_)
-            insertModeButton_->setText(symbol);
+        elementButton_->setText(
+            QLatin1String(core::Elements::data(activeElementZ_).symbol));
     };
     updateElementButton();
     connect(elementButton_, &QToolButton::clicked, this,
@@ -812,6 +797,8 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showLocalEntropy);
     analysisMenu->addAction(tr("Partial &Charge Analysis…"),
                             this, &MainWindow::showPartialCharge);
+    analysisMenu->addAction(tr("&Velocity Autocorrelation Function (VACF)…"),
+                            this, &MainWindow::showVacf);
     analysisMenu->addAction(tr("Ra&man Modes…"),
                             this, &MainWindow::showRamanModes);
     analysisMenu->addAction(tr("&Volumetric Data…"),
@@ -2649,7 +2636,7 @@ void MainWindow::openBandResults(const QString& directory)
     auto* window = new BandPdosWindow(directory, this);
     if (!window->hasData()) {
         delete window;
-        QMessageBox::information(this, tr("Band Structure"),
+        QMessageBox::information(this, tr("Electronic Structure Viewer"),
                                  tr("No bands.json found in %1").arg(directory));
         return;
     }
@@ -2993,6 +2980,41 @@ void MainWindow::showPartialCharge()
     // the property combo / info panel pick it up.
     connect(dialog, &QDialog::finished, this,
             [this] { notifyStructureChanged(false); });
+    dialog->show();
+}
+
+void MainWindow::showVacf()
+{
+    Document* doc = currentDocument();
+    if (!doc || doc->frames.size() < 2) {
+        QMessageBox::information(
+            this, tr("Velocity Autocorrelation Function (VACF)"),
+            tr("Open a molecular-dynamics trajectory (at least two frames) "
+               "first."));
+        return;
+    }
+    // Extract per-frame, per-atom velocities. MD trajectories carry them as the
+    // "velocities" vector field; require every frame to have them.
+    std::vector<std::vector<core::Vec3>> velocities;
+    velocities.reserve(doc->frames.size());
+    for (const auto& frame : doc->frames) {
+        if (!frame)
+            continue;
+        const auto& fields = frame->vectorFields();
+        const auto it = fields.find("velocities");
+        if (it == fields.end() || it->second.empty()) {
+            QMessageBox::information(
+                this, tr("Velocity Autocorrelation Function (VACF)"),
+                tr("This trajectory has no per-atom velocities. Run Molecular "
+                   "Dynamics (which records velocities) and analyse that "
+                   "trajectory."));
+            return;
+        }
+        velocities.push_back(it->second);
+    }
+
+    auto* dialog = new VacfDialog(std::move(velocities), /*defaultDtFs=*/1.0, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->show();
 }
 
@@ -4253,7 +4275,7 @@ void MainWindow::about()
     box.setText(
         tr("<h3>Calango %1</h3>"
            "<p>For visual atomistic modeling</p>"
-           "<p><b>Lead Developer / Creator</b><br>Leandro Seixas Rocha</p>"
+           "<p><b>Developed by</b><br>Leandro Seixas Rocha</p>"
            "<p><b>Runtime &amp; build diagnostics</b></p>"
            "%2")
             .arg(QStringLiteral(CALANGO_VERSION), diagnostics));

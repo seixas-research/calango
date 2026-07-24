@@ -7,6 +7,7 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QLineEdit>
 #include <QSpinBox>
 #include <QWidget>
 
@@ -56,15 +57,15 @@ QWidget* SinglePointWizard::buildCalculatorExtras()
     connect(spinCheck_, &QCheckBox::toggled, this,
             &SinglePointWizard::updateSpinEnabled);
 
-    magMomentSpin_ = new QDoubleSpinBox(page);
-    magMomentSpin_->setRange(-10.0, 10.0);
-    magMomentSpin_->setDecimals(2);
-    magMomentSpin_->setSingleStep(0.5);
-    magMomentSpin_->setValue(1.0);
-    magMomentSpin_->setSuffix(tr(" μB/atom"));
-    magMomentSpin_->setToolTip(
-        tr("Initial magnetic moment assigned to every atom."));
-    form->addRow(tr("Initial magnetic moment:"), magMomentSpin_);
+    magMomentEdit_ = new QLineEdit(page);
+    magMomentEdit_->setPlaceholderText(QStringLiteral("e.g. 2.2, -2.2, 0, 0"));
+    magMomentEdit_->setText(QStringLiteral("1.0"));
+    magMomentEdit_->setToolTip(
+        tr("Explicit initial magnetic moments (μB) per atom, comma- or "
+           "space-separated and in atom order.\nIf fewer values than atoms are "
+           "given, the rest are padded with 0.0 automatically; a single value "
+           "seeds only the first atom (others 0)."));
+    form->addRow(tr("Initial magnetic moments:"), magMomentEdit_);
 
     smearingCombo_ = new QComboBox(page);
     // Order mirrors core::SmearingMethod.
@@ -108,8 +109,8 @@ void SinglePointWizard::updateCalculatorExtras(core::CalculatorKind kind)
 void SinglePointWizard::updateSpinEnabled()
 {
     const bool spin = spinCheck_ && spinCheck_->isChecked();
-    if (magMomentSpin_)
-        magMomentSpin_->setEnabled(spin);
+    if (magMomentEdit_)
+        magMomentEdit_->setEnabled(spin);
     const bool smeared = smearingCombo_
         && smearingCombo_->currentIndex()
             != static_cast<int>(core::SmearingMethod::None);
@@ -124,7 +125,7 @@ core::CalculatorConfig SinglePointWizard::config() const
     c.scfMaxSteps = scfStepsSpin_->value();
     c.scfEnergyTolEv = scfTolSpin_->value();
     c.spinPolarized = spinCheck_->isChecked();
-    c.initialMagMoment = magMomentSpin_->value();
+    c.initialMagMomentsCsv = magMomentEdit_->text().trimmed().toStdString();
     c.smearing = static_cast<core::SmearingMethod>(smearingCombo_->currentIndex());
     c.smearingWidthEv = smearingWidthSpin_->value();
     return c;
