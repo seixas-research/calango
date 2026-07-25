@@ -74,9 +74,11 @@ SqsDialog::SqsDialog(std::shared_ptr<const core::Structure> structure,
 
     stepsSpin_ = new QSpinBox(this);
     stepsSpin_->setRange(100, 1000000);
-    stepsSpin_->setValue(5000);
-    stepsSpin_->setToolTip(tr("Annealing steps of the internal backend "
-                              "(ignored when icet is used)"));
+    stepsSpin_->setValue(20000);
+    stepsSpin_->setToolTip(
+        tr("Monte Carlo swap attempts in the simulated annealing. More steps "
+           "explore more decorations; the objective reported after generating "
+           "tells you whether it was enough."));
     form->addRow(tr("MC steps:"), stepsSpin_);
 
     seedSpin_ = new QSpinBox(this);
@@ -101,7 +103,7 @@ SqsDialog::SqsDialog(std::shared_ptr<const core::Structure> structure,
 
 void SqsDialog::generate()
 {
-    pybridge::SqsBuilder::Params params;
+    core::SqsGenerator::Params params;
     params.nx = nxSpin_->value();
     params.ny = nySpin_->value();
     params.nz = nzSpin_->value();
@@ -139,13 +141,30 @@ void SqsDialog::generate()
     statusLabel_->setText(tr("Generating…"));
     QApplication::setOverrideCursor(Qt::WaitCursor);
     try {
-        result_ = pybridge::SqsBuilder::generate(*structure_, params);
+        result_ = core::SqsGenerator::generate(*structure_, params);
         QApplication::restoreOverrideCursor();
         accept();
     } catch (const std::exception& e) {
         QApplication::restoreOverrideCursor();
         statusLabel_->setText(QString::fromUtf8(e.what()));
     }
+}
+
+QString SqsDialog::resultSummary() const
+{
+    if (!result_)
+        return QString();
+    const auto& r = *result_;
+    // The absolute objective means little on its own — how far it fell from
+    // the random starting decoration is what says the annealing worked.
+    return tr("SQS: ΔΠ = %1 (from %2) over %3 shell(s), %4 sites, "
+              "%5/%6 swaps accepted")
+        .arg(r.objective, 0, 'g', 4)
+        .arg(r.initialObjective, 0, 'g', 4)
+        .arg(r.shells)
+        .arg(r.sublatticeSites)
+        .arg(r.accepted)
+        .arg(r.steps);
 }
 
 } // namespace calango::gui

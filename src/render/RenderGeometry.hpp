@@ -47,7 +47,7 @@ inline QVector3D perpendicularTo(const QVector3D& axis)
 inline void multiBondLayout(int order, std::vector<float>& offsets,
                             float& radiusScale)
 {
-    switch (std::clamp(order, 1, 3)) {
+    switch (std::clamp(order, 1, 4)) {
     case 2:
         offsets = {-0.8f, 0.8f};
         radiusScale = 0.55f;
@@ -55,6 +55,13 @@ inline void multiBondLayout(int order, std::vector<float>& offsets,
     case 3:
         offsets = {-1.5f, 0.0f, 1.5f};
         radiusScale = 0.45f;
+        break;
+    case 4:
+        // Aromatic (order 1.5): drawn as a double bond. Two cylinders is the
+        // conventional depiction of a delocalized ring bond, and the ring
+        // context is what tells it apart from a true double bond.
+        offsets = {-0.8f, 0.8f};
+        radiusScale = 0.55f;
         break;
     default:
         offsets = {0.0f};

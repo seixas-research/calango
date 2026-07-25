@@ -87,6 +87,11 @@ private:
     QComboBox* calcCombo_;
     QComboBox* maceSizeCombo_;
     QComboBox* maceDeviceCombo_;
+    /// Shared ML-potential controls: one model/checkpoint path (enabled only
+    /// for the file-backed engines — CHGNet and MatterSim carry their own
+    /// weights) and the device they run on.
+    QLineEdit* mlipModelEdit_ = nullptr;
+    QComboBox* mlipDeviceCombo_ = nullptr;
     QDoubleSpinBox* cutoffSpin_;
     QSpinBox* kptSpins_[3];
 

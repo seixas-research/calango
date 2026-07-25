@@ -8,9 +8,10 @@ class QSpinBox;
 
 namespace calango::gui {
 
-/// Simulation → "Molecular Dynamics…": the standardized 4-stage wizard. Stage
-/// 1 is the ensemble + physical parameters; Stages 2–4 are the shared
-/// calculator/environment, calculator settings and ASE script review.
+/// Simulation → "Molecular Dynamics…": a 3-stage wizard. Stage 1 is the shared
+/// Calculator Settings (engine, XC functional, cutoff, k-grid); Stage 2 is the
+/// dynamics settings (ensemble, temperature, pressure, time step, total steps,
+/// friction / coupling times); Stage 3 is the ASE script review.
 class MolecularDynamicsWizard : public SimulationWizardBase {
     Q_OBJECT
 
@@ -21,6 +22,10 @@ protected:
     QString wizardTitle() const override;
     QString settingsHeader() const override;
     QWidget* buildSettingsPage() override;
+    /// Calculator Settings lead, then the dynamics settings: the forces the
+    /// integrator propagates come from the engine, so choosing it first is the
+    /// order the physics is set up in (and matches Geometry Optimization).
+    bool settingsStageFirst() const override { return false; }
     QString generateScript() const override;
     QString exportFileName() const override { return QStringLiteral("md.py"); }
 

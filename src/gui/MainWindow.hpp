@@ -98,7 +98,6 @@ private Q_SLOTS:
     /// Structure panel → "Edit Structure…": unit cell + atomic positions
     /// editor, applied through the document's undo stack.
     void editStructure();
-    void assignBondOrderToSelection(int order);
     void showPreferences();
     void undo();
     void redo();
@@ -144,6 +143,9 @@ private Q_SLOTS:
     /// Open the dedicated Single-Point Viewer on a finished job directory
     /// (reads its single_point.json summary).
     void openSinglePointResults(const QString& directory);
+    /// Open the Geometry Optimization Viewer on a finished relaxation's
+    /// directory (reads geometry_optimization.json + opt.traj).
+    void openGeometryOptimizationResults(const QString& directory);
     /// Open the dedicated MLWF Viewer (viewport orbital overlays + Wannier
     /// interpolation launcher) on a finished job directory.
     void openMlwfResults(const QString& directory);
@@ -157,6 +159,7 @@ private Q_SLOTS:
     /// Results menu → "Single-Point Viewer…": open the viewer on the selected
     /// (or most recent) completed Single-Point process.
     void showSinglePointViewer();
+    void showGeometryOptimizationViewer();
     /// Results menu → "MLWF Viewer…": open the viewer on the selected (or most
     /// recent) completed MLWF process.
     void showMlwfViewer();
@@ -247,6 +250,11 @@ private Q_SLOTS:
 
 private:
     struct Document {
+        /// Stable identity of this workspace, independent of the tab's
+        /// position (tabs are movable and closable, so an index is not an
+        /// identity). Records bound to a workspace — currently the Volumetric
+        /// Data dock's datasets — key off this.
+        int id = -1;
         std::shared_ptr<core::Structure> structure;
         std::vector<std::shared_ptr<core::Structure>> frames; ///< trajectory
         std::deque<std::shared_ptr<core::Structure>> undoStack;
@@ -272,6 +280,8 @@ private:
     void refreshTabTitles();
     /// Push the current document's state into all views.
     void syncViewsToCurrent(bool frameCamera);
+    /// Workspace id of the tab on screen, or -1 when no document is open.
+    int currentWorkspaceId() const;
     /// Replace the current document's structure (supercell, slab, undo...).
     void replaceCurrentStructure(std::shared_ptr<core::Structure> structure,
                                  const QString& name);
@@ -324,6 +334,9 @@ private:
     void closeAllDocuments();
 
     std::vector<std::unique_ptr<Document>> documents_;
+    /// Monotonic source of Document::id — never reused, so a closed tab's id
+    /// cannot be inherited by a later one (and neither can its bound records).
+    int nextWorkspaceId_ = 0;
     QString lastJobDir_;
     /// Unsaved-changes flag: set by every workspace mutation (undoable
     /// edits, document add/close, job runs), cleared by project

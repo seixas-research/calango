@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <random>
 #include <utility>
 #include <vector>
 
@@ -35,7 +36,7 @@ ViewportWidget::~ViewportWidget()
 {
     // GL resources held by the renderer are released with the context.
     makeCurrent();
-    destroyDofTarget();
+    destroyPostTarget();
     doneCurrent();
 }
 
@@ -52,6 +53,10 @@ void ViewportWidget::setStructure(std::shared_ptr<const core::Structure> structu
     measurementLabel_.clear();
     updateColorScalars();
     structureDirty_ = true;
+    // Contacts are a property of the geometry, so a new structure invalidates
+    // them; recompute rather than leaving the previous frame's dashes hanging
+    // in space (a no-op clear when detection is off).
+    refreshHydrogenBonds();
     if (frameCamera)
         frameStructure();
     Q_EMIT structureReplaced();
@@ -104,6 +109,54 @@ void ViewportWidget::setGradientInverted(bool inverted)
 {
     renderer_.style().invertGradient = inverted;
     refreshStructure(); // scalars unchanged — only the palette differs
+}
+
+void ViewportWidget::setCustomScalarRange(bool enabled, float min, float max)
+{
+    auto& style = renderer_.style();
+    // The panel re-pushes the window on every color-mapping change; skip the
+    // instance-buffer rebuild when nothing actually moved.
+    if (style.useCustomScalarRange == enabled && style.customScalarMin == min
+        && style.customScalarMax == max)
+        return;
+    style.useCustomScalarRange = enabled;
+    style.customScalarMin = min;
+    style.customScalarMax = max;
+    refreshStructure(); // scalars unchanged — only their normalization differs
+}
+
+void ViewportWidget::refreshHydrogenBonds()
+{
+    hydrogenBondSegments_.clear();
+    hbondCount_ = 0;
+    if (hbondStyle_.enabled && structure_ && !structure_->empty()) {
+        const auto contacts =
+            core::detectHydrogenBonds(*structure_, hbondStyle_.options);
+        hbondCount_ = static_cast<int>(contacts.size());
+        // Only the H···A leg is drawn: D–H is already an ordinary covalent
+        // bond, and drawing it again dashed would double every N–H and O–H.
+        std::vector<std::pair<QVector3D, QVector3D>> segments;
+        segments.reserve(contacts.size());
+        for (const core::HydrogenBond& bond : contacts) {
+            const core::Vec3& h =
+                structure_->atoms()[static_cast<std::size_t>(bond.hydrogen)]
+                    .position;
+            const core::Vec3 a =
+                structure_->atoms()[static_cast<std::size_t>(bond.acceptor)]
+                    .position
+                + bond.acceptorOffset;
+            segments.emplace_back(
+                QVector3D(static_cast<float>(h.x), static_cast<float>(h.y),
+                          static_cast<float>(h.z)),
+                QVector3D(static_cast<float>(a.x), static_cast<float>(a.y),
+                          static_cast<float>(a.z)));
+        }
+        render::StructureRenderer::buildHydrogenBondDashes(
+            segments, hbondStyle_.color, hbondStyle_.dashLength,
+            hydrogenBondSegments_);
+    }
+    hydrogenBondsDirty_ = true;
+    update();
 }
 
 void ViewportWidget::setCoordinationOptions(const core::CoordinationOptions& options)
@@ -474,35 +527,99 @@ void ViewportWidget::initializeGL()
     glEnable(GL_MULTISAMPLE);
     renderer_.initialize(this);
 
-    dofProgram_.addShaderFromSourceFile(QOpenGLShader::Vertex,
-                                        QStringLiteral(":/assets/shaders/dof.vert"));
-    dofProgram_.addShaderFromSourceFile(QOpenGLShader::Fragment,
-                                        QStringLiteral(":/assets/shaders/dof.frag"));
-    dofProgram_.link();
-    dofVao_.create(); // empty — the fullscreen triangle comes from gl_VertexID
+    initializePostProcessing();
 
     structureDirty_ = true;
 }
 
-void ViewportWidget::ensureDofTarget(int w, int h)
+void ViewportWidget::initializePostProcessing()
 {
-    if (dofFbo_ && dofWidth_ == w && dofHeight_ == h)
+    // All four post passes draw the same fullscreen triangle, so they share
+    // dof.vert (and the empty VAO below — the triangle comes from gl_VertexID).
+    const auto link = [](QOpenGLShaderProgram& program, const char* fragment) {
+        program.addShaderFromSourceFile(
+            QOpenGLShader::Vertex, QStringLiteral(":/assets/shaders/dof.vert"));
+        program.addShaderFromSourceFile(QOpenGLShader::Fragment,
+                                        QLatin1String(fragment));
+        program.link();
+    };
+    link(dofProgram_, ":/assets/shaders/dof.frag");
+    link(ssaoProgram_, ":/assets/shaders/ssao.frag");
+    link(ssaoBlurProgram_, ":/assets/shaders/ssao_blur.frag");
+    link(ssaoCompositeProgram_, ":/assets/shaders/ssao_composite.frag");
+    dofVao_.create();
+
+    // -- SSAO sample kernel -------------------------------------------------
+    // Points in the +z hemisphere, pushed toward the origin: occlusion falls
+    // off with distance, so clustering samples near the shaded point spends
+    // the budget where it changes the result most. A fixed seed keeps the
+    // shading identical across runs — an AO pattern that shifted between
+    // sessions would look like a rendering bug in a saved figure.
+    constexpr int kKernelSize = 32;
+    std::mt19937 rng(1337);
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+    std::uniform_real_distribution<float> signed01(-1.0f, 1.0f);
+    ssaoKernel_.clear();
+    ssaoKernel_.reserve(kKernelSize);
+    for (int i = 0; i < kKernelSize; ++i) {
+        QVector3D sample(signed01(rng), signed01(rng), unit(rng));
+        sample.normalize();
+        sample *= unit(rng);
+        float scale = static_cast<float>(i) / kKernelSize;
+        scale = 0.1f + 0.9f * scale * scale; // accelerate toward the origin
+        ssaoKernel_.push_back(sample * scale);
+    }
+
+    // -- Rotation noise -----------------------------------------------------
+    // A 4x4 tile of random in-plane rotations, repeated across the screen. It
+    // converts the banding a fixed kernel would produce into high-frequency
+    // noise, which the blur pass (matched to this tile size) removes.
+    constexpr int kNoiseSide = 4;
+    std::vector<float> noise;
+    noise.reserve(kNoiseSide * kNoiseSide * 3);
+    for (int i = 0; i < kNoiseSide * kNoiseSide; ++i) {
+        noise.push_back(signed01(rng));
+        noise.push_back(signed01(rng));
+        noise.push_back(0.0f); // rotation about the surface normal only
+    }
+    glGenTextures(1, &ssaoNoiseTex_);
+    glBindTexture(GL_TEXTURE_2D, ssaoNoiseTex_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, kNoiseSide, kNoiseSide, 0, GL_RGB,
+                 GL_FLOAT, noise.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+void ViewportWidget::ensurePostTarget(int w, int h)
+{
+    if (postFbo_ && postWidth_ == w && postHeight_ == h)
         return;
-    destroyDofTarget();
-    dofWidth_ = w;
-    dofHeight_ = h;
+    destroyPostTarget();
+    postWidth_ = w;
+    postHeight_ = h;
 
-    glGenTextures(1, &dofColorTex_);
-    glBindTexture(GL_TEXTURE_2D, dofColorTex_);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA,
-                 GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    const auto makeColorTexture = [this, w, h](unsigned& tex, GLint internal,
+                                               GLenum format, GLenum type) {
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, internal, w, h, 0, format, type, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    };
 
-    glGenTextures(1, &dofDepthTex_);
-    glBindTexture(GL_TEXTURE_2D, dofDepthTex_);
+    // -- G-buffer: shaded color + view-space normals + depth ---------------
+    makeColorTexture(postColorTex_, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE);
+    // Normals need signed values and more than 8 bits per channel, or the
+    // reconstructed hemisphere basis visibly quantizes into facets.
+    makeColorTexture(postNormalTex_, GL_RGBA16F, GL_RGBA, GL_FLOAT);
+
+    glGenTextures(1, &postDepthTex_);
+    glBindTexture(GL_TEXTURE_2D, postDepthTex_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0,
                  GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -510,23 +627,118 @@ void ViewportWidget::ensureDofTarget(int w, int h)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glGenFramebuffers(1, &dofFbo_);
-    glBindFramebuffer(GL_FRAMEBUFFER, dofFbo_);
+    glGenFramebuffers(1, &postFbo_);
+    glBindFramebuffer(GL_FRAMEBUFFER, postFbo_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                           dofColorTex_, 0);
+                           postColorTex_, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D,
+                           postNormalTex_, 0);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
-                           dofDepthTex_, 0);
+                           postDepthTex_, 0);
+    // Both attachments must be listed or the scene shaders' second output is
+    // discarded and the SSAO pass reads an untouched normal buffer.
+    const GLenum drawBuffers[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+    glDrawBuffers(2, drawBuffers);
+
+    // -- AO ping-pong + composited color -----------------------------------
+    const auto makeAoTarget = [&](unsigned& fbo, unsigned& tex) {
+        makeColorTexture(tex, GL_R16F, GL_RED, GL_FLOAT);
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, tex, 0);
+        const GLenum one[1] = {GL_COLOR_ATTACHMENT0};
+        glDrawBuffers(1, one);
+    };
+    makeAoTarget(ssaoFbo_, ssaoTex_);
+    makeAoTarget(ssaoBlurFbo_, ssaoBlurTex_);
+
+    makeColorTexture(ssaoCompositeTex_, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE);
+    glGenFramebuffers(1, &ssaoCompositeFbo_);
+    glBindFramebuffer(GL_FRAMEBUFFER, ssaoCompositeFbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           ssaoCompositeTex_, 0);
+    const GLenum one[1] = {GL_COLOR_ATTACHMENT0};
+    glDrawBuffers(1, one);
+
     glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
 }
 
-void ViewportWidget::destroyDofTarget()
+void ViewportWidget::destroyPostTarget()
 {
-    if (dofFbo_) {
-        glDeleteFramebuffers(1, &dofFbo_);
-        glDeleteTextures(1, &dofColorTex_);
-        glDeleteTextures(1, &dofDepthTex_);
-        dofFbo_ = dofColorTex_ = dofDepthTex_ = 0;
-    }
+    if (!postFbo_)
+        return;
+    const unsigned framebuffers[4] = {postFbo_, ssaoFbo_, ssaoBlurFbo_,
+                                      ssaoCompositeFbo_};
+    glDeleteFramebuffers(4, framebuffers);
+    const unsigned textures[6] = {postColorTex_,   postNormalTex_,
+                                  postDepthTex_,   ssaoTex_,
+                                  ssaoBlurTex_,    ssaoCompositeTex_};
+    glDeleteTextures(6, textures);
+    postFbo_ = ssaoFbo_ = ssaoBlurFbo_ = ssaoCompositeFbo_ = 0;
+    postColorTex_ = postNormalTex_ = postDepthTex_ = 0;
+    ssaoTex_ = ssaoBlurTex_ = ssaoCompositeTex_ = 0;
+}
+
+void ViewportWidget::drawFullscreenTriangle()
+{
+    dofVao_.bind();
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    dofVao_.release();
+}
+
+void ViewportWidget::renderSsaoPasses(int w, int h, const QMatrix4x4& projection)
+{
+    glDisable(GL_DEPTH_TEST);
+
+    // -- Occlusion ----------------------------------------------------------
+    glBindFramebuffer(GL_FRAMEBUFFER, ssaoFbo_);
+    glViewport(0, 0, w, h);
+    ssaoProgram_.bind();
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, postDepthTex_);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, postNormalTex_);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, ssaoNoiseTex_);
+    ssaoProgram_.setUniformValue("uDepth", 0);
+    ssaoProgram_.setUniformValue("uNormal", 1);
+    ssaoProgram_.setUniformValue("uNoise", 2);
+    ssaoProgram_.setUniformValue("uProjection", projection);
+    ssaoProgram_.setUniformValue("uInvProjection", projection.inverted());
+    ssaoProgram_.setUniformValueArray("uKernel", ssaoKernel_.data(),
+                                      static_cast<int>(ssaoKernel_.size()));
+    ssaoProgram_.setUniformValue("uKernelSize",
+                                 static_cast<int>(ssaoKernel_.size()));
+    ssaoProgram_.setUniformValue("uRadius", ssao_.radius);
+    // The bias scales with the radius: a fixed epsilon that is invisible at
+    // 2 Å becomes self-occlusion acne at 0.2 Å.
+    ssaoProgram_.setUniformValue("uBias", 0.02f * ssao_.radius);
+    ssaoProgram_.setUniformValue(
+        "uNoiseScale", QVector2D(static_cast<float>(w) / 4.0f,
+                                 static_cast<float>(h) / 4.0f));
+    drawFullscreenTriangle();
+    ssaoProgram_.release();
+
+    // -- Bilateral blur -----------------------------------------------------
+    glBindFramebuffer(GL_FRAMEBUFFER, ssaoBlurFbo_);
+    ssaoBlurProgram_.bind();
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, ssaoTex_);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, postDepthTex_);
+    ssaoBlurProgram_.setUniformValue("uAo", 0);
+    ssaoBlurProgram_.setUniformValue("uDepth", 1);
+    ssaoBlurProgram_.setUniformValue(
+        "uPixelSize", QVector2D(1.0f / static_cast<float>(w),
+                                1.0f / static_cast<float>(h)));
+    ssaoBlurProgram_.setUniformValue("uRadius", 2); // covers the 4x4 noise tile
+    ssaoBlurProgram_.setUniformValue("uDepthSigma", 0.0005f);
+    drawFullscreenTriangle();
+    ssaoBlurProgram_.release();
+
+    glActiveTexture(GL_TEXTURE0);
+    glEnable(GL_DEPTH_TEST);
 }
 
 void ViewportWidget::resizeGL(int, int)
@@ -549,6 +761,10 @@ void ViewportWidget::ensureUploaded()
         renderer_.setCustomOverlay(customOverlayFaces_, customOverlayEdges_,
                                    customOverlayRanges_, customOverlayVisible_);
         customOverlayDirty_ = false;
+    }
+    if (hydrogenBondsDirty_) {
+        renderer_.setHydrogenBonds(hydrogenBondSegments_);
+        hydrogenBondsDirty_ = false;
     }
 }
 
@@ -596,63 +812,118 @@ void ViewportWidget::clearLatticePlane()
     update();
 }
 
-void ViewportWidget::renderScene()
+void ViewportWidget::clearScene()
 {
     glEnable(GL_DEPTH_TEST);
     glClearColor(static_cast<float>(backgroundColor_.redF()),
                  static_cast<float>(backgroundColor_.greenF()),
                  static_cast<float>(backgroundColor_.blueF()), 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}
+
+void ViewportWidget::drawSceneGeometry()
+{
     const float aspect = height() > 0
         ? static_cast<float>(width()) / static_cast<float>(height())
         : 1.0f;
     renderer_.render(camera_.view(), camera_.projection(aspect));
 }
 
+void ViewportWidget::renderScene()
+{
+    clearScene();
+    drawSceneGeometry();
+}
+
 void ViewportWidget::paintGL()
 {
     ensureUploaded();
 
-    if (!dof_.enabled) {
+    if (!dof_.enabled && !ssao_.enabled) {
         // QPainter overlays reset pieces of GL state — reassert then draw.
         renderScene();
     } else {
-        // Depth-of-field: scene into an offscreen color+depth pair, then
-        // a fullscreen composite with the circle-of-confusion blur.
+        // Post-processing path: the scene goes into the offscreen G-buffer
+        // (color + view normals + depth), then SSAO and/or depth-of-field
+        // composite it onto the default framebuffer. Both effects need the
+        // same offscreen render, so they share one target and one scene pass.
         const qreal dpr = devicePixelRatioF();
         const int w = std::max(1, static_cast<int>(width() * dpr));
         const int h = std::max(1, static_cast<int>(height() * dpr));
-        ensureDofTarget(w, h);
+        ensurePostTarget(w, h);
 
-        glBindFramebuffer(GL_FRAMEBUFFER, dofFbo_);
+        glBindFramebuffer(GL_FRAMEBUFFER, postFbo_);
         glViewport(0, 0, w, h);
-        renderScene();
+        clearScene();
+        // The normal attachment must be zeroed AFTER the scene clear: glClear
+        // fills every attached color buffer with the background color, whose
+        // alpha is 1 — which the SSAO pass would read as a valid normal and
+        // shade occlusion across the empty background. Zeroing alpha marks
+        // those pixels "no geometry here".
+        const float clearNormal[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        glClearBufferfv(GL_COLOR, 1, clearNormal);
+        drawSceneGeometry();
 
-        glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
-        glViewport(0, 0, w, h);
-        glDisable(GL_DEPTH_TEST);
-        dofProgram_.bind();
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, dofColorTex_);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, dofDepthTex_);
-        dofProgram_.setUniformValue("uColor", 0);
-        dofProgram_.setUniformValue("uDepth", 1);
-        const float distance = camera_.distance();
-        dofProgram_.setUniformValue("uNear", std::max(0.01f, distance * 0.01f));
-        dofProgram_.setUniformValue("uFar", distance * 50.0f);
-        dofProgram_.setUniformValue("uFocusDistance",
-                                    distance + dof_.focusOffset);
-        dofProgram_.setUniformValue("uFocusRange", dof_.focusRange);
-        dofProgram_.setUniformValue("uStrength", dof_.strength * static_cast<float>(dpr));
-        dofProgram_.setUniformValue(
-            "uPixelSize", QVector2D(1.0f / w, 1.0f / h));
-        dofVao_.bind();
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-        dofVao_.release();
-        dofProgram_.release();
-        glEnable(GL_DEPTH_TEST);
-        glActiveTexture(GL_TEXTURE0);
+        const float aspect = height() > 0
+            ? static_cast<float>(width()) / static_cast<float>(height())
+            : 1.0f;
+        const QMatrix4x4 projection = camera_.projection(aspect);
+
+        // `sourceColor` is what the final pass reads: either the raw scene or
+        // the AO-modulated version.
+        unsigned sourceColor = postColorTex_;
+        if (ssao_.enabled) {
+            renderSsaoPasses(w, h, projection);
+            // Multiply AO into the color. When DoF follows, this goes to an
+            // offscreen texture so the blur acts on the composited image —
+            // otherwise sharp occlusion would survive on top of blurred
+            // geometry, which reads as a compositing error.
+            glBindFramebuffer(GL_FRAMEBUFFER, dof_.enabled
+                                                  ? ssaoCompositeFbo_
+                                                  : defaultFramebufferObject());
+            glViewport(0, 0, w, h);
+            glDisable(GL_DEPTH_TEST);
+            ssaoCompositeProgram_.bind();
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, postColorTex_);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, ssaoBlurTex_);
+            ssaoCompositeProgram_.setUniformValue("uColor", 0);
+            ssaoCompositeProgram_.setUniformValue("uAo", 1);
+            ssaoCompositeProgram_.setUniformValue("uIntensity", ssao_.intensity);
+            drawFullscreenTriangle();
+            ssaoCompositeProgram_.release();
+            glActiveTexture(GL_TEXTURE0);
+            glEnable(GL_DEPTH_TEST);
+            sourceColor = ssaoCompositeTex_;
+        }
+
+        if (dof_.enabled) {
+            glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
+            glViewport(0, 0, w, h);
+            glDisable(GL_DEPTH_TEST);
+            dofProgram_.bind();
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, sourceColor);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, postDepthTex_);
+            dofProgram_.setUniformValue("uColor", 0);
+            dofProgram_.setUniformValue("uDepth", 1);
+            const float distance = camera_.distance();
+            dofProgram_.setUniformValue("uNear", std::max(0.01f, distance * 0.01f));
+            dofProgram_.setUniformValue("uFar", distance * 50.0f);
+            dofProgram_.setUniformValue("uFocusDistance",
+                                        distance + dof_.focusOffset);
+            dofProgram_.setUniformValue("uFocusRange", dof_.focusRange);
+            dofProgram_.setUniformValue("uStrength",
+                                        dof_.strength * static_cast<float>(dpr));
+            dofProgram_.setUniformValue(
+                "uPixelSize", QVector2D(1.0f / w, 1.0f / h));
+            drawFullscreenTriangle();
+            dofProgram_.release();
+            glEnable(GL_DEPTH_TEST);
+            glActiveTexture(GL_TEXTURE0);
+        }
     }
 
     if (showAxes_ || showElementLabels_ || showIndexLabels_

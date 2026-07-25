@@ -207,7 +207,7 @@ void Structure::setBondOrder(int i, int j, int order)
     if (order <= 1)
         bondOrders_.erase({pair.first, pair.second}); // single is the default
     else
-        bondOrders_[{pair.first, pair.second}] = std::min(order, 3);
+        bondOrders_[{pair.first, pair.second}] = std::min(order, 4);
 }
 
 void Structure::addBondOverride(int i, int j)

@@ -37,7 +37,7 @@ VisualEffectsPanel::VisualEffectsPanel(ViewportWidget* viewport, QWidget* parent
     tabs->addTab(new LightingPanel(viewport_, tabs), tr("Lighting"));
     tabs->addTab(buildShadowTab(), tr("Shadow"));
     tabs->addTab(buildFogTab(), tr("Distance Fog"));
-    tabs->addTab(buildDepthBlurTab(), tr("Depth Blur"));
+    tabs->addTab(buildDepthBlurTab(), tr("Depth && Occlusion"));
     layout->addWidget(tabs);
 
     // Zone-9 dock width constraint: size the panel so the tab bar shows every
@@ -241,7 +241,54 @@ QWidget* VisualEffectsPanel::buildDepthBlurTab()
     form->addRow(tr("Focus offset:"), offsetSpin);
 
     pageLayout->addWidget(group);
+
+    // -- Ambient occlusion --------------------------------------------------
+    // Shares this tab with depth-of-field: both are screen-space passes that
+    // run off the same offscreen G-buffer, and enabling either trades MSAA.
+    auto* ssaoGroup = new QGroupBox(tr("Ambient occlusion (SSAO)"), page);
+    ssaoGroup->setCheckable(true);
+    ssaoGroup->setChecked(viewport_->ambientOcclusion().enabled);
+    ssaoGroup->setToolTip(
+        tr("Darkens contact regions — the creases between touching atoms and "
+           "the gaps under bonds — which direct lighting alone leaves fully "
+           "lit.\nWhile enabled the scene renders without MSAA."));
+    auto* ssaoForm = new QFormLayout(ssaoGroup);
+
+    auto* radiusSpin = new QDoubleSpinBox(ssaoGroup);
+    radiusSpin->setRange(0.1, 10.0);
+    radiusSpin->setDecimals(2);
+    radiusSpin->setSingleStep(0.1);
+    radiusSpin->setSuffix(QStringLiteral(" Å"));
+    radiusSpin->setValue(viewport_->ambientOcclusion().radius);
+    radiusSpin->setToolTip(
+        tr("How far a neighbouring surface can be and still shade this one. "
+           "Around one atomic radius reads best: much larger and the whole "
+           "structure dims uniformly, much smaller and only the tightest "
+           "creases darken."));
+    ssaoForm->addRow(tr("SSAO radius:"), radiusSpin);
+
+    auto* intensitySlider = new QSlider(Qt::Horizontal, ssaoGroup);
+    intensitySlider->setRange(0, 100);
+    intensitySlider->setValue(static_cast<int>(
+        viewport_->ambientOcclusion().intensity * 100.0f));
+    intensitySlider->setToolTip(
+        tr("Strength of the darkening: 0 leaves the image untouched, 100 "
+           "applies the full occlusion factor."));
+    ssaoForm->addRow(tr("SSAO intensity:"), intensitySlider);
+
+    pageLayout->addWidget(ssaoGroup);
     pageLayout->addStretch(1);
+
+    const auto applySsao = [this, ssaoGroup, radiusSpin, intensitySlider] {
+        auto& ssao = viewport_->ambientOcclusion();
+        ssao.enabled = ssaoGroup->isChecked();
+        ssao.radius = static_cast<float>(radiusSpin->value());
+        ssao.intensity = static_cast<float>(intensitySlider->value()) / 100.0f;
+        viewport_->update();
+    };
+    connect(ssaoGroup, &QGroupBox::toggled, this, applySsao);
+    connect(radiusSpin, &QDoubleSpinBox::valueChanged, this, applySsao);
+    connect(intensitySlider, &QSlider::valueChanged, this, applySsao);
 
     const auto applyDof = [this, group, strengthSlider, rangeSpin, offsetSpin] {
         auto& dof = viewport_->depthOfField();

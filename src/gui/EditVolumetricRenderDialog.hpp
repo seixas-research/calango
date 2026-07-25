@@ -11,6 +11,7 @@ class QComboBox;
 class QDoubleSpinBox;
 class QPushButton;
 class QSlider;
+class QSpinBox;
 class QStackedWidget;
 
 namespace calango::gui {
@@ -22,7 +23,8 @@ namespace calango::gui {
 ///   * Isosurfaces  — isovalue, opacity, specular, positive/negative phase
 ///     colors, and a grid-interpolation scheme (no colormap: isosurfaces are
 ///     uniform single-color / phase fills).
-///   * Color Slice  — plane orientation, offset, colormap, transparency.
+///   * Color Slice  — plane orientation as Miller indices (h k l), offset
+///     along the plane normal, colormap (optionally inverted), transparency.
 ///   * Potential Map — a base isosurface colored by a secondary scalar field
 ///     (colormap + min/max ramp bounds).
 ///
@@ -78,9 +80,14 @@ private:
     QComboBox* isoInterpCombo_ = nullptr;
 
     // Color slice
-    QComboBox* planeCombo_ = nullptr;
+    QSpinBox* millerSpins_[3] = {nullptr, nullptr, nullptr}; ///< h, k, l
     QSlider* sliceOffsetSlider_ = nullptr;
     QComboBox* sliceGradientCombo_ = nullptr;
+    QCheckBox* sliceInvertCheck_ = nullptr;
+    QCheckBox* sliceBoundsCheck_ = nullptr;
+    QDoubleSpinBox* sliceMinSpin_ = nullptr;
+    QDoubleSpinBox* sliceMaxSpin_ = nullptr;
+    QComboBox* sliceInterpCombo_ = nullptr;
     QDoubleSpinBox* sliceOpacitySpin_ = nullptr;
 
     // Potential map

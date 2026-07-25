@@ -1,23 +1,19 @@
 #pragma once
 
+#include "gui/GpawElectronicRows.hpp"
 #include "gui/SimulationWizardBase.hpp"
 
-class QCheckBox;
-class QComboBox;
-class QDoubleSpinBox;
 class QFormLayout;
-class QLineEdit;
-class QSpinBox;
 
 namespace calango::gui {
 
-/// Simulation → "Single-point Calculation…": a streamlined 3-stage wizard.
-/// Stage 1 is the shared Calculator & Execution Environment; Stage 2 is
-/// "Calculator & Convergence Settings" — the engine-specific knobs plus the
-/// electronic convergence controls (energy convergence, max electronic steps,
-/// spin polarization / magnetic moments, smearing) folded in and shown only
-/// for DFT engines; Stage 3 is the ASE script review. There is no separate
-/// task-settings stage (hasTaskSettingsStage() == false).
+/// Simulation → "Single-point Calculation…": a streamlined 2-stage wizard.
+/// Stage 1 is "Calculator & Convergence Settings" — the engine-specific knobs
+/// plus the electronic convergence controls (energy convergence, max electronic
+/// steps, spin polarization / magnetic moments, smearing) folded into the
+/// shared thematic GPAW group boxes and shown only for DFT engines; Stage 2 is
+/// the ASE script review. There is no separate task-settings stage
+/// (hasTaskSettingsStage() == false).
 class SinglePointWizard : public SimulationWizardBase {
     Q_OBJECT
 
@@ -36,8 +32,16 @@ protected:
     /// The electronic controls fold into the shared thematic GPAW group boxes:
     /// smearing + SCF tolerance/steps into "Electronic Convergence && Smearing",
     /// spin polarization mode + magnetic moments into "Spin Configurations".
-    void buildConvergenceRows(QFormLayout* form) override;
-    void buildSpinRows(QFormLayout* form) override;
+    /// Both are built by the shared GpawElectronicRows, so the Geometry
+    /// Optimization wizard presents the identical GPAW form.
+    void buildConvergenceRows(QFormLayout* form) override
+    {
+        electronic_.buildConvergenceRows(form, this);
+    }
+    void buildSpinRows(QFormLayout* form) override
+    {
+        electronic_.buildSpinRows(form, this);
+    }
     bool hasConvergenceExtras() const override { return true; }
     bool hasSpinExtras() const override { return true; }
     /// Expose the GPAW "Symmetry: off" and "Export Charge Density" toggles —
@@ -50,18 +54,10 @@ protected:
         return QStringLiteral("single_point.py");
     }
 
-private Q_SLOTS:
-    void updateSpinEnabled();
-
 private:
     core::CalculatorConfig config() const;
 
-    QSpinBox* scfStepsSpin_ = nullptr;
-    QDoubleSpinBox* scfTolSpin_ = nullptr;
-    QComboBox* spinModeCombo_ = nullptr; ///< Unpolarized / Collinear / Non-collinear
-    QLineEdit* magMomentEdit_ = nullptr;
-    QComboBox* smearingCombo_ = nullptr;
-    QDoubleSpinBox* smearingWidthSpin_ = nullptr;
+    GpawElectronicRows electronic_;
 };
 
 } // namespace calango::gui

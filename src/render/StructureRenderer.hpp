@@ -110,7 +110,9 @@ public:
         /// Base opacity of the Glassy finish at face-on incidence (the
         /// Fresnel term drives edges toward opaque). Ignored otherwise.
         float glassOpacity = 0.45f;
-        float vectorScale = 1.0f; ///< Å of arrow length per field unit
+        /// Normalized vector-overlay length: 1.0 is the calibrated baseline
+        /// (kVectorBaseScale Å of arrow per field unit), not a raw Å factor.
+        float vectorScale = 1.0f;
         QColor forceColor{242, 92, 54};
         QColor velocityColor{54, 166, 242};
         QColor magmomColor{168, 120, 240};
@@ -130,6 +132,15 @@ public:
         /// Reverse the scalar -> color mapping of `gradient` (minima get
         /// the high end of the palette), like matplotlib's "_r" maps.
         bool invertGradient = false;
+        /// Fixed color-scale bounds. Off by default, so the ramp auto-scales
+        /// to the data's own min/max; on, the ramp is pinned to
+        /// [customScalarMin, customScalarMax], which is what comparing frames
+        /// or structures on one scale requires (auto-scaling silently
+        /// renormalizes every frame and makes them incomparable). Values
+        /// outside the window clamp to the ramp ends.
+        bool useCustomScalarRange = false;
+        float customScalarMin = 0.0f;
+        float customScalarMax = 1.0f;
         /// Distance fog (View -> Visual Effects): 0 = off, 1 = linear
         /// between fogStart/fogEnd, 2 = exponential with fogDensity.
         /// fogColor tracks the viewport background. Off by default; the
@@ -192,6 +203,17 @@ public:
                           const std::vector<float>& edges,
                           const std::vector<OverlayRange>& faceRanges,
                           bool visible);
+
+    /// Hydrogen-bond overlay: an interleaved pos(3)+color(3) GL_LINES stream
+    /// of PRE-DASHED segments (see buildHydrogenBondDashes). Empty clears it.
+    void setHydrogenBonds(const std::vector<float>& segments);
+
+    /// Split each D-H···A contact into dashes of `dashLength` Å separated by
+    /// equal gaps, appending an interleaved pos+color stream. Static so the
+    /// geometry can be built without a current GL context.
+    static void buildHydrogenBondDashes(
+        const std::vector<std::pair<QVector3D, QVector3D>>& contacts,
+        const QColor& color, float dashLength, std::vector<float>& out);
 
     Style& style() { return style_; }
     const Style& style() const { return style_; }
@@ -276,6 +298,12 @@ private:
     ColoredVertexBuffer customOverlayEdges_; ///< GL_LINES (primitive wireframes)
     std::vector<OverlayRange> customOverlayRanges_;
     bool customOverlayVisible_ = false;
+    /// Hydrogen bonds, GL_LINES. The dash pattern is BAKED INTO THE GEOMETRY
+    /// (many short segments) rather than drawn with line stipple: core-profile
+    /// GL removed glLineStipple, so this is the portable way to get a dashed
+    /// line — and it keeps the dashes a fixed length in Å, so they do not
+    /// stretch or crowd as the camera zooms.
+    ColoredVertexBuffer hydrogenBonds_;
 
     // -- Shadow map --------------------------------------------------------
     /// 2048² is the sweet spot here: structures are compact, so the fitted

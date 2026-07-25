@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QColor>
+#include <QDoubleSpinBox>
 #include <QJsonObject>
 #include <QString>
 
@@ -35,6 +36,30 @@ QJsonObject readJsonObject(const QString& path);
 /// and the effective-band heatmap.
 void drawWithSubscripts(QPainter& painter, const QRectF& box,
                         const QString& text);
+
+/// A QDoubleSpinBox that renders its value COMPACTLY: three significant
+/// figures, switching to exponential notation ("1.23e-2") when a fixed-point
+/// rendering would be misleading or too wide.
+///
+/// The physical properties the color-mapping bounds cover span many orders of
+/// magnitude — partial charges around 1e-2 e, magnetic moments around 1 μB,
+/// forces up to 1e2 eV/Å. A fixed `decimals` cannot serve them all: set it low
+/// and small values collapse to "0.000"; set it high and large values overflow
+/// the field. Formatting by significance instead keeps every value both
+/// readable and honest at a fixed width.
+class CompactDoubleSpinBox : public QDoubleSpinBox {
+    Q_OBJECT
+
+public:
+    explicit CompactDoubleSpinBox(QWidget* parent = nullptr);
+
+protected:
+    QString textFromValue(double value) const override;
+    double valueFromText(const QString& text) const override;
+    /// Accept exponential input, which the base class's fixed-notation
+    /// validator rejects outright.
+    QValidator::State validate(QString& input, int& pos) const override;
+};
 
 /// JSON number array -> std::vector<double>. Non-numeric entries become 0.0,
 /// matching QJsonValue::toDouble()'s contract.

@@ -24,6 +24,14 @@ QString presetName(core::CalculatorKind kind)
     case core::CalculatorKind::Asap: return QStringLiteral("ASAP");
     case core::CalculatorKind::LennardJones:
         return QStringLiteral("LennardJones");
+    // MLIP engines. These keys are what lands in ~/.calango/settings.json, so
+    // they must stay stable once shipped.
+    case core::CalculatorKind::DeepMd: return QStringLiteral("DeepMD");
+    case core::CalculatorKind::NequIp: return QStringLiteral("NequIP");
+    case core::CalculatorKind::Allegro: return QStringLiteral("Allegro");
+    case core::CalculatorKind::ChgNet: return QStringLiteral("CHGNet");
+    case core::CalculatorKind::MatterSim: return QStringLiteral("MatterSim");
+    case core::CalculatorKind::FairChem: return QStringLiteral("FAIRChem");
     }
     return QStringLiteral("default");
 }
@@ -42,12 +50,24 @@ QString displayName(core::CalculatorKind kind)
     case core::CalculatorKind::Asap: return QStringLiteral("ASAP");
     case core::CalculatorKind::LennardJones:
         return QStringLiteral("Lennard-Jones");
+    case core::CalculatorKind::DeepMd: return QStringLiteral("DeepMD-kit");
+    case core::CalculatorKind::NequIp: return QStringLiteral("NequIP");
+    case core::CalculatorKind::Allegro: return QStringLiteral("Allegro");
+    case core::CalculatorKind::ChgNet: return QStringLiteral("CHGNet");
+    case core::CalculatorKind::MatterSim: return QStringLiteral("MatterSim");
+    case core::CalculatorKind::FairChem:
+        return QStringLiteral("FAIRChem / OCP");
     }
     return QStringLiteral("Default");
 }
 
 const QVector<core::CalculatorKind>& configurableEngines()
 {
+    // Every engine that needs a package the embedded interpreter does not
+    // ship. The MLIP entries each pull a different (and mutually hostile)
+    // deep-learning stack — deepmd-kit, nequip, chgnet, mattersim and
+    // fairchem-core routinely pin conflicting torch builds — so each gets its
+    // own environment slot rather than sharing one "ML" preset.
     static const QVector<core::CalculatorKind> kEngines = {
         core::CalculatorKind::Gpaw,
         core::CalculatorKind::Mace,
@@ -55,6 +75,12 @@ const QVector<core::CalculatorKind>& configurableEngines()
         core::CalculatorKind::Siesta,
         core::CalculatorKind::Orca,
         core::CalculatorKind::Vasp,
+        core::CalculatorKind::DeepMd,
+        core::CalculatorKind::NequIp,
+        core::CalculatorKind::Allegro,
+        core::CalculatorKind::ChgNet,
+        core::CalculatorKind::MatterSim,
+        core::CalculatorKind::FairChem,
     };
     return kEngines;
 }

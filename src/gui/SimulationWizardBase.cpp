@@ -91,6 +91,15 @@ void SimulationWizardBase::buildUi()
         stack_->addWidget(calculatorPage);
     else
         calculatorPage->hide();
+    // Optional extra task stage between Calculator Settings and the subclass's
+    // own page (Phonon: displacement settings, then the q-path).
+    hasSecondSettingsStage_ = !secondSettingsHeader().isEmpty();
+    if (hasSecondSettingsStage_) {
+        if (QWidget* second = buildSecondSettingsPage())
+            stack_->addWidget(second);
+        else
+            hasSecondSettingsStage_ = false; // no content — drop the stage
+    }
     if (hasSettingsStage_ && !settingsFirst_)
         stack_->addWidget(buildSettingsPage());
     stack_->addWidget(buildReviewPage());
@@ -165,6 +174,14 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     addCalc(tr("EMT (fast test potential)"), core::CalculatorKind::EMT);
     addCalc(tr("ASAP (fast EMT / OpenKIM)"), core::CalculatorKind::Asap);
     addCalc(tr("Lennard-Jones"), core::CalculatorKind::LennardJones);
+    // Machine-learning interatomic potentials.
+    addCalc(tr("DeepMD-kit (ML potential)"), core::CalculatorKind::DeepMd);
+    addCalc(tr("NequIP (ML potential)"), core::CalculatorKind::NequIp);
+    addCalc(tr("Allegro (ML potential)"), core::CalculatorKind::Allegro);
+    addCalc(tr("CHGNet (universal ML potential)"), core::CalculatorKind::ChgNet);
+    addCalc(tr("MatterSim (universal ML potential)"),
+            core::CalculatorKind::MatterSim);
+    addCalc(tr("FAIRChem / OCP (ML potential)"), core::CalculatorKind::FairChem);
     engineForm->addRow(tr("Calculation engine:"), calcCombo_);
     layout->addWidget(engineWidget_);
     connect(calcCombo_, &QComboBox::currentIndexChanged, this,
@@ -175,6 +192,7 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     layout->addWidget(calcSettingsHint_);
 
     layout->addWidget(buildMaceGroup(page));
+    layout->addWidget(buildMlipGroup(page));
     // Thematic DFT/GPAW group boxes (Mode & Basis Set; Brillouin Zone &
     // k-Points; Electronic Convergence & Smearing; Output & Exports). Shared
     // cutoff/k-points live in the first two groups.
@@ -298,6 +316,198 @@ QWidget* SimulationWizardBase::buildMaceGroup(QWidget* parent)
     return maceGroup_;
 }
 
+QWidget* SimulationWizardBase::buildMlipGroup(QWidget* parent)
+{
+    // One group serving every non-MACE ML potential: they share the same
+    // shape (a model file + a device) and differ only in which extra row
+    // applies, so a group box per engine would be five near-identical panels
+    // with one row each. updateMlipRows() shows only the selected engine's.
+    mlipGroup_ = new QGroupBox(tr("Machine-Learning Potential"), parent);
+    auto* form = new QFormLayout(mlipGroup_);
+
+    // -- Model / checkpoint file (label + placeholder retuned per engine) ---
+    mlipModelEdit_ = new QLineEdit(mlipGroup_);
+    auto* browse = new QPushButton(tr("Browse…"), mlipGroup_);
+    mlipModelRow_ = new QWidget(mlipGroup_);
+    auto* pathLayout = new QHBoxLayout(mlipModelRow_);
+    pathLayout->setContentsMargins(0, 0, 0, 0);
+    pathLayout->addWidget(mlipModelEdit_, 1);
+    pathLayout->addWidget(browse);
+    mlipModelLabel_ = new QLabel(tr("Model file:"), mlipGroup_);
+    form->addRow(mlipModelLabel_, mlipModelRow_);
+    connect(browse, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, tr("Select Model File"), mlipModelEdit_->text(),
+            tr("Model files (*.pb *.pt *.pth *.model);;All files (*)"));
+        if (!path.isEmpty())
+            mlipModelEdit_->setText(path); // textChanged → refreshPreview
+    });
+    connect(mlipModelEdit_, &QLineEdit::textChanged, this,
+            [this] { refreshPreview(); });
+
+    mlipDeviceCombo_ = new QComboBox(mlipGroup_);
+    // Order matches core::MlipDevice.
+    mlipDeviceCombo_->addItem(tr("cpu"));
+    mlipDeviceCombo_->addItem(tr("cuda (NVIDIA GPU)"));
+    mlipDeviceCombo_->addItem(tr("mps (Apple GPU)"));
+    mlipDeviceCombo_->setToolTip(
+        tr("Device the model runs on. cuda needs a CUDA build of the "
+           "framework; mps is Apple-silicon only and has no float64 kernels."));
+    form->addRow(tr("Device / GPU:"), mlipDeviceCombo_);
+
+    // -- NequIP / Allegro: training units of the deployed model -------------
+    nequipUnitsRow_ = new QWidget(mlipGroup_);
+    auto* unitsLayout = new QHBoxLayout(nequipUnitsRow_);
+    unitsLayout->setContentsMargins(0, 0, 0, 0);
+    nequipEnergyUnitsCombo_ = new QComboBox(nequipUnitsRow_);
+    nequipEnergyUnitsCombo_->setEditable(true);
+    nequipEnergyUnitsCombo_->addItems({QStringLiteral("eV"),
+                                       QStringLiteral("kcal/mol"),
+                                       QStringLiteral("Hartree"),
+                                       QStringLiteral("meV")});
+    nequipLengthUnitsCombo_ = new QComboBox(nequipUnitsRow_);
+    nequipLengthUnitsCombo_->setEditable(true);
+    nequipLengthUnitsCombo_->addItems({QStringLiteral("Angstrom"),
+                                       QStringLiteral("Bohr"),
+                                       QStringLiteral("nm")});
+    unitsLayout->addWidget(new QLabel(tr("energy"), nequipUnitsRow_));
+    unitsLayout->addWidget(nequipEnergyUnitsCombo_, 1);
+    unitsLayout->addWidget(new QLabel(tr("length"), nequipUnitsRow_));
+    unitsLayout->addWidget(nequipLengthUnitsCombo_, 1);
+    nequipUnitsRow_->setToolTip(
+        tr("Units the deployed model was TRAINED in. ASE works in eV and Å, so "
+           "the calculator rescales by these — a model trained in kcal/mol "
+           "reports silently wrong energies if this is left at eV."));
+    form->addRow(tr("Model units:"), nequipUnitsRow_);
+
+    // -- CHGNet -------------------------------------------------------------
+    chgnetWeightsCombo_ = new QComboBox(mlipGroup_);
+    // Order matches core::ChgNetWeights.
+    chgnetWeightsCombo_->addItem(tr("0.3.0 (published checkpoint)"));
+    chgnetWeightsCombo_->addItem(tr("latest (installed release default)"));
+    chgnetWeightsCombo_->setToolTip(
+        tr("Pretrained weight set. Pinning 0.3.0 keeps results reproducible "
+           "across chgnet upgrades; \"latest\" tracks the installed package."));
+    form->addRow(tr("Pretrained weights:"), chgnetWeightsCombo_);
+
+    chgnetStressCheck_ = new QCheckBox(tr("Evaluate stress tensor"), mlipGroup_);
+    chgnetStressCheck_->setChecked(true);
+    chgnetStressCheck_->setToolTip(
+        tr("Required for variable-cell relaxation and any stress analysis. "
+           "Turning it off is slightly cheaper per step."));
+    form->addRow(chgnetStressCheck_);
+
+    // -- MatterSim ----------------------------------------------------------
+    matterSimModelCombo_ = new QComboBox(mlipGroup_);
+    // Order matches core::MatterSimModel.
+    matterSimModelCombo_->addItem(tr("3M (1M parameters — fast)"));
+    matterSimModelCombo_->addItem(tr("100M (5M parameters — accurate)"));
+    matterSimModelCombo_->setCurrentIndex(0);
+    matterSimModelCombo_->setToolTip(
+        tr("Released MatterSim checkpoint. The larger model is markedly more "
+           "accurate on unusual chemistries at a few times the cost."));
+    form->addRow(tr("Model precision:"), matterSimModelCombo_);
+
+    matterSimThermalCheck_ =
+        new QCheckBox(tr("Specify thermodynamic state"), mlipGroup_);
+    matterSimThermalCheck_->setToolTip(
+        tr("MatterSim is trained across temperature and pressure; tick this to "
+           "evaluate it at a specific state rather than the 0 K reference."));
+    form->addRow(matterSimThermalCheck_);
+
+    matterSimStateRow_ = new QWidget(mlipGroup_);
+    auto* stateLayout = new QHBoxLayout(matterSimStateRow_);
+    stateLayout->setContentsMargins(0, 0, 0, 0);
+    matterSimTempSpin_ = new QDoubleSpinBox(matterSimStateRow_);
+    matterSimTempSpin_->setRange(0.0, 10000.0);
+    matterSimTempSpin_->setValue(300.0);
+    matterSimTempSpin_->setSuffix(tr(" K"));
+    matterSimPressureSpin_ = new QDoubleSpinBox(matterSimStateRow_);
+    matterSimPressureSpin_->setRange(0.0, 1000.0);
+    matterSimPressureSpin_->setDecimals(3);
+    matterSimPressureSpin_->setSuffix(tr(" GPa"));
+    stateLayout->addWidget(new QLabel(tr("T"), matterSimStateRow_));
+    stateLayout->addWidget(matterSimTempSpin_, 1);
+    stateLayout->addWidget(new QLabel(tr("P"), matterSimStateRow_));
+    stateLayout->addWidget(matterSimPressureSpin_, 1);
+    form->addRow(tr("State:"), matterSimStateRow_);
+    connect(matterSimThermalCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        matterSimStateRow_->setEnabled(on);
+        refreshPreview();
+    });
+    matterSimStateRow_->setEnabled(false);
+
+    // -- FAIRChem -----------------------------------------------------------
+    fairChemModelCombo_ = new QComboBox(mlipGroup_);
+    // Order matches core::FairChemModel.
+    fairChemModelCombo_->addItem(QStringLiteral("EquiformerV2"));
+    fairChemModelCombo_->addItem(QStringLiteral("eSCN"));
+    fairChemModelCombo_->setToolTip(
+        tr("Architecture of the checkpoint above — it must match, or the "
+           "checkpoint fails to load."));
+    form->addRow(tr("Model type:"), fairChemModelCombo_);
+
+    for (QComboBox* combo : {mlipDeviceCombo_, chgnetWeightsCombo_,
+                             matterSimModelCombo_, fairChemModelCombo_,
+                             nequipEnergyUnitsCombo_, nequipLengthUnitsCombo_}) {
+        connect(combo, &QComboBox::currentTextChanged, this,
+                [this] { refreshPreview(); });
+    }
+    connect(chgnetStressCheck_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
+    for (QDoubleSpinBox* spin : {matterSimTempSpin_, matterSimPressureSpin_})
+        connect(spin, &QDoubleSpinBox::valueChanged, this,
+                [this] { refreshPreview(); });
+
+    return mlipGroup_;
+}
+
+void SimulationWizardBase::updateMlipRows()
+{
+    const auto kind = selectedCalculator();
+    const bool nequip = kind == core::CalculatorKind::NequIp
+        || kind == core::CalculatorKind::Allegro;
+    const bool deepmd = kind == core::CalculatorKind::DeepMd;
+    const bool chgnet = kind == core::CalculatorKind::ChgNet;
+    const bool matterSim = kind == core::CalculatorKind::MatterSim;
+    const bool fairChem = kind == core::CalculatorKind::FairChem;
+
+    // CHGNet and MatterSim ship their own weights, so they need no file.
+    const bool needsFile = deepmd || nequip || fairChem;
+    setFormRowVisible(mlipGroup_, mlipModelRow_, needsFile);
+    if (deepmd) {
+        mlipModelLabel_->setText(tr("Frozen model (.pb):"));
+        mlipModelEdit_->setPlaceholderText(
+            tr("path/to/frozen_model.pb  (or .pth for the PyTorch backend)"));
+    } else if (nequip) {
+        mlipModelLabel_->setText(tr("Deployed model (.pth):"));
+        mlipModelEdit_->setPlaceholderText(
+            tr("path/to/deployed.pth  (output of `nequip-deploy build`)"));
+    } else if (fairChem) {
+        mlipModelLabel_->setText(tr("Checkpoint (.pt):"));
+        mlipModelEdit_->setPlaceholderText(
+            tr("path/to/checkpoint.pt  (must match the model type below)"));
+    }
+    setFormRowVisible(mlipGroup_, nequipUnitsRow_, nequip);
+    setFormRowVisible(mlipGroup_, chgnetWeightsCombo_, chgnet);
+    setFormRowVisible(mlipGroup_, chgnetStressCheck_, chgnet);
+    setFormRowVisible(mlipGroup_, matterSimModelCombo_, matterSim);
+    setFormRowVisible(mlipGroup_, matterSimThermalCheck_, matterSim);
+    setFormRowVisible(mlipGroup_, matterSimStateRow_, matterSim);
+    setFormRowVisible(mlipGroup_, fairChemModelCombo_, fairChem);
+
+    // MPS has no float64 kernels in PyTorch, and every backend here is a
+    // PyTorch model — warn rather than let the job die on the first pass.
+    const bool mps = mlipDeviceCombo_->currentIndex()
+        == static_cast<int>(core::MlipDevice::Mps);
+    mlipDeviceCombo_->setStyleSheet(mps && deepmd ? QStringLiteral("color: #d9534f;")
+                                                  : QString());
+    if (mps && deepmd)
+        mlipDeviceCombo_->setToolTip(
+            tr("DeepMD-kit has no Apple-silicon (MPS) backend — run on the CPU "
+               "or a CUDA GPU."));
+}
+
 void SimulationWizardBase::updateMaceRows()
 {
     const bool custom = maceModelCombo_->currentIndex()
@@ -413,32 +623,37 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
 
     // Γ-centered mesh (gamma=True) — GPAW k-point option, offered for every
     // GPAW wizard.
-    gpawGammaCheck_ = new QCheckBox(
-        tr("Gamma-centered Grid  (gamma=True)"), bzGroup_);
+    gpawGammaCheck_ = new QCheckBox(tr("Gamma-centered Grid"), bzGroup_);
     gpawGammaCheck_->setToolTip(
         tr("Shift the Monkhorst-Pack mesh so it includes the Γ point "
            "(kpts={'size': …, 'gamma': True})."));
     connect(gpawGammaCheck_, &QCheckBox::toggled, this,
             [this] { refreshPreview(); });
-    bzForm->addRow(gpawGammaCheck_);
 
-    // Single, clean "Symmetry: off" checkbox (spans the row — its own text is
-    // self-describing, so no separate "k-point symmetry" label is duplicated).
-    // GPAW only, and only when the wizard opts in (Single-Point): a symmetry-off
-    // run is the recommended MLWF baseline.
-    gpawSymmetryOffCheck_ = new QCheckBox(
-        tr("Symmetry: off  (symmetry=\"off\", no point-group reduction)"),
-        bzGroup_);
+    // "Symmetry: off" — GPAW only, and only when the wizard opts in
+    // (Single-Point / Geometry Optimization): a symmetry-off run is the
+    // recommended MLWF baseline.
+    gpawSymmetryOffCheck_ = new QCheckBox(tr("Symmetry: off"), bzGroup_);
     gpawSymmetryOffCheck_->setToolTip(
-        tr("Disable point-group symmetry reduction of the k-point set — sample "
-           "the full, unsymmetrized Brillouin zone (required when the "
-           "wavefunctions feed a Maximally Localized Wannier Functions run)."));
+        tr("Disable point-group symmetry reduction of the k-point set "
+           "(symmetry=\"off\") — sample the full, unsymmetrized Brillouin zone "
+           "(required when the wavefunctions feed a Maximally Localized "
+           "Wannier Functions run)."));
     connect(gpawSymmetryOffCheck_, &QCheckBox::toggled, this,
             [this] { refreshPreview(); });
+
+    // Both are short, self-describing k-point switches, so they share one row
+    // instead of consuming two full-width rows of a page that already scrolls.
+    gpawBzTogglesRow_ = new QWidget(bzGroup_);
+    auto* bzToggleLayout = new QHBoxLayout(gpawBzTogglesRow_);
+    bzToggleLayout->setContentsMargins(0, 0, 0, 0);
+    bzToggleLayout->addWidget(gpawGammaCheck_);
     if (showsGpawSymmetryToggle())
-        bzForm->addRow(gpawSymmetryOffCheck_);
+        bzToggleLayout->addWidget(gpawSymmetryOffCheck_);
     else
         gpawSymmetryOffCheck_->hide();
+    bzToggleLayout->addStretch(1);
+    bzForm->addRow(gpawBzTogglesRow_);
     layout->addWidget(bzGroup_);
 
     // ===== 3. Electronic Convergence & Smearing ===========================
@@ -469,7 +684,6 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
            "MixerSum: spin-polarized — mixes the total density.\n"
            "MixerDif: spin-polarized — total density + magnetization "
            "separately."));
-    convForm->addRow(tr("Density mixer:"), gpawMixerCombo_);
 
     gpawBetaSpin_ = new QDoubleSpinBox(convGroup_);
     gpawBetaSpin_->setRange(0.001, 1.0);
@@ -490,22 +704,31 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
     gpawWeightSpin_->setValue(50.0);
     gpawWeightSpin_->setToolTip(
         tr("Metric weight damping long-wavelength charge sloshing."));
-    gpawMixerParamsRow_ = new QWidget(convGroup_);
-    auto* mixerRow = new QHBoxLayout(gpawMixerParamsRow_);
-    mixerRow->setContentsMargins(0, 0, 0, 0);
-    mixerRow->addWidget(new QLabel(tr("beta"), gpawMixerParamsRow_));
-    mixerRow->addWidget(gpawBetaSpin_);
-    mixerRow->addWidget(new QLabel(tr("nmaxold"), gpawMixerParamsRow_));
-    mixerRow->addWidget(gpawNmaxoldSpin_);
-    mixerRow->addWidget(new QLabel(tr("weight"), gpawMixerParamsRow_));
-    mixerRow->addWidget(gpawWeightSpin_);
-    mixerRow->addStretch(1);
-    convForm->addRow(tr("Mixer parameters:"), gpawMixerParamsRow_);
+    auto* mixerParamsRow = new QWidget(convGroup_);
+    auto* mixerParams = new QHBoxLayout(mixerParamsRow);
+    mixerParams->setContentsMargins(0, 0, 0, 0);
+    mixerParams->addWidget(new QLabel(tr("beta"), mixerParamsRow));
+    mixerParams->addWidget(gpawBetaSpin_);
+    mixerParams->addWidget(new QLabel(tr("nmaxold"), mixerParamsRow));
+    mixerParams->addWidget(gpawNmaxoldSpin_);
+    mixerParams->addWidget(new QLabel(tr("weight"), mixerParamsRow));
+    mixerParams->addWidget(gpawWeightSpin_);
 
-    const auto toleranceEdit = [this](double initial, double minimum,
-                                      double maximum, const QString& tip) {
-        auto* edit =
-            new QLineEdit(QString::number(initial, 'g', 6), convGroup_);
+    // The mixer kind and the parameters that tune it are one decision, so they
+    // share a row: reading "MixerSum · beta 0.05" left to right beats hunting
+    // across two rows, and the page keeps a screenful of vertical space.
+    gpawMixerRow_ = new QWidget(convGroup_);
+    auto* mixerRow = new QHBoxLayout(gpawMixerRow_);
+    mixerRow->setContentsMargins(0, 0, 0, 0);
+    mixerRow->addWidget(gpawMixerCombo_);
+    mixerRow->addWidget(mixerParamsRow);
+    mixerRow->addStretch(1);
+    convForm->addRow(tr("Density mixer:"), gpawMixerRow_);
+
+    const auto toleranceEdit = [](QWidget* parent, double initial,
+                                  double minimum, double maximum,
+                                  const QString& tip) {
+        auto* edit = new QLineEdit(QString::number(initial, 'g', 6), parent);
         auto* validator = new QDoubleValidator(minimum, maximum, 12, edit);
         validator->setNotation(QDoubleValidator::ScientificNotation);
         validator->setLocale(QLocale::c());
@@ -513,16 +736,24 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
         edit->setToolTip(tip);
         return edit;
     };
+    // The two SCF thresholds are converged together and read as a pair, so
+    // they sit side by side under one label rather than on two rows.
+    gpawTolRow_ = new QWidget(convGroup_);
+    auto* tolRow = new QHBoxLayout(gpawTolRow_);
+    tolRow->setContentsMargins(0, 0, 0, 0);
     gpawEigenTolEdit_ = toleranceEdit(
-        4e-8, 1e-12, 1e-2,
+        gpawTolRow_, 4e-8, 1e-12, 1e-2,
         tr("GPAW convergence['eigenstates'] — integrated eigenstate residual, "
            "in eV² per valence electron (e.g. 4e-8)."));
-    convForm->addRow(tr("Eigenstate tolerance:"), gpawEigenTolEdit_);
     gpawDensityTolEdit_ = toleranceEdit(
-        1e-4, 1e-9, 1e-1,
+        gpawTolRow_, 1e-4, 1e-9, 1e-1,
         tr("GPAW convergence['density'] — change in the density integrated "
            "over the cell, in electrons per valence electron (e.g. 1e-4)."));
-    convForm->addRow(tr("Density tolerance:"), gpawDensityTolEdit_);
+    tolRow->addWidget(new QLabel(tr("eigenstates"), gpawTolRow_));
+    tolRow->addWidget(gpawEigenTolEdit_, 1);
+    tolRow->addWidget(new QLabel(tr("density"), gpawTolRow_));
+    tolRow->addWidget(gpawDensityTolEdit_, 1);
+    convForm->addRow(tr("Convergence tolerances:"), gpawTolRow_);
     layout->addWidget(convGroup_);
 
     // ===== 4. Spin Configurations =========================================
@@ -679,6 +910,7 @@ void SimulationWizardBase::updateCalculatorEnabled()
         if (calcSettingsHint_) calcSettingsHint_->setVisible(false);
         setGroups(false);
         if (maceGroup_) maceGroup_->setVisible(false);
+        if (mlipGroup_) mlipGroup_->setVisible(false);
         if (orcaGroup_) orcaGroup_->setVisible(false);
         if (baselineInheritNote_) baselineInheritNote_->setVisible(false);
         updateCalculatorExtras(kind);
@@ -691,6 +923,9 @@ void SimulationWizardBase::updateCalculatorEnabled()
     const bool isMace = kind == core::CalculatorKind::Mace;
     const bool isOrca = kind == core::CalculatorKind::Orca;
     const bool isGpaw = kind == core::CalculatorKind::Gpaw;
+    // MACE keeps its own group (foundation families / sizes have no analogue
+    // in the others); the remaining ML potentials share the generic one.
+    const bool isMlip = core::isMlipCalculator(kind) && !isMace;
 
     // Mode & Basis Set and Brillouin Zone & k-Points host the shared cutoff /
     // k-points, so they show for every DFT engine. Convergence / Spin carry
@@ -702,12 +937,14 @@ void SimulationWizardBase::updateCalculatorEnabled()
     spinGroup_->setVisible(isDft && hasSpinExtras());
     outputGroup_->setVisible(isGpaw && showsGpawDensityExport());
     maceGroup_->setVisible(isMace);
+    mlipGroup_->setVisible(isMlip);
+    if (isMlip)
+        updateMlipRows();
     orcaGroup_->setVisible(isOrca);
 
-    // GPAW-only Brillouin-zone options: Γ-centering and the symmetry toggle.
-    setFormRowVisible(bzGroup_, gpawGammaCheck_, isGpaw);
-    if (showsGpawSymmetryToggle())
-        setFormRowVisible(bzGroup_, gpawSymmetryOffCheck_, isGpaw);
+    // GPAW-only Brillouin-zone options: Γ-centering and the symmetry toggle
+    // share one row, so the row hides as a unit for non-GPAW engines.
+    setFormRowVisible(bzGroup_, gpawBzTogglesRow_, isGpaw);
 
     // The XC note applies only to the script-template DFT backends; GPAW picks
     // XC in its own combo. Mode / grid / basis / XC combo and the density
@@ -720,12 +957,12 @@ void SimulationWizardBase::updateCalculatorEnabled()
     // wholesale for non-GPAW, then let updateGpawRows pick the right one.
     setFormRowVisible(modeBasisGroup_, gpawGridSpacingSpin_, isGpaw);
     setFormRowVisible(modeBasisGroup_, gpawBasisCombo_, isGpaw);
+    // The mixer (combo + parameters) and the two tolerances are each one
+    // composite row now, so their containers — not the individual fields — are
+    // what the form layout can resolve and hide.
     for (QWidget* w : {static_cast<QWidget*>(gpawEigensolverCombo_),
-                       static_cast<QWidget*>(gpawMixerCombo_),
-                       static_cast<QWidget*>(gpawEigenTolEdit_),
-                       static_cast<QWidget*>(gpawDensityTolEdit_)})
+                       gpawMixerRow_, gpawTolRow_})
         setFormRowVisible(convGroup_, w, isGpaw);
-    setFormRowVisible(convGroup_, gpawMixerParamsRow_, isGpaw);
     if (isGpaw)
         updateGpawRows();
 
@@ -788,6 +1025,41 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
     c.macePrecision =
         static_cast<core::MacePrecision>(macePrecisionCombo_->currentIndex());
 
+    // -- MLIP backends (DeepMD … FAIRChem) ---------------------------------
+    // One model-path field feeds whichever engine is selected, so the value is
+    // routed to that engine's config field rather than to all of them.
+    c.mlipDevice = static_cast<core::MlipDevice>(mlipDeviceCombo_->currentIndex());
+    const std::string modelPath =
+        mlipModelEdit_->text().trimmed().toStdString();
+    switch (c.calculator) {
+    case core::CalculatorKind::DeepMd:
+        c.deepmdModelPath = modelPath;
+        break;
+    case core::CalculatorKind::NequIp:
+    case core::CalculatorKind::Allegro:
+        c.nequipModelPath = modelPath;
+        break;
+    case core::CalculatorKind::FairChem:
+        c.fairChemCheckpointPath = modelPath;
+        break;
+    default:
+        break;
+    }
+    c.nequipEnergyUnits =
+        nequipEnergyUnitsCombo_->currentText().trimmed().toStdString();
+    c.nequipLengthUnits =
+        nequipLengthUnitsCombo_->currentText().trimmed().toStdString();
+    c.chgnetWeights =
+        static_cast<core::ChgNetWeights>(chgnetWeightsCombo_->currentIndex());
+    c.chgnetStress = chgnetStressCheck_->isChecked();
+    c.matterSimModel =
+        static_cast<core::MatterSimModel>(matterSimModelCombo_->currentIndex());
+    c.matterSimThermal = matterSimThermalCheck_->isChecked();
+    c.matterSimTemperatureK = matterSimTempSpin_->value();
+    c.matterSimPressureGPa = matterSimPressureSpin_->value();
+    c.fairChemModel =
+        static_cast<core::FairChemModel>(fairChemModelCombo_->currentIndex());
+
     c.gpawMode = static_cast<core::GpawMode>(gpawModeCombo_->currentIndex());
     c.gpawGridSpacing = gpawGridSpacingSpin_->value();
     c.gpawBasis = gpawBasisCombo_->currentText().trimmed().toStdString();
@@ -839,6 +1111,8 @@ void SimulationWizardBase::updateStage()
         titles << settingsHeader();
     if (showsCalculatorStage_)
         titles << calculatorSettingsHeader();
+    if (hasSecondSettingsStage_)
+        titles << secondSettingsHeader();
     if (hasSettingsStage_ && !settingsFirst_)
         titles << settingsHeader();
     titles << reviewHeader();

@@ -35,14 +35,22 @@ QString PhononWizard::settingsHeader() const
     return tr("q-Path Definition");
 }
 
-QWidget* PhononWizard::buildCalculatorExtras()
+QString PhononWizard::secondSettingsHeader() const
 {
-    // Finite-displacement and DOS-sampling settings describe how the phonon
-    // calculation is set up, so they belong on Calculator Settings (Stage 2)
-    // alongside the engine's own parameters. Stage 3 is then purely the
-    // q-path, matching the Electronic Structure flow.
-    auto* group = new QGroupBox(tr("Phonon settings"), this);
+    return tr("Phonon Settings");
+}
+
+QWidget* PhononWizard::buildSecondSettingsPage()
+{
+    // Stage 2 — how the force constants are sampled. This is its own stage
+    // rather than a group appended to Calculator Settings: the engine page is
+    // already dense, and the supercell / δ / symmetry choices are what a user
+    // revisits when a dispersion comes out wrong.
+    auto* page = new QWidget(this);
+    auto* pageLayout = new QVBoxLayout(page);
+    auto* group = new QGroupBox(tr("Finite Displacements"), page);
     auto* form = new QFormLayout(group);
+    pageLayout->addWidget(group);
 
     if (!periodic_)
         form->addRow(new QLabel(
@@ -67,6 +75,30 @@ QWidget* PhononWizard::buildCalculatorExtras()
         superRow->addWidget(spin);
     }
     form->addRow(tr("Supercell (nx·ny·nz):"), superRow);
+
+    symmetryCheck_ = new QCheckBox(tr("Symmetry-reduced displacements"), group);
+    symmetryCheck_->setToolTip(
+        tr("Displace only along the symmetry-irreducible directions and rebuild "
+           "the full force-constant matrix by symmetry.\n"
+           "The naive scheme costs 6N force evaluations (±δ along x, y, z for "
+           "every atom); most of those are related by the crystal's space "
+           "group. Spglib (through phonopy) finds the space group and the "
+           "site-symmetry irreps, which for a high-symmetry cell can cut the "
+           "count by an order of magnitude.\n"
+           "Needs phonopy in the job environment — the script falls back to "
+           "the full 6N set if it is missing."));
+    symmetryCheck_->setEnabled(periodic_);
+    form->addRow(symmetryCheck_);
+
+    residualCheck_ = new QCheckBox(tr("Remove residual forces"), group);
+    residualCheck_->setToolTip(
+        tr("Compute the forces on the un-displaced geometry and subtract them "
+           "from every displaced configuration.\n"
+           "A relaxation stops at a finite fmax, so the reference geometry "
+           "still carries small forces; left in, they add a spurious linear "
+           "term to the force constants that shows up as non-zero acoustic "
+           "frequencies at Γ. Costs one extra force evaluation."));
+    form->addRow(residualCheck_);
 
     acousticCheck_ = new QCheckBox(tr("Enforce acoustic sum rule"), group);
     acousticCheck_->setChecked(true);
@@ -100,11 +132,15 @@ QWidget* PhononWizard::buildCalculatorExtras()
     for (QDoubleSpinBox* spin : {deltaSpin_, dosWidthSpin_})
         connect(spin, &QDoubleSpinBox::valueChanged, this,
                 [this] { refreshPreview(); });
-    connect(meshSpin_, &QSpinBox::valueChanged, this,
-            [this] { refreshPreview(); });
-    connect(acousticCheck_, &QCheckBox::toggled, this,
-            [this] { refreshPreview(); });
-    return group;
+    for (QSpinBox* spin : {meshSpin_, supercellSpins_[0], supercellSpins_[1],
+                           supercellSpins_[2]})
+        connect(spin, &QSpinBox::valueChanged, this,
+                [this] { refreshPreview(); });
+    for (QCheckBox* check : {acousticCheck_, symmetryCheck_, residualCheck_})
+        connect(check, &QCheckBox::toggled, this, [this] { refreshPreview(); });
+
+    pageLayout->addStretch(1);
+    return page;
 }
 
 QWidget* PhononWizard::buildSettingsPage()
@@ -113,8 +149,9 @@ QWidget* PhononWizard::buildSettingsPage()
     auto* layout = new QVBoxLayout(page);
 
     // Stage 3 is purely the q-path: the embedded Brillouin-zone builder, same
-    // as the Electronic Structure wizard — a phonon dispersion is read along
-    // exactly the same high-symmetry lines.
+    // as the Electronic Structure wizard — a phonon dispersion ω(q) is read
+    // along exactly the same high-symmetry lines as an electronic band
+    // structure.
     if (periodic_) {
         kpath_ = new EmbeddedKPathEditor(structure_, page);
         layout->addWidget(kpath_, 1);
@@ -151,6 +188,8 @@ QString PhononWizard::generateScript() const
     pc.dosKptGrid = meshSpin_->value();
     pc.dosWidthCm = dosWidthSpin_->value();
     pc.acousticSumRule = acousticCheck_->isChecked();
+    pc.symmetryReducedDisplacements = symmetryCheck_->isChecked();
+    pc.removeResidualForces = residualCheck_->isChecked();
     return QString::fromStdString(
         core::PhononScriptGenerator::generate(pc, "structure.extxyz"));
 }

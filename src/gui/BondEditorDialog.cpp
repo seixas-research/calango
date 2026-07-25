@@ -9,6 +9,7 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QTabWidget>
+#include <QColorDialog>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -150,6 +151,7 @@ BondEditorDialog::BondEditorDialog(std::shared_ptr<core::Structure> structure,
     bondOrderCombo_->addItem(tr("Single"), 1);
     bondOrderCombo_->addItem(tr("Double"), 2);
     bondOrderCombo_->addItem(tr("Triple"), 3);
+    bondOrderCombo_->addItem(tr("Aromatic"), 4);
     bondOrderCombo_->setToolTip(
         tr("Order-n bonds render as n parallel cylinders."));
     orderRow->addWidget(bondOrderCombo_, 1);
@@ -172,6 +174,98 @@ BondEditorDialog::BondEditorDialog(std::shared_ptr<core::Structure> structure,
     connect(useSelectionButton_, &QPushButton::clicked,
             this, &BondEditorDialog::useSelection);
     modeTabs->addTab(indexTab, tr("By Atomic Indices"));
+
+    // ----- Mode 3: Hydrogen Bonds -----------------------------------------
+    // Hydrogen bonds are perceived geometrically rather than listed as
+    // overrides: they are a property of the arrangement, so they must
+    // re-evaluate whenever the geometry moves (a trajectory frame, a
+    // relaxation step) instead of being frozen at the moment they were added.
+    auto* hbondTab = new QWidget(modeTabs);
+    auto* hbondForm = new QFormLayout(hbondTab);
+    auto& hbond = viewport_->hydrogenBondStyle();
+
+    hbondEnableCheck_ = new QCheckBox(tr("Detect and show hydrogen bonds"),
+                                      hbondTab);
+    hbondEnableCheck_->setChecked(hbond.enabled);
+    hbondEnableCheck_->setToolTip(
+        tr("Drawn as dashed lines from the hydrogen to the acceptor, so they "
+           "read as distinct from the covalent bonds around them."));
+    hbondForm->addRow(hbondEnableCheck_);
+
+    hbondDistanceSpin_ = new QDoubleSpinBox(hbondTab);
+    hbondDistanceSpin_->setRange(2.0, 6.0);
+    hbondDistanceSpin_->setDecimals(2);
+    hbondDistanceSpin_->setSingleStep(0.1);
+    hbondDistanceSpin_->setValue(hbond.options.maxDonorAcceptor);
+    hbondDistanceSpin_->setSuffix(tr(" Å"));
+    hbondDistanceSpin_->setToolTip(
+        tr("Maximum donor-acceptor separation d(D···A). Beyond about 3.5 Å the "
+           "interaction is negligible for the usual N/O donors."));
+    hbondForm->addRow(tr("Max. D···A distance:"), hbondDistanceSpin_);
+
+    hbondAngleSpin_ = new QDoubleSpinBox(hbondTab);
+    hbondAngleSpin_->setRange(90.0, 180.0);
+    hbondAngleSpin_->setDecimals(1);
+    hbondAngleSpin_->setSingleStep(5.0);
+    hbondAngleSpin_->setValue(hbond.options.minAngle);
+    hbondAngleSpin_->setSuffix(tr("°"));
+    hbondAngleSpin_->setToolTip(
+        tr("Minimum D–H···A angle. A hydrogen bond is close to linear (180°); "
+           "admitting strongly bent geometries turns every nearby polar pair "
+           "into a spurious \"bond\"."));
+    hbondForm->addRow(tr("Min. D–H···A angle:"), hbondAngleSpin_);
+
+    hbondColorButton_ = new QPushButton(hbondTab);
+    hbondForm->addRow(tr("Color:"), hbondColorButton_);
+
+    hbondCountLabel_ = new QLabel(hbondTab);
+    hbondCountLabel_->setWordWrap(true);
+    hbondForm->addRow(hbondCountLabel_);
+
+    const auto applyHydrogenBonds = [this] {
+        auto& style = viewport_->hydrogenBondStyle();
+        style.enabled = hbondEnableCheck_->isChecked();
+        style.options.maxDonorAcceptor = hbondDistanceSpin_->value();
+        style.options.minAngle = hbondAngleSpin_->value();
+        viewport_->refreshHydrogenBonds();
+        // Report the count: with no feedback, "nothing appeared" is
+        // indistinguishable between criteria that are too strict and a
+        // structure that genuinely has no hydrogen bonds.
+        hbondCountLabel_->setText(
+            !style.enabled
+                ? tr("Detection is off.")
+                : (viewport_->hydrogenBondCount() == 0
+                       ? tr("No hydrogen bonds match these criteria.")
+                       : tr("%1 hydrogen bond(s) detected.")
+                             .arg(viewport_->hydrogenBondCount())));
+    };
+    connect(hbondEnableCheck_, &QCheckBox::toggled, this, applyHydrogenBonds);
+    connect(hbondDistanceSpin_, &QDoubleSpinBox::valueChanged, this,
+            applyHydrogenBonds);
+    connect(hbondAngleSpin_, &QDoubleSpinBox::valueChanged, this,
+            applyHydrogenBonds);
+    const auto paintHbondSwatch = [this] {
+        const QColor c = viewport_->hydrogenBondStyle().color;
+        hbondColorButton_->setText(c.name(QColor::HexRgb).toUpper());
+        hbondColorButton_->setStyleSheet(
+            QStringLiteral("background-color: %1; color: %2;")
+                .arg(c.name(), c.lightnessF() > 0.5 ? QStringLiteral("#000")
+                                                    : QStringLiteral("#fff")));
+    };
+    paintHbondSwatch();
+    connect(hbondColorButton_, &QPushButton::clicked, this,
+            [this, paintHbondSwatch, applyHydrogenBonds] {
+                const QColor picked = QColorDialog::getColor(
+                    viewport_->hydrogenBondStyle().color, this,
+                    tr("Hydrogen Bond Color"));
+                if (!picked.isValid())
+                    return;
+                viewport_->hydrogenBondStyle().color = picked;
+                paintHbondSwatch();
+                applyHydrogenBonds();
+            });
+    applyHydrogenBonds();
+    modeTabs->addTab(hbondTab, tr("Hydrogen Bonds"));
 
     manualLayout->addWidget(modeTabs);
 

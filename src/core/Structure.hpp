@@ -16,9 +16,11 @@ struct Bond {
     /// Cartesian shift applied to atom j's position to get the periodic
     /// image actually bonded to atom i. Zero for bonds inside the cell.
     Vec3 imageOffset{};
-    /// Bond order (1, 2 or 3). Orders are never auto-perceived — they are
-    /// assigned manually (Representation panel / setBondOrder) and default
-    /// to single; rendering draws order-n bonds as n parallel cylinders.
+    /// Bond order: 1 single, 2 double, 3 triple, 4 aromatic. Orders are never
+    /// auto-perceived — they are assigned manually (Bond Editor /
+    /// setBondOrder) and default to single. Rendering draws order-n bonds as n
+    /// parallel cylinders; aromatic renders as a double bond (two cylinders),
+    /// which is the conventional depiction of a delocalized 1.5 bond.
     int order = 1;
 
     bool crossesBoundary() const { return imageOffset.dot(imageOffset) > 1e-12; }
@@ -92,7 +94,7 @@ public:
     }
     /// Order of the bond between i and j (1 when unassigned).
     int bondOrder(int i, int j) const;
-    /// Assign order 1-3; 1 resets the pair to the default.
+    /// Assign order 1-4 (4 = aromatic); 1 resets the pair to the default.
     void setBondOrder(int i, int j, int order);
 
     // -- Per-atom scalar fields (charges, |forces|, potentials, ...) -------

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.50
+    VERSION 26.7.51
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -138,6 +138,8 @@ qt_add_executable(calango
     src/core/Rdf.cpp
     src/core/Coordination.hpp
     src/core/Coordination.cpp
+    src/core/HydrogenBonds.hpp
+    src/core/HydrogenBonds.cpp
     src/core/Distributions.hpp
     src/core/Distributions.cpp
     src/core/StructureFactor.hpp
@@ -184,6 +186,8 @@ qt_add_executable(calango
     src/core/ClusterExpansionScriptGenerator.cpp
     src/core/MonteCarlo.hpp
     src/core/MonteCarlo.cpp
+    src/core/SqsGenerator.hpp
+    src/core/SqsGenerator.cpp
     src/core/Vacf.hpp
     src/core/Vacf.cpp
 
@@ -369,6 +373,8 @@ qt_add_executable(calango
     src/gui/WannierDialog.cpp
     src/gui/SinglePointViewer.hpp
     src/gui/SinglePointViewer.cpp
+    src/gui/GeometryOptimizationViewer.hpp
+    src/gui/GeometryOptimizationViewer.cpp
     src/gui/MlwfViewer.hpp
     src/gui/MlwfViewer.cpp
     src/gui/WannierInterpolationDialog.hpp
@@ -388,6 +394,8 @@ qt_add_executable(calango
     src/gui/VacfDialog.cpp
     src/gui/SimulationWizardBase.hpp
     src/gui/SimulationWizardBase.cpp
+    src/gui/GpawElectronicRows.hpp
+    src/gui/GpawElectronicRows.cpp
     src/gui/MolecularDynamicsWizard.hpp
     src/gui/MolecularDynamicsWizard.cpp
     src/gui/SinglePointWizard.hpp
@@ -439,6 +447,10 @@ qt_add_resources(calango "shaders"
         assets/shaders/volume.frag
         assets/shaders/dof.vert
         assets/shaders/dof.frag
+        # SSAO reuses dof.vert for its fullscreen triangle.
+        assets/shaders/ssao.frag
+        assets/shaders/ssao_blur.frag
+        assets/shaders/ssao_composite.frag
 )
 
 qt_add_resources(calango "branding"
@@ -754,12 +766,64 @@ if(CALANGO_BUILD_TESTS)
     target_link_libraries(calango_raytrace_test PRIVATE Qt6::Gui Qt6::OpenGL)
     add_test(NAME raytrace_scene_files COMMAND calango_raytrace_test)
 
+    # Hydrogen-bond perception: the geometric criteria that separate a real
+    # D-H...A contact from any two nearby polar atoms.
+    add_executable(calango_hbond_test
+        tests/HydrogenBondTest.cpp
+        src/core/HydrogenBonds.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_hbond_test PRIVATE src)
+    add_test(NAME hydrogen_bonds COMMAND calango_hbond_test)
+
+    # Shader compilation: a GLSL error renders nothing instead of crashing, so
+    # without this a broken shader ships as a black viewport. Needs a real GL
+    # 3.3 context and self-skips when there is none.
+    qt_add_executable(calango_shader_test tests/ShaderCompileTest.cpp)
+    qt_add_resources(calango_shader_test "test_shaders"
+        PREFIX "/"
+        FILES
+            assets/shaders/mesh.vert
+            assets/shaders/mesh.frag
+            assets/shaders/shadow.vert
+            assets/shaders/shadow.frag
+            assets/shaders/line.vert
+            assets/shaders/line.frag
+            assets/shaders/wire.vert
+            assets/shaders/wire.frag
+            assets/shaders/volume.vert
+            assets/shaders/volume.frag
+            assets/shaders/dof.vert
+            assets/shaders/dof.frag
+            assets/shaders/ssao.frag
+            assets/shaders/ssao_blur.frag
+            assets/shaders/ssao_composite.frag
+    )
+    target_link_libraries(calango_shader_test PRIVATE Qt6::Gui Qt6::OpenGL)
+    add_test(NAME shader_compilation COMMAND calango_shader_test)
+
+    # Native SQS generator: composition exactness across binary/ternary/
+    # quaternary alloys and, above all, that the generated decoration really is
+    # quasirandom (first-shell Warren-Cowley order parameter near zero).
+    add_executable(calango_sqs_generator_test
+        tests/SqsGeneratorTest.cpp
+        src/core/SqsGenerator.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_sqs_generator_test PRIVATE src)
+    add_test(NAME sqs_generator COMMAND calango_sqs_generator_test)
+
     # Generated ASE scripts: logger-module import (rather than an inline copy)
     # and the MACE / GPAW calculator parameters. No Qt, no Python, no network.
     # `--dump <dir>` writes the scripts out for an external py_compile check.
     add_executable(calango_script_test
         tests/ScriptGenerationTest.cpp
         src/core/AseScriptGenerator.cpp
+        src/core/PhononScriptGenerator.cpp
     )
     target_include_directories(calango_script_test PRIVATE src
         "${CMAKE_CURRENT_BINARY_DIR}/generated")

@@ -8,8 +8,6 @@
 #include <QSlider>
 #include <QWidget>
 
-#include <array>
-
 namespace calango::gui {
 
 class ViewportWidget;
@@ -25,10 +23,10 @@ public:
     explicit RepresentationPanel(ViewportWidget* viewport, QWidget* parent = nullptr);
 
 Q_SIGNALS:
-    /// Assign `order` (1-3) to the currently selected atom pair. Emitted
-    /// only from the bond-order buttons; MainWindow owns the mutable
-    /// structure and applies the change (with an undo snapshot).
-    void bondOrderAssignRequested(int order);
+    /// "Bond Editor…": the host opens the dialog against the current mutable
+    /// document. The panel only observes the viewport, so it cannot own an
+    /// editor that mutates the structure (and pushes undo).
+    void bondEditorRequested();
 
 private Q_SLOTS:
     void applyColorMode();
@@ -36,6 +34,9 @@ private Q_SLOTS:
     void syncColoringFromViewport();
 
 private:
+    /// Push the Min/Max fields to the viewport as the scalar color window
+    /// (or restore auto-scaling when "Auto-scale to data" is ticked).
+    void applyColorRange();
     /// Style field holding the arrow color of the active vector overlay, or
     /// null when the overlay is None.
     QColor* vectorOverlayColor();
@@ -49,13 +50,18 @@ private:
     QComboBox* gradientCombo_;
     QCheckBox* invertGradientCheck_;
     QComboBox* propertyCombo_;
-    QLabel* rangeLabel_;
+    /// Editable color-scale bounds + the auto-scale toggle they override.
+    QDoubleSpinBox* rangeMinSpin_;
+    QDoubleSpinBox* rangeMaxSpin_;
+    QCheckBox* autoRangeCheck_;
+    /// True while the bounds fields are being repopulated from the data, so
+    /// their valueChanged does not read as a user override.
+    bool syncingRange_ = false;
     QSlider* atomScaleSlider_;
     QDoubleSpinBox* atomScaleSpin_;
     QSlider* bondWidthSlider_;
     QDoubleSpinBox* bondWidthSpin_;
     QCheckBox* gradientBondsCheck_;
-    std::array<QPushButton*, 3> bondOrderButtons_{};
     QComboBox* vectorOverlayCombo_;
     QComboBox* surfaceFinishCombo_;
     QPushButton* vectorColorButton_;

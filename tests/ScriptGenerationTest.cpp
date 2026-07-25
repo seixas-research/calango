@@ -11,6 +11,7 @@
 // against a real ASE install (see the accompanying check in the repo docs).
 
 #include "core/AseScriptGenerator.hpp"
+#include "core/PhononScriptGenerator.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -94,6 +95,52 @@ int main(int argc, char** argv)
         emt.task = TaskKind::MolecularDynamics;
         emt.ensemble = MdEnsemble::BerendsenNPT;
         dump("emt_npt.py", emt);
+
+        // Every MLIP block, so a syntax error in one cannot hide behind the
+        // others (each emits a different import + constructor shape).
+        for (const auto [name, kind] :
+             {std::pair{"mlip_deepmd.py", CalculatorKind::DeepMd},
+              std::pair{"mlip_nequip.py", CalculatorKind::NequIp},
+              std::pair{"mlip_allegro.py", CalculatorKind::Allegro},
+              std::pair{"mlip_chgnet.py", CalculatorKind::ChgNet},
+              std::pair{"mlip_mattersim.py", CalculatorKind::MatterSim},
+              std::pair{"mlip_fairchem.py", CalculatorKind::FairChem}}) {
+            CalculatorConfig c;
+            c.calculator = kind;
+            c.task = TaskKind::GeometryOptimization;
+            c.mlipDevice = MlipDevice::Cuda;
+            c.deepmdModelPath = "/models/frozen.pb";
+            c.nequipModelPath = "/models/deployed.pth";
+            c.fairChemCheckpointPath = "/models/eq2.pt";
+            c.matterSimThermal = true;
+            dump(name, c);
+        }
+
+        // Phonon drivers: the plain 6N path and the symmetry-reduced one, each
+        // with and without residual force removal. The symmetry-reduced script
+        // nests both drivers in functions, so its indentation is worth
+        // byte-compiling rather than eyeballing.
+        const auto dumpPhonon = [&dir](const std::string& name,
+                                       const PhononConfig& config) {
+            std::ofstream out(dir + "/" + name);
+            out << PhononScriptGenerator::generate(config, "structure.extxyz");
+        };
+        for (const bool symmetry : {false, true}) {
+            for (const bool residual : {false, true}) {
+                PhononConfig p;
+                p.symmetryReducedDisplacements = symmetry;
+                p.removeResidualForces = residual;
+                p.kpath = "GXMG";
+                dumpPhonon(std::string("phonon_") + (symmetry ? "sym" : "full")
+                               + (residual ? "_residual" : "") + ".py",
+                           p);
+                PhononConfig molecule = p;
+                molecule.periodic = false;
+                dumpPhonon(std::string("vib_") + (symmetry ? "sym" : "full")
+                               + (residual ? "_residual" : "") + ".py",
+                           molecule);
+            }
+        }
 
         std::ofstream module(dir + "/"
                              + AseScriptGenerator::loggerModuleFileName());
@@ -236,6 +283,126 @@ int main(int argc, char** argv)
         checkContains(AseScriptGenerator::generate(vasp, "structure.extxyz"),
                       "apply in the calculator block above",
                       "other DFT hooks keep the hand-off comment");
+    }
+
+    // -- MLIP calculator blocks ---------------------------------------------
+    std::printf("MLIP calculator blocks:\n");
+    {
+        CalculatorConfig c;
+        c.calculator = CalculatorKind::DeepMd;
+        c.deepmdModelPath = "/models/frozen.pb";
+        const std::string script = AseScriptGenerator::calculatorSnippet(c);
+        checkContains(script, "from deepmd.calculator import DP", "DeepMD import");
+        checkContains(script, "model=r\"/models/frozen.pb\"", "frozen graph path");
+    }
+    {
+        CalculatorConfig c;
+        c.calculator = CalculatorKind::Allegro;
+        c.nequipModelPath = "/models/deployed.pth";
+        c.mlipDevice = MlipDevice::Cuda;
+        const std::string script = AseScriptGenerator::calculatorSnippet(c);
+        checkContains(script, "NequIPCalculator.from_deployed_model",
+                      "Allegro loads through the NequIP deployed-model API");
+        checkContains(script, "device=\"cuda\"", "device is honored");
+        checkContains(script, "mir-allegro", "names the Allegro package");
+    }
+    {
+        // A model trained in non-ASE units must not silently claim a factor of
+        // 1.0 — that is the failure mode that yields plausible-but-wrong
+        // energies with no error anywhere.
+        CalculatorConfig c;
+        c.calculator = CalculatorKind::NequIp;
+        c.nequipEnergyUnits = "kcal/mol";
+        const std::string script = AseScriptGenerator::calculatorSnippet(c);
+        check(!contains(script, "energy_units_to_eV=1.0"),
+              "non-eV training units do not claim a unit conversion of 1.0");
+        checkContains(script, "EDIT ME", "and the script says so");
+    }
+    {
+        CalculatorConfig c;
+        c.calculator = CalculatorKind::ChgNet;
+        c.chgnetWeights = ChgNetWeights::Latest;
+        c.chgnetStress = false;
+        const std::string script = AseScriptGenerator::calculatorSnippet(c);
+        checkContains(script, "model_name=\"latest\"", "weight set is honored");
+        checkContains(script, "stress_weight=0.0", "stress toggle is honored");
+    }
+    {
+        CalculatorConfig c;
+        c.calculator = CalculatorKind::MatterSim;
+        c.matterSimModel = MatterSimModel::M100;
+        c.matterSimThermal = true;
+        c.matterSimTemperatureK = 900.0;
+        const std::string script = AseScriptGenerator::calculatorSnippet(c);
+        checkContains(script, "MatterSim-v1.0.0-5M.pth", "model size is honored");
+        checkContains(script, "temperature_K", "thermodynamic state is emitted");
+    }
+    {
+        CalculatorConfig c;
+        c.calculator = CalculatorKind::FairChem;
+        c.fairChemModel = FairChemModel::EScn;
+        c.fairChemCheckpointPath = "/models/escn.pt";
+        c.mlipDevice = MlipDevice::Cuda;
+        const std::string script = AseScriptGenerator::calculatorSnippet(c);
+        checkContains(script, "OCPCalculator", "FAIRChem calculator");
+        checkContains(script, "checkpoint_path=r\"/models/escn.pt\"", "checkpoint");
+        checkContains(script, "eSCN", "architecture named in the comment");
+        checkContains(script, "cpu=False", "GPU flag follows the device");
+    }
+
+    // -- Phonon displacement drivers ----------------------------------------
+    std::printf("Phonon displacement drivers:\n");
+    {
+        PhononConfig p; // defaults: full 6N, no residual removal
+        const std::string script =
+            PhononScriptGenerator::generate(p, "structure.extxyz");
+        checkContains(script, "run_ase_displacements()", "ASE driver runs");
+        check(!contains(script, "import phonopy"),
+              "phonopy is not imported when symmetry reduction is off");
+        check(!contains(script, "ResidualFreeCalculator"),
+              "no residual machinery when the option is off");
+    }
+    {
+        PhononConfig p;
+        p.symmetryReducedDisplacements = true;
+        const std::string script =
+            PhononScriptGenerator::generate(p, "structure.extxyz");
+        checkContains(script, "generate_displacements(distance=delta)",
+                      "phonopy generates the irreducible displacement set");
+        checkContains(script, "produce_force_constants",
+                      "force constants rebuilt by symmetry");
+        checkContains(script, "displacements_irreducible",
+                      "reports how many displacements survived the reduction");
+        // The fallback is what keeps the script runnable without phonopy.
+        checkContains(script, "except ImportError:", "guards the phonopy import");
+        checkContains(script, "run_ase_displacements()",
+                      "and falls back to the 6N driver");
+        checkContains(script, "phonon_band.json",
+                      "writes the same band schema as the ASE driver");
+    }
+    {
+        PhononConfig p;
+        p.removeResidualForces = true;
+        const std::string script =
+            PhononScriptGenerator::generate(p, "structure.extxyz");
+        checkContains(script, "class ResidualFreeCalculator",
+                      "residual-subtracting calculator is defined");
+        checkContains(script, "residual = reference.get_forces()",
+                      "baseline measured on the un-displaced supercell");
+        checkContains(script, "CALANGO_INFO residual_fmax",
+                      "residual magnitude is reported");
+    }
+    {
+        // Molecules have no space group to exploit, but the residual removal
+        // still applies — it is what keeps the 6 zero modes near zero.
+        PhononConfig p;
+        p.periodic = false;
+        p.removeResidualForces = true;
+        const std::string script =
+            PhononScriptGenerator::generate(p, "structure.extxyz");
+        checkContains(script, "class ResidualFreeCalculator",
+                      "molecular path also subtracts residual forces");
+        checkContains(script, "Vibrations", "still the normal-mode driver");
     }
 
     std::printf(failures == 0 ? "\nAll script checks passed.\n"

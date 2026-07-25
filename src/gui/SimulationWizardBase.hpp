@@ -102,6 +102,18 @@ protected:
     /// calculator-settings page via buildCalculatorExtras().
     virtual bool hasTaskSettingsStage() const { return true; }
 
+    /// An optional SECOND task stage, inserted between Calculator Settings and
+    /// the settings page, giving a 4-stage flow. The Phonon wizard uses it to
+    /// separate two genuinely different decisions that were previously crammed
+    /// together: how the displacements are generated (supercell, δ, symmetry)
+    /// and where the dispersion is sampled (the q-path). Returning a non-empty
+    /// header enables the stage; buildSecondSettingsPage() supplies its content.
+    ///
+    /// Only meaningful with settingsStageFirst() == false, i.e. when the
+    /// subclass's own page already follows Calculator Settings.
+    virtual QString secondSettingsHeader() const { return QString(); }
+    virtual QWidget* buildSecondSettingsPage() { return nullptr; }
+
     /// Header for the calculator-settings stage. A wizard that folds its
     /// convergence controls in here (Single-point) overrides this to
     /// "Calculator & Convergence Settings".
@@ -199,6 +211,11 @@ private Q_SLOTS:
 private:
     QWidget* buildCalculatorPage();
     QWidget* buildMaceGroup(QWidget* parent);
+    /// The shared "Machine-Learning Potential" group serving DeepMD, NequIP /
+    /// Allegro, CHGNet, MatterSim and FAIRChem (MACE keeps its own group).
+    QWidget* buildMlipGroup(QWidget* parent);
+    /// Show only the rows that apply to the selected ML potential.
+    void updateMlipRows();
     /// Build the four thematic DFT/GPAW group boxes (Mode & Basis Set;
     /// Brillouin Zone & k-Points; Electronic Convergence & Smearing; Output &
     /// Exports) and add them to `layout`. Shared cutoff/k-points live in the
@@ -215,6 +232,9 @@ private:
     int stage_ = 0;
     bool hasSettingsStage_ = true; ///< resolved from hasTaskSettingsStage()
     bool settingsFirst_ = true;    ///< resolved from settingsStageFirst()
+    /// Resolved from secondSettingsHeader(): true when the subclass supplied
+    /// the optional extra stage between Calculator Settings and its own page.
+    bool hasSecondSettingsStage_ = false;
     bool showsCalculatorStage_ = true; ///< resolved from showsCalculatorStage()
     int reviewStage_ = 3;          ///< index of the final (review) stage
     bool manuallyEdited_ = false;
@@ -253,6 +273,26 @@ private:
     QPushButton* maceBrowseButton_ = nullptr;
     QLabel* maceModelPathHint_ = nullptr;
 
+    // Shared MLIP controls (DeepMD / NequIP / Allegro / CHGNet / MatterSim /
+    // FAIRChem). One model-file row and one device selector serve them all;
+    // the engine-specific rows below are shown per selection.
+    QGroupBox* mlipGroup_ = nullptr;
+    QWidget* mlipModelRow_ = nullptr;   ///< model path + Browse
+    QLabel* mlipModelLabel_ = nullptr;  ///< retitled per engine (.pb/.pth/.pt)
+    QLineEdit* mlipModelEdit_ = nullptr;
+    QComboBox* mlipDeviceCombo_ = nullptr;
+    QWidget* nequipUnitsRow_ = nullptr; ///< deployed-model energy/length units
+    QComboBox* nequipEnergyUnitsCombo_ = nullptr;
+    QComboBox* nequipLengthUnitsCombo_ = nullptr;
+    QComboBox* chgnetWeightsCombo_ = nullptr;
+    QCheckBox* chgnetStressCheck_ = nullptr;
+    QComboBox* matterSimModelCombo_ = nullptr;
+    QCheckBox* matterSimThermalCheck_ = nullptr;
+    QWidget* matterSimStateRow_ = nullptr; ///< T / P spin boxes
+    QDoubleSpinBox* matterSimTempSpin_ = nullptr;
+    QDoubleSpinBox* matterSimPressureSpin_ = nullptr;
+    QComboBox* fairChemModelCombo_ = nullptr;
+
     // GPAW controls (distributed across the four thematic groups above).
     QComboBox* gpawModeCombo_ = nullptr;
     QDoubleSpinBox* gpawGridSpacingSpin_ = nullptr;
@@ -263,9 +303,15 @@ private:
     QDoubleSpinBox* gpawBetaSpin_ = nullptr;
     QSpinBox* gpawNmaxoldSpin_ = nullptr;
     QDoubleSpinBox* gpawWeightSpin_ = nullptr;
-    /// Container for the beta/nmaxold/weight row so it can be hidden as a unit
-    /// (its widgets sit in a sub-layout getWidgetPosition can't resolve).
-    QWidget* gpawMixerParamsRow_ = nullptr;
+    /// Composite rows pairing controls side by side to save vertical space.
+    /// Each is the widget the form layout can resolve, so visibility toggles
+    /// address these rather than the fields nested inside them:
+    ///   gpawMixerRow_    — mixer kind + its beta/nmaxold/weight parameters
+    ///   gpawTolRow_      — eigenstate tolerance + density tolerance
+    ///   gpawBzTogglesRow_— Gamma-centered Grid + Symmetry: off
+    QWidget* gpawMixerRow_ = nullptr;
+    QWidget* gpawTolRow_ = nullptr;
+    QWidget* gpawBzTogglesRow_ = nullptr;
     /// Convergence thresholds are ~1e-8..1e-4, which a QDoubleSpinBox can
     /// only show as "0.000000040000" — plain line edits with a
     /// scientific-notation validator keep them readable and typable.

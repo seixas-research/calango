@@ -8,7 +8,6 @@
 #include "render/StructureRenderer.hpp"
 #include "ui/IconManager.hpp"
 
-#include <QCheckBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -29,18 +28,26 @@ namespace calango::gui {
 
 const QVector<render::ColorGradient>& volumetricGradients()
 {
+    // Each entry is a distinct ramp — no two share a color progression, so the
+    // list stays a genuine palette rather than near-duplicates of one another.
     static const QVector<render::ColorGradient> kGradients{
-        render::ColorGradient::Viridis, render::ColorGradient::Plasma,
-        render::ColorGradient::Coolwarm, render::ColorGradient::Rainbow,
-        render::ColorGradient::Greys};
+        render::ColorGradient::Viridis,  render::ColorGradient::Plasma,
+        render::ColorGradient::Inferno,  render::ColorGradient::Magma,
+        render::ColorGradient::Cividis,  render::ColorGradient::Afmhot,
+        render::ColorGradient::Hot,      render::ColorGradient::Spectral,
+        render::ColorGradient::Greys,    render::ColorGradient::Rainbow,
+        render::ColorGradient::Gnuplot};
     return kGradients;
 }
 
 QStringList volumetricGradientNames()
 {
-    return {QStringLiteral("Viridis"), QStringLiteral("Plasma"),
-            QStringLiteral("Coolwarm"), QStringLiteral("Rainbow"),
-            QStringLiteral("Greys")};
+    return {QStringLiteral("Viridis"),  QStringLiteral("Plasma"),
+            QStringLiteral("Inferno"),  QStringLiteral("Magma"),
+            QStringLiteral("Cividis"),  QStringLiteral("Afmhot"),
+            QStringLiteral("Hot"),      QStringLiteral("Spectral"),
+            QStringLiteral("Greys"),    QStringLiteral("Rainbow"),
+            QStringLiteral("Gnuplot")};
 }
 
 namespace {
@@ -60,13 +67,17 @@ VolumetricPanel::VolumetricPanel(ViewportWidget* viewport, QWidget* parent)
     registry_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     registry_->setRootIsDecorated(false);
     registry_->setToolTip(
-        tr("Active 3D scalar volumetric grids — loaded from disk or produced by "
-           "a calculation (e.g. MLWF orbitals). Select one to visualize it; "
-           "press Delete to remove it."));
+        tr("3D scalar volumetric grids registered for the active workspace tab "
+           "— loaded from disk or produced by a calculation (e.g. MLWF "
+           "orbitals). Tick a row to render it on the 3D viewport; select one "
+           "to style it, and press Delete to remove it."));
     registry_->installEventFilter(this); // Delete / Backspace removal
     layout->addWidget(registry_, 1);
     connect(registry_, &QTreeWidget::currentItemChanged, this,
             &VolumetricPanel::onSelectionChanged);
+    // Per-row check boxes replace the former single global "Show" toggle.
+    connect(registry_, &QTreeWidget::itemChanged, this,
+            &VolumetricPanel::onItemChanged);
 
     // Compact icon-only action bar (RemixIcon glyphs, theme-tinted).
     auto* bar = new QHBoxLayout;
@@ -95,10 +106,6 @@ VolumetricPanel::VolumetricPanel(ViewportWidget* viewport, QWidget* parent)
         tr("Remove Dataset — unload the selected field from memory and the 3D "
            "viewport (or press Delete)."));
     bar->addStretch(1);
-    showCheck_ = new QCheckBox(tr("Show"), this);
-    showCheck_->setChecked(true);
-    showCheck_->setToolTip(tr("Show the selected field on the 3D viewport."));
-    bar->addWidget(showCheck_);
     layout->addLayout(bar);
 
     connect(loadButton, &QPushButton::clicked, this,
@@ -109,11 +116,9 @@ VolumetricPanel::VolumetricPanel(ViewportWidget* viewport, QWidget* parent)
             &VolumetricPanel::openEditDialog);
     connect(removeButton, &QPushButton::clicked, this,
             &VolumetricPanel::removeCurrentDataset);
-    connect(showCheck_, &QCheckBox::toggled, this,
-            &VolumetricPanel::onShowToggled);
 
-    connect(&isoWatcher_, &QFutureWatcher<ExtractResult>::finished, this,
-            &VolumetricPanel::onIsoExtractionFinished);
+    connect(&isoWatcher_, &QFutureWatcher<std::vector<ExtractResult>>::finished,
+            this, &VolumetricPanel::onIsoExtractionFinished);
 
     onSelectionChanged(); // disables actions with an empty registry
 }
@@ -150,7 +155,8 @@ void VolumetricPanel::loadExternalFile()
 
 void VolumetricPanel::registerResultFile(const QString& path,
                                          const QString& label,
-                                         const QString& structureLabel)
+                                         const QString& structureLabel,
+                                         int workspaceId)
 {
     std::shared_ptr<const core::VolumetricData> field;
     try {
@@ -162,28 +168,117 @@ void VolumetricPanel::registerResultFile(const QString& path,
                                  QString::fromUtf8(e.what()));
         return;
     }
-    addEntry(std::move(field), label, path, structureLabel);
+    // Callers that don't name a tab bind to the one on screen — a calculation
+    // result belongs to the workspace it was launched from.
+    addEntry(std::move(field), label, path, structureLabel,
+             workspaceId >= 0 ? workspaceId : activeWorkspace_);
 }
 
 void VolumetricPanel::addEntry(
     std::shared_ptr<const core::VolumetricData> field, const QString& label,
-    const QString& path, const QString& structureLabel)
+    const QString& path, const QString& structureLabel, int workspaceId)
 {
     if (!field || field->empty())
         return;
     const int index = static_cast<int>(entries_.size());
-    entries_.push_back({field, label, path, structureLabel});
+    entries_.push_back({field, label, path, structureLabel, workspaceId,
+                        /*visible=*/true});
 
-    auto* item = new QTreeWidgetItem(registry_);
-    item->setText(0, label);
-    item->setText(1, QStringLiteral("%1×%2×%3")
-                         .arg(field->nx)
-                         .arg(field->ny)
-                         .arg(field->nz));
-    item->setToolTip(0, path);
-    item->setData(0, Qt::UserRole, index);
-    registry_->setCurrentItem(item); // selects → onSelectionChanged → render
+    // Build the row with itemChanged muted: setCheckState() during
+    // construction would otherwise re-enter onItemChanged before the item is
+    // fully populated.
+    QTreeWidgetItem* item = nullptr;
+    {
+        const QSignalBlocker blocker(registry_);
+        item = new QTreeWidgetItem(registry_);
+        item->setText(0, label);
+        item->setText(1, QStringLiteral("%1×%2×%3")
+                             .arg(field->nx)
+                             .arg(field->ny)
+                             .arg(field->nz));
+        item->setToolTip(0, path);
+        item->setData(0, Qt::UserRole, index);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(0, Qt::Checked);
+    }
+    // A record registered while another tab is on screen stays hidden until
+    // its own tab comes forward.
+    const bool active = inActiveWorkspace(entries_.back());
+    item->setHidden(!active);
+    if (active)
+        registry_->setCurrentItem(item); // → onSelectionChanged → render
+    // Nothing to redraw otherwise: the set on screen is unchanged.
     syncEditDialogDatasets();
+}
+
+bool VolumetricPanel::inActiveWorkspace(const Entry& entry) const
+{
+    // A record with no workspace (registered before any tab existed) is never
+    // orphaned — it stays available whichever tab is forward.
+    return entry.workspaceId < 0 || entry.workspaceId == activeWorkspace_;
+}
+
+std::vector<int> VolumetricPanel::renderableRows() const
+{
+    std::vector<int> rows;
+    for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
+        const Entry& e = entries_[static_cast<std::size_t>(i)];
+        if (e.visible && inActiveWorkspace(e) && e.field && !e.field->empty())
+            rows.push_back(i);
+    }
+    return rows;
+}
+
+void VolumetricPanel::applyWorkspaceFilter()
+{
+    const QTreeWidgetItem* previous = registry_->currentItem();
+    bool currentHidden = false;
+    QTreeWidgetItem* firstVisible = nullptr;
+    for (int i = 0; i < registry_->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* item = registry_->topLevelItem(i);
+        const int index = item->data(0, Qt::UserRole).toInt();
+        if (index < 0 || index >= static_cast<int>(entries_.size()))
+            continue;
+        const bool show = inActiveWorkspace(entries_[static_cast<std::size_t>(index)]);
+        item->setHidden(!show);
+        if (show && !firstVisible)
+            firstVisible = item;
+        if (!show && item == previous)
+            currentHidden = true;
+    }
+    if (currentHidden || !previous) {
+        const QSignalBlocker blocker(registry_);
+        registry_->setCurrentItem(firstVisible); // null clears the selection
+    }
+}
+
+void VolumetricPanel::setActiveWorkspace(int id)
+{
+    if (activeWorkspace_ == id)
+        return;
+    activeWorkspace_ = id;
+    applyWorkspaceFilter();
+    // Drop whatever the previous tab was showing before drawing this tab's set.
+    ++isoGeneration_;
+    isoPending_ = false;
+    clearViewportOverlay();
+    syncEditDialogDatasets();
+    onSelectionChanged();
+}
+
+void VolumetricPanel::onItemChanged(QTreeWidgetItem* item, int column)
+{
+    if (!item || column != 0)
+        return;
+    const int index = item->data(0, Qt::UserRole).toInt();
+    if (index < 0 || index >= static_cast<int>(entries_.size()))
+        return;
+    const bool visible = item->checkState(0) == Qt::Checked;
+    Entry& entry = entries_[static_cast<std::size_t>(index)];
+    if (entry.visible == visible)
+        return;
+    entry.visible = visible;
+    render();
 }
 
 void VolumetricPanel::removeCurrentDataset()
@@ -207,6 +302,8 @@ void VolumetricPanel::removeCurrentDataset()
         if (registry_->topLevelItemCount() > 0)
             registry_->setCurrentItem(registry_->topLevelItem(
                 std::min(row, registry_->topLevelItemCount() - 1)));
+        // Re-indexing may have landed the selection on another tab's record.
+        applyWorkspaceFilter();
     }
     // Drop any in-flight extraction result and refresh the viewport for the new
     // selection (or clear it when nothing remains).
@@ -241,18 +338,25 @@ const core::VolumetricData* VolumetricPanel::currentField() const
 
 QStringList VolumetricPanel::datasetLabels() const
 {
+    // One slot per registry index so a label's position stays the entry index
+    // the style's base/secondary selectors store. Records belonging to another
+    // workspace tab yield an empty slot, which the dialog skips — tab
+    // isolation without renumbering.
     QStringList labels;
     for (const Entry& e : entries_)
-        labels << e.label;
+        labels << (inActiveWorkspace(e) ? e.label : QString());
     return labels;
 }
 
 std::shared_ptr<const core::VolumetricData>
 VolumetricPanel::fieldForIndex(int index) const
 {
-    if (index >= 0 && index < static_cast<int>(entries_.size()))
-        return entries_.at(index).field;
-    return nullptr;
+    if (index < 0 || index >= static_cast<int>(entries_.size()))
+        return nullptr;
+    // A stale index left over from another tab must not resurrect that tab's
+    // field on this structure.
+    const Entry& entry = entries_.at(static_cast<std::size_t>(index));
+    return inActiveWorkspace(entry) ? entry.field : nullptr;
 }
 
 void VolumetricPanel::syncEditDialogDatasets()
@@ -280,19 +384,11 @@ void VolumetricPanel::defaultIsovalueForField()
 
 void VolumetricPanel::onSelectionChanged()
 {
-    const core::VolumetricData* field = currentField();
-    const bool has = field != nullptr;
-    showCheck_->setEnabled(has);
-    if (has) {
+    if (const core::VolumetricData* field = currentField()) {
         defaultIsovalueForField();
         if (editDialog_)
             editDialog_->setFieldRange(field->minValue(), field->maxValue());
     }
-    render();
-}
-
-void VolumetricPanel::onShowToggled(bool /*on*/)
-{
     render();
 }
 
@@ -349,8 +445,9 @@ void VolumetricPanel::render()
 {
     if (!viewport_)
         return;
-    const core::VolumetricData* field = currentField();
-    if (!field || !showCheck_->isChecked()) {
+    // Only checked datasets bound to the workspace tab on screen are drawn;
+    // everything else (other tabs, unticked rows) stays off the viewport.
+    if (renderableRows().empty()) {
         clearViewportOverlay();
         ++isoGeneration_;
         isoPending_ = false;
@@ -369,48 +466,112 @@ void VolumetricPanel::render()
 
 void VolumetricPanel::renderSlice()
 {
-    const core::VolumetricData* field = currentField();
-    if (!field || !viewport_)
+    // A color slice is a single cutting plane, so it follows the selected row
+    // (falling back to the first visible one when the selection is unticked).
+    const std::vector<int> rows = renderableRows();
+    if (rows.empty() || !viewport_)
+        return;
+    const int row = currentRow();
+    const int useRow =
+        std::find(rows.begin(), rows.end(), row) != rows.end() ? row : rows.front();
+    const std::shared_ptr<const core::VolumetricData> entryField =
+        entries_[static_cast<std::size_t>(useRow)].field;
+    if (!entryField)
         return;
 
-    const double lo = field->minValue(), hi = field->maxValue();
+    // Optional voxel-grid refinement before the plane samples it. Held in a
+    // local so `field` can point at either the original or the refined copy
+    // without a second code path below.
+    core::VolumetricData refined;
+    if (style_.sliceInterpolation != core::GridInterpolation::None)
+        refined = core::refineGrid(*entryField, kRefineFactor,
+                                   style_.sliceInterpolation);
+    const core::VolumetricData* field =
+        style_.sliceInterpolation == core::GridInterpolation::None
+            ? entryField.get()
+            : &refined;
+
+    // Custom bounds pin the ramp; otherwise it spans the field's own range.
+    const double lo =
+        style_.sliceUseBounds ? std::min(style_.sliceMin, style_.sliceMax)
+                              : field->minValue();
+    const double hi =
+        style_.sliceUseBounds ? std::max(style_.sliceMin, style_.sliceMax)
+                              : field->maxValue();
     const double range = std::max(hi - lo, 1e-30);
-    const int plane = std::clamp(style_.slicePlane, 0, 2);
 
-    const int uAxis = plane == 2 ? 1 : 0;
-    const int vAxis = plane == 0 ? 1 : 2;
-    const int wAxis = 3 - uAxis - vAxis;
-    const int dims[3] = {field->nx, field->ny, field->nz};
-    const int nu = dims[uAxis], nv = dims[vAxis];
-    const double w = std::clamp(style_.sliceOffset, 0.0, 1.0) * dims[wAxis];
+    // --- Plane orientation from the Miller indices -------------------------
+    // The grid's spanning vectors ARE the lattice the field was sampled on, so
+    // the (hkl) family is defined against them: the plane normal is the
+    // reciprocal-lattice vector G = h·(b×c) + k·(c×a) + l·(a×b).
+    const core::Vec3 a = field->spanA, b = field->spanB, c = field->spanC;
+    core::Vec3 normal = b.cross(c) * static_cast<double>(style_.millerH)
+        + c.cross(a) * static_cast<double>(style_.millerK)
+        + a.cross(b) * static_cast<double>(style_.millerL);
+    if (normal.norm() < 1e-9)
+        normal = a.cross(b); // degenerate (0 0 0) → the ab-plane normal
+    if (normal.norm() < 1e-9)
+        return;              // degenerate grid box
+    normal = normal.normalized();
 
-    const auto gridPoint = [&](double u, double v) {
-        double g[3];
-        g[uAxis] = u;
-        g[vAxis] = v;
-        g[wAxis] = w;
-        return std::array<double, 3>{g[0], g[1], g[2]};
-    };
+    // In-plane orthonormal basis (any pair perpendicular to the normal).
+    const core::Vec3 helper =
+        std::abs(normal.x) < 0.9 ? core::Vec3{1, 0, 0} : core::Vec3{0, 1, 0};
+    const core::Vec3 uAxis = helper.cross(normal).normalized();
+    const core::Vec3 vAxis = normal.cross(uAxis).normalized();
+
+    // Sweep the plane through the whole box: project the three spanning
+    // vectors on the normal to get the box's thickness along it, and let the
+    // 0…1 offset travel exactly that span, centered on the box.
+    const core::Vec3 center = field->origin + (a + b + c) * 0.5;
+    const double thickness = std::abs(a.dot(normal)) + std::abs(b.dot(normal))
+        + std::abs(c.dot(normal));
+    const core::Vec3 planeOrigin =
+        center + normal * ((std::clamp(style_.sliceOffset, 0.0, 1.0) - 0.5)
+                           * thickness);
+    // Half-extent covering the box from any orientation (its bounding sphere).
+    const double extent = 0.5 * (a + b + c).norm()
+        + 0.5 * std::max({a.norm(), b.norm(), c.norm()});
+
+    // Cartesian → fractional grid coordinates (Cramer against the spans), so
+    // an oblique plane can sample a triclinic grid.
+    const core::Vec3 fBC = b.cross(c), fCA = c.cross(a), fAB = a.cross(b);
+    const double det = a.dot(fBC);
+    const double invDet = std::abs(det) > 1e-12 ? 1.0 / det : 0.0;
+    if (invDet == 0.0)
+        return;
+
+    // Resolution: match the grid's own sampling along the two densest axes so
+    // the slice never invents detail the data doesn't carry.
+    const int divisions =
+        std::clamp(std::max({field->nx, field->ny, field->nz}), 16, 256);
 
     std::vector<float> faces;
-    faces.reserve(static_cast<std::size_t>(nu) * nv * 6 * 6);
-    const auto emit_ = [&](const std::array<double, 3>& g) {
-        const core::Vec3 p = field->position(g[0], g[1], g[2]);
-        const double value = field->samplePeriodic(g[0], g[1], g[2]);
-        const QColor c = render::ColorMap::sample(
+    faces.reserve(static_cast<std::size_t>(divisions) * divisions * 6 * 6);
+    const auto point = [&](int i, int j) {
+        const double s = (static_cast<double>(i) / divisions * 2.0 - 1.0) * extent;
+        const double t = (static_cast<double>(j) / divisions * 2.0 - 1.0) * extent;
+        return planeOrigin + uAxis * s + vAxis * t;
+    };
+    const auto emit_ = [&](const core::Vec3& p) {
+        const core::Vec3 d = p - field->origin;
+        const double value = field->samplePeriodic(d.dot(fBC) * invDet * field->nx,
+                                                   d.dot(fCA) * invDet * field->ny,
+                                                   d.dot(fAB) * invDet * field->nz);
+        const QColor col = render::ColorMap::sample(
             style_.gradient,
-            static_cast<float>(std::clamp((value - lo) / range, 0.0, 1.0)));
+            static_cast<float>(std::clamp((value - lo) / range, 0.0, 1.0)),
+            style_.invertGradient);
         faces.insert(faces.end(),
                      {static_cast<float>(p.x), static_cast<float>(p.y),
-                      static_cast<float>(p.z), static_cast<float>(c.redF()),
-                      static_cast<float>(c.greenF()),
-                      static_cast<float>(c.blueF())});
+                      static_cast<float>(p.z), static_cast<float>(col.redF()),
+                      static_cast<float>(col.greenF()),
+                      static_cast<float>(col.blueF())});
     };
-    for (int iu = 0; iu < nu; ++iu) {
-        for (int iv = 0; iv < nv; ++iv) {
-            const std::array<double, 3> q[4] = {
-                gridPoint(iu, iv), gridPoint(iu + 1, iv),
-                gridPoint(iu + 1, iv + 1), gridPoint(iu, iv + 1)};
+    for (int i = 0; i < divisions; ++i) {
+        for (int j = 0; j < divisions; ++j) {
+            const core::Vec3 q[4] = {point(i, j), point(i + 1, j),
+                                     point(i + 1, j + 1), point(i, j + 1)};
             static constexpr int kQuad[6] = {0, 1, 2, 0, 2, 3};
             for (const int k : kQuad)
                 emit_(q[k]);
@@ -433,16 +594,27 @@ void VolumetricPanel::pumpIsoExtraction()
         return;
 
     const bool potential = mode_ == VolumetricRenderMode::PotentialMap;
-    // Base geometry: the chosen potential base, else the current selection.
-    std::shared_ptr<const core::VolumetricData> base;
-    if (potential && style_.potentialBaseIndex >= 0)
-        base = fieldForIndex(style_.potentialBaseIndex);
-    if (!base) {
-        const int row = currentRow();
-        if (row >= 0)
-            base = entries_.at(row).field;
+    // The fields to extract this pass. A potential map is one composite
+    // surface (base geometry + secondary coloring); an isosurface render draws
+    // every ticked dataset of the active tab, so several orbitals / densities
+    // can be compared side by side.
+    std::vector<std::shared_ptr<const core::VolumetricData>> bases;
+    if (potential) {
+        std::shared_ptr<const core::VolumetricData> base;
+        if (style_.potentialBaseIndex >= 0)
+            base = fieldForIndex(style_.potentialBaseIndex);
+        if (!base) {
+            const int row = currentRow();
+            if (row >= 0)
+                base = entries_.at(static_cast<std::size_t>(row)).field;
+        }
+        if (base)
+            bases.push_back(std::move(base));
+    } else {
+        for (const int row : renderableRows())
+            bases.push_back(entries_[static_cast<std::size_t>(row)].field);
     }
-    if (!base)
+    if (bases.empty())
         return;
     std::shared_ptr<const core::VolumetricData> secondary =
         potential ? fieldForIndex(style_.potentialSecondaryIndex) : nullptr;
@@ -450,35 +622,43 @@ void VolumetricPanel::pumpIsoExtraction()
     isoPending_ = false;
     isoRunningGeneration_ = ++isoGeneration_;
 
-    double iso = std::abs(style_.isovalue);
-    const double bmin = base->minValue(), bmax = base->maxValue();
-    if (iso < bmin || iso > bmax) // a different base may not span this isovalue
-        iso = bmin + 0.5 * (bmax - bmin);
-    const bool signedField = bmin < 0.0;
+    const double requestedIso = std::abs(style_.isovalue);
     const core::GridInterpolation interp = style_.gridInterpolation;
 
     isoWatcher_.setFuture(QtConcurrent::run(
-        [base = std::move(base), secondary = std::move(secondary), iso,
-         signedField, potential, interp]() -> ExtractResult {
-            ExtractResult r;
-            r.potential = potential;
-            // Refine the base grid before marching cubes when requested; skip
-            // the copy entirely for None.
-            const core::VolumetricData refined =
-                interp == core::GridInterpolation::None
-                    ? core::VolumetricData{}
-                    : core::refineGrid(*base, kRefineFactor, interp);
-            const core::VolumetricData& bf =
-                interp == core::GridInterpolation::None ? *base : refined;
-            if (potential) {
-                r.positive =
-                    core::extractIsosurface(bf, iso, secondary.get());
-            } else {
-                r.positive = core::extractIsosurface(bf, iso, nullptr);
-                if (signedField && iso > 0.0)
-                    r.negative = core::extractIsosurface(bf, -iso, nullptr);
+        [bases = std::move(bases), secondary = std::move(secondary),
+         requestedIso, potential, interp]() -> std::vector<ExtractResult> {
+            std::vector<ExtractResult> results;
+            results.reserve(bases.size());
+            for (const auto& base : bases) {
+                ExtractResult r;
+                r.potential = potential;
+                // Each field has its own value range: an isovalue chosen for
+                // one may not be spanned by another, so fall back to its
+                // mid-range rather than extracting an empty surface.
+                const double bmin = base->minValue(), bmax = base->maxValue();
+                double iso = requestedIso;
+                if (iso < bmin || iso > bmax)
+                    iso = bmin + 0.5 * (bmax - bmin);
+                const bool signedField = bmin < 0.0;
+                // Refine the grid before marching cubes when requested; skip
+                // the copy entirely for None.
+                const core::VolumetricData refined =
+                    interp == core::GridInterpolation::None
+                        ? core::VolumetricData{}
+                        : core::refineGrid(*base, kRefineFactor, interp);
+                const core::VolumetricData& bf =
+                    interp == core::GridInterpolation::None ? *base : refined;
+                if (potential) {
+                    r.positive = core::extractIsosurface(bf, iso, secondary.get());
+                } else {
+                    r.positive = core::extractIsosurface(bf, iso, nullptr);
+                    if (signedField && iso > 0.0)
+                        r.negative = core::extractIsosurface(bf, -iso, nullptr);
+                }
+                results.push_back(std::move(r));
             }
-            return r;
+            return results;
         }));
 }
 
@@ -488,79 +668,79 @@ void VolumetricPanel::onIsoExtractionFinished()
         pumpIsoExtraction();
         return;
     }
-    pushResult(isoWatcher_.result());
+    pushResults(isoWatcher_.result());
     pumpIsoExtraction();
 }
 
-void VolumetricPanel::pushResult(const ExtractResult& result)
+void VolumetricPanel::pushResults(const std::vector<ExtractResult>& results)
 {
     if (!viewport_)
         return;
-    if (result.positive.positions.empty()
-        && result.negative.positions.empty()) {
-        viewport_->clearCustomOverlay();
-        return;
-    }
     std::vector<float> faces;
     std::vector<render::StructureRenderer::OverlayRange> ranges;
     const float alpha = static_cast<float>(style_.isoOpacity);
 
-    if (result.potential) {
-        // Color each vertex of the base isosurface by the secondary scalar
-        // field (colorValues), mapped through the chosen colormap + bounds.
-        const core::IsoMesh& mesh = result.positive;
-        double lo = style_.potentialMin, hi = style_.potentialMax;
-        if (!style_.potentialUseBounds) {
-            if (!mesh.colorValues.empty()) {
-                const auto [mn, mx] = std::minmax_element(
-                    mesh.colorValues.begin(), mesh.colorValues.end());
-                lo = *mn;
-                hi = *mx;
-            } else {
-                lo = 0.0;
-                hi = 1.0;
-            }
-        }
+    // Every extracted dataset appends into one interleaved stream; each mesh
+    // gets its own OverlayRange so it blends at the shared opacity.
+    const auto appendMesh = [&](const core::IsoMesh& mesh,
+                                const QColor& uniformColor, bool colorByValue,
+                                double lo, double hi) {
+        if (mesh.positions.empty())
+            return;
         const double range = std::max(hi - lo, 1e-30);
-        faces.reserve(mesh.positions.size() * 6);
+        const int first = static_cast<int>(faces.size() / 6);
+        const float ur = static_cast<float>(uniformColor.redF());
+        const float ug = static_cast<float>(uniformColor.greenF());
+        const float ub = static_cast<float>(uniformColor.blueF());
         for (std::size_t i = 0; i < mesh.positions.size(); ++i) {
             const core::Vec3& p = mesh.positions[i];
-            QColor c;
-            if (i < mesh.colorValues.size())
-                c = render::ColorMap::sample(
+            float r = ur, g = ug, b = ub;
+            if (colorByValue && i < mesh.colorValues.size()) {
+                const QColor c = render::ColorMap::sample(
                     style_.gradient,
                     static_cast<float>(
-                        std::clamp((mesh.colorValues[i] - lo) / range, 0.0, 1.0)));
-            else
-                c = style_.positiveColor; // no secondary field → uniform
+                        std::clamp((mesh.colorValues[i] - lo) / range, 0.0, 1.0)),
+                    style_.invertGradient);
+                r = static_cast<float>(c.redF());
+                g = static_cast<float>(c.greenF());
+                b = static_cast<float>(c.blueF());
+            }
             faces.insert(faces.end(),
                          {static_cast<float>(p.x), static_cast<float>(p.y),
-                          static_cast<float>(p.z), static_cast<float>(c.redF()),
-                          static_cast<float>(c.greenF()),
-                          static_cast<float>(c.blueF())});
+                          static_cast<float>(p.z), r, g, b});
         }
-        ranges.push_back(
-            {0, static_cast<int>(mesh.positions.size()), alpha});
-    } else {
-        const auto appendLobe = [&](const core::IsoMesh& mesh,
-                                    const QColor& color) {
-            if (mesh.positions.empty())
-                return;
-            const float r = static_cast<float>(color.redF());
-            const float g = static_cast<float>(color.greenF());
-            const float b = static_cast<float>(color.blueF());
-            const int first = static_cast<int>(faces.size() / 6);
-            for (const core::Vec3& p : mesh.positions)
-                faces.insert(faces.end(),
-                             {static_cast<float>(p.x), static_cast<float>(p.y),
-                              static_cast<float>(p.z), r, g, b});
-            ranges.push_back(
-                {first, static_cast<int>(mesh.positions.size()), alpha});
-        };
-        appendLobe(result.positive, style_.positiveColor);
-        appendLobe(result.negative, style_.negativeColor);
+        ranges.push_back({first, static_cast<int>(mesh.positions.size()), alpha});
+    };
+
+    for (const ExtractResult& result : results) {
+        if (result.potential) {
+            // Color each vertex of the base isosurface by the secondary scalar
+            // field (colorValues), through the colormap + ramp bounds.
+            const core::IsoMesh& mesh = result.positive;
+            double lo = style_.potentialMin, hi = style_.potentialMax;
+            if (!style_.potentialUseBounds) {
+                if (!mesh.colorValues.empty()) {
+                    const auto [mn, mx] = std::minmax_element(
+                        mesh.colorValues.begin(), mesh.colorValues.end());
+                    lo = *mn;
+                    hi = *mx;
+                } else {
+                    lo = 0.0;
+                    hi = 1.0;
+                }
+            }
+            appendMesh(mesh, style_.positiveColor,
+                       /*colorByValue=*/!mesh.colorValues.empty(), lo, hi);
+        } else {
+            appendMesh(result.positive, style_.positiveColor, false, 0.0, 1.0);
+            appendMesh(result.negative, style_.negativeColor, false, 0.0, 1.0);
+        }
     }
 
+    if (faces.empty()) {
+        viewport_->clearCustomOverlay();
+        return;
+    }
     viewport_->setCustomOverlay(std::move(faces), {}, std::move(ranges),
                                 /*visible=*/true);
 }

@@ -66,6 +66,7 @@
 #include "ui/IconManager.hpp"
 #include "gui/WelcomeDialog.hpp"
 #include "gui/RamanDialog.hpp"
+#include "gui/GeometryOptimizationViewer.hpp"
 #include "gui/SqsDialog.hpp"
 #include "gui/VolumetricDialog.hpp"
 #include "gui/WarrenCowleyDialog.hpp"
@@ -866,6 +867,8 @@ void MainWindow::createMenusAndDocks()
     QMenu* resultsMenu = menuBar()->addMenu(tr("&Results"));
     resultsMenu->addAction(tr("&Single-Point Viewer…"),
                            this, &MainWindow::showSinglePointViewer);
+    resultsMenu->addAction(tr("&Geometry Optimization Viewer…"),
+                           this, &MainWindow::showGeometryOptimizationViewer);
     resultsMenu->addAction(tr("&MLWF Viewer…"),
                            this, &MainWindow::showMlwfViewer);
 
@@ -982,8 +985,8 @@ void MainWindow::createMenusAndDocks()
     auto* reprPanel = new RepresentationPanel(viewport_, reprDock);
     reprDock->setWidget(reprPanel);
     addDockWidget(Qt::RightDockWidgetArea, reprDock);
-    connect(reprPanel, &RepresentationPanel::bondOrderAssignRequested,
-            this, &MainWindow::assignBondOrderToSelection);
+    connect(reprPanel, &RepresentationPanel::bondEditorRequested,
+            this, &MainWindow::showBondEditor);
 
     visualEffectsDock_ = new QDockWidget(tr("Visual Effects"), this); // zone 9
     visualEffectsDock_->setObjectName(QStringLiteral("visualEffectsDock"));
@@ -1271,6 +1274,14 @@ MainWindow::Document* MainWindow::currentDocument()
     return documents_[static_cast<std::size_t>(index)].get();
 }
 
+int MainWindow::currentWorkspaceId() const
+{
+    const int index = tabBar_->currentIndex();
+    if (index < 0 || index >= static_cast<int>(documents_.size()))
+        return -1;
+    return documents_[static_cast<std::size_t>(index)]->id;
+}
+
 MainWindow::Document& MainWindow::ensureDocument()
 {
     if (Document* doc = currentDocument())
@@ -1286,6 +1297,7 @@ int MainWindow::addDocument(std::shared_ptr<core::Structure> structure,
                             const QString& task)
 {
     auto document = std::make_unique<Document>();
+    document->id = nextWorkspaceId_++;
     document->structure = std::move(structure);
     document->frames = std::move(frames);
     document->fileName = name;
@@ -1343,6 +1355,9 @@ void MainWindow::onTabChanged(int index)
     if (index < 0 || index >= static_cast<int>(documents_.size())) {
         viewport_->setStructure(nullptr);
         infoWidget_->updateFromStructure(nullptr);
+        // No workspace on screen — no volumetric record may render.
+        if (volumetricPanel_)
+            volumetricPanel_->setActiveWorkspace(-1);
         timeline_->stop();
         timeline_->hide();
         setWindowTitle(QStringLiteral("Calango"));
@@ -1421,6 +1436,11 @@ void MainWindow::syncViewsToCurrent(bool frameCamera)
         return;
     viewport_->setStructure(doc->structure, frameCamera);
     infoWidget_->updateFromStructure(doc->structure.get());
+    // Volumetric overlays are bound to the workspace that produced them: this
+    // hides the previous tab's fields and draws this tab's. Cheap no-op when
+    // the workspace is unchanged (a plain structure refresh).
+    if (volumetricPanel_)
+        volumetricPanel_->setActiveWorkspace(doc->id);
     refreshTabTitles(); // formula may have changed since the last sync
     setWindowTitle(doc->fileName.isEmpty()
                        ? QStringLiteral("Calango")
@@ -2518,30 +2538,6 @@ void MainWindow::deleteSelectedAtoms()
                                 static_cast<int>(indices.size())));
 }
 
-void MainWindow::assignBondOrderToSelection(int order)
-{
-    Document* doc = currentDocument();
-    if (!doc || !doc->structure)
-        return;
-    const auto& selection = viewport_->selection();
-    if (selection.size() != 2)
-        return; // the panel's buttons are disabled otherwise
-
-    pushUndo();
-    const int i = *selection.begin();
-    const int j = *std::next(selection.begin());
-    doc->structure->setBondOrder(i, j, order);
-    // A multiple bond the user asked for should be visible even when the
-    // pair sits outside the auto-detection cutoff.
-    if (order > 1)
-        doc->structure->addBondOverride(i, j);
-    notifyStructureChanged(false);
-    statusBar()->showMessage(tr("Bond %1–%2 set to order %3")
-                                 .arg(i)
-                                 .arg(j)
-                                 .arg(order));
-}
-
 void MainWindow::showBondEditor()
 {
     Document* doc = currentDocument();
@@ -2940,6 +2936,36 @@ void MainWindow::showSinglePointViewer()
     openSinglePointResults(dir);
 }
 
+void MainWindow::showGeometryOptimizationViewer()
+{
+    const QString dir = selectedProcessDirectory();
+    if (dir.isEmpty()
+        || !QFile::exists(dir
+                          + QStringLiteral("/geometry_optimization.json"))) {
+        QMessageBox::information(
+            this, tr("Geometry Optimization Viewer"),
+            tr("Select a completed Geometry Optimization in the Processes "
+               "panel first (its results include "
+               "geometry_optimization.json)."));
+        return;
+    }
+    openGeometryOptimizationResults(dir);
+}
+
+void MainWindow::openGeometryOptimizationResults(const QString& directory)
+{
+    auto* viewer = new GeometryOptimizationViewer(viewport_, this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    if (!viewer->loadResults(directory
+                             + QStringLiteral("/geometry_optimization.json"))) {
+        delete viewer;
+        return;
+    }
+    connect(viewer, &GeometryOptimizationViewer::getVolumetricDataRequested,
+            this, &MainWindow::onGetVolumetricData);
+    viewer->show();
+}
+
 void MainWindow::showMlwfViewer()
 {
     const QString dir = selectedProcessDirectory();
@@ -3077,6 +3103,14 @@ void MainWindow::onProcessResultRequested(const QString& directory)
     }
     if (QFile::exists(directory + QStringLiteral("/single_point.json"))) {
         openSinglePointResults(directory);
+        return;
+    }
+    // Before the raw-trajectory fallback below: a relaxation's own summary is
+    // strictly more informative than opening opt.traj as an anonymous
+    // trajectory, and the viewer scrubs the same frames anyway.
+    if (QFile::exists(directory
+                      + QStringLiteral("/geometry_optimization.json"))) {
+        openGeometryOptimizationResults(directory);
         return;
     }
     for (const auto* candidate :
@@ -3468,23 +3502,19 @@ void MainWindow::openSqsBuilder()
                                  tr("Open or build a base structure first."));
         return;
     }
-    if (!ensureAseAvailable())
-        return;
-
+    // No ensureAseAvailable() here any more: SQS generation is native C++
+    // (core::SqsGenerator), so it runs with or without a working Python
+    // environment.
     SqsDialog dialog(doc->structure, this);
     if (dialog.exec() != QDialog::Accepted || !dialog.result())
         return;
 
     const auto& generated = *dialog.result();
-    const int tab = addDocument(
-        std::make_shared<core::Structure>(generated.structure),
-        tr("SQS (%1)").arg(QString::fromStdString(generated.method)));
+    const int tab =
+        addDocument(std::make_shared<core::Structure>(generated.structure),
+                    tr("SQS"));
     tabBar_->setCurrentIndex(tab);
-    statusBar()->showMessage(
-        generated.method == "icet"
-            ? tr("SQS generated with icet")
-            : tr("SQS generated (internal annealer, residual Σα² = %1)")
-                  .arg(generated.objective, 0, 'f', 4));
+    statusBar()->showMessage(dialog.resultSummary());
 }
 
 void MainWindow::effectiveBandsCalculation()

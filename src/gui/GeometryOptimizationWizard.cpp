@@ -17,6 +17,7 @@ GeometryOptimizationWizard::GeometryOptimizationWizard(QWidget* parent)
 {
     buildUi();
     updateCellEnabled();
+    electronic_.updateEnabled();
 }
 
 QString GeometryOptimizationWizard::wizardTitle() const
@@ -103,6 +104,10 @@ core::CalculatorConfig GeometryOptimizationWizard::config() const
 {
     core::CalculatorConfig c = baseCalculatorConfig();
     c.task = core::TaskKind::GeometryOptimization;
+    // The electronic knobs the shared GPAW form collects (smearing, SCF
+    // tolerance / step cap, spin) drive the calculator block of the generated
+    // script exactly as they do for a Single-Point run.
+    electronic_.applyTo(c);
     c.optimizer = static_cast<core::Optimizer>(optimizerCombo_->currentIndex());
     c.fmax = fmaxSpin_->value();
     c.maxSteps = maxStepsSpin_->value();

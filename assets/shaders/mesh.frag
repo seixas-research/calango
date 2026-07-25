@@ -101,7 +101,12 @@ uniform float uFogStart;
 uniform float uFogEnd;
 uniform float uFogDensity;
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
+// G-buffer attachment 1: view-space normal for the SSAO pass, encoded into
+// [0,1] (rgb = n * 0.5 + 0.5). Alpha is a validity flag — SSAO skips
+// fragments that carry no meaningful normal. Discarded when the target has a
+// single draw buffer (SSAO off), so this costs nothing in the plain path.
+layout(location = 1) out vec4 gNormal;
 
 void main()
 {
@@ -164,4 +169,7 @@ void main()
         color = mix(uFogColor, color, visibility);
     }
     fragColor = vec4(color, alpha);
+    // `n` is the shading normal, already flipped to face the viewer, which is
+    // exactly what the hemisphere sampling wants.
+    gNormal = vec4(normalize(n) * 0.5 + 0.5, 1.0);
 }

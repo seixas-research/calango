@@ -356,9 +356,16 @@ QColor StructureRenderer::resolvedAtomColor(std::size_t index, int atomicNumber)
 {
     if (style_.colorMode == ColorMode::Element || index >= atomScalars_.size())
         return atomColor(atomicNumber, style_);
+    // User-pinned bounds win over the data's own range; values outside the
+    // window clamp to the ramp ends rather than wrapping.
+    const bool custom = style_.useCustomScalarRange;
+    const float lo = custom ? style_.customScalarMin : scalarMin_;
+    const float hi = custom ? style_.customScalarMax : scalarMax_;
     // A flat field (all atoms identical) maps to the middle of the gradient.
-    const float range = scalarMax_ - scalarMin_;
-    const float t = range > 1e-12f ? (atomScalars_[index] - scalarMin_) / range : 0.5f;
+    const float range = hi - lo;
+    const float t = range > 1e-12f
+        ? std::clamp((atomScalars_[index] - lo) / range, 0.0f, 1.0f)
+        : 0.5f;
     return ColorMap::sample(style_.gradient, t, style_.invertGradient);
 }
 
@@ -410,6 +417,7 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     createColoredBuffer(latticePlaneEdges_);
     createColoredBuffer(customOverlayFaces_);
     createColoredBuffer(customOverlayEdges_);
+    createColoredBuffer(hydrogenBonds_);
 
     cellVao_.create();
     cellVao_.bind();
@@ -515,6 +523,42 @@ void StructureRenderer::setCustomOverlay(const std::vector<float>& faces,
     uploadColoredBuffer(customOverlayEdges_, edges);
     customOverlayRanges_ = faceRanges;
     customOverlayVisible_ = visible;
+}
+
+void StructureRenderer::setHydrogenBonds(const std::vector<float>& segments)
+{
+    if (!initialized_)
+        return;
+    uploadColoredBuffer(hydrogenBonds_, segments);
+}
+
+void StructureRenderer::buildHydrogenBondDashes(
+    const std::vector<std::pair<QVector3D, QVector3D>>& contacts,
+    const QColor& color, float dashLength, std::vector<float>& out)
+{
+    const float r = static_cast<float>(color.redF());
+    const float g = static_cast<float>(color.greenF());
+    const float b = static_cast<float>(color.blueF());
+    const float period = std::max(dashLength, 1e-3f) * 2.0f; // dash + equal gap
+
+    for (const auto& [from, to] : contacts) {
+        const QVector3D delta = to - from;
+        const float length = delta.length();
+        if (length < 1e-4f)
+            continue;
+        const QVector3D direction = delta / length;
+        // Walk the contact in dash+gap periods. The dash length is fixed in
+        // Angstroms, so a long contact simply gets more dashes rather than
+        // longer ones — the pattern reads the same at every bond length, and
+        // (unlike line stipple) it does not change with zoom.
+        for (float t = 0.0f; t < length; t += period) {
+            const float end = std::min(t + dashLength, length);
+            const QVector3D a = from + direction * t;
+            const QVector3D c = from + direction * end;
+            out.insert(out.end(), {a.x(), a.y(), a.z(), r, g, b,
+                                   c.x(), c.y(), c.z(), r, g, b});
+        }
+    }
 }
 
 void StructureRenderer::buildPolyhedra(const core::Structure* structure,
@@ -719,10 +763,15 @@ void StructureRenderer::setStructure(const core::Structure* structure,
         // Vector overlay arrows: shaft (cylinder) + head (cone) per atom,
         // sharing the lit instanced pipeline. Skipped in wireframe mode.
         if (!wireframe && style_.vectorOverlay != VectorOverlay::None) {
+            // vectorScale is normalized, not raw Å: 1.0 means the calibrated
+            // baseline below. The former 1:1 Å-per-unit baseline drew forces
+            // long enough to overlap neighboring atoms and obscure the
+            // geometry, so the baseline is half that — and the slider's 1.0×
+            // is this recalibrated length.
+            constexpr double kVectorBaseScale = 0.5;
             // Velocities are tiny (Å/fs·√amu) next to forces/moments, so the
-            // Velocity overlay gets a 20× visual multiplier to render at a
-            // clearly visible magnitude (scale = vectorScale × 20).
-            const double effectiveScale = style_.vectorScale
+            // Velocity overlay keeps a 20× visual multiplier on top.
+            const double effectiveScale = style_.vectorScale * kVectorBaseScale
                 * (style_.vectorOverlay == VectorOverlay::Velocity ? 20.0 : 1.0);
             const auto addArrows = [&](const std::string& fieldName,
                                        const QColor& color) {
@@ -1177,6 +1226,19 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
             gl_->glDrawArrays(GL_LINES, 0, customOverlayEdges_.vertexCount);
             customOverlayEdges_.vao.release();
         }
+        wireProgram_.release();
+    }
+
+    // Hydrogen bonds: dashed lines, drawn last so they read on top of the
+    // covalent geometry they connect. The dashes are baked into the vertex
+    // stream (core-profile GL has no line stipple).
+    if (hydrogenBonds_.vertexCount > 0) {
+        wireProgram_.bind();
+        wireProgram_.setUniformValue("uMvp", projection * view);
+        wireProgram_.setUniformValue("uAlpha", 1.0f);
+        hydrogenBonds_.vao.bind();
+        gl_->glDrawArrays(GL_LINES, 0, hydrogenBonds_.vertexCount);
+        hydrogenBonds_.vao.release();
         wireProgram_.release();
     }
 }

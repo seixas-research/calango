@@ -135,7 +135,48 @@ NebDialog::NebDialog(std::vector<NamedStructure> openDocs, QWidget* parent)
                         static_cast<int>(core::CalculatorKind::Gpaw));
     calcCombo_->addItem(tr("Quantum ESPRESSO (DFT)"),
                         static_cast<int>(core::CalculatorKind::QuantumEspresso));
+    // Machine-learning potentials: the natural fit for NEB, where a band of
+    // images needs many force evaluations at near-DFT accuracy.
+    calcCombo_->addItem(tr("DeepMD-kit (ML potential)"),
+                        static_cast<int>(core::CalculatorKind::DeepMd));
+    calcCombo_->addItem(tr("NequIP (ML potential)"),
+                        static_cast<int>(core::CalculatorKind::NequIp));
+    calcCombo_->addItem(tr("Allegro (ML potential)"),
+                        static_cast<int>(core::CalculatorKind::Allegro));
+    calcCombo_->addItem(tr("CHGNet (universal ML potential)"),
+                        static_cast<int>(core::CalculatorKind::ChgNet));
+    calcCombo_->addItem(tr("MatterSim (universal ML potential)"),
+                        static_cast<int>(core::CalculatorKind::MatterSim));
+    calcCombo_->addItem(tr("FAIRChem / OCP (ML potential)"),
+                        static_cast<int>(core::CalculatorKind::FairChem));
     calcForm->addRow(tr("Calculator:"), calcCombo_);
+
+    // One model-file row shared by the file-backed ML potentials (DeepMD,
+    // NequIP / Allegro, FAIRChem); CHGNet and MatterSim carry their own
+    // pretrained weights and leave it disabled.
+    mlipModelEdit_ = new QLineEdit(calcBox);
+    mlipModelEdit_->setPlaceholderText(
+        tr("path to the model / checkpoint (.pb, .pth, .pt)"));
+    auto* mlipBrowse = new QPushButton(tr("Browse…"), calcBox);
+    auto* mlipRow = new QWidget(calcBox);
+    auto* mlipLayout = new QHBoxLayout(mlipRow);
+    mlipLayout->setContentsMargins(0, 0, 0, 0);
+    mlipLayout->addWidget(mlipModelEdit_, 1);
+    mlipLayout->addWidget(mlipBrowse);
+    calcForm->addRow(tr("ML model file:"), mlipRow);
+    connect(mlipBrowse, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, tr("Select Model File"), mlipModelEdit_->text(),
+            tr("Model files (*.pb *.pt *.pth *.model);;All files (*)"));
+        if (!path.isEmpty())
+            mlipModelEdit_->setText(path);
+    });
+
+    mlipDeviceCombo_ = new QComboBox(calcBox);
+    // Order matches core::MlipDevice.
+    mlipDeviceCombo_->addItems({QStringLiteral("cpu"), QStringLiteral("cuda"),
+                                QStringLiteral("mps")});
+    calcForm->addRow(tr("ML device:"), mlipDeviceCombo_);
     maceSizeCombo_ = new QComboBox(calcBox);
     maceSizeCombo_->addItems({QStringLiteral("small"), QStringLiteral("medium"),
                               QStringLiteral("large")});
@@ -265,6 +306,14 @@ void NebDialog::updateCalculatorEnabled()
         || kind == core::CalculatorKind::QuantumEspresso;
     maceSizeCombo_->setEnabled(isMace);
     maceDeviceCombo_->setEnabled(isMace);
+    // CHGNet / MatterSim ship their own weights, so only the file-backed ML
+    // potentials enable the model-path row.
+    const bool needsModelFile = kind == core::CalculatorKind::DeepMd
+        || kind == core::CalculatorKind::NequIp
+        || kind == core::CalculatorKind::Allegro
+        || kind == core::CalculatorKind::FairChem;
+    mlipModelEdit_->setEnabled(needsModelFile);
+    mlipDeviceCombo_->setEnabled(core::isMlipCalculator(kind) && !isMace);
     cutoffSpin_->setEnabled(isDft);
     for (auto* s : kptSpins_)
         s->setEnabled(isDft);
@@ -318,6 +367,18 @@ core::CalculatorConfig NebDialog::calculatorConfig() const
         static_cast<core::CalculatorKind>(calcCombo_->currentData().toInt());
     c.maceSize = maceSizeCombo_->currentText().toStdString();
     c.maceDevice = maceDeviceCombo_->currentText().toStdString();
+    c.mlipDevice =
+        static_cast<core::MlipDevice>(mlipDeviceCombo_->currentIndex());
+    const std::string modelPath = mlipModelEdit_->text().trimmed().toStdString();
+    switch (c.calculator) {
+    case core::CalculatorKind::DeepMd: c.deepmdModelPath = modelPath; break;
+    case core::CalculatorKind::NequIp:
+    case core::CalculatorKind::Allegro: c.nequipModelPath = modelPath; break;
+    case core::CalculatorKind::FairChem:
+        c.fairChemCheckpointPath = modelPath;
+        break;
+    default: break;
+    }
     c.planeWaveCutoffEv = cutoffSpin_->value();
     for (int i = 0; i < 3; ++i)
         c.kpts[i] = kptSpins_[i]->value();

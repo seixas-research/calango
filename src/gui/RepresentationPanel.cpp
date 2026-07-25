@@ -2,6 +2,7 @@
 #include "gui/GuiUtils.hpp"
 
 #include "gui/ElementSettingsDialog.hpp"
+#include "gui/GuiUtils.hpp"
 #include "gui/ViewportWidget.hpp"
 
 #include <QColorDialog>
@@ -14,6 +15,7 @@
 #include <QStandardItemModel>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 
@@ -82,6 +84,17 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
         ElementSettingsDialog dialog(viewport_, this);
         dialog.exec();
     });
+    // Bond perception, orders and hydrogen bonds all live in the Bond Editor;
+    // this panel just needs the door to it, next to the other "what is drawn"
+    // editor rather than buried in the Edit menu.
+    auto* bondEditorButton = new QPushButton(tr("Bond Editor…"), this);
+    bondEditorButton->setToolTip(
+        tr("Bond perception, manual bonds, bond order (single / double / "
+           "triple / aromatic) and hydrogen-bond detection."));
+    form->addRow(bondEditorButton);
+    connect(bondEditorButton, &QPushButton::clicked, this,
+            &RepresentationPanel::bondEditorRequested);
+
     connect(colorModeCombo_, &QComboBox::currentIndexChanged,
             this, &RepresentationPanel::applyColorMode);
 
@@ -90,7 +103,8 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     gradientCombo_->addItems({tr("Viridis"), tr("Plasma"), tr("Turbo"),
                               tr("Inferno"), tr("Magma"), tr("Cividis"),
                               tr("Hot"), tr("Afmhot"), tr("Coolwarm"),
-                              tr("Rainbow")});
+                              tr("Rainbow"), tr("Greys"), tr("Spectral"),
+                              tr("Gnuplot")});
     form->addRow(tr("Gradient:"), gradientCombo_);
     connect(gradientCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
         viewport_->setColorGradient(static_cast<render::ColorGradient>(index));
@@ -113,8 +127,62 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     connect(propertyCombo_, &QComboBox::currentIndexChanged,
             this, &RepresentationPanel::applyColorMode);
 
-    rangeLabel_ = new QLabel(this);
-    form->addRow(tr("Range:"), rangeLabel_);
+    // --- Color range bounds ------------------------------------------------
+    // Editable Min/Max rather than a read-only legend: auto-scaling
+    // renormalizes the ramp to whatever the current frame/structure happens to
+    // contain, which makes two figures on the same property incomparable.
+    // Typing bounds pins the scale so the same color means the same value
+    // across frames, structures and exported figures.
+    auto* rangeRow = new QWidget(this);
+    auto* rangeLayout = new QHBoxLayout(rangeRow);
+    rangeLayout->setContentsMargins(0, 0, 0, 0);
+    rangeLayout->setSpacing(4);
+    const auto makeBoundSpin = [rangeRow] {
+        // Compact rendering: property ranges span everything from 1e-5 μB to
+        // 1e3 eV/Å, and a fixed-decimal spin box either overflows the field
+        // ("0.000012345") or shows a misleading "0.000". CompactDoubleSpinBox
+        // formats to 3 significant figures, switching to exponential when the
+        // magnitude needs it.
+        auto* spin = new CompactDoubleSpinBox(rangeRow);
+        spin->setRange(-1.0e9, 1.0e9);
+        spin->setKeyboardTracking(false); // apply on commit, not per keystroke
+        return spin;
+    };
+    rangeLayout->addWidget(new QLabel(tr("Min"), rangeRow));
+    rangeMinSpin_ = makeBoundSpin();
+    rangeLayout->addWidget(rangeMinSpin_, 1);
+    rangeLayout->addWidget(new QLabel(tr("Max"), rangeRow));
+    rangeMaxSpin_ = makeBoundSpin();
+    rangeLayout->addWidget(rangeMaxSpin_, 1);
+    form->addRow(tr("Range:"), rangeRow);
+
+    autoRangeCheck_ = new QCheckBox(tr("Auto-scale to data"), this);
+    autoRangeCheck_->setChecked(true);
+    autoRangeCheck_->setToolTip(
+        tr("On: the color ramp spans the property's own minimum and maximum in "
+           "the current structure, and the fields above track it.\n"
+           "Off: the ramp is pinned to the Min/Max you type — values beyond "
+           "them clamp to the ramp ends — so several structures or frames can "
+           "be compared on one fixed scale."));
+    form->addRow(autoRangeCheck_);
+
+    // Editing a bound is itself the intent to override, so it switches off
+    // auto-scaling rather than being silently discarded on the next refresh.
+    const auto applyCustomRange = [this] {
+        if (syncingRange_)
+            return;
+        if (autoRangeCheck_->isChecked()) {
+            const QSignalBlocker blocker(autoRangeCheck_);
+            autoRangeCheck_->setChecked(false);
+        }
+        applyColorRange();
+    };
+    connect(rangeMinSpin_, &QDoubleSpinBox::valueChanged, this, applyCustomRange);
+    connect(rangeMaxSpin_, &QDoubleSpinBox::valueChanged, this, applyCustomRange);
+    // Re-syncing covers both directions: switching auto back on refills the
+    // fields from the data, and it applies the window either way.
+    connect(autoRangeCheck_, &QCheckBox::toggled, this,
+            &RepresentationPanel::syncColoringFromViewport);
 
     connect(viewport_, &ViewportWidget::structureReplaced,
             this, &RepresentationPanel::refreshPropertyList);
@@ -169,39 +237,10 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
                      viewport_->styleChanged(true);
                  }));
 
-    // --- Manual bond order -------------------------------------------------
-    // Orders are never auto-perceived; select exactly two atoms in the
-    // viewport and assign the multiplicity here.
-    auto* orderRow = new QWidget(this);
-    auto* orderLayout = new QHBoxLayout(orderRow);
-    orderLayout->setContentsMargins(0, 0, 0, 0);
-    orderLayout->setSpacing(4);
-    const std::array<const char*, 3> orderNames{
-        QT_TR_NOOP("Single"), QT_TR_NOOP("Double"), QT_TR_NOOP("Triple")};
-    for (int order = 1; order <= 3; ++order) {
-        auto* button = new QPushButton(tr(orderNames[order - 1]), orderRow);
-        bondOrderButtons_[order - 1] = button;
-        orderLayout->addWidget(button);
-        connect(button, &QPushButton::clicked, this, [this, order] {
-            Q_EMIT bondOrderAssignRequested(order);
-        });
-    }
-    form->addRow(tr("Bond order:"), orderRow);
-
-    const auto syncBondOrderButtons = [this](int selectedCount) {
-        const bool pair = selectedCount == 2;
-        for (auto* button : bondOrderButtons_) {
-            button->setEnabled(pair);
-            button->setToolTip(pair
-                                   ? tr("Assign this bond order to the "
-                                        "selected atom pair")
-                                   : tr("Select exactly two atoms in the "
-                                        "viewport first (Ctrl+click)"));
-        }
-    };
-    connect(viewport_, &ViewportWidget::selectionChanged,
-            this, syncBondOrderButtons);
-    syncBondOrderButtons(static_cast<int>(viewport_->selection().size()));
+    // Bond order used to live here as three buttons acting on the viewport
+    // selection. It moved into the Bond Editor's "By Atomic Indices" tab,
+    // which already owns per-pair bond edits and can also express Aromatic —
+    // one place to assign a pair's chemistry instead of two.
 
     gradientBondsCheck_ = new QCheckBox(tr("Gradient bond coloring"), this);
     gradientBondsCheck_->setChecked(viewport_->style().gradientBonds);
@@ -244,17 +283,19 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     auto* vectorLayout = new QHBoxLayout(vectorRow);
     vectorLayout->setContentsMargins(0, 0, 0, 0);
     vectorScaleSlider_ = new QSlider(Qt::Horizontal, vectorRow);
-    vectorScaleSlider_->setRange(5, 20000); // ×0.05 .. ×200 in hundredths
-    vectorScaleSlider_->setValue(100);      // ×1.0 default
+    vectorScaleSlider_->setRange(10, 1000); // ×0.1 .. ×10.0 in hundredths
+    vectorScaleSlider_->setValue(100);      // ×1.0 = the calibrated baseline
     vectorScaleSpin_ = new QDoubleSpinBox(vectorRow);
-    vectorScaleSpin_->setRange(0.05, 200.0);
+    vectorScaleSpin_->setRange(0.1, 10.0);
     vectorScaleSpin_->setDecimals(2);
-    vectorScaleSpin_->setSingleStep(0.5);
+    vectorScaleSpin_->setSingleStep(0.1);
     vectorScaleSpin_->setValue(1.00);
     vectorScaleSpin_->setSuffix(QStringLiteral("×"));
-    vectorScaleSpin_->setToolTip(tr("Arrow length in Å per field unit\n"
-                                    "(eV/Å for forces, Å/fs·√(amu) for "
-                                    "velocities, μB for magnetic moments)"));
+    vectorScaleSpin_->setToolTip(
+        tr("Arrow length relative to the calibrated baseline (1.0×), which is "
+           "half an Å of arrow per field unit\n"
+           "(eV/Å for forces, Å/fs·√(amu) for velocities, μB for magnetic "
+           "moments). Velocities keep an extra 20× so they stay visible."));
     vectorLayout->addWidget(vectorScaleSlider_, 1);
     vectorLayout->addWidget(vectorScaleSpin_);
     form->addRow(tr("Vector scale:"), vectorRow);
@@ -435,21 +476,39 @@ void RepresentationPanel::syncColoringFromViewport()
     gradientCombo_->setEnabled(scalarMode);
     invertGradientCheck_->setEnabled(scalarMode);
     propertyCombo_->setEnabled(mode == render::ColorMode::CustomScalar);
-    rangeLabel_->setEnabled(scalarMode);
 
-    const auto range = viewport_->scalarRange();
-    if (!scalarMode)
-        rangeLabel_->setText(tr("—"));
-    else if (!range.valid)
-        rangeLabel_->setText(tr("no data"));
-    else if (mode == render::ColorMode::CoordinationNumber)
-        rangeLabel_->setText(QStringLiteral("%1 – %2")
-                                 .arg(static_cast<int>(range.min))
-                                 .arg(static_cast<int>(range.max)));
-    else
-        rangeLabel_->setText(QStringLiteral("%1 – %2")
-                                 .arg(static_cast<double>(range.min), 0, 'f', 3)
-                                 .arg(static_cast<double>(range.max), 0, 'f', 3));
+    // The bounds fields stay editable in any scalar mode; they only go dead in
+    // Element mode, where no scalar is being mapped at all.
+    const bool autoScale = autoRangeCheck_->isChecked();
+    autoRangeCheck_->setEnabled(scalarMode);
+    rangeMinSpin_->setEnabled(scalarMode);
+    rangeMaxSpin_->setEnabled(scalarMode);
+
+    // While auto-scaling, the fields mirror the data's own range so the user
+    // starts from the real numbers when they switch to custom bounds. Once
+    // pinned, they are the user's values and must not be overwritten.
+    if (autoScale) {
+        const auto range = viewport_->scalarRange();
+        const QSignalBlocker minBlocker(rangeMinSpin_);
+        const QSignalBlocker maxBlocker(rangeMaxSpin_);
+        syncingRange_ = true;
+        rangeMinSpin_->setValue(range.valid ? range.min : 0.0);
+        rangeMaxSpin_->setValue(range.valid ? range.max : 1.0);
+        syncingRange_ = false;
+    }
+    applyColorRange();
+}
+
+void RepresentationPanel::applyColorRange()
+{
+    const bool custom = !autoRangeCheck_->isChecked();
+    // An inverted or degenerate window would map every atom to one color;
+    // order the two bounds rather than silently flattening the figure.
+    const auto lo = static_cast<float>(
+        std::min(rangeMinSpin_->value(), rangeMaxSpin_->value()));
+    const auto hi = static_cast<float>(
+        std::max(rangeMinSpin_->value(), rangeMaxSpin_->value()));
+    viewport_->setCustomScalarRange(custom, lo, hi);
 }
 
 } // namespace calango::gui

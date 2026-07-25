@@ -18,6 +18,54 @@ enum class CalculatorKind {
     Siesta,
     Orca, ///< quantum chemistry (requires the ORCA binary)
     Asap, ///< asap3 fast C++ EMT / OpenKIM (requires the asap3 package)
+    // -- Machine-learning interatomic potentials (append only) --------------
+    // Each needs its own package in the job environment; the generated script
+    // names it in a comment. Grouped after the classical/DFT engines so the
+    // existing enum values keep the meaning they have in saved projects.
+    DeepMd,    ///< DeepMD-kit — frozen .pb graph
+    NequIp,    ///< NequIP — deployed TorchScript .pth
+    Allegro,   ///< Allegro — NequIP's strictly-local architecture
+    ChgNet,    ///< CHGNet — pretrained universal potential with magmoms
+    MatterSim, ///< MatterSim — Microsoft's universal potential (M3GNet-family)
+    FairChem,  ///< FAIRChem / OCP — EquiformerV2, eSCN checkpoints
+};
+
+/// True for the machine-learning interatomic potentials — the engines that
+/// take a model/checkpoint rather than a basis set and k-points. Drives which
+/// wizard groups are shown and which script block is emitted.
+constexpr bool isMlipCalculator(CalculatorKind kind)
+{
+    return kind == CalculatorKind::Mace || kind == CalculatorKind::DeepMd
+        || kind == CalculatorKind::NequIp || kind == CalculatorKind::Allegro
+        || kind == CalculatorKind::ChgNet || kind == CalculatorKind::MatterSim
+        || kind == CalculatorKind::FairChem;
+}
+
+/// Compute device shared by every MLIP backend. Enum order is the combo order.
+enum class MlipDevice {
+    Cpu,
+    Cuda, ///< NVIDIA GPU (needs a CUDA build of the framework)
+    Mps,  ///< Apple-silicon GPU (no float64 kernels in PyTorch)
+};
+
+/// CHGNet pretrained weight sets. CHGNet ships versioned checkpoints; pinning
+/// one keeps a run reproducible when the package is updated.
+enum class ChgNetWeights {
+    V0_3_0, ///< "0.3.0" — the widely-cited published checkpoint
+    Latest, ///< whatever the installed chgnet release considers current
+};
+
+/// MatterSim model size. The 5M-parameter model is the fast default; 1M trades
+/// accuracy for speed on large cells.
+enum class MatterSimModel {
+    M3,   ///< MatterSim-v1.0.0-1M
+    M100, ///< MatterSim-v1.0.0-5M (the larger, more accurate release)
+};
+
+/// FAIRChem / OCP architectures. The checkpoint must match the architecture.
+enum class FairChemModel {
+    EquiformerV2,
+    EScn,
 };
 
 /// Which MACE model the calculator loads. Foundation models are fetched
@@ -209,6 +257,39 @@ struct CalculatorConfig {
     std::string maceDevice = "cpu";    ///< "cpu" | "cuda" | "mps"
     MacePrecision macePrecision = MacePrecision::Float64;
 
+    // -- Machine-learning interatomic potentials (DeepMD … FAIRChem) --------
+    // One shared device selector: every backend below is a PyTorch/TF model
+    // that runs on the same hardware, and duplicating the control per engine
+    // would let two of them disagree about which GPU a job uses.
+    MlipDevice mlipDevice = MlipDevice::Cpu;
+
+    /// DeepMD-kit: frozen graph (`.pb`, or a `.pth` for the PyTorch backend).
+    std::string deepmdModelPath;
+    /// NequIP / Allegro: *deployed* TorchScript model (`.pth`), i.e. the
+    /// output of `nequip-deploy build`, not a training checkpoint.
+    std::string nequipModelPath;
+    /// Unit names the deployed NequIP/Allegro model was trained in. ASE works
+    /// in eV and Å, so the calculator rescales by these — a model trained in
+    /// kcal/mol silently reports wrong energies if they are left at eV.
+    std::string nequipEnergyUnits = "eV";
+    std::string nequipLengthUnits = "Angstrom";
+
+    ChgNetWeights chgnetWeights = ChgNetWeights::V0_3_0;
+    /// Ask CHGNet for the stress tensor as well as energy/forces (needed for
+    /// variable-cell relaxation; costs an extra head evaluation).
+    bool chgnetStress = true;
+
+    MatterSimModel matterSimModel = MatterSimModel::M3;
+    /// Thermodynamic state passed to MatterSim's finite-temperature head.
+    /// Ignored unless `matterSimThermal` is set.
+    bool matterSimThermal = false;
+    double matterSimTemperatureK = 300.0;
+    double matterSimPressureGPa = 0.0;
+
+    FairChemModel fairChemModel = FairChemModel::EquiformerV2;
+    /// FAIRChem checkpoint (`.pt`). Required — FAIRChem has no default model.
+    std::string fairChemCheckpointPath;
+
     // -- GPAW (DFT) ---------------------------------------------------------
     // planeWaveCutoffEv above is the PW() cutoff; gpawGridSpacing is the FD
     // grid spacing (h) and gpawBasis the LCAO basis — GPAW takes exactly one
@@ -255,6 +336,14 @@ struct CalculatorConfig {
 
 std::string toString(CalculatorKind kind);
 std::string toString(TaskKind kind);
+/// The device keyword the MLIP frameworks take ("cpu", "cuda", "mps").
+std::string toString(MlipDevice device);
+/// CHGNet's `model_name` keyword ("0.3.0" / "latest").
+std::string toString(ChgNetWeights weights);
+/// MatterSim's bundled checkpoint name ("MatterSim-v1.0.0-1M.pth", …).
+std::string toString(MatterSimModel model);
+/// FAIRChem architecture label, used in the generated script's comment.
+std::string toString(FairChemModel model);
 /// MACE's `default_dtype` keyword ("float64" / "float32").
 std::string toString(MacePrecision precision);
 /// GPAW's eigensolver keyword ("dav", "cg", "rmm-diis", "direct").

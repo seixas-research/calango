@@ -18,8 +18,51 @@ std::string toString(CalculatorKind kind)
     case CalculatorKind::Siesta: return "SIESTA";
     case CalculatorKind::Orca: return "ORCA";
     case CalculatorKind::Asap: return "ASAP";
+    case CalculatorKind::DeepMd: return "DeepMD-kit";
+    case CalculatorKind::NequIp: return "NequIP";
+    case CalculatorKind::Allegro: return "Allegro";
+    case CalculatorKind::ChgNet: return "CHGNet";
+    case CalculatorKind::MatterSim: return "MatterSim";
+    case CalculatorKind::FairChem: return "FAIRChem";
     }
     return "?";
+}
+
+std::string toString(MlipDevice device)
+{
+    switch (device) {
+    case MlipDevice::Cpu: return "cpu";
+    case MlipDevice::Cuda: return "cuda";
+    case MlipDevice::Mps: return "mps";
+    }
+    return "cpu";
+}
+
+std::string toString(ChgNetWeights weights)
+{
+    switch (weights) {
+    case ChgNetWeights::V0_3_0: return "0.3.0";
+    case ChgNetWeights::Latest: return "latest";
+    }
+    return "0.3.0";
+}
+
+std::string toString(MatterSimModel model)
+{
+    switch (model) {
+    case MatterSimModel::M3: return "MatterSim-v1.0.0-1M.pth";
+    case MatterSimModel::M100: return "MatterSim-v1.0.0-5M.pth";
+    }
+    return "MatterSim-v1.0.0-1M.pth";
+}
+
+std::string toString(FairChemModel model)
+{
+    switch (model) {
+    case FairChemModel::EquiformerV2: return "EquiformerV2";
+    case FairChemModel::EScn: return "eSCN";
+    }
+    return "EquiformerV2";
 }
 
 std::string toString(TaskKind kind)
@@ -298,6 +341,111 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
         break;
     }
 
+    // -- Machine-learning interatomic potentials ---------------------------
+    // Each block is a plain ASE calculator construction: the user edits the
+    // model path in the wizard, and the script stays runnable standalone.
+
+    case CalculatorKind::DeepMd:
+        out << "# DeepMD-kit — deep potential from a frozen model graph.\n"
+               "# Requires:  pip install deepmd-kit   (TensorFlow or PyTorch backend)\n"
+               "from deepmd.calculator import DP\n"
+               "\n"
+            << "atoms.calc = DP(model=r\"" << c.deepmdModelPath << "\")\n";
+        if (c.deepmdModelPath.empty())
+            out << "# EDIT ME: no model file was selected — DP() needs a frozen\n"
+                   "# .pb (TensorFlow) or .pth (PyTorch) deep-potential graph.\n";
+        break;
+
+    case CalculatorKind::NequIp:
+    case CalculatorKind::Allegro: {
+        const bool allegro = c.calculator == CalculatorKind::Allegro;
+        out << (allegro
+                    ? "# Allegro — strictly-local equivariant potential (NequIP\n"
+                      "# framework), loaded from a deployed TorchScript model.\n"
+                    : "# NequIP — E(3)-equivariant message-passing potential,\n"
+                      "# loaded from a deployed TorchScript model.\n")
+            << "# Requires:  pip install nequip"
+            << (allegro ? " mir-allegro\n" : "\n")
+            << "# The model must be DEPLOYED (`nequip-deploy build ...`), not a\n"
+               "# raw training checkpoint.\n"
+               "from nequip.ase import NequIPCalculator\n"
+               "\n"
+               "atoms.calc = NequIPCalculator.from_deployed_model(\n"
+            << "    model_path=r\"" << c.nequipModelPath << "\",\n"
+            << "    device=\"" << toString(c.mlipDevice) << "\",\n"
+               "    # The deployed model carries its own training units; these\n"
+               "    # rescale them to ASE's eV / Angstrom.\n"
+            << "    energy_units_to_eV=" << (c.nequipEnergyUnits == "eV" ? "1.0" : "None")
+            << ",  # " << c.nequipEnergyUnits << "\n"
+            << "    length_units_to_A=" << (c.nequipLengthUnits == "Angstrom" ? "1.0" : "None")
+            << ",  # " << c.nequipLengthUnits << "\n"
+               ")\n";
+        if (c.nequipEnergyUnits != "eV" || c.nequipLengthUnits != "Angstrom")
+            out << "# EDIT ME: this model was trained in " << c.nequipEnergyUnits
+                << " / " << c.nequipLengthUnits << ". Replace the None values\n"
+                   "# above with the numeric conversion factors to eV / Angstrom\n"
+                   "# (e.g. 0.0433641 for kcal/mol -> eV); leaving them None makes\n"
+                   "# NequIP fall back to the units recorded in the deployed model.\n";
+        break;
+    }
+
+    case CalculatorKind::ChgNet:
+        out << "# CHGNet — universal pretrained potential with magnetic-moment\n"
+               "# prediction (crystal Hamiltonian graph network).\n"
+               "# Requires:  pip install chgnet\n"
+               "from chgnet.model.dynamics import CHGNetCalculator\n"
+               "from chgnet.model.model import CHGNet\n"
+               "\n"
+            << "model = CHGNet.load(model_name=\"" << toString(c.chgnetWeights)
+            << "\")\n"
+            << "atoms.calc = CHGNetCalculator(model=model, use_device=\""
+            << toString(c.mlipDevice) << "\",\n"
+            << "                              stress_weight="
+            << (c.chgnetStress ? "1.0" : "0.0") << ")\n";
+        if (!c.chgnetStress)
+            out << "# Stress evaluation disabled: cheaper, but variable-cell\n"
+                   "# relaxation and any stress-based analysis will not work.\n";
+        break;
+
+    case CalculatorKind::MatterSim:
+        out << "# MatterSim — universal interatomic potential across the\n"
+               "# periodic table and a wide temperature / pressure range.\n"
+               "# Requires:  pip install mattersim\n"
+               "from mattersim.forcefield import MatterSimCalculator\n"
+               "\n"
+            << "atoms.calc = MatterSimCalculator(\n"
+            << "    load_path=\"" << toString(c.matterSimModel) << "\",\n"
+            << "    device=\"" << toString(c.mlipDevice) << "\",\n"
+               ")\n";
+        if (c.matterSimThermal)
+            out << "# Thermodynamic state this potential is evaluated at:\n"
+                << "#   T = " << c.matterSimTemperatureK << " K, P = "
+                << c.matterSimPressureGPa << " GPa\n"
+                   "# MatterSim's released checkpoints are trained across T/P, so\n"
+                   "# the state is carried on the Atoms rather than the calculator.\n"
+                << "atoms.info[\"temperature_K\"] = " << c.matterSimTemperatureK
+                << "\n"
+                << "atoms.info[\"pressure_GPa\"] = " << c.matterSimPressureGPa
+                << "\n";
+        break;
+
+    case CalculatorKind::FairChem:
+        out << "# FAIRChem (formerly Open Catalyst / OCP) — "
+            << toString(c.fairChemModel) << " architecture.\n"
+               "# Requires:  pip install fairchem-core\n"
+               "from fairchem.core import OCPCalculator\n"
+               "\n"
+               "atoms.calc = OCPCalculator(\n"
+            << "    checkpoint_path=r\"" << c.fairChemCheckpointPath << "\",\n"
+            << "    cpu=" << (c.mlipDevice == MlipDevice::Cpu ? "True" : "False")
+            << ",\n"
+               ")\n";
+        if (c.fairChemCheckpointPath.empty())
+            out << "# EDIT ME: FAIRChem ships no default model — download an\n"
+                   "# " << toString(c.fairChemModel)
+                << " checkpoint and point checkpoint_path at it.\n";
+        break;
+
     case CalculatorKind::Vasp:
         out << "# VASP via ASE — requires the VASP_PP_PATH and ASE_VASP_COMMAND\n"
                "# environment variables (see the ASE VASP calculator docs).\n"
@@ -478,7 +626,52 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "_opt_traj.close()\n"
                "write(\"optimized.extxyz\", atoms)\n"
                "energy = atoms.get_potential_energy()\n"
-               "print(f\"CALANGO_RESULT converged={converged} energy_eV={energy:.6f}\", flush=True)\n";
+               "print(f\"CALANGO_RESULT converged={converged} energy_eV={energy:.6f}\", flush=True)\n"
+               "\n"
+               "# Machine-readable summary for the Geometry Optimization Viewer.\n"
+               "# Written last so its presence means the run reached the end.\n"
+               "import json\n"
+               "import numpy as _np\n"
+               "\n"
+               "_forces = atoms.get_forces()\n"
+               "_force_norms = _np.linalg.norm(_forces, axis=1)\n"
+               "# The energy CHANGE over the relaxation is what says whether the\n"
+               "# optimizer actually did anything, so read the first recorded\n"
+               "# step back out of the trajectory rather than reporting only the\n"
+               "# final value.\n"
+               "_initial_energy = None\n"
+               "try:\n"
+               "    from ase.io import read as _read\n"
+               "\n"
+               "    _first = _read(\"opt.traj\", index=0)\n"
+               "    _initial_energy = float(_first.get_potential_energy())\n"
+               "except Exception:\n"
+               "    pass  # single-step run, or a calculator that cannot re-evaluate\n"
+               "_summary = {\n"
+            << "    \"optimizer\": \"" << opt << "\",\n"
+            << "    \"fmax_criterion_eV_per_A\": " << c.fmax << ",\n"
+               "    \"max_steps\": max_steps,\n"
+               "    \"steps\": int(opt.nsteps),\n"
+               "    \"converged\": bool(converged),\n"
+            << "    \"relax_cell\": " << (c.relaxCell ? "True" : "False") << ",\n"
+               "    \"energy_eV\": float(energy),\n"
+               "    \"initial_energy_eV\": _initial_energy,\n"
+               "    \"energy_change_eV\": (None if _initial_energy is None\n"
+               "                         else float(energy) - _initial_energy),\n"
+               "    \"fmax_eV_per_A\": float(_force_norms.max()) if len(_force_norms) else 0.0,\n"
+               "    \"fmax_atom\": int(_force_norms.argmax()) if len(_force_norms) else -1,\n"
+               "    # RMS over ALL 3N force components, the conventional\n"
+               "    # definition — not the RMS of the per-atom magnitudes.\n"
+               "    \"frms_eV_per_A\": float(_np.sqrt((_forces ** 2).sum() / _forces.size))\n"
+               "                     if _forces.size else 0.0,\n"
+               "    \"natoms\": len(atoms),\n"
+               "    \"formula\": atoms.get_chemical_formula(),\n"
+               "    \"trajectory\": \"opt.traj\",\n"
+               "    \"forces\": [[float(c) for c in row] for row in _forces],\n"
+               "}\n"
+               "with open(\"geometry_optimization.json\", \"w\") as f:\n"
+               "    json.dump(_summary, f)\n"
+               "print(\"CALANGO_INFO wrote geometry_optimization.json\", flush=True)\n";
         break;
     }
 

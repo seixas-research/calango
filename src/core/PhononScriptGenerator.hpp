@@ -39,6 +39,21 @@ struct PhononConfig {
     /// Enforce the acoustic sum rule when reading the force constants, so the
     /// three acoustic branches vanish at Γ (ase.phonons Phonons.read(acoustic=…)).
     bool acousticSumRule = true;
+
+    /// Use the crystal's space-group symmetry to cut the finite-displacement
+    /// set from the naive 6N (±δ along x/y/z for every atom) down to the
+    /// symmetry-irreducible displacements, reconstructing the full force
+    /// constant matrix from them. Uses spglib (through phonopy) to find the
+    /// site-symmetry irreps; falls back to the plain ASE 6N path when phonopy
+    /// is unavailable, so the script always runs.
+    bool symmetryReducedDisplacements = false;
+
+    /// Compute forces on the UN-displaced geometry and subtract them from
+    /// every displaced configuration. A relaxation stops at a finite fmax, so
+    /// the reference geometry carries small residual forces; leaving them in
+    /// contaminates the force constants and shows up as spurious non-zero
+    /// acoustic frequencies at Γ. Costs one extra force evaluation.
+    bool removeResidualForces = false;
 };
 
 /// Generates the standalone ASE Python script for a PhononConfig, in the

@@ -10,6 +10,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSlider>
+#include <QSpinBox>
 #include <QStackedWidget>
 #include <QVBoxLayout>
 
@@ -196,21 +197,47 @@ QWidget* EditVolumetricRenderDialog::buildColorSlicePage()
     auto* page = new QWidget(this);
     auto* form = new QFormLayout(page);
 
-    planeCombo_ = new QComboBox(page);
-    planeCombo_->addItems({QStringLiteral("XY (hkl 001)"),
-                           QStringLiteral("XZ (hkl 010)"),
-                           QStringLiteral("YZ (hkl 100)")});
-    planeCombo_->setCurrentIndex(std::clamp(style_.slicePlane, 0, 2));
-    form->addRow(tr("Plane orientation:"), planeCombo_);
-    connect(planeCombo_, &QComboBox::currentIndexChanged, this, [this](int i) {
-        style_.slicePlane = i;
-        emitChange();
-    });
+    // Plane orientation as Miller indices, so the slice is defined against the
+    // crystal lattice rather than the Cartesian axes: the normal is the
+    // reciprocal-lattice vector G = h·b₁ + k·b₂ + l·b₃. Three dedicated
+    // numerical fields (not sliders) — the useful values are small exact
+    // integers, and a family like (1 -1 0) has to be typed, not dragged.
+    auto* millerRow = new QWidget(page);
+    auto* millerLayout = new QHBoxLayout(millerRow);
+    millerLayout->setContentsMargins(0, 0, 0, 0);
+    int* const millerFields[3] = {&style_.millerH, &style_.millerK,
+                                  &style_.millerL};
+    const char* const millerNames[3] = {"h", "k", "l"};
+    for (int i = 0; i < 3; ++i) {
+        millerLayout->addWidget(
+            new QLabel(QLatin1String(millerNames[i]), millerRow));
+        auto* spin = new QSpinBox(millerRow);
+        spin->setRange(-99, 99);
+        spin->setValue(*millerFields[i]);
+        millerLayout->addWidget(spin);
+        millerSpins_[i] = spin;
+        connect(spin, &QSpinBox::valueChanged, this,
+                [this, target = millerFields[i]](int v) {
+                    *target = v;
+                    emitChange();
+                });
+    }
+    millerLayout->addStretch(1);
+    millerRow->setToolTip(
+        tr("Miller indices (h k l) of the slice plane. The plane normal is the "
+           "reciprocal-lattice vector G = h·(b×c) + k·(c×a) + l·(a×b), so "
+           "(0 0 1) cuts along the a-b plane and (1 1 1) along the close-packed "
+           "family. (0 0 0) is degenerate and falls back to the c-axis "
+           "normal."));
+    form->addRow(tr("Plane — Miller indices (h k l):"), millerRow);
 
     sliceOffsetSlider_ = new QSlider(Qt::Horizontal, page);
     sliceOffsetSlider_->setRange(0, kSliderSteps);
     sliceOffsetSlider_->setValue(
         static_cast<int>(std::clamp(style_.sliceOffset, 0.0, 1.0) * kSliderSteps));
+    sliceOffsetSlider_->setToolTip(
+        tr("Displacement of the plane along its own normal, sweeping the whole "
+           "cell from one face to the other."));
     form->addRow(tr("Offset:"), sliceOffsetSlider_);
     connect(sliceOffsetSlider_, &QSlider::valueChanged, this, [this](int v) {
         style_.sliceOffset = static_cast<double>(v) / kSliderSteps;
@@ -224,6 +251,87 @@ QWidget* EditVolumetricRenderDialog::buildColorSlicePage()
                 const auto& g = volumetricGradients();
                 if (i >= 0 && i < g.size())
                     style_.gradient = g.at(i);
+                emitChange();
+            });
+
+    sliceInvertCheck_ = new QCheckBox(tr("Invert Colormap Scale"), page);
+    sliceInvertCheck_->setChecked(style_.invertGradient);
+    sliceInvertCheck_->setToolTip(
+        tr("Flip the value → color mapping (t → 1 − t): field minima take the "
+           "high end of the ramp and maxima the low end, like matplotlib's "
+           "\"_r\" palettes."));
+    form->addRow(sliceInvertCheck_);
+    connect(sliceInvertCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        style_.invertGradient = on;
+        emitChange();
+    });
+
+    // -- Color-mapping bounds ----------------------------------------------
+    // A few outlier voxels (a nuclear cusp in a density, a spike at a boundary)
+    // compress everything else into one end of the ramp; pinning the window is
+    // what makes the physically interesting range legible, and what lets two
+    // slices be compared on the same scale.
+    sliceBoundsCheck_ = new QCheckBox(tr("Custom color range"), page);
+    sliceBoundsCheck_->setChecked(style_.sliceUseBounds);
+    sliceBoundsCheck_->setToolTip(
+        tr("Off: the ramp spans the field's own minimum and maximum.\n"
+           "On: it is pinned to the Min/Max below, with values outside them "
+           "clamped to the ramp ends."));
+    form->addRow(sliceBoundsCheck_);
+
+    const auto makeBoundSpin = [page](double value) {
+        auto* spin = new QDoubleSpinBox(page);
+        spin->setDecimals(5);
+        spin->setRange(-1e12, 1e12);
+        spin->setKeyboardTracking(false); // apply on commit, not per keystroke
+        spin->setValue(value);
+        return spin;
+    };
+    sliceMinSpin_ = makeBoundSpin(style_.sliceMin);
+    form->addRow(tr("Min value:"), sliceMinSpin_);
+    sliceMaxSpin_ = makeBoundSpin(style_.sliceMax);
+    form->addRow(tr("Max value:"), sliceMaxSpin_);
+
+    const auto syncBoundsEnabled = [this] {
+        const bool on = sliceBoundsCheck_->isChecked();
+        sliceMinSpin_->setEnabled(on);
+        sliceMaxSpin_->setEnabled(on);
+    };
+    syncBoundsEnabled();
+    connect(sliceBoundsCheck_, &QCheckBox::toggled, this,
+            [this, syncBoundsEnabled](bool on) {
+                style_.sliceUseBounds = on;
+                syncBoundsEnabled();
+                emitChange();
+            });
+    connect(sliceMinSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double v) {
+                style_.sliceMin = v;
+                emitChange();
+            });
+    connect(sliceMaxSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double v) {
+                style_.sliceMax = v;
+                emitChange();
+            });
+
+    // -- Voxel grid interpolation ------------------------------------------
+    sliceInterpCombo_ = new QComboBox(page);
+    // Order matches core::GridInterpolation.
+    sliceInterpCombo_->addItem(tr("None (Raw Grid)"));
+    sliceInterpCombo_->addItem(tr("Linear Spline Interpolation (Trilinear)"));
+    sliceInterpCombo_->addItem(tr("Cubic Spline Interpolation (Tricubic)"));
+    sliceInterpCombo_->setCurrentIndex(
+        static_cast<int>(style_.sliceInterpolation));
+    sliceInterpCombo_->setToolTip(
+        tr("Refine the voxel grid (2× upsampling) before sampling the plane. "
+           "Tricubic gives the smoothest field but costs the most memory; None "
+           "shows the raw data, voxel facets and all."));
+    form->addRow(tr("Grid Interpolation:"), sliceInterpCombo_);
+    connect(sliceInterpCombo_, &QComboBox::currentIndexChanged, this,
+            [this](int i) {
+                style_.sliceInterpolation =
+                    static_cast<core::GridInterpolation>(i);
                 emitChange();
             });
 
@@ -349,7 +457,11 @@ void EditVolumetricRenderDialog::setDatasets(const QStringList& labels,
     potentialBaseCombo_->addItem(tr("Current selection"), -1);
     potentialSecondaryCombo_->clear();
     potentialSecondaryCombo_->addItem(tr("None"), -1);
+    // An empty label marks a dataset bound to another workspace tab — skipped
+    // here, while the surviving entries keep their registry index as data.
     for (int i = 0; i < labels.size(); ++i) {
+        if (labels.at(i).isEmpty())
+            continue;
         potentialBaseCombo_->addItem(labels.at(i), i);
         potentialSecondaryCombo_->addItem(labels.at(i), i);
     }
@@ -387,6 +499,15 @@ void EditVolumetricRenderDialog::setFieldRange(double fieldMin, double fieldMax)
         style_.potentialMax = fieldMax_;
         potentialMinSpin_->setValue(fieldMin_);
         potentialMaxSpin_->setValue(fieldMax_);
+    }
+    // While auto-scaled, the slice bounds track the field so the user starts
+    // from its real numbers when they switch to a custom window. Once pinned,
+    // the values are theirs and a new selection must not overwrite them.
+    if (!style_.sliceUseBounds) {
+        style_.sliceMin = fieldMin_;
+        style_.sliceMax = fieldMax_;
+        sliceMinSpin_->setValue(fieldMin_);
+        sliceMaxSpin_->setValue(fieldMax_);
     }
     updating_ = false;
 }

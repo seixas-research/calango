@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Coordination.hpp"
+#include "core/HydrogenBonds.hpp"
 #include "core/Vec3.hpp"
 #include "render/Camera.hpp"
 #include "render/StructureRenderer.hpp"
@@ -84,6 +85,11 @@ public:
     };
     ScalarRange scalarRange() const { return scalarRange_; }
 
+    /// Pin the scalar color ramp to explicit bounds instead of auto-scaling to
+    /// the data. Passing enabled=false restores auto-scaling. Re-colors the
+    /// atoms (and their bond halves) without touching the scalars themselves.
+    void setCustomScalarRange(bool enabled, float min, float max);
+
     QColor backgroundColor() const { return backgroundColor_; }
     void setBackgroundColor(const QColor& color);
 
@@ -107,6 +113,24 @@ public:
         bool visible);
     /// Remove the custom-overlay primitives.
     void clearCustomOverlay();
+
+    // -- Hydrogen bonds -----------------------------------------------------
+    /// Geometric hydrogen-bond perception (Bond Editor → "Hydrogen Bonds").
+    /// Detected contacts are drawn as dashed lines, so they are visually
+    /// distinct from the covalent bonds they sit among.
+    struct HydrogenBondStyle {
+        bool enabled = false;
+        core::HydrogenBondOptions options;
+        QColor color{120, 200, 255};
+        float dashLength = 0.18f; ///< Å per dash (gaps are the same length)
+    };
+    HydrogenBondStyle& hydrogenBondStyle() { return hbondStyle_; }
+    /// Re-run detection on the current structure and push the dashes. Call
+    /// after editing hydrogenBondStyle() or replacing the structure.
+    void refreshHydrogenBonds();
+    /// Number of contacts found by the last refresh — the Bond Editor reports
+    /// it so the user can tell "criteria too strict" from "none present".
+    int hydrogenBondCount() const { return hbondCount_; }
 
 public Q_SLOTS:
     /// Perspective (default) vs. orthographic projection; the transition
@@ -171,6 +195,23 @@ public:
         float focusOffset = 0.0f; ///< Å shift of the focal plane from the target
     };
     DepthOfField& depthOfField() { return dof_; }
+
+    /// Screen-space ambient occlusion (View -> Visual Effects). Darkens the
+    /// contact regions a direct-lighting model leaves fully lit — the creases
+    /// between touching spheres, the gap under a bond — which is what makes a
+    /// dense structure read as solid geometry rather than a flat cluster of
+    /// discs. Like DoF it renders through the offscreen G-buffer, so enabling
+    /// either trades MSAA for the effect.
+    struct AmbientOcclusion {
+        bool enabled = false;
+        /// Hemisphere sampling radius in Å. Roughly "how far away can a
+        /// neighbour still shade me" — around an atomic radius reads best.
+        float radius = 1.2f;
+        /// Strength of the darkening: 0 leaves the image untouched, 1 applies
+        /// the full occlusion factor.
+        float intensity = 0.7f;
+    };
+    AmbientOcclusion& ambientOcclusion() { return ssao_; }
 
 public Q_SLOTS:
     /// Off-screen high-resolution capture of the current scene into a
@@ -251,11 +292,27 @@ private:
     /// Atoms whose projected centers fall inside the screen-space rect.
     std::set<int> atomsInRect(const QRectF& rect) const;
 
-    /// (Re)create the offscreen color+depth pair for the DoF pass.
-    void ensureDofTarget(int w, int h);
-    void destroyDofTarget();
+    /// (Re)create the offscreen G-buffer (color + view normals + depth) and
+    /// the SSAO ping-pong targets. Shared by the DoF and SSAO passes: both
+    /// need the scene rendered offscreen, and DoF also reads the same depth.
+    void ensurePostTarget(int w, int h);
+    void destroyPostTarget();
+    /// Compile the post-processing programs and build the SSAO sample kernel +
+    /// noise texture. Called once from initializeGL.
+    void initializePostProcessing();
+    /// Run the SSAO + blur passes over the current G-buffer, leaving the
+    /// blurred occlusion factor in ssaoBlurTex_. `projection` must be the one
+    /// the scene was rendered with.
+    void renderSsaoPasses(int w, int h, const QMatrix4x4& projection);
+    /// Draw a fullscreen triangle with the currently bound program.
+    void drawFullscreenTriangle();
     /// Draw the scene (GL state assumed set) — shared by both paths.
     void renderScene();
+    /// The two halves of renderScene(), so the post-processing path can slip a
+    /// per-attachment clear between them (glClear fills every attached color
+    /// buffer, including the G-buffer normals).
+    void clearScene();
+    void drawSceneGeometry();
     /// Screen position of an atom center; false if behind the camera.
     bool projectAtomToScreen(int index, QPointF& out) const;
     /// Register a click on `atom` for the active measurement mode.
@@ -304,6 +361,10 @@ private:
     std::vector<render::StructureRenderer::OverlayRange> customOverlayRanges_;
     bool customOverlayVisible_ = false;
     bool customOverlayDirty_ = false;
+    HydrogenBondStyle hbondStyle_;
+    std::vector<float> hydrogenBondSegments_; ///< pre-dashed pos+color stream
+    bool hydrogenBondsDirty_ = false;
+    int hbondCount_ = 0;
     bool showAxes_ = true;
     bool axesLatticeMode_ = false;
     bool axesArrows_ = false;
@@ -327,13 +388,33 @@ private:
     QString measurementLabel_; ///< overlay text of a completed measurement
 
     DepthOfField dof_;
+    AmbientOcclusion ssao_;
     QOpenGLShaderProgram dofProgram_;
+    QOpenGLShaderProgram ssaoProgram_;
+    QOpenGLShaderProgram ssaoBlurProgram_;
+    QOpenGLShaderProgram ssaoCompositeProgram_;
     QOpenGLVertexArrayObject dofVao_; ///< empty VAO for the fullscreen triangle
-    unsigned dofFbo_ = 0;
-    unsigned dofColorTex_ = 0;
-    unsigned dofDepthTex_ = 0;
-    int dofWidth_ = 0;
-    int dofHeight_ = 0;
+
+    // Offscreen G-buffer shared by the post-processing passes. `postNormalTex_`
+    // is written by the scene shaders through draw buffer 1.
+    unsigned postFbo_ = 0;
+    unsigned postColorTex_ = 0;
+    unsigned postNormalTex_ = 0;
+    unsigned postDepthTex_ = 0;
+    /// AO ping-pong: raw occlusion, then the bilaterally blurred result.
+    unsigned ssaoFbo_ = 0;
+    unsigned ssaoTex_ = 0;
+    unsigned ssaoBlurFbo_ = 0;
+    unsigned ssaoBlurTex_ = 0;
+    /// Scene color after the AO multiply, so DoF can blur the composited
+    /// image rather than a version with sharp occlusion painted back on.
+    unsigned ssaoCompositeFbo_ = 0;
+    unsigned ssaoCompositeTex_ = 0;
+    /// 4x4 tiled random rotation vectors for the SSAO kernel.
+    unsigned ssaoNoiseTex_ = 0;
+    std::vector<QVector3D> ssaoKernel_; ///< hemisphere sample offsets
+    int postWidth_ = 0;
+    int postHeight_ = 0;
     QPointF pressPos_;
 };
 

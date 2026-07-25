@@ -26,7 +26,13 @@ class ViewportWidget;
 ///         (or unbonded) in one action.
 ///       * By Atomic Indices — pick a specific atom pair by 1-based index (or
 ///         from the viewport selection) and create it as a single/double/
-///         triple bond, or suppress it.
+///         triple/aromatic bond, or suppress it. Bond order lives here rather
+///         than in the Representation panel: it is a property of the chemistry,
+///         not of how the structure is displayed.
+///       * Hydrogen Bonds — geometric D-H...A perception (distance + angle
+///         criteria), rendered as dashed lines. Not an override list: these are
+///         re-derived from the geometry, so they follow a trajectory rather
+///         than freezing at the frame they were detected on.
 /// Manual overrides live on the Structure (so they survive re-rendering
 /// and are captured by undo); edits apply immediately via bondsEdited().
 class BondEditorDialog : public QDialog {
@@ -81,6 +87,13 @@ private:
     QComboBox* bondOrderCombo_ = nullptr;
     QPushButton* useSelectionButton_;
     QLabel* pairInfoLabel_;
+
+    // "Hydrogen Bonds" tab — geometric perception, not stored overrides.
+    QCheckBox* hbondEnableCheck_ = nullptr;
+    QDoubleSpinBox* hbondDistanceSpin_ = nullptr;
+    QDoubleSpinBox* hbondAngleSpin_ = nullptr;
+    QPushButton* hbondColorButton_ = nullptr;
+    QLabel* hbondCountLabel_ = nullptr;
 
     QListWidget* overrideList_;
 };

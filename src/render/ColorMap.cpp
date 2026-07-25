@@ -152,6 +152,35 @@ constexpr std::array<Rgb, 9> kGreys{{
     {0.000f, 0.000f, 0.000f},
 }};
 
+// matplotlib "Spectral": diverging dark-red -> yellow -> dark-blue, sampled
+// from the 11-class ColorBrewer control points at the 9 anchor positions.
+constexpr std::array<Rgb, 9> kSpectral{{
+    {0.620f, 0.004f, 0.259f},
+    {0.866f, 0.289f, 0.298f},
+    {0.975f, 0.555f, 0.322f},
+    {0.995f, 0.829f, 0.504f},
+    {1.000f, 1.000f, 0.749f},
+    {0.844f, 0.937f, 0.608f},
+    {0.535f, 0.814f, 0.645f},
+    {0.247f, 0.590f, 0.717f},
+    {0.369f, 0.310f, 0.635f},
+}};
+
+// gnuplot's default pm3d palette: r = √t, g = t³, b = sin(2πt) clipped at 0.
+// Black -> purple -> red -> yellow; the blue hump is what the linear anchors
+// approximate most coarsely, which reads as the intended purple midtone.
+constexpr std::array<Rgb, 9> kGnuplot{{
+    {0.000f, 0.000f, 0.000f},
+    {0.354f, 0.002f, 0.707f},
+    {0.500f, 0.016f, 1.000f},
+    {0.612f, 0.053f, 0.707f},
+    {0.707f, 0.125f, 0.000f},
+    {0.791f, 0.244f, 0.000f},
+    {0.866f, 0.422f, 0.000f},
+    {0.935f, 0.670f, 0.000f},
+    {1.000f, 1.000f, 0.000f},
+}};
+
 const std::array<Rgb, 9>& anchors(ColorGradient gradient)
 {
     switch (gradient) {
@@ -175,6 +204,10 @@ const std::array<Rgb, 9>& anchors(ColorGradient gradient)
         return kRainbow;
     case ColorGradient::Greys:
         return kGreys;
+    case ColorGradient::Spectral:
+        return kSpectral;
+    case ColorGradient::Gnuplot:
+        return kGnuplot;
     case ColorGradient::Viridis:
         break;
     }
