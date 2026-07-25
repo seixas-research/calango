@@ -17,6 +17,9 @@ namespace calango::gui {
 ///     Computation (OMP thread count, Conda environments directory).
 ///   • "Python & Environments" — the per-engine Conda environment mapping
 ///     (GPAW/MACE/QE/SIESTA/…) that the simulation wizards resolve silently.
+///   • "Run" — the per-engine shell command template each job launches with
+///     (MPI ranks, OMP pinning, solver invocation) plus the core count those
+///     templates substitute for {cores}.
 /// Values persist through QSettings, which SettingsManager mirrors to
 /// ~/.calango/settings.json; the theme + thread readout apply live when the
 /// dialog closes (MainWindow::showPreferences).
@@ -36,6 +39,8 @@ private:
     void updateCondaStatus();
     /// Build the "Python & Environments" tab (engine → Conda env table).
     QWidget* buildPythonEnvTab();
+    /// Build the "Run" tab (engine → launch command template + core count).
+    QWidget* buildRunTab();
 
     QLineEdit* envPathEdit_;
     QLabel* statusLabel_;
@@ -44,6 +49,8 @@ private:
     QLineEdit* condaDirEdit_ = nullptr;
     QLabel* condaStatusLabel_ = nullptr;
     QTableWidget* engineEnvTable_ = nullptr;
+    QTableWidget* runCommandTable_ = nullptr;
+    QSpinBox* runCoresSpin_ = nullptr;
 };
 
 } // namespace calango::gui

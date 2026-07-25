@@ -23,6 +23,13 @@ public:
     /// Per-calculator environment presets: a JSON-object string mapping a
     /// calculator name ("GPAW", "MACE", …) to its last-used Python/Conda env.
     static constexpr auto kEnvironmentPresets = "jobs/environmentPresets";
+    /// Per-calculator shell command templates (Preferences → "Run"): a
+    /// JSON-object string mapping a calculator name to its launch template,
+    /// e.g. {"GPAW": "gpaw -P {cores} python {script}"}. Engines absent from
+    /// the map use RunCommands::defaultTemplate().
+    static constexpr auto kRunCommands = "jobs/runCommands";
+    /// MPI rank count substituted for {cores} in those templates.
+    static constexpr auto kRunCores = "jobs/runCores";
     static constexpr auto kShowWelcome = "welcome/showAtStartup";
     static constexpr auto kEnvFilePath = "config/envFilePath";
     static constexpr auto kMaterialsProjectApiKey = "materialsProject/apiKey";

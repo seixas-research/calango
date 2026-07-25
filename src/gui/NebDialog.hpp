@@ -3,12 +3,12 @@
 #include "core/CalculatorConfig.hpp"
 #include "core/Structure.hpp"
 
+#include <QComboBox>
 #include <QDialog>
 
 #include <memory>
 #include <vector>
 
-class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
@@ -45,6 +45,12 @@ public:
     /// runRequested() emission).
     QString script() const { return script_; }
     QString pythonExecutable() const;
+    /// Engine this band runs on — the host resolves its launch command
+    /// template (Preferences → "Run") from it.
+    core::CalculatorKind calculatorKind() const
+    {
+        return static_cast<core::CalculatorKind>(calcCombo_->currentData().toInt());
+    }
 
 Q_SIGNALS:
     /// Emitted when the user previews an interpolation; the host loads `band`

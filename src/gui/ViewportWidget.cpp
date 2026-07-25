@@ -555,7 +555,7 @@ void ViewportWidget::initializePostProcessing()
     // the budget where it changes the result most. A fixed seed keeps the
     // shading identical across runs — an AO pattern that shifted between
     // sessions would look like a rendering bug in a saved figure.
-    constexpr int kKernelSize = 32;
+    constexpr int kKernelSize = kMaxSsaoSamples;
     std::mt19937 rng(1337);
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
     std::uniform_real_distribution<float> signed01(-1.0f, 1.0f);
@@ -708,15 +708,20 @@ void ViewportWidget::renderSsaoPasses(int w, int h, const QMatrix4x4& projection
     ssaoProgram_.setUniformValue("uInvProjection", projection.inverted());
     ssaoProgram_.setUniformValueArray("uKernel", ssaoKernel_.data(),
                                       static_cast<int>(ssaoKernel_.size()));
-    ssaoProgram_.setUniformValue("uKernelSize",
-                                 static_cast<int>(ssaoKernel_.size()));
+    // The full kernel is uploaded once; uKernelSize decides how much of it the
+    // shader walks, so the sample count is a live control with no re-upload.
+    ssaoProgram_.setUniformValue(
+        "uKernelSize",
+        std::clamp(ssao_.samples, 1, static_cast<int>(ssaoKernel_.size())));
     ssaoProgram_.setUniformValue("uRadius", ssao_.radius);
     // The bias scales with the radius: a fixed epsilon that is invisible at
     // 2 Å becomes self-occlusion acne at 0.2 Å.
     ssaoProgram_.setUniformValue("uBias", 0.02f * ssao_.radius);
+    // Framebuffer size over the 4x4 noise texture, times the user's scale.
+    const float noiseTile = 4.0f / std::max(ssao_.noiseScale, 0.05f);
     ssaoProgram_.setUniformValue(
-        "uNoiseScale", QVector2D(static_cast<float>(w) / 4.0f,
-                                 static_cast<float>(h) / 4.0f));
+        "uNoiseScale", QVector2D(static_cast<float>(w) / noiseTile,
+                                 static_cast<float>(h) / noiseTile));
     drawFullscreenTriangle();
     ssaoProgram_.release();
 

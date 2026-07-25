@@ -2,6 +2,7 @@
 
 #include "gui/CondaEnvs.hpp"
 #include "gui/EnginePresets.hpp"
+#include "gui/RunCommands.hpp"
 #include "gui/EnvFile.hpp"
 #include "gui/SettingsManager.hpp"
 #include "gui/ThemeManager.hpp"
@@ -161,6 +162,7 @@ PreferencesDialog::PreferencesDialog(QWidget* parent)
     auto* tabs = new QTabWidget(this);
     tabs->addTab(generalPage, tr("General"));
     tabs->addTab(buildPythonEnvTab(), tr("Python && Environments"));
+    tabs->addTab(buildRunTab(), tr("Run"));
 
     auto* layout = new QVBoxLayout(this);
     layout->addWidget(tabs, 1);
@@ -308,6 +310,100 @@ void PreferencesDialog::updateStatus()
                                  "(%n entries).", nullptr,
                                  static_cast<int>(values.size())));
     }
+}
+
+
+QWidget* PreferencesDialog::buildRunTab()
+{
+    auto* page = new QWidget(this);
+    auto* layout = new QVBoxLayout(page);
+
+    auto* note = new QLabel(
+        tr("Shell command each engine's jobs are launched with. Placeholders: "
+           "<b>{cores}</b> MPI ranks, <b>{script}</b> the generated script, "
+           "<b>{python}</b> the engine's interpreter, <b>{input}</b> / "
+           "<b>{output}</b> the solver's files.<br><br>"
+           "A template containing <b>{script}</b> launches the script itself — "
+           "that is how a parallel GPAW run works. A template with "
+           "<b>{input}</b>/<b>{output}</b> is instead handed to ASE as the "
+           "solver command (ASE_ESPRESSO_COMMAND and friends), because running "
+           "the whole Python script under mpirun would start N independent "
+           "copies of it rather than one script driving an N-rank solver."),
+        page);
+    note->setWordWrap(true);
+    note->setTextFormat(Qt::RichText);
+    layout->addWidget(note);
+
+    auto* coresRow = new QHBoxLayout;
+    coresRow->addWidget(new QLabel(tr("Cores ({cores}):"), page));
+    runCoresSpin_ = new QSpinBox(page);
+    runCoresSpin_->setRange(1, 4096);
+    runCoresSpin_->setValue(RunCommands::cores());
+    runCoresSpin_->setToolTip(
+        tr("MPI rank count substituted for {cores}. Defaults to 1: a template "
+           "that silently claimed every core would oversubscribe a machine "
+           "already running something else."));
+    coresRow->addWidget(runCoresSpin_);
+    coresRow->addStretch(1);
+    layout->addLayout(coresRow);
+    connect(runCoresSpin_, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [](int value) { RunCommands::setCores(value); });
+
+    const auto& engines = EnginePresets::configurableEngines();
+    runCommandTable_ = new QTableWidget(engines.size(), 2, page);
+    runCommandTable_->setHorizontalHeaderLabels(
+        {tr("Engine"), tr("Execution command template")});
+    runCommandTable_->verticalHeader()->setVisible(false);
+    runCommandTable_->setSelectionMode(QAbstractItemView::NoSelection);
+    runCommandTable_->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::ResizeToContents);
+    runCommandTable_->horizontalHeader()->setSectionResizeMode(
+        1, QHeaderView::Stretch);
+
+    for (int row = 0; row < engines.size(); ++row) {
+        const core::CalculatorKind kind = engines.at(row);
+
+        auto* nameItem = new QTableWidgetItem(EnginePresets::displayName(kind));
+        nameItem->setFlags(Qt::ItemIsEnabled);
+        runCommandTable_->setItem(row, 0, nameItem);
+
+        auto* edit = new QLineEdit(runCommandTable_);
+        edit->setText(RunCommands::templateFor(kind));
+        edit->setPlaceholderText(RunCommands::defaultTemplate(kind));
+        const QString variable = RunCommands::solverCommandVariable(kind);
+        edit->setToolTip(
+            variable.isEmpty()
+                ? tr("Launches the generated script directly.")
+                : tr("Without {script} this is exported as %1 for ASE to run "
+                     "the solver with.").arg(variable));
+        runCommandTable_->setCellWidget(row, 1, edit);
+        connect(edit, &QLineEdit::editingFinished, this, [edit, kind] {
+            RunCommands::setTemplateFor(kind, edit->text());
+            // Clearing the field falls back to the default, so show what will
+            // actually run rather than leaving the row looking unset.
+            edit->setText(RunCommands::templateFor(kind));
+        });
+    }
+    layout->addWidget(runCommandTable_, 1);
+
+    auto* restore = new QPushButton(tr("Restore Defaults"), page);
+    restore->setToolTip(
+        tr("Reset every engine to its shipped command template."));
+    connect(restore, &QPushButton::clicked, this, [this, engines] {
+        for (int row = 0; row < engines.size(); ++row) {
+            const core::CalculatorKind kind = engines.at(row);
+            RunCommands::setTemplateFor(kind, QString());
+            if (auto* edit = qobject_cast<QLineEdit*>(
+                    runCommandTable_->cellWidget(row, 1)))
+                edit->setText(RunCommands::defaultTemplate(kind));
+        }
+    });
+    auto* restoreRow = new QHBoxLayout;
+    restoreRow->addStretch(1);
+    restoreRow->addWidget(restore);
+    layout->addLayout(restoreRow);
+
+    return page;
 }
 
 } // namespace calango::gui

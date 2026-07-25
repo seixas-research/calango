@@ -40,6 +40,13 @@ public:
 
     Action action() const { return action_; }
     QString script() const;            ///< the (possibly edited) preview text
+    /// The engine the run uses — the host needs it to resolve the launch
+    /// command template (Preferences → "Run").
+    core::CalculatorKind calculatorKind() const { return selectedCalculator(); }
+    /// The (possibly hand-edited) "Running:" line from the review stage. Empty
+    /// when the wizard was never opened on that stage, in which case the host
+    /// falls back to the engine's configured template.
+    QString runCommand() const;
     virtual QString pythonExecutable() const; ///< selected env python, else embedded
 
     /// A compact JSON record of the calculator this run uses — engine, XC,
@@ -227,6 +234,9 @@ private:
     void updateMaceRows();
     /// Show only the GPAW rows that apply to the selected discretization.
     void updateGpawRows();
+    /// Re-fill the "Running:" line from the selected engine's template, unless
+    /// the user has typed their own command into it.
+    void refreshRunCommand();
 
     Action action_ = Action::None;
     int stage_ = 0;
@@ -335,6 +345,12 @@ private:
 
     // Stage 4 — review
     QPlainTextEdit* preview_ = nullptr;
+    /// Editable "Running:" line: the resolved launch command, shown so the
+    /// user can adjust rank counts or flags at the last moment without going
+    /// back to Preferences. Re-resolved from the engine whenever the review
+    /// stage is (re)entered, UNLESS the user has edited it.
+    QLineEdit* runCommandEdit_ = nullptr;
+    bool runCommandEdited_ = false;
 
     // Action bar
     QPushButton* backButton_ = nullptr;

@@ -67,6 +67,7 @@
 #include "gui/WelcomeDialog.hpp"
 #include "gui/RamanDialog.hpp"
 #include "gui/GeometryOptimizationViewer.hpp"
+#include "gui/RunCommands.hpp"
 #include "gui/SqsDialog.hpp"
 #include "gui/VolumetricDialog.hpp"
 #include "gui/WarrenCowleyDialog.hpp"
@@ -2724,11 +2725,16 @@ void MainWindow::openBandResults(const QString& directory)
 
 void MainWindow::openPhononResults(const QString& directory)
 {
-    auto* window = new PhononPlotWindow(directory, this);
+    // The active document's structure is what the phonons were computed for,
+    // so hand it (and the viewport) over — that is what "Vibrational
+    // Analysis…" animates on.
+    Document* doc = currentDocument();
+    auto* window = new PhononPlotWindow(
+        directory, this, doc ? doc->structure : nullptr, viewport_);
     if (!window->hasData()) {
         delete window;
         QMessageBox::information(
-            this, tr("Phonon Band Structure"),
+            this, tr("Phonon Viewer"),
             tr("No phonon_band.json found in %1").arg(directory));
         return;
     }
@@ -2954,7 +2960,7 @@ void MainWindow::showGeometryOptimizationViewer()
 
 void MainWindow::openGeometryOptimizationResults(const QString& directory)
 {
-    auto* viewer = new GeometryOptimizationViewer(viewport_, this);
+    auto* viewer = new GeometryOptimizationViewer(this);
     viewer->setAttribute(Qt::WA_DeleteOnClose);
     if (!viewer->loadResults(directory
                              + QStringLiteral("/geometry_optimization.json"))) {
@@ -3585,7 +3591,8 @@ void MainWindow::effectiveBandsCalculation()
         return;
     }
     runScript(wizard.script(), wizard.pythonExecutable(), tr("Effective Bands"),
-              /*expectFrames=*/false);
+              /*expectFrames=*/false, wizard.calculatorKind(),
+              wizard.runCommand());
     stagedPrimitive_.reset(); // consumed by stageJob, or dropped on failure
 }
 
@@ -3997,7 +4004,8 @@ void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
                                  tr("A calculation is already running — kill it first."));
         return;
     }
-    runScript(wizard.script(), wizard.pythonExecutable(), label, expectFrames);
+    runScript(wizard.script(), wizard.pythonExecutable(), label, expectFrames,
+              wizard.calculatorKind(), wizard.runCommand());
 }
 
 void MainWindow::geometryOptimization()
@@ -4085,7 +4093,8 @@ void MainWindow::openNudgedElasticBand()
         }
         stagedBandFrames_ = nebDialog_->band();
         runScript(nebDialog_->script(), nebDialog_->pythonExecutable(),
-                  tr("NEB"), /*expectFrames=*/true);
+                  tr("NEB"), /*expectFrames=*/true,
+                  nebDialog_->calculatorKind());
     });
     connect(nebDialog_, &QObject::destroyed, this, [this] { nebDialog_ = nullptr; });
     nebDialog_->show();
@@ -4485,7 +4494,8 @@ QString MainWindow::stageJob(const QString& script, int procId)
 }
 
 void MainWindow::runScript(const QString& script, const QString& pythonExe,
-                           const QString& taskLabel, bool expectFrames)
+                           const QString& taskLabel, bool expectFrames,
+                           core::CalculatorKind kind, const QString& runCommand)
 {
     const QString label = taskLabel.isEmpty() ? tr("Local calculation") : taskLabel;
     // Stamp the task onto the tab the run launches from. For frame-producing
@@ -4540,11 +4550,22 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe,
         }
     }
 
+    // Resolve the launch command: the engine's template from Preferences →
+    // "Run", or the wizard's hand-edited "Running:" line when it supplied one.
+    RunCommands::Context context;
+    context.pythonExecutable = pythonExe;
+    context.scriptFile = QStringLiteral("run.py");
+    context.cores = RunCommands::cores();
+    const RunCommands::Resolved resolved =
+        RunCommands::resolve(kind, context, runCommand);
+
     jobDock_->show();
     jobDock_->raise();
-    jobRunner_->start(pythonExe, QStringLiteral("run.py"), jobDir);
+    jobRunner_->start(resolved.commandLine, pythonExe, jobDir,
+                      resolved.environment);
     metricsTimer_->start(); // poll metrics.json for live Results-graph updates
-    statusBar()->showMessage(tr("Running in %1 (%2)").arg(jobDir, pythonExe));
+    statusBar()->showMessage(tr("Running in %1 — %2")
+                                 .arg(jobDir, resolved.commandLine));
 }
 
 int MainWindow::indexOfDocument(const Document* document) const
@@ -4646,7 +4667,7 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         openBandResults(lastJobDir_);
         return;
     }
-    // Phonon runs: open the phonon band structure + PhDOS viewer.
+    // Phonon runs: open the Phonon Viewer (dispersion + PhDOS).
     if (QFile::exists(lastJobDir_ + QStringLiteral("/phonon_band.json"))) {
         openPhononResults(lastJobDir_);
         return;

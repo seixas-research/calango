@@ -58,8 +58,13 @@ int main(int argc, char* argv[])
                          QCoreApplication::quit();
                      });
 
-    runner.start(QStringLiteral(CALANGO_DEFAULT_PYTHON),
-                 QStringLiteral("run.py"), dir.path());
+    // JobRunner now takes a full shell command line (the Preferences → "Run"
+    // templates carry env assignments and redirections that only a shell
+    // interprets); the interpreter path is passed separately so its bin/ still
+    // wins on PATH.
+    runner.start(QStringLiteral("\"%1\" run.py")
+                     .arg(QStringLiteral(CALANGO_DEFAULT_PYTHON)),
+                 QStringLiteral(CALANGO_DEFAULT_PYTHON), dir.path());
     QTimer::singleShot(30000, &app, [] {
         std::fprintf(stderr, "FAIL: timeout\n");
         QCoreApplication::exit(2);

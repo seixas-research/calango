@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.51
+    VERSION 26.7.52
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -148,6 +148,8 @@ qt_add_executable(calango
     src/core/Noise.cpp
     src/core/PhononScriptGenerator.hpp
     src/core/PhononScriptGenerator.cpp
+    src/core/PhononThermodynamics.hpp
+    src/core/PhononThermodynamics.cpp
     src/core/SchedulerScript.hpp
     src/core/SchedulerScript.cpp
     src/core/ChemicalOrder.hpp
@@ -301,6 +303,8 @@ qt_add_executable(calango
     src/gui/PreferencesDialog.cpp
     src/gui/EnginePresets.hpp
     src/gui/EnginePresets.cpp
+    src/gui/RunCommands.hpp
+    src/gui/RunCommands.cpp
     src/gui/EnvFile.hpp
     src/gui/EnvFile.cpp
     src/gui/ExamplesDialog.hpp
@@ -357,6 +361,10 @@ qt_add_executable(calango
     src/gui/PlotStyleDialog.cpp
     src/gui/PhononPlotWindow.hpp
     src/gui/PhononPlotWindow.cpp
+    src/gui/PhononThermodynamicsDialog.hpp
+    src/gui/PhononThermodynamicsDialog.cpp
+    src/gui/VibrationalAnalysisDialog.hpp
+    src/gui/VibrationalAnalysisDialog.cpp
     src/gui/NanoparticleDialog.hpp
     src/gui/NanoparticleDialog.cpp
     src/gui/AdsorptionDialog.hpp
@@ -765,6 +773,15 @@ if(CALANGO_BUILD_TESTS)
     # created (only its static color/radius helpers are exercised).
     target_link_libraries(calango_raytrace_test PRIVATE Qt6::Gui Qt6::OpenGL)
     add_test(NAME raytrace_scene_files COMMAND calango_raytrace_test)
+
+    # Harmonic phonon thermodynamics: checked against the closed-form Einstein
+    # oscillator and the limits that are laws (Third Law, Dulong-Petit).
+    add_executable(calango_phonon_thermo_test
+        tests/PhononThermodynamicsTest.cpp
+        src/core/PhononThermodynamics.cpp
+    )
+    target_include_directories(calango_phonon_thermo_test PRIVATE src)
+    add_test(NAME phonon_thermodynamics COMMAND calango_phonon_thermo_test)
 
     # Hydrogen-bond perception: the geometric criteria that separate a real
     # D-H...A contact from any two nearby polar atoms.

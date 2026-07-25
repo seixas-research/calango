@@ -1,28 +1,49 @@
 #pragma once
 
+#include "core/Structure.hpp"
+
 #include <QDialog>
+#include <QString>
+
+#include <memory>
+#include <vector>
 
 class QDoubleSpinBox;
 
 namespace calango::gui {
 
 class BandPdosView;
+class ViewportWidget;
 
-/// Post-processing viewer for a finished phonon job: the phonon band
-/// structure (frequency in cm⁻¹ vs the high-symmetry k-path) side by side
-/// with the phonon density of states, sharing the frequency axis. Reads
-/// phonon_band.json / phonon_dos.json written by PhononScriptGenerator and
-/// drives a BandPdosView in phonon mode. hasData() reports whether a band
+/// "Phonon Viewer" — the post-processing viewer for a finished phonon job: the
+/// phonon band structure (frequency in cm⁻¹ vs the high-symmetry q-path) side
+/// by side with the phonon density of states, sharing the frequency axis.
+/// Reads phonon_band.json / phonon_dos.json written by PhononScriptGenerator
+/// and drives a BandPdosView in phonon mode. hasData() reports whether a band
 /// file was found and parsed.
+///
+/// It is also the entry point for the two derived analyses, both of which need
+/// exactly the data this window already holds: "Phonon Thermodynamics…"
+/// (harmonic U/F/S from the PhDOS) and "Vibrational Analysis…" (eigenmode
+/// animation on the 3D viewport).
 class PhononPlotWindow : public QDialog {
     Q_OBJECT
 
 public:
-    explicit PhononPlotWindow(const QString& directory, QWidget* parent = nullptr);
+    /// `structure` and `viewport` enable "Vibrational Analysis…" (the mode
+    /// animation needs both); passing null leaves that action disabled while
+    /// everything else still works.
+    PhononPlotWindow(const QString& directory, QWidget* parent = nullptr,
+                     std::shared_ptr<const core::Structure> structure = nullptr,
+                     ViewportWidget* viewport = nullptr);
 
     bool hasData() const { return hasData_; }
 
 private Q_SLOTS:
+    /// "Phonon Thermodynamics…" — harmonic U/F/S from the loaded PhDOS.
+    void showThermodynamics();
+    /// "Vibrational Analysis…" — eigenmode animation on the 3D viewport.
+    void showVibrationalAnalysis();
     /// Dispersion only: k-distance + one column per phonon branch.
     void exportBandsCsv();
     /// PhDOS only: frequency + intensity per projection.
@@ -39,6 +60,16 @@ private:
     QDoubleSpinBox* minSpin_;
     QDoubleSpinBox* maxSpin_;
     bool hasData_ = false;
+    QString directory_; ///< where the phonon_*.json came from
+    /// The PhDOS as loaded, kept so the derived analyses integrate exactly the
+    /// data this window is showing rather than re-reading (and possibly
+    /// re-interpreting) the file.
+    std::vector<double> dosFrequenciesCm_;
+    std::vector<double> dosValues_;
+    /// Structure the phonons belong to, for the eigenmode animation. Null when
+    /// the viewer was opened without one (Results menu on an old job).
+    std::shared_ptr<const core::Structure> structure_;
+    ViewportWidget* viewport_ = nullptr;
 };
 
 } // namespace calango::gui

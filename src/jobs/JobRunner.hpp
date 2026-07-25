@@ -3,6 +3,7 @@
 #include "core/Structure.hpp"
 
 #include <QObject>
+#include <QMap>
 #include <QProcess>
 #include <QString>
 
@@ -26,13 +27,22 @@ public:
     bool isRunning() const;
 
 public Q_SLOTS:
-    /// Launch `pythonExe scriptPath` with `workDir` as the working directory.
+    /// Launch `commandLine` through the system shell with `workDir` as the
+    /// working directory.
     ///
-    /// The interpreter's directory is prepended to PATH so that solver
-    /// binaries installed alongside it (pw.x, siesta, ... in a conda env's
-    /// bin/) are found without global PATH conflicts; for conda-style
-    /// layouts CONDA_PREFIX is set to the environment root as well.
-    void start(const QString& pythonExe, const QString& scriptPath, const QString& workDir);
+    /// A shell rather than a direct exec because the command comes from a
+    /// user-editable template (Preferences → "Run", and the wizard's
+    /// "Running:" field): those legitimately carry leading environment
+    /// assignments ("OMP_NUM_THREADS=1 gpaw …") and redirections
+    /// ("> pw.out"), which only a shell interprets. `pythonExe` is not
+    /// executed — it locates the environment whose bin/ is prepended to PATH,
+    /// so solver binaries installed beside the interpreter (pw.x, siesta) win
+    /// over globally installed ones; for conda-style layouts CONDA_PREFIX is
+    /// set to the environment root as well. `extraEnv` carries per-engine
+    /// hand-offs such as ASE_ESPRESSO_COMMAND.
+    void start(const QString& commandLine, const QString& pythonExe,
+               const QString& workDir,
+               const QMap<QString, QString>& extraEnv = {});
 
     /// Politely terminate; escalates to kill() after a grace period.
     void terminate();

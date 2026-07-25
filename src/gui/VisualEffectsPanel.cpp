@@ -33,11 +33,15 @@ VisualEffectsPanel::VisualEffectsPanel(ViewportWidget* viewport, QWidget* parent
     tabs->setUsesScrollButtons(false);
     tabs->setElideMode(Qt::ElideNone);
     tabs->tabBar()->setExpanding(false);
-    // Logical sequence: Lighting → Shadow → Distance Fog → Depth Blur.
+    // Logical sequence: Lighting → Shadow → Fog → Blur → Occlusion. Blur and
+    // Occlusion are separate pages rather than one: they are independent
+    // effects with independent controls, and sharing a page made the SSAO
+    // parameters read as if they modified the depth-of-field blur.
     tabs->addTab(new LightingPanel(viewport_, tabs), tr("Lighting"));
     tabs->addTab(buildShadowTab(), tr("Shadow"));
-    tabs->addTab(buildFogTab(), tr("Distance Fog"));
-    tabs->addTab(buildDepthBlurTab(), tr("Depth && Occlusion"));
+    tabs->addTab(buildFogTab(), tr("Fog"));
+    tabs->addTab(buildDepthBlurTab(), tr("Blur"));
+    tabs->addTab(buildOcclusionTab(), tr("Occlusion"));
     layout->addWidget(tabs);
 
     // Zone-9 dock width constraint: size the panel so the tab bar shows every
@@ -139,7 +143,7 @@ QWidget* VisualEffectsPanel::buildFogTab()
     auto* pageLayout = new QVBoxLayout(page);
     auto& style = viewport_->style();
 
-    auto* group = new QGroupBox(tr("Distance fog"), page);
+    auto* group = new QGroupBox(tr("Fog"), page);
     group->setCheckable(true);
     group->setChecked(style.fogMode != 0);
     auto* form = new QFormLayout(group);
@@ -214,7 +218,7 @@ QWidget* VisualEffectsPanel::buildDepthBlurTab()
     auto* page = new QWidget(this);
     auto* pageLayout = new QVBoxLayout(page);
 
-    auto* group = new QGroupBox(tr("Depth blur (depth of field)"), page);
+    auto* group = new QGroupBox(tr("Depth of field"), page);
     group->setCheckable(true);
     group->setChecked(viewport_->depthOfField().enabled);
     group->setToolTip(tr("Blurs geometry away from the focal plane.\n"
@@ -242,10 +246,29 @@ QWidget* VisualEffectsPanel::buildDepthBlurTab()
 
     pageLayout->addWidget(group);
 
-    // -- Ambient occlusion --------------------------------------------------
-    // Shares this tab with depth-of-field: both are screen-space passes that
-    // run off the same offscreen G-buffer, and enabling either trades MSAA.
-    auto* ssaoGroup = new QGroupBox(tr("Ambient occlusion (SSAO)"), page);
+    pageLayout->addStretch(1);
+
+    const auto applyDof = [this, group, strengthSlider, rangeSpin, offsetSpin] {
+        auto& dof = viewport_->depthOfField();
+        dof.enabled = group->isChecked();
+        dof.strength = static_cast<float>(strengthSlider->value());
+        dof.focusRange = static_cast<float>(rangeSpin->value());
+        dof.focusOffset = static_cast<float>(offsetSpin->value());
+        viewport_->update();
+    };
+    connect(group, &QGroupBox::toggled, this, applyDof);
+    connect(strengthSlider, &QSlider::valueChanged, this, applyDof);
+    connect(rangeSpin, &QDoubleSpinBox::valueChanged, this, applyDof);
+    connect(offsetSpin, &QDoubleSpinBox::valueChanged, this, applyDof);
+    return page;
+}
+
+QWidget* VisualEffectsPanel::buildOcclusionTab()
+{
+    auto* page = new QWidget(this);
+    auto* pageLayout = new QVBoxLayout(page);
+
+    auto* ssaoGroup = new QGroupBox(tr("Screen-space ambient occlusion"), page);
     ssaoGroup->setCheckable(true);
     ssaoGroup->setChecked(viewport_->ambientOcclusion().enabled);
     ssaoGroup->setToolTip(
@@ -276,33 +299,50 @@ QWidget* VisualEffectsPanel::buildDepthBlurTab()
            "applies the full occlusion factor."));
     ssaoForm->addRow(tr("SSAO intensity:"), intensitySlider);
 
+
+
+    auto* samplesSpin = new QSpinBox(ssaoGroup);
+    samplesSpin->setRange(4, ViewportWidget::kMaxSsaoSamples);
+    samplesSpin->setValue(viewport_->ambientOcclusion().samples);
+    samplesSpin->setToolTip(
+        tr("Hemisphere samples per pixel. More samples cost frame time and buy "
+           "less noise; the blur pass cleans up most of it, so raising this "
+           "mainly helps at large radii where the samples spread thin."));
+    ssaoForm->addRow(tr("Kernel samples:"), samplesSpin);
+
+    auto* noiseSpin = new QDoubleSpinBox(ssaoGroup);
+    noiseSpin->setRange(0.25, 4.0);
+    noiseSpin->setDecimals(2);
+    noiseSpin->setSingleStep(0.25);
+    noiseSpin->setValue(viewport_->ambientOcclusion().noiseScale);
+    noiseSpin->setToolTip(
+        tr("Scale of the tiled rotation-noise lookup. 1.0 tiles the 4x4 "
+           "texture pixel-for-pixel, which is what the blur radius is matched "
+           "to; larger values rotate over a coarser grid and leave banding the "
+           "blur can no longer fully remove."));
+    ssaoForm->addRow(tr("Noise texture scale:"), noiseSpin);
+
     pageLayout->addWidget(ssaoGroup);
     pageLayout->addStretch(1);
 
-    const auto applySsao = [this, ssaoGroup, radiusSpin, intensitySlider] {
+    const auto applySsao = [this, ssaoGroup, radiusSpin, intensitySlider,
+                            samplesSpin, noiseSpin] {
         auto& ssao = viewport_->ambientOcclusion();
         ssao.enabled = ssaoGroup->isChecked();
         ssao.radius = static_cast<float>(radiusSpin->value());
         ssao.intensity = static_cast<float>(intensitySlider->value()) / 100.0f;
+        ssao.samples = samplesSpin->value();
+        ssao.noiseScale = static_cast<float>(noiseSpin->value());
         viewport_->update();
     };
     connect(ssaoGroup, &QGroupBox::toggled, this, applySsao);
     connect(radiusSpin, &QDoubleSpinBox::valueChanged, this, applySsao);
     connect(intensitySlider, &QSlider::valueChanged, this, applySsao);
-
-    const auto applyDof = [this, group, strengthSlider, rangeSpin, offsetSpin] {
-        auto& dof = viewport_->depthOfField();
-        dof.enabled = group->isChecked();
-        dof.strength = static_cast<float>(strengthSlider->value());
-        dof.focusRange = static_cast<float>(rangeSpin->value());
-        dof.focusOffset = static_cast<float>(offsetSpin->value());
-        viewport_->update();
-    };
-    connect(group, &QGroupBox::toggled, this, applyDof);
-    connect(strengthSlider, &QSlider::valueChanged, this, applyDof);
-    connect(rangeSpin, &QDoubleSpinBox::valueChanged, this, applyDof);
-    connect(offsetSpin, &QDoubleSpinBox::valueChanged, this, applyDof);
+    connect(samplesSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            applySsao);
+    connect(noiseSpin, &QDoubleSpinBox::valueChanged, this, applySsao);
     return page;
 }
+
 
 } // namespace calango::gui

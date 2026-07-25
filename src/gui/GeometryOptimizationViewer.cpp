@@ -1,8 +1,5 @@
 #include "gui/GeometryOptimizationViewer.hpp"
 
-#include "gui/ViewportWidget.hpp"
-#include "python_bridge/AseBridge.hpp"
-
 #include <QClipboard>
 #include <QDialogButtonBox>
 #include <QFile>
@@ -14,7 +11,6 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QPushButton>
-#include <QSlider>
 #include <QVBoxLayout>
 
 namespace calango::gui {
@@ -34,12 +30,11 @@ QString orDash(const QJsonValue& value, int decimals, const QString& suffix)
 
 } // namespace
 
-GeometryOptimizationViewer::GeometryOptimizationViewer(ViewportWidget* viewport,
-                                                       QWidget* parent)
-    : QDialog(parent), viewport_(viewport)
+GeometryOptimizationViewer::GeometryOptimizationViewer(QWidget* parent)
+    : QDialog(parent)
 {
     setWindowTitle(tr("Geometry Optimization Viewer"));
-    resize(520, 470);
+    resize(520, 300);
 
     auto* layout = new QVBoxLayout(this);
 
@@ -70,23 +65,6 @@ GeometryOptimizationViewer::GeometryOptimizationViewer(ViewportWidget* viewport,
     addRow(tr("Convergence:"), convergedLabel_);
     layout->addWidget(summaryGroup);
 
-    // -- Trajectory scrubber ------------------------------------------------
-    auto* trajGroup = new QGroupBox(tr("Relaxation Path"), this);
-    auto* trajLayout = new QVBoxLayout(trajGroup);
-    frameLabel_ = new QLabel(tr("No trajectory recorded."), trajGroup);
-    trajLayout->addWidget(frameLabel_);
-    frameSlider_ = new QSlider(Qt::Horizontal, trajGroup);
-    frameSlider_->setEnabled(false);
-    frameSlider_->setToolTip(
-        tr("Step through the intermediate geometries on the main viewport. A "
-           "relaxation can converge through an unphysical intermediate — "
-           "atoms passing through each other, a collapsing cell — and "
-           "scrubbing the path is the only way to see it."));
-    trajLayout->addWidget(frameSlider_);
-    connect(frameSlider_, &QSlider::valueChanged, this,
-            &GeometryOptimizationViewer::showFrame);
-    layout->addWidget(trajGroup);
-
     // -- Actions ------------------------------------------------------------
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     volumetricButton_ = buttons->addButton(tr("Get Volumetric Data"),
@@ -105,11 +83,6 @@ GeometryOptimizationViewer::GeometryOptimizationViewer(ViewportWidget* viewport,
     });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
-}
-
-GeometryOptimizationViewer::~GeometryOptimizationViewer()
-{
-    restoreViewport();
 }
 
 bool GeometryOptimizationViewer::loadResults(const QString& jsonPath)
@@ -168,66 +141,7 @@ bool GeometryOptimizationViewer::loadResults(const QString& jsonPath)
     convergedLabel_->setStyleSheet(converged ? QString()
                                              : QStringLiteral("color: #d9534f;"));
 
-    loadTrajectory();
     return true;
-}
-
-void GeometryOptimizationViewer::loadTrajectory()
-{
-    frames_.clear();
-    // opt.traj holds every evaluated step; optimized.extxyz is the endpoint
-    // only, and is the fallback when the trajectory is missing or unreadable.
-    for (const QString& name :
-         {QStringLiteral("opt.traj"), QStringLiteral("optimized.extxyz")}) {
-        const QString path = directory_ + QLatin1Char('/') + name;
-        if (!QFile::exists(path))
-            continue;
-        try {
-            for (auto& frame :
-                 pybridge::AseBridge::readTrajectory(path.toStdString()))
-                frames_.push_back(
-                    std::make_shared<core::Structure>(std::move(frame)));
-        } catch (const std::exception&) {
-            frames_.clear(); // unreadable — try the next candidate
-            continue;
-        }
-        if (!frames_.empty())
-            break;
-    }
-
-    const bool scrubbable = viewport_ && frames_.size() > 1;
-    frameSlider_->setEnabled(scrubbable);
-    if (frames_.empty()) {
-        frameLabel_->setText(tr("No trajectory recorded."));
-        return;
-    }
-    frameSlider_->setRange(0, static_cast<int>(frames_.size()) - 1);
-    // Remember what was on screen so closing the viewer can put it back.
-    if (viewport_ && !viewportStructureBefore_)
-        viewportStructureBefore_ = viewport_->structure();
-    frameSlider_->setValue(static_cast<int>(frames_.size()) - 1); // the result
-    showFrame(static_cast<int>(frames_.size()) - 1);
-}
-
-void GeometryOptimizationViewer::showFrame(int index)
-{
-    if (index < 0 || index >= static_cast<int>(frames_.size()))
-        return;
-    frameLabel_->setText(tr("Step %1 of %2")
-                             .arg(index + 1)
-                             .arg(static_cast<int>(frames_.size())));
-    // frameCamera=false: re-framing on every scrub step would make the
-    // structure jump around while the user is trying to watch it move.
-    if (viewport_)
-        viewport_->setStructure(frames_[static_cast<std::size_t>(index)], false);
-}
-
-void GeometryOptimizationViewer::restoreViewport()
-{
-    if (viewport_ && viewportStructureBefore_) {
-        viewport_->setStructure(viewportStructureBefore_, false);
-        viewportStructureBefore_.reset();
-    }
 }
 
 QString GeometryOptimizationViewer::plainTextSummary() const

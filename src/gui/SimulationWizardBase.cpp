@@ -3,6 +3,7 @@
 #include "gui/CondaEnvs.hpp"
 #include "gui/EnginePresets.hpp"
 #include "gui/PythonHighlighter.hpp"
+#include "gui/RunCommands.hpp"
 #include "gui/ScriptStaging.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
@@ -865,6 +866,24 @@ QWidget* SimulationWizardBase::buildReviewPage()
     auto* scriptPane = new QWidget(page);
     auto* scriptLayout = new QVBoxLayout(scriptPane);
     scriptLayout->setContentsMargins(0, 0, 0, 0);
+
+    // The launch command, above the script it launches. Editable because the
+    // last-minute questions ("how many ranks?", "does this node have mpirun?")
+    // arrive here, at the point of running, not back in Preferences.
+    auto* runRow = new QHBoxLayout;
+    runRow->addWidget(new QLabel(tr("Running:"), page));
+    runCommandEdit_ = new QLineEdit(page);
+    runCommandEdit_->setToolTip(
+        tr("Shell command this job launches with, from Preferences → \"Run\".\n"
+           "Edit it to change MPI ranks, thread pinning or flags for this run "
+           "only — Preferences keeps the saved template.\n"
+           "{input} / {output} stay symbolic: ASE substitutes the solver's own "
+           "file names."));
+    runRow->addWidget(runCommandEdit_, 1);
+    scriptLayout->addLayout(runRow);
+    connect(runCommandEdit_, &QLineEdit::textEdited, this,
+            [this] { runCommandEdited_ = true; });
+
     auto* header = new QHBoxLayout;
     header->addWidget(new QLabel(tr("Generated ASE script (editable):"), page));
     header->addStretch(1);
@@ -978,6 +997,7 @@ void SimulationWizardBase::updateCalculatorEnabled()
     if (baselineInheritNote_)
         baselineInheritNote_->setVisible(inheritGpaw);
 
+    refreshRunCommand();
     if (calcSettingsHint_)
         calcSettingsHint_->setText(
             (isDft || isMace || isOrca)
@@ -1093,6 +1113,23 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
     return c;
 }
 
+QString SimulationWizardBase::runCommand() const
+{
+    return runCommandEdit_ ? runCommandEdit_->text().trimmed() : QString();
+}
+
+void SimulationWizardBase::refreshRunCommand()
+{
+    if (!runCommandEdit_ || runCommandEdited_)
+        return; // the user's own command wins over the engine's template
+    RunCommands::Context context;
+    context.pythonExecutable = pythonExecutable();
+    context.scriptFile = QStringLiteral("run.py");
+    context.cores = RunCommands::cores();
+    runCommandEdit_->setText(
+        RunCommands::displayCommand(selectedCalculator(), context));
+}
+
 void SimulationWizardBase::refreshPreview()
 {
     if (manuallyEdited_)
@@ -1135,8 +1172,10 @@ void SimulationWizardBase::goNext()
 {
     if (stage_ < reviewStage_) {
         ++stage_;
-        if (stage_ == reviewStage_)
-            refreshPreview(); // (re)generate on arriving at the review stage
+        if (stage_ == reviewStage_) {
+            refreshPreview();    // (re)generate on arriving at the review stage
+            refreshRunCommand(); // and re-resolve for the engine now selected
+        }
         updateStage();
     }
 }

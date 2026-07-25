@@ -2,12 +2,15 @@
 #include "gui/GuiUtils.hpp"
 
 #include "gui/BandPdosView.hpp"
+#include "gui/PhononThermodynamicsDialog.hpp"
 #include "gui/PlotStyleDialog.hpp"
+#include "gui/VibrationalAnalysisDialog.hpp"
 
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -29,10 +32,15 @@ namespace {
 
 } // namespace
 
-PhononPlotWindow::PhononPlotWindow(const QString& directory, QWidget* parent)
+PhononPlotWindow::PhononPlotWindow(const QString& directory, QWidget* parent,
+                                   std::shared_ptr<const core::Structure> structure,
+                                   ViewportWidget* viewport)
     : QDialog(parent)
+    , directory_(directory)
+    , structure_(std::move(structure))
+    , viewport_(viewport)
 {
-    setWindowTitle(tr("Phonon Band Structure / PhDOS — %1").arg(directory));
+    setWindowTitle(tr("Phonon Viewer — %1").arg(directory));
     resize(980, 620);
 
     auto* layout = new QHBoxLayout(this);
@@ -113,6 +121,25 @@ PhononPlotWindow::PhononPlotWindow(const QString& directory, QWidget* parent)
             this, &PhononPlotWindow::exportPhdosCsv);
     side->addWidget(exportPhdosButton);
 
+    // -- Derived analyses ---------------------------------------------------
+    // Both work off data this window already holds, so they belong here rather
+    // than as separate menu entries that would have to re-locate the job.
+    auto* thermoButton = new QPushButton(tr("Phonon Thermodynamics…"), this);
+    thermoButton->setToolTip(
+        tr("Harmonic vibrational internal energy, free energy and entropy "
+           "integrated over the phonon DOS, from 0 K upward."));
+    connect(thermoButton, &QPushButton::clicked, this,
+            &PhononPlotWindow::showThermodynamics);
+    side->addWidget(thermoButton);
+
+    auto* vibrationButton = new QPushButton(tr("Vibrational Analysis…"), this);
+    vibrationButton->setToolTip(
+        tr("Pick a branch and q-point and animate its eigenmode displacements "
+           "on the 3D viewport."));
+    connect(vibrationButton, &QPushButton::clicked, this,
+            &PhononPlotWindow::showVibrationalAnalysis);
+    side->addWidget(vibrationButton);
+
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     side->addWidget(buttons);
@@ -166,10 +193,51 @@ void PhononPlotWindow::loadDirectory(const QString& directory)
     if (!dos.isEmpty()) {
         BandPdosView::PdosData pdosData;
         pdosData.energies = toDoubleVector(dos[QStringLiteral("frequencies")].toArray());
+        // Keep a copy for the thermodynamics integrator.
+        dosFrequenciesCm_ = pdosData.energies;
+        dosValues_ = toDoubleVector(dos[QStringLiteral("dos")].toArray());
         pdosData.projections.emplace_back(
             tr("PhDOS"), toDoubleVector(dos[QStringLiteral("dos")].toArray()));
         view_->setPdosData(std::move(pdosData));
     }
+}
+
+
+void PhononPlotWindow::showThermodynamics()
+{
+    if (dosFrequenciesCm_.size() < 2 || dosValues_.size() < 2) {
+        QMessageBox::information(
+            this, tr("Phonon Thermodynamics"),
+            tr("This run has no phonon DOS (phonon_dos.json). The harmonic "
+               "properties are integrals over g(ω), so there is nothing to "
+               "integrate — re-run the phonon calculation with a DOS mesh."));
+        return;
+    }
+    auto* dialog = new PhononThermodynamicsDialog(
+        dosFrequenciesCm_, dosValues_, QFileInfo(directory_).fileName(), this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
+}
+
+void PhononPlotWindow::showVibrationalAnalysis()
+{
+    if (!structure_ || !viewport_) {
+        QMessageBox::information(
+            this, tr("Vibrational Analysis"),
+            tr("The mode animation needs the structure the phonons were "
+               "computed for. Open this viewer from the finished job (or from "
+               "the Processes panel) with that structure in the active tab."));
+        return;
+    }
+    if (!hasData_) {
+        QMessageBox::information(this, tr("Vibrational Analysis"),
+                                 tr("No phonon dispersion was loaded."));
+        return;
+    }
+    auto* dialog = new VibrationalAnalysisDialog(directory_, structure_,
+                                                 viewport_, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
 }
 
 void PhononPlotWindow::exportBandsCsv()

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/CalculatorConfig.hpp"
+
 #include <QMainWindow>
 #include <QList>
 #include <QPair>
@@ -309,8 +311,18 @@ private:
     /// Launch a staged local job. `taskLabel` names it in the Process
     /// panel; `expectFrames` opens a live trajectory tab that streamed
     /// CALANGO_FRAME blocks append to while the job runs.
+    /// Stage and launch a script as a local job.
+    ///
+    /// `kind` and `runCommand` decide HOW it is launched: the engine's
+    /// template from Preferences → "Run" (or `runCommand`, the possibly
+    /// hand-edited "Running:" line from the wizard) is resolved into a shell
+    /// command line plus any solver-command environment. Callers that are not
+    /// engine-driven (a density export, a Raman post-process) leave both at
+    /// their defaults and get a plain `python run.py`.
     void runScript(const QString& script, const QString& pythonExe,
-                   const QString& taskLabel = {}, bool expectFrames = true);
+                   const QString& taskLabel, bool expectFrames = false,
+                   core::CalculatorKind kind = core::CalculatorKind::EMT,
+                   const QString& runCommand = QString());
     int indexOfDocument(const Document* document) const;
     bool ensureAseAvailable();
     /// Shared preconditions for the dedicated Simulation dialogs: a non-empty

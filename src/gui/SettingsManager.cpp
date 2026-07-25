@@ -24,7 +24,7 @@ struct Managed {
     const char* jsonName = nullptr;
 };
 
-std::array<Managed, 8> managedKeys()
+std::array<Managed, 10> managedKeys()
 {
     return {{
         {SettingsManager::kTheme, QStringLiteral("system")},
@@ -34,6 +34,10 @@ std::array<Managed, 8> managedKeys()
         {SettingsManager::kEnvironmentPath, QString()},
         // Per-calculator env presets, stored as a JSON-object string.
         {SettingsManager::kEnvironmentPresets, QString()},
+        // Per-calculator launch command templates (Preferences → "Run"), also
+        // a JSON-object string. Empty = every engine uses its shipped default.
+        {SettingsManager::kRunCommands, QString()},
+        {SettingsManager::kRunCores, 1},
         // Exposed as a top-level `show_welcome_screen` boolean in settings.json.
         {SettingsManager::kShowWelcome, true, "show_welcome_screen"},
         {SettingsManager::kEnvFilePath, QString()},

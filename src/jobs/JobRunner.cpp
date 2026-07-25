@@ -38,7 +38,9 @@ bool JobRunner::isRunning() const
     return process_.state() != QProcess::NotRunning;
 }
 
-void JobRunner::start(const QString& pythonExe, const QString& scriptPath, const QString& workDir)
+void JobRunner::start(const QString& commandLine, const QString& pythonExe,
+                      const QString& workDir,
+                      const QMap<QString, QString>& extraEnv)
 {
     if (isRunning())
         return;
@@ -84,12 +86,21 @@ void JobRunner::start(const QString& pythonExe, const QString& scriptPath, const
             env.insert(QStringLiteral("CONDA_PREFIX"), prefix.absolutePath());
     }
 
+    // Per-engine hand-offs (ASE_ESPRESSO_COMMAND and friends) go in last so a
+    // user-configured solver command wins over anything inherited.
+    for (auto it = extraEnv.constBegin(); it != extraEnv.constEnd(); ++it)
+        env.insert(it.key(), it.value());
+
     process_.setProcessEnvironment(env);
     process_.setWorkingDirectory(workDir);
-    process_.start(pythonExe, {scriptPath});
+#ifdef Q_OS_WIN
+    process_.start(QStringLiteral("cmd.exe"), {QStringLiteral("/c"), commandLine});
+#else
+    process_.start(QStringLiteral("/bin/sh"), {QStringLiteral("-c"), commandLine});
+#endif
 
-    Q_EMIT started(QStringLiteral("%1 %2  (in %3)")
-                       .arg(pythonExe, scriptPath, QDir::toNativeSeparators(workDir)));
+    Q_EMIT started(QStringLiteral("%1  (in %2)")
+                       .arg(commandLine, QDir::toNativeSeparators(workDir)));
 }
 
 void JobRunner::terminate()

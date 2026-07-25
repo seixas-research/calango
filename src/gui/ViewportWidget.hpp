@@ -210,7 +210,19 @@ public:
         /// Strength of the darkening: 0 leaves the image untouched, 1 applies
         /// the full occlusion factor.
         float intensity = 0.7f;
+        /// Hemisphere samples per pixel. More samples trade frame time for
+        /// less noise; the blur pass cleans up what remains, so raising this
+        /// mainly helps at large radii where the samples spread thin. Capped
+        /// at kMaxSsaoSamples (the shader's uniform array size).
+        int samples = 32;
+        /// Scale of the tiled rotation-noise lookup. 1.0 tiles the 4x4 texture
+        /// pixel-for-pixel — the value the blur radius is matched to. Larger
+        /// values rotate over a coarser grid, which trades a subtler dither
+        /// pattern for banding the blur can no longer fully remove.
+        float noiseScale = 1.0f;
     };
+    /// Mirrors MAX_KERNEL in ssao.frag.
+    static constexpr int kMaxSsaoSamples = 64;
     AmbientOcclusion& ambientOcclusion() { return ssao_; }
 
 public Q_SLOTS:
