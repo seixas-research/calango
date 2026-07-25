@@ -5,6 +5,11 @@
 #include <QPixmap>
 #include <QString>
 
+class QAbstractButton;
+class QAction;
+class QLabel;
+class QObject;
+
 namespace calango::ui {
 
 /// Centralized RemixIcon loader and styler for the whole application.
@@ -41,6 +46,43 @@ public:
 
     /// True when a bundled SVG asset exists for `name`.
     static bool has(const QString& name);
+
+    // -- Theme-adaptive binding ---------------------------------------------
+    //
+    // icon() resolves the tint from the theme that is active AT THE MOMENT OF
+    // THE CALL and bakes it into pixmaps. A widget whose icon was built under
+    // Dark keeps its near-white glyphs after a switch to Light, where they are
+    // invisible against a light background — the white-on-white bug.
+    //
+    // bind() sets the icon AND records the (widget, name) pair, so refreshAll()
+    // can re-tint every bound icon when the palette changes. Prefer it over
+    // icon() for any long-lived widget; icon() remains correct for transient
+    // dialogs built after the theme is already settled.
+
+    /// Set `button`'s icon from `name` and keep it in sync with the theme.
+    static void bind(QAbstractButton* button, const QString& name, int px = 24);
+    /// Set `action`'s icon from `name` and keep it in sync with the theme.
+    static void bind(QAction* action, const QString& name, int px = 24);
+    /// Set `label`'s pixmap from `name` and keep it in sync with the theme.
+    static void bind(QLabel* label, const QString& name, int px = 24);
+
+    /// Re-tint every live binding against the current theme. Bindings whose
+    /// widget has been destroyed are dropped as they are encountered.
+    static void refreshAll();
+
+    /// Install the application-wide theme watcher. It listens for the
+    /// APPLICATION-level QEvent::ApplicationPaletteChange / QEvent::ThemeChange
+    /// and calls refreshAll().
+    ///
+    /// It must not listen for the per-widget QEvent::PaletteChange /
+    /// QEvent::StyleChange: Qt sends those as a consequence of restyling a
+    /// widget, which setting an icon does, so handling them closes a
+    /// refresh -> setIcon -> StyleChange -> refresh loop that pegs the CPU and
+    /// starves the event loop. See the note in ThemeWatcher.
+    ///
+    /// Safe to call more than once — only the first installs a filter. Call
+    /// once at startup, after the QApplication exists.
+    static void installThemeWatcher(QObject* app);
 };
 
 } // namespace calango::ui

@@ -68,7 +68,7 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
     auto* buttons = new QHBoxLayout;
     const auto makeButton = [&](const QString& iconName, const QString& tip) {
         auto* button = new QPushButton(this);
-        button->setIcon(ui::IconManager::icon(iconName));
+        ui::IconManager::bind(button, iconName);
         // Action-button icons enlarged 20% (16 → 20) for visual clarity.
         button->setIconSize(QSize(20, 20));
         button->setToolTip(tip);

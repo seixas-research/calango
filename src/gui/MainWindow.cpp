@@ -159,7 +159,13 @@ constexpr std::size_t kMaxUndoDepth = 50;
 //      Visual Effects relocated into the bottom row's right-hand slot.
 //  10: "Cell, Axes & Vectors" added at the right end of the bottom row (the
 //      overlay tabs moved back out of Representation, joined by Vectors).
-constexpr int kLayoutVersion = 10;
+//  11: default grid realigned to the reference capture — "Cell, Axes &
+//      Vectors" moved from the bottom row into the right column under
+//      Representation, and the branding card shown by default again.
+//  12: Visual Effects joined the right column, which now runs the full window
+//      height (both bottom corners belong to the side areas); the bottom row
+//      is Results | Remote Access, the latter pinned to its minimum width.
+constexpr int kLayoutVersion = 12;
 
 /// Painted icons for the frame-panel camera toolbar (icon-only buttons).
 /// Plane icons use the axes-triad colors: x red, y green, z blue.
@@ -316,8 +322,8 @@ MainWindow::MainWindow(QWidget* parent)
     // Compact icon-only camera toolbar living inside the frame panel
     // (replaces the old top application toolbar). Projection toggling lives
     // solely here on the 'O' toolbar button (no View-menu duplicate).
-    orthoAction_ = new QAction(ui::IconManager::icon(QStringLiteral("box-3-line")),
-                               tr("Orthographic"), this);
+    orthoAction_ = new QAction(tr("Orthographic"), this);
+    ui::IconManager::bind(orthoAction_, QStringLiteral("box-3-line"));
     orthoAction_->setCheckable(true);
     orthoAction_->setShortcut(QKeySequence(Qt::Key_O));
     orthoAction_->setToolTip(tr("Toggle perspective / orthographic projection  [O]"));
@@ -342,8 +348,8 @@ MainWindow::MainWindow(QWidget* parent)
                                         ViewportWidget::InteractionMode mode,
                                         const QKeySequence& key) {
             QAction* action = frameToolbar->addAction(
-                ui::IconManager::icon(iconName),
                 tr("%1  [%2]").arg(text, key.toString(QKeySequence::NativeText)));
+            ui::IconManager::bind(action, iconName);
             action->setCheckable(true);
             action->setShortcut(key);
             modeGroup->addAction(action);
@@ -415,8 +421,8 @@ MainWindow::MainWindow(QWidget* parent)
     frameToolbar->addSeparator();
 
     QAction* resetAction = frameToolbar->addAction(
-        ui::IconManager::icon(QStringLiteral("focus-3-line")),
         tr("Reset camera (center and frame the structure)  [F]"));
+    ui::IconManager::bind(resetAction, QStringLiteral("focus-3-line"));
     // The 'F' shortcut lives here now that the View → Alignment submenu is gone.
     resetAction->setShortcut(QKeySequence(Qt::Key_F));
     connect(resetAction, &QAction::triggered,
@@ -476,9 +482,8 @@ MainWindow::MainWindow(QWidget* parent)
     // its current frame as a static structure). Theme-tinted RemixIcon; also
     // reachable from the tab bar's right-click menu.
     frameToolbar->addSeparator();
-    QAction* duplicateAction = frameToolbar->addAction(
-        ui::IconManager::icon(QStringLiteral("file-copy-line")),
-        tr("Duplicate Workspace / Extract Frame to New Tab"));
+    QAction* duplicateAction = frameToolbar->addAction(tr("Duplicate Workspace / Extract Frame to New Tab"));
+    ui::IconManager::bind(duplicateAction, QStringLiteral("file-copy-line"));
     duplicateAction->setToolTip(
         tr("Duplicate the active workspace into a new tab. For a trajectory, "
            "extract the frame currently shown as a standalone structure "
@@ -491,9 +496,8 @@ MainWindow::MainWindow(QWidget* parent)
     // canvas: element symbols (font-size glyph) and/or 1-based atom indices
     // (hashtag glyph), both theme-tinted RemixIcons.
     frameToolbar->addSeparator();
-    QAction* elementLabelsAction = frameToolbar->addAction(
-        ui::IconManager::icon(QStringLiteral("font-size-2")),
-        tr("Show element symbols"));
+    QAction* elementLabelsAction = frameToolbar->addAction(tr("Show element symbols"));
+    ui::IconManager::bind(elementLabelsAction, QStringLiteral("font-size-2"));
     elementLabelsAction->setCheckable(true);
     elementLabelsAction->setToolTip(
         tr("Show element symbols — overlay each atom's chemical symbol "
@@ -501,9 +505,8 @@ MainWindow::MainWindow(QWidget* parent)
     connect(elementLabelsAction, &QAction::toggled, viewport_,
             &ViewportWidget::setShowElementLabels);
 
-    QAction* indexLabelsAction = frameToolbar->addAction(
-        ui::IconManager::icon(QStringLiteral("hashtag")),
-        tr("Show atomic indices"));
+    QAction* indexLabelsAction = frameToolbar->addAction(tr("Show atomic indices"));
+    ui::IconManager::bind(indexLabelsAction, QStringLiteral("hashtag"));
     indexLabelsAction->setCheckable(true);
     indexLabelsAction->setToolTip(
         tr("Show atomic indices — overlay each atom's 1-based index (#1, #2…) "
@@ -513,9 +516,8 @@ MainWindow::MainWindow(QWidget* parent)
 
     // --- Lattice Plane / volumetric color-slice overlay -------------------
     frameToolbar->addSeparator();
-    QAction* latticePlaneAction = frameToolbar->addAction(
-        ui::IconManager::icon(QStringLiteral("shape-line")),
-        tr("Lattice Plane…"));
+    QAction* latticePlaneAction = frameToolbar->addAction(tr("Lattice Plane…"));
+    ui::IconManager::bind(latticePlaneAction, QStringLiteral("shape-line"));
     latticePlaneAction->setToolTip(
         tr("Lattice Plane… — overlay a translucent Miller-index (h k l) plane, "
            "optionally color-sliced through a loaded volumetric field "
@@ -523,9 +525,8 @@ MainWindow::MainWindow(QWidget* parent)
     connect(latticePlaneAction, &QAction::triggered, this,
             &MainWindow::showLatticePlane);
 
-    QAction* customOverlayAction = frameToolbar->addAction(
-        ui::IconManager::icon(QStringLiteral("stack-line")),
-        tr("Custom overlay…"));
+    QAction* customOverlayAction = frameToolbar->addAction(tr("Custom overlay…"));
+    ui::IconManager::bind(customOverlayAction, QStringLiteral("stack-line"));
     customOverlayAction->setToolTip(
         tr("Custom overlay… — add geometric primitives (spheres, boxes, "
            "cylinders, planes…) with custom textures and opacity over the "
@@ -968,8 +969,13 @@ void MainWindow::createMenusAndDocks()
     // spanning two rows) flank the central widget (tab bar + viewport +
     // timeline) that fills zones 2-3/6-7. Every zone stays resizable via
     // the dock splitters, and panels remain re-dockable/floatable.
-    setCorner(Qt::BottomLeftCorner, Qt::BottomDockWidgetArea);
-    setCorner(Qt::BottomRightCorner, Qt::BottomDockWidgetArea);
+    // Corner ownership decides how far the bottom row runs, and it is the only
+    // thing that does — nothing in the splitDockWidget calls expresses it.
+    // Both bottom corners belong to the side columns here, so the left and
+    // right columns run the FULL height and the bottom row spans only the
+    // space between them (Results | Remote Access).
+    setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
+    setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
 
     auto* brandingDock = new QDockWidget(tr("Calango"), this); // zone 1
     brandingDock->setObjectName(QStringLiteral("brandingDock"));
@@ -980,13 +986,14 @@ void MainWindow::createMenusAndDocks()
     // the header without disabling the dock.)
     brandingDock->setTitleBarWidget(new QWidget(brandingDock));
     addDockWidget(Qt::LeftDockWidgetArea, brandingDock);
-    // Hidden by default: the logo card is decorative, and the ~150 px it
-    // occupies is worth more to the Processes and Structure docks below it.
-    // This is only the *default* — restoreState() at the end of this function
-    // reinstates whatever the user left behind (kLayoutVersion was bumped so
-    // the new default appears once for existing installs), and View → Calango
-    // brings it back.
-    brandingDock->setVisible(false);
+    // Visible by default: the branding card heads the left column in the
+    // reference layout. Stated explicitly rather than left implicit — a dock
+    // added to an area is shown by default, but this one was deliberately
+    // hidden for a while, so a reader needs to see the default was changed
+    // back rather than infer it from a missing line. This is only the
+    // *default*: restoreState() below reinstates whatever the user left
+    // behind, and View → Calango toggles it.
+    brandingDock->setVisible(true);
 
     // Left column, top → bottom: Structure, Volumetric Data, then Processes.
     // (Structure and its related Volumetric Data panel sit at the prominent top
@@ -1180,8 +1187,8 @@ void MainWindow::createMenusAndDocks()
         remoteDock_);
     remoteDock_->setWidget(remotePanel_);
     splitDockWidget(jobDock_, remoteDock_, Qt::Horizontal);
-
-    splitDockWidget(remoteDock_, visualEffectsDock_, Qt::Horizontal);
+    // The bottom row ends here: Results | Remote Access. Visual Effects joins
+    // the right column below — see the splitDockWidget chain further down.
 
     // Zone 12 — the scene OVERLAYS: the cell wireframe, the orientation triad
     // and the per-atom vector arrows. All three draw something onto the scene
@@ -1197,7 +1204,11 @@ void MainWindow::createMenusAndDocks()
     overlayTabs->addTab(new VectorsPanel(viewport_, overlayTabs), tr("Vectors"));
     overlayTabs->setMinimumWidth(overlayTabs->tabBar()->sizeHint().width() + 24);
     overlaysDock->setWidget(overlayTabs);
-    splitDockWidget(visualEffectsDock_, overlaysDock, Qt::Horizontal);
+    // The right column, top → bottom: Representation, Cell/Axes/Vectors,
+    // Visual Effects. All three configure how the scene is DRAWN, so they read
+    // as one column; the bottom row is left to the two job panels.
+    splitDockWidget(reprDock, overlaysDock, Qt::Vertical);
+    splitDockWidget(overlaysDock, visualEffectsDock_, Qt::Vertical);
 
     connect(remotePanel_, &RemoteAccessPanel::resultsReady,
             this, &MainWindow::onRemoteResultsReady);
@@ -1215,36 +1226,59 @@ void MainWindow::createMenusAndDocks()
     // widget's size hint on the first show and whenever a dock is toggled — so
     // the minimum width is what actually holds the column.
     constexpr int kColumnWidth = 290;
+    // The branding card is a thin strip heading the left column. BrandingPanel
+    // scales the logo to fit, so this is a free choice — but it has to stay at
+    // or above the panel's own minimum height or resizeDocks is overridden.
+    constexpr int kBrandingHeight = 30;
+    // All three right-column docks now share one width — Visual Effects has
+    // joined them, and its five tab headers set the widest floor of the three.
+    const QVector<QDockWidget*> rightColumn{reprDock, overlaysDock,
+                                            visualEffectsDock_};
     int rightColumnWidth = kColumnWidth;
-    for (QDockWidget* dock : {reprDock, overlaysDock})
+    for (QDockWidget* dock : rightColumn)
         if (QWidget* panel = dock->widget())
             rightColumnWidth = qMax(rightColumnWidth, panel->minimumWidth());
-    for (QDockWidget* dock : {reprDock, overlaysDock})
+    for (QDockWidget* dock : rightColumn)
         if (QWidget* panel = dock->widget())
             panel->setMinimumWidth(rightColumnWidth);
-    // Visual Effects is no longer the right-hand column, but its five tab
-    // headers still set a floor of their own.
-    if (QWidget* panel = visualEffectsDock_->widget())
-        panel->setMinimumWidth(qMax(kColumnWidth, panel->minimumWidth()));
 
+    // The left column needs a hard minimum for the same reason the right one
+    // does: resizeDocks is only a hint, so without it the left column is the
+    // one thing in the window with no floor and absorbs every squeeze — it
+    // collapsed to 198 px once Remote Access gained a minimum width.
+    for (QDockWidget* dock : {brandingDock, infoDock, volumetricDock, processDock})
+        if (QWidget* panel = dock->widget())
+            panel->setMinimumWidth(qMax(kColumnWidth, panel->minimumWidth()));
     resizeDocks({brandingDock, infoDock, volumetricDock, processDock},
                 {kColumnWidth, kColumnWidth, kColumnWidth, kColumnWidth},
                 Qt::Horizontal);
-    resizeDocks({reprDock}, {rightColumnWidth}, Qt::Horizontal);
+    resizeDocks({reprDock, overlaysDock, visualEffectsDock_},
+                {rightColumnWidth, rightColumnWidth, rightColumnWidth},
+                Qt::Horizontal);
+    // Right column heights, now three docks over the full window height:
+    // Representation carries the most controls, Visual Effects the fewest
+    // (five tabs of a handful of rows each).
+    resizeDocks({reprDock, overlaysDock, visualEffectsDock_},
+                {320, 280, 260}, Qt::Vertical);
 
     // Left column heights (top → bottom: Structure, Volumetric Data,
     // Processes): keep the compact Structure summary small (its ~7 property
     // rows fit comfortably) and hand the freed space to the Volumetric Data and
     // Processes panels below it.
     resizeDocks({brandingDock, infoDock, volumetricDock, processDock},
-                {150, 220, 300, 300}, Qt::Vertical);
-    resizeDocks({jobDock_, remoteDock_, visualEffectsDock_, overlaysDock},
-                {250, 250, 250, 250}, Qt::Vertical);
-    // Results and Remote Access absorb the width the removed fourth zone
-    // released; Visual Effects keeps the column width so it stays aligned
-    // under Representation.
-    resizeDocks({jobDock_, remoteDock_, visualEffectsDock_, overlaysDock},
-                {560, 430, kColumnWidth, rightColumnWidth}, Qt::Horizontal);
+                {kBrandingHeight, 220, 300, 300}, Qt::Vertical);
+    resizeDocks({jobDock_, remoteDock_}, {250, 250}, Qt::Vertical);
+    // The bottom row is Results | Remote Access. Remote Access is held to the
+    // narrowest width that still shows its whole form — its own minimum size
+    // hint, asked of the panel rather than guessed at — and Results absorbs
+    // everything left over.
+    const int remoteWidth = remotePanel_->minimumSizeHint().width();
+    remoteDock_->setMinimumWidth(remoteWidth);
+    // Results is given a plain preferred width rather than an enormous one:
+    // resizeDocks normalizes the numbers it is handed, and an extreme ratio
+    // makes the solver claw the difference out of the LEFT column, which is
+    // not part of this call at all.
+    resizeDocks({jobDock_, remoteDock_}, {560, remoteWidth}, Qt::Horizontal);
 
     // Dock titles at 1.2× the theme default across all zones (the earlier
     // 1.5× reduced by 0.8×). The font is set on the QDockWidget (whose
@@ -1280,6 +1314,15 @@ void MainWindow::createMenusAndDocks()
     statusBarAction->setChecked(true);
     connect(statusBarAction, &QAction::toggled, statusBar(),
             &QWidget::setVisible);
+
+    // Snapshot the default arrangement BEFORE any saved state is applied —
+    // this is the only moment it exists. Rebuilding it later would mean
+    // re-running the whole dock construction, so it is captured instead. Any
+    // future change to the dock set must keep this after the last resizeDocks.
+    defaultLayoutState_ = saveState(kLayoutVersion);
+
+    viewMenu->addSeparator();
+    viewMenu->addAction(tr("Reset &Layout"), this, &MainWindow::resetLayout);
 
     // Reapply the layout the user left behind last session. The version
     // tag rejects layouts saved before the 8-zone grid existed, so the
@@ -3187,6 +3230,20 @@ void MainWindow::showMlwfViewer()
     openMlwfResults(dir);
 }
 
+void MainWindow::resetLayout()
+{
+    if (defaultLayoutState_.isEmpty())
+        return;
+    restoreState(defaultLayoutState_, kLayoutVersion);
+    // restoreState reinstates each dock's recorded visibility, so the branding
+    // card returns with the rest. Asserting it makes the guarantee independent
+    // of what the snapshot happened to capture — a reset that left the primary
+    // panel hidden would read as the reset having failed.
+    if (auto* branding = findChild<QDockWidget*>(QStringLiteral("brandingDock")))
+        branding->setVisible(true);
+    statusBar()->showMessage(tr("Dock layout reset to the default."), 4000);
+}
+
 void MainWindow::showGwViewer()
 {
     const QString dir = selectedProcessDirectory();
@@ -3389,6 +3446,12 @@ void MainWindow::applyAppearanceTheme()
         brandingPanel_->setDarkVariant(dark);
     if (systemStatusBar_)
         systemStatusBar_->refreshThreads();
+    // Icon tints are baked into pixmaps at bind time, so the whole registry is
+    // re-rendered against the new palette. The application event filter also
+    // catches this, but palette-change events are delivered asynchronously and
+    // a theme applied from Preferences should be visible on the way out of
+    // this call, not one event loop later.
+    ui::IconManager::refreshAll();
 }
 
 void MainWindow::showWelcomeScreen()

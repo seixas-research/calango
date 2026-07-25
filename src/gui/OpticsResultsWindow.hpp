@@ -44,6 +44,28 @@ private Q_SLOTS:
 private:
     void loadDirectory(const QString& directory);
 
+    /// X-axis unit. The data is always stored as photon energy in eV (that is
+    /// what the generator writes); wavelength is a view of it.
+    enum class XAxisUnit { EnergyEv, WavelengthNm };
+
+    /// Photon energy (eV) → vacuum wavelength (nm): λ = hc/E with
+    /// hc = 1239.84197 eV·nm.
+    static constexpr double kHcEvNm = 1239.84197;
+
+    /// The plotted abscissa in the selected unit, together with `series`
+    /// filtered to match it index for index.
+    ///
+    /// Converting to wavelength is singular at E = 0 — the grid GPAW writes
+    /// starts there — so those samples are DROPPED rather than clamped. A
+    /// clamp would place a fabricated finite wavelength on the axis; dropping
+    /// removes the sample from the abscissa and from every curve together, so
+    /// no series is silently shifted against the others.
+    std::vector<double> abscissa(
+        std::vector<QPair<QString, std::vector<double>>>& series) const;
+
+    /// Axis title for the current unit.
+    QString xAxisLabel() const;
+
     /// Which spectrum the plot shows. Stored as combo item DATA, not as an
     /// index: the 2D entries only exist for a 2D job, so index-based dispatch
     /// would silently plot the wrong quantity for bulk runs.
@@ -75,6 +97,7 @@ private:
     class OpticsPlotWidget* plot_ = nullptr;
     QComboBox* quantityCombo_ = nullptr;
     QComboBox* directionCombo_ = nullptr;
+    QComboBox* unitCombo_ = nullptr;
     bool hasData_ = false;
 };
 

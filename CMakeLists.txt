@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.54
+    VERSION 26.7.55
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -885,6 +885,23 @@ if(CALANGO_BUILD_TESTS)
     target_link_libraries(calango_shader_test PRIVATE Qt6::Gui Qt6::OpenGL)
     add_test(NAME shader_compilation COMMAND calango_shader_test)
 
+    # Theme-adaptive icons: that a Light-mode glyph is dark (the white-on-white
+    # bug) and that a bound icon is re-tinted when the theme changes. Checks
+    # rendered PIXELS, not just the colour table — the table can be right while
+    # the widget still shows the pixmap it was handed at construction.
+    qt_add_executable(calango_icon_theme_test
+        tests/IconThemeTest.cpp
+        src/ui/IconManager.cpp
+        src/gui/ThemeManager.cpp
+    )
+    target_include_directories(calango_icon_theme_test PRIVATE src)
+    target_link_libraries(calango_icon_theme_test
+        PRIVATE Qt6::Widgets Qt6::Svg)
+    qt_add_resources(calango_icon_theme_test "icon_theme_test_assets"
+        PREFIX "/"
+        FILES assets/.internal/icons/focus-3-line.svg)
+    add_test(NAME icon_theme COMMAND calango_icon_theme_test)
+
     # Results viewers: the GW and optics windows parse a JSON schema written by
     # a Python script, so nothing in the C++ build ties the two together. This
     # pins the schema from the reader's side (offscreen Qt, no GL, no display).
@@ -1024,6 +1041,20 @@ if(CALANGO_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/gw_silicon_benchmark.py
                 $<TARGET_FILE:calango_script_test>)
+
+    # Tetrahedron integration validated on graphene, whose low-energy
+    # absorbance is the universal pi*alpha = 2.293% — a reference independent
+    # of the calculation. Runs the GENERATED optics script end to end.
+    #
+    # The SLOWEST test in the suite (~4 min): it needs a 36x36 high-symmetry
+    # k-mesh to resolve the Dirac cone. A coarser mesh does cross pi*alpha, but
+    # at the wrong energy and for the wrong reason, so it cannot be cheapened
+    # without making the test dishonest. Self-skips without GPAW.
+    add_test(NAME graphene_tetrahedron
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_tetrahedron_benchmark.py
+                $<TARGET_FILE:calango_script_test>)
+    set_tests_properties(graphene_tetrahedron PROPERTIES TIMEOUT 1800)
 
     # 2D optical observables: unit conventions and vacuum-thickness
     # invariance, checked against graphene's universal absorbance (pi*alpha).

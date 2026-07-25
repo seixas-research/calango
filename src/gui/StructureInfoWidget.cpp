@@ -12,6 +12,11 @@ namespace calango::gui {
 
 namespace {
 
+/// Horizontal inset for the property rows, in logical pixels. Small on
+/// purpose: enough to lift the labels off the dock edge without making the
+/// summary look indented relative to the panels above and below it.
+constexpr int kFormSideMargin = 8;
+
 double vectorAngleDeg(const core::Vec3& a, const core::Vec3& b)
 {
     const double lengths = a.norm() * b.norm();
@@ -40,6 +45,12 @@ StructureInfoWidget::StructureInfoWidget(QWidget* parent)
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
     auto* form = new QFormLayout;
+    // Inset the property block (Formula … Periodic) from the dock edge. With
+    // zero margins the label column sits flush against the window frame, which
+    // reads as clipped text rather than as a deliberate flush-left layout.
+    // Applied to the form alone so the "Edit Structure…" button below keeps
+    // spanning the panel's full width.
+    form->setContentsMargins(kFormSideMargin, 0, kFormSideMargin, 0);
     outer->addLayout(form);
     editButton_->setToolTip(
         tr("Edit lattice parameters, lattice vectors and atomic positions; "

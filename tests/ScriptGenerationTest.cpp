@@ -159,6 +159,9 @@ int main(int argc, char** argv)
             OpticsConfig sheet = optics;
             sheet.vacuumAxis = 2;
             dumpOptics("optics_2d.py", sheet);
+            OpticsConfig tetra = sheet;
+            tetra.tetrahedronIntegration = true;
+            dumpOptics("optics_2d_tetrahedron.py", tetra);
         }
 
         // GW: both engines against both frequency treatments. The Yambo path
@@ -484,6 +487,39 @@ int main(int argc, char** argv)
         // function and runs it; here we only pin that it stays extractable.
         checkContains(script, "def twod_observables(omega_eV, eps1, eps2, L_z):",
                       "the observables live in an extractable function");
+    }
+
+    // -- Brillouin-zone integrator ------------------------------------------
+    std::printf("Optics integration mode:\n");
+    {
+        OpticsConfig optics;
+        optics.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        const std::string script = generateOpticsScript(optics);
+        checkContains(script, "integrationmode = \"point integration\"",
+                      "point integration is the default");
+        checkContains(script, "\"integrationmode\": integrationmode",
+                      "the integrator is recorded in the results");
+    }
+    {
+        OpticsConfig optics;
+        optics.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        optics.tetrahedronIntegration = true;
+        const std::string script = generateOpticsScript(optics);
+        // GPAW spells it with a SPACE, and the kwarg is `integrationmode`, not
+        // `method` — both differ from the obvious guess.
+        checkContains(script, "integrationmode = \"tetrahedron integration\"",
+                      "tetrahedron mode uses GPAW's exact spelling");
+        checkContains(script, "integrationmode=integrationmode",
+                      "passed through to DielectricFunction");
+        // The failure mode this guards: an inherited baseline whose k-grid is
+        // not high-symmetry. Falling back would return a spectrum from a
+        // different integrator than the one requested.
+        checkContains(script, "vertices of the IBZ",
+                      "detects the incompatible-grid error");
+        checkContains(script, "find_high_symmetry_monkhorst_pack",
+                      "names the remedy in the error message");
+        check(!contains(script, "integrationmode = \"point integration\""),
+              "does not silently fall back to point integration");
     }
 
     // -- GW quasiparticle pipelines -----------------------------------------

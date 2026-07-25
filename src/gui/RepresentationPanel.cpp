@@ -104,7 +104,7 @@ QWidget* RepresentationPanel::buildAppearanceTab()
     const auto makeEditorButton = [page, editorRow](const QString& icon,
                                                     const QString& tip) {
         auto* button = new QPushButton(page);
-        button->setIcon(ui::IconManager::icon(icon));
+        ui::IconManager::bind(button, icon);
         button->setIconSize(QSize(20, 20));
         button->setToolTip(tip);
         button->setFocusPolicy(Qt::NoFocus);

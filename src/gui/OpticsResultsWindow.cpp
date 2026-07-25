@@ -247,6 +247,17 @@ OpticsResultsWindow::OpticsResultsWindow(const QString& directory,
     controls->addWidget(new QLabel(tr("Direction:"), this));
     directionCombo_ = new QComboBox(this);
     controls->addWidget(directionCombo_);
+    controls->addSpacing(16);
+    controls->addWidget(new QLabel(tr("X axis:"), this));
+    unitCombo_ = new QComboBox(this);
+    unitCombo_->addItem(tr("Energy (eV)"),
+                        static_cast<int>(XAxisUnit::EnergyEv));
+    unitCombo_->addItem(tr("Wavelength (nm)"),
+                        static_cast<int>(XAxisUnit::WavelengthNm));
+    unitCombo_->setToolTip(
+        tr("λ = hc/E with hc = 1239.84197 eV·nm. Samples at E ≤ 0 have no "
+           "finite wavelength and are omitted from the wavelength view."));
+    controls->addWidget(unitCombo_);
     controls->addStretch(1);
     layout->addLayout(controls);
 
@@ -294,6 +305,11 @@ OpticsResultsWindow::OpticsResultsWindow(const QString& directory,
     connect(quantityCombo_, &QComboBox::currentIndexChanged, this,
             &OpticsResultsWindow::updatePlot);
     connect(directionCombo_, &QComboBox::currentIndexChanged, this,
+            &OpticsResultsWindow::updatePlot);
+    // The unit is a property of the abscissa, so every quantity re-plots
+    // through the same path — ε₁/ε₂, α, R, n/k, L and the 2D observables all
+    // pick it up without each needing to know about it.
+    connect(unitCombo_, &QComboBox::currentIndexChanged, this,
             &OpticsResultsWindow::updatePlot);
 
     updatePlot();
@@ -430,7 +446,50 @@ void OpticsResultsWindow::updatePlot()
         yLabel = tr("Sheet conductivity σ₂D (e²/h)");
         break;
     }
-    plot_->setSeries(energy_, series, tr("Photon energy ħω (eV)"), yLabel);
+    const std::vector<double> x = abscissa(series);
+    plot_->setSeries(x, series, xAxisLabel(), yLabel);
+}
+
+QString OpticsResultsWindow::xAxisLabel() const
+{
+    const auto unit = static_cast<XAxisUnit>(
+        unitCombo_ ? unitCombo_->currentData().toInt() : 0);
+    return unit == XAxisUnit::WavelengthNm ? tr("Wavelength λ (nm)")
+                                           : tr("Photon energy ħω (eV)");
+}
+
+std::vector<double> OpticsResultsWindow::abscissa(
+    std::vector<QPair<QString, std::vector<double>>>& series) const
+{
+    const auto unit = static_cast<XAxisUnit>(
+        unitCombo_ ? unitCombo_->currentData().toInt() : 0);
+    if (unit == XAxisUnit::EnergyEv)
+        return energy_;
+
+    // Wavelength view. E = 0 is a pole (λ → ∞) and negative energies are not
+    // physical, so those samples are dropped from the abscissa AND from the
+    // same index of every series. Filtering the two together is what keeps a
+    // curve aligned with its x values; dropping from one alone would shift
+    // every subsequent point by one sample.
+    std::vector<std::size_t> keep;
+    keep.reserve(energy_.size());
+    for (std::size_t i = 0; i < energy_.size(); ++i)
+        if (energy_[i] > 0.0 && std::isfinite(energy_[i]))
+            keep.push_back(i);
+
+    std::vector<double> wavelength;
+    wavelength.reserve(keep.size());
+    for (std::size_t i : keep)
+        wavelength.push_back(kHcEvNm / energy_[i]);
+
+    for (auto& entry : series) {
+        std::vector<double> filtered;
+        filtered.reserve(keep.size());
+        for (std::size_t i : keep)
+            filtered.push_back(i < entry.second.size() ? entry.second[i] : 0.0);
+        entry.second = std::move(filtered);
+    }
+    return wavelength;
 }
 
 void OpticsResultsWindow::exportCsv()

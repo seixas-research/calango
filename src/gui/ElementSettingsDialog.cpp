@@ -62,7 +62,7 @@ ElementSettingsDialog::ElementSettingsDialog(ViewportWidget* viewport, QWidget* 
                                const QString& tip) {
         auto* button =
             buttons->addButton(text, QDialogButtonBox::ResetRole);
-        button->setIcon(ui::IconManager::icon(iconName));
+        ui::IconManager::bind(button, iconName);
         button->setToolTip(tip);
         return button;
     };

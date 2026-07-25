@@ -3,6 +3,7 @@
 #include "core/CalculatorConfig.hpp"
 
 #include <QMainWindow>
+#include <QByteArray>
 #include <QList>
 #include <QPair>
 #include <QString>
@@ -193,6 +194,9 @@ private Q_SLOTS:
     /// Results → "GW Viewer…": open the quasiparticle read-out for the process
     /// selected in the Processes panel.
     void showGwViewer();
+    /// View → "Reset Layout": restore the default dock arrangement captured at
+    /// construction, including the branding panel's visibility.
+    void resetLayout();
     /// Directory of the process the Results tabs track, else the most recent
     /// run — the default target for the Results-menu viewers.
     QString selectedProcessDirectory() const;
@@ -425,6 +429,10 @@ private:
     MetricPlotWidget* forcePlot_ = nullptr;
     MetricPlotWidget* pressurePlot_ = nullptr;
     TimelineWidget* timeline_ = nullptr;
+    /// The default dock arrangement, captured once at construction before any
+    /// saved state is restored — the only point at which it exists. View →
+    /// Reset Layout replays it.
+    QByteArray defaultLayoutState_;
     QDockWidget* jobDock_ = nullptr;
     QDockWidget* visualEffectsDock_ = nullptr; ///< zone 9 (Lighting + effects)
     QDockWidget* remoteDock_ = nullptr;

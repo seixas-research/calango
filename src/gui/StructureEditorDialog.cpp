@@ -5,6 +5,7 @@
 #include "python_bridge/AseBridge.hpp"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -16,6 +17,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QStackedWidget>
+#include <QStandardItemModel>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -394,10 +396,16 @@ void StructureEditorDialog::translateAtoms()
     layout->insertWidget(0, note);
 
     QDoubleSpinBox* components[3] = {nullptr, nullptr, nullptr};
-    const char* labels[3] = {"Δx", "Δy", "Δz"};
+    // Plain ASCII component labels. The previous "Δx"/"Δy"/"Δz" were built from
+    // const char* through QLatin1String, which reads each BYTE as Latin-1 — so
+    // the two UTF-8 bytes of "Δ" rendered as the mojibake "Î”x". The row is
+    // already titled "Translation vector", which carries the delta sense
+    // without needing a glyph that has to survive an encoding round-trip.
+    const QString labels[3] = {QStringLiteral("X:"), QStringLiteral("Y:"),
+                               QStringLiteral("Z:")};
     auto* vectorRow = new QHBoxLayout;
     for (int i = 0; i < 3; ++i) {
-        vectorRow->addWidget(new QLabel(QLatin1String(labels[i]), &dialog));
+        vectorRow->addWidget(new QLabel(labels[i], &dialog));
         components[i] = new QDoubleSpinBox(&dialog);
         components[i]->setDecimals(4);
         components[i]->setRange(-10000.0, 10000.0);
@@ -407,27 +415,25 @@ void StructureEditorDialog::translateAtoms()
     form->addRow(tr("Translation vector:"), vectorRow);
 
     const bool periodic = working_->cell().isDefined();
-    auto* cartesianCheck =
-        new QCheckBox(tr("Cartesian coordinates (Å)"), &dialog);
-    cartesianCheck->setChecked(true);
-    auto* fractionalCheck = new QCheckBox(
-        tr("Fractional coordinates (direct cell vectors)"), &dialog);
-    fractionalCheck->setEnabled(periodic);
-    // Two mutually exclusive checkboxes rather than one: the spec asks for a
-    // toggle between two named systems, and a lone "Cartesian" box would leave
-    // the other mode unlabelled.
-    QObject::connect(cartesianCheck, &QCheckBox::toggled, &dialog,
-                     [fractionalCheck](bool on) {
-                         const QSignalBlocker blocker(fractionalCheck);
-                         fractionalCheck->setChecked(!on);
-                     });
-    QObject::connect(fractionalCheck, &QCheckBox::toggled, &dialog,
-                     [cartesianCheck](bool on) {
-                         const QSignalBlocker blocker(cartesianCheck);
-                         cartesianCheck->setChecked(!on);
-                     });
-    form->addRow(cartesianCheck);
-    form->addRow(fractionalCheck);
+    // One dropdown rather than two mutually exclusive checkboxes: the two modes
+    // are alternatives, not independent options, and a pair of linked
+    // checkboxes has to fake that exclusivity with signal blocking (and can
+    // still be driven into a both-off state by a stray setChecked).
+    auto* coordinateCombo = new QComboBox(&dialog);
+    coordinateCombo->addItem(tr("Cartesian (Å)"), false);
+    coordinateCombo->addItem(tr("Fractional (direct cell vectors)"), true);
+    if (!periodic) {
+        // Without a cell there is nothing to be fractional with respect to.
+        // The item stays visible but unselectable, so the mode is discoverable
+        // and its unavailability is explained rather than simply absent.
+        if (auto* model = qobject_cast<QStandardItemModel*>(coordinateCombo->model()))
+            if (QStandardItem* item = model->item(1))
+                item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+        coordinateCombo->setToolTip(
+            tr("This structure has no unit cell, so only Cartesian shifts "
+               "apply."));
+    }
+    form->addRow(tr("Coordinate system:"), coordinateCombo);
     if (!periodic)
         form->addRow(new QLabel(
             tr("This structure has no cell, so only Cartesian shifts apply."),
@@ -447,9 +453,10 @@ void StructureEditorDialog::translateAtoms()
     // Fractional input is converted through the CELL, not by scaling each
     // component by a lattice length: for a non-orthogonal cell those differ,
     // and the per-length shortcut silently shears the translation.
-    const core::Vec3 shift = fractionalCheck->isChecked() && periodic
-        ? working_->cell().fractionalToCartesian(input)
-        : input;
+    const bool fractional =
+        coordinateCombo->currentData().toBool() && periodic;
+    const core::Vec3 shift =
+        fractional ? working_->cell().fractionalToCartesian(input) : input;
     if (shift.norm() < 1e-12)
         return;
 

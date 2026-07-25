@@ -83,7 +83,7 @@ VolumetricPanel::VolumetricPanel(ViewportWidget* viewport, QWidget* parent)
     auto* bar = new QHBoxLayout;
     const auto makeButton = [&](const QString& icon, const QString& tip) {
         auto* button = new QPushButton(this);
-        button->setIcon(ui::IconManager::icon(icon));
+        ui::IconManager::bind(button, icon);
         button->setIconSize(QSize(20, 20));
         button->setToolTip(tip);
         button->setFocusPolicy(Qt::NoFocus);

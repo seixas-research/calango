@@ -135,6 +135,23 @@ QWidget* OpticsWizard::buildSettingsPage()
     omegaMaxSpin_->setToolTip(tr("Upper bound of the photon-energy window."));
     form->addRow(tr("Energy window max:"), omegaMaxSpin_);
 
+    tetrahedronCheck_ =
+        new QCheckBox(tr("Tetrahedron integration (Brillouin zone)"), page);
+    tetrahedronCheck_->setToolTip(
+        tr("Integrate the response by linear tetrahedron interpolation instead "
+           "of summing over k-points.\n"
+           "Point integration gives every transition a Lorentzian of width η, "
+           "so any feature narrower than η — a van Hove singularity, a 2D "
+           "absorption edge — is smeared rather than resolved. Tetrahedron "
+           "integration resolves those on a mesh where point integration is "
+           "still noisy.\n\n"
+           "Requires the BASELINE's k-grid to contain every vertex of the "
+           "irreducible Brillouin zone (gpaw.bztools."
+           "find_high_symmetry_monkhorst_pack). An ordinary Monkhorst-Pack "
+           "grid usually does not, and the run will stop with that message "
+           "rather than quietly switch back to point integration."));
+    form->addRow(QString(), tetrahedronCheck_);
+
     npointsSpin_ = new QSpinBox(page);
     npointsSpin_->setRange(2, 100000);
     npointsSpin_->setValue(500);
@@ -166,6 +183,8 @@ QWidget* OpticsWizard::buildSettingsPage()
     connect(omegaMaxSpin_, &QDoubleSpinBox::valueChanged, this,
             [this] { refreshPreview(); });
     connect(npointsSpin_, &QSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+    connect(tetrahedronCheck_, &QCheckBox::toggled, this,
             [this] { refreshPreview(); });
     connect(dirXxCheck_, &QCheckBox::toggled, this,
             [this] { refreshPreview(); });
@@ -273,6 +292,7 @@ QString OpticsWizard::generateScript() const
     cfg.omegaMinEv = omegaMinSpin_->value();
     cfg.omegaMaxEv = omegaMaxSpin_->value();
     cfg.npoints = npointsSpin_->value();
+    cfg.tetrahedronIntegration = tetrahedronCheck_->isChecked();
     cfg.dirX = dirXxCheck_->isChecked();
     cfg.dirY = dirYyCheck_->isChecked();
     cfg.dirZ = dirZzCheck_->isChecked();

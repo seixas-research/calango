@@ -9,6 +9,7 @@
 //      declaration order below guarantees destruction order.
 
 #include "gui/MainWindow.hpp"
+#include "ui/IconManager.hpp"
 #include "gui/SettingsManager.hpp"
 #include "gui/ThemeManager.hpp"
 #include "gui/WelcomeDialog.hpp"
@@ -87,6 +88,10 @@ int main(int argc, char* argv[])
     calango::gui::SettingsManager::loadOrInitialize();
     // Apply the persisted appearance theme before any widget is constructed.
     calango::gui::ThemeManager::apply(calango::gui::ThemeManager::current());
+    // Watch for later theme changes (Preferences, or the OS switching under
+    // "System") and re-tint every bound icon. Installed before any widget so
+    // no binding can be created outside its reach.
+    calango::ui::IconManager::installThemeWatcher(&app);
 
     calango::pybridge::PythonEngine python;
     if (!python.aseAvailable()) {

@@ -8,7 +8,14 @@ BrandingPanel::BrandingPanel(QWidget* parent)
     : QWidget(parent)
     , source_(QStringLiteral(":/assets/.internal/logo_light.png"))
 {
-    setMinimumHeight(60);
+    // The logo is drawn "contain"-style (see paintEvent), so it simply scales
+    // down inside whatever height the dock is given — nothing clips. The floor
+    // is therefore only about staying visible at all, not about fitting the
+    // artwork. It is set to the same 30 px the default layout asks for:
+    // resizeDocks is a hint the splitter rounds (it settled on 28), so making
+    // the floor coincide with the request is what pins the strip at exactly
+    // the intended height while still letting the user drag it taller.
+    setMinimumHeight(30);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 }
 

@@ -34,6 +34,25 @@ struct OpticsConfig {
     /// absorbance A(ω) — quantities that are only meaningful once the
     /// arbitrary vacuum thickness is divided back out.
     int vacuumAxis = -1;
+    /// Use linear tetrahedron integration over the Brillouin zone instead of
+    /// the default point (sum-over-k) integration.
+    ///
+    /// Point integration replaces every interband transition with a Lorentzian
+    /// of width η, so structure narrower than η — a van Hove singularity, a
+    /// 2D absorption edge — is smeared into the broadening rather than
+    /// resolved. Tetrahedron integration interpolates the bands linearly
+    /// within each tetrahedron and integrates analytically, which resolves
+    /// those features at a k-mesh where point integration still shows noise.
+    ///
+    /// It is NOT a free improvement: GPAW requires the ground-state k-grid to
+    /// contain every vertex of the irreducible BZ (see
+    /// `gpaw.bztools.find_high_symmetry_monkhorst_pack`). An ordinary
+    /// Monkhorst-Pack grid usually does not, and the response code refuses to
+    /// run rather than integrate over an incomplete zone. The generated script
+    /// therefore reports that condition as an actionable error instead of
+    /// silently falling back — a spectrum produced by a different integrator
+    /// than the one requested is not the spectrum that was asked for.
+    bool tetrahedronIntegration = false;
     double broadeningEv = 0.1;  ///< Lorentzian broadening η, eV
     double omegaMinEv = 0.0;    ///< lower photon energy of the spectrum, eV
     double omegaMaxEv = 20.0;   ///< upper photon energy of the spectrum, eV

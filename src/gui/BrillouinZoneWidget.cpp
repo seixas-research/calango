@@ -126,7 +126,7 @@ BrillouinZoneWidget::BrillouinZoneWidget(
     auto* pathButtons = new QHBoxLayout;
     const auto iconButton = [this](const QString& iconName, const QString& tip) {
         auto* button = new QPushButton(this);
-        button->setIcon(ui::IconManager::icon(iconName));
+        ui::IconManager::bind(button, iconName);
         button->setToolTip(tip);
         button->setFocusPolicy(Qt::NoFocus);
         return button;
