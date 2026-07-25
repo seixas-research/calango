@@ -13,7 +13,7 @@ namespace calango::gui {
 /// Read-only side panel summarizing the current structure: formula, atom
 /// and bond counts, and full lattice parameters (a, b, c, α, β, γ, volume,
 /// periodicity). Crystallographic symmetry has its own dedicated tool under
-/// Analysis → Detect Symmetry…, keeping this dock uncluttered and free of
+/// Analysis → Symmetry…, keeping this dock uncluttered and free of
 /// Python calls during trajectory playback.
 class StructureInfoWidget : public QWidget {
     Q_OBJECT

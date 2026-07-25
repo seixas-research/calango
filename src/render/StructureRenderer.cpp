@@ -1,6 +1,7 @@
 #include "render/StructureRenderer.hpp"
 #include "render/RenderGeometry.hpp"
 
+#include "core/PeriodicImages.hpp"
 #include "core/Structure.hpp"
 
 #include <QOpenGLFunctions_3_3_Core>
@@ -583,6 +584,48 @@ void StructureRenderer::buildPolyhedra(const core::Structure* structure,
         neighbors[j].push_back(toQt(atoms[i].position - bond.imageOffset));
     }
 
+    // Per-cation cutoff overrides replace that atom's bond-derived shell with
+    // every neighbour inside an absolute radius. Covalent-radius bonding gets
+    // the coordination number wrong for some cations (an octahedral Ti in an
+    // oxide picks up 4 or 8 rather than 6), and no global tolerance fixes one
+    // element without breaking the others.
+    if (!style_.polyhedronCutoffOverrides.empty()) {
+        const auto range = core::imageRange(
+            structure->cell(),
+            std::max_element(style_.polyhedronCutoffOverrides.begin(),
+                             style_.polyhedronCutoffOverrides.end(),
+                             [](const auto& a, const auto& b) {
+                                 return a.second < b.second;
+                             })
+                ->second);
+        const auto& cellVectors = structure->cell().vectors();
+        for (std::size_t c = 0; c < count; ++c) {
+            const auto override =
+                style_.polyhedronCutoffOverrides.find(atoms[c].atomicNumber);
+            if (override == style_.polyhedronCutoffOverrides.end())
+                continue;
+            const double cutoff = override->second;
+            neighbors[c].clear();
+            for (std::size_t n = 0; n < count; ++n) {
+                if (n == c)
+                    continue;
+                for (int ia = -range[0]; ia <= range[0]; ++ia)
+                    for (int ib = -range[1]; ib <= range[1]; ++ib)
+                        for (int ic = -range[2]; ic <= range[2]; ++ic) {
+                            const core::Vec3 shift =
+                                cellVectors[0] * static_cast<double>(ia)
+                                + cellVectors[1] * static_cast<double>(ib)
+                                + cellVectors[2] * static_cast<double>(ic);
+                            const core::Vec3 delta =
+                                atoms[n].position + shift - atoms[c].position;
+                            if (delta.norm() <= cutoff)
+                                neighbors[c].push_back(
+                                    toQt(atoms[n].position + shift));
+                        }
+            }
+        }
+    }
+
     for (std::size_t c = 0; c < count; ++c) {
         // A coordination polyhedron needs at least four vertices to enclose a
         // volume; fewer neighbors (edges/triangles) are left to the spheres.
@@ -607,6 +650,45 @@ void StructureRenderer::buildPolyhedra(const core::Structure* structure,
             appendColoredVertex(edgeVertices, neighbors[c][b], edgeColor);
         }
     }
+}
+
+
+std::vector<core::Vec3> StructureRenderer::boundaryGhostShifts(
+    const core::Vec3& position, const core::UnitCell& cell, float tolerance)
+{
+    std::vector<core::Vec3> shifts;
+    if (!cell.isDefined())
+        return shifts;
+    const core::Vec3 fractional = cell.cartesianToFractional(position);
+    const double f[3] = {fractional.x, fractional.y, fractional.z};
+    const auto& vectors = cell.vectors();
+
+    // Which axes this atom sits on the near face of. An atom at fractional 0
+    // is duplicated at 1; one already at 1 is its own duplicate and needs
+    // nothing. Both ends are tested so a cell whose coordinates were written
+    // out at 1.0 rather than 0.0 behaves the same.
+    bool onFace[3] = {false, false, false};
+    for (int axis = 0; axis < 3; ++axis)
+        onFace[axis] = std::abs(f[axis]) < tolerance;
+
+    // Every non-empty subset of the on-face axes: one shift for a face atom,
+    // three for an edge, seven for the origin vertex.
+    for (int mask = 1; mask < 8; ++mask) {
+        bool valid = true;
+        core::Vec3 shift;
+        for (int axis = 0; axis < 3; ++axis) {
+            if (!(mask & (1 << axis)))
+                continue;
+            if (!onFace[axis]) {
+                valid = false;
+                break;
+            }
+            shift = shift + vectors[static_cast<std::size_t>(axis)];
+        }
+        if (valid)
+            shifts.push_back(shift);
+    }
+    return shifts;
 }
 
 void StructureRenderer::setStructure(const core::Structure* structure,
@@ -660,6 +742,19 @@ void StructureRenderer::setStructure(const core::Structure* structure,
         const auto& atoms = structure->atoms();
         atomInstances.reserve(atoms.size() * kFloatsPerInstance);
 
+        // Boundary duplicates, computed once and reused by the bond pass so
+        // an atom and its bonds are never ghosted inconsistently.
+        std::vector<std::vector<core::Vec3>> ghostShifts;
+        const bool ghosts =
+            style_.showBoundaryGhosts && structure->cell().isDefined();
+        if (ghosts) {
+            ghostShifts.resize(atoms.size());
+            for (std::size_t index = 0; index < atoms.size(); ++index)
+                ghostShifts[index] = boundaryGhostShifts(
+                    atoms[index].position, structure->cell(),
+                    style_.boundaryGhostTolerance);
+        }
+
         for (std::size_t index = 0; index < atoms.size(); ++index) {
             const core::Atom& atom = atoms[index];
             const bool selected =
@@ -678,17 +773,54 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                             * (selected ? 1.2f : 1.0f));
                 appendInstance(atomInstances, model, color);
             }
+
+            // Ghosts use the same radius and colour as their source, so the
+            // duplicated face is visually indistinguishable from the real one.
+            if (ghosts) {
+                for (const core::Vec3& shift : ghostShifts[index]) {
+                    const QVector3D ghostPosition = toQt(atom.position + shift);
+                    if (wireframe) {
+                        appendColoredVertex(wireAtomVertices, ghostPosition, color);
+                        continue;
+                    }
+                    QMatrix4x4 model;
+                    model.translate(ghostPosition);
+                    model.scale(displayRadius(atom.atomicNumber, style_)
+                                * (selected ? 1.2f : 1.0f));
+                    appendInstance(atomInstances, model, color);
+                }
+            }
         }
 
         if (wantBonds) {
             const float baseRadius = style_.bondRadius * style_.bondWidthFactor;
             for (const core::Bond& bond :
                  structure->detectBonds(style_.bondTolerance, style_.autoBonds)) {
+                // The bond is drawn once at its real position, then once per
+                // ghost translation of EITHER endpoint: an atom duplicated onto
+                // the far face takes its bonds with it, which is what makes the
+                // duplicated face look bonded rather than like loose spheres.
+                std::vector<core::Vec3> offsets{core::Vec3{}};
+                if (ghosts) {
+                    for (const int end : {bond.i, bond.j})
+                        for (const core::Vec3& shift :
+                             ghostShifts[static_cast<std::size_t>(end)]) {
+                            const bool duplicate = std::any_of(
+                                offsets.begin(), offsets.end(),
+                                [&shift](const core::Vec3& existing) {
+                                    return (existing - shift).norm() < 1e-9;
+                                });
+                            if (!duplicate)
+                                offsets.push_back(shift);
+                        }
+                }
+                for (const core::Vec3& offset : offsets) {
                 const auto& a = atoms[static_cast<std::size_t>(bond.i)];
                 const auto& b = atoms[static_cast<std::size_t>(bond.j)];
-                const QVector3D pa = toQt(a.position);
-                const QVector3D pbReal = toQt(b.position);
-                const QVector3D pbImage = toQt(b.position + bond.imageOffset);
+                const QVector3D pa = toQt(a.position + offset);
+                const QVector3D pbReal = toQt(b.position + offset);
+                const QVector3D pbImage =
+                    toQt(b.position + bond.imageOffset + offset);
                 const QVector3D dir = (pbImage - pa).normalized();
                 const float half = pa.distanceToPoint(pbImage) * 0.5f;
 
@@ -757,6 +889,7 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                             colorB, style_.gradientBonds ? mid : colorB);
                     }
                 }
+                } // ghost offsets
             }
         }
 
@@ -1128,7 +1261,7 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
         wireProgram_.bind();
         wireProgram_.setUniformValue("uMvp", projection * view);
         if (polyhedronFaces_.vertexCount > 0) {
-            wireProgram_.setUniformValue("uAlpha", 0.38f);
+            wireProgram_.setUniformValue("uAlpha", style_.polyhedronOpacity);
             gl_->glEnable(GL_BLEND);
             gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             gl_->glDepthMask(GL_FALSE);
@@ -1138,11 +1271,13 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
             gl_->glDepthMask(GL_TRUE);
             gl_->glDisable(GL_BLEND);
         }
-        if (polyhedronEdges_.vertexCount > 0) {
+        if (style_.polyhedronEdges && polyhedronEdges_.vertexCount > 0) {
             wireProgram_.setUniformValue("uAlpha", 1.0f);
+            gl_->glLineWidth(style_.polyhedronEdgeWidth);
             polyhedronEdges_.vao.bind();
             gl_->glDrawArrays(GL_LINES, 0, polyhedronEdges_.vertexCount);
             polyhedronEdges_.vao.release();
+            gl_->glLineWidth(1.0f);
         }
         wireProgram_.release();
     }

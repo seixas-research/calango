@@ -13,7 +13,7 @@ class QTableWidget;
 
 namespace calango::gui {
 
-/// Analysis → "Detect Symmetry…": a standalone crystallographic symmetry
+/// Analysis → "Symmetry…": a standalone crystallographic symmetry
 /// report (extracted from the Structure panel). It shows the space group
 /// (symbol + number), point group, Hall number, crystal system, and the
 /// symmetry-inequivalent sites with their Wyckoff letters at an adjustable

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.52
+    VERSION 26.7.53
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -190,6 +190,10 @@ qt_add_executable(calango
     src/core/MonteCarlo.cpp
     src/core/SqsGenerator.hpp
     src/core/SqsGenerator.cpp
+    src/core/IceBuilder.hpp
+    src/core/IceBuilder.cpp
+    src/core/PolymerBuilder.hpp
+    src/core/PolymerBuilder.cpp
     src/core/Vacf.hpp
     src/core/Vacf.cpp
 
@@ -265,6 +269,10 @@ qt_add_executable(calango
     src/gui/LightingPanel.cpp
     src/gui/ElementSettingsDialog.hpp
     src/gui/ElementSettingsDialog.cpp
+    src/gui/PolyhedralSettingsDialog.hpp
+    src/gui/PolyhedralSettingsDialog.cpp
+    src/gui/VectorOverlayDialog.hpp
+    src/gui/VectorOverlayDialog.cpp
     src/gui/PythonHighlighter.hpp
     src/gui/PythonHighlighter.cpp
     src/gui/BrillouinZoneView.hpp
@@ -291,6 +299,10 @@ qt_add_executable(calango
     src/gui/XrdDialog.cpp
     src/gui/NanoBuilderDialog.hpp
     src/gui/NanoBuilderDialog.cpp
+    src/gui/WaterIceWizard.hpp
+    src/gui/WaterIceWizard.cpp
+    src/gui/MacromoleculeWizard.hpp
+    src/gui/MacromoleculeWizard.cpp
     src/gui/PhononBuilderDialog.hpp
     src/gui/PhononBuilderDialog.cpp
     src/gui/BondEditorDialog.hpp
@@ -383,6 +395,8 @@ qt_add_executable(calango
     src/gui/SinglePointViewer.cpp
     src/gui/GeometryOptimizationViewer.hpp
     src/gui/GeometryOptimizationViewer.cpp
+    src/gui/MolecularDynamicsViewer.hpp
+    src/gui/MolecularDynamicsViewer.cpp
     src/gui/MlwfViewer.hpp
     src/gui/MlwfViewer.cpp
     src/gui/WannierInterpolationDialog.hpp
@@ -503,6 +517,10 @@ qt_add_resources(calango "icons"
         assets/.internal/icons/loader-4-line.svg
         assets/.internal/icons/magic-line.svg
         assets/.internal/icons/palette-line.svg
+        assets/.internal/icons/links-line.svg
+        assets/.internal/icons/arrow-right-up-line.svg
+        assets/.internal/icons/save-line.svg
+        assets/.internal/icons/box-1-line.svg
         assets/.internal/icons/ram-line.svg
         assets/.internal/icons/ruler-2-line.svg
         assets/.internal/icons/scissors-cut-line.svg
@@ -773,6 +791,45 @@ if(CALANGO_BUILD_TESTS)
     # created (only its static color/radius helpers are exercised).
     target_link_libraries(calango_raytrace_test PRIVATE Qt6::Gui Qt6::OpenGL)
     add_test(NAME raytrace_scene_files COMMAND calango_raytrace_test)
+
+    # Periodic boundary ghost duplication: the face/edge/vertex combinatorics,
+    # and that computing them never touches the structure.
+    add_executable(calango_ghost_test
+        tests/BoundaryGhostTest.cpp
+        src/render/StructureRenderer.cpp
+        src/render/ColorMap.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_ghost_test PRIVATE src)
+    target_link_libraries(calango_ghost_test PRIVATE Qt6::Gui Qt6::OpenGL)
+    add_test(NAME boundary_ghosts COMMAND calango_ghost_test)
+
+    # Polymer builder: measures the chemistry of the generated cell (bond
+    # lengths, valence angles, composition, self-avoidance) rather than the
+    # builder's own bookkeeping.
+    add_executable(calango_polymer_test
+        tests/PolymerBuilderTest.cpp
+        src/core/PolymerBuilder.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_polymer_test PRIVATE src)
+    add_test(NAME polymer_builder COMMAND calango_polymer_test)
+
+    # Native water/ice builder: the Bernal-Fowler ice rules are re-derived from
+    # the generated COORDINATES, not read back from the solver's bookkeeping.
+    add_executable(calango_ice_test
+        tests/IceBuilderTest.cpp
+        src/core/IceBuilder.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_ice_test PRIVATE src)
+    add_test(NAME ice_builder COMMAND calango_ice_test)
 
     # Harmonic phonon thermodynamics: checked against the closed-form Einstein
     # oscillator and the limits that are laws (Third Law, Dulong-Petit).

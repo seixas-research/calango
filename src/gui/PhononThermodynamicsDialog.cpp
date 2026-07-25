@@ -8,6 +8,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPushButton>
@@ -17,6 +18,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <limits>
 
 namespace calango::gui {
 
@@ -24,15 +27,23 @@ namespace {
 constexpr double kMevPerEv = 1000.0;
 } // namespace
 
-/// Dual-axis multi-curve plot for the thermodynamic functions. Drawing lives in
-/// render(QPainter, QRectF) so the widget, the PNG export and the SVG export
-/// are literally the same code — an export that redraws through a second path
-/// is an export that silently drifts from what the user saw.
+/// One thermodynamics panel: either the two energy curves (U, F) or the single
+/// entropy curve. Drawing lives in render(QPainter, QRectF) so the widget, the
+/// PNG export and the SVG export are literally the same code — an export that
+/// redraws through a second path is an export that silently drifts from what
+/// the user saw.
+///
+/// The crosshair is driven from OUTSIDE (setCursorTemperature) rather than from
+/// this widget's own mouse position, which is what lets both columns track one
+/// hover: each plot reports where the pointer is and both are told where to
+/// draw.
 class ThermoPlotWidget : public QWidget {
 public:
-    explicit ThermoPlotWidget(QWidget* parent = nullptr) : QWidget(parent)
+    explicit ThermoPlotWidget(bool entropy, QWidget* parent = nullptr)
+        : QWidget(parent), entropy_(entropy)
     {
-        setMinimumSize(520, 360);
+        setMinimumSize(300, 300);
+        setMouseTracking(true);
     }
 
     void setResult(const core::PhononThermoResult& result)
@@ -41,8 +52,20 @@ public:
         update();
     }
 
-    /// Draw the whole chart into `target` using `painter`. Fonts scale with the
-    /// target height so a 3x PNG export is not a chart with tiny labels.
+    /// Draw the crosshair at temperature `t`; NaN hides it.
+    void setCursorTemperature(double t)
+    {
+        if (!(std::isnan(cursorT_) && std::isnan(t)) && cursorT_ != t) {
+            cursorT_ = t;
+            update();
+        }
+    }
+
+    /// Emitted-by-hand callback (this widget is not a QObject subclass with its
+    /// own signals to keep it file-local): the dialog installs one to broadcast
+    /// the hovered temperature to both columns.
+    std::function<void(double)> onHover;
+
     void render(QPainter& painter, const QRectF& target) const;
 
 protected:
@@ -54,55 +77,104 @@ protected:
         render(painter, QRectF(rect()));
     }
 
+    void mouseMoveEvent(QMouseEvent* event) override
+    {
+        if (!onHover || result_.points.size() < 2)
+            return;
+        const QRectF plot = plotRect(QRectF(rect()));
+        if (!plot.contains(event->position())) {
+            onHover(std::numeric_limits<double>::quiet_NaN());
+            return;
+        }
+        const double tMin = result_.points.front().temperatureK;
+        const double tMax = result_.points.back().temperatureK;
+        const double fraction =
+            (event->position().x() - plot.left()) / std::max(plot.width(), 1.0);
+        onHover(tMin + fraction * (tMax - tMin));
+    }
+
+    void leaveEvent(QEvent*) override
+    {
+        if (onHover)
+            onHover(std::numeric_limits<double>::quiet_NaN());
+    }
+
 private:
+    /// The framed data area inside `target`; shared by drawing and hit-testing
+    /// so the crosshair cannot drift from the curves.
+    QRectF plotRect(const QRectF& target) const
+    {
+        const double scale = target.height() / 340.0;
+        return target.adjusted(72.0 * scale, 22.0 * scale, -18.0 * scale,
+                               -40.0 * scale);
+    }
+    /// The point nearest `cursorT_`, or -1.
+    int cursorIndex() const;
+
+    bool entropy_;
     core::PhononThermoResult result_;
+    double cursorT_ = std::numeric_limits<double>::quiet_NaN();
 };
+
+int ThermoPlotWidget::cursorIndex() const
+{
+    if (std::isnan(cursorT_) || result_.points.size() < 2)
+        return -1;
+    int best = -1;
+    double bestDistance = std::numeric_limits<double>::max();
+    for (std::size_t i = 0; i < result_.points.size(); ++i) {
+        const double d = std::abs(result_.points[i].temperatureK - cursorT_);
+        if (d < bestDistance) {
+            bestDistance = d;
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
 
 void ThermoPlotWidget::render(QPainter& painter, const QRectF& target) const
 {
     if (result_.points.size() < 2)
         return;
 
-    const double scale = target.height() / 360.0;
+    const double scale = target.height() / 340.0;
     QFont font = painter.font();
     font.setPointSizeF(std::max(7.0, 9.0 * scale));
     painter.setFont(font);
     const QFontMetricsF metrics(font);
 
-    // Generous side margins: both axes carry labelled ticks.
-    const QRectF plot = target.adjusted(70.0 * scale, 24.0 * scale,
-                                        -78.0 * scale, -40.0 * scale);
+    const QRectF plot = plotRect(target);
     if (plot.width() <= 1.0 || plot.height() <= 1.0)
         return;
 
-    // -- Ranges -------------------------------------------------------------
     double tMin = result_.points.front().temperatureK;
     double tMax = result_.points.back().temperatureK;
     if (tMax - tMin < 1e-9)
         tMax = tMin + 1.0;
-    double energyMin = 0.0, energyMax = 0.0, entropyMax = 0.0;
+
+    // Value range for whichever series this panel owns.
+    double vMin = 0.0, vMax = 0.0;
     for (const auto& p : result_.points) {
-        energyMin = std::min({energyMin, p.internalEnergyEv, p.freeEnergyEv});
-        energyMax = std::max({energyMax, p.internalEnergyEv, p.freeEnergyEv});
-        entropyMax = std::max(entropyMax, p.entropyEvPerK * kMevPerEv);
+        if (entropy_) {
+            vMax = std::max(vMax, p.entropyEvPerK * kMevPerEv);
+        } else {
+            vMin = std::min({vMin, p.internalEnergyEv, p.freeEnergyEv});
+            vMax = std::max({vMax, p.internalEnergyEv, p.freeEnergyEv});
+        }
     }
-    if (energyMax - energyMin < 1e-12)
-        energyMax = energyMin + 1e-12;
-    if (entropyMax < 1e-12)
-        entropyMax = 1e-12;
+    if (vMax - vMin < 1e-12)
+        vMax = vMin + 1e-12;
 
     const auto xOf = [&](double t) {
         return plot.left() + (t - tMin) / (tMax - tMin) * plot.width();
     };
-    const auto yEnergy = [&](double e) {
-        return plot.bottom() - (e - energyMin) / (energyMax - energyMin) * plot.height();
-    };
-    const auto yEntropy = [&](double s) {
-        return plot.bottom() - s / entropyMax * plot.height();
+    const auto yOf = [&](double v) {
+        return plot.bottom() - (v - vMin) / (vMax - vMin) * plot.height();
     };
 
-    // -- Frame + grid -------------------------------------------------------
-    const QColor axisColor = palette().color(QPalette::Text);
+    const QColor axisColor = painter.pen().color().isValid()
+        ? palette().color(QPalette::Text)
+        : QColor(Qt::black);
     QColor gridColor = axisColor;
     gridColor.setAlphaF(0.15);
     painter.setPen(QPen(gridColor, 1.0));
@@ -116,27 +188,30 @@ void ThermoPlotWidget::render(QPainter& painter, const QRectF& target) const
     painter.setPen(QPen(axisColor, 1.2 * scale));
     painter.drawRect(plot);
 
-    // -- Curves -------------------------------------------------------------
     struct Curve {
         QColor color;
         QString label;
-        bool entropy;
+        double valueOf(const core::PhononThermoPoint& p) const
+        {
+            return kind == 0 ? p.internalEnergyEv
+                             : (kind == 1 ? p.freeEnergyEv
+                                          : p.entropyEvPerK * kMevPerEv);
+        }
+        int kind; // 0 = U, 1 = F, 2 = S
     };
-    const Curve curves[3] = {
-        {QColor(214, 96, 77), QStringLiteral("U_vib"), false},
-        {QColor(69, 117, 180), QStringLiteral("F_vib"), false},
-        {QColor(90, 174, 97), QStringLiteral("S_vib"), true},
-    };
+    std::vector<Curve> curves;
+    if (entropy_)
+        curves.push_back({QColor(90, 174, 97), QStringLiteral("S_vib"), 2});
+    else {
+        curves.push_back({QColor(214, 96, 77), QStringLiteral("U_vib"), 0});
+        curves.push_back({QColor(69, 117, 180), QStringLiteral("F_vib"), 1});
+    }
+
     for (const Curve& curve : curves) {
         QPainterPath path;
         for (std::size_t i = 0; i < result_.points.size(); ++i) {
-            const auto& p = result_.points[i];
-            const double value = curve.entropy
-                ? yEntropy(p.entropyEvPerK * kMevPerEv)
-                : yEnergy(curve.label == QStringLiteral("U_vib")
-                              ? p.internalEnergyEv
-                              : p.freeEnergyEv);
-            const QPointF point(xOf(p.temperatureK), value);
+            const QPointF point(xOf(result_.points[i].temperatureK),
+                                yOf(curve.valueOf(result_.points[i])));
             if (i == 0)
                 path.moveTo(point);
             else
@@ -146,48 +221,32 @@ void ThermoPlotWidget::render(QPainter& painter, const QRectF& target) const
         painter.drawPath(path);
     }
 
-    // -- Tick labels + axis titles -----------------------------------------
+    // -- Ticks + titles -----------------------------------------------------
     painter.setPen(axisColor);
     for (int i = 0; i <= kTicks; ++i) {
         const double t = tMin + (tMax - tMin) * i / kTicks;
-        const double x = xOf(t);
-        painter.drawText(QRectF(x - 30.0 * scale, plot.bottom() + 2.0 * scale,
+        painter.drawText(QRectF(xOf(t) - 30.0 * scale, plot.bottom() + 2.0 * scale,
                                 60.0 * scale, metrics.height()),
                          Qt::AlignCenter, QString::number(t, 'f', 0));
-
-        const double e = energyMin + (energyMax - energyMin) * i / kTicks;
-        painter.drawText(QRectF(target.left(), yEnergy(e) - metrics.height() / 2.0,
+        const double v = vMin + (vMax - vMin) * i / kTicks;
+        painter.drawText(QRectF(target.left(), yOf(v) - metrics.height() / 2.0,
                                 plot.left() - target.left() - 4.0 * scale,
                                 metrics.height()),
                          Qt::AlignRight | Qt::AlignVCenter,
-                         QString::number(e, 'g', 3));
-
-        const double s = entropyMax * i / kTicks;
-        painter.drawText(QRectF(plot.right() + 4.0 * scale,
-                                yEntropy(s) - metrics.height() / 2.0,
-                                target.right() - plot.right() - 6.0 * scale,
-                                metrics.height()),
-                         Qt::AlignLeft | Qt::AlignVCenter,
-                         QString::number(s, 'g', 3));
+                         QString::number(v, 'g', 3));
     }
     painter.drawText(QRectF(plot.left(), target.bottom() - metrics.height() * 1.2,
                             plot.width(), metrics.height()),
                      Qt::AlignCenter, QStringLiteral("Temperature (K)"));
-
-    // Rotated axis titles, one per side.
-    const auto drawRotated = [&](double x, const QString& text, int direction) {
-        painter.save();
-        painter.translate(x, plot.center().y());
-        painter.rotate(direction * 90.0);
-        painter.drawText(QRectF(-plot.height() / 2.0, -metrics.height(),
-                                plot.height(), metrics.height() * 1.2),
-                         Qt::AlignCenter, text);
-        painter.restore();
-    };
-    drawRotated(target.left() + metrics.height() * 0.9,
-                QStringLiteral("U, F  (eV / cell)"), -1);
-    drawRotated(target.right() - metrics.height() * 0.4,
-                QStringLiteral("S  (meV/K / cell)"), 1);
+    painter.save();
+    painter.translate(target.left() + metrics.height() * 0.9, plot.center().y());
+    painter.rotate(-90.0);
+    painter.drawText(QRectF(-plot.height() / 2.0, -metrics.height(),
+                            plot.height(), metrics.height() * 1.2),
+                     Qt::AlignCenter,
+                     entropy_ ? QStringLiteral("S  (meV/K / cell)")
+                              : QStringLiteral("U, F  (eV / cell)"));
+    painter.restore();
 
     // -- Legend -------------------------------------------------------------
     double legendY = plot.top() + 6.0 * scale;
@@ -199,10 +258,35 @@ void ThermoPlotWidget::render(QPainter& painter, const QRectF& target) const
         painter.setPen(axisColor);
         painter.drawText(QRectF(x + 28.0 * scale, legendY, 160.0 * scale,
                                 metrics.height()),
-                         Qt::AlignLeft | Qt::AlignVCenter,
-                         curve.entropy ? curve.label + QStringLiteral(" (right)")
-                                       : curve.label);
+                         Qt::AlignLeft | Qt::AlignVCenter, curve.label);
         legendY += metrics.height() * 1.15;
+    }
+
+    // -- Crosshair ----------------------------------------------------------
+    const int index = cursorIndex();
+    if (index >= 0) {
+        const auto& point = result_.points[static_cast<std::size_t>(index)];
+        const double x = xOf(point.temperatureK);
+        QColor crosshair = axisColor;
+        crosshair.setAlphaF(0.55);
+        painter.setPen(QPen(crosshair, 1.0 * scale, Qt::DashLine));
+        painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
+
+        QStringList readout;
+        readout << QStringLiteral("T = %1 K").arg(point.temperatureK, 0, 'f', 1);
+        for (const Curve& curve : curves) {
+            const double value = curve.valueOf(point);
+            painter.setBrush(curve.color);
+            painter.setPen(Qt::NoPen);
+            painter.drawEllipse(QPointF(x, yOf(value)), 3.0 * scale, 3.0 * scale);
+            readout << QStringLiteral("%1 = %2").arg(curve.label)
+                           .arg(value, 0, 'g', 4);
+        }
+        painter.setPen(axisColor);
+        const QString text = readout.join(QStringLiteral("   "));
+        painter.drawText(QRectF(plot.left(), plot.bottom() - metrics.height() * 1.3,
+                                plot.width() - 6.0 * scale, metrics.height()),
+                         Qt::AlignRight | Qt::AlignVCenter, text);
     }
 }
 
@@ -217,20 +301,32 @@ PhononThermodynamicsDialog::PhononThermodynamicsDialog(
 {
     setWindowTitle(label.isEmpty() ? tr("Phonon Thermodynamics")
                                    : tr("Phonon Thermodynamics — %1").arg(label));
-    resize(820, 560);
+    resize(1000, 560);
 
     auto* layout = new QVBoxLayout(this);
 
     auto* intro = new QLabel(
         tr("Harmonic vibrational thermodynamics integrated over the phonon "
            "density of states g(ω). U includes the zero-point energy, so "
-           "U(0) = F(0) = E_ZPE and S(0) = 0."),
+           "U(0) = F(0) = E_ZPE and S(0) = 0. Hovering either plot reads both "
+           "out at the same temperature."),
         this);
     intro->setWordWrap(true);
     layout->addWidget(intro);
 
-    plot_ = new ThermoPlotWidget(this);
-    layout->addWidget(plot_, 1);
+    auto* columns = new QHBoxLayout;
+    columns->addWidget(buildColumn(/*entropy=*/false, energyPlot_), 1);
+    columns->addWidget(buildColumn(/*entropy=*/true, entropyPlot_), 1);
+    layout->addLayout(columns, 1);
+
+    // One hover drives both crosshairs: reading U, F and S at a temperature is
+    // a single gesture rather than two hovers the user has to line up by eye.
+    const auto broadcast = [this](double temperature) {
+        energyPlot_->setCursorTemperature(temperature);
+        entropyPlot_->setCursorTemperature(temperature);
+    };
+    energyPlot_->onHover = broadcast;
+    entropyPlot_->onHover = broadcast;
 
     summaryLabel_ = new QLabel(this);
     summaryLabel_->setWordWrap(true);
@@ -254,26 +350,55 @@ PhononThermodynamicsDialog::PhononThermodynamicsDialog(
     maxTempSpin_ = makeTempSpin(1000.0);
     controls->addWidget(maxTempSpin_);
     controls->addStretch(1);
-    layout->addLayout(controls);
-    for (QDoubleSpinBox* spin : {minTempSpin_, maxTempSpin_})
-        connect(spin, &QDoubleSpinBox::valueChanged, this,
-                [this] { recompute(); });
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
-    auto* csvButton =
-        buttons->addButton(tr("Export CSV…"), QDialogButtonBox::ActionRole);
-    auto* imageButton =
-        buttons->addButton(tr("Export Image…"), QDialogButtonBox::ActionRole);
-    imageButton->setToolTip(
-        tr("PNG at 3x for print, or SVG vector art for a figure."));
-    connect(csvButton, &QPushButton::clicked, this,
-            &PhononThermodynamicsDialog::exportCsv);
-    connect(imageButton, &QPushButton::clicked, this,
-            &PhononThermodynamicsDialog::exportImage);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-    layout->addWidget(buttons);
+    controls->addWidget(buttons);
+    layout->addLayout(controls);
+
+    for (QDoubleSpinBox* spin : {minTempSpin_, maxTempSpin_})
+        connect(spin, &QDoubleSpinBox::valueChanged, this,
+                &PhononThermodynamicsDialog::recompute);
 
     recompute();
+}
+
+QWidget* PhononThermodynamicsDialog::buildColumn(bool entropy,
+                                                 ThermoPlotWidget*& plot)
+{
+    auto* column = new QWidget(this);
+    auto* layout = new QVBoxLayout(column);
+    layout->setContentsMargins(0, 0, 0, 0);
+
+    auto* title = new QLabel(entropy ? tr("Vibrational Entropy")
+                                     : tr("Vibrational Energy"),
+                             column);
+    QFont titleFont = title->font();
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    title->setAlignment(Qt::AlignCenter);
+    layout->addWidget(title);
+
+    plot = new ThermoPlotWidget(entropy, column);
+    layout->addWidget(plot, 1);
+
+    // Per-column exports: the two panels have different y quantities and
+    // units, so one combined file would concatenate two tables that most
+    // tools will not read back as one.
+    auto* actions = new QHBoxLayout;
+    auto* csvButton = new QPushButton(tr("Export CSV…"), column);
+    auto* imageButton = new QPushButton(tr("Export Image…"), column);
+    imageButton->setToolTip(
+        tr("PNG at 3x for print, or SVG vector art for a figure."));
+    actions->addWidget(csvButton);
+    actions->addWidget(imageButton);
+    actions->addStretch(1);
+    layout->addLayout(actions);
+    connect(csvButton, &QPushButton::clicked, this,
+            [this, entropy] { exportCsv(entropy); });
+    connect(imageButton, &QPushButton::clicked, this,
+            [this, entropy] { exportImage(entropy); });
+    return column;
 }
 
 void PhononThermodynamicsDialog::recompute()
@@ -282,7 +407,8 @@ void PhononThermodynamicsDialog::recompute()
     // at any window width, cheap enough to recompute on every spin-box edit.
     result_ = core::computePhononThermodynamics(
         frequenciesCm_, dos_, minTempSpin_->value(), maxTempSpin_->value(), 201);
-    plot_->setResult(result_);
+    energyPlot_->setResult(result_);
+    entropyPlot_->setResult(result_);
 
     if (result_.points.empty()) {
         summaryLabel_->setText(
@@ -303,11 +429,12 @@ void PhononThermodynamicsDialog::recompute()
     summaryLabel_->setText(text);
 }
 
-void PhononThermodynamicsDialog::exportCsv()
+void PhononThermodynamicsDialog::exportCsv(bool entropy)
 {
     const QString path = QFileDialog::getSaveFileName(
         this, tr("Export Phonon Thermodynamics"),
-        QStringLiteral("phonon_thermodynamics.csv"),
+        entropy ? QStringLiteral("phonon_thermodynamics_entropy.csv")
+                : QStringLiteral("phonon_thermodynamics_energy.csv"),
         tr("CSV files (*.csv);;All files (*)"));
     if (path.isEmpty())
         return;
@@ -319,25 +446,34 @@ void PhononThermodynamicsDialog::exportCsv()
     }
     QTextStream out(&file);
     out << "# Harmonic vibrational thermodynamics from the phonon DOS\n"
-        << "# zero_point_energy_eV," << result_.zeroPointEnergyEv << "\n"
-        << "temperature_K,U_vib_eV,F_vib_eV,S_vib_eV_per_K,Cv_eV_per_K\n";
-    for (const auto& p : result_.points) {
-        out << p.temperatureK << ',' << p.internalEnergyEv << ','
-            << p.freeEnergyEv << ',' << p.entropyEvPerK << ','
-            << p.heatCapacityEvPerK << '\n';
+        << "# zero_point_energy_eV," << result_.zeroPointEnergyEv << "\n";
+    if (entropy) {
+        // Cv rides with the entropy column: both are temperature derivatives
+        // of the same curve, and a user plotting S almost always wants Cv too.
+        out << "temperature_K,S_vib_eV_per_K,Cv_eV_per_K\n";
+        for (const auto& p : result_.points)
+            out << p.temperatureK << ',' << p.entropyEvPerK << ','
+                << p.heatCapacityEvPerK << '\n';
+    } else {
+        out << "temperature_K,U_vib_eV,F_vib_eV\n";
+        for (const auto& p : result_.points)
+            out << p.temperatureK << ',' << p.internalEnergyEv << ','
+                << p.freeEnergyEv << '\n';
     }
 }
 
-void PhononThermodynamicsDialog::exportImage()
+void PhononThermodynamicsDialog::exportImage(bool entropy)
 {
     const QString path = QFileDialog::getSaveFileName(
         this, tr("Export Plot Image"),
-        QStringLiteral("phonon_thermodynamics.png"),
+        entropy ? QStringLiteral("phonon_entropy.png")
+                : QStringLiteral("phonon_energy.png"),
         tr("PNG image (*.png);;SVG vector (*.svg)"));
     if (path.isEmpty())
         return;
 
-    const QSizeF logical(plot_->width(), plot_->height());
+    ThermoPlotWidget* plot = entropy ? entropyPlot_ : energyPlot_;
+    const QSizeF logical(plot->width(), plot->height());
     if (path.endsWith(QLatin1String(".svg"), Qt::CaseInsensitive)) {
         QSvgGenerator generator;
         generator.setFileName(path);
@@ -347,7 +483,7 @@ void PhononThermodynamicsDialog::exportImage()
         QPainter painter(&generator);
         painter.setRenderHint(QPainter::Antialiasing);
         painter.fillRect(QRectF(QPointF(0, 0), logical), Qt::white);
-        plot_->render(painter, QRectF(QPointF(0, 0), logical));
+        plot->render(painter, QRectF(QPointF(0, 0), logical));
         return;
     }
 
@@ -360,7 +496,7 @@ void PhononThermodynamicsDialog::exportImage()
     image.fill(Qt::white);
     QPainter painter(&image);
     painter.setRenderHint(QPainter::Antialiasing);
-    plot_->render(painter, QRectF(QPointF(0, 0), QSizeF(image.size())));
+    plot->render(painter, QRectF(QPointF(0, 0), QSizeF(image.size())));
     painter.end();
     if (!image.save(path))
         QMessageBox::warning(this, tr("Export Plot Image"),

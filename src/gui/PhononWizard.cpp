@@ -108,10 +108,21 @@ QWidget* PhononWizard::buildSecondSettingsPage()
     form->addRow(acousticCheck_);
 
     meshSpin_ = new QSpinBox(group);
-    meshSpin_->setRange(2, 64);
-    meshSpin_->setValue(20);
-    meshSpin_->setToolTip(tr("Monkhorst-Pack n×n×n mesh density for the phonon "
-                             "DOS / band interpolation."));
+    // A smooth PhDOS needs a dense q-mesh: the DOS is a histogram over
+    // sampled frequencies, so 20x20x20 leaves visible sampling noise on the
+    // van Hove features. Interpolating force constants onto a mesh is cheap
+    // compared with the force evaluations already done, so the cap is high.
+    meshSpin_->setRange(2, 200);
+    meshSpin_->setValue(30);
+    meshSpin_->setSingleStep(5);
+    meshSpin_->setToolTip(
+        tr("Monkhorst-Pack n×n×n q-mesh for the phonon DOS.\n"
+           "20 is adequate for a first look; 30–50 gives a smooth spectrum; "
+           "beyond that the cost is memory rather than force evaluations "
+           "(the force constants are already computed, the mesh only "
+           "interpolates them).\n"
+           "Raise the mesh before lowering the Gaussian σ below — a sharp σ on "
+           "a coarse mesh produces spikes, not resolution."));
     meshSpin_->setEnabled(periodic_);
     form->addRow(tr("Mesh density (DOS):"), meshSpin_);
 

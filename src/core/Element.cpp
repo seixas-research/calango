@@ -1,6 +1,7 @@
 #include "core/Element.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cctype>
 #include <unordered_map>
 
@@ -166,6 +167,35 @@ int atomicNumber(const std::string& symbol)
     const auto& index = symbolIndex();
     const auto it = index.find(normalized);
     return it != index.end() ? it->second : 0;
+}
+
+
+namespace {
+
+// Standard atomic weights (u), IUPAC 2021; index = Z. Elements with no stable
+// isotope use the mass number of the longest-lived one (the ASE convention).
+// Index 0 is the dummy element and is deliberately 0.0 so mass-weighted code
+// can detect "no mass known" rather than silently using a plausible value.
+constexpr std::array<double, maxZ + 1> kMasses = {{
+    0.0, 1.008, 4.0026, 6.94, 9.0122, 10.81, 12.011, 14.007, 15.999, 18.998,  // 0
+    20.18, 22.99, 24.305, 26.982, 28.085, 30.974, 32.06, 35.45, 39.95, 39.098,  // 10
+    40.078, 44.956, 47.867, 50.942, 51.996, 54.938, 55.845, 58.933, 58.693, 63.546,  // 20
+    65.38, 69.723, 72.63, 74.922, 78.971, 79.904, 83.798, 85.468, 87.62, 88.906,  // 30
+    91.224, 92.906, 95.95, 97.0, 101.07, 102.91, 106.42, 107.87, 112.41, 114.82,  // 40
+    118.71, 121.76, 127.6, 126.9, 131.29, 132.91, 137.33, 138.91, 140.12, 140.91,  // 50
+    144.24, 145.0, 150.36, 151.96, 157.25, 158.93, 162.5, 164.93, 167.26, 168.93,  // 60
+    173.05, 174.97, 178.49, 180.95, 183.84, 186.21, 190.23, 192.22, 195.08, 196.97,  // 70
+    200.59, 204.38, 207.2, 208.98, 209.0, 210.0, 222.0, 223.0, 226.0, 227.0,  // 80
+    232.04, 231.04, 238.03, 237.0, 244.0, 243.0, 247.0, 247.0, 251.0, 252.0,  // 90
+    257.0, 258.0, 259.0, 266.0, 267.0, 268.0, 269.0, 270.0, 269.0, 278.0,  // 100
+    281.0, 282.0, 285.0, 286.0, 289.0, 290.0, 293.0, 294.0, 294.0,  // 110
+}};
+
+} // namespace
+
+double atomicMass(int z)
+{
+    return (z >= 0 && z <= maxZ) ? kMasses[static_cast<std::size_t>(z)] : 0.0;
 }
 
 } // namespace calango::core::Elements

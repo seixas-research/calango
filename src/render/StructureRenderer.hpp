@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/UnitCell.hpp"
+
 #include "render/ColorMap.hpp"
 
 #include <QColor>
@@ -92,6 +94,22 @@ public:
         /// end blending to atom B color at the other); off = classic
         /// half-and-half coloring.
         bool gradientBonds = true;
+        // -- Coordination polyhedra (Polyhedral mode) ----------------------
+        /// Face opacity. Translucent by default so the coordinated atoms stay
+        /// visible through the hull — an opaque polyhedron hides exactly the
+        /// geometry it is drawn to explain.
+        float polyhedronOpacity = 0.38f;
+        /// Draw the hull's edge wireframe. On by default: the edges are what
+        /// make a translucent polyhedron read as a solid rather than a smear.
+        bool polyhedronEdges = true;
+        /// Edge width. Core-profile GL clamps glLineWidth on most drivers, so
+        /// values much above ~2 may not visibly thicken.
+        float polyhedronEdgeWidth = 1.5f;
+        /// Per-element coordination cutoff override (Z -> Å). A central cation
+        /// absent from the map uses the global bondTolerance rule; an entry
+        /// here fixes ITS coordination shell at an absolute radius, which is
+        /// what a cation whose covalent radii give the wrong shell needs.
+        std::map<int, float> polyhedronCutoffOverrides;
         /// Per-atom vector overlays drawn as 3D arrows from each atom
         /// center (mesh representations only). Data comes from the
         /// structure's vector fields "forces" / "velocities".
@@ -117,6 +135,21 @@ public:
         QColor velocityColor{54, 166, 242};
         QColor magmomColor{168, 120, 240};
         bool showCell = true;
+        /// Draw duplicate "ghost" atoms and their bonds at the far faces,
+        /// edges and vertices of the cell: an atom sitting at fractional 0
+        /// along an axis is repeated at 1, so the cell reads as a closed,
+        /// continuous motif instead of one with atoms sliced off two of its
+        /// faces.
+        ///
+        /// Purely a rendering duplication — the ghosts are extra GPU instances
+        /// and never enter the Structure, so the atom count, the chemical
+        /// formula and every exported POSCAR/CIF are unchanged.
+        bool showBoundaryGhosts = false;
+        /// How close to a cell face (in fractional coordinates) counts as
+        /// "on" it. 1e-3 of a ~5 Å cell is ~5 mÅ: tight enough that an atom
+        /// merely near the face is not duplicated, loose enough to catch
+        /// coordinates that have been through a round trip through a file.
+        float boundaryGhostTolerance = 1e-3f;
         QColor cellColor{166, 166, 178};
         /// 1 = plain GL lines; > 1 renders the edges as thin lit tubes
         /// (core-profile GL clamps glLineWidth, so tubes are the portable
@@ -167,6 +200,15 @@ public:
     /// scene. Atoms whose index is in `selection` are drawn highlighted.
     void setStructure(const core::Structure* structure,
                       const std::set<int>* selection = nullptr);
+
+    /// Cartesian translations that duplicate `position` onto the far cell
+    /// faces/edges/vertices it lies on: empty for an interior atom, one entry
+    /// for a face, three for an edge, seven for the origin vertex. Public so
+    /// the same rule can be reused (e.g. by an exporter that wants to show
+    /// what the viewport shows).
+    static std::vector<core::Vec3> boundaryGhostShifts(const core::Vec3& position,
+                                                       const core::UnitCell& cell,
+                                                       float tolerance);
 
     /// Per-atom scalars driving the non-Element color modes (CN, GCN,
     /// custom fields). Values are normalized to the [min, max] range

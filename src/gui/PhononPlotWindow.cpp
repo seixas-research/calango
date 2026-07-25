@@ -237,6 +237,8 @@ void PhononPlotWindow::showVibrationalAnalysis()
     auto* dialog = new VibrationalAnalysisDialog(directory_, structure_,
                                                  viewport_, this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dialog, &VibrationalAnalysisDialog::modeTrajectoryRequested, this,
+            &PhononPlotWindow::modeTrajectoryRequested);
     dialog->show();
 }
 

@@ -44,7 +44,16 @@ public:
                               QWidget* parent = nullptr);
     ~VibrationalAnalysisDialog() override;
 
+Q_SIGNALS:
+    /// "Create Mode Trajectory Tab": one full vibrational period of the
+    /// selected mode, as frames carrying the harmonic restoring forces. The
+    /// host opens it as a new workspace tab (this dialog owns no documents).
+    void modeTrajectoryRequested(
+        const std::vector<std::shared_ptr<core::Structure>>& frames,
+        const QString& label);
+
 private Q_SLOTS:
+    void createModeTrajectory();
     void onQPointChanged(int index);
     void onModeChanged(int index);
     void togglePlay();
@@ -55,6 +64,12 @@ private:
     /// Parse phonon_modes.json (q-points, frequencies, eigenvectors) and, as a
     /// fallback, the frequencies alone from phonon_band.json.
     void load(const QString& directory);
+    /// The reference structure displaced by the selected mode at `phase`,
+    /// with the harmonic restoring forces of that instant attached as the
+    /// "forces" vector field when `withForces` is set. Null when no mode /
+    /// eigenvector is available.
+    std::shared_ptr<core::Structure> displacedAt(double phase,
+                                                 bool withForces) const;
     /// Displace the reference structure by the current mode at the current
     /// phase and show it.
     void applyDisplacement();
@@ -86,6 +101,7 @@ private:
     QSlider* amplitudeSlider_ = nullptr;
     QSlider* speedSlider_ = nullptr;
     QPushButton* playButton_ = nullptr;
+    QPushButton* trajectoryButton_ = nullptr;
     QTimer* timer_ = nullptr;
     double phase_ = 0.0;
 };

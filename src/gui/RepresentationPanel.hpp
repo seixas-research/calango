@@ -12,10 +12,15 @@ namespace calango::gui {
 
 class ViewportWidget;
 
-/// "Representation" dock panel: representation mode, atom color mapping
-/// (element / CN / GCN / custom scalar with gradient + legend range),
-/// global atom-radius and bond-width scales, gradient bond shading,
-/// per-element settings, and the viewport background color.
+/// "Representation" dock panel (Zone 8): representation mode, atom color
+/// mapping (element / CN / GCN / custom scalar with editable range), global
+/// atom-radius and bond-width scales, gradient bond shading, and the viewport
+/// background color.
+///
+/// The four editors that change WHAT is drawn — Element Settings, Bond Editor,
+/// Edit Polyhedral, Edit Vector Overlay — sit on one icon-only row rather than
+/// as four labelled full-width buttons: this dock is the tallest in the app and
+/// those labels cost four rows for controls opened occasionally.
 class RepresentationPanel : public QWidget {
     Q_OBJECT
 
@@ -37,11 +42,6 @@ private:
     /// Push the Min/Max fields to the viewport as the scalar color window
     /// (or restore auto-scaling when "Auto-scale to data" is ticked).
     void applyColorRange();
-    /// Style field holding the arrow color of the active vector overlay, or
-    /// null when the overlay is None.
-    QColor* vectorOverlayColor();
-    /// Refresh the swatch + enablement after the overlay selection changes.
-    void syncVectorColorButton();
 
     ViewportWidget* viewport_;
 
@@ -62,11 +62,7 @@ private:
     QSlider* bondWidthSlider_;
     QDoubleSpinBox* bondWidthSpin_;
     QCheckBox* gradientBondsCheck_;
-    QComboBox* vectorOverlayCombo_;
     QComboBox* surfaceFinishCombo_;
-    QPushButton* vectorColorButton_;
-    QSlider* vectorScaleSlider_;
-    QDoubleSpinBox* vectorScaleSpin_;
 };
 
 } // namespace calango::gui

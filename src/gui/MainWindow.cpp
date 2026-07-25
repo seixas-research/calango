@@ -67,7 +67,10 @@
 #include "gui/WelcomeDialog.hpp"
 #include "gui/RamanDialog.hpp"
 #include "gui/GeometryOptimizationViewer.hpp"
+#include "gui/MacromoleculeWizard.hpp"
+#include "gui/MolecularDynamicsViewer.hpp"
 #include "gui/RunCommands.hpp"
+#include "gui/WaterIceWizard.hpp"
 #include "gui/SqsDialog.hpp"
 #include "gui/VolumetricDialog.hpp"
 #include "gui/WarrenCowleyDialog.hpp"
@@ -777,6 +780,17 @@ void MainWindow::createMenusAndDocks()
     buildMenu->addAction(tr("&Nanomaterials…"), this, &MainWindow::openNanoBuilder);
     buildMenu->addAction(tr("Su&percell…"),
                          this, &MainWindow::openSupercellBuilder);
+    buildMenu->addSeparator();
+    // Molecular-system builders: both generate a periodic box of molecules
+    // rather than cleaving or repeating a crystal, so they group together.
+    buildMenu->addAction(tr("&Macromolecules…"),
+                         this, &MainWindow::openMacromoleculeBuilder)
+        ->setToolTip(tr("Polymer chains: monomer chemistry, tacticity, "
+                        "conformation and amorphous multi-chain packing"));
+    buildMenu->addAction(tr("&Water && Ice…"),
+                         this, &MainWindow::openWaterIceBuilder)
+        ->setToolTip(tr("Liquid water and the ice polymorphs, with "
+                        "Bernal-Fowler proton disorder"));
     // Cluster Expansion, SQS and Warren-Cowley now live under Modules → Alloys;
     // the alloy toolchain is grouped there rather than split across Build /
     // Simulation / Analysis.
@@ -831,7 +845,7 @@ void MainWindow::createMenusAndDocks()
 
     // ----- Analysis: spec order, reciprocal-space tools at the end ---------
     QMenu* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
-    analysisMenu->addAction(tr("Detect &Symmetry…"),
+    analysisMenu->addAction(tr("&Symmetry…"),
                             this, &MainWindow::showSymmetry);
     analysisMenu->addAction(tr("Structure &Factor S(q)…"),
                             this, &MainWindow::showStructureFactor);
@@ -870,6 +884,8 @@ void MainWindow::createMenusAndDocks()
                            this, &MainWindow::showSinglePointViewer);
     resultsMenu->addAction(tr("&Geometry Optimization Viewer…"),
                            this, &MainWindow::showGeometryOptimizationViewer);
+    resultsMenu->addAction(tr("&Molecular Dynamics Viewer…"),
+                           this, &MainWindow::showMolecularDynamicsViewer);
     resultsMenu->addAction(tr("&MLWF Viewer…"),
                            this, &MainWindow::showMlwfViewer);
 
@@ -2723,6 +2739,56 @@ void MainWindow::openBandResults(const QString& directory)
     window->show();
 }
 
+
+
+void MainWindow::showMolecularDynamicsViewer()
+{
+    const QString dir = selectedProcessDirectory();
+    if (dir.isEmpty()) {
+        QMessageBox::information(
+            this, tr("Molecular Dynamics Viewer"),
+            tr("Select a completed Molecular Dynamics run in the Processes "
+               "panel first."));
+        return;
+    }
+    openMolecularDynamicsResults(dir);
+}
+
+void MainWindow::openMolecularDynamicsResults(const QString& directory)
+{
+    auto* viewer = new MolecularDynamicsViewer(viewport_, this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    if (!viewer->loadDirectory(directory)) {
+        delete viewer;
+        QMessageBox::information(
+            this, tr("Molecular Dynamics Viewer"),
+            tr("No MD metrics or trajectory found in %1.").arg(directory));
+        return;
+    }
+    viewer->show();
+}
+
+void MainWindow::openModeTrajectory(
+    const std::vector<std::shared_ptr<core::Structure>>& frames,
+    const QString& label)
+{
+    if (frames.empty())
+        return;
+    // A scrubbable multi-frame document, exactly like a loaded trajectory: the
+    // timeline, the vector overlay and the export tooling all work on it
+    // without a special case for "this one came from a phonon mode".
+    const int tab = addDocument(
+        std::make_shared<core::Structure>(*frames.front()), label, frames,
+        tr("Vibrational Mode"));
+    tabBar_->setCurrentIndex(tab);
+    isDirty_ = true;
+    statusBar()->showMessage(
+        tr("Opened %1 as a %2-frame trajectory — enable Representation → "
+           "Vector overlay → Force to see the restoring forces")
+            .arg(label)
+            .arg(static_cast<int>(frames.size())));
+}
+
 void MainWindow::openPhononResults(const QString& directory)
 {
     // The active document's structure is what the phonons were computed for,
@@ -2731,6 +2797,8 @@ void MainWindow::openPhononResults(const QString& directory)
     Document* doc = currentDocument();
     auto* window = new PhononPlotWindow(
         directory, this, doc ? doc->structure : nullptr, viewport_);
+    connect(window, &PhononPlotWindow::modeTrajectoryRequested, this,
+            &MainWindow::openModeTrajectory);
     if (!window->hasData()) {
         delete window;
         QMessageBox::information(
@@ -3119,6 +3187,16 @@ void MainWindow::onProcessResultRequested(const QString& directory)
         openGeometryOptimizationResults(directory);
         return;
     }
+    // An MD run is identified by its trajectory: metrics.json alone is written
+    // by every task, so keying off that would open this viewer on relaxations
+    // too. Placed before the generic trajectory fallback below, which would
+    // otherwise open md.extxyz as an anonymous trajectory and drop the metrics.
+    for (const auto* mdFile : {"md.extxyz", "md.traj"}) {
+        if (QFile::exists(directory + QLatin1Char('/') + QLatin1String(mdFile))) {
+            openMolecularDynamicsResults(directory);
+            return;
+        }
+    }
     for (const auto* candidate :
          // md.extxyz first: it carries the per-atom forces and velocities
          // the Vector overlay needs, which the binary md.traj only exposes
@@ -3500,6 +3578,43 @@ void MainWindow::showAdsorption()
            static_cast<int>(dialog.outputs().size())));
 }
 
+
+void MainWindow::openMacromoleculeBuilder()
+{
+    MacromoleculeWizard wizard(this);
+    if (wizard.exec() != QDialog::Accepted || !wizard.result())
+        return;
+    const auto& generated = *wizard.result();
+    const int tab = addDocument(
+        std::make_shared<core::Structure>(generated.structure),
+        QString::fromStdString(generated.description));
+    tabBar_->setCurrentIndex(tab);
+    isDirty_ = true;
+    statusBar()->showMessage(
+        tr("%1 — %2 atoms, %3 g/cm³")
+            .arg(QString::fromStdString(generated.description))
+            .arg(static_cast<int>(generated.structure.size()))
+            .arg(generated.densityGCm3, 0, 'f', 3));
+}
+
+void MainWindow::openWaterIceBuilder()
+{
+    WaterIceWizard wizard(this);
+    if (wizard.exec() != QDialog::Accepted || !wizard.result())
+        return;
+    const auto& generated = *wizard.result();
+    const int tab = addDocument(
+        std::make_shared<core::Structure>(generated.structure),
+        QString::fromStdString(generated.description));
+    tabBar_->setCurrentIndex(tab);
+    isDirty_ = true;
+    statusBar()->showMessage(
+        tr("%1 — %2 molecules, %3 g/cm³")
+            .arg(QString::fromStdString(generated.description))
+            .arg(generated.moleculeCount)
+            .arg(generated.densityGCm3, 0, 'f', 3));
+}
+
 void MainWindow::openSqsBuilder()
 {
     Document* doc = currentDocument();
@@ -3691,7 +3806,7 @@ void MainWindow::showSymmetry()
     if (!doc || !doc->structure || doc->structure->empty()
         || !doc->structure->cell().isDefined()) {
         QMessageBox::information(
-            this, tr("Detect Symmetry"),
+            this, tr("Symmetry"),
             tr("Open a periodic structure with a defined unit cell first."));
         return;
     }

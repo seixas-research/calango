@@ -2,6 +2,9 @@
 #include "gui/GuiUtils.hpp"
 
 #include "gui/ElementSettingsDialog.hpp"
+#include "gui/PolyhedralSettingsDialog.hpp"
+#include "gui/VectorOverlayDialog.hpp"
+#include "ui/IconManager.hpp"
 #include "gui/GuiUtils.hpp"
 #include "gui/ViewportWidget.hpp"
 
@@ -76,24 +79,59 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
                                tr("Custom property")});
     form->addRow(tr("Color by:"), colorModeCombo_);
 
-    // Per-element colors and radii are what "Color by: Element (CPK)" maps,
-    // so the editor for them belongs immediately under that selector.
-    auto* elementsButton = new QPushButton(tr("Element Settings…"), this);
-    form->addRow(elementsButton);
+    // Four editors that change WHAT is drawn (rather than how it is shaded),
+    // on one compact icon row. Icon-only with tooltips: the four labels spelled
+    // out consumed four full-width rows of a dock that is already the tallest
+    // in the app, and these are recognized by glyph once learned.
+    auto* editorRow = new QHBoxLayout;
+    editorRow->setSpacing(4);
+    const auto makeEditorButton = [this, editorRow](const QString& icon,
+                                                    const QString& tip) {
+        auto* button = new QPushButton(this);
+        button->setIcon(ui::IconManager::icon(icon));
+        button->setIconSize(QSize(20, 20));
+        button->setToolTip(tip);
+        button->setFocusPolicy(Qt::NoFocus);
+        editorRow->addWidget(button);
+        return button;
+    };
+    auto* elementsButton = makeEditorButton(
+        QStringLiteral("palette-line"),
+        tr("Element Settings… — per-element colours and radii, and preset "
+           "save/load."));
+    auto* bondButton = makeEditorButton(
+        QStringLiteral("links-line"),
+        tr("Bond Editor… — bond perception, manual bonds, bond order and "
+           "hydrogen-bond detection."));
+    auto* polyhedralButton = makeEditorButton(
+        QStringLiteral("box-1-line"),
+        tr("Edit Polyhedral… — coordination-polyhedra opacity, edge wireframe "
+           "and per-cation coordination cutoffs."));
+    auto* vectorButton = makeEditorButton(
+        QStringLiteral("arrow-right-up-line"),
+        tr("Edit Vector Overlay… — which per-atom vector field is drawn, its "
+           "scale and its colour."));
+    editorRow->addStretch(1);
+    form->addRow(editorRow);
+
     connect(elementsButton, &QPushButton::clicked, this, [this] {
         ElementSettingsDialog dialog(viewport_, this);
         dialog.exec();
     });
-    // Bond perception, orders and hydrogen bonds all live in the Bond Editor;
-    // this panel just needs the door to it, next to the other "what is drawn"
-    // editor rather than buried in the Edit menu.
-    auto* bondEditorButton = new QPushButton(tr("Bond Editor…"), this);
-    bondEditorButton->setToolTip(
-        tr("Bond perception, manual bonds, bond order (single / double / "
-           "triple / aromatic) and hydrogen-bond detection."));
-    form->addRow(bondEditorButton);
-    connect(bondEditorButton, &QPushButton::clicked, this,
+    connect(bondButton, &QPushButton::clicked, this,
             &RepresentationPanel::bondEditorRequested);
+    // Modeless: both edit live, and the user needs to see the viewport change
+    // while dragging a slider.
+    connect(polyhedralButton, &QPushButton::clicked, this, [this] {
+        auto* dialog = new PolyhedralSettingsDialog(viewport_, this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->show();
+    });
+    connect(vectorButton, &QPushButton::clicked, this, [this] {
+        auto* dialog = new VectorOverlayDialog(viewport_, this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->show();
+    });
 
     connect(colorModeCombo_, &QComboBox::currentIndexChanged,
             this, &RepresentationPanel::applyColorMode);
@@ -253,94 +291,10 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
         viewport_->styleChanged(true);
     });
 
-    // --- Per-atom vector overlay -------------------------------------------
-    // Rendered inline in the main panel (preceded by a horizontal separator)
-    // rather than tucked inside a collapsible accordion.
-    auto* vectorSeparator = new QFrame(this);
-    vectorSeparator->setFrameShape(QFrame::HLine);
-    vectorSeparator->setFrameShadow(QFrame::Sunken);
-    form->addRow(vectorSeparator);
-    // One selector rather than a checkbox per property: the arrows share a
-    // single scale and would overlap illegibly if two were drawn at once, and
-    // the list grows naturally as extended-XYZ files carry more columns.
-    vectorOverlayCombo_ = new QComboBox(this);
-    // Order matches render::VectorOverlay.
-    vectorOverlayCombo_->addItem(tr("None"));
-    vectorOverlayCombo_->addItem(tr("Velocity"));
-    vectorOverlayCombo_->addItem(tr("Force"));
-    vectorOverlayCombo_->addItem(tr("Magnetic moment"));
-    form->addRow(tr("Vector overlay:"), vectorOverlayCombo_);
-    connect(vectorOverlayCombo_, &QComboBox::currentIndexChanged, this,
-            [this](int index) {
-                viewport_->style().vectorOverlay =
-                    static_cast<render::VectorOverlay>(index);
-                syncVectorColorButton();
-                viewport_->styleChanged(true);
-            });
-
-    // Arrow scale: slider (coarse) + spinbox (exact), Å per field unit.
-    auto* vectorRow = new QWidget(this);
-    auto* vectorLayout = new QHBoxLayout(vectorRow);
-    vectorLayout->setContentsMargins(0, 0, 0, 0);
-    vectorScaleSlider_ = new QSlider(Qt::Horizontal, vectorRow);
-    vectorScaleSlider_->setRange(10, 1000); // ×0.1 .. ×10.0 in hundredths
-    vectorScaleSlider_->setValue(100);      // ×1.0 = the calibrated baseline
-    vectorScaleSpin_ = new QDoubleSpinBox(vectorRow);
-    vectorScaleSpin_->setRange(0.1, 10.0);
-    vectorScaleSpin_->setDecimals(2);
-    vectorScaleSpin_->setSingleStep(0.1);
-    vectorScaleSpin_->setValue(1.00);
-    vectorScaleSpin_->setSuffix(QStringLiteral("×"));
-    vectorScaleSpin_->setToolTip(
-        tr("Arrow length relative to the calibrated baseline (1.0×), which is "
-           "half an Å of arrow per field unit\n"
-           "(eV/Å for forces, Å/fs·√(amu) for velocities, μB for magnetic "
-           "moments). Velocities keep an extra 20× so they stay visible."));
-    vectorLayout->addWidget(vectorScaleSlider_, 1);
-    vectorLayout->addWidget(vectorScaleSpin_);
-    form->addRow(tr("Vector scale:"), vectorRow);
-
-    // One picker that edits whichever overlay is selected: each property
-    // keeps its own color (so switching Force -> Velocity restores that
-    // property's color rather than carrying one over), and the button always
-    // shows the color currently in use.
-    vectorColorButton_ = new QPushButton(this);
-    vectorColorButton_->setToolTip(
-        tr("Arrow color for the selected vector overlay. Each property "
-           "(velocity, force, magnetic moment) remembers its own color."));
-    form->addRow(tr("Vector color:"), vectorColorButton_);
-    connect(vectorColorButton_, &QPushButton::clicked, this, [this] {
-        QColor* target = vectorOverlayColor();
-        if (!target)
-            return;
-        const QColor chosen = QColorDialog::getColor(
-            *target, this, tr("Vector Overlay Color"));
-        if (!chosen.isValid())
-            return;
-        *target = chosen;
-        setButtonColor(vectorColorButton_, chosen);
-        viewport_->styleChanged(true); // arrow colors live in the instance buffer
-    });
-    syncVectorColorButton(); // seed the swatch for the initial selection
-
-    connect(vectorScaleSlider_, &QSlider::valueChanged, this, [this](int hundredths) {
-        const float factor = static_cast<float>(hundredths) / 100.0f;
-        {
-            const QSignalBlocker blocker(vectorScaleSpin_);
-            vectorScaleSpin_->setValue(factor);
-        }
-        viewport_->style().vectorScale = factor;
-        viewport_->styleChanged(true);
-    });
-    connect(vectorScaleSpin_, &QDoubleSpinBox::valueChanged, this, [this](double factor) {
-        {
-            const QSignalBlocker blocker(vectorScaleSlider_);
-            vectorScaleSlider_->setValue(static_cast<int>(std::lround(factor * 100.0)));
-        }
-        viewport_->style().vectorScale = static_cast<float>(factor);
-        viewport_->styleChanged(true);
-    });
-
+    // The per-atom vector overlay (property selector, scale, colour) moved
+    // into "Edit Vector Overlay…" on the icon row above: three controls that
+    // only matter once an overlay is switched on do not earn permanent space
+    // in the panel.
 
     auto* backgroundButton = new QPushButton(this);
     backgroundButton->setFixedHeight(22);
@@ -387,65 +341,9 @@ void RepresentationPanel::refreshPropertyList()
     if (index >= 0)
         propertyCombo_->setCurrentIndex(index);
 
-    // Grey out overlay entries the current frame has no data for, rather than
-    // hiding them: a fixed list keeps the indices aligned with
-    // render::VectorOverlay, and the disabled tooltip explains what is
-    // missing instead of silently offering nothing.
-    {
-        const QSignalBlocker overlayBlocker(vectorOverlayCombo_);
-        bool currentStillValid = true;
-        for (int i = 1; i < vectorOverlayCombo_->count(); ++i) {
-            const auto overlay = static_cast<render::VectorOverlay>(i);
-            const std::string field = render::vectorFieldName(overlay);
-            const bool available =
-                structure && structure->vectorFields().count(field) > 0;
-            auto* model = qobject_cast<QStandardItemModel*>(
-                vectorOverlayCombo_->model());
-            if (model) {
-                if (QStandardItem* item = model->item(i)) {
-                    item->setEnabled(available);
-                    item->setToolTip(
-                        available
-                            ? QString()
-                            : tr("This frame carries no per-atom \"%1\" data "
-                                 "(load an extended-XYZ trajectory whose "
-                                 "frames include that column)")
-                                  .arg(QString::fromStdString(field)));
-                }
-            }
-            if (!available && vectorOverlayCombo_->currentIndex() == i)
-                currentStillValid = false;
-        }
-        // Scrubbing to a frame without the selected property must not leave a
-        // stale selection pointing at nothing.
-        if (!currentStillValid) {
-            vectorOverlayCombo_->setCurrentIndex(0);
-            viewport_->style().vectorOverlay = render::VectorOverlay::None;
-        }
-    }
-}
-
-QColor* RepresentationPanel::vectorOverlayColor()
-{
-    auto& style = viewport_->style();
-    switch (style.vectorOverlay) {
-    case render::VectorOverlay::Velocity: return &style.velocityColor;
-    case render::VectorOverlay::Force: return &style.forceColor;
-    case render::VectorOverlay::MagneticMoment: return &style.magmomColor;
-    case render::VectorOverlay::None: break;
-    }
-    return nullptr; // nothing is drawn, so there is no color to edit
-}
-
-void RepresentationPanel::syncVectorColorButton()
-{
-    const QColor* color = vectorOverlayColor();
-    vectorColorButton_->setEnabled(color != nullptr);
-    setButtonColor(vectorColorButton_,
-                   color ? *color : palette().color(QPalette::Button));
-    if (!color)
-        vectorColorButton_->setToolTip(
-            tr("Select a vector overlay above to choose its arrow color."));
+    // Overlay availability is now the Vector Overlay dialog's own concern: it
+    // re-checks on structureReplaced, so a frame that drops a per-atom column
+    // still resets the selection — without this panel holding widgets for it.
 }
 
 void RepresentationPanel::syncColoringFromViewport()

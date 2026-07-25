@@ -39,6 +39,14 @@ public:
 
     bool hasData() const { return hasData_; }
 
+Q_SIGNALS:
+    /// Forwarded from the Vibrational Analysis dialog: the host opens these
+    /// frames as a new workspace tab. Relayed rather than connected directly
+    /// because that dialog is created on demand and owns no documents.
+    void modeTrajectoryRequested(
+        const std::vector<std::shared_ptr<core::Structure>>& frames,
+        const QString& label);
+
 private Q_SLOTS:
     /// "Phonon Thermodynamics…" — harmonic U/F/S from the loaded PhDOS.
     void showThermodynamics();

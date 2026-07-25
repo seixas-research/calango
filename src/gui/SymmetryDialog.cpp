@@ -21,7 +21,7 @@ SymmetryDialog::SymmetryDialog(std::shared_ptr<const core::Structure> structure,
                                QWidget* parent)
     : QDialog(parent), structure_(std::move(structure))
 {
-    setWindowTitle(tr("Detect Symmetry"));
+    setWindowTitle(tr("Symmetry"));
     resize(520, 560);
 
     auto* layout = new QVBoxLayout(this);

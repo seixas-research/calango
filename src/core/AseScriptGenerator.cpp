@@ -870,9 +870,17 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                    "    stress = atoms.get_stress(voigt=True)\n"
                    "    pressure_GPa = -(stress[0] + stress[1] + stress[2]) / 3.0 / units.GPa\n"
                    "    _calango_log.metric(dyn.nsteps, energy=epot, temperature=temp,\n"
+                   "                        kinetic=ekin, volume=atoms.get_volume(),\n"
                    "                        max_force=fmax_now, pressure=pressure_GPa)\n";
         else
-            out << "    _calango_log.metric(dyn.nsteps, energy=epot, temperature=temp,\n"
+            out << "    # Kinetic energy and volume are logged alongside the\n"
+                   "    # potential energy so the MD Viewer can show E_tot =\n"
+                   "    # E_pot + E_kin (whose drift is the integrator health\n"
+                   "    # check) rather than only the potential term.\n"
+                   "    _calango_log.metric(dyn.nsteps, energy=epot, temperature=temp,\n"
+                   "                        kinetic=ekin,\n"
+                   "                        volume=(atoms.get_volume() if atoms.cell.rank == 3\n"
+                   "                                else 0.0),\n"
                    "                        max_force=fmax_now)\n";
 
         out << "    print(f\"CALANGO_MD step={dyn.nsteps} epot_eV={epot:.4f} ekin_eV={ekin:.4f}"

@@ -4,7 +4,14 @@
 #include "gui/ViewportWidget.hpp"
 #include "render/StructureRenderer.hpp"
 
+#include "ui/IconManager.hpp"
+
 #include <QColorDialog>
+#include <QFile>
+#include <QFileDialog>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QMessageBox>
 #include <QDialogButtonBox>
 #include <QHeaderView>
 #include <QPushButton>
@@ -13,6 +20,7 @@
 #include <QVBoxLayout>
 
 #include <cmath>
+#include <set>
 #include <set>
 
 namespace calango::gui {
@@ -47,10 +55,32 @@ ElementSettingsDialog::ElementSettingsDialog(ViewportWidget* viewport, QWidget* 
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
     auto* buttons = new QDialogButtonBox(this);
-    auto* resetAllButton = buttons->addButton(tr("Reset All"), QDialogButtonBox::ResetRole);
+    // Preset management sits beside Reset All: the three are the same kind of
+    // action (replace the whole override set at once), as opposed to the
+    // per-row edits in the table above.
+    const auto addAction = [&](const QString& text, const QString& iconName,
+                               const QString& tip) {
+        auto* button =
+            buttons->addButton(text, QDialogButtonBox::ResetRole);
+        button->setIcon(ui::IconManager::icon(iconName));
+        button->setToolTip(tip);
+        return button;
+    };
+    auto* resetAllButton = addAction(
+        tr("Reset All"), QStringLiteral("arrow-go-back-line"),
+        tr("Discard every color and radius override, restoring the Jmol CPK "
+           "palette and 100% radii."));
+    auto* loadButton = addAction(
+        tr("Load Presets…"), QStringLiteral("folder-open-line"),
+        tr("Replace the current overrides with a saved element preset (JSON)."));
+    auto* saveButton = addAction(
+        tr("Save Presets…"), QStringLiteral("save-line"),
+        tr("Write the current color and radius overrides to a JSON preset."));
     buttons->addButton(QDialogButtonBox::Close);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(resetAllButton, &QPushButton::clicked, this, [this] { resetAll(); });
+    connect(loadButton, &QPushButton::clicked, this, [this] { loadPresets(); });
+    connect(saveButton, &QPushButton::clicked, this, [this] { savePresets(); });
 
     auto* layout = new QVBoxLayout(this);
     layout->addWidget(table_);
@@ -139,6 +169,132 @@ void ElementSettingsDialog::resetAll()
     viewport_->style().radiusScaleOverrides.clear();
     viewport_->styleChanged(true);
     populate();
+}
+
+
+void ElementSettingsDialog::savePresets()
+{
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Save Element Presets"),
+        QStringLiteral("calango_elements.json"),
+        tr("Element presets (*.json);;All files (*)"));
+    if (path.isEmpty())
+        return;
+
+    const auto& style = viewport_->style();
+    QJsonObject elements;
+    // Keyed by SYMBOL rather than atomic number: a preset is meant to be
+    // hand-editable and shareable, and "Fe" says what it is where "26" does not.
+    const auto entryFor = [&](int z) {
+        QJsonObject entry;
+        if (const auto color = style.colorOverrides.find(z);
+            color != style.colorOverrides.end())
+            entry.insert(QStringLiteral("color"), color->second.name(QColor::HexRgb));
+        if (const auto radius = style.radiusScaleOverrides.find(z);
+            radius != style.radiusScaleOverrides.end())
+            entry.insert(QStringLiteral("radiusScale"),
+                         static_cast<double>(radius->second));
+        return entry;
+    };
+    std::set<int> touched;
+    for (const auto& [z, color] : style.colorOverrides) {
+        (void)color;
+        touched.insert(z);
+    }
+    for (const auto& [z, radius] : style.radiusScaleOverrides) {
+        (void)radius;
+        touched.insert(z);
+    }
+    for (const int z : touched) {
+        const QJsonObject entry = entryFor(z);
+        if (!entry.isEmpty())
+            elements.insert(QLatin1String(core::Elements::data(z).symbol), entry);
+    }
+
+    QJsonObject root;
+    root.insert(QStringLiteral("format"), QStringLiteral("calango-element-presets"));
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("elements"), elements);
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QMessageBox::warning(this, tr("Save Element Presets"),
+                             tr("Could not write %1").arg(path));
+        return;
+    }
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    if (elements.isEmpty())
+        QMessageBox::information(
+            this, tr("Save Element Presets"),
+            tr("No overrides are set, so the preset is empty — loading it will "
+               "simply restore the default CPK palette."));
+}
+
+void ElementSettingsDialog::loadPresets()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Load Element Presets"), QString(),
+        tr("Element presets (*.json);;All files (*)"));
+    if (path.isEmpty())
+        return;
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, tr("Load Element Presets"),
+                             tr("Could not read %1").arg(path));
+        return;
+    }
+    QJsonParseError error{};
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject()) {
+        QMessageBox::warning(this, tr("Load Element Presets"),
+                             tr("%1 is not valid JSON:\n%2")
+                                 .arg(path, error.errorString()));
+        return;
+    }
+    const QJsonObject elements =
+        document.object().value(QStringLiteral("elements")).toObject();
+    if (elements.isEmpty()) {
+        QMessageBox::warning(
+            this, tr("Load Element Presets"),
+            tr("%1 contains no \"elements\" object — it does not look like a "
+               "Calango element preset.").arg(path));
+        return;
+    }
+
+    // Replace rather than merge: a preset describes a complete look, and
+    // merging would leave whatever the previous preset set for elements the
+    // new one does not mention.
+    auto& style = viewport_->style();
+    style.colorOverrides.clear();
+    style.radiusScaleOverrides.clear();
+
+    QStringList unknown;
+    for (auto it = elements.constBegin(); it != elements.constEnd(); ++it) {
+        const int z = core::Elements::atomicNumber(it.key().toStdString());
+        if (z == 0) {
+            unknown << it.key();
+            continue;
+        }
+        const QJsonObject entry = it.value().toObject();
+        const QColor color(entry.value(QStringLiteral("color")).toString());
+        if (color.isValid())
+            style.colorOverrides[z] = color;
+        const QJsonValue radius = entry.value(QStringLiteral("radiusScale"));
+        if (radius.isDouble() && radius.toDouble() > 0.0)
+            style.radiusScaleOverrides[z] = static_cast<float>(radius.toDouble());
+    }
+    viewport_->styleChanged(true);
+    populate();
+
+    // Unknown symbols are reported rather than dropped silently: a typo in a
+    // hand-edited preset would otherwise just not apply, with no clue why.
+    if (!unknown.isEmpty())
+        QMessageBox::information(
+            this, tr("Load Element Presets"),
+            tr("Ignored %1 unrecognized element symbol(s): %2")
+                .arg(unknown.size())
+                .arg(unknown.join(QStringLiteral(", "))));
 }
 
 } // namespace calango::gui

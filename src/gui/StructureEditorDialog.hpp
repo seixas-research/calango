@@ -50,6 +50,9 @@ private Q_SLOTS:
     void applyLatticeVectors();
     void defineUnitCell();
     void centerInUnitCell();
+    /// "Translate atoms…": shift every atom by a vector given in Å or in
+    /// fractional cell coordinates.
+    void translateAtoms();
     void addVacuumLayer();
     /// Crystallographic cell transforms via Spglib (through AseBridge):
     /// "Standardize Cell" (spglib.standardize_cell) and "Reduce to Primitive
@@ -89,6 +92,7 @@ private:
     QPushButton* vacuumButton_ = nullptr;
     QPushButton* standardizeButton_ = nullptr;
     QPushButton* primitiveButton_ = nullptr;
+    QPushButton* translateButton_ = nullptr;
     QTableWidget* atomTable_ = nullptr;
     QLabel* summaryLabel_ = nullptr;
 };

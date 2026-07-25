@@ -91,6 +91,10 @@ private Q_SLOTS:
     void exportAnimation();
 
     void openSupercellBuilder();
+    /// Build → "Macromolecules…" / "Water & Ice…": the two molecular-system
+    /// builders. Each opens its generated cell as a new workspace tab.
+    void openMacromoleculeBuilder();
+    void openWaterIceBuilder();
     void cleaveSurface();
     void addAtom();
     void changeElementOfSelection();
@@ -134,6 +138,11 @@ private Q_SLOTS:
     void openBandResults(const QString& directory);
     /// Open the phonon band structure + PhDOS viewer for a finished job dir.
     void openPhononResults(const QString& directory);
+    /// "Create Mode Trajectory Tab" from the Vibrational Analysis dialog: open
+    /// one vibrational period as a scrubbable multi-frame workspace tab.
+    void openModeTrajectory(
+        const std::vector<std::shared_ptr<core::Structure>>& frames,
+        const QString& label);
     /// Simulation → "Optics…": linear optical-response wizard (GPAW response).
     void showOptics();
     /// Open the optical-spectra viewer for a finished job directory.
@@ -162,6 +171,10 @@ private Q_SLOTS:
     /// (or most recent) completed Single-Point process.
     void showSinglePointViewer();
     void showGeometryOptimizationViewer();
+    /// Results menu → "Molecular Dynamics Viewer…" and its opener: time series
+    /// (T, E, P, V), g(r) and the trajectory player for a finished MD run.
+    void showMolecularDynamicsViewer();
+    void openMolecularDynamicsResults(const QString& directory);
     /// Results menu → "MLWF Viewer…": open the viewer on the selected (or most
     /// recent) completed MLWF process.
     void showMlwfViewer();

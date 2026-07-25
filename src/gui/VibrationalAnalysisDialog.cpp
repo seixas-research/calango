@@ -1,5 +1,7 @@
 #include "gui/VibrationalAnalysisDialog.hpp"
 
+#include "core/Element.hpp"
+
 #include "gui/GuiUtils.hpp"
 #include "gui/ViewportWidget.hpp"
 
@@ -10,6 +12,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSlider>
 #include <QTimer>
@@ -27,6 +30,15 @@ namespace {
 constexpr int kTickMs = 20;
 /// cm⁻¹ → meV, for the second unit in the mode label.
 constexpr double kCmToMev = 0.1239841984;
+/// cm⁻¹ → Hz (c in cm/s), for the angular frequency the restoring force needs.
+constexpr double kCmToHz = 2.99792458e10;
+/// amu·Å·(rad/s)² → eV/Å. 1 u = 1.66053907e-27 kg, 1 Å = 1e-10 m,
+/// 1 eV = 1.602176634e-19 J, so the factor is m_u·Å²/eV = 1.0360e-28... in
+/// practice: F[eV/Å] = M[u]·ω²[s⁻²]·u[Å] × (1.66053907e-27 × 1e-20 / 1.602176634e-19).
+constexpr double kForceUnit = 1.66053907e-27 * 1e-20 / 1.602176634e-19;
+/// Frames per vibrational period in the exported trajectory. 32 is smooth at
+/// the timeline's playback rate without inflating a project file.
+constexpr int kTrajectoryFrames = 32;
 
 core::Vec3 vec3From(const QJsonArray& array)
 {
@@ -93,6 +105,16 @@ VibrationalAnalysisDialog::VibrationalAnalysisDialog(
     playButton_ = buttons->addButton(tr("Play"), QDialogButtonBox::ActionRole);
     connect(playButton_, &QPushButton::clicked, this,
             &VibrationalAnalysisDialog::togglePlay);
+    trajectoryButton_ = buttons->addButton(tr("Create Mode Trajectory Tab"),
+                                           QDialogButtonBox::ActionRole);
+    trajectoryButton_->setToolTip(
+        tr("Open one full vibrational period of this mode as a new workspace "
+           "tab, scrubbable on the timeline.\n"
+           "Each frame carries the instantaneous harmonic restoring forces "
+           "F = −Mω²u, so the Representation panel's Vector Overlay can show "
+           "them in 3D."));
+    connect(trajectoryButton_, &QPushButton::clicked, this,
+            &VibrationalAnalysisDialog::createModeTrajectory);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
 
@@ -185,6 +207,7 @@ void VibrationalAnalysisDialog::load(const QString& directory)
                "calculation with mode export enabled to animate them."));
         noticeLabel_->setStyleSheet(QStringLiteral("color: #d9534f;"));
         playButton_->setEnabled(false);
+        trajectoryButton_->setEnabled(false);
         amplitudeSlider_->setEnabled(false);
         speedSlider_->setEnabled(false);
     } else {
@@ -199,6 +222,7 @@ void VibrationalAnalysisDialog::load(const QString& directory)
     if (qpoints_.empty()) {
         noticeLabel_->setText(tr("No phonon modes were found in this run."));
         playButton_->setEnabled(false);
+        trajectoryButton_->setEnabled(false);
         return;
     }
     onQPointChanged(0);
@@ -250,17 +274,19 @@ void VibrationalAnalysisDialog::updateModeLabel()
                             .arg(cm * 0.0299792458, 0, 'f', 3));
 }
 
-void VibrationalAnalysisDialog::applyDisplacement()
+std::shared_ptr<core::Structure> VibrationalAnalysisDialog::displacedAt(
+    double phase, bool withForces) const
 {
-    if (!viewport_ || !reference_ || !hasEigenvectors_)
-        return;
+    if (!reference_ || !hasEigenvectors_)
+        return nullptr;
     const int q = qpointCombo_->currentIndex();
     const int branch = modeCombo_->currentIndex();
     if (q < 0 || q >= static_cast<int>(qpoints_.size()) || branch < 0)
-        return;
+        return nullptr;
     const QPointModes& qpoint = qpoints_[static_cast<std::size_t>(q)];
-    if (branch >= static_cast<int>(qpoint.eigenvectorsReal.size()))
-        return;
+    if (branch >= static_cast<int>(qpoint.eigenvectorsReal.size())
+        || branch >= static_cast<int>(qpoint.frequenciesCm.size()))
+        return nullptr;
     const auto& real = qpoint.eigenvectorsReal[static_cast<std::size_t>(branch)];
     const auto& imag = qpoint.eigenvectorsImag[static_cast<std::size_t>(branch)];
 
@@ -269,6 +295,11 @@ void VibrationalAnalysisDialog::applyDisplacement()
     const double amplitude = amplitudeSlider_->value() / 100.0; // Å
     const bool periodic = displaced->cell().isDefined();
 
+    // ω in rad/s from the frequency in cm⁻¹, for the restoring forces.
+    const double frequencyCm = qpoint.frequenciesCm[static_cast<std::size_t>(branch)];
+    const double omega = 2.0 * M_PI * std::abs(frequencyCm) * kCmToHz;
+
+    std::vector<core::Vec3> displacements(atoms.size());
     for (std::size_t i = 0; i < atoms.size() && i < real.size(); ++i) {
         // u_α(t) = Re[ e_α(q) · exp(i(q·R_α − ωt)) ]. The q·R phase is what
         // makes a zone-boundary mode show neighbouring cells in antiphase
@@ -282,20 +313,91 @@ void VibrationalAnalysisDialog::applyDisplacement()
                 * (qpoint.q[0] * fractional.x + qpoint.q[1] * fractional.y
                    + qpoint.q[2] * fractional.z);
         }
-        const double angle = qr - phase_;
+        const double angle = qr - phase;
         const double c = std::cos(angle);
-        const double s = std::sin(angle);
+        const double sn = std::sin(angle);
         const core::Vec3& re = real[i];
         const core::Vec3& im = i < imag.size() ? imag[i] : core::Vec3{};
         // Re[(re + i·im)(c + i·s)] = re·c − im·s
-        atoms[i].position = atoms[i].position
-            + core::Vec3{re.x * c - im.x * s, re.y * c - im.y * s,
-                         re.z * c - im.z * s}
-                * amplitude;
+        const core::Vec3 u{(re.x * c - im.x * sn) * amplitude,
+                           (re.y * c - im.y * sn) * amplitude,
+                           (re.z * c - im.z * sn) * amplitude};
+        displacements[i] = u;
+        atoms[i].position = atoms[i].position + u;
     }
-    // frameCamera=false: re-framing every tick would make the structure jitter
-    // in place instead of showing the motion.
-    viewport_->setStructure(displaced, false);
+
+    if (withForces) {
+        // Harmonic restoring force F_α = −M_α ω² u_α. Converted from
+        // u·amu·rad²/s² to eV/Å so it lands in the same units as every other
+        // force in the app — the Vector Overlay scale is calibrated for those,
+        // and a raw SI magnitude would render as an invisible or absurd arrow.
+        std::vector<core::Vec3> forces(atoms.size());
+        for (std::size_t i = 0; i < atoms.size(); ++i) {
+            const double mass =
+                core::Elements::atomicMass(atoms[i].atomicNumber);
+            const double factor = -mass * omega * omega * kForceUnit;
+            forces[i] = {displacements[i].x * factor,
+                         displacements[i].y * factor,
+                         displacements[i].z * factor};
+        }
+        displaced->setVectorField("forces", std::move(forces));
+    }
+    return displaced;
+}
+
+void VibrationalAnalysisDialog::applyDisplacement()
+{
+    if (!viewport_)
+        return;
+    // No forces on the live animation: the arrows would be redrawn 50x a
+    // second and the overlay is off by default anyway. The exported trajectory
+    // carries them, which is where they are actually inspected.
+    if (auto displaced = displacedAt(phase_, /*withForces=*/false)) {
+        // frameCamera=false: re-framing every tick would make the structure
+        // jitter in place instead of showing the motion.
+        viewport_->setStructure(displaced, false);
+    }
+}
+
+void VibrationalAnalysisDialog::createModeTrajectory()
+{
+    const int q = qpointCombo_->currentIndex();
+    const int branch = modeCombo_->currentIndex();
+    if (!hasEigenvectors_ || q < 0 || branch < 0) {
+        QMessageBox::information(
+            this, tr("Create Mode Trajectory Tab"),
+            tr("This run exported no eigenvectors, so there is no displacement "
+               "pattern to animate."));
+        return;
+    }
+    const QPointModes& qpoint = qpoints_[static_cast<std::size_t>(q)];
+    const double frequencyCm =
+        branch < static_cast<int>(qpoint.frequenciesCm.size())
+        ? qpoint.frequenciesCm[static_cast<std::size_t>(branch)]
+        : 0.0;
+
+    // One full period sampled uniformly in phase. The last frame is omitted:
+    // phase 2π is the same configuration as phase 0, and a duplicated frame
+    // makes a looped playback stutter.
+    std::vector<std::shared_ptr<core::Structure>> frames;
+    frames.reserve(kTrajectoryFrames);
+    for (int i = 0; i < kTrajectoryFrames; ++i) {
+        const double phase =
+            2.0 * M_PI * static_cast<double>(i) / kTrajectoryFrames;
+        if (auto frame = displacedAt(phase, /*withForces=*/true))
+            frames.push_back(std::move(frame));
+    }
+    if (frames.empty()) {
+        QMessageBox::information(this, tr("Create Mode Trajectory Tab"),
+                                 tr("Could not build the mode trajectory."));
+        return;
+    }
+
+    Q_EMIT modeTrajectoryRequested(
+        frames, tr("Mode %1 @ %2 — %3 cm⁻¹")
+                    .arg(branch + 1)
+                    .arg(qpoint.label)
+                    .arg(frequencyCm, 0, 'f', 1));
 }
 
 void VibrationalAnalysisDialog::advance()

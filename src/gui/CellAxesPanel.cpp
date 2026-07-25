@@ -33,6 +33,22 @@ CellAxesPanel::CellAxesPanel(ViewportWidget* viewport, QWidget* parent)
     connect(cellShowCheck, &QCheckBox::toggled,
             viewport_, &ViewportWidget::setShowCell);
 
+    auto* ghostCheck =
+        new QCheckBox(tr("Duplicate atoms on cell boundaries"), this);
+    ghostCheck->setChecked(viewport_->style().showBoundaryGhosts);
+    ghostCheck->setToolTip(
+        tr("Repeat atoms lying on a cell face, edge or vertex at the opposite "
+           "side (fractional 0 → 1), together with their bonds, so the cell "
+           "reads as a closed motif instead of one sliced off at two faces.\n"
+           "Purely visual: the atom count, the chemical formula and every "
+           "exported POSCAR/CIF are unchanged."));
+    form->addRow(ghostCheck);
+    connect(ghostCheck, &QCheckBox::toggled, this, [this](bool on) {
+        viewport_->style().showBoundaryGhosts = on;
+        // Extra instances — the geometry buffers must be rebuilt.
+        viewport_->styleChanged(true);
+    });
+
     auto* cellColorButton = new QPushButton(this);
     cellColorButton->setFixedHeight(22);
     setButtonColor(cellColorButton, viewport_->style().cellColor);

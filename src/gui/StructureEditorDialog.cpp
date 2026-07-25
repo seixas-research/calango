@@ -198,29 +198,20 @@ void StructureEditorDialog::buildCellSection(QVBoxLayout* parent)
     }
     cellLayout->addWidget(vectorBox);
 
-    // Transformations
+    // Transformations. All five act on the whole structure in place, so they
+    // share one compact row rather than being split across two: the previous
+    // split implied a distinction (geometry vs. crystallography) that did not
+    // survive adding a translation, which is both.
     auto* actionRow = new QHBoxLayout;
-    centerButton_ = new QPushButton(tr("Center Structure in Unit Cell"), cellPage);
+    centerButton_ = new QPushButton(tr("Center Structure"), cellPage);
     centerButton_->setToolTip(
         tr("Translate every atom so the structure's centroid sits at the "
            "center of the cell."));
-    vacuumButton_ = new QPushButton(tr("Add Vacuum Layer…"), cellPage);
+    vacuumButton_ = new QPushButton(tr("Add vacuum…"), cellPage);
     vacuumButton_->setToolTip(
         tr("Extend the cell along chosen directions and re-center the atoms "
            "in the enlarged cell."));
-    actionRow->addWidget(centerButton_);
-    actionRow->addWidget(vacuumButton_);
-    actionRow->addStretch(1);
-    cellLayout->addLayout(actionRow);
-    connect(centerButton_, &QPushButton::clicked,
-            this, &StructureEditorDialog::centerInUnitCell);
-    connect(vacuumButton_, &QPushButton::clicked,
-            this, &StructureEditorDialog::addVacuumLayer);
-
-    // Spglib crystallographic cell transforms (moved here from Detect
-    // Symmetry): both replace the working structure in place.
-    auto* symmetryRow = new QHBoxLayout;
-    standardizeButton_ = new QPushButton(tr("Standardize Cell"), cellPage);
+    standardizeButton_ = new QPushButton(tr("Standardize cell"), cellPage);
     standardizeButton_->setToolTip(
         tr("Convert lattice vectors and site positions to the standard "
            "crystallographic convention (spglib.standardize_cell)."));
@@ -228,14 +219,25 @@ void StructureEditorDialog::buildCellSection(QVBoxLayout* parent)
     primitiveButton_->setToolTip(
         tr("Transform the cell into its minimal primitive representation "
            "(spglib.find_primitive)."));
-    symmetryRow->addWidget(standardizeButton_);
-    symmetryRow->addWidget(primitiveButton_);
-    symmetryRow->addStretch(1);
-    cellLayout->addLayout(symmetryRow);
+    translateButton_ = new QPushButton(tr("Translate atoms…"), cellPage);
+    translateButton_->setToolTip(
+        tr("Shift every atom by a vector, in Å or in fractional cell "
+           "coordinates."));
+    for (QPushButton* button : {centerButton_, vacuumButton_, standardizeButton_,
+                                primitiveButton_, translateButton_})
+        actionRow->addWidget(button);
+    actionRow->addStretch(1);
+    cellLayout->addLayout(actionRow);
+    connect(centerButton_, &QPushButton::clicked,
+            this, &StructureEditorDialog::centerInUnitCell);
+    connect(vacuumButton_, &QPushButton::clicked,
+            this, &StructureEditorDialog::addVacuumLayer);
     connect(standardizeButton_, &QPushButton::clicked,
             this, &StructureEditorDialog::standardizeCell);
     connect(primitiveButton_, &QPushButton::clicked,
             this, &StructureEditorDialog::reduceToPrimitiveCell);
+    connect(translateButton_, &QPushButton::clicked,
+            this, &StructureEditorDialog::translateAtoms);
 
     cellStack_->addWidget(cellPage);
     groupLayout->addWidget(cellStack_);
@@ -366,6 +368,95 @@ void StructureEditorDialog::defineUnitCell()
         atom.position += shift;
 
     refreshAll();
+}
+
+
+void StructureEditorDialog::translateAtoms()
+{
+    if (!working_ || working_->empty()) {
+        QMessageBox::information(this, tr("Translate Atoms"),
+                                 tr("The structure has no atoms."));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Translate Atoms"));
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* form = new QFormLayout;
+    layout->addLayout(form);
+
+    auto* note = new QLabel(
+        tr("Shifts every atom by the same vector. Fractional coordinates are "
+           "the natural choice for a periodic cell — (0.5, 0, 0) is half a "
+           "cell along a₁ whatever the lattice parameter is."),
+        &dialog);
+    note->setWordWrap(true);
+    layout->insertWidget(0, note);
+
+    QDoubleSpinBox* components[3] = {nullptr, nullptr, nullptr};
+    const char* labels[3] = {"Δx", "Δy", "Δz"};
+    auto* vectorRow = new QHBoxLayout;
+    for (int i = 0; i < 3; ++i) {
+        vectorRow->addWidget(new QLabel(QLatin1String(labels[i]), &dialog));
+        components[i] = new QDoubleSpinBox(&dialog);
+        components[i]->setDecimals(4);
+        components[i]->setRange(-10000.0, 10000.0);
+        components[i]->setSingleStep(0.1);
+        vectorRow->addWidget(components[i], 1);
+    }
+    form->addRow(tr("Translation vector:"), vectorRow);
+
+    const bool periodic = working_->cell().isDefined();
+    auto* cartesianCheck =
+        new QCheckBox(tr("Cartesian coordinates (Å)"), &dialog);
+    cartesianCheck->setChecked(true);
+    auto* fractionalCheck = new QCheckBox(
+        tr("Fractional coordinates (direct cell vectors)"), &dialog);
+    fractionalCheck->setEnabled(periodic);
+    // Two mutually exclusive checkboxes rather than one: the spec asks for a
+    // toggle between two named systems, and a lone "Cartesian" box would leave
+    // the other mode unlabelled.
+    QObject::connect(cartesianCheck, &QCheckBox::toggled, &dialog,
+                     [fractionalCheck](bool on) {
+                         const QSignalBlocker blocker(fractionalCheck);
+                         fractionalCheck->setChecked(!on);
+                     });
+    QObject::connect(fractionalCheck, &QCheckBox::toggled, &dialog,
+                     [cartesianCheck](bool on) {
+                         const QSignalBlocker blocker(cartesianCheck);
+                         cartesianCheck->setChecked(!on);
+                     });
+    form->addRow(cartesianCheck);
+    form->addRow(fractionalCheck);
+    if (!periodic)
+        form->addRow(new QLabel(
+            tr("This structure has no cell, so only Cartesian shifts apply."),
+            &dialog));
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const core::Vec3 input{components[0]->value(), components[1]->value(),
+                           components[2]->value()};
+    // Fractional input is converted through the CELL, not by scaling each
+    // component by a lattice length: for a non-orthogonal cell those differ,
+    // and the per-length shortcut silently shears the translation.
+    const core::Vec3 shift = fractionalCheck->isChecked() && periodic
+        ? working_->cell().fractionalToCartesian(input)
+        : input;
+    if (shift.norm() < 1e-12)
+        return;
+
+    for (core::Atom& atom : working_->atoms())
+        atom.position = atom.position + shift;
+    refreshAtomTable();
+    refreshSummary();
 }
 
 void StructureEditorDialog::centerInUnitCell()
