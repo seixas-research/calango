@@ -1,9 +1,9 @@
 #include "gui/RepresentationPanel.hpp"
 #include "gui/GuiUtils.hpp"
 
+#include "gui/CustomGradientColoringDialog.hpp"
 #include "gui/ElementSettingsDialog.hpp"
 #include "gui/PolyhedralSettingsDialog.hpp"
-#include "gui/VectorOverlayDialog.hpp"
 #include "ui/IconManager.hpp"
 #include "gui/GuiUtils.hpp"
 #include "gui/ViewportWidget.hpp"
@@ -16,6 +16,8 @@
 #include <QHBoxLayout>
 #include <QSignalBlocker>
 #include <QStandardItemModel>
+#include <QTabBar>
+#include <QTabWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -32,14 +34,28 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     : QWidget(parent)
     , viewport_(viewport)
 {
-    auto* form = new QFormLayout(this);
+    // A single page, not a QTabWidget: Unit cell, Axes triad and Vectors moved
+    // to the "Cell, Axes & Vectors" dock and Custom coloring became a dialog,
+    // so there is nothing left to tab between. A one-tab tab widget is a header
+    // that costs a row and does nothing.
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(buildAppearanceTab());
+
+    syncColoringFromViewport();
+}
+
+QWidget* RepresentationPanel::buildAppearanceTab()
+{
+    auto* page = new QWidget(this);
+    auto* form = new QFormLayout(page);
 
     // --- Style (surface material) ------------------------------------------
     // First control in the panel: the material decides how everything below
     // it reads on screen, and it is the setting most often changed when
     // preparing a figure. Applies to every lit mesh (atom spheres, bond
     // cylinders, cell tubes) so a figure reads as one material.
-    surfaceFinishCombo_ = new QComboBox(this);
+    surfaceFinishCombo_ = new QComboBox(page);
     // Order matches render::SurfaceFinish.
     surfaceFinishCombo_->addItem(tr("Standard"));
     surfaceFinishCombo_->addItem(tr("Shiny"));
@@ -63,7 +79,7 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
                 viewport_->styleChanged(false);
             });
 
-    modeCombo_ = new QComboBox(this);
+    modeCombo_ = new QComboBox(page);
     modeCombo_->addItems({tr("Ball-and-Stick"), tr("Space-filling (CPK)"),
                           tr("Wireframe"), tr("Polyhedral")});
     form->addRow(tr("Mode:"), modeCombo_);
@@ -72,7 +88,7 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     });
 
     // --- Atom coloring -----------------------------------------------------
-    colorModeCombo_ = new QComboBox(this);
+    colorModeCombo_ = new QComboBox(page);
     colorModeCombo_->addItems({tr("Element (CPK)"),
                                tr("Coordination number (CN)"),
                                tr("Generalized CN (GCN)"),
@@ -85,9 +101,9 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     // in the app, and these are recognized by glyph once learned.
     auto* editorRow = new QHBoxLayout;
     editorRow->setSpacing(4);
-    const auto makeEditorButton = [this, editorRow](const QString& icon,
+    const auto makeEditorButton = [page, editorRow](const QString& icon,
                                                     const QString& tip) {
-        auto* button = new QPushButton(this);
+        auto* button = new QPushButton(page);
         button->setIcon(ui::IconManager::icon(icon));
         button->setIconSize(QSize(20, 20));
         button->setToolTip(tip);
@@ -107,10 +123,10 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
         QStringLiteral("box-1-line"),
         tr("Edit Polyhedral… — coordination-polyhedra opacity, edge wireframe "
            "and per-cation coordination cutoffs."));
-    auto* vectorButton = makeEditorButton(
-        QStringLiteral("arrow-right-up-line"),
-        tr("Edit Vector Overlay… — which per-atom vector field is drawn, its "
-           "scale and its colour."));
+    auto* gradientButton = makeEditorButton(
+        QStringLiteral("gradient"),
+        tr("Edit gradient coloring… — which per-atom property is mapped, "
+           "through which gradient, over which value range."));
     editorRow->addStretch(1);
     form->addRow(editorRow);
 
@@ -127,112 +143,24 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->show();
     });
-    connect(vectorButton, &QPushButton::clicked, this, [this] {
-        auto* dialog = new VectorOverlayDialog(viewport_, this);
+    connect(gradientButton, &QPushButton::clicked, this, [this] {
+        auto* dialog = new CustomGradientColoringDialog(viewport_, this);
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->show();
     });
 
     connect(colorModeCombo_, &QComboBox::currentIndexChanged,
             this, &RepresentationPanel::applyColorMode);
-
-    gradientCombo_ = new QComboBox(this);
-    // Same order as render::ColorGradient.
-    gradientCombo_->addItems({tr("Viridis"), tr("Plasma"), tr("Turbo"),
-                              tr("Inferno"), tr("Magma"), tr("Cividis"),
-                              tr("Hot"), tr("Afmhot"), tr("Coolwarm"),
-                              tr("Rainbow"), tr("Greys"), tr("Spectral"),
-                              tr("Gnuplot")});
-    form->addRow(tr("Gradient:"), gradientCombo_);
-    connect(gradientCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
-        viewport_->setColorGradient(static_cast<render::ColorGradient>(index));
-    });
-
-    invertGradientCheck_ = new QCheckBox(tr("Invert palette"), this);
-    invertGradientCheck_->setToolTip(tr("Reverse the scalar-to-color mapping: "
-                                        "minimum values take the high end of the\n"
-                                        "gradient and maximum values the low end "
-                                        "(matplotlib \"_r\" palettes)"));
-    form->addRow(invertGradientCheck_);
-    connect(invertGradientCheck_, &QCheckBox::toggled, this, [this](bool on) {
-        viewport_->setGradientInverted(on);
-    });
-
-    propertyCombo_ = new QComboBox(this);
-    propertyCombo_->setToolTip(tr("Per-atom scalar fields of the current structure\n"
-                                  "(charges, |forces|, extxyz columns, ...)"));
-    form->addRow(tr("Property:"), propertyCombo_);
-    connect(propertyCombo_, &QComboBox::currentIndexChanged,
-            this, &RepresentationPanel::applyColorMode);
-
-    // --- Color range bounds ------------------------------------------------
-    // Editable Min/Max rather than a read-only legend: auto-scaling
-    // renormalizes the ramp to whatever the current frame/structure happens to
-    // contain, which makes two figures on the same property incomparable.
-    // Typing bounds pins the scale so the same color means the same value
-    // across frames, structures and exported figures.
-    auto* rangeRow = new QWidget(this);
-    auto* rangeLayout = new QHBoxLayout(rangeRow);
-    rangeLayout->setContentsMargins(0, 0, 0, 0);
-    rangeLayout->setSpacing(4);
-    const auto makeBoundSpin = [rangeRow] {
-        // Compact rendering: property ranges span everything from 1e-5 μB to
-        // 1e3 eV/Å, and a fixed-decimal spin box either overflows the field
-        // ("0.000012345") or shows a misleading "0.000". CompactDoubleSpinBox
-        // formats to 3 significant figures, switching to exponential when the
-        // magnitude needs it.
-        auto* spin = new CompactDoubleSpinBox(rangeRow);
-        spin->setRange(-1.0e9, 1.0e9);
-        spin->setKeyboardTracking(false); // apply on commit, not per keystroke
-        return spin;
-    };
-    rangeLayout->addWidget(new QLabel(tr("Min"), rangeRow));
-    rangeMinSpin_ = makeBoundSpin();
-    rangeLayout->addWidget(rangeMinSpin_, 1);
-    rangeLayout->addWidget(new QLabel(tr("Max"), rangeRow));
-    rangeMaxSpin_ = makeBoundSpin();
-    rangeLayout->addWidget(rangeMaxSpin_, 1);
-    form->addRow(tr("Range:"), rangeRow);
-
-    autoRangeCheck_ = new QCheckBox(tr("Auto-scale to data"), this);
-    autoRangeCheck_->setChecked(true);
-    autoRangeCheck_->setToolTip(
-        tr("On: the color ramp spans the property's own minimum and maximum in "
-           "the current structure, and the fields above track it.\n"
-           "Off: the ramp is pinned to the Min/Max you type — values beyond "
-           "them clamp to the ramp ends — so several structures or frames can "
-           "be compared on one fixed scale."));
-    form->addRow(autoRangeCheck_);
-
-    // Editing a bound is itself the intent to override, so it switches off
-    // auto-scaling rather than being silently discarded on the next refresh.
-    const auto applyCustomRange = [this] {
-        if (syncingRange_)
-            return;
-        if (autoRangeCheck_->isChecked()) {
-            const QSignalBlocker blocker(autoRangeCheck_);
-            autoRangeCheck_->setChecked(false);
-        }
-        applyColorRange();
-    };
-    connect(rangeMinSpin_, &QDoubleSpinBox::valueChanged, this, applyCustomRange);
-    connect(rangeMaxSpin_, &QDoubleSpinBox::valueChanged, this, applyCustomRange);
-    // Re-syncing covers both directions: switching auto back on refills the
-    // fields from the data, and it applies the window either way.
-    connect(autoRangeCheck_, &QCheckBox::toggled, this,
-            &RepresentationPanel::syncColoringFromViewport);
-
-    connect(viewport_, &ViewportWidget::structureReplaced,
-            this, &RepresentationPanel::refreshPropertyList);
-    connect(viewport_, &ViewportWidget::colorMappingChanged,
-            this, &RepresentationPanel::syncColoringFromViewport);
+    // The viewport observers live with the widgets they update, on the Custom
+    // coloring tab — connecting them here as well would fire each handler
+    // twice per signal.
 
     // --- Scales ------------------------------------------------------------
     // Slider for coarse adjustment + spinbox for exact typed values,
     // bidirectionally synced (both drive the same style factor).
-    const auto makeScaleRow = [this](QSlider*& slider, QDoubleSpinBox*& spin,
+    const auto makeScaleRow = [this, page](QSlider*& slider, QDoubleSpinBox*& spin,
                                      const std::function<void(float)>& apply) {
-        auto* row = new QWidget(this);
+        auto* row = new QWidget(page);
         auto* rowLayout = new QHBoxLayout(row);
         rowLayout->setContentsMargins(0, 0, 0, 0);
         slider = new QSlider(Qt::Horizontal, row);
@@ -280,7 +208,7 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     // which already owns per-pair bond edits and can also express Aromatic —
     // one place to assign a pair's chemistry instead of two.
 
-    gradientBondsCheck_ = new QCheckBox(tr("Gradient bond coloring"), this);
+    gradientBondsCheck_ = new QCheckBox(tr("Gradient bond coloring"), page);
     gradientBondsCheck_->setChecked(viewport_->style().gradientBonds);
     gradientBondsCheck_->setToolTip(tr("Blend each bond smoothly from one atom's "
                                        "color to the other's\ninstead of the classic "
@@ -296,7 +224,7 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     // only matter once an overlay is switched on do not earn permanent space
     // in the panel.
 
-    auto* backgroundButton = new QPushButton(this);
+    auto* backgroundButton = new QPushButton(page);
     backgroundButton->setFixedHeight(22);
     setButtonColor(backgroundButton, viewport_->backgroundColor());
     // Background is the first control in the panel: it frames how every atom,
@@ -312,101 +240,40 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
         viewport_->setBackgroundColor(chosen);
     });
 
-    refreshPropertyList();
-    syncColoringFromViewport();
+    return page;
 }
+
 
 void RepresentationPanel::applyColorMode()
 {
     const auto mode = static_cast<render::ColorMode>(colorModeCombo_->currentIndex());
-    const bool custom = mode == render::ColorMode::CustomScalar;
-    viewport_->setColorMode(mode, custom ? propertyCombo_->currentText() : QString());
-}
-
-void RepresentationPanel::refreshPropertyList()
-{
-    const QSignalBlocker blocker(propertyCombo_);
-    const QString previous = propertyCombo_->currentText();
-    propertyCombo_->clear();
-    const core::Structure* structure = nullptr;
-    const auto held = viewport_->structure();
-    if (held) {
-        structure = held.get();
-        for (const auto& [name, values] : structure->scalarFields()) {
-            (void)values;
-            propertyCombo_->addItem(QString::fromStdString(name));
+    if (mode != render::ColorMode::CustomScalar) {
+        viewport_->setColorMode(mode);
+        return;
+    }
+    // Which property is mapped belongs to the Custom Gradient Coloring dialog.
+    // Keep whatever it last selected; when nothing has been chosen yet, seed
+    // the structure's first scalar field so switching to "Custom property"
+    // shows something instead of silently colouring nothing.
+    QString field = viewport_->customScalarField();
+    if (field.isEmpty()) {
+        if (const auto structure = viewport_->structure()) {
+            const auto& fields = structure->scalarFields();
+            if (!fields.empty())
+                field = QString::fromStdString(fields.begin()->first);
         }
     }
-    const int index = propertyCombo_->findText(previous);
-    if (index >= 0)
-        propertyCombo_->setCurrentIndex(index);
-
-    // Overlay availability is now the Vector Overlay dialog's own concern: it
-    // re-checks on structureReplaced, so a frame that drops a per-atom column
-    // still resets the selection — without this panel holding widgets for it.
+    viewport_->setColorMode(mode, field);
 }
 
 void RepresentationPanel::syncColoringFromViewport()
 {
-    // The mapping can also be driven from outside (Coordination Analysis
-    // dialog) — mirror the viewport state without re-triggering it.
-    const auto mode = viewport_->colorMode();
-    {
-        const QSignalBlocker blocker(colorModeCombo_);
-        colorModeCombo_->setCurrentIndex(static_cast<int>(mode));
-    }
-    {
-        const QSignalBlocker blocker(gradientCombo_);
-        gradientCombo_->setCurrentIndex(static_cast<int>(viewport_->style().gradient));
-    }
-    {
-        const QSignalBlocker blocker(invertGradientCheck_);
-        invertGradientCheck_->setChecked(viewport_->style().invertGradient);
-    }
-    if (mode == render::ColorMode::CustomScalar) {
-        const QSignalBlocker blocker(propertyCombo_);
-        const int index = propertyCombo_->findText(viewport_->customScalarField());
-        if (index >= 0)
-            propertyCombo_->setCurrentIndex(index);
-    }
-
-    const bool scalarMode = mode != render::ColorMode::Element;
-    gradientCombo_->setEnabled(scalarMode);
-    invertGradientCheck_->setEnabled(scalarMode);
-    propertyCombo_->setEnabled(mode == render::ColorMode::CustomScalar);
-
-    // The bounds fields stay editable in any scalar mode; they only go dead in
-    // Element mode, where no scalar is being mapped at all.
-    const bool autoScale = autoRangeCheck_->isChecked();
-    autoRangeCheck_->setEnabled(scalarMode);
-    rangeMinSpin_->setEnabled(scalarMode);
-    rangeMaxSpin_->setEnabled(scalarMode);
-
-    // While auto-scaling, the fields mirror the data's own range so the user
-    // starts from the real numbers when they switch to custom bounds. Once
-    // pinned, they are the user's values and must not be overwritten.
-    if (autoScale) {
-        const auto range = viewport_->scalarRange();
-        const QSignalBlocker minBlocker(rangeMinSpin_);
-        const QSignalBlocker maxBlocker(rangeMaxSpin_);
-        syncingRange_ = true;
-        rangeMinSpin_->setValue(range.valid ? range.min : 0.0);
-        rangeMaxSpin_->setValue(range.valid ? range.max : 1.0);
-        syncingRange_ = false;
-    }
-    applyColorRange();
-}
-
-void RepresentationPanel::applyColorRange()
-{
-    const bool custom = !autoRangeCheck_->isChecked();
-    // An inverted or degenerate window would map every atom to one color;
-    // order the two bounds rather than silently flattening the figure.
-    const auto lo = static_cast<float>(
-        std::min(rangeMinSpin_->value(), rangeMaxSpin_->value()));
-    const auto hi = static_cast<float>(
-        std::max(rangeMinSpin_->value(), rangeMaxSpin_->value()));
-    viewport_->setCustomScalarRange(custom, lo, hi);
+    // The mapping can also be driven from outside (the Coordination Analysis
+    // dialog, the Custom Gradient Coloring dialog) — mirror the mode here
+    // without re-triggering it. Everything else about the mapping lives in
+    // that dialog now.
+    const QSignalBlocker blocker(colorModeCombo_);
+    colorModeCombo_->setCurrentIndex(static_cast<int>(viewport_->colorMode()));
 }
 
 } // namespace calango::gui

@@ -9,7 +9,10 @@ namespace calango::core {
 
 std::string generateOpticsScript(const OpticsConfig& cfg)
 {
-    const CalculatorConfig& c = cfg.calculator;
+    // Note: cfg.calculator is deliberately NOT consulted. Every ground-state
+    // parameter (mode, cutoff, xc, k-grid, smearing) comes from the inherited
+    // .gpw, which GPAW restores on restart. Emitting them here would let a
+    // wizard-side value silently disagree with the baseline it claims to use.
 
     // The list of (json-key, GPAW axis) pairs the response loop iterates over,
     // filtered to the directions the user asked for. Guard against an empty
@@ -41,30 +44,23 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
         << "atoms = read(\"structure.extxyz\")\n"
            "_calango_log.progress(0, 4)\n"
            "\n"
-           "# --- Ground state (self-consistent) "
-           "---------------------------------\n"
-           "# GPAW's response module needs a plane-wave ground state, so PW mode\n"
-           "# is used here regardless of the engine's default discretization.\n"
-           "from gpaw import GPAW, PW\n"
+           "# --- Baseline ground state (inherited, NOT re-converged) "
+           "---------\n"
+           "# The SCF was done by the Single-Point Calculation this run "
+           "inherits\n"
+           "# from; re-converging it here would silently produce a spectrum "
+           "from a\n"
+           "# different ground state than the one that was inspected.\n"
+           "from gpaw import GPAW\n"
            "\n"
-           "calc = GPAW(\n"
-        << "    mode=PW(" << c.planeWaveCutoffEv << "),  # plane-wave cutoff, eV\n"
-        << "    xc=\"" << c.gpawXc << "\",\n"
-        << "    kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2]
-        << "),  # Monkhorst-Pack grid\n"
-           "    txt=\"gpaw_gs.txt\",\n"
-           ")\n"
-           "atoms.calc = calc\n"
-           "atoms.get_potential_energy()\n"
-           "calc.write(\"gs.gpw\", mode=\"all\")\n"
+        << "gs = GPAW(r\"" << cfg.baselineDensityPath << "\", txt=None)\n"
            "_calango_log.progress(1, 4)\n"
            "\n"
            "# --- Fixed-density NSCF with extra empty bands "
            "----------------------\n"
            "# The dielectric response sums transitions into unoccupied states, so\n"
-           "# a generous number of empty bands (and a denser k-grid) improves the\n"
-           "# spectrum. The empty bands are converged at the fixed SCF density.\n"
-           "gs = GPAW(\"gs.gpw\")\n"
+           "# a generous number of empty bands improves the spectrum. They are\n"
+           "# converged at the FIXED baseline density — no self-consistency.\n"
            "n_occ = max(1, int(round(gs.get_number_of_electrons() / 2.0)))\n"
            "n_bands = max(4 * n_occ, 24)  # occupied + empty bands\n"
            "nscf = gs.fixed_density(\n"
@@ -151,8 +147,86 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "\n"
            "if not _ok:\n"
            "    raise RuntimeError('DielectricFunction produced no valid "
-           "direction — check the k-point sampling and empty-band count.')\n"
-           "with open(\"optics.json\", \"w\") as handle:\n"
+           "direction — check the k-point sampling and empty-band count.')\n";
+
+    if (cfg.vacuumAxis >= 0 && cfg.vacuumAxis <= 2) {
+        // --- 2D observables -------------------------------------------------
+        // A supercell calculation of a sheet reports a dielectric function
+        // diluted by whatever vacuum was used, so eps_3D is NOT a property of
+        // the material — double the vacuum and it moves. Dividing the vacuum
+        // thickness back out gives quantities that do not: the sheet
+        // polarizability, the 2D conductivity and the absorbance.
+        out << "\n"
+               "# --- 2D observables (vacuum truncation) "
+               "-------------------------\n"
+            << "L_z = float(atoms.cell.lengths()[" << cfg.vacuumAxis << "])"
+               "  # vacuum-direction cell length, Å\n"
+               "results[\"vacuum_axis\"] = "
+            << cfg.vacuumAxis << "\n"
+               "results[\"L_z_A\"] = L_z\n"
+               "\n"
+               "# Physical constants in the units used here: ħc in eV·Å and the\n"
+               "# fine-structure constant (dimensionless).\n"
+               "hbar_c_eV_A = 1973.269804\n"
+               "alpha_fs = 1.0 / 137.035999084\n"
+               "\n"
+               "\n"
+               "def twod_observables(omega_eV, eps1, eps2, L_z):\n"
+               "    \"\"\"Sheet observables from a slab's eps_3D.\n"
+               "\n"
+               "    omega_eV: photon energies (eV); eps1/eps2: the SUPERCELL\n"
+               "    dielectric function; L_z: vacuum-direction cell length (Å).\n"
+               "\n"
+               "    Every quantity returned is independent of L_z — that is the\n"
+               "    point. eps_3D itself is not: double the vacuum and it moves,\n"
+               "    because the sheet's polarization is diluted over more cell.\n"
+               "    \"\"\"\n"
+               "    omega_eV = np.asarray(omega_eV, dtype=float)\n"
+               "    eps1 = np.asarray(eps1, dtype=float)\n"
+               "    eps2 = np.asarray(eps2, dtype=float)\n"
+               "    # k = omega / (hbar c), in 1/Å.\n"
+               "    k = omega_eV / hbar_c_eV_A\n"
+               "    # alpha_2D(omega) = L_z / (4 pi) * (eps_3D - 1)   [Å]\n"
+               "    # The -1 removes the vacuum's own contribution, which is\n"
+               "    # what makes the result a property of the SHEET.\n"
+               "    alpha2d_re = L_z / (4.0 * np.pi) * (eps1 - 1.0)\n"
+               "    alpha2d_im = L_z / (4.0 * np.pi) * eps2\n"
+               "    # A(omega) = (omega L_z / c) Im[eps_3D]. For graphene this\n"
+               "    # returns the universal pi*alpha = 2.29%.\n"
+               "    absorbance = k * L_z * eps2\n"
+               "    # sigma_2D = -i omega alpha_2D, i.e.\n"
+               "    #   Re[sigma_2D] = omega Im[alpha_2D]\n"
+               "    #   Im[sigma_2D] = -omega Re[alpha_2D]\n"
+               "    # Those are Gaussian sigma/c (dimensionless). The literature\n"
+               "    # quotes 2D conductivity in e^2/h, where graphene's universal\n"
+               "    # value is pi/2 ~ 1.5708, so convert: sigma[e^2/h] =\n"
+               "    # (sigma/c) * 2 pi / alpha. Equivalently A / (2 alpha).\n"
+               "    to_e2_over_h = 2.0 * np.pi / alpha_fs\n"
+               "    sigma_re = k * alpha2d_im * to_e2_over_h\n"
+               "    sigma_im = -k * alpha2d_re * to_e2_over_h\n"
+               "    return {\n"
+               "        \"alpha_2D_re_A\": [float(v) for v in alpha2d_re],\n"
+               "        \"alpha_2D_im_A\": [float(v) for v in alpha2d_im],\n"
+               "        \"absorbance\": [float(v) for v in absorbance],\n"
+               "        \"sigma_2D_re\": [float(v) for v in sigma_re],\n"
+               "        \"sigma_2D_im\": [float(v) for v in sigma_im],\n"
+               "    }\n"
+               "\n"
+               "\n"
+               "for key in list(_ok):\n"
+               "    twod = twod_observables(omega_eV,\n"
+               "                            results[\"eps_\" + key][\"eps1\"],\n"
+               "                            results[\"eps_\" + key][\"eps2\"],\n"
+               "                            L_z)\n"
+               "    results[\"twod_\" + key] = twod\n"
+               "    absorbance = np.asarray(twod[\"absorbance\"], dtype=float)\n"
+               "    _peak = int(np.argmax(absorbance)) if absorbance.size else 0\n"
+               "    print(f\"CALANGO_RESULT twod_{key} peak_absorbance=\"\n"
+               "          f\"{absorbance[_peak]:.4f} at {omega_eV[_peak]:.3f} eV\","
+               " flush=True)\n";
+    }
+
+    out << "with open(\"optics.json\", \"w\") as handle:\n"
            "    json.dump(results, handle)\n"
            "_calango_log.progress(4, 4)\n"
            "print(\"CALANGO_RESULT optics=optics.json\", flush=True)\n";

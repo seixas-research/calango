@@ -18,6 +18,12 @@ namespace calango::gui {
 /// self-contained multi-series QPainter widget draws the curves; the data can
 /// be exported as CSV or the plot as a high-resolution image. hasData()
 /// reports whether a usable optics.json was found and parsed.
+///
+/// A job run through Modules → 2D Materials → "2D Optics…" additionally stores
+/// the sheet observables (absorbance A(ω), polarizability α₂D, conductivity
+/// σ₂D). Those quantities are offered only when the file actually carries them:
+/// they are meaningless for a bulk run, where ε₃D is the property and there is
+/// no vacuum thickness to divide back out.
 class OpticsResultsWindow : public QDialog {
     Q_OBJECT
 
@@ -38,9 +44,28 @@ private Q_SLOTS:
 private:
     void loadDirectory(const QString& directory);
 
-    /// The seven spectra stored for one polarization direction.
+    /// Which spectrum the plot shows. Stored as combo item DATA, not as an
+    /// index: the 2D entries only exist for a 2D job, so index-based dispatch
+    /// would silently plot the wrong quantity for bulk runs.
+    enum class Quantity {
+        Dielectric,
+        Absorption,
+        Reflectivity,
+        RefractiveIndex,
+        Loss,
+        Absorbance,      ///< A(ω), 2D only
+        Polarizability,  ///< α₂D(ω), 2D only
+        Conductivity,    ///< σ₂D(ω), 2D only
+    };
+
+    /// The spectra stored for one polarization direction. The 2D block is
+    /// present only when the job ran as a sheet (the generator emits `twod_*`
+    /// alongside each direction); those vectors stay empty otherwise.
     struct DirectionData {
         std::vector<double> eps1, eps2, absorption, reflectivity, n, k, loss;
+        std::vector<double> alpha2dRe, alpha2dIm, absorbance, sigma2dRe,
+            sigma2dIm;
+        bool twoDimensional = false;
     };
     const DirectionData* currentDirection() const;
 

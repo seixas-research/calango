@@ -131,6 +131,13 @@ public:
         /// Normalized vector-overlay length: 1.0 is the calibrated baseline
         /// (kVectorBaseScale Å of arrow per field unit), not a raw Å factor.
         float vectorScale = 1.0f;
+        /// Draw a cone at each arrow tip. Off leaves plain shafts, which read
+        /// better on a dense magnetic structure where the heads merge.
+        bool vectorArrowHeads = true;
+        /// Hide arrows whose field magnitude is below this, in the FIELD's own
+        /// units (eV/Å, μB, …) — not in Å of drawn arrow, so the filter does
+        /// not shift when the length scale is changed.
+        float vectorMinMagnitude = 0.0f;
         QColor forceColor{242, 92, 54};
         QColor velocityColor{54, 166, 242};
         QColor magmomColor{168, 120, 240};

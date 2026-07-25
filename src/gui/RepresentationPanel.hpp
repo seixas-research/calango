@@ -12,10 +12,16 @@ namespace calango::gui {
 
 class ViewportWidget;
 
-/// "Representation" dock panel (Zone 8): representation mode, atom color
-/// mapping (element / CN / GCN / custom scalar with editable range), global
-/// atom-radius and bond-width scales, gradient bond shading, and the viewport
-/// background color.
+/// "Representation" dock panel (Zone 8) — how the atoms and bonds are drawn:
+///
+/// material, representation mode, colour-by, atom/bond scales, gradient bond
+/// shading and the viewport background — plus one icon row opening the editors
+/// that own the rest.
+///
+/// The scene OVERLAYS (unit cell, axes triad, per-atom vectors) live in the
+/// "Cell, Axes & Vectors" dock, and the scalar colour mapping in the "Custom
+/// Gradient Coloring" dialog: this panel is about how the atoms themselves are
+/// drawn.
 ///
 /// The four editors that change WHAT is drawn — Element Settings, Bond Editor,
 /// Edit Polyhedral, Edit Vector Overlay — sit on one icon-only row rather than
@@ -35,28 +41,17 @@ Q_SIGNALS:
 
 private Q_SLOTS:
     void applyColorMode();
-    void refreshPropertyList();
     void syncColoringFromViewport();
 
 private:
-    /// Push the Min/Max fields to the viewport as the scalar color window
-    /// (or restore auto-scaling when "Auto-scale to data" is ticked).
-    void applyColorRange();
+    /// "Appearance" tab: material, mode, colour-by, the editor icon row,
+    /// atom/bond scales, gradient bond shading and the background colour.
+    QWidget* buildAppearanceTab();
 
     ViewportWidget* viewport_;
 
     QComboBox* modeCombo_;
     QComboBox* colorModeCombo_;
-    QComboBox* gradientCombo_;
-    QCheckBox* invertGradientCheck_;
-    QComboBox* propertyCombo_;
-    /// Editable color-scale bounds + the auto-scale toggle they override.
-    QDoubleSpinBox* rangeMinSpin_;
-    QDoubleSpinBox* rangeMaxSpin_;
-    QCheckBox* autoRangeCheck_;
-    /// True while the bounds fields are being repopulated from the data, so
-    /// their valueChanged does not read as a user override.
-    bool syncingRange_ = false;
     QSlider* atomScaleSlider_;
     QDoubleSpinBox* atomScaleSpin_;
     QSlider* bondWidthSlider_;

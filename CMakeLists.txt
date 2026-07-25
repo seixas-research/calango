@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.53
+    VERSION 26.7.54
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -168,6 +168,8 @@ qt_add_executable(calango
     src/core/ElectronicScriptGenerator.cpp
     src/core/OpticsScriptGenerator.hpp
     src/core/OpticsScriptGenerator.cpp
+    src/core/GwScriptGenerator.hpp
+    src/core/GwScriptGenerator.cpp
     src/core/ElfScriptGenerator.hpp
     src/core/ElfScriptGenerator.cpp
     src/core/WannierScriptGenerator.hpp
@@ -263,16 +265,16 @@ qt_add_executable(calango
     src/gui/RepresentationPanel.cpp
     src/gui/CollapsibleSection.hpp
     src/gui/CollapsibleSection.cpp
-    src/gui/CellAxesPanel.hpp
-    src/gui/CellAxesPanel.cpp
+    src/gui/CellAxesTabs.hpp
+    src/gui/CellAxesTabs.cpp
     src/gui/LightingPanel.hpp
     src/gui/LightingPanel.cpp
     src/gui/ElementSettingsDialog.hpp
     src/gui/ElementSettingsDialog.cpp
     src/gui/PolyhedralSettingsDialog.hpp
     src/gui/PolyhedralSettingsDialog.cpp
-    src/gui/VectorOverlayDialog.hpp
-    src/gui/VectorOverlayDialog.cpp
+    src/gui/CustomGradientColoringDialog.hpp
+    src/gui/CustomGradientColoringDialog.cpp
     src/gui/PythonHighlighter.hpp
     src/gui/PythonHighlighter.cpp
     src/gui/BrillouinZoneView.hpp
@@ -426,12 +428,16 @@ qt_add_executable(calango
     src/gui/ElectronicBandsWizard.cpp
     src/gui/OpticsWizard.hpp
     src/gui/OpticsWizard.cpp
+    src/gui/GwWizard.hpp
+    src/gui/GwWizard.cpp
     src/gui/ElfWizard.hpp
     src/gui/ElfWizard.cpp
     src/gui/WannierWizard.hpp
     src/gui/WannierWizard.cpp
     src/gui/OpticsResultsWindow.hpp
     src/gui/OpticsResultsWindow.cpp
+    src/gui/GwResultsWindow.hpp
+    src/gui/GwResultsWindow.cpp
     src/gui/EffectiveBandsWizard.hpp
     src/gui/EffectiveBandsWizard.cpp
     src/gui/GeometryOptimizationWizard.hpp
@@ -521,6 +527,7 @@ qt_add_resources(calango "icons"
         assets/.internal/icons/arrow-right-up-line.svg
         assets/.internal/icons/save-line.svg
         assets/.internal/icons/box-1-line.svg
+        assets/.internal/icons/gradient.svg
         assets/.internal/icons/ram-line.svg
         assets/.internal/icons/ruler-2-line.svg
         assets/.internal/icons/scissors-cut-line.svg
@@ -878,6 +885,18 @@ if(CALANGO_BUILD_TESTS)
     target_link_libraries(calango_shader_test PRIVATE Qt6::Gui Qt6::OpenGL)
     add_test(NAME shader_compilation COMMAND calango_shader_test)
 
+    # Results viewers: the GW and optics windows parse a JSON schema written by
+    # a Python script, so nothing in the C++ build ties the two together. This
+    # pins the schema from the reader's side (offscreen Qt, no GL, no display).
+    qt_add_executable(calango_results_viewer_test
+        tests/ResultsViewerTest.cpp
+        src/gui/GwResultsWindow.cpp
+        src/gui/OpticsResultsWindow.cpp
+    )
+    target_include_directories(calango_results_viewer_test PRIVATE src)
+    target_link_libraries(calango_results_viewer_test PRIVATE Qt6::Widgets)
+    add_test(NAME results_viewers COMMAND calango_results_viewer_test)
+
     # Native SQS generator: composition exactness across binary/ternary/
     # quaternary alloys and, above all, that the generated decoration really is
     # quasirandom (first-shell Warren-Cowley order parameter near zero).
@@ -898,6 +917,8 @@ if(CALANGO_BUILD_TESTS)
         tests/ScriptGenerationTest.cpp
         src/core/AseScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
+        src/core/OpticsScriptGenerator.cpp
+        src/core/GwScriptGenerator.cpp
     )
     target_include_directories(calango_script_test PRIVATE src
         "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -994,6 +1015,34 @@ if(CALANGO_BUILD_TESTS)
     add_test(NAME elf_silicon
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/elf_silicon_benchmark.py)
+
+    # GPAW G0W0 end-to-end: runs the GENERATED script against a real
+    # baseline .gpw and checks the gw.json. Catches what neither review nor
+    # py_compile can — e.g. the response code asking for more bands than the
+    # ground state holds. Self-skips (exit 0) without the GPAW response stack.
+    add_test(NAME gw_silicon
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/gw_silicon_benchmark.py
+                $<TARGET_FILE:calango_script_test>)
+
+    # 2D optical observables: unit conventions and vacuum-thickness
+    # invariance, checked against graphene's universal absorbance (pi*alpha).
+    # A stray 4*pi or hbar*c factor is invisible to review and to py_compile,
+    # and would only surface as a plausible-looking wrong number.
+    add_test(NAME optics_2d_observables
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/optics_2d_test.py
+                $<TARGET_FILE:calango_script_test>)
+
+    # Yambo quasiparticle-report parser: the only generated code whose result
+    # depends on reading a third-party text format, and the one pipeline that
+    # cannot be run here. Extracts parse_qp_report() from a freshly dumped
+    # script by AST and exercises it against realistic reports. No Yambo, no
+    # network — just Python.
+    add_test(NAME gw_qp_parser
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/gw_qp_parser_test.py
+                $<TARGET_FILE:calango_script_test>)
 
     # Optics validation on bulk Si: GPAW SCF → NSCF → DielectricFunction,
     # verifying ε₁/ε₂. Self-skips (exit 0) without the GPAW response stack.

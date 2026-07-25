@@ -915,13 +915,19 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                 const float shaftRadius = 0.045f;
                 for (std::size_t index = 0; index < atoms.size(); ++index) {
                     const core::Vec3& v = it->second[index];
+                    // Filter on the FIELD magnitude, before the display scale:
+                    // otherwise the set of hidden atoms would change every time
+                    // the arrow length slider moved.
+                    if (v.norm() < style_.vectorMinMagnitude)
+                        continue;
                     const double length = v.norm() * effectiveScale;
                     if (length < 0.05)
                         continue; // invisible / zero vector
                     const QVector3D origin = toQt(atoms[index].position);
                     const QVector3D dir = toQt(v.normalized());
-                    const auto headLength =
-                        static_cast<float>(std::min(0.30 * length, 0.45));
+                    const auto headLength = style_.vectorArrowHeads
+                        ? static_cast<float>(std::min(0.30 * length, 0.45))
+                        : 0.0f;
                     const auto shaftLength =
                         static_cast<float>(length) - headLength;
                     appendInstance(bondInstances,
@@ -929,11 +935,14 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                                                  shaftRadius),
                                    color);
                     // Arrowhead cone: unit radius scales laterally via
-                    // bondTransform's radius parameter.
-                    appendInstance(coneInstances,
-                                   bondTransform(origin + dir * shaftLength, dir,
-                                                 headLength, shaftRadius * 2.6f),
-                                   color);
+                    // bondTransform's radius parameter. Skipped entirely when
+                    // heads are off, so the shaft runs the full length.
+                    if (style_.vectorArrowHeads)
+                        appendInstance(coneInstances,
+                                       bondTransform(origin + dir * shaftLength,
+                                                     dir, headLength,
+                                                     shaftRadius * 2.6f),
+                                       color);
                 }
             };
             switch (style_.vectorOverlay) {

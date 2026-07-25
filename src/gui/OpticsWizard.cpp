@@ -5,26 +5,33 @@
 
 #include <QCheckBox>
 #include <QDoubleSpinBox>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QComboBox>
+#include <QGroupBox>
 #include <QLabel>
 #include <QSpinBox>
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <algorithm>
+
 namespace calango::gui {
 
 OpticsWizard::OpticsWizard(std::shared_ptr<core::Structure> structure,
-                           QWidget* parent)
+                           bool twoDimensional, QWidget* parent)
     : SimulationWizardBase(parent)
     , structure_(std::move(structure))
+    , twoDimensional_(twoDimensional)
 {
     buildUi();
 }
 
 QString OpticsWizard::wizardTitle() const
 {
-    return tr("Optical Properties Setup");
+    return twoDimensional_ ? tr("2D Optics Setup")
+                           : tr("Optical Properties Setup");
 }
 
 QString OpticsWizard::settingsHeader() const
@@ -37,12 +44,63 @@ QWidget* OpticsWizard::buildSettingsPage()
     auto* page = new QWidget(this);
     auto* layout = new QVBoxLayout(page);
 
+    // -- Mandatory ground-state baseline ------------------------------------
+    auto* baselineGroup = new QGroupBox(tr("Ground-State Baseline"), page);
+    auto* baselineForm = new QFormLayout(baselineGroup);
+    auto* baselineNote = new QLabel(
+        tr("The response is evaluated at the FIXED density of a completed "
+           "Single-Point Calculation — its SCF is inherited, never re-run. "
+           "Re-converging here would give a spectrum from a different ground "
+           "state than the one you validated."),
+        baselineGroup);
+    baselineNote->setWordWrap(true);
+    baselineForm->addRow(baselineNote);
+    baselineCombo_ = new QComboBox(baselineGroup);
+    baselineForm->addRow(tr("Baseline SCF (.gpw):"), baselineCombo_);
+    // What is being inherited, spelled out. With no Calculator Settings stage
+    // this is the only place the run's cutoff / xc / k-grid are visible, and
+    // they are exactly what determines whether the spectrum is trustworthy.
+    inheritanceNote_ = new QLabel(baselineGroup);
+    inheritanceNote_->setWordWrap(true);
+    inheritanceNote_->setTextFormat(Qt::RichText);
+    baselineForm->addRow(inheritanceNote_);
+    connect(baselineCombo_, &QComboBox::currentIndexChanged, this,
+            [this] { onBaselineChanged(); });
+    layout->addWidget(baselineGroup);
+
+    if (twoDimensional_) {
+        auto* sheetGroup = new QGroupBox(tr("2D Sheet"), page);
+        auto* sheetForm = new QFormLayout(sheetGroup);
+        auto* sheetNote = new QLabel(
+            tr("A supercell dielectric function is diluted by whatever vacuum "
+               "was used — double the vacuum and ε₃D moves, so it is not a "
+               "property of the sheet. Dividing that thickness back out gives "
+               "α₂D, σ₂D and the absorbance, which are."),
+            sheetGroup);
+        sheetNote->setWordWrap(true);
+        sheetForm->addRow(sheetNote);
+        vacuumAxisCombo_ = new QComboBox(sheetGroup);
+        vacuumAxisCombo_->addItem(tr("a₁ (x)"), 0);
+        vacuumAxisCombo_->addItem(tr("a₂ (y)"), 1);
+        vacuumAxisCombo_->addItem(tr("a₃ (z)"), 2);
+        const int guessed = guessVacuumAxis();
+        vacuumAxisCombo_->setCurrentIndex(guessed >= 0 ? guessed : 2);
+        vacuumAxisCombo_->setToolTip(
+            tr("Which cell axis carries the vacuum. Seeded from the cell (the "
+               "long axis the atoms only partly occupy) but confirm it: "
+               "getting it wrong rescales every 2D quantity by the wrong "
+               "length, silently."));
+        sheetForm->addRow(tr("Vacuum axis:"), vacuumAxisCombo_);
+        layout->addWidget(sheetGroup);
+    }
+
     auto* intro = new QLabel(
         tr("Compute the frequency-dependent dielectric function ε(ω) and the "
            "derived optical spectra (absorption, reflectivity, refractive "
            "index and energy loss) from GPAW's linear-response module. The "
-           "ground-state cutoff and k-grid are set in the next stage; a denser "
-           "k-grid and more empty bands sharpen the spectrum."),
+           "ground-state cutoff and k-grid come from the baseline above — a "
+           "spectrum is only as converged as the SCF it is built on, so a "
+           "coarse baseline k-grid needs a denser one, not a finer η here."),
         page);
     intro->setWordWrap(true);
     layout->addWidget(intro);
@@ -125,9 +183,91 @@ bool OpticsWizard::calculatorAllowed(core::CalculatorKind kind) const
     return kind == core::CalculatorKind::Gpaw;
 }
 
+
+void OpticsWizard::setDensityBaselines(
+    const QList<QPair<QString, QString>>& baselines)
+{
+    if (!baselineCombo_)
+        return;
+    baselineCombo_->clear();
+    for (const auto& [label, path] : baselines)
+        baselineCombo_->addItem(label, path);
+    onBaselineChanged();
+}
+
+void OpticsWizard::onBaselineChanged()
+{
+    const QString gpw =
+        baselineCombo_ ? baselineCombo_->currentData().toString() : QString();
+    // The combo holds the .gpw; the provenance sidecar sits in its job dir.
+    const QString dir =
+        gpw.isEmpty() ? QString() : QFileInfo(gpw).absolutePath();
+    inherited_ = dir.isEmpty() ? std::nullopt : readCalculatorProvenance(dir);
+
+    if (inheritanceNote_) {
+        if (inherited_) {
+            QString note = tr("Inherited: %1")
+                               .arg(inherited_->summary().toHtmlEscaped());
+            if (!inherited_->condaEnv.isEmpty())
+                note += tr(" — env <code>%1</code>")
+                            .arg(inherited_->condaEnv.toHtmlEscaped());
+            inheritanceNote_->setText(note);
+        } else if (gpw.isEmpty()) {
+            inheritanceNote_->clear();
+        } else {
+            inheritanceNote_->setText(
+                tr("This baseline carries no <code>calculator.json</code>, so "
+                   "its parameters cannot be shown. GPAW still restores them "
+                   "from the <code>.gpw</code> at run time."));
+        }
+    }
+    refreshPreview();
+}
+
+QString OpticsWizard::pythonExecutable() const
+{
+    if (inherited_ && !inherited_->pythonExecutable.isEmpty())
+        return inherited_->pythonExecutable;
+    return SimulationWizardBase::pythonExecutable();
+}
+
+int OpticsWizard::guessVacuumAxis() const
+{
+    if (!structure_ || !structure_->cell().isDefined() || structure_->empty())
+        return -1;
+    // A slab's vacuum axis is the one whose atoms span far less than the cell.
+    // Reported as a seed only — the combo is the authority, because a thick
+    // slab in a modest cell and a thin one in a huge cell are not reliably
+    // distinguishable from the geometry alone.
+    int best = -1;
+    double bestEmptiness = 0.35; // needs to be clearly a vacuum, not a guess
+    for (int axis = 0; axis < 3; ++axis) {
+        double lo = 1.0;
+        double hi = 0.0;
+        for (const core::Atom& atom : structure_->atoms()) {
+            const core::Vec3 f =
+                structure_->cell().cartesianToFractional(atom.position);
+            const double v = axis == 0 ? f.x : (axis == 1 ? f.y : f.z);
+            lo = std::min(lo, v);
+            hi = std::max(hi, v);
+        }
+        const double emptiness = 1.0 - (hi - lo);
+        if (emptiness > bestEmptiness) {
+            bestEmptiness = emptiness;
+            best = axis;
+        }
+    }
+    return best;
+}
+
 QString OpticsWizard::generateScript() const
 {
     core::OpticsConfig cfg;
+    if (baselineCombo_)
+        cfg.baselineDensityPath =
+            baselineCombo_->currentData().toString().toStdString();
+    if (twoDimensional_ && vacuumAxisCombo_)
+        cfg.vacuumAxis = vacuumAxisCombo_->currentData().toInt();
     cfg.calculator = baseCalculatorConfig();
     cfg.broadeningEv = broadeningSpin_->value();
     cfg.omegaMinEv = omegaMinSpin_->value();

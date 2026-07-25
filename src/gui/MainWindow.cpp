@@ -15,7 +15,7 @@
 #include "gui/RayTraceDialog.hpp"
 #include "gui/RdfDialog.hpp"
 #include "gui/BondEditorDialog.hpp"
-#include "gui/CellAxesPanel.hpp"
+#include "gui/CellAxesTabs.hpp"
 #include "gui/EnvFile.hpp"
 #include "gui/VisualEffectsPanel.hpp"
 #include "gui/PeriodicTableDialog.hpp"
@@ -48,6 +48,7 @@
 #include "gui/ElfWizard.hpp"
 #include "gui/LatticePlaneDialog.hpp"
 #include "gui/OpticsWizard.hpp"
+#include "gui/GwResultsWindow.hpp"
 #include "gui/OpticsResultsWindow.hpp"
 #include "gui/WannierDialog.hpp"
 #include "gui/MlwfViewer.hpp"
@@ -67,6 +68,7 @@
 #include "gui/WelcomeDialog.hpp"
 #include "gui/RamanDialog.hpp"
 #include "gui/GeometryOptimizationViewer.hpp"
+#include "gui/GwWizard.hpp"
 #include "gui/MacromoleculeWizard.hpp"
 #include "gui/MolecularDynamicsViewer.hpp"
 #include "gui/RunCommands.hpp"
@@ -149,7 +151,15 @@ constexpr std::size_t kMaxUndoDepth = 50;
 /// "Results" with a process selector, v5 = the "Lighting" dock renamed to
 /// the tabbed "Visual Effects" panel, v6 = zones 9/12 width-locked to the
 /// side columns and the branding card hidden by default).
-constexpr int kLayoutVersion = 8;
+// Bumped whenever the DOCK SET or its default arrangement changes, so
+// restoreState() rejects a layout saved against the previous one rather than
+// reinstating a half-matching arrangement (Qt silently drops docks it cannot
+// find and leaves the freed space empty).
+//   9: "Unit Cell & Axes" removed (its tabs moved into Representation) and
+//      Visual Effects relocated into the bottom row's right-hand slot.
+//  10: "Cell, Axes & Vectors" added at the right end of the bottom row (the
+//      overlay tabs moved back out of Representation, joined by Vectors).
+constexpr int kLayoutVersion = 10;
 
 /// Painted icons for the frame-panel camera toolbar (icon-only buttons).
 /// Plane icons use the axes-triad colors: x red, y green, z blue.
@@ -757,10 +767,10 @@ void MainWindow::createMenusAndDocks()
 
     // ----- View: effects | panels ------------------------------------------
     // Projection (perspective/orthographic) lives solely on the frame-panel
-    // toolbar 'O' button; unit-cell visibility + wireframe styling live in the
-    // "Unit Cell & Axes" dock (zone 12). Camera alignment (frame [F], XY/XZ/YZ)
-    // lives entirely on the 3D-viewport toolbar — the View → Alignment submenu
-    // was removed as redundant.
+    // toolbar 'O' button; unit-cell visibility + wireframe styling live on the
+    // Representation dock's "Unit cell" tab. Camera alignment (frame [F],
+    // XY/XZ/YZ) lives entirely on the 3D-viewport toolbar — the View →
+    // Alignment submenu was removed as redundant.
     QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
     // Visual effects (fog, depth blur, lighting) live entirely in the Zone-9
     // "Visual Effects" dock; the dock's own toggle is in View → the docks.
@@ -816,6 +826,10 @@ void MainWindow::createMenusAndDocks()
                               this, &MainWindow::openMonteCarlo);
     simulationMenu->addAction(tr("&Nudged Elastic Band (NEB)…"),
                               this, &MainWindow::openNudgedElasticBand);
+    simulationMenu->addAction(tr("&GW Calculations…"), this,
+                              &MainWindow::showGwCalculations)
+        ->setToolTip(tr("One-shot G₀W₀ quasiparticle corrections on top of a "
+                        "completed SCF (GPAW or Yambo)"));
     // Cluster Expansion Calculation moved to Modules → Alloys.
     simulationMenu->addSeparator();
     // "New Remote Calculation…" was removed along with the legacy calculator
@@ -888,6 +902,8 @@ void MainWindow::createMenusAndDocks()
                            this, &MainWindow::showMolecularDynamicsViewer);
     resultsMenu->addAction(tr("&MLWF Viewer…"),
                            this, &MainWindow::showMlwfViewer);
+    resultsMenu->addAction(tr("&GW Viewer…"),
+                           this, &MainWindow::showGwViewer);
 
     // ----- Modules: MLIP + Alloys tool families (between Analysis and Help) -
     // "Modules" gathers the machine-learning-potential workflow and the alloy
@@ -899,6 +915,15 @@ void MainWindow::createMenusAndDocks()
     mlipMenu->addAction(tr("&Trainer…"), this, &MainWindow::openMaceTrainer);
     mlipMenu->addAction(tr("&Dataset Manager…"),
                         this, &MainWindow::showDatasetManager);
+
+    // 2D Materials: workflows whose physics is specific to a sheet in vacuum,
+    // where the supercell's arbitrary vacuum thickness has to be divided back
+    // out before a quantity means anything.
+    QMenu* twoDimensionalMenu = modulesMenu->addMenu(tr("&2D Materials"));
+    twoDimensionalMenu->addAction(tr("2D &Optics…"), this,
+                                  &MainWindow::show2DOptics)
+        ->setToolTip(tr("Absorbance A(ω), 2D conductivity σ₂D and sheet "
+                        "polarizability α₂D from an inherited ground state"));
 
     QMenu* alloysMenu = modulesMenu->addMenu(tr("&Alloys"));
     alloysMenu->addAction(tr("Cluster &Expansion Builder…"),
@@ -1005,11 +1030,14 @@ void MainWindow::createMenusAndDocks()
     connect(reprPanel, &RepresentationPanel::bondEditorRequested,
             this, &MainWindow::showBondEditor);
 
-    visualEffectsDock_ = new QDockWidget(tr("Visual Effects"), this); // zone 9
+    // Zone 9. Constructed here (its panel is referenced below) but placed at
+    // the END of the bottom row — see the splitDockWidget chain further down.
+    visualEffectsDock_ = new QDockWidget(tr("Visual Effects"), this);
     visualEffectsDock_->setObjectName(QStringLiteral("visualEffectsDock"));
     visualEffectsDock_->setWidget(new VisualEffectsPanel(viewport_, visualEffectsDock_));
-    addDockWidget(Qt::BottomDockWidgetArea, visualEffectsDock_);
 
+    // Results leads the bottom row now that Visual Effects has moved to its
+    // right-hand end, so it is the dock that establishes the row.
     jobDock_ = new QDockWidget(tr("Results"), this); // zone 10
     jobDock_->setObjectName(QStringLiteral("resultsDock"));
     auto* jobTabs = new QTabWidget(jobDock_);
@@ -1143,7 +1171,7 @@ void MainWindow::createMenusAndDocks()
     jobLayout->addWidget(jobTabs);
     jobTabs->setDocumentMode(true); // flat tab bar, no frame to overlap
     jobDock_->setWidget(jobContainer);
-    splitDockWidget(visualEffectsDock_, jobDock_, Qt::Horizontal);
+    addDockWidget(Qt::BottomDockWidgetArea, jobDock_);
 
     remoteDock_ = new QDockWidget(tr("Remote Access"), this); // zone 11
     remoteDock_->setObjectName(QStringLiteral("remoteDock"));
@@ -1153,10 +1181,23 @@ void MainWindow::createMenusAndDocks()
     remoteDock_->setWidget(remotePanel_);
     splitDockWidget(jobDock_, remoteDock_, Qt::Horizontal);
 
-    auto* cellAxesDock = new QDockWidget(tr("Unit Cell && Axes"), this); // zone 12
-    cellAxesDock->setObjectName(QStringLiteral("cellAxesDock"));
-    cellAxesDock->setWidget(new CellAxesPanel(viewport_, cellAxesDock));
-    splitDockWidget(remoteDock_, cellAxesDock, Qt::Horizontal);
+    splitDockWidget(remoteDock_, visualEffectsDock_, Qt::Horizontal);
+
+    // Zone 12 — the scene OVERLAYS: the cell wireframe, the orientation triad
+    // and the per-atom vector arrows. All three draw something onto the scene
+    // that is not the atoms, which is what separates them from Representation.
+    auto* overlaysDock = new QDockWidget(tr("Cell, Axes && Vectors"), this);
+    overlaysDock->setObjectName(QStringLiteral("cellAxesVectorsDock"));
+    auto* overlayTabs = new QTabWidget(overlaysDock);
+    overlayTabs->setUsesScrollButtons(false);
+    overlayTabs->setElideMode(Qt::ElideNone);
+    overlayTabs->tabBar()->setExpanding(false);
+    overlayTabs->addTab(new UnitCellPanel(viewport_, overlayTabs), tr("Unit cell"));
+    overlayTabs->addTab(new AxesTriadPanel(viewport_, overlayTabs), tr("Axes triad"));
+    overlayTabs->addTab(new VectorsPanel(viewport_, overlayTabs), tr("Vectors"));
+    overlayTabs->setMinimumWidth(overlayTabs->tabBar()->sizeHint().width() + 24);
+    overlaysDock->setWidget(overlayTabs);
+    splitDockWidget(visualEffectsDock_, overlaysDock, Qt::Horizontal);
 
     connect(remotePanel_, &RemoteAccessPanel::resultsReady,
             this, &MainWindow::onRemoteResultsReady);
@@ -1164,36 +1205,46 @@ void MainWindow::createMenusAndDocks()
     // Default grid proportions: side columns kColumnWidth px wide with a
     // compact branding card; the full-width bottom row is ~250 px tall.
     //
-    // The bottom row's outer zones are locked to the same width as the
-    // column above them so the layout reads as a grid: zone 9 (Visual
-    // Effects) lines up with zones 1/5/10 on the left, zone 12 (Unit Cell &
-    // Axes) with the Representation dock on the right. resizeDocks() alone
-    // is only a *hint* — Qt re-solves it against each widget's size hint on
-    // the first show and whenever a dock is toggled — so the two aligned
-    // zones also carry a hard minimum width; the middle zones (Results,
-    // Remote Access) stay elastic and absorb every resize.
+    // The right-hand column must be one width top to bottom or the layout
+    // stops reading as a grid: Representation sits above "Cell, Axes &
+    // Vectors", whose three tab headers set a hard minimum. Letting each take
+    // its own minimum would step the column, so it is the widest of the two
+    // and both docks are pinned to it.
+    //
+    // resizeDocks() alone is only a *hint* — Qt re-solves it against each
+    // widget's size hint on the first show and whenever a dock is toggled — so
+    // the minimum width is what actually holds the column.
     constexpr int kColumnWidth = 290;
+    int rightColumnWidth = kColumnWidth;
+    for (QDockWidget* dock : {reprDock, overlaysDock})
+        if (QWidget* panel = dock->widget())
+            rightColumnWidth = qMax(rightColumnWidth, panel->minimumWidth());
+    for (QDockWidget* dock : {reprDock, overlaysDock})
+        if (QWidget* panel = dock->widget())
+            panel->setMinimumWidth(rightColumnWidth);
+    // Visual Effects is no longer the right-hand column, but its five tab
+    // headers still set a floor of their own.
+    if (QWidget* panel = visualEffectsDock_->widget())
+        panel->setMinimumWidth(qMax(kColumnWidth, panel->minimumWidth()));
+
     resizeDocks({brandingDock, infoDock, volumetricDock, processDock},
                 {kColumnWidth, kColumnWidth, kColumnWidth, kColumnWidth},
                 Qt::Horizontal);
-    resizeDocks({reprDock}, {kColumnWidth}, Qt::Horizontal);
-    for (QDockWidget* dock : {visualEffectsDock_, cellAxesDock}) {
-        if (QWidget* panel = dock->widget())
-            // Never shrink below a panel's own minimum: the Visual Effects
-            // panel derives a wider minimum from its four sub-tab headers so
-            // they stay fully visible, and that must win over the column width.
-            panel->setMinimumWidth(qMax(kColumnWidth, panel->minimumWidth()));
-    }
+    resizeDocks({reprDock}, {rightColumnWidth}, Qt::Horizontal);
+
     // Left column heights (top → bottom: Structure, Volumetric Data,
     // Processes): keep the compact Structure summary small (its ~7 property
     // rows fit comfortably) and hand the freed space to the Volumetric Data and
     // Processes panels below it.
     resizeDocks({brandingDock, infoDock, volumetricDock, processDock},
                 {150, 220, 300, 300}, Qt::Vertical);
-    resizeDocks({visualEffectsDock_, jobDock_, remoteDock_, cellAxesDock},
+    resizeDocks({jobDock_, remoteDock_, visualEffectsDock_, overlaysDock},
                 {250, 250, 250, 250}, Qt::Vertical);
-    resizeDocks({visualEffectsDock_, jobDock_, remoteDock_, cellAxesDock},
-                {kColumnWidth, 560, 430, kColumnWidth}, Qt::Horizontal);
+    // Results and Remote Access absorb the width the removed fourth zone
+    // released; Visual Effects keeps the column width so it stays aligned
+    // under Representation.
+    resizeDocks({jobDock_, remoteDock_, visualEffectsDock_, overlaysDock},
+                {560, 430, kColumnWidth, rightColumnWidth}, Qt::Horizontal);
 
     // Dock titles at 1.2× the theme default across all zones (the earlier
     // 1.5× reduced by 0.8×). The font is set on the QDockWidget (whose
@@ -1214,8 +1265,8 @@ void MainWindow::createMenusAndDocks()
     viewMenu->addAction(volumetricDock->toggleViewAction());
     viewMenu->addAction(processDock->toggleViewAction());
     viewMenu->addAction(reprDock->toggleViewAction());
-    viewMenu->addAction(cellAxesDock->toggleViewAction());
     viewMenu->addAction(visualEffectsDock_->toggleViewAction());
+    viewMenu->addAction(overlaysDock->toggleViewAction());
     viewMenu->addAction(jobDock_->toggleViewAction());
     viewMenu->addAction(remoteDock_->toggleViewAction());
 
@@ -2810,20 +2861,90 @@ void MainWindow::openPhononResults(const QString& directory)
     window->show();
 }
 
+
+// Completed Quantum ESPRESSO calculations that saved a `.save` directory — the
+// baselines Yambo can convert with p2y.
+QList<QPair<QString, QString>> MainWindow::espressoBaselines() const
+{
+    QList<QPair<QString, QString>> baselines;
+    for (const auto& [id, record] : processRecords_) {
+        if (record.directory.isEmpty())
+            continue;
+        const QDir dir(record.directory);
+        if (!dir.entryList({QStringLiteral("*.save")}, QDir::Dirs).isEmpty())
+            baselines.append(
+                {tr("#%1 — %2 [Quantum ESPRESSO]").arg(id).arg(record.label),
+                 record.directory});
+    }
+    return baselines;
+}
+
+void MainWindow::showGwCalculations()
+{
+    if (!prepareSimulation(tr("GW Calculations")))
+        return;
+    // The GPAW engine restarts from the .gpw file itself; Yambo works from the
+    // QE .save directory, so the two lists carry different kinds of path.
+    const auto gpaw = gpawDensityFiles();
+    const auto espresso = espressoBaselines();
+    // G0W0 corrects a specific DFT solution, so without one there is nothing
+    // to correct — this is a missing prerequisite, not a configuration error.
+    if (gpaw.isEmpty() && espresso.isEmpty()) {
+        QMessageBox::critical(
+            this, tr("GW Calculations"),
+            tr("G₀W₀ is a perturbative correction on top of a completed DFT "
+               "ground state, so it needs a baseline to correct.\n\n"
+               "Run a GPAW Single-Point Calculation (saving its .gpw) for the "
+               "GPAW engine, or a Quantum ESPRESSO one (saving its .save "
+               "directory) for Yambo."));
+        return;
+    }
+
+    GwWizard wizard(this);
+    wizard.setBaselines(gpaw, espresso);
+    runSimulationWizard(wizard, tr("GW Calculations"), /*expectFrames=*/false);
+}
+
 void MainWindow::showOptics()
 {
+    openOpticsWizard(/*twoDimensional=*/false);
+}
+
+void MainWindow::show2DOptics()
+{
+    openOpticsWizard(/*twoDimensional=*/true);
+}
+
+void MainWindow::openOpticsWizard(bool twoDimensional)
+{
+    const QString label =
+        twoDimensional ? tr("2D Optics") : tr("Optical Properties");
     Document* doc = currentDocument();
     if (!doc || !doc->structure || doc->structure->empty()
         || !doc->structure->cell().isDefined()) {
-        QMessageBox::information(this, tr("Optical Properties"),
+        QMessageBox::information(this, label,
                                  tr("Open a periodic structure first."));
         return;
     }
     if (!ensureAseAvailable())
         return;
 
-    OpticsWizard wizard(doc->structure, this);
-    runSimulationWizard(wizard, tr("Optical Properties"), /*expectFrames=*/false);
+    // The baseline is mandatory: the run evaluates the response at the fixed
+    // density of a prior single point rather than converging its own.
+    const auto baselines = gpawDensityFiles();
+    if (baselines.isEmpty()) {
+        QMessageBox::critical(
+            this, label,
+            tr("This calculation inherits a converged ground state and never "
+               "re-runs the SCF, so it needs a completed GPAW Single-Point "
+               "Calculation that saved its wavefunctions (.gpw).\n\n"
+               "Run one first, with \"Export Charge Density\" enabled."));
+        return;
+    }
+
+    OpticsWizard wizard(doc->structure, twoDimensional, this);
+    wizard.setDensityBaselines(baselines);
+    runSimulationWizard(wizard, label, /*expectFrames=*/false);
 }
 
 void MainWindow::openOpticsResults(const QString& directory)
@@ -2833,6 +2954,19 @@ void MainWindow::openOpticsResults(const QString& directory)
         delete window;
         QMessageBox::information(this, tr("Optical Properties"),
                                  tr("No optics.json found in %1").arg(directory));
+        return;
+    }
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    window->show();
+}
+
+void MainWindow::openGwResults(const QString& directory)
+{
+    auto* window = new GwResultsWindow(this);
+    if (!window->loadResults(directory + QStringLiteral("/gw.json"))) {
+        delete window;
+        QMessageBox::information(this, tr("GW Calculations"),
+                                 tr("No gw.json found in %1").arg(directory));
         return;
     }
     window->setAttribute(Qt::WA_DeleteOnClose);
@@ -3053,6 +3187,19 @@ void MainWindow::showMlwfViewer()
     openMlwfResults(dir);
 }
 
+void MainWindow::showGwViewer()
+{
+    const QString dir = selectedProcessDirectory();
+    if (dir.isEmpty() || !QFile::exists(dir + QStringLiteral("/gw.json"))) {
+        QMessageBox::information(
+            this, tr("GW Viewer"),
+            tr("Select a completed GW Calculations run in the Processes panel "
+               "first (its results include gw.json)."));
+        return;
+    }
+    openGwResults(dir);
+}
+
 void MainWindow::onDeleteProcessRequested(int id)
 {
     const auto it = processRecords_.find(id);
@@ -3162,6 +3309,10 @@ void MainWindow::onProcessResultRequested(const QString& directory)
     }
     if (QFile::exists(directory + QStringLiteral("/optics.json"))) {
         openOpticsResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/gw.json"))) {
+        openGwResults(directory);
         return;
     }
     if (QFile::exists(directory + QStringLiteral("/wannier.json"))) {
@@ -3474,6 +3625,29 @@ QList<QPair<QString, QString>> MainWindow::gpawBaselines() const
         if (!dir.entryList({QStringLiteral("*.gpw")}, QDir::Files).isEmpty())
             baselines.append({tr("#%1 — %2 [GPAW]").arg(id).arg(record.label),
                               record.directory});
+    }
+    return baselines;
+}
+
+QList<QPair<QString, QString>> MainWindow::gpawDensityFiles() const
+{
+    QList<QPair<QString, QString>> baselines;
+    for (const auto& [id, record] : processRecords_) {
+        if (record.directory.isEmpty())
+            continue;
+        const QDir dir(record.directory);
+        // single_point.gpw is what the Single-Point wizard writes; accept any
+        // other .gpw the directory holds so a hand-run job still qualifies.
+        const QStringList files =
+            dir.entryList({QStringLiteral("*.gpw")}, QDir::Files, QDir::Name);
+        if (files.isEmpty())
+            continue;
+        const QString preferred =
+            files.contains(QStringLiteral("single_point.gpw"))
+                ? QStringLiteral("single_point.gpw")
+                : files.first();
+        baselines.append({tr("#%1 — %2 [GPAW]").arg(id).arg(record.label),
+                          dir.absoluteFilePath(preferred)});
     }
     return baselines;
 }

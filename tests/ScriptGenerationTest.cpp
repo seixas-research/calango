@@ -11,6 +11,8 @@
 // against a real ASE install (see the accompanying check in the repo docs).
 
 #include "core/AseScriptGenerator.hpp"
+#include "core/GwScriptGenerator.hpp"
+#include "core/OpticsScriptGenerator.hpp"
 #include "core/PhononScriptGenerator.hpp"
 
 #include <cstdio>
@@ -140,6 +142,46 @@ int main(int argc, char** argv)
                                + (residual ? "_residual" : "") + ".py",
                            molecule);
             }
+        }
+
+        // Optics: the 3D form and the 2D-sheet variant. Both inherit a
+        // baseline ground state and append a post-processing block, so their
+        // indentation is worth byte-compiling rather than eyeballing.
+        {
+            const auto dumpOptics = [&dir](const std::string& name,
+                                           const OpticsConfig& config) {
+                std::ofstream out(dir + "/" + name);
+                out << generateOpticsScript(config);
+            };
+            OpticsConfig optics;
+            optics.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+            dumpOptics("optics_3d.py", optics);
+            OpticsConfig sheet = optics;
+            sheet.vacuumAxis = 2;
+            dumpOptics("optics_2d.py", sheet);
+        }
+
+        // GW: both engines against both frequency treatments. The Yambo path
+        // is the longest generated script in the suite (subprocess driver,
+        // input patcher, .qp parser) and has the most indentation to get wrong.
+        {
+            const auto dumpGw = [&dir](const std::string& name,
+                                       const GwConfig& config) {
+                std::ofstream out(dir + "/" + name);
+                out << generateGwScript(config);
+            };
+            GwConfig gw;
+            gw.baselinePath = "/jobs/proc_1/single_point.gpw";
+            dumpGw("gw_gpaw_ppa.py", gw);
+            gw.frequency = GwFrequencyTreatment::RealAxis;
+            dumpGw("gw_gpaw_realaxis.py", gw);
+            GwConfig yambo;
+            yambo.engine = GwEngine::Yambo;
+            yambo.baselinePath = "/jobs/proc_2";
+            yambo.yamboCores = 8;
+            dumpGw("gw_yambo_ppa.py", yambo);
+            yambo.frequency = GwFrequencyTreatment::RealAxis;
+            dumpGw("gw_yambo_realaxis.py", yambo);
         }
 
         std::ofstream module(dir + "/"
@@ -403,6 +445,95 @@ int main(int argc, char** argv)
         checkContains(script, "class ResidualFreeCalculator",
                       "molecular path also subtracts residual forces");
         checkContains(script, "Vibrations", "still the normal-mode driver");
+    }
+
+    // -- Optics inherits a baseline; it never re-converges one ---------------
+    std::printf("Optics baseline inheritance:\n");
+    {
+        OpticsConfig optics;
+        optics.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        const std::string script = generateOpticsScript(optics);
+        checkContains(script, "GPAW(r\"/jobs/proc_1/single_point.gpw\", txt=None)",
+                      "loads the baseline ground state");
+        checkContains(script, "gs.fixed_density(",
+                      "evaluates the response at fixed density");
+        // The whole point of the feature: a self-consistent cycle inside the
+        // optics job would produce a spectrum from a DIFFERENT SCF solution
+        // than the one the user inspected, with no visible sign of it.
+        check(!contains(script, "atoms.get_potential_energy()"),
+              "no self-consistent cycle is run");
+        check(!contains(script, "twod_"),
+              "a bulk run emits no 2D observables");
+    }
+    {
+        OpticsConfig sheet;
+        sheet.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        sheet.vacuumAxis = 2;
+        const std::string script = generateOpticsScript(sheet);
+        checkContains(script, "atoms.cell.lengths()[2]",
+                      "reads the sheet thickness off the chosen vacuum axis");
+        checkContains(script, "L_z / (4.0 * np.pi) * (eps1 - 1.0)",
+                      "alpha_2D = L_z/(4 pi) (eps_3D - 1)");
+        checkContains(script, "k = omega_eV / hbar_c_eV_A",
+                      "photon wavevector from the energy");
+        checkContains(script, "absorbance = k * L_z * eps2",
+                      "A(omega) = (omega L_z / c) Im[eps_3D]");
+        checkContains(script, "\"sigma_2D_re\"", "reports the 2D conductivity");
+        // The values themselves are checked numerically against graphene's
+        // universal absorbance by tests/optics_2d_test.py, which extracts this
+        // function and runs it; here we only pin that it stays extractable.
+        checkContains(script, "def twod_observables(omega_eV, eps1, eps2, L_z):",
+                      "the observables live in an extractable function");
+    }
+
+    // -- GW quasiparticle pipelines -----------------------------------------
+    std::printf("GW quasiparticle pipelines:\n");
+    {
+        GwConfig gw;
+        gw.baselinePath = "/jobs/proc_1/single_point.gpw";
+        gw.screeningCutoffEv = 150.0;
+        const std::string script = generateGwScript(gw);
+        checkContains(script, "from gpaw.response.g0w0 import G0W0",
+                      "GPAW's own G0W0 driver");
+        checkContains(script, "ecut=150", "screening cutoff is honored");
+        checkContains(script, "ppa=True", "plasmon-pole treatment by default");
+        checkContains(script, "gs.fixed_density(",
+                      "empty bands are added at the baseline density");
+        check(!contains(script, "p2y"), "no Yambo steps in the GPAW pipeline");
+        checkContains(script, "gap_renormalization_eV",
+                      "reports the gap renormalization");
+    }
+    {
+        GwConfig gw;
+        gw.baselinePath = "/jobs/proc_1/single_point.gpw";
+        gw.frequency = GwFrequencyTreatment::RealAxis;
+        checkContains(generateGwScript(gw), "ppa=False",
+                      "real-axis treatment switches off the plasmon pole");
+    }
+    {
+        GwConfig yambo;
+        yambo.engine = GwEngine::Yambo;
+        yambo.baselinePath = "/jobs/proc_2";
+        yambo.yamboCores = 8;
+        const std::string script = generateGwScript(yambo);
+        checkContains(script, "\"p2y\"", "converts the QE save to a Yambo database");
+        checkContains(script, "\"-g\", \"n\", \"-p\", \"p\"",
+                      "generates a plasmon-pole G0W0 input");
+        checkContains(script, "o-gw.qp", "parses the quasiparticle report");
+        checkContains(script, "mpirun", "honors the MPI rank count");
+        check(!contains(script, "from gpaw"),
+              "no GPAW imports in the Yambo pipeline");
+        // A silent failure is worse than a loud one here: without the abort,
+        // the parser would read the PREVIOUS run's report and hand back
+        // confident, stale quasiparticle energies.
+        checkContains(script, "raise RuntimeError(", "a failed step aborts the run");
+    }
+    {
+        GwConfig yambo;
+        yambo.engine = GwEngine::Yambo;
+        yambo.frequency = GwFrequencyTreatment::RealAxis;
+        checkContains(generateGwScript(yambo), "\"-g\", \"n\", \"-p\", \"r\"",
+                      "real-axis selects the -p r screening form");
     }
 
     std::printf(failures == 0 ? "\nAll script checks passed.\n"

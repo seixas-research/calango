@@ -143,10 +143,22 @@ private Q_SLOTS:
     void openModeTrajectory(
         const std::vector<std::shared_ptr<core::Structure>>& frames,
         const QString& label);
-    /// Simulation → "Optics…": linear optical-response wizard (GPAW response).
+    /// Simulation → "Optics…" and Modules → 2D Materials → "2D Optics…":
+    /// the same linear-response wizard, the second adding the vacuum-axis
+    /// question and the 2D observables derived from it.
     void showOptics();
+    void show2DOptics();
+    /// Simulation → "GW Calculations…": one-shot G₀W₀ on a completed SCF.
+    void showGwCalculations();
+    /// Completed Quantum ESPRESSO runs with a saved `.save` directory — the
+    /// baselines Yambo converts with p2y.
+    QList<QPair<QString, QString>> espressoBaselines() const;
+    void openOpticsWizard(bool twoDimensional);
     /// Open the optical-spectra viewer for a finished job directory.
     void openOpticsResults(const QString& directory);
+    /// Open the G₀W₀ quasiparticle viewer for a finished job directory
+    /// (reads its gw.json summary — same schema for GPAW and Yambo).
+    void openGwResults(const QString& directory);
     /// Open the ELF isosurface / slice viewer for a finished job directory.
     void openElfResults(const QString& directory);
     /// Open the MLWF centres table + orbital viewer for a finished job dir.
@@ -178,6 +190,9 @@ private Q_SLOTS:
     /// Results menu → "MLWF Viewer…": open the viewer on the selected (or most
     /// recent) completed MLWF process.
     void showMlwfViewer();
+    /// Results → "GW Viewer…": open the quasiparticle read-out for the process
+    /// selected in the Processes panel.
+    void showGwViewer();
     /// Directory of the process the Results tabs track, else the most recent
     /// run — the default target for the Results-menu viewers.
     QString selectedProcessDirectory() const;
@@ -238,6 +253,11 @@ private Q_SLOTS:
     /// Completed processes that saved GPAW wavefunctions (.gpw), as (label,
     /// directory) pairs — the baselines the ELF / MLWF wizards can restart from.
     QList<QPair<QString, QString>> gpawBaselines() const;
+    /// The same set as (label, absolute path to the restart FILE) pairs, for the
+    /// wizards whose scripts call `GPAW("<file>")` directly — bands, optics and
+    /// the GPAW G₀W₀ path. Handing those a directory produces a script that
+    /// only fails once the job is already running.
+    QList<QPair<QString, QString>> gpawDensityFiles() const;
     void showDatasetManager();
     /// MLIP → Trainer…: MACE training-config (YAML) builder + launcher.
     void openMaceTrainer();

@@ -234,10 +234,14 @@ OpticsResultsWindow::OpticsResultsWindow(const QString& directory,
     auto* controls = new QHBoxLayout;
     controls->addWidget(new QLabel(tr("Quantity:"), this));
     quantityCombo_ = new QComboBox(this);
-    quantityCombo_->addItems({tr("Dielectric function (ε₁ & ε₂)"),
-                              tr("Absorption α(ω)"), tr("Reflectivity R(ω)"),
-                              tr("Refractive index (n & k)"),
-                              tr("Energy loss L(ω)")});
+    const auto addQuantity = [this](const QString& label, Quantity id) {
+        quantityCombo_->addItem(label, static_cast<int>(id));
+    };
+    addQuantity(tr("Dielectric function (ε₁ & ε₂)"), Quantity::Dielectric);
+    addQuantity(tr("Absorption α(ω)"), Quantity::Absorption);
+    addQuantity(tr("Reflectivity R(ω)"), Quantity::Reflectivity);
+    addQuantity(tr("Refractive index (n & k)"), Quantity::RefractiveIndex);
+    addQuantity(tr("Energy loss L(ω)"), Quantity::Loss);
     controls->addWidget(quantityCombo_);
     controls->addSpacing(16);
     controls->addWidget(new QLabel(tr("Direction:"), this));
@@ -270,6 +274,22 @@ OpticsResultsWindow::OpticsResultsWindow(const QString& directory,
     // Only the directions actually present in the file become selectable.
     for (int i = 0; i < directions_.size(); ++i)
         directionCombo_->addItem(directions_[i].first, i);
+
+    // The sheet observables are offered only for a job that computed them.
+    // ε₃D of a slab supercell depends on the vacuum padding, so for a 2D run
+    // these — not ε — are the quantities that describe the material.
+    const bool twoDimensional =
+        std::any_of(directions_.cbegin(), directions_.cend(),
+                    [](const auto& entry) { return entry.second.twoDimensional; });
+    if (twoDimensional) {
+        addQuantity(tr("Absorbance A(ω)"), Quantity::Absorbance);
+        addQuantity(tr("Polarizability α₂D(ω)"), Quantity::Polarizability);
+        addQuantity(tr("Conductivity σ₂D(ω)"), Quantity::Conductivity);
+        setWindowTitle(tr("2D Optical Properties"));
+        // Open on the quantity the user came for.
+        quantityCombo_->setCurrentIndex(
+            quantityCombo_->findData(static_cast<int>(Quantity::Absorbance)));
+    }
 
     connect(quantityCombo_, &QComboBox::currentIndexChanged, this,
             &OpticsResultsWindow::updatePlot);
@@ -320,6 +340,25 @@ void OpticsResultsWindow::loadDirectory(const QString& directory)
         data.n = toVector(dir.value(QStringLiteral("n")).toArray());
         data.k = toVector(dir.value(QStringLiteral("k")).toArray());
         data.loss = toVector(dir.value(QStringLiteral("loss")).toArray());
+
+        // Sheet observables, written only by the 2D variant of the wizard.
+        const QJsonValue sheet =
+            root.value(QLatin1String("twod_") + QLatin1String(key));
+        if (sheet.isObject()) {
+            const QJsonObject twod = sheet.toObject();
+            data.alpha2dRe =
+                toVector(twod.value(QStringLiteral("alpha_2D_re_A")).toArray());
+            data.alpha2dIm =
+                toVector(twod.value(QStringLiteral("alpha_2D_im_A")).toArray());
+            data.absorbance =
+                toVector(twod.value(QStringLiteral("absorbance")).toArray());
+            data.sigma2dRe =
+                toVector(twod.value(QStringLiteral("sigma_2D_re")).toArray());
+            data.sigma2dIm =
+                toVector(twod.value(QStringLiteral("sigma_2D_im")).toArray());
+            data.twoDimensional = !data.absorbance.empty();
+        }
+
         directions_.append({QString::fromLatin1(key), data});
     }
 
@@ -349,28 +388,46 @@ void OpticsResultsWindow::updatePlot()
 
     std::vector<QPair<QString, std::vector<double>>> series;
     QString yLabel;
-    switch (quantityCombo_ ? quantityCombo_->currentIndex() : 0) {
-    case 0:
+    const auto quantity = static_cast<Quantity>(
+        quantityCombo_ ? quantityCombo_->currentData().toInt() : 0);
+    switch (quantity) {
+    case Quantity::Dielectric:
         series = {{tr("ε₁"), dir->eps1}, {tr("ε₂"), dir->eps2}};
         yLabel = tr("Dielectric function ε");
         break;
-    case 1:
+    case Quantity::Absorption:
         series = {{tr("α"), dir->absorption}};
         yLabel = tr("Absorption α (cm⁻¹)");
         break;
-    case 2:
+    case Quantity::Reflectivity:
         series = {{tr("R"), dir->reflectivity}};
         yLabel = tr("Reflectivity R");
         break;
-    case 3:
+    case Quantity::RefractiveIndex:
         series = {{tr("n"), dir->n}, {tr("k"), dir->k}};
         yLabel = tr("Refractive index");
         break;
-    case 4:
+    case Quantity::Loss:
         series = {{tr("L"), dir->loss}};
         yLabel = tr("Energy loss L");
         break;
-    default:
+    case Quantity::Absorbance:
+        // Dimensionless: the fraction of normally incident light the sheet
+        // absorbs. Graphene's πα ≈ 2.3% is the familiar landmark.
+        series = {{tr("A"), dir->absorbance}};
+        yLabel = tr("Absorbance A");
+        break;
+    case Quantity::Polarizability:
+        series = {{tr("Re α₂D"), dir->alpha2dRe},
+                  {tr("Im α₂D"), dir->alpha2dIm}};
+        yLabel = tr("Sheet polarizability α₂D (Å)");
+        break;
+    case Quantity::Conductivity:
+        series = {{tr("Re σ₂D"), dir->sigma2dRe},
+                  {tr("Im σ₂D"), dir->sigma2dIm}};
+        // e²/h is the convention the 2D literature quotes, where graphene's
+        // universal conductivity is the familiar π/2 ≈ 1.57.
+        yLabel = tr("Sheet conductivity σ₂D (e²/h)");
         break;
     }
     plot_->setSeries(energy_, series, tr("Photon energy ħω (eV)"), yLabel);
@@ -399,7 +456,12 @@ void OpticsResultsWindow::exportCsv()
     }
     QTextStream out(&file);
     out << "# Optical properties (direction " << label << ")\n";
-    out << "energy_eV,eps1,eps2,absorption_cm-1,reflectivity,n,k,loss\n";
+    out << "energy_eV,eps1,eps2,absorption_cm-1,reflectivity,n,k,loss";
+    // The 2D columns are appended only for a sheet job, so a bulk export keeps
+    // exactly the column set it always had.
+    if (dir->twoDimensional)
+        out << ",alpha_2D_re_A,alpha_2D_im_A,absorbance,sigma_2D_re,sigma_2D_im";
+    out << '\n';
 
     const auto at = [](const std::vector<double>& v, std::size_t i) {
         return i < v.size() ? v[i] : 0.0;
@@ -412,7 +474,15 @@ void OpticsResultsWindow::exportCsv()
             << QString::number(at(dir->reflectivity, i), 'g', 8) << ','
             << QString::number(at(dir->n, i), 'g', 8) << ','
             << QString::number(at(dir->k, i), 'g', 8) << ','
-            << QString::number(at(dir->loss, i), 'g', 8) << '\n';
+            << QString::number(at(dir->loss, i), 'g', 8);
+        if (dir->twoDimensional) {
+            out << ',' << QString::number(at(dir->alpha2dRe, i), 'g', 8) << ','
+                << QString::number(at(dir->alpha2dIm, i), 'g', 8) << ','
+                << QString::number(at(dir->absorbance, i), 'g', 8) << ','
+                << QString::number(at(dir->sigma2dRe, i), 'g', 8) << ','
+                << QString::number(at(dir->sigma2dIm, i), 'g', 8);
+        }
+        out << '\n';
     }
     file.commit();
 }
