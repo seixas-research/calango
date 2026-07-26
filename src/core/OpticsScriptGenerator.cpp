@@ -7,6 +7,37 @@
 
 namespace calango::core {
 
+namespace {
+
+/// `kpts=` line for the fixed-density step, or empty to inherit the baseline's
+/// own grid.
+std::string kpointsLine(const OpticsConfig& cfg)
+{
+    if (cfg.responseKpts[0] <= 0 || cfg.responseKpts[1] <= 0
+        || cfg.responseKpts[2] <= 0)
+        return {};
+    std::ostringstream out;
+    out << "    kpts=(" << cfg.responseKpts[0] << ", " << cfg.responseKpts[1]
+        << ", " << cfg.responseKpts[2]
+        << "),  # denser response mesh than the baseline SCF\n";
+    return out.str();
+}
+
+/// `symmetry=` line. Off samples the full zone; omitting the keyword lets GPAW
+/// reduce to the irreducible wedge and weight each point by its degeneracy,
+/// which is what "Include IBZ points" asks for.
+std::string symmetryLine(const OpticsConfig& cfg)
+{
+    return cfg.includeIbzPoints
+        ? std::string("    # symmetry left ON: GPAW reduces the mesh to the "
+                      "irreducible\n    # Brillouin zone and weights each point "
+                      "by its degeneracy.\n")
+        : std::string("    symmetry=\"off\",  # sample the full Brillouin "
+                      "zone\n");
+}
+
+} // namespace
+
 std::string generateOpticsScript(const OpticsConfig& cfg)
 {
     // Note: cfg.calculator is deliberately NOT consulted. Every ground-state
@@ -66,9 +97,17 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "nscf = gs.fixed_density(\n"
            "    nbands=n_bands,\n"
            "    convergence={\"bands\": max(2 * n_occ, 12)},\n"
-           "    symmetry=\"off\",\n"
-           "    txt=\"gpaw_nscf.txt\",\n"
+        << kpointsLine(cfg)
+        << symmetryLine(cfg)
+        << "    txt=\"gpaw_nscf.txt\",\n"
            ")\n"
+           "# What the response will actually integrate over. With symmetry\n"
+           "# reduction on, the count is the IRREDUCIBLE set and each point\n"
+           "# carries its degeneracy weight; the weights sum to 1 either way.\n"
+           "_ibz = nscf.get_ibz_k_points()\n"
+           "print(f\"CALANGO_INFO response k-points={len(_ibz)} \"\n"
+           "      f\"weight_sum={float(sum(nscf.get_k_point_weights())):.4f}\",\n"
+           "      flush=True)\n"
            "nscf.write(\"gs_nscf.gpw\", mode=\"all\")\n"
            "_calango_log.progress(2, 4)\n"
            "\n"

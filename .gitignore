@@ -292,3 +292,11 @@ agy-report/
 
 # Temporary file
 capture.png
+# LaTeX build artifacts (docs/tex/**); the .tex sources and built .pdf are tracked
+*.aux
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz

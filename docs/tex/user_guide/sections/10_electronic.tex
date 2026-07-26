@@ -1,13 +1,27 @@
 \chapter{Electronic Structure}
 \label{ch:electronic}
 
-\menu{Simulation}\menusep\menu{Electronic Bands / PDOS} computes a band
+\menu{Simulation}\menusep\menu{Electronic Structure\dots} computes a band
 structure along a high-symmetry $k$-path and, where the backend supports
 it, an element- and orbital-resolved projected density of states.
+
+\begin{calwarn}
+The GPAW route needs a \textbf{baseline ground state}: a completed
+\menu{Simulation}\menusep\menu{Single-point Calculation\dots} run with the GPAW
+calculator, which writes \file{single\_point.gpw} into its job directory. The
+bands run loads that converged density and evaluates non-self-consistently at
+fixed density --- it never re-runs the SCF. Without a baseline the wizard
+refuses to open and tells you so. Chapter~\ref{ch:tutorial-silicon} walks
+through the whole sequence on silicon.
+\end{calwarn}
 
 \section{Setting up the calculation}
 
 \begin{description}
+  \item[\ui{Baseline SCF density}] The completed single point whose
+    \file{single\_point.gpw} supplies the charge density. Inheriting it rather
+    than re-converging is what makes the band structure attributable to a
+    specific, inspected ground state.
   \item[\ui{Backend}] \ui{Free electrons (ASE --- bands only)},
     \ui{GPAW (DFT, bands + PDOS)} or
     \ui{Quantum ESPRESSO (needs pw.x + pseudos)}. The GPAW entry is

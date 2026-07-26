@@ -16,9 +16,9 @@
 [![CMake 3.21+](https://img.shields.io/badge/CMake-3.21%2B-064F8C?style=for-the-badge&logo=cmake&logoColor=white)](https://cmake.org/)
 [![Qt 6.4+](https://img.shields.io/badge/Qt-6.4%2B-41CD52?style=for-the-badge&logo=qt&logoColor=white)](https://www.qt.io/)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-fcbc2c?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
-[![macOS .dmg](https://img.shields.io/badge/macOS-.dmg-000000?style=for-the-badge&logo=apple&logoColor=white)](docs/Calango_Packaging_Guide.md#2-macos-dmg)
-[![Conda](https://img.shields.io/badge/Conda-package-44A833?style=for-the-badge&logo=anaconda&logoColor=white)](docs/Calango_Packaging_Guide.md#3-conda-package)
-[![Debian](https://img.shields.io/badge/Debian%2FUbuntu-.deb-A81D33?style=for-the-badge&logo=debian&logoColor=white)](docs/Calango_Packaging_Guide.md#4-debian--ubuntu-deb)
+[![macOS .dmg](https://img.shields.io/badge/macOS-.dmg-000000?style=for-the-badge&logo=apple&logoColor=white)](docs/tex/packaging/packaging.pdf)
+[![Conda](https://img.shields.io/badge/Conda-package-44A833?style=for-the-badge&logo=anaconda&logoColor=white)](docs/tex/packaging/packaging.pdf)
+[![Debian](https://img.shields.io/badge/Debian%2FUbuntu-.deb-A81D33?style=for-the-badge&logo=debian&logoColor=white)](docs/tex/packaging/packaging.pdf)
 [![ASE](https://img.shields.io/badge/ASE-3.2x-4B8BBE?style=for-the-badge)](https://wiki.fysik.dtu.dk/ase/)
 
 ---
@@ -27,8 +27,11 @@
 
 | Guide | Covers |
 |---|---|
-| [User Guide](docs/Calango_User_Guide.md) | the four-stage wizards, interactive Brillouin zone / k-paths, cluster expansion and convex hulls, slab and nanoparticle builders, effective band structure (unfolding), run monitoring |
-| [Packaging Guide](docs/Calango_Packaging_Guide.md) | macOS `.dmg`, Conda package, Debian/Ubuntu `.deb`, and managing core vs optional Python dependencies |
+| [User Guide](docs/tex/user_guide/calango_user_guide.pdf) | a step-by-step silicon tutorial (build → relax → phonons → bands), the staged wizards, interactive Brillouin zone / k-paths, optics and GW, cluster expansion and convex hulls, slab and nanoparticle builders, effective band structure (unfolding), run monitoring |
+| [Packaging Guide](docs/tex/packaging/packaging.pdf) | macOS `.dmg`, Conda package, Debian/Ubuntu `.deb`, the embedded Python environment, and managing core vs optional dependencies |
+
+Both are LaTeX sources under `docs/tex/`; rebuild either with
+`pdflatex <name>.tex` (twice, for the table of contents).
 
 ---
 
@@ -39,7 +42,7 @@
 - **Representation Modes:** Ball-and-stick, space-filling (CPK), and wireframe. Bond orders (single/double/triple) are assigned manually per atom pair and render as parallel cylinders; automatic perception never guesses multiplicities.
 - **Gradient Bond Coloring:** Each bond blends smoothly from one atom's color to the other's (Gouraud-interpolated along the cylinder axis in the instanced shader), toggleable back to the classic half-and-half split.
 - **Modular Dock Panels:** Every panel is an independent dock widget that can sit side-by-side, stack as tabs, or float; the layout persists across sessions.
-- **12-Zone Grid Workspace:** The default layout is a 4x3 grid — the branding card and Structure panel on the left, the spanning 3D viewport in the middle, and Representation spanning the right column across the top two rows; a full-width bottom row holds Lighting, the Job console, Remote Access, and Unit Cell and Axes — with every zone resizable via the dock splitters.
+- **Two-Column Workspace:** The default layout is two full-height side columns flanking the 3D viewport — Calango branding, Structure, Volumetric Data and Processes on the left; Representation, Cell/Axes/Vectors and Visual Effects on the right — with a short Results and Remote Access row between them. Every panel is resizable, re-dockable, tabbable and floatable, the arrangement persists across sessions, and View → Reset Layout restores the default.
 - **Dynamic Atom Color Mapping:** Four coloring modes selectable from the Display panel, applied to atoms and their bond halves in every representation:
   - *Element (CPK):* the Jmol palette with per-element user overrides.
   - *Coordination Number (CN):* discrete CN values mapped along a continuous gradient.
@@ -51,9 +54,9 @@
 - **Interaction Modes and Hotkeys:** Six exclusive mouse modes in the frame toolbar — Rotate (R), Pan (T), box Selection (S), Insertion (I), Distance measurement (D), and Angle measurement (A) — plus O for the projection toggle. Insertion mode places atoms of the toolbar-selected element on click and bonds atom pairs on drag; Selection mode supports rubber-band multi-select and Delete/Backspace removal with automatic bond-network rebuilding.
 - **Measurement Overlays:** Distance (two atoms, in angstroms) and angle (three atoms, in degrees) readouts drawn directly on the 3D canvas and echoed to the status console.
 - **Fixed-Angle Axis Rotations:** X/Y/Z clockwise and counter-clockwise buttons with an editable degree step rotate the scene smoothly about the world axes by exact increments.
-- **Depth Effects:** Distance fog (linear or exponential, blending into the background color) and a depth-of-field post-processing pass (circle-of-confusion Poisson blur around the focal plane), tuned live from View, Visual Effects.
+- **Depth and Occlusion Effects:** Fog (linear or exponential, blending into the background color), a depth-of-field pass (circle-of-confusion Poisson blur around the focal plane), and real-time screen-space ambient occlusion (MRT G-buffer, hemisphere-kernel sampling, bilateral blur) — all tuned live in the Visual Effects dock's Lighting / Shadow / Fog / Blur / Occlusion tabs.
 - **Per-Element Styling:** CPK color overrides via `QColorDialog` and per-element radius scaling, plus global atom-radius and bond-width sliders with synced spin boxes.
-- **Viewport Furniture:** Axes triad showing Cartesian (X, Y, Z) or Bravais lattice vectors (a1, a2, a3), and unit cell boundaries rendered as thin lines or lit tubes with configurable color and width.
+- **Scene Overlays (Cell, Axes & Vectors dock):** Unit cell boundaries as thin lines or lit tubes with configurable color and width, optional duplication of atoms and bonds across periodic boundaries, an axes triad showing Cartesian (X, Y, Z) or Bravais lattice vectors (a1, a2, a3), and the per-atom vector overlay with arrowhead and magnitude-threshold filtering.
 
 ### Structure Building and File I/O
 - **Broad File Format Support:** Read and write any format supported by ASE, including `.cif`, `POSCAR`/`CONTCAR`, `.xyz`/`.extxyz`, Quantum ESPRESSO input/output, CASTEP `.cell`, LAMMPS data and dump files, Gaussian `.gjf`/`.com`, and SHELX `.res`. Per-atom arrays in extended-XYZ files (charges, forces) are imported as color-mappable scalar fields.
@@ -73,6 +76,7 @@
 
 ### Simulation and Machine-Learning Potentials
 - **Four-Stage Setup Wizards:** Every workflow (Single-point, Geometry Optimization, Molecular Dynamics, Phonon, Electronic Structure, Monte Carlo, Cluster Expansion, Effective Bands) runs through one stepper shell — Calculator & Execution Environment, Calculator Settings, the workflow's own task stage, and an editable ASE Script Review that doubles as the run/export launcher. The k-path workflows place their task stage after the engine choice, since a path is only meaningful once the calculator is known.
+- **Machine-Learning Interatomic Potentials:** Beyond MACE, first-class calculator blocks for DeepMD-kit, NequIP, Allegro, CHGNet, MatterSim and FAIRChem, each with its own model-source, device and precision controls, and a per-engine Conda environment bound from Preferences.
 - **MACE Machine-Learning Potentials:** MACE-MP-0 and MACE-OFF foundation models by size keyword, or a pinned `.model`/`.pt` checkpoint; selectable `float32`/`float64` precision and `cpu`/`cuda`/`mps` device, with a guard against the float64-on-MPS combination PyTorch cannot execute.
 - **Full GPAW Parameter Set:** Mode (PW / FD / LCAO), XC functional (PBE, LDA, revPBE, RPBE, PBEsol, HSE06, B3LYP, SCAN, r2SCAN), eigensolver (Davidson, CG, RMM-DIIS, direct), density mixer class with beta / nmaxold / weight, SCF convergence thresholds, smearing and Monkhorst-Pack grid — the identical control set across Single-point, Geometry Optimization, Electronic Structure and Band Unfolding.
 - **Effective Band Structure (Band Unfolding):** Popescu-Zunger unfolding of defect, dopant and alloy supercells back onto the primitive Brillouin zone, with automatic supercell-matrix deduction (and a commensurability check that refuses incommensurate cell pairs), spectral weights P_Km(k), and a Gaussian-broadened A(k, E) intensity heatmap in the Results panel.
@@ -81,14 +85,19 @@
 - **Tasks:** Single-point energies/forces, BFGS geometry optimization, and molecular dynamics across the full ASE ensemble matrix — NVE (velocity Verlet), NVT (Langevin, Andersen, Berendsen, Nose-Hoover chains), and NPT (Berendsen, Nose-Hoover/Parrinello-Rahman) — with thermostat/barostat coupling and pressure controls.
 - **Live MD Monitoring:** The Job panel tracks the log, energy convergence, and ionic temperature vs. step, with a dashed thermostat-setpoint reference line for constant-temperature ensembles.
 - **Live Trajectory Streaming:** MD runs and geometry relaxations open their trajectory tab at process start and stream freshly computed frames into it in real time (geometry blocks over the subprocess pipe, parsed into structures on arrival); the playback timeline grows as frames land and follows the newest frame unless the user scrubs away.
+- **Result Viewers:** Dedicated read-outs on the Results menu for single-point summaries, geometry-optimization convergence, molecular dynamics (T/E/P/V time series, RDF, frame player), MLWF centres and orbitals, and GW quasiparticle energies. Each opens automatically when the matching artifact appears in a finished job directory.
 - **Process Manager:** A compact dock between the branding and Structure panels lists every background task (local jobs, remote submissions, band-structure runs) with live status. Jobs of a saved project stage into a managed `.calango_tmp/` folder next to the `.calproj` — checkpoints, trajectory dumps and logs stay linked in the panel for one-click post-processing without recomputation.
 - **Electronic Bands / PDOS:** Band-structure workflows along the ASE-suggested (or custom) high-symmetry k-path with three backends — free-electron reference (always available), GPAW (DFT bands plus element/orbital-projected DOS), and a Quantum ESPRESSO scaffold. Results open in a hand-painted two-pane viewer: bands (E − E_F vs. k-distance, Gamma/X/... tick labels, adjustable Fermi reference line) beside the PDOS sharing the energy axis, with per-projection visibility toggles and CSV/.dat export.
+- **Optical Properties:** The frequency-dependent dielectric function from GPAW's linear-response module, with eps1/eps2, absorption, reflectivity, refractive index (n, k) and the energy-loss function. Selectable point or **linear tetrahedron** Brillouin-zone integration (the latter resolving van Hove features that a Lorentzian broadening would smear), and an x-axis that switches between photon energy (eV) and wavelength (nm).
+- **2D Optics (Modules, 2D Materials):** Sheet observables for a monolayer — absorbance A(w), 2D conductivity sigma_2D in e^2/h, and sheet polarizability alpha_2D — obtained by dividing the supercell's arbitrary vacuum thickness back out, so the result is a property of the sheet rather than of the padding. Validated against graphene's universal absorbance, A = pi\*alpha = 2.29%.
+- **GW Quasiparticle Corrections:** One-shot G0W0 through two engines — GPAW (`gpaw.response.g0w0`) correcting a `.gpw`, or Yambo (`p2y` + `yambo`) correcting a Quantum ESPRESSO `.save` — with plasmon-pole or real-axis frequency treatment. Both write the same schema, and the viewer reports the DFT gap, the quasiparticle gap and the renormalization between them, flagging the near-zero or negative values that indicate an unconverged run.
+- **Baseline Inheritance:** Optics, 2D Optics, GW, ELF and MLWF all load a completed Single-Point ground state and evaluate at fixed density rather than re-converging their own — so a spectrum is always attributable to a specific, inspected SCF solution, and the calculator stage is dropped from those wizards entirely.
 - **Interactive Script Editor:** Every GUI configuration is synthesized into a standalone, syntax-highlighted Python/ASE script that remains fully editable — manual edits pause form synchronization until an explicit regenerate. Scripts run unmodified on clusters.
 - **Subprocess Isolation:** Jobs run as separate processes in per-job directories with live log capture, progress markers, an energy-convergence plot, and automatic trajectory loading on completion. A conda-environment selector routes jobs to any interpreter.
 - **MLIP Dataset Manager:** Assembles machine-learning training datasets from heterogeneous multi-frame trajectories: deterministic train/validation/test splits (percentages plus seed), Query-by-Committee sub-datasets (independent splits or bootstrap resampling), and export to Extended XYZ (MACE-ready) or an ASE SQLite database with energies, forces and stresses preserved.
 
 ### Vibrational Analysis: Phonon Builder
-- **Finite Displacements (Build menu):** Constructs the fully expanded supercell first and then applies plus/minus displacements (default 0.01 angstrom) along x, y, and z to every atom it contains — 6N_supercell + 1 configurations, following the standard finite-displacement recipe (Phonopy-style; symmetry reduction is on the roadmap).
+- **Finite Displacements:** Applies plus/minus displacements (default 0.01 angstrom) along x, y and z to every atom of the supercell — 6N + 1 configurations. **Spglib symmetry reduction** (through phonopy) displaces only along the symmetry-irreducible directions and rebuilds the full force-constant matrix by symmetry, cutting the count by an order of magnitude for a high-symmetry cell; the script falls back to the full 6N set when phonopy is absent. **Residual-force removal** subtracts the forces on the un-displaced geometry, which is what keeps the acoustic branches at zero when the relaxation stopped at a finite fmax.
 - **Two Workflows:**
   - *Generate displaced structures:* the displacement set opens as a trajectory tab, ready for inspection or export to external DFT codes.
   - *Run calculation:* a generated ASE script computes forces with EMT, Lennard-Jones, or MACE, assembles force constants and the dynamical matrix (acoustic sum rule enforced), and reports vibrational frequencies.
@@ -202,16 +211,27 @@ Calango enforces a strict Model-View-Controller (MVC) split to ensure stability,
    cmake --build build -j
 
    # Run with a sample structure
-   ./build/calango assets/examples/diamond.vasp
+   ./build/calango examples/diamond.vasp
    ```
 
 ### Integration Tests
 
-Configure with `-DCALANGO_BUILD_TESTS=ON` and run `ctest --test-dir build`.
-The suite exercises the real embedded-Python pipeline: SQS generation
-(SiGe alloy), spglib symmetry detection (Si diamond, Fd-3m), the Raman
-factor-group analysis (Si diamond, T2g + T1u), and a live Materials
-Project fetch (skipped automatically when no `MP_API_KEY` is configured).
+Configure with `-DCALANGO_BUILD_TESTS=ON` and run `ctest --test-dir build`
+(35 tests). They fall into three groups:
+
+- **Pure C++ / physics** — SQS generation and its Warren-Cowley order
+  parameter, cluster expansion, phonon thermodynamics against the Einstein
+  oscillator, ice-rule satisfaction, polymer geometry, band unfolding.
+- **Generated-script checks** — the emitted Python is asserted on and dumped
+  for `python -m py_compile`; the Yambo `.qp` parser and the 2D-optics
+  observables are extracted from a freshly generated script *by AST* and
+  exercised directly, so the code under test is the code that ships.
+- **Live engine benchmarks** — real GPAW runs that self-skip when the
+  response stack is unavailable: silicon and diamond optics, ELF, Wannier
+  interpolation, G0W0 on silicon, and graphene tetrahedron integration
+  checked against the universal absorbance (the slowest test, ~4 min).
+
+GUI tests run under the offscreen platform and need no display.
 
 ### Installers
 
@@ -226,7 +246,7 @@ bash packaging/linux/build_deb.sh               # Debian/Ubuntu .deb
 The `.deb` registers a desktop entry, the `application/x-calango-project`
 MIME type for `.calproj`, and icons. Full instructions — including bundling a
 relocatable Python interpreter so the app ships self-contained — are in the
-[Packaging Guide](docs/Calango_Packaging_Guide.md).
+[Packaging Guide](docs/tex/packaging/packaging.pdf).
 
 ---
 
@@ -262,10 +282,10 @@ export CALANGO_PYTHON=/path/to/.venv/bin/python
 - `CMakeLists.txt` — global build configuration, installers (CPack), and tests.
 - `assets/`
   - `shaders/` — GLSL shaders (compiled in as Qt resources).
-  - `examples/` — benchmark structure files for the Examples browser.
-  - `calango/` — brand assets (application icon, logos; icon variants are embedded as Qt resources).
+  - `.internal/` — brand assets (application icon, logos), the RemixIcon SVG set tinted at runtime per theme, and helper scripts; all embedded as Qt resources.
   - `remote/` — the paramiko SSH/SFTP helper (embedded as a Qt resource).
-- `docs/` — architecture guides, design notes, and the packaging guide (PDF).
+- `examples/` — benchmark structure files for the Database browser.
+- `docs/tex/` — LaTeX sources and built PDFs for the User Guide and the Packaging Guide.
 - `packaging/` — installer support files (macOS scripts, Linux desktop/MIME assets).
 - `src/`
   - `main.cpp` — application entry point and CLI (`--probe-python`).

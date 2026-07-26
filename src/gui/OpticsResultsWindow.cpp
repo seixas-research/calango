@@ -1,7 +1,10 @@
 #include "gui/OpticsResultsWindow.hpp"
 
+#include "gui/OpticsPlotStyleDialog.hpp"
+
 #include <QColor>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFontMetrics>
@@ -42,6 +45,21 @@ public:
         setMinimumSize(480, 320);
     }
 
+    void setStyle(const OpticsPlotStyle& style)
+    {
+        style_ = style;
+        update();
+    }
+
+    /// Explicit x window. An empty (min >= max) range means "fit the data",
+    /// which is the default.
+    void setXRange(double minimum, double maximum)
+    {
+        xMinLimit_ = minimum;
+        xMaxLimit_ = maximum;
+        update();
+    }
+
     void setSeries(const std::vector<double>& x,
                    const std::vector<QPair<QString, std::vector<double>>>& series,
                    const QString& xLabel, const QString& yLabel)
@@ -80,12 +98,15 @@ private:
     std::vector<QPair<QString, std::vector<double>>> series_;
     QString xLabel_;
     QString yLabel_;
+    OpticsPlotStyle style_;
+    double xMinLimit_ = 0.0;
+    double xMaxLimit_ = 0.0;
 };
 
 bool OpticsPlotWidget::renderTo(QPainter& p, QSize size) const
 {
     p.setRenderHint(QPainter::Antialiasing, true);
-    p.fillRect(QRect(QPoint(0, 0), size), Qt::white);
+    p.fillRect(QRect(QPoint(0, 0), size), style_.canvasBackground);
 
     const double W = size.width();
     const double H = size.height();
@@ -106,14 +127,27 @@ bool OpticsPlotWidget::renderTo(QPainter& p, QSize size) const
         xMin = std::min(xMin, v);
         xMax = std::max(xMax, v);
     }
+    // A user-set window overrides the data extent.
+    const bool clipped = xMaxLimit_ > xMinLimit_;
+    if (clipped) {
+        xMin = xMinLimit_;
+        xMax = xMaxLimit_;
+    }
+    // The vertical scale follows what is VISIBLE: scanning the whole series
+    // while showing a slice of it would leave the curve flattened against the
+    // axis by a peak that is off-screen.
     double yMin = std::numeric_limits<double>::infinity();
     double yMax = -std::numeric_limits<double>::infinity();
     for (const auto& s : series_)
-        for (double v : s.second)
+        for (std::size_t i = 0; i < s.second.size() && i < x_.size(); ++i) {
+            if (clipped && (x_[i] < xMin || x_[i] > xMax))
+                continue;
+            const double v = s.second[i];
             if (std::isfinite(v)) {
                 yMin = std::min(yMin, v);
                 yMax = std::max(yMax, v);
             }
+        }
     if (!(xMax > xMin))
         xMax = xMin + 1.0;
     if (!std::isfinite(yMin) || !std::isfinite(yMax)) {
@@ -133,22 +167,29 @@ bool OpticsPlotWidget::renderTo(QPainter& p, QSize size) const
         return plot.bottom() - (v - yMin) / (yMax - yMin) * plot.height();
     };
 
+    p.fillRect(plot, style_.plotBackground);
+
     // Grid, ticks and tick labels.
     const int ticks = 5;
     for (int i = 0; i <= ticks; ++i) {
         const double fx = xMin + (xMax - xMin) * i / ticks;
         const double px = mapX(fx);
-        p.setPen(QPen(QColor(228, 228, 228), 1.0));
-        p.drawLine(QPointF(px, plot.top()), QPointF(px, plot.bottom()));
-        p.setPen(QColor(80, 80, 80));
+        if (style_.showGrid) {
+            p.setPen(QPen(style_.effectiveGridColor(), 1.0));
+            p.drawLine(QPointF(px, plot.top()), QPointF(px, plot.bottom()));
+        }
+        p.setFont(style_.axisFont());
+        p.setPen(style_.axisLabelColor);
         p.drawText(QRectF(px - 40.0, plot.bottom() + 4.0, 80.0, 16.0),
                    Qt::AlignHCenter | Qt::AlignTop, QString::number(fx, 'g', 4));
 
         const double fy = yMin + (yMax - yMin) * i / ticks;
         const double py = mapY(fy);
-        p.setPen(QPen(QColor(228, 228, 228), 1.0));
-        p.drawLine(QPointF(plot.left(), py), QPointF(plot.right(), py));
-        p.setPen(QColor(80, 80, 80));
+        if (style_.showGrid) {
+            p.setPen(QPen(style_.effectiveGridColor(), 1.0));
+            p.drawLine(QPointF(plot.left(), py), QPointF(plot.right(), py));
+        }
+        p.setPen(style_.axisLabelColor);
         p.drawText(QRectF(2.0, py - 8.0, plot.left() - 8.0, 16.0),
                    Qt::AlignRight | Qt::AlignVCenter, QString::number(fy, 'g', 4));
     }
@@ -170,8 +211,10 @@ bool OpticsPlotWidget::renderTo(QPainter& p, QSize size) const
     p.setClipRect(plot);
     for (std::size_t si = 0; si < series_.size(); ++si) {
         const std::vector<double>& y = series_[si].second;
-        QPen pen(seriesColor(static_cast<int>(si)));
-        pen.setWidthF(1.8);
+        QPen pen(style_.overrideCurveColor ? style_.curveColor
+                                           : seriesColor(static_cast<int>(si)));
+        pen.setWidthF(style_.lineWidth);
+        pen.setStyle(style_.lineStyle);
         p.setPen(pen);
         QPolygonF poly;
         const std::size_t n = std::min(x_.size(), y.size());
@@ -185,8 +228,9 @@ bool OpticsPlotWidget::renderTo(QPainter& p, QSize size) const
     }
     p.restore();
 
-    // Axis titles.
-    p.setPen(QColor(30, 30, 30));
+    // Axis titles, in the configured face and colour.
+    p.setFont(style_.axisFont());
+    p.setPen(style_.axisLabelColor);
     p.drawText(QRectF(plot.left(), H - 20.0, plot.width(), 18.0),
                Qt::AlignHCenter, xLabel_);
     p.save();
@@ -261,6 +305,35 @@ OpticsResultsWindow::OpticsResultsWindow(const QString& directory,
     controls->addStretch(1);
     layout->addLayout(controls);
 
+    // Axis window + appearance, on their own row: the controls row above is
+    // already three combos wide.
+    auto* rangeRow = new QHBoxLayout;
+    rangeRow->addWidget(new QLabel(tr("Range:"), this));
+    xMinSpin_ = new QDoubleSpinBox(this);
+    xMaxSpin_ = new QDoubleSpinBox(this);
+    for (QDoubleSpinBox* spin : {xMinSpin_, xMaxSpin_}) {
+        spin->setDecimals(2);
+        spin->setRange(0.0, 100000.0);
+        spin->setValue(0.0);
+        // Both at zero is the "fit the data" default; the min box says so.
+        spin->setSpecialValueText(tr("auto"));
+        connect(spin, &QDoubleSpinBox::valueChanged, this,
+                &OpticsResultsWindow::updatePlot);
+        rangeRow->addWidget(spin);
+    }
+    xMinSpin_->setToolTip(
+        tr("Lower display bound. Leave both at \"auto\" to fit the data. The "
+           "vertical scale follows what is visible, so zooming in re-scales "
+           "the y axis to the window rather than to an off-screen peak."));
+    xMaxSpin_->setToolTip(xMinSpin_->toolTip());
+    rangeRow->addSpacing(16);
+    auto* appearanceButton = new QPushButton(tr("Customize Appearance…"), this);
+    connect(appearanceButton, &QPushButton::clicked, this,
+            &OpticsResultsWindow::customizeAppearance);
+    rangeRow->addWidget(appearanceButton);
+    rangeRow->addStretch(1);
+    layout->addLayout(rangeRow);
+
     plot_ = new OpticsPlotWidget(this);
     layout->addWidget(plot_, 1);
 
@@ -310,7 +383,7 @@ OpticsResultsWindow::OpticsResultsWindow(const QString& directory,
     // through the same path — ε₁/ε₂, α, R, n/k, L and the 2D observables all
     // pick it up without each needing to know about it.
     connect(unitCombo_, &QComboBox::currentIndexChanged, this,
-            &OpticsResultsWindow::updatePlot);
+            &OpticsResultsWindow::retuneRangeForUnit);
 
     updatePlot();
 }
@@ -447,7 +520,42 @@ void OpticsResultsWindow::updatePlot()
         break;
     }
     const std::vector<double> x = abscissa(series);
+    plot_->setStyle(style_);
+    plot_->setXRange(xMinSpin_ ? xMinSpin_->value() : 0.0,
+                     xMaxSpin_ ? xMaxSpin_->value() : 0.0);
     plot_->setSeries(x, series, xAxisLabel(), yLabel);
+}
+
+void OpticsResultsWindow::customizeAppearance()
+{
+    auto* dialog = new OpticsPlotStyleDialog(style_, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    // Live, not on-accept: the point of a styling dialog is to judge the
+    // result against the real plot.
+    connect(dialog, &OpticsPlotStyleDialog::styleChanged, this,
+            [this](const OpticsPlotStyle& style) {
+                style_ = style;
+                plot_->setStyle(style_);
+            });
+    dialog->show();
+}
+
+void OpticsResultsWindow::retuneRangeForUnit()
+{
+    // Energy and wavelength differ by three orders of magnitude and invert
+    // each other, so a window set in one unit is meaningless in the other.
+    // Clearing it is honest; silently converting it would imply the user had
+    // asked for the converted span.
+    const QSignalBlocker blockMin(xMinSpin_);
+    const QSignalBlocker blockMax(xMaxSpin_);
+    const auto unit = static_cast<XAxisUnit>(unitCombo_->currentData().toInt());
+    const bool wavelength = unit == XAxisUnit::WavelengthNm;
+    for (QDoubleSpinBox* spin : {xMinSpin_, xMaxSpin_}) {
+        spin->setSuffix(wavelength ? tr(" nm") : tr(" eV"));
+        spin->setSingleStep(wavelength ? 50.0 : 0.5);
+        spin->setValue(0.0);
+    }
+    updatePlot();
 }
 
 QString OpticsResultsWindow::xAxisLabel() const

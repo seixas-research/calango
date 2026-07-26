@@ -187,6 +187,35 @@ constexpr const char* kJsonLoggerHelper =
     "_calango_log = CalangoLog()\n"
     "\n";
 
+/// Wrap whatever calculator was just bound to `atoms.calc` in ASE's DFTD4,
+/// adding Grimme's D4 dispersion energy and forces on top of it.
+///
+/// This runs AFTER the calculator block rather than being folded into each
+/// one: every branch above ends by assigning `atoms.calc`, so wrapping the
+/// result once covers all of them and cannot fall out of step with a
+/// calculator added later.
+void emitDispersion(std::ostringstream& out, const CalculatorConfig& c)
+{
+    if (!c.dispersionD4)
+        return;
+    // The damping parameters are fitted per functional, so D4 has to be told
+    // which one it is correcting. Following the calculator's own xc keeps the
+    // two from silently disagreeing.
+    std::string method = c.dispersionD4Method;
+    if (method.empty())
+        method = c.calculator == CalculatorKind::Gpaw ? c.gpawXc : "PBE";
+    out << "\n"
+           "# --- van der Waals dispersion (Grimme D4) -------------------------\n"
+           "# Semilocal functionals carry no long-range correlation, so layered\n"
+           "# and molecular systems come out under-bound without this. D4 is\n"
+           "# charge-dependent, which is what separates it from D3.\n"
+           "# Requires:  pip install dftd4   (or conda install -c conda-forge dftd4)\n"
+           "from ase.calculators.dftd4 import DFTD4\n"
+           "\n"
+        << "atoms.calc = DFTD4(method=\"" << method
+        << "\", calc=atoms.calc)\n";
+}
+
 void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
 {
     switch (c.calculator) {
@@ -459,6 +488,8 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
                ")\n";
         break;
     }
+
+    emitDispersion(out, c);
 }
 
 void emitTask(std::ostringstream& out, const CalculatorConfig& c)
@@ -956,6 +987,24 @@ std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,
         << ",      # electrons/valence electron\n"
         << indent << "},\n"
         << indent << "maxiter=" << c.scfMaxSteps << ",\n";
+    // DFT+U as GPAW's `setups` dictionary. The leading colon keeps the default
+    // PAW dataset and appends the correction to it — without it GPAW would look
+    // for a differently named dataset instead of correcting the standard one.
+    if (c.useHubbardU && !c.hubbardU.empty()) {
+        out << indent << "setups={";
+        bool first = true;
+        for (const HubbardU& hubbard : c.hubbardU) {
+            if (hubbard.element.empty())
+                continue;
+            if (!first)
+                out << ", ";
+            first = false;
+            out << "\"" << hubbard.element << "\": \":"
+                << (hubbard.orbital.empty() ? std::string("d") : hubbard.orbital)
+                << "," << hubbard.u << (hubbard.scale ? ",1" : "") << "\"";
+        }
+        out << "},  # DFT+U (element: :shell,U[,scale])\n";
+    }
     // Spin: collinear sets spinpol=True; non-collinear is driven by the vector
     // initial moments seeded in the preamble, so no spinpol keyword is written
     // (GPAW infers the spinor treatment from the (N,3) magmoms). `spinPolarized`

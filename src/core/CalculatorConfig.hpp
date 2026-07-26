@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace calango::core {
 
@@ -186,6 +187,19 @@ constexpr bool isConstantPressure(MdEnsemble ensemble)
 /// Plain parameter bag filled in by the simulation wizards and consumed by
 /// AseScriptGenerator. Deliberately UI-free so scripts can also be
 /// generated headlessly (e.g. future batch/CLI mode).
+/// One DFT+U correction: a Hubbard U applied to a named orbital shell of a
+/// chemical element. GPAW spells this as a `setups` entry, e.g.
+/// `setups={"Fe": ":d,3.5"}` — the leading colon keeps the default PAW dataset
+/// and appends the correction to it.
+struct HubbardU {
+    std::string element;          ///< chemical symbol, e.g. "Fe"
+    std::string orbital = "d";    ///< shell the correction acts on: s/p/d/f
+    double u = 0.0;               ///< U value, eV
+    /// Scale the correction by the number of electrons in the shell. GPAW's
+    /// third, optional field; off by default, which is the usual convention.
+    bool scale = false;
+};
+
 struct CalculatorConfig {
     CalculatorKind calculator = CalculatorKind::EMT;
     TaskKind task = TaskKind::SinglePoint;
@@ -322,6 +336,31 @@ struct CalculatorConfig {
     /// all-electron.
     bool gpawExportDensity = false;
     GpawDensityType gpawDensityType = GpawDensityType::AllElectron;
+
+    /// DFT+U corrections, emitted as GPAW's `setups={...}` dictionary.
+    /// `useHubbardU` gates the whole block so a populated table can be turned
+    /// off without losing it.
+    ///
+    /// A U is a property of an element's shell in a given chemical
+    /// environment, not a universal constant — the same Fe 3d takes different
+    /// values in an oxide and in a metal. Nothing here validates the numbers;
+    /// they are the user's to justify.
+    bool useHubbardU = false;
+    std::vector<HubbardU> hubbardU;
+
+    // -- Dispersion --------------------------------------------------------
+    /// Wrap the configured calculator in ASE's DFTD4 calculator, adding
+    /// Grimme's D4 van der Waals energy and forces on top of it.
+    ///
+    /// Semilocal functionals have no long-range correlation, so layered and
+    /// molecular-crystal systems come out under-bound without a dispersion
+    /// correction. D4 is charge-dependent, which is what distinguishes it from
+    /// D3. `dispersionD4Method` names the parent functional the damping
+    /// parameters are fitted for; it must match the functional actually in use
+    /// or the correction is parameterized for a different theory than the one
+    /// it corrects. Empty means "follow the calculator's own xc".
+    bool dispersionD4 = false;
+    std::string dispersionD4Method;
 
     // -- ORCA (quantum chemistry) ------------------------------------------
     std::string orcaMethod = "B3LYP";   ///< functional / method keyword

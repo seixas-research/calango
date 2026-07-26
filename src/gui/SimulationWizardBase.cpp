@@ -1,5 +1,7 @@
 #include "gui/SimulationWizardBase.hpp"
 
+#include "gui/HubbardParametersDialog.hpp"
+
 #include "gui/CondaEnvs.hpp"
 #include "gui/EnginePresets.hpp"
 #include "gui/PythonHighlighter.hpp"
@@ -655,6 +657,36 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
         gpawSymmetryOffCheck_->hide();
     bzToggleLayout->addStretch(1);
     bzForm->addRow(gpawBzTogglesRow_);
+
+    // DFT+U lives behind a button rather than inline: it needs a table, and it
+    // is a minority setting that would otherwise crowd every GPAW page.
+    hubbardButton_ = new QPushButton(tr("Hubbard parameters…"), bzGroup_);
+    hubbardButton_->setToolTip(
+        tr("Add an on-site Coulomb repulsion U to a named orbital shell "
+           "(GPAW setups={…}). For narrow d/f bands that a semilocal "
+           "functional over-delocalizes."));
+    connect(hubbardButton_, &QPushButton::clicked, this,
+            &SimulationWizardBase::editHubbardParameters);
+    bzForm->addRow(hubbardButton_);
+
+    // Dispersion: only for the wizards whose answer depends on it.
+    dispersionD4Check_ =
+        new QCheckBox(tr("van der Waals Correction (DFTD4)"), bzGroup_);
+    dispersionD4Check_->setToolTip(
+        tr("Wrap the calculator in ASE's DFTD4, adding Grimme's D4 dispersion "
+           "energy and forces.\n"
+           "Semilocal functionals carry no long-range correlation, so layered "
+           "and molecular systems come out under-bound without it. D4 is "
+           "charge-dependent, which is what separates it from D3.\n"
+           "Needs the dftd4 package in the job environment; the damping "
+           "parameters follow the calculator's own functional."));
+    connect(dispersionD4Check_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
+    if (showsDispersionToggle())
+        bzForm->addRow(dispersionD4Check_);
+    else
+        dispersionD4Check_->hide();
+
     layout->addWidget(bzGroup_);
 
     // ===== 3. Electronic Convergence & Smearing ===========================
@@ -1100,6 +1132,11 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
     c.gpawSymmetryOff =
         gpawSymmetryOffCheck_ && gpawSymmetryOffCheck_->isChecked();
     c.gpawGammaCentered = gpawGammaCheck_ && gpawGammaCheck_->isChecked();
+    c.useHubbardU = hubbardEnabled_ && !hubbardParameters_.empty();
+    c.hubbardU = hubbardParameters_;
+    c.dispersionD4 =
+        dispersionD4Check_ && dispersionD4Check_->isChecked()
+        && showsDispersionToggle();
     c.gpawExportDensity =
         gpawDensityExportCheck_ && gpawDensityExportCheck_->isChecked();
     if (gpawDensityTypeCombo_)
@@ -1128,6 +1165,17 @@ void SimulationWizardBase::refreshRunCommand()
     context.cores = RunCommands::cores();
     runCommandEdit_->setText(
         RunCommands::displayCommand(selectedCalculator(), context));
+}
+
+void SimulationWizardBase::editHubbardParameters()
+{
+    HubbardParametersDialog dialog(hubbardEnabled_, hubbardParameters_,
+                                   calculatorElements(), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    hubbardEnabled_ = dialog.isEnabled();
+    hubbardParameters_ = dialog.parameters();
+    refreshPreview();
 }
 
 void SimulationWizardBase::refreshPreview()

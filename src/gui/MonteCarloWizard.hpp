@@ -25,6 +25,8 @@ protected:
     QString settingsHeader() const override;
     QWidget* buildSettingsPage() override;
     QString generateScript() const override;
+    /// Dispersion is offered here: acceptance depends on energy differences between configurations.
+    bool showsDispersionToggle() const override { return true; }
     QString exportFileName() const override { return QStringLiteral("monte_carlo.py"); }
 
 private Q_SLOTS:

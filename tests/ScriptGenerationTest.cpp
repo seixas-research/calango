@@ -93,6 +93,16 @@ int main(int argc, char** argv)
             dump(name, gpaw);
         }
 
+        // DFT+U and dispersion ride on top of a normal GPAW block, so they
+        // are dumped together — the setups dict and the DFTD4 wrap are both
+        // appended to code that already has to stay syntactically valid.
+        CalculatorConfig hubbard = gpawConfig();
+        hubbard.task = TaskKind::GeometryOptimization;
+        hubbard.useHubbardU = true;
+        hubbard.hubbardU = {{"Fe", "d", 3.5, false}, {"O", "p", 2.0, true}};
+        hubbard.dispersionD4 = true;
+        dump("gpaw_hubbard_d4.py", hubbard);
+
         CalculatorConfig emt;
         emt.task = TaskKind::MolecularDynamics;
         emt.ensemble = MdEnsemble::BerendsenNPT;
@@ -162,6 +172,10 @@ int main(int argc, char** argv)
             OpticsConfig tetra = sheet;
             tetra.tetrahedronIntegration = true;
             dumpOptics("optics_2d_tetrahedron.py", tetra);
+            OpticsConfig ibz = optics;
+            ibz.responseKpts[0] = ibz.responseKpts[1] = ibz.responseKpts[2] = 12;
+            ibz.includeIbzPoints = true;
+            dumpOptics("optics_ibz.py", ibz);
         }
 
         // GW: both engines against both frequency treatments. The Yambo path
@@ -520,6 +534,89 @@ int main(int argc, char** argv)
                       "names the remedy in the error message");
         check(!contains(script, "integrationmode = \"point integration\""),
               "does not silently fall back to point integration");
+    }
+
+    // -- Response k-mesh and IBZ reduction -----------------------------------
+    std::printf("Optics response sampling:\n");
+    {
+        OpticsConfig optics;
+        optics.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        const std::string script = generateOpticsScript(optics);
+        check(!contains(script, "kpts=("),
+              "no k-mesh line when the baseline grid is inherited");
+        checkContains(script, "symmetry=\"off\"",
+                      "full-zone sampling by default");
+    }
+    {
+        OpticsConfig optics;
+        optics.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        optics.responseKpts[0] = 12;
+        optics.responseKpts[1] = 12;
+        optics.responseKpts[2] = 8;
+        optics.includeIbzPoints = true;
+        const std::string script = generateOpticsScript(optics);
+        checkContains(script, "kpts=(12, 12, 8)",
+                      "the denser response mesh overrides the baseline grid");
+        // Leaving symmetry ON is what produces the weighted irreducible set;
+        // emitting symmetry="off" alongside would cancel the whole feature.
+        check(!contains(script, "symmetry=\"off\""),
+              "IBZ mode does not also disable symmetry");
+        checkContains(script, "get_k_point_weights()",
+                      "reports the degeneracy weights it will integrate with");
+        checkContains(script, "CALANGO_INFO response k-points=",
+                      "reports how many points survived the reduction");
+    }
+    {
+        // A partially specified mesh is not a mesh — 12x12x0 would be an
+        // invalid grid, so it must fall back to inheriting rather than emit it.
+        OpticsConfig optics;
+        optics.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        optics.responseKpts[0] = 12;
+        optics.responseKpts[1] = 12;
+        check(!contains(generateOpticsScript(optics), "kpts=("),
+              "an incomplete mesh is ignored rather than emitted");
+    }
+
+    // -- DFT+U and dispersion ------------------------------------------------
+    std::printf("DFT+U and dispersion:\n");
+    {
+        CalculatorConfig c = gpawConfig();
+        c.useHubbardU = true;
+        c.hubbardU = {{"Fe", "d", 3.5, false}, {"Ni", "d", 4.6, false}};
+        const std::string script =
+            AseScriptGenerator::generate(c, "structure.extxyz");
+        // The leading colon keeps the DEFAULT PAW dataset and appends the
+        // correction; without it GPAW hunts for a differently named dataset.
+        checkContains(script, "setups={\"Fe\": \":d,3.5\", \"Ni\": \":d,4.6\"}",
+                      "emits GPAW's setups dictionary");
+    }
+    {
+        CalculatorConfig c = gpawConfig();
+        c.useHubbardU = false;
+        c.hubbardU = {{"Fe", "d", 3.5, false}};
+        check(!contains(AseScriptGenerator::generate(c, "structure.extxyz"),
+                        "setups="),
+              "a populated table stays unwritten while the toggle is off");
+    }
+    {
+        CalculatorConfig c = gpawConfig();
+        c.dispersionD4 = true;
+        c.gpawXc = "PBEsol";
+        const std::string script =
+            AseScriptGenerator::generate(c, "structure.extxyz");
+        checkContains(script, "from ase.calculators.dftd4 import DFTD4",
+                      "imports the ASE DFTD4 wrapper");
+        // The damping parameters are fitted per functional, so D4 must be told
+        // which one it corrects — following the calculator's own xc.
+        checkContains(script, "atoms.calc = DFTD4(method=\"PBEsol\", calc=atoms.calc)",
+                      "wraps the calculator and follows its functional");
+    }
+    {
+        // The wrap must apply to every calculator, not just GPAW.
+        CalculatorConfig c = maceConfig();
+        c.dispersionD4 = true;
+        checkContains(AseScriptGenerator::generate(c, "structure.extxyz"),
+                      "calc=atoms.calc)", "wraps a non-DFT calculator too");
     }
 
     // -- GW quasiparticle pipelines -----------------------------------------

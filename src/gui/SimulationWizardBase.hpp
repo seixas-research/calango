@@ -4,8 +4,10 @@
 
 #include <QDialog>
 #include <QString>
+#include <QStringList>
 
 #include <optional>
+#include <vector>
 
 class QCheckBox;
 class QComboBox;
@@ -172,6 +174,23 @@ protected:
     /// with symmetry off is the recommended baseline for an MLWF localization.
     virtual bool showsGpawSymmetryToggle() const { return false; }
 
+    /// When true a "van der Waals Correction (DFTD4)" checkbox is shown.
+    ///
+    /// Offered by the wizards whose result depends on forces or on energy
+    /// DIFFERENCES between geometries — Geometry Optimization, Phonon, MD,
+    /// Monte Carlo, NEB — since that is where the missing long-range
+    /// correlation of a semilocal functional actually changes the answer. A
+    /// single-point total energy gains a constant shift, which is why the
+    /// default is off.
+    virtual bool showsDispersionToggle() const { return false; }
+
+    /// Chemical species present in the structure this wizard is configuring,
+    /// used to seed the Hubbard editor's element completer. Empty is fine —
+    /// the completer is simply omitted — but a wizard that holds a structure
+    /// should override it, since a U on an element the cell does not contain
+    /// is silently inert and hard to spot in a generated script.
+    virtual QStringList calculatorElements() const { return {}; }
+
     /// When true a "Export Electron Density (.cube)" checkbox is shown in the
     /// GPAW "Output & Exports" group. Only the Single-Point wizard exposes it.
     virtual bool showsGpawDensityExport() const { return false; }
@@ -210,6 +229,8 @@ protected Q_SLOTS:
     void refreshPreview();
 
 private Q_SLOTS:
+    /// "Hubbard parameters…": open the DFT+U editor and keep its result.
+    void editHubbardParameters();
     void goNext();
     void goBack();
     void exportScript();
@@ -332,6 +353,15 @@ private:
     QCheckBox* gpawSymmetryOffCheck_ = nullptr;
     /// "Gamma-centered Grid" — emits kpts={'size':…,'gamma':True}. GPAW only.
     QCheckBox* gpawGammaCheck_ = nullptr;
+    /// "Hubbard parameters…" — GPAW only. The edited state lives here rather
+    /// than in the dialog, which is constructed on demand and destroyed on
+    /// close.
+    QPushButton* hubbardButton_ = nullptr;
+    bool hubbardEnabled_ = false;
+    std::vector<core::HubbardU> hubbardParameters_;
+    /// "van der Waals Correction (DFTD4)" — offered by the wizards whose task
+    /// involves forces or energy differences between geometries.
+    QCheckBox* dispersionD4Check_ = nullptr;
     /// "Export Charge Density (.cube)" + pseudo/all-electron type — shown only
     /// when showsGpawDensityExport() is true (Single-Point).
     QCheckBox* gpawDensityExportCheck_ = nullptr;

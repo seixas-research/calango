@@ -1,65 +1,81 @@
 \chapter{The Workspace}
 \label{ch:workspace}
 
-\section{The 12-zone grid}
+\section{The default layout}
 
-Calango opens into a fixed default arrangement: a $4 \times 3$ grid of
-twelve zones around the central 3D viewport. Every zone is a Qt dock
-widget, so the layout is a starting point rather than a constraint --- any
-panel can be resized, re-docked, tabbed with another, floated onto a second
-monitor, or hidden entirely.
+Calango opens into two full-height side columns flanking the 3D viewport,
+with a short row of job panels between them. Every panel is a Qt dock widget,
+so the layout is a starting point rather than a constraint --- any panel can be
+resized, re-docked, tabbed with another, floated onto a second monitor, or
+hidden entirely.
 
 \begin{center}
 \begin{tikzpicture}[
     zone/.style={draw=shadegray, fill=panelgray, rounded corners=2pt,
-                 minimum height=1.5cm, align=center, font=\small},
+                 minimum height=1.0cm, align=center, font=\small},
     view/.style={draw=calangoteal, fill=calangoteal!12, rounded corners=2pt,
                  align=center, font=\small\bfseries, text=calangodark},
     node distance=2mm]
-  % row 1
-  \node[zone, minimum width=3.1cm] (z1) at (0,3.2) {\textbf{1}\\Logo};
-  \node[view, minimum width=6.4cm, minimum height=3.2cm] (v) at (3.9,2.35)
-       {\textbf{2--3, 6--7}\\3D Viewport\\[2pt]
+  % --- left column (full height) ---
+  \node[zone, minimum width=2.6cm, minimum height=0.5cm] (l1) at (0,3.35) {Calango};
+  \node[zone, minimum width=2.6cm] (l2) at (0,2.5) {Structure};
+  \node[zone, minimum width=2.6cm] (l3) at (0,1.35) {Volumetric\\Data};
+  \node[zone, minimum width=2.6cm] (l4) at (0,0.15) {Processes};
+  % --- centre: viewport over the job row ---
+  \node[view, minimum width=5.0cm, minimum height=2.7cm] (v) at (4.2,2.6)
+       {3D Viewport\\[2pt]
         \footnotesize\mdseries tab bar $\cdot$ toolbar $\cdot$ timeline};
-  \node[view, minimum width=3.1cm, minimum height=3.2cm, fill=calangoteal!7]
-       (z48) at (7.8,2.35) {\textbf{4, 8}\\Representation};
-  % row 2
-  \node[zone, minimum width=3.1cm] (z5) at (0,1.5) {\textbf{5}\\Processes\\+ Structure};
-  % row 3
-  \node[zone, minimum width=1.9cm] (z9)  at (-0.6,0) {\textbf{9}\\Lighting};
-  \node[zone, minimum width=2.9cm] (z10) at (1.85,0) {\textbf{10}\\Job};
-  \node[zone, minimum width=2.4cm] (z11) at (4.55,0) {\textbf{11}\\Remote};
-  \node[zone, minimum width=2.4cm] (z12) at (7.15,0) {\textbf{12}\\Cell \& Axes};
+  \node[zone, minimum width=2.4cm, minimum height=1.2cm] (b1) at (3.0,0.2) {Results};
+  \node[zone, minimum width=2.4cm, minimum height=1.2cm] (b2) at (5.5,0.2) {Remote\\Access};
+  % --- right column (full height) ---
+  \node[view, minimum width=2.8cm, minimum height=1.2cm, fill=calangoteal!7]
+       (r1) at (8.3,3.05) {Representation};
+  \node[zone, minimum width=2.8cm, minimum height=1.1cm] (r2) at (8.3,1.75)
+       {Cell, Axes\\\& Vectors};
+  \node[zone, minimum width=2.8cm, minimum height=1.1cm] (r3) at (8.3,0.5)
+       {Visual Effects};
 \end{tikzpicture}
 \end{center}
 
 \begin{description}
-  \item[Zone 1 --- branding] The Calango banner. Purely decorative; hide it
-    from \menu{View} if you want the vertical space.
-  \item[Zone 5 --- \ui{Processes} and \ui{Structure}] The process manager
-    (Section~\ref{sec:process-manager}) sits above the structure
-    information panel.
-  \item[Zones 2--3, 6--7 --- the viewport] The document tab bar, the frame
-    toolbar, the 3D canvas, and the playback timeline (visible only for
-    trajectories). Covered in Chapter~\ref{ch:viewport}.
-  \item[Zones 4 and 8 --- \ui{Representation}] Appearance controls,
-    spanning the full height of the right column
-    (Chapter~\ref{ch:appearance}).
-  \item[Zone 9 --- \ui{Lighting}] Directional light editor.
-  \item[Zone 10 --- \ui{Job}] Console and live metric plots for the running
+  \item[\ui{Calango}] The branding strip heading the left column. Purely
+    decorative; hide it from \menu{View} if you want the vertical space.
+  \item[\ui{Structure}] Formula, atom and bond counts, lattice parameters,
+    cell volume and periodicity, plus \ui{Edit Structure\dots}
+    (Chapter~\ref{ch:editing}).
+  \item[\ui{Volumetric Data}] Scalar fields --- charge density, ELF, Wannier
+    orbitals --- as isosurfaces and colour slices (Section~\ref{sec:volumetric}).
+  \item[\ui{Processes}] The process manager
+    (Section~\ref{sec:process-manager}): every background task with live status.
+  \item[the viewport] The document tab bar, the frame toolbar, the 3D canvas,
+    and the playback timeline (visible only for trajectories). Covered in
+    Chapter~\ref{ch:viewport}.
+  \item[\ui{Results}] Console and live metric plots for the running
     calculation (Section~\ref{sec:job-panel}).
-  \item[Zone 11 --- \ui{Remote Access}] SSH connection, cluster job
-    submission and queue monitoring (Chapter~\ref{ch:remote}).
-  \item[Zone 12 --- \ui{Unit Cell \& Axes}] Cell wireframe and axes triad
-    styling.
+  \item[\ui{Remote Access}] SSH connection, cluster job submission and queue
+    monitoring (Chapter~\ref{ch:remote}). It opens at the narrowest width that
+    still shows its whole form.
+  \item[\ui{Representation}] Appearance controls --- style, mode, colour
+    mapping, radii and bond widths (Chapter~\ref{ch:appearance}).
+  \item[\ui{Cell, Axes \& Vectors}] Three tabs: the cell wireframe, the
+    orientation triad, and the per-atom vector overlay. All three draw
+    something onto the scene that is not the atoms.
+  \item[\ui{Visual Effects}] Lighting, shadow, fog, blur and ambient occlusion.
 \end{description}
 
 \begin{caltip}
-Your layout is saved when you quit and restored on the next launch,
-including floating panels and window geometry. Every panel has a toggle at
-the bottom of the \menu{View} menu, so a panel you closed by accident is
-one menu click away.
+Your layout is saved when you quit and restored on the next launch, including
+floating panels and window geometry. Every panel has a toggle at the bottom of
+the \menu{View} menu, so a panel you closed by accident is one menu click away
+--- and \menu{View}\menusep\menu{Reset Layout} puts everything back where this
+diagram shows it.
 \end{caltip}
+
+\begin{calnote}
+After an upgrade that changes the default arrangement, Calango discards the
+saved layout once so the new default appears; any rearrangement you make after
+that persists as usual.
+\end{calnote}
 
 \section{Documents, tabs and the timeline}
 

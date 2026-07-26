@@ -1,0 +1,228 @@
+\chapter{Tutorial: silicon from start to finish}
+\label{ch:tutorial-silicon}
+
+This tutorial walks the whole arc of a materials study on one small,
+well-understood system: crystalline silicon. You will build the crystal,
+relax it, converge a ground state, compute the phonon dispersion, and finish
+with the electronic band structure and projected density of states.
+
+Silicon is the right first system precisely because the answers are known.
+Every stage below ends with a number you can check, so when something goes
+wrong you find out at that stage instead of three stages later.
+
+\begin{calwarn}
+GPAW is used throughout. Install it into a Conda environment and point
+Calango at it once, in \menu{Edit}\menusep\menu{Preferences}\menusep\menu{Python
+\& Environments}. Every wizard then binds to that environment automatically.
+Without GPAW you can still follow the tutorial with the \ui{EMT} calculator ---
+the workflow is identical --- except for the absence of electronic structure calculations.
+\end{calwarn}
+
+\section{Step 1 --- Build the crystal}
+
+Open \menu{Build}\menusep\menu{From Database\dots} and stay on the \ui{Bulk}
+tab. It is already set up for this system:
+
+\begin{description}
+  \item[\ui{Build from}] \opt{Prototype (ase.build.bulk)}.
+  \item[\ui{Formula}] \opt{Si}.
+  \item[\ui{Crystal structure}] \opt{diamond}.
+  \item[\ui{Lattice constant a}] leave at \opt{0} to accept ASE's tabulated
+    value, 5.43\,\AA.
+  \item[\ui{Cell shape}] leave unchecked for the two-atom primitive cell.
+\end{description}
+
+Click \ui{Build Crystal} and the crystal opens in a new workspace tab. The
+\ui{Structure} dock on the left should now read \opt{Si2}, 2 atoms, with
+$a = b = c = 3.84$\,\AA{} and $\alpha = \beta = \gamma = 60^\circ$: that is
+the rhombohedral primitive cell of the diamond lattice, not an error. The
+conventional cubic cell with its 8 atoms and $90^\circ$ angles is what you get
+by ticking \ui{Conventional cubic cell}.
+
+\begin{caltip}
+Work in the primitive cell. Every stage after this one scales with the number
+of atoms --- the phonon step worst of all, since it builds a supercell of
+whatever you hand it. Eight atoms instead of two would make that step roughly
+an order of magnitude slower for identical physics.
+\end{caltip}
+
+\section{Step 2 --- Relax the geometry}
+
+Silicon's tabulated lattice constant is not PBE's lattice constant, so the
+first job is to let the calculator find its own minimum.
+
+Open \menu{Simulation}\menusep\menu{Geometry Optimization\dots}. The wizard
+runs in four stages; the \ui{Next} button carries you through them.
+
+\begin{enumerate}
+  \item \textbf{Calculator \& Execution Environment.} Choose \ui{GPAW}. The
+    Conda environment is filled in from Preferences.
+  \item \textbf{Calculator Settings.} For this system:
+    \begin{itemize}
+      \item \ui{Mode} \opt{PW}, \ui{Plane-wave cutoff} \opt{400\,eV}
+      \item \ui{XC functional} \opt{PBE}
+      \item \ui{k-points} \opt{8 $\times$ 8 $\times$ 8}
+    \end{itemize}
+  \item \textbf{Optimization Settings.} \ui{Force convergence (fmax)}
+    \opt{0.01\,eV/\AA}. Silicon's primitive cell has no free internal
+    coordinates by symmetry, so this converges almost immediately.
+  \item \textbf{ASE Script Review.} Read the script --- it is the whole job,
+    and it is editable. Press \ui{Run}.
+\end{enumerate}
+
+The \ui{Processes} dock tracks the run and the \ui{Results} dock plots energy
+against step as it goes. When it finishes, the relaxed structure loads back
+into the tab and \menu{Results}\menusep\menu{Geometry Optimization Viewer\dots}
+shows the energy and force convergence history.
+
+\begin{calnote}
+Relaxing \emph{positions} will not change silicon's lattice constant --- BFGS
+moves atoms, not the cell. Getting PBE's lattice constant (about 5.47\,\AA,
+some 0.7\,\% above experiment, which is PBE behaving normally) means an
+energy--volume scan: build several cells with
+\menu{Build}\menusep\menu{Supercell\dots} or the structure editor, run a
+single point on each, and fit the minimum. This tutorial keeps the tabulated
+constant so the later stages stay comparable to published numbers.
+\end{calnote}
+
+\section{Step 3 --- Converge the ground state}
+
+\menu{Simulation}\menusep\menu{Single-point Calculation\dots} (\kbd{Ctrl}+\kbd{R})
+now does double duty. It reports the total energy, and --- because the
+calculator is GPAW --- it writes \file{single\_point.gpw}, the converged
+density and wavefunctions.
+
+Use the same calculator settings as Step 2, but raise the k-grid to
+\opt{12 $\times$ 12 $\times$ 12}. Run it.
+
+\begin{calnote}
+This file is the \emph{baseline} that the later analysis workflows inherit.
+Electronic Structure, Optics, ELF, MLWF and GW all load a completed ground
+state and evaluate at fixed density rather than re-converging their own. That
+is deliberate: a spectrum computed from a silently different SCF solution than
+the one you inspected is not attributable to anything. It also means those
+wizards will refuse to open until this step exists --- if one tells you it
+needs a baseline, this is the step you skipped.
+\end{calnote}
+
+\menu{Results}\menusep\menu{Single-Point Viewer\dots} shows the total energy,
+the Fermi level and the maximum residual force.
+
+\section{Step 4 --- Phonon dispersion}
+
+Open \menu{Simulation}\menusep\menu{Phonon\dots}. This wizard has four stages.
+
+\begin{enumerate}
+  \item \textbf{Calculator \& Execution Environment.} GPAW again.
+  \item \textbf{Calculator Settings.} As before.
+  \item \textbf{Phonon Settings.}
+    \begin{itemize}
+      \item \ui{Displacement $\delta$} \opt{0.01\,\AA} --- small enough to stay
+        harmonic, large enough to lift the forces clear of numerical noise.
+      \item \ui{Supercell} \opt{3 $\times$ 3 $\times$ 3}. The supercell sets
+        how far force constants are sampled, and therefore how much of the
+        dispersion is real rather than interpolated. $2\times2\times2$ runs
+        faster and already gives the right shape.
+      \item \ui{Symmetry-reduced displacements} \textbf{on}. The naive scheme
+        costs $6N$ force evaluations; silicon's space group relates almost all
+        of them, and spglib (through phonopy) reduces the set by roughly an
+        order of magnitude for identical force constants.
+      \item \ui{Remove residual forces} \textbf{on}. A relaxation stops at a
+        finite \opt{fmax}, so the reference geometry still carries small
+        forces; left in, they add a spurious linear term that shows up as
+        non-zero acoustic frequencies at $\Gamma$.
+      \item \ui{Enforce acoustic sum rule} \textbf{on}.
+    \end{itemize}
+  \item \textbf{q-Path Definition.} The embedded Brillouin-zone builder
+    suggests silicon's conventional path,
+    $\Gamma \to X \to W \to K \to \Gamma \to L$. Accept it.
+\end{enumerate}
+
+This is the longest step of the tutorial --- it is many force evaluations on a
+supercell. When it completes, the \ui{Phonon Viewer} opens on its own.
+
+\subsection{Checking the answer}
+
+Two atoms in the primitive cell give $3 \times 2 = 6$ branches: three acoustic
+and three optical. Check these before reading anything else into the plot:
+
+\begin{description}
+  \item[Acoustic branches vanish at $\Gamma$.] All three should start at zero.
+    Residual frequencies of a few cm$^{-1}$ are normal; tens of cm$^{-1}$ mean
+    the acoustic sum rule or the residual-force subtraction is not doing its
+    job, or the relaxation was too loose.
+  \item[The optical mode at $\Gamma$ sits near 15.5\,THz (520\,cm$^{-1}$).]
+    This is silicon's Raman line, one of the best-measured numbers in solid
+    state physics. Within a few percent means the calculation is sound.
+  \item[No imaginary frequencies.] Plotted as negative, they would mean the
+    structure is not at a minimum --- for silicon that indicates a problem with
+    the setup, not a real instability.
+\end{description}
+
+\menu{Analysis}\menusep\menu{Phonon Thermodynamics\dots} integrates the density
+of states into internal energy, free energy, entropy and heat capacity over
+0--1000\,K. Two checks come free: $C_V$ must approach the Dulong--Petit limit
+$3Nk_B$ at high temperature, and the entropy must go to zero at 0\,K.
+
+\section{Step 5 --- Electronic structure}
+
+Open \menu{Simulation}\menusep\menu{Electronic Structure\dots}. Stage 1 asks
+for a \ui{Baseline SCF density} --- the \file{single\_point.gpw} from Step 3.
+Select it.
+
+The run is non-self-consistent by construction: it loads that density and
+evaluates the bands along the k-path at fixed density. Set the k-path the same
+way as for the phonons ($\Gamma \to X \to W \to K \to \Gamma \to L$) and enable
+\ui{PDOS} to get the element- and orbital-projected density of states beside
+the bands.
+
+When it finishes, the band/PDOS viewer opens: bands as $E - E_F$ against
+k-distance on the left, the PDOS sharing the energy axis on the right.
+
+\subsection{Checking the answer}
+
+\begin{description}
+  \item[The gap is indirect.] The valence-band maximum sits at $\Gamma$; the
+    conduction-band minimum does not --- it lies along $\Gamma \to X$, about
+    85\,\% of the way to $X$. A band structure showing silicon's minimum at
+    $\Gamma$ is wrong.
+  \item[The gap is too small, and that is expected.] PBE gives roughly
+    0.6\,eV against an experimental 1.17\,eV. This is the standard
+    band-gap underestimation of semilocal DFT, not a convergence failure.
+    Raising the cutoff or the k-grid will not fix it, because it is not an
+    error in the calculation.
+  \item[The PDOS is $sp^3$.] The valence band is a mixture of Si $s$ and $p$
+    character, as tetrahedral bonding requires.
+\end{description}
+
+\begin{caltip}
+To correct the gap rather than accept it, run
+\menu{Simulation}\menusep\menu{GW Calculations\dots} on the same baseline.
+One-shot $G_0W_0$ replaces the DFT exchange--correlation potential with the
+self-energy and opens semiconductor gaps by typically 0.5--2\,eV. The
+\ui{GW Viewer} reports the DFT gap, the quasiparticle gap and the
+renormalization between them.
+\end{caltip}
+
+\section{Where to go next}
+
+The same baseline supports the rest of the analysis suite without recomputing
+the ground state:
+
+\begin{itemize}
+  \item \menu{Simulation}\menusep\menu{Optics\dots} --- the dielectric function
+    $\varepsilon(\omega)$ and the absorption, reflectivity, refractive-index
+    and loss spectra derived from it.
+  \item \menu{Simulation}\menusep\menu{Electron Localization Function (ELF)\dots}
+    --- the covalent bond charge between neighbours, as an isosurface.
+  \item \menu{Simulation}\menusep\menu{Maximally Localized Wannier Functions
+    (MLWF)\dots} --- the four $sp^3$ bond orbitals of the diamond lattice.
+  \item \menu{Analysis}\menusep\menu{Raman Modes\dots} --- the factor-group
+    analysis that labels silicon's $\Gamma$ optical mode $T_{2g}$ and
+    Raman-active.
+\end{itemize}
+
+Save the workspace with \menu{File}\menusep\menu{Save} before you stop. Job
+directories of a saved project are kept alongside the \file{.calproj}, so
+every result above stays linked in the \ui{Processes} dock and can be reopened
+without recomputation.

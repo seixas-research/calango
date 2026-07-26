@@ -25,6 +25,8 @@ protected:
     /// Calculator Settings lead, then the dynamics settings: the forces the
     /// integrator propagates come from the engine, so choosing it first is the
     /// order the physics is set up in (and matches Geometry Optimization).
+    /// Dispersion is offered here: the forces that drive the dynamics are what the correction changes.
+    bool showsDispersionToggle() const override { return true; }
     bool settingsStageFirst() const override { return false; }
     QString generateScript() const override;
     QString exportFileName() const override { return QStringLiteral("md.py"); }

@@ -24,13 +24,14 @@
 \usepackage{tikz}
 \usepackage{needspace}
 \usepackage{parskip}
-\usepackage[colorlinks=true,linkcolor=calangoteal,urlcolor=calangoteal,
-            citecolor=calangoteal]{hyperref}
+\usepackage[colorlinks=true,linkcolor=calangocoral,urlcolor=calangocoral,
+            citecolor=calangocoral]{hyperref}
 
 \tcbuselibrary{skins,breakable}
 \usetikzlibrary{positioning,fit,backgrounds}
 
 % --- Brand palette (shared with docs/packaging.tex) ------------------------
+\definecolor{calangocoral}{RGB}{205,91,69} % 	205,91,69 | 255, 127, 80
 \definecolor{calangoteal}{RGB}{0,110,110}
 \definecolor{calangodark}{RGB}{30,34,40}
 \definecolor{codebg}{RGB}{245,246,248}
@@ -42,22 +43,22 @@
 % --- Chapter / section typography -----------------------------------------
 \titleformat{\chapter}[display]
   {\bfseries\color{calangodark}}
-  {\raggedright\large\color{shadegray}\MakeUppercase{\chaptertitlename}\ \Huge\color{calangoteal}\thechapter}
+  {\raggedright\large\color{shadegray}\MakeUppercase{\chaptertitlename}\ \Huge\color{calangocoral}\thechapter}
   {6pt}
   {\Huge\raggedright}
-  [\vspace{4pt}{\color{calangoteal}\rule{\textwidth}{1.6pt}}]
+  [\vspace{4pt}{\color{calangocoral}\rule{\textwidth}{1.6pt}}]
 \titlespacing*{\chapter}{0pt}{-18pt}{22pt}
 
 \titleformat{\section}
   {\Large\bfseries\color{calangodark}}
-  {\textcolor{calangoteal}{\thesection}}{0.8em}{}
-  [\vspace{-6pt}{\color{calangoteal!35}\rule{\textwidth}{0.8pt}}]
+  {\textcolor{calangocoral}{\thesection}}{0.8em}{}
+  [\vspace{-6pt}{\color{calangocoral!35}\rule{\textwidth}{0.8pt}}]
 \titleformat{\subsection}
   {\large\bfseries\color{calangodark}}
-  {\textcolor{calangoteal}{\thesubsection}}{0.8em}{}
+  {\textcolor{calangocoral}{\thesubsection}}{0.8em}{}
 \titleformat{\subsubsection}
   {\normalsize\bfseries\color{calangodark}}
-  {\textcolor{calangoteal}{\thesubsubsection}}{0.7em}{}
+  {\textcolor{calangocoral}{\thesubsubsection}}{0.7em}{}
 \titlespacing*{\section}{0pt}{18pt}{10pt}
 \titlespacing*{\subsection}{0pt}{12pt}{6pt}
 
@@ -68,12 +69,12 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\raisebox{-4pt}{%
-  \includegraphics[height=18pt]{../../assets/.internal/logo_light.png}}}
+  \includegraphics[height=18pt]{../../../assets/.internal/logo_light.png}}}
 \fancyhead[R]{\small\color{shadegray}\nouppercase{\leftmark}}
 \fancyfoot[L]{\small\color{shadegray}Calango User Guide}
 \fancyfoot[R]{\small\color{shadegray}\thepage}
 \renewcommand{\headrulewidth}{0.8pt}
-\renewcommand{\headrule}{{\color{calangoteal}%
+\renewcommand{\headrule}{{\color{calangocoral}%
   \hrule width\headwidth height\headrulewidth}}
 \renewcommand{\footrulewidth}{0pt}
 \renewcommand{\chaptermark}[1]{\markboth{\thechapter.\ #1}{}}
@@ -87,7 +88,7 @@
   backgroundcolor=\color{codebg},
   frame=leftline,
   framerule=2.4pt,
-  rulecolor=\color{calangoteal},
+  rulecolor=\color{calangocoral},
   framesep=8pt,
   xleftmargin=12pt,
   xrightmargin=6pt,
@@ -109,7 +110,7 @@
 % A UI control (button, field, checkbox label).
 \newcommand{\ui}[1]{\textcolor{calangodark}{\textsf{\textbf{#1}}}}
 % A menu path: \menu{Analysis}{Raman Modes}
-\newcommand{\menusep}{\,\textcolor{calangoteal}{$\rangle$}\,}
+\newcommand{\menusep}{\,\textcolor{calangocoral}{$\rangle$}\,}
 \newcommand{\menu}[1]{\textsf{\textbf{\textcolor{calangodark}{#1}}}}
 % A keyboard key.
 \newcommand{\kbd}[1]{%
@@ -118,9 +119,9 @@
 
 % --- Callout boxes ---------------------------------------------------------
 \newtcolorbox{calnote}[1][]{%
-  breakable, enhanced, colback=calangoteal!5, colframe=calangoteal,
+  breakable, enhanced, colback=calangocoral!5, colframe=calangocoral,
   boxrule=0pt, leftrule=3pt, arc=1pt, left=8pt, right=8pt, top=6pt, bottom=6pt,
-  fonttitle=\bfseries\small, title={Note}, coltitle=calangoteal,
+  fonttitle=\bfseries\small, title={Note}, coltitle=calangocoral,
   attach title to upper=\par\vspace{2pt}, #1}
 \newtcolorbox{caltip}[1][]{%
   breakable, enhanced, colback=tipgreen!5, colframe=tipgreen,
@@ -144,21 +145,21 @@
 \begin{titlepage}
 \centering
 \vspace*{2.0cm}
-\includegraphics[width=0.55\textwidth]{../../assets/.internal/logo_light.png}\par
+\includegraphics[width=0.55\textwidth]{../../../assets/.internal/logo_light.png}\par
 \vspace{1.3cm}
-{\color{calangoteal}\rule{0.74\textwidth}{1.6pt}}\par
+{\color{calangocoral}\rule{0.74\textwidth}{1.6pt}}\par
 \vspace{0.9cm}
 {\Huge\bfseries User Guide\par}
 \vspace{0.5cm}
 {\Large Visual atomistic modeling, simulation and analysis\par}
 \vspace{0.9cm}
-{\color{calangoteal}\rule{0.74\textwidth}{1.6pt}}\par
+{\color{calangocoral}\rule{0.74\textwidth}{1.6pt}}\par
 \vspace{1.5cm}
 {\large\bfseries Leandro Seixas\par}
 \vspace{0.3cm}
 {\large\color{shadegray}Seixas Research\par}
 \vfill
-{\large July 2026 --- Calango 26.7.26\par}
+{\large July 2026 --- Calango 26.7.55\par}
 \vspace*{1.2cm}
 \end{titlepage}
 
@@ -167,6 +168,7 @@
 \tableofcontents
 
 \input{sections/01_getting_started}
+\input{sections/01b_tutorial_silicon}
 \input{sections/02_workspace}
 \input{sections/03_viewport}
 \input{sections/04_data}
@@ -176,6 +178,7 @@
 \input{sections/08_simulations}
 \input{sections/09_remote}
 \input{sections/10_electronic}
+\input{sections/10b_optics_gw}
 \input{sections/11_analysis}
 \input{sections/12_output}
 \input{sections/13_reference}

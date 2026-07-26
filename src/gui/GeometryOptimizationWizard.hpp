@@ -30,6 +30,8 @@ protected:
     QString settingsHeader() const override;
     QWidget* buildSettingsPage() override;
     /// Calculator Settings first, then the relaxation settings page.
+    /// Dispersion is offered here: a relaxation path is exactly where the missing long-range attraction changes the geometry it settles into.
+    bool showsDispersionToggle() const override { return true; }
     bool settingsStageFirst() const override { return false; }
     /// The GPAW calculator form is shared verbatim with the Single-Point
     /// wizard through GpawElectronicRows — same groups, same rows, same

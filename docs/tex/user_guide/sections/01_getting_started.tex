@@ -53,8 +53,7 @@ Calango needs \texttt{ase} and \texttt{numpy} at minimum. Individual
 features add their own requirements: \texttt{spglib} (symmetry, Raman
 modes), \texttt{paramiko} (remote access), \texttt{pillow} /
 \texttt{imageio} / \texttt{imageio-ffmpeg} (animation export),
-\texttt{mace-torch} (ML potentials), \texttt{gpaw} (DFT bands and PDOS),
-\texttt{icet} (optional, improves SQS generation). A complete environment:
+\texttt{mace-torch} (ML potentials), \texttt{gpaw} (DFT bands and PDOS). A complete environment:
 \begin{lstlisting}
 python3 -m venv .venv
 .venv/bin/pip install ase numpy spglib paramiko pillow imageio \
@@ -116,6 +115,3 @@ on screen:
     Each file argument opens in its own tab; a \file{.calproj} argument
     restores a whole saved session.
 \end{enumerate}
-
-Once a structure is loaded, \kbd{F} frames it in the viewport and the
-\ui{Structure} panel fills in with formula, cell parameters and symmetry.

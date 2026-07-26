@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gui/OpticsPlotStyleDialog.hpp"
+
 #include <QDialog>
 #include <QList>
 #include <QPair>
@@ -8,6 +10,7 @@
 #include <vector>
 
 class QComboBox;
+class QDoubleSpinBox;
 
 namespace calango::gui {
 
@@ -36,6 +39,11 @@ public:
 private Q_SLOTS:
     /// Rebuild the plotted series from the Quantity + Direction combos.
     void updatePlot();
+    /// "Customize Appearance…": open the styling dialog, applying live.
+    void customizeAppearance();
+    /// Re-label and re-scale the range spin boxes after a unit change, keeping
+    /// the window pointing at the same physical span where possible.
+    void retuneRangeForUnit();
     /// Energy + every quantity for the current direction, one row per sample.
     void exportCsv();
     /// Render the current plot to a high-resolution PNG / JPEG.
@@ -98,6 +106,11 @@ private:
     QComboBox* quantityCombo_ = nullptr;
     QComboBox* directionCombo_ = nullptr;
     QComboBox* unitCombo_ = nullptr;
+    /// Display window on the abscissa. Both zero means "fit the data"; the
+    /// suffix and sensible range follow the selected unit.
+    QDoubleSpinBox* xMinSpin_ = nullptr;
+    QDoubleSpinBox* xMaxSpin_ = nullptr;
+    OpticsPlotStyle style_;
     bool hasData_ = false;
 };
 

@@ -46,6 +46,8 @@ protected:
     QString secondSettingsHeader() const override;
     QWidget* buildSecondSettingsPage() override;
     /// Calculator Settings lead; the phonon settings and q-path follow.
+    /// Dispersion is offered here: force constants are second derivatives of the energy, so a missing dispersion term shifts every frequency.
+    bool showsDispersionToggle() const override { return true; }
     bool settingsStageFirst() const override { return false; }
     QString generateScript() const override;
     QString exportFileName() const override { return QStringLiteral("phonon.py"); }

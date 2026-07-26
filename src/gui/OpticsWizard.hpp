@@ -99,6 +99,8 @@ private:
     QDoubleSpinBox* omegaMinSpin_ = nullptr;
     QDoubleSpinBox* omegaMaxSpin_ = nullptr;
     QSpinBox* npointsSpin_ = nullptr;
+    QSpinBox* responseKptsSpin_[3] = {nullptr, nullptr, nullptr};
+    QCheckBox* ibzCheck_ = nullptr;
     QCheckBox* tetrahedronCheck_ = nullptr;
     QCheckBox* dirXxCheck_ = nullptr;
     QCheckBox* dirYyCheck_ = nullptr;

@@ -1,0 +1,209 @@
+#include "gui/OpticsPlotStyleDialog.hpp"
+
+#include <QApplication>
+#include <QCheckBox>
+#include <QColorDialog>
+#include <QComboBox>
+#include <QDialogButtonBox>
+#include <QDoubleSpinBox>
+#include <QFontComboBox>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QPushButton>
+#include <QSpinBox>
+#include <QVBoxLayout>
+
+namespace calango::gui {
+
+QFont OpticsPlotStyle::axisFont() const
+{
+    QFont font = axisFontFamily.isEmpty() ? QApplication::font()
+                                          : QFont(axisFontFamily);
+    font.setPointSize(axisFontSize);
+    return font;
+}
+
+QColor OpticsPlotStyle::effectiveGridColor() const
+{
+    QColor color = gridColor;
+    color.setAlphaF(qBound(0.0, gridAlpha, 1.0));
+    return color;
+}
+
+OpticsPlotStyleDialog::OpticsPlotStyleDialog(const OpticsPlotStyle& style,
+                                             QWidget* parent)
+    : QDialog(parent)
+    , style_(style)
+{
+    setWindowTitle(tr("Customize Appearance"));
+
+    auto* layout = new QVBoxLayout(this);
+
+    auto* fillGroup = new QGroupBox(tr("Background"), this);
+    auto* fillForm = new QFormLayout(fillGroup);
+    canvasButton_ = colorButton(&style_.canvasBackground);
+    plotButton_ = colorButton(&style_.plotBackground);
+    fillForm->addRow(tr("Canvas fill:"), canvasButton_);
+    fillForm->addRow(tr("Plot area fill:"), plotButton_);
+    layout->addWidget(fillGroup);
+
+    auto* curveGroup = new QGroupBox(tr("Curves"), this);
+    auto* curveForm = new QFormLayout(curveGroup);
+    overrideCurveCheck_ =
+        new QCheckBox(tr("Use one colour for every curve"), curveGroup);
+    overrideCurveCheck_->setToolTip(
+        tr("Off, curves cycle through a palette so paired quantities (ε₁ with "
+           "ε₂, n with k) stay distinguishable. On, they share one stroke — "
+           "usually what a single-curve figure wants."));
+    curveForm->addRow(overrideCurveCheck_);
+    curveButton_ = colorButton(&style_.curveColor);
+    curveForm->addRow(tr("Curve colour:"), curveButton_);
+    lineWidthSpin_ = new QDoubleSpinBox(curveGroup);
+    lineWidthSpin_->setRange(0.2, 8.0);
+    lineWidthSpin_->setSingleStep(0.2);
+    lineWidthSpin_->setDecimals(1);
+    curveForm->addRow(tr("Line width:"), lineWidthSpin_);
+    lineStyleCombo_ = new QComboBox(curveGroup);
+    lineStyleCombo_->addItem(tr("Solid"), static_cast<int>(Qt::SolidLine));
+    lineStyleCombo_->addItem(tr("Dashed"), static_cast<int>(Qt::DashLine));
+    lineStyleCombo_->addItem(tr("Dotted"), static_cast<int>(Qt::DotLine));
+    curveForm->addRow(tr("Line style:"), lineStyleCombo_);
+    layout->addWidget(curveGroup);
+
+    auto* axisGroup = new QGroupBox(tr("Axes"), this);
+    auto* axisForm = new QFormLayout(axisGroup);
+    fontCombo_ = new QFontComboBox(axisGroup);
+    axisForm->addRow(tr("Font family:"), fontCombo_);
+    fontSizeSpin_ = new QSpinBox(axisGroup);
+    fontSizeSpin_->setRange(5, 48);
+    fontSizeSpin_->setSuffix(tr(" pt"));
+    axisForm->addRow(tr("Font size:"), fontSizeSpin_);
+    labelButton_ = colorButton(&style_.axisLabelColor);
+    axisForm->addRow(tr("Label colour:"), labelButton_);
+    layout->addWidget(axisGroup);
+
+    auto* gridGroup = new QGroupBox(tr("Grid"), this);
+    auto* gridForm = new QFormLayout(gridGroup);
+    gridCheck_ = new QCheckBox(tr("Show grid lines"), gridGroup);
+    gridForm->addRow(gridCheck_);
+    gridButton_ = colorButton(&style_.gridColor);
+    gridForm->addRow(tr("Grid colour:"), gridButton_);
+    gridAlphaSpin_ = new QDoubleSpinBox(gridGroup);
+    gridAlphaSpin_->setRange(0.0, 1.0);
+    gridAlphaSpin_->setSingleStep(0.05);
+    gridAlphaSpin_->setDecimals(2);
+    gridAlphaSpin_->setToolTip(
+        tr("Grid opacity. A grid at full strength competes with the data; "
+           "0.3–0.5 keeps it readable as a reference without doing so."));
+    gridForm->addRow(tr("Grid opacity:"), gridAlphaSpin_);
+    layout->addWidget(gridGroup);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Close | QDialogButtonBox::RestoreDefaults, this);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::accept);
+    connect(buttons->button(QDialogButtonBox::RestoreDefaults),
+            &QPushButton::clicked, this,
+            &OpticsPlotStyleDialog::restoreDefaults);
+
+    syncToControls();
+
+    // Live application: every control writes through to the viewer as it
+    // changes, so the result is judged against the real plot.
+    connect(overrideCurveCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        style_.overrideCurveColor = on;
+        curveButton_->setEnabled(on);
+        emitStyle();
+    });
+    connect(lineWidthSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double v) { style_.lineWidth = v; emitStyle(); });
+    connect(lineStyleCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        style_.lineStyle =
+            static_cast<Qt::PenStyle>(lineStyleCombo_->currentData().toInt());
+        emitStyle();
+    });
+    connect(fontCombo_, &QFontComboBox::currentFontChanged, this,
+            [this](const QFont& font) {
+                style_.axisFontFamily = font.family();
+                emitStyle();
+            });
+    connect(fontSizeSpin_, &QSpinBox::valueChanged, this,
+            [this](int v) { style_.axisFontSize = v; emitStyle(); });
+    connect(gridCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        style_.showGrid = on;
+        gridButton_->setEnabled(on);
+        gridAlphaSpin_->setEnabled(on);
+        emitStyle();
+    });
+    connect(gridAlphaSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double v) { style_.gridAlpha = v; emitStyle(); });
+}
+
+QPushButton* OpticsPlotStyleDialog::colorButton(QColor* target)
+{
+    auto* button = new QPushButton(this);
+    button->setFixedWidth(80);
+    paintSwatch(button, *target);
+    connect(button, &QPushButton::clicked, this, [this, button, target] {
+        const QColor chosen = QColorDialog::getColor(
+            *target, this, tr("Select colour"),
+            QColorDialog::ShowAlphaChannel);
+        if (!chosen.isValid())
+            return;
+        *target = chosen;
+        paintSwatch(button, chosen);
+        emitStyle();
+    });
+    return button;
+}
+
+void OpticsPlotStyleDialog::paintSwatch(QPushButton* button,
+                                        const QColor& color)
+{
+    button->setStyleSheet(
+        QStringLiteral("background-color: %1; border: 1px solid #666;")
+            .arg(color.name()));
+}
+
+void OpticsPlotStyleDialog::syncToControls()
+{
+    const QSignalBlocker b1(overrideCurveCheck_);
+    const QSignalBlocker b2(lineWidthSpin_);
+    const QSignalBlocker b3(lineStyleCombo_);
+    const QSignalBlocker b4(fontCombo_);
+    const QSignalBlocker b5(fontSizeSpin_);
+    const QSignalBlocker b6(gridCheck_);
+    const QSignalBlocker b7(gridAlphaSpin_);
+
+    overrideCurveCheck_->setChecked(style_.overrideCurveColor);
+    curveButton_->setEnabled(style_.overrideCurveColor);
+    lineWidthSpin_->setValue(style_.lineWidth);
+    lineStyleCombo_->setCurrentIndex(
+        lineStyleCombo_->findData(static_cast<int>(style_.lineStyle)));
+    fontCombo_->setCurrentFont(style_.axisFont());
+    fontSizeSpin_->setValue(style_.axisFontSize);
+    gridCheck_->setChecked(style_.showGrid);
+    gridButton_->setEnabled(style_.showGrid);
+    gridAlphaSpin_->setEnabled(style_.showGrid);
+    gridAlphaSpin_->setValue(style_.gridAlpha);
+
+    paintSwatch(canvasButton_, style_.canvasBackground);
+    paintSwatch(plotButton_, style_.plotBackground);
+    paintSwatch(curveButton_, style_.curveColor);
+    paintSwatch(labelButton_, style_.axisLabelColor);
+    paintSwatch(gridButton_, style_.gridColor);
+}
+
+void OpticsPlotStyleDialog::restoreDefaults()
+{
+    style_ = OpticsPlotStyle{};
+    syncToControls();
+    emitStyle();
+}
+
+void OpticsPlotStyleDialog::emitStyle()
+{
+    Q_EMIT styleChanged(style_);
+}
+
+} // namespace calango::gui

@@ -96,6 +96,9 @@ private Q_SLOTS:
     /// builders. Each opens its generated cell as a new workspace tab.
     void openMacromoleculeBuilder();
     void openWaterIceBuilder();
+    /// Modules → 2D Materials → "Graphene Oxide…": functionalized
+    /// graphene at target coverages, opened as a new workspace tab.
+    void openGrapheneOxideBuilder();
     void cleaveSurface();
     void addAtom();
     void changeElementOfSelection();

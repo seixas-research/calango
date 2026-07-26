@@ -7,6 +7,8 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QRadioButton>
+#include <QTabWidget>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -15,6 +17,7 @@
 #include <QVBoxLayout>
 
 #include <cmath>
+#include <limits>
 #include <map>
 
 namespace calango::gui {
@@ -28,9 +31,17 @@ AdsorptionDialog::AdsorptionDialog(std::shared_ptr<const core::Structure> slab,
     resize(560, 620);
 
     auto* layout = new QVBoxLayout(this);
+    auto* tabs = new QTabWidget(this);
+    layout->addWidget(tabs, 1);
+
+    // ===== Tab 1 — Site Identification & Geometry Generation ==============
+    auto* sitesTab = new QWidget(tabs);
+    auto* sitesLayout = new QVBoxLayout(sitesTab);
+    tabs->addTab(sitesTab, tr("Site Identification && Geometry Generation"));
+
     summaryLabel_ = new QLabel(this);
     summaryLabel_->setWordWrap(true);
-    layout->addWidget(summaryLabel_);
+    sitesLayout->addWidget(summaryLabel_);
 
     auto* filterRow = new QHBoxLayout;
     filterRow->addWidget(new QLabel(tr("Show sites:"), this));
@@ -39,7 +50,7 @@ AdsorptionDialog::AdsorptionDialog(std::shared_ptr<const core::Structure> slab,
                             QStringLiteral("bridge"), QStringLiteral("fcc"),
                             QStringLiteral("hcp"), QStringLiteral("hollow")});
     filterRow->addWidget(filterCombo_, 1);
-    layout->addLayout(filterRow);
+    sitesLayout->addLayout(filterRow);
 
     table_ = new QTableWidget(this);
     table_->setColumnCount(3);
@@ -49,10 +60,10 @@ AdsorptionDialog::AdsorptionDialog(std::shared_ptr<const core::Structure> slab,
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     table_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    layout->addWidget(table_, 1);
+    sitesLayout->addWidget(table_, 1);
 
     auto* form = new QFormLayout;
-    layout->addLayout(form);
+    sitesLayout->addLayout(form);
     adsorbateCombo_ = new QComboBox(this);
     adsorbateCombo_->setEditable(true);
     adsorbateCombo_->addItems({QStringLiteral("OH"), QStringLiteral("O"),
@@ -70,13 +81,37 @@ AdsorptionDialog::AdsorptionDialog(std::shared_ptr<const core::Structure> slab,
     heightSpin_->setToolTip(tr("Anchor-atom height above the surface layer"));
     form->addRow(tr("Height:"), heightSpin_);
 
+    // How the generated geometries are surfaced. One tab per site is right
+    // for comparing a handful of sites side by side; a single trajectory is
+    // right for scrubbing through many, and keeps the tab bar usable.
+    auto* outputGroup = new QGroupBox(tr("Output"), sitesTab);
+    auto* outputLayout = new QVBoxLayout(outputGroup);
+    individualTabsRadio_ =
+        new QRadioButton(tr("Individual workspace tabs"), outputGroup);
+    trajectoryRadio_ =
+        new QRadioButton(tr("Single trajectory tab"), outputGroup);
+    individualTabsRadio_->setChecked(true);
+    individualTabsRadio_->setToolTip(
+        tr("Each generated geometry opens in its own tab — best for comparing "
+           "a few sites directly."));
+    trajectoryRadio_->setToolTip(
+        tr("All generated geometries become frames of one trajectory tab, "
+           "scrubbable from the timeline — best for many sites at once."));
+    outputLayout->addWidget(individualTabsRadio_);
+    outputLayout->addWidget(trajectoryRadio_);
+    sitesLayout->addWidget(outputGroup);
+
     auto* placeButton = new QPushButton(tr("Place on Selected Sites"), this);
     form->addRow(placeButton);
     connect(placeButton, &QPushButton::clicked,
             this, &AdsorptionDialog::placeOnSelection);
 
-    // --- Coverage series ---------------------------------------------------
-    auto* coverageGroup = new QGroupBox(tr("Coverage series"), this);
+    // ===== Tab 2 — Coverage ================================================
+    auto* coverageTab = new QWidget(tabs);
+    auto* coverageTabLayout = new QVBoxLayout(coverageTab);
+    tabs->addTab(coverageTab, tr("Coverage"));
+
+    auto* coverageGroup = new QGroupBox(tr("Coverage series"), coverageTab);
     auto* coverageLayout = new QVBoxLayout(coverageGroup);
     auto* coverageForm = new QFormLayout;
     coverageSiteCombo_ = new QComboBox(coverageGroup);
@@ -113,11 +148,31 @@ AdsorptionDialog::AdsorptionDialog(std::shared_ptr<const core::Structure> slab,
                 coverageSlider_->setValue(static_cast<int>(std::lround(v * 100.0)));
             });
 
+    // Steric floor. Two adsorbates on neighbouring hollow sites can sit ~1.5 Å
+    // apart, which is inside a bond length — a configuration no relaxation
+    // recovers from. The placement below honours this and reports when the
+    // requested coverage cannot be reached without violating it.
+    minSeparationSpin_ = new QDoubleSpinBox(coverageGroup);
+    minSeparationSpin_->setRange(0.0, 20.0);
+    minSeparationSpin_->setDecimals(2);
+    minSeparationSpin_->setSingleStep(0.25);
+    minSeparationSpin_->setValue(3.0);
+    minSeparationSpin_->setSuffix(QStringLiteral(" Å"));
+    minSeparationSpin_->setToolTip(
+        tr("Minimum centre-to-centre distance between occupied sites, "
+           "evaluated under the minimum-image convention so neighbours across "
+           "the periodic boundary count.\n"
+           "0 disables the constraint. If the target coverage cannot be met at "
+           "this separation, the run places as many as it can and says so — "
+           "the two are often genuinely incompatible on a small cell."));
+    coverageForm->addRow(tr("Minimum separation:"), minSeparationSpin_);
+
     auto* seriesButton = new QPushButton(tr("Generate Coverage"), coverageGroup);
     coverageLayout->addWidget(seriesButton);
     connect(seriesButton, &QPushButton::clicked,
             this, &AdsorptionDialog::generateCoverageSeries);
-    layout->addWidget(coverageGroup);
+    coverageTabLayout->addWidget(coverageGroup);
+    coverageTabLayout->addStretch(1);
 
     statusLabel_ = new QLabel(this);
     statusLabel_->setWordWrap(true);
@@ -191,6 +246,9 @@ QString AdsorptionDialog::adsorbateName() const
 
 void AdsorptionDialog::placeOnSelection()
 {
+    outputMode_ = trajectoryRadio_ && trajectoryRadio_->isChecked()
+        ? OutputMode::SingleTrajectory
+        : OutputMode::IndividualTabs;
     // Map selected (filtered) rows back to site entries.
     const std::string filter = filterCombo_->currentIndex() == 0
         ? std::string()
@@ -229,6 +287,74 @@ void AdsorptionDialog::placeOnSelection()
     }
 }
 
+std::vector<pybridge::SurfaceScience::AdsorptionSite>
+AdsorptionDialog::spreadSites(
+    const std::vector<pybridge::SurfaceScience::AdsorptionSite>& pool,
+    std::size_t want, double minSeparation) const
+{
+    std::vector<pybridge::SurfaceScience::AdsorptionSite> chosen;
+    if (pool.empty() || want == 0)
+        return chosen;
+
+    // Minimum-image separation in the slab plane. Two sites on opposite edges
+    // of the cell are periodic neighbours, so a plain Cartesian distance would
+    // call them far apart and let the placement pack them together.
+    const auto& cell = slab_->cell().vectors();
+    const double lx = cell[0].x;
+    const double ly = cell[1].y;
+    const double shear = cell[1].x;
+    const auto separation = [&](const auto& a, const auto& b) {
+        double dx = a.x - b.x;
+        double dy = a.y - b.y;
+        if (ly > 1e-9) {
+            const double nj = std::round(dy / ly);
+            dy -= nj * ly;
+            dx -= nj * shear;
+        }
+        if (lx > 1e-9)
+            dx -= std::round(dx / lx) * lx;
+        return std::sqrt(dx * dx + dy * dy);
+    };
+
+    // Farthest-point selection: repeatedly take the candidate whose closest
+    // approach to the already-chosen set is largest. That spreads the
+    // adsorbates over the cell rather than clustering them, and makes the
+    // minimum-separation test a cheap accept/reject on top.
+    //
+    // Seeded from the strided start so the result is deterministic for a
+    // given pool ordering rather than depending on which site happened to be
+    // detected first.
+    chosen.push_back(pool.front());
+    while (chosen.size() < want) {
+        double bestDistance = -1.0;
+        std::size_t best = pool.size();
+        for (std::size_t i = 0; i < pool.size(); ++i) {
+            double closest = std::numeric_limits<double>::infinity();
+            bool already = false;
+            for (const auto& taken : chosen) {
+                const double d = separation(pool[i], taken);
+                if (d < 1e-6) {
+                    already = true;
+                    break;
+                }
+                closest = std::min(closest, d);
+            }
+            if (already)
+                continue;
+            if (closest > bestDistance) {
+                bestDistance = closest;
+                best = i;
+            }
+        }
+        // Out of candidates, or the best remaining one violates the floor.
+        if (best == pool.size()
+            || (minSeparation > 0.0 && bestDistance < minSeparation))
+            break;
+        chosen.push_back(pool[best]);
+    }
+    return chosen;
+}
+
 void AdsorptionDialog::generateCoverageSeries()
 {
     const std::string family = coverageSiteCombo_->currentText().toStdString();
@@ -248,10 +374,31 @@ void AdsorptionDialog::generateCoverageSeries()
     try {
         const auto want = std::max<std::size_t>(
             1, static_cast<std::size_t>(std::llround(coverage * pool.size())));
-        // Evenly strided subset spreads the adsorbates over the cell.
-        std::vector<pybridge::SurfaceScience::AdsorptionSite> subset;
-        for (std::size_t k = 0; k < want; ++k)
-            subset.push_back(pool[k * pool.size() / want]);
+        const double minSeparation = minSeparationSpin_->value();
+        const auto subset = spreadSites(pool, want, minSeparation);
+        if (subset.empty()) {
+            QApplication::restoreOverrideCursor();
+            statusLabel_->setText(
+                tr("No sites could be placed at a %1 Å minimum separation.")
+                    .arg(minSeparation, 0, 'f', 2));
+            return;
+        }
+        if (subset.size() < want) {
+            // Reported, not silently accepted: the structure carries a lower
+            // coverage than the one asked for, and a paper that quotes the
+            // requested figure would be quoting a number that is not in the
+            // file.
+            statusLabel_->setText(
+                tr("Placed %1 of %2 adsorbates — a %3 Å minimum separation "
+                   "cannot be maintained at %4 ML on this cell. The generated "
+                   "structure is %5 ML.")
+                    .arg(subset.size())
+                    .arg(want)
+                    .arg(minSeparation, 0, 'f', 2)
+                    .arg(coverage, 0, 'f', 2)
+                    .arg(static_cast<double>(subset.size()) / pool.size(),
+                         0, 'f', 2));
+        }
         auto structure = std::make_shared<core::Structure>(
             pybridge::SurfaceScience::placeAdsorbates(
                 *slab_, subset, adsorbateName().toStdString(),
@@ -259,7 +406,8 @@ void AdsorptionDialog::generateCoverageSeries()
         outputs_.push_back(
             {tr("%1/%2 %3 ML").arg(adsorbateName(),
                                    QString::fromStdString(family))
-                 .arg(coverage, 0, 'f', 2),
+                 .arg(static_cast<double>(subset.size()) / pool.size(),
+                      0, 'f', 2),
              std::move(structure)});
         QApplication::restoreOverrideCursor();
         if (!outputs_.empty())

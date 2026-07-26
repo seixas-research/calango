@@ -1,6 +1,8 @@
 #include "gui/CondaEnvs.hpp"
 #include "gui/NebDialog.hpp"
 
+#include <QCheckBox>
+
 #include "core/AseScriptGenerator.hpp"
 #include "python_bridge/AseBridge.hpp"
 #include "python_bridge/NebBuilder.hpp"
@@ -186,6 +188,19 @@ NebDialog::NebDialog(std::vector<NamedStructure> openDocs, QWidget* parent)
     maceDeviceCombo_->addItems({QStringLiteral("cpu"), QStringLiteral("cuda"),
                                 QStringLiteral("mps")});
     calcForm->addRow(tr("MACE device:"), maceDeviceCombo_);
+
+    // Dispersion. A barrier is an energy DIFFERENCE along a path, so a missing
+    // long-range attraction does not cancel out of it — for a molecule moving
+    // across a surface it is often the dominant correction to the barrier.
+    dispersionD4Check_ =
+        new QCheckBox(tr("van der Waals Correction (DFTD4)"), calcBox);
+    dispersionD4Check_->setToolTip(
+        tr("Wrap the calculator in ASE's DFTD4, adding Grimme's D4 dispersion "
+           "energy and forces. Needs the dftd4 package in the job "
+           "environment."));
+    // No connect: this dialog builds its script when the run is launched
+    // rather than previewing it live, so the checkbox is simply read then.
+    calcForm->addRow(dispersionD4Check_);
     cutoffSpin_ = new QDoubleSpinBox(calcBox);
     cutoffSpin_->setRange(100.0, 2000.0);
     cutoffSpin_->setValue(500.0);
@@ -369,6 +384,7 @@ core::CalculatorConfig NebDialog::calculatorConfig() const
     c.maceDevice = maceDeviceCombo_->currentText().toStdString();
     c.mlipDevice =
         static_cast<core::MlipDevice>(mlipDeviceCombo_->currentIndex());
+    c.dispersionD4 = dispersionD4Check_ && dispersionD4Check_->isChecked();
     const std::string modelPath = mlipModelEdit_->text().trimmed().toStdString();
     switch (c.calculator) {
     case core::CalculatorKind::DeepMd: c.deepmdModelPath = modelPath; break;

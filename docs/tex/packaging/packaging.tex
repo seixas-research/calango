@@ -35,7 +35,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\raisebox{-4pt}{%
-  \includegraphics[height=18pt]{../assets/.internal/logo_light.png}}}
+  \includegraphics[height=18pt]{../../../assets/.internal/logo_light.png}}}
 \fancyhead[R]{\small\color{shadegray}Calango Packaging Guide}
 \fancyfoot[L]{\small\color{shadegray}Leandro Seixas}
 \fancyfoot[R]{\small\color{shadegray}\thepage}
@@ -75,7 +75,7 @@
 \begin{titlepage}
 \centering
 \vspace*{2.2cm}
-\includegraphics[width=0.52\textwidth]{../assets/.internal/logo_light.png}\par
+\includegraphics[width=0.52\textwidth]{../../../assets/.internal/logo_light.png}\par
 \vspace{1.4cm}
 {\color{calangoteal}\rule{0.72\textwidth}{1.6pt}}\par
 \vspace{0.9cm}
@@ -89,7 +89,7 @@
 \vspace{0.3cm}
 {\large\color{shadegray}Seixas Research\par}
 \vfill
-{\large July 2026 --- Calango 26.7.23\par}
+{\large July 2026 --- Calango 26.7.55\par}
 \vspace*{1.2cm}
 \end{titlepage}
 
@@ -121,8 +121,8 @@ $\to$ \emph{build} $\to$ \emph{cpack}. The platform decides the generator:
 Platform & CPack generator & Artifact \\
 \midrule
 macOS (\opt{-DCALANGO\_MACOS\_BUNDLE=ON}) & \opt{DragNDrop} &
-\file{calango-26.7.23-macos-arm64.dmg} \\
-Linux & \opt{DEB} & \file{calango\_26.7.23\_amd64.deb} \\
+\file{calango-26.7.55-macos-arm64.dmg} \\
+Linux & \opt{DEB} & \file{calango\_26.7.55\_amd64.deb} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -181,7 +181,7 @@ cmake --build build-dmg -j 8
 cd build-dmg && cpack
 \end{lstlisting}
 
-The result is \file{build-dmg/calango-26.7.23-macos-arm64.dmg}. Mounting
+The result is \file{build-dmg/calango-26.7.55-macos-arm64.dmg}. Mounting
 it shows \file{calango.app} next to an \file{/Applications} symlink ---
 the standard drag-to-install layout. There is deliberately no
 click-through license sheet
@@ -230,7 +230,7 @@ disk image. The install rules perform, in order:
 \subsection{Verification}
 
 \begin{lstlisting}
-APP=_CPack_Packages/Darwin/DragNDrop/calango-26.7.23-macos-arm64/calango.app
+APP=_CPack_Packages/Darwin/DragNDrop/calango-26.7.55-macos-arm64/calango.app
 
 # 1. Signature must verify strictly, including nested code
 codesign --verify --deep --strict "$APP"
@@ -239,7 +239,7 @@ codesign --verify --deep --strict "$APP"
 "$APP/Contents/MacOS/calango" --probe-python
 
 # 3. The image must mount without an SLA prompt
-hdiutil attach -readonly -nobrowse calango-26.7.23-macos-arm64.dmg
+hdiutil attach -readonly -nobrowse calango-26.7.55-macos-arm64.dmg
 \end{lstlisting}
 
 To rebuild the package from a clean state, clear the staging area first
@@ -303,11 +303,11 @@ description file name: [/opt/homebrew/share/cmake/Templates/...]}. A
 separate \file{build-deb} directory, configured by the Linux \file{cmake},
 avoids this entirely.
 
-The result is \file{calango\_26.7.23\_<arch>.deb}. Install it via
+The result is \file{calango\_26.7.55\_<arch>.deb}. Install it via
 \opt{apt} rather than \opt{dpkg -i}, so the dependencies are resolved:
 
 \begin{lstlisting}
-sudo apt install ./calango_26.7.23_amd64.deb
+sudo apt install ./calango_26.7.55_amd64.deb
 \end{lstlisting}
 
 \subsection{Package contents and desktop integration}
@@ -349,8 +349,8 @@ disabled; users can also point Calango at any interpreter via
 \subsection{Verification}
 
 \begin{lstlisting}
-dpkg-deb --info  calango_26.7.23_amd64.deb   # control fields, Depends
-dpkg-deb --contents calango_26.7.23_amd64.deb
+dpkg-deb --info  calango_26.7.55_amd64.deb   # control fields, Depends
+dpkg-deb --contents calango_26.7.55_amd64.deb
 
 # after installing:
 calango --probe-python
@@ -363,6 +363,65 @@ end-to-end on Ubuntu (\file{dpkg-deb --info} shows the auto-computed
 \texttt{Depends:}, including \opt{libpython3.12t64} and the Qt~6 runtime
 libraries). Running it in CI on a clean Ubuntu 22.04/24.04 image remains
 worthwhile to catch host-specific assumptions.
+
+\section{Conda package}
+\label{sec:conda}
+
+The Conda recipe lives in \file{packaging/conda/} and differs from the two
+installers above in kind: it does not ship a bundled interpreter. Conda
+\emph{is} the environment, so Calango declares its Python stack as ordinary
+runtime dependencies and the solver provides them.
+
+\subsection{Commands}
+
+\begin{lstlisting}
+# From the repository root
+bash packaging/conda/create_conda_osx-arm64.sh
+
+# Result: packaging/conda/dist/calango-<version>-<build>.conda
+\end{lstlisting}
+
+The script finds whichever build tool is available --- \opt{conda-build},
+\opt{boa} (\opt{conda mambabuild}), or \opt{rattler-build} when a
+\file{recipe.yaml} is present --- validates the recipe, and emits the modern
+\file{.conda} format into \file{packaging/conda/dist/}. Useful overrides:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{7.6cm}@{}}
+\toprule
+Variable & Effect \\
+\midrule
+\opt{CHANNELS}      & Extra channels; defaults to \opt{-c conda-forge}. \\
+\opt{OUTPUT\_DIR}   & Where the artifact lands; defaults to \file{dist/}. \\
+\opt{CONDA\_SOLVER} & Defaults to \opt{libmamba}. The classic solver fails
+                      this recipe on the platform virtual packages
+                      (\opt{\_\_osx}, \opt{\_\_unix}, \opt{\_\_archspec}). \\
+\opt{CALANGO\_VERSION} & Overrides the version in \file{meta.yaml}; keep it in
+                      step with \file{CMakeLists.txt}. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{What the recipe pulls in}
+
+\opt{host} carries only what Calango compiles against --- \opt{qt6-main},
+\opt{pybind11} and \opt{python}. Everything the embedded interpreter imports at
+run time is in \opt{run}: \opt{ase}, \opt{numpy}, \opt{scipy}, \opt{spglib},
+\opt{pymatgen}, \opt{paramiko}, plus \opt{pymace} for machine-learning
+potentials.
+
+\textbf{Apple Silicon caveat.} \opt{gpaw} is gated on \opt{[x86\_64]}:
+conda-forge does not build GPAW for \opt{osx-arm64}, so on Apple Silicon it
+must be installed into the environment separately with
+\opt{pip install gpaw}. \opt{gpaw-data} (the PAW datasets) \emph{is} available
+on every platform and is always pulled in. Every DFT workflow in the user guide
+depends on this, so it is worth checking before concluding that a wizard is
+broken.
+
+The recipe's only test is \opt{calango -{}-probe-python}, which exits non-zero
+unless the interpreter it resolves can import ASE --- a cheap end-to-end check
+that the packaged binary and the packaged Python stack actually agree.
 
 \section{The embedded Python environment}
 \label{sec:python-embed}

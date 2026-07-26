@@ -48,6 +48,7 @@
 #include "gui/ElfWizard.hpp"
 #include "gui/LatticePlaneDialog.hpp"
 #include "gui/OpticsWizard.hpp"
+#include "gui/GrapheneOxideWizard.hpp"
 #include "gui/GwResultsWindow.hpp"
 #include "gui/OpticsResultsWindow.hpp"
 #include "gui/WannierDialog.hpp"
@@ -925,6 +926,10 @@ void MainWindow::createMenusAndDocks()
                                   &MainWindow::show2DOptics)
         ->setToolTip(tr("Absorbance A(ω), 2D conductivity σ₂D and sheet "
                         "polarizability α₂D from an inherited ground state"));
+    twoDimensionalMenu->addAction(tr("&Graphene Oxide…"), this,
+                                  &MainWindow::openGrapheneOxideBuilder)
+        ->setToolTip(tr("Functionalized graphene: epoxides, hydroxyls, "
+                        "carboxyls and carbonyls at target coverages"));
 
     QMenu* alloysMenu = modulesMenu->addMenu(tr("&Alloys"));
     alloysMenu->addAction(tr("Cluster &Expansion Builder…"),
@@ -3806,13 +3811,28 @@ void MainWindow::showAdsorption()
     AdsorptionDialog dialog(doc->structure, this);
     if (dialog.exec() != QDialog::Accepted || dialog.outputs().empty())
         return;
+    const auto& outputs = dialog.outputs();
     int lastTab = -1;
-    for (const auto& output : dialog.outputs())
-        lastTab = addDocument(output.structure, output.name);
+    if (dialog.outputMode() == AdsorptionDialog::OutputMode::SingleTrajectory
+        && outputs.size() > 1) {
+        // One tab whose frames are the generated geometries, scrubbable from
+        // the timeline. The first frame is also the tab's own structure, so a
+        // trajectory tab still behaves like a structure tab everywhere else.
+        std::vector<std::shared_ptr<core::Structure>> frames;
+        frames.reserve(outputs.size());
+        for (const auto& output : outputs)
+            frames.push_back(output.structure);
+        lastTab = addDocument(outputs.front().structure,
+                              tr("Adsorption sites"), frames,
+                              tr("Adsorption"));
+    } else {
+        for (const auto& output : outputs)
+            lastTab = addDocument(output.structure, output.name);
+    }
     tabBar_->setCurrentIndex(lastTab);
     statusBar()->showMessage(
         tr("%n adsorption structure(s) generated", nullptr,
-           static_cast<int>(dialog.outputs().size())));
+           static_cast<int>(outputs.size())));
 }
 
 
@@ -3850,6 +3870,33 @@ void MainWindow::openWaterIceBuilder()
             .arg(QString::fromStdString(generated.description))
             .arg(generated.moleculeCount)
             .arg(generated.densityGCm3, 0, 'f', 3));
+}
+
+void MainWindow::openGrapheneOxideBuilder()
+{
+    GrapheneOxideWizard wizard(this);
+    if (wizard.exec() != QDialog::Accepted || !wizard.result())
+        return;
+    const auto& report = wizard.report();
+    const int tab = addDocument(
+        std::make_shared<core::Structure>(*wizard.result()),
+        tr("Graphene oxide"));
+    tabBar_->setCurrentIndex(tab);
+    isDirty_ = true;
+
+    // Report what was actually placed, not what was asked for. The two differ
+    // whenever the lattice ran out of free carbons, and a silent shortfall
+    // leaves the user believing they have a composition they do not have.
+    QString message =
+        tr("Graphene oxide — %1 C, C/O = %2")
+            .arg(report.carbonCount)
+            .arg(report.carbonToOxygenRatio(), 0, 'f', 2);
+    if (!report.note.empty()) {
+        message += tr("  ⚠ %1").arg(QString::fromStdString(report.note));
+        QMessageBox::information(this, tr("Graphene Oxide"),
+                                 QString::fromStdString(report.note));
+    }
+    statusBar()->showMessage(message);
 }
 
 void MainWindow::openSqsBuilder()

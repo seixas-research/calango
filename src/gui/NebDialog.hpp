@@ -9,6 +9,7 @@
 #include <memory>
 #include <vector>
 
+class QCheckBox;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
@@ -98,6 +99,7 @@ private:
     /// weights) and the device they run on.
     QLineEdit* mlipModelEdit_ = nullptr;
     QComboBox* mlipDeviceCombo_ = nullptr;
+    QCheckBox* dispersionD4Check_ = nullptr;
     QDoubleSpinBox* cutoffSpin_;
     QSpinBox* kptSpins_[3];
 

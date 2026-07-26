@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.55
+    VERSION 26.7.56
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -170,6 +170,8 @@ qt_add_executable(calango
     src/core/OpticsScriptGenerator.cpp
     src/core/GwScriptGenerator.hpp
     src/core/GwScriptGenerator.cpp
+    src/core/GrapheneOxideBuilder.hpp
+    src/core/GrapheneOxideBuilder.cpp
     src/core/ElfScriptGenerator.hpp
     src/core/ElfScriptGenerator.cpp
     src/core/WannierScriptGenerator.hpp
@@ -438,6 +440,12 @@ qt_add_executable(calango
     src/gui/OpticsResultsWindow.cpp
     src/gui/GwResultsWindow.hpp
     src/gui/GwResultsWindow.cpp
+    src/gui/HubbardParametersDialog.hpp
+    src/gui/HubbardParametersDialog.cpp
+    src/gui/GrapheneOxideWizard.hpp
+    src/gui/GrapheneOxideWizard.cpp
+    src/gui/OpticsPlotStyleDialog.hpp
+    src/gui/OpticsPlotStyleDialog.cpp
     src/gui/EffectiveBandsWizard.hpp
     src/gui/EffectiveBandsWizard.cpp
     src/gui/GeometryOptimizationWizard.hpp
@@ -885,6 +893,25 @@ if(CALANGO_BUILD_TESTS)
     target_link_libraries(calango_shader_test PRIVATE Qt6::Gui Qt6::OpenGL)
     add_test(NAME shader_compilation COMMAND calango_shader_test)
 
+    # Dialog construction: a wizard whose constructor emitted a signal into a
+    # slot reading widgets it had not created yet crashed the moment its menu
+    # item was clicked. The application smoke test never opens dialogs and a
+    # compile cannot see a signal-ordering hazard, so each dialog is built and
+    # driven here. Offscreen, no display.
+    qt_add_executable(calango_dialog_test
+        tests/DialogConstructionTest.cpp
+        src/gui/GrapheneOxideWizard.cpp
+        src/gui/HubbardParametersDialog.cpp
+        src/gui/OpticsPlotStyleDialog.cpp
+        src/core/GrapheneOxideBuilder.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_dialog_test PRIVATE src)
+    target_link_libraries(calango_dialog_test PRIVATE Qt6::Widgets)
+    add_test(NAME dialog_construction COMMAND calango_dialog_test)
+
     # Theme-adaptive icons: that a Light-mode glyph is dark (the white-on-white
     # bug) and that a bound icon is re-tinted when the theme changes. Checks
     # rendered PIXELS, not just the colour table — the table can be right while
@@ -909,10 +936,24 @@ if(CALANGO_BUILD_TESTS)
         tests/ResultsViewerTest.cpp
         src/gui/GwResultsWindow.cpp
         src/gui/OpticsResultsWindow.cpp
+        src/gui/OpticsPlotStyleDialog.cpp
     )
     target_include_directories(calango_results_viewer_test PRIVATE src)
     target_link_libraries(calango_results_viewer_test PRIVATE Qt6::Widgets)
     add_test(NAME results_viewers COMMAND calango_results_viewer_test)
+
+    # Graphene oxide: the single-group-per-carbon constraint is chemical, not
+    # statistical — two groups on one carbon is a pentavalent carbon, an
+    # impossible structure. Re-derived from the returned coordinates.
+    add_executable(calango_graphene_oxide_test
+        tests/GrapheneOxideTest.cpp
+        src/core/GrapheneOxideBuilder.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_graphene_oxide_test PRIVATE src)
+    add_test(NAME graphene_oxide COMMAND calango_graphene_oxide_test)
 
     # Native SQS generator: composition exactness across binary/ternary/
     # quaternary alloys and, above all, that the generated decoration really is

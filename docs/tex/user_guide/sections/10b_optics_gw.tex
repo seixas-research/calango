@@ -1,0 +1,199 @@
+\chapter{Optical and Quasiparticle Properties}
+\label{ch:optics-gw}
+
+Three workflows sit on top of a converged ground state: the dielectric
+response, the same response reduced to sheet quantities for a 2D material, and
+the $G_0W_0$ quasiparticle correction.
+
+\begin{calwarn}
+All three \textbf{inherit a baseline} rather than converging their own ground
+state --- a completed GPAW \menu{Simulation}\menusep\menu{Single-point
+Calculation\dots}, which writes \file{single\_point.gpw}. They will not open
+without one.
+
+This is not merely a saving. Re-converging inside the job would give a spectrum
+from a different SCF solution than the one you validated --- different
+smearing, a different $k$-grid, possibly a different magnetic state --- with
+nothing in the output to say so. Because the ground state is inherited whole,
+these wizards show no Calculator Settings stage: the cutoff, functional and
+$k$-grid all come back from the baseline, and offering to set them again would
+present knobs that cannot affect the run.
+\end{calwarn}
+
+\section{Optical properties}
+\label{sec:optics}
+
+\menu{Simulation}\menusep\menu{Optics\dots} evaluates the frequency-dependent
+dielectric function $\varepsilon(\omega)$ with GPAW's linear-response module
+and derives the usual optical observables from it.
+
+\subsection{Settings}
+
+\begin{description}
+  \item[\ui{Baseline SCF (.gpw)}] The ground state to inherit. The note beneath
+    it spells out what is being inherited --- functional, cutoff, $k$-grid and
+    environment --- because with no Calculator Settings stage this is the only
+    place those values are visible, and they are what decides whether the
+    spectrum is trustworthy.
+  \item[\ui{Broadening $\eta$}] Lorentzian broadening, default 0.1\,eV.
+    Smaller values resolve sharper features but need a denser $k$-mesh in the
+    \emph{baseline} to be meaningful.
+  \item[\ui{Energy window min/max}] The photon-energy range, default
+    0--20\,eV.
+  \item[\ui{Tetrahedron integration}] See below.
+  \item[\ui{Number of points}] Samples on the energy grid.
+  \item[\ui{Polarization directions}] $\varepsilon_{xx}$, $\varepsilon_{yy}$,
+    $\varepsilon_{zz}$. For an isotropic crystal the three coincide.
+\end{description}
+
+\subsection{Brillouin-zone integration}
+
+By default the response is summed over $k$-points, giving every interband
+transition a Lorentzian of width $\eta$. Anything narrower than $\eta$ --- a
+van Hove singularity, a 2D absorption edge --- is smeared into the broadening
+rather than resolved.
+
+\ui{Tetrahedron integration} interpolates the bands linearly within each
+tetrahedron and integrates analytically, resolving those features on a mesh
+where point integration is still noisy.
+
+\begin{calwarn}
+Tetrahedron integration requires the \emph{baseline's} $k$-grid to contain
+every vertex of the irreducible Brillouin zone --- a grid from
+\opt{gpaw.bztools.find\_high\_symmetry\_monkhorst\_pack()}. An ordinary
+Monkhorst--Pack grid usually does not qualify, and since the grid is inherited,
+it has to be right when the \emph{baseline} is run; the optics job cannot fix
+it afterwards. When the grid is unsuitable the run stops and says so, naming
+the remedy, rather than quietly falling back to point integration and returning
+a spectrum computed by a different method than the one requested. Which
+integrator ran is recorded in \file{optics.json} alongside the spectra.
+\end{calwarn}
+
+\subsection{The viewer}
+
+The results window plots one quantity at a time against photon energy:
+$\varepsilon_1$ and $\varepsilon_2$ together, the absorption coefficient
+$\alpha(\omega)$, reflectivity $R(\omega)$, the refractive index $n$ and $k$,
+and the energy-loss function $L(\omega)$.
+
+The \ui{X axis} selector switches between \ui{Energy (eV)} and
+\ui{Wavelength (nm)} via $\lambda = hc/E$ with $hc = 1239.84197$\,eV\,nm. Every
+curve and every tick label follows.
+
+\begin{calnote}
+Samples at $E \le 0$ have no finite wavelength and are omitted from the
+wavelength view --- dropped from the abscissa and from every curve together, so
+nothing is shifted out of alignment. Since GPAW's energy grid starts at zero,
+expect the wavelength view to begin one sample in. Very low energies map to
+very long wavelengths, so a window that starts near 0\,eV will stretch far into
+the infrared; set \ui{Energy window min} above zero if that compresses the part
+of the spectrum you care about.
+\end{calnote}
+
+\ui{Export CSV\dots} writes one row per sample with every quantity for the
+selected direction; \ui{Export Image\dots} renders the current plot at high
+resolution.
+
+\section{2D optics}
+\label{sec:optics-2d}
+
+\menu{Modules}\menusep\menu{2D Materials}\menusep\menu{2D Optics\dots} runs the
+same response and then divides the vacuum back out.
+
+The reason is that a slab supercell's $\varepsilon_{3D}$ is not a property of
+the material: double the vacuum padding and it moves, because the sheet's
+polarization is diluted over more cell. The wizard adds one question ---
+\ui{Vacuum axis}, seeded from the cell but worth confirming, since getting it
+wrong rescales every 2D quantity by the wrong length --- and derives three
+quantities that do not depend on the padding:
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{6.2cm}@{}}
+\toprule
+Quantity & Definition & Units \\
+\midrule
+Sheet polarizability & $\alpha_{2D} = \dfrac{L_z}{4\pi}(\varepsilon_{3D} - 1)$
+  & \AA{} \\[6pt]
+Absorbance & $A(\omega) = \dfrac{\omega L_z}{c}\,\mathrm{Im}[\varepsilon_{3D}]$
+  & dimensionless \\[6pt]
+Sheet conductivity & $\sigma_{2D} = -i\,\omega\,\alpha_{2D}$
+  & $e^2/h$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The $-1$ in $\alpha_{2D}$ removes the vacuum's own contribution, which is what
+makes the result a property of the sheet.
+
+The viewer offers these three only when the file actually carries them, and a
+2D job opens on the absorbance rather than on $\varepsilon$.
+
+\begin{caltip}
+Graphene is the reference case. Its low-energy absorbance is the universal
+$A = \pi\alpha \approx 2.29\,\%$, fixed by the fine-structure constant alone,
+and its conductivity is the equally universal $\pi/2$ in units of $e^2/h$. If a
+graphene run reproduces those, the whole chain --- baseline, response,
+vacuum-axis choice and unit conversion --- is working. Reaching the plateau
+needs a dense mesh: it is the $k$-sampling near the Dirac point that decides
+this, not the cutoff or the band count.
+\end{caltip}
+
+\section{GW calculations}
+\label{sec:gw}
+
+\menu{Simulation}\menusep\menu{GW Calculations\dots} computes one-shot
+$G_0W_0$ quasiparticle corrections,
+\[
+  E^{\text{qp}}_{n\mathbf{k}} = \varepsilon^{\text{DFT}}_{n\mathbf{k}}
+  + Z_{n\mathbf{k}}\left[\Sigma_{n\mathbf{k}}(\varepsilon^{\text{DFT}})
+  - V^{xc}_{n\mathbf{k}}\right],
+\]
+i.e.\ the DFT eigenvalue with its exchange--correlation potential replaced by
+the energy-dependent, non-local self-energy. Nothing here is self-consistent,
+and the result is only meaningful relative to the baseline it corrects.
+
+\subsection{Engines}
+
+Two engines, each bound to the DFT code that produced its baseline. They are
+not interchangeable --- $G_0W_0$ perturbs a specific DFT solution, so the
+engine follows from which baseline exists rather than from preference.
+
+\begin{description}
+  \item[GPAW] Corrects a \file{.gpw}. The run restarts the baseline, adds a
+    generous set of empty bands at fixed density, then applies
+    \opt{gpaw.response.g0w0.G0W0}.
+  \item[Yambo] Corrects a Quantum ESPRESSO \file{.save} directory. The run
+    converts it with \opt{p2y}, generates the $G_0W_0$ input, executes it under
+    MPI, and parses the quasiparticle report.
+\end{description}
+
+\subsection{Settings}
+
+\begin{description}
+  \item[\ui{Screening cutoff}] The convergence parameter that matters. A
+    $G_0W_0$ gap is not converged until it stops moving with this.
+  \item[\ui{Frequency treatment}] \ui{Plasmon-pole} approximates the frequency
+    dependence of the screening with a single pole --- much cheaper, and
+    usually good for the gap of a simple semiconductor. \ui{Real axis} performs
+    the full integration.
+  \item[\ui{Bands below/above}] How many occupied and empty states around the
+    gap receive a correction.
+  \item[\ui{MPI ranks}] Yambo only.
+\end{description}
+
+\subsection{The viewer}
+
+The \ui{GW Viewer} --- also on \menu{Results}\menusep\menu{GW Viewer\dots} ---
+reports the DFT and quasiparticle band edges, the gap renormalization as its
+headline number, and a per-state table of $\varepsilon_{\text{DFT}}$,
+$E_{\text{qp}}$ and the correction between them.
+
+\begin{calnote}
+$G_0W_0$ essentially always \emph{opens} a semiconductor gap, typically by
+0.5--2\,eV. A renormalization that is negative or near zero is far more likely
+an unconverged screening cutoff or too few empty bands than a physical result,
+and the viewer says so rather than presenting the number neutrally. The
+per-state corrections are the other thing to read: they should vary smoothly
+across bands, not jump erratically between neighbouring states.
+\end{calnote}
