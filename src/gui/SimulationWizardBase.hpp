@@ -227,10 +227,15 @@ protected:
 
 protected Q_SLOTS:
     void refreshPreview();
+    /// "Hubbard parameters…": open the DFT+U editor and keep its result.
+    ///
+    /// Protected rather than private because a wizard that hides the standard
+    /// GPAW chrome (Electronic Structure) still wants the editor, and puts its
+    /// own button on its own page — the U itself still travels through
+    /// baseCalculatorConfig(), so there is one owner of the state either way.
+    void editHubbardParameters();
 
 private Q_SLOTS:
-    /// "Hubbard parameters…": open the DFT+U editor and keep its result.
-    void editHubbardParameters();
     void goNext();
     void goBack();
     void exportScript();
@@ -353,6 +358,11 @@ private:
     QCheckBox* gpawSymmetryOffCheck_ = nullptr;
     /// "Gamma-centered Grid" — emits kpts={'size':…,'gamma':True}. GPAW only.
     QCheckBox* gpawGammaCheck_ = nullptr;
+    /// "Hubbard parameters…" + "van der Waals Correction (DFTD4)", paired on
+    /// one row of "Mode & Basis Set" directly under the XC functional combo:
+    /// both are corrections to the chosen functional, not k-point settings.
+    /// GPAW only, so the row hides as a unit for the other DFT engines.
+    QWidget* xcCorrectionsRow_ = nullptr;
     /// "Hubbard parameters…" — GPAW only. The edited state lives here rather
     /// than in the dialog, which is constructed on demand and destroyed on
     /// close.

@@ -72,6 +72,39 @@ Vec3 rotateAlign(const Vec3& u, const Vec3& v, const Vec3& x)
     return x + kx + kkx * (1.0 / (1.0 + c));
 }
 
+/// Rotate `x` by `angle` radians about the unit axis `axis` (Rodrigues).
+Vec3 rotateAbout(const Vec3& axis, double angle, const Vec3& x)
+{
+    const double c = std::cos(angle);
+    const double s = std::sin(angle);
+    return x * c + axis.cross(x) * s + axis * (axis.dot(x) * (1.0 - c));
+}
+
+/// Any unit vector perpendicular to `n`. Which one does not matter — it only
+/// fixes where azimuth = 0 points, and the user turns the azimuth to taste.
+Vec3 perpendicularTo(const Vec3& n)
+{
+    const Vec3 ref = std::abs(n.x) < 0.9 ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
+    return n.cross(ref).normalized();
+}
+
+/// The adsorbate's intrinsic axis: anchor → centroid of the remaining atoms,
+/// i.e. the direction that should point AWAY from the surface. A single atom
+/// has none, so +z stands in and every rotation below is a no-op on it.
+Vec3 intrinsicAxis(const std::vector<Atom>& molAtoms, int anchor)
+{
+    if (molAtoms.size() < 2)
+        return {0, 0, 1};
+    const Vec3 anchorPos = molAtoms[static_cast<std::size_t>(anchor)].position;
+    Vec3 mean{};
+    for (int a = 0; a < static_cast<int>(molAtoms.size()); ++a)
+        if (a != anchor)
+            mean += molAtoms[static_cast<std::size_t>(a)].position;
+    mean = mean * (1.0 / static_cast<double>(molAtoms.size() - 1));
+    const Vec3 axis = (mean - anchorPos).normalized();
+    return axis.norm() > 1e-6 ? axis : Vec3{0, 0, 1};
+}
+
 } // namespace
 
 std::vector<AdsorptionSite> detectAdsorptionSites(
@@ -297,6 +330,55 @@ Structure placeAdsorbate(const Structure& substrate,
             placed.position = base + rotated;
             result.addAtom(placed);
         }
+    }
+    return result;
+}
+
+Structure placeAdsorbateAt(const Structure& substrate,
+                           const AdsorptionSite& site, const Structure& molecule,
+                           int anchorIndex, double height,
+                           const AdsorbateOrientation& orientation)
+{
+    Structure result = substrate;
+    const auto& molAtoms = molecule.atoms();
+    if (molAtoms.empty())
+        return result;
+
+    const int anchor = (anchorIndex >= 0
+                        && anchorIndex < static_cast<int>(molAtoms.size()))
+        ? anchorIndex
+        : 0;
+    const Vec3 anchorPos = molAtoms[static_cast<std::size_t>(anchor)].position;
+    const Vec3 up = intrinsicAxis(molAtoms, anchor);
+
+    const Vec3 normal = site.normal.normalized();
+    constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+    const double tilt = orientation.tiltDeg * kDegToRad;
+    const double azimuth = orientation.azimuthDeg * kDegToRad;
+
+    // Target axis: the outward normal tilted by `tilt` toward the in-plane
+    // direction picked out by `azimuth`. At tilt = 0 this is the normal itself
+    // and the placement is the classic upright one.
+    const Vec3 e1 = perpendicularTo(normal);
+    const Vec3 e2 = normal.cross(e1).normalized();
+    const Vec3 lean = e1 * std::cos(azimuth) + e2 * std::sin(azimuth);
+    const Vec3 target =
+        (normal * std::cos(tilt) + lean * std::sin(tilt)).normalized();
+
+    const double roll = orientation.rollDeg * kDegToRad;
+    // Height is measured along the SURFACE NORMAL, not along the molecule's
+    // tilted axis: "3 Å above the surface" is a statement about the surface.
+    const Vec3 base = site.position + normal * height;
+
+    for (const Atom& a : molAtoms) {
+        const Vec3 rel = a.position - anchorPos;
+        Vec3 rotated = rotateAlign(up, target, rel);
+        if (std::abs(roll) > 1e-12)
+            rotated = rotateAbout(target, roll, rotated);
+        Atom placed;
+        placed.atomicNumber = a.atomicNumber;
+        placed.position = base + rotated;
+        result.addAtom(placed);
     }
     return result;
 }

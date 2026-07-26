@@ -231,6 +231,9 @@ private Q_SLOTS:
     /// active supercell onto a reference primitive cell.
     void effectiveBandsCalculation();
     void openNanoparticleBuilder();
+    /// Build → "Add adsorbate…": place one atom or one molecule/radical on the
+    /// current geometry, opening substrate + adsorbate as a NEW tab.
+    void openAddAdsorbate();
     void showAdsorption();
     void showWarrenCowley();
     void showLocalEntropy();

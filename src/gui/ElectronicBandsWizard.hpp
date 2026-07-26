@@ -45,6 +45,9 @@ public:
 
 protected:
     QString wizardTitle() const override;
+    /// Species present in the structure, seeding the Hubbard editor's
+    /// element completer.
+    QStringList calculatorElements() const override;
     QString settingsHeader() const override { return QString(); } // unused (merged)
     QWidget* buildSettingsPage() override { return nullptr; }      // unused (merged)
     /// The former k-Path Definition stage is merged into the calculator page:
@@ -82,6 +85,11 @@ private:
 
     class EmbeddedKPathEditor* kpath_ = nullptr;
     QComboBox* baselineCombo_ = nullptr; ///< charge-density baseline selector
+    /// "Spin Configurations" — the spin treatment of the BAND evaluation, as
+    /// opposed to the collinear polarization of the SCF, which is inherited
+    /// from the baseline along with the density.
+    QGroupBox* spinGroup_ = nullptr;
+    QCheckBox* spinOrbitCheck_ = nullptr;
     QGroupBox* pdosGroup_ = nullptr;
     QCheckBox* pdosCheck_ = nullptr;
     QDoubleSpinBox* pdosWidthSpin_ = nullptr;

@@ -1,19 +1,27 @@
 #include "gui/GeometryOptimizationWizard.hpp"
 
 #include "core/AseScriptGenerator.hpp"
+#include "core/Structure.hpp"
+#include "gui/GeometryConstraintsDialog.hpp"
 
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QLabel>
+#include <QPushButton>
 #include <QSpinBox>
 #include <QWidget>
 
+#include <set>
+
 namespace calango::gui {
 
-GeometryOptimizationWizard::GeometryOptimizationWizard(QWidget* parent)
+GeometryOptimizationWizard::GeometryOptimizationWizard(
+    std::shared_ptr<const core::Structure> structure, QWidget* parent)
     : SimulationWizardBase(parent)
+    , structure_(std::move(structure))
 {
     buildUi();
     updateCellEnabled();
@@ -23,6 +31,21 @@ GeometryOptimizationWizard::GeometryOptimizationWizard(QWidget* parent)
 QString GeometryOptimizationWizard::wizardTitle() const
 {
     return tr("Geometry Optimization Setup");
+}
+
+QStringList GeometryOptimizationWizard::calculatorElements() const
+{
+    if (!structure_)
+        return {};
+    // Sorted and unique: the Hubbard editor uses this as a completer list, and
+    // a completer that repeats "Fe" once per Fe atom is unusable.
+    std::set<QString> symbols;
+    for (const core::Atom& atom : structure_->atoms())
+        symbols.insert(QString::fromLatin1(atom.symbol()));
+    QStringList result;
+    for (const QString& symbol : symbols)
+        result << symbol;
+    return result;
 }
 
 QString GeometryOptimizationWizard::settingsHeader() const
@@ -56,6 +79,26 @@ QWidget* GeometryOptimizationWizard::buildSettingsPage()
     maxStepsSpin_->setRange(1, 100000);
     maxStepsSpin_->setValue(500);
     form->addRow(tr("Max relaxation steps:"), maxStepsSpin_);
+
+    // Frozen degrees of freedom. Behind a button because the editor is a pair
+    // of tables — and directly above the cell controls because the two answer
+    // the same question from opposite ends: what is this relaxation allowed to
+    // move? A slab calculation almost always needs both (bottom layers held,
+    // cell fixed).
+    auto* constraintRow = new QHBoxLayout;
+    auto* constraintButton = new QPushButton(tr("Geometry constraints…"), page);
+    constraintButton->setToolTip(
+        tr("Hold atoms — or single Cartesian directions of them — fixed during "
+           "the relaxation. Select them individually, or by a region such as "
+           "z < 5 Å (the bottom layers of a slab)."));
+    connect(constraintButton, &QPushButton::clicked, this,
+            &GeometryOptimizationWizard::editConstraints);
+    constraintRow->addWidget(constraintButton);
+    constraintSummary_ = new QLabel(page);
+    constraintSummary_->setWordWrap(true);
+    constraintRow->addWidget(constraintSummary_, 1);
+    form->addRow(constraintRow);
+    refreshConstraintSummary();
 
     relaxCellCheck_ = new QCheckBox(tr("Relax the unit cell (variable-cell)"), page);
     relaxCellCheck_->setToolTip(
@@ -92,6 +135,41 @@ QWidget* GeometryOptimizationWizard::buildSettingsPage()
     return page;
 }
 
+void GeometryOptimizationWizard::editConstraints()
+{
+    GeometryConstraintsDialog dialog(structure_, constraints_, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    constraints_ = dialog.constraints();
+    refreshConstraintSummary();
+    refreshPreview();
+}
+
+void GeometryOptimizationWizard::refreshConstraintSummary()
+{
+    if (!constraintSummary_)
+        return;
+    if (constraints_.empty()) {
+        constraintSummary_->setText(tr("None — every atom relaxes freely."));
+        return;
+    }
+    int fixedAtoms = 0;
+    int regions = 0;
+    for (const core::GeometryConstraint& rule : constraints_) {
+        if (rule.selection == core::GeometryConstraint::Selection::Region)
+            ++regions;
+        else
+            fixedAtoms += static_cast<int>(rule.indices.size());
+    }
+    QStringList parts;
+    if (fixedAtoms > 0)
+        parts << tr("%n atom(s)", nullptr, fixedAtoms);
+    if (regions > 0)
+        parts << tr("%n region(s)", nullptr, regions);
+    constraintSummary_->setText(
+        tr("Constrained: %1.").arg(parts.join(tr(", "))));
+}
+
 void GeometryOptimizationWizard::updateCellEnabled()
 {
     const bool relax = relaxCellCheck_->isChecked();
@@ -108,6 +186,7 @@ core::CalculatorConfig GeometryOptimizationWizard::config() const
     // tolerance / step cap, spin) drive the calculator block of the generated
     // script exactly as they do for a Single-Point run.
     electronic_.applyTo(c);
+    c.constraints = constraints_;
     c.optimizer = static_cast<core::Optimizer>(optimizerCombo_->currentIndex());
     c.fmax = fmaxSpin_->value();
     c.maxSteps = maxStepsSpin_->value();

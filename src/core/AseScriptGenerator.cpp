@@ -2,7 +2,10 @@
 
 #include "core/CalangoLogModule.hpp" // generated from calango_log.py by CMake
 
+#include <algorithm>
 #include <sstream>
+#include <string>
+#include <vector>
 
 namespace calango::core {
 
@@ -186,6 +189,95 @@ constexpr const char* kJsonLoggerHelper =
     "\n"
     "_calango_log = CalangoLog()\n"
     "\n";
+
+/// Frozen degrees of freedom, emitted as an ASE constraint list bound to
+/// `atoms` before the optimizer (or its cell filter) ever sees them.
+///
+/// An index rule becomes a literal list; a REGION rule becomes a comprehension
+/// over `atoms.get_positions()` evaluated at run time rather than a baked-in
+/// index list. That is the difference that matters when the same script is
+/// re-run on a re-cleaved slab or a supercell: bounds still mean "the bottom
+/// two layers", a stale index list means "whatever atoms 0..23 happen to be".
+///
+/// All three directions frozen is FixAtoms; a partial mask is FixCartesian,
+/// whose mask entries are true for the coordinates that are HELD.
+void emitConstraints(std::ostringstream& out, const CalculatorConfig& c)
+{
+    // A rule that freezes nothing is a no-op the user disabled in the dialog;
+    // dropping it here keeps it out of the script instead of emitting a
+    // constraint with an all-false mask.
+    std::vector<const GeometryConstraint*> active;
+    for (const GeometryConstraint& constraint : c.constraints) {
+        if (!constraint.fixesAnyDirection())
+            continue;
+        if (constraint.selection == GeometryConstraint::Selection::Indices
+            && constraint.indices.empty())
+            continue;
+        active.push_back(&constraint);
+    }
+    if (active.empty())
+        return;
+
+    const char* axisNames = "xyz";
+    out << "\n"
+           "# --- Geometry constraints ----------------------------------------\n"
+           "# Frozen degrees of freedom. FixAtoms holds an atom entirely;\n"
+           "# FixCartesian holds only the marked directions (True = held).\n"
+           "from ase.constraints import FixAtoms, FixCartesian\n"
+           "\n"
+           "_constraints = []\n";
+
+    int region = 0;
+    for (const GeometryConstraint* constraint : active) {
+        std::string selectionExpr;
+        if (constraint->selection == GeometryConstraint::Selection::Indices) {
+            std::ostringstream list;
+            list << "[";
+            for (std::size_t i = 0; i < constraint->indices.size(); ++i)
+                list << (i ? ", " : "") << constraint->indices[i];
+            list << "]";
+            selectionExpr = list.str();
+        } else {
+            const int axis = std::clamp(constraint->axis, 0, 2);
+            const char component = axisNames[axis];
+            std::ostringstream test;
+            if (constraint->hasMin)
+                test << "_p[" << axis << "] > " << constraint->minValue;
+            if (constraint->hasMin && constraint->hasMax)
+                test << " and ";
+            if (constraint->hasMax)
+                test << "_p[" << axis << "] < " << constraint->maxValue;
+            const std::string name = "_region" + std::to_string(region++);
+            out << "# Every atom with ";
+            if (constraint->hasMin)
+                out << component << " > " << constraint->minValue;
+            if (constraint->hasMin && constraint->hasMax)
+                out << " and ";
+            if (constraint->hasMax)
+                out << component << " < " << constraint->maxValue;
+            if (!constraint->hasMin && !constraint->hasMax)
+                out << "any position (unbounded region)";
+            out << " Å, re-evaluated against the geometry actually read.\n"
+                << name << " = [_i for _i, _p in enumerate(atoms.get_positions())"
+                << (test.str().empty() ? "]\n" : "\n         if " + test.str() + "]\n")
+                << "print(f\"CALANGO_INFO constrained atoms: {len(" << name
+                << ")}\", flush=True)\n";
+            selectionExpr = name;
+        }
+
+        if (constraint->fixesAllDirections()) {
+            out << "_constraints.append(FixAtoms(indices=" << selectionExpr
+                << "))\n";
+        } else {
+            out << "_constraints.append(FixCartesian(" << selectionExpr
+                << ", mask=(" << (constraint->fix[0] ? "True" : "False") << ", "
+                << (constraint->fix[1] ? "True" : "False") << ", "
+                << (constraint->fix[2] ? "True" : "False") << ")))\n";
+        }
+    }
+    out << "atoms.set_constraint(_constraints)\n"
+           "\n";
+}
 
 /// Wrap whatever calculator was just bound to `atoms.calc` in ASE's DFTD4,
 /// adding Grimme's D4 dispersion energy and forces on top of it.
@@ -612,6 +704,10 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
         }
         out << "\n"
             << "max_steps = " << c.maxSteps << "\n";
+        // Constraints bind to `atoms` BEFORE the cell filter wraps it: the
+        // filter forwards the constrained forces, so the order decides whether
+        // the frozen atoms are actually frozen.
+        emitConstraints(out, c);
         if (c.relaxCell) {
             out << "# Variable-cell relaxation: relax atomic positions AND the\n"
                    "# unit cell.\n";

@@ -106,6 +106,54 @@ int main()
     if (dist(oPos, expectedO) > 1e-6)
         return fail("O anchor not placed at site + normal*height");
 
+    // --- Oriented single-site placement (Build → "Add adsorbate…") ---------
+    //
+    // The upright default is the same placement placeAdsorbate() makes, and a
+    // 90° tilt must lay the molecule flat: the anchor stays put while the rest
+    // of the molecule swings into the surface plane. That perpendicularity is
+    // the property the whole tilt control exists to deliver, and getting the
+    // rotation axis wrong produces a molecule that merely looks different.
+    {
+        core::AdsorptionSite site;
+        site.type = one.type;
+        site.position = sitePos;
+        site.normal = nrm;
+
+        const auto oh = pybridge::SurfaceScience::moleculeTemplate("OH");
+        if (oh.structure.size() != 2)
+            return fail("OH template should have 2 atoms");
+
+        const auto upright = core::placeAdsorbateAt(
+            ico, site, oh.structure, oh.anchorIndex, height, {});
+        // Same geometry as the multi-site path: one builder, one answer.
+        for (std::size_t i = 0; i < 2; ++i)
+            if (dist(upright.atoms()[ico.size() + i].position,
+                     withOH.atoms()[ico.size() + i].position) > 1e-9)
+                return fail("upright placeAdsorbateAt disagrees with "
+                            "placeAdsorbate");
+
+        core::AdsorbateOrientation flat;
+        flat.tiltDeg = 90.0;
+        const auto laid = core::placeAdsorbateAt(ico, site, oh.structure,
+                                                 oh.anchorIndex, height, flat);
+        const core::Vec3 anchor = laid.atoms()[ico.size()].position;
+        // The anchor is fixed by the site + height, not by the orientation.
+        if (dist(anchor, expectedO) > 1e-6)
+            return fail("tilting moved the anchor off the site axis");
+        const core::Vec3 axis =
+            (laid.atoms()[ico.size() + 1].position - anchor).normalized();
+        if (std::abs(axis.dot(nrm.normalized())) > 1e-6)
+            return fail("a 90° tilt did not lay the molecule flat on the facet");
+        // ...and the bond length must survive a rigid rotation.
+        const core::Vec3 uprightAnchor = upright.atoms()[ico.size()].position;
+        const double uprightBond =
+            dist(upright.atoms()[ico.size() + 1].position, uprightAnchor);
+        const double tiltedBond =
+            dist(laid.atoms()[ico.size() + 1].position, anchor);
+        if (std::abs(uprightBond - tiltedBond) > 1e-9)
+            return fail("tilting changed the O-H bond length");
+    }
+
     // --- Feature 4: slab normals are perpendicular to the surface ----------
     // fcc Cu conventional cell -> (111) slab, then check top-site normals are
     // (nearly) parallel to ±z rather than lying in the surface plane.

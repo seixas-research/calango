@@ -4,7 +4,7 @@
 #include <QString>
 
 namespace calango::core {
-struct VolumetricData;
+class VolumetricData;
 }
 
 namespace calango::gui {

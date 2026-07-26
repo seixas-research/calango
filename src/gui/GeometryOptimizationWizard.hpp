@@ -3,11 +3,19 @@
 #include "gui/GpawElectronicRows.hpp"
 #include "gui/SimulationWizardBase.hpp"
 
+#include <memory>
+#include <vector>
+
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
 class QFormLayout;
+class QLabel;
 class QSpinBox;
+
+namespace calango::core {
+class Structure;
+}
 
 namespace calango::gui {
 
@@ -23,10 +31,17 @@ class GeometryOptimizationWizard : public SimulationWizardBase {
     Q_OBJECT
 
 public:
-    explicit GeometryOptimizationWizard(QWidget* parent = nullptr);
+    /// `structure` is the geometry being relaxed. It is only read to populate
+    /// the "Geometry constraints…" editor (and to seed the Hubbard editor's
+    /// element completer); passing null simply leaves the per-atom constraint
+    /// table empty.
+    explicit GeometryOptimizationWizard(
+        std::shared_ptr<const core::Structure> structure = nullptr,
+        QWidget* parent = nullptr);
 
 protected:
     QString wizardTitle() const override;
+    QStringList calculatorElements() const override;
     QString settingsHeader() const override;
     QWidget* buildSettingsPage() override;
     /// Calculator Settings first, then the relaxation settings page.
@@ -53,9 +68,20 @@ protected:
 
 private Q_SLOTS:
     void updateCellEnabled();
+    /// "Geometry constraints…": open the editor and keep its result.
+    void editConstraints();
 
 private:
     core::CalculatorConfig config() const;
+    /// One-line description of the active constraints, shown next to the
+    /// button so the page says what is frozen without being reopened.
+    void refreshConstraintSummary();
+
+    std::shared_ptr<const core::Structure> structure_;
+    /// Frozen degrees of freedom. Owned here rather than in the dialog, which
+    /// is constructed on demand and destroyed on close.
+    std::vector<core::GeometryConstraint> constraints_;
+    QLabel* constraintSummary_ = nullptr;
 
     QComboBox* optimizerCombo_;
     QDoubleSpinBox* fmaxSpin_;

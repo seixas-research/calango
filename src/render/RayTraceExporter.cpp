@@ -31,17 +31,28 @@ void collectGeometry(const RayTraceExporter::SceneInputs& in,
                      std::vector<SceneCylinder>& cylinders)
 {
     const auto& atoms = in.structure->atoms();
-    const bool wantBonds = in.style.mode != RepresentationMode::SpaceFilling;
+    // Per-atom representation, resolved exactly as the viewport does, so an
+    // exported figure keeps the cast split (CPK substrate, ball-and-stick
+    // adsorbate) the user set up on screen.
+    const auto modes = StructureRenderer::atomModes(in.structure, in.style);
 
-    for (const auto& atom : atoms) {
-        spheres.push_back({toQt(atom.position),
-                           StructureRenderer::displayRadius(atom.atomicNumber, in.style),
-                           StructureRenderer::atomColor(atom.atomicNumber, in.style)});
+    for (std::size_t i = 0; i < atoms.size(); ++i) {
+        const auto& atom = atoms[i];
+        spheres.push_back(
+            {toQt(atom.position),
+             StructureRenderer::displayRadius(atom.atomicNumber, in.style, modes[i]),
+             StructureRenderer::atomColor(atom.atomicNumber, in.style)});
     }
 
-    if (wantBonds) {
+    {
         const float baseRadius = in.style.bondRadius * in.style.bondWidthFactor;
         for (const auto& bond : in.structure->detectBonds(in.style.bondTolerance)) {
+            // Space-filling casts carry no bonds — same rule as the viewport.
+            if (modes[static_cast<std::size_t>(bond.i)]
+                    == RepresentationMode::SpaceFilling
+                || modes[static_cast<std::size_t>(bond.j)]
+                    == RepresentationMode::SpaceFilling)
+                continue;
             const auto& a = atoms[static_cast<std::size_t>(bond.i)];
             const auto& b = atoms[static_cast<std::size_t>(bond.j)];
             const QVector3D pa = toQt(a.position);

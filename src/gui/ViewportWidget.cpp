@@ -51,6 +51,14 @@ void ViewportWidget::setStructure(std::shared_ptr<const core::Structure> structu
     // Measurement atom indices would dangle across a structure swap.
     measureAtoms_.clear();
     measurementLabel_.clear();
+    // Cast assignments are per-atom-index, so they only survive a swap that
+    // keeps the atom count — which is exactly the trajectory-playback case,
+    // where the casts must NOT be reset between frames. A different atom count
+    // means different atoms, and keeping the old indices would draw arbitrary
+    // atoms in the adsorbate's cast.
+    if (renderer_.style().atomCasts.size()
+        != (structure_ ? structure_->size() : 0))
+        renderer_.style().atomCasts.clear();
     updateColorScalars();
     structureDirty_ = true;
     // Contacts are a property of the geometry, so a new structure invalidates
@@ -1461,12 +1469,18 @@ int ViewportWidget::pickAtom(const QPointF& screenPos) const
     int best = -1;
     float bestT = std::numeric_limits<float>::max();
     const auto& atoms = structure_->atoms();
+    // Each atom is picked at the radius it is DRAWN at, which with casts in
+    // play differs per atom: a CPK substrate sphere is several times the
+    // ball-and-stick node next to it, and picking at one shared radius would
+    // miss the big ones and grab empty space around the small ones.
+    const auto modes = render::StructureRenderer::atomModes(structure_.get(),
+                                                            renderer_.style());
     for (std::size_t i = 0; i < atoms.size(); ++i) {
         const QVector3D center(static_cast<float>(atoms[i].position.x),
                                static_cast<float>(atoms[i].position.y),
                                static_cast<float>(atoms[i].position.z));
-        const float radius =
-            render::StructureRenderer::displayRadius(atoms[i].atomicNumber, renderer_.style());
+        const float radius = render::StructureRenderer::displayRadius(
+            atoms[i].atomicNumber, renderer_.style(), modes[i]);
 
         const QVector3D oc = origin - center;
         const float b = QVector3D::dotProduct(direction, oc);

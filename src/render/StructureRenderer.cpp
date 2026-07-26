@@ -305,9 +305,15 @@ std::vector<Light> StructureRenderer::defaultLights()
 
 float StructureRenderer::displayRadius(int atomicNumber, const Style& style)
 {
+    return displayRadius(atomicNumber, style, style.mode);
+}
+
+float StructureRenderer::displayRadius(int atomicNumber, const Style& style,
+                                       RepresentationMode mode)
+{
     const float covalent = core::Elements::data(atomicNumber).covalentRadius;
     float radius = 0.25f;
-    switch (style.mode) {
+    switch (mode) {
     case RepresentationMode::BallAndStick:
         radius = std::max(0.2f, covalent * 0.4f);
         break;
@@ -330,6 +336,22 @@ float StructureRenderer::displayRadius(int atomicNumber, const Style& style)
         it != style.radiusScaleOverrides.end())
         perElement = it->second;
     return radius * style.atomScaleFactor * perElement;
+}
+
+std::vector<RepresentationMode> StructureRenderer::atomModes(
+    const core::Structure* structure, const Style& style)
+{
+    const std::size_t count = structure ? structure->size() : 0;
+    // A cast assignment that does not match the atom count belongs to a
+    // structure that has since been replaced. Falling back to the uniform mode
+    // is the only safe reading — the alternative is drawing atoms in the casts
+    // of whatever geometry was loaded before.
+    if (style.atomCasts.size() != count)
+        return std::vector<RepresentationMode>(count, style.mode);
+    std::vector<RepresentationMode> modes(count, style.mode);
+    for (std::size_t i = 0; i < count; ++i)
+        modes[i] = style.castMode(style.atomCasts[i]);
+    return modes;
 }
 
 QColor StructureRenderer::atomColor(int atomicNumber, const Style& style)
@@ -572,6 +594,12 @@ void StructureRenderer::buildPolyhedra(const core::Structure* structure,
     const auto& atoms = structure->atoms();
     const std::size_t count = atoms.size();
 
+    // Only the atoms whose own cast asks for Polyhedral get a hull. The
+    // neighbour shells are still built from ALL bonds — a polyhedron's vertices
+    // are its ligands, which have no reason to be in the same cast as the
+    // cation at its centre.
+    const std::vector<RepresentationMode> modes = atomModes(structure, style_);
+
     // Bonded-neighbor positions per atom in world coordinates, honoring
     // periodic image offsets so a polyhedron straddling a cell boundary stays
     // whole rather than collapsing to the in-cell images.
@@ -627,6 +655,8 @@ void StructureRenderer::buildPolyhedra(const core::Structure* structure,
     }
 
     for (std::size_t c = 0; c < count; ++c) {
+        if (modes[c] != RepresentationMode::Polyhedral)
+            continue;
         // A coordination polyhedron needs at least four vertices to enclose a
         // volume; fewer neighbors (edges/triangles) are left to the spheres.
         if (neighbors[c].size() < 4)
@@ -731,12 +761,19 @@ void StructureRenderer::setStructure(const core::Structure* structure,
     std::vector<float> cellVertices;
     std::vector<float> cellTubeInstances;
 
-    const bool polyhedral = style_.mode == RepresentationMode::Polyhedral;
-    // Space-filling is the only mode without bonds. Polyhedral is a hybrid: it
-    // draws the coordination polyhedra AND the ball-and-stick bond cylinders,
-    // so the opaque bonds read through the translucent faces.
-    const bool wantBonds = style_.mode != RepresentationMode::SpaceFilling;
-    const bool wireframe = style_.mode == RepresentationMode::Wireframe;
+    // Per-atom representation: every atom's own cast decides how it is drawn.
+    // With no casts defined this is a vector of one repeated value and every
+    // branch below behaves exactly as the single-mode renderer did.
+    const std::vector<RepresentationMode> modes = atomModes(structure, style_);
+    const auto modeAt = [&modes](std::size_t index) {
+        return modes[index];
+    };
+    // Polyhedra are built when ANY cast asks for them; buildPolyhedra then
+    // skips the atoms whose own cast does not.
+    const bool polyhedral =
+        std::any_of(modes.begin(), modes.end(), [](RepresentationMode m) {
+            return m == RepresentationMode::Polyhedral;
+        });
 
     if (structure && !structure->empty()) {
         const auto& atoms = structure->atoms();
@@ -764,13 +801,18 @@ void StructureRenderer::setStructure(const core::Structure* structure,
             if (selected)
                 color = selectionTint(color);
 
-            if (wireframe) {
+            const RepresentationMode atomMode = modeAt(index);
+            const bool atomWireframe = atomMode == RepresentationMode::Wireframe;
+            const float radius =
+                displayRadius(atom.atomicNumber, style_, atomMode)
+                * (selected ? 1.2f : 1.0f);
+
+            if (atomWireframe) {
                 appendColoredVertex(wireAtomVertices, toQt(atom.position), color);
             } else {
                 QMatrix4x4 model;
                 model.translate(toQt(atom.position));
-                model.scale(displayRadius(atom.atomicNumber, style_)
-                            * (selected ? 1.2f : 1.0f));
+                model.scale(radius);
                 appendInstance(atomInstances, model, color);
             }
 
@@ -779,23 +821,40 @@ void StructureRenderer::setStructure(const core::Structure* structure,
             if (ghosts) {
                 for (const core::Vec3& shift : ghostShifts[index]) {
                     const QVector3D ghostPosition = toQt(atom.position + shift);
-                    if (wireframe) {
+                    if (atomWireframe) {
                         appendColoredVertex(wireAtomVertices, ghostPosition, color);
                         continue;
                     }
                     QMatrix4x4 model;
                     model.translate(ghostPosition);
-                    model.scale(displayRadius(atom.atomicNumber, style_)
-                                * (selected ? 1.2f : 1.0f));
+                    model.scale(radius);
                     appendInstance(atomInstances, model, color);
                 }
             }
         }
 
-        if (wantBonds) {
+        {
             const float baseRadius = style_.bondRadius * style_.bondWidthFactor;
             for (const core::Bond& bond :
                  structure->detectBonds(style_.bondTolerance, style_.autoBonds)) {
+                // Which cast a bond belongs to is only well defined when both
+                // of its atoms agree. Space-filling has no bonds at all, so a
+                // bond touching a CPK atom is dropped — that is what lets a
+                // CPK metal surface sit under a ball-and-stick molecule
+                // without a thicket of substrate sticks growing through the
+                // vdW spheres. A bond whose two ends disagree on anything else
+                // (one wireframe, one solid) is drawn solid: a half-line,
+                // half-cylinder bond reads as a rendering fault.
+                const RepresentationMode modeI =
+                    modeAt(static_cast<std::size_t>(bond.i));
+                const RepresentationMode modeJ =
+                    modeAt(static_cast<std::size_t>(bond.j));
+                if (modeI == RepresentationMode::SpaceFilling
+                    || modeJ == RepresentationMode::SpaceFilling)
+                    continue;
+                const bool wireframe = modeI == RepresentationMode::Wireframe
+                    && modeJ == RepresentationMode::Wireframe;
+
                 // The bond is drawn once at its real position, then once per
                 // ghost translation of EITHER endpoint: an atom duplicated onto
                 // the far face takes its bonds with it, which is what makes the
@@ -894,8 +953,9 @@ void StructureRenderer::setStructure(const core::Structure* structure,
         }
 
         // Vector overlay arrows: shaft (cylinder) + head (cone) per atom,
-        // sharing the lit instanced pipeline. Skipped in wireframe mode.
-        if (!wireframe && style_.vectorOverlay != VectorOverlay::None) {
+        // sharing the lit instanced pipeline. Atoms drawn as wireframe are
+        // skipped — there is no solid geometry there for a lit arrow to sit on.
+        if (style_.vectorOverlay != VectorOverlay::None) {
             // vectorScale is normalized, not raw Å: 1.0 means the calibrated
             // baseline below. The former 1:1 Å-per-unit baseline drew forces
             // long enough to overlap neighboring atoms and obscure the
@@ -914,6 +974,8 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                     return;
                 const float shaftRadius = 0.045f;
                 for (std::size_t index = 0; index < atoms.size(); ++index) {
+                    if (modeAt(index) == RepresentationMode::Wireframe)
+                        continue;
                     const core::Vec3& v = it->second[index];
                     // Filter on the FIELD magnitude, before the display scale:
                     // otherwise the set of hidden atoms would change every time
@@ -1197,13 +1259,21 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
     if (!initialized_)
         return;
 
+    // What is drawn is decided by what the geometry build produced, not by the
+    // style's mode: with casts in play a single scene can hold solid spheres
+    // AND wireframe lines AND polyhedra at once, so each pass runs whenever its
+    // own buffers are non-empty.
+    const bool hasMeshes = sphere_.instanceCount > 0 || cylinder_.instanceCount > 0
+        || cone_.instanceCount > 0;
+    const bool hasWires =
+        wireBonds_.vertexCount > 0 || wireAtoms_.vertexCount > 0;
+
     // Depth pass first: the shadow map must exist before the shading pass
-    // samples it. Wireframe mode has no solid geometry to occlude anything,
-    // so it skips the whole thing.
+    // samples it. A purely wireframe scene has no solid geometry to occlude
+    // anything, so it skips the whole thing.
     QMatrix4x4 lightSpace;
     bool shadowsActive = false;
-    if (style_.shadowsEnabled && style_.mode != RepresentationMode::Wireframe
-        && ensureShadowTarget()) {
+    if (style_.shadowsEnabled && hasMeshes && ensureShadowTarget()) {
         lightSpace = lightSpaceMatrix();
         renderShadowMap(lightSpace);
         shadowsActive = true;
@@ -1211,7 +1281,7 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
     shadowsActive_ = shadowsActive;
     lightSpace_ = lightSpace;
 
-    if (style_.mode == RepresentationMode::Wireframe) {
+    if (hasWires) {
         wireProgram_.bind();
         wireProgram_.setUniformValue("uMvp", projection * view);
         wireProgram_.setUniformValue("uAlpha", 1.0f);
@@ -1226,7 +1296,8 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
             wireAtoms_.vao.release();
         }
         wireProgram_.release();
-    } else {
+    }
+    if (hasMeshes) {
         meshProgram_.bind();
         meshProgram_.setUniformValue("uView", view);
         meshProgram_.setUniformValue("uProj", projection);
@@ -1265,8 +1336,7 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
     // then their solid edge outline. Faces blend without writing depth (no
     // order-independent sort here) so overlapping polyhedra stay readable;
     // edges write depth normally so the wireframe reads crisply.
-    if (style_.mode == RepresentationMode::Polyhedral
-        && (polyhedronFaces_.vertexCount > 0 || polyhedronEdges_.vertexCount > 0)) {
+    if (polyhedronFaces_.vertexCount > 0 || polyhedronEdges_.vertexCount > 0) {
         wireProgram_.bind();
         wireProgram_.setUniformValue("uMvp", projection * view);
         if (polyhedronFaces_.vertexCount > 0) {

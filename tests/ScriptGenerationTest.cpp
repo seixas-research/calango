@@ -11,6 +11,7 @@
 // against a real ASE install (see the accompanying check in the repo docs).
 
 #include "core/AseScriptGenerator.hpp"
+#include "core/ElectronicScriptGenerator.hpp"
 #include "core/GwScriptGenerator.hpp"
 #include "core/OpticsScriptGenerator.hpp"
 #include "core/PhononScriptGenerator.hpp"
@@ -60,6 +61,32 @@ CalculatorConfig gpawConfig()
     return c;
 }
 
+/// A relaxation with all three constraint shapes at once: whole atoms frozen,
+/// a partial direction mask, and a two-sided region rule.
+CalculatorConfig constrainedRelaxation()
+{
+    CalculatorConfig c = gpawConfig();
+    c.task = TaskKind::GeometryOptimization;
+
+    GeometryConstraint fixed;               // atoms 0,1,2 frozen entirely
+    fixed.indices = {0, 1, 2};
+    GeometryConstraint inPlane;             // atom 7 free only in x/y
+    inPlane.indices = {7};
+    inPlane.fix[0] = false;
+    inPlane.fix[1] = false;
+    inPlane.fix[2] = true;
+    GeometryConstraint slab;                // 5 < z < 10, frozen entirely
+    slab.selection = GeometryConstraint::Selection::Region;
+    slab.axis = 2;
+    slab.hasMin = true;
+    slab.minValue = 5.0;
+    slab.hasMax = true;
+    slab.maxValue = 10.0;
+
+    c.constraints = {fixed, inPlane, slab};
+    return c;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -102,6 +129,17 @@ int main(int argc, char** argv)
         hubbard.hubbardU = {{"Fe", "d", 3.5, false}, {"O", "p", 2.0, true}};
         hubbard.dispersionD4 = true;
         dump("gpaw_hubbard_d4.py", hubbard);
+
+        // Constraints emit a list comprehension inside a generated script that
+        // already mixes literal lists and f-strings, so its indentation is
+        // worth byte-compiling rather than eyeballing. Once free-cell and once
+        // variable-cell: the constraint block sits between max_steps and the
+        // cell filter, and only the second layout exercises that neighbour.
+        dump("gpaw_constraints.py", constrainedRelaxation());
+        CalculatorConfig constrainedCell = constrainedRelaxation();
+        constrainedCell.relaxCell = true;
+        constrainedCell.cellCustomMask = true;
+        dump("gpaw_constraints_cell.py", constrainedCell);
 
         CalculatorConfig emt;
         emt.task = TaskKind::MolecularDynamics;
@@ -199,6 +237,25 @@ int main(int argc, char** argv)
             dumpGw("gw_yambo_ppa.py", yambo);
             yambo.frequency = GwFrequencyTreatment::RealAxis;
             dumpGw("gw_yambo_realaxis.py", yambo);
+        }
+
+        // Electronic structure with spin-orbit coupling: the SOC block rebuilds
+        // `bs` from a numpy array, indented into the middle of the GPAW branch.
+        {
+            const auto dumpBands = [&dir](const std::string& name,
+                                          const ElectronicConfig& config) {
+                std::ofstream out(dir + "/" + name);
+                out << generateElectronicScript(config);
+            };
+            ElectronicConfig bands;
+            bands.backend = ElectronicBackend::Gpaw;
+            bands.kpath = "GXWKG";
+            bands.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+            bands.spinOrbit = true;
+            dumpBands("bands_soc.py", bands);
+            ElectronicConfig inlineScf = bands;
+            inlineScf.baselineDensityPath.clear();
+            dumpBands("bands_soc_inline_scf.py", inlineScf);
         }
 
         std::ofstream module(dir + "/"
@@ -342,6 +399,106 @@ int main(int argc, char** argv)
         checkContains(AseScriptGenerator::generate(vasp, "structure.extxyz"),
                       "apply in the calculator block above",
                       "other DFT hooks keep the hand-off comment");
+    }
+
+    // -- Geometry constraints -----------------------------------------------
+    //
+    // The failure this guards against is silent: a constraint that reaches the
+    // script in the wrong ASE spelling, or after the cell filter has already
+    // wrapped `atoms`, leaves the run looking normal while the atoms the user
+    // pinned move anyway.
+    std::printf("Geometry constraints:\n");
+    {
+        const std::string script =
+            AseScriptGenerator::generate(constrainedRelaxation(),
+                                         "structure.extxyz");
+        checkContains(script, "from ase.constraints import FixAtoms, FixCartesian",
+                      "imports both constraint classes");
+        checkContains(script, "FixAtoms(indices=[0, 1, 2])",
+                      "fully frozen atoms become FixAtoms");
+        // ASE's mask is true for the coordinates that are HELD — the opposite
+        // of the intuitive reading, and the bug this pins.
+        checkContains(script, "mask=(False, False, True)",
+                      "a partial mask becomes FixCartesian, held-directions true");
+        checkContains(script, "_p[2] > 5",
+                      "a region rule keeps its lower bound");
+        checkContains(script, "_p[2] < 10",
+                      "and its upper bound");
+        checkContains(script, "enumerate(atoms.get_positions())",
+                      "the region is re-evaluated at run time, not baked in");
+        checkContains(script, "atoms.set_constraint(_constraints)",
+                      "the rules are bound to the atoms");
+
+        // Order matters: constraints must reach `atoms` before the optimizer.
+        check(script.find("atoms.set_constraint") < script.find("opt = BFGS("),
+              "constraints are applied before the optimizer is built");
+    }
+    {
+        // With a cell filter the ordering is what decides whether the frozen
+        // atoms are frozen at all — the filter forwards whatever forces it is
+        // handed.
+        CalculatorConfig c = constrainedRelaxation();
+        c.relaxCell = true;
+        const std::string script =
+            AseScriptGenerator::generate(c, "structure.extxyz");
+        check(script.find("atoms.set_constraint") < script.find("_CellFilter(atoms"),
+              "constraints are applied before the cell filter wraps the atoms");
+    }
+    {
+        // A rule that freezes nothing, and an index rule with no atoms, are
+        // both leftovers of an emptied dialog row. Emitting them would put a
+        // constraint block in the script that constrains nothing.
+        CalculatorConfig c = gpawConfig();
+        c.task = TaskKind::GeometryOptimization;
+        GeometryConstraint empty;
+        empty.indices = {4};
+        empty.fix[0] = empty.fix[1] = empty.fix[2] = false;
+        GeometryConstraint noAtoms; // Indices selection, empty list
+        c.constraints = {empty, noAtoms};
+        const std::string script =
+            AseScriptGenerator::generate(c, "structure.extxyz");
+        check(!contains(script, "set_constraint"),
+              "freeze-nothing and empty rules emit no constraint block");
+    }
+    {
+        CalculatorConfig c = gpawConfig();
+        c.task = TaskKind::GeometryOptimization;
+        const std::string script =
+            AseScriptGenerator::generate(c, "structure.extxyz");
+        check(!contains(script, "ase.constraints"),
+              "an unconstrained relaxation imports nothing extra");
+    }
+
+    // -- Spin-orbit coupling (Electronic Structure) --------------------------
+    std::printf("Spin-orbit coupling:\n");
+    {
+        ElectronicConfig bands;
+        bands.backend = ElectronicBackend::Gpaw;
+        bands.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        bands.spinOrbit = true;
+        const std::string script = generateElectronicScript(bands);
+        checkContains(script, "from gpaw.spinorbit import soc_eigenstates",
+                      "SOC comes from GPAW's spinorbit module");
+        checkContains(script, "_soc = soc_eigenstates(band_calc)",
+                      "applied to the states along the k-path");
+        // SOC shifts the Fermi level with the bands; keeping the scalar-
+        // relativistic one would misplace the gap in every plot downstream.
+        checkContains(script, "efermi = float(_soc.fermi_level)",
+                      "the Fermi level is re-read from the spinor solution");
+        checkContains(script, "_soc_energies[_np.newaxis]",
+                      "spinor bands are ONE channel, not a spin pair");
+        // The rebuilt BandStructure must come after the one it replaces.
+        check(script.find("bs = band_calc.band_structure()")
+                  < script.find("bs = BandStructure("),
+              "the SOC bands replace the scalar-relativistic ones");
+    }
+    {
+        ElectronicConfig bands;
+        bands.backend = ElectronicBackend::Gpaw;
+        bands.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        const std::string script = generateElectronicScript(bands);
+        check(!contains(script, "spinorbit"),
+              "SOC costs an extra diagonalization and is emitted only on request");
     }
 
     // -- MLIP calculator blocks ---------------------------------------------

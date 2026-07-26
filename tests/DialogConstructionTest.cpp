@@ -14,6 +14,8 @@
 // A dialog is exercised, not merely constructed: toggling every control is
 // what re-enters the slots that read half-built state.
 
+#include "core/Structure.hpp"
+#include "gui/GeometryConstraintsDialog.hpp"
 #include "gui/GrapheneOxideWizard.hpp"
 #include "gui/HubbardParametersDialog.hpp"
 #include "gui/OpticsPlotStyleDialog.hpp"
@@ -23,10 +25,12 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QPushButton>
 #include <QSpinBox>
 
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 
 using namespace calango::gui;
 
@@ -117,6 +121,55 @@ int main(int argc, char** argv)
         HubbardParametersDialog dialog(true, seeded, {});
         check(dialog.isEnabled(), "reports the enabled state it was given");
         check(dialog.parameters().size() == 2, "round-trips seeded rows");
+        exerciseControls(&dialog);
+        check(true, "survives control exercise when pre-populated");
+    }
+
+    std::printf("Geometry constraints dialog:\n");
+    {
+        // A null structure is the case a wizard opened with nothing loaded
+        // hits, and the per-atom table has to cope with having no rows at all
+        // rather than indexing into an absent structure.
+        GeometryConstraintsDialog dialog(nullptr, {});
+        check(dialog.constraints().empty(), "no structure yields no constraints");
+        exerciseControls(&dialog);
+        check(true, "survives control exercise with no structure");
+    }
+    {
+        auto structure = std::make_shared<calango::core::Structure>();
+        for (int i = 0; i < 6; ++i)
+            structure->addAtom({29, {0.0, 0.0, 2.0 * i}});
+
+        // Seeded with one of each rule shape: appendRegionRow() wires per-row
+        // signals into updateSummary(), which reads the table it is still
+        // filling — the exact hazard this file exists for.
+        calango::core::GeometryConstraint fixed;
+        fixed.indices = {0, 1};
+        calango::core::GeometryConstraint region;
+        region.selection = calango::core::GeometryConstraint::Selection::Region;
+        region.hasMin = true;
+        region.minValue = 4.0;
+        region.fix[0] = false;
+        region.fix[1] = false;
+
+        GeometryConstraintsDialog dialog(structure, {fixed, region});
+        const auto rules = dialog.constraints();
+        check(rules.size() == 2, "round-trips one index rule and one region");
+        // The two atoms named by the seed must come back as ONE index rule
+        // (same mask), not as two — that grouping is what keeps a 400-atom slab
+        // from emitting 400 constraint objects.
+        int indexRules = 0;
+        int constrainedAtoms = 0;
+        for (const auto& rule : rules) {
+            if (rule.selection
+                == calango::core::GeometryConstraint::Selection::Region)
+                continue;
+            ++indexRules;
+            constrainedAtoms += static_cast<int>(rule.indices.size());
+        }
+        check(indexRules == 1, "atoms sharing a mask collapse into one rule");
+        check(constrainedAtoms == 2, "both seeded atoms survive the round trip");
+
         exerciseControls(&dialog);
         check(true, "survives control exercise when pre-populated");
     }

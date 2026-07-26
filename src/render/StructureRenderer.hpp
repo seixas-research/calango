@@ -83,7 +83,49 @@ inline constexpr int kMaxLights = 4;
 class StructureRenderer {
 public:
     struct Style {
+        /// Representation of CAST 0 — and, since every atom starts in cast 0,
+        /// the representation of the whole structure until casts are used.
         RepresentationMode mode = RepresentationMode::BallAndStick;
+
+        // -- Casts (per-atom representation groups) ------------------------
+        //
+        // A cast is a group of atoms drawn in its OWN representation, so one
+        // scene can show a metal surface as space-filling CPK spheres and the
+        // molecule adsorbed on it as ball-and-stick — the standard way a
+        // surface-science figure separates substrate from adsorbate. Without
+        // this the representation is all-or-nothing and the molecule either
+        // disappears inside the vdW spheres or the surface stops reading as a
+        // surface.
+        //
+        // Cast 0 always exists and its mode is `mode` above; `castModes` holds
+        // casts 1, 2, … in order. Keeping cast 0 in `mode` rather than
+        // duplicating it into the vector means every existing reader of
+        // `style.mode` (ray-trace export, viewport picking, saved projects)
+        // stays correct for the default single-cast scene.
+
+        /// Cast index per atom, index-aligned with the structure's atoms().
+        /// Empty — or any size that disagrees with the atom count, which is
+        /// what a structure replacement leaves behind — means every atom is in
+        /// cast 0.
+        std::vector<int> atomCasts;
+        /// Representation of casts 1..N (cast 0's is `mode`). An atom whose
+        /// cast index has no entry here falls back to `mode`.
+        std::vector<RepresentationMode> castModes;
+
+        /// Number of casts, cast 0 included — always at least 1.
+        int castCount() const
+        {
+            return 1 + static_cast<int>(castModes.size());
+        }
+        /// Representation of `cast`, falling back to cast 0's for an index
+        /// outside the current set.
+        RepresentationMode castMode(int cast) const
+        {
+            if (cast <= 0 || cast > static_cast<int>(castModes.size()))
+                return mode;
+            return castModes[static_cast<std::size_t>(cast - 1)];
+        }
+
         float atomScaleFactor = 1.0f; ///< global sphere-radius multiplier (UI)
         float bondWidthFactor = 1.0f; ///< global cylinder-width multiplier (UI)
         float bondRadius = 0.078f;    ///< Å, base radius of a single bond
@@ -194,8 +236,20 @@ public:
     };
 
     /// Display radius of an atom (Å) — the single source of truth shared
-    /// by instance building and by ray-cast picking in the viewport.
+    /// by instance building and by ray-cast picking in the viewport. The
+    /// two-argument form uses cast 0's representation; pass an explicit mode
+    /// for an atom in another cast.
     static float displayRadius(int atomicNumber, const Style& style);
+    static float displayRadius(int atomicNumber, const Style& style,
+                               RepresentationMode mode);
+
+    /// Representation each atom of `structure` is drawn in, resolved from the
+    /// style's cast assignment. Falls back to a uniform cast-0 mode when the
+    /// assignment is absent or does not match the atom count (which is what a
+    /// structure replacement leaves behind). Public so the viewport's picking
+    /// and the ray-trace exporter resolve radii exactly as the renderer does.
+    static std::vector<RepresentationMode> atomModes(
+        const core::Structure* structure, const Style& style);
 
     /// Element color after applying user overrides (default: Jmol CPK).
     static QColor atomColor(int atomicNumber, const Style& style);

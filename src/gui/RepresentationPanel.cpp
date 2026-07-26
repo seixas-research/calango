@@ -1,6 +1,7 @@
 #include "gui/RepresentationPanel.hpp"
 #include "gui/GuiUtils.hpp"
 
+#include "gui/CastSetupDialog.hpp"
 #include "gui/CustomGradientColoringDialog.hpp"
 #include "gui/ElementSettingsDialog.hpp"
 #include "gui/PolyhedralSettingsDialog.hpp"
@@ -43,12 +44,36 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     layout->addWidget(buildAppearanceTab());
 
     syncColoringFromViewport();
+    syncCastsFromViewport();
 }
 
 QWidget* RepresentationPanel::buildAppearanceTab()
 {
     auto* page = new QWidget(this);
     auto* form = new QFormLayout(page);
+
+    // --- Casting -----------------------------------------------------------
+    // Which GROUP of atoms the representation controls below apply to. Every
+    // atom starts in "Cast: 0", so with casts unused this is a one-entry
+    // dropdown and the panel behaves exactly as it always did. Split a
+    // substrate and an adsorbate into two casts and each gets its own
+    // representation — a CPK metal surface under a ball-and-stick molecule.
+    //
+    // It sits directly under Background and above Style because it scopes
+    // everything below it: reading the panel top-down, you choose what you are
+    // styling before you choose how.
+    castCombo_ = new QComboBox(page);
+    castCombo_->setToolTip(
+        tr("The atom group the representation below applies to. Atoms are moved "
+           "between casts in \"Cast change…\" on the editor row."));
+    form->addRow(tr("Casting:"), castCombo_);
+    connect(castCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        // Switching casts only changes WHICH mode the combo shows; it must not
+        // write that mode back onto the newly selected cast.
+        const QSignalBlocker blocker(modeCombo_);
+        modeCombo_->setCurrentIndex(
+            static_cast<int>(viewport_->style().castMode(selectedCast())));
+    });
 
     // --- Style (surface material) ------------------------------------------
     // First control in the panel: the material decides how everything below
@@ -84,7 +109,23 @@ QWidget* RepresentationPanel::buildAppearanceTab()
                           tr("Wireframe"), tr("Polyhedral")});
     form->addRow(tr("Mode:"), modeCombo_);
     connect(modeCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
-        viewport_->setRepresentation(static_cast<render::RepresentationMode>(index));
+        const auto mode = static_cast<render::RepresentationMode>(index);
+        const int cast = selectedCast();
+        if (cast == 0) {
+            // Cast 0's mode IS style.mode, which setRepresentation owns
+            // (it also re-derives the scalar mapping and rebuilds).
+            viewport_->setRepresentation(mode);
+        } else {
+            auto& modes = viewport_->style().castModes;
+            const auto slot = static_cast<std::size_t>(cast - 1);
+            if (slot < modes.size()) {
+                modes[slot] = mode;
+                viewport_->styleChanged(true);
+            }
+        }
+        // The cast dropdown names each cast by its representation, so the label
+        // the user just invalidated has to be re-rendered.
+        syncCastsFromViewport();
     });
 
     // --- Atom coloring -----------------------------------------------------
@@ -111,6 +152,13 @@ QWidget* RepresentationPanel::buildAppearanceTab()
         editorRow->addWidget(button);
         return button;
     };
+    // First on the row, ahead of Element Settings: a cast decides WHICH atoms
+    // the rest of the panel is about, so the editor that moves atoms between
+    // casts leads the editors that style them.
+    auto* castButton = makeEditorButton(
+        QStringLiteral("stacked-view"),
+        tr("Cast change… — which cast each atom belongs to, and how many casts "
+           "there are. Each cast draws in its own representation."));
     auto* elementsButton = makeEditorButton(
         QStringLiteral("palette-line"),
         tr("Element Settings… — per-element colours and radii, and preset "
@@ -130,6 +178,8 @@ QWidget* RepresentationPanel::buildAppearanceTab()
     editorRow->addStretch(1);
     form->addRow(editorRow);
 
+    connect(castButton, &QPushButton::clicked, this,
+            &RepresentationPanel::openCastSetup);
     connect(elementsButton, &QPushButton::clicked, this, [this] {
         ElementSettingsDialog dialog(viewport_, this);
         dialog.exec();
@@ -243,6 +293,43 @@ QWidget* RepresentationPanel::buildAppearanceTab()
     return page;
 }
 
+
+int RepresentationPanel::selectedCast() const
+{
+    return std::max(0, castCombo_->currentIndex());
+}
+
+void RepresentationPanel::syncCastsFromViewport()
+{
+    const auto& style = viewport_->style();
+    const int count = style.castCount();
+    const int keep = std::clamp(castCombo_->currentIndex(), 0, count - 1);
+    {
+        const QSignalBlocker blocker(castCombo_);
+        castCombo_->clear();
+        for (int cast = 0; cast < count; ++cast) {
+            // Naming each cast by its representation is what makes the
+            // dropdown readable at a glance ("Cast: 1 — Ball-and-Stick");
+            // bare indices would say nothing about what they draw.
+            const int mode = static_cast<int>(style.castMode(cast));
+            castCombo_->addItem(tr("Cast: %1 — %2").arg(cast).arg(
+                modeCombo_->itemText(mode)));
+        }
+        castCombo_->setCurrentIndex(keep);
+    }
+    const QSignalBlocker blocker(modeCombo_);
+    modeCombo_->setCurrentIndex(static_cast<int>(style.castMode(keep)));
+}
+
+void RepresentationPanel::openCastSetup()
+{
+    // Modal: it edits live against the viewport, and letting a second editor
+    // resize the cast list underneath it would leave both showing stale
+    // indices.
+    CastSetupDialog dialog(viewport_, viewport_->structure(), this);
+    dialog.exec();
+    syncCastsFromViewport();
+}
 
 void RepresentationPanel::applyColorMode()
 {

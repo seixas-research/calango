@@ -170,6 +170,77 @@ int main(int argc, char** argv)
               .arg(orthoZoom)
               .arg(0.5 / orthoHalfHeight, 0, 'f', 6));
 
+    // -- Casts (per-atom representation groups) ------------------------------
+    //
+    // The exporter shares StructureRenderer::atomModes with the viewport, so
+    // this pins the resolution rule itself: a figure that splits a substrate
+    // and an adsorbate into two casts must export with that split, and a stale
+    // assignment left over from a replaced structure must fall back to the
+    // uniform mode rather than styling arbitrary atoms.
+    std::printf("Casts:\n");
+    {
+        using calango::render::RepresentationMode;
+        using calango::render::StructureRenderer;
+
+        auto casted = makeInputs(structure);
+        // C in cast 0 (space-filling), O in cast 1 (ball-and-stick).
+        casted.style.mode = RepresentationMode::SpaceFilling;
+        casted.style.castModes = {RepresentationMode::BallAndStick};
+        casted.style.atomCasts = {0, 1};
+
+        const auto modes = StructureRenderer::atomModes(&structure, casted.style);
+        check(modes.size() == 2 && modes[0] == RepresentationMode::SpaceFilling
+                  && modes[1] == RepresentationMode::BallAndStick,
+              "each atom resolves to its own cast's representation");
+
+        // The two atoms must now get DIFFERENT radii — one vdW-sized, one a
+        // ball-and-stick node. A shared radius would mean the cast never
+        // reached the geometry.
+        const float carbonR = StructureRenderer::displayRadius(6, casted.style,
+                                                               modes[0]);
+        const float oxygenR = StructureRenderer::displayRadius(8, casted.style,
+                                                               modes[1]);
+        check(carbonR > oxygenR * 2.0f,
+              "the space-filling cast is drawn several times larger");
+
+        // A bond touching a space-filling atom is dropped, so this scene keeps
+        // only the 12 cell edges — without that rule a CPK surface grows sticks
+        // through its own vdW spheres.
+        const QString castScene = RayTraceExporter::tachyon(casted);
+        check(castScene.count(QStringLiteral("FCylinder Base")) == 12,
+              "no bond cylinders survive a space-filling endpoint");
+
+        // Stale assignment (wrong length): fall back to the uniform mode.
+        auto stale = casted;
+        stale.style.atomCasts = {0, 1, 0, 1};
+        const auto staleModes = StructureRenderer::atomModes(&structure,
+                                                             stale.style);
+        check(staleModes.size() == 2
+                  && staleModes[0] == RepresentationMode::SpaceFilling
+                  && staleModes[1] == RepresentationMode::SpaceFilling,
+              "an assignment that does not match the atom count is ignored");
+
+        // A cast index with no mode entry falls back to cast 0's rather than
+        // reading past the end of castModes.
+        auto outOfRange = casted;
+        outOfRange.style.atomCasts = {0, 7};
+        const auto clamped = StructureRenderer::atomModes(&structure,
+                                                          outOfRange.style);
+        check(clamped[1] == RepresentationMode::SpaceFilling,
+              "an out-of-range cast index falls back to cast 0");
+
+        // With no casts at all nothing changes: this is the default every
+        // structure loads with.
+        auto plain = makeInputs(structure);
+        const auto defaults = StructureRenderer::atomModes(&structure,
+                                                           plain.style);
+        check(defaults.size() == 2
+                  && defaults[0] == plain.style.mode
+                  && defaults[1] == plain.style.mode
+                  && plain.style.castCount() == 1,
+              "the default is one cast holding every atom");
+    }
+
     // -- POV-Ray ------------------------------------------------------------
     std::printf("POV-Ray scene:\n");
     auto povInputs = makeInputs(structure);

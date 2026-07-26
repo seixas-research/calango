@@ -235,4 +235,51 @@ core::Structure SurfaceScience::placeAdsorbates(
     return core::placeAdsorbate(slab, coreSites, molecule, anchor, height);
 }
 
+SurfaceScience::MoleculeTemplate SurfaceScience::moleculeTemplate(
+    const std::string& name)
+{
+    // Exactly the resolution the coverage/site-scan path uses, exposed on its
+    // own so the "Add adsorbate…" builder places the SAME geometry the
+    // Adsorption & Catalysis module would — two molecule databases that
+    // disagree about where CO's carbon sits is how two runs of "the same"
+    // system stop being comparable.
+    MoleculeTemplate result;
+    try {
+        py::dict scope;
+        scope["adsorbate"] = name;
+        py::exec(kMoleculeScript, scope, scope);
+        result.structure = AseBridge::fromAtoms(scope["result_molecule"]);
+        result.anchorIndex = scope["result_anchor"].cast<int>();
+    } catch (const py::error_already_set& e) {
+        rethrow(e, "Could not build the adsorbate molecule");
+    }
+    return result;
+}
+
+std::vector<std::string> SurfaceScience::moleculeNames()
+{
+    try {
+        py::dict scope;
+        py::exec(R"PY(
+from ase.collections import g2
+
+# The G2/97 set is a thermochemistry benchmark, so it carries closed-shell
+# molecules and misses precisely the open-shell fragments a surface binds.
+# These are the ones ase.build.molecule also knows (the "extra" table) plus the
+# radicals surface science reaches for constantly.
+_EXTRA = ["OH", "OOH", "O", "H", "N", "C", "S", "CH3", "CH2", "CH", "NH2",
+          "NH", "COOH", "HCOO", "CN", "NO", "NO2", "SH", "O2", "N2", "H2",
+          "CO", "CO2", "H2O", "NH3", "CH4"]
+
+result_names = sorted(set(list(g2.names) + _EXTRA))
+)PY",
+                 scope, scope);
+        return scope["result_names"].cast<std::vector<std::string>>();
+    } catch (const py::error_already_set&) {
+        // A missing / broken ASE must not stop the dialog from opening: the
+        // name field is editable, so a typed formula still works.
+        return {};
+    }
+}
+
 } // namespace calango::pybridge

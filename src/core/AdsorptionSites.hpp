@@ -56,4 +56,35 @@ Structure placeAdsorbate(const Structure& substrate,
                          const Structure& molecule, int anchorIndex,
                          double height);
 
+/// How an adsorbate is turned relative to the outward normal at its site.
+///
+/// The "upright" placement placeAdsorbate() applies is the right default and
+/// the wrong answer often enough to matter: CO stands on end, but a benzene
+/// ring lies flat, an OH leans, and the binding energy of an adsorbate is a
+/// function of exactly this. All three angles are degrees.
+struct AdsorbateOrientation {
+    /// Angle between the molecule's intrinsic axis and the outward normal.
+    /// 0 = upright (pointing away from the surface), 90 = lying flat,
+    /// 180 = inverted (pointing into the surface).
+    double tiltDeg = 0.0;
+    /// Rotation of the tilt direction about the outward normal — which way a
+    /// leaning molecule leans, and the in-plane orientation of a flat one.
+    double azimuthDeg = 0.0;
+    /// Spin about the molecule's own axis. Only visible for an adsorbate that
+    /// is not axially symmetric (a methyl group, a ring).
+    double rollDeg = 0.0;
+};
+
+/// Place ONE copy of `molecule` on a single `site`, `height` Å out along that
+/// site's outward normal, turned by `orientation`. The anchor atom lands on
+/// the axis; the rest of the molecule follows rigidly.
+///
+/// Separate from placeAdsorbate() because that one answers "decorate every one
+/// of these sites identically" (coverage series, site scans) while this one
+/// answers "put this one thing exactly here, at this angle".
+Structure placeAdsorbateAt(const Structure& substrate,
+                           const AdsorptionSite& site, const Structure& molecule,
+                           int anchorIndex, double height,
+                           const AdsorbateOrientation& orientation);
+
 } // namespace calango::core

@@ -79,6 +79,28 @@ public:
     static core::Structure placeAdsorbates(
         const core::Structure& slab, const std::vector<AdsorptionSite>& sites,
         const std::string& adsorbate, double height);
+
+    /// A molecule / radical resolved from ASE's database, with the atom that
+    /// binds to the surface already identified.
+    struct MoleculeTemplate {
+        core::Structure structure;
+        /// Index of the surface-facing atom (O for OH/H2O, C for CO, …), used
+        /// as the placement anchor.
+        int anchorIndex = 0;
+    };
+
+    /// Resolve `name` through ase.build.molecule (falling back to reading it as
+    /// a bare chemical formula) and hand back the geometry plus its anchor.
+    /// Throws std::runtime_error with the Python traceback when the name is
+    /// neither a database entry nor a parseable formula.
+    static MoleculeTemplate moleculeTemplate(const std::string& name);
+
+    /// Every name in ASE's G2 molecule collection, plus the small radicals and
+    /// fragments the g2 set does not carry but surface science constantly
+    /// needs (OH, OOH, CH3, NH2, …). Sorted, for a picker. Returns an empty
+    /// list rather than throwing when ASE is unavailable — the dialog stays
+    /// usable with a hand-typed formula.
+    static std::vector<std::string> moleculeNames();
 };
 
 } // namespace calango::pybridge

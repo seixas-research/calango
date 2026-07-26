@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.56
+    VERSION 26.7.57
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -442,6 +442,12 @@ qt_add_executable(calango
     src/gui/GwResultsWindow.cpp
     src/gui/HubbardParametersDialog.hpp
     src/gui/HubbardParametersDialog.cpp
+    src/gui/GeometryConstraintsDialog.hpp
+    src/gui/GeometryConstraintsDialog.cpp
+    src/gui/CastSetupDialog.hpp
+    src/gui/CastSetupDialog.cpp
+    src/gui/AddAdsorbateDialog.hpp
+    src/gui/AddAdsorbateDialog.cpp
     src/gui/GrapheneOxideWizard.hpp
     src/gui/GrapheneOxideWizard.cpp
     src/gui/OpticsPlotStyleDialog.hpp
@@ -541,6 +547,7 @@ qt_add_resources(calango "icons"
         assets/.internal/icons/scissors-cut-line.svg
         assets/.internal/icons/shape-line.svg
         assets/.internal/icons/stack-line.svg
+        assets/.internal/icons/stacked-view.svg
         assets/.internal/icons/time-line.svg
 )
 
@@ -902,6 +909,7 @@ if(CALANGO_BUILD_TESTS)
         tests/DialogConstructionTest.cpp
         src/gui/GrapheneOxideWizard.cpp
         src/gui/HubbardParametersDialog.cpp
+        src/gui/GeometryConstraintsDialog.cpp
         src/gui/OpticsPlotStyleDialog.cpp
         src/core/GrapheneOxideBuilder.cpp
         src/core/Structure.cpp
@@ -974,6 +982,7 @@ if(CALANGO_BUILD_TESTS)
     add_executable(calango_script_test
         tests/ScriptGenerationTest.cpp
         src/core/AseScriptGenerator.cpp
+        src/core/ElectronicScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
         src/core/OpticsScriptGenerator.cpp
         src/core/GwScriptGenerator.cpp

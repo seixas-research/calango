@@ -4,4 +4,4 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/qt
 
 # 2. Build
-cmake --build build -j
+cmake --build build -j 2

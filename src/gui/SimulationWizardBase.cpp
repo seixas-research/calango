@@ -595,6 +595,49 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
            "GPAW build with libxc, and are far more expensive than the GGAs."));
     modeForm->addRow(tr("XC functional:"), gpawXcCombo_);
 
+    // DFT+U and the dispersion correction sit directly under the XC combo:
+    // both are corrections TO the chosen functional (a U for the self-interaction
+    // a semilocal functional leaves on narrow d/f shells, D4 for the long-range
+    // correlation it has none of), so they belong with the functional rather than
+    // among the k-point settings they have nothing to do with. Side by side in
+    // one row — two short controls do not earn two full-width rows on a page
+    // that already scrolls.
+    //
+    // DFT+U lives behind a button rather than inline: it needs a table, and it
+    // is a minority setting that would otherwise crowd every GPAW page.
+    hubbardButton_ = new QPushButton(tr("Hubbard parameters…"), modeBasisGroup_);
+    hubbardButton_->setToolTip(
+        tr("Add an on-site Coulomb repulsion U to a named orbital shell "
+           "(GPAW setups={…}). For narrow d/f bands that a semilocal "
+           "functional over-delocalizes."));
+    connect(hubbardButton_, &QPushButton::clicked, this,
+            &SimulationWizardBase::editHubbardParameters);
+
+    // Dispersion: only for the wizards whose answer depends on it.
+    dispersionD4Check_ =
+        new QCheckBox(tr("van der Waals Correction (DFTD4)"), modeBasisGroup_);
+    dispersionD4Check_->setToolTip(
+        tr("Wrap the calculator in ASE's DFTD4, adding Grimme's D4 dispersion "
+           "energy and forces.\n"
+           "Semilocal functionals carry no long-range correlation, so layered "
+           "and molecular systems come out under-bound without it. D4 is "
+           "charge-dependent, which is what separates it from D3.\n"
+           "Needs the dftd4 package in the job environment; the damping "
+           "parameters follow the calculator's own functional."));
+    connect(dispersionD4Check_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
+
+    xcCorrectionsRow_ = new QWidget(modeBasisGroup_);
+    auto* xcCorrectionsLayout = new QHBoxLayout(xcCorrectionsRow_);
+    xcCorrectionsLayout->setContentsMargins(0, 0, 0, 0);
+    xcCorrectionsLayout->addWidget(hubbardButton_);
+    if (showsDispersionToggle())
+        xcCorrectionsLayout->addWidget(dispersionD4Check_);
+    else
+        dispersionD4Check_->hide();
+    xcCorrectionsLayout->addStretch(1);
+    modeForm->addRow(xcCorrectionsRow_);
+
     // For the script-template DFT backends (Espresso/VASP/Siesta) XC is edited
     // in the generated script; shown for them, hidden for GPAW.
     dftXcNote_ = new QLabel(
@@ -658,34 +701,9 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
     bzToggleLayout->addStretch(1);
     bzForm->addRow(gpawBzTogglesRow_);
 
-    // DFT+U lives behind a button rather than inline: it needs a table, and it
-    // is a minority setting that would otherwise crowd every GPAW page.
-    hubbardButton_ = new QPushButton(tr("Hubbard parameters…"), bzGroup_);
-    hubbardButton_->setToolTip(
-        tr("Add an on-site Coulomb repulsion U to a named orbital shell "
-           "(GPAW setups={…}). For narrow d/f bands that a semilocal "
-           "functional over-delocalizes."));
-    connect(hubbardButton_, &QPushButton::clicked, this,
-            &SimulationWizardBase::editHubbardParameters);
-    bzForm->addRow(hubbardButton_);
-
-    // Dispersion: only for the wizards whose answer depends on it.
-    dispersionD4Check_ =
-        new QCheckBox(tr("van der Waals Correction (DFTD4)"), bzGroup_);
-    dispersionD4Check_->setToolTip(
-        tr("Wrap the calculator in ASE's DFTD4, adding Grimme's D4 dispersion "
-           "energy and forces.\n"
-           "Semilocal functionals carry no long-range correlation, so layered "
-           "and molecular systems come out under-bound without it. D4 is "
-           "charge-dependent, which is what separates it from D3.\n"
-           "Needs the dftd4 package in the job environment; the damping "
-           "parameters follow the calculator's own functional."));
-    connect(dispersionD4Check_, &QCheckBox::toggled, this,
-            [this] { refreshPreview(); });
-    if (showsDispersionToggle())
-        bzForm->addRow(dispersionD4Check_);
-    else
-        dispersionD4Check_->hide();
+    // The Hubbard-U editor and the D4 dispersion toggle used to live here.
+    // They moved up to "Mode & Basis Set", directly under the XC combo they
+    // correct — see buildDftGpawGroups above.
 
     layout->addWidget(bzGroup_);
 
@@ -1004,6 +1022,10 @@ void SimulationWizardBase::updateCalculatorEnabled()
         setFormRowVisible(modeBasisGroup_, dftXcNote_, isDft && !isGpaw);
     setFormRowVisible(modeBasisGroup_, gpawModeCombo_, isGpaw);
     setFormRowVisible(modeBasisGroup_, gpawXcCombo_, isGpaw);
+    // The XC corrections (Hubbard U, D4 dispersion) follow the XC combo they
+    // correct: both are written into the GPAW calculator (setups={…} / the
+    // DFTD4 wrapper around it), so they only apply to the GPAW backend.
+    setFormRowVisible(modeBasisGroup_, xcCorrectionsRow_, isGpaw);
     // Grid spacing / LCAO basis are GPAW-only *and* mode-dependent; hide them
     // wholesale for non-GPAW, then let updateGpawRows pick the right one.
     setFormRowVisible(modeBasisGroup_, gpawGridSpacingSpin_, isGpaw);

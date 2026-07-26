@@ -47,6 +47,17 @@ struct ElectronicConfig {
     /// (calc.fixed_density) instead of re-running the SCF cycle inline. Empty
     /// keeps the legacy self-contained SCF+NSCF script.
     std::string baselineDensityPath;
+    /// Re-diagonalize the band energies with spin-orbit coupling included
+    /// (GPAW's `gpaw.spinorbit.soc_eigenstates`, applied non-perturbatively to
+    /// the converged states along the path).
+    ///
+    /// This is what splits the degeneracies a scalar-relativistic calculation
+    /// leaves in place — the Γ-point valence band of a III-V semiconductor, the
+    /// Rashba splitting of a heavy-element surface state, the band inversion of
+    /// a topological insulator. For light elements it changes the bands by
+    /// meV and costs an extra diagonalization; for 5d/6p systems it is the
+    /// difference between the right answer and the wrong one.
+    bool spinOrbit = false;
     // -- PDOS (GPAW) --
     bool pdos = true;
     double pdosWidthEv = 0.1;   ///< Gaussian smearing σ (eV)

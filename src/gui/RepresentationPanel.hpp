@@ -42,14 +42,23 @@ Q_SIGNALS:
 private Q_SLOTS:
     void applyColorMode();
     void syncColoringFromViewport();
+    /// Open the Cast Setup editor against the viewport's current structure,
+    /// then re-sync the cast dropdown with whatever it left behind.
+    void openCastSetup();
 
 private:
     /// "Appearance" tab: material, mode, colour-by, the editor icon row,
     /// atom/bond scales, gradient bond shading and the background colour.
     QWidget* buildAppearanceTab();
+    /// Re-fill the "Casting" combo from the viewport's cast list and show the
+    /// selected cast's representation in the Mode combo.
+    void syncCastsFromViewport();
+    /// The cast the panel's representation controls currently edit.
+    int selectedCast() const;
 
     ViewportWidget* viewport_;
 
+    QComboBox* castCombo_;
     QComboBox* modeCombo_;
     QComboBox* colorModeCombo_;
     QSlider* atomScaleSlider_;

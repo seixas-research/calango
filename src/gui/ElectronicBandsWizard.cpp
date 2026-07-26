@@ -10,9 +10,12 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QLabel>
+#include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <set>
 
 namespace calango::gui {
 
@@ -31,6 +34,21 @@ ElectronicBandsWizard::ElectronicBandsWizard(
 QString ElectronicBandsWizard::wizardTitle() const
 {
     return tr("Electronic Structure Setup");
+}
+
+QStringList ElectronicBandsWizard::calculatorElements() const
+{
+    if (!structure_)
+        return {};
+    // Sorted and unique: this feeds a completer, and repeating "Fe" once per
+    // Fe atom makes it useless.
+    std::set<QString> symbols;
+    for (const core::Atom& atom : structure_->atoms())
+        symbols.insert(QString::fromLatin1(atom.symbol()));
+    QStringList result;
+    for (const QString& symbol : symbols)
+        result << symbol;
+    return result;
 }
 
 QWidget* ElectronicBandsWizard::buildCalculatorExtras()
@@ -117,9 +135,51 @@ QWidget* ElectronicBandsWizard::buildCalculatorExtras()
     // controls exist.
     applyPdosKmeshDefault();
 
+    // --- Spin Configurations ---------------------------------------------
+    // The SCF's collinear polarization is inherited from the baseline density
+    // along with everything else about the SCF. What is still open here is how
+    // the BANDS are evaluated on top of it — and that is where spin-orbit
+    // coupling lives, because SOC is applied to the converged states rather
+    // than to the density.
+    spinGroup_ = new QGroupBox(tr("Spin Configurations"), this);
+    auto* spinForm = new QFormLayout(spinGroup_);
+
+    spinOrbitCheck_ = new QCheckBox(tr("Spin-Orbit Coupling"), spinGroup_);
+    spinOrbitCheck_->setToolTip(
+        tr("Re-diagonalize the band energies in the spinor basis "
+           "(gpaw.spinorbit.soc_eigenstates), non-perturbatively.\n\n"
+           "This is what lifts the degeneracies a scalar-relativistic run "
+           "leaves in place: the Γ-point valence band splitting of a III-V "
+           "semiconductor, Rashba splitting at a heavy-element surface, the "
+           "band inversion of a topological insulator.\n\n"
+           "The result is ONE channel of doubled, spin-mixed bands rather than "
+           "a spin-up/spin-down pair, and the Fermi level moves with them. For "
+           "light elements the shift is meV; for 5d/6p systems it is the "
+           "difference between the right answer and the wrong one."));
+    spinForm->addRow(QString(), spinOrbitCheck_);
+    connect(spinOrbitCheck_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
+
+    // DFT+U on this page too: a band structure is exactly where a missing U
+    // shows up (a known insulator coming out metallic), so being sent back to
+    // re-run the baseline to add one is the wrong shape of workflow.
+    auto* hubbardButton = new QPushButton(tr("Hubbard parameters…"), spinGroup_);
+    hubbardButton->setToolTip(
+        tr("Add an on-site Coulomb repulsion U to a named orbital shell "
+           "(GPAW setups={…}). For narrow d/f bands that a semilocal "
+           "functional over-delocalizes — the usual symptom is a metallic "
+           "band structure for a known insulator.\n\n"
+           "Note: with a baseline density selected the bands are evaluated at "
+           "that FIXED density, so the U in force is the one the baseline was "
+           "converged with. A U set here applies when this run converges its "
+           "own SCF."));
+    connect(hubbardButton, &QPushButton::clicked, this,
+            &ElectronicBandsWizard::editHubbardParameters);
+    spinForm->addRow(QString(), hubbardButton);
+
     // Merged stage: the interactive Brillouin-zone / k-path builder comes
-    // first, with the PDOS configuration below it, in one container so the
-    // wizard has a single setup stage.
+    // first, with the spin and PDOS configuration below it, in one container so
+    // the wizard has a single setup stage.
     auto* container = new QWidget(this);
     auto* vbox = new QVBoxLayout(container);
     vbox->setContentsMargins(0, 0, 0, 0);
@@ -130,6 +190,7 @@ QWidget* ElectronicBandsWizard::buildCalculatorExtras()
     connect(kpath_, &EmbeddedKPathEditor::pathChanged, this,
             [this] { refreshPreview(); });
 
+    vbox->addWidget(spinGroup_);
     vbox->addWidget(pdosGroup_);
 
     return container;
@@ -159,10 +220,14 @@ void ElectronicBandsWizard::calculatorKgridChanged()
 
 void ElectronicBandsWizard::updateCalculatorExtras(core::CalculatorKind kind)
 {
-    // Only the GPAW backend produces a projected DOS; showing the controls
-    // for the others would promise output they cannot generate.
+    // Only the GPAW backend produces a projected DOS, applies spin-orbit
+    // coupling or takes a `setups` DFT+U dictionary; showing the controls for
+    // the others would promise output they cannot generate.
+    const bool gpaw = kind == core::CalculatorKind::Gpaw;
     if (pdosGroup_)
-        pdosGroup_->setVisible(kind == core::CalculatorKind::Gpaw);
+        pdosGroup_->setVisible(gpaw);
+    if (spinGroup_)
+        spinGroup_->setVisible(gpaw);
 }
 
 bool ElectronicBandsWizard::calculatorAllowed(core::CalculatorKind kind) const
@@ -208,6 +273,7 @@ QString ElectronicBandsWizard::generateScript() const
     // carry a second, independent "k-points along path" box that could
     // silently disagree with it.
     config.npoints = kpath_->pointsPerSegment() * kpath_->segmentCount();
+    config.spinOrbit = spinOrbitCheck_ && spinOrbitCheck_->isChecked();
     config.pdos = pdosCheck_->isChecked();
     config.pdosWidthEv = pdosWidthSpin_->value();
     config.pdosPoints = energyPointsSpin_->value();

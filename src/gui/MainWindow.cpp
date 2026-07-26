@@ -24,6 +24,7 @@
 #include "gui/RemoteAccessPanel.hpp"
 #include "gui/RepresentationPanel.hpp"
 #include "gui/SlabWizard.hpp"
+#include "gui/AddAdsorbateDialog.hpp"
 #include "gui/AdsorptionDialog.hpp"
 #include "gui/BandPdosWindow.hpp"
 #include "gui/ClusterExpansionDialog.hpp"
@@ -792,6 +793,13 @@ void MainWindow::createMenusAndDocks()
     buildMenu->addAction(tr("&Nanomaterials…"), this, &MainWindow::openNanoBuilder);
     buildMenu->addAction(tr("Su&percell…"),
                          this, &MainWindow::openSupercellBuilder);
+    // Decorating a surface follows building one, so it sits under Surface Slab
+    // and Nanoparticle rather than in Analysis with the site *statistics*.
+    buildMenu->addAction(tr("Add &adsorbate…"), this,
+                         &MainWindow::openAddAdsorbate)
+        ->setToolTip(tr("Place one atom or one molecule/radical on the current "
+                        "geometry, on a detected site or at an explicit "
+                        "position; the result opens as a new tab"));
     buildMenu->addSeparator();
     // Molecular-system builders: both generate a periodic box of molecules
     // rather than cleaving or repeating a crystal, so they group together.
@@ -828,10 +836,6 @@ void MainWindow::createMenusAndDocks()
                               this, &MainWindow::openMonteCarlo);
     simulationMenu->addAction(tr("&Nudged Elastic Band (NEB)…"),
                               this, &MainWindow::openNudgedElasticBand);
-    simulationMenu->addAction(tr("&GW Calculations…"), this,
-                              &MainWindow::showGwCalculations)
-        ->setToolTip(tr("One-shot G₀W₀ quasiparticle corrections on top of a "
-                        "completed SCF (GPAW or Yambo)"));
     // Cluster Expansion Calculation moved to Modules → Alloys.
     simulationMenu->addSeparator();
     // "New Remote Calculation…" was removed along with the legacy calculator
@@ -849,6 +853,13 @@ void MainWindow::createMenusAndDocks()
     // refractive index, energy loss) via GPAW's response module.
     simulationMenu->addAction(tr("&Optics…"),
                               this, &MainWindow::showOptics);
+    // G₀W₀ sits with the other post-processes that read a completed SCF —
+    // right after Optics, which is the other response-function calculation —
+    // rather than up among the ground-state runs it depends on.
+    simulationMenu->addAction(tr("&GW Calculations…"), this,
+                              &MainWindow::showGwCalculations)
+        ->setToolTip(tr("One-shot G₀W₀ quasiparticle corrections on top of a "
+                        "completed SCF (GPAW or Yambo)"));
     // ELF and MLWF are DFT post-processes staged & run through the standardized
     // wizard (engine selection + auto-bound Conda env); their result viewers
     // open when the job finishes.
@@ -3795,6 +3806,37 @@ void MainWindow::openNanoparticleBuilder()
     statusBar()->showMessage(tr("%1 generated").arg(dialog.resultName()));
 }
 
+void MainWindow::openAddAdsorbate()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(
+            this, tr("Add Adsorbate"),
+            tr("Open or build a structure first — the adsorbate is placed on "
+               "the geometry in the active tab."));
+        return;
+    }
+    // ASE supplies the molecule database on the second tab. Site detection and
+    // the placement geometry are native, so a missing ASE would still leave a
+    // usable single-atom builder — but the dialog would then be half-broken in
+    // a way that is only discovered after opening it.
+    if (!ensureAseAvailable())
+        return;
+
+    AddAdsorbateDialog dialog(doc->structure, this);
+    if (dialog.exec() != QDialog::Accepted || !dialog.result())
+        return;
+    // A NEW tab, carrying the previous tab's geometry plus the adsorbate: the
+    // clean surface is the reference an adsorption energy is measured against,
+    // so mutating it in place would destroy half of the calculation.
+    const int tab = addDocument(dialog.result(), dialog.resultName());
+    tabBar_->setCurrentIndex(tab);
+    isDirty_ = true;
+    statusBar()->showMessage(tr("%1 — %2 atoms")
+                                 .arg(dialog.resultName())
+                                 .arg(dialog.result()->size()));
+}
+
 void MainWindow::showAdsorption()
 {
     Document* doc = currentDocument();
@@ -4417,7 +4459,10 @@ void MainWindow::geometryOptimization()
     }
     if (!ensureAseAvailable())
         return;
-    GeometryOptimizationWizard wizard(this);
+    // The structure goes in so the wizard's "Geometry constraints…" editor can
+    // list the actual atoms (and the Hubbard editor can complete against the
+    // species present).
+    GeometryOptimizationWizard wizard(doc->structure, this);
     runSimulationWizard(wizard, tr("Geometry Optimization"));
 }
 

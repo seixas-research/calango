@@ -200,9 +200,52 @@ struct HubbardU {
     bool scale = false;
 };
 
+/// One "hold these degrees of freedom still" rule for a relaxation, emitted as
+/// an ASE constraint object.
+///
+/// Two orthogonal choices, which is why this is one struct rather than three:
+/// WHICH atoms (an explicit index list, or everything inside a slab of space
+/// along one Cartesian axis — the classic "freeze the bottom two layers,
+/// z < 5 Å"), and WHICH directions of those atoms are frozen. Freezing all
+/// three directions is `FixAtoms(indices=…)`; a partial mask is
+/// `FixCartesian(indices, mask=…)`, where a true entry means that coordinate is
+/// held (ASE's own convention).
+///
+/// A region rule keeps its BOUNDS rather than the indices they select, so the
+/// generated script re-evaluates the selection against the geometry it actually
+/// reads. That matters because a relaxation is often re-run on a slightly
+/// different cell, where a frozen index list silently freezes the wrong atoms.
+struct GeometryConstraint {
+    enum class Selection {
+        Indices, ///< the explicit `indices` list
+        Region,  ///< every atom whose `axis` coordinate is within the bounds
+    };
+    Selection selection = Selection::Indices;
+    /// 0-based atom indices (Selection::Indices only).
+    std::vector<int> indices;
+    /// Cartesian axis the region bounds apply to: 0 = x, 1 = y, 2 = z.
+    int axis = 2;
+    /// Half-open bounds in Å; each side is optional, so "z > 5" needs no upper
+    /// limit. With neither set, a region rule selects every atom.
+    bool hasMin = false;
+    double minValue = 0.0;
+    bool hasMax = false;
+    double maxValue = 0.0;
+    /// Which Cartesian directions are frozen: {x, y, z}. All three (the
+    /// default) is a plain fixed atom.
+    bool fix[3] = {true, true, true};
+
+    bool fixesAllDirections() const { return fix[0] && fix[1] && fix[2]; }
+    bool fixesAnyDirection() const { return fix[0] || fix[1] || fix[2]; }
+};
+
 struct CalculatorConfig {
     CalculatorKind calculator = CalculatorKind::EMT;
     TaskKind task = TaskKind::SinglePoint;
+
+    /// Frozen-degree-of-freedom rules applied to `atoms` before the optimizer
+    /// runs (Geometry Optimization). Empty means a fully free relaxation.
+    std::vector<GeometryConstraint> constraints;
 
     // Geometry optimization
     Optimizer optimizer = Optimizer::BFGS;

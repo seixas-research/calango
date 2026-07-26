@@ -82,6 +82,32 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    "bs = band_calc.band_structure()\n"
                    "_calango_log.progress(3, 4)\n";
         }
+        if (c.spinOrbit)
+            // Non-perturbative SOC: the scalar-relativistic states along the
+            // path are re-diagonalized in the spinor basis, so the result is
+            // ONE spin channel of doubled, spin-mixed bands rather than the
+            // two collinear channels. The Fermi level moves with them, which
+            // is why it is re-read here rather than kept from the SCF.
+            out << "\n"
+                   "# --- Spin-orbit coupling -----------------------------------\n"
+                   "# Re-diagonalizes the converged states in the spinor basis\n"
+                   "# (gpaw.spinorbit). Lifts the degeneracies a scalar-\n"
+                   "# relativistic run leaves: the Γ-point valence band of a\n"
+                   "# III-V semiconductor, Rashba splitting, band inversion.\n"
+                   "import numpy as _np\n"
+                   "from ase.spectrum.band_structure import BandStructure\n"
+                   "from gpaw.spinorbit import soc_eigenstates\n"
+                   "\n"
+                   "_soc = soc_eigenstates(band_calc)\n"
+                   "_soc_energies = _np.asarray(_soc.eigenvalues())\n"
+                   "efermi = float(_soc.fermi_level)\n"
+                   "# (nkpt, nband) -> (1, nkpt, nband): spinor bands are a\n"
+                   "# single channel, not a spin-up/spin-down pair.\n"
+                   "bs = BandStructure(path=bs.path,\n"
+                   "                   energies=_soc_energies[_np.newaxis],\n"
+                   "                   reference=efermi)\n"
+                   "print(f\"CALANGO_INFO spin-orbit coupling applied, \"\n"
+                   "      f\"E_F = {efermi:.4f} eV\", flush=True)\n";
         if (c.pdos)
             out << "\n"
                    "# Element/orbital-projected DOS. The projection is re-sampled\n"
