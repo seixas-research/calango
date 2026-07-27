@@ -2,10 +2,17 @@
 
 #include "gui/SimulationWizardBase.hpp"
 
+#include <QList>
+#include <QPair>
+#include <QString>
+
 #include <memory>
 
 class QCheckBox;
+class QComboBox;
 class QDoubleSpinBox;
+class QGroupBox;
+class QLabel;
 class QSpinBox;
 
 namespace calango::core {
@@ -37,6 +44,14 @@ public:
     PhononWizard(bool periodic, std::shared_ptr<const core::Structure> structure,
                  QWidget* parent = nullptr);
 
+    /// Completed Born Effective Charges runs (label -> born_charges.json), for
+    /// the LO-TO splitting selector. Empty leaves the correction unavailable
+    /// and says why.
+    void setBornChargeProcesses(const QList<QPair<QString, QString>>& processes);
+    /// Completed Optics runs (label -> optics.json), which carry the
+    /// high-frequency dielectric function the correction also needs.
+    void setOpticsProcesses(const QList<QPair<QString, QString>>& processes);
+
 protected:
     QString wizardTitle() const override;
     QString settingsHeader() const override;
@@ -64,6 +79,21 @@ private:
     QSpinBox* meshSpin_ = nullptr;
     QDoubleSpinBox* dosWidthSpin_ = nullptr;
     EmbeddedKPathEditor* kpath_ = nullptr;
+
+    // -- LO-TO splitting ---------------------------------------------------
+    /// Fill eps_inf from a completed Optics run's optics.json, taking the
+    /// zero-frequency limit of eps_1 along each axis. Returns false (and says
+    /// why) when the file cannot supply it.
+    bool loadDielectricFromOptics(const QString& file);
+    /// Enable/disable the eps_inf controls with the Born selection, and warn
+    /// when the tensor is still the physically impossible identity.
+    void updateLoToState();
+
+    QGroupBox* loToGroup_ = nullptr;
+    QComboBox* bornCombo_ = nullptr;
+    QComboBox* opticsCombo_ = nullptr;
+    QDoubleSpinBox* dielectricSpin_[3] = {nullptr, nullptr, nullptr};
+    QLabel* loToNote_ = nullptr;
 };
 
 } // namespace calango::gui

@@ -48,6 +48,33 @@ struct PhononConfig {
     /// is unavailable, so the script always runs.
     bool symmetryReducedDisplacements = false;
 
+    // -- LO-TO splitting (non-analytical term correction) ------------------
+    //
+    // In a polar crystal the long-wavelength longitudinal optical mode is
+    // stiffened by the macroscopic electric field its own displacement pattern
+    // creates. A finite-displacement supercell cannot see that field — the
+    // supercell is charge-neutral and the field is a q -> 0 effect — so the LO
+    // and TO branches come out degenerate at Gamma unless the dipole physics is
+    // added back analytically. That correction needs exactly two inputs: how
+    // much dipole each displaced atom creates (the Born effective charges) and
+    // how strongly the electrons screen the resulting field (the high-frequency
+    // dielectric tensor).
+
+    /// Path to a completed Born Effective Charges run's born_charges.json.
+    /// Empty disables the correction, and the dispersion is the uncorrected
+    /// one — correct for a non-polar crystal, and the only thing a
+    /// finite-displacement calculation can give for a polar one.
+    std::string bornChargesFile;
+    /// Electronic (clamped-ion, "high-frequency") dielectric tensor. The
+    /// identity is vacuum: physically meaningless for a real solid, so the UI
+    /// never leaves it there when the correction is switched on.
+    double dielectric[3][3] = {{1.0, 0.0, 0.0},
+                               {0.0, 1.0, 0.0},
+                               {0.0, 0.0, 1.0}};
+
+    /// True when both halves of the correction are present.
+    bool loToSplitting() const { return !bornChargesFile.empty(); }
+
     /// Compute forces on the UN-displaced geometry and subtract them from
     /// every displaced configuration. A relaxation stops at a finite fmax, so
     /// the reference geometry carries small residual forces; leaving them in

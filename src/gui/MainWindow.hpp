@@ -308,6 +308,10 @@ private Q_SLOTS:
     /// Completed processes that saved GPAW wavefunctions (.gpw), as (label,
     /// directory) pairs — the baselines the ELF / MLWF wizards can restart from.
     QList<QPair<QString, QString>> gpawBaselines() const;
+    /// Processes whose directory holds `resultFile`, as label -> path. Used to
+    /// offer one run's output as another run's input (Born charges and the
+    /// dielectric function feeding a phonon dispersion).
+    QList<QPair<QString, QString>> processResults(const QString& resultFile) const;
     /// The same set as (label, absolute path to the restart FILE) pairs, for the
     /// wizards whose scripts call `GPAW("<file>")` directly — bands, optics and
     /// the GPAW G₀W₀ path. Handing those a directory produces a script that

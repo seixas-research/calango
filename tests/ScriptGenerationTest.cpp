@@ -193,6 +193,21 @@ int main(int argc, char** argv)
                            molecule);
             }
         }
+        // LO-TO splitting: the nac_params block and the Gamma re-evaluation
+        // are nested two levels deep inside a function, so their indentation
+        // needs byte-compiling like the rest.
+        {
+            PhononConfig loto;
+            loto.kpath = "GXMG";
+            loto.bornChargesFile = "/tmp/born_charges.json";
+            loto.dielectric[0][0] = 2.96;
+            loto.dielectric[1][1] = 2.96;
+            loto.dielectric[2][2] = 2.96;
+            dumpPhonon("phonon_loto.py", loto);
+            loto.symmetryReducedDisplacements = true;
+            loto.removeResidualForces = true;
+            dumpPhonon("phonon_loto_sym.py", loto);
+        }
 
         // Optics: the 3D form and the 2D-sheet variant. Both inherit a
         // baseline ground state and append a post-processing block, so their
@@ -545,6 +560,51 @@ int main(int argc, char** argv)
         check(!contains(AseScriptGenerator::calculatorSnippet(opt),
                         "symmetry=\"off\""),
               "but geometry optimization keeps symmetry on");
+    }
+
+    // -- LO-TO splitting ----------------------------------------------------
+    std::printf("LO-TO splitting (non-analytical term correction):\n");
+    {
+        PhononConfig plain;
+        plain.kpath = "GXMG";
+        check(!plain.loToSplitting(), "off without a Born charges file");
+        const std::string bare = PhononScriptGenerator::generate(plain, "s.extxyz");
+        check(!contains(bare, "nac_params"),
+              "no correction is emitted when none was asked for");
+
+        PhononConfig loto = plain;
+        loto.bornChargesFile = "/tmp/born_charges.json";
+        for (int i = 0; i < 3; ++i)
+            loto.dielectric[i][i] = 2.96;
+        check(loto.loToSplitting(), "on once a Born charges file is set");
+        const std::string script = PhononScriptGenerator::generate(loto, "s.extxyz");
+
+        checkContains(script, "phonon.nac_params", "nac_params is set on phonopy");
+        checkContains(script, "/tmp/born_charges.json",
+                      "the Born charges file is read");
+        checkContains(script, "2.96", "the dielectric tensor is embedded");
+        checkContains(script, "14.399652",
+                      "phonopy's e^2/(4 pi eps_0) unit factor is supplied");
+        // Z* must sum to zero over the cell; a residual is the Born run's own
+        // convergence error and puts a spurious dipole on the acoustic modes.
+        checkContains(script, "born_tensors -= _residual / len(atoms)",
+                      "the acoustic sum rule is re-imposed on Z*");
+        // The correction is a directional limit: at exactly q = 0 phonopy needs
+        // to be told which way the path came in, or it returns TO twice.
+        checkContains(script, "nac_q_direction",
+                      "Gamma is re-evaluated with a direction of approach");
+        checkContains(script, "lo_to_split_cm1",
+                      "the splitting itself is reported as a result");
+        // ase.phonons cannot apply the correction, so the driver choice is not
+        // optional here - and a silent fallback would return a dispersion with
+        // the splitting simply missing.
+        checkContains(script, "run_symmetry_reduced_displacements()",
+                      "the phonopy driver is selected even without symmetry "
+                      "reduction");
+        checkContains(script, "CALANGO_ERROR LO-TO splitting needs phonopy",
+                      "and a missing phonopy is a hard error, not a fallback");
+        check(!contains(bare, "CALANGO_ERROR LO-TO splitting needs phonopy"),
+              "while a plain run still falls back to the ASE driver");
     }
 
     // -- Molecular-dynamics constraints -------------------------------------

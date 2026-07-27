@@ -3,7 +3,12 @@
 #include "core/PhononScriptGenerator.hpp"
 #include "gui/EmbeddedKPathEditor.hpp"
 
+#include <QComboBox>
+#include <QFile>
 #include <QGroupBox>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -150,8 +155,170 @@ QWidget* PhononWizard::buildSecondSettingsPage()
     for (QCheckBox* check : {acousticCheck_, symmetryCheck_, residualCheck_})
         connect(check, &QCheckBox::toggled, this, [this] { refreshPreview(); });
 
+    // -- LO-TO splitting ---------------------------------------------------
+    //
+    // In a polar crystal the long-wavelength LO mode is stiffened by the
+    // macroscopic electric field its own displacement pattern creates. A
+    // finite-displacement supercell is charge-neutral and cannot host that
+    // field, so LO and TO come out degenerate at Γ — for MgO that is a 300
+    // cm⁻¹ error, not a subtlety. The correction is added analytically, and
+    // needs the two quantities below.
+    loToGroup_ = new QGroupBox(tr("LO-TO Splitting"), page);
+    loToGroup_->setEnabled(periodic_);
+    auto* loToForm = new QFormLayout(loToGroup_);
+    pageLayout->addWidget(loToGroup_);
+
+    bornCombo_ = new QComboBox(loToGroup_);
+    bornCombo_->addItem(tr("None — no LO-TO splitting"), QString());
+    bornCombo_->setToolTip(
+        tr("A completed Born Effective Charges run on THIS structure.\n\n"
+           "Z* is how much dipole each atom creates when it moves, which is "
+           "exactly\nwhat a finite-displacement supercell cannot see. Leave "
+           "this at None for a\nnon-polar crystal (Si, diamond, a metal): "
+           "there is no splitting to add."));
+    loToForm->addRow(tr("Born charges:"), bornCombo_);
+
+    opticsCombo_ = new QComboBox(loToGroup_);
+    opticsCombo_->addItem(tr("Enter manually"), QString());
+    opticsCombo_->setToolTip(
+        tr("Optionally take ε∞ from a completed Optics run, using the "
+           "zero-frequency\nlimit of ε₁ along each axis. Otherwise type it — "
+           "a literature or\nexperimental value is perfectly legitimate here, "
+           "and is what most\npublished phonon dispersions use."));
+    loToForm->addRow(tr("ε∞ source:"), opticsCombo_);
+
+    auto* dielectricRow = new QHBoxLayout;
+    const char* axisLabel[3] = {"xx", "yy", "zz"};
+    for (int axis = 0; axis < 3; ++axis) {
+        dielectricRow->addWidget(new QLabel(QLatin1String(axisLabel[axis]),
+                                            loToGroup_));
+        dielectricSpin_[axis] = new QDoubleSpinBox(loToGroup_);
+        dielectricSpin_[axis]->setRange(1.0, 1000.0);
+        dielectricSpin_[axis]->setDecimals(3);
+        dielectricSpin_[axis]->setSingleStep(0.1);
+        dielectricSpin_[axis]->setValue(1.0);
+        dielectricSpin_[axis]->setToolTip(
+            tr("The ELECTRONIC (clamped-ion, high-frequency) dielectric "
+               "constant —\nε∞, not the static ε₀. It is what screens the "
+               "field the LO mode creates:\nthe larger it is, the smaller the "
+               "splitting.\n\n"
+               "Typical values: MgO 2.96, NaCl 2.34, cubic BN 4.5, GaAs 10.9, "
+               "Si 11.9\n(non-polar, so no splitting regardless)."));
+        dielectricRow->addWidget(dielectricSpin_[axis], 1);
+        connect(dielectricSpin_[axis], &QDoubleSpinBox::valueChanged, this,
+                [this] { updateLoToState(); refreshPreview(); });
+    }
+    loToForm->addRow(tr("ε∞ (diagonal):"), dielectricRow);
+
+    loToNote_ = new QLabel(loToGroup_);
+    loToNote_->setWordWrap(true);
+    loToForm->addRow(loToNote_);
+
+    connect(bornCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        updateLoToState();
+        refreshPreview();
+    });
+    connect(opticsCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        const QString file = opticsCombo_->currentData().toString();
+        if (!file.isEmpty())
+            loadDielectricFromOptics(file);
+        updateLoToState();
+        refreshPreview();
+    });
+    updateLoToState();
+
     pageLayout->addStretch(1);
     return page;
+}
+
+void PhononWizard::setBornChargeProcesses(
+    const QList<QPair<QString, QString>>& processes)
+{
+    if (!bornCombo_)
+        return;
+    const QString previous = bornCombo_->currentData().toString();
+    bornCombo_->clear();
+    bornCombo_->addItem(tr("None — no LO-TO splitting"), QString());
+    for (const auto& [label, file] : processes)
+        bornCombo_->addItem(label, file);
+    const int restored = bornCombo_->findData(previous);
+    bornCombo_->setCurrentIndex(restored >= 0 ? restored : 0);
+    updateLoToState();
+}
+
+void PhononWizard::setOpticsProcesses(
+    const QList<QPair<QString, QString>>& processes)
+{
+    if (!opticsCombo_)
+        return;
+    opticsCombo_->clear();
+    opticsCombo_->addItem(tr("Enter manually"), QString());
+    for (const auto& [label, file] : processes)
+        opticsCombo_->addItem(label, file);
+    updateLoToState();
+}
+
+bool PhononWizard::loadDielectricFromOptics(const QString& file)
+{
+    QFile handle(file);
+    if (!handle.open(QIODevice::ReadOnly))
+        return false;
+    const QJsonObject root =
+        QJsonDocument::fromJson(handle.readAll()).object();
+
+    // optics.json stores eps_1(omega) per Cartesian axis. The high-frequency
+    // dielectric constant the correction wants is the ELECTRONIC screening at
+    // frequencies far above the phonons but below the electronic gap — which
+    // on this grid is the omega -> 0 limit of the electronic response.
+    const char* keys[3] = {"eps_x", "eps_y", "eps_z"};
+    bool any = false;
+    for (int axis = 0; axis < 3; ++axis) {
+        const QJsonObject entry = root.value(QLatin1String(keys[axis])).toObject();
+        const QJsonArray eps1 = entry.value(QStringLiteral("eps1")).toArray();
+        if (eps1.isEmpty())
+            continue;
+        const double value = eps1.first().toDouble();
+        if (value < 1.0)
+            continue; // below vacuum is not a dielectric constant
+        dielectricSpin_[axis]->setValue(value);
+        any = true;
+    }
+    return any;
+}
+
+void PhononWizard::updateLoToState()
+{
+    if (!loToGroup_ || !bornCombo_)
+        return;
+    const bool on = !bornCombo_->currentData().toString().isEmpty();
+    opticsCombo_->setEnabled(on);
+    for (QDoubleSpinBox* spin : dielectricSpin_)
+        spin->setEnabled(on);
+
+    if (!on) {
+        loToNote_->setText(
+            bornCombo_->count() > 1
+                ? tr("<i>Off. The dispersion will have no LO-TO splitting — "
+                     "correct for a non-polar crystal.</i>")
+                : tr("<i>No Born Effective Charges run is available. Run one "
+                     "from <b>Electronics → Born Effective Charges…</b> on this "
+                     "structure first; it is what supplies Z*.</i>"));
+        return;
+    }
+    // eps_inf = 1 is vacuum. Nothing screens the field, so the splitting comes
+    // out far too large — a silent, physically impossible default is worse
+    // than an obvious complaint.
+    bool identity = true;
+    for (QDoubleSpinBox* spin : dielectricSpin_)
+        identity = identity && spin->value() < 1.001;
+    loToNote_->setText(
+        identity
+            ? tr("<b>ε∞ = 1 is vacuum</b> — nothing would screen the field and "
+                 "the splitting would come out far too large. Set the "
+                 "material's value, or load it from an Optics run.")
+            : tr("<i>The LO branch will be corrected at Γ, using the direction "
+                 "the q-path approaches Γ from. Requires phonopy in the job "
+                 "environment.</i>"));
 }
 
 QWidget* PhononWizard::buildSettingsPage()
@@ -201,6 +368,16 @@ QString PhononWizard::generateScript() const
     pc.acousticSumRule = acousticCheck_->isChecked();
     pc.symmetryReducedDisplacements = symmetryCheck_->isChecked();
     pc.removeResidualForces = residualCheck_->isChecked();
+    if (bornCombo_) {
+        pc.bornChargesFile =
+            bornCombo_->currentData().toString().toStdString();
+        // Diagonal only: the off-diagonal components of eps_inf vanish in every
+        // crystal class the UI can express with three numbers, and a full
+        // tensor entered by hand is far more often a typo than a real
+        // low-symmetry measurement.
+        for (int axis = 0; axis < 3; ++axis)
+            pc.dielectric[axis][axis] = dielectricSpin_[axis]->value();
+    }
     return QString::fromStdString(
         core::PhononScriptGenerator::generate(pc, "structure.extxyz"));
 }

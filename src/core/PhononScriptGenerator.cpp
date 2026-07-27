@@ -134,6 +134,83 @@ void emitSymmetryReducedPhonons(std::ostringstream& out, const PhononConfig& c)
     if (c.acousticSumRule)
         out << "phonon.symmetrize_force_constants()  # acoustic sum rule + "
                "space-group symmetry\n";
+
+    if (c.loToSplitting()) {
+        out << "\n"
+               "# --- LO-TO splitting -------------------------------------\n"
+               "#\n"
+               "# The force constants above come from a finite supercell, which\n"
+               "# is charge-neutral and so cannot host the macroscopic electric\n"
+               "# field a long-wavelength LO mode sets up. Without that field\n"
+               "# the LO and TO branches are degenerate at Gamma, which for a\n"
+               "# polar crystal is simply wrong. The field is added back\n"
+               "# analytically from the Born effective charges Z* and the\n"
+               "# electronic dielectric tensor eps_inf.\n"
+               "born_charges_file = r\"" << c.bornChargesFile << "\"\n"
+               "with open(born_charges_file) as _handle:\n"
+               "    _born_data = json.load(_handle)\n"
+               "born_tensors = np.zeros((len(atoms), 3, 3))\n"
+               "_seen = set()\n"
+               "for _entry in _born_data[\"atoms\"]:\n"
+               "    born_tensors[int(_entry[\"index\"])] = np.asarray(\n"
+               "        _entry[\"tensor\"], dtype=float)\n"
+               "    _seen.add(int(_entry[\"index\"]))\n"
+               "if len(_seen) != len(atoms):\n"
+               "    raise SystemExit(\n"
+               "        f\"CALANGO_ERROR the Born charges run covers "
+               "{len(_seen)} atom(s) \"\n"
+               "        f\"but this structure has {len(atoms)}. LO-TO "
+               "splitting needs a \"\n"
+               "        f\"Z* tensor for every atom - re-run Born Effective "
+               "Charges over \"\n"
+               "        f\"the whole cell, on this same geometry.\")\n"
+               "\n"
+               "# Z* must sum to zero over the cell (the acoustic sum rule):\n"
+               "# translating the whole crystal cannot create a dipole. A\n"
+               "# residual here is the Born run's own convergence error, and\n"
+               "# left in it puts a spurious dipole on the acoustic modes.\n"
+               "_residual = born_tensors.sum(axis=0)\n"
+               "_residual_max = float(np.abs(_residual).max())\n"
+               "born_tensors -= _residual / len(atoms)\n"
+               "print(f\"CALANGO_INFO born_asr_residual_e={_residual_max:.4f}\",\n"
+               "      flush=True)\n"
+               "\n"
+               "dielectric_tensor = np.array([\n";
+        for (int row = 0; row < 3; ++row) {
+            out << "    [" << c.dielectric[row][0] << ", " << c.dielectric[row][1]
+                << ", " << c.dielectric[row][2] << "],\n";
+        }
+        out << "])\n"
+               "# 14.399652 eV*A is e^2/(4*pi*eps_0) - the unit conversion\n"
+               "# phonopy expects for Z* in |e| and distances in Angstrom.\n"
+               "phonon.nac_params = {\"born\": born_tensors,\n"
+               "                     \"dielectric\": dielectric_tensor,\n"
+               "                     \"factor\": 14.399652}\n"
+               "print(\"CALANGO_INFO lo_to_splitting=on \"\n"
+               "      f\"eps_inf_diag={np.diag(dielectric_tensor).tolist()}\",\n"
+               "      flush=True)\n"
+               "\n"
+               "\n"
+               "def _gamma_direction(index, points):\n"
+               "    \"\"\"Direction the path approaches Gamma from.\n"
+               "\n"
+               "    The correction is a limit, not a value: at exactly q = 0 the\n"
+               "    dipole field depends on which way you came in, so the LO\n"
+               "    frequency at Gamma differs along different directions. That\n"
+               "    is the physics, not an artefact - and it is why phonopy\n"
+               "    needs a direction rather than just a q-point.\n"
+               "    \"\"\"\n"
+               "    for step in (1, -1):\n"
+               "        probe = index + step\n"
+               "        while 0 <= probe < len(points):\n"
+               "            candidate = np.asarray(points[probe], dtype=float)\n"
+               "            if np.linalg.norm(candidate) > 1e-8:\n"
+               "                return candidate.tolist()\n"
+               "            probe += step\n"
+               "    return [1.0, 0.0, 0.0]  # a path that is nothing but Gamma\n"
+               "\n"
+               "\n";
+    }
     out << "\n"
            "# Gamma-point frequencies (THz from phonopy -> cm^-1).\n"
            "THZ_TO_CM1 = 33.35641\n"
@@ -143,7 +220,31 @@ void emitSymmetryReducedPhonons(std::ostringstream& out, const PhononConfig& c)
            "    print(f\"CALANGO_RESULT mode={i:3d} \"\n"
            "          f\"freq_cm1={freq * THZ_TO_CM1:10.2f} \"\n"
            "          f\"freq_meV={freq * 4.135667:9.3f}\", flush=True)\n"
-           "\n"
+           "\n"        << (c.loToSplitting()
+                ? "# The Gamma frequencies above are the TRANSVERSE ones: with "
+                  "no\n"
+                  "# direction supplied, phonopy leaves q = 0 uncorrected. Read "
+                  "the\n"
+                  "# longitudinal set as the limit along x, and report the "
+                  "splitting\n"
+                  "# itself - the one number this whole correction exists to "
+                  "produce.\n"
+                  "phonon.run_qpoints([[0.0, 0.0, 0.0]], "
+                  "nac_q_direction=[1.0, 0.0, 0.0])\n"
+                  "gamma_lo = np.asarray(\n"
+                  "    phonon.get_qpoints_dict()[\"frequencies\"])[0]\n"
+                  "for i, (_to, _lo) in enumerate(zip(gamma, gamma_lo)):\n"
+                  "    print(f\"CALANGO_RESULT mode={i:3d} \"\n"
+                  "          f\"TO_cm1={_to * THZ_TO_CM1:10.2f} \"\n"
+                  "          f\"LO_cm1={_lo * THZ_TO_CM1:10.2f} \"\n"
+                  "          f\"split_cm1={(_lo - _to) * THZ_TO_CM1:9.2f}\",\n"
+                  "          flush=True)\n"
+                  "_split = float(np.max((gamma_lo - gamma)) * THZ_TO_CM1)\n"
+                  "print(f\"CALANGO_RESULT lo_to_split_cm1={_split:.2f}\", "
+                  "flush=True)\n"
+                  "\n"
+                : "")
+        << 
            "# Dispersion along the requested (or ASE-suggested) BZ path. The\n"
            "# q-points come from ASE's bandpath so the path string, labels and\n"
            "# linear x-axis match every other Calango band plot exactly.\n"
@@ -154,7 +255,27 @@ void emitSymmetryReducedPhonons(std::ostringstream& out, const PhononConfig& c)
            "print(f\"CALANGO_INFO bandpath={path.path}\", flush=True)\n"
            "qpoints = [list(map(float, q)) for q in path.kpts]\n"
            "phonon.run_qpoints(qpoints)\n"
-           "freqs_thz = np.asarray(phonon.get_qpoints_dict()[\"frequencies\"])\n"
+           "freqs_thz = np.asarray(phonon.get_qpoints_dict()[\"frequencies\"])\n"        << (c.loToSplitting()
+                ? "# phonopy cannot apply the correction at exactly q = 0 "
+                  "without\n"
+                  "# being told which way the path arrives, so those points come "
+                  "back\n"
+                  "# uncorrected. Redo each of them with the direction of "
+                  "approach:\n"
+                  "# this is what puts the LO branch above the TO branch at "
+                  "Gamma\n"
+                  "# instead of leaving them degenerate.\n"
+                  "for _i, _q in enumerate(qpoints):\n"
+                  "    if np.linalg.norm(_q) > 1e-8:\n"
+                  "        continue\n"
+                  "    _direction = _gamma_direction(_i, qpoints)\n"
+                  "    phonon.run_qpoints([_q], nac_q_direction=_direction)\n"
+                  "    freqs_thz[_i] = np.asarray(\n"
+                  "        phonon.get_qpoints_dict()[\"frequencies\"])[0]\n"
+                  "    print(f\"CALANGO_INFO gamma_nac_direction={_direction}\",\n"
+                  "          flush=True)\n"
+                : "")
+        << 
            "xcoords, special_x, labels = path.get_linear_kpoint_axis()\n"
            "band_json = {\n"
            "    \"unit\": \"cm^-1\",\n"
@@ -352,7 +473,14 @@ void emitPeriodicPhonons(std::ostringstream& out, const PhononConfig& c)
     out << "def run_ase_displacements():\n"
         << indentBlock(aseBlock.str(), "    ") << "\n\n";
 
-    if (!c.symmetryReducedDisplacements) {
+    // LO-TO splitting only exists on the phonopy path: the correction is a
+    // property of the dynamical matrix, and ase.phonons has no hook to modify
+    // it. Requesting the correction therefore selects that driver regardless
+    // of the symmetry-reduction checkbox — running the ASE driver instead
+    // would silently produce a dispersion with no splitting in it, which looks
+    // like a converged answer and is not one.
+    const bool needsPhonopy = c.symmetryReducedDisplacements || c.loToSplitting();
+    if (!needsPhonopy) {
         out << "run_ase_displacements()\n";
         return;
     }
@@ -363,16 +491,35 @@ void emitPeriodicPhonons(std::ostringstream& out, const PhononConfig& c)
         << indentBlock(symBlock.str(), "    ") << "\n\n"
         << "# phonopy (and its spglib dependency) live in the job environment,\n"
            "# so availability is decided here rather than when the script was\n"
-           "# generated. Without it the physics is unchanged — only the number\n"
-           "# of force evaluations grows back to the full 6N.\n"
+           "# generated.\n"
            "try:\n"
            "    import phonopy  # noqa: F401\n"
            "except ImportError:\n"
-           "    print(\"CALANGO_WARNING phonopy not importable — falling back to \"\n"
-           "          \"the full 6N ASE displacement set (pip install phonopy)\",\n"
-           "          flush=True)\n"
-           "    run_ase_displacements()\n"
-           "else:\n"
+        << (c.loToSplitting()
+                ? "    # No silent fallback here. The ASE driver cannot apply "
+                  "the\n"
+                  "    # non-analytical correction, so it would return a "
+                  "dispersion with\n"
+                  "    # the LO-TO splitting simply absent - indistinguishable "
+                  "from a\n"
+                  "    # correct result for a non-polar crystal. Better to stop "
+                  "and say\n"
+                  "    # so than to hand back a plot that is quietly wrong.\n"
+                  "    raise SystemExit(\n"
+                  "        \"CALANGO_ERROR LO-TO splitting needs phonopy, which "
+                  "is not \"\n"
+                  "        \"importable in this environment (pip install "
+                  "phonopy). \"\n"
+                  "        \"Install it, or clear the Born charges selection to "
+                  "run \"\n"
+                  "        \"without the correction.\")\n"
+                : "    print(\"CALANGO_WARNING phonopy not importable — falling "
+                  "back to \"\n"
+                  "          \"the full 6N ASE displacement set (pip install "
+                  "phonopy)\",\n"
+                  "          flush=True)\n"
+                  "    run_ase_displacements()\n")
+        << "else:\n"
            "    run_symmetry_reduced_displacements()\n";
 }
 

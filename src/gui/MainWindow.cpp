@@ -4357,6 +4357,26 @@ QList<QPair<QString, QString>> MainWindow::gpawBaselines() const
     return baselines;
 }
 
+QList<QPair<QString, QString>> MainWindow::processResults(
+    const QString& resultFile) const
+{
+    // Processes that left a particular result file behind, as
+    // label -> absolute path. Keyed on the FILE rather than on the task name:
+    // what makes a run usable as an input is that it actually produced the
+    // data, not what it was launched as.
+    QList<QPair<QString, QString>> matches;
+    for (const auto& [id, record] : processRecords_) {
+        if (record.directory.isEmpty())
+            continue;
+        const QDir dir(record.directory);
+        if (!dir.exists(resultFile))
+            continue;
+        matches.append({tr("#%1 — %2").arg(id).arg(record.label),
+                        dir.absoluteFilePath(resultFile)});
+    }
+    return matches;
+}
+
 QList<QPair<QString, QString>> MainWindow::gpawDensityFiles() const
 {
     QList<QPair<QString, QString>> baselines;
@@ -4859,6 +4879,10 @@ void MainWindow::openPhononBuilder()
     const bool periodic = doc->structure->cell().isDefined()
         && (pbc[0] || pbc[1] || pbc[2]);
     PhononWizard wizard(periodic, doc->structure, this);
+    // LO-TO splitting is assembled from two earlier runs: Z* from a Born
+    // Effective Charges job, and eps_inf from an Optics one (or typed).
+    wizard.setBornChargeProcesses(processResults(QStringLiteral("born_charges.json")));
+    wizard.setOpticsProcesses(processResults(QStringLiteral("optics.json")));
     runSimulationWizard(wizard, tr("Phonon Calculation"));
 }
 
