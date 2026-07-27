@@ -26,30 +26,6 @@
 
 namespace calango::gui {
 
-const QVector<render::ColorGradient>& volumetricGradients()
-{
-    // Each entry is a distinct ramp — no two share a color progression, so the
-    // list stays a genuine palette rather than near-duplicates of one another.
-    static const QVector<render::ColorGradient> kGradients{
-        render::ColorGradient::Viridis,  render::ColorGradient::Plasma,
-        render::ColorGradient::Inferno,  render::ColorGradient::Magma,
-        render::ColorGradient::Cividis,  render::ColorGradient::Afmhot,
-        render::ColorGradient::Hot,      render::ColorGradient::Spectral,
-        render::ColorGradient::Greys,    render::ColorGradient::Rainbow,
-        render::ColorGradient::Gnuplot};
-    return kGradients;
-}
-
-QStringList volumetricGradientNames()
-{
-    return {QStringLiteral("Viridis"),  QStringLiteral("Plasma"),
-            QStringLiteral("Inferno"),  QStringLiteral("Magma"),
-            QStringLiteral("Cividis"),  QStringLiteral("Afmhot"),
-            QStringLiteral("Hot"),      QStringLiteral("Spectral"),
-            QStringLiteral("Greys"),    QStringLiteral("Rainbow"),
-            QStringLiteral("Gnuplot")};
-}
-
 namespace {
 constexpr int kRefineFactor = 2; // upsampling factor for grid interpolation
 }
@@ -529,9 +505,22 @@ void VolumetricPanel::renderSlice()
     const core::Vec3 planeOrigin =
         center + normal * ((std::clamp(style_.sliceOffset, 0.0, 1.0) - 0.5)
                            * thickness);
-    // Half-extent covering the box from any orientation (its bounding sphere).
-    const double extent = 0.5 * (a + b + c).norm()
-        + 0.5 * std::max({a.norm(), b.norm(), c.norm()});
+    // How far the quad is drawn, and how much of it survives. The parametric
+    // sweep still uses a bounding-sphere half-extent so an oblique plane is
+    // covered from any orientation — but the quad is then CLIPPED to whole
+    // unit cells, which is what makes "just the cell" and "tiled over the
+    // neighbours" mean something. Without the clip the plane always overshot,
+    // and for a triclinic cell it visibly floated past the structure.
+    const int replicas = std::clamp(style_.sliceReplicas, 1, 5);
+    const double extent = static_cast<double>(replicas)
+        * (0.5 * (a + b + c).norm()
+           + 0.5 * std::max({a.norm(), b.norm(), c.norm()}));
+    // Fractional window: 1 cell -> [0, 1], 3 cells -> [-1, 2]. Centred on the
+    // cell, so growing the extent adds neighbours symmetrically instead of
+    // marching off in one direction.
+    const double margin = 0.5 * (replicas - 1);
+    const double clipLo = -margin;
+    const double clipHi = 1.0 + margin;
 
     // Cartesian → fractional grid coordinates (Cramer against the spans), so
     // an oblique plane can sample a triclinic grid.
@@ -553,6 +542,23 @@ void VolumetricPanel::renderSlice()
         const double t = (static_cast<double>(j) / divisions * 2.0 - 1.0) * extent;
         return planeOrigin + uAxis * s + vAxis * t;
     };
+    /// Fractional coordinates of a point against the grid's own spanning
+    /// vectors — the same Cramer solve the sampler uses, reused here so the
+    /// clip and the sampling agree exactly.
+    const auto fractional = [&](const core::Vec3& p) {
+        const core::Vec3 d = p - field->origin;
+        return core::Vec3{d.dot(fBC) * invDet, d.dot(fCA) * invDet,
+                          d.dot(fAB) * invDet};
+    };
+    const auto inside = [&](const core::Vec3& p) {
+        const core::Vec3 f = fractional(p);
+        // A hair of tolerance: a corner landing exactly on a cell face would
+        // otherwise drop a row of quads along every boundary.
+        constexpr double kEps = 1e-9;
+        return f.x >= clipLo - kEps && f.x <= clipHi + kEps
+            && f.y >= clipLo - kEps && f.y <= clipHi + kEps
+            && f.z >= clipLo - kEps && f.z <= clipHi + kEps;
+    };
     const auto emit_ = [&](const core::Vec3& p) {
         const core::Vec3 d = p - field->origin;
         const double value = field->samplePeriodic(d.dot(fBC) * invDet * field->nx,
@@ -568,18 +574,58 @@ void VolumetricPanel::renderSlice()
                       static_cast<float>(col.greenF()),
                       static_cast<float>(col.blueF())});
     };
+    // Track the drawn corners so the optional border outlines what was
+    // actually kept rather than the un-clipped sweep.
+    double minS = extent, maxS = -extent, minT = extent, maxT = -extent;
     for (int i = 0; i < divisions; ++i) {
         for (int j = 0; j < divisions; ++j) {
             const core::Vec3 q[4] = {point(i, j), point(i + 1, j),
                                      point(i + 1, j + 1), point(i, j + 1)};
+            // Whole quads, not individual triangles: a quad split across the
+            // boundary would leave a sawtooth edge at the grid's resolution.
+            if (!inside(q[0]) || !inside(q[1]) || !inside(q[2]) || !inside(q[3]))
+                continue;
+            const double s0 =
+                (static_cast<double>(i) / divisions * 2.0 - 1.0) * extent;
+            const double t0 =
+                (static_cast<double>(j) / divisions * 2.0 - 1.0) * extent;
+            const double step = 2.0 * extent / divisions;
+            minS = std::min(minS, s0);
+            maxS = std::max(maxS, s0 + step);
+            minT = std::min(minT, t0);
+            maxT = std::max(maxT, t0 + step);
             static constexpr int kQuad[6] = {0, 1, 2, 0, 2, 3};
             for (const int k : kQuad)
                 emit_(q[k]);
         }
     }
-    viewport_->setLatticePlane(std::move(faces), {},
+
+    std::vector<float> edges;
+    if (style_.sliceShowBorder && minS <= maxS && minT <= maxT) {
+        const QColor border = style_.invertGradient
+            ? render::ColorMap::sample(style_.gradient, 0.0f, false)
+            : render::ColorMap::sample(style_.gradient, 1.0f, false);
+        const core::Vec3 corners[4] = {
+            planeOrigin + uAxis * minS + vAxis * minT,
+            planeOrigin + uAxis * maxS + vAxis * minT,
+            planeOrigin + uAxis * maxS + vAxis * maxT,
+            planeOrigin + uAxis * minS + vAxis * maxT};
+        for (int k = 0; k < 4; ++k) {
+            for (const core::Vec3& p : {corners[k], corners[(k + 1) % 4]}) {
+                edges.insert(edges.end(),
+                             {static_cast<float>(p.x), static_cast<float>(p.y),
+                              static_cast<float>(p.z),
+                              static_cast<float>(border.redF()),
+                              static_cast<float>(border.greenF()),
+                              static_cast<float>(border.blueF())});
+            }
+        }
+    }
+
+    viewport_->setLatticePlane(std::move(faces), std::move(edges),
                                static_cast<float>(style_.sliceOpacity),
-                               /*visible=*/true, /*showEdges=*/false);
+                               /*visible=*/true,
+                               /*showEdges=*/style_.sliceShowBorder);
 }
 
 void VolumetricPanel::requestExtraction()
@@ -593,31 +639,23 @@ void VolumetricPanel::pumpIsoExtraction()
     if (!isoPending_ || isoWatcher_.isRunning())
         return;
 
-    const bool potential = mode_ == VolumetricRenderMode::PotentialMap;
-    // The fields to extract this pass. A potential map is one composite
-    // surface (base geometry + secondary coloring); an isosurface render draws
-    // every ticked dataset of the active tab, so several orbitals / densities
-    // can be compared side by side.
+    // Potential-map colouring is an OPTION on the isosurface now, not a mode
+    // of its own — so it no longer replaces the base with a single chosen
+    // field. Every ticked dataset is still extracted, and each gets painted by
+    // the secondary field, which is what makes "compare these two orbitals,
+    // both coloured by the potential" possible at all.
+    std::shared_ptr<const core::VolumetricData> secondary =
+        style_.potentialColoring ? fieldForIndex(style_.potentialSecondaryIndex)
+                                 : nullptr;
+    // Asking for the colouring without choosing a field to colour by would
+    // extract a surface with no vertex colours and render it black.
+    const bool potential = secondary != nullptr;
+
     std::vector<std::shared_ptr<const core::VolumetricData>> bases;
-    if (potential) {
-        std::shared_ptr<const core::VolumetricData> base;
-        if (style_.potentialBaseIndex >= 0)
-            base = fieldForIndex(style_.potentialBaseIndex);
-        if (!base) {
-            const int row = currentRow();
-            if (row >= 0)
-                base = entries_.at(static_cast<std::size_t>(row)).field;
-        }
-        if (base)
-            bases.push_back(std::move(base));
-    } else {
-        for (const int row : renderableRows())
-            bases.push_back(entries_[static_cast<std::size_t>(row)].field);
-    }
+    for (const int row : renderableRows())
+        bases.push_back(entries_[static_cast<std::size_t>(row)].field);
     if (bases.empty())
         return;
-    std::shared_ptr<const core::VolumetricData> secondary =
-        potential ? fieldForIndex(style_.potentialSecondaryIndex) : nullptr;
 
     isoPending_ = false;
     isoRunningGeneration_ = ++isoGeneration_;

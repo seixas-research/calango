@@ -35,7 +35,6 @@ private:
 
     QStringList files_;
     std::vector<int> frameCounts_; ///< frames per file (ase.io.read count)
-    QString compositionSummary_;
 
     QListWidget* fileList_;
     QLabel* summaryLabel_;

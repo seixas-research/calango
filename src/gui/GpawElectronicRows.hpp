@@ -5,9 +5,10 @@
 class QComboBox;
 class QDoubleSpinBox;
 class QFormLayout;
-class QLineEdit;
+class QLabel;
 class QObject;
 class QSpinBox;
+class QWidget;
 
 namespace calango::gui {
 
@@ -16,8 +17,9 @@ namespace calango::gui {
 ///
 ///   "Electronic Convergence && Smearing" — smearing method + width σ, SCF
 ///                                          energy tolerance, max SCF steps
-///   "Spin Configurations"                — polarization mode, initial magnetic
-///                                          moments
+///   "Spin Configurations"                — polarization mode (the initial
+///                                          moments themselves belong to the
+///                                          structure; see Edit Structure)
 ///
 /// One owner of these rows rather than a copy per wizard: the Single-Point and
 /// Geometry Optimization setups must present the *same* GPAW form — an SCF is
@@ -44,6 +46,14 @@ public:
     /// rows are built.
     void updateEnabled();
 
+    /// Two controls this class OWNS but does not place: the base class puts
+    /// them where they belong physically rather than where they happen to be
+    /// created — the SCF energy tolerance beside the eigenstates and density
+    /// tolerances it is converged with, and the step cap beside the eigensolver
+    /// whose iterations it caps. Null before buildConvergenceRows() runs.
+    QWidget* energyToleranceWidget() const;
+    QWidget* scfStepsWidget() const;
+
     /// Write the collected values into `config`. Leaves every other field —
     /// task kind, optimizer, ensemble — to the calling wizard.
     void applyTo(core::CalculatorConfig& config) const;
@@ -54,7 +64,8 @@ private:
     QDoubleSpinBox* scfTolSpin_ = nullptr;
     QSpinBox* scfStepsSpin_ = nullptr;
     QComboBox* spinModeCombo_ = nullptr; ///< Unpolarized / Collinear / Non-collinear
-    QLineEdit* magMomentEdit_ = nullptr;
+    /// Says where the moments come from now — Edit Structure, not this page.
+    QLabel* momentsNote_ = nullptr;
 };
 
 } // namespace calango::gui

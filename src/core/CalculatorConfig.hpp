@@ -152,6 +152,13 @@ enum class SmearingMethod {
     MethfesselPaxton,
 };
 
+/// VASP PREC. Enum order is the combo order in the VASP settings group.
+enum class VaspPrecision { Normal, Accurate, Single };
+
+/// VASP ALGO — the electronic minimization algorithm. Enum order is the combo
+/// order.
+enum class VaspAlgo { Normal, Fast, VeryFast, All, Damped };
+
 /// Spin treatment for the DFT SCF. Enum order is the "Spin Configurations"
 /// dropdown order in the Single-point wizard.
 enum class SpinMode {
@@ -164,6 +171,28 @@ enum class SpinMode {
 enum class GpawDensityType {
     Pseudo,       ///< calc.get_pseudo_density() — smooth valence pseudodensity
     AllElectron,  ///< calc.get_all_electron_density() — full nuclear-cusp density
+};
+
+/// The volumetric fields a GPAW run can write out after the SCF, each to its
+/// own `.cube`. Independent flags rather than one choice: they cost one grid
+/// evaluation each on an already-converged calculation, and comparing (say) the
+/// ELF against the density that produced it means having both.
+struct GpawDensityExports {
+    bool allElectron = false;   ///< get_all_electron_density(gridrefinement=2)
+    bool pseudo = false;        ///< get_pseudo_density()
+    /// n(up) - n(down). Zero by construction in a spin-restricted run, so the
+    /// generated script skips it with a note rather than writing a null field.
+    bool spin = false;
+    bool hartree = false;       ///< get_electrostatic_potential(), eV
+    bool elf = false;           ///< gpaw.elf.elf_from_dft_calculation
+    /// tau(r), the positive-definite kinetic-energy density the ELF is built
+    /// from. Read off the density object after update_ked().
+    bool kineticEnergy = false;
+
+    bool any() const
+    {
+        return allElectron || pseudo || spin || hartree || elf || kineticEnergy;
+    }
 };
 
 /// Local optimizers ASE ships for structural relaxation. Enum order is the
@@ -293,7 +322,12 @@ struct CalculatorConfig {
     // Single-point / electronic convergence (DFT backends only; ignored by
     // the classical potentials). scfMaxSteps caps SCF iterations;
     // scfEnergyTolEv is the electronic-energy convergence threshold.
-    int scfMaxSteps = 100;
+    /// Runaway guard on the SCF, not a target — the convergence thresholds are
+    /// what normally end the cycle, so a cap that stops a converging run costs
+    /// the whole job and saves nothing. 500 matches the wizard default and is
+    /// enough for the magnetic and metallic systems that routinely need a few
+    /// hundred iterations.
+    int scfMaxSteps = 500;
     double scfEnergyTolEv = 1e-4;
     /// Spin treatment (unpolarized / collinear / non-collinear). `spinPolarized`
     /// is kept in sync (true for collinear + non-collinear) for the many callers
@@ -302,12 +336,16 @@ struct CalculatorConfig {
     /// Spin polarization: seed every atom with an initial magnetic moment so
     /// the SCF can converge to a magnetic solution.
     bool spinPolarized = false;
-    double initialMagMoment = 1.0; ///< uniform fallback moment per atom (μB)
-    /// Explicit per-atom initial moments as a comma/space-separated list
-    /// ("2.2, -2.2, 0, 0"). When non-empty it overrides `initialMagMoment`;
-    /// the generated script zero-pads it to the atom count. Empty falls back to
-    /// the uniform scalar above.
-    std::string initialMagMomentsCsv;
+    /// Uniform fallback moment per atom (μB), used ONLY when the structure
+    /// itself carries no initial moments.
+    ///
+    /// The per-atom moments are a property of the structure — they are set in
+    /// Edit Structure, ride on the staged geometry's `initial_magmoms` column,
+    /// and arrive on the ASE atoms object before the calculator is built. This
+    /// is the seed for the case where nobody set any, because a spin-polarized
+    /// run starting from all zeros converges straight back to the non-magnetic
+    /// solution.
+    double initialMagMoment = 1.0;
     /// Electronic occupation smearing (DFT backends; classical potentials
     /// ignore it). smearingWidthEv is the broadening / electronic temperature.
     SmearingMethod smearing = SmearingMethod::Gaussian;
@@ -374,6 +412,49 @@ struct CalculatorConfig {
     /// FAIRChem checkpoint (`.pt`). Required — FAIRChem has no default model.
     std::string fairChemCheckpointPath;
 
+    // -- VASP (DFT) ---------------------------------------------------------
+
+    /// Directory holding the PAW pseudopotential sets, i.e. `VASP_PP_PATH`.
+    ///
+    /// Not a hard-coded path and not derived from the environment: VASP's
+    /// POTCARs are licensed and live wherever the group put them, so this is a
+    /// per-installation setting the user points at once. Empty falls back to
+    /// whatever `VASP_PP_PATH` the environment already carries.
+    std::string vaspPotcarPath;
+    /// Exchange-correlation set (ASE's `xc`, which expands to GGA/METAGGA plus
+    /// the matching defaults).
+    std::string vaspXc = "PBE";
+    VaspPrecision vaspPrec = VaspPrecision::Accurate;
+    VaspAlgo vaspAlgo = VaspAlgo::Normal;
+    /// NELM — SCF iteration cap. Shared with `scfMaxSteps` in the UI so one
+    /// control drives every engine, but stored separately because VASP's
+    /// default differs.
+    int vaspNelm = 500;
+    double vaspEdiff = 1e-6;      ///< EDIFF (eV)
+    /// LREAL — real-space projection. "Auto" for anything over ~20 atoms,
+    /// False for small cells where the extra accuracy is free.
+    std::string vaspLreal = "Auto";
+    /// Ionic relaxation. Only written for the relaxation / MD tasks; a
+    /// single-point emits NSW = 0 whatever is set here.
+    int vaspIbrion = 2;           ///< 2 = conjugate gradient, 1 = quasi-Newton
+    int vaspIsif = 2;             ///< 2 = ions only, 3 = ions + cell + volume
+    double vaspEdiffg = -0.02;    ///< eV/Å when negative (force criterion)
+    /// Output control. LCHARG on by default because CHGCAR is what every
+    /// downstream density analysis needs; LWAVE off because WAVECAR is large
+    /// and rarely wanted.
+    bool vaspLwave = false;
+    bool vaspLcharg = true;
+    bool vaspLaechg = false;      ///< AECCAR0/2 — required by Bader analysis
+    bool vaspLorbit = false;      ///< LORBIT = 11 (site/l-projected DOS)
+    /// Parallelization. 0 means "leave it to VASP", which is the right default
+    /// — a wrong NCORE is a performance cliff, not an error.
+    int vaspNcore = 0;
+    int vaspKpar = 0;
+    /// Free-form INCAR tags appended verbatim, one per line ("LDAU = .TRUE.").
+    /// No UI can cover 300 INCAR flags; this is the escape hatch that stops
+    /// the wizard from being a ceiling.
+    std::string vaspExtraIncar;
+
     // -- GPAW (DFT) ---------------------------------------------------------
     // planeWaveCutoffEv above is the PW() cutoff; gpawGridSpacing is the FD
     // grid spacing (h) and gpawBasis the LCAO basis — GPAW takes exactly one
@@ -406,6 +487,10 @@ struct CalculatorConfig {
     /// all-electron.
     bool gpawExportDensity = false;
     GpawDensityType gpawDensityType = GpawDensityType::AllElectron;
+    /// Per-field export selection. Supersedes the single-choice pair above,
+    /// which is kept because saved projects and the headless script path still
+    /// carry it; when `gpawDensityExports.any()` is true it wins.
+    GpawDensityExports gpawDensityExports;
 
     /// DFT+U corrections, emitted as GPAW's `setups={...}` dictionary.
     /// `useHubbardU` gates the whole block so a populated table can be turned

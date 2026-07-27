@@ -266,43 +266,6 @@ QString PhononBuilderDialog::pythonExecutable() const
     return QString::fromStdString(pybridge::PythonEngine::instance().executable());
 }
 
-std::vector<std::shared_ptr<core::Structure>>
-PhononBuilderDialog::buildDisplacedFrames() const
-{
-    const core::PhononConfig c = config();
-    // Build the fully expanded supercell FIRST, then displace every atom
-    // it contains — a displacement set generated from the original cell
-    // atoms alone would miss the supercell copies and yield an incomplete
-    // force-constant sampling for external codes.
-    const core::Structure base = periodic_
-        ? pybridge::AseBridge::makeSupercell(*structure_, c.supercell[0],
-                                             c.supercell[1], c.supercell[2])
-        : *structure_;
-    const std::size_t displacedCount = base.size();
-
-    std::vector<std::shared_ptr<core::Structure>> frames;
-    frames.reserve(6 * displacedCount + 1);
-    frames.push_back(std::make_shared<core::Structure>(base)); // reference
-
-    for (std::size_t atom = 0; atom < displacedCount; ++atom) {
-        for (int axis = 0; axis < 3; ++axis) {
-            for (const double sign : {+1.0, -1.0}) {
-                auto frame = std::make_shared<core::Structure>(base);
-                core::Vec3& p = frame->atoms()[atom].position;
-                const double d = sign * c.deltaAngstrom;
-                if (axis == 0)
-                    p.x += d;
-                else if (axis == 1)
-                    p.y += d;
-                else
-                    p.z += d;
-                frames.push_back(std::move(frame));
-            }
-        }
-    }
-    return frames;
-}
-
 void PhononBuilderDialog::regenerateScript()
 {
     manuallyEdited_ = false;

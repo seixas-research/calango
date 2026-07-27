@@ -232,32 +232,26 @@ void BandPdosWindow::exportBands()
         return;
     const QChar sep = path.endsWith(QLatin1String(".dat")) ? QChar(' ')
                                                            : QChar(',');
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, windowTitle(),
-                             tr("Could not write %1").arg(path));
-        return;
-    }
-    QTextStream out(&file);
-    out << "k_distance";
-    const std::size_t bandCount =
-        data.energies.front().empty() ? 0 : data.energies.front().front().size();
-    for (std::size_t s = 0; s < data.energies.size(); ++s)
-        for (std::size_t b = 0; b < bandCount; ++b)
-            out << sep
-                << QStringLiteral("band_%1%2").arg(b + 1).arg(
-                       data.energies.size() > 1
-                           ? QStringLiteral("_spin%1").arg(s + 1)
-                           : QString());
-    out << "\n";
-    for (std::size_t k = 0; k < data.x.size(); ++k) {
-        out << data.x[k];
-        for (const auto& spin : data.energies)
+    writeTextFile(this, path, [&](QTextStream& out) {
+        out << "k_distance";
+        const std::size_t bandCount =
+            data.energies.front().empty() ? 0 : data.energies.front().front().size();
+        for (std::size_t s = 0; s < data.energies.size(); ++s)
             for (std::size_t b = 0; b < bandCount; ++b)
-                out << sep << spin[k][b];
+                out << sep
+                    << QStringLiteral("band_%1%2").arg(b + 1).arg(
+                           data.energies.size() > 1
+                               ? QStringLiteral("_spin%1").arg(s + 1)
+                               : QString());
         out << "\n";
-    }
-    file.commit();
+        for (std::size_t k = 0; k < data.x.size(); ++k) {
+            out << data.x[k];
+            for (const auto& spin : data.energies)
+                for (std::size_t b = 0; b < bandCount; ++b)
+                    out << sep << spin[k][b];
+            out << "\n";
+        }
+    });
 }
 
 void BandPdosWindow::exportPdos()
@@ -275,26 +269,20 @@ void BandPdosWindow::exportPdos()
         return;
     const QChar sep = path.endsWith(QLatin1String(".dat")) ? QChar(' ')
                                                            : QChar(',');
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, windowTitle(),
-                             tr("Could not write %1").arg(path));
-        return;
-    }
-    QTextStream out(&file);
-    out << "energy_eV";
-    for (const auto& [label, curve] : data.projections) {
-        (void)curve;
-        out << sep << QString(label).replace(QLatin1Char(' '), QLatin1Char('_'));
-    }
-    out << "\n";
-    for (std::size_t i = 0; i < data.energies.size(); ++i) {
-        out << data.energies[i];
-        for (const auto& [label, curve] : data.projections)
-            out << sep << (i < curve.size() ? curve[i] : 0.0);
+    writeTextFile(this, path, [&](QTextStream& out) {
+        out << "energy_eV";
+        for (const auto& [label, curve] : data.projections) {
+            (void)curve;
+            out << sep << QString(label).replace(QLatin1Char(' '), QLatin1Char('_'));
+        }
         out << "\n";
-    }
-    file.commit();
+        for (std::size_t i = 0; i < data.energies.size(); ++i) {
+            out << data.energies[i];
+            for (const auto& [label, curve] : data.projections)
+                out << sep << (i < curve.size() ? curve[i] : 0.0);
+            out << "\n";
+        }
+    });
 }
 
 void BandPdosWindow::refreshBandGap()

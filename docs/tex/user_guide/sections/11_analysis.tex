@@ -227,6 +227,13 @@ value range.
 
 Field A defines the geometry; Field B is optional and colours it.
 
+\subsection{Render modes}
+
+\ui{Edit Volumetric Render} offers two modes: \ui{Isosurfaces} and \ui{Color
+Slice}. Potential-map colouring used to be a third; it is now a group inside
+\ui{Isosurfaces}, because it always was one --- the same surface, extracted the
+same way at the same isovalue, differing only in what colours it.
+
 \subsection{Isosurfaces}
 
 The isovalue slider and numeric box re-extract the surface in real time.
@@ -235,13 +242,23 @@ decomposition of each grid cell, which is topologically unambiguous, with
 smooth normals from the field gradient and periodic stitching so surfaces
 close correctly across cell boundaries.
 
-\subsection{Electrostatic potential maps}
+\subsection{Potential map colour}
 
-Check \ui{Color by Field B (potential map)} to make an EPM: Field A (say
-the electron density) shapes the surface, and Field B (say the Hartree
-potential) is interpolated at every surface vertex and mapped through the
-chosen colormap. The value range is reported so the colour scale is
-quantitative.
+The \ui{Potential Map Color} group under \ui{Isosurfaces} makes an EPM: the
+isosurface (say the electron density) shapes the geometry, and the field chosen
+under \ui{Color by} (say the Hartree potential) is interpolated at every
+surface vertex and mapped through the \ui{Color map}. \ui{Invert palette}
+flips the ramp.
+
+\ui{Custom range} pins the colour scale to an explicit min/max instead of the
+colouring field's own extremes. A potential runs from deeply negative at the
+nuclei to nearly flat in the vacuum, so on the full range everything
+interesting sits in a sliver of the ramp --- and a fixed window is also what
+lets two molecules be compared on one scale.
+
+Because the colouring is an option on the surface rather than a mode, it
+applies to \emph{every} ticked dataset at once: two orbitals can be shown side
+by side, both painted by the same potential.
 
 \begin{caltip}
 The classic recipe: load the charge density as Field A, the local potential
@@ -253,15 +270,83 @@ immediately.
 
 \subsection{Slice planes}
 
-\ui{Slice plane} cuts through the volume with a colour-mapped plane:
-\ui{XY}, \ui{XZ}, \ui{YZ}, or \ui{Custom normal} with an arbitrary
-direction and an offset slider. Slices can sample either field.
+\ui{Color Slice} cuts through the volume with a colour-mapped plane, oriented
+by Miller indices $(h\,k\,l)$ against the grid's own lattice and swept along its
+normal by the \ui{Offset} slider.
+
+\ui{Extent} sets how far the plane is drawn, in unit cells across. \ui{This
+unit cell only} keeps it inside the box the field was computed in --- the
+honest extent, and the one to use when reading values off it. The replicated
+options tile the periodic field over the neighbouring cells, which is what
+makes a surface reconstruction or an adsorbate pattern legible instead of
+showing one cell floating on its own. \ui{Outline the slice} draws its
+boundary, useful where the field has gone to zero and the quad would otherwise
+fade into the background.
+
+\ui{Custom color range} pins the ramp the same way the potential map's does:
+a few outlier voxels (a nuclear cusp, a spike at a boundary) otherwise compress
+everything else into one end of it.
 
 \subsection{Export}
 
 \ui{Export Isosurface (OBJ)\ldots} writes the triangle mesh with normals
 for external rendering; \ui{Export Slice (CSV)\ldots} writes the sampled
 plane as $x, y, z$, value.
+
+\section{Charge density difference}
+\label{sec:cdd}
+
+\menu{Analysis}\menusep\menu{Charge Density Difference (CDD)\dots} computes
+\[
+  \Delta\rho \;=\; \rho_{A+B} \;-\; \rho_{A} \;-\; \rho_{B},
+\]
+the redistribution of charge caused by putting two fragments together. Each
+of the three densities on its own is dominated by the atomic cores and shows
+nothing; the difference shows the bond.
+
+\subsection{Step 1 --- density source}
+
+Pick a completed \menu{Simulation}\menusep\menu{Single-point Calculation} that
+saved its wavefunctions (GPAW \file{.gpw}); that run supplies $\rho_{A+B}$ and,
+more importantly, the calculator both fragments are rebuilt from. Choose
+whether to difference the \ui{All-electron density} or the
+\ui{Pseudodensity}. The pseudodensity is usually the clearer field to read:
+it carries no nuclear cusps, so the isosurface scale is set by the bonding
+features rather than by the cores.
+
+\subsection{Step 2 --- subsystem partition}
+
+Two columns list the atoms of the selected run. Move atoms across with the
+arrow buttons or by double-clicking a row. The split is exhaustive --- every
+atom belongs to exactly one side --- because $\Delta\rho$ only integrates to
+zero if $A$ and $B$ together are the whole system.
+
+\subsection{What the run does}
+
+Both fragments are recomputed in the parent's own unit cell, at the parent's
+geometry, with the parameters read back out of its \file{.gpw}: cutoff, XC
+functional, grid, $k$-points and convergence cannot drift between the three
+terms. \emph{Nothing is relaxed.} $\Delta\rho$ is defined at one geometry, and
+letting a fragment relax would mix charge transfer with structural
+rearrangement into a quantity nobody can read off an isosurface.
+
+\begin{calnote}
+Cutting a closed-shell molecule in half leaves open-shell fragments, and an
+isolated atom with a partly-filled degenerate shell often will not converge
+under the settings that converged the molecule in one pass. The run therefore
+tries the parent's exact parameters first, then adds occupation smearing, then
+spin polarization, and reports in the log which was needed. The reported
+\texttt{net} charge is the check: $A$ and $B$ together hold exactly the
+electrons $A{+}B$ does, so it must come out at zero.
+\end{calnote}
+
+\subsection{Result}
+
+The difference is written as \file{cdd.cube} and loaded automatically into the
+\ui{Volumetric Data} dock (\S\ref{sec:volumetric}), where it renders in the
+main 3D viewport like any other grid. A \ui{Coolwarm} colormap is the natural
+choice: accumulation and depletion sit on opposite sides of white. The status
+bar reports how much charge was redistributed, from \file{cdd.json}.
 
 \section{Adsorption and catalysis}
 \label{sec:adsorption}

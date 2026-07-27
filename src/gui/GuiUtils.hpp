@@ -7,10 +7,19 @@
 
 #include <vector>
 
+#include <QStringList>
+
+#include <functional>
+
 class QJsonArray;
 class QPainter;
 class QPushButton;
 class QRectF;
+class QWidget;
+
+namespace calango::core {
+class Structure;
+}
 
 namespace calango::gui {
 
@@ -21,6 +30,30 @@ namespace calango::gui {
 /// Paint a color-swatch button — the "click to pick a color" buttons in the
 /// Representation, Lighting and Unit Cell & Axes panels.
 void setButtonColor(QPushButton* button, const QColor& color);
+
+/// The chemical species present in `structure`, sorted and unique.
+///
+/// Every wizard that offers the Hubbard editor needs this to seed its element
+/// completer, and each had grown its own identical copy — a completer that
+/// repeats "Fe" once per Fe atom is unusable, so all of them had to sort and
+/// de-duplicate. A null structure gives an empty list rather than a crash,
+/// because several callers hold one optionally.
+QStringList structureElements(const core::Structure* structure);
+
+/// Write `body` to `path` atomically, reporting failure to the user.
+///
+/// The seven export actions in this layer (JSON, CSV, OBJ, plot data …) each
+/// carried the same five lines: open a QSaveFile, warn and bail on failure,
+/// stream through a QTextStream, commit. The differences were only the text
+/// being written — so that is what the callback supplies, and the error path
+/// exists once.
+///
+/// Returns false when the file could not be opened or committed; the warning
+/// has already been shown in that case.
+bool writeTextFile(QWidget* parent, const QString& path,
+                   const std::function<void(QTextStream&)>& body);
+/// Convenience overload for a body that is already a string.
+bool writeTextFile(QWidget* parent, const QString& path, const QString& body);
 
 /// The Jmol CPK colour of an element, straight from the element table.
 ///

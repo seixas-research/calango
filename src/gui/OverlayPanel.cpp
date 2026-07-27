@@ -31,29 +31,31 @@ OverlayPanel::OverlayPanel(ViewportWidget* viewport, QWidget* parent)
 
     auto* buttons = new QHBoxLayout;
     buttons->setSpacing(4);
-    const auto makeButton = [this, buttons](const QString& text,
-                                            const QString& icon,
+    // Icon-only: four labelled buttons did not fit the dock's width and wrapped
+    // onto a second row, stealing height from the list they act on.
+    const auto makeButton = [this, buttons](const QString& icon,
                                             const QString& tip) {
-        auto* button = new QPushButton(text, this);
+        auto* button = new QPushButton(this);
         ui::IconManager::bind(button, icon);
+        button->setIconSize(QSize(20, 20));
         button->setToolTip(tip);
         button->setFocusPolicy(Qt::NoFocus);
         buttons->addWidget(button);
         return button;
     };
     addButton_ = makeButton(
-        tr("Add"), QStringLiteral("add-circle-fill"),
+        QStringLiteral("add-circle-fill"),
         tr("Add overlay… — choose a type (lattice plane, text, box, sphere, "
            "tube…) and set its properties."));
     removeButton_ = makeButton(
-        tr("Remove"), QStringLiteral("indeterminate-circle-fill"),
+        QStringLiteral("indeterminate-circle-fill"),
         tr("Remove overlay… — delete the selected entry."));
     editButton_ = makeButton(
-        tr("Edit"), QStringLiteral("edit-fill"),
+        QStringLiteral("edit-fill"),
         tr("Edit overlay… — reopen the selected entry's properties. Changes "
            "apply live; Cancel puts it back as it was."));
     resetButton_ = makeButton(
-        tr("Reset"), QStringLiteral("arrow-go-back-line"),
+        QStringLiteral("arrow-go-back-line"),
         tr("Reset overlays — remove every overlay and clear the viewport."));
     buttons->addStretch(1);
     layout->addLayout(buttons);
@@ -107,6 +109,27 @@ void OverlayPanel::onSelectionChanged()
     resetButton_->setEnabled(!overlays_.empty());
 }
 
+std::vector<std::pair<int, QString>> OverlayPanel::entries() const
+{
+    std::vector<std::pair<int, QString>> out;
+    out.reserve(overlays_.size());
+    for (const Overlay& overlay : overlays_)
+        out.emplace_back(overlay.id, overlay.displayName());
+    return out;
+}
+
+void OverlayPanel::setFilmOverlayFilter(const std::vector<int>* ids)
+{
+    const bool active = ids != nullptr;
+    if (!active && !filmFilterActive_)
+        return; // nothing to restore; avoid a pointless re-tessellation
+    if (active && filmFilterActive_ && filmFilterIds_ == *ids)
+        return; // most film frames repeat the previous frame's overlay set
+    filmFilterActive_ = active;
+    filmFilterIds_ = active ? *ids : std::vector<int>{};
+    pushToViewport();
+}
+
 void OverlayPanel::refreshList()
 {
     const int keep = list_->currentRow();
@@ -123,6 +146,10 @@ void OverlayPanel::refreshList()
         std::clamp(keep, overlays_.empty() ? -1 : 0,
                    static_cast<int>(overlays_.size()) - 1));
     onSelectionChanged();
+    // Every add / remove / edit / reset comes through here, so this is the one
+    // place the Film Production dialog has to listen to in order to keep its
+    // per-shot overlay lists current.
+    Q_EMIT overlaysChanged();
 }
 
 void OverlayPanel::pushToViewport()
@@ -136,9 +163,25 @@ void OverlayPanel::pushToViewport()
     std::vector<float> edges;
     std::vector<render::StructureRenderer::OverlayRange> ranges;
     std::vector<ViewportWidget::TextOverlay> texts;
+    // A film shot naming its own overlay set wins over the dock's checkboxes
+    // for as long as it is on screen. The overlays themselves are untouched,
+    // so stopping playback restores the dock's own state exactly.
+    const auto shown = [this](const Overlay& overlay) {
+        if (!filmFilterActive_)
+            return overlay.visible;
+        return std::find(filmFilterIds_.begin(), filmFilterIds_.end(),
+                         overlay.id)
+            != filmFilterIds_.end();
+    };
     for (const Overlay& overlay : overlays_) {
-        appendOverlayGeometry(overlay, structure, faces, edges, ranges);
-        if (overlay.kind != Overlay::Kind::Text || !overlay.visible
+        if (shown(overlay)) {
+            appendOverlayGeometry(overlay, structure, faces, edges, ranges);
+        } else {
+            Overlay hidden = overlay;
+            hidden.visible = false;
+            appendOverlayGeometry(hidden, structure, faces, edges, ranges);
+        }
+        if (overlay.kind != Overlay::Kind::Text || !shown(overlay)
             || overlay.text.isEmpty())
             continue;
         ViewportWidget::TextOverlay text;
@@ -147,6 +190,9 @@ void OverlayPanel::pushToViewport()
         text.position = overlay.center;
         text.font = overlay.font;
         text.color = overlay.color;
+        text.backgroundColor = overlay.backgroundColor;
+        text.backgroundOpacity = overlay.backgroundOpacity;
+        text.opacity = overlay.opacity;
         text.visible = true;
         texts.push_back(std::move(text));
     }
@@ -201,6 +247,10 @@ void OverlayPanel::addOverlay()
     overlay.font.setPointSize(14);
     overlay.font.setBold(true);
     overlay.text = tr("Label");
+    // A new overlay is opaque. The 0.6 default in the struct is right for a
+    // plane you want to see through; a label you cannot fully read is not a
+    // useful starting point.
+    overlay.opacity = 1.0;
 
     if (!editInDialog(overlay, tr("Add Overlay")))
         return;

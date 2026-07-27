@@ -163,6 +163,7 @@ VectorsPanel::VectorsPanel(ViewportWidget* viewport, QWidget* parent)
     overlayCombo_->addItem(tr("Velocity"));
     overlayCombo_->addItem(tr("Force"));
     overlayCombo_->addItem(tr("Magnetic moment"));
+    overlayCombo_->addItem(tr("Initial magnetic moments"));
     overlayCombo_->setCurrentIndex(
         static_cast<int>(viewport_->style().vectorOverlay));
     form->addRow(tr("Vector overlay:"), overlayCombo_);
@@ -216,7 +217,7 @@ VectorsPanel::VectorsPanel(ViewportWidget* viewport, QWidget* parent)
 
     colorButton_ = new QPushButton(this);
     colorButton_->setToolTip(
-        tr("Arrow colour for the selected overlay. Each property (velocity, "
+        tr("Arrow color for the selected overlay. Each property (velocity, "
            "force, magnetic moment) remembers its own."));
     form->addRow(tr("Vector color:"), colorButton_);
     connect(colorButton_, &QPushButton::clicked, this, [this] {
@@ -269,6 +270,8 @@ QColor* VectorsPanel::overlayColor()
     case render::VectorOverlay::Velocity: return &style.velocityColor;
     case render::VectorOverlay::Force: return &style.forceColor;
     case render::VectorOverlay::MagneticMoment: return &style.magmomColor;
+    case render::VectorOverlay::InitialMagneticMoment:
+        return &style.initialMagmomColor;
     case render::VectorOverlay::None: break;
     }
     return nullptr; // nothing is drawn, so there is no colour to edit
@@ -281,7 +284,7 @@ void VectorsPanel::syncColorButton()
     setButtonColor(colorButton_, color ? *color : palette().color(QPalette::Button));
     if (!color)
         colorButton_->setToolTip(
-            tr("Select a vector overlay above to choose its arrow colour."));
+            tr("Select a vector overlay above to choose its arrow color."));
 }
 
 void VectorsPanel::refreshAvailability()

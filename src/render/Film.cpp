@@ -89,6 +89,48 @@ double FilmScript::effectiveDuration() const
     return duration;
 }
 
+std::vector<double> FilmScript::segmentDurations() const
+{
+    const auto count = static_cast<int>(shots.size());
+    if (count < 2)
+        return {};
+    const int segments = count - 1;
+    const double total = effectiveDuration();
+
+    std::vector<double> raw(static_cast<std::size_t>(segments), 0.0);
+    double sumSet = 0.0;
+    int countSet = 0;
+    for (int i = 0; i < segments; ++i) {
+        const double value = shots[static_cast<std::size_t>(i)].segmentSeconds;
+        if (value > 0.0) {
+            raw[static_cast<std::size_t>(i)] = value;
+            sumSet += value;
+            ++countSet;
+        }
+    }
+
+    if (countSet == 0) {
+        // Nothing timed: the even split, unchanged.
+        return std::vector<double>(static_cast<std::size_t>(segments),
+                                   total / static_cast<double>(segments));
+    }
+
+    // A partly-timed film still has to play. An unset segment takes the mean
+    // of the timed ones rather than zero, which would make it a hard cut the
+    // user never asked for.
+    const double mean = sumSet / static_cast<double>(countSet);
+    double sum = 0.0;
+    for (double& value : raw) {
+        if (value <= 0.0)
+            value = mean;
+        sum += value;
+    }
+    const double scale = sum > 0.0 ? total / sum : 1.0;
+    for (double& value : raw)
+        value *= scale;
+    return raw;
+}
+
 int FilmScript::frameCount() const
 {
     if (!isValid())
@@ -142,20 +184,33 @@ FilmSample sampleFilm(const FilmScript& script, double timeSeconds)
 
     // -- Camera and casts ---------------------------------------------------
     const auto shotCount = static_cast<int>(script.shots.size());
+    // Which shot's overlay set is on screen. Overlays cannot be blended — a
+    // label is either shown or not — so this is always a hard switch to
+    // whichever shot the frame most belongs to, unlike the cast opacities
+    // beside it.
+    const FilmShot* overlaySource = nullptr;
+
     if (shotCount == 1) {
         sample.camera = script.shots.front().pov;
         sample.castOpacity = script.shots.front().castOpacity;
+        overlaySource = &script.shots.front();
     } else {
         const int segments = shotCount - 1;
-        const double segmentLength = total / static_cast<double>(segments);
+        // Segments are no longer necessarily equal, so the shot is found by
+        // walking the cumulative times rather than by dividing.
+        const std::vector<double> lengths = script.segmentDurations();
+        int index = 0;
+        double start = 0.0;
         // The final instant belongs to the last segment, not to a segment one
         // past the end — without this, t == duration indexes out of range.
-        int index = segmentLength > 0.0
-            ? static_cast<int>(time / segmentLength)
-            : 0;
-        index = std::clamp(index, 0, segments - 1);
+        while (index < segments - 1
+               && time >= start + lengths[static_cast<std::size_t>(index)]) {
+            start += lengths[static_cast<std::size_t>(index)];
+            ++index;
+        }
+        const double segmentLength = lengths[static_cast<std::size_t>(index)];
         const double u = segmentLength > 0.0
-            ? std::clamp((time - index * segmentLength) / segmentLength, 0.0, 1.0)
+            ? std::clamp((time - start) / segmentLength, 0.0, 1.0)
             : 1.0;
 
         const FilmShot& from = script.shots[static_cast<std::size_t>(index)];
@@ -167,12 +222,14 @@ FilmSample sampleFilm(const FilmScript& script, double timeSeconds)
             // opens on its own keyframe, which IS the cut.
             sample.camera = u >= 1.0 ? to.pov : from.pov;
             sample.castOpacity = u >= 1.0 ? to.castOpacity : from.castOpacity;
+            overlaySource = u >= 1.0 ? &to : &from;
             break;
         case FilmTransition::Interpolation: {
             const double eased = smoothstep(u);
             sample.camera = blendPointOfView(from.pov, to.pov, eased);
             sample.castOpacity =
                 blendCastOpacity(from.castOpacity, to.castOpacity, eased);
+            overlaySource = u < 0.5 ? &from : &to;
             break;
         }
         case FilmTransition::Crossfade: {
@@ -186,6 +243,7 @@ FilmSample sampleFilm(const FilmScript& script, double timeSeconds)
             sample.crossfadeFrom = from.pov;
             sample.crossfadeFromCastOpacity = from.castOpacity;
             sample.crossfadeWeight = static_cast<float>(eased);
+            overlaySource = u < 0.5 ? &from : &to;
             break;
         }
         case FilmTransition::FadeInOut:
@@ -194,8 +252,15 @@ FilmSample sampleFilm(const FilmScript& script, double timeSeconds)
             sample.camera = u < 0.5 ? from.pov : to.pov;
             sample.castOpacity = u < 0.5 ? from.castOpacity : to.castOpacity;
             sample.fade = static_cast<float>(std::fabs(2.0 * u - 1.0));
+            // Switched under cover of the black, like the camera itself.
+            overlaySource = u < 0.5 ? &from : &to;
             break;
         }
+    }
+
+    if (overlaySource && overlaySource->overridesOverlays) {
+        sample.overridesOverlays = true;
+        sample.overlayIds = overlaySource->overlayIds;
     }
 
     // -- Trajectory ---------------------------------------------------------

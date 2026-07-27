@@ -2,8 +2,10 @@
 
 #include "gui/OverlayModel.hpp"
 
+#include <QString>
 #include <QWidget>
 
+#include <utility>
 #include <vector>
 
 class QListWidget;
@@ -36,6 +38,24 @@ public:
     /// plane is defined against the cell it is drawn in.
     void refresh();
 
+    /// (id, label) for every overlay, in list order. The Film Production
+    /// dialog offers these per shot; it takes ids rather than copies so the
+    /// dock stays the single definition of what each overlay is.
+    std::vector<std::pair<int, QString>> entries() const;
+
+    /// Film override: while active, exactly the listed overlays are drawn,
+    /// whatever their own `visible` flags say. Pass nullptr to hand control
+    /// back to the dock.
+    ///
+    /// A filter rather than a mutation of the overlays themselves: playing a
+    /// film must not leave the dock's checkboxes rearranged when it stops.
+    void setFilmOverlayFilter(const std::vector<int>* ids);
+
+Q_SIGNALS:
+    /// The set of overlays changed (added, removed, renamed, reset). The Film
+    /// Production dialog re-offers them per shot.
+    void overlaysChanged();
+
 private Q_SLOTS:
     void addOverlay();
     void removeOverlay();
@@ -59,6 +79,11 @@ private:
     /// Monotonic, never reused: the viewport reports drags by id, and a
     /// recycled id would move the wrong overlay after a delete.
     int nextId_ = 1;
+
+    /// Set while a film is driving which overlays are visible; see
+    /// setFilmOverlayFilter().
+    bool filmFilterActive_ = false;
+    std::vector<int> filmFilterIds_;
 
     QListWidget* list_ = nullptr;
     QPushButton* addButton_ = nullptr;

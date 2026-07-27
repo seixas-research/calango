@@ -136,9 +136,4 @@ std::string PythonEngine::executable() const
     return py::module_::import("sys").attr("executable").cast<std::string>();
 }
 
-void PythonEngine::addSysPath(const std::string& directory)
-{
-    py::module_::import("sys").attr("path").attr("append")(directory);
-}
-
 } // namespace calango::pybridge

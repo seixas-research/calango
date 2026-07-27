@@ -56,12 +56,10 @@ public:
     void refreshStructure();
 
     const std::set<int>& selection() const { return selection_; }
-    void clearSelection();
 
     std::shared_ptr<const core::Structure> structure() const { return structure_; }
 
     void setShowCell(bool show);
-    void setRepresentation(render::RepresentationMode mode);
 
     // -- Scalar color mapping ----------------------------------------------
 
@@ -144,10 +142,18 @@ public:
     /// annotation is the wanted behaviour anyway.
     struct TextOverlay {
         int id = 0;              ///< matches the dock's list entry
-        QString text;
+        QString text;            ///< may contain newlines
         core::Vec3 position;     ///< world anchor (Å)
         QFont font;
         QColor color{255, 255, 255};
+        /// Plate drawn behind the glyphs, and its alpha in [0, 1]. At 0 the
+        /// plate is skipped entirely rather than drawn transparent, so a label
+        /// can float directly on the structure.
+        QColor backgroundColor{20, 22, 26};
+        double backgroundOpacity = 0.6;
+        /// Scales glyph AND plate alpha together, so one control fades the
+        /// annotation as a unit.
+        double opacity = 1.0;
         bool visible = true;
     };
     /// Replace the whole set of text overlays.

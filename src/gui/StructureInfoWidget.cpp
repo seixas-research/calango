@@ -1,8 +1,10 @@
 #include "gui/StructureInfoWidget.hpp"
 
 #include "core/Structure.hpp"
+#include "ui/IconManager.hpp"
 
 #include <QFormLayout>
+#include <QHBoxLayout>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -31,7 +33,11 @@ double vectorAngleDeg(const core::Vec3& a, const core::Vec3& b)
 
 StructureInfoWidget::StructureInfoWidget(QWidget* parent)
     : QWidget(parent)
-    , editButton_(new QPushButton(tr("Edit Structure…"), this))
+    , editButton_(new QPushButton(this))
+    , centerButton_(new QPushButton(this))
+    , vacuumButton_(new QPushButton(this))
+    , wrapButton_(new QPushButton(this))
+    , supercellButton_(new QPushButton(this))
     , formulaLabel_(new QLabel(this))
     , atomCountLabel_(new QLabel(this))
     , bondCountLabel_(new QLabel(this))
@@ -50,18 +56,59 @@ StructureInfoWidget::StructureInfoWidget(QWidget* parent)
     // Inset the property block (Formula … Periodic) from the dock edge. With
     // zero margins the label column sits flush against the window frame, which
     // reads as clipped text rather than as a deliberate flush-left layout.
-    // Applied to the form alone so the "Edit Structure…" button below keeps
-    // spanning the panel's full width.
+    // Applied to the form alone so the action row below spans the panel's
+    // full width.
     form->setContentsMargins(kFormSideMargin, 0, kFormSideMargin, 0);
     outer->addLayout(form);
-    editButton_->setToolTip(
-        tr("Edit lattice parameters, lattice vectors and atomic positions; "
-           "center the structure or add a vacuum layer."));
-    editButton_->setEnabled(false);
+
+    // The structure-modification row. Centring, vacuum padding and wrapping
+    // used to be buttons INSIDE the Edit Structure dialog, acting on its
+    // working copy; the supercell builder was a Build-menu entry. All four are
+    // one-click whole-structure transforms, so they belong together, on the
+    // panel that already shows what they change.
+    auto* actionRow = new QHBoxLayout;
+    actionRow->setSpacing(4);
+    const auto makeAction = [actionRow](QPushButton* button,
+                                        const QString& icon,
+                                        const QString& tip) {
+        ui::IconManager::bind(button, icon);
+        button->setIconSize(QSize(20, 20));
+        button->setToolTip(tip);
+        button->setFocusPolicy(Qt::NoFocus);
+        button->setEnabled(false);
+        actionRow->addWidget(button);
+    };
+    makeAction(editButton_, QStringLiteral("edit-box-fill"),
+               tr("Edit Structure… — lattice parameters, lattice vectors and "
+                  "atomic positions."));
+    makeAction(centerButton_, QStringLiteral("align-item-vertical-center-line"),
+               tr("Center Structure — translate every atom so the centroid "
+                  "sits at the center of the cell."));
+    makeAction(vacuumButton_, QStringLiteral("expand-height-line"),
+               tr("Add vacuum… — extend the cell along chosen lattice "
+                  "directions and re-center the atoms in the enlarged cell."));
+    makeAction(wrapButton_, QStringLiteral("contract-left-right-line"),
+               tr("Wrap within the unit cell — translate atoms by whole "
+                  "lattice vectors until they lie inside the cell. Acts on the "
+                  "viewport selection, or on every atom when nothing is "
+                  "selected."));
+    makeAction(supercellButton_, QStringLiteral("grid-line"),
+               tr("Supercell… — build a supercell from a repetition or "
+                  "transformation matrix."));
+    actionRow->addStretch(1);
+    outer->addLayout(actionRow);
+    outer->addStretch(1);
+
     connect(editButton_, &QPushButton::clicked,
             this, &StructureInfoWidget::editStructureRequested);
-    outer->addWidget(editButton_);
-    outer->addStretch(1);
+    connect(centerButton_, &QPushButton::clicked,
+            this, &StructureInfoWidget::centerStructureRequested);
+    connect(vacuumButton_, &QPushButton::clicked,
+            this, &StructureInfoWidget::addVacuumRequested);
+    connect(wrapButton_, &QPushButton::clicked,
+            this, &StructureInfoWidget::wrapIntoCellRequested);
+    connect(supercellButton_, &QPushButton::clicked,
+            this, &StructureInfoWidget::supercellRequested);
 
     QFormLayout* layout = form;
     layout->addRow(tr("Formula:"), formulaLabel_);
@@ -76,10 +123,25 @@ StructureInfoWidget::StructureInfoWidget(QWidget* parent)
     updateFromStructure(nullptr);
 }
 
+void StructureInfoWidget::updateActionsEnabled()
+{
+    const bool hasAtoms = structure_ != nullptr && !structure_->empty();
+    // Three of the four are defined against a lattice: centring needs a cell
+    // centre to move to, vacuum needs a cell to extend, wrapping needs
+    // boundaries to wrap into, and a supercell needs vectors to repeat.
+    // Offering them on an isolated molecule would only produce a message box.
+    const bool hasCell = hasAtoms && structure_->cell().isDefined();
+    editButton_->setEnabled(hasAtoms);
+    centerButton_->setEnabled(hasCell);
+    vacuumButton_->setEnabled(hasCell);
+    wrapButton_->setEnabled(hasCell);
+    supercellButton_->setEnabled(hasCell);
+}
+
 void StructureInfoWidget::updateFromStructure(const core::Structure* structure)
 {
     structure_ = structure;
-    editButton_->setEnabled(structure != nullptr && !structure->empty());
+    updateActionsEnabled();
 
     if (!structure || structure->empty()) {
         for (QLabel* label : {formulaLabel_, atomCountLabel_, bondCountLabel_,

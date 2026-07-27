@@ -32,16 +32,6 @@ RemoteClient::RemoteClient(QString pythonExe, QObject* parent)
 {
 }
 
-bool RemoteClient::isBusy() const
-{
-    return opProcess_ != nullptr;
-}
-
-bool RemoteClient::isMonitoring() const
-{
-    return monitorProcess_ != nullptr;
-}
-
 QString RemoteClient::ensureHelperScript()
 {
     if (!helperPath_.isEmpty() && QFile::exists(helperPath_))

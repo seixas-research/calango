@@ -2,9 +2,11 @@
 
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QHBoxLayout>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
-#include <QLineEdit>
+#include <QLabel>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QWidget>
 
@@ -30,12 +32,20 @@ void GpawElectronicRows::buildConvergenceRows(QFormLayout* form,
     // Order mirrors core::SmearingMethod.
     smearingCombo_->addItems({tr("None (fixed occupations)"), tr("Gaussian"),
                               tr("Fermi-Dirac"), tr("Methfessel-Paxton")});
+    // Fermi-Dirac by default: it is the physical occupation function at an
+    // electronic temperature, it is what GPAW's own default resolves to, and
+    // unlike Gaussian it converges to a free energy that the reported total
+    // energy is actually consistent with.
     smearingCombo_->setCurrentIndex(
-        static_cast<int>(core::SmearingMethod::Gaussian));
+        static_cast<int>(core::SmearingMethod::FermiDirac));
     smearingCombo_->setToolTip(
         tr("Occupation-number broadening. Use smearing for metals; None for "
            "insulators and isolated molecules."));
-    form->addRow(tr("Smearing method:"), smearingCombo_);
+    // Half width: the entries are short ("Fermi-Dirac", "Gaussian") and the
+    // combo was stretching to fill the row, pushing the width spin box that
+    // belongs beside it out to the margin.
+    smearingCombo_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    smearingCombo_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     QObject::connect(smearingCombo_, &QComboBox::currentIndexChanged, owner,
                      [this] { updateEnabled(); });
 
@@ -47,7 +57,19 @@ void GpawElectronicRows::buildConvergenceRows(QFormLayout* form,
     smearingWidthSpin_->setSuffix(tr(" eV"));
     smearingWidthSpin_->setToolTip(
         tr("Broadening width σ (electronic temperature) for the smearing."));
-    form->addRow(tr("Smearing width σ:"), smearingWidthSpin_);
+
+    // Method and width are one decision — a smearing without its width is
+    // half an answer — so they share a row instead of stacking two.
+    auto* smearingRow = new QWidget(parent);
+    auto* smearingLayout = new QHBoxLayout(smearingRow);
+    smearingLayout->setContentsMargins(0, 0, 0, 0);
+    // Stretch factor 1 on the trailing spacer rather than on the combo, so the
+    // combo keeps its content width instead of absorbing the whole row.
+    smearingLayout->addWidget(smearingCombo_);
+    smearingLayout->addWidget(new QLabel(tr("width σ"), smearingRow));
+    smearingLayout->addWidget(smearingWidthSpin_);
+    smearingLayout->addStretch(1);
+    form->addRow(tr("Smearing method:"), smearingRow);
 
     scfTolSpin_ = new QDoubleSpinBox(parent);
     scfTolSpin_->setDecimals(8);
@@ -56,14 +78,23 @@ void GpawElectronicRows::buildConvergenceRows(QFormLayout* form,
     scfTolSpin_->setSuffix(tr(" eV"));
     scfTolSpin_->setToolTip(
         tr("Electronic-energy convergence threshold for the SCF cycle."));
-    form->addRow(tr("Energy convergence:"), scfTolSpin_);
+    // NOT added to this form: the base class places it on the "Convergence
+    // tolerances" row beside the eigenstates and density thresholds, which are
+    // the two it is converged together with. Parented here so it is owned
+    // either way.
 
     scfStepsSpin_ = new QSpinBox(parent);
     scfStepsSpin_->setRange(1, 100000);
-    scfStepsSpin_->setValue(100);
+    // 500 rather than 100: a magnetic or metallic system routinely needs a few
+    // hundred iterations, and a cap that stops a converging SCF costs the whole
+    // run while saving nothing — the convergence criteria are what end it.
+    scfStepsSpin_->setValue(500);
     scfStepsSpin_->setToolTip(
-        tr("Maximum number of self-consistent-field iterations."));
-    form->addRow(tr("Max electronic (SCF) steps:"), scfStepsSpin_);
+        tr("Maximum number of self-consistent-field iterations. This is a "
+           "runaway guard, not a target: the convergence thresholds are what "
+           "normally end the cycle."));
+    // Also placed by the base class, beside the eigensolver: how the SCF is
+    // solved and how long it is allowed to try are one thought.
 
     updateEnabled();
 }
@@ -87,33 +118,48 @@ void GpawElectronicRows::buildSpinRows(QFormLayout* form, QObject* owner)
     QObject::connect(spinModeCombo_, &QComboBox::currentIndexChanged, owner,
                      [this] { updateEnabled(); });
 
-    magMomentEdit_ = new QLineEdit(parent);
-    magMomentEdit_->setPlaceholderText(QStringLiteral("e.g. 2.2, -2.2, 0, 0"));
-    magMomentEdit_->setText(QStringLiteral("1.0"));
-    magMomentEdit_->setToolTip(
-        tr("Explicit initial magnetic moments (μB) per atom, comma- or "
-           "space-separated and in atom order.\nIf fewer values than atoms are "
-           "given, the rest are padded with 0.0 automatically; a single value "
-           "seeds only the first atom (others 0)."));
-    form->addRow(tr("Initial magnetic moments:"), magMomentEdit_);
+    // The per-atom initial moments used to be typed here as a comma-separated
+    // list. They are not: they are a property OF THE STRUCTURE, they are set
+    // per atom in Edit Structure (which knows which atom is which), and they
+    // travel with the staged structure file. A second copy in a text box was a
+    // second source of truth that silently won — a user who set moments on the
+    // right atoms in the editor got the box's "1.0" instead.
+    momentsNote_ = new QLabel(
+        tr("<i>Taken from the structure. Set them per atom in "
+           "<b>Edit Structure…</b> → Spin polarization; they travel with the "
+           "staged geometry as its initial magnetic moments.</i>"),
+        parent);
+    momentsNote_->setWordWrap(true);
+    momentsNote_->setTextFormat(Qt::RichText);
+    form->addRow(tr("Initial magnetic moments:"), momentsNote_);
 
     updateEnabled();
 }
 
 void GpawElectronicRows::updateEnabled()
 {
-    // Magnetic moments are only meaningful when spin is enabled (collinear or
+    // The moments note is only meaningful when spin is enabled (collinear or
     // non-collinear, i.e. any mode past Unpolarized).
     const bool spin = spinModeCombo_
         && spinModeCombo_->currentIndex()
             != static_cast<int>(core::SpinMode::Unpolarized);
-    if (magMomentEdit_)
-        magMomentEdit_->setEnabled(spin);
+    if (momentsNote_)
+        momentsNote_->setEnabled(spin);
     const bool smeared = smearingCombo_
         && smearingCombo_->currentIndex()
             != static_cast<int>(core::SmearingMethod::None);
     if (smearingWidthSpin_)
         smearingWidthSpin_->setEnabled(smeared);
+}
+
+QWidget* GpawElectronicRows::energyToleranceWidget() const
+{
+    return scfTolSpin_;
+}
+
+QWidget* GpawElectronicRows::scfStepsWidget() const
+{
+    return scfStepsSpin_;
 }
 
 void GpawElectronicRows::applyTo(core::CalculatorConfig& config) const
@@ -128,9 +174,8 @@ void GpawElectronicRows::applyTo(core::CalculatorConfig& config) const
         // Keep the boolean in sync for the many callers that only read it.
         config.spinPolarized = config.spinMode != core::SpinMode::Unpolarized;
     }
-    if (magMomentEdit_)
-        config.initialMagMomentsCsv =
-            magMomentEdit_->text().trimmed().toStdString();
+    // No moments are written here: they live on the structure now and reach the
+    // run through the staged geometry file.
     if (smearingCombo_)
         config.smearing =
             static_cast<core::SmearingMethod>(smearingCombo_->currentIndex());

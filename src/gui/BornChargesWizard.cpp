@@ -1,5 +1,7 @@
 #include "gui/BornChargesWizard.hpp"
 
+#include "gui/GuiUtils.hpp"
+
 #include "core/Structure.hpp"
 
 #include <QCheckBox>
@@ -40,15 +42,7 @@ QString BornChargesWizard::settingsHeader() const
 
 QStringList BornChargesWizard::calculatorElements() const
 {
-    if (!structure_)
-        return {};
-    std::set<QString> symbols;
-    for (const core::Atom& atom : structure_->atoms())
-        symbols.insert(QString::fromLatin1(atom.symbol()));
-    QStringList result;
-    for (const QString& symbol : symbols)
-        result << symbol;
-    return result;
+    return structureElements(structure_.get());
 }
 
 QWidget* BornChargesWizard::buildSettingsPage()

@@ -27,6 +27,64 @@ per-document history up to 50 states deep.
 Deleting atoms re-indexes everything that referenced them --- bond
 overrides, bond orders and per-atom fields all follow correctly.
 
+\section{The Edit Structure dialog}
+\label{sec:editstructure}
+
+\menu{Edit Structure\dots} in the \ui{Structure} panel opens a two-section
+editor over a working copy: the unit cell above, and \ui{Atomic Positions \&
+Elements} below --- a table carrying both Cartesian ($x$, $y$, $z$) and
+fractional ($u$, $v$, $w$) coordinates, where editing either updates the other.
+
+\subsection{Sorting}
+
+\ui{Sort by} reorders the atoms by element or by any coordinate, ascending or
+\ui{descending}.
+
+This \emph{renumbers} the atoms --- it permutes the structure itself, not just
+the view. That is normally the point: grouping by element is what VASP's
+POSCAR/POTCAR pairing wants, and sorting by $z$ gives a slab a layer-ordered
+index list you can select ranges from. Everything index-aligned travels with
+its atom: per-atom scalar and vector fields, magnetic moments, residue
+annotation, bond overrides and manual bond orders.
+
+The sort is stable, so atoms that tie on the key --- every atom of one element,
+every site in one layer --- keep their existing relative order rather than being
+reshuffled on each press.
+
+\subsection{Spin polarization}
+
+The \ui{Spin polarization} dropdown adds editable magnetic-moment columns to
+the table:
+
+\begin{description}
+  \item[\ui{Unpolarized}] No columns. This means \emph{no moments}, not
+    moments of zero --- an all-zero column would still switch a calculator into
+    spin-polarized mode and cost the run its speed for nothing.
+  \item[\ui{Collinear Spin-Polarized}] One signed \ui{m ($\mu_B$)} column. The
+    sign is what makes a seed antiferromagnetic rather than ferromagnetic,
+    which is why it is set per atom rather than as one number.
+  \item[\ui{Non-collinear Spin}] Three columns, \ui{mx}, \ui{my}, \ui{mz}.
+\end{description}
+
+What you type is stored as the structure's \emph{initial} magnetic moments. It
+travels with the geometry into every calculation --- the wizards no longer ask
+for a list of moments, they read these --- and it can be drawn in the viewport
+through \menu{Cell, Axes \& Vectors}\menusep\menu{Vectors}\menusep\ui{Vector
+overlay}\,$\rightarrow$\,\ui{Initial magnetic moments}.
+
+\begin{calnote}
+That overlay is deliberately separate from \ui{Magnetic moment}, which shows
+the moments a calculation \emph{produced}. A guess and a result are different
+claims, and drawing one as the other is how a seeded antiferromagnet gets
+reported as a converged one. The two even use different arrow colours.
+\end{calnote}
+
+The dialog opens on whatever mode the structure is already in, so a magnetic
+structure shows its moments instead of hiding them behind a dropdown you would
+have to know to change. The summary line reports the net moment alongside
+$\Sigma|m|$: a column of $2.2$ and a column of $\pm 2.2$ look nearly identical
+and mean opposite things.
+
 \section{The periodic table selector}
 
 Wherever an element must be chosen, Calango opens a graphical periodic

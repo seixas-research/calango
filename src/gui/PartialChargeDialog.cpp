@@ -61,7 +61,7 @@ PartialChargeDialog::PartialChargeDialog(std::shared_ptr<core::Structure> struct
                           static_cast<int>(Method::Hirshfeld));
     methodCombo_->setToolTip(
         tr("Bader: topological basins of the total electron density.\n"
-           "Voronoi: density integrated in each atom's nearest-neighbour cell.\n"
+           "Voronoi: density integrated in each atom's nearest-neighbor cell.\n"
            "Hirshfeld: stockholder partitioning against promolecule densities.\n"
            "All three run on the same standardized density grid."));
     form->addRow(tr("Partitioning scheme:"), methodCombo_);
@@ -83,7 +83,7 @@ PartialChargeDialog::PartialChargeDialog(std::shared_ptr<core::Structure> struct
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     layout->addWidget(table_, 1);
 
-    colorCheck_ = new QCheckBox(tr("Colour atoms in the 3D viewport by charge"), this);
+    colorCheck_ = new QCheckBox(tr("Color atoms in the 3D viewport by charge"), this);
     colorCheck_->setChecked(true);
     layout->addWidget(colorCheck_);
 
@@ -263,7 +263,7 @@ QString PartialChargeDialog::generateScript(Method method) const
         "pos = np.asarray(atoms.get_positions(), dtype=float)\n"
         "zval = atoms.get_atomic_numbers()\n"
         "rflat = rho.reshape(-1)\n"
-        "# GPAW real-space grid points sit at i/N along each axis (not centred);\n"
+        "# GPAW real-space grid points sit at i/N along each axis (not centered);\n"
         "# a half-cell offset would mis-assign points to the wrong atom.\n"
         "frac = np.stack(np.meshgrid(\n"
         "    *[np.arange(n) / float(n) for n in ng], indexing='ij'),\n"

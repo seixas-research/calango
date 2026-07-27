@@ -13,6 +13,7 @@ class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
 class QFormLayout;
+class QGridLayout;
 class QGroupBox;
 class QLabel;
 class QLineEdit;
@@ -77,6 +78,16 @@ public:
     };
     static std::optional<InheritedCalculator> readCalculatorProvenance(
         const QString& jobDir);
+
+    /// The configured VASP POTCAR directory (`VASP_PP_PATH`), persisted
+    /// globally.
+    ///
+    /// Static and global because it describes the INSTALLATION, not a job:
+    /// every VASP run on this machine wants the same datasets, and a per-dialog
+    /// copy would be one more place to set it and forget. Read by the wizards
+    /// and by the standalone dialogs (NEB) alike.
+    static QString vaspPotcarDirectory();
+    static void setVaspPotcarDirectory(const QString& path);
 
 protected:
     explicit SimulationWizardBase(QWidget* parent = nullptr);
@@ -203,11 +214,23 @@ protected:
     /// Default: no rows.
     virtual void buildConvergenceRows(QFormLayout*) {}
     virtual void buildSpinRows(QFormLayout*) {}
+    /// Controls the subclass creates but wants the BASE to position, because
+    /// where they belong is decided by the shared GPAW layout rather than by
+    /// the subclass: the SCF energy tolerance goes on the "Convergence
+    /// tolerances" row beside eigenstates/density, and the SCF step cap beside
+    /// the eigensolver. Null (the default) simply places nothing.
+    virtual QWidget* gpawEnergyToleranceWidget() { return nullptr; }
+    virtual QWidget* gpawScfStepsWidget() { return nullptr; }
     /// Whether the subclass added any rows via the hooks above — drives the
     /// visibility of the two groups for non-GPAW DFT engines (which otherwise
     /// have nothing to show there).
     virtual bool hasConvergenceExtras() const { return false; }
     virtual bool hasSpinExtras() const { return false; }
+
+    /// Whether this wizard's task moves the ions. Drives the VASP ionic
+    /// relaxation row (IBRION / ISIF / EDIFFG), which describes nothing for a
+    /// single point.
+    virtual bool taskHasIonicSteps() const { return false; }
 
     /// Fired when the DFT k-point grid changes, so a subclass can rescale a
     /// derived mesh default (e.g. the PDOS k-mesh at 2× the SCF grid).
@@ -235,15 +258,29 @@ protected Q_SLOTS:
     /// baseCalculatorConfig(), so there is one owner of the state either way.
     void editHubbardParameters();
 
-private Q_SLOTS:
-    void goNext();
+    /// Advance / retreat one stage. Protected rather than private so a wizard
+    /// can put its own button on a page ("Run simulation" on the Random Noise
+    /// stage) and have it mean the same thing as Next — two controls that move
+    /// the flow must not be two implementations of moving it.
+    ///
+    /// goNext() is virtual so a wizard can make leaving a stage do something
+    /// first (Random Noise generates its ensemble if the user pressed Next
+    /// instead of the button). An override must call the base implementation.
+    virtual void goNext();
     void goBack();
+
+private Q_SLOTS:
     void exportScript();
     void updateCalculatorEnabled();
 
 private:
     QWidget* buildCalculatorPage();
     QWidget* buildMaceGroup(QWidget* parent);
+    /// The "VASP settings" group — the primary INCAR tags plus the POTCAR
+    /// directory. Shown only when VASP is the selected engine.
+    QWidget* buildVaspGroup(QWidget* parent);
+    /// Show the ionic-relaxation row only for the tasks that have ionic steps.
+    void updateVaspRows();
     /// The "LAMMPS settings" group — interface, pair style, coefficients,
     /// potential files and the executable. LAMMPS is the only engine here that
     /// brings no force field of its own, so it needs the most configuration.
@@ -383,6 +420,10 @@ private:
     /// when showsGpawDensityExport() is true (Single-Point).
     QCheckBox* gpawDensityExportCheck_ = nullptr;
     QComboBox* gpawDensityTypeCombo_ = nullptr;
+    /// The six selectable volumetric fields, in the order they are laid out
+    /// (two columns) and in the order core::GpawDensityExports declares them.
+    static constexpr int kDensityFieldCount = 6;
+    QCheckBox* densityFieldChecks_[kDensityFieldCount] = {};
     // LAMMPS. The engine supplies no force field of its own, so the pair style
     // and its coefficients ARE the physics and every one of these feeds the
     // generated script.
@@ -394,6 +435,30 @@ private:
     QPlainTextEdit* lammpsExtraEdit_ = nullptr;      ///< one command per line
     QLineEdit* lammpsCommandEdit_ = nullptr;         ///< `lmp` (Run only)
     QCheckBox* lammpsLogCheck_ = nullptr;
+
+    // -- VASP ---------------------------------------------------------------
+    // In the shared base rather than in one wizard, so every wizard built on
+    // it that offers VASP gets the same INCAR controls without a second copy
+    // to keep in step.
+    QGroupBox* vaspGroup_ = nullptr;
+    QLineEdit* vaspPotcarEdit_ = nullptr;
+    QComboBox* vaspXcCombo_ = nullptr;
+    QComboBox* vaspPrecCombo_ = nullptr;
+    QComboBox* vaspAlgoCombo_ = nullptr;
+    QSpinBox* vaspNelmSpin_ = nullptr;
+    QLineEdit* vaspEdiffEdit_ = nullptr;
+    QComboBox* vaspLrealCombo_ = nullptr;
+    QComboBox* vaspIbrionCombo_ = nullptr;
+    QComboBox* vaspIsifCombo_ = nullptr;
+    QDoubleSpinBox* vaspEdiffgSpin_ = nullptr;
+    QWidget* vaspIonicRow_ = nullptr;
+    QCheckBox* vaspLwaveCheck_ = nullptr;
+    QCheckBox* vaspLchargCheck_ = nullptr;
+    QCheckBox* vaspLaechgCheck_ = nullptr;
+    QCheckBox* vaspLorbitCheck_ = nullptr;
+    QSpinBox* vaspNcoreSpin_ = nullptr;
+    QSpinBox* vaspKparSpin_ = nullptr;
+    QPlainTextEdit* vaspExtraIncarEdit_ = nullptr;
 
     QGroupBox* orcaGroup_ = nullptr;
     QComboBox* orcaMethodCombo_ = nullptr;

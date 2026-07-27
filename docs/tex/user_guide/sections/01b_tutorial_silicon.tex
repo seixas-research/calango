@@ -97,7 +97,8 @@ Use the same calculator settings as Step 2, but raise the k-grid to
 
 \begin{calnote}
 This file is the \emph{baseline} that the later analysis workflows inherit.
-Electronic Structure, Optics, ELF, MLWF and GW all load a completed ground
+Electronic Structure, Optics, MLWF, GW and the charge density difference all
+load a completed ground
 state and evaluate at fixed density rather than re-converging their own. That
 is deliberate: a spectrum computed from a silently different SCF solution than
 the one you inspected is not attributable to anything. It also means those
@@ -213,8 +214,14 @@ the ground state:
   \item \menu{Simulation}\menusep\menu{Optics\dots} --- the dielectric function
     $\varepsilon(\omega)$ and the absorption, reflectivity, refractive-index
     and loss spectra derived from it.
-  \item \menu{Simulation}\menusep\menu{Electron Localization Function (ELF)\dots}
-    --- the covalent bond charge between neighbours, as an isosurface.
+  \item The \ui{ELF} checkbox under \ui{Density Exports} in the single-point
+    setup --- the covalent bond charge between neighbours, written as
+    \file{elf.cube} by the same SCF and rendered as an isosurface in the
+    \ui{Volumetric Data} dock. There is no separate ELF module: the field
+    comes out of the ground state you already have.
+  \item \menu{Analysis}\menusep\menu{Charge Density Difference (CDD)\dots} ---
+    $\Delta\rho = \rho_{A+B} - \rho_A - \rho_B$ between two fragments of the
+    same run, showing where the charge went when they were put together.
   \item \menu{Simulation}\menusep\menu{Maximally Localized Wannier Functions
     (MLWF)\dots} --- the four $sp^3$ bond orbitals of the diamond lattice.
   \item \menu{Analysis}\menusep\menu{Raman Modes\dots} --- the factor-group

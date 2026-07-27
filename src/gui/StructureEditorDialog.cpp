@@ -16,12 +16,14 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QStandardItemModel>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <numeric>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -32,13 +34,29 @@ namespace calango::gui {
 
 namespace {
 
-/// Atom-table columns.
+/// Fixed atom-table columns. The magnetic-moment columns come after these and
+/// are added/removed with the spin mode, so they are not in the enum.
 enum AtomColumn {
     ColElement = 0,
     ColX, ColY, ColZ,
     ColU, ColV, ColW,
     AtomColumnCount,
 };
+
+/// Spin-polarization modes offered in the combo, in combo order. A local enum
+/// rather than core::SpinMode: the structure editor is about the structure, and
+/// pulling in the calculator configuration would make a geometry editor depend
+/// on what DFT codes call things. The orders are deliberately identical, and
+/// the moments themselves are what actually travel between the two.
+enum class SpinDisplayMode { Unpolarized, Collinear, NonCollinear };
+
+/// Sort keys offered in the "Sort by" combo, in combo order.
+enum class SortKey { Element, X, Y, Z, U, V, W };
+
+/// The name ASE (and therefore every generated script) reads initial moments
+/// from. Using ASE's own key is what makes the moments survive the round trip
+/// through the staged extxyz without any translation step.
+constexpr const char* kInitialMagmoms = "initial_magmoms";
 
 double degrees(double radians) { return radians * 180.0 / M_PI; }
 double radians(double deg) { return deg * M_PI / 180.0; }
@@ -201,19 +219,11 @@ void StructureEditorDialog::buildCellSection(QVBoxLayout* parent)
     }
     cellLayout->addWidget(vectorBox);
 
-    // Transformations. All five act on the whole structure in place, so they
-    // share one compact row rather than being split across two: the previous
-    // split implied a distinction (geometry vs. crystallography) that did not
-    // survive adding a translation, which is both.
+    // Transformations that need this dialog's own editing context. Centring,
+    // vacuum padding and wrapping moved to the Structure panel's action row —
+    // they are one-click whole-structure operations that want to be undoable
+    // through the document, not reverted only by cancelling this dialog.
     auto* actionRow = new QHBoxLayout;
-    centerButton_ = new QPushButton(tr("Center Structure"), cellPage);
-    centerButton_->setToolTip(
-        tr("Translate every atom so the structure's centroid sits at the "
-           "center of the cell."));
-    vacuumButton_ = new QPushButton(tr("Add vacuum…"), cellPage);
-    vacuumButton_->setToolTip(
-        tr("Extend the cell along chosen directions and re-center the atoms "
-           "in the enlarged cell."));
     standardizeButton_ = new QPushButton(tr("Standardize cell"), cellPage);
     standardizeButton_->setToolTip(
         tr("Convert lattice vectors and site positions to the standard "
@@ -226,15 +236,11 @@ void StructureEditorDialog::buildCellSection(QVBoxLayout* parent)
     translateButton_->setToolTip(
         tr("Shift every atom by a vector, in Å or in fractional cell "
            "coordinates."));
-    for (QPushButton* button : {centerButton_, vacuumButton_, standardizeButton_,
-                                primitiveButton_, translateButton_})
+    for (QPushButton* button : {standardizeButton_, primitiveButton_,
+                                translateButton_})
         actionRow->addWidget(button);
     actionRow->addStretch(1);
     cellLayout->addLayout(actionRow);
-    connect(centerButton_, &QPushButton::clicked,
-            this, &StructureEditorDialog::centerInUnitCell);
-    connect(vacuumButton_, &QPushButton::clicked,
-            this, &StructureEditorDialog::addVacuumLayer);
     connect(standardizeButton_, &QPushButton::clicked,
             this, &StructureEditorDialog::standardizeCell);
     connect(primitiveButton_, &QPushButton::clicked,
@@ -467,136 +473,7 @@ void StructureEditorDialog::translateAtoms()
     refreshSummary();
 }
 
-void StructureEditorDialog::centerInUnitCell()
-{
-    if (!hasCell() || working_->empty())
-        return;
 
-    const auto& vectors = working_->cell().vectors();
-    const core::Vec3 cellCenter = (vectors[0] + vectors[1] + vectors[2]) * 0.5;
-    const core::Vec3 shift = cellCenter - working_->centroid();
-    for (auto& atom : working_->atoms())
-        atom.position += shift;
-
-    refreshAtomTable();
-    refreshSummary();
-}
-
-void StructureEditorDialog::addVacuumLayer()
-{
-    if (!hasCell()) {
-        QMessageBox::information(
-            this, windowTitle(),
-            tr("Define a unit cell first — vacuum padding extends an existing "
-               "cell."));
-        return;
-    }
-
-    QDialog dialog(this);
-    dialog.setWindowTitle(tr("Add Vacuum Layer"));
-    auto* form = new QFormLayout(&dialog);
-
-    auto* amountSpin = new QDoubleSpinBox(&dialog);
-    amountSpin->setRange(0.0, 1000.0);
-    amountSpin->setDecimals(3);
-    amountSpin->setSingleStep(0.5);
-    amountSpin->setValue(10.0);
-    amountSpin->setSuffix(QStringLiteral(" Å"));
-    form->addRow(tr("Vacuum thickness:"), amountSpin);
-
-    auto* bothSidesCheck = new QCheckBox(tr("Split evenly on both sides"), &dialog);
-    bothSidesCheck->setChecked(true);
-    bothSidesCheck->setToolTip(
-        tr("On: the thickness above is the *total* added length, and the "
-           "structure ends up centered along that direction (the usual choice "
-           "for slabs and clusters).\n"
-           "Off: the full amount is added past the structure on the far side "
-           "only."));
-    form->addRow(QString(), bothSidesCheck);
-
-    // Per-direction: lattice directions rather than Cartesian axes, because
-    // vacuum has to grow along the cell vector to stay commensurate with a
-    // non-orthogonal cell. For an orthorhombic cell the two coincide.
-    std::array<QCheckBox*, 3> axisChecks{};
-    static const char* kAxisLabels[3] = {
-        QT_TR_NOOP("a (v1)"), QT_TR_NOOP("b (v2)"), QT_TR_NOOP("c (v3)")};
-    auto* axisRow = new QHBoxLayout;
-    for (int i = 0; i < 3; ++i) {
-        axisChecks[static_cast<std::size_t>(i)] =
-            new QCheckBox(tr(kAxisLabels[i]), &dialog);
-        axisRow->addWidget(axisChecks[static_cast<std::size_t>(i)]);
-    }
-    // +Z is the overwhelmingly common case (2D slabs); preselect it.
-    axisChecks[2]->setChecked(true);
-    form->addRow(tr("Along:"), axisRow);
-
-    auto* clearPbcCheck =
-        new QCheckBox(tr("Mark the padded directions non-periodic"), &dialog);
-    clearPbcCheck->setChecked(true);
-    clearPbcCheck->setToolTip(
-        tr("Vacuum is normally added precisely to decouple periodic images; "
-           "clearing pbc along those directions makes that explicit for the "
-           "calculators."));
-    form->addRow(QString(), clearPbcCheck);
-
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
-                                         &dialog);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    form->addRow(buttons);
-
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-
-    const double amount = amountSpin->value();
-    if (amount <= 0.0)
-        return;
-    if (!axisChecks[0]->isChecked() && !axisChecks[1]->isChecked()
-        && !axisChecks[2]->isChecked()) {
-        QMessageBox::information(this, windowTitle(),
-                                 tr("Select at least one direction."));
-        return;
-    }
-
-    auto vectors = working_->cell().vectors();
-    auto pbc = working_->cell().pbc();
-    for (int axis = 0; axis < 3; ++axis) {
-        if (!axisChecks[static_cast<std::size_t>(axis)]->isChecked())
-            continue;
-        const auto index = static_cast<std::size_t>(axis);
-        const double length = vectors[index].norm();
-        if (length < 1e-9)
-            continue;
-
-        const core::Vec3 unit = vectors[index] / length;
-        const double added = amount;
-        vectors[index] = unit * (length + added);
-        if (clearPbcCheck->isChecked())
-            pbc[index] = false;
-
-        if (bothSidesCheck->isChecked()) {
-            // Re-center along this direction: project the structure's extent
-            // onto the axis and shift so equal vacuum sits on either side.
-            double lo = std::numeric_limits<double>::max();
-            double hi = std::numeric_limits<double>::lowest();
-            for (const auto& atom : working_->atoms()) {
-                const double projection = atom.position.dot(unit);
-                lo = std::min(lo, projection);
-                hi = std::max(hi, projection);
-            }
-            if (lo <= hi) {
-                const double target = 0.5 * (length + added - (hi - lo));
-                const core::Vec3 shift = unit * (target - lo);
-                for (auto& atom : working_->atoms())
-                    atom.position += shift;
-            }
-        }
-    }
-
-    core::UnitCell cell(vectors[0], vectors[1], vectors[2], pbc);
-    working_->setCell(cell);
-    refreshAll();
-}
 
 void StructureEditorDialog::standardizeCell()
 {
@@ -650,6 +527,56 @@ void StructureEditorDialog::buildAtomSection(QVBoxLayout* parent)
     auto* group = new QGroupBox(tr("2 · Atomic Positions && Elements"), this);
     auto* layout = new QVBoxLayout(group);
 
+    // -- Sorting and spin ----------------------------------------------------
+    auto* optionRow = new QHBoxLayout;
+    optionRow->addWidget(new QLabel(tr("Sort by:"), group));
+    sortKeyCombo_ = new QComboBox(group);
+    // Order matches SortKey.
+    sortKeyCombo_->addItem(tr("Element"), static_cast<int>(SortKey::Element));
+    sortKeyCombo_->addItem(tr("x"), static_cast<int>(SortKey::X));
+    sortKeyCombo_->addItem(tr("y"), static_cast<int>(SortKey::Y));
+    sortKeyCombo_->addItem(tr("z"), static_cast<int>(SortKey::Z));
+    sortKeyCombo_->addItem(tr("u"), static_cast<int>(SortKey::U));
+    sortKeyCombo_->addItem(tr("v"), static_cast<int>(SortKey::V));
+    sortKeyCombo_->addItem(tr("w"), static_cast<int>(SortKey::W));
+    sortKeyCombo_->setToolTip(
+        tr("Sorting RENUMBERS the atoms — it reorders the structure itself, "
+           "not just this view.\n\n"
+           "That is usually the point: grouping by element is what VASP's "
+           "POSCAR/POTCAR pairing needs, and sorting by z gives a slab a "
+           "layer-ordered index list. Everything index-aligned (forces, "
+           "moments, bond orders, residues) moves with its atom."));
+    optionRow->addWidget(sortKeyCombo_);
+    sortDescendingCheck_ = new QCheckBox(tr("descending"), group);
+    optionRow->addWidget(sortDescendingCheck_);
+    auto* sortButton = new QPushButton(tr("Sort"), group);
+    optionRow->addWidget(sortButton);
+    optionRow->addSpacing(18);
+
+    optionRow->addWidget(new QLabel(tr("Spin polarization:"), group));
+    spinModeCombo_ = new QComboBox(group);
+    // Order matches core::SpinMode.
+    spinModeCombo_->addItem(tr("Unpolarized"));
+    spinModeCombo_->addItem(tr("Collinear Spin-Polarized"));
+    spinModeCombo_->addItem(tr("Non-collinear Spin"));
+    spinModeCombo_->setToolTip(
+        tr("Adds editable magnetic-moment columns to the table below.\n\n"
+           "Collinear gives one moment per atom (μB, signed — that sign is "
+           "what makes a seed antiferromagnetic rather than ferromagnetic); "
+           "non-collinear gives the full (mx, my, mz) vector.\n\n"
+           "What you type is stored as the structure's INITIAL magnetic "
+           "moments: it travels with the geometry into every calculation, and "
+           "can be drawn in the viewport through Representation → Vector "
+           "overlay → Initial magnetic moments."));
+    optionRow->addWidget(spinModeCombo_);
+    optionRow->addStretch(1);
+    layout->addLayout(optionRow);
+
+    connect(sortButton, &QPushButton::clicked, this,
+            &StructureEditorDialog::applySort);
+    connect(spinModeCombo_, &QComboBox::currentIndexChanged, this,
+            &StructureEditorDialog::onSpinModeChanged);
+
     atomTable_ = new QTableWidget(0, AtomColumnCount, group);
     atomTable_->setHorizontalHeaderLabels({tr("Element"), tr("x (Å)"), tr("y (Å)"),
                                            tr("z (Å)"), tr("u"), tr("v"), tr("w")});
@@ -665,16 +592,8 @@ void StructureEditorDialog::buildAtomSection(QVBoxLayout* parent)
     auto* buttonRow = new QHBoxLayout;
     auto* addButton = new QPushButton(tr("Add Atom"), group);
     auto* removeButton = new QPushButton(tr("Remove Selected"), group);
-    wrapButton_ = new QPushButton(tr("Wrap within the unit cell"), group);
     originButton_ = new QPushButton(tr("Set as origin"), group);
     auto* elementButton = new QPushButton(tr("Periodic Table…"), group);
-    wrapButton_->setToolTip(
-        tr("Translate the selected atoms by whole lattice vectors until their "
-           "fractional coordinates lie in [0, 1) — the same site, moved into "
-           "the cell that is drawn.\n\n"
-           "With no rows selected every atom is wrapped. Nothing about the "
-           "structure changes but the representative image chosen for each "
-           "site."));
     originButton_->setToolTip(
         tr("Put the selected atom at (0, 0, 0) and shift every other atom by "
            "the same vector, so the whole structure is re-expressed about that "
@@ -683,7 +602,6 @@ void StructureEditorDialog::buildAtomSection(QVBoxLayout* parent)
            "the chemistry are untouched. Select exactly one row."));
     buttonRow->addWidget(addButton);
     buttonRow->addWidget(removeButton);
-    buttonRow->addWidget(wrapButton_);
     buttonRow->addWidget(originButton_);
     buttonRow->addWidget(elementButton);
     buttonRow->addStretch(1);
@@ -717,8 +635,6 @@ void StructureEditorDialog::buildAtomSection(QVBoxLayout* parent)
         refreshAtomTable();
         refreshSummary();
     });
-    connect(wrapButton_, &QPushButton::clicked, this,
-            &StructureEditorDialog::wrapSelectedIntoCell);
     connect(originButton_, &QPushButton::clicked, this,
             &StructureEditorDialog::setSelectedAsOrigin);
     connect(elementButton, &QPushButton::clicked, this, [this] {
@@ -744,64 +660,159 @@ void StructureEditorDialog::buildAtomSection(QVBoxLayout* parent)
     parent->addWidget(group, 1);
 }
 
-void StructureEditorDialog::wrapSelectedIntoCell()
+
+int StructureEditorDialog::momentColumnCount() const
 {
-    if (!hasCell()) {
-        QMessageBox::information(
-            this, windowTitle(),
-            tr("Define a unit cell first — without a lattice there are no cell "
-               "boundaries to wrap into."));
+    if (!spinModeCombo_)
+        return 0;
+    switch (static_cast<SpinDisplayMode>(spinModeCombo_->currentIndex())) {
+    case SpinDisplayMode::Collinear:
+        return 1;
+    case SpinDisplayMode::NonCollinear:
+        return 3;
+    case SpinDisplayMode::Unpolarized:
+        break;
+    }
+    return 0;
+}
+
+std::vector<core::Vec3> StructureEditorDialog::momentsFromStructure() const
+{
+    std::vector<core::Vec3> moments(working_->size(), core::Vec3{0, 0, 0});
+    // Vector first: a non-collinear structure has only the (N,3) form, and a
+    // collinear one carries both (the vector copy exists so the viewport
+    // overlay has a direction to draw).
+    const auto vectors = working_->vectorFields().find(kInitialMagmoms);
+    if (vectors != working_->vectorFields().end()
+        && vectors->second.size() == moments.size())
+        return vectors->second;
+    const auto scalars = working_->scalarFields().find(kInitialMagmoms);
+    if (scalars != working_->scalarFields().end()
+        && scalars->second.size() == moments.size()) {
+        for (std::size_t i = 0; i < moments.size(); ++i)
+            moments[i] = {0.0, 0.0, scalars->second[i]};
+    }
+    return moments;
+}
+
+void StructureEditorDialog::writeMomentsToStructure()
+{
+    const int columns = momentColumnCount();
+    const auto n = working_->size();
+
+    if (columns == 0) {
+        // Unpolarized means "no moments", not "moments of zero": an all-zero
+        // initial_magmoms column would still switch a calculator into
+        // spin-polarized mode and cost the run its speed for nothing.
+        working_->setScalarField(kInitialMagmoms, {});
+        working_->setVectorField(kInitialMagmoms, {});
         return;
     }
 
-    // No selection means "all atoms": wrapping a whole imported structure back
-    // into its cell is the common case, and demanding a select-all first would
-    // be busywork. The tooltip says so.
-    std::vector<std::size_t> rows;
-    for (const QModelIndex& index : atomTable_->selectionModel()->selectedRows())
-        rows.push_back(static_cast<std::size_t>(index.row()));
-    if (rows.empty()) {
-        rows.resize(working_->size());
-        std::iota(rows.begin(), rows.end(), std::size_t{0});
+    std::vector<core::Vec3> vectors(n, core::Vec3{0, 0, 0});
+    std::vector<double> scalars(n, 0.0);
+    for (std::size_t row = 0; row < n; ++row) {
+        const auto readCell = [&](int column) {
+            const QTableWidgetItem* item =
+                atomTable_->item(static_cast<int>(row), column);
+            if (!item)
+                return 0.0;
+            bool ok = false;
+            const double value = item->text().trimmed().toDouble(&ok);
+            return ok ? value : 0.0;
+        };
+        if (columns == 1) {
+            scalars[row] = readCell(kFirstMomentColumn);
+            // Promoted to (0, 0, m) so the viewport's vector overlay has a
+            // direction: a collinear calculation quantizes along z by
+            // convention, and up/down then read as opposite arrows.
+            vectors[row] = {0.0, 0.0, scalars[row]};
+        } else {
+            vectors[row] = {readCell(kFirstMomentColumn),
+                            readCell(kFirstMomentColumn + 1),
+                            readCell(kFirstMomentColumn + 2)};
+        }
     }
 
-    const core::UnitCell& cell = working_->cell();
-    // Only the PERIODIC axes wrap: folding a slab's vacuum direction back into
-    // the box would push atoms through the vacuum they were placed in. A cell
-    // with no periodic axis at all is a plain bounding box, and there the
-    // drawn boundaries are exactly what "within the unit cell" means, so all
-    // three wrap.
-    const std::array<bool, 3> pbc = cell.pbc();
-    const bool anyPeriodic = pbc[0] || pbc[1] || pbc[2];
-    int moved = 0;
-    for (const std::size_t row : rows) {
-        if (row >= working_->size())
-            continue;
-        core::Atom& atom = working_->atoms()[row];
-        core::Vec3 fractional = cell.cartesianToFractional(atom.position);
-        double* components[3] = {&fractional.x, &fractional.y, &fractional.z};
-        bool changed = false;
-        for (int axis = 0; axis < 3; ++axis) {
-            if (anyPeriodic && !pbc[static_cast<std::size_t>(axis)])
-                continue;
-            const double wrapped = *components[axis] - std::floor(*components[axis]);
-            if (std::abs(wrapped - *components[axis]) > 1e-12) {
-                *components[axis] = wrapped;
-                changed = true;
-            }
-        }
-        if (!changed)
-            continue;
-        atom.position = cell.fractionalToCartesian(fractional);
-        ++moved;
+    // Collinear stores BOTH: the scalar is the real datum (and the one written
+    // as `initial_magmoms:R:1`, which is what ASE reads back), the vector is
+    // the display promotion. Non-collinear has only the vector — writing a
+    // scalar too would let the export path mistake it for a collinear run.
+    working_->setScalarField(kInitialMagmoms,
+                             columns == 1 ? scalars : std::vector<double>{});
+    working_->setVectorField(kInitialMagmoms, std::move(vectors));
+}
+
+void StructureEditorDialog::onSpinModeChanged()
+{
+    if (updating_)
+        return;
+    // Read what is currently in the table BEFORE the columns change, so
+    // switching collinear -> non-collinear keeps the moments already typed
+    // (as the z component) instead of discarding them.
+    writeMomentsToStructure();
+    refreshAtomTable();
+    refreshSummary();
+}
+
+void StructureEditorDialog::applySort()
+{
+    const auto n = working_->size();
+    if (n < 2)
+        return;
+    const auto key = static_cast<SortKey>(sortKeyCombo_->currentData().toInt());
+    const bool fractional = key == SortKey::U || key == SortKey::V
+        || key == SortKey::W;
+    if (fractional && !hasCell()) {
+        summaryLabel_->setStyleSheet(QStringLiteral("color: #d9534f;"));
+        summaryLabel_->setText(
+            tr("Fractional coordinates need a unit cell — sort by x, y, z or "
+               "element instead."));
+        return;
     }
+
+    // Whatever is typed in the moment cells is part of the structure, so it
+    // has to be committed before the permutation moves the rows.
+    writeMomentsToStructure();
+
+    const auto sortValue = [&](std::size_t index) {
+        const core::Atom& atom = working_->atoms()[index];
+        const core::Vec3 p = fractional
+            ? working_->cell().cartesianToFractional(atom.position)
+            : atom.position;
+        switch (key) {
+        case SortKey::Element:
+            return static_cast<double>(atom.atomicNumber);
+        case SortKey::X:
+        case SortKey::U:
+            return p.x;
+        case SortKey::Y:
+        case SortKey::V:
+            return p.y;
+        case SortKey::Z:
+        case SortKey::W:
+            return p.z;
+        }
+        return 0.0;
+    };
+
+    std::vector<std::size_t> order(n);
+    std::iota(order.begin(), order.end(), std::size_t{0});
+    // Stable, so atoms that tie on the key (every atom of one element, all
+    // sites in one layer) keep their existing relative order rather than being
+    // shuffled arbitrarily on each sort.
+    std::stable_sort(order.begin(), order.end(),
+                     [&](std::size_t a, std::size_t b) {
+                         const double va = sortValue(a);
+                         const double vb = sortValue(b);
+                         return sortDescendingCheck_->isChecked() ? va > vb
+                                                                  : va < vb;
+                     });
+    working_->reorder(order);
 
     refreshAtomTable();
     refreshSummary();
-    if (moved == 0) {
-        summaryLabel_->setText(
-            tr("Every selected atom already lies inside the unit cell."));
-    }
+    summaryLabel_->setStyleSheet(QString());
 }
 
 void StructureEditorDialog::setSelectedAsOrigin()
@@ -846,6 +857,19 @@ void StructureEditorDialog::onAtomCellChanged(int row, int column)
     if (!item)
         return;
     const QString text = item->text().trimmed();
+
+    if (column >= kFirstMomentColumn) {
+        // A moment edit needs no coordinate round trip; commit the whole
+        // moment set and leave the rest of the table alone, so the cursor does
+        // not jump out of the cell being typed in.
+        bool ok = false;
+        (void)text.toDouble(&ok);
+        if (!ok)
+            return;
+        writeMomentsToStructure();
+        refreshSummary();
+        return;
+    }
 
     if (column == ColElement) {
         const int z = core::Elements::atomicNumber(text.toStdString());
@@ -894,6 +918,25 @@ void StructureEditorDialog::onAtomCellChanged(int row, int column)
 
 void StructureEditorDialog::refreshAll()
 {
+    // Open on the mode the structure is already in, so a magnetic structure
+    // shows its moments rather than hiding them behind a combo the user has to
+    // know to change. The (N,3) form wins: a structure carrying both is
+    // collinear (the vector copy is this dialog's own display promotion), and
+    // only a vector WITHOUT a scalar is genuinely non-collinear.
+    if (spinModeCombo_ && spinModeCombo_->currentIndex() == 0) {
+        const bool hasScalar =
+            working_->scalarFields().count(kInitialMagmoms) > 0;
+        const bool hasVector =
+            working_->vectorFields().count(kInitialMagmoms) > 0;
+        const QSignalBlocker block(spinModeCombo_);
+        if (hasScalar)
+            spinModeCombo_->setCurrentIndex(
+                static_cast<int>(SpinDisplayMode::Collinear));
+        else if (hasVector)
+            spinModeCombo_->setCurrentIndex(
+                static_cast<int>(SpinDisplayMode::NonCollinear));
+    }
+
     updating_ = true;
     refreshCellWidgets();
     updating_ = false;
@@ -905,14 +948,10 @@ void StructureEditorDialog::refreshCellWidgets()
 {
     const bool defined = hasCell();
     cellStack_->setCurrentIndex(defined ? 1 : 0);
-    centerButton_->setEnabled(defined);
-    vacuumButton_->setEnabled(defined);
     if (standardizeButton_)
         standardizeButton_->setEnabled(defined);
     if (primitiveButton_)
         primitiveButton_->setEnabled(defined);
-    if (wrapButton_)
-        wrapButton_->setEnabled(defined);
     if (!defined)
         return;
 
@@ -943,6 +982,17 @@ void StructureEditorDialog::refreshAtomTable()
     // cellChanged fires for every setItem; suppress it or each refresh would
     // recurse back through onAtomCellChanged.
     updating_ = true;
+    const int momentColumns = momentColumnCount();
+    atomTable_->setColumnCount(AtomColumnCount + momentColumns);
+    QStringList headers = {tr("Element"), tr("x (Å)"),  tr("y (Å)"), tr("z (Å)"),
+                           tr("u"),       tr("v"),      tr("w")};
+    if (momentColumns == 1)
+        headers << tr("m (μB)");
+    else if (momentColumns == 3)
+        headers << tr("mx (μB)") << tr("my (μB)") << tr("mz (μB)");
+    atomTable_->setHorizontalHeaderLabels(headers);
+
+    const std::vector<core::Vec3> moments = momentsFromStructure();
     atomTable_->setRowCount(static_cast<int>(working_->size()));
     const bool defined = hasCell();
     for (int row = 0; row < static_cast<int>(working_->size()); ++row) {
@@ -969,6 +1019,19 @@ void StructureEditorDialog::refreshAtomTable()
                 atomTable_->setItem(row, column, item);
             }
         }
+
+        if (momentColumns > 0) {
+            const core::Vec3& m = moments[static_cast<std::size_t>(row)];
+            if (momentColumns == 1) {
+                atomTable_->setItem(row, kFirstMomentColumn, numberCell(m.z, 3));
+            } else {
+                atomTable_->setItem(row, kFirstMomentColumn, numberCell(m.x, 3));
+                atomTable_->setItem(row, kFirstMomentColumn + 1,
+                                    numberCell(m.y, 3));
+                atomTable_->setItem(row, kFirstMomentColumn + 2,
+                                    numberCell(m.z, 3));
+            }
+        }
     }
     updating_ = false;
 }
@@ -976,17 +1039,34 @@ void StructureEditorDialog::refreshAtomTable()
 void StructureEditorDialog::refreshSummary()
 {
     summaryLabel_->setStyleSheet(QString());
+    QString spinNote;
+    if (momentColumnCount() > 0) {
+        // The NET moment, because that is the number that says whether the
+        // seed is ferromagnetic or antiferromagnetic — a column of 2.2 and a
+        // column of ±2.2 look nearly identical and mean opposite things.
+        double net = 0.0;
+        double magnitude = 0.0;
+        for (const core::Vec3& m : momentsFromStructure()) {
+            net += m.z;
+            magnitude += m.norm();
+        }
+        spinNote = tr(" · net moment %1 μB (Σ|m| %2)")
+                       .arg(net, 0, 'f', 2)
+                       .arg(magnitude, 0, 'f', 2);
+    }
     if (hasCell()) {
-        summaryLabel_->setText(tr("%1 · %2 atoms · cell volume %3 Å³")
+        summaryLabel_->setText(tr("%1 · %2 atoms · cell volume %3 Å³%4")
                                    .arg(QString::fromStdString(
                                        working_->chemicalFormula()))
                                    .arg(working_->size())
-                                   .arg(working_->cell().volume(), 0, 'f', 3));
+                                   .arg(working_->cell().volume(), 0, 'f', 3)
+                                   .arg(spinNote));
     } else {
-        summaryLabel_->setText(tr("%1 · %2 atoms · no unit cell")
+        summaryLabel_->setText(tr("%1 · %2 atoms · no unit cell%3")
                                    .arg(QString::fromStdString(
                                        working_->chemicalFormula()))
-                                   .arg(working_->size()));
+                                   .arg(working_->size())
+                                   .arg(spinNote));
     }
 }
 

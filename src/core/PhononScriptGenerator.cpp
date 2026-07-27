@@ -197,7 +197,7 @@ void emitSymmetryReducedPhonons(std::ostringstream& out, const PhononConfig& c)
                "    The correction is a limit, not a value: at exactly q = 0 the\n"
                "    dipole field depends on which way you came in, so the LO\n"
                "    frequency at Gamma differs along different directions. That\n"
-               "    is the physics, not an artefact - and it is why phonopy\n"
+               "    is the physics, not an artifact - and it is why phonopy\n"
                "    needs a direction rather than just a q-point.\n"
                "    \"\"\"\n"
                "    for step in (1, -1):\n"

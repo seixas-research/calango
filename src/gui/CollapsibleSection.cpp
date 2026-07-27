@@ -67,9 +67,4 @@ void CollapsibleSection::setExpanded(bool expanded)
     animation_->start();
 }
 
-bool CollapsibleSection::isExpanded() const
-{
-    return toggle_->isChecked();
-}
-
 } // namespace calango::gui

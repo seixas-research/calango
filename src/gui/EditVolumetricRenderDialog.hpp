@@ -9,6 +9,7 @@
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
+class QGroupBox;
 class QPushButton;
 class QSlider;
 class QSpinBox;
@@ -17,16 +18,21 @@ class QStackedWidget;
 namespace calango::gui {
 
 /// "Edit Volumetric Render" — the styling window opened from the Volumetric
-/// Data panel's toolbar. A central "Render Mode" dropdown selects one of three
+/// Data panel's toolbar. A central "Render Mode" dropdown selects one of two
 /// configuration panels (shown via a QStackedWidget); the active mode drives
 /// what the viewport renders:
 ///   * Isosurfaces  — isovalue, opacity, specular, positive/negative phase
-///     colors, and a grid-interpolation scheme (no colormap: isosurfaces are
-///     uniform single-color / phase fills).
+///     colors, a grid-interpolation scheme, and an optional "Potential Map
+///     Color" group that paints the surface with a second scalar field
+///     (colormap, invert, explicit range).
 ///   * Color Slice  — plane orientation as Miller indices (h k l), offset
-///     along the plane normal, colormap (optionally inverted), transparency.
-///   * Potential Map — a base isosurface colored by a secondary scalar field
-///     (colormap + min/max ramp bounds).
+///     along the plane normal, how many unit cells it spans, colormap
+///     (optionally inverted), explicit range, transparency.
+///
+/// "Potential Map" was a third mode until it stopped being one: it is the same
+/// isosurface, extracted the same way at the same isovalue, differing only in
+/// what colours it — so it duplicated every isosurface control and made the
+/// user re-select a base field they had already chosen.
 ///
 /// Edits apply live: styleChanged(style, mode) fires as controls move and when
 /// the mode changes, so the viewport tracks the dialog immediately.
@@ -56,7 +62,6 @@ Q_SIGNALS:
 private:
     QWidget* buildIsosurfacePage();
     QWidget* buildColorSlicePage();
-    QWidget* buildPotentialPage();
     void emitChange();
     double isovalueFromSlider() const;
     void syncIsoSlider();
@@ -89,10 +94,12 @@ private:
     QDoubleSpinBox* sliceMaxSpin_ = nullptr;
     QComboBox* sliceInterpCombo_ = nullptr;
     QDoubleSpinBox* sliceOpacitySpin_ = nullptr;
+    QComboBox* sliceExtentCombo_ = nullptr;
+    QCheckBox* sliceBorderCheck_ = nullptr;
 
-    // Potential map
-    QComboBox* potentialBaseCombo_ = nullptr;
+    // Potential-map colouring (inside the Isosurfaces page)
     QComboBox* potentialSecondaryCombo_ = nullptr;
+    QCheckBox* potentialInvertCheck_ = nullptr;
     QComboBox* potentialGradientCombo_ = nullptr;
     QCheckBox* potentialBoundsCheck_ = nullptr;
     QDoubleSpinBox* potentialMinSpin_ = nullptr;

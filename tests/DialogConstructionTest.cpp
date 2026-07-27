@@ -22,6 +22,9 @@
 #include "gui/HubbardParametersDialog.hpp"
 #include "gui/OpticsPlotStyleDialog.hpp"
 #include "gui/OverlayEditDialog.hpp"
+#include "gui/CddWizard.hpp"
+#include "gui/EditVolumetricRenderDialog.hpp"
+#include "gui/RandomNoiseWizard.hpp"
 #include "gui/SinglePointWizard.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
@@ -31,7 +34,9 @@
 #include <QComboBox>
 #include <QGroupBox>
 #include <QDoubleSpinBox>
+#include <QListWidget>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QSpinBox>
 
 #include <algorithm>
@@ -232,6 +237,246 @@ int main(int argc, char** argv)
         }
     }
 
+    // The Random Noise wizard is the only four-stage flow built on the shared
+    // base (settings, calculator, second settings, review), and it generates
+    // its ensemble from a button on stage 1 rather than on OK — so both the
+    // stage assembly and the generate-then-run path are worth a construction
+    // check.
+    std::printf("Random Noise wizard:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        auto reference = std::make_shared<calango::core::Structure>();
+        reference->setCell(calango::core::UnitCell({4, 0, 0}, {0, 4, 0},
+                                                   {0, 0, 4}));
+        for (int i = 0; i < 4; ++i) {
+            calango::core::Atom atom;
+            atom.atomicNumber = 14;
+            atom.position = {i * 1.0, 0.5 * i, 0.25 * i};
+            reference->addAtom(atom);
+        }
+
+        RandomNoiseWizard wizard(reference);
+        check(true, "constructs");
+
+        int generated = 0;
+        QObject::connect(
+            &wizard, &RandomNoiseWizard::structuresGenerated,
+            [&generated](
+                const std::vector<std::shared_ptr<calango::core::Structure>>& f) {
+                generated = static_cast<int>(f.size());
+            });
+
+        // Find the generate button by text; pressing it must publish an
+        // ensemble whose first frame is the untouched reference.
+        const auto buttons = wizard.findChildren<QPushButton*>();
+        const auto generate = std::find_if(
+            buttons.begin(), buttons.end(), [](const QPushButton* button) {
+                return button->text().contains(QStringLiteral("Generate"));
+            });
+        check(generate != buttons.end(), "offers a Generate structures button");
+        if (generate != buttons.end()) {
+            (*generate)->click();
+            check(generated > 1, "generating publishes the ensemble");
+            check(static_cast<int>(wizard.frames().size()) == generated,
+                  "and keeps it");
+            if (!wizard.frames().empty()) {
+                const auto& first = wizard.frames().front()->atoms();
+                const auto& source = reference->atoms();
+                bool untouched = first.size() == source.size();
+                for (std::size_t i = 0; untouched && i < first.size(); ++i)
+                    untouched = (first[i].position - source[i].position).norm()
+                        < 1e-12;
+                check(untouched,
+                      "frame 0 is the unperturbed reference, so the spread has "
+                      "something to be measured against");
+            }
+            // A later frame must actually have moved, or the "ensemble" is a
+            // stack of identical structures and every statistic is zero.
+            if (wizard.frames().size() > 1) {
+                const auto& moved = wizard.frames().back()->atoms();
+                const auto& source = reference->atoms();
+                bool differs = false;
+                for (std::size_t i = 0; i < moved.size(); ++i)
+                    differs = differs
+                        || (moved[i].position - source[i].position).norm() > 1e-9;
+                check(differs, "and the other frames are actually displaced");
+            }
+        }
+        check(!wizard.script().isEmpty(),
+              "the review stage has a script to show");
+    }
+
+    // The plane-wave cutoff is only a parameter of the plane-wave basis. In FD
+    // the basis is the real-space grid and in LCAO the atomic orbital set, so
+    // the row has to go — and the check is worth automating because it was
+    // being set in two places, with the later one silently undoing the first.
+    std::printf("GPAW cutoff visibility:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        SinglePointWizard wizard;
+        wizard.show(); // isVisibleTo() needs the page realized
+
+        // The mode/basis group only shows for a DFT engine, so the engine has
+        // to be GPAW before any of this means anything.
+        auto* engine = wizard.findChild<QComboBox*>();
+        const int gpaw = engine
+            ? engine->findData(static_cast<int>(calango::core::CalculatorKind::Gpaw))
+            : -1;
+        check(gpaw >= 0, "GPAW is offered as an engine");
+        if (gpaw >= 0)
+            engine->setCurrentIndex(gpaw);
+
+        // Find the cutoff spin box by its suffix, and the GPAW mode combo by
+        // its entries.
+        const auto spins = wizard.findChildren<QDoubleSpinBox*>();
+        const auto cutoff = std::find_if(
+            spins.begin(), spins.end(), [](const QDoubleSpinBox* spin) {
+                return spin->suffix().contains(QStringLiteral("eV"))
+                    && spin->maximum() >= 2000.0;
+            });
+        const auto combos = wizard.findChildren<QComboBox*>();
+        // The combo order is core::GpawMode: FD, PW, LCAO.
+        const auto modeCombo = std::find_if(
+            combos.begin(), combos.end(), [](const QComboBox* combo) {
+                return combo->count() == 3
+                    && combo->itemText(0).startsWith(QStringLiteral("FD"))
+                    && combo->itemText(2).startsWith(QStringLiteral("LCAO"));
+            });
+        check(cutoff != spins.end(), "the cutoff spin box is present");
+        check(modeCombo != combos.end(), "and the GPAW mode combo");
+        if (cutoff != spins.end() && modeCombo != combos.end()) {
+            const int fd = static_cast<int>(calango::core::GpawMode::FiniteDifference);
+            const int pw = static_cast<int>(calango::core::GpawMode::PlaneWave);
+            const int lcao = static_cast<int>(calango::core::GpawMode::Lcao);
+            (*modeCombo)->setCurrentIndex(pw);
+            check((*cutoff)->isVisibleTo(&wizard),
+                  "shown in plane-wave mode, where it means something");
+            (*modeCombo)->setCurrentIndex(fd);
+            check(!(*cutoff)->isVisibleTo(&wizard),
+                  "hidden in FD, where the basis is the real-space grid");
+            (*modeCombo)->setCurrentIndex(lcao);
+            check(!(*cutoff)->isVisibleTo(&wizard),
+                  "and in LCAO, where it is the orbital set");
+            (*modeCombo)->setCurrentIndex(pw);
+            check((*cutoff)->isVisibleTo(&wizard), "and comes back");
+        }
+        wizard.hide();
+    }
+
+    // The CDD wizard's two columns ARE its input: the generated script names
+    // subsystem B by atom index, and an index taken from a row number rather
+    // than from the item's own data would silently difference the wrong atoms.
+    // Nothing about that fails loudly, so it is checked here.
+    std::printf("Charge Density Difference wizard:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        CddWizard wizard;
+        check(true, "constructs with no baselines");
+        check(wizard.baselineDirectory().isEmpty(),
+              "and reports no baseline directory");
+
+        // Both columns exist and start empty (no structure to partition).
+        const auto lists = wizard.findChildren<QListWidget*>();
+        check(lists.size() >= 2, "offers two subsystem columns");
+
+        // With no baseline the script must still be generatable rather than
+        // crashing — the review stage renders it on arrival.
+        check(!wizard.script().isEmpty(), "generates a script");
+        const QString script = wizard.script();
+        check(script.contains(QStringLiteral("subsystem_b = []")),
+              "an unpartitioned system yields an empty B");
+        check(script.contains(QStringLiteral("rho_ab - rho_a - rho_b")),
+              "and the difference it is named for");
+        check(script.contains(QStringLiteral("get_all_electron_density")),
+              "defaulting to the all-electron density");
+
+        // The density-type radio must actually reach the generator.
+        const auto radios = wizard.findChildren<QRadioButton*>();
+        const auto pseudo = std::find_if(
+            radios.begin(), radios.end(), [](const QRadioButton* button) {
+                return button->text().contains(QStringLiteral("Pseudo"));
+            });
+        check(pseudo != radios.end(), "offers a pseudodensity option");
+        if (pseudo != radios.end()) {
+            (*pseudo)->setChecked(true);
+            check(wizard.script().contains(QStringLiteral("get_pseudo_density")),
+                  "and selecting it switches the generated density");
+        }
+    }
+    {
+        // With a structure attached, the partition is the thing that has to be
+        // right. Moving rows reorders the lists, so an index taken from the
+        // row number instead of the item's data would difference the wrong
+        // atoms — and nothing about that fails loudly.
+        calango::pybridge::PythonEngine python;
+        auto structure = std::make_shared<calango::core::Structure>();
+        structure->setCell(calango::core::UnitCell({8, 0, 0}, {0, 8, 0},
+                                                   {0, 0, 8}));
+        for (const int z : {6, 8, 1, 1, 7}) { // C, O, H, H, N
+            calango::core::Atom atom;
+            atom.atomicNumber = z;
+            atom.position = {0.5 * z, 0.0, 0.0};
+            structure->addAtom(atom);
+        }
+
+        CddWizard wizard;
+        CddWizard::Baseline baseline;
+        baseline.label = QStringLiteral("#1 — Single-Point [GPAW]");
+        baseline.directory = QStringLiteral("/tmp/does-not-need-to-exist");
+        baseline.structure = structure;
+        wizard.setDensityBaselines({baseline});
+
+        check(wizard.baselineDirectory() == baseline.directory,
+              "selecting a baseline reports its directory");
+
+        const auto lists = wizard.findChildren<QListWidget*>();
+        check(lists.size() >= 2, "has both columns");
+        if (lists.size() >= 2) {
+            QListWidget* a = lists.at(0);
+            QListWidget* b = lists.at(1);
+            check(a->count() == 5 && b->count() == 0,
+                  "every atom starts in subsystem A");
+
+            // Move atoms 2 and 4 (0-based indices 1 and 3) across, out of
+            // order, so a row-number bug cannot coincide with the right answer.
+            a->item(3)->setSelected(true);
+            a->item(1)->setSelected(true);
+            const auto buttons = wizard.findChildren<QPushButton*>();
+            const auto toB = std::find_if(
+                buttons.begin(), buttons.end(), [](const QPushButton* button) {
+                    return button->text() == QString::fromUtf8("→");
+                });
+            check(toB != buttons.end(), "offers a move-to-B button");
+            if (toB != buttons.end()) {
+                (*toB)->click();
+                check(a->count() == 3 && b->count() == 2,
+                      "the selection moved across");
+                const QString script = wizard.script();
+                check(script.contains(QStringLiteral("subsystem_b = [1, 3]")),
+                      "and the script names the atoms' own indices, in order");
+                check(script.contains(
+                          QStringLiteral("subsystem_a = [i for i in "
+                                         "range(len(atoms)) if i not in")),
+                      "with A derived as the complement, so the split is "
+                      "exhaustive");
+            }
+
+            // And back again: moving one atom home must remove exactly it.
+            b->item(0)->setSelected(true);
+            const auto buttons2 = wizard.findChildren<QPushButton*>();
+            const auto toA = std::find_if(
+                buttons2.begin(), buttons2.end(), [](const QPushButton* button) {
+                    return button->text() == QString::fromUtf8("←");
+                });
+            if (toA != buttons2.end()) {
+                (*toA)->click();
+                check(wizard.script().contains(
+                          QStringLiteral("subsystem_b = [3]")),
+                      "moving one back leaves the other behind");
+            }
+        }
+    }
+
     // The overlay editor swaps its property page on every type change, and
     // three pages' worth of widgets are all constructed up front while the
     // change handler is already connected — the same construction-order hazard
@@ -267,6 +512,75 @@ int main(int argc, char** argv)
               "opens on the kind it was given");
         exerciseControls(&dialog);
         check(true, "survives control exercise with no cell");
+    }
+
+    // The volumetric render dialog dropped its third mode and folded the
+    // potential map into the isosurface page. Both halves of that are worth
+    // pinning: the mode list is now what the panel's enum can represent, and
+    // the folded controls have to actually reach the style.
+    std::printf("Volumetric render dialog:\n");
+    {
+        VolumetricStyle style;
+        EditVolumetricRenderDialog dialog(style,
+                                          VolumetricRenderMode::Isosurface,
+                                          -1.0, 1.0);
+        check(true, "constructs");
+
+        const auto combos = dialog.findChildren<QComboBox*>();
+        const auto modeCombo = std::find_if(
+            combos.begin(), combos.end(), [](const QComboBox* combo) {
+                return combo->count() > 0
+                    && combo->itemText(0).contains(QStringLiteral("Isosurface"));
+            });
+        check(modeCombo != combos.end(), "has a render-mode combo");
+        if (modeCombo != combos.end()) {
+            // Exactly two — an entry past the end of VolumetricRenderMode
+            // would cast to an invalid enumerator the panel then switches on.
+            check((*modeCombo)->count() == 2,
+                  "offers exactly two modes, matching the enum");
+            check((*modeCombo)->itemText(1).contains(QStringLiteral("Slice")),
+                  "Isosurfaces and Color Slice");
+            (*modeCombo)->setCurrentIndex(1);
+            check(dialog.mode() == VolumetricRenderMode::ColorSlice,
+                  "and selecting one reports it");
+            (*modeCombo)->setCurrentIndex(0);
+        }
+
+        // Potential-map colouring is a checkable group on the Isosurfaces
+        // page now, not a mode.
+        const auto boxes = dialog.findChildren<QGroupBox*>();
+        const auto potential = std::find_if(
+            boxes.begin(), boxes.end(), [](const QGroupBox* box) {
+                return box->title().contains(QStringLiteral("Potential Map"));
+            });
+        check(potential != boxes.end(),
+              "the potential map is a group on the isosurface page");
+        if (potential != boxes.end()) {
+            check((*potential)->isCheckable(), "and it is switchable");
+            check(!dialog.style().potentialColoring, "off by default");
+            (*potential)->setChecked(true);
+            check(dialog.style().potentialColoring,
+                  "turning it on reaches the style");
+        }
+
+        // Slice extent: the values are what the renderer clips against, so a
+        // combo whose data does not carry them would silently draw one cell.
+        const auto extent = std::find_if(
+            combos.begin(), combos.end(), [](const QComboBox* combo) {
+                return combo->count() > 0
+                    && combo->itemText(0).contains(QStringLiteral("unit cell"));
+            });
+        check(extent != combos.end(), "the slice offers an extent selector");
+        if (extent != combos.end()) {
+            check((*extent)->itemData(0).toInt() == 1,
+                  "whose first entry is the single unit cell");
+            (*extent)->setCurrentIndex((*extent)->count() - 1);
+            check(dialog.style().sliceReplicas > 1,
+                  "and picking a replicated extent reaches the style");
+        }
+
+        exerciseControls(&dialog);
+        check(true, "survives every control being exercised");
     }
 
     std::printf("Optics plot style dialog:\n");

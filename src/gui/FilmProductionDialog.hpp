@@ -3,7 +3,12 @@
 #include "render/Film.hpp"
 
 #include <QDialog>
+#include <QString>
 
+#include <utility>
+#include <vector>
+
+class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
@@ -42,6 +47,11 @@ public Q_SLOTS:
     /// The host's trajectory changed (tab switch, loaded result): re-couple
     /// the priority controls to it. Zero frames disables them entirely.
     void setTrajectory(int frameCount, double fps);
+    /// The scene's "Additional Overlays", as (id, label). Each shot picks the
+    /// subset it shows from these. Re-supplied whenever the dock changes, so a
+    /// shot that names an overlay the user has since deleted quietly stops
+    /// listing it rather than keeping a dangling id on screen.
+    void setAvailableOverlays(std::vector<std::pair<int, QString>> overlays);
     /// Show a different film — the incoming tab's, on a workspace switch.
     /// Films are per workspace, so without this the dialog would keep editing
     /// (and republishing) the film of the tab it was opened on, overwriting
@@ -63,11 +73,23 @@ private Q_SLOTS:
     void shotSelectionChanged();
     void applyShotEdits();
     void applyTiming();
+    /// A per-shot duration or transition was edited in the timeline table.
+    void applyShotTimeline();
 
 private:
     void refreshSavedList();
     void refreshShotList();
     void refreshCastTable();
+    void refreshOverlayList();
+    /// Append a shot, timing the segment it creates and extending the film by
+    /// it. Shared by both "Add" paths so they cannot drift apart.
+    void appendShot(render::FilmShot shot);
+    /// Spread `seconds` over the shots in proportion to what they already
+    /// have, so dragging the total re-times the film without flattening the
+    /// pacing the user set up.
+    void rescaleShotDurations(double seconds);
+    /// Sum of the per-segment times currently in the table.
+    double shotDurationSum() const;
     void updateSummary();
     /// Push the current script out and refresh the derived read-outs.
     void publish();
@@ -79,13 +101,20 @@ private:
     bool loading_ = false;
 
     QListWidget* savedList_;   ///< saved points-of-view to draw shots from
-    QListWidget* shotList_;    ///< the film, in order
+    /// The film, in order. A table rather than a list because a shot now
+    /// carries two things the user edits constantly — how long it runs and how
+    /// it leaves — and burying either behind "select the row, then look in the
+    /// panel below" makes re-timing a film a click-per-value exercise.
+    QTableWidget* shotTable_;
     QPushButton* removeButton_;
     QPushButton* upButton_;
     QPushButton* downButton_;
-    QComboBox* transitionCombo_;
     QTableWidget* castTable_;  ///< per-shot cast opacity keyframes
     QLabel* castNote_;
+    QCheckBox* overlayOverrideCheck_;
+    QListWidget* overlayList_; ///< checkable, per shot
+    QLabel* overlayNote_;
+    std::vector<std::pair<int, QString>> availableOverlays_;
 
     QDoubleSpinBox* durationSpin_;
     QSpinBox* fpsSpin_;

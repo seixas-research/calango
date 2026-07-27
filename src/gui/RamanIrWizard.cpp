@@ -1,5 +1,7 @@
 #include "gui/RamanIrWizard.hpp"
 
+#include "gui/GuiUtils.hpp"
+
 #include "core/Structure.hpp"
 
 #include <QCheckBox>
@@ -39,15 +41,7 @@ QString RamanIrWizard::settingsHeader() const
 
 QStringList RamanIrWizard::calculatorElements() const
 {
-    if (!structure_)
-        return {};
-    std::set<QString> symbols;
-    for (const core::Atom& atom : structure_->atoms())
-        symbols.insert(QString::fromLatin1(atom.symbol()));
-    QStringList result;
-    for (const QString& symbol : symbols)
-        result << symbol;
-    return result;
+    return structureElements(structure_.get());
 }
 
 QWidget* RamanIrWizard::buildSettingsPage()

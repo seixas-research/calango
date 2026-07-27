@@ -64,8 +64,8 @@ VibrationalAnalysisDialog::VibrationalAnalysisDialog(
     qpointCombo_ = new QComboBox(this);
     qpointCombo_->setToolTip(
         tr("Reciprocal-space point q at which the mode is evaluated. Γ is the "
-           "zone centre, where all cells move in phase; at a zone-boundary q "
-           "neighbouring cells move in antiphase."));
+           "zone center, where all cells move in phase; at a zone-boundary q "
+           "neighboring cells move in antiphase."));
     form->addRow(tr("q-point:"), qpointCombo_);
 
     modeCombo_ = new QComboBox(this);

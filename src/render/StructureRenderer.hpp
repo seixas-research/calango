@@ -33,6 +33,15 @@ enum class VectorOverlay {
     Velocity,       ///< "velocities" (Å/fs·√amu)
     Force,          ///< "forces" (eV/Å)
     MagneticMoment, ///< "magmoms" (μB) — non-collinear (N,3), see below
+    /// "initial_magmoms" (μB) — the moments SET on the structure (Edit
+    /// Structure → Spin polarization), as opposed to the ones a calculation
+    /// produced.
+    ///
+    /// A separate entry rather than folding them into MagneticMoment, because
+    /// the two answer different questions: one is an input guess, the other a
+    /// result, and drawing a guess as though it were an outcome is how a
+    /// seeded antiferromagnet gets reported as a converged one.
+    InitialMagneticMoment,
 };
 
 /// Vector field backing an overlay, and the label/unit used in the UI.
@@ -268,6 +277,9 @@ public:
         QColor forceColor{242, 92, 54};
         QColor velocityColor{54, 166, 242};
         QColor magmomColor{168, 120, 240};
+        /// Distinct from magmomColor on purpose: a guess and a result should
+        /// not be the same colour when they can both be on screen.
+        QColor initialMagmomColor{240, 160, 90};
         bool showCell = true;
         /// "Show atoms of the neighboring unit cell": draw the periodic images
         /// of the atoms that the home cell's bonds actually reach into.

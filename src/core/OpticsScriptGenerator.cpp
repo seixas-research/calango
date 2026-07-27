@@ -147,7 +147,7 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "    # Tetrahedron integration needs every vertex of the irreducible\n"
            "    # BZ present in the ground-state k-grid. Falling back to point\n"
            "    # integration here would return a spectrum computed by a\n"
-           "    # different method than the one requested, labelled as if it\n"
+           "    # different method than the one requested, labeled as if it\n"
            "    # were not — so this stops instead.\n"
            "    raise RuntimeError(\n"
            "        \"Tetrahedron integration requires a ground-state k-grid \"\n"

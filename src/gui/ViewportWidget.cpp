@@ -77,26 +77,10 @@ void ViewportWidget::refreshStructure()
     update();
 }
 
-void ViewportWidget::clearSelection()
-{
-    if (selection_.empty())
-        return;
-    selection_.clear();
-    Q_EMIT selectionChanged(0);
-    structureDirty_ = true;
-    update();
-}
-
 void ViewportWidget::setShowCell(bool show)
 {
     renderer_.style().showCell = show;
     update();
-}
-
-void ViewportWidget::setRepresentation(render::RepresentationMode mode)
-{
-    renderer_.style().mode = mode;
-    refreshStructure();
 }
 
 void ViewportWidget::setColorMode(render::ColorMode mode, const QString& customField)
@@ -398,37 +382,53 @@ bool ViewportWidget::textOverlayRect(const TextOverlay& overlay,
     QPointF anchor;
     if (!projectToScreen(overlay.position, anchor))
         return false;
+    // Qt::TextExpandTabs|Qt::AlignCenter over the multi-line flag: the text
+    // may be several lines, and boundingRect(QString) alone measures only the
+    // first, which left a two-line label hanging out of its own plate.
     const QFontMetricsF metrics(overlay.font);
-    out = metrics.boundingRect(overlay.text).adjusted(-5, -3, 5, 3);
+    out = metrics.boundingRect(QRectF(0, 0, 0, 0),
+                               Qt::AlignCenter | Qt::TextWordWrap,
+                               overlay.text)
+              .adjusted(-5, -3, 5, 3);
     out.moveCenter(anchor);
     return true;
 }
 
 void ViewportWidget::drawTextOverlays(QPainter& painter)
 {
-    // Same treatment as the atom labels: a translucent pill behind the glyphs
-    // so an annotation stays legible over whatever geometry it lands on.
-    const bool darkBg = backgroundColor_.lightnessF() < 0.5;
-    const QColor pillColor = darkBg ? QColor(20, 22, 26, 150)
-                                    : QColor(245, 246, 248, 170);
+    // Plate colour and both alphas come from the overlay itself now — the
+    // viewport no longer picks a pill shade from the canvas brightness, because
+    // the user can (and on a figure with a white background, must) choose it.
+    const auto withAlpha = [](QColor color, double alpha) {
+        color.setAlphaF(static_cast<float>(std::clamp(alpha, 0.0, 1.0)));
+        return color;
+    };
     for (std::size_t i = 0; i < textOverlays_.size(); ++i) {
         const TextOverlay& overlay = textOverlays_[i];
         QRectF box;
         if (!textOverlayRect(overlay, box))
             continue;
+        const double opacity = std::clamp(overlay.opacity, 0.0, 1.0);
         painter.setFont(overlay.font);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(pillColor);
-        painter.drawRoundedRect(box, 4, 4);
+        const double plateAlpha =
+            std::clamp(overlay.backgroundOpacity, 0.0, 1.0) * opacity;
+        if (plateAlpha > 0.0) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(withAlpha(overlay.backgroundColor, plateAlpha));
+            painter.drawRoundedRect(box, 4, 4);
+        }
         // The one being dragged gets an outline, so it is obvious which label
-        // the cursor has hold of when several overlap.
+        // the cursor has hold of when several overlap. Drawn at full strength
+        // whatever the overlay opacity: it is interaction feedback, not part of
+        // the annotation.
         if (static_cast<int>(i) == draggedTextOverlay_) {
             painter.setBrush(Qt::NoBrush);
             painter.setPen(QPen(overlay.color, 1.5));
             painter.drawRoundedRect(box, 4, 4);
         }
-        painter.setPen(overlay.color);
-        painter.drawText(box, Qt::AlignCenter, overlay.text);
+        painter.setPen(withAlpha(overlay.color, overlay.color.alphaF()
+                                     * opacity));
+        painter.drawText(box, Qt::AlignCenter | Qt::TextWordWrap, overlay.text);
     }
 }
 

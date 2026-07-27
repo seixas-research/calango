@@ -1,5 +1,7 @@
 #include "gui/ElectronicBandsWizard.hpp"
 
+#include "gui/GuiUtils.hpp"
+
 #include "core/ElectronicScriptGenerator.hpp"
 #include "core/Structure.hpp"
 #include "gui/EmbeddedKPathEditor.hpp"
@@ -38,17 +40,7 @@ QString ElectronicBandsWizard::wizardTitle() const
 
 QStringList ElectronicBandsWizard::calculatorElements() const
 {
-    if (!structure_)
-        return {};
-    // Sorted and unique: this feeds a completer, and repeating "Fe" once per
-    // Fe atom makes it useless.
-    std::set<QString> symbols;
-    for (const core::Atom& atom : structure_->atoms())
-        symbols.insert(QString::fromLatin1(atom.symbol()));
-    QStringList result;
-    for (const QString& symbol : symbols)
-        result << symbol;
-    return result;
+    return structureElements(structure_.get());
 }
 
 QWidget* ElectronicBandsWizard::buildCalculatorExtras()

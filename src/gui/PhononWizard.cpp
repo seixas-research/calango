@@ -351,6 +351,8 @@ QString PhononWizard::generateScript() const
 {
     core::PhononConfig pc;
     pc.calculator = baseCalculatorConfig();
+    // The GPAW electronic settings the shared rows collected.
+    electronic_.applyTo(pc.calculator);
     pc.periodic = periodic_;
     for (int i = 0; i < 3; ++i)
         pc.supercell[i] = supercellSpins_[i]->value();

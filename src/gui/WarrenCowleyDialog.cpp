@@ -1,5 +1,7 @@
 #include "gui/WarrenCowleyDialog.hpp"
 
+#include "gui/GuiUtils.hpp"
+
 #include "core/Element.hpp"
 
 #include <QDialogButtonBox>
@@ -144,31 +146,25 @@ void WarrenCowleyDialog::exportData()
     if (path.isEmpty())
         return;
 
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, windowTitle(),
-                             tr("Could not write %1").arg(path));
-        return;
-    }
-    QTextStream out(&file);
-    out << "pair";
-    for (std::size_t k = 0; k < result_.shells.size(); ++k)
-        out << QStringLiteral(",alpha_shell%1_%2A_%3A")
-                   .arg(k + 1)
-                   .arg(result_.shells[k].rMin, 0, 'f', 2)
-                   .arg(result_.shells[k].rMax, 0, 'f', 2);
-    out << "\n";
-    const auto speciesCount = result_.species.size();
-    for (std::size_t si = 0; si < speciesCount; ++si) {
-        for (std::size_t sj = 0; sj < speciesCount; ++sj) {
-            out << core::Elements::data(result_.species[si]).symbol << "-"
-                << core::Elements::data(result_.species[sj]).symbol;
-            for (const auto& shell : result_.shells)
-                out << "," << QString::number(shell.alpha[si][sj], 'g', 6);
-            out << "\n";
+    writeTextFile(this, path, [&](QTextStream& out) {
+        out << "pair";
+        for (std::size_t k = 0; k < result_.shells.size(); ++k)
+            out << QStringLiteral(",alpha_shell%1_%2A_%3A")
+                       .arg(k + 1)
+                       .arg(result_.shells[k].rMin, 0, 'f', 2)
+                       .arg(result_.shells[k].rMax, 0, 'f', 2);
+        out << "\n";
+        const auto speciesCount = result_.species.size();
+        for (std::size_t si = 0; si < speciesCount; ++si) {
+            for (std::size_t sj = 0; sj < speciesCount; ++sj) {
+                out << core::Elements::data(result_.species[si]).symbol << "-"
+                    << core::Elements::data(result_.species[sj]).symbol;
+                for (const auto& shell : result_.shells)
+                    out << "," << QString::number(shell.alpha[si][sj], 'g', 6);
+                out << "\n";
+            }
         }
-    }
-    file.commit();
+    });
 }
 
 } // namespace calango::gui

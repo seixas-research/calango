@@ -108,7 +108,7 @@ GwResultsWindow::GwResultsWindow(QWidget* parent)
     auto* statesLayout = new QVBoxLayout(statesGroup);
     auto* statesNote = new QLabel(
         tr("Σ − V_xc shifts each state individually. The corrections should "
-           "vary smoothly across bands; erratic jumps between neighbouring "
+           "vary smoothly across bands; erratic jumps between neighboring "
            "states point at an unconverged screening cutoff or too few empty "
            "bands, not at physics."),
         statesGroup);

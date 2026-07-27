@@ -38,7 +38,7 @@ PolyhedralSettingsDialog::PolyhedralSettingsDialog(ViewportWidget* viewport,
     modeNoteLabel_->setText(
         viewport_->style().mode == render::RepresentationMode::Polyhedral
             ? tr("Polyhedra are drawn on every atom with four or more "
-                 "coordinating neighbours.")
+                 "coordinating neighbors.")
             : tr("⚠ The viewport is not in Polyhedral representation mode, so "
                  "these settings have nothing to draw on yet. Switch the "
                  "Representation panel's Mode to Polyhedral to see them."));
@@ -61,7 +61,7 @@ PolyhedralSettingsDialog::PolyhedralSettingsDialog(ViewportWidget* viewport,
     edgesCheck_->setChecked(viewport_->style().polyhedronEdges);
     edgesCheck_->setToolTip(
         tr("The edges are what make a translucent hull read as a solid rather "
-           "than a smear of colour."));
+           "than a smear of color."));
     form->addRow(edgesCheck_);
 
     edgeWidthSpin_ = new QDoubleSpinBox(appearance);
@@ -95,7 +95,7 @@ PolyhedralSettingsDialog::PolyhedralSettingsDialog(ViewportWidget* viewport,
     auto* note = new QLabel(
         tr("By default a polyhedron is built from the atom's perceived bonds. "
            "An override replaces that for one central element with every "
-           "neighbour inside an absolute radius — which is how you get a "
+           "neighbor inside an absolute radius — which is how you get a "
            "6-coordinate octahedron when covalent radii give 4 or 8."),
         cutoffGroup);
     note->setWordWrap(true);

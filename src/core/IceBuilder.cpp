@@ -516,7 +516,7 @@ IceBuilder::Result IceBuilder::generate(const Params& params)
         if (d != 4)
             throw std::invalid_argument(
                 "the oxygen lattice is not 4-coordinated (got a site with "
-                + std::to_string(d) + " neighbours) — the supercell is too "
+                + std::to_string(d) + " neighbors) — the supercell is too "
                 "small for the bond cutoff");
     }
 

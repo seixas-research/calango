@@ -1,6 +1,5 @@
 #include "gui/OverlayEditDialog.hpp"
 
-#include "core/VolumetricData.hpp"
 #include "gui/GuiUtils.hpp"
 
 #include <QCheckBox>
@@ -8,20 +7,21 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
-#include <QFileDialog>
-#include <QFileInfo>
 #include <QFontComboBox>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSlider>
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QVBoxLayout>
+
+#include <algorithm>
+#include <cmath>
 
 namespace calango::gui {
 
@@ -61,6 +61,25 @@ int pageFor(Overlay::Kind kind)
     }
 }
 
+/// The offset slider is an int control over a continuous quantity: these map
+/// the two. 0.01 Å per tick is finer than the plane is drawn, so dragging never
+/// feels stepped.
+constexpr double kOffsetMin = -200.0;
+constexpr double kOffsetMax = 200.0;
+constexpr double kOffsetTicksPerAngstrom = 100.0;
+constexpr int kOffsetSliderMin =
+    static_cast<int>(kOffsetMin * kOffsetTicksPerAngstrom);
+constexpr int kOffsetSliderMax =
+    static_cast<int>(kOffsetMax * kOffsetTicksPerAngstrom);
+
+int offsetToTicks(double value)
+{
+    return static_cast<int>(std::lround(
+        std::clamp(value, kOffsetMin, kOffsetMax) * kOffsetTicksPerAngstrom));
+}
+
+double ticksToOffset(int ticks) { return ticks / kOffsetTicksPerAngstrom; }
+
 } // namespace
 
 OverlayEditDialog::OverlayEditDialog(const Overlay& overlay,
@@ -70,6 +89,9 @@ OverlayEditDialog::OverlayEditDialog(const Overlay& overlay,
     , structureHasCell_(structureHasCell)
 {
     setWindowTitle(tr("Overlay Properties"));
+    // Resizable, with a grip: the text box grows with the dialog, and a
+    // multi-line caption is unworkable in a fixed 3-line well.
+    setSizeGripEnabled(true);
 
     auto* layout = new QVBoxLayout(this);
     auto* header = new QFormLayout;
@@ -98,14 +120,18 @@ OverlayEditDialog::OverlayEditDialog(const Overlay& overlay,
     pages_->addWidget(buildPrimitivePage());
     layout->addWidget(pages_);
 
-    // Opacity is shared by every kind that has a fill, so it lives outside the
-    // pages rather than being repeated on two of them.
+    // Opacity applies to every kind, so it lives outside the pages rather than
+    // being repeated on each of them. For a primitive it is the fill alpha; for
+    // text it fades glyphs and background together, which is what you want when
+    // an annotation should recede without being deleted.
     opacityRow_ = new QWidget(this);
     auto* opacityLayout = new QHBoxLayout(opacityRow_);
     opacityLayout->setContentsMargins(0, 0, 0, 0);
-    opacityLayout->addWidget(new QLabel(tr("Opacity:"), opacityRow_));
+    opacityLayout->addWidget(new QLabel(tr("Overlay opacity:"), opacityRow_));
     opacitySlider_ = new QSlider(Qt::Horizontal, opacityRow_);
     opacitySlider_->setRange(5, 100);
+    opacitySlider_->setToolTip(
+        tr("Transparency of the whole overlay. Text fades with its background."));
     opacityLayout->addWidget(opacitySlider_, 1);
     layout->addWidget(opacityRow_);
 
@@ -130,8 +156,13 @@ QWidget* OverlayEditDialog::buildTextPage()
     auto* page = new QGroupBox(tr("Text"), this);
     auto* form = new QFormLayout(page);
 
-    textEdit_ = new QLineEdit(page);
+    textEdit_ = new QPlainTextEdit(page);
     textEdit_->setPlaceholderText(tr("annotation shown in the viewport"));
+    textEdit_->setTabChangesFocus(true);
+    textEdit_->setMinimumHeight(60);
+    // Grows with the dialog, and the dialog is resizable: a caption can run to
+    // several lines and the user should be able to see all of them while typing.
+    textEdit_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     form->addRow(tr("Text:"), textEdit_);
 
     fontCombo_ = new QFontComboBox(page);
@@ -153,7 +184,28 @@ QWidget* OverlayEditDialog::buildTextPage()
 
     textColorButton_ = new QPushButton(page);
     textColorButton_->setFixedHeight(22);
-    form->addRow(tr("Colour:"), textColorButton_);
+    form->addRow(tr("Color:"), textColorButton_);
+
+    backgroundCheck_ = new QCheckBox(tr("Draw a background plate"), page);
+    backgroundCheck_->setToolTip(
+        tr("A filled pill behind the glyphs. Without it a pale label over a "
+           "pale structure is unreadable."));
+    form->addRow(QString(), backgroundCheck_);
+
+    backgroundColorButton_ = new QPushButton(page);
+    backgroundColorButton_->setFixedHeight(22);
+    form->addRow(tr("Background:"), backgroundColorButton_);
+
+    auto* bgOpacityRow = new QWidget(page);
+    auto* bgOpacityLayout = new QHBoxLayout(bgOpacityRow);
+    bgOpacityLayout->setContentsMargins(0, 0, 0, 0);
+    backgroundOpacitySlider_ = new QSlider(Qt::Horizontal, bgOpacityRow);
+    // From 0: "no plate at all" is a legitimate setting, unlike the overlay
+    // opacity below, where a fully invisible overlay is indistinguishable from
+    // a broken one.
+    backgroundOpacitySlider_->setRange(0, 100);
+    bgOpacityLayout->addWidget(backgroundOpacitySlider_, 1);
+    form->addRow(tr("Background opacity:"), bgOpacityRow);
 
     form->addRow(tr("Position (Å):"),
                  makeVectorRow(page, textPosSpin_, -10000.0, 10000.0, 0.5));
@@ -166,7 +218,21 @@ QWidget* OverlayEditDialog::buildTextPage()
     hint->setTextFormat(Qt::RichText);
     form->addRow(hint);
 
-    connect(textEdit_, &QLineEdit::textChanged, this, &OverlayEditDialog::apply);
+    connect(textEdit_, &QPlainTextEdit::textChanged, this,
+            &OverlayEditDialog::apply);
+    connect(backgroundCheck_, &QCheckBox::toggled, this,
+            &OverlayEditDialog::apply);
+    connect(backgroundOpacitySlider_, &QSlider::valueChanged, this,
+            &OverlayEditDialog::apply);
+    connect(backgroundColorButton_, &QPushButton::clicked, this, [this] {
+        const QColor chosen = QColorDialog::getColor(
+            overlay_.backgroundColor, this, tr("Background Color"));
+        if (!chosen.isValid())
+            return;
+        overlay_.backgroundColor = chosen;
+        updateColorButtons();
+        Q_EMIT changed();
+    });
     connect(fontCombo_, &QFontComboBox::currentFontChanged, this,
             [this] { apply(); });
     connect(fontSizeSpin_, &QSpinBox::valueChanged, this,
@@ -178,7 +244,7 @@ QWidget* OverlayEditDialog::buildTextPage()
                 &OverlayEditDialog::apply);
     connect(textColorButton_, &QPushButton::clicked, this, [this] {
         const QColor chosen =
-            QColorDialog::getColor(overlay_.color, this, tr("Text Colour"));
+            QColorDialog::getColor(overlay_.color, this, tr("Text Color"));
         if (!chosen.isValid())
             return;
         overlay_.color = chosen;
@@ -215,71 +281,85 @@ QWidget* OverlayEditDialog::buildLatticePlanePage()
     millerLayout->addStretch(1);
     form->addRow(tr("Miller indices:"), millerRow);
 
-    offsetSpin_ = new QDoubleSpinBox(page);
-    offsetSpin_->setRange(-200.0, 200.0);
+    auto* offsetRow = new QWidget(page);
+    auto* offsetLayout = new QHBoxLayout(offsetRow);
+    offsetLayout->setContentsMargins(0, 0, 0, 0);
+    offsetSlider_ = new QSlider(Qt::Horizontal, offsetRow);
+    offsetSlider_->setRange(kOffsetSliderMin, kOffsetSliderMax);
+    offsetSlider_->setToolTip(
+        tr("Slide the plane along its normal to sweep it through the cell."));
+    offsetSpin_ = new QDoubleSpinBox(offsetRow);
+    offsetSpin_->setRange(kOffsetMin, kOffsetMax);
     offsetSpin_->setDecimals(3);
     offsetSpin_->setSingleStep(0.25);
     offsetSpin_->setSuffix(tr(" Å"));
     offsetSpin_->setToolTip(
-        tr("Displacement along the plane normal from the cell centre."));
-    form->addRow(tr("Offset:"), offsetSpin_);
+        tr("Displacement along the plane normal from the cell center."));
+    offsetLayout->addWidget(offsetSlider_, 1);
+    offsetLayout->addWidget(offsetSpin_);
+    form->addRow(tr("Position:"), offsetRow);
 
-    extentSpin_ = new QDoubleSpinBox(page);
-    extentSpin_->setRange(0.5, 500.0);
-    extentSpin_->setDecimals(2);
-    extentSpin_->setSingleStep(1.0);
-    extentSpin_->setSuffix(tr(" Å"));
-    extentSpin_->setToolTip(tr("Half-size of the drawn quad."));
-    form->addRow(tr("Extent:"), extentSpin_);
+    auto* sizeRow = new QWidget(page);
+    auto* sizeLayout = new QHBoxLayout(sizeRow);
+    sizeLayout->setContentsMargins(0, 0, 0, 0);
+    const auto makeExtentSpin = [&](const QString& tip) {
+        auto* spin = new QDoubleSpinBox(sizeRow);
+        spin->setRange(0.5, 500.0);
+        spin->setDecimals(2);
+        spin->setSingleStep(1.0);
+        spin->setSuffix(tr(" Å"));
+        spin->setToolTip(tip);
+        return spin;
+    };
+    widthSpin_ = makeExtentSpin(
+        tr("Half-width of the drawn quad, along the plane's first in-plane "
+           "axis."));
+    heightSpin_ = makeExtentSpin(
+        tr("Half-height of the drawn quad, along the plane's second in-plane "
+           "axis."));
+    sizeLayout->addWidget(new QLabel(tr("w"), sizeRow));
+    sizeLayout->addWidget(widthSpin_);
+    sizeLayout->addWidget(new QLabel(tr("h"), sizeRow));
+    sizeLayout->addWidget(heightSpin_);
+    sizeLayout->addStretch(1);
+    form->addRow(tr("Dimensions:"), sizeRow);
 
     edgesCheck_ = new QCheckBox(tr("Draw border"), page);
     form->addRow(QString(), edgesCheck_);
 
-    sliceCheck_ = new QCheckBox(tr("Colour-map a volumetric field"), page);
-    sliceCheck_->setToolTip(
-        tr("Sample a loaded 3D scalar field (charge density, ELF…) on the "
-           "plane, turning it into a 2D slice through the grid."));
-    form->addRow(QString(), sliceCheck_);
-
-    gradientCombo_ = new QComboBox(page);
-    gradientCombo_->addItem(tr("Viridis"),
-                            static_cast<int>(render::ColorGradient::Viridis));
-    gradientCombo_->addItem(tr("Plasma"),
-                            static_cast<int>(render::ColorGradient::Plasma));
-    gradientCombo_->addItem(tr("Coolwarm"),
-                            static_cast<int>(render::ColorGradient::Coolwarm));
-    gradientCombo_->addItem(tr("Rainbow"),
-                            static_cast<int>(render::ColorGradient::Rainbow));
-    form->addRow(tr("Gradient:"), gradientCombo_);
-
-    auto* fieldRow = new QWidget(page);
-    auto* fieldLayout = new QHBoxLayout(fieldRow);
-    fieldLayout->setContentsMargins(0, 0, 0, 0);
-    loadFieldButton_ = new QPushButton(tr("Load field…"), fieldRow);
-    fieldLabel_ = new QLabel(tr("(none)"), fieldRow);
-    fieldLayout->addWidget(loadFieldButton_);
-    fieldLayout->addWidget(fieldLabel_, 1);
-    form->addRow(tr("Field:"), fieldRow);
-
     planeColorButton_ = new QPushButton(page);
     planeColorButton_->setFixedHeight(22);
-    form->addRow(tr("Plane colour:"), planeColorButton_);
+    form->addRow(tr("Plane color:"), planeColorButton_);
 
     for (QSpinBox* spin : millerSpin_)
         connect(spin, &QSpinBox::valueChanged, this, &OverlayEditDialog::apply);
+    // Slider and spin box mirror each other. Both guard on loading_ via
+    // apply(), and each setter is a no-op when the value already matches, so
+    // the round trip terminates instead of ping-ponging.
     connect(offsetSpin_, &QDoubleSpinBox::valueChanged, this,
-            &OverlayEditDialog::apply);
-    connect(extentSpin_, &QDoubleSpinBox::valueChanged, this,
-            &OverlayEditDialog::apply);
+            [this](double value) {
+                const int ticks = offsetToTicks(value);
+                if (offsetSlider_->value() != ticks) {
+                    QSignalBlocker block(offsetSlider_);
+                    offsetSlider_->setValue(ticks);
+                }
+                apply();
+            });
+    connect(offsetSlider_, &QSlider::valueChanged, this, [this](int ticks) {
+        const double value = ticksToOffset(ticks);
+        if (std::abs(offsetSpin_->value() - value) > 1e-9) {
+            QSignalBlocker block(offsetSpin_);
+            offsetSpin_->setValue(value);
+        }
+        apply();
+    });
+    for (QDoubleSpinBox* spin : {widthSpin_, heightSpin_})
+        connect(spin, &QDoubleSpinBox::valueChanged, this,
+                &OverlayEditDialog::apply);
     connect(edgesCheck_, &QCheckBox::toggled, this, &OverlayEditDialog::apply);
-    connect(sliceCheck_, &QCheckBox::toggled, this, &OverlayEditDialog::apply);
-    connect(gradientCombo_, &QComboBox::currentIndexChanged, this,
-            &OverlayEditDialog::apply);
-    connect(loadFieldButton_, &QPushButton::clicked, this,
-            &OverlayEditDialog::loadField);
     connect(planeColorButton_, &QPushButton::clicked, this, [this] {
         const QColor chosen =
-            QColorDialog::getColor(overlay_.color, this, tr("Plane Colour"));
+            QColorDialog::getColor(overlay_.color, this, tr("Plane Color"));
         if (!chosen.isValid())
             return;
         overlay_.color = chosen;
@@ -294,7 +374,7 @@ QWidget* OverlayEditDialog::buildPrimitivePage()
     auto* page = new QGroupBox(tr("Shape"), this);
     auto* form = new QFormLayout(page);
 
-    form->addRow(tr("Centre (Å):"),
+    form->addRow(tr("Center (Å):"),
                  makeVectorRow(page, centerSpin_, -10000.0, 10000.0, 0.5));
     sizeRow_ = makeVectorRow(page, sizeSpin_, 0.01, 1000.0, 0.5);
     form->addRow(tr("Size (Å):"), sizeRow_);
@@ -336,12 +416,12 @@ QWidget* OverlayEditDialog::buildPrimitivePage()
 
     colorButton_ = new QPushButton(page);
     colorButton_->setFixedHeight(22);
-    form->addRow(tr("Colour:"), colorButton_);
+    form->addRow(tr("Color:"), colorButton_);
     color2Button_ = new QPushButton(page);
     color2Button_->setFixedHeight(22);
     color2Button_->setToolTip(
-        tr("Second colour, used by the Checkerboard and Gradient textures."));
-    form->addRow(tr("Second colour:"), color2Button_);
+        tr("Second color, used by the Checkerboard and Gradient textures."));
+    form->addRow(tr("Second color:"), color2Button_);
 
     for (auto* spins : {&centerSpin_, &sizeSpin_, &endSpin_, &normalSpin_,
                         &rotationSpin_}) {
@@ -359,7 +439,7 @@ QWidget* OverlayEditDialog::buildPrimitivePage()
             &OverlayEditDialog::apply);
     connect(colorButton_, &QPushButton::clicked, this, [this] {
         const QColor chosen =
-            QColorDialog::getColor(overlay_.color, this, tr("Overlay Colour"));
+            QColorDialog::getColor(overlay_.color, this, tr("Overlay Color"));
         if (!chosen.isValid())
             return;
         overlay_.color = chosen;
@@ -368,7 +448,7 @@ QWidget* OverlayEditDialog::buildPrimitivePage()
     });
     connect(color2Button_, &QPushButton::clicked, this, [this] {
         const QColor chosen =
-            QColorDialog::getColor(overlay_.color2, this, tr("Second Colour"));
+            QColorDialog::getColor(overlay_.color2, this, tr("Second Color"));
         if (!chosen.isValid())
             return;
         overlay_.color2 = chosen;
@@ -385,8 +465,6 @@ void OverlayEditDialog::onKindChanged()
     overlay_.kind =
         static_cast<Overlay::Kind>(kindCombo_->currentData().toInt());
     pages_->setCurrentIndex(pageFor(overlay_.kind));
-    // Text is painted glyphs; there is no fill for an opacity to act on.
-    opacityRow_->setVisible(overlay_.kind != Overlay::Kind::Text);
     showRelevantPrimitiveRows();
     Q_EMIT changed();
 }
@@ -431,7 +509,11 @@ void OverlayEditDialog::load()
     opacitySlider_->setValue(
         std::clamp(static_cast<int>(overlay_.opacity * 100.0), 5, 100));
 
-    textEdit_->setText(overlay_.text);
+    textEdit_->setPlainText(overlay_.text);
+    backgroundCheck_->setChecked(overlay_.backgroundOpacity > 0.0);
+    backgroundOpacitySlider_->setValue(
+        std::clamp(static_cast<int>(overlay_.backgroundOpacity * 100.0), 0, 100));
+    backgroundOpacitySlider_->setEnabled(backgroundCheck_->isChecked());
     fontCombo_->setCurrentFont(overlay_.font);
     fontSizeSpin_->setValue(overlay_.font.pointSize() > 0
                                 ? overlay_.font.pointSize()
@@ -446,13 +528,10 @@ void OverlayEditDialog::load()
     for (int i = 0; i < 3; ++i)
         millerSpin_[i]->setValue(overlay_.miller[i]);
     offsetSpin_->setValue(overlay_.offset);
-    extentSpin_->setValue(overlay_.extent);
+    offsetSlider_->setValue(offsetToTicks(overlay_.offset));
+    widthSpin_->setValue(overlay_.width);
+    heightSpin_->setValue(overlay_.height);
     edgesCheck_->setChecked(overlay_.showEdges);
-    sliceCheck_->setChecked(overlay_.sliceField);
-    gradientCombo_->setCurrentIndex(
-        gradientCombo_->findData(static_cast<int>(overlay_.gradient)));
-    fieldLabel_->setText(overlay_.fieldName.isEmpty() ? tr("(none)")
-                                                      : overlay_.fieldName);
     noCellLabel_->setVisible(!structureHasCell_);
 
     const double centre[3] = {overlay_.center.x, overlay_.center.y,
@@ -477,7 +556,6 @@ void OverlayEditDialog::load()
     finishCombo_->setCurrentIndex(static_cast<int>(overlay_.finish));
 
     pages_->setCurrentIndex(pageFor(overlay_.kind));
-    opacityRow_->setVisible(overlay_.kind != Overlay::Kind::Text);
     showRelevantPrimitiveRows();
     updateColorButtons();
     loading_ = false;
@@ -491,36 +569,7 @@ void OverlayEditDialog::updateColorButtons()
     setButtonColor(planeColorButton_, overlay_.color);
     setButtonColor(color2Button_, overlay_.color2);
     setButtonColor(textColorButton_, overlay_.color);
-}
-
-void OverlayEditDialog::loadField()
-{
-    const QString path = QFileDialog::getOpenFileName(
-        this, tr("Load Volumetric Field"), QString(),
-        tr("Volumetric grids (*.cube *.xsf CHGCAR* LOCPOT* PARCHG* ELFCAR*);;"
-           "All files (*)"));
-    if (path.isEmpty())
-        return;
-    try {
-        overlay_.field = std::make_shared<core::VolumetricData>(
-            core::VolumetricData::load(path.toStdString()));
-    } catch (const std::exception& e) {
-        QMessageBox::warning(this, tr("Load Volumetric Field"),
-                             tr("Could not read the field:\n%1")
-                                 .arg(QString::fromLocal8Bit(e.what())));
-        return;
-    }
-    overlay_.fieldName = tr("%1  (%2x%3x%4 grid)")
-                             .arg(QFileInfo(path).fileName())
-                             .arg(overlay_.field->nx)
-                             .arg(overlay_.field->ny)
-                             .arg(overlay_.field->nz);
-    fieldLabel_->setText(overlay_.fieldName);
-    // Loading a field is only ever done in order to see it.
-    if (!sliceCheck_->isChecked())
-        sliceCheck_->setChecked(true);
-    else
-        apply();
+    setButtonColor(backgroundColorButton_, overlay_.backgroundColor);
 }
 
 void OverlayEditDialog::apply()
@@ -533,7 +582,11 @@ void OverlayEditDialog::apply()
     overlay_.opacity = opacitySlider_->value() / 100.0;
 
     if (overlay_.kind == Overlay::Kind::Text) {
-        overlay_.text = textEdit_->text();
+        overlay_.text = textEdit_->toPlainText();
+        backgroundOpacitySlider_->setEnabled(backgroundCheck_->isChecked());
+        overlay_.backgroundOpacity = backgroundCheck_->isChecked()
+            ? backgroundOpacitySlider_->value() / 100.0
+            : 0.0;
         QFont font = fontCombo_->currentFont();
         font.setPointSize(fontSizeSpin_->value());
         font.setBold(boldCheck_->isChecked());
@@ -545,11 +598,9 @@ void OverlayEditDialog::apply()
         for (int i = 0; i < 3; ++i)
             overlay_.miller[i] = millerSpin_[i]->value();
         overlay_.offset = offsetSpin_->value();
-        overlay_.extent = extentSpin_->value();
+        overlay_.width = widthSpin_->value();
+        overlay_.height = heightSpin_->value();
         overlay_.showEdges = edgesCheck_->isChecked();
-        overlay_.sliceField = sliceCheck_->isChecked();
-        overlay_.gradient = static_cast<render::ColorGradient>(
-            gradientCombo_->currentData().toInt());
     } else {
         overlay_.center = {centerSpin_[0]->value(), centerSpin_[1]->value(),
                            centerSpin_[2]->value()};

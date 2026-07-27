@@ -191,7 +191,7 @@ WannierDialog::WannierDialog(std::shared_ptr<core::Structure> structure,
 
 WannierDialog::~WannierDialog()
 {
-    // Same teardown as ElfDialog: QFutureWatcher's destructor does not wait, and
+    // QFutureWatcher's destructor does not wait, and
     // the running lambda holds a shared_ptr into a member about to die. Detach
     // from the signal, then block until the worker is done.
     isoWatcher_.disconnect(this);

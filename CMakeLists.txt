@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.62
+    VERSION 26.7.63
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -127,6 +127,8 @@ qt_add_executable(calango
     src/core/PeriodicImages.hpp
     src/core/Structure.hpp
     src/core/Structure.cpp
+    src/core/StructureTransforms.hpp
+    src/core/StructureTransforms.cpp
     src/core/CalculatorConfig.hpp
     src/core/AseScriptGenerator.hpp
     src/core/AseScriptGenerator.cpp
@@ -174,8 +176,6 @@ qt_add_executable(calango
     src/core/GwScriptGenerator.cpp
     src/core/GrapheneOxideBuilder.hpp
     src/core/GrapheneOxideBuilder.cpp
-    src/core/ElfScriptGenerator.hpp
-    src/core/ElfScriptGenerator.cpp
     src/core/BornChargesScriptGenerator.hpp
     src/core/BornChargesScriptGenerator.cpp
     src/core/RamanIrScriptGenerator.hpp
@@ -198,6 +198,10 @@ qt_add_executable(calango
     src/core/ConvexHull.cpp
     src/core/ClusterExpansionScriptGenerator.hpp
     src/core/ClusterExpansionScriptGenerator.cpp
+    src/core/RandomNoiseScriptGenerator.hpp
+    src/core/RandomNoiseScriptGenerator.cpp
+    src/core/CddScriptGenerator.hpp
+    src/core/CddScriptGenerator.cpp
     src/core/MonteCarlo.hpp
     src/core/MonteCarlo.cpp
     src/core/SqsGenerator.hpp
@@ -407,8 +411,6 @@ qt_add_executable(calango
     src/gui/SymmetryDialog.cpp
     src/gui/PartialChargeDialog.hpp
     src/gui/PartialChargeDialog.cpp
-    src/gui/ElfDialog.hpp
-    src/gui/ElfDialog.cpp
     src/gui/WannierDialog.hpp
     src/gui/WannierDialog.cpp
     src/gui/SinglePointViewer.hpp
@@ -422,6 +424,7 @@ qt_add_executable(calango
     src/gui/WannierInterpolationDialog.hpp
     src/gui/WannierInterpolationDialog.cpp
     src/gui/VolumetricStyle.hpp
+    src/gui/VolumetricStyle.cpp
     src/gui/VolumetricPanel.hpp
     src/gui/VolumetricPanel.cpp
     src/gui/VolumetricMetadataDialog.hpp
@@ -444,14 +447,16 @@ qt_add_executable(calango
     src/gui/MolecularDynamicsWizard.cpp
     src/gui/SinglePointWizard.hpp
     src/gui/SinglePointWizard.cpp
+    src/gui/RandomNoiseWizard.hpp
+    src/gui/RandomNoiseWizard.cpp
+    src/gui/CddWizard.hpp
+    src/gui/CddWizard.cpp
     src/gui/ElectronicBandsWizard.hpp
     src/gui/ElectronicBandsWizard.cpp
     src/gui/OpticsWizard.hpp
     src/gui/OpticsWizard.cpp
     src/gui/GwWizard.hpp
     src/gui/GwWizard.cpp
-    src/gui/ElfWizard.hpp
-    src/gui/ElfWizard.cpp
     src/gui/WannierWizard.hpp
     src/gui/WannierWizard.cpp
     src/gui/OpticsResultsWindow.hpp
@@ -541,6 +546,7 @@ qt_add_resources(calango "icons"
     FILES
         assets/.internal/icons/add-circle-fill.svg
         assets/.internal/icons/add-circle-line.svg
+        assets/.internal/icons/align-item-vertical-center-line.svg
         assets/.internal/icons/anticlockwise-2-line.svg
         assets/.internal/icons/arrow-go-back-line.svg
         assets/.internal/icons/atom-line.svg
@@ -555,12 +561,15 @@ qt_add_resources(calango "icons"
         assets/.internal/icons/color-filter-fill.svg
         assets/.internal/icons/compasses-2-line.svg
         assets/.internal/icons/computer-line.svg
+        assets/.internal/icons/contract-left-right-line.svg
         assets/.internal/icons/cpu-line.svg
         assets/.internal/icons/cursor-line.svg
         assets/.internal/icons/delete.svg
         assets/.internal/icons/delete-bin-line.svg
         assets/.internal/icons/drag-move-2-line.svg
+        assets/.internal/icons/edit-box-fill.svg
         assets/.internal/icons/edit-fill.svg
+        assets/.internal/icons/expand-height-line.svg
         assets/.internal/icons/eye-fill.svg
         assets/.internal/icons/file-code-line.svg
         assets/.internal/icons/film-fill.svg
@@ -569,6 +578,7 @@ qt_add_resources(calango "icons"
         assets/.internal/icons/folder-open-line.svg
         assets/.internal/icons/folder-received-line.svg
         assets/.internal/icons/font-size-2.svg
+        assets/.internal/icons/grid-line.svg
         assets/.internal/icons/group-fill.svg
         assets/.internal/icons/hard-drive-2-line.svg
         assets/.internal/icons/hashtag.svg
@@ -1052,6 +1062,13 @@ if(CALANGO_BUILD_TESTS)
         # where a newly added engine re-arms the construction-order hazard this
         # test exists for.
         src/gui/SinglePointWizard.cpp
+        src/gui/RandomNoiseWizard.cpp
+        src/gui/CddWizard.cpp
+        src/gui/EditVolumetricRenderDialog.cpp
+        src/gui/VolumetricStyle.cpp
+        src/core/RandomNoiseScriptGenerator.cpp
+        src/core/CddScriptGenerator.cpp
+        src/core/Noise.cpp
         src/gui/SimulationWizardBase.cpp
         src/gui/GpawElectronicRows.cpp
         src/gui/HubbardParametersDialog.cpp
@@ -1098,6 +1115,20 @@ if(CALANGO_BUILD_TESTS)
         PREFIX "/"
         FILES assets/.internal/icons/focus-3-line.svg)
     add_test(NAME icon_theme COMMAND calango_icon_theme_test)
+
+    # Whole-structure transforms (centre / vacuum / wrap). They moved from the
+    # Edit Structure dialog's throwaway working copy onto the Structure panel,
+    # where they are committed document edits — a wrong result is no longer
+    # discardable with Cancel. GUI-free.
+    add_executable(calango_transforms_test
+        tests/StructureTransformsTest.cpp
+        src/core/StructureTransforms.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_transforms_test PRIVATE src)
+    add_test(NAME structure_transforms COMMAND calango_transforms_test)
 
     # Overlay geometry: the "Additional overlays" dock packs every entry into
     # one pair of shared streams and slices them with per-overlay ranges. A
@@ -1216,17 +1247,32 @@ if(CALANGO_BUILD_TESTS)
         src/core/AseScriptGenerator.cpp
         src/core/BornChargesScriptGenerator.cpp
         src/core/ElectronicScriptGenerator.cpp
-        src/core/ElfScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
         src/core/OpticsScriptGenerator.cpp
         src/core/GwScriptGenerator.cpp
         src/core/RamanIrScriptGenerator.cpp
+        src/core/RandomNoiseScriptGenerator.cpp
+        src/core/CddScriptGenerator.cpp
     )
     target_include_directories(calango_script_test PRIVATE src
         "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_compile_definitions(calango_script_test PRIVATE
         CALANGO_VERSION="${PROJECT_VERSION}")
     add_test(NAME generated_ase_scripts COMMAND calango_script_test)
+
+    # Volumetric grid parsing: the value block is read with a bulk read plus
+    # std::from_chars rather than through istream >> double (5x faster on a
+    # production grid). A fast parser that is subtly wrong renders a plausible
+    # isosurface of the wrong data, so the tokenizer is pinned here.
+    add_executable(calango_volumetric_parse_test
+        tests/VolumetricParseTest.cpp
+        src/core/VolumetricData.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_volumetric_parse_test PRIVATE src)
+    add_test(NAME volumetric_parse COMMAND calango_volumetric_parse_test)
 
     # Periodic-image bound: the degenerate-cell guard that five of the seven
     # former private copies of imageRange() were missing.
@@ -1313,8 +1359,10 @@ if(CALANGO_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/wannier_interpolation_silicon_benchmark.py)
 
-    # ELF validation on bulk Si: GPAW SCF → gpaw.elf.ELF, verifying a finite
-    # 3D η ∈ [0,1] field. Self-skips (exit 0) without GPAW/gpaw.elf.
+    # ELF validation on bulk Si: GPAW SCF → gpaw.elf.elf_from_dft_calculation,
+    # verifying a finite 3D η ∈ [0,1] field. This is the API the Single-point
+    # wizard's ELF density export drives, so it stays even though the
+    # standalone ELF module is gone. Self-skips (exit 0) without GPAW/gpaw.elf.
     add_test(NAME elf_silicon
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/elf_silicon_benchmark.py)

@@ -182,7 +182,7 @@ QWidget* ClusterExpansionWizard::buildSettingsPage()
         tr("On completion the Results panel gains a <b>Convex Hull</b> tab: "
            "E_form vs x, with configurations on the hull (stable) drawn "
            "filled and connected by tie-lines, and everything above it hollow "
-           "and labelled by its energy above the hull."),
+           "and labeled by its energy above the hull."),
         page);
     hint->setWordWrap(true);
     hint->setTextFormat(Qt::RichText);

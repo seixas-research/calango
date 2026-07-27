@@ -1,5 +1,7 @@
 #include "gui/MolecularDynamicsWizard.hpp"
 
+#include "gui/GuiUtils.hpp"
+
 #include "core/AseScriptGenerator.hpp"
 #include "core/Structure.hpp"
 #include "gui/GeometryConstraintsDialog.hpp"
@@ -28,17 +30,7 @@ MolecularDynamicsWizard::MolecularDynamicsWizard(
 
 QStringList MolecularDynamicsWizard::calculatorElements() const
 {
-    if (!structure_)
-        return {};
-    // Sorted and unique: this feeds a completer, and repeating "Fe" once per
-    // Fe atom makes it useless.
-    std::set<QString> symbols;
-    for (const core::Atom& atom : structure_->atoms())
-        symbols.insert(QString::fromLatin1(atom.symbol()));
-    QStringList result;
-    for (const QString& symbol : symbols)
-        result << symbol;
-    return result;
+    return structureElements(structure_.get());
 }
 
 QString MolecularDynamicsWizard::wizardTitle() const
@@ -202,6 +194,8 @@ void MolecularDynamicsWizard::refreshConstraintSummary()
 core::CalculatorConfig MolecularDynamicsWizard::config() const
 {
     core::CalculatorConfig c = baseCalculatorConfig();
+    // The GPAW electronic settings the shared rows collected.
+    electronic_.applyTo(c);
     c.task = core::TaskKind::MolecularDynamics;
     c.ensemble = static_cast<core::MdEnsemble>(ensembleCombo_->currentIndex());
     c.temperatureK = temperatureSpin_->value();

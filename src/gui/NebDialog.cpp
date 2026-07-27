@@ -4,6 +4,9 @@
 #include <QCheckBox>
 
 #include "core/AseScriptGenerator.hpp"
+#include "gui/GuiUtils.hpp"
+#include "gui/HubbardParametersDialog.hpp"
+#include "gui/SimulationWizardBase.hpp"
 #include "python_bridge/AseBridge.hpp"
 #include "python_bridge/NebBuilder.hpp"
 #include "python_bridge/PythonEngine.hpp"
@@ -12,6 +15,7 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QDoubleValidator>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -20,7 +24,9 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSettings>
+#include <QLocale>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
@@ -51,9 +57,21 @@ NebDialog::NebDialog(std::vector<NamedStructure> openDocs, QWidget* parent)
 {
     setWindowTitle(tr("Nudged Elastic Band (NEB)"));
     setAttribute(Qt::WA_DeleteOnClose);
-    resize(560, 640);
+    resize(600, 720);
 
-    auto* layout = new QVBoxLayout(this);
+    // The settings stack outgrew a fixed dialog once the GPAW group joined it,
+    // so it scrolls — with Run / Close pinned outside the scroll area, which is
+    // the one pair of buttons that must never be the thing you have to scroll
+    // to find.
+    auto* rootLayout = new QVBoxLayout(this);
+    auto* scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    auto* content = new QWidget(scroll);
+    scroll->setWidget(content);
+    rootLayout->addWidget(scroll, 1);
+    auto* layout = new QVBoxLayout(content);
+    layout->setContentsMargins(0, 0, 0, 0);
 
     // --- Endpoints ---------------------------------------------------------
     auto* endpointsBox = new QGroupBox(tr("Reaction endpoints"), this);
@@ -215,6 +233,15 @@ NebDialog::NebDialog(std::vector<NamedStructure> openDocs, QWidget* parent)
     }
     calcForm->addRow(tr("k-point grid:"), kptRow);
     layout->addWidget(calcBox);
+
+    // The GPAW electronic-structure settings, in the same arrangement the
+    // simulation wizards use. A NEB runs an SCF per image per optimizer step,
+    // so smearing, the eigensolver and the convergence targets matter here at
+    // least as much as anywhere else — they were simply absent, which left the
+    // band relaxing on GPAW's bare defaults.
+    gpawGroup_ = buildGpawGroup();
+    layout->addWidget(gpawGroup_);
+
     connect(calcCombo_, &QComboBox::currentIndexChanged, this,
             &NebDialog::updateCalculatorEnabled);
 
@@ -240,10 +267,12 @@ NebDialog::NebDialog(std::vector<NamedStructure> openDocs, QWidget* parent)
     statusLabel_->setWordWrap(true);
     layout->addWidget(statusLabel_);
 
+    layout->addStretch(1);
+
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     auto* runButton = buttons->addButton(tr("Run NEB"), QDialogButtonBox::AcceptRole);
     runButton->setDefault(true);
-    layout->addWidget(buttons);
+    rootLayout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::close);
     disconnect(buttons, &QDialogButtonBox::accepted, nullptr, nullptr);
     connect(runButton, &QPushButton::clicked, this, &NebDialog::doRun);
@@ -332,6 +361,137 @@ void NebDialog::updateCalculatorEnabled()
     cutoffSpin_->setEnabled(isDft);
     for (auto* s : kptSpins_)
         s->setEnabled(isDft);
+    // Hidden rather than greyed out for the non-GPAW engines: none of these
+    // map onto EMT or a MACE model, and a dozen dead rows would be pure noise
+    // on a dialog that already scrolls.
+    if (gpawGroup_)
+        gpawGroup_->setVisible(kind == core::CalculatorKind::Gpaw);
+}
+
+QGroupBox* NebDialog::buildGpawGroup()
+{
+    auto* group = new QGroupBox(tr("Calculator && Convergence Settings"), this);
+    auto* form = new QFormLayout(group);
+
+    gpawXcCombo_ = new QComboBox(group);
+    gpawXcCombo_->setEditable(true);
+    gpawXcCombo_->addItems({QStringLiteral("PBE"), QStringLiteral("LDA"),
+                            QStringLiteral("revPBE"), QStringLiteral("RPBE"),
+                            QStringLiteral("PBEsol"), QStringLiteral("HSE06"),
+                            QStringLiteral("B3LYP"), QStringLiteral("SCAN"),
+                            QStringLiteral("r2SCAN")});
+    gpawXcCombo_->setToolTip(
+        tr("The hybrids (HSE06, B3LYP) and meta-GGAs (SCAN, r2SCAN) need a "
+           "GPAW build with libxc, and are far more expensive than the GGAs — "
+           "which a band multiplies by the image count."));
+    hubbardButton_ = new QPushButton(tr("Hubbard parameters…"), group);
+    hubbardButton_->setToolTip(
+        tr("Add an on-site Coulomb repulsion U to a named orbital shell "
+           "(GPAW setups={…}). For narrow d/f bands that a semilocal "
+           "functional over-delocalizes."));
+    connect(hubbardButton_, &QPushButton::clicked, this,
+            &NebDialog::editHubbardParameters);
+    // DFT+U is a correction TO the functional, so it sits on the functional's
+    // own row rather than among the convergence settings below.
+    auto* xcRow = new QWidget(group);
+    auto* xcLayout = new QHBoxLayout(xcRow);
+    xcLayout->setContentsMargins(0, 0, 0, 0);
+    xcLayout->addWidget(gpawXcCombo_, 1);
+    xcLayout->addWidget(hubbardButton_);
+    form->addRow(tr("XC functional:"), xcRow);
+
+    // Smearing method + width, and the SCF tolerance / step cap, from the same
+    // shared rows the wizards use.
+    electronic_.buildConvergenceRows(form, this);
+
+    gpawEigensolverCombo_ = new QComboBox(group);
+    gpawEigensolverCombo_->addItems({QStringLiteral("davidson"),
+                                     QStringLiteral("cg"),
+                                     QStringLiteral("rmm-diis"),
+                                     QStringLiteral("direct")});
+    gpawEigensolverCombo_->setToolTip(
+        tr("davidson: robust general default.\n"
+           "cg: slower but very stable — try it when the SCF oscillates.\n"
+           "rmm-diis: cheapest per step for large metallic systems.\n"
+           "direct: exact diagonalization (LCAO / small systems)."));
+    // The solver and the cap on its iterations are one thought: "how the SCF
+    // is solved, and how long it may try".
+    if (QWidget* steps = electronic_.scfStepsWidget()) {
+        auto* solverRow = new QWidget(group);
+        auto* solverLayout = new QHBoxLayout(solverRow);
+        solverLayout->setContentsMargins(0, 0, 0, 0);
+        solverLayout->addWidget(gpawEigensolverCombo_, 1);
+        solverLayout->addWidget(new QLabel(tr("max SCF steps"), solverRow));
+        solverLayout->addWidget(steps);
+        form->addRow(tr("Eigensolver:"), solverRow);
+    } else {
+        form->addRow(tr("Eigensolver:"), gpawEigensolverCombo_);
+    }
+
+    const auto toleranceEdit = [](QWidget* parent, double initial,
+                                  double minimum, double maximum,
+                                  const QString& tip) {
+        auto* edit = new QLineEdit(QString::number(initial, 'g', 6), parent);
+        auto* validator = new QDoubleValidator(minimum, maximum, 12, edit);
+        validator->setNotation(QDoubleValidator::ScientificNotation);
+        validator->setLocale(QLocale::c());
+        edit->setValidator(validator);
+        edit->setToolTip(tip);
+        return edit;
+    };
+    // The three SCF thresholds are converged together and read as a group, so
+    // they share one row — energy first, because it is the one a user sets and
+    // the other two support.
+    auto* tolRowWidget = new QWidget(group);
+    auto* tolRow = new QHBoxLayout(tolRowWidget);
+    tolRow->setContentsMargins(0, 0, 0, 0);
+    if (QWidget* energy = electronic_.energyToleranceWidget()) {
+        tolRow->addWidget(new QLabel(tr("energy"), tolRowWidget));
+        tolRow->addWidget(energy, 1);
+    }
+    gpawEigenTolEdit_ = toleranceEdit(
+        tolRowWidget, 4e-8, 1e-12, 1e-2,
+        tr("GPAW convergence['eigenstates'] — integrated eigenstate residual, "
+           "in eV² per valence electron (e.g. 4e-8)."));
+    gpawDensityTolEdit_ = toleranceEdit(
+        tolRowWidget, 1e-4, 1e-9, 1e-1,
+        tr("GPAW convergence['density'] — change in the density integrated "
+           "over the cell, in electrons per valence electron (e.g. 1e-4)."));
+    tolRow->addWidget(new QLabel(tr("eigenstates"), tolRowWidget));
+    tolRow->addWidget(gpawEigenTolEdit_, 1);
+    tolRow->addWidget(new QLabel(tr("density"), tolRowWidget));
+    tolRow->addWidget(gpawDensityTolEdit_, 1);
+    form->addRow(tr("Convergence tolerances:"), tolRowWidget);
+
+    // Spin polarization and the initial moments, same shared rows again.
+    electronic_.buildSpinRows(form, this);
+
+    // Deliberately no "Density Exports" group. That block writes a .cube after
+    // an SCF converges; a band converges one SCF per image per optimizer step,
+    // so there is no single density to export and asking for one would produce
+    // either hundreds of files or an arbitrary pick. Run the converged saddle
+    // point through Single-point Calculation when you want its density.
+    return group;
+}
+
+void NebDialog::editHubbardParameters()
+{
+    // Seed the element completer from the endpoints, so a U cannot be set on a
+    // species the band does not contain. Both ends, because an NEB is allowed
+    // to relax a composition-preserving rearrangement in which one endpoint
+    // happens to be listed first.
+    QStringList elements;
+    for (QComboBox* combo : {initialCombo_, finalCombo_})
+        elements << structureElements(endpoint(combo).get());
+    elements.removeDuplicates();
+    elements.sort();
+
+    HubbardParametersDialog dialog(hubbardEnabled_, hubbardParameters_,
+                                   elements, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    hubbardEnabled_ = dialog.isEnabled();
+    hubbardParameters_ = dialog.parameters();
 }
 
 bool NebDialog::computeBand()
@@ -398,6 +558,32 @@ core::CalculatorConfig NebDialog::calculatorConfig() const
     c.planeWaveCutoffEv = cutoffSpin_->value();
     for (int i = 0; i < 3; ++i)
         c.kpts[i] = kptSpins_[i]->value();
+
+    // VASP's POTCAR directory is an installation-wide setting shared with the
+    // wizards, so a band relaxation picks it up without asking again. The rest
+    // of the INCAR tags keep their defaults here: NEB drives the relaxation
+    // from ASE, so VASP only ever runs single points inside it.
+    c.vaspPotcarPath =
+        SimulationWizardBase::vaspPotcarDirectory().trimmed().toStdString();
+
+    if (c.calculator == core::CalculatorKind::Gpaw) {
+        c.gpawXc = gpawXcCombo_->currentText().trimmed().toStdString();
+        c.gpawEigensolver = static_cast<core::GpawEigensolver>(
+            gpawEigensolverCombo_->currentIndex());
+        bool ok = false;
+        const double eigen =
+            QLocale::c().toDouble(gpawEigenTolEdit_->text(), &ok);
+        if (ok && eigen > 0.0)
+            c.gpawConvEigenstates = eigen;
+        const double density =
+            QLocale::c().toDouble(gpawDensityTolEdit_->text(), &ok);
+        if (ok && density > 0.0)
+            c.gpawConvDensity = density;
+        c.useHubbardU = hubbardEnabled_ && !hubbardParameters_.empty();
+        c.hubbardU = hubbardParameters_;
+        // Smearing, SCF tolerance / steps and spin, from the shared rows.
+        electronic_.applyTo(c);
+    }
     return c;
 }
 

@@ -2,15 +2,12 @@
 
 #include "core/Structure.hpp"
 #include "core/Vec3.hpp"
-#include "core/VolumetricData.hpp"
-#include "render/ColorMap.hpp"
 #include "render/StructureRenderer.hpp"
 
 #include <QColor>
 #include <QFont>
 #include <QString>
 
-#include <memory>
 #include <vector>
 
 namespace calango::gui {
@@ -59,6 +56,9 @@ struct Overlay {
     // -- shared ------------------------------------------------------------
     core::Vec3 center{0, 0, 0}; ///< centre / origin / text anchor
     QColor color{210, 180, 90};
+    /// Overall transparency of the whole overlay, in [0, 1]. For a primitive
+    /// it is the fill alpha; for text it scales BOTH the glyphs and their
+    /// background, so one control fades the annotation as a unit.
     double opacity = 0.6;
 
     // -- primitives --------------------------------------------------------
@@ -77,20 +77,33 @@ struct Overlay {
     /// vector G = h·b1 + k·b2 + l·b3.
     int miller[3] = {0, 0, 1};
     double offset = 0.0;    ///< displacement along the normal (Å)
-    double extent = 10.0;   ///< half-size of the drawn quad (Å)
+    /// Half-width and half-height of the drawn quad (Å), along the plane's own
+    /// in-plane axes. Two dimensions rather than one `extent`, because a plane
+    /// cutting a slab wants to span the surface without running metres into the
+    /// vacuum above it.
+    double width = 10.0;
+    double height = 10.0;
     bool showEdges = true;
-    /// Colour-map the plane from a loaded volumetric field, turning it into a
-    /// 2D slice through the 3D grid.
-    bool sliceField = false;
-    render::ColorGradient gradient = render::ColorGradient::Viridis;
-    /// The field to slice. Held per overlay so two planes can slice different
-    /// fields; null means the plane is drawn in its flat colour.
-    std::shared_ptr<const core::VolumetricData> field;
-    QString fieldName;
+
+    // Volumetric colour-slicing was removed from this overlay. It duplicated
+    // the Volumetric Data dock, which owns field loading, its own colour ramp
+    // and the isosurface view — two places to load the same .cube, and only one
+    // of them could show it properly. A plane here is a geometric annotation;
+    // slicing a field is the Volumetric dock's job.
 
     // -- text --------------------------------------------------------------
+    /// May contain newlines: the editor is a multi-line box, and an annotation
+    /// is routinely two or three lines (a label plus a value plus a unit).
     QString text;
     QFont font;
+    /// Pill drawn behind the glyphs. Its own colour and its own alpha, so a
+    /// label can sit on a solid plate over busy geometry or float with no
+    /// backing at all.
+    QColor backgroundColor{20, 22, 26};
+    /// Background alpha in [0, 1]. Separate from `opacity` below, which fades
+    /// the whole overlay: a fully opaque label on a barely-there plate is a
+    /// common annotation style and needs the two to move independently.
+    double backgroundOpacity = 0.6;
 
     /// Human-readable type name, for the list and the dialog's combo.
     static QString kindName(Kind kind);

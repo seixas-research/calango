@@ -2,6 +2,7 @@
 
 #include "core/CalculatorConfig.hpp"
 #include "core/Structure.hpp"
+#include "gui/GpawElectronicRows.hpp"
 
 #include <QComboBox>
 #include <QDialog>
@@ -11,8 +12,10 @@
 
 class QCheckBox;
 class QDoubleSpinBox;
+class QGroupBox;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QSpinBox;
 
 namespace calango::gui {
@@ -68,11 +71,16 @@ private Q_SLOTS:
     void browseFinal();
     void browseEnvironment();
     void updateCalculatorEnabled();
+    void editHubbardParameters();
 
 private:
     std::shared_ptr<const core::Structure> endpoint(QComboBox* combo) const;
     bool computeBand();
     core::CalculatorConfig calculatorConfig() const;
+    /// The GPAW electronic-structure group, laid out exactly as the simulation
+    /// wizards lay it out. A band relaxation runs an SCF per image per step, so
+    /// the same knobs matter here; they were simply missing.
+    QGroupBox* buildGpawGroup();
     QString buildNebScript() const;
     void repopulateEndpointCombos(int initialSel, int finalSel);
 
@@ -102,6 +110,17 @@ private:
     QCheckBox* dispersionD4Check_ = nullptr;
     QDoubleSpinBox* cutoffSpin_;
     QSpinBox* kptSpins_[3];
+
+    // --- GPAW electronic structure (shared with the simulation wizards) ----
+    QGroupBox* gpawGroup_ = nullptr;
+    GpawElectronicRows electronic_;
+    QComboBox* gpawXcCombo_ = nullptr;
+    QPushButton* hubbardButton_ = nullptr;
+    QComboBox* gpawEigensolverCombo_ = nullptr;
+    QLineEdit* gpawEigenTolEdit_ = nullptr;
+    QLineEdit* gpawDensityTolEdit_ = nullptr;
+    bool hubbardEnabled_ = false;
+    std::vector<core::HubbardU> hubbardParameters_;
 
     QLineEdit* envEdit_;
     QLabel* envStatus_;

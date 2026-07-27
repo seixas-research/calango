@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Validation benchmark for the Electron Localization Function (ELF) on silicon.
 
-Mirrors the workflow that ``ElfDialog::generateScript`` emits: a plane-wave GPAW
-ground state on bulk diamond-Si, then the ELF evaluated on the real-space grid.
+Mirrors the ELF branch of the Single-point wizard's density exports (see
+``gpawDensityExportBlock`` in AseScriptGenerator): a plane-wave GPAW ground
+state on bulk diamond-Si, then the ELF evaluated on the real-space grid. There
+is no longer a separate ELF module — the field comes out of the same SCF as the
+other five density exports and renders in the Volumetric Data dock.
 
 GPAW 25.x replaced the old ``gpaw.elf.ELF`` class with
 ``gpaw.elf.elf_from_dft_calculation(calc)``, and that routine needs the kinetic

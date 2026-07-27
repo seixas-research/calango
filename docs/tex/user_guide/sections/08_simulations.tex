@@ -78,8 +78,17 @@ all.
 
 \subsection{DFT and ORCA parameters}
 
-DFT calculators expose \ui{Plane-wave cutoff} (default 550\,eV) and a
-\ui{k-point grid} (default $4\times4\times4$).
+DFT calculators expose \ui{Plane-wave cutoff} and a \ui{k-point grid}.
+
+The cutoff is a parameter of the \emph{plane-wave} basis, so under GPAW it is
+shown only in \ui{PW} mode. In \ui{FD} the basis is the real-space grid
+(controlled by \ui{Grid spacing h}) and in \ui{LCAO} it is the atomic orbital
+set --- a cutoff there converges nothing, which is a trap worth not laying.
+
+Under \ui{Spin Configurations}, only the polarization \emph{mode} is chosen
+here. The per-atom initial moments are a property of the structure: set them in
+\menu{Edit Structure\dots} (\S\ref{sec:editstructure}), where you can see which
+atom is which, and they travel with the staged geometry into every calculation.
 
 ORCA has its own group:
 
@@ -98,6 +107,56 @@ ORCA has its own group:
 ASE writes the ORCA \file{.inp} file into the job directory and parses the
 output. The generated script contains an \texttt{EDIT ME} line for the path
 to your \texttt{orca} binary.
+
+\subsection{VASP parameters}
+\label{sec:vaspsettings}
+
+Selecting VASP opens a \ui{VASP settings} group exposing the primary INCAR
+tags. It is built into the shared calculator page, so every wizard that offers
+VASP shows the same controls.
+
+\begin{description}
+  \item[\ui{POTCAR directory}] The PAW datasets, i.e. \texttt{VASP\_PP\_PATH}.
+    Remembered across sessions and shared by every VASP run, since it describes
+    the installation rather than a job. Both layouts work: the canonical one
+    with a \file{potpaw\_PBE/} level inside, and the flat one where the element
+    folders sit directly in the directory --- for the latter the generated
+    script builds a symlink shim, because ASE cannot be told to look anywhere
+    else.
+  \item[\ui{XC functional}] ASE's \texttt{xc}, which expands to the matching
+    \texttt{GGA}/\texttt{METAGGA} tag and its recommended defaults.
+  \item[\ui{PREC} / \ui{ALGO}] Grid accuracy and the electronic minimization.
+    \texttt{Accurate} is the default: \texttt{Normal}'s coarser grid puts
+    egg-box error into the forces, which is what a relaxation is most sensitive
+    to.
+  \item[\ui{NELM} / \ui{EDIFF}] The SCF iteration cap and its energy threshold.
+  \item[\ui{LREAL}] \texttt{Auto} is a large speed-up above roughly 20 atoms;
+    \texttt{False} is exact and right for small cells.
+  \item[\ui{IBRION} / \ui{ISIF} / \ui{EDIFFG}] Shown only for tasks with ionic
+    steps. A negative \texttt{EDIFFG} is a force criterion in eV/\AA; a
+    variable-cell relaxation is raised to \texttt{ISIF}~$\geq$~3
+    automatically.
+  \item[\ui{Write}] \texttt{LCHARG} (on --- CHGCAR is what every density
+    analysis reads), \texttt{LWAVE}, \texttt{LAECHG} (the AECCARs a Bader
+    analysis needs) and \texttt{LORBIT}~=~11.
+  \item[\ui{NCORE} / \ui{KPAR}] Left at \ui{auto} unless you know the machine:
+    a wrong value is a performance cliff, not an error.
+  \item[\ui{Extra INCAR tags}] One \texttt{TAG = value} per line, applied
+    verbatim on top of everything above. No dialog can cover 300 INCAR flags,
+    and one that tries becomes a ceiling.
+\end{description}
+
+\begin{calnote}
+\texttt{ISMEAR} and \texttt{SIGMA} come from the shared \ui{Smearing method}
+row rather than from this group, so one control drives every engine.
+Fermi-Dirac maps to \texttt{ISMEAR}~=~$-1$, Gaussian to 0 and
+Methfessel-Paxton to 1. \ui{None} maps to a very narrow Gaussian rather than to
+the tetrahedron method \texttt{ISMEAR}~=~$-5$, which VASP refuses on the
+$\Gamma$-only meshes that small test cells use.
+
+\texttt{MAGMOM} is not set here either: it comes from the structure's initial
+magnetic moments, and ASE writes it out of the atoms object.
+\end{calnote}
 
 \subsection{MACE models}
 

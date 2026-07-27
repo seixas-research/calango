@@ -1,21 +1,80 @@
 #include "gui/GuiUtils.hpp"
 
 #include "core/Element.hpp"
+#include "core/Structure.hpp"
 
 #include <cmath>
 
+#include <QCoreApplication>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QFontMetricsF>
 #include <QPainter>
 #include <QRectF>
+#include <QMessageBox>
 #include <QPushButton>
+#include <QSaveFile>
+#include <QTextStream>
+#include <QWidget>
 
 #include <algorithm>
+#include <set>
 #include <vector>
 
 namespace calango::gui {
+
+QStringList structureElements(const core::Structure* structure)
+{
+    if (!structure)
+        return {};
+    // std::set rather than sorting a list afterwards: it de-duplicates and
+    // orders in one pass, and the counts here are tens of species at most.
+    std::set<QString> symbols;
+    for (const core::Atom& atom : structure->atoms())
+        symbols.insert(QString::fromLatin1(atom.symbol()));
+    QStringList result;
+    result.reserve(static_cast<qsizetype>(symbols.size()));
+    for (const QString& symbol : symbols)
+        result << symbol;
+    return result;
+}
+
+bool writeTextFile(QWidget* parent, const QString& path,
+                   const std::function<void(QTextStream&)>& body)
+{
+    // QSaveFile, not QFile: an export that fails halfway through must not
+    // leave a truncated file where the previous good one was.
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(
+            parent, parent ? parent->windowTitle() : QString(),
+            QCoreApplication::translate("calango::gui",
+                                        "Could not write %1")
+                .arg(path));
+        return false;
+    }
+    {
+        QTextStream out(&file);
+        body(out);
+    }
+    if (!file.commit()) {
+        QMessageBox::warning(
+            parent, parent ? parent->windowTitle() : QString(),
+            QCoreApplication::translate("calango::gui",
+                                        "Could not write %1")
+                .arg(path));
+        return false;
+    }
+    return true;
+}
+
+bool writeTextFile(QWidget* parent, const QString& path, const QString& body)
+{
+    return writeTextFile(parent, path,
+                         [&body](QTextStream& out) { out << body; });
+}
+
 
 void setButtonColor(QPushButton* button, const QColor& color)
 {

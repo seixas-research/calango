@@ -73,6 +73,7 @@ build-deb/
 build-dmg/
 build-macos-bundle/
 build-verify/
+build-warn/
 develop-eggs/
 dist/
 downloads/

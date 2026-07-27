@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gui/GpawElectronicRows.hpp"
 #include "gui/SimulationWizardBase.hpp"
 
 #include <QList>
@@ -18,6 +19,8 @@ class QSpinBox;
 namespace calango::core {
 class Structure;
 }
+
+class QFormLayout;
 
 namespace calango::gui {
 
@@ -67,9 +70,37 @@ protected:
     QString generateScript() const override;
     QString exportFileName() const override { return QStringLiteral("phonon.py"); }
 
+
+    // The shared GPAW electronic-structure form: smearing (method + width),
+    // eigensolver + SCF step cap, the three convergence tolerances and the spin
+    // configuration. Injected here so this wizard's GPAW page is the SAME page
+    // the Single-Point and Geometry Optimization setups present — an SCF is an
+    // SCF whichever task drives it, and a second layout for the same settings
+    // is how the two drift apart.
+    void buildConvergenceRows(QFormLayout* form) override
+    {
+        electronic_.buildConvergenceRows(form, this);
+    }
+    void buildSpinRows(QFormLayout* form) override
+    {
+        electronic_.buildSpinRows(form, this);
+    }
+    QWidget* gpawEnergyToleranceWidget() override
+    {
+        return electronic_.energyToleranceWidget();
+    }
+    QWidget* gpawScfStepsWidget() override
+    {
+        return electronic_.scfStepsWidget();
+    }
+    bool hasConvergenceExtras() const override { return true; }
+    bool hasSpinExtras() const override { return true; }
+
 private:
     bool periodic_;
     std::shared_ptr<const core::Structure> structure_;
+    /// Shared GPAW electronic-structure controls (see the hooks above).
+    GpawElectronicRows electronic_;
 
     QDoubleSpinBox* deltaSpin_ = nullptr;
     QSpinBox* supercellSpins_[3] = {nullptr, nullptr, nullptr};

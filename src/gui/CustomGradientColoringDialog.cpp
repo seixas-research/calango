@@ -30,7 +30,7 @@ CustomGradientColoringDialog::CustomGradientColoringDialog(
     layout->addLayout(form);
 
     auto* intro = new QLabel(
-        tr("These control the scalar colour mapping. They take effect once "
+        tr("These control the scalar color mapping. They take effect once "
            "\"Color by\" in the Representation panel is set to something other "
            "than Element."),
         this);

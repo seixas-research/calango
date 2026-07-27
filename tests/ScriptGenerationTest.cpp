@@ -12,12 +12,13 @@
 
 #include "core/AseScriptGenerator.hpp"
 #include "core/BornChargesScriptGenerator.hpp"
+#include "core/CddScriptGenerator.hpp"
 #include "core/ElectronicScriptGenerator.hpp"
-#include "core/ElfScriptGenerator.hpp"
 #include "core/GwScriptGenerator.hpp"
 #include "core/OpticsScriptGenerator.hpp"
 #include "core/PhononScriptGenerator.hpp"
 #include "core/RamanIrScriptGenerator.hpp"
+#include "core/RandomNoiseScriptGenerator.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -167,6 +168,84 @@ int main(int argc, char** argv)
             c.fairChemCheckpointPath = "/models/eq2.pt";
             c.matterSimThermal = true;
             dump(name, c);
+        }
+
+        // GPAW density exports: all six fields at once. The block defines
+        // nested helpers and lambdas inside an f-string-bearing script, which
+        // is exactly the shape a hand-check misses.
+        {
+            CalculatorConfig densities = gpawConfig();
+            densities.gpawExportDensity = true;
+            densities.gpawDensityExports = {true, true, true, true, true, true};
+            densities.spinPolarized = true;
+            densities.spinMode = SpinMode::Collinear;
+            std::ofstream out(dir + "/gpaw_densities.py");
+            out << AseScriptGenerator::generate(densities, "structure.extxyz");
+        }
+
+        // VASP: the POTCAR shim, the INCAR tags and the free-form extras all
+        // land in one block with a nested loop and an f-string, so it is worth
+        // byte-compiling rather than eyeballing.
+        {
+            CalculatorConfig vasp;
+            vasp.calculator = CalculatorKind::Vasp;
+            vasp.task = TaskKind::SinglePoint;
+            vasp.vaspPotcarPath = "/opt/vasp/POTCARs";
+            vasp.spinPolarized = true;
+            vasp.spinMode = SpinMode::Collinear;
+            vasp.vaspLaechg = true;
+            vasp.vaspLorbit = true;
+            vasp.vaspNcore = 4;
+            vasp.vaspKpar = 2;
+            vasp.vaspExtraIncar = "LDAU = .TRUE.\nLDAUU = 4.0 0.0";
+            dump("vasp_single_point.py", vasp);
+
+            CalculatorConfig relax = vasp;
+            relax.task = TaskKind::GeometryOptimization;
+            relax.relaxCell = true;
+            relax.vaspExtraIncar.clear();
+            relax.vaspPotcarPath.clear(); // the no-POTCAR-configured branch
+            dump("vasp_relax.py", relax);
+        }
+
+        // Charge density difference: the fragment loop rebuilds a calculator
+        // from a **params dict inside a function, two levels of nesting under
+        // an f-string-bearing script.
+        {
+            CddRunConfig cdd;
+            cdd.baselineDir = dir;
+            cdd.subsystemB = {1};
+            std::ofstream out(dir + "/cdd_all_electron.py");
+            out << CddScriptGenerator::generate(cdd);
+
+            CddRunConfig pseudo = cdd;
+            pseudo.allElectron = false;
+            pseudo.subsystemB = {2, 3, 5};
+            std::ofstream pseudoOut(dir + "/cdd_pseudo.py");
+            pseudoOut << CddScriptGenerator::generate(pseudo);
+        }
+
+        // Random-noise ensemble sweep: the calculator block is re-indented
+        // into a function body and the per-member loop nests two more levels
+        // under it, so this is exactly the shape where an indentation slip
+        // parses as valid Python that does the wrong thing.
+        {
+            RandomNoiseRunConfig noise;
+            noise.calculator = gpawConfig();
+            noise.calculator.task = TaskKind::SinglePoint;
+            noise.computeForces = true;
+            noise.computeStress = true;
+            std::ofstream out(dir + "/random_noise.py");
+            out << RandomNoiseScriptGenerator::generate(noise);
+
+            // The failure branch is a `raise` rather than a recovery block, so
+            // both variants are compiled.
+            RandomNoiseRunConfig strict = noise;
+            strict.continueOnFailure = false;
+            strict.computeForces = false;
+            strict.computeStress = false;
+            std::ofstream strictOut(dir + "/random_noise_strict.py");
+            strictOut << RandomNoiseScriptGenerator::generate(strict);
         }
 
         // LAMMPS: both interfaces, since they emit structurally different
@@ -587,17 +666,10 @@ int main(int argc, char** argv)
         checkContains(script, "no PDOS projections were produced",
                       "an empty PDOS is now reported, not silent");
     }
-    {
-        ElfConfig elf;
-        elf.calculator = gpawConfig();
-        const std::string script = generateElfScript(elf);
-        // gpaw.elf.ELF is gone from BOTH 25.7 and 26.7 — ELF was dead on every
-        // currently shipping GPAW until this.
-        checkContains(script, "from gpaw.elf import elf_from_dft_calculation",
-                      "ELF uses the free function that replaced the class");
-        checkContains(script, "getattr(elf_grid, 'data', elf_grid)",
-                      "and unwraps the UGArray it returns");
-    }
+    // The standalone ELF generator is gone: ELF is one of the six fields the
+    // single-point density-export block writes, and its API is pinned in the
+    // "GPAW density exports" block further down. One generator, one place the
+    // gpaw.elf entry point is named.
     {
         // Symmetry is detected once from the starting geometry and validated
         // against every later one. MD's thermal velocities and a phonon
@@ -739,6 +811,127 @@ int main(int argc, char** argv)
         check(countSymmetryKwargs(
                   AseScriptGenerator::calculatorSnippet(gpawConfig())) == 1,
               "and so does the plain GPAW block");
+    }
+
+    // -- GPAW density exports -----------------------------------------------
+    std::printf("VASP INCAR generation:\n");
+    {
+        CalculatorConfig vasp;
+        vasp.calculator = CalculatorKind::Vasp;
+        vasp.task = TaskKind::SinglePoint;
+        vasp.vaspPotcarPath = "/opt/vasp/POTCARs";
+        vasp.smearing = SmearingMethod::FermiDirac;
+        vasp.smearingWidthEv = 0.05;
+        const std::string script =
+            AseScriptGenerator::generate(vasp, "structure.extxyz");
+
+        checkContains(script, "os.environ['VASP_PP_PATH'] = _potcar_root",
+                      "the POTCAR directory is exported, not assumed");
+        checkContains(script, "'potpaw_PBE', 'potpaw', 'potpaw_LDA'",
+                      "and a flat POTCAR layout is detected");
+        checkContains(script, "os.symlink(_potcar_root, _link)",
+                      "then shimmed, since ASE cannot be pointed elsewhere");
+        // ISMEAR is the one mapping a reader cannot verify by inspection.
+        checkContains(script, "ismear=-1",
+                      "Fermi-Dirac smearing maps to ISMEAR = -1");
+        checkContains(script, "sigma=0.05", "with its width as SIGMA");
+        checkContains(script, "nsw=0", "a single point takes no ionic steps");
+        checkContains(script, "ibrion=-1", "and no ionic algorithm");
+        checkContains(script, "ispin=1", "spin off unless asked for");
+        checkContains(script, "lcharg=True", "CHGCAR is written by default");
+        checkContains(script, "lwave=False", "WAVECAR is not");
+
+        CalculatorConfig gaussian = vasp;
+        gaussian.smearing = SmearingMethod::Gaussian;
+        checkContains(AseScriptGenerator::generate(gaussian, "s.extxyz"),
+                      "ismear=0", "Gaussian smearing maps to ISMEAR = 0");
+        CalculatorConfig mp = vasp;
+        mp.smearing = SmearingMethod::MethfesselPaxton;
+        checkContains(AseScriptGenerator::generate(mp, "s.extxyz"),
+                      "ismear=1", "Methfessel-Paxton maps to first-order MP");
+        CalculatorConfig none = vasp;
+        none.smearing = SmearingMethod::None;
+        const std::string fixed = AseScriptGenerator::generate(none, "s.extxyz");
+        // NOT -5: the tetrahedron method fails outright on the Gamma-only
+        // meshes that small test cells use, which is the first thing anyone
+        // runs.
+        checkContains(fixed, "ismear=0",
+                      "fixed occupations use a narrow Gaussian, not ISMEAR=-5");
+        checkContains(fixed, "sigma=0.01", "with a small width");
+
+        CalculatorConfig magnetic = vasp;
+        magnetic.spinPolarized = true;
+        magnetic.spinMode = SpinMode::Collinear;
+        const std::string spin =
+            AseScriptGenerator::generate(magnetic, "s.extxyz");
+        checkContains(spin, "ispin=2", "a spin-polarized run sets ISPIN = 2");
+        check(!contains(spin, "magmom="),
+              "and does NOT restate MAGMOM — it rides on the structure");
+
+        CalculatorConfig relax = vasp;
+        relax.task = TaskKind::GeometryOptimization;
+        relax.maxSteps = 60;
+        relax.vaspIsif = 2;
+        relax.relaxCell = true;
+        const std::string relaxed =
+            AseScriptGenerator::generate(relax, "s.extxyz");
+        checkContains(relaxed, "nsw=60", "a relaxation gets its step budget");
+        checkContains(relaxed, "isif=3",
+                      "and a variable-cell run is raised to ISIF = 3");
+
+        CalculatorConfig unset = vasp;
+        unset.vaspPotcarPath.clear();
+        check(!contains(AseScriptGenerator::generate(unset, "s.extxyz"),
+                        "VASP_PP_PATH'] ="),
+              "with no directory configured the environment's own is left "
+              "alone");
+    }
+
+    std::printf("GPAW density exports:\n");
+    {
+        CalculatorConfig config = gpawConfig();
+        config.gpawExportDensity = true;
+        config.gpawDensityExports = {true, true, true, true, true, true};
+        const std::string script =
+            AseScriptGenerator::generate(config, "structure.extxyz");
+        checkContains(script, "density_all_electron.cube", "all-electron density");
+        checkContains(script, "density_pseudo.cube", "pseudodensity");
+        checkContains(script, "density_spin.cube", "spin density");
+        checkContains(script, "potential_hartree.cube", "Hartree potential");
+        checkContains(script, "elf.cube", "ELF");
+        checkContains(script, "kinetic_energy_density.cube",
+                      "kinetic energy density");
+        // The two whose API is not obvious, pinned by name: both were
+        // established against a live GPAW 26.x, and both moved between
+        // releases.
+        checkContains(script, "elf_from_dft_calculation",
+                      "ELF uses the module-level entry point");
+        checkContains(script, "density.update_ked(dft.ibzwfs)",
+                      "tau is built before it is read");
+        checkContains(script, "density.taut_sR",
+                      "and read off the density object");
+        // One unsupported field must not cost the others, which the converged
+        // SCF has already paid for.
+        checkContains(script, "CALANGO_INFO", "a failing field is reported");
+
+        // Only what was asked for.
+        CalculatorConfig one = gpawConfig();
+        one.gpawExportDensity = true;
+        one.gpawDensityExports.elf = true;
+        const std::string onlyElf =
+            AseScriptGenerator::generate(one, "structure.extxyz");
+        checkContains(onlyElf, "elf.cube", "a single selection emits its field");
+        check(!contains(onlyElf, "potential_hartree.cube"),
+              "and nothing else");
+
+        // A config from a saved project carries only the old single choice.
+        CalculatorConfig legacy = gpawConfig();
+        legacy.gpawExportDensity = true;
+        legacy.gpawDensityType = GpawDensityType::AllElectron;
+        const std::string legacyScript =
+            AseScriptGenerator::generate(legacy, "structure.extxyz");
+        checkContains(legacyScript, "density_all_electron.cube",
+                      "an empty selection falls back to the legacy density type");
     }
 
     // -- LAMMPS -------------------------------------------------------------

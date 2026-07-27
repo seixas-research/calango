@@ -1,10 +1,13 @@
 #pragma once
 
+#include "gui/GpawElectronicRows.hpp"
 #include "gui/SimulationWizardBase.hpp"
 
 class QComboBox;
 class QDoubleSpinBox;
 class QSpinBox;
+
+class QFormLayout;
 
 namespace calango::gui {
 
@@ -29,6 +32,32 @@ protected:
     bool showsDispersionToggle() const override { return true; }
     QString exportFileName() const override { return QStringLiteral("monte_carlo.py"); }
 
+
+    // The shared GPAW electronic-structure form: smearing (method + width),
+    // eigensolver + SCF step cap, the three convergence tolerances and the spin
+    // configuration. Injected here so this wizard's GPAW page is the SAME page
+    // the Single-Point and Geometry Optimization setups present — an SCF is an
+    // SCF whichever task drives it, and a second layout for the same settings
+    // is how the two drift apart.
+    void buildConvergenceRows(QFormLayout* form) override
+    {
+        electronic_.buildConvergenceRows(form, this);
+    }
+    void buildSpinRows(QFormLayout* form) override
+    {
+        electronic_.buildSpinRows(form, this);
+    }
+    QWidget* gpawEnergyToleranceWidget() override
+    {
+        return electronic_.energyToleranceWidget();
+    }
+    QWidget* gpawScfStepsWidget() override
+    {
+        return electronic_.scfStepsWidget();
+    }
+    bool hasConvergenceExtras() const override { return true; }
+    bool hasSpinExtras() const override { return true; }
+
 private Q_SLOTS:
     void updateMethodEnabled();
 
@@ -44,6 +73,12 @@ private:
     QDoubleSpinBox* fmaxSpin_;         // Basin Hopping local-opt force tol
     QComboBox* optimizerCombo_;        // Basin Hopping local optimizer
     QSpinBox* seedSpin_;
+    /// baseCalculatorConfig() plus the shared GPAW electronic rows. Folded
+    /// into one accessor so the two script paths cannot disagree about them.
+    core::CalculatorConfig electronicCalculatorConfig() const;
+
+    /// Shared GPAW electronic-structure controls.
+    GpawElectronicRows electronic_;
 };
 
 } // namespace calango::gui

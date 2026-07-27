@@ -64,7 +64,7 @@ QWidget* VisualEffectsPanel::buildShadowTab()
     group->setChecked(style.shadowsEnabled);
     group->setToolTip(
         tr("Real-time shadow mapping with percentage-closer filtering: atoms "
-           "and bonds cast shadows onto neighbouring geometry. Adds a "
+           "and bonds cast shadows onto neighboring geometry. Adds a "
            "depth-only pass per frame, so it costs roughly one extra draw of "
            "the scene."));
     auto* form = new QFormLayout(group);
@@ -94,7 +94,7 @@ QWidget* VisualEffectsPanel::buildShadowTab()
     softnessSpin->setToolTip(
         tr("PCF blur radius in shadow-map texels.\n"
            "0 gives hard, aliased edges; each step averages a wider "
-           "neighbourhood — (2r+1)² samples per fragment — so quality and "
+           "neighborhood — (2r+1)² samples per fragment — so quality and "
            "cost both rise with it. 2–3 suits most structures."));
     form->addRow(tr("Softness / blur radius:"), softnessSpin);
 
@@ -284,7 +284,7 @@ QWidget* VisualEffectsPanel::buildOcclusionTab()
     radiusSpin->setSuffix(QStringLiteral(" Å"));
     radiusSpin->setValue(viewport_->ambientOcclusion().radius);
     radiusSpin->setToolTip(
-        tr("How far a neighbouring surface can be and still shade this one. "
+        tr("How far a neighboring surface can be and still shade this one. "
            "Around one atomic radius reads best: much larger and the whole "
            "structure dims uniformly, much smaller and only the tightest "
            "creases darken."));

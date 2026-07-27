@@ -1,5 +1,7 @@
 #include "gui/VolumetricDialog.hpp"
 
+#include "gui/GuiUtils.hpp"
+
 #include "gui/VolumeViewWidget.hpp"
 #include "render/ColorMap.hpp"
 
@@ -474,23 +476,17 @@ void VolumetricDialog::exportIso()
         tr("Wavefront OBJ (*.obj)"));
     if (path.isEmpty())
         return;
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, windowTitle(),
-                             tr("Could not write %1").arg(path));
-        return;
-    }
-    QTextStream out(&file);
-    out << "# Calango isosurface (" << isoMesh_.positions.size() / 3
-        << " triangles)\n";
-    for (const auto& p : isoMesh_.positions)
-        out << "v " << p.x << ' ' << p.y << ' ' << p.z << '\n';
-    for (const auto& n : isoMesh_.normals)
-        out << "vn " << n.x << ' ' << n.y << ' ' << n.z << '\n';
-    for (std::size_t i = 0; i + 2 < isoMesh_.positions.size(); i += 3)
-        out << "f " << i + 1 << "//" << i + 1 << ' ' << i + 2 << "//" << i + 2
-            << ' ' << i + 3 << "//" << i + 3 << '\n';
-    file.commit();
+    writeTextFile(this, path, [&](QTextStream& out) {
+        out << "# Calango isosurface (" << isoMesh_.positions.size() / 3
+            << " triangles)\n";
+        for (const auto& p : isoMesh_.positions)
+            out << "v " << p.x << ' ' << p.y << ' ' << p.z << '\n';
+        for (const auto& n : isoMesh_.normals)
+            out << "vn " << n.x << ' ' << n.y << ' ' << n.z << '\n';
+        for (std::size_t i = 0; i + 2 < isoMesh_.positions.size(); i += 3)
+            out << "f " << i + 1 << "//" << i + 1 << ' ' << i + 2 << "//" << i + 2
+                << ' ' << i + 3 << "//" << i + 3 << '\n';
+    });
 }
 
 void VolumetricDialog::exportSlice()
@@ -505,17 +501,11 @@ void VolumetricDialog::exportSlice()
         tr("CSV (*.csv)"));
     if (path.isEmpty())
         return;
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, windowTitle(),
-                             tr("Could not write %1").arg(path));
-        return;
-    }
-    QTextStream out(&file);
-    out << "x_A,y_A,z_A,value\n";
-    for (const auto& s : sliceSamples_)
-        out << s[0] << ',' << s[1] << ',' << s[2] << ',' << s[3] << '\n';
-    file.commit();
+    writeTextFile(this, path, [&](QTextStream& out) {
+        out << "x_A,y_A,z_A,value\n";
+        for (const auto& s : sliceSamples_)
+            out << s[0] << ',' << s[1] << ',' << s[2] << ',' << s[3] << '\n';
+    });
 }
 
 } // namespace calango::gui

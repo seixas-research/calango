@@ -15,10 +15,10 @@ using core::Vec3;
 
 constexpr double kPi = std::numbers::pi;
 
-/// Tessellation of the lattice-plane quad. 48x48 is fine enough that a
-/// field-sliced plane reads as a smooth colour map rather than as facets, and
-/// coarse enough to rebuild interactively while a slider is dragged.
-constexpr int kPlaneDivisions = 48;
+/// Tessellation of the lattice-plane quad. A flat-coloured plane needs far
+/// less than this, but keeping it fine costs nothing at these sizes and leaves
+/// room for per-vertex shading later.
+constexpr int kPlaneDivisions = 16;
 
 void appendVertex(std::vector<float>& out, const Vec3& p, const QColor& c)
 {
@@ -211,9 +211,9 @@ void genPlane(const Overlay& p, std::vector<float>& out)
     }
 }
 
-/// The (hkl) plane: a tessellated quad centred on the cell, optionally
-/// colour-mapped from a volumetric field. Carried over from the retired
-/// Lattice Plane dialog.
+/// The (hkl) plane: a tessellated quad centred on the cell and displaced along
+/// its own normal. Carried over from the retired Lattice Plane dialog, minus
+/// the field slicing that dialog also carried.
 void genLatticePlane(const Overlay& p, const core::Structure* structure,
                      std::vector<float>& faces, std::vector<float>& edges)
 {
@@ -234,42 +234,16 @@ void genLatticePlane(const Overlay& p, const core::Structure* structure,
     const Vec3 uAxis = perpendicular(normal);
     const Vec3 vAxis = normal.cross(uAxis).normalized();
     const Vec3 planeOrigin = (a + b + c) * 0.5 + normal * p.offset;
-    const double R = p.extent;
 
-    // Field slice: Cartesian -> field-box fractional by Cramer's rule.
-    const bool useField = p.sliceField && p.field && !p.field->empty();
-    double lo = 0.0, hi = 1.0, invDet = 0.0;
-    Vec3 fBC, fCA, fAB;
-    if (useField) {
-        lo = p.field->minValue();
-        hi = p.field->maxValue();
-        if (hi <= lo)
-            hi = lo + 1.0;
-        fBC = p.field->spanB.cross(p.field->spanC);
-        fCA = p.field->spanC.cross(p.field->spanA);
-        fAB = p.field->spanA.cross(p.field->spanB);
-        const double det = p.field->spanA.dot(fBC);
-        invDet = std::abs(det) > 1e-12 ? 1.0 / det : 0.0;
-    }
-
-    const auto colorAt = [&](const Vec3& point) -> QColor {
-        if (!useField || invDet == 0.0)
-            return p.color;
-        const Vec3 dp = point - p.field->origin;
-        const double uf = dp.dot(fBC) * invDet;
-        const double vf = dp.dot(fCA) * invDet;
-        const double wf = dp.dot(fAB) * invDet;
-        const double value = p.field->samplePeriodic(
-            uf * p.field->nx, vf * p.field->ny, wf * p.field->nz);
-        return render::ColorMap::sample(
-            p.gradient, static_cast<float>((value - lo) / (hi - lo)));
-    };
+    // Independent half-extents along the plane's own two in-plane axes.
+    const double halfWidth = p.width;
+    const double halfHeight = p.height;
 
     const auto point = [&](int i, int j) {
         const double s =
-            (static_cast<double>(i) / kPlaneDivisions * 2.0 - 1.0) * R;
+            (static_cast<double>(i) / kPlaneDivisions * 2.0 - 1.0) * halfWidth;
         const double t =
-            (static_cast<double>(j) / kPlaneDivisions * 2.0 - 1.0) * R;
+            (static_cast<double>(j) / kPlaneDivisions * 2.0 - 1.0) * halfHeight;
         return planeOrigin + uAxis * s + vAxis * t;
     };
 
@@ -277,14 +251,12 @@ void genLatticePlane(const Overlay& p, const core::Structure* structure,
         for (int j = 0; j < kPlaneDivisions; ++j) {
             const Vec3 p00 = point(i, j), p10 = point(i + 1, j),
                        p11 = point(i + 1, j + 1), p01 = point(i, j + 1);
-            const QColor c00 = colorAt(p00), c10 = colorAt(p10),
-                         c11 = colorAt(p11), c01 = colorAt(p01);
-            appendVertex(faces, p00, c00);
-            appendVertex(faces, p10, c10);
-            appendVertex(faces, p11, c11);
-            appendVertex(faces, p00, c00);
-            appendVertex(faces, p11, c11);
-            appendVertex(faces, p01, c01);
+            appendVertex(faces, p00, p.color);
+            appendVertex(faces, p10, p.color);
+            appendVertex(faces, p11, p.color);
+            appendVertex(faces, p00, p.color);
+            appendVertex(faces, p11, p.color);
+            appendVertex(faces, p01, p.color);
         }
     }
 

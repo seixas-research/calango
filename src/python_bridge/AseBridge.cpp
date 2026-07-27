@@ -153,19 +153,26 @@ core::Structure AseBridge::fromAtoms(const py::handle& atoms)
     // those are an input guess (ASE seeds bulk Fe with 2.3 μB whether or not
     // anything was ever calculated) and drawing them as results would be
     // actively misleading.
-    if (structure.vectorFields().count("magmoms") == 0) {
-        const auto scalar = structure.scalarFields().find("magmoms");
-        if (scalar != structure.scalarFields().end()
-            && scalar->second.size() == n) {
-            std::vector<core::Vec3> vectors(n);
-            double largest = 0.0;
-            for (std::size_t i = 0; i < n; ++i) {
-                vectors[i] = {0.0, 0.0, scalar->second[i]};
-                largest = std::max(largest, std::abs(scalar->second[i]));
-            }
-            if (largest > 1e-9)
-                structure.setVectorField("magmoms", std::move(vectors));
+    // `initial_magmoms` gets the same promotion, and unlike the computed
+    // moments it IS drawn: the Structure editor sets it deliberately, the
+    // viewport offers it as its own overlay entry ("Initial magnetic
+    // moments"), and it is labelled as the guess it is rather than passed off
+    // as a result.
+    for (const char* name : {"magmoms", "initial_magmoms"}) {
+        if (structure.vectorFields().count(name) > 0)
+            continue;
+        const auto scalar = structure.scalarFields().find(name);
+        if (scalar == structure.scalarFields().end()
+            || scalar->second.size() != n)
+            continue;
+        std::vector<core::Vec3> vectors(n);
+        double largest = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            vectors[i] = {0.0, 0.0, scalar->second[i]};
+            largest = std::max(largest, std::abs(scalar->second[i]));
         }
+        if (largest > 1e-9)
+            structure.setVectorField(name, std::move(vectors));
     }
 
     // Velocities derived from momenta/masses (ase get_velocities); only

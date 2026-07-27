@@ -25,6 +25,7 @@ const char* vectorFieldName(VectorOverlay overlay)
     case VectorOverlay::Velocity: return "velocities";
     case VectorOverlay::Force: return "forces";
     case VectorOverlay::MagneticMoment: return "magmoms";
+    case VectorOverlay::InitialMagneticMoment: return "initial_magmoms";
     case VectorOverlay::None: break;
     }
     return "";
@@ -1571,6 +1572,12 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                 // spin up/down along z. Non-collinear (N,3) magmoms import
                 // directly.
                 addArrows("magmoms", style_.magmomColor);
+                break;
+            case VectorOverlay::InitialMagneticMoment:
+                // Set in Edit Structure, not computed. Collinear moments are
+                // stored alongside a promoted (0, 0, m) vector copy so this
+                // same arrow path serves both spin modes.
+                addArrows("initial_magmoms", style_.initialMagmomColor);
                 break;
             case VectorOverlay::None:
                 break;

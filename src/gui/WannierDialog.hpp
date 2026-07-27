@@ -82,7 +82,7 @@ private:
 
     // -- Isosurface extraction, off the GUI thread -------------------------
     //
-    // Mirrors ElfDialog: marching cubes runs on a QtConcurrent worker so a
+    // Marching cubes runs on a QtConcurrent worker so a
     // slider drag never freezes the window. Requests coalesce (at most one in
     // flight, at most one queued) and `isoGeneration_` tags each launch so a
     // result that arrives after its inputs changed is discarded, not drawn.

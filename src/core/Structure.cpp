@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <type_traits>
 #include <map>
 #include <utility>
 #include <vector>
@@ -182,6 +183,73 @@ void Structure::removeAtom(std::size_t index)
     bondOrders_ = std::move(orders);
 }
 
+void Structure::reorder(const std::vector<std::size_t>& order)
+{
+    const std::size_t n = atoms_.size();
+    if (order.size() != n)
+        return;
+    // Validate before touching anything: a partially-applied permutation is
+    // far worse than a rejected one, because it silently scrambles the very
+    // index alignment this function exists to preserve.
+    std::vector<bool> seen(n, false);
+    for (const std::size_t from : order) {
+        if (from >= n || seen[from])
+            return;
+        seen[from] = true;
+    }
+
+    // inverse[old] = new, for remapping the index-keyed bond data.
+    std::vector<int> inverse(n, 0);
+    for (std::size_t to = 0; to < n; ++to)
+        inverse[order[to]] = static_cast<int>(to);
+
+    const auto permute = [&order, n](auto& values) {
+        if (values.size() != n)
+            return;
+        std::decay_t<decltype(values)> sorted;
+        sorted.reserve(n);
+        for (const std::size_t from : order)
+            sorted.push_back(values[from]);
+        values = std::move(sorted);
+    };
+
+    permute(atoms_);
+    for (auto& [name, values] : scalarFields_) {
+        (void)name;
+        permute(values);
+    }
+    for (auto& [name, values] : vectorFields_) {
+        (void)name;
+        permute(values);
+    }
+    permute(residues_);
+
+    for (auto* overrides : {&addedBonds_, &removedBonds_}) {
+        for (auto& [i, j] : *overrides) {
+            if (i >= 0 && static_cast<std::size_t>(i) < n)
+                i = inverse[static_cast<std::size_t>(i)];
+            if (j >= 0 && static_cast<std::size_t>(j) < n)
+                j = inverse[static_cast<std::size_t>(j)];
+        }
+    }
+    // Keys are immutable, so the map is rebuilt. The canonical (low, high)
+    // ordering of each key has to be restored too: a permutation can swap the
+    // two ends of a pair, and a key stored the wrong way round is a bond order
+    // that lookups never find.
+    std::map<std::pair<int, int>, int> orders;
+    for (const auto& [pair, order_] : bondOrders_) {
+        if (pair.first < 0 || static_cast<std::size_t>(pair.first) >= n
+            || pair.second < 0 || static_cast<std::size_t>(pair.second) >= n)
+            continue;
+        int i = inverse[static_cast<std::size_t>(pair.first)];
+        int j = inverse[static_cast<std::size_t>(pair.second)];
+        if (i > j)
+            std::swap(i, j);
+        orders[{i, j}] = order_;
+    }
+    bondOrders_ = std::move(orders);
+}
+
 void Structure::clear()
 {
     atoms_.clear();
@@ -293,12 +361,35 @@ std::vector<Bond> Structure::detectBonds(double tolerance, bool autoDetect) cons
             d += offset;
         }
     };
-    const auto hasOverride = [](const std::vector<std::pair<int, int>>& list,
+    // Manual bond overrides, sorted once so the inner loop can binary-search
+    // them.
+    //
+    // This used to be a std::find over the raw vectors, run twice for every
+    // candidate pair the spatial grid produced — so the cost of bond
+    // perception grew with the number of bonds the user had drawn by hand. On
+    // a 7000-atom structure, 400 overrides took it from 34 ms to 339 ms: the
+    // more a structure was edited, the less usable the viewport became.
+    std::vector<std::pair<int, int>> removedSorted, addedSorted;
+    const auto canonical = [](const std::vector<std::pair<int, int>>& list) {
+        std::vector<std::pair<int, int>> out;
+        out.reserve(list.size());
+        for (const auto& [i, j] : list) {
+            const auto pair = std::minmax(i, j);
+            out.emplace_back(pair.first, pair.second);
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+    removedSorted = canonical(removedBonds_);
+    addedSorted = canonical(addedBonds_);
+    // The overwhelmingly common case is no overrides at all, and an empty
+    // check is cheaper than even a binary search on an empty range.
+    const bool anyOverride = !removedSorted.empty() || !addedSorted.empty();
+    const auto hasOverride = [](const std::vector<std::pair<int, int>>& sorted,
                                 int i, int j) {
         const auto pair = std::minmax(i, j);
-        return std::find(list.begin(), list.end(),
-                         std::pair<int, int>{pair.first, pair.second})
-            != list.end();
+        return std::binary_search(sorted.begin(), sorted.end(),
+                                  std::pair<int, int>{pair.first, pair.second});
     };
 
     std::vector<Bond> bonds;
@@ -374,8 +465,9 @@ std::vector<Bond> Structure::detectBonds(double tolerance, bool autoDetect) cons
                         if (!positive)
                             return;
                     }
-                    if (hasOverride(removedBonds_, i, j)
-                        || hasOverride(addedBonds_, i, j))
+                    if (anyOverride
+                        && (hasOverride(removedSorted, i, j)
+                            || hasOverride(addedSorted, i, j)))
                         return; // suppressed, or handled below as a manual bond
 
                     const auto& b = atoms_[static_cast<std::size_t>(j)];

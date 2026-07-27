@@ -10,7 +10,15 @@
 namespace calango::gui {
 
 /// Which visualization the Volumetric Data panel renders on the main viewport.
-enum class VolumetricRenderMode { Isosurface, ColorSlice, PotentialMap };
+///
+/// Two, not three. "Potential map" used to be a third mode, which was a
+/// mis-modelling: it IS an isosurface — the same geometry, extracted the same
+/// way, at the same isovalue — differing only in what colours it. As a
+/// separate mode it duplicated every isosurface control, forced the user to
+/// re-pick the base field they had already selected, and made "show me this
+/// surface, coloured by the potential" a mode switch rather than a checkbox.
+/// It is now an option under Isosurface.
+enum class VolumetricRenderMode { Isosurface, ColorSlice };
 
 /// Appearance settings for a rendered volumetric field, shared between the
 /// Volumetric Data panel (which applies it) and the "Edit Volumetric Render"
@@ -28,6 +36,11 @@ struct VolumetricStyle {
     /// Grid refinement applied before marching cubes (smoother meshes).
     core::GridInterpolation gridInterpolation = core::GridInterpolation::None;
 
+    /// Colour the isosurface by a second field sampled at its vertices — the
+    /// electrostatic-potential map. Off, the surface takes the flat phase
+    /// colours above.
+    bool potentialColoring = false;
+
     // -- Color slice -------------------------------------------------------
     /// Plane orientation as Miller indices (h k l) relative to the grid's own
     /// lattice: the slice normal is the reciprocal-lattice vector
@@ -39,6 +52,17 @@ struct VolumetricStyle {
     int millerL = 1;
     double sliceOffset = 0.5;   ///< 0 … 1 sweeping the cell along the normal
     double sliceOpacity = 0.70; ///< 0 (transparent) … 1 (opaque)
+    /// How far the slice extends, in unit cells across: 1 draws it inside the
+    /// cell only, 2 and 3 tile it over the neighbouring cells.
+    ///
+    /// The plane used to be drawn over the grid's bounding SPHERE, which
+    /// overshoots the cell in every direction and, for anything triclinic,
+    /// leaves a plane visibly larger than the structure it cuts. Clipping to
+    /// whole cells makes the extent mean something, and periodic sampling
+    /// makes the replicated copies real rather than a smear.
+    int sliceReplicas = 1;
+    /// Outline the slice quad, so its extent is visible against the structure.
+    bool sliceShowBorder = false;
     /// Reverse the value → color mapping (t → 1 − t), matplotlib's "_r" maps.
     /// Honored by every mode that samples `gradient` (slice + potential map).
     bool invertGradient = false;
@@ -56,12 +80,14 @@ struct VolumetricStyle {
     /// than visible voxel facets.
     core::GridInterpolation sliceInterpolation = core::GridInterpolation::None;
 
-    // -- Potential map -----------------------------------------------------
-    // A base isosurface (geometry) colored by a secondary scalar field mapped
-    // onto its vertices via `gradient`. Indices are into the panel's dataset
-    // registry; -1 for the base means "the current selection", -1 for the
-    // secondary means "none" (uniform positive color).
-    int potentialBaseIndex = -1;
+    // -- Potential-map colouring (an Isosurface option) --------------------
+    // The secondary scalar field sampled at each surface vertex and mapped
+    // through `gradient`. An index into the panel's dataset registry; -1 means
+    // "none", which leaves the surface on its flat phase colours.
+    //
+    // There is no base index any more: the base IS whichever isosurface is
+    // being drawn, which is both what the user already selected and what makes
+    // colouring several surfaces at once possible.
     int potentialSecondaryIndex = -1;
     /// When true the color ramp uses [potentialMin, potentialMax] instead of
     /// the secondary field's own min/max — for electrostatic / work-function

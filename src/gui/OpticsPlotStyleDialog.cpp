@@ -50,14 +50,14 @@ OpticsPlotStyleDialog::OpticsPlotStyleDialog(const OpticsPlotStyle& style,
     auto* curveGroup = new QGroupBox(tr("Curves"), this);
     auto* curveForm = new QFormLayout(curveGroup);
     overrideCurveCheck_ =
-        new QCheckBox(tr("Use one colour for every curve"), curveGroup);
+        new QCheckBox(tr("Use one color for every curve"), curveGroup);
     overrideCurveCheck_->setToolTip(
         tr("Off, curves cycle through a palette so paired quantities (ε₁ with "
            "ε₂, n with k) stay distinguishable. On, they share one stroke — "
            "usually what a single-curve figure wants."));
     curveForm->addRow(overrideCurveCheck_);
     curveButton_ = colorButton(&style_.curveColor);
-    curveForm->addRow(tr("Curve colour:"), curveButton_);
+    curveForm->addRow(tr("Curve color:"), curveButton_);
     lineWidthSpin_ = new QDoubleSpinBox(curveGroup);
     lineWidthSpin_->setRange(0.2, 8.0);
     lineWidthSpin_->setSingleStep(0.2);
@@ -79,7 +79,7 @@ OpticsPlotStyleDialog::OpticsPlotStyleDialog(const OpticsPlotStyle& style,
     fontSizeSpin_->setSuffix(tr(" pt"));
     axisForm->addRow(tr("Font size:"), fontSizeSpin_);
     labelButton_ = colorButton(&style_.axisLabelColor);
-    axisForm->addRow(tr("Label colour:"), labelButton_);
+    axisForm->addRow(tr("Label color:"), labelButton_);
     layout->addWidget(axisGroup);
 
     auto* gridGroup = new QGroupBox(tr("Grid"), this);
@@ -87,7 +87,7 @@ OpticsPlotStyleDialog::OpticsPlotStyleDialog(const OpticsPlotStyle& style,
     gridCheck_ = new QCheckBox(tr("Show grid lines"), gridGroup);
     gridForm->addRow(gridCheck_);
     gridButton_ = colorButton(&style_.gridColor);
-    gridForm->addRow(tr("Grid colour:"), gridButton_);
+    gridForm->addRow(tr("Grid color:"), gridButton_);
     gridAlphaSpin_ = new QDoubleSpinBox(gridGroup);
     gridAlphaSpin_->setRange(0.0, 1.0);
     gridAlphaSpin_->setSingleStep(0.05);

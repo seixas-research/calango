@@ -329,6 +329,179 @@ std::string pythonStringList(const std::vector<std::string>& values,
 /// LAMMPSlib takes a list of LAMMPS COMMANDS, lammpsrun takes a parameter DICT
 /// it renders into an input deck — so they get separate blocks rather than one
 /// parameterized template that would obscure both.
+/// VASP through ASE, with the INCAR tags the wizard collects.
+///
+/// Two things here are not obvious and are the reason this is not a one-liner.
+///
+/// POTCARs. ASE resolves them as `$VASP_PP_PATH/potpaw_PBE/<El>/POTCAR` and
+/// gives no way to override that subdirectory name. Plenty of real
+/// installations (including the one this was written against) keep the element
+/// folders directly under their POTCAR directory, with no `potpaw_PBE` level at
+/// all. Rather than telling the user their layout is wrong, the script detects
+/// it and builds a tiny symlink shim so ASE finds what is already there.
+///
+/// ISMEAR. VASP encodes the smearing METHOD and the Methfessel-Paxton ORDER in
+/// one integer, and the useful values are not a simple enumeration: -1 is
+/// Fermi-Dirac, 0 is Gaussian, N > 0 is Nth-order MP, -5 is the tetrahedron
+/// method. The mapping is spelled out below rather than left to the reader.
+void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
+{
+    const auto pyBool = [](bool value) { return value ? "True" : "False"; };
+    const auto prec = [&] {
+        switch (c.vaspPrec) {
+        case VaspPrecision::Normal: return "Normal";
+        case VaspPrecision::Single: return "Single";
+        case VaspPrecision::Accurate: break;
+        }
+        return "Accurate";
+    }();
+    const auto algo = [&] {
+        switch (c.vaspAlgo) {
+        case VaspAlgo::Fast: return "Fast";
+        case VaspAlgo::VeryFast: return "VeryFast";
+        case VaspAlgo::All: return "All";
+        case VaspAlgo::Damped: return "Damped";
+        case VaspAlgo::Normal: break;
+        }
+        return "Normal";
+    }();
+    // ISMEAR / SIGMA. A metal wants MP or Gaussian; an insulator wants the
+    // tetrahedron method, which VASP will refuse for a Gamma-only mesh — so a
+    // "None" selection maps to a very small Gaussian rather than to -5, which
+    // would fail on exactly the small test cells people try first.
+    int ismear = 0;
+    double sigma = c.smearingWidthEv;
+    switch (c.smearing) {
+    case SmearingMethod::None:
+        ismear = 0;
+        sigma = 0.01;
+        break;
+    case SmearingMethod::Gaussian:
+        ismear = 0;
+        break;
+    case SmearingMethod::FermiDirac:
+        ismear = -1;
+        break;
+    case SmearingMethod::MethfesselPaxton:
+        ismear = 1;
+        break;
+    }
+
+    out << "# VASP through ASE. The run needs a VASP binary reachable through\n"
+           "# ASE_VASP_COMMAND (or ASE's `command`), and the PAW datasets\n"
+           "# below.\n"
+           "import os\n"
+           "from ase.calculators.vasp import Vasp\n"
+           "\n";
+
+    if (!c.vaspPotcarPath.empty()) {
+        out << "# PAW datasets. ASE looks for $VASP_PP_PATH/potpaw_PBE/<El>/POTCAR;\n"
+               "# an installation that keeps the element folders directly under\n"
+               "# the POTCAR directory gets a symlink shim so it resolves anyway.\n"
+            << "_potcar_root = r\"" << c.vaspPotcarPath
+            << "\"\n"
+               "if not os.path.isdir(_potcar_root):\n"
+               "    raise RuntimeError(\n"
+               "        f'POTCAR directory not found: {_potcar_root}\\n'\n"
+               "        'Set it in the calculator settings (VASP -> POTCAR "
+               "directory).')\n"
+               "if not any(os.path.isdir(os.path.join(_potcar_root, _d))\n"
+               "           for _d in ('potpaw_PBE', 'potpaw', 'potpaw_LDA')):\n"
+               "    _shim = os.path.abspath('_potcar_shim')\n"
+               "    os.makedirs(_shim, exist_ok=True)\n"
+               "    for _name in ('potpaw_PBE', 'potpaw_LDA', 'potpaw'):\n"
+               "        _link = os.path.join(_shim, _name)\n"
+               "        if not os.path.exists(_link):\n"
+               "            os.symlink(_potcar_root, _link)\n"
+               "    print(f'CALANGO_INFO flat POTCAR layout — shimmed via "
+               "{_shim}',\n"
+               "          flush=True)\n"
+               "    _potcar_root = _shim\n"
+               "os.environ['VASP_PP_PATH'] = _potcar_root\n"
+               "\n";
+    } else {
+        out << "# No POTCAR directory configured — ASE falls back to whatever\n"
+               "# VASP_PP_PATH the environment already carries.\n\n";
+    }
+
+    out << "atoms.calc = Vasp(\n"
+        << "    directory=\".\",\n"
+        << "    xc=\"" << c.vaspXc << "\",\n"
+        << "    prec=\"" << prec << "\",\n"
+        << "    encut=" << c.planeWaveCutoffEv << ",\n"
+        << "    kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2]
+        << "),\n"
+        << "    # Electronic minimization\n"
+        << "    algo=\"" << algo << "\",\n"
+        << "    nelm=" << c.vaspNelm << ",\n"
+        << "    ediff=" << c.vaspEdiff << ",\n"
+        << "    ismear=" << ismear << ",\n"
+        << "    sigma=" << sigma << ",\n"
+        << "    lreal=" << (c.vaspLreal == "False" ? std::string("False")
+                                                   : "\"" + c.vaspLreal + "\"")
+        << ",\n";
+
+    // ISPIN / MAGMOM. The moments themselves ride on `atoms` (set from the
+    // structure's initial_magmoms further up), and ASE writes them into MAGMOM
+    // for us — so only the switch is emitted here.
+    if (c.spinMode != SpinMode::Unpolarized || c.spinPolarized) {
+        out << "    # Spin. MAGMOM comes from the structure's initial moments,\n"
+               "    # which ASE writes out of `atoms` for us.\n"
+               "    ispin=2,\n";
+        if (c.spinMode == SpinMode::NonCollinear)
+            out << "    lsorbit=True,\n";
+    } else {
+        out << "    ispin=1,\n";
+    }
+
+    const bool relaxes = c.task == TaskKind::GeometryOptimization;
+    if (relaxes) {
+        out << "    # Ionic relaxation, done by VASP itself rather than by an\n"
+               "    # ASE optimizer: its internal relaxation is what the INCAR\n"
+               "    # tags below describe.\n"
+            << "    ibrion=" << c.vaspIbrion << ",\n"
+            // A variable-cell relaxation needs ISIF >= 3; the wizard's own
+            // "relax the cell" toggle is the authority on that, so it raises
+            // the floor rather than letting a stale 2 quietly pin the lattice.
+            << "    isif=" << (c.relaxCell ? std::max(3, c.vaspIsif)
+                                           : c.vaspIsif)
+            << ",\n"
+            << "    nsw=" << std::max(1, c.maxSteps) << ",\n"
+            << "    ediffg=" << c.vaspEdiffg << ",\n";
+    } else {
+        out << "    # Single point: no ionic steps.\n"
+               "    ibrion=-1,\n"
+               "    nsw=0,\n";
+    }
+
+    out << "    # Output\n"
+        << "    lwave=" << pyBool(c.vaspLwave) << ",\n"
+        << "    lcharg=" << pyBool(c.vaspLcharg) << ",\n";
+    if (c.vaspLaechg)
+        out << "    laechg=True,\n";
+    if (c.vaspLorbit)
+        out << "    lorbit=11,\n";
+    if (c.vaspNcore > 0)
+        out << "    ncore=" << c.vaspNcore << ",\n";
+    if (c.vaspKpar > 0)
+        out << "    kpar=" << c.vaspKpar << ",\n";
+    out << ")\n";
+
+    if (!c.vaspExtraIncar.empty()) {
+        // Free-form tags, applied through ASE's own setter so they land in the
+        // INCAR with the right formatting instead of being pasted as text.
+        out << "\n# Extra INCAR tags from the calculator settings.\n"
+               "for _line in \"\"\"" << c.vaspExtraIncar
+            << "\"\"\".splitlines():\n"
+               "    _line = _line.split('#')[0].strip()\n"
+               "    if not _line or '=' not in _line:\n"
+               "        continue\n"
+               "    _tag, _value = (_part.strip() for _part in _line.split('=', 1))\n"
+               "    atoms.calc.set(**{_tag.lower(): _value})\n";
+    }
+    out << "\n";
+}
+
 void emitLammps(std::ostringstream& out, const CalculatorConfig& c)
 {
     const bool library = c.lammpsInterface == LammpsInterface::Library;
@@ -731,20 +904,136 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
         break;
 
     case CalculatorKind::Vasp:
-        out << "# VASP via ASE — requires the VASP_PP_PATH and ASE_VASP_COMMAND\n"
-               "# environment variables (see the ASE VASP calculator docs).\n"
-               "from ase.calculators.vasp import Vasp\n"
-               "\n"
-               "atoms.calc = Vasp(\n"
-               "    xc=\"PBE\",\n"
-            << "    encut=" << c.planeWaveCutoffEv << ",\n"
-            << "    kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2] << "),\n"
-               "    directory=\".\",\n"
-               ")\n";
+        emitVasp(out, c);
         break;
     }
 
     emitDispersion(out, c);
+}
+
+/// Post-SCF volumetric exports, one Gaussian cube per selected field.
+///
+/// Every field is a grid over the SAME converged calculation, so they share one
+/// writer: the only per-field differences are which GPAW call produces the
+/// array and what the file is named. The API for two of them is not obvious and
+/// was established against a live GPAW 26.x rather than from the docs:
+///
+///   ELF  gpaw.elf.elf_from_dft_calculation(calc)  — the module-level function;
+///        the older `ELF` class it replaced no longer exists in this line.
+///   tau  density.update_ked(dft.ibzwfs) then density.taut_sR — the kinetic
+///        energy density is not exposed on the ASE calculator at all.
+///
+/// Both are wrapped so an unsupported build skips that field with a message
+/// instead of losing the whole run's exports after the SCF has already been
+/// paid for.
+std::string gpawDensityExportBlock(const CalculatorConfig& c)
+{
+    GpawDensityExports fields = c.gpawDensityExports;
+    if (!fields.any()) {
+        // A config from a saved project (or the headless path) carries only the
+        // old single choice; honour it so those keep working unchanged.
+        if (c.gpawDensityType == GpawDensityType::AllElectron)
+            fields.allElectron = true;
+        else
+            fields.pseudo = true;
+    }
+
+    std::ostringstream out;
+    out << "\n"
+           "# --- Volumetric exports ------------------------------------------\n"
+           "from ase.io.cube import write_cube\n"
+           "\n"
+           "\n"
+           "def _calango_write_cube(name, data, label):\n"
+           "    \"\"\"One field to <name>.cube, normalized to a contiguous grid.\n"
+           "\n"
+           "    The new GPAW engine hands back a (possibly distributed)\n"
+           "    array-like rather than a plain ndarray, so `.data` is unwrapped\n"
+           "    and the result made contiguous before write_cube touches it.\n"
+           "    \"\"\"\n"
+           "    grid = _np.ascontiguousarray(\n"
+           "        _np.asarray(getattr(data, 'data', data), dtype=float))\n"
+           "    with open(name, 'w') as handle:\n"
+           "        write_cube(handle, atoms, data=grid)\n"
+           "    print(f'CALANGO_RESULT density_cube={name} {label}', flush=True)\n"
+           "\n"
+           "\n"
+           "def _calango_export(name, label, produce):\n"
+           "    \"\"\"Guarded export: one unsupported field must not cost the\n"
+           "    others, which are already paid for by the converged SCF.\"\"\"\n"
+           "    try:\n"
+           "        _calango_write_cube(name, produce(), label)\n"
+           "    except Exception as exc:\n"
+           "        print(f'CALANGO_INFO {label} export unavailable: {exc!r}',\n"
+           "              flush=True)\n"
+           "\n"
+           "_calc = atoms.calc\n";
+
+    if (fields.allElectron) {
+        out << "_calango_export('density_all_electron.cube', 'all_electron',\n"
+               "                lambda: _calc.get_all_electron_density("
+               "gridrefinement=2))\n";
+    }
+    if (fields.pseudo) {
+        out << "_calango_export('density_pseudo.cube', 'pseudo',\n"
+               "                lambda: _calc.get_pseudo_density())\n";
+    }
+    if (fields.spin) {
+        // n(up) - n(down). In a spin-restricted run the two are the same array
+        // and the difference is identically zero, so say so rather than writing
+        // a cube of noise the user would try to interpret.
+        out << "def _calango_spin_density():\n"
+               "    up = _np.asarray(getattr(_calc.get_pseudo_density(spin=0),\n"
+               "                             'data', "
+               "_calc.get_pseudo_density(spin=0)), dtype=float)\n"
+               "    down = _np.asarray(getattr(_calc.get_pseudo_density(spin=1),\n"
+               "                               'data', "
+               "_calc.get_pseudo_density(spin=1)), dtype=float)\n"
+               "    if _np.abs(up - down).max() < 1e-12:\n"
+               "        raise RuntimeError(\n"
+               "            'the spin density is identically zero — this run is "
+               "spin-restricted; '\n"
+               "            'set Spin polarization to Collinear to get a "
+               "meaningful field')\n"
+               "    return up - down\n"
+               "\n"
+               "_calango_export('density_spin.cube', 'spin', "
+               "_calango_spin_density)\n";
+    }
+    if (fields.hartree) {
+        out << "_calango_export('potential_hartree.cube', 'hartree',\n"
+               "                lambda: _calc.get_electrostatic_potential())\n";
+    }
+    if (fields.elf) {
+        out << "def _calango_elf():\n"
+               "    # Module-level function in the current GPAW line; the older\n"
+               "    # `ELF` class is kept as a fallback for 24.x and earlier.\n"
+               "    try:\n"
+               "        from gpaw.elf import elf_from_dft_calculation\n"
+               "        return elf_from_dft_calculation(_calc)\n"
+               "    except ImportError:\n"
+               "        from gpaw.elf import ELF\n"
+               "        handle = ELF(_calc)\n"
+               "        handle.update()\n"
+               "        return handle.get_electronic_localization_function()\n"
+               "\n"
+               "_calango_export('elf.cube', 'elf', _calango_elf)\n";
+    }
+    if (fields.kineticEnergy) {
+        out << "def _calango_kinetic_energy_density():\n"
+               "    # Not exposed on the ASE calculator: it lives on the DFT\n"
+               "    # object's density, and only after update_ked() has been\n"
+               "    # asked to build it from the wavefunctions.\n"
+               "    dft = getattr(_calc, 'dft', _calc)\n"
+               "    density = dft.density\n"
+               "    density.update_ked(dft.ibzwfs)\n"
+               "    return _np.asarray(density.taut_sR.data).sum(axis=0)\n"
+               "\n"
+               "_calango_export('kinetic_energy_density.cube', "
+               "'kinetic_energy',\n"
+               "                _calango_kinetic_energy_density)\n";
+    }
+    return out.str();
 }
 
 void emitTask(std::ostringstream& out, const CalculatorConfig& c)
@@ -831,25 +1120,8 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
             out << "atoms.calc.write(\"single_point.gpw\", mode=\"all\")\n"
                    "print(\"CALANGO_RESULT density_file=single_point.gpw\", "
                    "flush=True)\n";
-            if (c.gpawExportDensity) {
-                // Charge density → a standard Gaussian cube. The new GPAW engine
-                // returns a (possibly distributed) array-like; normalize it to a
-                // contiguous float64 grid before write_cube.
-                const bool ae =
-                    c.gpawDensityType == GpawDensityType::AllElectron;
-                out << "_density = atoms.calc."
-                    << (ae ? "get_all_electron_density(gridrefinement=2)"
-                           : "get_pseudo_density()")
-                    << "\n"
-                       "_density = _np.ascontiguousarray(\n"
-                       "    _np.asarray(getattr(_density, \"data\", "
-                       "_density), dtype=float))\n"
-                       "from ase.io.cube import write_cube\n"
-                       "with open(\"density.cube\", \"w\") as _dfh:\n"
-                       "    write_cube(_dfh, atoms, data=_density)\n"
-                    << "print(\"CALANGO_RESULT density_cube=density.cube "
-                    << (ae ? "all_electron" : "pseudo") << "\", flush=True)\n";
-            }
+            if (c.gpawExportDensity)
+                out << gpawDensityExportBlock(c);
         }
         break;
 
@@ -1413,26 +1685,38 @@ std::string AseScriptGenerator::generate(const CalculatorConfig& config,
         const bool nc = config.spinMode == SpinMode::NonCollinear;
         out << "# Spin polarization: seed each atom with an initial magnetic\n"
                "# moment so the SCF can find a magnetic solution.\n";
-        if (!config.initialMagMomentsCsv.empty()) {
-            // Explicit per-atom moments, zero-padded to the atom count so a
-            // short list still applies (remaining atoms start non-magnetic).
-            out << "_moments = [float(_m) for _m in \""
-                << config.initialMagMomentsCsv
-                << "\".replace(\",\", \" \").split()]\n"
-                   "_moments += [0.0] * (len(atoms) - len(_moments))\n"
-                   "_moments = _moments[:len(atoms)]\n";
-            if (nc)
-                out << "atoms.set_initial_magnetic_moments("
-                       "[[0.0, 0.0, _m] for _m in _moments])\n\n";
-            else
-                out << "atoms.set_initial_magnetic_moments(_moments)\n\n";
-        } else if (nc) {
-            out << "atoms.set_initial_magnetic_moments([[0.0, 0.0, "
-                << config.initialMagMoment << "]] * len(atoms))\n\n";
-        } else {
-            out << "atoms.set_initial_magnetic_moments([" << config.initialMagMoment
-                << "] * len(atoms))\n\n";
-        }
+        // The normal path: the moments are a property of the STRUCTURE and
+        // were set per atom in Edit Structure, so they arrive in the
+        // geometry file's `initial_magmoms` column and are already on
+        // `atoms`. Only a structure that carries none gets the uniform
+        // fallback — overwriting real per-atom moments with one number was
+        // how a carefully-set antiferromagnetic seed became a ferromagnetic
+        // one without a word.
+        out << "import numpy as _np\n"
+               "_seeded = _np.asarray(atoms.get_initial_magnetic_moments(),\n"
+               "                      dtype=float)\n"
+               "if _np.abs(_seeded).max(initial=0.0) > 1e-12:\n"
+               "    print(f\"CALANGO_INFO initial magnetic moments from the \"\n"
+               "          f\"structure: {_np.round(_seeded, 3).tolist()}\",\n"
+               "          flush=True)\n"
+               "else:\n"
+               "    # Nothing set anywhere. A spin-polarized run seeded with\n"
+               "    # all-zero moments converges straight back to the\n"
+               "    # non-magnetic solution, which looks like \"this system\n"
+               "    # is not magnetic\" but is really \"nobody asked\".\n";
+        if (nc)
+            out << "    atoms.set_initial_magnetic_moments(\n"
+                   "        [[0.0, 0.0, " << config.initialMagMoment
+                << "]] * len(atoms))\n";
+        else
+            out << "    atoms.set_initial_magnetic_moments(\n"
+                   "        [" << config.initialMagMoment
+                << "] * len(atoms))\n";
+        out << "    print(\"CALANGO_WARN the structure carries no initial \"\n"
+               "          \"magnetic moments — seeding every atom with "
+            << config.initialMagMoment << " uB. \"\n"
+               "          \"Set them per atom in Edit Structure for anything \"\n"
+               "          \"but a ferromagnetic guess.\", flush=True)\n\n";
     }
     emitCalculator(out, config);
     out << "\n";

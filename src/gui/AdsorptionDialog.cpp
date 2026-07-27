@@ -159,8 +159,8 @@ AdsorptionDialog::AdsorptionDialog(std::shared_ptr<const core::Structure> slab,
     minSeparationSpin_->setValue(3.0);
     minSeparationSpin_->setSuffix(QStringLiteral(" Å"));
     minSeparationSpin_->setToolTip(
-        tr("Minimum centre-to-centre distance between occupied sites, "
-           "evaluated under the minimum-image convention so neighbours across "
+        tr("Minimum center-to-center distance between occupied sites, "
+           "evaluated under the minimum-image convention so neighbors across "
            "the periodic boundary count.\n"
            "0 disables the constraint. If the target coverage cannot be met at "
            "this separation, the run places as many as it can and says so — "

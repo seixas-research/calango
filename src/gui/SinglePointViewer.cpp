@@ -1,5 +1,7 @@
 #include "gui/SinglePointViewer.hpp"
 
+#include "gui/GuiUtils.hpp"
+
 #include <QApplication>
 #include <QClipboard>
 #include <QDialogButtonBox>
@@ -247,14 +249,9 @@ void SinglePointViewer::exportJson()
         QStringLiteral("single_point_summary.json"), tr("JSON (*.json)"));
     if (path.isEmpty())
         return;
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, windowTitle(),
-                             tr("Could not write %1").arg(path));
-        return;
-    }
-    file.write(QJsonDocument(data_).toJson(QJsonDocument::Indented));
-    file.commit();
+    writeTextFile(this, path, [&](QTextStream& out) {
+        out << QString::fromUtf8(QJsonDocument(data_).toJson(QJsonDocument::Indented));
+    });
 }
 
 void SinglePointViewer::exportCsv()
@@ -264,35 +261,29 @@ void SinglePointViewer::exportCsv()
         QStringLiteral("single_point_summary.csv"), tr("CSV (*.csv)"));
     if (path.isEmpty())
         return;
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, windowTitle(),
-                             tr("Could not write %1").arg(path));
-        return;
-    }
-    const QJsonObject scf = data_.value(QStringLiteral("scf")).toObject();
-    QTextStream out(&file);
-    out << "metric,value,unit\n";
-    out << "total_energy," << data_.value(QStringLiteral("energy_eV")).toDouble()
-        << ",eV\n";
-    out << "total_energy,"
-        << data_.value(QStringLiteral("energy_Hartree")).toDouble() << ",Hartree\n";
-    const QJsonValue fermi = data_.value(QStringLiteral("fermi_eV"));
-    if (!fermi.isNull() && !fermi.isUndefined())
-        out << "fermi_energy," << fermi.toDouble() << ",eV\n";
-    out << "max_force," << data_.value(QStringLiteral("fmax_eV_per_A")).toDouble()
-        << ",eV/A\n";
-    out << "max_force_atom," << data_.value(QStringLiteral("fmax_atom")).toInt(-1)
-        << ",index\n";
-    const QJsonValue magmom = data_.value(QStringLiteral("total_magnetic_moment"));
-    if (!magmom.isNull() && !magmom.isUndefined())
-        out << "total_magnetic_moment," << magmom.toDouble() << ",bohr_magneton\n";
-    out << "scf_iterations,"
-        << scf.value(QStringLiteral("iterations")).toInt(-1) << ",count\n";
-    out << "energy_tolerance,"
-        << scf.value(QStringLiteral("energy_tol_eV")).toDouble() << ",eV\n";
-    out << "natoms," << data_.value(QStringLiteral("natoms")).toInt() << ",count\n";
-    file.commit();
+    writeTextFile(this, path, [&](QTextStream& out) {
+        const QJsonObject scf = data_.value(QStringLiteral("scf")).toObject();
+        out << "metric,value,unit\n";
+        out << "total_energy," << data_.value(QStringLiteral("energy_eV")).toDouble()
+            << ",eV\n";
+        out << "total_energy,"
+            << data_.value(QStringLiteral("energy_Hartree")).toDouble() << ",Hartree\n";
+        const QJsonValue fermi = data_.value(QStringLiteral("fermi_eV"));
+        if (!fermi.isNull() && !fermi.isUndefined())
+            out << "fermi_energy," << fermi.toDouble() << ",eV\n";
+        out << "max_force," << data_.value(QStringLiteral("fmax_eV_per_A")).toDouble()
+            << ",eV/A\n";
+        out << "max_force_atom," << data_.value(QStringLiteral("fmax_atom")).toInt(-1)
+            << ",index\n";
+        const QJsonValue magmom = data_.value(QStringLiteral("total_magnetic_moment"));
+        if (!magmom.isNull() && !magmom.isUndefined())
+            out << "total_magnetic_moment," << magmom.toDouble() << ",bohr_magneton\n";
+        out << "scf_iterations,"
+            << scf.value(QStringLiteral("iterations")).toInt(-1) << ",count\n";
+        out << "energy_tolerance,"
+            << scf.value(QStringLiteral("energy_tol_eV")).toDouble() << ",eV\n";
+        out << "natoms," << data_.value(QStringLiteral("natoms")).toInt() << ",count\n";
+    });
 }
 
 } // namespace calango::gui

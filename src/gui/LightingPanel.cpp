@@ -71,7 +71,7 @@ LightingPanel::LightingPanel(ViewportWidget* viewport, QWidget* parent)
         QStringLiteral("save-line"),
         tr("Save presets… — write the current lights to a .json file: each "
            "light's view-space direction and its ambient, diffuse and specular "
-           "colours."));
+           "colors."));
     resetLightsButton_ = makeIconButton(
         QStringLiteral("arrow-go-back-line"),
         tr("Reset lights — restore the two-light studio default (warm key "

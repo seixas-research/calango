@@ -61,6 +61,26 @@ struct FilmShot {
     PointOfView pov;
     /// The transition FROM this shot to the next. Ignored on the last shot.
     FilmTransition transitionToNext = FilmTransition::Interpolation;
+    /// Seconds spent getting from this shot to the next; ignored on the last
+    /// shot.
+    ///
+    /// 0 means "unset", and a film where every segment is unset falls back to
+    /// the even split this used to do unconditionally — which is what every
+    /// film authored before this field existed relies on. A shot is timed
+    /// individually because two moves are rarely worth the same: a slow orbit
+    /// around the active site and a quick reposition to the next face should
+    /// not be forced to the same length just because they are both one
+    /// segment of the list.
+    double segmentSeconds = 0.0;
+    /// Ids of the "Additional Overlays" entries shown while this shot is on
+    /// screen, honoured only when `overridesOverlays`.
+    ///
+    /// Ids, not copies of the overlays: the dock stays the single definition
+    /// of what each overlay IS, and a shot names the subset it wants. Editing
+    /// a label therefore updates it in every shot that shows it, and a film
+    /// cannot drift out of sync with the scene it was built from.
+    bool overridesOverlays = false;
+    std::vector<int> overlayIds;
     /// Cast opacities at this keyframe. Casts not listed are 1.0 (opaque), so
     /// a cast named on one shot only ramps down to it and back out again.
     std::vector<FilmCastOpacity> castOpacity;
@@ -97,6 +117,15 @@ struct FilmScript {
     double effectiveDuration() const;
     /// Frames the film renders end to end, at least 1.
     int frameCount() const;
+    /// Length of each segment in seconds, in playback order; empty for a film
+    /// of fewer than two shots.
+    ///
+    /// Always sums to effectiveDuration(), so the priority rule and the frame
+    /// count stay honest no matter what the per-shot times say. In normal use
+    /// the dialog keeps `duration` equal to the sum, so the scaling is a no-op
+    /// and the typed seconds are literal; it only bites when the trajectory
+    /// takes priority, where re-timing the camera moves is the point.
+    std::vector<double> segmentDurations() const;
 };
 
 /// Everything the viewport needs to draw one instant of the film.
@@ -133,6 +162,14 @@ struct FilmSample {
     /// Trajectory frame to display, or -1 when the film has no trajectory.
     /// Already re-timed by the priority rule.
     int trajectoryFrame = -1;
+
+    /// True when the shot on screen names its own set of "Additional Overlays".
+    /// False means the film says nothing and the dock's own visibility flags
+    /// stand — which is every film that never touched the feature.
+    bool overridesOverlays = false;
+    /// The overlay ids to show, when `overridesOverlays`. Empty with the flag
+    /// set is meaningful: it hides every overlay for this shot.
+    std::vector<int> overlayIds;
 };
 
 /// The film's state at `timeSeconds`, clamped to [0, effectiveDuration()].

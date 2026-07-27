@@ -6,6 +6,7 @@
 #include "core/Noise.hpp"
 #include "core/PdbxFile.hpp"
 #include "core/Structure.hpp"
+#include "core/StructureTransforms.hpp"
 #include "gui/BrillouinZoneDialog.hpp"
 #include "gui/CoordinationDialog.hpp"
 #include "gui/DistributionDialog.hpp"
@@ -40,6 +41,10 @@
 #include "gui/GeometryOptimizationWizard.hpp"
 #include "gui/ElectronicBandsWizard.hpp"
 #include "gui/MolecularDynamicsWizard.hpp"
+#include "gui/RandomNoiseWizard.hpp"
+#include "gui/CddWizard.hpp"
+#include "gui/CondaEnvs.hpp"
+#include "gui/EnginePresets.hpp"
 #include "gui/SinglePointWizard.hpp"
 #include "gui/MonteCarloWizard.hpp"
 #include "gui/PhononWizard.hpp"
@@ -49,8 +54,6 @@
 #include "gui/PhononPlotWindow.hpp"
 #include "gui/SupercellDialog.hpp"
 #include "gui/PartialChargeDialog.hpp"
-#include "gui/ElfDialog.hpp"
-#include "gui/ElfWizard.hpp"
 #include "gui/OpticsWizard.hpp"
 #include "gui/OverlayPanel.hpp"
 #include "gui/GrapheneOxideWizard.hpp"
@@ -858,8 +861,9 @@ void MainWindow::createMenusAndDocks()
                          this, &MainWindow::openNanoparticleBuilder);
     buildMenu->addAction(tr("&Surface Slab…"), this, &MainWindow::cleaveSurface);
     buildMenu->addAction(tr("&Nanomaterials…"), this, &MainWindow::openNanoBuilder);
-    buildMenu->addAction(tr("Su&percell…"),
-                         this, &MainWindow::openSupercellBuilder);
+    // Supercell moved to the Structure panel's action row: it is a
+    // whole-structure transform like centring and vacuum padding, and having it
+    // in a menu while its siblings were buttons made the grouping arbitrary.
     // Decorating a surface follows building one, so it sits under Surface Slab
     // and Nanoparticle rather than in Analysis with the site *statistics*.
     buildMenu->addAction(tr("Add &adsorbate…"), this,
@@ -882,9 +886,6 @@ void MainWindow::createMenusAndDocks()
     // the alloy toolchain is grouped there rather than split across Build /
     // Simulation / Analysis.
     buildMenu->addSeparator();
-    buildMenu->addAction(tr("Structure Perturbation / N&oise…"),
-                         this, &MainWindow::addRandomNoise);
-    buildMenu->addSeparator();
     buildMenu->addAction(tr("&Brillouin Zone Builder…"),
                          this, &MainWindow::showBrillouinZone);
 
@@ -901,6 +902,11 @@ void MainWindow::createMenusAndDocks()
                               this, &MainWindow::openPhononBuilder);
     simulationMenu->addAction(tr("&Monte Carlo Simulation…"),
                               this, &MainWindow::openMonteCarlo);
+    // Random noise moved here from Build: it no longer merely displaces a
+    // structure, it runs a single point on every displaced copy — that is a
+    // job, and jobs live on this menu.
+    simulationMenu->addAction(tr("Random N&oise Setup…"),
+                              this, &MainWindow::addRandomNoise);
     simulationMenu->addAction(tr("&Nudged Elastic Band (NEB)…"),
                               this, &MainWindow::openNudgedElasticBand);
     // Cluster Expansion Calculation moved to Modules → Alloys.
@@ -935,11 +941,16 @@ void MainWindow::createMenusAndDocks()
                                &MainWindow::showGwCalculations)
         ->setToolTip(tr("One-shot G₀W₀ quasiparticle corrections on top of a "
                         "completed SCF (GPAW or Yambo)"));
-    // ELF and MLWF are DFT post-processes staged & run through the standardized
-    // wizard (engine selection + auto-bound Conda env); their result viewers
-    // open from the Processes panel when the job finishes.
-    electronicsMenu->addAction(tr("&Electron Localization Function (ELF)…"),
-                               this, &MainWindow::showElf);
+    // MLWF is a DFT post-process staged & run through the standardized wizard
+    // (engine selection + auto-bound Conda env); its result viewer opens from
+    // the Processes panel when the job finishes.
+    //
+    // ELF used to sit beside it. It no longer needs a module of its own: the
+    // Single-point wizard writes elf.cube from the same SCF as one of its six
+    // density exports, and the grid renders in the main 3D viewport through the
+    // Volumetric Data dock — so a separate wizard, a separate job and a
+    // separate isosurface dialog were three copies of machinery that already
+    // existed.
     electronicsMenu->addAction(
         tr("Maximally Localized &Wannier Functions (MLWF)…"),
         this, &MainWindow::showWannier);
@@ -985,9 +996,17 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showRamanModes);
     analysisMenu->addAction(tr("&Volumetric Data…"),
                             this, &MainWindow::showVolumetricData);
-    // ELF and MLWF are DFT post-processes: their setup + run now lives in the
-    // Simulation menu (as multi-stage wizards); their result viewers open
-    // automatically when the job finishes.
+    // Charge density difference sits with the volumetric tools because that is
+    // what it produces: one more grid in the Volumetric Data dock, rendered in
+    // the main viewport like any other.
+    analysisMenu->addAction(tr("Charge &Density Difference (CDD)…"),
+                            this, &MainWindow::showChargeDensityDifference)
+        ->setToolTip(tr("Δρ = ρ(A+B) − ρ(A) − ρ(B) from a completed "
+                        "single-point: where the charge went when two "
+                        "fragments were brought together"));
+    // MLWF is a DFT post-process: its setup + run lives in the Electronics
+    // menu (as a multi-stage wizard); its result viewer opens automatically
+    // when the job finishes.
     analysisMenu->addAction(tr("Adsorption && Catal&ysis…"),
                             this, &MainWindow::showAdsorption);
     // Brillouin Zone Builder moved to the Build menu.
@@ -998,8 +1017,10 @@ void MainWindow::createMenusAndDocks()
     // open FROM that process (its "Open Viewer" button, its context menu, or a
     // double-click), so the question is answered by the act of asking, and only
     // the viewers a given run actually produced are ever offered.
-    // The slots themselves are unchanged and still open automatically when a
-    // run finishes.
+    //
+    // Its five slots went with it: onProcessResultRequested() dispatches on
+    // which result files a directory actually holds, which is the same decision
+    // made once instead of five times.
 
     // ----- Modules: MLIP + Alloys tool families (between Analysis and Help) -
     // "Modules" gathers the machine-learning-potential workflow and the alloy
@@ -1106,11 +1127,20 @@ void MainWindow::createMenusAndDocks()
     splitDockWidget(brandingDock, infoDock, Qt::Vertical);
     connect(infoWidget_, &StructureInfoWidget::editStructureRequested,
             this, &MainWindow::editStructure);
+    connect(infoWidget_, &StructureInfoWidget::centerStructureRequested,
+            this, &MainWindow::centerStructure);
+    connect(infoWidget_, &StructureInfoWidget::addVacuumRequested,
+            this, &MainWindow::addVacuumLayer);
+    connect(infoWidget_, &StructureInfoWidget::wrapIntoCellRequested,
+            this, &MainWindow::wrapStructureIntoCell);
+    connect(infoWidget_, &StructureInfoWidget::supercellRequested,
+            this, &MainWindow::openSupercellBuilder);
 
     // Zone 13 — "Volumetric Data": stacked directly below Zone 5 "Structure" in
     // the left column. It renders 3D scalar fields (cube/xsf/CHGCAR) as
     // isosurface / color-slice overlays on the main viewport.
     auto* volumetricDock = new QDockWidget(tr("Volumetric Data"), this); // zone 13
+    volumetricDock_ = volumetricDock;
     volumetricDock->setObjectName(QStringLiteral("volumetricDock"));
     volumetricPanel_ = new VolumetricPanel(viewport_, volumetricDock);
     volumetricDock->setWidget(volumetricPanel_);
@@ -1121,7 +1151,7 @@ void MainWindow::createMenusAndDocks()
     // It sits under Volumetric Data because the two are neighbours in kind:
     // both add something to the scene rather than describing the atoms, and a
     // lattice plane routinely slices a field loaded in the panel above.
-    auto* overlayDock = new QDockWidget(tr("Additional overlays"), this);
+    auto* overlayDock = new QDockWidget(tr("Additional Overlays"), this);
     overlayDock->setObjectName(QStringLiteral("overlayDock"));
     overlayPanel_ = new OverlayPanel(viewport_, overlayDock);
     overlayDock->setWidget(overlayPanel_);
@@ -1498,14 +1528,6 @@ MainWindow::Document* MainWindow::currentDocument()
     if (index < 0 || index >= static_cast<int>(documents_.size()))
         return nullptr;
     return documents_[static_cast<std::size_t>(index)].get();
-}
-
-int MainWindow::currentWorkspaceId() const
-{
-    const int index = tabBar_->currentIndex();
-    if (index < 0 || index >= static_cast<int>(documents_.size()))
-        return -1;
-    return documents_[static_cast<std::size_t>(index)]->id;
 }
 
 MainWindow::Document& MainWindow::ensureDocument()
@@ -1907,23 +1929,6 @@ void MainWindow::loadFile(const QString& path)
         QMessageBox::critical(this, tr("Open Structure"),
                               QString::fromUtf8(e.what()));
     }
-}
-
-void MainWindow::loadExample(const QString& resourcePath, const QString& recommendation)
-{
-    // Resource files need a real path for ase.io — stage them in temp
-    // with their original name so the tab title stays meaningful.
-    static QTemporaryDir stagingDir;
-    if (!stagingDir.isValid())
-        return;
-    const QString target = stagingDir.filePath(QFileInfo(resourcePath).fileName());
-    if (!QFile::exists(target))
-        QFile::copy(resourcePath, target);
-    loadFile(target);
-    statusBar()->showMessage(
-        tr("%1 — recommended potential: %2")
-            .arg(QFileInfo(resourcePath).fileName(), recommendation),
-        8000);
 }
 
 void MainWindow::openStructure()
@@ -2475,6 +2480,14 @@ QImage MainWindow::renderFilmFrame(const render::FilmScript& film, int frame,
             doc->frames[static_cast<std::size_t>(sample.trajectoryFrame)], false);
     }
 
+    // The exported film must show the same overlays the preview does — an
+    // annotation that appears on screen but not in the rendered MP4 is the
+    // kind of difference nobody notices until the talk.
+    if (overlayPanel_) {
+        overlayPanel_->setFilmOverlayFilter(
+            sample.overridesOverlays ? &sample.overlayIds : nullptr);
+    }
+
     const auto shoot = [&](const render::PointOfView& pov,
                            const std::vector<render::FilmCastOpacity>& casts) {
         applyFilmCastOpacities(casts);
@@ -2598,7 +2611,7 @@ void MainWindow::exportAnimation()
            "HEVC and VP9 encode the same picture smaller, at the cost of "
            "older players.\n"
            "Animated GIF is the only format here that carries transparency — "
-           "and the only one limited to 256 colours per frame."));
+           "and the only one limited to 256 colors per frame."));
     form->addRow(tr("Format:"), formatCombo);
 
     auto* countLabel = new QLabel(&dialog);
@@ -2745,6 +2758,8 @@ void MainWindow::exportAnimation()
         if (hasTrajectory)
             showFrame(restoreFrame);
         applyFilmCastOpacities({});
+        if (overlayPanel_)
+            overlayPanel_->setFilmOverlayFilter(nullptr);
         if (ownBaseline)
             filmCastBaseline_.clear();
         applyingFilm_ = true;
@@ -2878,6 +2893,153 @@ void MainWindow::exportAlembic()
 // ---------------------------------------------------------------------------
 // Builder tools
 // ---------------------------------------------------------------------------
+
+namespace {
+
+/// Prompt for how much vacuum to add and where. Lifted verbatim from the Edit
+/// Structure dialog, which no longer owns the operation.
+bool askVacuumOptions(QWidget* parent, core::VacuumOptions& options)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("Add Vacuum Layer"));
+    auto* form = new QFormLayout(&dialog);
+
+    auto* amountSpin = new QDoubleSpinBox(&dialog);
+    amountSpin->setRange(0.0, 1000.0);
+    amountSpin->setDecimals(3);
+    amountSpin->setSingleStep(0.5);
+    amountSpin->setValue(options.thickness);
+    amountSpin->setSuffix(QStringLiteral(" Å"));
+    form->addRow(QObject::tr("Vacuum thickness:"), amountSpin);
+
+    auto* bothSidesCheck =
+        new QCheckBox(QObject::tr("Split evenly on both sides"), &dialog);
+    bothSidesCheck->setChecked(options.bothSides);
+    bothSidesCheck->setToolTip(QObject::tr(
+        "On: the thickness above is the *total* added length, and the "
+        "structure ends up centered along that direction (the usual choice "
+        "for slabs and clusters).\n"
+        "Off: the full amount is added past the structure on the far side "
+        "only."));
+    form->addRow(QString(), bothSidesCheck);
+
+    // Lattice directions rather than Cartesian axes: vacuum has to grow along
+    // the cell vector to stay commensurate with a non-orthogonal cell.
+    std::array<QCheckBox*, 3> axisChecks{};
+    static const char* kAxisLabels[3] = {
+        QT_TR_NOOP("a (v1)"), QT_TR_NOOP("b (v2)"), QT_TR_NOOP("c (v3)")};
+    auto* axisRow = new QHBoxLayout;
+    for (int i = 0; i < 3; ++i) {
+        axisChecks[static_cast<std::size_t>(i)] =
+            new QCheckBox(QObject::tr(kAxisLabels[i]), &dialog);
+        axisChecks[static_cast<std::size_t>(i)]->setChecked(options.axes[i]);
+        axisRow->addWidget(axisChecks[static_cast<std::size_t>(i)]);
+    }
+    form->addRow(QObject::tr("Along:"), axisRow);
+
+    auto* clearPbcCheck = new QCheckBox(
+        QObject::tr("Mark the padded directions non-periodic"), &dialog);
+    clearPbcCheck->setChecked(options.clearPbc);
+    clearPbcCheck->setToolTip(QObject::tr(
+        "Vacuum is normally added precisely to decouple periodic images; "
+        "clearing pbc along those directions makes that explicit for the "
+        "calculators."));
+    form->addRow(QString(), clearPbcCheck);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
+                     &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                     &QDialog::reject);
+    form->addRow(buttons);
+
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    options.thickness = amountSpin->value();
+    options.bothSides = bothSidesCheck->isChecked();
+    options.clearPbc = clearPbcCheck->isChecked();
+    for (int i = 0; i < 3; ++i)
+        options.axes[i] = axisChecks[static_cast<std::size_t>(i)]->isChecked();
+    return true;
+}
+
+} // namespace
+
+void MainWindow::centerStructure()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty())
+        return;
+    auto edited = std::make_shared<core::Structure>(*doc->structure);
+    core::centerInCell(*edited);
+    installEditedStructure(std::move(edited), tr("Structure centered in the cell"));
+}
+
+void MainWindow::addVacuumLayer()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty())
+        return;
+    if (!doc->structure->cell().isDefined()) {
+        QMessageBox::information(
+            this, tr("Add Vacuum"),
+            tr("Define a unit cell first — vacuum padding extends an existing "
+               "cell."));
+        return;
+    }
+    core::VacuumOptions options;
+    if (!askVacuumOptions(this, options))
+        return;
+    if (options.thickness <= 0.0)
+        return;
+    if (!options.axes[0] && !options.axes[1] && !options.axes[2]) {
+        QMessageBox::information(this, tr("Add Vacuum"),
+                                 tr("Select at least one direction."));
+        return;
+    }
+    auto edited = std::make_shared<core::Structure>(*doc->structure);
+    if (!core::addVacuum(*edited, options))
+        return;
+    installEditedStructure(std::move(edited),
+                           tr("Vacuum layer added (%1 Å)")
+                               .arg(options.thickness, 0, 'f', 2));
+}
+
+void MainWindow::wrapStructureIntoCell()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty())
+        return;
+    if (!doc->structure->cell().isDefined()) {
+        QMessageBox::information(
+            this, tr("Wrap Into Cell"),
+            tr("Define a unit cell first — without a lattice there are no cell "
+               "boundaries to wrap into."));
+        return;
+    }
+    // The viewport selection is the analogue of the atom table's selection the
+    // Edit Structure dialog used; nothing selected still means "all atoms",
+    // which is the common case for a freshly imported structure.
+    std::vector<std::size_t> indices;
+    for (const int index : viewport_->selection()) {
+        if (index >= 0)
+            indices.push_back(static_cast<std::size_t>(index));
+    }
+    auto edited = std::make_shared<core::Structure>(*doc->structure);
+    const int moved = core::wrapIntoCell(*edited, indices);
+    if (moved == 0) {
+        // Nothing moved and nothing moved look identical on screen, so say so
+        // rather than pushing an undo step that changes nothing.
+        statusBar()->showMessage(
+            indices.empty()
+                ? tr("Every atom already lies inside the unit cell.")
+                : tr("Every selected atom already lies inside the unit cell."));
+        return;
+    }
+    installEditedStructure(std::move(edited),
+                           tr("Wrapped %n atom(s) into the cell", nullptr, moved));
+}
 
 void MainWindow::openSupercellBuilder()
 {
@@ -3170,6 +3332,17 @@ void MainWindow::editStructure()
     if (!edited)
         return;
 
+    installEditedStructure(std::move(edited),
+                           tr("Structure updated (%1 atoms)")
+                               .arg(dialog.result()->size()));
+}
+
+void MainWindow::installEditedStructure(
+    std::shared_ptr<core::Structure> edited, const QString& message)
+{
+    Document* doc = currentDocument();
+    if (!doc || !edited)
+        return;
     pushUndo();
     // In a trajectory the displayed frame *is* one of doc->frames — replace
     // it there too, or scrubbing away and back would silently revert the
@@ -3184,8 +3357,8 @@ void MainWindow::editStructure()
     // Keep the camera where the user left it: an edited cell or a vacuum
     // layer would otherwise jump the view.
     notifyStructureChanged(/*frameCamera=*/false);
-    statusBar()->showMessage(tr("Structure updated (%1 atoms)")
-                                 .arg(doc->structure->size()));
+    if (!message.isEmpty())
+        statusBar()->showMessage(message);
 }
 
 void MainWindow::showPreferences()
@@ -3324,19 +3497,6 @@ void MainWindow::openBandResults(const QString& directory)
 }
 
 
-
-void MainWindow::showMolecularDynamicsViewer()
-{
-    const QString dir = selectedProcessDirectory();
-    if (dir.isEmpty()) {
-        QMessageBox::information(
-            this, tr("Molecular Dynamics Viewer"),
-            tr("Select a completed Molecular Dynamics run in the Processes "
-               "panel first."));
-        return;
-    }
-    openMolecularDynamicsResults(dir);
-}
 
 void MainWindow::openMolecularDynamicsResults(const QString& directory)
 {
@@ -3506,26 +3666,6 @@ void MainWindow::openGwResults(const QString& directory)
     window->show();
 }
 
-void MainWindow::openElfResults(const QString& directory)
-{
-    Document* doc = currentDocument();
-    auto* dialog =
-        new ElfDialog(doc ? doc->structure : nullptr, this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->show();
-    dialog->loadGrid(directory + QStringLiteral("/elf.cube"));
-}
-
-void MainWindow::openWannierResults(const QString& directory)
-{
-    Document* doc = currentDocument();
-    auto* dialog =
-        new WannierDialog(doc ? doc->structure : nullptr, this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->show();
-    dialog->loadResults(directory + QStringLiteral("/wannier.json"));
-}
-
 void MainWindow::openSinglePointResults(const QString& directory)
 {
     auto* viewer = new SinglePointViewer(this);
@@ -3539,22 +3679,75 @@ void MainWindow::openSinglePointResults(const QString& directory)
     viewer->show();
 }
 
-void MainWindow::onGetVolumetricData(const QString& directory)
+int MainWindow::registerDensityCubes(const QString& directory)
 {
     if (!volumetricPanel_)
-        return;
+        return 0;
+    // Names the generated scripts write, with the label each field deserves in
+    // the dock. Anything else found is registered under its own file name
+    // rather than skipped — a hand-dropped cube is still a grid the user wants
+    // to see.
+    static const QHash<QString, QString> kLabels = {
+        {QStringLiteral("density_all_electron.cube"), tr("All-electron density")},
+        {QStringLiteral("density_pseudo.cube"), tr("Pseudodensity")},
+        {QStringLiteral("density_spin.cube"), tr("Spin density")},
+        {QStringLiteral("hartree_potential.cube"), tr("Hartree potential")},
+        {QStringLiteral("elf.cube"), tr("ELF η(r)")},
+        {QStringLiteral("kinetic_energy_density.cube"),
+         tr("Kinetic energy density τ(r)")},
+        {QStringLiteral("density.cube"), tr("Charge density")},
+        {QStringLiteral("cdd.cube"), tr("Charge density difference Δρ")},
+    };
+
     Document* doc = currentDocument();
     const QString structLabel = (doc && doc->structure)
         ? QString::fromStdString(doc->structure->chemicalFormula())
         : QString();
 
-    // If the run already exported density.cube, register it immediately.
-    const QString cube = directory + QStringLiteral("/density.cube");
-    if (QFile::exists(cube)) {
-        volumetricPanel_->registerResultFile(cube, tr("Charge density"),
+    const QDir dir(directory);
+    int added = 0;
+    for (const QString& name :
+         dir.entryList({QStringLiteral("*.cube")}, QDir::Files, QDir::Name)) {
+        // The Wannier orbitals have their own registration path (they are
+        // named and numbered from wannier.json), so they are not swept up here
+        // as a pile of anonymous grids.
+        if (name.startsWith(QStringLiteral("wannier_")))
+            continue;
+        volumetricPanel_->registerResultFile(dir.filePath(name),
+                                             kLabels.value(name, name),
                                              structLabel);
+        ++added;
+    }
+    return added;
+}
+
+QString MainWindow::pythonForEngine(core::CalculatorKind kind) const
+{
+    QString env = EnginePresets::envFor(kind);
+    if (env.trimmed().isEmpty())
+        env = QSettings().value(QLatin1String(SettingsManager::kEnvironmentPath))
+                  .toString();
+    const QString resolved = CondaEnvs::resolvePython(env);
+    if (!resolved.isEmpty())
+        return resolved;
+    return QString::fromStdString(pybridge::PythonEngine::instance().executable());
+}
+
+void MainWindow::onGetVolumetricData(const QString& directory)
+{
+    if (!volumetricPanel_)
+        return;
+
+    // Whatever the run already wrote goes straight in. A single-point with the
+    // density exports enabled produces up to six cubes, and re-deriving any of
+    // them from the .gpw would be a needless second GPAW start-up.
+    if (const int added = registerDensityCubes(directory); added > 0) {
         statusBar()->showMessage(
-            tr("Charge density added to the Volumetric Data dock."), 6000);
+            tr("%n volumetric field(s) added to the Volumetric Data dock.",
+               nullptr, added),
+            6000);
+        volumetricDock_->show();
+        volumetricDock_->raise();
         return;
     }
 
@@ -3580,9 +3773,9 @@ void MainWindow::onGetVolumetricData(const QString& directory)
     const QString script = QString::fromStdString(
         core::AseScriptGenerator::densityCubeScript(directory.toStdString(),
                                                     /*allElectron=*/true));
-    runScript(script,
-              QString::fromStdString(
-                  pybridge::PythonEngine::instance().executable()),
+    // The GPAW environment, NOT the embedded interpreter: this script does
+    // `from gpaw import GPAW`, and the embedded runtime has no gpaw in it.
+    runScript(script, pythonForEngine(core::CalculatorKind::Gpaw),
               tr("Charge Density Export"), /*expectFrames=*/false);
 }
 
@@ -3726,36 +3919,6 @@ void MainWindow::onProcessContextMenu(const QString& directory,
     menu.exec(globalPos);
 }
 
-void MainWindow::showSinglePointViewer()
-{
-    const QString dir = selectedProcessDirectory();
-    if (dir.isEmpty()
-        || !QFile::exists(dir + QStringLiteral("/single_point.json"))) {
-        QMessageBox::information(
-            this, tr("Single-Point Viewer"),
-            tr("Select a completed Single-Point calculation in the Processes "
-               "panel first (its results include single_point.json)."));
-        return;
-    }
-    openSinglePointResults(dir);
-}
-
-void MainWindow::showGeometryOptimizationViewer()
-{
-    const QString dir = selectedProcessDirectory();
-    if (dir.isEmpty()
-        || !QFile::exists(dir
-                          + QStringLiteral("/geometry_optimization.json"))) {
-        QMessageBox::information(
-            this, tr("Geometry Optimization Viewer"),
-            tr("Select a completed Geometry Optimization in the Processes "
-               "panel first (its results include "
-               "geometry_optimization.json)."));
-        return;
-    }
-    openGeometryOptimizationResults(dir);
-}
-
 void MainWindow::openGeometryOptimizationResults(const QString& directory)
 {
     auto* viewer = new GeometryOptimizationViewer(this);
@@ -3768,19 +3931,6 @@ void MainWindow::openGeometryOptimizationResults(const QString& directory)
     connect(viewer, &GeometryOptimizationViewer::getVolumetricDataRequested,
             this, &MainWindow::onGetVolumetricData);
     viewer->show();
-}
-
-void MainWindow::showMlwfViewer()
-{
-    const QString dir = selectedProcessDirectory();
-    if (dir.isEmpty() || !QFile::exists(dir + QStringLiteral("/wannier.json"))) {
-        QMessageBox::information(
-            this, tr("MLWF Viewer"),
-            tr("Select a completed Maximally Localized Wannier Functions run in "
-               "the Processes panel first (its results include wannier.json)."));
-        return;
-    }
-    openMlwfResults(dir);
 }
 
 void MainWindow::showPointOfView()
@@ -3848,6 +3998,17 @@ void MainWindow::showFilmProduction()
     filmDialog_->setAttribute(Qt::WA_DeleteOnClose);
     connect(filmDialog_, &QObject::destroyed, this,
             [this] { filmDialog_ = nullptr; });
+    // Shots pick their overlays from the dock's list by id, so the dialog has
+    // to be told what is in it — now and whenever it changes underneath.
+    if (overlayPanel_) {
+        filmDialog_->setAvailableOverlays(overlayPanel_->entries());
+        connect(overlayPanel_, &OverlayPanel::overlaysChanged, filmDialog_,
+                [this] {
+                    if (filmDialog_ && overlayPanel_)
+                        filmDialog_->setAvailableOverlays(
+                            overlayPanel_->entries());
+                });
+    }
     connect(filmDialog_, &FilmProductionDialog::scriptChanged, this,
             [this](const render::FilmScript& script) {
                 if (Document* current = currentDocument())
@@ -3926,8 +4087,10 @@ void MainWindow::setFilmMode(bool on)
     filmCrossfadeKey_ = CrossfadeKey{};
     // Cast opacities are the film's to animate but the panel's to own, so they
     // are handed back exactly as they were rather than left where the last
-    // previewed frame put them.
+    // previewed frame put them. Overlays are handed back the same way.
     restoreCastOpacities();
+    if (overlayPanel_)
+        overlayPanel_->setFilmOverlayFilter(nullptr);
     if (preFilmPov_.valid) {
         restoringPointOfView_ = true;
         viewport_->setPointOfView(preFilmPov_);
@@ -3986,6 +4149,13 @@ void MainWindow::showFilmTime(double seconds)
     // overrides on top, rather than editing whatever the previous frame left
     // behind: a ramp that only ever wrote would never come back up.
     applyFilmCastOpacities(sample.castOpacity);
+
+    // Per-shot overlays. A film that never sets them leaves the dock alone,
+    // so nothing changes for a film authored before this existed.
+    if (overlayPanel_) {
+        overlayPanel_->setFilmOverlayFilter(
+            sample.overridesOverlays ? &sample.overlayIds : nullptr);
+    }
 
     applyingFilm_ = true;
     viewport_->setPointOfView(sample.camera);
@@ -4066,19 +4236,6 @@ void MainWindow::resetLayout()
     if (auto* branding = findChild<QDockWidget*>(QStringLiteral("brandingDock")))
         branding->setVisible(true);
     statusBar()->showMessage(tr("Dock layout reset to the default."), 4000);
-}
-
-void MainWindow::showGwViewer()
-{
-    const QString dir = selectedProcessDirectory();
-    if (dir.isEmpty() || !QFile::exists(dir + QStringLiteral("/gw.json"))) {
-        QMessageBox::information(
-            this, tr("GW Viewer"),
-            tr("Select a completed GW Calculations run in the Processes panel "
-               "first (its results include gw.json)."));
-        return;
-    }
-    openGwResults(dir);
 }
 
 void MainWindow::onDeleteProcessRequested(int id)
@@ -4198,13 +4355,6 @@ void MainWindow::onProcessResultRequested(const QString& directory)
     }
     if (QFile::exists(directory + QStringLiteral("/wannier.json"))) {
         openMlwfResults(directory);
-        return;
-    }
-    if (QFile::exists(directory + QStringLiteral("/elf.cube"))) {
-        if (volumetricPanel_)
-            volumetricPanel_->registerResultFile(
-                directory + QStringLiteral("/elf.cube"), tr("ELF η(r)"));
-        openElfResults(directory);
         return;
     }
     if (QFile::exists(directory + QStringLiteral("/single_point.json"))) {
@@ -4482,7 +4632,7 @@ void MainWindow::showPartialCharge()
 }
 
 // Completed processes that saved GPAW wavefunctions (.gpw) — the baselines the
-// ELF / MLWF post-processes can restart from. Shared by both wizards.
+// the MLWF post-process can restart from.
 QList<QPair<QString, QString>> MainWindow::gpawBaselines() const
 {
     QList<QPair<QString, QString>> baselines;
@@ -4495,6 +4645,61 @@ QList<QPair<QString, QString>> MainWindow::gpawBaselines() const
                               record.directory});
     }
     return baselines;
+}
+
+void MainWindow::showChargeDensityDifference()
+{
+    // Deliberately not prepareSimulation(): that requires an open structure,
+    // and this one gets its geometry from the completed run it differences.
+    // A project reopened with finished jobs in the Processes panel but no tab
+    // in front is a perfectly good starting point.
+    if (!ensureAseAvailable())
+        return;
+    if (jobRunner_->isRunning()) {
+        QMessageBox::information(
+            this, tr("Charge Density Difference"),
+            tr("A calculation is already running — kill it first."));
+        return;
+    }
+    const QList<QPair<QString, QString>> baselines = gpawBaselines();
+    if (baselines.isEmpty()) {
+        QMessageBox::information(
+            this, tr("Charge Density Difference"),
+            tr("No completed calculation has saved wavefunctions to build the "
+               "difference from.\n\n"
+               "Run a Single-point Calculation with GPAW first — it writes "
+               "single_point.gpw, and both fragments are rebuilt from that "
+               "same calculator so the three densities cannot drift apart."));
+        return;
+    }
+
+    // Each baseline carries the geometry the run was staged with, read here
+    // rather than in the wizard: the atom indices the generated script names
+    // must be the ones inside that run's .gpw, and the current document may
+    // have been edited since — or be a different system entirely.
+    QList<CddWizard::Baseline> sources;
+    for (const auto& [label, directory] : baselines) {
+        CddWizard::Baseline source;
+        source.label = label;
+        source.directory = directory;
+        try {
+            source.structure = std::make_shared<const core::Structure>(
+                pybridge::AseBridge::readStructure(
+                    (directory + QStringLiteral("/structure.extxyz"))
+                        .toStdString()));
+        } catch (const std::exception&) {
+            // Readable job, unreadable input: still offered, with the
+            // partition stage saying it has nothing to split. Dropping it
+            // silently would be worse — the user would wonder where their run
+            // went.
+        }
+        sources.append(std::move(source));
+    }
+
+    CddWizard wizard(this);
+    wizard.setDensityBaselines(std::move(sources));
+    runSimulationWizard(wizard, tr("Charge Density Difference"),
+                        /*expectFrames=*/false);
 }
 
 QList<QPair<QString, QString>> MainWindow::processResults(
@@ -4538,19 +4743,6 @@ QList<QPair<QString, QString>> MainWindow::gpawDensityFiles() const
                           dir.absoluteFilePath(preferred)});
     }
     return baselines;
-}
-
-void MainWindow::showElf()
-{
-    if (!prepareSimulation(tr("Electron Localization Function (ELF)")))
-        return;
-    // The ELF is set up + launched through the standardized wizard (engine
-    // selection + per-engine Conda env). It writes elf.cube into the job
-    // directory; onJobFinished() opens the isosurface / slice viewer.
-    ElfWizard wizard(currentDocument()->structure, this);
-    wizard.setDensityBaselines(gpawBaselines());
-    runSimulationWizard(wizard, tr("Electron Localization Function"),
-                        /*expectFrames=*/false);
 }
 
 void MainWindow::showBornCharges()
@@ -4697,7 +4889,7 @@ void MainWindow::showVacf()
             QMessageBox::information(
                 this, tr("Velocity Autocorrelation Function (VACF)"),
                 tr("This trajectory has no per-atom velocities. Run Molecular "
-                   "Dynamics (which records velocities) and analyse that "
+                   "Dynamics (which records velocities) and analyze that "
                    "trajectory."));
             return;
         }
@@ -5098,158 +5290,47 @@ void MainWindow::openNanoBuilder()
 
 void MainWindow::addRandomNoise()
 {
+    if (!prepareSimulation(tr("Random Noise Setup")))
+        return;
     Document* doc = currentDocument();
     if (!doc || !doc->structure || doc->structure->empty()) {
         statusBar()->showMessage(tr("Open a structure first."));
         return;
     }
 
-    QDialog dialog(this);
-    dialog.setWindowTitle(tr("Add Random Noise"));
-    auto* form = new QFormLayout(&dialog);
+    // Captured before any tab is added: regenerating would otherwise name the
+    // second ensemble after the first one's tab, giving "X (noise) (noise)".
+    const QString baseName = doc->fileName;
 
-    auto* distributionCombo = new QComboBox(&dialog);
-    distributionCombo->addItems({tr("Gaussian (normal)"), tr("Uniform")});
-    form->addRow(tr("Distribution:"), distributionCombo);
+    RandomNoiseWizard wizard(doc->structure, this);
+    // The ensemble is generated DURING the wizard, so it is captured as it
+    // arrives rather than read back after exec() — stageJob() consumes
+    // stagedEnsembleFrames_ as configs.extxyz, which is what the generated
+    // script reads.
+    connect(&wizard, &RandomNoiseWizard::structuresGenerated, this,
+            [this, baseName](
+                const std::vector<std::shared_ptr<core::Structure>>& frames) {
+                stagedEnsembleFrames_ = frames;
+                if (frames.empty())
+                    return;
+                // Open it as a scrubbable trajectory, so the displacement can
+                // be judged by eye before any compute time is spent on it.
+                auto copy = frames;
+                addDocument(copy.front(),
+                            tr("%1 (noise ×%2)")
+                                .arg(baseName)
+                                .arg(frames.size() - 1),
+                            std::move(copy));
+                statusBar()->showMessage(
+                    tr("Generated %1 perturbed structures — scrub the new tab.")
+                        .arg(frames.size() - 1));
+            });
 
-    auto* amplitudeSpin = new QDoubleSpinBox(&dialog);
-    amplitudeSpin->setRange(0.001, 5.0);
-    amplitudeSpin->setDecimals(3);
-    amplitudeSpin->setSingleStep(0.01);
-    amplitudeSpin->setValue(0.05);
-    amplitudeSpin->setSuffix(tr(" Å"));
-    amplitudeSpin->setToolTip(tr("Gaussian: σ per component · Uniform: half-width"));
-    form->addRow(tr("Amplitude:"), amplitudeSpin);
-
-    auto* seedSpin = new QSpinBox(&dialog);
-    seedSpin->setRange(0, 2147483647);
-    seedSpin->setValue(42);
-    form->addRow(tr("Random seed:"), seedSpin);
-
-    auto* positionsCheck = new QCheckBox(tr("Perturb atomic positions"), &dialog);
-    positionsCheck->setChecked(true);
-    auto* cellCheck = new QCheckBox(tr("Perturb unit cell vectors (random strain)"),
-                                    &dialog);
-    cellCheck->setEnabled(doc->structure->cell().isDefined());
-    cellCheck->setToolTip(tr("Atoms follow the cell affinely (fractional "
-                             "coordinates preserved)"));
-    form->addRow(positionsCheck);
-    form->addRow(cellCheck);
-
-    // Stochastic trajectory generation: 1 frame = perturb in place;
-    // more frames = a new trajectory tab.
-    auto* framesSpin = new QSpinBox(&dialog);
-    framesSpin->setRange(1, 1000);
-    framesSpin->setValue(1);
-    framesSpin->setToolTip(tr("1 perturbs the current structure in place;\n"
-                              "more generates a trajectory in a new tab"));
-    form->addRow(tr("Frames:"), framesSpin);
-
-    auto* modeCombo = new QComboBox(&dialog);
-    modeCombo->addItem(tr("Independent (each frame from the original)"));
-    modeCombo->addItem(tr("Cumulative (random walk from previous frame)"));
-    modeCombo->setEnabled(false);
-    form->addRow(tr("Accumulation:"), modeCombo);
-    connect(framesSpin, &QSpinBox::valueChanged, modeCombo,
-            [modeCombo](int frames) { modeCombo->setEnabled(frames > 1); });
-
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
-                                         &dialog);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    form->addRow(buttons);
-
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-    if (!positionsCheck->isChecked() && !cellCheck->isChecked()) {
-        statusBar()->showMessage(tr("Nothing selected to perturb."));
-        return;
-    }
-
-    core::NoiseOptions options;
-    options.distribution = distributionCombo->currentIndex() == 0
-        ? core::NoiseOptions::Distribution::Gaussian
-        : core::NoiseOptions::Distribution::Uniform;
-    options.amplitude = amplitudeSpin->value();
-    options.seed = static_cast<unsigned int>(seedSpin->value());
-    options.perturbPositions = positionsCheck->isChecked();
-    options.perturbCell = cellCheck->isChecked();
-
-    const int frameCount = framesSpin->value();
-    if (frameCount == 1) {
-        pushUndo();
-        core::applyRandomNoise(*doc->structure, options);
-        notifyStructureChanged(false);
-        statusBar()->showMessage(tr("Applied %1 noise (amplitude %2 Å, seed %3)")
-                                     .arg(distributionCombo->currentText())
-                                     .arg(options.amplitude)
-                                     .arg(options.seed));
-        return;
-    }
-
-    // Multi-frame stochastic trajectory (frame 0 = unperturbed original).
-    const bool cumulative = modeCombo->currentIndex() == 1;
-    const core::Structure original = *doc->structure;
-    std::vector<std::shared_ptr<core::Structure>> frames;
-    frames.reserve(static_cast<std::size_t>(frameCount) + 1);
-    frames.push_back(std::make_shared<core::Structure>(original));
-
-    core::Structure walker = original;
-    for (int k = 1; k <= frameCount; ++k) {
-        core::NoiseOptions frameOptions = options;
-        frameOptions.seed = options.seed + static_cast<unsigned int>(k);
-        if (cumulative) {
-            core::applyRandomNoise(walker, frameOptions); // builds on previous
-            frames.push_back(std::make_shared<core::Structure>(walker));
-        } else {
-            core::Structure fresh = original; // fresh displacement each frame
-            core::applyRandomNoise(fresh, frameOptions);
-            frames.push_back(std::make_shared<core::Structure>(std::move(fresh)));
-        }
-    }
-
-    const QString name = tr("%1 (%2 noise ×%3)")
-                             .arg(doc->fileName,
-                                  cumulative ? tr("cumulative") : tr("independent"))
-                             .arg(frameCount);
-
-    // Track the ensemble in the Process panel and checkpoint it into the
-    // managed session store, so the perturbed frames stay available for
-    // post-processing (RDF, distributions, datasets) without regeneration.
-    const QString tasksRoot = projectPath_.isEmpty()
-        ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-            + QStringLiteral("/jobs")
-        : QFileInfo(projectPath_).absolutePath()
-            + QStringLiteral("/.calango_tmp");
-    const QString taskDir = tasksRoot + QStringLiteral("/noise_")
-        + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
-    const int taskId = processPanel_->registerTask(
-        tr("Noise trajectory (×%1, seed %2)").arg(frameCount).arg(options.seed),
-        taskDir);
-    processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
-    bool stored = false;
-    if (QDir().mkpath(taskDir)) {
-        try {
-            pybridge::AseBridge::writeTrajectory(
-                frames, (taskDir + QStringLiteral("/perturbed.extxyz")).toStdString(),
-                "extxyz");
-            stored = true;
-        } catch (const std::exception&) {
-            stored = false; // in-app tab still opens; only the checkpoint failed
-        }
-    }
-    processPanel_->setTaskStatus(taskId,
-                                 stored ? ProcessManagerPanel::Status::Completed
-                                        : ProcessManagerPanel::Status::Failed);
-    isDirty_ = true;
-
-    addDocument(frames.front(), name, std::move(frames));
-    statusBar()->showMessage(
-        tr("Generated %1-frame noise trajectory (seed %2)%3")
-            .arg(frameCount + 1)
-            .arg(options.seed)
-            .arg(stored ? tr(" — checkpointed to %1").arg(taskDir)
-                        : QString()));
+    runSimulationWizard(wizard, tr("Random Noise Single-point"),
+                        /*expectFrames=*/false);
+    // Not consumed (the user cancelled) — do not leak the staging into the
+    // next unrelated job.
+    stagedEnsembleFrames_.clear();
 }
 
 void MainWindow::openExamplesBrowser()
@@ -6045,15 +6126,6 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         openOpticsResults(lastJobDir_);
         return;
     }
-    // ELF runs: register the grid in the Volumetric Data dock, then open the
-    // isosurface / slice viewer on it.
-    if (QFile::exists(lastJobDir_ + QStringLiteral("/elf.cube"))) {
-        if (volumetricPanel_)
-            volumetricPanel_->registerResultFile(
-                lastJobDir_ + QStringLiteral("/elf.cube"), tr("ELF η(r)"));
-        openElfResults(lastJobDir_);
-        return;
-    }
     // MLWF runs: open the dedicated MLWF viewer (centres/spreads table, orbital
     // isosurface overlays on the viewport, band-interpolation launcher).
     if (QFile::exists(lastJobDir_ + QStringLiteral("/wannier.json"))) {
@@ -6065,22 +6137,45 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         openBornChargesResults(lastJobDir_);
         return;
     }
-    // Charge-density export (from a single-point run with the export toggle,
-    // or the viewer's "Get Volumetric Data" action): register the cube in the
-    // Volumetric Data dock for instant rendering.
-    if (QFile::exists(lastJobDir_ + QStringLiteral("/density.cube"))) {
-        if (volumetricPanel_) {
-            Document* doc = currentDocument();
-            volumetricPanel_->registerResultFile(
-                lastJobDir_ + QStringLiteral("/density.cube"),
-                tr("Charge density"),
-                doc && doc->structure
-                    ? QString::fromStdString(doc->structure->chemicalFormula())
-                    : QString());
+    // Charge density difference: the cube is registered by the sweep below like
+    // any other grid; what needs saying here is the integrated result, because
+    // "how much charge moved" is the number the isosurface is qualitative
+    // about.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/cdd.json"))) {
+        QFile file(lastJobDir_ + QStringLiteral("/cdd.json"));
+        if (file.open(QIODevice::ReadOnly)) {
+            const QJsonObject o =
+                QJsonDocument::fromJson(file.readAll()).object();
+            statusBar()->showMessage(
+                tr("Δρ(%1 | %2): %3 e redistributed — loaded into the "
+                   "Volumetric Data dock.")
+                    .arg(o.value(QStringLiteral("formula_a")).toString(),
+                         o.value(QStringLiteral("formula_b")).toString())
+                    .arg(o.value(QStringLiteral("charge_transferred")).toDouble(),
+                         0, 'f', 4),
+                12000);
         }
+    }
+
+    // Volumetric fields: every .cube the run wrote goes into the Volumetric
+    // Data dock, which is where they are now viewed — ELF included, since it
+    // renders in the main viewport like any other grid rather than in a dialog
+    // of its own.
+    //
+    // A single-point with the density exports enabled writes up to six of
+    // them; the old code looked for one hard-coded name and left the rest in
+    // the job directory, which is exactly the "generated but not transferred"
+    // symptom.
+    if (const int cubes = registerDensityCubes(lastJobDir_); cubes > 0) {
         statusBar()->showMessage(
-            tr("Charge density added to the Volumetric Data dock."), 6000);
-        // A density-only export has nothing else to open.
+            tr("%n volumetric field(s) added to the Volumetric Data dock.",
+               nullptr, cubes),
+            6000);
+        if (volumetricDock_) {
+            volumetricDock_->show();
+            volumetricDock_->raise();
+        }
+        // A grid-only export has nothing else to open.
         if (!QFile::exists(lastJobDir_ + QStringLiteral("/single_point.json")))
             return;
     }

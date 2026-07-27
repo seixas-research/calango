@@ -134,8 +134,8 @@ QWidget* RepresentationPanel::buildAppearanceTab()
                                tr("Generalized CN (GCN)"),
                                tr("Custom property")});
     colorModeCombo_->setToolTip(
-        tr("Per cast: a coordination-coloured slab and a "
-           "custom-property-coloured adsorbate can share one scene, each "
+        tr("Per cast: a coordination-colored slab and a "
+           "custom-property-colored adsorbate can share one scene, each "
            "normalized against its own data range."));
     form->addRow(tr("Color by:"), colorModeCombo_);
 
@@ -164,7 +164,7 @@ QWidget* RepresentationPanel::buildAppearanceTab()
            "there are. Each cast draws in its own representation."));
     auto* elementsButton = makeEditorButton(
         QStringLiteral("brush-fill"),
-        tr("Element Settings… — per-element colours and radii, and preset "
+        tr("Element Settings… — per-element colors and radii, and preset "
            "save/load."));
     // Three per-atom text overlays, together and directly after Element
     // Settings. All three answer the same question — what is written ON the

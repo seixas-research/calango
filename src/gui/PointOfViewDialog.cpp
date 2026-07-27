@@ -99,7 +99,7 @@ PointOfViewDialog::PointOfViewDialog(ViewportWidget* viewport, QWidget* parent)
         panSpin_[axis]->setSingleStep(0.5);
         panSpin_[axis]->setToolTip(
             tr("The point the camera looks at, in world coordinates (Å). "
-               "Panning moves this; typing it centres the view on a chosen "
+               "Panning moves this; typing it centers the view on a chosen "
                "site exactly."));
         panRow->addWidget(panSpin_[axis], 1);
         connect(panSpin_[axis], &QDoubleSpinBox::valueChanged, this,

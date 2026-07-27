@@ -8,6 +8,7 @@
 #include <memory>
 
 class QCheckBox;
+class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class QPushButton;
@@ -26,7 +27,10 @@ namespace calango::gui {
 ///     bounding box when it has no cell at all.
 ///  2. Atomic Positions & Elements — an editable table of every site with
 ///     both Cartesian (x, y, z) and fractional (u, v, w) coordinates. Edit
-///     either; the other follows.
+///     either; the other follows. Rows can be sorted by element or by any
+///     coordinate, which RENUMBERS the atoms, and a spin-polarization mode
+///     adds editable magnetic-moment columns that become the structure's
+///     initial moments.
 ///
 /// Plus two whole-structure transformations: centering the atoms in the
 /// cell, and padding the cell with vacuum along chosen directions.
@@ -49,33 +53,42 @@ private Q_SLOTS:
     /// Lattice vectors edited -> refresh the parameter spins.
     void applyLatticeVectors();
     void defineUnitCell();
-    void centerInUnitCell();
     /// "Translate atoms…": shift every atom by a vector given in Å or in
     /// fractional cell coordinates.
     void translateAtoms();
-    void addVacuumLayer();
     /// Crystallographic cell transforms via Spglib (through AseBridge):
     /// "Standardize Cell" (spglib.standardize_cell) and "Reduce to Primitive
     /// Cell" (spglib.find_primitive). Both replace the working structure and
     /// refresh the dialog; on accept the caller installs it via undo.
     void standardizeCell();
     void reduceToPrimitiveCell();
-    /// "Wrap within the unit cell": translate the selected atoms by whole
-    /// lattice vectors until their fractional coordinates lie in [0, 1). With
-    /// nothing selected every atom is wrapped. Non-periodic axes are left
-    /// alone — folding a slab's vacuum direction would move atoms through the
-    /// vacuum they were placed in.
-    void wrapSelectedIntoCell();
     /// "Set as origin": put the single selected atom at (0, 0, 0) and shift
     /// every other atom by the same vector. A rigid translation, so distances
     /// and the lattice are untouched.
     void setSelectedAsOrigin();
     /// One cell of the atom table was edited by the user.
     void onAtomCellChanged(int row, int column);
+    /// "Sort": permute the atoms by the selected key. This renumbers them, so
+    /// it goes through Structure::reorder() rather than sorting the view.
+    void applySort();
+    /// The spin-polarization mode changed: add or drop the moment columns and
+    /// rewrite the structure's initial moments to match.
+    void onSpinModeChanged();
 
 private:
     void buildCellSection(QVBoxLayout* parent);
     void buildAtomSection(QVBoxLayout* parent);
+
+    /// How many moment columns the current spin mode shows: 0, 1 or 3.
+    int momentColumnCount() const;
+    /// Column index of the first moment column (== AtomColumnCount).
+    static constexpr int kFirstMomentColumn = 7;
+    /// Read the moment columns out of the table and store them on the working
+    /// structure as `initial_magmoms`.
+    void writeMomentsToStructure();
+    /// Per-atom moments currently on the structure, as (mx, my, mz). Zero for
+    /// atoms that carry none, so the table always has something to show.
+    std::vector<core::Vec3> momentsFromStructure() const;
 
     /// Repopulate every widget from working_ (suppressing edit signals).
     void refreshAll();
@@ -98,16 +111,13 @@ private:
     std::array<QCheckBox*, 3> pbcChecks_{};
     QStackedWidget* cellStack_ = nullptr;
     QPushButton* defineCellButton_ = nullptr;
-    QPushButton* centerButton_ = nullptr;
-    QPushButton* vacuumButton_ = nullptr;
     QPushButton* standardizeButton_ = nullptr;
     QPushButton* primitiveButton_ = nullptr;
     QPushButton* translateButton_ = nullptr;
-    /// Atom-table row. Wrapping needs boundaries to wrap into, so it follows
-    /// the cell's presence; re-origining is a plain translation and stays
-    /// available for an isolated molecule.
-    QPushButton* wrapButton_ = nullptr;
     QPushButton* originButton_ = nullptr;
+    QComboBox* sortKeyCombo_ = nullptr;
+    QCheckBox* sortDescendingCheck_ = nullptr;
+    QComboBox* spinModeCombo_ = nullptr;
     QTableWidget* atomTable_ = nullptr;
     QLabel* summaryLabel_ = nullptr;
 };

@@ -125,6 +125,12 @@ private Q_SLOTS:
     /// Structure panel → "Edit Structure…": unit cell + atomic positions
     /// editor, applied through the document's undo stack.
     void editStructure();
+    // Structure panel action row. These were buttons inside the Edit Structure
+    // dialog (acting on its working copy, undone only by cancelling it); here
+    // they mutate the document and are undoable like any other edit.
+    void centerStructure();
+    void addVacuumLayer();
+    void wrapStructureIntoCell();
     void showPreferences();
     void undo();
     void redo();
@@ -180,10 +186,25 @@ private Q_SLOTS:
     /// Open the G₀W₀ quasiparticle viewer for a finished job directory
     /// (reads its gw.json summary — same schema for GPAW and Yambo).
     void openGwResults(const QString& directory);
-    /// Open the ELF isosurface / slice viewer for a finished job directory.
-    void openElfResults(const QString& directory);
+    /// Register every .cube in `directory` in the Volumetric Data dock,
+    /// labelled from its filename. Returns how many were added.
+    ///
+    /// One place, because a single-point run can now write six different
+    /// fields (all-electron, pseudo, spin, Hartree, ELF, kinetic energy) and
+    /// every caller that used to look for the single hard-coded "density.cube"
+    /// silently dropped the other five on the floor.
+    int registerDensityCubes(const QString& directory);
+    /// The interpreter an ad-hoc post-processing script should run under for
+    /// `kind` — the engine's Preferences preset, then the last global env,
+    /// then the embedded interpreter.
+    ///
+    /// The same resolution SimulationWizardBase::pythonExecutable() does. A
+    /// post-process imports the same modules the run did (gpaw, here), so
+    /// defaulting it to the embedded interpreter guarantees a
+    /// ModuleNotFoundError on every machine where GPAW lives in a conda env —
+    /// which is all of them.
+    QString pythonForEngine(core::CalculatorKind kind) const;
     /// Open the MLWF centres table + orbital viewer for a finished job dir.
-    void openWannierResults(const QString& directory);
     /// Open the dedicated Single-Point Viewer on a finished job directory
     /// (reads its single_point.json summary).
     void openSinglePointResults(const QString& directory);
@@ -200,18 +221,9 @@ private Q_SLOTS:
     /// density.cube from `directory` into the Volumetric Data dock, or export
     /// one from the run's saved .gpw as a job when none exists yet.
     void onGetVolumetricData(const QString& directory);
-    /// The dedicated result viewers. Each opens on the selected (or most
-    /// recent) process; they are reached from the Processes panel — its
-    /// "Open Viewer" button or its context menu — and also open automatically
-    /// when the matching run finishes.
-    void showSinglePointViewer();
-    void showGeometryOptimizationViewer();
     /// Time series (T, E, P, V), g(r) and the trajectory player for a
     /// finished MD run.
-    void showMolecularDynamicsViewer();
     void openMolecularDynamicsResults(const QString& directory);
-    void showMlwfViewer();
-    void showGwViewer();
     /// Electronics → "Born Effective Charges…": stage and launch the Z* run.
     void showBornCharges();
     /// Open the Z* tensor read-out for a completed Born-charges process.
@@ -302,10 +314,6 @@ private Q_SLOTS:
     void showRamanModes();
     void newProject();
     void showVolumetricData();
-    /// Simulation → "Electron Localization Function (ELF)…": set up + launch the
-    /// ELF post-process through the standardized wizard (engine selection +
-    /// per-engine Conda env). The viewer opens when the job finishes.
-    void showElf();
     /// Viewport toolbar → "Lattice Plane…": interactive Miller-index plane +
     /// volumetric color-slice overlay in the main 3D viewport.
     /// Viewport toolbar → "Custom overlay…": geometric-primitive overlay manager.
@@ -315,8 +323,12 @@ private Q_SLOTS:
     /// finishes.
     void showWannier();
     /// Completed processes that saved GPAW wavefunctions (.gpw), as (label,
-    /// directory) pairs — the baselines the ELF / MLWF wizards can restart from.
+    /// directory) pairs — the baselines the MLWF post-process can restart from.
     QList<QPair<QString, QString>> gpawBaselines() const;
+    /// Analysis → "Charge Density Difference (CDD)…": pick a completed
+    /// single-point, split its atoms into two subsystems, and difference the
+    /// densities.
+    void showChargeDensityDifference();
     /// Processes whose directory holds `resultFile`, as label -> path. Used to
     /// offer one run's output as another run's input (Born charges and the
     /// dielectric function feeding a phonon dispersion).
@@ -332,7 +344,6 @@ private Q_SLOTS:
     void openExamplesBrowser();
     void openRayTraceDialog();
     void addRandomNoise();
-    void loadExample(const QString& resourcePath, const QString& recommendation);
 
     void onTabChanged(int index);
     void onTabCloseRequested(int index);
@@ -416,10 +427,14 @@ private:
     /// Push the current document's state into all views.
     void syncViewsToCurrent(bool frameCamera);
     /// Workspace id of the tab on screen, or -1 when no document is open.
-    int currentWorkspaceId() const;
     /// Replace the current document's structure (supercell, slab, undo...).
     void replaceCurrentStructure(std::shared_ptr<core::Structure> structure,
                                  const QString& name);
+    /// Push undo, swap `edited` in as the current structure (and in the
+    /// trajectory frame it stands for), refresh the views and report `message`.
+    /// The one path every whole-structure transform goes through.
+    void installEditedStructure(std::shared_ptr<core::Structure> edited,
+                                const QString& message);
     void notifyStructureChanged(bool frameCamera = true);
     void pushUndo();
     void updateUndoActions();
@@ -556,6 +571,9 @@ private:
     QComboBox* processSelector_ = nullptr; ///< Results-panel process dropdown
     StructureInfoWidget* infoWidget_ = nullptr;
     VolumetricPanel* volumetricPanel_ = nullptr; ///< zone 13 (Volumetric Data)
+    /// The dock holding it, so a run that produces a grid can raise the panel
+    /// rather than leave the result sitting in a collapsed tab.
+    QDockWidget* volumetricDock_ = nullptr;
     JobLogWidget* jobLogWidget_ = nullptr;
     MetricPlotWidget* energyPlot_ = nullptr;
     MetricPlotWidget* temperaturePlot_ = nullptr;

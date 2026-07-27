@@ -1,5 +1,7 @@
 #include "gui/GeometryOptimizationWizard.hpp"
 
+#include "gui/GuiUtils.hpp"
+
 #include "core/AseScriptGenerator.hpp"
 #include "core/Structure.hpp"
 #include "gui/GeometryConstraintsDialog.hpp"
@@ -35,17 +37,7 @@ QString GeometryOptimizationWizard::wizardTitle() const
 
 QStringList GeometryOptimizationWizard::calculatorElements() const
 {
-    if (!structure_)
-        return {};
-    // Sorted and unique: the Hubbard editor uses this as a completer list, and
-    // a completer that repeats "Fe" once per Fe atom is unusable.
-    std::set<QString> symbols;
-    for (const core::Atom& atom : structure_->atoms())
-        symbols.insert(QString::fromLatin1(atom.symbol()));
-    QStringList result;
-    for (const QString& symbol : symbols)
-        result << symbol;
-    return result;
+    return structureElements(structure_.get());
 }
 
 QString GeometryOptimizationWizard::settingsHeader() const

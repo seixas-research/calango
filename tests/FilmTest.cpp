@@ -361,6 +361,107 @@ void testClamping()
               "after the end clamps to the last shot");
 }
 
+/// Per-shot durations. The film used to divide its running time evenly; now a
+/// shot can be given its own length, and the thing that must not break is the
+/// old behaviour when nobody sets one.
+void testPerShotDurations()
+{
+    std::printf("per-shot durations\n");
+    FilmScript script;
+    script.shots = {shot(0.0f, 10.0f, FilmTransition::Interpolation),
+                    shot(90.0f, 10.0f, FilmTransition::Interpolation),
+                    shot(180.0f, 10.0f, FilmTransition::Interpolation)};
+    script.duration = 12.0;
+
+    {
+        const std::vector<double> even = script.segmentDurations();
+        check(even.size() == 2, "two shots' gaps for three shots");
+        checkNear(even[0], 6.0, 1e-9, "untimed film still splits evenly");
+        checkNear(even[1], 6.0, 1e-9, "...on both segments");
+    }
+
+    // A slow opening move and a quick one out.
+    script.shots[0].segmentSeconds = 9.0;
+    script.shots[1].segmentSeconds = 3.0;
+    {
+        const std::vector<double> lengths = script.segmentDurations();
+        checkNear(lengths[0], 9.0, 1e-9, "a typed time is used literally");
+        checkNear(lengths[1], 3.0, 1e-9, "...for every segment");
+        // The camera must reach the second keyframe at 9 s, not at the 6 s the
+        // even split would have put it.
+        checkNear(sampleFilm(script, 9.0).camera.yawDeg, 90.0, 1e-4,
+                  "the second shot lands at its own time, not the midpoint");
+        check(sampleFilm(script, 6.0).camera.yawDeg < 90.0,
+              "and has not been reached at the halfway mark");
+        checkNear(sampleFilm(script, 12.0).camera.yawDeg, 180.0, 1e-4,
+                  "the film still ends on the last shot");
+    }
+
+    // Half-timed: an unset segment must not become a zero-length hard cut.
+    script.shots[1].segmentSeconds = 0.0;
+    {
+        const std::vector<double> lengths = script.segmentDurations();
+        check(lengths[1] > 0.1, "an untimed segment is not collapsed to zero");
+        checkNear(lengths[0] + lengths[1], script.effectiveDuration(), 1e-9,
+                  "the segments still account for the whole film");
+    }
+
+    // Trajectory priority re-times the camera moves; the proportions survive.
+    script.shots[0].segmentSeconds = 9.0;
+    script.shots[1].segmentSeconds = 3.0;
+    script.trajectoryFrames = 100;
+    script.trajectoryFps = 25.0; // 4 s natural
+    script.priority = FilmTimelinePriority::Trajectory;
+    {
+        const std::vector<double> lengths = script.segmentDurations();
+        checkNear(lengths[0] + lengths[1], 4.0, 1e-9,
+                  "trajectory priority compresses the film to 4 s");
+        checkNear(lengths[0] / lengths[1], 3.0, 1e-9,
+                  "...keeping the 3:1 pacing the user set");
+    }
+}
+
+/// Per-shot overlays. They cannot be blended, so the only question is which
+/// shot's set is on screen at a given instant — and that a film that never
+/// touches the feature says nothing at all.
+void testPerShotOverlays()
+{
+    std::printf("per-shot overlays\n");
+    FilmScript script;
+    script.shots = {shot(0.0f, 10.0f, FilmTransition::Interpolation),
+                    shot(90.0f, 10.0f, FilmTransition::Interpolation)};
+    script.duration = 10.0;
+
+    check(!sampleFilm(script, 5.0).overridesOverlays,
+          "a film that sets no overlays leaves the dock alone");
+
+    script.shots[0].overridesOverlays = true;
+    script.shots[0].overlayIds = {1, 2};
+    script.shots[1].overridesOverlays = true;
+    script.shots[1].overlayIds = {}; // deliberately none
+
+    const FilmSample early = sampleFilm(script, 1.0);
+    check(early.overridesOverlays && early.overlayIds == std::vector<int>{1, 2},
+          "the opening shot's overlays are shown");
+    const FilmSample late = sampleFilm(script, 9.0);
+    check(late.overridesOverlays && late.overlayIds.empty(),
+          "an empty set hides everything rather than meaning \"no opinion\"");
+
+    // A hard cut holds the outgoing shot for the whole segment, so its
+    // overlays must hold with it rather than switching at the midpoint.
+    script.shots[0].transitionToNext = FilmTransition::HardCut;
+    check(sampleFilm(script, 9.0).overlayIds == std::vector<int>{1, 2},
+          "a hard cut keeps the outgoing shot's overlays until the cut");
+
+    // One shot, no segments: the sample still reports that shot's set.
+    FilmScript single;
+    single.shots = {shot(0.0f, 10.0f, FilmTransition::Interpolation)};
+    single.shots[0].overridesOverlays = true;
+    single.shots[0].overlayIds = {7};
+    check(sampleFilm(single, 0.0).overlayIds == std::vector<int>{7},
+          "a single-shot film reports its own overlays");
+}
+
 } // namespace
 
 int main()
@@ -377,6 +478,8 @@ int main()
     testCastOpacityRamp();
     testSingleShot();
     testClamping();
+    testPerShotDurations();
+    testPerShotOverlays();
 
     if (failures == 0) {
         std::printf("\nAll film checks passed.\n");

@@ -21,6 +21,7 @@
 #include <QFileDialog>
 #include <QFontDatabase>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -41,6 +42,10 @@ namespace calango::gui {
 
 namespace {
 const auto kEnvSettingsKey = QStringLiteral("jobs/environmentPath");
+/// Where the VASP POTCAR directory is remembered. Under `jobs/` with the other
+/// installation-wide run settings rather than under a wizard's own key, because
+/// it is shared by every VASP-capable dialog.
+const auto kVaspPotcarKey = QStringLiteral("jobs/vaspPotcarPath");
 
 /// Hide/show the QFormLayout row (label + field) that `field` occupies inside
 /// `group`'s form layout. No-op if the group has no form layout or the field
@@ -233,6 +238,7 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     multiplicitySpin_->setValue(1);
     orcaForm->addRow(tr("Multiplicity:"), multiplicitySpin_);
     layout->addWidget(orcaGroup_);
+    layout->addWidget(buildVaspGroup(page));
     layout->addWidget(buildLammpsGroup(page));
 
     // Subclass-supplied extra settings (e.g. Single-point's convergence group,
@@ -242,6 +248,272 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
 
     layout->addStretch(1);
     return page;
+}
+
+QWidget* SimulationWizardBase::buildVaspGroup(QWidget* parent)
+{
+    vaspGroup_ = new QGroupBox(tr("VASP settings"), parent);
+    auto* form = new QFormLayout(vaspGroup_);
+
+    // -- POTCAR datasets ----------------------------------------------------
+    // First, because without it nothing runs at all. Persisted globally rather
+    // than per wizard: it is a property of the installation, not of one job,
+    // and every VASP-capable dialog reads the same value.
+    auto* potcarRow = new QWidget(vaspGroup_);
+    auto* potcarLayout = new QHBoxLayout(potcarRow);
+    potcarLayout->setContentsMargins(0, 0, 0, 0);
+    vaspPotcarEdit_ = new QLineEdit(potcarRow);
+    vaspPotcarEdit_->setPlaceholderText(
+        QStringLiteral("/path/to/POTCARs"));
+    vaspPotcarEdit_->setText(vaspPotcarDirectory());
+    vaspPotcarEdit_->setToolTip(
+        tr("Directory holding the PAW datasets — VASP's VASP_PP_PATH.\n\n"
+           "Both layouts work: the canonical one with a potpaw_PBE/ level "
+           "inside, and the flat one where the element folders sit directly "
+           "here (the generated script builds a symlink shim for that case, "
+           "because ASE cannot be told to look anywhere else).\n\n"
+           "Remembered across sessions and shared by every VASP run."));
+    auto* potcarBrowse = new QPushButton(tr("Browse…"), potcarRow);
+    potcarLayout->addWidget(vaspPotcarEdit_, 1);
+    potcarLayout->addWidget(potcarBrowse);
+    form->addRow(tr("POTCAR directory:"), potcarRow);
+    connect(potcarBrowse, &QPushButton::clicked, this, [this] {
+        const QString dir = QFileDialog::getExistingDirectory(
+            this, tr("Select the POTCAR Directory"),
+            vaspPotcarEdit_->text());
+        if (!dir.isEmpty())
+            vaspPotcarEdit_->setText(dir);
+    });
+    connect(vaspPotcarEdit_, &QLineEdit::textChanged, this,
+            [this](const QString& text) {
+                setVaspPotcarDirectory(text);
+                refreshPreview();
+            });
+
+    // -- Basis and XC -------------------------------------------------------
+    vaspXcCombo_ = new QComboBox(vaspGroup_);
+    vaspXcCombo_->setEditable(true);
+    vaspXcCombo_->addItems({QStringLiteral("PBE"), QStringLiteral("PBEsol"),
+                            QStringLiteral("RPBE"), QStringLiteral("LDA"),
+                            QStringLiteral("SCAN"), QStringLiteral("r2SCAN"),
+                            QStringLiteral("HSE06")});
+    vaspXcCombo_->setToolTip(
+        tr("ASE's `xc`, which expands to the matching GGA / METAGGA tag plus "
+           "its recommended defaults. The meta-GGAs and HSE06 need the right "
+           "POTCAR set and cost far more than the GGAs."));
+    form->addRow(tr("XC functional:"), vaspXcCombo_);
+
+    vaspPrecCombo_ = new QComboBox(vaspGroup_);
+    // Order matches core::VaspPrecision.
+    vaspPrecCombo_->addItems({QStringLiteral("Normal"),
+                              QStringLiteral("Accurate"),
+                              QStringLiteral("Single")});
+    vaspPrecCombo_->setCurrentIndex(
+        static_cast<int>(core::VaspPrecision::Accurate));
+    vaspPrecCombo_->setToolTip(
+        tr("PREC — the FFT grid and augmentation-charge accuracy. Accurate is "
+           "the right default: Normal's coarser grid introduces egg-box errors "
+           "in forces, which is exactly what a relaxation is sensitive to."));
+
+    vaspAlgoCombo_ = new QComboBox(vaspGroup_);
+    // Order matches core::VaspAlgo.
+    vaspAlgoCombo_->addItems({QStringLiteral("Normal"), QStringLiteral("Fast"),
+                              QStringLiteral("VeryFast"), QStringLiteral("All"),
+                              QStringLiteral("Damped")});
+    vaspAlgoCombo_->setToolTip(
+        tr("ALGO — the electronic minimization.\n\n"
+           "Normal (blocked Davidson): robust general default.\n"
+           "Fast: Davidson then RMM-DIIS — the usual choice for large "
+           "relaxations.\n"
+           "VeryFast: RMM-DIIS only; fastest and least stable.\n"
+           "All / Damped: for the cases where the others oscillate, and "
+           "required for meta-GGA and hybrid functionals."));
+    // PREC and ALGO are both "how hard is it trying", so they share a row.
+    auto* precRow = new QWidget(vaspGroup_);
+    auto* precLayout = new QHBoxLayout(precRow);
+    precLayout->setContentsMargins(0, 0, 0, 0);
+    precLayout->addWidget(vaspPrecCombo_);
+    precLayout->addWidget(new QLabel(tr("ALGO"), precRow));
+    precLayout->addWidget(vaspAlgoCombo_);
+    precLayout->addStretch(1);
+    form->addRow(tr("PREC:"), precRow);
+
+    // -- Electronic convergence --------------------------------------------
+    vaspNelmSpin_ = new QSpinBox(vaspGroup_);
+    vaspNelmSpin_->setRange(1, 100000);
+    vaspNelmSpin_->setValue(500);
+    vaspNelmSpin_->setToolTip(
+        tr("NELM — maximum electronic (SCF) steps. A runaway guard: EDIFF is "
+           "what normally ends the cycle."));
+    vaspEdiffEdit_ = new QLineEdit(QStringLiteral("1e-6"), vaspGroup_);
+    auto* ediffValidator = new QDoubleValidator(1e-12, 1e-1, 12, vaspEdiffEdit_);
+    ediffValidator->setNotation(QDoubleValidator::ScientificNotation);
+    ediffValidator->setLocale(QLocale::c());
+    vaspEdiffEdit_->setValidator(ediffValidator);
+    vaspEdiffEdit_->setToolTip(
+        tr("EDIFF — the SCF energy convergence threshold, in eV. 1e-6 for "
+           "forces and relaxations; 1e-4 is only enough for a rough total "
+           "energy."));
+    auto* elecRow = new QWidget(vaspGroup_);
+    auto* elecLayout = new QHBoxLayout(elecRow);
+    elecLayout->setContentsMargins(0, 0, 0, 0);
+    elecLayout->addWidget(vaspNelmSpin_);
+    elecLayout->addWidget(new QLabel(tr("EDIFF"), elecRow));
+    elecLayout->addWidget(vaspEdiffEdit_, 1);
+    form->addRow(tr("NELM:"), elecRow);
+
+    vaspLrealCombo_ = new QComboBox(vaspGroup_);
+    vaspLrealCombo_->addItem(tr("Auto — real space (large cells)"),
+                             QStringLiteral("Auto"));
+    vaspLrealCombo_->addItem(tr("False — reciprocal space (exact)"),
+                             QStringLiteral("False"));
+    vaspLrealCombo_->setToolTip(
+        tr("LREAL — where the projection operators are evaluated. Auto is a "
+           "large speed-up above roughly 20 atoms at a small accuracy cost; "
+           "False is exact and is what you want for a small cell or a "
+           "high-accuracy energy difference."));
+    form->addRow(tr("LREAL:"), vaspLrealCombo_);
+
+    // -- Ionic relaxation ---------------------------------------------------
+    // Only meaningful for a task with ionic steps; a single point emits
+    // NSW = 0 regardless, so the row is hidden rather than shown inert.
+    vaspIbrionCombo_ = new QComboBox(vaspGroup_);
+    vaspIbrionCombo_->addItem(tr("2 — conjugate gradient"), 2);
+    vaspIbrionCombo_->addItem(tr("1 — quasi-Newton (RMM-DIIS)"), 1);
+    vaspIbrionCombo_->addItem(tr("3 — damped molecular dynamics"), 3);
+    vaspIbrionCombo_->setToolTip(
+        tr("IBRION — the ionic relaxation algorithm. CG is robust from a poor "
+           "starting geometry; quasi-Newton converges faster once close to the "
+           "minimum."));
+    vaspIsifCombo_ = new QComboBox(vaspGroup_);
+    vaspIsifCombo_->addItem(tr("2 — ions only"), 2);
+    vaspIsifCombo_->addItem(tr("3 — ions + cell shape + volume"), 3);
+    vaspIsifCombo_->addItem(tr("4 — ions + cell shape"), 4);
+    vaspIsifCombo_->setToolTip(
+        tr("ISIF — what is allowed to move, and what is computed. A "
+           "variable-cell relaxation needs 3 or more; the wizard raises this "
+           "automatically when the cell is set to relax."));
+    vaspEdiffgSpin_ = new QDoubleSpinBox(vaspGroup_);
+    vaspEdiffgSpin_->setRange(-10.0, 10.0);
+    vaspEdiffgSpin_->setDecimals(4);
+    vaspEdiffgSpin_->setSingleStep(0.005);
+    vaspEdiffgSpin_->setValue(-0.02);
+    vaspEdiffgSpin_->setToolTip(
+        tr("EDIFFG — the ionic convergence criterion. NEGATIVE means a force "
+           "threshold in eV/Å (the usual choice); positive means an energy "
+           "change in eV."));
+    vaspIonicRow_ = new QWidget(vaspGroup_);
+    auto* ionicLayout = new QHBoxLayout(vaspIonicRow_);
+    ionicLayout->setContentsMargins(0, 0, 0, 0);
+    ionicLayout->addWidget(vaspIbrionCombo_);
+    ionicLayout->addWidget(new QLabel(tr("ISIF"), vaspIonicRow_));
+    ionicLayout->addWidget(vaspIsifCombo_);
+    ionicLayout->addWidget(new QLabel(tr("EDIFFG"), vaspIonicRow_));
+    ionicLayout->addWidget(vaspEdiffgSpin_);
+    form->addRow(tr("IBRION:"), vaspIonicRow_);
+
+    // -- Output -------------------------------------------------------------
+    vaspLchargCheck_ = new QCheckBox(tr("CHGCAR"), vaspGroup_);
+    vaspLchargCheck_->setChecked(true);
+    vaspLchargCheck_->setToolTip(
+        tr("LCHARG — write the charge density. On by default: it is what every "
+           "downstream density analysis reads, and re-running an SCF to get it "
+           "back costs far more than the file."));
+    vaspLwaveCheck_ = new QCheckBox(tr("WAVECAR"), vaspGroup_);
+    vaspLwaveCheck_->setToolTip(
+        tr("LWAVE — write the wavefunctions. Large, but required to restart "
+           "or to post-process bands."));
+    vaspLaechgCheck_ = new QCheckBox(tr("AECCAR (Bader)"), vaspGroup_);
+    vaspLaechgCheck_->setToolTip(
+        tr("LAECHG — write the all-electron core and valence densities, which "
+           "a Bader charge analysis needs on top of CHGCAR."));
+    vaspLorbitCheck_ = new QCheckBox(tr("Projected DOS"), vaspGroup_);
+    vaspLorbitCheck_->setToolTip(
+        tr("LORBIT = 11 — site- and l-projected DOS in PROCAR/DOSCAR."));
+    auto* outputRow = new QWidget(vaspGroup_);
+    auto* outputLayout = new QHBoxLayout(outputRow);
+    outputLayout->setContentsMargins(0, 0, 0, 0);
+    for (QCheckBox* box : {vaspLchargCheck_, vaspLwaveCheck_, vaspLaechgCheck_,
+                           vaspLorbitCheck_})
+        outputLayout->addWidget(box);
+    outputLayout->addStretch(1);
+    form->addRow(tr("Write:"), outputRow);
+
+    // -- Parallelization ----------------------------------------------------
+    vaspNcoreSpin_ = new QSpinBox(vaspGroup_);
+    vaspNcoreSpin_->setRange(0, 4096);
+    vaspNcoreSpin_->setSpecialValueText(tr("auto"));
+    vaspNcoreSpin_->setToolTip(
+        tr("NCORE — cores working on one orbital. Left at auto unless you know "
+           "the machine: a wrong value is a performance cliff rather than an "
+           "error, so VASP's own choice is the safer default."));
+    vaspKparSpin_ = new QSpinBox(vaspGroup_);
+    vaspKparSpin_->setRange(0, 4096);
+    vaspKparSpin_->setSpecialValueText(tr("auto"));
+    vaspKparSpin_->setToolTip(
+        tr("KPAR — k-points treated in parallel. The cheapest parallelism "
+           "there is when the mesh is dense enough to divide."));
+    auto* parallelRow = new QWidget(vaspGroup_);
+    auto* parallelLayout = new QHBoxLayout(parallelRow);
+    parallelLayout->setContentsMargins(0, 0, 0, 0);
+    parallelLayout->addWidget(vaspNcoreSpin_);
+    parallelLayout->addWidget(new QLabel(tr("KPAR"), parallelRow));
+    parallelLayout->addWidget(vaspKparSpin_);
+    parallelLayout->addStretch(1);
+    form->addRow(tr("NCORE:"), parallelRow);
+
+    // -- Escape hatch -------------------------------------------------------
+    vaspExtraIncarEdit_ = new QPlainTextEdit(vaspGroup_);
+    vaspExtraIncarEdit_->setMaximumHeight(70);
+    vaspExtraIncarEdit_->setPlaceholderText(
+        QStringLiteral("LDAU = .TRUE.\nLDAUU = 4.0 0.0\nNBANDS = 64"));
+    vaspExtraIncarEdit_->setToolTip(
+        tr("Extra INCAR tags, one per line, applied verbatim on top of "
+           "everything above.\n\n"
+           "No dialog can cover 300 INCAR flags, and a wizard that tries "
+           "becomes a ceiling. Anything typed here is passed straight to the "
+           "calculator and is not validated."));
+    form->addRow(tr("Extra INCAR tags:"), vaspExtraIncarEdit_);
+
+    for (QComboBox* combo : {vaspXcCombo_, vaspPrecCombo_, vaspAlgoCombo_,
+                             vaspLrealCombo_, vaspIbrionCombo_, vaspIsifCombo_})
+        connect(combo, &QComboBox::currentIndexChanged, this,
+                [this] { refreshPreview(); });
+    connect(vaspXcCombo_, &QComboBox::currentTextChanged, this,
+            [this] { refreshPreview(); });
+    connect(vaspNelmSpin_, &QSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+    connect(vaspEdiffEdit_, &QLineEdit::textChanged, this,
+            [this] { refreshPreview(); });
+    connect(vaspEdiffgSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+    for (QSpinBox* spin : {vaspNcoreSpin_, vaspKparSpin_})
+        connect(spin, &QSpinBox::valueChanged, this,
+                [this] { refreshPreview(); });
+    for (QCheckBox* box : {vaspLchargCheck_, vaspLwaveCheck_, vaspLaechgCheck_,
+                           vaspLorbitCheck_})
+        connect(box, &QCheckBox::toggled, this, [this] { refreshPreview(); });
+    connect(vaspExtraIncarEdit_, &QPlainTextEdit::textChanged, this,
+            [this] { refreshPreview(); });
+
+    return vaspGroup_;
+}
+
+void SimulationWizardBase::updateVaspRows()
+{
+    if (!vaspGroup_ || !vaspIonicRow_)
+        return;
+    // A single point has no ionic steps, so IBRION/ISIF/EDIFFG describe
+    // nothing. Hidden rather than disabled: three greyed-out controls read as
+    // "broken", not as "not applicable here".
+    auto* form = qobject_cast<QFormLayout*>(vaspGroup_->layout());
+    if (!form)
+        return;
+    int row = -1;
+    QFormLayout::ItemRole role{};
+    form->getWidgetPosition(vaspIonicRow_, &row, &role);
+    if (row >= 0)
+        form->setRowVisible(row, taskHasIonicSteps());
 }
 
 QWidget* SimulationWizardBase::buildLammpsGroup(QWidget* parent)
@@ -317,7 +589,7 @@ QWidget* SimulationWizardBase::buildLammpsGroup(QWidget* parent)
     lammpsExtraEdit_->setPlaceholderText(
         tr("neighbor 2.0 bin        (one LAMMPS command per line)"));
     lammpsExtraEdit_->setToolTip(
-        tr("Extra LAMMPS commands appended after the pair setup — neighbour "
+        tr("Extra LAMMPS commands appended after the pair setup — neighbor "
            "list settings, `pair_modify`, style-specific `fix` commands. One "
            "per line.\n\n"
            "Only the library interface can apply these directly; with the "
@@ -859,7 +1131,20 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
            "cg: slower but very stable — try it when the SCF oscillates.\n"
            "rmm-diis: cheapest per step for large metallic systems.\n"
            "direct: exact diagonalization (LCAO / small systems)."));
-    convForm->addRow(tr("Eigensolver:"), gpawEigensolverCombo_);
+    // The solver and the cap on its iterations are one thought: "how the SCF
+    // is solved, and how long it may try". The cap is created by the subclass
+    // (GpawElectronicRows) but placed here, next to what it caps.
+    if (QWidget* steps = gpawScfStepsWidget()) {
+        auto* solverRow = new QWidget(convGroup_);
+        auto* solverLayout = new QHBoxLayout(solverRow);
+        solverLayout->setContentsMargins(0, 0, 0, 0);
+        solverLayout->addWidget(gpawEigensolverCombo_, 1);
+        solverLayout->addWidget(new QLabel(tr("max SCF steps"), solverRow));
+        solverLayout->addWidget(steps);
+        convForm->addRow(tr("Eigensolver:"), solverRow);
+    } else {
+        convForm->addRow(tr("Eigensolver:"), gpawEigensolverCombo_);
+    }
 
     gpawMixerCombo_ = new QComboBox(convGroup_);
     gpawMixerCombo_->addItems({QStringLiteral("Mixer"), QStringLiteral("MixerSum"),
@@ -934,6 +1219,12 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
         gpawTolRow_, 1e-4, 1e-9, 1e-1,
         tr("GPAW convergence['density'] — change in the density integrated "
            "over the cell, in electrons per valence electron (e.g. 1e-4)."));
+    // Energy leads the row: the three are converged together, and the energy
+    // threshold is the one a user sets first and the other two support.
+    if (QWidget* energy = gpawEnergyToleranceWidget()) {
+        tolRow->addWidget(new QLabel(tr("energy"), gpawTolRow_));
+        tolRow->addWidget(energy, 1);
+    }
     tolRow->addWidget(new QLabel(tr("eigenstates"), gpawTolRow_));
     tolRow->addWidget(gpawEigenTolEdit_, 1);
     tolRow->addWidget(new QLabel(tr("density"), gpawTolRow_));
@@ -948,38 +1239,86 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
     buildSpinRows(spinForm);
     layout->addWidget(spinGroup_);
 
-    // ===== 5. Output Files & Density Exports ==============================
-    outputGroup_ = new QGroupBox(tr("Output Files && Density Exports"), parent);
-    auto* outForm = new QFormLayout(outputGroup_);
+    // ===== 5. Density Exports =============================================
+    // Renamed from "Output Files & Density Exports": the group only ever held
+    // density exports, and the longer title implied output settings that were
+    // not there.
+    outputGroup_ = new QGroupBox(tr("Density Exports"), parent);
+    auto* outLayout = new QVBoxLayout(outputGroup_);
 
     gpawDensityExportCheck_ = new QCheckBox(
-        tr("Export Charge Density (.cube)"), outputGroup_);
+        tr("Export volumetric fields (.cube) after the SCF"), outputGroup_);
     gpawDensityExportCheck_->setToolTip(
-        tr("After the SCF, write the charge density to density.cube "
-           "(a standard Gaussian cube volumetric file)."));
-    connect(gpawDensityExportCheck_, &QCheckBox::toggled, this,
-            [this] { refreshPreview(); });
+        tr("Write the selected fields to Gaussian cube files in the job "
+           "directory. Each is one grid evaluation on the already-converged "
+           "calculation, so several cost little more than one."));
+    connect(gpawDensityExportCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        for (QCheckBox* field : densityFieldChecks_)
+            if (field)
+                field->setEnabled(on);
+        refreshPreview();
+    });
+    outLayout->addWidget(gpawDensityExportCheck_);
 
-    gpawDensityTypeCombo_ = new QComboBox(outputGroup_);
-    // Order matches core::GpawDensityType.
-    gpawDensityTypeCombo_->addItem(tr("Pseudodensity"));
-    gpawDensityTypeCombo_->addItem(tr("All-electron Density"));
-    gpawDensityTypeCombo_->setCurrentIndex(
-        static_cast<int>(core::GpawDensityType::AllElectron));
-    gpawDensityTypeCombo_->setToolTip(
-        tr("Pseudodensity: calc.get_pseudo_density() (smooth valence "
-           "density).\n"
-           "All-electron: calc.get_all_electron_density() (full nuclear-cusp "
-           "density)."));
-    connect(gpawDensityTypeCombo_, &QComboBox::currentIndexChanged, this,
-            [this] { refreshPreview(); });
+    // Six fields in two columns. A single column would run the group to six
+    // rows on a page that already scrolls, and the fields pair naturally:
+    // the two densities, then the two potentials-of-a-kind, then the two
+    // kinetic-energy-derived ones.
+    auto* fieldGrid = new QGridLayout;
+    fieldGrid->setContentsMargins(18, 0, 0, 0);
+    struct FieldSpec {
+        const char* label;
+        const char* tip;
+    };
+    static const FieldSpec kFields[kDensityFieldCount] = {
+        {QT_TR_NOOP("All-electron density"),
+         QT_TR_NOOP("get_all_electron_density(gridrefinement=2) — the full "
+                    "density including the nuclear cusps the PAW "
+                    "pseudization smooths away.")},
+        {QT_TR_NOOP("Pseudodensity"),
+         QT_TR_NOOP("get_pseudo_density() — the smooth valence density the "
+                    "SCF actually iterates on.")},
+        {QT_TR_NOOP("Spin density"),
+         QT_TR_NOOP("n(up) - n(down). Identically zero in a spin-restricted "
+                    "run; set Spin polarization to Collinear for a "
+                    "meaningful field.")},
+        {QT_TR_NOOP("Hartree potential"),
+         QT_TR_NOOP("get_electrostatic_potential() — the electrostatic "
+                    "potential in eV, the field a work function or a band "
+                    "alignment is read off.")},
+        {QT_TR_NOOP("ELF"),
+         QT_TR_NOOP("Electron localization function, in [0, 1]: where the "
+                    "electrons pair up. Lone pairs and bonds show as "
+                    "basins.")},
+        {QT_TR_NOOP("Kinetic energy density"),
+         QT_TR_NOOP("tau(r), the positive-definite kinetic energy density — "
+                    "what the ELF and every meta-GGA are built from.")},
+    };
+    for (int i = 0; i < kDensityFieldCount; ++i) {
+        densityFieldChecks_[i] =
+            new QCheckBox(tr(kFields[i].label), outputGroup_);
+        densityFieldChecks_[i]->setToolTip(tr(kFields[i].tip));
+        densityFieldChecks_[i]->setEnabled(false);
+        fieldGrid->addWidget(densityFieldChecks_[i], i / 2, i % 2);
+    }
+    // All-electron on by default: it is the field almost every export is
+    // actually after, and it matches what the old single-choice combo
+    // defaulted to.
+    //
+    // Set BEFORE the preview wiring below. This page is still under
+    // construction — the ORCA and LAMMPS groups do not exist yet — and
+    // refreshPreview() reads every engine's widgets through
+    // baseCalculatorConfig(), so a toggled() fired here would dereference a
+    // combo that has not been created.
+    densityFieldChecks_[0]->setChecked(true);
+    for (QCheckBox* field : densityFieldChecks_)
+        connect(field, &QCheckBox::toggled, this, [this] { refreshPreview(); });
+    outLayout->addLayout(fieldGrid);
 
-    if (showsGpawDensityExport()) {
-        outForm->addRow(gpawDensityExportCheck_);
-        outForm->addRow(tr("Density type:"), gpawDensityTypeCombo_);
-    } else {
+    if (!showsGpawDensityExport()) {
         gpawDensityExportCheck_->hide();
-        gpawDensityTypeCombo_->hide();
+        for (QCheckBox* field : densityFieldChecks_)
+            field->hide();
     }
     layout->addWidget(outputGroup_);
 
@@ -1026,6 +1365,19 @@ void SimulationWizardBase::updateGpawRows()
     };
     setRowVisible(gpawGridSpacingSpin_, fd);
     setRowVisible(gpawBasisCombo_, lcao);
+    // ...and hide the one NOT in play. The cutoff is the plane-wave basis's
+    // own convergence parameter; in FD the basis is the real-space grid and in
+    // LCAO it is the atomic orbital set, so leaving the row on screen offered a
+    // number that changed nothing — the classic "I converged the cutoff and the
+    // energy never moved" trap.
+    //
+    // Only for GPAW: the shared cutoff row also serves Quantum ESPRESSO, VASP
+    // and SIESTA, which are plane-wave throughout and always want it.
+    // Also hidden when the whole calculator is inherited from a baseline SCF:
+    // the cutoff is then fixed by that .gpw and offering it would invite an
+    // edit that the restart ignores.
+    setRowVisible(cutoffSpin_, mode == core::GpawMode::PlaneWave
+                      && !inheritsCalculatorFromBaseline());
 }
 
 // ---------------------------------------------------------------------------
@@ -1115,6 +1467,7 @@ void SimulationWizardBase::updateCalculatorEnabled()
         if (maceGroup_) maceGroup_->setVisible(false);
         if (mlipGroup_) mlipGroup_->setVisible(false);
         if (orcaGroup_) orcaGroup_->setVisible(false);
+        if (vaspGroup_) vaspGroup_->setVisible(false);
         if (lammpsGroup_) lammpsGroup_->setVisible(false);
         if (baselineInheritNote_) baselineInheritNote_->setVisible(false);
         updateCalculatorExtras(kind);
@@ -1145,6 +1498,12 @@ void SimulationWizardBase::updateCalculatorEnabled()
     if (isMlip)
         updateMlipRows();
     orcaGroup_->setVisible(isOrca);
+    if (vaspGroup_) {
+        const bool isVasp = kind == core::CalculatorKind::Vasp;
+        vaspGroup_->setVisible(isVasp);
+        if (isVasp)
+            updateVaspRows();
+    }
     if (lammpsGroup_) {
         const bool isLammps = kind == core::CalculatorKind::Lammps;
         lammpsGroup_->setVisible(isLammps);
@@ -1177,14 +1536,20 @@ void SimulationWizardBase::updateCalculatorEnabled()
     for (QWidget* w : {static_cast<QWidget*>(gpawEigensolverCombo_),
                        gpawMixerRow_, gpawTolRow_})
         setFormRowVisible(convGroup_, w, isGpaw);
-    if (isGpaw)
-        updateGpawRows();
 
     // Baseline inheritance (Electronic Structure): the run restarts from a
     // completed SCF density, so its plane-wave cutoff, XC functional and mode
     // are fixed by that .gpw — hide those controls and show a note instead.
     const bool inheritGpaw = isGpaw && inheritsCalculatorFromBaseline();
-    setFormRowVisible(modeBasisGroup_, cutoffSpin_, !inheritGpaw);
+    // The cutoff row has exactly one owner. For GPAW that is updateGpawRows(),
+    // which is also called on its own when the mode combo changes and so must
+    // not be second-guessed here; for the other DFT engines (always plane-wave)
+    // it is simply shown. Setting it in both places is how the FD/LCAO hide
+    // ended up being undone two lines later.
+    if (isGpaw)
+        updateGpawRows();
+    else
+        setFormRowVisible(modeBasisGroup_, cutoffSpin_, isDft);
     if (inheritGpaw) {
         setFormRowVisible(modeBasisGroup_, gpawXcCombo_, false);
         setFormRowVisible(modeBasisGroup_, gpawModeCombo_, false);
@@ -1305,6 +1670,42 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
     if (gpawDensityTypeCombo_)
         c.gpawDensityType = static_cast<core::GpawDensityType>(
             gpawDensityTypeCombo_->currentIndex());
+    // Order matches the kFields table and core::GpawDensityExports.
+    if (densityFieldChecks_[0]) {
+        c.gpawDensityExports.allElectron = densityFieldChecks_[0]->isChecked();
+        c.gpawDensityExports.pseudo = densityFieldChecks_[1]->isChecked();
+        c.gpawDensityExports.spin = densityFieldChecks_[2]->isChecked();
+        c.gpawDensityExports.hartree = densityFieldChecks_[3]->isChecked();
+        c.gpawDensityExports.elf = densityFieldChecks_[4]->isChecked();
+        c.gpawDensityExports.kineticEnergy =
+            densityFieldChecks_[5]->isChecked();
+    }
+
+    if (vaspPotcarEdit_) {
+        c.vaspPotcarPath = vaspPotcarEdit_->text().trimmed().toStdString();
+        c.vaspXc = vaspXcCombo_->currentText().trimmed().toStdString();
+        c.vaspPrec =
+            static_cast<core::VaspPrecision>(vaspPrecCombo_->currentIndex());
+        c.vaspAlgo = static_cast<core::VaspAlgo>(vaspAlgoCombo_->currentIndex());
+        c.vaspNelm = vaspNelmSpin_->value();
+        bool ok = false;
+        const double ediff =
+            QLocale::c().toDouble(vaspEdiffEdit_->text(), &ok);
+        if (ok && ediff > 0.0)
+            c.vaspEdiff = ediff;
+        c.vaspLreal = vaspLrealCombo_->currentData().toString().toStdString();
+        c.vaspIbrion = vaspIbrionCombo_->currentData().toInt();
+        c.vaspIsif = vaspIsifCombo_->currentData().toInt();
+        c.vaspEdiffg = vaspEdiffgSpin_->value();
+        c.vaspLwave = vaspLwaveCheck_->isChecked();
+        c.vaspLcharg = vaspLchargCheck_->isChecked();
+        c.vaspLaechg = vaspLaechgCheck_->isChecked();
+        c.vaspLorbit = vaspLorbitCheck_->isChecked();
+        c.vaspNcore = vaspNcoreSpin_->value();
+        c.vaspKpar = vaspKparSpin_->value();
+        c.vaspExtraIncar =
+            vaspExtraIncarEdit_->toPlainText().trimmed().toStdString();
+    }
 
     c.orcaMethod = orcaMethodCombo_->currentText().trimmed().toStdString();
     c.orcaBasis = orcaBasisCombo_->currentText().trimmed().toStdString();
@@ -1444,6 +1845,16 @@ void SimulationWizardBase::exportScript()
 QString SimulationWizardBase::script() const
 {
     return preview_->toPlainText();
+}
+
+QString SimulationWizardBase::vaspPotcarDirectory()
+{
+    return QSettings().value(kVaspPotcarKey).toString();
+}
+
+void SimulationWizardBase::setVaspPotcarDirectory(const QString& path)
+{
+    QSettings().setValue(kVaspPotcarKey, path.trimmed());
 }
 
 QString SimulationWizardBase::pythonExecutable() const

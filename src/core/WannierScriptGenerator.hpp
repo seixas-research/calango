@@ -49,16 +49,6 @@ struct WannierConfig {
 /// watches for.
 std::string generateWannierScript(const WannierConfig& cfg);
 
-/// ASE/GPAW script for a Wannier-interpolated band structure. It restarts GPAW
-/// from the completed MLWF run's saved wavefunctions (`*.gpw` in `mlwfDir`),
-/// rebuilds the localization using the parameters recorded in that run's
-/// `wannier.json` (number of Wannier functions + trial projection), then
-/// interpolates the eigenvalues along an automatic band path via the Wannier
-/// Hamiltonian and writes `bands.json` in the same schema as the Electronic
-/// Structure workflow — so the standard band viewer opens it. `mlwfDir` is the
-/// absolute directory of the finished MLWF job (baked in so the script can run
-/// from a fresh job directory).
-std::string generateWannierBandScript(const std::string& mlwfDir);
 
 /// Configuration for the interactive Wannier-interpolation dialog: a band path
 /// (E_n(k)) plus a dense k-mesh (PDOS), and the frozen/disentanglement energy

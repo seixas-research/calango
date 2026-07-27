@@ -47,8 +47,6 @@ public:
     /// JobRunner so subprocess jobs see the same environment (same ASE).
     std::string executable() const;
 
-    /// Append a directory to sys.path (e.g. for shipping helper modules).
-    void addSysPath(const std::string& directory);
 
 private:
     std::string resolvedExecutable_;

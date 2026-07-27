@@ -77,7 +77,7 @@ CastSetupDialog::CastSetupDialog(ViewportWidget* viewport,
            "Each cast's representation is chosen in the Representation panel: "
            "pick the cast there, then pick its mode. Bonds are drawn only "
            "between atoms of compatible casts, so a space-filling cast never "
-           "grows sticks into its neighbour."),
+           "grows sticks into its neighbor."),
         this);
     note->setWordWrap(true);
     note->setTextFormat(Qt::RichText);

@@ -346,7 +346,7 @@ void RayTraceDialog::renderAnimation()
 void RayTraceDialog::renderNextFrame()
 {
     if (animationCancelled_) {
-        finishAnimation(tr("Cancelled."));
+        finishAnimation(tr("Canceled."));
         return;
     }
     if (frameIndex_ >= frameTotal_) {
@@ -458,7 +458,7 @@ void RayTraceDialog::processFinished(int exitCode, QProcess::ExitStatus status)
     }
 
     if (animationCancelled_) { // Close was pressed; the process was killed
-        finishAnimation(tr("cancelled after %1 of %2 frames")
+        finishAnimation(tr("canceled after %1 of %2 frames")
                             .arg(frameIndex_)
                             .arg(frameTotal_));
         return;

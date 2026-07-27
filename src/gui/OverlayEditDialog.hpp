@@ -10,6 +10,7 @@ class QDoubleSpinBox;
 class QFontComboBox;
 class QLabel;
 class QLineEdit;
+class QPlainTextEdit;
 class QPushButton;
 class QSlider;
 class QSpinBox;
@@ -56,7 +57,6 @@ private:
     void showRelevantPrimitiveRows();
     void load();
     void updateColorButtons();
-    void loadField();
 
     Overlay overlay_;
     bool structureHasCell_ = false;
@@ -69,23 +69,29 @@ private:
     QStackedWidget* pages_ = nullptr;
 
     // Text page
-    QLineEdit* textEdit_ = nullptr;
+    /// Multi-line and resizable: annotations are routinely a label plus a value
+    /// plus a unit, and a one-line QLineEdit forced those into one cramped run.
+    QPlainTextEdit* textEdit_ = nullptr;
     QFontComboBox* fontCombo_ = nullptr;
     QSpinBox* fontSizeSpin_ = nullptr;
     QCheckBox* boldCheck_ = nullptr;
     QCheckBox* italicCheck_ = nullptr;
     QPushButton* textColorButton_ = nullptr;
+    QCheckBox* backgroundCheck_ = nullptr;
+    QPushButton* backgroundColorButton_ = nullptr;
+    QSlider* backgroundOpacitySlider_ = nullptr;
     QDoubleSpinBox* textPosSpin_[3] = {nullptr, nullptr, nullptr};
 
     // Lattice-plane page
     QSpinBox* millerSpin_[3] = {nullptr, nullptr, nullptr};
+    /// Slider and spin box over the same value: the slider is for sweeping the
+    /// plane through the cell and watching it cut, the spin box for typing the
+    /// exact height a figure caption will quote.
     QDoubleSpinBox* offsetSpin_ = nullptr;
-    QDoubleSpinBox* extentSpin_ = nullptr;
+    QSlider* offsetSlider_ = nullptr;
+    QDoubleSpinBox* widthSpin_ = nullptr;
+    QDoubleSpinBox* heightSpin_ = nullptr;
     QCheckBox* edgesCheck_ = nullptr;
-    QCheckBox* sliceCheck_ = nullptr;
-    QComboBox* gradientCombo_ = nullptr;
-    QPushButton* loadFieldButton_ = nullptr;
-    QLabel* fieldLabel_ = nullptr;
     QLabel* noCellLabel_ = nullptr;
     /// Its own button, not colorButton_: both pages are constructed, so a
     /// shared pointer would leave whichever page was built first pointing at

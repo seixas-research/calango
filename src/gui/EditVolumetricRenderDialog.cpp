@@ -5,12 +5,14 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QGroupBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QSlider>
 #include <QSpinBox>
+#include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QVBoxLayout>
 
@@ -47,8 +49,7 @@ EditVolumetricRenderDialog::EditVolumetricRenderDialog(
     // Central mode selector (replaces the former tab widget).
     auto* modeRow = new QFormLayout;
     modeCombo_ = new QComboBox(this);
-    modeCombo_->addItems(
-        {tr("Isosurfaces"), tr("Color Slice"), tr("Potential Map")});
+    modeCombo_->addItems({tr("Isosurfaces"), tr("Color Slice")});
     modeCombo_->setCurrentIndex(static_cast<int>(mode));
     modeRow->addRow(tr("Render Mode:"), modeCombo_);
     layout->addLayout(modeRow);
@@ -56,7 +57,6 @@ EditVolumetricRenderDialog::EditVolumetricRenderDialog(
     stack_ = new QStackedWidget(this);
     stack_->addWidget(buildIsosurfacePage());  // index 0 = Isosurface
     stack_->addWidget(buildColorSlicePage());  // index 1 = ColorSlice
-    stack_->addWidget(buildPotentialPage());   // index 2 = PotentialMap
     stack_->setCurrentIndex(static_cast<int>(mode));
     layout->addWidget(stack_, 1);
 
@@ -189,6 +189,124 @@ QWidget* EditVolumetricRenderDialog::buildIsosurfacePage()
                 emitChange();
             });
 
+    // -- Potential-map colouring -------------------------------------------
+    // The same surface, coloured by a second field instead of by phase. It
+    // used to be a third render mode, which meant re-choosing the base field
+    // that was already selected and a duplicate set of isosurface controls;
+    // as a checkbox here it is what it actually is — an option on this
+    // surface.
+    auto* potentialGroup = new QGroupBox(tr("Potential Map Color"), page);
+    potentialGroup->setCheckable(true);
+    potentialGroup->setChecked(style_.potentialColoring);
+    potentialGroup->setToolTip(
+        tr("Color this isosurface by a second scalar field sampled at each of "
+           "its vertices — the classic electrostatic-potential map: the "
+           "density shapes the surface, the potential paints it.\n\n"
+           "Off, the surface keeps the flat phase colors above."));
+    auto* potentialForm = new QFormLayout(potentialGroup);
+
+    potentialSecondaryCombo_ = new QComboBox(potentialGroup);
+    potentialSecondaryCombo_->setToolTip(
+        tr("Scalar field V(r) sampled at each surface vertex and mapped to "
+           "color through the ramp below."));
+    potentialForm->addRow(tr("Color by:"), potentialSecondaryCombo_);
+    connect(potentialSecondaryCombo_, &QComboBox::currentIndexChanged, this,
+            [this] {
+                if (updating_)
+                    return;
+                style_.potentialSecondaryIndex =
+                    potentialSecondaryCombo_->currentData().toInt();
+                emitChange();
+            });
+
+    potentialGradientCombo_ = gradientCombo(potentialGroup, style_.gradient);
+    potentialForm->addRow(tr("Color map:"), potentialGradientCombo_);
+    connect(potentialGradientCombo_, &QComboBox::currentIndexChanged, this,
+            [this](int i) {
+                const auto& g = volumetricGradients();
+                if (i >= 0 && i < g.size())
+                    style_.gradient = g.at(i);
+                emitChange();
+            });
+
+    potentialInvertCheck_ =
+        new QCheckBox(tr("Invert palette"), potentialGroup);
+    potentialInvertCheck_->setChecked(style_.invertGradient);
+    potentialInvertCheck_->setToolTip(
+        tr("Flip the value → color mapping (t → 1 − t), like matplotlib's "
+           "\"_r\" palettes."));
+    potentialForm->addRow(QString(), potentialInvertCheck_);
+    connect(potentialInvertCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        style_.invertGradient = on;
+        if (sliceInvertCheck_ && sliceInvertCheck_->isChecked() != on) {
+            const QSignalBlocker block(sliceInvertCheck_);
+            sliceInvertCheck_->setChecked(on);
+        }
+        emitChange();
+    });
+
+    // -- Ramp bounds --------------------------------------------------------
+    // A potential runs from deeply negative at the nuclei to nearly flat in
+    // the vacuum; on the field's own full range everything interesting sits in
+    // a sliver of the ramp. Pinning the window is what makes the map readable,
+    // and what lets two molecules be compared on one colour scale.
+    potentialBoundsCheck_ =
+        new QCheckBox(tr("Custom range"), potentialGroup);
+    potentialBoundsCheck_->setChecked(style_.potentialUseBounds);
+    potentialBoundsCheck_->setToolTip(
+        tr("Off: the ramp spans the coloring field's own minimum and "
+           "maximum.\n"
+           "On: it is pinned to the values below, with anything outside them "
+           "clamped to the ramp ends."));
+    potentialForm->addRow(QString(), potentialBoundsCheck_);
+
+    auto* rangeRow = new QWidget(potentialGroup);
+    auto* rangeLayout = new QHBoxLayout(rangeRow);
+    rangeLayout->setContentsMargins(0, 0, 0, 0);
+    potentialMinSpin_ = new QDoubleSpinBox(rangeRow);
+    potentialMinSpin_->setDecimals(4);
+    potentialMinSpin_->setRange(-1e12, 1e12);
+    potentialMinSpin_->setKeyboardTracking(false);
+    potentialMinSpin_->setValue(style_.potentialMin);
+    potentialMaxSpin_ = new QDoubleSpinBox(rangeRow);
+    potentialMaxSpin_->setDecimals(4);
+    potentialMaxSpin_->setRange(-1e12, 1e12);
+    potentialMaxSpin_->setKeyboardTracking(false);
+    potentialMaxSpin_->setValue(style_.potentialMax);
+    rangeLayout->addWidget(new QLabel(tr("min"), rangeRow));
+    rangeLayout->addWidget(potentialMinSpin_, 1);
+    rangeLayout->addWidget(new QLabel(tr("max"), rangeRow));
+    rangeLayout->addWidget(potentialMaxSpin_, 1);
+    potentialForm->addRow(tr("Range:"), rangeRow);
+
+    const auto syncPotentialBounds = [this] {
+        const bool on = potentialBoundsCheck_->isChecked();
+        potentialMinSpin_->setEnabled(on);
+        potentialMaxSpin_->setEnabled(on);
+    };
+    syncPotentialBounds();
+    connect(potentialBoundsCheck_, &QCheckBox::toggled, this,
+            [this, syncPotentialBounds](bool on) {
+                style_.potentialUseBounds = on;
+                syncPotentialBounds();
+                emitChange();
+            });
+    connect(potentialMinSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double v) {
+                style_.potentialMin = v;
+                emitChange();
+            });
+    connect(potentialMaxSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double v) {
+                style_.potentialMax = v;
+                emitChange();
+            });
+    connect(potentialGroup, &QGroupBox::toggled, this, [this](bool on) {
+        style_.potentialColoring = on;
+        emitChange();
+    });
+    form->addRow(potentialGroup);
+
     return page;
 }
 
@@ -244,6 +362,41 @@ QWidget* EditVolumetricRenderDialog::buildColorSlicePage()
         emitChange();
     });
 
+    // -- Extent -------------------------------------------------------------
+    sliceExtentCombo_ = new QComboBox(page);
+    sliceExtentCombo_->addItem(tr("This unit cell only"), 1);
+    sliceExtentCombo_->addItem(tr("2 × 2 cells"), 2);
+    sliceExtentCombo_->addItem(tr("3 × 3 cells"), 3);
+    sliceExtentCombo_->addItem(tr("5 × 5 cells"), 5);
+    const int extentIndex =
+        sliceExtentCombo_->findData(std::clamp(style_.sliceReplicas, 1, 5));
+    sliceExtentCombo_->setCurrentIndex(extentIndex >= 0 ? extentIndex : 0);
+    sliceExtentCombo_->setToolTip(
+        tr("How far the plane is drawn, in unit cells across.\n\n"
+           "One cell keeps the slice inside the box the field was computed "
+           "in — the honest extent, and the one to use when reading values "
+           "off it. The replicated options tile the periodic field over the "
+           "neighboring cells, which is what makes a surface reconstruction "
+           "or an adsorbate pattern legible instead of showing one cell "
+           "floating on its own."));
+    form->addRow(tr("Extent:"), sliceExtentCombo_);
+    connect(sliceExtentCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        style_.sliceReplicas = sliceExtentCombo_->currentData().toInt();
+        emitChange();
+    });
+
+    sliceBorderCheck_ = new QCheckBox(tr("Outline the slice"), page);
+    sliceBorderCheck_->setChecked(style_.sliceShowBorder);
+    sliceBorderCheck_->setToolTip(
+        tr("Draw the plane's boundary, so its extent is visible where the "
+           "field itself has gone to zero and the quad would otherwise fade "
+           "into the background."));
+    form->addRow(QString(), sliceBorderCheck_);
+    connect(sliceBorderCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        style_.sliceShowBorder = on;
+        emitChange();
+    });
+
     sliceGradientCombo_ = gradientCombo(page, style_.gradient);
     form->addRow(tr("Colormap:"), sliceGradientCombo_);
     connect(sliceGradientCombo_, &QComboBox::currentIndexChanged, this,
@@ -263,6 +416,12 @@ QWidget* EditVolumetricRenderDialog::buildColorSlicePage()
     form->addRow(sliceInvertCheck_);
     connect(sliceInvertCheck_, &QCheckBox::toggled, this, [this](bool on) {
         style_.invertGradient = on;
+        // One flag serves both modes, so the two checkboxes mirror each other
+        // rather than silently disagreeing about what the palette is doing.
+        if (potentialInvertCheck_ && potentialInvertCheck_->isChecked() != on) {
+            const QSignalBlocker block(potentialInvertCheck_);
+            potentialInvertCheck_->setChecked(on);
+        }
         emitChange();
     });
 
@@ -349,112 +508,15 @@ QWidget* EditVolumetricRenderDialog::buildColorSlicePage()
     return page;
 }
 
-QWidget* EditVolumetricRenderDialog::buildPotentialPage()
-{
-    auto* page = new QWidget(this);
-    auto* form = new QFormLayout(page);
-
-    auto* intro = new QLabel(
-        tr("Color a base geometric isosurface (e.g. the charge density ρ(r)) "
-           "by a secondary scalar field (e.g. the electrostatic potential "
-           "V(r)) mapped onto its vertices."),
-        page);
-    intro->setWordWrap(true);
-    form->addRow(intro);
-
-    // Base isosurface geometry (isovalue comes from the Isosurfaces panel).
-    potentialBaseCombo_ = new QComboBox(page);
-    potentialBaseCombo_->setToolTip(
-        tr("Dataset whose isosurface provides the surface geometry ρ(r)."));
-    form->addRow(tr("Base isosurface:"), potentialBaseCombo_);
-    connect(potentialBaseCombo_, &QComboBox::currentIndexChanged, this,
-            [this] {
-                if (updating_)
-                    return;
-                style_.potentialBaseIndex =
-                    potentialBaseCombo_->currentData().toInt();
-                emitChange();
-            });
-
-    // Secondary scalar field mapped onto the surface.
-    potentialSecondaryCombo_ = new QComboBox(page);
-    potentialSecondaryCombo_->setToolTip(
-        tr("Scalar field V(r) sampled at each surface vertex and mapped to "
-           "color through the ramp below."));
-    form->addRow(tr("Secondary scalar:"), potentialSecondaryCombo_);
-    connect(potentialSecondaryCombo_, &QComboBox::currentIndexChanged, this,
-            [this] {
-                if (updating_)
-                    return;
-                style_.potentialSecondaryIndex =
-                    potentialSecondaryCombo_->currentData().toInt();
-                emitChange();
-            });
-
-    potentialGradientCombo_ = gradientCombo(page, style_.gradient);
-    form->addRow(tr("Color ramp:"), potentialGradientCombo_);
-    connect(potentialGradientCombo_, &QComboBox::currentIndexChanged, this,
-            [this](int i) {
-                const auto& g = volumetricGradients();
-                if (i >= 0 && i < g.size())
-                    style_.gradient = g.at(i);
-                emitChange();
-            });
-
-    potentialBoundsCheck_ =
-        new QCheckBox(tr("Use explicit ramp bounds"), page);
-    potentialBoundsCheck_->setChecked(style_.potentialUseBounds);
-    form->addRow(tr("Ramp bounds:"), potentialBoundsCheck_);
-
-    potentialMinSpin_ = new QDoubleSpinBox(page);
-    potentialMinSpin_->setDecimals(4);
-    potentialMinSpin_->setRange(-1e6, 1e6);
-    potentialMinSpin_->setValue(style_.potentialMin);
-    form->addRow(tr("Ramp min:"), potentialMinSpin_);
-    potentialMaxSpin_ = new QDoubleSpinBox(page);
-    potentialMaxSpin_->setDecimals(4);
-    potentialMaxSpin_->setRange(-1e6, 1e6);
-    potentialMaxSpin_->setValue(style_.potentialMax);
-    form->addRow(tr("Ramp max:"), potentialMaxSpin_);
-
-    const auto syncEnabled = [this] {
-        const bool on = potentialBoundsCheck_->isChecked();
-        potentialMinSpin_->setEnabled(on);
-        potentialMaxSpin_->setEnabled(on);
-    };
-    syncEnabled();
-
-    connect(potentialBoundsCheck_, &QCheckBox::toggled, this,
-            [this, syncEnabled](bool on) {
-                style_.potentialUseBounds = on;
-                syncEnabled();
-                emitChange();
-            });
-    connect(potentialMinSpin_, &QDoubleSpinBox::valueChanged, this,
-            [this](double v) {
-                style_.potentialMin = v;
-                emitChange();
-            });
-    connect(potentialMaxSpin_, &QDoubleSpinBox::valueChanged, this,
-            [this](double v) {
-                style_.potentialMax = v;
-                emitChange();
-            });
-
-    return page;
-}
-
 void EditVolumetricRenderDialog::setDatasets(const QStringList& labels,
                                              int currentIndex)
 {
-    if (!potentialBaseCombo_)
+    Q_UNUSED(currentIndex);
+    if (!potentialSecondaryCombo_)
         return;
     updating_ = true;
-    const int prevBase = style_.potentialBaseIndex;
     const int prevSecondary = style_.potentialSecondaryIndex;
 
-    potentialBaseCombo_->clear();
-    potentialBaseCombo_->addItem(tr("Current selection"), -1);
     potentialSecondaryCombo_->clear();
     potentialSecondaryCombo_->addItem(tr("None"), -1);
     // An empty label marks a dataset bound to another workspace tab — skipped
@@ -462,24 +524,10 @@ void EditVolumetricRenderDialog::setDatasets(const QStringList& labels,
     for (int i = 0; i < labels.size(); ++i) {
         if (labels.at(i).isEmpty())
             continue;
-        potentialBaseCombo_->addItem(labels.at(i), i);
         potentialSecondaryCombo_->addItem(labels.at(i), i);
     }
-
-    const auto selectData = [](QComboBox* combo, int value) {
-        const int idx = combo->findData(value);
-        combo->setCurrentIndex(idx >= 0 ? idx : 0);
-    };
-    // Preserve the prior selections when still valid; default base to the
-    // current tree selection.
-    selectData(potentialBaseCombo_,
-               prevBase >= 0 && prevBase < labels.size() ? prevBase
-                                                         : currentIndex);
-    selectData(potentialSecondaryCombo_,
-               prevSecondary >= 0 && prevSecondary < labels.size()
-                   ? prevSecondary
-                   : -1);
-    style_.potentialBaseIndex = potentialBaseCombo_->currentData().toInt();
+    const int idx = potentialSecondaryCombo_->findData(prevSecondary);
+    potentialSecondaryCombo_->setCurrentIndex(idx >= 0 ? idx : 0);
     style_.potentialSecondaryIndex =
         potentialSecondaryCombo_->currentData().toInt();
     updating_ = false;

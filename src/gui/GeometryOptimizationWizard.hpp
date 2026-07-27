@@ -59,7 +59,19 @@ protected:
     {
         electronic_.buildSpinRows(form, this);
     }
+    // Created by `electronic_`, positioned by the base class: the SCF energy
+    // tolerance belongs on the tolerance row and the step cap beside the
+    // eigensolver, and both of those rows are the base class's to lay out.
+    QWidget* gpawEnergyToleranceWidget() override
+    {
+        return electronic_.energyToleranceWidget();
+    }
+    QWidget* gpawScfStepsWidget() override
+    {
+        return electronic_.scfStepsWidget();
+    }
     bool hasConvergenceExtras() const override { return true; }
+    bool taskHasIonicSteps() const override { return true; }
     bool hasSpinExtras() const override { return true; }
     bool showsGpawSymmetryToggle() const override { return true; }
     bool showsGpawDensityExport() const override { return true; }

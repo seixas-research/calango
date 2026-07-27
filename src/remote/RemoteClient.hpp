@@ -41,9 +41,6 @@ public:
     void setConfig(const SshConfig& config) { config_ = config; }
     const SshConfig& config() const { return config_; }
 
-    /// True while a one-shot operation (probe/upload/submit/download) runs.
-    bool isBusy() const;
-    bool isMonitoring() const;
 
 public Q_SLOTS:
     /// Verify the connection; reports $HOME and the detected scheduler.

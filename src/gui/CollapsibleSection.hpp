@@ -29,7 +29,6 @@ public:
 
     /// Expand or collapse programmatically (animated).
     void setExpanded(bool expanded);
-    bool isExpanded() const;
 
 private:
     QToolButton* toggle_ = nullptr;

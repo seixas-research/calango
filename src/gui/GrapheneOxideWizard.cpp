@@ -42,7 +42,7 @@ const std::array<GroupSpec, 4> kGroups{{
      "A −COOH group, which brings its own carbon. In real graphene oxide "
      "these sit at sheet EDGES and defects rather than on the basal plane; "
      "on a periodic sheet with no edges they are placed on the plane, which "
-     "is a modelling compromise rather than the physical situation."},
+     "is a modeling compromise rather than the physical situation."},
     {Group::Carbonyl, "Carbonyl  (=O)",
      "A doubly-bonded oxygen on one carbon. Like carboxyls, an edge group in "
      "practice."},

@@ -159,6 +159,23 @@ public:
     /// Replace the whole annotation; ignored unless values.size() == size().
     void setResidues(std::vector<ResidueInfo> values);
 
+    // -- Reordering --------------------------------------------------------
+
+    /// Permute the atoms so that the atom currently at `order[k]` ends up at
+    /// index k, carrying every index-aligned property with it.
+    ///
+    /// The whole point is that "carrying with it" is not optional and is easy
+    /// to get half right. Scalar and vector fields, residue annotation, the
+    /// manual bond-order map and the add/remove bond overrides are all keyed
+    /// by atom index; a sort that moved only `atoms_` would leave a structure
+    /// whose forces belong to the wrong atoms and whose double bond now joins
+    /// two different ones — silently, and in a form that looks perfectly
+    /// normal on screen.
+    ///
+    /// `order` must be a permutation of [0, size()); anything else is ignored
+    /// rather than applied partially.
+    void reorder(const std::vector<std::size_t>& order);
+
 private:
     std::vector<Atom> atoms_;
     UnitCell cell_;

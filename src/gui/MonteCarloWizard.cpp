@@ -12,6 +12,16 @@
 
 namespace calango::gui {
 
+core::CalculatorConfig MonteCarloWizard::electronicCalculatorConfig() const
+{
+    core::CalculatorConfig config = baseCalculatorConfig();
+    // The GPAW electronic settings the shared rows collected. Folded in here
+    // rather than at each call site so the two script paths cannot disagree.
+    electronic_.applyTo(config);
+    return config;
+}
+
+
 namespace {
 
 // The CALANGO_FRAME/CELL streaming helper shared by the generated scripts.
@@ -118,7 +128,7 @@ void MonteCarloWizard::updateMethodEnabled()
 QString MonteCarloWizard::buildBasinHoppingScript() const
 {
     const std::string calc =
-        core::AseScriptGenerator::calculatorSnippet(baseCalculatorConfig());
+        core::AseScriptGenerator::calculatorSnippet(electronicCalculatorConfig());
     const std::string optimizer = optimizerCombo_->currentText().toStdString();
 
     std::ostringstream out;
@@ -170,7 +180,7 @@ QString MonteCarloWizard::buildBasinHoppingScript() const
 QString MonteCarloWizard::buildSwapScript() const
 {
     const std::string calc =
-        core::AseScriptGenerator::calculatorSnippet(baseCalculatorConfig());
+        core::AseScriptGenerator::calculatorSnippet(electronicCalculatorConfig());
 
     std::ostringstream out;
     out << "#!/usr/bin/env python3\n"

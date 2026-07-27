@@ -25,15 +25,36 @@ public Q_SLOTS:
     void updateFromStructure(const core::Structure* structure);
 
 Q_SIGNALS:
-    /// "Edit Structure…" pressed. The panel stays read-only: the controller
-    /// (MainWindow) owns the document and its undo stack, so it opens the
-    /// editor and installs the result.
+    // The panel stays read-only and REQUESTS: the controller (MainWindow) owns
+    // the document and its undo stack, so every one of these is performed
+    // there. That is what makes the transforms undoable, which they were not
+    // when they lived inside the Edit Structure dialog and were reverted only
+    // by cancelling it.
     void editStructureRequested();
+    /// Translate every atom so the centroid sits at the cell centre.
+    void centerStructureRequested();
+    /// Extend the cell along chosen lattice directions (prompts for how much).
+    void addVacuumRequested();
+    /// Fold atoms back inside the cell by whole lattice vectors.
+    void wrapIntoCellRequested();
+    /// Open the Supercell builder.
+    void supercellRequested();
 
 private:
+    /// Enable/disable the action row against what the current structure can
+    /// actually support (three of the four need a cell).
+    void updateActionsEnabled();
+
     const core::Structure* structure_ = nullptr; ///< observed, not owned
 
+    // One icon-only action row. Labels were dropped because the row is five
+    // buttons wide in a narrow dock; spelled out, it wrapped to three lines and
+    // pushed the property summary out of view.
     QPushButton* editButton_;
+    QPushButton* centerButton_;
+    QPushButton* vacuumButton_;
+    QPushButton* wrapButton_;
+    QPushButton* supercellButton_;
     QLabel* formulaLabel_;
     QLabel* atomCountLabel_;
     QLabel* bondCountLabel_;

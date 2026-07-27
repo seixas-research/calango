@@ -207,6 +207,58 @@ int main()
               "the edge stream is whole segments (2 vertices each)");
     }
 
+    std::printf("Lattice-plane dimensions and position:\n");
+    {
+        // width and height are independent half-extents. They replaced a single
+        // `extent`, so the thing to prove is that they are actually independent
+        // — a plane 20 wide and 2 high must not come out square.
+        const auto bounds = [&](double width, double height, double offset) {
+            auto plane = make(gui::Overlay::Kind::LatticePlane, 1);
+            plane.miller[0] = 0;
+            plane.miller[1] = 0;
+            plane.miller[2] = 1; // normal along z for a cubic cell
+            plane.width = width;
+            plane.height = height;
+            plane.offset = offset;
+            std::vector<float> faces, edges;
+            std::vector<render::StructureRenderer::OverlayRange> ranges;
+            gui::appendOverlayGeometry(plane, &structure, faces, edges, ranges);
+            struct Box {
+                double lo[3] = {1e30, 1e30, 1e30};
+                double hi[3] = {-1e30, -1e30, -1e30};
+            } box;
+            for (std::size_t i = 0; i + 5 < faces.size(); i += 6) {
+                for (int k = 0; k < 3; ++k) {
+                    const double v = faces[i + static_cast<std::size_t>(k)];
+                    box.lo[k] = std::min(box.lo[k], v);
+                    box.hi[k] = std::max(box.hi[k], v);
+                }
+            }
+            return box;
+        };
+
+        const auto wide = bounds(20.0, 2.0, 0.0);
+        const double spanX = wide.hi[0] - wide.lo[0];
+        const double spanY = wide.hi[1] - wide.lo[1];
+        // Which of x/y is "width" depends on the in-plane basis the generator
+        // picks, so assert on the pair rather than on a named axis.
+        const double longSpan = std::max(spanX, spanY);
+        const double shortSpan = std::min(spanX, spanY);
+        check(std::abs(longSpan - 40.0) < 1e-6,
+              "width sets one in-plane half-extent (20 -> 40 A across)");
+        check(std::abs(shortSpan - 4.0) < 1e-6,
+              "height sets the other, independently (2 -> 4 A across)");
+
+        // The offset slider's whole purpose: sweep the plane along its normal.
+        const auto centred = bounds(6.0, 6.0, 0.0);
+        const auto raised = bounds(6.0, 6.0, 2.5);
+        check(std::abs((raised.lo[2] - centred.lo[2]) - 2.5) < 1e-6
+                  && std::abs((raised.hi[2] - centred.hi[2]) - 2.5) < 1e-6,
+              "offset translates the plane rigidly along its normal");
+        check(std::abs(centred.lo[2] - 3.0) < 1e-6,
+              "a zero offset leaves the plane at the cell centre");
+    }
+
     std::printf("List labels identify the entry:\n");
     {
         auto plane = make(gui::Overlay::Kind::LatticePlane, 1);
