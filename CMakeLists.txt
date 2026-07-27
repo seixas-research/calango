@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.59
+    VERSION 26.7.60
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -934,6 +934,18 @@ if(CALANGO_BUILD_TESTS)
     )
     target_include_directories(calango_hbond_test PRIVATE src)
     add_test(NAME hydrogen_bonds COMMAND calango_hbond_test)
+
+    # Periodic bond perception: that an atom bonds to EVERY lattice image
+    # within reach, not just the nearest one (the MoS2 two-bonds-instead-of-six
+    # bug), and to its own images when the cell holds a single atom.
+    add_executable(calango_bond_test
+        tests/BondPerceptionTest.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_bond_test PRIVATE src)
+    add_test(NAME bond_perception COMMAND calango_bond_test)
 
     # Hydrogen completion: the valence arithmetic that decides HOW MANY
     # hydrogens an atom is missing, and the repulsion relaxation that decides

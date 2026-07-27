@@ -544,6 +544,24 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     gl_->glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
     cellVao_.release();
 
+    // Unit 0 must never be left empty while the mesh program is drawing —
+    // see dummyTexture_. Created once, for the life of the context.
+    {
+        const unsigned char white[4] = {255, 255, 255, 255};
+        gl_->glGenTextures(1, &dummyTexture_);
+        gl_->glBindTexture(GL_TEXTURE_2D, dummyTexture_);
+        gl_->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA,
+                          GL_UNSIGNED_BYTE, white);
+        // A complete texture needs a non-mipmapped min filter; the default
+        // GL_NEAREST_MIPMAP_LINEAR would leave it incomplete and the warning
+        // would stand.
+        gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        gl_->glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
     initialized_ = true;
 }
 
@@ -1571,10 +1589,13 @@ void StructureRenderer::uploadLights()
     meshProgram_.setUniformValue("uShadowTexelSize",
                                  1.0f / static_cast<float>(kShadowMapSize));
     meshProgram_.setUniformValue("uShadowMap", 0); // texture unit 0
-    if (shadowsActive_) {
-        gl_->glActiveTexture(GL_TEXTURE0);
-        gl_->glBindTexture(GL_TEXTURE_2D, shadowTexture_);
-    }
+    // ALWAYS bind something complete here, not just when shadows are on: the
+    // sampler points at unit 0 on every draw, and an empty unit is what the
+    // driver complains about. The post-process passes also leave their own
+    // textures on unit 0, so this re-establishes a known one each pass.
+    gl_->glActiveTexture(GL_TEXTURE0);
+    gl_->glBindTexture(GL_TEXTURE_2D,
+                       shadowsActive_ ? shadowTexture_ : dummyTexture_);
 }
 
 QMatrix4x4 StructureRenderer::lightSpaceMatrix() const
@@ -1659,6 +1680,15 @@ void StructureRenderer::renderShadowMap(const QMatrix4x4& lightSpace)
     gl_->glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFbo);
     GLint viewport[4] = {0, 0, 0, 0};
     gl_->glGetIntegerv(GL_VIEWPORT, viewport);
+
+    // Break last frame's sampler binding FIRST. uploadLights() leaves the
+    // shadow depth texture bound to unit 0 for the shading pass, and it is
+    // still there when this runs again next frame — at which point the same
+    // texture would be an attachment of the framebuffer about to be bound AND
+    // a live sampler source. That is a framebuffer feedback loop: undefined by
+    // the spec, and what makes a driver report the texture as unloadable.
+    gl_->glActiveTexture(GL_TEXTURE0);
+    gl_->glBindTexture(GL_TEXTURE_2D, dummyTexture_);
 
     gl_->glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
     gl_->glViewport(0, 0, kShadowMapSize, kShadowMapSize);

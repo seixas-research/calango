@@ -1,9 +1,125 @@
 #include "core/Structure.hpp"
 
+#include "core/PeriodicImages.hpp"
+
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <utility>
+#include <vector>
+
+namespace calango::core {
+namespace {
+
+/// Uniform spatial hash over the atoms, so bond detection can ask "what is
+/// near this point" instead of testing every pair.
+///
+/// The all-pairs scan this replaces was O(n^2) — already ~300 ms on a 15 000
+/// atom protein — and correct periodic bonding multiplies the work by the
+/// number of lattice images (75 for a thin 2D cell), which the quadratic form
+/// could not absorb.
+struct SpatialGrid {
+    Vec3 origin;
+    double cellSize = 1.0;
+    int dim[3] = {1, 1, 1};
+    /// Bins as an intrusive linked list: heads[bin] is the first atom index in
+    /// that bin, next[atom] the one after it, -1 terminating. One allocation
+    /// each instead of a vector per bin.
+    std::vector<int> heads;
+    std::vector<int> next;
+
+    void build(const std::vector<Atom>& atoms, double spacing)
+    {
+        const auto n = static_cast<int>(atoms.size());
+        next.assign(static_cast<std::size_t>(n), -1);
+        cellSize = std::max(spacing, 1e-3);
+
+        Vec3 lo{std::numeric_limits<double>::max(),
+                std::numeric_limits<double>::max(),
+                std::numeric_limits<double>::max()};
+        Vec3 hi{std::numeric_limits<double>::lowest(),
+                std::numeric_limits<double>::lowest(),
+                std::numeric_limits<double>::lowest()};
+        for (const Atom& atom : atoms) {
+            lo.x = std::min(lo.x, atom.position.x);
+            lo.y = std::min(lo.y, atom.position.y);
+            lo.z = std::min(lo.z, atom.position.z);
+            hi.x = std::max(hi.x, atom.position.x);
+            hi.y = std::max(hi.y, atom.position.y);
+            hi.z = std::max(hi.z, atom.position.z);
+        }
+        origin = lo;
+        const double extent[3] = {hi.x - lo.x, hi.y - lo.y, hi.z - lo.z};
+
+        // Bin count is capped against the ATOM count, not the bounding box: a
+        // pair of atoms 1000 A apart in a vacuum box would otherwise ask for
+        // tens of millions of empty bins. Coarsening the spacing keeps the
+        // table proportional to the structure.
+        const auto axes = [&](double spacingUsed) {
+            long long total = 1;
+            for (int i = 0; i < 3; ++i) {
+                dim[i] = std::max(
+                    1, static_cast<int>(std::floor(extent[i] / spacingUsed)) + 1);
+                total *= dim[i];
+            }
+            return total;
+        };
+        const long long budget = 8LL * std::max(n, 1) + 64;
+        if (axes(cellSize) > budget) {
+            const double scale =
+                std::cbrt(static_cast<double>(axes(cellSize)) / static_cast<double>(budget));
+            cellSize *= std::max(1.0, scale);
+            axes(cellSize);
+        }
+
+        heads.assign(static_cast<std::size_t>(dim[0]) * dim[1] * dim[2], -1);
+        for (int i = 0; i < n; ++i) {
+            const int bin = binOf(atoms[static_cast<std::size_t>(i)].position);
+            next[static_cast<std::size_t>(i)] = heads[static_cast<std::size_t>(bin)];
+            heads[static_cast<std::size_t>(bin)] = i;
+        }
+    }
+
+    /// Grid coordinate of `p`, clamped into the table. Clamping is what makes a
+    /// query from outside the bounding box (a shifted periodic image) land in
+    /// the nearest edge bin rather than out of range.
+    void coordOf(const Vec3& p, int out[3]) const
+    {
+        const double f[3] = {(p.x - origin.x) / cellSize, (p.y - origin.y) / cellSize,
+                             (p.z - origin.z) / cellSize};
+        for (int i = 0; i < 3; ++i) {
+            const int raw = static_cast<int>(std::floor(f[i]));
+            out[i] = std::clamp(raw, 0, dim[i] - 1);
+        }
+    }
+
+    int binOf(const Vec3& p) const
+    {
+        int c[3];
+        coordOf(p, c);
+        return (c[2] * dim[1] + c[1]) * dim[0] + c[0];
+    }
+
+    /// Call `visit(atomIndex)` for every atom in the 3x3x3 block around `p`.
+    template <typename F>
+    void forEachNear(const Vec3& p, F&& visit) const
+    {
+        int c[3];
+        coordOf(p, c);
+        for (int z = std::max(0, c[2] - 1); z <= std::min(dim[2] - 1, c[2] + 1); ++z)
+            for (int y = std::max(0, c[1] - 1); y <= std::min(dim[1] - 1, c[1] + 1); ++y)
+                for (int x = std::max(0, c[0] - 1); x <= std::min(dim[0] - 1, c[0] + 1); ++x) {
+                    const auto bin = static_cast<std::size_t>((z * dim[1] + y) * dim[0] + x);
+                    for (int atom = heads[bin]; atom >= 0;
+                         atom = next[static_cast<std::size_t>(atom)])
+                        visit(atom);
+                }
+    }
+};
+
+} // namespace
+} // namespace calango::core
 
 namespace calango::core {
 
@@ -158,8 +274,10 @@ std::vector<Bond> Structure::detectBonds(double tolerance, bool autoDetect) cons
     const auto pbc = cell_.pbc();
     const bool usePbc = cell_.isDefined() && (pbc[0] || pbc[1] || pbc[2]);
 
-    // Minimum-image displacement from atom i to atom j and the image
-    // offset applied to j (zero inside the cell).
+    // Minimum-image displacement from atom i to atom j and the image offset
+    // applied to j (zero inside the cell). Used only for MANUAL bonds now: a
+    // pair the user drew by hand names one specific contact, and the nearest
+    // image is the one they meant.
     const auto minimumImage = [&](int i, int j, Vec3& d, Vec3& offset) {
         d = atoms_[static_cast<std::size_t>(j)].position
             - atoms_[static_cast<std::size_t>(i)].position;
@@ -185,22 +303,89 @@ std::vector<Bond> Structure::detectBonds(double tolerance, bool autoDetect) cons
 
     std::vector<Bond> bonds;
     const auto n = static_cast<int>(atoms_.size());
-    if (autoDetect) {
+    if (autoDetect && n > 0) {
+        double largestRadius = 0.0;
+        for (const Atom& atom : atoms_)
+            largestRadius = std::max(largestRadius, static_cast<double>(atom.covalentRadius()));
+        const double rMax = tolerance * 2.0 * largestRadius;
+
+        // EVERY lattice image within reach, not just the nearest one.
+        //
+        // This is the whole fix. Minimum-image convention answers "where is the
+        // closest copy of atom j", which is the right question for a distance
+        // and the wrong one for bonding: in a crystal an atom bonds to SEVERAL
+        // images of the same neighbour. A MoS2 monolayer is the clean example —
+        // its Mo sits in a trigonal prism of six sulfurs, three above and three
+        // below, and all six are images of the two S atoms the cell lists. Under
+        // minimum image only one image of each survived, so four of the six
+        // bonds simply did not exist.
+        struct Translation {
+            Vec3 shift;
+            /// Lattice indices, kept so a self-image pair can be canonicalized
+            /// by sign — see the j == i case below.
+            int index[3];
+        };
+        std::vector<Translation> translations{Translation{Vec3{}, {0, 0, 0}}};
+        if (usePbc) {
+            translations.clear();
+            const auto range = imageRange(cell_, rMax);
+            const auto& v = cell_.vectors();
+            for (int ia = -range[0]; ia <= range[0]; ++ia)
+                for (int ib = -range[1]; ib <= range[1]; ++ib)
+                    for (int ic = -range[2]; ic <= range[2]; ++ic) {
+                        translations.push_back(
+                            {v[0] * ia + v[1] * ib + v[2] * ic, {ia, ib, ic}});
+                    }
+        }
+
+        SpatialGrid grid;
+        grid.build(atoms_, rMax);
+
         for (int i = 0; i < n; ++i) {
-            for (int j = i + 1; j < n; ++j) {
-                if (hasOverride(removedBonds_, i, j) || hasOverride(addedBonds_, i, j))
-                    continue; // suppressed, or handled below as a manual bond
-                const auto& a = atoms_[static_cast<std::size_t>(i)];
-                const auto& b = atoms_[static_cast<std::size_t>(j)];
+            const auto& a = atoms_[static_cast<std::size_t>(i)];
+            for (const Translation& translation : translations) {
+                const Vec3& t = translation.shift;
+                // Testing atom i against image (j, t) is the same as testing the
+                // point (p_i - t) against the primary atom j, so one grid built
+                // over the real atoms serves every image.
+                const Vec3 query = a.position - t;
+                grid.forEachNear(query, [&](int j) {
+                    // Each unordered pair is emitted once: (i,j,+t) and
+                    // (j,i,-t) are the same bond. j == i is kept for every
+                    // non-zero translation, which is how an atom bonds to its
+                    // OWN images — the only bonds a one-atom-per-cell lattice
+                    // has, and previously unreachable because the scan started
+                    // at j = i + 1.
+                    if (j < i)
+                        return;
+                    if (j == i) {
+                        if (t.dot(t) < 1e-12)
+                            return; // the atom itself
+                        // An atom's bond to its image at +t and its bond to the
+                        // image at -t are two contacts along ONE line, and the
+                        // renderer already draws a wrapped bond as a stub at
+                        // each end. Emitting both would double every stub, and
+                        // would make consumers that credit a bond to each of its
+                        // endpoints count this atom's neighbours twice. Keep the
+                        // lexicographically positive half.
+                        const int* k = translation.index;
+                        const bool positive = k[0] > 0
+                            || (k[0] == 0 && (k[1] > 0 || (k[1] == 0 && k[2] > 0)));
+                        if (!positive)
+                            return;
+                    }
+                    if (hasOverride(removedBonds_, i, j)
+                        || hasOverride(addedBonds_, i, j))
+                        return; // suppressed, or handled below as a manual bond
 
-                Vec3 d, offset;
-                minimumImage(i, j, d, offset);
-
-                const double radiusSum = a.covalentRadius() + b.covalentRadius();
-                const double cutoff = tolerance * radiusSum;
-                const double distSq = d.dot(d);
-                if (distSq < cutoff * cutoff && distSq > 0.16) // 0.4 Å floor
-                    bonds.push_back({i, j, offset, bondOrder(i, j)});
+                    const auto& b = atoms_[static_cast<std::size_t>(j)];
+                    const Vec3 d = b.position + t - a.position;
+                    const double cutoff =
+                        tolerance * (a.covalentRadius() + b.covalentRadius());
+                    const double distSq = d.dot(d);
+                    if (distSq < cutoff * cutoff && distSq > 0.16) // 0.4 A floor
+                        bonds.push_back({i, j, t, bondOrder(i, j)});
+                });
             }
         }
     }

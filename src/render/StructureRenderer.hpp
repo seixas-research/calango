@@ -554,6 +554,22 @@ private:
     bool shadowsActive_ = false;
     QMatrix4x4 lightSpace_;
     unsigned shadowTexture_ = 0;
+    /// A 1x1 white texture kept bound to unit 0 whenever the real shadow map
+    /// is not.
+    ///
+    /// uShadowMap is a sampler2D on the mesh program, which draws every frame
+    /// whether or not shadows are on. A sampler pointing at a unit with no
+    /// complete texture is what makes the macOS GL driver log
+    ///
+    ///     UNSUPPORTED (log once): POSSIBLE ISSUE: unit 0
+    ///     GLD_TEXTURE_INDEX_2D is unloadable and bound to sampler type
+    ///     (Float) - using zero texture because texture unloadable
+    ///
+    /// The shader's `uShadowEnabled == 0` early-out does not prevent it: the
+    /// driver validates sampler-to-unit completeness at DRAW time, regardless
+    /// of which branch the shader takes. White = depth 1.0 = "nothing
+    /// occludes", so it is also the harmless answer if it ever were sampled.
+    unsigned dummyTexture_ = 0;
     /// Scene bounds in world space, refreshed on every setStructure(); the
     /// light frustum is fitted to this sphere so the map's depth precision
     /// tracks the actual model rather than a fixed guess.
