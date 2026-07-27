@@ -16,14 +16,21 @@
 #include <QVBoxLayout>
 
 #include <cmath>
+#include <vector>
 
 namespace calango::gui {
 
 namespace {
 
-/// Above this the two cells are not an integer multiple of one another and
-/// the unfolding is undefined. Matches the guard in the generated script.
-constexpr double kCommensurateTolerance = 1e-3;
+/// Default commensurability tolerance, in units of the M matrix itself.
+///
+/// 2e-2, not the 1e-3 a pristine pair needs. The case that matters is a doped
+/// supercell that has been RELAXED: a 1% change in lattice constant leaves a
+/// 2x2x2's M off by ~0.02, which the tight tolerance rejected outright even
+/// though the physics is perfectly well posed. The check is a guard against
+/// the wrong primitive cell being selected — an unrelated cell misses by
+/// O(0.1) or more — so it can be this loose and still catch that.
+constexpr double kDefaultCommensurateTolerance = 2e-2;
 
 QString describe(const core::Structure& s)
 {
@@ -96,7 +103,37 @@ EffectiveBandsWizard::primitiveStructure() const
     const int index = primitiveCombo_->currentData().toInt();
     if (index < 0 || index >= static_cast<int>(openDocuments_.size()))
         return nullptr;
-    return openDocuments_[static_cast<std::size_t>(index)].structure;
+    const auto selected = openDocuments_[static_cast<std::size_t>(index)].structure;
+
+    // With forcing on, the STAGED primitive is the rebuilt one — otherwise the
+    // job would be handed the cell the user picked and the run would redo the
+    // arithmetic that failed, defeating the option entirely.
+    if (!forceCommensurateCheck_ || !forceCommensurateCheck_->isChecked()
+        || !selected || !supercell_ || !selected->cell().isDefined()
+        || !supercell_->cell().isDefined())
+        return selected;
+
+    core::SupercellMatrix matrix;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            matrix.m[i][j] = matrixSpins_[i][j]->value();
+    core::UnitCell forced;
+    if (!core::forceCommensuratePrimitive(supercell_->cell(), matrix,
+                                          selected->cell(), forced))
+        return selected;
+
+    // Only the LATTICE is rebuilt; the basis rides along at the same
+    // fractional coordinates, so the motif is unchanged and every atom stays
+    // on the site it occupied.
+    auto rescaled = std::make_shared<core::Structure>(*selected);
+    std::vector<core::Vec3> fractional;
+    fractional.reserve(rescaled->atoms().size());
+    for (const core::Atom& atom : rescaled->atoms())
+        fractional.push_back(selected->cell().cartesianToFractional(atom.position));
+    rescaled->setCell(forced);
+    for (std::size_t i = 0; i < rescaled->atoms().size(); ++i)
+        rescaled->atoms()[i].position = forced.fractionalToCartesian(fractional[i]);
+    return rescaled;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +183,43 @@ QWidget* EffectiveBandsWizard::buildSettingsPage()
     auto* matrixGroup = new QGroupBox(tr("Mapping matrix  (supercell = M · primitive)"),
                                       page);
     auto* matrixLayout = new QVBoxLayout(matrixGroup);
+
+    // -- Commensurability --------------------------------------------------
+    auto* toleranceRow = new QWidget(matrixGroup);
+    auto* toleranceLayout = new QHBoxLayout(toleranceRow);
+    toleranceLayout->setContentsMargins(0, 0, 0, 0);
+    toleranceLayout->addWidget(new QLabel(tr("Tolerance:"), toleranceRow));
+    toleranceSpin_ = new QDoubleSpinBox(toleranceRow);
+    toleranceSpin_->setRange(1e-4, 0.5);
+    toleranceSpin_->setDecimals(4);
+    toleranceSpin_->setSingleStep(0.005);
+    toleranceSpin_->setValue(kDefaultCommensurateTolerance);
+    toleranceSpin_->setToolTip(
+        tr("How far M may sit from integers before the two cells are called "
+           "incommensurate, in units of M itself.\n\n"
+           "A relaxed supercell needs room here: a 1% change in lattice "
+           "constant puts a 2×2×2's M ~0.02 off, which a pristine-cell "
+           "tolerance rejects even though the unfolding is perfectly well "
+           "posed. An unrelated primitive cell misses by 0.1 or more, so this "
+           "still catches the mistake it exists for."));
+    toleranceLayout->addWidget(toleranceSpin_);
+    toleranceLayout->addStretch(1);
+    matrixLayout->addWidget(toleranceRow);
+
+    forceCommensurateCheck_ =
+        new QCheckBox(tr("Force commensurability by rescaling the unit cell"),
+                      matrixGroup);
+    forceCommensurateCheck_->setToolTip(
+        tr("Rebuild the primitive cell as P = M⁻¹ · S, so the supercell "
+           "becomes an exact integer multiple of it.\n\n"
+           "For a relaxed supercell this is not a fudge: the supercell IS "
+           "M × something, just not M × the pristine host any more, and this "
+           "recovers the host cell it actually relaxed into. The projection "
+           "needs an exact integer relation, and an approximate one gives "
+           "spectral weights that are quietly wrong rather than an error.\n\n"
+           "Check the reported strain: a few per cent is the relaxation; much "
+           "more means the wrong primitive cell was chosen."));
+    matrixLayout->addWidget(forceCommensurateCheck_);
 
     autoMatrixCheck_ = new QCheckBox(tr("Deduce M from the two cells"), matrixGroup);
     autoMatrixCheck_->setChecked(true);
@@ -221,19 +295,27 @@ void EffectiveBandsWizard::refreshMatrix()
                 matrixSpins_[i][j]->setValue(deduced.m[i][j]);
             }
         }
-        if (!std::isfinite(residual) || residual > kCommensurateTolerance) {
+        const double tolerance = toleranceSpin_ ? toleranceSpin_->value()
+                                                : kDefaultCommensurateTolerance;
+        const bool forcing =
+            forceCommensurateCheck_ && forceCommensurateCheck_->isChecked();
+        if (!std::isfinite(residual) || (residual > tolerance && !forcing)) {
             matrixVerdict_->setStyleSheet(QStringLiteral("color: #d9534f;"));
             matrixVerdict_->setText(
                 tr("<b>Not commensurate</b> — the best integer fit is off by "
-                   "%1. These two cells are not related by an integer "
-                   "transformation, so the unfolding would be meaningless. "
-                   "Check that the primitive cell really is the host of this "
+                   "%1, past the %2 tolerance. Either raise the tolerance, or "
+                   "tick <i>Force commensurability</i> to rebuild the "
+                   "primitive cell from the supercell — which is what a "
+                   "RELAXED supercell needs. If the miss is large, the "
+                   "primitive cell is probably not the host of this "
                    "supercell.")
                     .arg(std::isfinite(residual)
                              ? QString::number(residual, 'g', 3)
-                             : tr("a singular cell")));
+                             : tr("a singular cell"))
+                    .arg(tolerance, 0, 'g', 3));
             return;
         }
+        commensurateResidual_ = residual;
     }
 
     core::SupercellMatrix manual;
@@ -261,6 +343,24 @@ void EffectiveBandsWizard::refreshMatrix()
                     .arg(ratio)
                     .arg(static_cast<int>(supercell_->size())
                          - cells * static_cast<int>(primitive->size()));
+    }
+    if (forceCommensurateCheck_ && forceCommensurateCheck_->isChecked()) {
+        core::UnitCell forced;
+        double strain = 0.0;
+        if (core::forceCommensuratePrimitive(supercell_->cell(), manual,
+                                             primitive->cell(), forced,
+                                             &strain)) {
+            text += tr("<br><b>Forced commensurate:</b> the primitive cell is "
+                       "rebuilt as M⁻¹·S, straining its vectors by %1%. ")
+                        .arg(100.0 * strain, 0, 'f', 2);
+            // The number that decides whether this was legitimate. A relaxed
+            // supercell moves the host cell by a couple of per cent; a wrong
+            // primitive cell moves it by tens.
+            text += strain > 0.10
+                ? tr("<span style='color:#d9534f'>That is a large change — "
+                     "check that this really is the host cell.</span>")
+                : tr("Consistent with a relaxed supercell.");
+        }
     }
     matrixVerdict_->setText(text);
 }
@@ -396,6 +496,11 @@ core::UnfoldingConfig EffectiveBandsWizard::runConfig() const
         config.kpath = kpath_->path().toStdString();
         config.pointsPerSegment = kpath_->pointsPerSegment();
     }
+    // The script's own guard uses the same number the wizard checked, so a run
+    // the dialog accepted cannot then be rejected by its own script.
+    config.commensurateTolerance = toleranceSpin_
+        ? toleranceSpin_->value()
+        : kDefaultCommensurateTolerance;
     config.spectral.energyMin = energyMinSpin_->value();
     config.spectral.energyMax = energyMaxSpin_->value();
     config.spectral.energyBins = energyBinsSpin_->value();

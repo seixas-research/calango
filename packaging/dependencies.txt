@@ -15,7 +15,7 @@ Legend:  [required] must be present   [optional] enables a feature subset
 [build][required] C++ compiler ............. C++20     (clang 14+/gcc 11+/AppleClang 14+)
                                              CMAKE_CXX_STANDARD 20, extensions OFF
 [build][optional] sips + iconutil .......... macOS only, renders calango.icns from
-                                             assets/.internal/icon.png (bundle builds)
+                                             assets/calango/icon_base.png (bundle builds)
 [build][optional] macdeployqt .............. macOS, bundles Qt frameworks into Calango.app
 [build][optional] linuxdeployqt / dpkg ..... Linux .deb packaging (packaging/linux)
 

@@ -244,26 +244,71 @@ std::string generateElectronicScript(const ElectronicConfig& c)
 
     case ElectronicBackend::Vasp:
         out << "# VASP workflow (requires VASP_PP_PATH + ASE_VASP_COMMAND).\n"
-               "# EDIT ME: adjust the INCAR tags for your system.\n"
                "from ase.calculators.vasp import Vasp\n"
+               "import os\n"
+               "import shutil\n"
                "\n"
-            << "kgrid = " << c.scfKpts << "\n"
-            << "scf = Vasp(xc=\"PBE\", encut=" << c.ecutEv << ",\n"
-               "           kpts=(kgrid, kgrid, kgrid), ismear=0, sigma=0.05,\n"
-               "           directory=\".\")\n"
-               "atoms.calc = scf\n"
-               "atoms.get_potential_energy()\n"
-               "efermi = float(atoms.calc.get_fermi_level())\n"
-               "_calango_log.progress(2, 4)\n"
-               "\n"
-               "# Non-self-consistent band run (ICHARG=11 reuses the SCF density).\n"
-            << "bands = Vasp(xc=\"PBE\", encut=" << c.ecutEv << ", icharg=11,\n"
-               "             directory=\".\", kpts=bandpath)\n"
-               "atoms.calc = bands\n"
-               "atoms.get_potential_energy()\n"
-               "bs = atoms.calc.band_structure()\n"
-               "bs._reference = efermi\n"
-               "_calango_log.progress(3, 4)\n";
+            << "kgrid = " << c.scfKpts << "\n";
+        if (!c.baselineDensityPath.empty()) {
+            // The whole point of the baseline: no SCF here at all. VASP reads
+            // the converged density from the CHGCAR of a prior single point
+            // and diagonalizes along the band path at fixed density.
+            //
+            // The file has to be COPIED in rather than read from where it
+            // lives: VASP has no path option for it — it opens 'CHGCAR' in the
+            // working directory, full stop.
+            out << "# Non-self-consistent bands on a converged density.\n"
+                   "#\n"
+                   "# ICHARG = 11 reads CHGCAR and never updates it, so no SCF\n"
+                   "# runs here. VASP opens 'CHGCAR' in the working directory\n"
+                   "# and takes no path for it, hence the copy.\n"
+                << "_baseline = r\"" << c.baselineDensityPath
+                << "\"\n"
+                   "if not os.path.exists(_baseline):\n"
+                   "    raise RuntimeError(\n"
+                   "        f'The baseline charge density is gone: {_baseline}\\n'\n"
+                   "        'ICHARG = 11 cannot converge one of its own — re-run "
+                   "the '\n"
+                   "        'Single-point Calculation that produced it.')\n"
+                   "if os.path.abspath(_baseline) != os.path.abspath('CHGCAR'):\n"
+                   "    shutil.copyfile(_baseline, 'CHGCAR')\n"
+                   "print(f'CALANGO_INFO reusing the charge density from "
+                   "{_baseline}',\n"
+                   "      flush=True)\n"
+                   "_calango_log.progress(2, 4)\n"
+                   "\n"
+                << "bands = Vasp(xc=\"PBE\", encut=" << c.ecutEv
+                << ", icharg=11,\n"
+                   "             ismear=0, sigma=0.05,\n"
+                   "             directory=\".\", kpts=bandpath)\n"
+                   "atoms.calc = bands\n"
+                   "atoms.get_potential_energy()\n"
+                   "efermi = float(atoms.calc.get_fermi_level())\n"
+                   "bs = atoms.calc.band_structure()\n"
+                   "bs._reference = efermi\n"
+                   "_calango_log.progress(3, 4)\n";
+        } else {
+            out << "# No baseline was selected, so the SCF runs here first and\n"
+                   "# the band pass reuses ITS density (ICHARG = 11).\n"
+                << "scf = Vasp(xc=\"PBE\", encut=" << c.ecutEv << ",\n"
+                   "           kpts=(kgrid, kgrid, kgrid), ismear=0, sigma=0.05,\n"
+                   "           lcharg=True, directory=\".\")\n"
+                   "atoms.calc = scf\n"
+                   "atoms.get_potential_energy()\n"
+                   "efermi = float(atoms.calc.get_fermi_level())\n"
+                   "_calango_log.progress(2, 4)\n"
+                   "\n"
+                   "# Non-self-consistent band run on the density just written.\n"
+                << "bands = Vasp(xc=\"PBE\", encut=" << c.ecutEv
+                << ", icharg=11,\n"
+                   "             ismear=0, sigma=0.05,\n"
+                   "             directory=\".\", kpts=bandpath)\n"
+                   "atoms.calc = bands\n"
+                   "atoms.get_potential_energy()\n"
+                   "bs = atoms.calc.band_structure()\n"
+                   "bs._reference = efermi\n"
+                   "_calango_log.progress(3, 4)\n";
+        }
         break;
     }
 

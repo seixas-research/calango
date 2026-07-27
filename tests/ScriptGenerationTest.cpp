@@ -13,6 +13,8 @@
 #include "core/AseScriptGenerator.hpp"
 #include "core/BornChargesScriptGenerator.hpp"
 #include "core/CddScriptGenerator.hpp"
+#include "core/UnfoldingScriptGenerator.hpp"
+#include "core/XasScriptGenerator.hpp"
 #include "core/ElectronicScriptGenerator.hpp"
 #include "core/GwScriptGenerator.hpp"
 #include "core/OpticsScriptGenerator.hpp"
@@ -206,6 +208,56 @@ int main(int argc, char** argv)
             relax.vaspExtraIncar.clear();
             relax.vaspPotcarPath.clear(); // the no-POTCAR-configured branch
             dump("vasp_relax.py", relax);
+
+            // The other relaxation driver: VASP takes the ionic steps and no
+            // ASE optimizer exists. A whole separate task body, so it needs
+            // byte-compiling like the rest.
+            CalculatorConfig internalRelax = relax;
+            internalRelax.vaspRelaxDriver = VaspRelaxDriver::Vasp;
+            internalRelax.vaspPotcarPath = "/opt/vasp/POTCARs";
+            dump("vasp_relax_internal.py", internalRelax);
+        }
+
+        // VASP band structure, with and without a reused CHGCAR: the baseline
+        // branch is a whole separate block with a file copy and a guard in it.
+        {
+            ElectronicConfig bands;
+            bands.backend = ElectronicBackend::Vasp;
+            bands.kpath = "GXWKG";
+            std::ofstream fresh(dir + "/vasp_bands_scf.py");
+            fresh << generateElectronicScript(bands);
+
+            ElectronicConfig nscf = bands;
+            nscf.baselineDensityPath = "/jobs/proc_1/CHGCAR";
+            std::ofstream reused(dir + "/vasp_bands_nscf.py");
+            reused << generateElectronicScript(nscf);
+        }
+
+        // Band unfolding: the commensurability guard is now a relative test
+        // with a configurable bound, and it has to still be valid Python.
+        {
+            UnfoldingConfig unfold;
+            unfold.kpath = "GXWKG";
+            std::ofstream out(dir + "/unfolding.py");
+            out << generateUnfoldingScript(unfold);
+        }
+
+        // XAS: three stages in one script, with a nested Generator call and
+        // an optional delta-Kohn-Sham block that doubles its length.
+        {
+            XasRunConfig xas;
+            xas.element = "O";
+            xas.calculator.calculator = CalculatorKind::Gpaw;
+            std::ofstream out(dir + "/xas_half.py");
+            out << XasScriptGenerator::generate(xas, "structure.extxyz");
+
+            XasRunConfig dks = xas;
+            dks.coreHole = XasCoreHole::Full;
+            dks.coreLevel = XasCoreLevel::L23;
+            dks.computeDks = true;
+            dks.linearBroadening = false;
+            std::ofstream dksOut(dir + "/xas_dks.py");
+            dksOut << XasScriptGenerator::generate(dks, "structure.extxyz");
         }
 
         // Charge density difference: the fragment loop rebuilds a calculator
@@ -873,6 +925,9 @@ int main(int argc, char** argv)
         relax.maxSteps = 60;
         relax.vaspIsif = 2;
         relax.relaxCell = true;
+        // Explicitly VASP-driven: the DEFAULT is now the ASE optimizer, under
+        // which writing NSW at all is the double-relaxation bug.
+        relax.vaspRelaxDriver = VaspRelaxDriver::Vasp;
         const std::string relaxed =
             AseScriptGenerator::generate(relax, "s.extxyz");
         checkContains(relaxed, "nsw=60", "a relaxation gets its step budget");
@@ -885,6 +940,198 @@ int main(int argc, char** argv)
                         "VASP_PP_PATH'] ="),
               "with no directory configured the environment's own is left "
               "alone");
+    }
+
+    std::printf("Unfolding commensurability guard:\n");
+    {
+        UnfoldingConfig unfold;
+        unfold.kpath = "GXWKG";
+        const std::string script = generateUnfoldingScript(unfold);
+        // Relative, not absolute: 1e-3 Ang is tight on a 4 Ang cell and
+        // meaningless on a 40 Ang slab, so the same number meant two things.
+        checkContains(script, "residual / _scale > 0.02",
+                      "the guard is relative to the cell size");
+        check(!contains(script, "if residual > 1e-3:"),
+              "and no longer an absolute Angstrom bound");
+        checkContains(script, "Force commensurability",
+                      "with the failure naming the way out");
+        // A run that is commensurate only approximately still proceeds, but
+        // says so: the projection assumes an exact relation.
+        checkContains(script, "CALANGO_WARN the cells are commensurate only",
+                      "an approximate relation is reported, not hidden");
+
+        UnfoldingConfig tight = unfold;
+        tight.commensurateTolerance = 1e-3;
+        checkContains(generateUnfoldingScript(tight),
+                      "residual / _scale > 0.001",
+                      "and the wizard's tolerance reaches the script");
+    }
+
+    std::printf("VASP electronic structure:\n");
+    {
+        ElectronicConfig bands;
+        bands.backend = ElectronicBackend::Vasp;
+        bands.kpath = "GXWKG";
+
+        // No baseline: the script has to converge its own density first, and
+        // must write it (LCHARG) or the ICHARG = 11 pass below has nothing to
+        // read.
+        const std::string fresh = generateElectronicScript(bands);
+        checkContains(fresh, "lcharg=True",
+                      "a self-contained run writes the density it will reuse");
+        checkContains(fresh, "icharg=11",
+                      "and the band pass is non-self-consistent");
+
+        // With a baseline: no SCF at all.
+        ElectronicConfig nscf = bands;
+        nscf.baselineDensityPath = "/jobs/proc_1/CHGCAR";
+        const std::string reused = generateElectronicScript(nscf);
+        checkContains(reused, "icharg=11",
+                      "a reused density is read with ICHARG = 11");
+        checkContains(reused, "shutil.copyfile(_baseline, 'CHGCAR')",
+                      "and copied in, since VASP takes no path for it");
+        check(!contains(reused, "scf = Vasp("),
+              "with NO SCF calculator built — that is the whole point");
+        checkContains(reused, "The baseline charge density is gone",
+                      "a missing baseline is caught before VASP starts");
+    }
+
+    std::printf("XAS generation:\n");
+    {
+        XasRunConfig xas;
+        xas.element = "O";
+        xas.absorbingAtom = 2;
+        xas.calculator.calculator = CalculatorKind::Gpaw;
+        xas.calculator.gpawMode = GpawMode::FiniteDifference;
+        const std::string script =
+            XasScriptGenerator::generate(xas, "structure.extxyz");
+
+        // The one thing that is not obvious from the tutorial and kills the
+        // run outright: gpaw.xas refuses to work on the new engine, which
+        // every other script Calango emits turns ON.
+        checkContains(script, "os.environ['GPAW_NEW'] = '0'",
+                      "the new GPAW engine is disabled");
+        checkContains(script, "legacy_gpaw=True",
+                      "and the legacy path asked for by name");
+
+        // Core-hole setup generation, keyed to the level and the occupation.
+        checkContains(script, "from gpaw.atom.generator import Generator",
+                      "the core-hole setup is generated");
+        checkContains(script, "corehole=(1, 0, 0.5)",
+                      "a K-edge half hole is (n=1, l=0, 0.5)");
+        checkContains(script, "setup_paths.insert(0, '.')",
+                      "and found from the job directory, not installed");
+        // Applied to the ATOM, not the element: keying by element would put a
+        // core hole on every atom of that species at once.
+        checkContains(script, "setups={absorbing_atom: setup_name}",
+                      "the setup goes on the absorbing atom by index");
+        checkContains(script, "absorbing_atom = 2",
+                      "which is the one the user chose");
+        checkContains(script, "nbands=-30",
+                      "unoccupied bands are requested as a negative count");
+        checkContains(script, "from gpaw.xas import XAS",
+                      "the spectrum comes from gpaw.xas");
+        checkContains(script, "xas.json", "and lands in the results file");
+
+        // The other edges and hole occupations.
+        XasRunConfig l23 = xas;
+        l23.coreLevel = XasCoreLevel::L23;
+        checkContains(XasScriptGenerator::generate(l23, "s.extxyz"),
+                      "corehole=(2, 1, 0.5)", "an L2,3 edge is (n=2, l=1)");
+        XasRunConfig full = xas;
+        full.coreHole = XasCoreHole::Full;
+        const std::string fullScript =
+            XasScriptGenerator::generate(full, "s.extxyz");
+        checkContains(fullScript, "corehole=(1, 0, 1)",
+                      "a full hole removes one electron");
+        checkContains(fullScript, "setup_name = \"fch1s\"",
+                      "and is named for what it is");
+        XasRunConfig none = xas;
+        none.coreHole = XasCoreHole::None;
+        checkContains(XasScriptGenerator::generate(none, "s.extxyz"),
+                      "corehole=(1, 0, 0)", "no hole removes nothing");
+
+        // Delta-Kohn-Sham calibration is opt-in and costs two more runs.
+        check(!contains(script, "get_reference_energy"),
+              "no delta-Kohn-Sham calculation unless asked for");
+        XasRunConfig dks = xas;
+        dks.computeDks = true;
+        const std::string dksScript =
+            XasScriptGenerator::generate(dks, "s.extxyz");
+        checkContains(dksScript, "get_reference_energy",
+                      "asking for it adds the two total energies");
+        checkContains(dksScript, "fixmagmom=True",
+                      "with the moment fixed so the excited state survives");
+        checkContains(dksScript, "charge=-1",
+                      "and the cell kept neutral");
+
+        // The absorbing atom has to BE the element the setup was made for.
+        checkContains(script, "is {_actual}, not {element}",
+                      "a mismatched atom and element is caught in the script");
+    }
+
+    std::printf("VASP relaxation driver:\n");
+    {
+        // The bug this pins: VASP relaxes internally when IBRION/NSW say so,
+        // and ASE's optimizer relaxes anything that returns forces. With both
+        // emitted, every ASE force evaluation ran a complete VASP relaxation.
+        // Exactly one of them must take the ionic steps.
+        CalculatorConfig relax;
+        relax.calculator = CalculatorKind::Vasp;
+        relax.task = TaskKind::GeometryOptimization;
+        relax.maxSteps = 80;
+        relax.vaspPotcarPath = "/opt/vasp/POTCARs";
+
+        // Default: ASE drives, so VASP must be static.
+        relax.vaspRelaxDriver = VaspRelaxDriver::Ase;
+        const std::string ase =
+            AseScriptGenerator::generate(relax, "structure.extxyz");
+        checkContains(ase, "from ase.optimize import BFGS",
+                      "ASE-driven: the optimizer is imported");
+        checkContains(ase, "opt.run(fmax=",
+                      "and it is the thing that runs");
+        checkContains(ase, "ibrion=-1",
+                      "while VASP is pinned to a static calculation");
+        checkContains(ase, "nsw=0", "with no ionic steps of its own");
+        check(!contains(ase, "ediffg="),
+              "and no ionic convergence criterion, which would be VASP's");
+
+        // VASP-driven: no ASE optimizer at all.
+        relax.vaspRelaxDriver = VaspRelaxDriver::Vasp;
+        const std::string internal =
+            AseScriptGenerator::generate(relax, "structure.extxyz");
+        checkContains(internal, "ibrion=2", "VASP-driven: IBRION is written");
+        checkContains(internal, "nsw=80", "with the step budget as NSW");
+        checkContains(internal, "ediffg=", "and its own force criterion");
+        check(!contains(internal, "from ase.optimize import"),
+              "and NO ASE optimizer is imported");
+        check(!contains(internal, "opt.run("),
+              "nor run — this is the whole fix");
+        checkContains(internal, "geometry_optimization.json",
+                      "the viewer's summary is still written");
+        checkContains(internal, "opt.traj",
+                      "and the ionic path, recovered from OUTCAR");
+
+        // A single point is static under either setting: there is nothing to
+        // drive, and NSW > 0 on a single point would silently relax it.
+        for (const VaspRelaxDriver driver :
+             {VaspRelaxDriver::Ase, VaspRelaxDriver::Vasp}) {
+            CalculatorConfig single = relax;
+            single.task = TaskKind::SinglePoint;
+            single.vaspRelaxDriver = driver;
+            const std::string script =
+                AseScriptGenerator::generate(single, "s.extxyz");
+            checkContains(script, "nsw=0",
+                          "a single point never takes ionic steps");
+        }
+
+        // Non-VASP engines are untouched by the driver setting.
+        CalculatorConfig gpawRelax = relax;
+        gpawRelax.calculator = CalculatorKind::Gpaw;
+        gpawRelax.vaspRelaxDriver = VaspRelaxDriver::Vasp;
+        checkContains(AseScriptGenerator::generate(gpawRelax, "s.extxyz"),
+                      "from ase.optimize import",
+                      "the driver choice does not leak into other engines");
     }
 
     std::printf("GPAW density exports:\n");

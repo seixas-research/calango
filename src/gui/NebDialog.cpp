@@ -405,10 +405,17 @@ QGroupBox* NebDialog::buildGpawGroup()
     electronic_.buildConvergenceRows(form, this);
 
     gpawEigensolverCombo_ = new QComboBox(group);
-    gpawEigensolverCombo_->addItems({QStringLiteral("davidson"),
-                                     QStringLiteral("cg"),
-                                     QStringLiteral("rmm-diis"),
-                                     QStringLiteral("direct")});
+    // Same list, same order and the same itemData mapping as the wizards': a
+    // second spelling of the solver names here is how the two drift apart.
+    gpawEigensolverCombo_->addItem(QStringLiteral("Davidson"),
+                                   static_cast<int>(core::GpawEigensolver::Davidson));
+    gpawEigensolverCombo_->addItem(QStringLiteral("RMM-DIIS"),
+                                   static_cast<int>(core::GpawEigensolver::RmmDiis));
+    gpawEigensolverCombo_->addItem(
+        QStringLiteral("CG"),
+        static_cast<int>(core::GpawEigensolver::ConjugateGradient));
+    gpawEigensolverCombo_->addItem(QStringLiteral("Direct"),
+                                   static_cast<int>(core::GpawEigensolver::Direct));
     gpawEigensolverCombo_->setToolTip(
         tr("davidson: robust general default.\n"
            "cg: slower but very stable — try it when the SCF oscillates.\n"
@@ -569,7 +576,7 @@ core::CalculatorConfig NebDialog::calculatorConfig() const
     if (c.calculator == core::CalculatorKind::Gpaw) {
         c.gpawXc = gpawXcCombo_->currentText().trimmed().toStdString();
         c.gpawEigensolver = static_cast<core::GpawEigensolver>(
-            gpawEigensolverCombo_->currentIndex());
+            gpawEigensolverCombo_->currentData().toInt());
         bool ok = false;
         const double eigen =
             QLocale::c().toDouble(gpawEigenTolEdit_->text(), &ok);

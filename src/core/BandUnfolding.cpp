@@ -89,6 +89,54 @@ SupercellMatrix deduceSupercellMatrix(const UnitCell& primitive,
     return result;
 }
 
+bool forceCommensuratePrimitive(const UnitCell& supercell,
+                                const SupercellMatrix& matrix,
+                                const UnitCell& originalPrimitive,
+                                UnitCell& forcedPrimitive, double* strain)
+{
+    if (!matrix.valid())
+        return false;
+
+    // M as doubles, then inverted: P = M⁻¹ · S. Inverting the integer matrix
+    // rather than solving per row keeps this symmetric with the deduction
+    // above, which computed M = S · P⁻¹ the same way.
+    std::array<Vec3, 3> m{};
+    for (int i = 0; i < 3; ++i) {
+        m[static_cast<std::size_t>(i)] = {
+            static_cast<double>(matrix.m[i][0]),
+            static_cast<double>(matrix.m[i][1]),
+            static_cast<double>(matrix.m[i][2])};
+    }
+    std::array<Vec3, 3> inverse{};
+    if (!invert3x3(m, inverse))
+        return false;
+
+    const auto& s = supercell.vectors();
+    std::array<Vec3, 3> forced{};
+    for (int i = 0; i < 3; ++i) {
+        const Vec3& row = inverse[static_cast<std::size_t>(i)];
+        forced[static_cast<std::size_t>(i)] =
+            s[0] * row.x + s[1] * row.y + s[2] * row.z;
+    }
+    forcedPrimitive = UnitCell(forced[0], forced[1], forced[2]);
+
+    if (strain) {
+        // Relative length change per vector, worst case. Lengths rather than
+        // components, because a rotation between the two settings is not a
+        // deformation and should not be reported as one.
+        double worst = 0.0;
+        const auto& original = originalPrimitive.vectors();
+        for (int i = 0; i < 3; ++i) {
+            const double before = original[static_cast<std::size_t>(i)].norm();
+            const double after = forced[static_cast<std::size_t>(i)].norm();
+            if (before > 1e-12)
+                worst = std::max(worst, std::abs(after - before) / before);
+        }
+        *strain = worst;
+    }
+    return true;
+}
+
 Vec3 foldToSupercell(const Vec3& kPrimitive, const SupercellMatrix& matrix)
 {
     // Reciprocal-space transformation is the TRANSPOSE of the real-space one:

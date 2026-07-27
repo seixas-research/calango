@@ -224,6 +224,11 @@ private Q_SLOTS:
     /// Time series (T, E, P, V), g(r) and the trajectory player for a
     /// finished MD run.
     void openMolecularDynamicsResults(const QString& directory);
+    /// Electronics → "X-ray Absorption Spectroscopy (XAS)…": core-hole setup
+    /// generation, ground state and spectrum, following the GPAW tutorial.
+    void showXas();
+    /// Open the XAS spectrum viewer for a finished job directory.
+    void openXasResults(const QString& directory);
     /// Electronics → "Born Effective Charges…": stage and launch the Z* run.
     void showBornCharges();
     /// Open the Z* tensor read-out for a completed Born-charges process.
@@ -338,6 +343,12 @@ private Q_SLOTS:
     /// the GPAW G₀W₀ path. Handing those a directory produces a script that
     /// only fails once the job is already running.
     QList<QPair<QString, QString>> gpawDensityFiles() const;
+    /// Completed processes holding a VASP CHGCAR, as (label, absolute path).
+    ///
+    /// The VASP analogue of gpawDensityFiles(): an Electronic Structure run
+    /// with ICHARG = 11 reads a converged density rather than computing one,
+    /// and this is where that density comes from.
+    QList<QPair<QString, QString>> vaspChargeDensityFiles() const;
     void showDatasetManager();
     /// MLIP → Trainer…: MACE training-config (YAML) builder + launcher.
     void openMaceTrainer();

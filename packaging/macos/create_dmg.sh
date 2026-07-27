@@ -76,8 +76,8 @@ VERSION="$(grep -E '^CMAKE_PROJECT_VERSION:' "$BUILD_DIR/CMakeCache.txt" | cut -
 ARCH="$(uname -m)"
 ICNS=""
 for candidate in \
-    "$REPO_ROOT/assets/.internal/calango.icns" \
-    "$REPO_ROOT/assets/.internal/icon.icns" \
+    "$REPO_ROOT/assets/calango/calango.icns" \
+    "$REPO_ROOT/assets/calango/icon.icns" \
     "$BUILD_DIR/calango.icns"; do
     [[ -f "$candidate" ]] && { ICNS="$candidate"; break; }
 done

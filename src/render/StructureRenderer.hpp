@@ -267,9 +267,16 @@ public:
         /// Normalized vector-overlay length: 1.0 is the calibrated baseline
         /// (kVectorBaseScale Å of arrow per field unit), not a raw Å factor.
         float vectorScale = 1.0f;
-        /// Draw a cone at each arrow tip. Off leaves plain shafts, which read
-        /// better on a dense magnetic structure where the heads merge.
-        bool vectorArrowHeads = true;
+        /// Arrow shaft thickness, relative to the calibrated baseline (1.0).
+        /// The head scales with it, so an arrow stays proportioned.
+        ///
+        /// This replaced the "draw arrowheads" toggle. A headless arrow is
+        /// ambiguous about direction — the one thing a vector overlay exists to
+        /// state — and the reason the toggle existed (heads merging into
+        /// clutter on a dense magnetic structure) is better answered by making
+        /// the whole arrow thinner than by removing the head that carries the
+        /// meaning.
+        float vectorWidth = 1.0f;
         /// Hide arrows whose field magnitude is below this, in the FIELD's own
         /// units (eV/Å, μB, …) — not in Å of drawn arrow, so the filter does
         /// not shift when the length scale is changed.
@@ -282,17 +289,16 @@ public:
         QColor initialMagmomColor{240, 160, 90};
         bool showCell = true;
         /// "Show atoms of the neighboring unit cell": draw the periodic images
-        /// of the atoms that the home cell's bonds actually reach into.
+        /// that terminate the bonds leaving the cell — and only those.
         ///
-        /// Two things get an image, and the second is the point of the setting:
+        /// One image per end of every wrapped bond, so a bond crossing the
+        /// boundary terminates ON AN ATOM instead of stopping in mid-air.
         ///
-        ///   - an atom sitting exactly on a cell face, edge or vertex is
-        ///     repeated on the far side (fractional 0 -> 1), so the cell reads
-        ///     as a closed motif rather than one sliced off at two faces;
-        ///   - the far end of every bond that wraps around the cell, so a bond
-        ///     crossing the boundary terminates ON AN ATOM instead of stopping
-        ///     in mid-air. The image atoms a duplicated atom is itself bonded
-        ///     to are added for the same reason.
+        /// It used to also duplicate every atom lying on a face, edge or
+        /// vertex, and then complete those copies' own bonds — which filled
+        /// the view with periodic repetition nobody had asked for (a
+        /// face-centred cell grew by more than half again). What the setting
+        /// is actually for is the dangling bonds, so that is all it does.
         ///
         /// With the setting off, wrapped bonds are still drawn as the
         /// conventional pair of half-length stubs — the standard depiction of
@@ -302,11 +308,6 @@ public:
         /// and never enter the Structure, so the atom count, the chemical
         /// formula and every exported POSCAR/CIF are unchanged.
         bool showNeighborCellAtoms = false;
-        /// How close to a cell face (in fractional coordinates) counts as
-        /// "on" it. 1e-3 of a ~5 Å cell is ~5 mÅ: tight enough that an atom
-        /// merely near the face is not duplicated, loose enough to catch
-        /// coordinates that have been through a round trip through a file.
-        float boundaryGhostTolerance = 1e-3f;
         QColor cellColor{166, 166, 178};
         /// 1 = plain GL lines; > 1 renders the edges as thin lit tubes
         /// (core-profile GL clamps glLineWidth, so tubes are the portable
@@ -362,7 +363,7 @@ public:
     static std::vector<CastStyle> atomCastStyles(const core::Structure* structure,
                                                  const Style& style);
 
-    // -- Macromolecular geometry (GL-free, like boundaryGhostShifts) --------
+    // -- Macromolecular geometry (GL-free, testable in isolation) -----------
     //
     // Public because they are pure geometry over a Structure — no GL context,
     // no member state beyond the style — which is what lets them be checked
@@ -391,14 +392,6 @@ public:
     void setStructure(const core::Structure* structure,
                       const std::set<int>* selection = nullptr);
 
-    /// Cartesian translations that duplicate `position` onto the far cell
-    /// faces/edges/vertices it lies on: empty for an interior atom, one entry
-    /// for a face, three for an edge, seven for the origin vertex. Public so
-    /// the same rule can be reused (e.g. by an exporter that wants to show
-    /// what the viewport shows).
-    static std::vector<core::Vec3> boundaryGhostShifts(const core::Vec3& position,
-                                                       const core::UnitCell& cell,
-                                                       float tolerance);
 
     /// Per-atom scalars driving one non-Element color mode (CN, GCN, a custom
     /// field). Values are normalized to their own [min, max] internally; an

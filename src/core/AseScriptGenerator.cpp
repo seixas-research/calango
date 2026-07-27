@@ -329,6 +329,16 @@ std::string pythonStringList(const std::vector<std::string>& values,
 /// LAMMPSlib takes a list of LAMMPS COMMANDS, lammpsrun takes a parameter DICT
 /// it renders into an input deck — so they get separate blocks rather than one
 /// parameterized template that would obscure both.
+/// True when this run's ionic steps belong to VASP rather than to an ASE
+/// optimizer. The single predicate both halves of the script consult, so they
+/// cannot disagree about who is relaxing.
+bool vaspDrivesRelaxation(const CalculatorConfig& c)
+{
+    return c.calculator == CalculatorKind::Vasp
+        && c.task == TaskKind::GeometryOptimization
+        && c.vaspRelaxDriver == VaspRelaxDriver::Vasp;
+}
+
 /// VASP through ASE, with the INCAR tags the wizard collects.
 ///
 /// Two things here are not obvious and are the reason this is not a one-liner.
@@ -454,11 +464,12 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
         out << "    ispin=1,\n";
     }
 
-    const bool relaxes = c.task == TaskKind::GeometryOptimization;
-    if (relaxes) {
-        out << "    # Ionic relaxation, done by VASP itself rather than by an\n"
-               "    # ASE optimizer: its internal relaxation is what the INCAR\n"
-               "    # tags below describe.\n"
+    // Ionic steps are emitted ONLY when VASP is the one taking them. Writing
+    // IBRION/NSW while an ASE optimizer is also running would make every ASE
+    // force call a complete VASP relaxation — see VaspRelaxDriver.
+    if (vaspDrivesRelaxation(c)) {
+        out << "    # Ionic relaxation, driven by VASP itself. No ASE optimizer\n"
+               "    # is created for this run; these tags ARE the relaxation.\n"
             << "    ibrion=" << c.vaspIbrion << ",\n"
             // A variable-cell relaxation needs ISIF >= 3; the wizard's own
             // "relax the cell" toggle is the authority on that, so it raises
@@ -468,6 +479,13 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
             << ",\n"
             << "    nsw=" << std::max(1, c.maxSteps) << ",\n"
             << "    ediffg=" << c.vaspEdiffg << ",\n";
+    } else if (c.task == TaskKind::GeometryOptimization) {
+        out << "    # Static force/energy calculator: ASE's optimizer takes the\n"
+               "    # ionic steps, so VASP must not also relax. With IBRION/NSW\n"
+               "    # set here, every force evaluation ASE requested would run a\n"
+               "    # full VASP relaxation of its own.\n"
+               "    ibrion=-1,\n"
+               "    nsw=0,\n";
     } else {
         out << "    # Single point: no ionic steps.\n"
                "    ibrion=-1,\n"
@@ -1036,6 +1054,112 @@ std::string gpawDensityExportBlock(const CalculatorConfig& c)
     return out.str();
 }
 
+/// The task body for a relaxation VASP runs by itself.
+///
+/// One `get_potential_energy()` call does the whole relaxation: VASP walks the
+/// ionic steps internally and hands back the final geometry. There is no ASE
+/// optimizer here at all, which is the entire point — see VaspRelaxDriver.
+///
+/// The outputs are deliberately the same files an ASE-driven relaxation
+/// produces (opt.traj, optimized.extxyz, geometry_optimization.json), so the
+/// Geometry Optimization Viewer and the trajectory tab work identically
+/// whichever driver ran. The per-step data comes out of VASP's own OUTCAR
+/// rather than from an optimizer callback, since the steps happened inside the
+/// single call above.
+void emitVaspInternalRelaxation(std::ostringstream& out,
+                                const CalculatorConfig& c)
+{
+    out << "# Relaxation driven by VASP (IBRION / NSW / ISIF / EDIFFG above).\n"
+           "#\n"
+           "# ASE creates no optimizer here. The one call below runs every\n"
+           "# ionic step inside VASP, which keeps the wavefunction and charge\n"
+           "# density between them — the reason to use this mode. The cost is\n"
+           "# that the steps are not visible until it returns.\n"
+           "import json\n"
+           "import numpy as _np\n"
+           "from ase.io import read as _read\n"
+           "from ase.io.trajectory import Trajectory\n"
+           "\n"
+        << "max_steps = " << c.maxSteps
+        << "\n"
+           "_calango_log.progress(0, max_steps)\n"
+           "print('CALANGO_INFO VASP is driving the relaxation; '\n"
+           "      'ionic steps are reported when it returns', flush=True)\n"
+           "\n"
+           "_e0 = atoms.get_potential_energy()\n"
+           "\n"
+           "# VASP has rewritten the geometry in place on `atoms`; CONTCAR is\n"
+           "# the same structure and is read back only when ASE did not update\n"
+           "# the object (older interface versions).\n"
+           "import os\n"
+           "if os.path.exists('CONTCAR') and os.path.getsize('CONTCAR') > 0:\n"
+           "    try:\n"
+           "        _final = _read('CONTCAR')\n"
+           "        atoms.set_positions(_final.get_positions())\n"
+           "        atoms.set_cell(_final.get_cell())\n"
+           "    except Exception as _error:\n"
+           "        print(f'CALANGO_WARN could not re-read CONTCAR: {_error}',\n"
+           "              flush=True)\n"
+           "\n"
+           "# The ionic path, recovered from OUTCAR so the viewer and the\n"
+           "# trajectory tab get the same frames an ASE-driven run would give.\n"
+           "_frames = []\n"
+           "try:\n"
+           "    _frames = _read('OUTCAR', index=':')\n"
+           "except Exception as _error:\n"
+           "    print(f'CALANGO_WARN could not read the ionic path from OUTCAR: '\n"
+           "          f'{_error}', flush=True)\n"
+           "if _frames:\n"
+           "    _traj = Trajectory('opt.traj', 'w')\n"
+           "    for _step, _frame in enumerate(_frames):\n"
+           "        _traj.write(_frame)\n"
+           "        try:\n"
+           "            _energy = float(_frame.get_potential_energy())\n"
+           "            _fmax = float(_np.linalg.norm(_frame.get_forces(),\n"
+           "                                          axis=1).max())\n"
+           "            _calango_log.metric(_step, energy=_energy,\n"
+           "                                max_force=_fmax)\n"
+           "        except Exception:\n"
+           "            pass  # a frame without a calculator attached\n"
+           "    _traj.close()\n"
+           "    _calango_log.progress(len(_frames), max(max_steps, len(_frames)))\n"
+           "\n"
+           "energy = atoms.get_potential_energy()\n"
+           "_forces = _np.asarray(atoms.get_forces(), dtype=float)\n"
+           "_force_norms = _np.linalg.norm(_forces, axis=1)\n"
+           "fmax_final = float(_force_norms.max()) if _force_norms.size else 0.0\n"
+        << "converged = bool(fmax_final <= " << c.fmax
+        << ")\n"
+           "write('optimized.extxyz', atoms)\n"
+           "print(f'CALANGO_RESULT converged={converged} "
+           "energy_eV={energy:.6f}', flush=True)\n"
+           "\n"
+           "_energy_first = None\n"
+           "if _frames:\n"
+           "    try:\n"
+           "        _energy_first = float(_frames[0].get_potential_energy())\n"
+           "    except Exception:\n"
+           "        _energy_first = None\n"
+           "_summary = {\n"
+           "    'driver': 'vasp',\n"
+           "    'converged': converged,\n"
+           "    'steps': len(_frames),\n"
+        << "    'fmax_target_eV_per_A': " << c.fmax
+        << ",\n"
+           "    'fmax_final_eV_per_A': fmax_final,\n"
+           "    'energy_eV': float(energy),\n"
+           "    'energy_initial_eV': _energy_first,\n"
+           "    'energy_change_eV': (float(energy) - _energy_first)\n"
+           "    if _energy_first is not None else None,\n"
+           "    'natoms': len(atoms),\n"
+           "    'forces_eV_per_A': _forces.tolist(),\n"
+           "}\n"
+           "with open('geometry_optimization.json', 'w') as _fh:\n"
+           "    json.dump(_summary, _fh, indent=2)\n"
+           "print('CALANGO_RESULT geometry_optimization="
+           "geometry_optimization.json', flush=True)\n";
+}
+
 void emitTask(std::ostringstream& out, const CalculatorConfig& c)
 {
     const bool isDft = c.calculator == CalculatorKind::QuantumEspresso
@@ -1126,6 +1250,10 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
         break;
 
     case TaskKind::GeometryOptimization: {
+        if (vaspDrivesRelaxation(c)) {
+            emitVaspInternalRelaxation(out, c);
+            break;
+        }
         const std::string opt = toString(c.optimizer);
         out << "from ase.optimize import " << opt << "\n";
         if (c.relaxCell) {

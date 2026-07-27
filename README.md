@@ -2,8 +2,8 @@
 
 <a href="https://github.com/seixas-research/calango" target="_blank" rel="noopener noreferrer">
   <picture>
-    <source srcset="https://raw.githubusercontent.com/seixas-research/calango/refs/heads/main/assets/.internal/logo_dark.png" media="(prefers-color-scheme: dark)">
-    <source srcset="https://raw.githubusercontent.com/seixas-research/calango/refs/heads/main/assets/.internal/logo_light.png" media="(prefers-color-scheme: light)">
+    <source srcset="https://raw.githubusercontent.com/seixas-research/calango/refs/heads/main/assets/calango/logo_dark.png" media="(prefers-color-scheme: dark)">
+    <source srcset="https://raw.githubusercontent.com/seixas-research/calango/refs/heads/main/assets/calango/logo_light.png" media="(prefers-color-scheme: light)">
     <img src="https://raw.githubusercontent.com/seixas-research/carcara/refs/heads/main/assets/.internal/logo_light.png" alt="Carcará logo" style="height: auto; width: auto; max-height: 100px;">
   </picture>
 </a>
@@ -282,7 +282,8 @@ export CALANGO_PYTHON=/path/to/.venv/bin/python
 - `CMakeLists.txt` — global build configuration, installers (CPack), and tests.
 - `assets/`
   - `shaders/` — GLSL shaders (compiled in as Qt resources).
-  - `.internal/` — brand assets (application icon, logos), the RemixIcon SVG set tinted at runtime per theme, and helper scripts; all embedded as Qt resources.
+  - `icons/` — the RemixIcon SVG set, tinted at runtime per theme (embedded as Qt resources).
+  - `calango/` — brand assets (application icon, logos) and helper scripts; all embedded as Qt resources.
   - `remote/` — the paramiko SSH/SFTP helper (embedded as a Qt resource).
 - `examples/` — benchmark structure files for the Database browser.
 - `docs/tex/` — LaTeX sources and built PDFs for the User Guide and the Packaging Guide.

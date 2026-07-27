@@ -81,7 +81,7 @@ int main(int argc, char* argv[])
     // Window / taskbar / dock icon (embedded high-resolution brand icon,
     // transparent-background variant).
     QApplication::setWindowIcon(
-        QIcon(QStringLiteral(":/assets/.internal/icon.png")));
+        QIcon(QStringLiteral(":/assets/calango/icon_base.png")));
 
     // Centralized settings (~/.calango/settings.json): create-with-defaults on
     // first run, otherwise load and apply into QSettings (JSON authoritative).

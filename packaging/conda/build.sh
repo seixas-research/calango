@@ -33,6 +33,6 @@ if [[ "$(uname)" == "Linux" ]]; then
         "$PREFIX/share/applications/calango.desktop"
     install -Dm644 "$SRC_DIR/packaging/linux/calango-mime.xml" \
         "$PREFIX/share/mime/packages/calango-mime.xml"
-    install -Dm644 "$SRC_DIR/assets/.internal/icon.png" \
+    install -Dm644 "$SRC_DIR/assets/calango/icon_base.png" \
         "$PREFIX/share/pixmaps/calango.png"
 fi

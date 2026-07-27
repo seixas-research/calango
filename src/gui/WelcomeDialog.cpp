@@ -40,8 +40,8 @@ WelcomeDialog::WelcomeDialog(const QStringList& recentProjects,
     // Welcome Screen and the branding panel always show the same asset.
     const bool dark = ThemeManager::isEffectivelyDark(ThemeManager::current());
     const QPixmap banner(dark
-                             ? QStringLiteral(":/assets/.internal/logo_dark.png")
-                             : QStringLiteral(":/assets/.internal/logo_light.png"));
+                             ? QStringLiteral(":/assets/calango/logo_dark.png")
+                             : QStringLiteral(":/assets/calango/logo_light.png"));
     if (!banner.isNull()) {
         auto* bannerLabel = new QLabel(this);
         bannerLabel->setAlignment(Qt::AlignCenter);

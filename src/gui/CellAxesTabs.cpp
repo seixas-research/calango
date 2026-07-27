@@ -215,6 +215,49 @@ VectorsPanel::VectorsPanel(ViewportWidget* viewport, QWidget* parent)
         viewport_->styleChanged(true);
     });
 
+    // Directly below the scale, because the two together are the arrow's
+    // geometry: how long it is and how thick.
+    auto* widthRow = new QWidget(this);
+    auto* widthLayout = new QHBoxLayout(widthRow);
+    widthLayout->setContentsMargins(0, 0, 0, 0);
+    widthSlider_ = new QSlider(Qt::Horizontal, widthRow);
+    widthSlider_->setRange(10, 500); // x0.1 .. x5.0 in hundredths
+    widthSpin_ = new QDoubleSpinBox(widthRow);
+    widthSpin_->setRange(0.1, 5.0);
+    widthSpin_->setDecimals(2);
+    widthSpin_->setSingleStep(0.1);
+    widthSpin_->setSuffix(QStringLiteral("×"));
+    const double currentWidth = viewport_->style().vectorWidth;
+    widthSlider_->setValue(static_cast<int>(std::lround(currentWidth * 100.0)));
+    widthSpin_->setValue(currentWidth);
+    widthRow->setToolTip(
+        tr("Arrow thickness, relative to the calibrated baseline (1.0×). The "
+           "head scales with it, so the arrow stays proportioned.\n\n"
+           "This is what a dense magnetic structure wants: thin arrows stay "
+           "legible where thick ones merge into a mat, without giving up the "
+           "heads that say which way each one points."));
+    widthLayout->addWidget(widthSlider_, 1);
+    widthLayout->addWidget(widthSpin_);
+    form->addRow(tr("Vector width:"), widthRow);
+
+    connect(widthSlider_, &QSlider::valueChanged, this, [this](int hundredths) {
+        const float factor = static_cast<float>(hundredths) / 100.0f;
+        {
+            const QSignalBlocker blocker(widthSpin_);
+            widthSpin_->setValue(factor);
+        }
+        viewport_->style().vectorWidth = factor;
+        viewport_->styleChanged(true);
+    });
+    connect(widthSpin_, &QDoubleSpinBox::valueChanged, this, [this](double factor) {
+        {
+            const QSignalBlocker blocker(widthSlider_);
+            widthSlider_->setValue(static_cast<int>(std::lround(factor * 100.0)));
+        }
+        viewport_->style().vectorWidth = static_cast<float>(factor);
+        viewport_->styleChanged(true);
+    });
+
     colorButton_ = new QPushButton(this);
     colorButton_->setToolTip(
         tr("Arrow color for the selected overlay. Each property (velocity, "
@@ -234,19 +277,11 @@ VectorsPanel::VectorsPanel(ViewportWidget* viewport, QWidget* parent)
     });
 
 
-    // -- Arrow style + filtering -------------------------------------------
-    arrowHeadsCheck_ = new QCheckBox(tr("Draw arrowheads"), this);
-    arrowHeadsCheck_->setChecked(viewport_->style().vectorArrowHeads);
-    arrowHeadsCheck_->setToolTip(
-        tr("Off draws plain shafts. Arrowheads state the vector's DIRECTION "
-           "unambiguously, which matters for forces; for a dense magnetic "
-           "structure the heads merge into clutter and plain shafts read "
-           "better."));
-    form->addRow(arrowHeadsCheck_);
-    connect(arrowHeadsCheck_, &QCheckBox::toggled, this, [this](bool on) {
-        viewport_->style().vectorArrowHeads = on;
-        viewport_->styleChanged(true);
-    });
+    // The "Draw arrowheads" toggle was removed and heads are now always drawn.
+    // A headless arrow is ambiguous about direction, which is the one thing a
+    // vector overlay exists to state; the clutter it was there to relieve is
+    // answered by "Vector width" above, which thins the whole arrow instead of
+    // deleting the part that carries the meaning.
 
     // The "Hide below:" magnitude filter was removed from this tab. The style
     // field behind it (Style::vectorMinMagnitude) stays at its 0 default, i.e.

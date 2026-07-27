@@ -448,6 +448,7 @@ private:
     QSpinBox* vaspNelmSpin_ = nullptr;
     QLineEdit* vaspEdiffEdit_ = nullptr;
     QComboBox* vaspLrealCombo_ = nullptr;
+    QComboBox* vaspDriverCombo_ = nullptr;
     QComboBox* vaspIbrionCombo_ = nullptr;
     QComboBox* vaspIsifCombo_ = nullptr;
     QDoubleSpinBox* vaspEdiffgSpin_ = nullptr;

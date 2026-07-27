@@ -53,6 +53,31 @@ SupercellMatrix deduceSupercellMatrix(const UnitCell& primitive,
                                       const UnitCell& supercell,
                                       double* residual = nullptr);
 
+/// The primitive cell that makes `supercell` an EXACT integer multiple of it:
+/// P = M⁻¹ · S.
+///
+/// Why this is needed at all: unfolding a relaxed supercell. A doped or
+/// defective supercell is relaxed, so its lattice constants no longer match
+/// n × the pristine host's — a 1% relaxation of a 2×2×2 leaves a residual of
+/// ~0.02 in M, twenty times the tolerance a pristine cell needs. The physics
+/// is still perfectly well posed (the supercell IS 2×2×2 of *something*, just
+/// not of the pristine host), but the arithmetic is not: the projection needs
+/// an exact integer relation.
+///
+/// Rebuilding the primitive cell from the supercell and the integer M resolves
+/// that exactly, and by construction the answer is the host cell the supercell
+/// actually relaxed into. `strain` receives the largest relative change from
+/// the caller's original primitive vectors — the number that says whether this
+/// was a nudge (a few per cent, the relaxation) or a sign that the wrong
+/// primitive cell was selected.
+///
+/// False when `matrix` is singular, in which case nothing is written.
+bool forceCommensuratePrimitive(const UnitCell& supercell,
+                                const SupercellMatrix& matrix,
+                                const UnitCell& originalPrimitive,
+                                UnitCell& forcedPrimitive,
+                                double* strain = nullptr);
+
 /// Fold a primitive-cell wavevector k (fractional, primitive reciprocal
 /// basis) onto the supercell Brillouin zone: K = k · Mᵀ reduced into
 /// [-0.5, 0.5). Returns the supercell fractional coordinates.

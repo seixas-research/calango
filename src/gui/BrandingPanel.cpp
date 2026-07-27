@@ -6,7 +6,7 @@ namespace calango::gui {
 
 BrandingPanel::BrandingPanel(QWidget* parent)
     : QWidget(parent)
-    , source_(QStringLiteral(":/assets/.internal/logo_light.png"))
+    , source_(QStringLiteral(":/assets/calango/logo_light.png"))
 {
     // The logo is drawn "contain"-style (see paintEvent), so it simply scales
     // down inside whatever height the dock is given — nothing clips. The floor
@@ -24,8 +24,8 @@ void BrandingPanel::setDarkVariant(bool dark)
     if (dark == dark_ && !source_.isNull())
         return;
     dark_ = dark;
-    source_ = QPixmap(dark ? QStringLiteral(":/assets/.internal/logo_dark.png")
-                           : QStringLiteral(":/assets/.internal/logo_light.png"));
+    source_ = QPixmap(dark ? QStringLiteral(":/assets/calango/logo_dark.png")
+                           : QStringLiteral(":/assets/calango/logo_light.png"));
     scaled_ = QPixmap();   // invalidate the scaled cache
     scaledFor_ = QSize();
     update();

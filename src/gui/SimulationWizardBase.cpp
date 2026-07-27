@@ -402,6 +402,30 @@ QWidget* SimulationWizardBase::buildVaspGroup(QWidget* parent)
         tr("EDIFFG — the ionic convergence criterion. NEGATIVE means a force "
            "threshold in eV/Å (the usual choice); positive means an energy "
            "change in eV."));
+    vaspDriverCombo_ = new QComboBox(vaspGroup_);
+    // Order matches core::VaspRelaxDriver.
+    vaspDriverCombo_->addItem(tr("ASE optimizer (VASP computes forces only)"));
+    vaspDriverCombo_->addItem(tr("VASP internal relaxation (IBRION / NSW)"));
+    vaspDriverCombo_->setToolTip(
+        tr("Who takes the ionic steps. Exactly one side may — both can relax "
+           "on their own, and with both enabled every force evaluation ASE "
+           "asked for would run a complete VASP relaxation.\n\n"
+           "ASE optimizer: VASP is pinned to IBRION = -1, NSW = 0 and just "
+           "returns forces. This is the mode the rest of the application is "
+           "built around — geometry constraints, the variable-cell filters, "
+           "the live streamed trajectory and the per-step metrics all come "
+           "from ASE taking the steps.\n\n"
+           "VASP internal: the tags below ARE the relaxation and no ASE "
+           "optimizer is created. Much faster per step, because VASP keeps the "
+           "wavefunction and density between ionic steps instead of restarting "
+           "— but the steps happen inside one call, so they cannot be streamed "
+           "or constrained from here."));
+    form->addRow(tr("Relaxation driver:"), vaspDriverCombo_);
+    connect(vaspDriverCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        updateVaspRows();
+        refreshPreview();
+    });
+
     vaspIonicRow_ = new QWidget(vaspGroup_);
     auto* ionicLayout = new QHBoxLayout(vaspIonicRow_);
     ionicLayout->setContentsMargins(0, 0, 0, 0);
@@ -509,11 +533,24 @@ void SimulationWizardBase::updateVaspRows()
     auto* form = qobject_cast<QFormLayout*>(vaspGroup_->layout());
     if (!form)
         return;
-    int row = -1;
-    QFormLayout::ItemRole role{};
-    form->getWidgetPosition(vaspIonicRow_, &row, &role);
-    if (row >= 0)
-        form->setRowVisible(row, taskHasIonicSteps());
+    const auto setRowVisible = [form](QWidget* field, bool visible) {
+        int row = -1;
+        QFormLayout::ItemRole role{};
+        form->getWidgetPosition(field, &row, &role);
+        if (row >= 0)
+            form->setRowVisible(row, visible);
+    };
+    const bool ionic = taskHasIonicSteps();
+    // The driver choice only exists for a task that has ionic steps to give
+    // to one side or the other.
+    setRowVisible(vaspDriverCombo_, ionic);
+    // IBRION / ISIF / EDIFFG describe VASP's own relaxation, so they are shown
+    // only when VASP is the one relaxing. Under the ASE driver they are not
+    // merely irrelevant — writing them is the bug.
+    const bool vaspDrives = vaspDriverCombo_
+        && vaspDriverCombo_->currentIndex()
+            == static_cast<int>(core::VaspRelaxDriver::Vasp);
+    setRowVisible(vaspIonicRow_, ionic && vaspDrives);
 }
 
 QWidget* SimulationWizardBase::buildLammpsGroup(QWidget* parent)
@@ -1122,10 +1159,28 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
     buildConvergenceRows(convForm);
 
     gpawEigensolverCombo_ = new QComboBox(convGroup_);
-    gpawEigensolverCombo_->addItems({QStringLiteral("davidson"),
-                                     QStringLiteral("cg"),
-                                     QStringLiteral("rmm-diis"),
-                                     QStringLiteral("direct")});
+    // Display names, capitalized as the methods are actually written, and in
+    // the order a user picks them: the robust default first, then the two
+    // alternatives for when it struggles, then the special case.
+    //
+    // The enum travels as itemData rather than as the row number. Casting the
+    // index straight to the enum silently binds the display order to the
+    // declaration order, so reordering this list — exactly what this change
+    // does — would have selected a different solver than the one named.
+    const auto addSolver = [this](const QString& label,
+                                   core::GpawEigensolver value) {
+        gpawEigensolverCombo_->addItem(label, static_cast<int>(value));
+    };
+    addSolver(QStringLiteral("Davidson"), core::GpawEigensolver::Davidson);
+    addSolver(QStringLiteral("RMM-DIIS"), core::GpawEigensolver::RmmDiis);
+    addSolver(QStringLiteral("CG"), core::GpawEigensolver::ConjugateGradient);
+    addSolver(QStringLiteral("Direct"), core::GpawEigensolver::Direct);
+
+    // Same sizing rule as the smearing combo directly above it, so the two
+    // dropdowns line up instead of one stretching to the margin.
+    gpawEigensolverCombo_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    gpawEigensolverCombo_->setSizePolicy(QSizePolicy::Preferred,
+                                         QSizePolicy::Fixed);
     gpawEigensolverCombo_->setToolTip(
         tr("davidson: robust general default.\n"
            "cg: slower but very stable — try it when the SCF oscillates.\n"
@@ -1138,9 +1193,12 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
         auto* solverRow = new QWidget(convGroup_);
         auto* solverLayout = new QHBoxLayout(solverRow);
         solverLayout->setContentsMargins(0, 0, 0, 0);
-        solverLayout->addWidget(gpawEigensolverCombo_, 1);
+        // Stretch on the trailing spacer, not on the combo — matching the
+        // smearing row, which is what makes the two the same width.
+        solverLayout->addWidget(gpawEigensolverCombo_);
         solverLayout->addWidget(new QLabel(tr("max SCF steps"), solverRow));
         solverLayout->addWidget(steps);
+        solverLayout->addStretch(1);
         convForm->addRow(tr("Eigensolver:"), solverRow);
     } else {
         convForm->addRow(tr("Eigensolver:"), gpawEigensolverCombo_);
@@ -1645,7 +1703,8 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
     c.gpawBasis = gpawBasisCombo_->currentText().trimmed().toStdString();
     c.gpawXc = gpawXcCombo_->currentText().trimmed().toStdString();
     c.gpawEigensolver =
-        static_cast<core::GpawEigensolver>(gpawEigensolverCombo_->currentIndex());
+        static_cast<core::GpawEigensolver>(
+            gpawEigensolverCombo_->currentData().toInt());
     c.gpawMixer = static_cast<core::GpawMixerKind>(gpawMixerCombo_->currentIndex());
     c.gpawMixerBeta = gpawBetaSpin_->value();
     c.gpawMixerNmaxold = gpawNmaxoldSpin_->value();
@@ -1694,6 +1753,8 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
         if (ok && ediff > 0.0)
             c.vaspEdiff = ediff;
         c.vaspLreal = vaspLrealCombo_->currentData().toString().toStdString();
+        c.vaspRelaxDriver =
+            static_cast<core::VaspRelaxDriver>(vaspDriverCombo_->currentIndex());
         c.vaspIbrion = vaspIbrionCombo_->currentData().toInt();
         c.vaspIsif = vaspIsifCombo_->currentData().toInt();
         c.vaspEdiffg = vaspEdiffgSpin_->value();

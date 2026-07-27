@@ -488,7 +488,9 @@ private:
     int hbondCount_ = 0;
     bool showAxes_ = true;
     bool axesLatticeMode_ = false;
-    bool axesArrows_ = false;
+    /// On by default: the triad exists to say which way the axes point, and
+    /// three unlabelled segments do not.
+    bool axesArrows_ = true;
     bool showElementLabels_ = false; ///< overlay element symbols on atoms
     bool showIndexLabels_ = false;   ///< overlay 1-based atom indices
     /// Overlay the per-atom value of the active "Color by" scalar (CN / GCN /

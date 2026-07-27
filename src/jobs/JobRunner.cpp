@@ -29,6 +29,7 @@ JobRunner::JobRunner(QObject* parent)
                     handleLine(stderrBuffer_, true);
                 stdoutBuffer_.clear();
                 stderrBuffer_.clear();
+                description_.clear();
                 Q_EMIT finished(exitCode, status == QProcess::CrashExit);
             });
 }
@@ -36,6 +37,11 @@ JobRunner::JobRunner(QObject* parent)
 bool JobRunner::isRunning() const
 {
     return process_.state() != QProcess::NotRunning;
+}
+
+qint64 JobRunner::processId() const
+{
+    return process_.state() == QProcess::NotRunning ? 0 : process_.processId();
 }
 
 void JobRunner::start(const QString& commandLine, const QString& pythonExe,
@@ -98,6 +104,17 @@ void JobRunner::start(const QString& commandLine, const QString& pythonExe,
 #else
     process_.start(QStringLiteral("/bin/sh"), {QStringLiteral("-c"), commandLine});
 #endif
+
+    // The leading executable is the useful short label: the full command line
+    // is a shell string with environment assignments and redirections in it,
+    // which is unreadable in a status bar.
+    description_ = commandLine.section(QLatin1Char(' '), 0, 0);
+    for (const QString& token : commandLine.split(QLatin1Char(' '))) {
+        if (!token.contains(QLatin1Char('=')) && !token.isEmpty()) {
+            description_ = QFileInfo(token).fileName();
+            break;
+        }
+    }
 
     Q_EMIT started(QStringLiteral("%1  (in %2)")
                        .arg(commandLine, QDir::toNativeSeparators(workDir)));

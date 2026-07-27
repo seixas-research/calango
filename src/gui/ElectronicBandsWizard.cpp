@@ -281,10 +281,16 @@ QString ElectronicBandsWizard::generateScript() const
     config.ecutEv = base.planeWaveCutoffEv;
     config.scfKpts = base.kpts[0];
 
-    // A selected charge-density baseline (GPAW only) turns the run NSCF: load
-    // that .gpw and evaluate bands/PDOS at fixed density. The path is absolute,
-    // so the NSCF job reads the prior run's density in place — no staging.
-    if (baselineCombo_ && config.backend == core::ElectronicBackend::Gpaw) {
+    // A selected charge-density baseline turns the run NSCF: evaluate
+    // bands/PDOS at the fixed density of a prior single point instead of
+    // converging a new one. The path is absolute, so the job reads that
+    // density in place — no staging.
+    //
+    // Both DFT engines, differing only in the file: GPAW restarts from a .gpw,
+    // VASP copies the CHGCAR in and sets ICHARG = 11.
+    if (baselineCombo_
+        && (config.backend == core::ElectronicBackend::Gpaw
+            || config.backend == core::ElectronicBackend::Vasp)) {
         const QString path = baselineCombo_->currentData().toString();
         if (!path.isEmpty())
             config.baselineDensityPath = path.toStdString();

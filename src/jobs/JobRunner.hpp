@@ -26,6 +26,17 @@ public:
 
     bool isRunning() const;
 
+    /// Process id of the running job, or 0 when nothing is running.
+    ///
+    /// The status bar samples this and everything below it. The pid is the
+    /// SHELL the command was launched through — the compute usually lives in
+    /// its children (`mpirun -n 4 gpaw …`), so a sampler that stops at this
+    /// process alone would report near-zero for a machine that is fully busy.
+    qint64 processId() const;
+    /// Human label of the running job (the task name the host registered), or
+    /// an empty string when idle.
+    QString description() const { return description_; }
+
 public Q_SLOTS:
     /// Launch `commandLine` through the system shell with `workDir` as the
     /// working directory.
@@ -79,6 +90,7 @@ private:
     void handleLine(const QString& line, bool isStderr);
 
     QProcess process_;
+    QString description_;
     QString stdoutBuffer_;
     QString stderrBuffer_;
 

@@ -21,7 +21,7 @@ class ViewportWidget;
 /// that own the rest.
 ///
 /// The scene OVERLAYS (unit cell, axes triad, per-atom vectors) live in the
-/// "Cell, Axes & Vectors" dock, and the scalar colour mapping in the "Custom
+/// "Spatial References" dock, and the scalar color mapping in the "Custom
 /// Gradient Coloring" dialog: this panel is about how the atoms themselves are
 /// drawn.
 ///

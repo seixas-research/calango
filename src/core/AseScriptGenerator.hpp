@@ -38,7 +38,7 @@ public:
     static std::string jsonLoggerPreamble();
 
     /// Full text of the `calango_log.py` helper module (the single copy lives
-    /// at assets/.internal/scripts/calango_log.py and is baked in at build
+    /// at assets/calango/scripts/calango_log.py and is baked in at build
     /// time). Staged next to run.py by the job launcher and next to an
     /// exported script by the wizards' Export action.
     static std::string loggerModuleSource();

@@ -172,6 +172,62 @@ int main()
               "zero energy span -> invalid rather than a divide by zero");
     }
 
+    // Forcing commensurability: the case this exists for is a RELAXED doped
+    // supercell, whose lattice constant no longer matches n x the pristine
+    // host's. The arithmetic must come out exact afterwards, or the projection
+    // weights are quietly wrong rather than an error.
+    std::printf("Forced commensurability\n");
+    {
+        // Au fcc primitive, and a 2x2x2 supercell relaxed 1.5% larger — the
+        // signature of substituting Pt into Au and letting it relax.
+        const double a = 4.078;
+        const calango::core::UnitCell primitive({0, a / 2, a / 2}, {a / 2, 0, a / 2},
+                                       {a / 2, a / 2, 0});
+        const double relaxed = 2.0 * 1.015;
+        const auto& p = primitive.vectors();
+        const calango::core::UnitCell supercell(p[0] * relaxed, p[1] * relaxed,
+                                       p[2] * relaxed);
+
+        double residual = 0.0;
+        const auto matrix =
+            calango::core::deduceSupercellMatrix(primitive, supercell, &residual);
+        check(matrix.m[0][0] == 2 && matrix.m[1][1] == 2 && matrix.m[2][2] == 2,
+              "a relaxed 2x2x2 still deduces M = 2I");
+        check(residual > 1e-3,
+              "but misses the pristine-cell tolerance, which is the problem");
+        check(residual < 5e-2, "while staying well inside the relaxed one");
+
+        calango::core::UnitCell forced;
+        double strain = 0.0;
+        check(calango::core::forceCommensuratePrimitive(supercell, matrix, primitive,
+                                               forced, &strain),
+              "the primitive cell can be rebuilt as M^-1 . S");
+        check(std::abs(strain - 0.015) < 1e-6,
+              "and the reported strain IS the relaxation (1.5%)");
+
+        // The point of the exercise: after forcing, the relation is exact.
+        double after = 0.0;
+        const auto again = calango::core::deduceSupercellMatrix(forced, supercell, &after);
+        check(after < 1e-12, "after which the two cells are exactly commensurate");
+        check(again.m[0][0] == 2 && again.m[1][1] == 2 && again.m[2][2] == 2,
+              "with the same M as before — the cell moved, not the mapping");
+        check(std::abs(again.determinant()) == 8,
+              "and |det M| is still the 8 primitive cells of a 2x2x2");
+    }
+    {
+        // A singular M writes nothing rather than producing a degenerate cell.
+        calango::core::SupercellMatrix singular;
+        singular.m[0][0] = 0;
+        singular.m[1][1] = 0;
+        singular.m[2][2] = 0;
+        const calango::core::UnitCell cell({4, 0, 0}, {0, 4, 0}, {0, 0, 4});
+        calango::core::UnitCell out({1, 0, 0}, {0, 1, 0}, {0, 0, 1});
+        check(!calango::core::forceCommensuratePrimitive(cell, singular, cell, out),
+              "a singular M is refused");
+        check(std::abs(out.vectors()[0].x - 1.0) < 1e-12,
+              "and the output is left untouched");
+    }
+
     std::printf(failures == 0 ? "\nAll band-unfolding checks passed.\n"
                               : "\n%d check(s) FAILED.\n",
                 failures);

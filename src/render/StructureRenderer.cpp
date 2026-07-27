@@ -1082,44 +1082,6 @@ void StructureRenderer::buildPolyhedra(const core::Structure* structure,
 }
 
 
-std::vector<core::Vec3> StructureRenderer::boundaryGhostShifts(
-    const core::Vec3& position, const core::UnitCell& cell, float tolerance)
-{
-    std::vector<core::Vec3> shifts;
-    if (!cell.isDefined())
-        return shifts;
-    const core::Vec3 fractional = cell.cartesianToFractional(position);
-    const double f[3] = {fractional.x, fractional.y, fractional.z};
-    const auto& vectors = cell.vectors();
-
-    // Which axes this atom sits on the near face of. An atom at fractional 0
-    // is duplicated at 1; one already at 1 is its own duplicate and needs
-    // nothing. Both ends are tested so a cell whose coordinates were written
-    // out at 1.0 rather than 0.0 behaves the same.
-    bool onFace[3] = {false, false, false};
-    for (int axis = 0; axis < 3; ++axis)
-        onFace[axis] = std::abs(f[axis]) < tolerance;
-
-    // Every non-empty subset of the on-face axes: one shift for a face atom,
-    // three for an edge, seven for the origin vertex.
-    for (int mask = 1; mask < 8; ++mask) {
-        bool valid = true;
-        core::Vec3 shift;
-        for (int axis = 0; axis < 3; ++axis) {
-            if (!(mask & (1 << axis)))
-                continue;
-            if (!onFace[axis]) {
-                valid = false;
-                break;
-            }
-            shift = shift + vectors[static_cast<std::size_t>(axis)];
-        }
-        if (valid)
-            shifts.push_back(shift);
-    }
-    return shifts;
-}
-
 void StructureRenderer::setStructure(const core::Structure* structure,
                                      const std::set<int>* selection)
 {
@@ -1214,41 +1176,24 @@ void StructureRenderer::setStructure(const core::Structure* structure,
         };
         if (ghosts) {
             ghostShifts.resize(atoms.size());
-            // (a) Atoms lying exactly on a face / edge / vertex repeat on the
-            //     far side, so the cell closes on itself.
-            for (std::size_t index = 0; index < atoms.size(); ++index) {
-                for (const core::Vec3& shift : boundaryGhostShifts(
-                         atoms[index].position, structure->cell(),
-                         style_.boundaryGhostTolerance))
-                    addGhost(index, shift);
-            }
-            // (b) The far end of every bond that wraps around the cell, at BOTH
-            //     ends. This is what stops a periodic bond from ending in mid
-            //     air: the image it points at is now actually drawn.
+            // Exactly the images that terminate a bond leaving the cell, and
+            // nothing else.
+            //
+            // The setting used to also duplicate every atom sitting on a face,
+            // edge or vertex, and then complete those copies' own bonds. That
+            // filled the view with atoms the user had not asked for — a
+            // face-centred cell grew by more than half again, most of it
+            // periodic repetition rather than information. What people
+            // actually want from "show the neighboring cell" is that a bond
+            // crossing the boundary ends ON AN ATOM instead of in mid-air, so
+            // that is all this does now: for every wrapped bond, the image at
+            // each end.
             for (const core::Bond& bond : bonds) {
                 if (!bond.crossesBoundary())
                     continue;
                 addGhost(static_cast<std::size_t>(bond.j), bond.imageOffset);
                 addGhost(static_cast<std::size_t>(bond.i),
                          core::Vec3{} - bond.imageOffset);
-            }
-            // (c) Close the bonds of the images added by (a). A duplicated face
-            //     atom carries its bonds with it (that is what makes the copied
-            //     face read as bonded), and each of those bonds needs its own
-            //     far end present for the same reason (b) exists. One level
-            //     only: completing the images' images would grow the scene
-            //     without bound.
-            const std::vector<std::vector<core::Vec3>> seeded = ghostShifts;
-            for (const core::Bond& bond : bonds) {
-                const auto i = static_cast<std::size_t>(bond.i);
-                const auto j = static_cast<std::size_t>(bond.j);
-                // Atom i drawn at s puts its partner j at s + imageOffset.
-                for (const core::Vec3& s : seeded[i])
-                    addGhost(j, s + bond.imageOffset);
-                // Atom j drawn at s comes from translating the bond by
-                // s - imageOffset, which puts atom i there.
-                for (const core::Vec3& s : seeded[j])
-                    addGhost(i, s - bond.imageOffset);
             }
         }
         /// True when atom `index` is drawn at translation `shift` — either as
@@ -1523,7 +1468,9 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                 const auto it = fields.find(fieldName);
                 if (it == fields.end() || it->second.size() != atoms.size())
                     return;
-                const float shaftRadius = 0.045f;
+                // Baseline 0.045 Å, scaled by the user's width setting.
+                const float shaftRadius =
+                    0.045f * std::max(0.05f, style_.vectorWidth);
                 for (std::size_t index = 0; index < atoms.size(); ++index) {
                     if (modeAt(index) == RepresentationMode::Wireframe
                         || isMacromolecularMode(modeAt(index)))
@@ -1539,9 +1486,10 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                         continue; // invisible / zero vector
                     const QVector3D origin = toQt(atoms[index].position);
                     const QVector3D dir = toQt(v.normalized());
-                    const auto headLength = style_.vectorArrowHeads
-                        ? static_cast<float>(std::min(0.30 * length, 0.45))
-                        : 0.0f;
+                    // Always headed: a plain shaft does not say which way the
+                    // vector points, which is the one thing the overlay is for.
+                    const auto headLength =
+                        static_cast<float>(std::min(0.30 * length, 0.45));
                     const auto shaftLength =
                         static_cast<float>(length) - headLength;
                     appendInstance(bondInstances,
@@ -1549,14 +1497,12 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                                                  shaftRadius),
                                    color, style_.surfaceFinish);
                     // Arrowhead cone: unit radius scales laterally via
-                    // bondTransform's radius parameter. Skipped entirely when
-                    // heads are off, so the shaft runs the full length.
-                    if (style_.vectorArrowHeads)
-                        appendInstance(coneInstances,
-                                       bondTransform(origin + dir * shaftLength,
-                                                     dir, headLength,
-                                                     shaftRadius * 2.6f),
-                                       color, style_.surfaceFinish);
+                    // bondTransform's radius parameter.
+                    appendInstance(coneInstances,
+                                   bondTransform(origin + dir * shaftLength,
+                                                 dir, headLength,
+                                                 shaftRadius * 2.6f),
+                                   color, style_.surfaceFinish);
                 }
             };
             switch (style_.vectorOverlay) {

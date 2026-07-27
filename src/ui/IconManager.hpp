@@ -17,8 +17,8 @@ namespace calango::ui {
 /// RemixIcon SVGs are monochrome (`fill="currentColor"`), so a single asset per
 /// glyph is tinted at load time to whatever the active theme and widget state
 /// require — no per-theme asset variants. Assets live under
-/// `assets/.internal/icons/<name>.svg` (bundled at
-/// `:/assets/.internal/icons/`), where `<name>` is the RemixIcon file stem,
+/// `assets/icons/<name>.svg` (bundled at
+/// `:/assets/icons/`), where `<name>` is the RemixIcon file stem,
 /// e.g. `file-copy-line`, `cpu-line`, `ruler-2-line`.
 ///
 /// Icons render in high-contrast light neutrals in Dark Mode and dark neutrals

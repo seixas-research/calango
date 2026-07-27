@@ -105,3 +105,122 @@ Exported bands use the same $k$-path distance as the $x$ axis, so the
 columns drop straight into an external plotting script and reproduce the
 figure you see.
 \end{calnote}
+
+\section{X-ray absorption spectroscopy (XAS)}
+\label{sec:xas}
+
+\menu{Electronics}\menusep\menu{X-ray Absorption Spectroscopy (XAS)\dots}
+computes a core-level absorption spectrum with GPAW, following the GPAW XAS
+tutorial.
+
+An XAS transition starts in a \emph{core} level of one atom, so it needs a PAW
+dataset with a hole in that level --- and none ships with GPAW. The generated
+script therefore runs three stages rather than one: it builds the core-hole
+dataset for the absorbing element, converges a ground state that uses it on the
+absorbing \emph{atom}, and evaluates the spectrum from those wavefunctions. The
+dataset is written into the job directory and found through
+\texttt{setup\_paths}, so nothing is installed into your GPAW distribution and
+the run reproduces elsewhere.
+
+\subsection{Absorbing site}
+
+Pick the \ui{Element} and then the \ui{Absorbing atom} --- one atom, not all
+atoms of that species. Giving the core-hole setup to every one of them would
+model a solid in which all are excited simultaneously, which is not what an
+absorption measurement does. Inequivalent sites each need their own run, and
+the measured spectrum is their sum; the wizard says so when the structure has
+more than one candidate.
+
+\ui{Edge} selects the level: K (1s) is what almost every XAS measurement means,
+while the L edges (2s, 2p) matter for transition metals.
+
+\subsection{Core hole}
+
+\begin{description}
+  \item[\ui{Half hole}] The transition-potential approximation --- 0.5
+    electrons removed. One calculation gives the whole spectrum, because the
+    final-state relaxation is averaged between initial and final states. This
+    is the tutorial's choice and what most published XAS is.
+  \item[\ui{Full hole}] The excited final state proper. Better for the first
+    resonance, worse for the rest of the spectrum, and it needs the
+    delta-Kohn-Sham shift to sit on an absolute energy scale.
+  \item[\ui{No hole}] The unperturbed ground state --- what the spectrum would
+    be if the core hole did not pull the excited states down. Worth computing
+    to see how large that effect is.
+\end{description}
+
+\ui{Unoccupied bands} sets how many states above the occupied ones are
+converged. The spectrum is a sum over them, so too few truncates it --- visibly,
+as a spectrum that stops rather than decays.
+
+\subsection{Broadening and the energy scale}
+
+\ui{Broadening (FWHM)} is a uniform Gaussian on every transition.
+\ui{Broaden more at higher energy} ramps it linearly above the edge, which is
+the physical behaviour (core-hole lifetime plus final-state broadening) and what
+makes the result comparable with a measurement whose peaks wash out with energy.
+The default ramp is the tutorial's, chosen for the oxygen K edge --- move it to
+your own.
+
+GPAW produces the spectrum on a \emph{relative} scale whose zero is the first
+unoccupied state, which is not where a measurement puts it.
+\ui{Compute the absolute edge position} adds two total-energy calculations
+(delta-Kohn-Sham) that give the shift, roughly doubling the cost; alternatively
+type a known \ui{Edge energy} directly.
+
+\begin{calnote}
+\texttt{gpaw.xas} runs on GPAW's \emph{legacy} engine only. This is the one
+script Calango generates that clears \texttt{GPAW\_NEW} and asks for
+\texttt{legacy\_gpaw=True} --- without it the run stops with ``New-GPAW not
+supported''.
+\end{calnote}
+
+\subsection{Results}
+
+The viewer opens automatically when the run finishes and plots the isotropic
+spectrum --- the average over the three Cartesian polarizations, which is what a
+powder or solution measurement sees. \ui{Show the x, y and z polarizations}
+adds them individually; for an oriented sample the difference between them is
+the result. \ui{Show individual transitions} overlays the discrete lines the
+broadened curve is built from, which is how you tell a genuine shoulder from two
+peaks the broadening merged.
+
+The header states which energy scale the axis is on, because a relative spectrum
+plotted as though it were absolute is wrong by hundreds of eV and nothing about
+the curve reveals it.
+
+\section{Unfolding a relaxed supercell}
+\label{sec:unfoldrelaxed}
+
+Unfolding needs the supercell to be an exact integer multiple of the primitive
+cell: the projection is defined against that mapping. A \emph{relaxed} doped
+supercell is not --- substituting an atom and letting the cell relax moves its
+lattice constant by a per cent or so, and the pristine host is no longer
+$1/n$ of it.
+
+The \ui{Effective Bands} wizard handles that two ways.
+
+\ui{Tolerance} is how far $M$ may sit from integers before the two cells are
+called incommensurate. The default (0.02) has room for a relaxation; an
+unrelated primitive cell misses by 0.1 or more, so the check still catches the
+mistake it exists for.
+
+\ui{Force commensurability by rescaling the unit cell} rebuilds the primitive
+cell as $P = M^{-1} S$, making the relation exact. For a relaxed supercell this
+is not a fudge: the supercell \emph{is} $M \times$ something, just not
+$M \times$ the pristine host any more, and this recovers the host cell it
+actually relaxed into. Only the lattice is rebuilt --- the basis rides along at
+the same fractional coordinates, so every atom stays on its site.
+
+The wizard reports the resulting strain. A couple of per cent is the
+relaxation; much more means the wrong primitive cell was selected, and it says
+so.
+
+\begin{calnote}
+Worked example --- Au$_7$Pt. A primitive Au fcc cell ($a = 4.078$\,\AA) and a
+$2\times2\times2$ supercell with one Au replaced by Pt, relaxed with GPAW,
+comes back at $a = 4.1088$\,\AA: a 0.755\% expansion. The deduced
+$M = 2\mathbf{I}$ is right, but its residual is 0.015 --- rejected outright by
+a pristine-cell tolerance, accepted by the default one. Forcing rebuilds the
+primitive at 4.1088\,\AA{} and the residual falls to $5\times10^{-17}$.
+\end{calnote}

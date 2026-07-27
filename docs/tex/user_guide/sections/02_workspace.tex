@@ -31,7 +31,7 @@ hidden entirely.
   \node[view, minimum width=2.8cm, minimum height=1.2cm, fill=calangoteal!7]
        (r1) at (8.3,3.05) {Representation};
   \node[zone, minimum width=2.8cm, minimum height=1.1cm] (r2) at (8.3,1.75)
-       {Cell, Axes\\\& Vectors};
+       {Spatial\\References};
   \node[zone, minimum width=2.8cm, minimum height=1.1cm] (r3) at (8.3,0.5)
        {Visual Effects};
 \end{tikzpicture}
@@ -55,11 +55,22 @@ hidden entirely.
   \item[\ui{Remote Access}] SSH connection, cluster job submission and queue
     monitoring (Chapter~\ref{ch:remote}). It opens at the narrowest width that
     still shows its whole form.
-  \item[\ui{Representation}] Appearance controls --- style, mode, colour
+  \item[\ui{Representation}] Appearance controls --- style, mode, color
     mapping, radii and bond widths (Chapter~\ref{ch:appearance}).
-  \item[\ui{Cell, Axes \& Vectors}] Three tabs: the cell wireframe, the
+  \item[\ui{Spatial References}] Three tabs: the cell wireframe, the
     orientation triad, and the per-atom vector overlay. All three draw
     something onto the scene that is not the atoms.
+
+    Under \ui{Vectors}, \ui{Vector scale} and \ui{Vector width} set the
+    arrows' length and thickness. Arrowheads are always drawn --- a plain
+    shaft does not say which way a vector points, which is the one thing the
+    overlay exists to state; thinning the arrows is what relieves the clutter
+    on a dense magnetic structure.
+
+    Under \ui{Unit cell}, \ui{Show atoms of the neighboring unit cell} draws
+    exactly the periodic images that terminate a bond leaving the cell, so no
+    bond ends in mid-air. Only those: duplicating every atom on a face filled
+    the view with periodic repetition rather than information.
   \item[\ui{Visual Effects}] Lighting, shadow, fog, blur and ambient occlusion.
 \end{description}
 

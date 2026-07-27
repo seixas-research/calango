@@ -29,6 +29,19 @@ struct UnfoldingConfig {
     /// editable by the user.
     SupercellMatrix matrix;
 
+    /// How far the supercell may sit from M · primitive before the run
+    /// refuses, as a fraction of the supercell's own vector lengths.
+    ///
+    /// Relative, not the absolute Ångström residual the guard used to compare
+    /// against: 1e-3 Å is a tight tolerance on a 4 Å cell and a preposterous
+    /// one on a 40 Å slab, so the same number meant two different things.
+    ///
+    /// The default is loose enough for a RELAXED doped supercell, whose
+    /// lattice constant no longer matches the pristine host's by a per cent
+    /// or so. Forcing commensurability in the wizard makes the residual
+    /// vanish entirely, and then this never fires.
+    double commensurateTolerance = 2e-2;
+
     /// High-symmetry path on the PRIMITIVE lattice ("GXWK,UX"); empty lets
     /// ASE suggest one.
     std::string kpath;

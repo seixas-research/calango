@@ -20,7 +20,7 @@ namespace {
 
 QString assetPath(const QString& name)
 {
-    return QStringLiteral(":/assets/.internal/icons/%1.svg").arg(name);
+    return QStringLiteral(":/assets/icons/%1.svg").arg(name);
 }
 
 // Supersample factor: render the SVG a few times larger than the logical size

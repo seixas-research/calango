@@ -14,7 +14,7 @@ class ViewportWidget;
 
 /// The two tabs that formerly made up the standalone "Unit Cell & Axes" dock,
 /// plus the per-atom vector overlay controls, gathered into the
-/// "Cell, Axes & Vectors" dock.
+/// "Spatial References" dock (formerly "Cell, Axes & Vectors").
 ///
 /// What unites them is that all three draw something ONTO the scene that is not
 /// the atoms themselves — the cell wireframe, the orientation triad and the
@@ -73,8 +73,9 @@ private:
     QComboBox* overlayCombo_ = nullptr;
     QSlider* scaleSlider_ = nullptr;
     QDoubleSpinBox* scaleSpin_ = nullptr;
+    QSlider* widthSlider_ = nullptr;
+    QDoubleSpinBox* widthSpin_ = nullptr;
     QPushButton* colorButton_ = nullptr;
-    QCheckBox* arrowHeadsCheck_ = nullptr;
 };
 
 } // namespace calango::gui

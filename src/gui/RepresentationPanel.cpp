@@ -36,7 +36,7 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
     , viewport_(viewport)
 {
     // A single page, not a QTabWidget: Unit cell, Axes triad and Vectors moved
-    // to the "Cell, Axes & Vectors" dock and Custom coloring became a dialog,
+    // to the "Spatial References" dock and Custom coloring became a dialog,
     // so there is nothing left to tab between. A one-tab tab widget is a header
     // that costs a row and does nothing.
     auto* layout = new QVBoxLayout(this);

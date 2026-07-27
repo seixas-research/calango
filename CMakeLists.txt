@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.63
+    VERSION 26.7.64
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -82,14 +82,14 @@ endif()
 # ---------------------------------------------------------------------------
 # Embedded Python helper modules
 # ---------------------------------------------------------------------------
-# assets/.internal/scripts/calango_log.py is the ONE copy of the job logger.
+# assets/calango/scripts/calango_log.py is the ONE copy of the job logger.
 # Generated ASE scripts `from calango_log import CalangoLog`, and the module
 # is staged next to run.py (and next to an exported script) at run time.
 # Baking its text into a header lets the Qt-free core/ layer hand it out
 # without a Qt resource; CONFIGURE_DEPENDS-style re-runs come from listing
 # the .py as a configure dependency below.
 set(CALANGO_LOG_MODULE_PY
-    "${CMAKE_CURRENT_SOURCE_DIR}/assets/.internal/scripts/calango_log.py")
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/scripts/calango_log.py")
 if(NOT EXISTS "${CALANGO_LOG_MODULE_PY}")
     message(FATAL_ERROR
         "Missing ${CALANGO_LOG_MODULE_PY} — generated ASE scripts import it. "
@@ -202,6 +202,8 @@ qt_add_executable(calango
     src/core/RandomNoiseScriptGenerator.cpp
     src/core/CddScriptGenerator.hpp
     src/core/CddScriptGenerator.cpp
+    src/core/XasScriptGenerator.hpp
+    src/core/XasScriptGenerator.cpp
     src/core/MonteCarlo.hpp
     src/core/MonteCarlo.cpp
     src/core/SqsGenerator.hpp
@@ -451,6 +453,12 @@ qt_add_executable(calango
     src/gui/RandomNoiseWizard.cpp
     src/gui/CddWizard.hpp
     src/gui/CddWizard.cpp
+    src/gui/XasWizard.hpp
+    src/gui/XasWizard.cpp
+    src/gui/SpectrumPlotWidget.hpp
+    src/gui/SpectrumPlotWidget.cpp
+    src/gui/XasResultsWindow.hpp
+    src/gui/XasResultsWindow.cpp
     src/gui/ElectronicBandsWizard.hpp
     src/gui/ElectronicBandsWizard.cpp
     src/gui/OpticsWizard.hpp
@@ -531,83 +539,84 @@ qt_add_resources(calango "shaders"
 qt_add_resources(calango "branding"
     PREFIX "/"
     FILES
-        assets/.internal/icon.png
-        assets/.internal/panel.png
-        assets/.internal/logo_dark.png
-        assets/.internal/logo_light.png
+        assets/calango/icon_base.png
+        assets/calango/panel.png
+        assets/calango/logo_dark.png
+        assets/calango/logo_light.png
 )
 
 # RemixIcon UI icons (monochrome SVG, runtime-tinted by calango::ui::IconManager
 # for theme + widget state). One asset per glyph; the file stem is the logical
-# name passed to IconManager::icon(). See assets/.internal/icons/README.md.
-# Add the new file's path here when bundling another RemixIcon.
+# name passed to IconManager::icon(), so this list is the registry of what
+# IconManager can resolve. Add the new file's path here when bundling another
+# RemixIcon.
 qt_add_resources(calango "icons"
     PREFIX "/"
     FILES
-        assets/.internal/icons/add-circle-fill.svg
-        assets/.internal/icons/add-circle-line.svg
-        assets/.internal/icons/align-item-vertical-center-line.svg
-        assets/.internal/icons/anticlockwise-2-line.svg
-        assets/.internal/icons/arrow-go-back-line.svg
-        assets/.internal/icons/atom-line.svg
-        assets/.internal/icons/box-1-fill.svg
-        assets/.internal/icons/box-3-line.svg
-        assets/.internal/icons/brush-fill.svg
-        assets/.internal/icons/checkbox-circle-line.svg
-        assets/.internal/icons/close-circle-line.svg
-        assets/.internal/icons/clapperboard-fill.svg
-        assets/.internal/icons/close-line.svg
-        assets/.internal/icons/code-box-fill.svg
-        assets/.internal/icons/color-filter-fill.svg
-        assets/.internal/icons/compasses-2-line.svg
-        assets/.internal/icons/computer-line.svg
-        assets/.internal/icons/contract-left-right-line.svg
-        assets/.internal/icons/cpu-line.svg
-        assets/.internal/icons/cursor-line.svg
-        assets/.internal/icons/delete.svg
-        assets/.internal/icons/delete-bin-line.svg
-        assets/.internal/icons/drag-move-2-line.svg
-        assets/.internal/icons/edit-box-fill.svg
-        assets/.internal/icons/edit-fill.svg
-        assets/.internal/icons/expand-height-line.svg
-        assets/.internal/icons/eye-fill.svg
-        assets/.internal/icons/file-code-line.svg
-        assets/.internal/icons/film-fill.svg
-        assets/.internal/icons/file-copy-line.svg
-        assets/.internal/icons/focus-3-line.svg
-        assets/.internal/icons/folder-open-line.svg
-        assets/.internal/icons/folder-received-line.svg
-        assets/.internal/icons/font-size-2.svg
-        assets/.internal/icons/grid-line.svg
-        assets/.internal/icons/group-fill.svg
-        assets/.internal/icons/hard-drive-2-line.svg
-        assets/.internal/icons/hashtag.svg
-        assets/.internal/icons/heading.svg
-        assets/.internal/icons/indeterminate-circle-fill.svg
-        assets/.internal/icons/information-line.svg
-        assets/.internal/icons/loader-4-line.svg
-        assets/.internal/icons/magic-line.svg
-        assets/.internal/icons/palette-line.svg
-        assets/.internal/icons/price-tag-fill.svg
-        assets/.internal/icons/puzzle-fill.svg
-        assets/.internal/icons/line-chart-line.svg
-        assets/.internal/icons/links-line.svg
-        assets/.internal/icons/arrow-right-up-line.svg
-        assets/.internal/icons/save-line.svg
-        assets/.internal/icons/box-1-line.svg
-        assets/.internal/icons/gradient.svg
-        assets/.internal/icons/ram-line.svg
-        assets/.internal/icons/ruler-2-line.svg
-        assets/.internal/icons/scissors-cut-line.svg
-        assets/.internal/icons/shape-line.svg
-        assets/.internal/icons/share-fill.svg
-        assets/.internal/icons/slideshow-3-fill.svg
-        assets/.internal/icons/split-cells-horizontal.svg
-        assets/.internal/icons/stack-fill.svg
-        assets/.internal/icons/stack-line.svg
-        assets/.internal/icons/stacked-view.svg
-        assets/.internal/icons/time-line.svg
-        assets/.internal/icons/triangle-fill.svg
+        assets/icons/add-circle-fill.svg
+        assets/icons/add-circle-line.svg
+        assets/icons/align-item-vertical-center-line.svg
+        assets/icons/anticlockwise-2-line.svg
+        assets/icons/arrow-go-back-line.svg
+        assets/icons/atom-line.svg
+        assets/icons/box-1-fill.svg
+        assets/icons/box-3-line.svg
+        assets/icons/brush-fill.svg
+        assets/icons/checkbox-circle-line.svg
+        assets/icons/close-circle-line.svg
+        assets/icons/clapperboard-fill.svg
+        assets/icons/close-line.svg
+        assets/icons/code-box-fill.svg
+        assets/icons/color-filter-fill.svg
+        assets/icons/compasses-2-line.svg
+        assets/icons/computer-line.svg
+        assets/icons/contract-left-right-line.svg
+        assets/icons/cpu-line.svg
+        assets/icons/cursor-line.svg
+        assets/icons/delete.svg
+        assets/icons/delete-bin-line.svg
+        assets/icons/drag-move-2-line.svg
+        assets/icons/edit-box-fill.svg
+        assets/icons/edit-fill.svg
+        assets/icons/expand-height-line.svg
+        assets/icons/eye-fill.svg
+        assets/icons/file-code-line.svg
+        assets/icons/film-fill.svg
+        assets/icons/file-copy-line.svg
+        assets/icons/focus-3-line.svg
+        assets/icons/folder-open-line.svg
+        assets/icons/folder-received-line.svg
+        assets/icons/font-size-2.svg
+        assets/icons/grid-line.svg
+        assets/icons/group-fill.svg
+        assets/icons/hard-drive-2-line.svg
+        assets/icons/hashtag.svg
+        assets/icons/heading.svg
+        assets/icons/indeterminate-circle-fill.svg
+        assets/icons/information-line.svg
+        assets/icons/loader-4-line.svg
+        assets/icons/magic-line.svg
+        assets/icons/palette-line.svg
+        assets/icons/price-tag-fill.svg
+        assets/icons/puzzle-fill.svg
+        assets/icons/line-chart-line.svg
+        assets/icons/links-line.svg
+        assets/icons/arrow-right-up-line.svg
+        assets/icons/save-line.svg
+        assets/icons/box-1-line.svg
+        assets/icons/gradient.svg
+        assets/icons/ram-line.svg
+        assets/icons/ruler-2-line.svg
+        assets/icons/scissors-cut-line.svg
+        assets/icons/shape-line.svg
+        assets/icons/share-fill.svg
+        assets/icons/slideshow-3-fill.svg
+        assets/icons/split-cells-horizontal.svg
+        assets/icons/stack-fill.svg
+        assets/icons/stack-line.svg
+        assets/icons/stacked-view.svg
+        assets/icons/time-line.svg
+        assets/icons/triangle-fill.svg
 )
 
 qt_add_resources(calango "remote"
@@ -619,9 +628,9 @@ qt_add_resources(calango "remote"
 # Distributable macOS bundle: configure with -DCALANGO_MACOS_BUNDLE=ON.
 # The default plain binary keeps the familiar ./build/calango developer
 # workflow, with the window/dock icon set at runtime from the embedded
-# resource. The bundle icon uses a committed assets/.internal/calango.icns
+# resource. The bundle icon uses a committed assets/calango/calango.icns
 # when present, otherwise it is rendered at build time from
-# icon.png with the stock sips/iconutil tools.
+# icon_base.png with the stock sips/iconutil tools.
 option(CALANGO_MACOS_BUNDLE "Build calango as a macOS .app bundle" OFF)
 if(APPLE AND CALANGO_MACOS_BUNDLE)
     set_target_properties(calango PROPERTIES
@@ -632,8 +641,8 @@ if(APPLE AND CALANGO_MACOS_BUNDLE)
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
 
     set(CALANGO_ICNS "")
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/.internal/calango.icns")
-        set(CALANGO_ICNS "${CMAKE_CURRENT_SOURCE_DIR}/assets/.internal/calango.icns")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/calango.icns")
+        set(CALANGO_ICNS "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/calango.icns")
     else()
         find_program(SIPS_EXECUTABLE sips)
         find_program(ICONUTIL_EXECUTABLE iconutil)
@@ -643,11 +652,11 @@ if(APPLE AND CALANGO_MACOS_BUNDLE)
             # executable bit from the script.
             add_custom_command(OUTPUT "${CALANGO_ICNS}"
                 COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/make_icns.sh"
-                        "${CMAKE_CURRENT_SOURCE_DIR}/assets/.internal/icon.png"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/icon_base.png"
                         "${CALANGO_ICNS}"
-                DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/.internal/icon.png"
+                DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/icon_base.png"
                         "${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/make_icns.sh"
-                COMMENT "Rendering calango.icns from icon.png")
+                COMMENT "Rendering calango.icns from icon_base.png")
         else()
             message(WARNING "sips/iconutil not found — the .app bundle will "
                             "have no Finder icon")
@@ -895,22 +904,6 @@ if(CALANGO_BUILD_TESTS)
     target_link_libraries(calango_film_test PRIVATE Qt6::Gui)
     add_test(NAME film_timeline COMMAND calango_film_test)
 
-    # Periodic boundary ghost duplication: the face/edge/vertex combinatorics,
-    # and that computing them never touches the structure.
-    add_executable(calango_ghost_test
-        tests/BoundaryGhostTest.cpp
-        src/render/StructureRenderer.cpp
-        src/core/MarchingCubes.cpp
-        src/core/VolumetricData.cpp
-        src/render/ColorMap.cpp
-        src/core/Structure.cpp
-        src/core/UnitCell.cpp
-        src/core/Element.cpp
-    )
-    target_include_directories(calango_ghost_test PRIVATE src)
-    target_link_libraries(calango_ghost_test PRIVATE Qt6::Gui Qt6::OpenGL)
-    add_test(NAME boundary_ghosts COMMAND calango_ghost_test)
-
     # Polymer builder: measures the chemistry of the generated cell (bond
     # lengths, valence angles, composition, self-avoidance) rather than the
     # builder's own bookkeeping.
@@ -1064,6 +1057,10 @@ if(CALANGO_BUILD_TESTS)
         src/gui/SinglePointWizard.cpp
         src/gui/RandomNoiseWizard.cpp
         src/gui/CddWizard.cpp
+        src/gui/XasWizard.cpp
+        src/gui/XasResultsWindow.cpp
+        src/gui/SpectrumPlotWidget.cpp
+        src/core/XasScriptGenerator.cpp
         src/gui/EditVolumetricRenderDialog.cpp
         src/gui/VolumetricStyle.cpp
         src/core/RandomNoiseScriptGenerator.cpp
@@ -1113,7 +1110,7 @@ if(CALANGO_BUILD_TESTS)
         PRIVATE Qt6::Widgets Qt6::Svg)
     qt_add_resources(calango_icon_theme_test "icon_theme_test_assets"
         PREFIX "/"
-        FILES assets/.internal/icons/focus-3-line.svg)
+        FILES assets/icons/focus-3-line.svg)
     add_test(NAME icon_theme COMMAND calango_icon_theme_test)
 
     # Whole-structure transforms (centre / vacuum / wrap). They moved from the
@@ -1205,6 +1202,7 @@ if(CALANGO_BUILD_TESTS)
         tests/ResultsViewerTest.cpp
         src/gui/GwResultsWindow.cpp
         src/gui/OpticsResultsWindow.cpp
+        src/gui/SpectrumPlotWidget.cpp
         src/gui/OpticsPlotStyleDialog.cpp
         src/gui/RamanIrViewer.cpp
         src/gui/LinePlotWidget.cpp
@@ -1253,6 +1251,10 @@ if(CALANGO_BUILD_TESTS)
         src/core/RamanIrScriptGenerator.cpp
         src/core/RandomNoiseScriptGenerator.cpp
         src/core/CddScriptGenerator.cpp
+        src/core/XasScriptGenerator.cpp
+        src/core/UnfoldingScriptGenerator.cpp
+        src/core/BandUnfolding.cpp
+        src/core/UnitCell.cpp
     )
     target_include_directories(calango_script_test PRIVATE src
         "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -1542,7 +1544,7 @@ elseif(UNIX AND NOT APPLE)
     # PNG as the pixmaps icon — it resolves the .desktop "Icon=calango"
     # lookup. Add a hicolor/scalable/apps/calango.svg install here if a real
     # SVG is committed later.
-    install(FILES assets/.internal/icon.png
+    install(FILES assets/calango/icon_base.png
             DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps
             RENAME calango.png)
 

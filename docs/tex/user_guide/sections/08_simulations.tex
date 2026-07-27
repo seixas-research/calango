@@ -132,13 +132,40 @@ VASP shows the same controls.
   \item[\ui{NELM} / \ui{EDIFF}] The SCF iteration cap and its energy threshold.
   \item[\ui{LREAL}] \texttt{Auto} is a large speed-up above roughly 20 atoms;
     \texttt{False} is exact and right for small cells.
-  \item[\ui{IBRION} / \ui{ISIF} / \ui{EDIFFG}] Shown only for tasks with ionic
-    steps. A negative \texttt{EDIFFG} is a force criterion in eV/\AA; a
+  \item[\ui{Relaxation driver}] Who takes the ionic steps. Exactly one side
+    may: VASP relaxes internally when \texttt{IBRION}/\texttt{NSW} say so, and
+    ASE's optimizers relax anything that returns forces, so with both enabled
+    \emph{every force evaluation ASE asked for ran a complete VASP
+    relaxation}.
+
+    \ui{ASE optimizer} (the default) pins VASP to \texttt{IBRION}~=~$-1$,
+    \texttt{NSW}~=~0 and lets ASE take the steps. This is the mode the rest of
+    the application is built around --- geometry constraints, the variable-cell
+    filters, the live streamed trajectory and the per-step metrics all come
+    from ASE driving.
+
+    \ui{VASP internal relaxation} creates no ASE optimizer at all; the tags
+    below \emph{are} the relaxation. Much faster per step, because VASP keeps
+    the wavefunction and charge density between ionic steps instead of
+    restarting --- but the steps happen inside a single call, so they cannot be
+    streamed or constrained from here. The ionic path is recovered from
+    \file{OUTCAR} afterwards, so the trajectory tab and the Geometry
+    Optimization Viewer work either way.
+  \item[\ui{IBRION} / \ui{ISIF} / \ui{EDIFFG}] Shown only for a VASP-driven
+    relaxation, since they describe nothing otherwise. A negative \texttt{EDIFFG} is a force criterion in eV/\AA; a
     variable-cell relaxation is raised to \texttt{ISIF}~$\geq$~3
     automatically.
   \item[\ui{Write}] \texttt{LCHARG} (on --- CHGCAR is what every density
     analysis reads), \texttt{LWAVE}, \texttt{LAECHG} (the AECCARs a Bader
     analysis needs) and \texttt{LORBIT}~=~11.
+
+    VASP writes its density as a \file{CHGCAR}, not as \file{.cube} files, and
+    Calango registers it in the \ui{Volumetric Data} dock when the run
+    finishes --- along with \file{AECCAR0}/\file{AECCAR2}, \file{LOCPOT} and
+    \file{ELFCAR} when those were requested. That same \file{CHGCAR} is what
+    an \menu{Electronics}\menusep\menu{Electronic Structure} run reuses: with
+    a VASP baseline selected it copies the file in and diagonalizes along the
+    band path with \texttt{ICHARG}~=~11, running no SCF of its own.
   \item[\ui{NCORE} / \ui{KPAR}] Left at \ui{auto} unless you know the machine:
     a wrong value is a performance cliff, not an error.
   \item[\ui{Extra INCAR tags}] One \texttt{TAG = value} per line, applied

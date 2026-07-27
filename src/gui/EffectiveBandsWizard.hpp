@@ -78,7 +78,11 @@ private:
     QComboBox* primitiveCombo_ = nullptr;
     QSpinBox* matrixSpins_[3][3] = {};
     QCheckBox* autoMatrixCheck_ = nullptr;
+    QDoubleSpinBox* toleranceSpin_ = nullptr;
+    QCheckBox* forceCommensurateCheck_ = nullptr;
     QLabel* matrixVerdict_ = nullptr;
+    /// Residual of the last deduction, for the verdict text.
+    double commensurateResidual_ = 0.0;
 
     QDoubleSpinBox* energyMinSpin_ = nullptr;
     QDoubleSpinBox* energyMaxSpin_ = nullptr;

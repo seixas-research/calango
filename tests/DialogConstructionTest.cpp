@@ -23,6 +23,8 @@
 #include "gui/OpticsPlotStyleDialog.hpp"
 #include "gui/OverlayEditDialog.hpp"
 #include "gui/CddWizard.hpp"
+#include "gui/XasResultsWindow.hpp"
+#include "gui/XasWizard.hpp"
 #include "gui/EditVolumetricRenderDialog.hpp"
 #include "gui/RandomNoiseWizard.hpp"
 #include "gui/SinglePointWizard.hpp"
@@ -31,6 +33,9 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QCheckBox>
+#include <QDir>
+#include <QFile>
+#include <QLabel>
 #include <QComboBox>
 #include <QGroupBox>
 #include <QDoubleSpinBox>
@@ -363,6 +368,44 @@ int main(int argc, char** argv)
         wizard.hide();
     }
 
+    // The eigensolver combo carries its enum as itemData rather than as the
+    // row number. Reordering the display — which this change does — would
+    // otherwise select a different solver than the one named, silently.
+    std::printf("GPAW eigensolver combo:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        SinglePointWizard wizard;
+        auto* engine = wizard.findChild<QComboBox*>();
+        if (engine) {
+            const int gpaw = engine->findData(
+                static_cast<int>(calango::core::CalculatorKind::Gpaw));
+            if (gpaw >= 0)
+                engine->setCurrentIndex(gpaw);
+        }
+        const auto combos = wizard.findChildren<QComboBox*>();
+        const auto solver = std::find_if(
+            combos.begin(), combos.end(), [](const QComboBox* combo) {
+                return combo->count() == 4
+                    && combo->itemText(0) == QStringLiteral("Davidson");
+            });
+        check(solver != combos.end(), "the eigensolver combo is present");
+        if (solver != combos.end()) {
+            check((*solver)->itemText(1) == QStringLiteral("RMM-DIIS")
+                      && (*solver)->itemText(2) == QStringLiteral("CG")
+                      && (*solver)->itemText(3) == QStringLiteral("Direct"),
+                  "capitalized, in the listed order");
+            // Row 2 is CG, whose enum value is 1 — the case a row-number cast
+            // would get wrong.
+            check((*solver)->itemData(2).toInt()
+                      == static_cast<int>(
+                          calango::core::GpawEigensolver::ConjugateGradient),
+                  "and each row carries its own enum value, not its index");
+            (*solver)->setCurrentIndex(2);
+            check(wizard.script().contains(QStringLiteral("eigensolver=\"cg\"")),
+                  "so selecting CG generates cg, not rmm-diis");
+        }
+    }
+
     // The CDD wizard's two columns ARE its input: the generated script names
     // subsystem B by atom index, and an index taken from a row number rather
     // than from the item's own data would silently difference the wrong atoms.
@@ -475,6 +518,90 @@ int main(int argc, char** argv)
                       "moving one back leaves the other behind");
             }
         }
+    }
+
+    // The XAS wizard's absorbing-atom selector is filled from the structure
+    // and must carry ATOM INDICES, not row numbers: the generated script keys
+    // the core-hole setup on that index, and getting it wrong puts the hole on
+    // the wrong atom — which produces a perfectly plausible spectrum of
+    // something else.
+    std::printf("XAS wizard:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        auto structure = std::make_shared<calango::core::Structure>();
+        structure->setCell(calango::core::UnitCell({10, 0, 0}, {0, 10, 0},
+                                                   {0, 0, 10}));
+        // H, O, H, O — so the second O is at index 3, not at row 1.
+        for (const int z : {1, 8, 1, 8}) {
+            calango::core::Atom atom;
+            atom.atomicNumber = z;
+            atom.position = {0.7 * z, 0.0, 0.0};
+            structure->addAtom(atom);
+        }
+
+        XasWizard wizard(structure);
+        check(true, "constructs");
+
+        const auto combos = wizard.findChildren<QComboBox*>();
+        // The element list is sorted, so it opens on H; the interesting case
+        // is O, whose atoms are at indices 1 and 3 — deliberately NOT rows
+        // 0 and 1.
+        const auto elementCombo = std::find_if(
+            combos.begin(), combos.end(), [](const QComboBox* combo) {
+                return combo->count() == 2
+                    && combo->itemText(0) == QStringLiteral("H")
+                    && combo->itemText(1) == QStringLiteral("O");
+            });
+        check(elementCombo != combos.end(), "offers the structure's elements");
+        if (elementCombo != combos.end())
+            (*elementCombo)->setCurrentIndex(1); // O
+
+        const auto atomCombo = std::find_if(
+            combos.begin(), combos.end(), [](const QComboBox* combo) {
+                return combo->count() > 0
+                    && combo->itemText(0).startsWith(QStringLiteral("#"));
+            });
+        check(atomCombo != combos.end(), "offers an absorbing-atom selector");
+        if (atomCombo != combos.end()) {
+            check((*atomCombo)->count() == 2,
+                  "listing only the atoms of the chosen element");
+            check((*atomCombo)->itemData(0).toInt() == 1
+                      && (*atomCombo)->itemData(1).toInt() == 3,
+                  "with their real indices, not their row numbers");
+            (*atomCombo)->setCurrentIndex(1);
+            check(wizard.script().contains(QStringLiteral("absorbing_atom = 3")),
+                  "and the script names the selected atom's index");
+        }
+        check(wizard.script().contains(QStringLiteral("from gpaw.xas import XAS")),
+              "the generated script is an XAS run");
+    }
+
+    std::printf("XAS results window:\n");
+    {
+        // A spectrum on a RELATIVE energy scale must say so: plotted as though
+        // it were absolute it is off by hundreds of eV, and nothing about the
+        // curve reveals that.
+        const QString path = QDir::temp().filePath(QStringLiteral("calango_xas.json"));
+        QFile file(path);
+        check(file.open(QIODevice::WriteOnly), "a results file can be staged");
+        file.write(R"({"element":"O","absorbing_atom":0,"setup":"hch1s",
+                       "core_hole":0.5,"dks_energy_eV":0.0,"fwhm_eV":0.5,
+                       "energy_eV":[0,1,2],"isotropic":[0,1,0],
+                       "polarization_x":[0,1,0],"polarization_y":[0,0.5,0],
+                       "polarization_z":[0,0.2,0],
+                       "stick_energy_eV":[1.0],"stick_isotropic":[1.0]})");
+        file.close();
+
+        XasResultsWindow window;
+        check(window.loadResults(path), "and loaded");
+        const auto labels = window.findChildren<QLabel*>();
+        const bool warns = std::any_of(
+            labels.begin(), labels.end(), [](const QLabel* label) {
+                return label->text().contains(QStringLiteral("RELATIVE"));
+            });
+        check(warns, "a relative energy scale is called out, not implied");
+        check(!window.loadResults(QStringLiteral("/nonexistent/xas.json")),
+              "a missing file is reported rather than shown empty");
     }
 
     // The overlay editor swaps its property page on every type change, and

@@ -152,6 +152,34 @@ enum class SmearingMethod {
     MethfesselPaxton,
 };
 
+/// Who actually drives a VASP geometry optimization.
+///
+/// This has to be a choice, and exactly one side has to win, because both
+/// halves can relax on their own: VASP relaxes internally when IBRION/NSW say
+/// so, and ASE's optimizers relax anything that can return forces. Letting
+/// both run means every "force evaluation" ASE asks for is a complete VASP
+/// relaxation — the geometry converges, eventually, but the run costs orders
+/// of magnitude more than it should and the reported step-by-step trajectory
+/// is a sequence of already-relaxed structures rather than a relaxation path.
+enum class VaspRelaxDriver {
+    /// ASE's optimizer drives; VASP is a static force/energy calculator
+    /// (IBRION = -1, NSW = 0).
+    ///
+    /// The default, because it is the only mode in which the rest of the
+    /// application works: geometry constraints, the variable-cell filters, the
+    /// live streamed trajectory, the per-step energy/force metrics and the
+    /// Geometry Optimization Viewer are all built around ASE taking the steps.
+    Ase,
+    /// VASP relaxes internally (IBRION / NSW / ISIF / EDIFFG); no ASE
+    /// optimizer is created at all.
+    ///
+    /// Much faster per step — VASP keeps the wavefunction and charge density
+    /// between ionic steps instead of restarting from scratch — which is the
+    /// whole reason to offer it. The cost is that the ionic steps happen inside
+    /// a single ASE call, so they cannot be streamed or constrained from here.
+    Vasp,
+};
+
 /// VASP PREC. Enum order is the combo order in the VASP settings group.
 enum class VaspPrecision { Normal, Accurate, Single };
 
@@ -424,6 +452,7 @@ struct CalculatorConfig {
     /// Exchange-correlation set (ASE's `xc`, which expands to GGA/METAGGA plus
     /// the matching defaults).
     std::string vaspXc = "PBE";
+    VaspRelaxDriver vaspRelaxDriver = VaspRelaxDriver::Ase;
     VaspPrecision vaspPrec = VaspPrecision::Accurate;
     VaspAlgo vaspAlgo = VaspAlgo::Normal;
     /// NELM — SCF iteration cap. Shared with `scfMaxSteps` in the UI so one

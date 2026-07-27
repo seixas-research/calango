@@ -65,6 +65,8 @@
 #include "gui/SinglePointViewer.hpp"
 #include "gui/VolumetricPanel.hpp"
 #include "gui/WannierWizard.hpp"
+#include "gui/XasResultsWindow.hpp"
+#include "gui/XasWizard.hpp"
 #include "gui/SymmetryDialog.hpp"
 #include "gui/VacfDialog.hpp"
 #include "gui/DatasetManagerDialog.hpp"
@@ -965,6 +967,11 @@ void MainWindow::createMenusAndDocks()
     // Directly after Born charges, which it consumes: the IR intensities ARE
     // the Z* tensors contracted with the phonon eigenvectors, so this is the
     // step that turns that run into a spectrum.
+    // XAS sits with the other spectroscopies. Its own module rather than an
+    // option on one of them: the core-hole dataset it has to generate first
+    // has no analogue anywhere else in the application.
+    electronicsMenu->addAction(tr("&X-ray Absorption Spectroscopy (XAS)…"),
+                               this, &MainWindow::showXas);
     electronicsMenu->addAction(tr("&Raman and IR Spectroscopy…"), this,
                                &MainWindow::showRamanIrSpectroscopy)
         ->setToolTip(tr("Γ-point Raman and infrared spectra: IR from the "
@@ -1335,10 +1342,18 @@ void MainWindow::createMenusAndDocks()
     // The bottom row ends here: Results | Remote Access. Visual Effects joins
     // the right column below — see the splitDockWidget chain further down.
 
-    // Zone 12 — the scene OVERLAYS: the cell wireframe, the orientation triad
-    // and the per-atom vector arrows. All three draw something onto the scene
-    // that is not the atoms, which is what separates them from Representation.
-    auto* overlaysDock = new QDockWidget(tr("Cell, Axes && Vectors"), this);
+    // Zone 12 — "Spatial References": the cell wireframe, the orientation
+    // triad and the per-atom vector arrows.
+    //
+    // The name is what the three have in common rather than a list of them:
+    // each answers "where/which way is this?" about the scene, and none of
+    // them draws the structure. That is also what separates the dock from
+    // Representation, which is entirely about how the atoms themselves look.
+    auto* overlaysDock = new QDockWidget(tr("Spatial References"), this);
+    // The object name deliberately keeps its old spelling. It is the key Qt
+    // stores saved layouts against, not a label anyone sees, and renaming it
+    // would orphan the dock in every layout saved so far — forcing a version
+    // bump and a Reset Layout on every user, for a cosmetic change.
     overlaysDock->setObjectName(QStringLiteral("cellAxesVectorsDock"));
     auto* overlayTabs = new QTabWidget(overlaysDock);
     overlayTabs->setUsesScrollButtons(false);
@@ -1349,7 +1364,7 @@ void MainWindow::createMenusAndDocks()
     overlayTabs->addTab(new VectorsPanel(viewport_, overlayTabs), tr("Vectors"));
     overlayTabs->setMinimumWidth(overlayTabs->tabBar()->sizeHint().width() + 24);
     overlaysDock->setWidget(overlayTabs);
-    // The right column, top → bottom: Representation, Cell/Axes/Vectors,
+    // The right column, top → bottom: Representation, Spatial References,
     // Visual Effects. All three configure how the scene is DRAWN, so they read
     // as one column; the bottom row is left to the two job panels.
     splitDockWidget(reprDock, overlaysDock, Qt::Vertical);
@@ -1362,8 +1377,8 @@ void MainWindow::createMenusAndDocks()
     // compact branding card; the full-width bottom row is ~250 px tall.
     //
     // The right-hand column must be one width top to bottom or the layout
-    // stops reading as a grid: Representation sits above "Cell, Axes &
-    // Vectors", whose three tab headers set a hard minimum. Letting each take
+    // stops reading as a grid: Representation sits above "Spatial
+    // References", whose three tab headers set a hard minimum. Letting each take
     // its own minimum would step the column, so it is the widest of the two
     // and both docks are pinned to it.
     //
@@ -1449,9 +1464,11 @@ void MainWindow::createMenusAndDocks()
     viewMenu->addAction(jobDock_->toggleViewAction());
     viewMenu->addAction(remoteDock_->toggleViewAction());
 
-    // Bottom system status bar (CPU / GPU / Memory / ASE threads) + its
-    // View-menu visibility toggle.
+    // Bottom system status bar: Calango's own CPU / GPU / memory / threads,
+    // plus the running job's. The runner is bound so the job group can sample
+    // the subprocess tree — without it the widget simply shows Calango alone.
     systemStatusBar_ = new SystemStatusBar(this);
+    systemStatusBar_->setJobRunner(jobRunner_);
     statusBar()->addPermanentWidget(systemStatusBar_);
     viewMenu->addSeparator();
     auto* statusBarAction = viewMenu->addAction(tr("&Status Bar"));
@@ -3460,21 +3477,20 @@ void MainWindow::showBandStructure()
 
     // Electronic Structure runs strictly non-self-consistently off a completed
     // Single-Point Calculation's saved charge density (single_point.gpw), so a
-    // baseline SCF is mandatory. Gather the candidates first.
-    QList<QPair<QString, QString>> baselines;
-    for (const auto& [id, record] : processRecords_) {
-        const QString gpw =
-            record.directory + QStringLiteral("/single_point.gpw");
-        if (!record.directory.isEmpty() && QFile::exists(gpw)) {
-            baselines.append({tr("#%1 — %2").arg(id).arg(record.label), gpw});
-        }
-    }
+    // baseline SCF is mandatory. Gather the candidates first — from BOTH
+    // engines, because a band structure is non-self-consistent either way and
+    // the file it reads back is simply named differently: GPAW restarts from
+    // single_point.gpw, VASP reads a CHGCAR with ICHARG = 11.
+    QList<QPair<QString, QString>> baselines = gpawDensityFiles();
+    baselines += vaspChargeDensityFiles();
     if (baselines.isEmpty()) {
         QMessageBox::critical(
             this, tr("Electronic Structure"),
             tr("Error: Electronic Structure calculations require a completed "
-               "baseline SCF process with saved charge density. Please run a "
-               "Single-Point Calculation first."));
+               "baseline SCF process with a saved charge density. Please run a "
+               "Single-Point Calculation first.\n\n"
+               "GPAW writes single_point.gpw; VASP writes CHGCAR (leave "
+               "\"CHGCAR\" ticked under Write in the VASP settings)."));
         return;
     }
 
@@ -3697,6 +3713,13 @@ int MainWindow::registerDensityCubes(const QString& directory)
          tr("Kinetic energy density τ(r)")},
         {QStringLiteral("density.cube"), tr("Charge density")},
         {QStringLiteral("cdd.cube"), tr("Charge density difference Δρ")},
+        // VASP writes its density as a CHGCAR rather than a cube, so the sweep
+        // has to look for it by name — there is no extension to glob for.
+        {QStringLiteral("CHGCAR"), tr("Charge density (CHGCAR)")},
+        {QStringLiteral("AECCAR0"), tr("Core charge density (AECCAR0)")},
+        {QStringLiteral("AECCAR2"), tr("All-electron density (AECCAR2)")},
+        {QStringLiteral("LOCPOT"), tr("Local potential (LOCPOT)")},
+        {QStringLiteral("ELFCAR"), tr("ELF η(r) (ELFCAR)")},
     };
 
     Document* doc = currentDocument();
@@ -3706,8 +3729,23 @@ int MainWindow::registerDensityCubes(const QString& directory)
 
     const QDir dir(directory);
     int added = 0;
-    for (const QString& name :
-         dir.entryList({QStringLiteral("*.cube")}, QDir::Files, QDir::Name)) {
+    // Cube files by extension, VASP grids by name. CHG (the coarse
+    // every-step dump) is deliberately not offered: it is the same field as
+    // CHGCAR at lower resolution, and two near-identical entries in the dock
+    // is worse than one.
+    QStringList names =
+        dir.entryList({QStringLiteral("*.cube")}, QDir::Files, QDir::Name);
+    for (const QString& vasp : {QStringLiteral("CHGCAR"),
+                                QStringLiteral("AECCAR0"),
+                                QStringLiteral("AECCAR2"),
+                                QStringLiteral("LOCPOT"),
+                                QStringLiteral("ELFCAR")}) {
+        // Non-empty: VASP creates the file whether or not the tag asked for
+        // it, and a zero-byte CHGCAR is not a density.
+        if (QFileInfo(dir.filePath(vasp)).size() > 0)
+            names << vasp;
+    }
+    for (const QString& name : names) {
         // The Wannier orbitals have their own registration path (they are
         // named and numbered from wannier.json), so they are not swept up here
         // as a pile of anonymous grids.
@@ -4357,6 +4395,10 @@ void MainWindow::onProcessResultRequested(const QString& directory)
         openMlwfResults(directory);
         return;
     }
+    if (QFile::exists(directory + QStringLiteral("/xas.json"))) {
+        openXasResults(directory);
+        return;
+    }
     if (QFile::exists(directory + QStringLiteral("/single_point.json"))) {
         openSinglePointResults(directory);
         return;
@@ -4743,6 +4785,47 @@ QList<QPair<QString, QString>> MainWindow::gpawDensityFiles() const
                           dir.absoluteFilePath(preferred)});
     }
     return baselines;
+}
+
+QList<QPair<QString, QString>> MainWindow::vaspChargeDensityFiles() const
+{
+    QList<QPair<QString, QString>> baselines;
+    for (const auto& [id, record] : processRecords_) {
+        if (record.directory.isEmpty())
+            continue;
+        const QDir dir(record.directory);
+        const QString chgcar = dir.absoluteFilePath(QStringLiteral("CHGCAR"));
+        // Non-empty: VASP writes the file whether or not LCHARG asked for it,
+        // and a zero-byte CHGCAR would fail ICHARG=11 at run time rather than
+        // here, where it can still be explained.
+        if (QFileInfo(chgcar).size() <= 0)
+            continue;
+        baselines.append({tr("#%1 — %2 [VASP]").arg(id).arg(record.label),
+                          chgcar});
+    }
+    return baselines;
+}
+
+void MainWindow::openXasResults(const QString& directory)
+{
+    auto* window = new XasResultsWindow(this);
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    if (!window->loadResults(directory + QStringLiteral("/xas.json"))) {
+        delete window;
+        QMessageBox::information(this, tr("X-ray Absorption Spectroscopy"),
+                                 tr("No readable xas.json in %1").arg(directory));
+        return;
+    }
+    window->show();
+}
+
+void MainWindow::showXas()
+{
+    if (!prepareSimulation(tr("X-ray Absorption Spectroscopy")))
+        return;
+    XasWizard wizard(currentDocument()->structure, this);
+    runSimulationWizard(wizard, tr("X-ray Absorption Spectroscopy"),
+                        /*expectFrames=*/false);
 }
 
 void MainWindow::showBornCharges()
@@ -6126,6 +6209,11 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         openOpticsResults(lastJobDir_);
         return;
     }
+    // XAS runs: open the spectrum viewer.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/xas.json"))) {
+        openXasResults(lastJobDir_);
+        return;
+    }
     // MLWF runs: open the dedicated MLWF viewer (centres/spreads table, orbital
     // isosurface overlays on the viewport, band-interpolation launcher).
     if (QFile::exists(lastJobDir_ + QStringLiteral("/wannier.json"))) {
@@ -6253,7 +6341,7 @@ void MainWindow::about()
     box.setWindowTitle(tr("About Calango"));
     // Brand banner: the app icon, scaled for the dialog.
     box.setIconPixmap(
-        QPixmap(QStringLiteral(":/assets/.internal/icon.png"))
+        QPixmap(QStringLiteral(":/assets/calango/icon_base.png"))
             .scaled(140, 140, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     box.setTextFormat(Qt::RichText);
     box.setText(

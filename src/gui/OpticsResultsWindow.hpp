@@ -102,7 +102,7 @@ private:
     std::vector<double> energy_;                       ///< ħω grid, eV
     QList<QPair<QString, DirectionData>> directions_;  ///< in xx, yy, zz order
 
-    class OpticsPlotWidget* plot_ = nullptr;
+    class SpectrumPlotWidget* plot_ = nullptr;
     QComboBox* quantityCombo_ = nullptr;
     QComboBox* directionCombo_ = nullptr;
     QComboBox* unitCombo_ = nullptr;
