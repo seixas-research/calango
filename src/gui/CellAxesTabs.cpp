@@ -34,17 +34,23 @@ UnitCellPanel::UnitCellPanel(ViewportWidget* viewport, QWidget* parent)
             viewport_, &ViewportWidget::setShowCell);
 
     auto* ghostCheck =
-        new QCheckBox(tr("Duplicate atoms on cell boundaries"), this);
-    ghostCheck->setChecked(viewport_->style().showBoundaryGhosts);
+        new QCheckBox(tr("Show atoms of the neighboring unit cell"), this);
+    ghostCheck->setChecked(viewport_->style().showNeighborCellAtoms);
     ghostCheck->setToolTip(
-        tr("Repeat atoms lying on a cell face, edge or vertex at the opposite "
-           "side (fractional 0 → 1), together with their bonds, so the cell "
-           "reads as a closed motif instead of one sliced off at two faces.\n"
+        tr("Draw the periodic images the home cell's bonds actually reach "
+           "into:\n"
+           "• the far end of every bond that wraps around the cell, so a "
+           "periodic bond terminates on an atom instead of stopping in "
+           "mid-air;\n"
+           "• atoms lying exactly on a face, edge or vertex, repeated at the "
+           "opposite side (fractional 0 → 1) together with the atoms their own "
+           "bonds reach, so the cell reads as a closed motif instead of one "
+           "sliced off at two faces.\n\n"
            "Purely visual: the atom count, the chemical formula and every "
            "exported POSCAR/CIF are unchanged."));
     form->addRow(ghostCheck);
     connect(ghostCheck, &QCheckBox::toggled, this, [this](bool on) {
-        viewport_->style().showBoundaryGhosts = on;
+        viewport_->style().showNeighborCellAtoms = on;
         // Extra instances — the geometry buffers must be rebuilt.
         viewport_->styleChanged(true);
     });
@@ -90,7 +96,10 @@ AxesTriadPanel::AxesTriadPanel(ViewportWidget* viewport, QWidget* parent)
 
     // Directly below "Show axes triad" and styled the same way — it is a
     // refinement of that triad, not an independent overlay.
-    auto* axesArrowsCheck = new QCheckBox(tr("Show axes triad with arrows"), this);
+    // "Show arrowheads", not "Show axes triad with arrows": this row sits
+    // directly under "Show axes triad" and is disabled with it, so restating
+    // what it belongs to only made the label long enough to wrap.
+    auto* axesArrowsCheck = new QCheckBox(tr("Show arrowheads"), this);
     axesArrowsCheck->setChecked(viewport_->showAxesArrows());
     axesArrowsCheck->setToolTip(
         tr("Draw arrowheads at the tips of X, Y and Z. Useful when a figure "
@@ -238,23 +247,11 @@ VectorsPanel::VectorsPanel(ViewportWidget* viewport, QWidget* parent)
         viewport_->styleChanged(true);
     });
 
-    minMagnitudeSpin_ = new QDoubleSpinBox(this);
-    minMagnitudeSpin_->setRange(0.0, 1000.0);
-    minMagnitudeSpin_->setDecimals(4);
-    minMagnitudeSpin_->setSingleStep(0.01);
-    minMagnitudeSpin_->setValue(viewport_->style().vectorMinMagnitude);
-    minMagnitudeSpin_->setToolTip(
-        tr("Hide arrows shorter than this, in the field's own units (eV/Å for "
-           "forces, μB for moments).\n"
-           "A relaxed structure has near-zero forces on most atoms; filtering "
-           "them leaves only the sites that are actually straining, which is "
-           "what the overlay is read for."));
-    form->addRow(tr("Hide below:"), minMagnitudeSpin_);
-    connect(minMagnitudeSpin_, &QDoubleSpinBox::valueChanged, this,
-            [this](double value) {
-                viewport_->style().vectorMinMagnitude = static_cast<float>(value);
-                viewport_->styleChanged(true);
-            });
+    // The "Hide below:" magnitude filter was removed from this tab. The style
+    // field behind it (Style::vectorMinMagnitude) stays at its 0 default, i.e.
+    // no filtering, and the renderer still honours it — so the capability is
+    // intact for the ray-trace path and for any future UI, it simply has no
+    // control here any more.
 
     // Re-check availability when the frame changes: scrubbing a trajectory can
     // move to a frame that carries different per-atom columns.

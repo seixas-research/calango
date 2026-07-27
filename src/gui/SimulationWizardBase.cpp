@@ -185,6 +185,7 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     addCalc(tr("MatterSim (universal ML potential)"),
             core::CalculatorKind::MatterSim);
     addCalc(tr("FAIRChem / OCP (ML potential)"), core::CalculatorKind::FairChem);
+    addCalc(tr("LAMMPS (classical MD)"), core::CalculatorKind::Lammps);
     engineForm->addRow(tr("Calculation engine:"), calcCombo_);
     layout->addWidget(engineWidget_);
     connect(calcCombo_, &QComboBox::currentIndexChanged, this,
@@ -232,6 +233,7 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     multiplicitySpin_->setValue(1);
     orcaForm->addRow(tr("Multiplicity:"), multiplicitySpin_);
     layout->addWidget(orcaGroup_);
+    layout->addWidget(buildLammpsGroup(page));
 
     // Subclass-supplied extra settings (e.g. Single-point's convergence group,
     // folded in here when it has no separate Stage 1).
@@ -240,6 +242,138 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
 
     layout->addStretch(1);
     return page;
+}
+
+QWidget* SimulationWizardBase::buildLammpsGroup(QWidget* parent)
+{
+    lammpsGroup_ = new QGroupBox(tr("LAMMPS settings"), parent);
+    auto* form = new QFormLayout(lammpsGroup_);
+
+    auto* note = new QLabel(
+        tr("LAMMPS is an <b>engine</b>, not a force field: what it computes is "
+           "decided entirely by the pair style and coefficients below. Nothing "
+           "here validates them — a <code>pair_coeff</code> that does not match "
+           "the style, or a potential file for the wrong elements, is a physics "
+           "error LAMMPS will run without complaint."),
+        lammpsGroup_);
+    note->setWordWrap(true);
+    note->setTextFormat(Qt::RichText);
+    form->addRow(note);
+
+    lammpsInterfaceCombo_ = new QComboBox(lammpsGroup_);
+    // Order matches core::LammpsInterface.
+    lammpsInterfaceCombo_->addItems({tr("Library (in-process, LAMMPSlib)"),
+                                     tr("Executable (per-step, lammpsrun)")});
+    lammpsInterfaceCombo_->setToolTip(
+        tr("Which of ASE's two LAMMPS interfaces to drive — the choice depends "
+           "on how LAMMPS is installed, not on the physics.\n\n"
+           "Library: runs LAMMPS in-process through its Python module, with no "
+           "file I/O per step. The right choice for MD and relaxation, and what "
+           "conda-forge's `lammps` package provides.\n\n"
+           "Executable: spawns the `lmp` binary once per force evaluation and "
+           "exchanges data files. Works with any build, including a plain "
+           "distro package, but pays process startup on every step."));
+    form->addRow(tr("Interface:"), lammpsInterfaceCombo_);
+
+    lammpsPairStyleEdit_ = new QLineEdit(lammpsGroup_);
+    lammpsPairStyleEdit_->setText(QStringLiteral("lj/cut 10.0"));
+    lammpsPairStyleEdit_->setToolTip(
+        tr("The `pair_style` line without the keyword, e.g.\n"
+           "    lj/cut 10.0\n"
+           "    eam/alloy\n"
+           "    tersoff\n"
+           "    sw\n\n"
+           "Everything after the style name is passed through verbatim, which "
+           "is how cutoffs and style options reach LAMMPS."));
+    form->addRow(tr("Pair style:"), lammpsPairStyleEdit_);
+
+    lammpsPairCoeffEdit_ = new QPlainTextEdit(lammpsGroup_);
+    lammpsPairCoeffEdit_->setPlainText(QStringLiteral("* * 0.0103 3.4"));
+    lammpsPairCoeffEdit_->setMaximumHeight(70);
+    lammpsPairCoeffEdit_->setToolTip(
+        tr("One `pair_coeff` line per row, without the keyword, e.g.\n"
+           "    * * Cu_u3.eam.alloy Cu\n"
+           "    1 1 0.0103 3.4\n\n"
+           "Where a line names elements, they must be listed in the type order "
+           "the generated script prints as \"LAMMPS species order\" — that "
+           "order is derived from the structure, and getting it wrong computes "
+           "a different compound rather than failing."));
+    form->addRow(tr("Pair coefficients:"), lammpsPairCoeffEdit_);
+
+    lammpsPotentialEdit_ = new QPlainTextEdit(lammpsGroup_);
+    lammpsPotentialEdit_->setMaximumHeight(52);
+    lammpsPotentialEdit_->setPlaceholderText(
+        tr("/path/to/Cu_u3.eam.alloy   (one per line; absolute paths)"));
+    lammpsPotentialEdit_->setToolTip(
+        tr("Potential files the pair style reads (EAM tables, Tersoff "
+           "parameter files…), one per line.\n\n"
+           "Absolute paths: the executable interface runs LAMMPS in a scratch "
+           "directory and the library interface inherits the process's working "
+           "directory, so a relative path resolves against neither reliably."));
+    form->addRow(tr("Potential files:"), lammpsPotentialEdit_);
+
+    lammpsExtraEdit_ = new QPlainTextEdit(lammpsGroup_);
+    lammpsExtraEdit_->setMaximumHeight(52);
+    lammpsExtraEdit_->setPlaceholderText(
+        tr("neighbor 2.0 bin        (one LAMMPS command per line)"));
+    lammpsExtraEdit_->setToolTip(
+        tr("Extra LAMMPS commands appended after the pair setup — neighbour "
+           "list settings, `pair_modify`, style-specific `fix` commands. One "
+           "per line.\n\n"
+           "Only the library interface can apply these directly; with the "
+           "executable interface they are emitted as comments, because "
+           "lammpsrun builds its own input deck from a parameter dictionary."));
+    form->addRow(tr("Extra commands:"), lammpsExtraEdit_);
+
+    lammpsCommandEdit_ = new QLineEdit(lammpsGroup_);
+    lammpsCommandEdit_->setPlaceholderText(
+        tr("lmp_serial            (blank = $ASE_LAMMPSRUN_COMMAND, then $PATH)"));
+    lammpsCommandEdit_->setToolTip(
+        tr("The LAMMPS executable, for the Executable interface only. Left "
+           "blank, ASE looks at $ASE_LAMMPSRUN_COMMAND and then for `lmp` on "
+           "$PATH."));
+    form->addRow(tr("LAMMPS binary:"), lammpsCommandEdit_);
+
+    lammpsLogCheck_ = new QCheckBox(tr("Keep the LAMMPS log"), lammpsGroup_);
+    lammpsLogCheck_->setChecked(true);
+    lammpsLogCheck_->setToolTip(
+        tr("Write lammps.log beside the job (library interface) or keep the "
+           "scratch files (executable interface).\n\n"
+           "On by default: when a pair style rejects its coefficients, that log "
+           "is the only place the reason appears — ASE surfaces the failure as "
+           "a bare exception."));
+    form->addRow(QString(), lammpsLogCheck_);
+
+    // Every control feeds the generated script, so the preview has to follow
+    // each of them.
+    connect(lammpsInterfaceCombo_, &QComboBox::currentIndexChanged, this,
+            [this] { updateLammpsRows(); refreshPreview(); });
+    connect(lammpsPairStyleEdit_, &QLineEdit::textChanged, this,
+            [this] { refreshPreview(); });
+    connect(lammpsCommandEdit_, &QLineEdit::textChanged, this,
+            [this] { refreshPreview(); });
+    for (QPlainTextEdit* edit : {lammpsPairCoeffEdit_, lammpsPotentialEdit_,
+                                 lammpsExtraEdit_}) {
+        connect(edit, &QPlainTextEdit::textChanged, this,
+                [this] { refreshPreview(); });
+    }
+    connect(lammpsLogCheck_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
+
+    updateLammpsRows();
+    return lammpsGroup_;
+}
+
+void SimulationWizardBase::updateLammpsRows()
+{
+    if (!lammpsGroup_ || !lammpsInterfaceCombo_)
+        return;
+    // The binary only exists for the executable interface; showing it while the
+    // library interface is selected invites the user to configure something
+    // that will be ignored.
+    const bool runInterface = lammpsInterfaceCombo_->currentIndex()
+        == static_cast<int>(core::LammpsInterface::Run);
+    setFormRowVisible(lammpsGroup_, lammpsCommandEdit_, runInterface);
 }
 
 QWidget* SimulationWizardBase::buildMaceGroup(QWidget* parent)
@@ -981,6 +1115,7 @@ void SimulationWizardBase::updateCalculatorEnabled()
         if (maceGroup_) maceGroup_->setVisible(false);
         if (mlipGroup_) mlipGroup_->setVisible(false);
         if (orcaGroup_) orcaGroup_->setVisible(false);
+        if (lammpsGroup_) lammpsGroup_->setVisible(false);
         if (baselineInheritNote_) baselineInheritNote_->setVisible(false);
         updateCalculatorExtras(kind);
         return;
@@ -1010,6 +1145,12 @@ void SimulationWizardBase::updateCalculatorEnabled()
     if (isMlip)
         updateMlipRows();
     orcaGroup_->setVisible(isOrca);
+    if (lammpsGroup_) {
+        const bool isLammps = kind == core::CalculatorKind::Lammps;
+        lammpsGroup_->setVisible(isLammps);
+        if (isLammps)
+            updateLammpsRows();
+    }
 
     // GPAW-only Brillouin-zone options: Γ-centering and the symmetry toggle
     // share one row, so the row hides as a unit for non-GPAW engines.
@@ -1169,6 +1310,35 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
     c.orcaBasis = orcaBasisCombo_->currentText().trimmed().toStdString();
     c.charge = chargeSpin_->value();
     c.multiplicity = multiplicitySpin_->value();
+
+    // -- LAMMPS -------------------------------------------------------------
+    // The three multi-line fields are split on newlines with blanks dropped, so
+    // a trailing empty line does not become an empty LAMMPS command (which the
+    // engine rejects with a parse error rather than ignoring).
+    if (lammpsInterfaceCombo_) {
+        const auto lines = [](const QPlainTextEdit* edit) {
+            std::vector<std::string> out;
+            if (!edit)
+                return out;
+            const QStringList parts = edit->toPlainText().split(
+                QLatin1Char('\n'), Qt::SkipEmptyParts);
+            for (const QString& part : parts) {
+                const QString trimmed = part.trimmed();
+                if (!trimmed.isEmpty())
+                    out.push_back(trimmed.toStdString());
+            }
+            return out;
+        };
+        c.lammpsInterface = static_cast<core::LammpsInterface>(
+            lammpsInterfaceCombo_->currentIndex());
+        c.lammpsPairStyle =
+            lammpsPairStyleEdit_->text().trimmed().toStdString();
+        c.lammpsPairCoeff = lines(lammpsPairCoeffEdit_);
+        c.lammpsPotentialFiles = lines(lammpsPotentialEdit_);
+        c.lammpsExtraCommands = lines(lammpsExtraEdit_);
+        c.lammpsCommand = lammpsCommandEdit_->text().trimmed().toStdString();
+        c.lammpsKeepLog = lammpsLogCheck_->isChecked();
+    }
     return c;
 }
 

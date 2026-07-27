@@ -17,9 +17,13 @@ void OrbitCamera::pan(float dxPixels, float dyPixels, int viewportHeight)
     const float worldPerPixel =
         2.0f * distance_ * std::tan(qDegreesToRadians(20.0f)) / std::max(1, viewportHeight);
 
+    // The inverse of view()'s rotation chain, so a drag moves the scene the way
+    // the cursor moves. Roll has to be undone here as well — without it a
+    // horizontal drag on a rolled view slides the structure diagonally.
     QMatrix4x4 rotation;
     rotation.rotate(-yawDeg_, 0.0f, 1.0f, 0.0f);
     rotation.rotate(-pitchDeg_, 1.0f, 0.0f, 0.0f);
+    rotation.rotate(-rollDeg_, 0.0f, 0.0f, 1.0f);
     // Undo the scene rotation too, so panning follows the cursor even
     // after fixed-angle axis rotations.
     const QQuaternion inverse = sceneRotation_.inverted();
@@ -60,6 +64,13 @@ QMatrix4x4 OrbitCamera::view() const
 {
     QMatrix4x4 m;
     m.translate(0.0f, 0.0f, -distance_);
+    // Roll goes OUTSIDE pitch/yaw. QMatrix4x4 post-multiplies, so a vertex is
+    // transformed by these in reverse order — putting roll first here makes it
+    // the LAST rotation applied, i.e. one about the finished view axis. That is
+    // what "the camera tilts its head" means: the picture turns in the screen
+    // plane and what is in front of the lens does not change. Inside pitch/yaw
+    // it would instead re-orbit the camera and change the viewpoint.
+    m.rotate(rollDeg_, 0.0f, 0.0f, 1.0f);
     m.rotate(pitchDeg_, 1.0f, 0.0f, 0.0f);
     m.rotate(yawDeg_, 0.0f, 1.0f, 0.0f);
     m.rotate(sceneRotation_); // world-axis rotation about the target
@@ -80,6 +91,10 @@ QVector3D OrbitCamera::worldUp() const
 QMatrix4x4 OrbitCamera::rotationOnlyView() const
 {
     QMatrix4x4 m;
+    // Same composition as view(), roll included: the axes triad is a read-out
+    // of the scene's orientation, and one that ignored roll would point the
+    // wrong way the moment the view was tilted.
+    m.rotate(rollDeg_, 0.0f, 0.0f, 1.0f);
     m.rotate(pitchDeg_, 1.0f, 0.0f, 0.0f);
     m.rotate(yawDeg_, 0.0f, 1.0f, 0.0f);
     m.rotate(sceneRotation_); // keep the axes triad in sync

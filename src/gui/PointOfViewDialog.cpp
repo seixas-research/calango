@@ -82,9 +82,12 @@ PointOfViewDialog::PointOfViewDialog(ViewportWidget* viewport, QWidget* parent)
     addAngle(pitchSpin_, tr("Rotation — pitch:"),
              tr("Elevation above (positive) or below the horizontal."));
     addAngle(rollSpin_, tr("Rotation — roll:"),
-             tr("Rotation about the viewing axis itself — the scene rotation "
-                "the X/Y/Z toolbar buttons apply. Yaw and pitch cannot "
-                "produce it, which is why it is separate."));
+             tr("Tilt about the viewing axis itself — the camera turning its "
+                "head, so the picture rotates in the screen plane while the "
+                "viewpoint and the structure stay put.\n\n"
+                "Yaw and pitch cannot produce it, which is why it is separate. "
+                "Distinct from the X/Y/Z toolbar buttons, which rotate the "
+                "STRUCTURE about a world axis."));
 
     auto* panRow = new QHBoxLayout;
     const char* axes[3] = {"x", "y", "z"};
@@ -162,12 +165,7 @@ void PointOfViewDialog::syncFromViewport()
     zoomSpin_->setValue(pov.distance);
     yawSpin_->setValue(pov.yawDeg);
     pitchSpin_->setValue(pov.pitchDeg);
-    // The scene rotation is a quaternion; report it as the angle about its own
-    // axis, which is what the roll control edits.
-    QVector3D axis;
-    float angle = 0.0f;
-    pov.sceneRotation.getAxisAndAngle(&axis, &angle);
-    rollSpin_->setValue(angle);
+    rollSpin_->setValue(pov.rollDeg);
     panSpin_[0]->setValue(pov.target.x());
     panSpin_[1]->setValue(pov.target.y());
     panSpin_[2]->setValue(pov.target.z());
@@ -188,10 +186,13 @@ void PointOfViewDialog::applyToViewport()
     pov.distance = static_cast<float>(zoomSpin_->value());
     pov.yawDeg = static_cast<float>(yawSpin_->value());
     pov.pitchDeg = static_cast<float>(pitchSpin_->value());
-    // Roll is applied about the camera's own viewing axis so the control does
-    // what its name says regardless of where the turntable currently points.
-    pov.sceneRotation = QQuaternion::fromAxisAndAngle(
-        QVector3D(0.0f, 0.0f, 1.0f), static_cast<float>(rollSpin_->value()));
+    // The camera's own roll. This used to synthesize a SCENE rotation about
+    // world z instead, which was wrong twice over: it turned the structure
+    // rather than the camera, and because it assigned sceneRotation outright,
+    // editing any field here silently discarded whatever rotation the X/Y/Z
+    // toolbar buttons had accumulated. sceneRotation now rides along untouched
+    // from pointOfView() above.
+    pov.rollDeg = static_cast<float>(rollSpin_->value());
     pov.target = QVector3D(static_cast<float>(panSpin_[0]->value()),
                            static_cast<float>(panSpin_[1]->value()),
                            static_cast<float>(panSpin_[2]->value()));
@@ -200,19 +201,25 @@ void PointOfViewDialog::applyToViewport()
 
 QString PointOfViewDialog::encode(const render::PointOfView& pov)
 {
-    return QStringLiteral("%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11")
+    // Roll is APPENDED as field 12 rather than inserted next to yaw/pitch,
+    // so that named views saved by an earlier release still decode — they
+    // simply carry no roll, which is what they meant.
+    return QStringLiteral("%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12")
         .arg(pov.target.x()).arg(pov.target.y()).arg(pov.target.z())
         .arg(pov.distance).arg(pov.yawDeg).arg(pov.pitchDeg)
         .arg(pov.sceneRotation.scalar()).arg(pov.sceneRotation.x())
         .arg(pov.sceneRotation.y()).arg(pov.sceneRotation.z())
-        .arg(static_cast<int>(pov.projection));
+        .arg(static_cast<int>(pov.projection))
+        .arg(pov.rollDeg);
 }
 
 render::PointOfView PointOfViewDialog::decode(const QString& text)
 {
     const QStringList parts = text.split(QLatin1Char(','));
     render::PointOfView pov;
-    if (parts.size() != 11)
+    // 11 fields is a view saved before roll existed; 12 includes it. Anything
+    // else is not a point-of-view.
+    if (parts.size() != 11 && parts.size() != 12)
         return pov; // stays invalid, so applying it is a no-op
     pov.target = QVector3D(parts[0].toFloat(), parts[1].toFloat(),
                            parts[2].toFloat());
@@ -224,6 +231,8 @@ render::PointOfView PointOfViewDialog::decode(const QString& text)
     pov.projection = parts[10].toInt() == 1
         ? render::CameraProjection::Orthographic
         : render::CameraProjection::Perspective;
+    // A pre-roll view is an untilted one, not one carrying today's default.
+    pov.rollDeg = parts.size() == 12 ? parts[11].toFloat() : 0.0f;
     pov.valid = true;
     return pov;
 }

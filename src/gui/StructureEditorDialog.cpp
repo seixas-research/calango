@@ -25,6 +25,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <numeric>
 #include <vector>
 
 namespace calango::gui {
@@ -664,9 +665,26 @@ void StructureEditorDialog::buildAtomSection(QVBoxLayout* parent)
     auto* buttonRow = new QHBoxLayout;
     auto* addButton = new QPushButton(tr("Add Atom"), group);
     auto* removeButton = new QPushButton(tr("Remove Selected"), group);
+    wrapButton_ = new QPushButton(tr("Wrap within the unit cell"), group);
+    originButton_ = new QPushButton(tr("Set as origin"), group);
     auto* elementButton = new QPushButton(tr("Periodic Table…"), group);
+    wrapButton_->setToolTip(
+        tr("Translate the selected atoms by whole lattice vectors until their "
+           "fractional coordinates lie in [0, 1) — the same site, moved into "
+           "the cell that is drawn.\n\n"
+           "With no rows selected every atom is wrapped. Nothing about the "
+           "structure changes but the representative image chosen for each "
+           "site."));
+    originButton_->setToolTip(
+        tr("Put the selected atom at (0, 0, 0) and shift every other atom by "
+           "the same vector, so the whole structure is re-expressed about that "
+           "site.\n\n"
+           "A rigid translation: the lattice, all interatomic distances and "
+           "the chemistry are untouched. Select exactly one row."));
     buttonRow->addWidget(addButton);
     buttonRow->addWidget(removeButton);
+    buttonRow->addWidget(wrapButton_);
+    buttonRow->addWidget(originButton_);
     buttonRow->addWidget(elementButton);
     buttonRow->addStretch(1);
     layout->addLayout(buttonRow);
@@ -699,6 +717,10 @@ void StructureEditorDialog::buildAtomSection(QVBoxLayout* parent)
         refreshAtomTable();
         refreshSummary();
     });
+    connect(wrapButton_, &QPushButton::clicked, this,
+            &StructureEditorDialog::wrapSelectedIntoCell);
+    connect(originButton_, &QPushButton::clicked, this,
+            &StructureEditorDialog::setSelectedAsOrigin);
     connect(elementButton, &QPushButton::clicked, this, [this] {
         const auto selected = atomTable_->selectionModel()->selectedRows();
         if (selected.isEmpty()) {
@@ -720,6 +742,96 @@ void StructureEditorDialog::buildAtomSection(QVBoxLayout* parent)
     });
 
     parent->addWidget(group, 1);
+}
+
+void StructureEditorDialog::wrapSelectedIntoCell()
+{
+    if (!hasCell()) {
+        QMessageBox::information(
+            this, windowTitle(),
+            tr("Define a unit cell first — without a lattice there are no cell "
+               "boundaries to wrap into."));
+        return;
+    }
+
+    // No selection means "all atoms": wrapping a whole imported structure back
+    // into its cell is the common case, and demanding a select-all first would
+    // be busywork. The tooltip says so.
+    std::vector<std::size_t> rows;
+    for (const QModelIndex& index : atomTable_->selectionModel()->selectedRows())
+        rows.push_back(static_cast<std::size_t>(index.row()));
+    if (rows.empty()) {
+        rows.resize(working_->size());
+        std::iota(rows.begin(), rows.end(), std::size_t{0});
+    }
+
+    const core::UnitCell& cell = working_->cell();
+    // Only the PERIODIC axes wrap: folding a slab's vacuum direction back into
+    // the box would push atoms through the vacuum they were placed in. A cell
+    // with no periodic axis at all is a plain bounding box, and there the
+    // drawn boundaries are exactly what "within the unit cell" means, so all
+    // three wrap.
+    const std::array<bool, 3> pbc = cell.pbc();
+    const bool anyPeriodic = pbc[0] || pbc[1] || pbc[2];
+    int moved = 0;
+    for (const std::size_t row : rows) {
+        if (row >= working_->size())
+            continue;
+        core::Atom& atom = working_->atoms()[row];
+        core::Vec3 fractional = cell.cartesianToFractional(atom.position);
+        double* components[3] = {&fractional.x, &fractional.y, &fractional.z};
+        bool changed = false;
+        for (int axis = 0; axis < 3; ++axis) {
+            if (anyPeriodic && !pbc[static_cast<std::size_t>(axis)])
+                continue;
+            const double wrapped = *components[axis] - std::floor(*components[axis]);
+            if (std::abs(wrapped - *components[axis]) > 1e-12) {
+                *components[axis] = wrapped;
+                changed = true;
+            }
+        }
+        if (!changed)
+            continue;
+        atom.position = cell.fractionalToCartesian(fractional);
+        ++moved;
+    }
+
+    refreshAtomTable();
+    refreshSummary();
+    if (moved == 0) {
+        summaryLabel_->setText(
+            tr("Every selected atom already lies inside the unit cell."));
+    }
+}
+
+void StructureEditorDialog::setSelectedAsOrigin()
+{
+    const auto selected = atomTable_->selectionModel()->selectedRows();
+    if (selected.size() != 1) {
+        QMessageBox::information(
+            this, windowTitle(),
+            tr("Select exactly one row — that atom becomes the origin, and "
+               "every other atom shifts with it."));
+        return;
+    }
+    const auto row = static_cast<std::size_t>(selected.front().row());
+    if (row >= working_->size())
+        return;
+
+    // A rigid translation of the whole structure: the lattice is untouched, so
+    // every interatomic distance (and hence every calculated property) is
+    // unchanged — only the origin the coordinates are quoted against moves.
+    const core::Vec3 shift = working_->atoms()[row].position;
+    if (shift.dot(shift) < 1e-24) {
+        summaryLabel_->setText(tr("That atom is already at the origin."));
+        return;
+    }
+    for (core::Atom& atom : working_->atoms())
+        atom.position = atom.position - shift;
+
+    refreshAtomTable();
+    refreshSummary();
+    atomTable_->selectRow(static_cast<int>(row));
 }
 
 void StructureEditorDialog::onAtomCellChanged(int row, int column)
@@ -799,6 +911,8 @@ void StructureEditorDialog::refreshCellWidgets()
         standardizeButton_->setEnabled(defined);
     if (primitiveButton_)
         primitiveButton_->setEnabled(defined);
+    if (wrapButton_)
+        wrapButton_->setEnabled(defined);
     if (!defined)
         return;
 

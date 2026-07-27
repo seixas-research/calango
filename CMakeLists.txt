@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.61
+    VERSION 26.7.62
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -178,6 +178,8 @@ qt_add_executable(calango
     src/core/ElfScriptGenerator.cpp
     src/core/BornChargesScriptGenerator.hpp
     src/core/BornChargesScriptGenerator.cpp
+    src/core/RamanIrScriptGenerator.hpp
+    src/core/RamanIrScriptGenerator.cpp
     src/core/PdbxFile.hpp
     src/core/PdbxFile.cpp
     src/core/WannierScriptGenerator.hpp
@@ -214,6 +216,8 @@ qt_add_executable(calango
     src/python_bridge/AseBridge.cpp
     src/python_bridge/AnimationExporter.hpp
     src/python_bridge/AnimationExporter.cpp
+    src/python_bridge/AlembicExporter.hpp
+    src/python_bridge/AlembicExporter.cpp
     src/python_bridge/MaterialsProject.hpp
     src/python_bridge/MaterialsProject.cpp
     src/python_bridge/BulkBuilder.hpp
@@ -424,10 +428,12 @@ qt_add_executable(calango
     src/gui/VolumetricMetadataDialog.cpp
     src/gui/EditVolumetricRenderDialog.hpp
     src/gui/EditVolumetricRenderDialog.cpp
-    src/gui/LatticePlaneDialog.hpp
-    src/gui/LatticePlaneDialog.cpp
-    src/gui/CustomOverlayDialog.hpp
-    src/gui/CustomOverlayDialog.cpp
+    src/gui/OverlayModel.hpp
+    src/gui/OverlayModel.cpp
+    src/gui/OverlayEditDialog.hpp
+    src/gui/OverlayEditDialog.cpp
+    src/gui/OverlayPanel.hpp
+    src/gui/OverlayPanel.cpp
     src/gui/VacfDialog.hpp
     src/gui/VacfDialog.cpp
     src/gui/SimulationWizardBase.hpp
@@ -460,6 +466,10 @@ qt_add_executable(calango
     src/gui/BornChargesWizard.cpp
     src/gui/BornChargesViewer.hpp
     src/gui/BornChargesViewer.cpp
+    src/gui/RamanIrWizard.hpp
+    src/gui/RamanIrWizard.cpp
+    src/gui/RamanIrViewer.hpp
+    src/gui/RamanIrViewer.cpp
     src/gui/PointOfViewDialog.hpp
     src/gui/PointOfViewDialog.cpp
     src/gui/CastSetupDialog.hpp
@@ -562,11 +572,13 @@ qt_add_resources(calango "icons"
         assets/.internal/icons/group-fill.svg
         assets/.internal/icons/hard-drive-2-line.svg
         assets/.internal/icons/hashtag.svg
+        assets/.internal/icons/heading.svg
         assets/.internal/icons/indeterminate-circle-fill.svg
         assets/.internal/icons/information-line.svg
         assets/.internal/icons/loader-4-line.svg
         assets/.internal/icons/magic-line.svg
         assets/.internal/icons/palette-line.svg
+        assets/.internal/icons/price-tag-fill.svg
         assets/.internal/icons/puzzle-fill.svg
         assets/.internal/icons/line-chart-line.svg
         assets/.internal/icons/links-line.svg
@@ -986,6 +998,38 @@ if(CALANGO_BUILD_TESTS)
     target_link_libraries(calango_shader_test PRIVATE Qt6::Gui Qt6::OpenGL)
     add_test(NAME shader_compilation COMMAND calango_shader_test)
 
+    # Translucent rendering: renders real frames offscreen and compares PIXELS.
+    # Opacity below 1 used to make the unit cell vanish and every bond jump in
+    # front of its atoms — a wrong frame is still a frame, so nothing else here
+    # could see it. Self-skips when no GL 3.3 context exists.
+    qt_add_executable(calango_translucent_render_test
+        tests/TranslucentRenderTest.cpp
+        src/render/StructureRenderer.cpp
+        src/render/Camera.cpp
+        src/render/ColorMap.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/core/Coordination.cpp
+        src/core/MarchingCubes.cpp
+        src/core/VolumetricData.cpp
+    )
+    qt_add_resources(calango_translucent_render_test "render_test_shaders"
+        PREFIX "/"
+        FILES
+            assets/shaders/mesh.vert
+            assets/shaders/mesh.frag
+            assets/shaders/shadow.vert
+            assets/shaders/shadow.frag
+            assets/shaders/line.vert
+            assets/shaders/line.frag
+            assets/shaders/wire.vert
+            assets/shaders/wire.frag)
+    target_include_directories(calango_translucent_render_test PRIVATE src)
+    target_link_libraries(calango_translucent_render_test
+        PRIVATE Qt6::Gui Qt6::OpenGL)
+    add_test(NAME translucent_render COMMAND calango_translucent_render_test)
+
     # Dialog construction: a wizard whose constructor emitted a signal into a
     # slot reading widgets it had not created yet crashed the moment its menu
     # item was clicked. The application smoke test never opens dialogs and a
@@ -998,13 +1042,44 @@ if(CALANGO_BUILD_TESTS)
         src/gui/HubbardParametersDialog.cpp
         src/gui/GeometryConstraintsDialog.cpp
         src/gui/OpticsPlotStyleDialog.cpp
+        src/gui/OverlayEditDialog.cpp
+        src/gui/OverlayModel.cpp
+        src/gui/GuiUtils.cpp
+        src/core/VolumetricData.cpp
+        src/render/ColorMap.cpp
+        # One concrete simulation wizard, so the shared per-engine group
+        # show/hide logic in SimulationWizardBase is actually driven. That is
+        # where a newly added engine re-arms the construction-order hazard this
+        # test exists for.
+        src/gui/SinglePointWizard.cpp
+        src/gui/SimulationWizardBase.cpp
+        src/gui/GpawElectronicRows.cpp
+        src/gui/HubbardParametersDialog.cpp
+        src/gui/CondaEnvs.cpp
+        src/gui/EnginePresets.cpp
+        src/gui/PythonHighlighter.cpp
+        src/gui/RunCommands.cpp
+        src/gui/ScriptStaging.cpp
+        src/gui/SettingsManager.cpp
+        src/core/AseScriptGenerator.cpp
         src/core/GrapheneOxideBuilder.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
         src/core/Element.cpp
+        src/python_bridge/PythonEngine.cpp
     )
-    target_include_directories(calango_dialog_test PRIVATE src)
-    target_link_libraries(calango_dialog_test PRIVATE Qt6::Widgets)
+    target_include_directories(calango_dialog_test PRIVATE src
+        "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    # QT_NO_KEYWORDS for the same reason the main target sets it: PythonEngine
+    # pulls in CPython headers, whose `slots` member collides with Qt's
+    # lowercase keyword. The GUI sources already use the Q_SLOTS spelling.
+    target_compile_definitions(calango_dialog_test PRIVATE
+        CALANGO_VERSION="${PROJECT_VERSION}"
+        QT_NO_KEYWORDS)
+    # Qt6::OpenGL for StructureRenderer.hpp, which OverlayModel.hpp pulls in
+    # for the OverlayRange type the geometry builders emit.
+    target_link_libraries(calango_dialog_test
+        PRIVATE Qt6::Widgets Qt6::OpenGL pybind11::embed)
     add_test(NAME dialog_construction COMMAND calango_dialog_test)
 
     # Theme-adaptive icons: that a Light-mode glyph is dark (the white-on-white
@@ -1024,6 +1099,74 @@ if(CALANGO_BUILD_TESTS)
         FILES assets/.internal/icons/focus-3-line.svg)
     add_test(NAME icon_theme COMMAND calango_icon_theme_test)
 
+    # Overlay geometry: the "Additional overlays" dock packs every entry into
+    # one pair of shared streams and slices them with per-overlay ranges. A
+    # range that does not match where the triangles landed draws the wrong
+    # overlay at the wrong opacity — silently. GL-free and GUI-free.
+    qt_add_executable(calango_overlay_test
+        tests/OverlayModelTest.cpp
+        src/gui/OverlayModel.cpp
+        src/render/ColorMap.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/core/VolumetricData.cpp
+    )
+    target_include_directories(calango_overlay_test PRIVATE src)
+    target_link_libraries(calango_overlay_test
+        PRIVATE Qt6::Widgets Qt6::OpenGL)
+    add_test(NAME overlay_model COMMAND calango_overlay_test)
+
+    # CPK element colours and the legibility of the symbol written on them.
+    # The periodic-table dialog and the insertion-element button both paint a
+    # raw CPK swatch and label it; CPK is not a designed UI palette, so an
+    # unreadable label is a real and silent failure. Checked as a property over
+    # all 118 elements, since the failures are individual ones.
+    qt_add_executable(calango_element_color_test
+        tests/ElementColorTest.cpp
+        src/gui/GuiUtils.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_element_color_test PRIVATE src)
+    target_link_libraries(calango_element_color_test PRIVATE Qt6::Widgets)
+    add_test(NAME element_colors COMMAND calango_element_color_test)
+
+    # Orbit camera: the default view, the plane alignments and the roll axis,
+    # checked against the matrices the camera actually produces. Every one of
+    # these is silently wrong-able — a pitch of the wrong sign still renders,
+    # just the other side of the crystal. GL-free and GUI-free.
+    qt_add_executable(calango_camera_test
+        tests/CameraTest.cpp
+        src/render/Camera.cpp
+        src/render/Film.cpp
+    )
+    target_include_directories(calango_camera_test PRIVATE src)
+    target_link_libraries(calango_camera_test PRIVATE Qt6::Gui)
+    add_test(NAME camera COMMAND calango_camera_test)
+
+    # Alembic export: the geometry half (face tables, per-element grouping,
+    # option handling) checked directly, because its defects produce a
+    # well-formed file that imports as garbage rather than an error. The Python
+    # half can only be checked for syntax and for the alembic/SQLAlchemy import
+    # collision — PyAlembic has no conda-forge build for arm64 macOS.
+    qt_add_executable(calango_alembic_test
+        tests/AlembicExportTest.cpp
+        src/python_bridge/AlembicExporter.cpp
+        src/render/StructureRenderer.cpp
+        src/render/ColorMap.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/core/Coordination.cpp
+        src/core/MarchingCubes.cpp
+        src/core/VolumetricData.cpp
+    )
+    target_include_directories(calango_alembic_test PRIVATE src)
+    target_link_libraries(calango_alembic_test
+        PRIVATE Qt6::Gui Qt6::OpenGL pybind11::embed)
+    target_compile_definitions(calango_alembic_test PRIVATE QT_NO_KEYWORDS)
+    add_test(NAME alembic_export COMMAND calango_alembic_test)
+
     # Results viewers: the GW and optics windows parse a JSON schema written by
     # a Python script, so nothing in the C++ build ties the two together. This
     # pins the schema from the reader's side (offscreen Qt, no GL, no display).
@@ -1032,6 +1175,8 @@ if(CALANGO_BUILD_TESTS)
         src/gui/GwResultsWindow.cpp
         src/gui/OpticsResultsWindow.cpp
         src/gui/OpticsPlotStyleDialog.cpp
+        src/gui/RamanIrViewer.cpp
+        src/gui/LinePlotWidget.cpp
     )
     target_include_directories(calango_results_viewer_test PRIVATE src)
     target_link_libraries(calango_results_viewer_test PRIVATE Qt6::Widgets)
@@ -1075,6 +1220,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/PhononScriptGenerator.cpp
         src/core/OpticsScriptGenerator.cpp
         src/core/GwScriptGenerator.cpp
+        src/core/RamanIrScriptGenerator.cpp
     )
     target_include_directories(calango_script_test PRIVATE src
         "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -1204,6 +1350,48 @@ if(CALANGO_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/optics_2d_test.py
                 $<TARGET_FILE:calango_script_test>)
+
+    # LAMMPS: the generated scripts are EXECUTED against recording stubs that
+    # mirror ASE's own calculator signatures, so a keyword ASE would reject
+    # fails here rather than on a machine that actually has LAMMPS. No LAMMPS
+    # build needed; self-skips without ASE.
+    add_test(NAME lammps_scripts
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/lammps_script_test.py
+                $<TARGET_FILE:calango_script_test>)
+
+    # LAMMPS against a REAL LAMMPS build: the shipped scripts driven through
+    # both ASE interfaces, checked against the closed-form Lennard-Jones fcc
+    # cohesive energy (with the truncated tail added back analytically). The
+    # stub-based lammps_scripts test above proves the arguments are right;
+    # this proves the physics that comes back is. Self-skips without LAMMPS.
+    add_test(NAME lammps_environment
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/lammps_env_benchmark.py
+                $<TARGET_FILE:calango_script_test>)
+    set_tests_properties(lammps_environment PROPERTIES TIMEOUT 900)
+
+    # Raman / IR array algebra: the mass-weighted diagonalization, the Z*
+    # contraction, the polarizability-derivative contraction and the Stokes
+    # prefactor, against an A-B spring pair whose every answer is closed-form.
+    # None of these can fail loudly — a dropped 1/sqrt(M) or a transposed
+    # einsum yields a plausible spectrum that is simply wrong.
+    add_test(NAME raman_ir_math
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/raman_ir_math_test.py
+                $<TARGET_FILE:calango_script_test>)
+
+    # Raman / IR end-to-end validation on MgO (rock-salt). Runs the SHIPPED
+    # generated script against a GPAW SCF baseline and Born charges computed
+    # here, and checks it against physics that admits no fitting: rock-salt is
+    # centrosymmetric, so its T_1u mode is IR-active and Raman-FORBIDDEN. A
+    # module that got the polarizability contraction wrong lights that mode up
+    # and is caught. Self-skips (exit 0) without GPAW.
+    add_test(NAME raman_ir_mgo
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/raman_ir_mgo_benchmark.py
+                $<TARGET_FILE:calango_script_test>)
+    set_tests_properties(raman_ir_mgo PROPERTIES TIMEOUT 3600)
 
     # Yambo quasiparticle-report parser: the only generated code whose result
     # depends on reading a third-party text format, and the one pipeline that

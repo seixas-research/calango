@@ -60,6 +60,16 @@ private Q_SLOTS:
     /// refresh the dialog; on accept the caller installs it via undo.
     void standardizeCell();
     void reduceToPrimitiveCell();
+    /// "Wrap within the unit cell": translate the selected atoms by whole
+    /// lattice vectors until their fractional coordinates lie in [0, 1). With
+    /// nothing selected every atom is wrapped. Non-periodic axes are left
+    /// alone — folding a slab's vacuum direction would move atoms through the
+    /// vacuum they were placed in.
+    void wrapSelectedIntoCell();
+    /// "Set as origin": put the single selected atom at (0, 0, 0) and shift
+    /// every other atom by the same vector. A rigid translation, so distances
+    /// and the lattice are untouched.
+    void setSelectedAsOrigin();
     /// One cell of the atom table was edited by the user.
     void onAtomCellChanged(int row, int column);
 
@@ -93,6 +103,11 @@ private:
     QPushButton* standardizeButton_ = nullptr;
     QPushButton* primitiveButton_ = nullptr;
     QPushButton* translateButton_ = nullptr;
+    /// Atom-table row. Wrapping needs boundaries to wrap into, so it follows
+    /// the cell's presence; re-origining is a plain translation and stays
+    /// available for an isolated molecule.
+    QPushButton* wrapButton_ = nullptr;
+    QPushButton* originButton_ = nullptr;
     QTableWidget* atomTable_ = nullptr;
     QLabel* summaryLabel_ = nullptr;
 };

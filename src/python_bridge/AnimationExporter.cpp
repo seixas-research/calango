@@ -73,21 +73,75 @@ processed[0].save(path, **kwargs)
     }
 }
 
-void AnimationExporter::exportMp4(const std::vector<QImage>& frames,
-                                  const QString& path,
-                                  int fps)
+const std::vector<AnimationExporter::VideoFormat>&
+AnimationExporter::videoFormats()
 {
-    if (frames.empty())
-        throw std::runtime_error("No frames to export");
+    // Codec availability comes from the ffmpeg imageio-ffmpeg bundles, which is
+    // a full build: libx264, libx265, libvpx-vp9 and mpeg4 are all present. The
+    // list is deliberately short — one entry per genuinely different answer to
+    // "where is this file going to be played".
+    static const std::vector<VideoFormat> kFormats = {
+        {QT_TRANSLATE_NOOP("AnimationExporter", "MP4 video (H.264)"),
+         "mp4", "libx264", "yuv420p"},
+        {QT_TRANSLATE_NOOP("AnimationExporter", "MP4 video (H.265 / HEVC)"),
+         "mp4", "libx265", "yuv420p"},
+        {QT_TRANSLATE_NOOP("AnimationExporter", "QuickTime movie (H.264)"),
+         "mov", "libx264", "yuv420p"},
+        {QT_TRANSLATE_NOOP("AnimationExporter", "Matroska video (H.264)"),
+         "mkv", "libx264", "yuv420p"},
+        {QT_TRANSLATE_NOOP("AnimationExporter", "WebM video (VP9)"),
+         "webm", "libvpx-vp9", "yuv420p"},
+        {QT_TRANSLATE_NOOP("AnimationExporter", "AVI video (MPEG-4)"),
+         "avi", "mpeg4", "yuv420p"},
+        {QT_TRANSLATE_NOOP("AnimationExporter", "Animated GIF"),
+         "gif", "", ""},
+    };
+    return kFormats;
+}
 
+namespace {
+
+/// Import check shared by every ffmpeg-backed path. The message names the two
+/// packages and the install line, because a missing bundled ffmpeg is by far
+/// the most common way a video export fails.
+void requireImageio()
+{
     try {
         py::module_::import("imageio");
         py::module_::import("imageio_ffmpeg");
     } catch (const py::error_already_set&) {
         throw std::runtime_error(
-            "MP4 export needs imageio with its bundled ffmpeg in the embedded\n"
-            "Python environment. Install with:  pip install imageio imageio-ffmpeg");
+            "Video export needs imageio with its bundled ffmpeg in the "
+            "embedded\nPython environment. Install with:  pip install imageio "
+            "imageio-ffmpeg");
     }
+}
+
+/// One frame repacked as densely-packed RGB888 rows, cropped to width×height.
+/// QImage pads scanlines to 4 bytes, which numpy's reshape would misread.
+QByteArray packRgb(const QImage& frame, int width, int height)
+{
+    const QImage rgb =
+        frame.copy(0, 0, width, height).convertToFormat(QImage::Format_RGB888);
+    QByteArray packed;
+    packed.reserve(width * height * 3);
+    for (int y = 0; y < height; ++y)
+        packed.append(reinterpret_cast<const char*>(rgb.constScanLine(y)),
+                      width * 3);
+    return packed;
+}
+
+} // namespace
+
+void AnimationExporter::exportVideo(const std::vector<QImage>& frames,
+                                    const QString& path,
+                                    int fps,
+                                    const QString& codec,
+                                    const QString& pixelFormat)
+{
+    if (frames.empty())
+        throw std::runtime_error("No frames to export");
+    requireImageio();
 
     // yuv420p requires even dimensions — crop a pixel if needed.
     const int width = frames.front().width() & ~1;
@@ -98,14 +152,7 @@ void AnimationExporter::exportMp4(const std::vector<QImage>& frames,
     try {
         py::list pyFrames;
         for (const QImage& frame : frames) {
-            const QImage rgb =
-                frame.copy(0, 0, width, height).convertToFormat(QImage::Format_RGB888);
-            // QImage pads scanlines to 4 bytes; repack rows densely.
-            QByteArray packed;
-            packed.reserve(width * height * 3);
-            for (int y = 0; y < height; ++y)
-                packed.append(reinterpret_cast<const char*>(rgb.constScanLine(y)),
-                              width * 3);
+            const QByteArray packed = packRgb(frame, width, height);
             pyFrames.append(py::bytes(packed.constData(),
                                       static_cast<std::size_t>(packed.size())));
         }
@@ -116,13 +163,15 @@ void AnimationExporter::exportMp4(const std::vector<QImage>& frames,
         locals["fps"] = std::max(1, fps);
         locals["width"] = width;
         locals["height"] = height;
+        locals["codec"] = codec.toStdString();
+        locals["pixelformat"] = pixelFormat.toStdString();
 
         py::exec(R"PY(
 import numpy as np
 import imageio
 
 writer = imageio.get_writer(
-    path, fps=fps, codec="libx264", quality=8, pixelformat="yuv420p")
+    path, fps=fps, codec=codec, quality=8, pixelformat=pixelformat)
 try:
     for raw in frames:
         writer.append_data(np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3))
@@ -133,8 +182,16 @@ finally:
                  // see the script's own names (see AseBridge::symmetryInfo).
                  locals, locals);
     } catch (const py::error_already_set& e) {
-        throw std::runtime_error(std::string("MP4 export failed:\n") + e.what());
+        throw std::runtime_error(std::string("Video export failed:\n") + e.what());
     }
+}
+
+void AnimationExporter::exportMp4(const std::vector<QImage>& frames,
+                                  const QString& path,
+                                  int fps)
+{
+    exportVideo(frames, path, fps, QStringLiteral("libx264"),
+                QStringLiteral("yuv420p"));
 }
 
 namespace {
@@ -236,17 +293,19 @@ void AnimationExporter::exportMp4FromFiles(const QStringList& framePaths,
                                            const QString& path,
                                            int fps)
 {
+    exportVideoFromFiles(framePaths, path, fps, QStringLiteral("libx264"),
+                         QStringLiteral("yuv420p"));
+}
+
+void AnimationExporter::exportVideoFromFiles(const QStringList& framePaths,
+                                             const QString& path,
+                                             int fps,
+                                             const QString& codec,
+                                             const QString& pixelFormat)
+{
     if (framePaths.isEmpty())
         throw std::runtime_error("No frames to export");
-
-    try {
-        py::module_::import("imageio");
-        py::module_::import("imageio_ffmpeg");
-    } catch (const py::error_already_set&) {
-        throw std::runtime_error(
-            "MP4 export needs imageio with its bundled ffmpeg in the embedded\n"
-            "Python environment. Install with:  pip install imageio imageio-ffmpeg");
-    }
+    requireImageio();
 
     // The whole stream is sized from frame 0; yuv420p requires even
     // dimensions, so crop a pixel where needed (as the in-memory path does).
@@ -261,6 +320,8 @@ void AnimationExporter::exportMp4FromFiles(const QStringList& framePaths,
     locals["fps"] = std::max(1, fps);
     locals["width"] = width;
     locals["height"] = height;
+    locals["codec"] = codec.toStdString();
+    locals["pixelformat"] = pixelFormat.toStdString();
 
     try {
         py::exec(R"PY(
@@ -268,7 +329,7 @@ import numpy as np
 import imageio
 
 writer = imageio.get_writer(
-    path, fps=fps, codec="libx264", quality=8, pixelformat="yuv420p")
+    path, fps=fps, codec=codec, quality=8, pixelformat=pixelformat)
 
 def add_frame(raw):
     writer.append_data(np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3))
@@ -280,12 +341,12 @@ def close_writer():
                  // see the script's own names (see AseBridge::symmetryInfo).
                  locals, locals);
     } catch (const py::error_already_set& e) {
-        throw std::runtime_error(std::string("MP4 export failed:\n") + e.what());
+        throw std::runtime_error(std::string("Video export failed:\n") + e.what());
     }
 
     // From here the ffmpeg writer owns a subprocess and a partially written
     // file: every exit path has to close it, or the process leaks and the
-    // .mp4 is left unplayable.
+    // video is left unplayable.
     const auto closeWriter = [&locals] {
         try {
             locals["close_writer"]();
@@ -311,20 +372,13 @@ def close_writer():
                         .arg(height)
                         .toStdString());
             }
-            const QImage rgb =
-                source.copy(0, 0, width, height).convertToFormat(QImage::Format_RGB888);
-            // QImage pads scanlines to 4 bytes; repack rows densely.
-            QByteArray packed;
-            packed.reserve(width * height * 3);
-            for (int y = 0; y < height; ++y)
-                packed.append(reinterpret_cast<const char*>(rgb.constScanLine(y)),
-                              width * 3);
+            const QByteArray packed = packRgb(source, width, height);
             addFrame(py::bytes(packed.constData(),
                                static_cast<std::size_t>(packed.size())));
         }
     } catch (const py::error_already_set& e) {
         closeWriter();
-        throw std::runtime_error(std::string("MP4 export failed:\n") + e.what());
+        throw std::runtime_error(std::string("Video export failed:\n") + e.what());
     } catch (...) {
         closeWriter();
         throw;

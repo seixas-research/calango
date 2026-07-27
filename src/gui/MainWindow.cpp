@@ -49,12 +49,12 @@
 #include "gui/PhononPlotWindow.hpp"
 #include "gui/SupercellDialog.hpp"
 #include "gui/PartialChargeDialog.hpp"
-#include "gui/CustomOverlayDialog.hpp"
 #include "gui/ElfDialog.hpp"
 #include "gui/ElfWizard.hpp"
-#include "gui/LatticePlaneDialog.hpp"
 #include "gui/OpticsWizard.hpp"
+#include "gui/OverlayPanel.hpp"
 #include "gui/GrapheneOxideWizard.hpp"
+#include "gui/GuiUtils.hpp"
 #include "gui/GwResultsWindow.hpp"
 #include "gui/OpticsResultsWindow.hpp"
 #include "gui/WannierDialog.hpp"
@@ -74,6 +74,8 @@
 #include "ui/IconManager.hpp"
 #include "gui/WelcomeDialog.hpp"
 #include "gui/RamanDialog.hpp"
+#include "gui/RamanIrViewer.hpp"
+#include "gui/RamanIrWizard.hpp"
 #include "gui/GeometryOptimizationViewer.hpp"
 #include "gui/GwWizard.hpp"
 #include "gui/MacromoleculeWizard.hpp"
@@ -95,6 +97,7 @@
 #include "gui/TimelineWidget.hpp"
 #include "gui/ViewportWidget.hpp"
 #include "jobs/JobRunner.hpp"
+#include "python_bridge/AlembicExporter.hpp"
 #include "python_bridge/AnimationExporter.hpp"
 #include "python_bridge/AseBridge.hpp"
 #include "python_bridge/PythonEngine.hpp"
@@ -180,7 +183,11 @@ constexpr double kTrajectoryPlaybackFps = 15.0;
 //  12: Visual Effects joined the right column, which now runs the full window
 //      height (both bottom corners belong to the side areas); the bottom row
 //      is Results | Remote Access, the latter pinned to its minimum width.
-constexpr int kLayoutVersion = 12;
+//  13: "Additional overlays" added to the left column between Volumetric Data
+//      and Processes. A new dock is exactly the case the version guards: a
+//      layout saved under 12 has no slot for it, and restoring one would hide
+//      the dock permanently with no way back short of Reset Layout.
+constexpr int kLayoutVersion = 13;
 
 /// Painted icons for the frame-panel camera toolbar (icon-only buttons).
 /// Plane icons use the axes-triad colors: x red, y green, z blue.
@@ -342,6 +349,12 @@ MainWindow::MainWindow(QWidget* parent)
     orthoAction_ = new QAction(tr("Orthographic"), this);
     ui::IconManager::bind(orthoAction_, QStringLiteral("box-3-line"));
     orthoAction_->setCheckable(true);
+    // Reflect the camera's ACTUAL projection rather than assuming unchecked.
+    // The viewport now starts orthographic (render::kDefaultProjection), and a
+    // toggle that opened unchecked over an orthographic camera would both
+    // misreport the state and need two clicks to reach perspective.
+    orthoAction_->setChecked(viewport_->camera().projectionMode()
+                             == render::CameraProjection::Orthographic);
     orthoAction_->setShortcut(QKeySequence(Qt::Key_O));
     orthoAction_->setToolTip(tr("Toggle perspective / orthographic projection  [O]"));
     connect(orthoAction_, &QAction::toggled,
@@ -394,19 +407,31 @@ MainWindow::MainWindow(QWidget* parent)
                   QKeySequence(Qt::Key_I));
 
     // Chemical Element Selector, placed directly after the Insert toggle:
-    // opens the periodic table and shows the active element symbol in bold
-    // white over a prominent red background, so the element Insertion mode
-    // will place is always obvious.
+    // opens the periodic table and shows the active element symbol over that
+    // element's own CPK colour, so the element Insertion mode will place is
+    // both named and previewed.
+    //
+    // The button used to be a fixed red regardless of the element, which meant
+    // it matched carbon, oxygen and iron equally badly and told the user
+    // nothing beyond the symbol already written on it.
     elementButton_ = new QToolButton(frameToolbar);
     elementButton_->setToolButtonStyle(Qt::ToolButtonTextOnly);
     elementButton_->setToolTip(tr("Element inserted by Insertion mode — "
                                   "click to choose from the periodic table"));
-    elementButton_->setStyleSheet(QStringLiteral(
-        "QToolButton { background-color: #D32F2F; color: white;"
-        " font-weight: bold; border: 1px solid #B71C1C;"
-        " border-radius: 3px; padding: 1px 6px; }"
-        "QToolButton:hover { background-color: #E53935; }"));
     const auto updateElementButton = [this] {
+        const QColor background = cpkColor(activeElementZ_);
+        const QColor text = readableTextColor(background);
+        // The border is a darkened swatch and the hover a lightened one, so
+        // both track the element instead of clashing with it.
+        elementButton_->setStyleSheet(
+            QStringLiteral(
+                "QToolButton { background-color: %1; color: %2;"
+                " font-weight: bold; border: 1px solid %3;"
+                " border-radius: 3px; padding: 1px 6px; }"
+                "QToolButton:hover { background-color: %4; }")
+                .arg(background.name(), text.name(),
+                     background.darker(140).name(),
+                     background.lighter(115).name()));
         elementButton_->setText(
             QLatin1String(core::Elements::data(activeElementZ_).symbol));
     };
@@ -545,48 +570,17 @@ MainWindow::MainWindow(QWidget* parent)
     connect(duplicateAction, &QAction::triggered, this,
             &MainWindow::duplicateOrExtractFrame);
 
-    // --- Atom label overlays ----------------------------------------------
-    // Two independent checkable toggles that overlay per-atom text on the 3D
-    // canvas: element symbols (atom glyph) and/or 1-based atom indices
-    // (hashtag glyph), both theme-tinted RemixIcons.
-    frameToolbar->addSeparator();
-    QAction* elementLabelsAction = frameToolbar->addAction(tr("Show element symbols"));
-    ui::IconManager::bind(elementLabelsAction, QStringLiteral("atom-line"));
-    elementLabelsAction->setCheckable(true);
-    elementLabelsAction->setToolTip(
-        tr("Show element symbols — overlay each atom's chemical symbol "
-           "(Fe, O, Si…) on the 3D canvas"));
-    connect(elementLabelsAction, &QAction::toggled, viewport_,
-            &ViewportWidget::setShowElementLabels);
+    // The two atom-label overlays (element symbols, atomic indices) moved to
+    // the Representation dock's editor row, beside the other controls that
+    // decide how atoms are DRAWN. The viewport toolbar is about navigating and
+    // measuring the scene; what is written on the atoms is a representation
+    // choice and belongs with the rest of them.
 
-    QAction* indexLabelsAction = frameToolbar->addAction(tr("Show atomic indices"));
-    ui::IconManager::bind(indexLabelsAction, QStringLiteral("hashtag"));
-    indexLabelsAction->setCheckable(true);
-    indexLabelsAction->setToolTip(
-        tr("Show atomic indices — overlay each atom's 1-based index (#1, #2…) "
-           "on the 3D canvas"));
-    connect(indexLabelsAction, &QAction::toggled, viewport_,
-            &ViewportWidget::setShowAtomIndexLabels);
-
-    // --- Lattice Plane / volumetric color-slice overlay -------------------
-    frameToolbar->addSeparator();
-    QAction* latticePlaneAction = frameToolbar->addAction(tr("Lattice Plane…"));
-    ui::IconManager::bind(latticePlaneAction, QStringLiteral("stack-fill"));
-    latticePlaneAction->setToolTip(
-        tr("Lattice Plane… — overlay a translucent Miller-index (h k l) plane, "
-           "optionally color-sliced through a loaded volumetric field "
-           "(charge density / ELF)"));
-    connect(latticePlaneAction, &QAction::triggered, this,
-            &MainWindow::showLatticePlane);
-
-    QAction* customOverlayAction = frameToolbar->addAction(tr("Custom overlay…"));
-    ui::IconManager::bind(customOverlayAction, QStringLiteral("puzzle-fill"));
-    customOverlayAction->setToolTip(
-        tr("Custom overlay… — add geometric primitives (spheres, boxes, "
-           "cylinders, planes…) with custom textures and opacity over the "
-           "structure"));
-    connect(customOverlayAction, &QAction::triggered, this,
-            &MainWindow::showCustomOverlay);
+    // The Lattice Plane and Custom overlay buttons are gone from this toolbar.
+    // Both opened a modeless dialog that owned its own private overlay list, so
+    // a scene with a plane and a labelled sphere meant two floating windows and
+    // no single place showing what was actually drawn. Both are now entries in
+    // the "Additional overlays" dock, alongside text annotations.
 
     auto* central = new QWidget(this);
     auto* centralLayout = new QVBoxLayout(central);
@@ -768,8 +762,16 @@ void MainWindow::createMenusAndDocks()
     QMenu* exportMenu = fileMenu->addMenu(tr("&Import / Export"));
     exportMenu->addAction(tr("Export &Image…"), QKeySequence(tr("Ctrl+E")),
                           this, &MainWindow::exportImage);
-    exportMenu->addAction(tr("Export Ani&mation (GIF/MP4)…"),
+    // The format is chosen inside the dialog (MP4, MOV, MKV, WebM, AVI, GIF),
+    // so spelling two of them out in the menu title is both incomplete and
+    // redundant.
+    exportMenu->addAction(tr("Export Ani&mation…"),
                           this, &MainWindow::exportAnimation);
+    exportMenu->addAction(tr("Export to &Alembic…"), this,
+                          &MainWindow::exportAlembic)
+        ->setToolTip(tr("Scene geometry (atoms, bonds, unit cell) as an "
+                        "Alembic .abc cache for Blender / Houdini / Maya; a "
+                        "trajectory exports as animated samples"));
     exportMenu->addAction(tr("&Ray-Traced Render…"),
                           this, &MainWindow::openRayTraceDialog);
     fileMenu->addSeparator();
@@ -949,6 +951,14 @@ void MainWindow::createMenusAndDocks()
         ->setToolTip(tr("Z* tensors from the polarization response to atomic "
                         "displacements — the LO-TO splitting and IR "
                         "intensities depend on them"));
+    // Directly after Born charges, which it consumes: the IR intensities ARE
+    // the Z* tensors contracted with the phonon eigenvectors, so this is the
+    // step that turns that run into a spectrum.
+    electronicsMenu->addAction(tr("&Raman and IR Spectroscopy…"), this,
+                               &MainWindow::showRamanIrSpectroscopy)
+        ->setToolTip(tr("Γ-point Raman and infrared spectra: IR from the "
+                        "inherited Born effective charges, Raman from the "
+                        "polarizability derivative ∂α/∂Q"));
 
     // ----- Analysis: spec order, reciprocal-space tools at the end ---------
     QMenu* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
@@ -1084,7 +1094,8 @@ void MainWindow::createMenusAndDocks()
     // behind, and View → Calango toggles it.
     brandingDock->setVisible(true);
 
-    // Left column, top → bottom: Structure, Volumetric Data, then Processes.
+    // Left column, top → bottom: Structure, Volumetric Data, Additional
+    // overlays, then Processes.
     // (Structure and its related Volumetric Data panel sit at the prominent top
     // of the left column, directly under the branding card; the transient
     // Processes monitor moves to the foot of the column.)
@@ -1105,12 +1116,23 @@ void MainWindow::createMenusAndDocks()
     volumetricDock->setWidget(volumetricPanel_);
     splitDockWidget(infoDock, volumetricDock, Qt::Vertical);
 
+    // "Additional overlays": everything drawn OVER the structure that is not
+    // the structure — lattice planes, text annotations, geometric primitives.
+    // It sits under Volumetric Data because the two are neighbours in kind:
+    // both add something to the scene rather than describing the atoms, and a
+    // lattice plane routinely slices a field loaded in the panel above.
+    auto* overlayDock = new QDockWidget(tr("Additional overlays"), this);
+    overlayDock->setObjectName(QStringLiteral("overlayDock"));
+    overlayPanel_ = new OverlayPanel(viewport_, overlayDock);
+    overlayDock->setWidget(overlayPanel_);
+    splitDockWidget(volumetricDock, overlayDock, Qt::Vertical);
+
     // Compact Process Manager at the foot of the left column.
     auto* processDock = new QDockWidget(tr("Processes"), this);
     processDock->setObjectName(QStringLiteral("processDock"));
     processPanel_ = new ProcessManagerPanel(processDock);
     processDock->setWidget(processPanel_);
-    splitDockWidget(volumetricDock, processDock, Qt::Vertical);
+    splitDockWidget(overlayDock, processDock, Qt::Vertical);
     connect(processPanel_, &ProcessManagerPanel::loadResultRequested,
             this, &MainWindow::onProcessResultRequested);
     connect(processPanel_, &ProcessManagerPanel::viewScriptRequested,
@@ -2560,6 +2582,25 @@ void MainWindow::exportAnimation()
     fpsSpin->setValue(24);
     form->addRow(tr("Frames per second:"), fpsSpin);
 
+    // Format is picked here rather than inferred from the file extension the
+    // user happens to type: .mp4 alone does not say H.264 or HEVC, and a
+    // silently-chosen codec is what makes an export unplayable somewhere else.
+    // The save dialog below follows this choice.
+    auto* formatCombo = new QComboBox(&dialog);
+    const auto& formats = pybridge::AnimationExporter::videoFormats();
+    for (std::size_t i = 0; i < formats.size(); ++i) {
+        formatCombo->addItem(tr(formats[i].label), static_cast<int>(i));
+    }
+    formatCombo->setCurrentIndex(0); // MP4 / H.264 — plays everywhere
+    formatCombo->setToolTip(
+        tr("H.264 MP4 is the default: it is the one file that plays "
+           "everywhere.\n"
+           "HEVC and VP9 encode the same picture smaller, at the cost of "
+           "older players.\n"
+           "Animated GIF is the only format here that carries transparency — "
+           "and the only one limited to 256 colours per frame."));
+    form->addRow(tr("Format:"), formatCombo);
+
     auto* countLabel = new QLabel(&dialog);
     form->addRow(tr("Frames to render:"), countLabel);
     // Rotation frames only mean anything for the turntable; the trajectory
@@ -2618,18 +2659,30 @@ void MainWindow::exportAnimation()
     if (dialog.exec() != QDialog::Accepted)
         return;
 
-    const QString path = QFileDialog::getSaveFileName(
-        this, tr("Export Animation"), QStringLiteral("calango.gif"),
-        tr("GIF animation (*.gif);;MP4 video (*.mp4)"));
+    const pybridge::AnimationExporter::VideoFormat& format =
+        formats[static_cast<std::size_t>(formatCombo->currentData().toInt())];
+    const QString extension = QLatin1String(format.extension);
+    const bool isGif = QLatin1String(format.codec).size() == 0;
+
+    QString path = QFileDialog::getSaveFileName(
+        this, tr("Export Animation"),
+        QStringLiteral("calango.") + extension,
+        tr("%1 (*.%2)").arg(tr(format.label), extension));
     if (path.isEmpty())
         return;
-    const bool isMp4 = path.endsWith(QStringLiteral(".mp4"), Qt::CaseInsensitive);
+    // The chosen format decides the container, so an absent (or mismatched)
+    // suffix is corrected rather than silently handing ffmpeg a name whose
+    // extension contradicts the codec it was told to use.
+    if (!path.endsWith(QLatin1Char('.') + extension, Qt::CaseInsensitive))
+        path += QLatin1Char('.') + extension;
 
     bool transparent = backgroundCombo->currentIndex() == 3;
-    if (transparent && isMp4) {
-        QMessageBox::information(this, tr("Export Animation"),
-                                 tr("MP4 has no alpha channel — using a solid white "
-                                    "background instead."));
+    if (transparent && !isGif) {
+        QMessageBox::information(
+            this, tr("Export Animation"),
+            tr("%1 has no alpha channel — using a solid white background "
+               "instead.")
+                .arg(tr(format.label)));
         transparent = false;
         backgroundCombo->setCurrentIndex(0);
     }
@@ -2703,14 +2756,122 @@ void MainWindow::exportAnimation()
     progress.setValue(frameCount);
 
     try {
-        if (isMp4)
-            pybridge::AnimationExporter::exportMp4(images, path, fpsSpin->value());
-        else
+        if (isGif) {
             pybridge::AnimationExporter::exportGif(images, path, fpsSpin->value(),
                                                    transparent);
+        } else {
+            pybridge::AnimationExporter::exportVideo(
+                images, path, fpsSpin->value(), QLatin1String(format.codec),
+                QLatin1String(format.pixelFormat));
+        }
         statusBar()->showMessage(tr("Exported %1 (%2 frames)").arg(path).arg(images.size()));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Export Animation"), QString::fromUtf8(e.what()));
+    }
+}
+
+void MainWindow::exportAlembic()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        statusBar()->showMessage(tr("Open a structure first."));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Export to Alembic"));
+    auto* form = new QFormLayout(&dialog);
+
+    auto* intro = new QLabel(
+        tr("<i>Alembic (.abc) is a baked geometry cache: the atoms, bonds and "
+           "cell as polygon meshes, one object per element so materials can be "
+           "assigned per species after import (Blender, Houdini, Maya, "
+           "Cinema&nbsp;4D, Unreal).</i>"),
+        &dialog);
+    intro->setWordWrap(true);
+    form->addRow(intro);
+
+    const bool hasTrajectory = doc->frames.size() > 1;
+    auto* sourceCombo = new QComboBox(&dialog);
+    sourceCombo->addItem(tr("Current structure (single frame)"), 0);
+    if (hasTrajectory) {
+        sourceCombo->addItem(
+            tr("Trajectory (%1 frames, animated)").arg(doc->frames.size()), 1);
+        sourceCombo->setCurrentIndex(1);
+    }
+    form->addRow(tr("Source:"), sourceCombo);
+
+    auto* fpsSpin = new QSpinBox(&dialog);
+    fpsSpin->setRange(1, 120);
+    fpsSpin->setValue(24);
+    fpsSpin->setEnabled(hasTrajectory);
+    form->addRow(tr("Frames per second:"), fpsSpin);
+
+    // Tessellation is the one real trade-off here: an .abc is polygons, and a
+    // 5 000-atom cell at high detail is a multi-hundred-megabyte file.
+    auto* detailCombo = new QComboBox(&dialog);
+    detailCombo->addItem(tr("Low (12 sides — large systems)"), 12);
+    detailCombo->addItem(tr("Medium (24 sides)"), 24);
+    detailCombo->addItem(tr("High (40 sides — close-ups)"), 40);
+    detailCombo->setCurrentIndex(1);
+    form->addRow(tr("Sphere detail:"), detailCombo);
+
+    auto* bondsCheck = new QCheckBox(tr("Include bonds"), &dialog);
+    bondsCheck->setChecked(true);
+    form->addRow(bondsCheck);
+    auto* cellCheck = new QCheckBox(tr("Include unit cell wireframe"), &dialog);
+    cellCheck->setChecked(doc->structure->cell().isDefined());
+    cellCheck->setEnabled(doc->structure->cell().isDefined());
+    form->addRow(cellCheck);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    form->addRow(buttons);
+
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    QString path = QFileDialog::getSaveFileName(
+        this, tr("Export to Alembic"), QStringLiteral("calango.abc"),
+        tr("Alembic cache (*.abc)"));
+    if (path.isEmpty())
+        return;
+    if (!path.endsWith(QStringLiteral(".abc"), Qt::CaseInsensitive))
+        path += QStringLiteral(".abc");
+
+    pybridge::AlembicExporter::Options options;
+    // The exported cache must be the scene that is on screen — same radii,
+    // same element colours, same bond perception — not a second set of
+    // defaults that happens to look similar.
+    options.style = viewport_->style();
+    options.sphereSegments = detailCombo->currentData().toInt();
+    options.cylinderSides = std::max(6, options.sphereSegments * 2 / 3);
+    options.includeBonds = bondsCheck->isChecked();
+    options.includeCell = cellCheck->isChecked();
+    options.fps = fpsSpin->value();
+
+    std::vector<std::shared_ptr<const core::Structure>> frames;
+    if (sourceCombo->currentData().toInt() == 1)
+        frames.assign(doc->frames.begin(), doc->frames.end());
+    else
+        frames.push_back(doc->structure);
+
+    QProgressDialog progress(tr("Writing Alembic cache…"), QString(), 0, 0, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.show();
+    QApplication::processEvents();
+    try {
+        pybridge::AlembicExporter::exportScene(frames, path, options);
+        progress.close();
+        statusBar()->showMessage(
+            tr("Exported %1 (%2 frame(s))").arg(path).arg(frames.size()));
+    } catch (const std::exception& e) {
+        progress.close();
+        QMessageBox::critical(this, tr("Export to Alembic"),
+                              QString::fromUtf8(e.what()));
     }
 }
 
@@ -3517,6 +3678,8 @@ std::vector<MainWindow::ViewerEntry> MainWindow::viewersFor(
          &MainWindow::openGeometryOptimizationResults},
         {"born_charges.json", tr("Born Effective Charges Viewer"),
          &MainWindow::openBornChargesResults},
+        {"raman_ir.json", tr("Raman / IR Spectroscopy Viewer"),
+         &MainWindow::openRamanIrResults},
         {"wannier.json", tr("MLWF Viewer"), &MainWindow::openMlwfResults},
         {"gw.json", tr("GW Viewer"), &MainWindow::openGwResults},
     };
@@ -4318,29 +4481,6 @@ void MainWindow::showPartialCharge()
     dialog->show();
 }
 
-void MainWindow::showLatticePlane()
-{
-    Document* doc = currentDocument();
-    if (!doc || !doc->structure || doc->structure->empty()) {
-        QMessageBox::information(this, tr("Lattice Plane"),
-                                 tr("Open a structure first."));
-        return;
-    }
-    // Modeless: the plane updates live in the viewport while the user orbits
-    // and adjusts the Miller indices / offset / slice field.
-    auto* dialog = new LatticePlaneDialog(doc->structure, viewport_, this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->show();
-}
-
-void MainWindow::showCustomOverlay()
-{
-    // Overlays are independent of the atomic structure, so no structure guard.
-    auto* dialog = new CustomOverlayDialog(viewport_, this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->show();
-}
-
 // Completed processes that saved GPAW wavefunctions (.gpw) — the baselines the
 // ELF / MLWF post-processes can restart from. Shared by both wizards.
 QList<QPair<QString, QString>> MainWindow::gpawBaselines() const
@@ -4459,6 +4599,63 @@ void MainWindow::openBornChargesResults(const QString& directory)
         QMessageBox::information(
             this, tr("Born Effective Charges"),
             tr("No born_charges.json found in %1.").arg(directory));
+        return;
+    }
+    viewer->show();
+}
+
+void MainWindow::showRamanIrSpectroscopy()
+{
+    if (!prepareSimulation(tr("Raman and IR Spectroscopy")))
+        return;
+    Document* doc = currentDocument();
+
+    // Three preconditions, each reported on its own because each is fixed by a
+    // different action. Collapsing them into one "requirements not met" message
+    // would leave the user guessing which run to go do.
+    const auto baselines = gpawDensityFiles();
+    if (baselines.isEmpty()) {
+        QMessageBox::critical(
+            this, tr("Raman and IR Spectroscopy"),
+            tr("This post-process starts from a converged ground state, so it "
+               "needs a completed GPAW Single-Point Calculation that saved its "
+               "wavefunctions (.gpw).\n\nRun one on this structure first."));
+        return;
+    }
+    const auto bornCharges =
+        processResults(QStringLiteral("born_charges.json"));
+    if (bornCharges.isEmpty()) {
+        QMessageBox::critical(
+            this, tr("Raman and IR Spectroscopy"),
+            tr("The infrared intensities are the Born effective charges Z* "
+               "contracted with the phonon eigenvectors, and in a periodic "
+               "crystal there is no other route to them — a molecular dipole "
+               "is not defined for a solid.\n\n"
+               "Run Electronics → \"Born Effective Charges…\" on this "
+               "structure first; its born_charges.json is what this module "
+               "reads."));
+        return;
+    }
+
+    RamanIrWizard wizard(doc ? doc->structure : nullptr, this);
+    wizard.setDensityBaselines(baselines);
+    wizard.setBornChargesResults(bornCharges);
+    // Optional: an Optics run contributes the broadening its dielectric
+    // response was validated with, nothing more.
+    wizard.setOpticsResults(processResults(QStringLiteral("optics.json")));
+    runSimulationWizard(wizard, tr("Raman and IR Spectroscopy"),
+                        /*expectFrames=*/false);
+}
+
+void MainWindow::openRamanIrResults(const QString& directory)
+{
+    auto* viewer = new RamanIrViewer(this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    if (!viewer->loadResults(directory + QStringLiteral("/raman_ir.json"))) {
+        delete viewer;
+        QMessageBox::information(this, tr("Raman and IR Spectroscopy"),
+                                 tr("No raman_ir.json found in %1.")
+                                     .arg(directory));
         return;
     }
     viewer->show();

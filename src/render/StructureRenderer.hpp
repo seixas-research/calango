@@ -269,16 +269,27 @@ public:
         QColor velocityColor{54, 166, 242};
         QColor magmomColor{168, 120, 240};
         bool showCell = true;
-        /// Draw duplicate "ghost" atoms and their bonds at the far faces,
-        /// edges and vertices of the cell: an atom sitting at fractional 0
-        /// along an axis is repeated at 1, so the cell reads as a closed,
-        /// continuous motif instead of one with atoms sliced off two of its
-        /// faces.
+        /// "Show atoms of the neighboring unit cell": draw the periodic images
+        /// of the atoms that the home cell's bonds actually reach into.
         ///
-        /// Purely a rendering duplication — the ghosts are extra GPU instances
+        /// Two things get an image, and the second is the point of the setting:
+        ///
+        ///   - an atom sitting exactly on a cell face, edge or vertex is
+        ///     repeated on the far side (fractional 0 -> 1), so the cell reads
+        ///     as a closed motif rather than one sliced off at two faces;
+        ///   - the far end of every bond that wraps around the cell, so a bond
+        ///     crossing the boundary terminates ON AN ATOM instead of stopping
+        ///     in mid-air. The image atoms a duplicated atom is itself bonded
+        ///     to are added for the same reason.
+        ///
+        /// With the setting off, wrapped bonds are still drawn as the
+        /// conventional pair of half-length stubs — the standard depiction of
+        /// periodicity when the neighbouring cell is not shown at all.
+        ///
+        /// Purely a rendering duplication — the images are extra GPU instances
         /// and never enter the Structure, so the atom count, the chemical
         /// formula and every exported POSCAR/CIF are unchanged.
-        bool showBoundaryGhosts = false;
+        bool showNeighborCellAtoms = false;
         /// How close to a cell face (in fractional coordinates) counts as
         /// "on" it. 1e-3 of a ~5 Å cell is ~5 mÅ: tight enough that an atom
         /// merely near the face is not duplicated, loose enough to catch
@@ -390,6 +401,13 @@ public:
     /// Drop every stored field (a structure replacement invalidates them all).
     void clearAtomScalars();
 
+    /// One mode's stored per-atom field in its OWN units — CN counts, GCN
+    /// values, the raw custom property — or nullptr when that mode carries no
+    /// data. Distinct from what the colours use, which is this field mapped
+    /// onto [0, 1]: the viewport's numeric overlay has to print the physical
+    /// value, not the colour coordinate.
+    const std::vector<float>* atomScalars(ColorMode mode) const;
+
     /// Data range of one mode's field, for the colour-scale legend. `valid` is
     /// false in Element mode or when that mode has no field.
     struct ScalarRange {
@@ -428,6 +446,21 @@ public:
                           const std::vector<OverlayRange>& faceRanges,
                           bool visible);
 
+    /// The "Additional overlays" dock's geometry — the user's lattice planes
+    /// and primitives — in the same interleaved pos(3)+color(3) form as
+    /// setCustomOverlay().
+    ///
+    /// A SEPARATE channel from setCustomOverlay() on purpose. That one is
+    /// already written by the Volumetric Data panel (isosurfaces) and the MLWF
+    /// viewer (orbital meshes), and each call replaces the whole buffer — so
+    /// sharing it would mean adding a text label silently erased a displayed
+    /// isosurface. Two channels cost two draw blocks; one channel would cost
+    /// the user their figure.
+    void setManagedOverlay(const std::vector<float>& faces,
+                           const std::vector<float>& edges,
+                           const std::vector<OverlayRange>& faceRanges,
+                           bool visible);
+
     /// Hydrogen-bond overlay: an interleaved pos(3)+color(3) GL_LINES stream
     /// of PRE-DASHED segments (see buildHydrogenBondDashes). Empty clears it.
     void setHydrogenBonds(const std::vector<float>& segments);
@@ -445,6 +478,12 @@ public:
     /// 1..kMaxLights directional lights (extra entries are ignored).
     std::vector<Light>& lights() { return lights_; }
     const std::vector<Light>& lights() const { return lights_; }
+
+    /// The two-light studio default (warm key + soft cool fill) every renderer
+    /// starts with. Public so "Reset lights" restores exactly the set a fresh
+    /// viewport has, rather than a second hand-written copy of it that could
+    /// drift from this one.
+    static std::vector<Light> defaultLights();
 
 private:
     struct InstancedMesh {
@@ -481,9 +520,6 @@ private:
     void createColoredBuffer(ColoredVertexBuffer& buffer);
     void uploadColoredBuffer(ColoredVertexBuffer& buffer, const std::vector<float>& data);
     void uploadLights();
-
-    /// Two-light studio default: warm key light + soft cool fill light.
-    static std::vector<Light> defaultLights();
 
     QOpenGLFunctions_3_3_Core* gl_ = nullptr;
     bool initialized_ = false;
@@ -536,6 +572,10 @@ private:
     ColoredVertexBuffer customOverlayEdges_; ///< GL_LINES (primitive wireframes)
     std::vector<OverlayRange> customOverlayRanges_;
     bool customOverlayVisible_ = false;
+    ColoredVertexBuffer managedOverlayFaces_; ///< GL_TRIANGLES (overlay dock)
+    ColoredVertexBuffer managedOverlayEdges_; ///< GL_LINES (overlay dock)
+    std::vector<OverlayRange> managedOverlayRanges_;
+    bool managedOverlayVisible_ = false;
     /// Hydrogen bonds, GL_LINES. The dash pattern is BAKED INTO THE GEOMETRY
     /// (many short segments) rather than drawn with line stipple: core-profile
     /// GL removed glLineStipple, so this is the portable way to get a dashed

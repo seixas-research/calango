@@ -453,6 +453,15 @@ void StructureRenderer::clearAtomScalars()
     scalars_.clear();
 }
 
+const std::vector<float>* StructureRenderer::atomScalars(ColorMode mode) const
+{
+    const auto it = scalars_.find(mode);
+    if (mode == ColorMode::Element || it == scalars_.end()
+        || it->second.values.empty())
+        return nullptr;
+    return &it->second.values;
+}
+
 StructureRenderer::ScalarRange StructureRenderer::scalarRangeFor(
     ColorMode mode) const
 {
@@ -534,6 +543,8 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     createColoredBuffer(latticePlaneEdges_);
     createColoredBuffer(customOverlayFaces_);
     createColoredBuffer(customOverlayEdges_);
+    createColoredBuffer(managedOverlayFaces_);
+    createColoredBuffer(managedOverlayEdges_);
     createColoredBuffer(hydrogenBonds_);
 
     cellVao_.create();
@@ -665,6 +676,18 @@ void StructureRenderer::setCustomOverlay(const std::vector<float>& faces,
     uploadColoredBuffer(customOverlayEdges_, edges);
     customOverlayRanges_ = faceRanges;
     customOverlayVisible_ = visible;
+}
+
+void StructureRenderer::setManagedOverlay(
+    const std::vector<float>& faces, const std::vector<float>& edges,
+    const std::vector<OverlayRange>& faceRanges, bool visible)
+{
+    if (!initialized_)
+        return;
+    uploadColoredBuffer(managedOverlayFaces_, faces);
+    uploadColoredBuffer(managedOverlayEdges_, edges);
+    managedOverlayRanges_ = faceRanges;
+    managedOverlayVisible_ = visible;
 }
 
 void StructureRenderer::setHydrogenBonds(const std::vector<float>& segments)
@@ -1166,18 +1189,80 @@ void StructureRenderer::setStructure(const core::Structure* structure,
         const auto& atoms = structure->atoms();
         atomInstances.reserve(atoms.size() * kFloatsPerInstance);
 
-        // Boundary duplicates, computed once and reused by the bond pass so
-        // an atom and its bonds are never ghosted inconsistently.
+        // Bonds are needed by the neighbouring-cell image rule below, so they
+        // are perceived once here rather than inside the bond pass.
+        const std::vector<core::Bond> bonds =
+            structure->detectBonds(style_.bondTolerance, style_.autoBonds);
+
+        // Periodic images of each atom, as Cartesian translations, computed
+        // once and reused by the bond pass so an atom and its bonds are never
+        // duplicated inconsistently. ghostShifts[i] never contains the identity
+        // — that is the atom itself.
         std::vector<std::vector<core::Vec3>> ghostShifts;
         const bool ghosts =
-            style_.showBoundaryGhosts && structure->cell().isDefined();
+            style_.showNeighborCellAtoms && structure->cell().isDefined();
+        const auto addGhost = [&ghostShifts](std::size_t index,
+                                             const core::Vec3& shift) {
+            if (shift.dot(shift) < 1e-12)
+                return; // the atom's own position
+            auto& shifts = ghostShifts[index];
+            for (const core::Vec3& existing : shifts)
+                if ((existing - shift).norm() < 1e-6)
+                    return;
+            shifts.push_back(shift);
+        };
         if (ghosts) {
             ghostShifts.resize(atoms.size());
-            for (std::size_t index = 0; index < atoms.size(); ++index)
-                ghostShifts[index] = boundaryGhostShifts(
-                    atoms[index].position, structure->cell(),
-                    style_.boundaryGhostTolerance);
+            // (a) Atoms lying exactly on a face / edge / vertex repeat on the
+            //     far side, so the cell closes on itself.
+            for (std::size_t index = 0; index < atoms.size(); ++index) {
+                for (const core::Vec3& shift : boundaryGhostShifts(
+                         atoms[index].position, structure->cell(),
+                         style_.boundaryGhostTolerance))
+                    addGhost(index, shift);
+            }
+            // (b) The far end of every bond that wraps around the cell, at BOTH
+            //     ends. This is what stops a periodic bond from ending in mid
+            //     air: the image it points at is now actually drawn.
+            for (const core::Bond& bond : bonds) {
+                if (!bond.crossesBoundary())
+                    continue;
+                addGhost(static_cast<std::size_t>(bond.j), bond.imageOffset);
+                addGhost(static_cast<std::size_t>(bond.i),
+                         core::Vec3{} - bond.imageOffset);
+            }
+            // (c) Close the bonds of the images added by (a). A duplicated face
+            //     atom carries its bonds with it (that is what makes the copied
+            //     face read as bonded), and each of those bonds needs its own
+            //     far end present for the same reason (b) exists. One level
+            //     only: completing the images' images would grow the scene
+            //     without bound.
+            const std::vector<std::vector<core::Vec3>> seeded = ghostShifts;
+            for (const core::Bond& bond : bonds) {
+                const auto i = static_cast<std::size_t>(bond.i);
+                const auto j = static_cast<std::size_t>(bond.j);
+                // Atom i drawn at s puts its partner j at s + imageOffset.
+                for (const core::Vec3& s : seeded[i])
+                    addGhost(j, s + bond.imageOffset);
+                // Atom j drawn at s comes from translating the bond by
+                // s - imageOffset, which puts atom i there.
+                for (const core::Vec3& s : seeded[j])
+                    addGhost(i, s - bond.imageOffset);
+            }
         }
+        /// True when atom `index` is drawn at translation `shift` — either as
+        /// itself (the zero shift) or as one of its images.
+        const auto drawnAt = [&ghostShifts, ghosts](std::size_t index,
+                                                    const core::Vec3& shift) {
+            if (shift.dot(shift) < 1e-12)
+                return true;
+            if (!ghosts)
+                return false;
+            for (const core::Vec3& existing : ghostShifts[index])
+                if ((existing - shift).norm() < 1e-6)
+                    return true;
+            return false;
+        };
 
         for (std::size_t index = 0; index < atoms.size(); ++index) {
             const core::Atom& atom = atoms[index];
@@ -1243,8 +1328,7 @@ void StructureRenderer::setStructure(const core::Structure* structure,
         }
 
         {
-            for (const core::Bond& bond :
-                 structure->detectBonds(style_.bondTolerance, style_.autoBonds)) {
+            for (const core::Bond& bond : bonds) {
                 // Which cast a bond belongs to is only well defined when both
                 // of its atoms agree. Space-filling has no bonds at all, so a
                 // bond touching a CPK atom is dropped — that is what lets a
@@ -1289,24 +1373,51 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                 const float bondOpacity =
                     0.5f * (castI.opacity + castJ.opacity);
 
-                // The bond is drawn once at its real position, then once per
-                // ghost translation of EITHER endpoint: an atom duplicated onto
-                // the far face takes its bonds with it, which is what makes the
-                // duplicated face look bonded rather than like loose spheres.
+                // Translations at which this bond is drawn. A copy is only
+                // emitted when BOTH of its ends are actually drawn there —
+                // atom i at `offset` and atom j at `offset + imageOffset`.
+                //
+                // That condition is the whole fix: the old rule took the union
+                // of the two endpoints' shifts and drew the bond at each, so a
+                // face atom's bond was duplicated onto the far face while its
+                // partner was not, leaving a stick growing out of the copied
+                // atom toward nothing. The candidates below are exactly the
+                // translations that can satisfy it, and the filter drops the
+                // rest.
                 std::vector<core::Vec3> offsets{core::Vec3{}};
                 if (ghosts) {
-                    for (const int end : {bond.i, bond.j})
-                        for (const core::Vec3& shift :
-                             ghostShifts[static_cast<std::size_t>(end)]) {
-                            const bool duplicate = std::any_of(
-                                offsets.begin(), offsets.end(),
-                                [&shift](const core::Vec3& existing) {
-                                    return (existing - shift).norm() < 1e-9;
-                                });
-                            if (!duplicate)
-                                offsets.push_back(shift);
-                        }
+                    const auto consider = [&offsets](const core::Vec3& shift) {
+                        const bool duplicate = std::any_of(
+                            offsets.begin(), offsets.end(),
+                            [&shift](const core::Vec3& existing) {
+                                return (existing - shift).norm() < 1e-9;
+                            });
+                        if (!duplicate)
+                            offsets.push_back(shift);
+                    };
+                    for (const core::Vec3& shift :
+                         ghostShifts[static_cast<std::size_t>(bond.i)])
+                        consider(shift);
+                    for (const core::Vec3& shift :
+                         ghostShifts[static_cast<std::size_t>(bond.j)])
+                        consider(shift - bond.imageOffset);
+                    offsets.erase(
+                        std::remove_if(
+                            offsets.begin(), offsets.end(),
+                            [&](const core::Vec3& t) {
+                                return !drawnAt(
+                                           static_cast<std::size_t>(bond.i), t)
+                                    || !drawnAt(
+                                           static_cast<std::size_t>(bond.j),
+                                           t + bond.imageOffset);
+                            }),
+                        offsets.end());
                 }
+                // With the neighbouring cell shown, a wrapped bond runs the
+                // whole way to the image atom that is now on screen; without
+                // it, the conventional pair of half-length stubs stands in for
+                // the periodicity.
+                const bool stubbed = bond.crossesBoundary() && !ghosts;
                 for (const core::Vec3& offset : offsets) {
                 const auto& a = atoms[static_cast<std::size_t>(bond.i)];
                 const auto& b = atoms[static_cast<std::size_t>(bond.j)];
@@ -1343,7 +1454,7 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                     const QColor jointB = style_.gradientBonds ? mid : colorB;
                     appendColoredVertex(wireBondVertices, pa, colorA);
                     appendColoredVertex(wireBondVertices, pa + dir * half, jointA);
-                    if (!bond.crossesBoundary()) {
+                    if (!stubbed) {
                         appendColoredVertex(wireBondVertices, pa + dir * half, jointB);
                         appendColoredVertex(wireBondVertices, pbImage, colorB);
                     } else {
@@ -1370,7 +1481,7 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                                    colorA,
                                    style_.gradientBonds ? mid : colorA,
                                    bondFinish, bondOpacity);
-                    if (!bond.crossesBoundary()) {
+                    if (!stubbed) {
                         appendInstance(
                             bondInstances,
                             bondTransform(pa + shift + dir * half, dir, half, radius),
@@ -1799,10 +1910,30 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
 
         if (style_.anyTranslucentCast()) {
             meshProgram_.setUniformValue("uFinishPass", 1);
+            // DEPTH PRE-PASS over the translucent instances, colour writes off.
+            //
+            // Without it the blended pass is drawn in buffer order — every
+            // sphere, then every cylinder — with depth writes off, so the bonds
+            // paint straight over the atoms they end inside and the model turns
+            // into a flat tangle the moment the opacity leaves 1.0 (a fully
+            // opaque scene never showed it, because the opaque pass depth-tests
+            // normally). Establishing the nearest translucent surface here and
+            // testing against it below makes the blend order-independent: each
+            // pixel blends its front-most translucent fragment over whatever the
+            // opaque pass already put in the colour buffer, whichever order the
+            // instances happen to arrive in.
+            gl_->glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+            drawMeshes();
+            gl_->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
             gl_->glEnable(GL_BLEND);
             gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             gl_->glDepthMask(GL_FALSE);
+            // LEQUAL, not LESS: the fragments that survive are exactly the ones
+            // the pre-pass just stored, so they must compare equal and pass.
+            gl_->glDepthFunc(GL_LEQUAL);
             drawMeshes();
+            gl_->glDepthFunc(GL_LESS);
             gl_->glDepthMask(GL_TRUE);
             gl_->glDisable(GL_BLEND);
         }
@@ -1857,10 +1988,32 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
         meshProgram_.setUniformValue("uView", view);
         meshProgram_.setUniformValue("uProj", projection);
         uploadLights();
-        cellTube_.vao.bind();
-        gl_->glDrawElementsInstanced(GL_TRIANGLES, cellTube_.indexCount, GL_UNSIGNED_INT,
-                                     nullptr, cellTube_.instanceCount);
-        cellTube_.vao.release();
+        const auto drawCellTubes = [this] {
+            cellTube_.vao.bind();
+            gl_->glDrawElementsInstanced(GL_TRIANGLES, cellTube_.indexCount,
+                                         GL_UNSIGNED_INT, nullptr,
+                                         cellTube_.instanceCount);
+            cellTube_.vao.release();
+        };
+        // uFinishPass MUST be set here, not inherited. The atom/bond passes
+        // above leave it at 1 whenever anything in the scene is translucent,
+        // and mesh.frag discards every opaque instance in that pass — which is
+        // why dialling a cast's opacity down to 0.95 used to make the whole
+        // unit cell disappear. The cell is scene furniture and carries no cast
+        // opacity, so it belongs in the opaque pass.
+        meshProgram_.setUniformValue("uFinishPass", 0);
+        drawCellTubes();
+        // ...unless the shared surface finish is Glassy, which IS translucent
+        // and would be discarded by the opaque pass instead.
+        if (style_.surfaceFinish == SurfaceFinish::Glassy) {
+            meshProgram_.setUniformValue("uFinishPass", 1);
+            gl_->glEnable(GL_BLEND);
+            gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            gl_->glDepthMask(GL_FALSE);
+            drawCellTubes();
+            gl_->glDepthMask(GL_TRUE);
+            gl_->glDisable(GL_BLEND);
+        }
         meshProgram_.release();
     } else if (style_.showCell && cellVertexCount_ > 0) {
         lineProgram_.bind();
@@ -1929,6 +2082,40 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
             customOverlayEdges_.vao.bind();
             gl_->glDrawArrays(GL_LINES, 0, customOverlayEdges_.vertexCount);
             customOverlayEdges_.vao.release();
+        }
+        wireProgram_.release();
+    }
+
+    // "Additional overlays" dock geometry. Identical treatment to the custom
+    // overlay above — per-range alpha, depth-write off, opaque edges — but out
+    // of its own buffers, so the two cannot overwrite each other.
+    if (managedOverlayVisible_
+        && (managedOverlayFaces_.vertexCount > 0
+            || managedOverlayEdges_.vertexCount > 0)) {
+        wireProgram_.bind();
+        wireProgram_.setUniformValue("uMvp", projection * view);
+        if (managedOverlayFaces_.vertexCount > 0
+            && !managedOverlayRanges_.empty()) {
+            gl_->glEnable(GL_BLEND);
+            gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            gl_->glDepthMask(GL_FALSE);
+            managedOverlayFaces_.vao.bind();
+            for (const OverlayRange& r : managedOverlayRanges_) {
+                if (r.count <= 0 || r.first < 0
+                    || r.first + r.count > managedOverlayFaces_.vertexCount)
+                    continue;
+                wireProgram_.setUniformValue("uAlpha", r.alpha);
+                gl_->glDrawArrays(GL_TRIANGLES, r.first, r.count);
+            }
+            managedOverlayFaces_.vao.release();
+            gl_->glDepthMask(GL_TRUE);
+            gl_->glDisable(GL_BLEND);
+        }
+        if (managedOverlayEdges_.vertexCount > 0) {
+            wireProgram_.setUniformValue("uAlpha", 1.0f);
+            managedOverlayEdges_.vao.bind();
+            gl_->glDrawArrays(GL_LINES, 0, managedOverlayEdges_.vertexCount);
+            managedOverlayEdges_.vao.release();
         }
         wireProgram_.release();
     }

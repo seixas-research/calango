@@ -22,6 +22,24 @@ namespace calango::gui {
 /// Representation, Lighting and Unit Cell & Axes panels.
 void setButtonColor(QPushButton* button, const QColor& color);
 
+/// The Jmol CPK colour of an element, straight from the element table.
+///
+/// Deliberately the RAW convention rather than the viewport's resolved colour:
+/// the periodic-table dialog is opened from places that have no viewport (the
+/// Edit Structure dialog among them), and a table that changed colour
+/// depending on which window opened it would be worse than one that is always
+/// the standard. Per-element user overrides therefore do NOT show here.
+QColor cpkColor(int atomicNumber);
+
+/// Near-black or white, whichever CONTRASTS MORE with `background` (WCAG
+/// relative luminance).
+///
+/// CPK spans the full range — hydrogen is pure white, nitrogen a deep blue —
+/// so a fixed text colour is unreadable at one end or the other. Choosing by
+/// contrast rather than by a luminance threshold is both simpler and strictly
+/// better; see the implementation for the measurement over all 119 elements.
+QColor readableTextColor(const QColor& background);
+
 /// Parse a JSON object from `path`. Returns an empty object when the file
 /// cannot be opened or does not parse; callers treat "empty" as "no data"
 /// (the result viewers are opened against job directories that may legally

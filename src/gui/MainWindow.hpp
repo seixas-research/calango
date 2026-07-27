@@ -40,6 +40,7 @@ class NebDialog;
 class PointOfViewDialog;
 class SimulationWizardBase;
 class MetricPlotWidget;
+class OverlayPanel;
 class ProcessManagerPanel;
 class RemoteAccessPanel;
 class StructureInfoWidget;
@@ -97,6 +98,10 @@ private Q_SLOTS:
     void saveTrajectoryAs();
     void exportImage();
     void exportAnimation();
+    /// File → Import/Export → "Export to Alembic…": the scene geometry as a
+    /// baked .abc cache for the DCC tools (Blender, Houdini, Maya). A loaded
+    /// trajectory can be written as animated samples.
+    void exportAlembic();
 
     void openSupercellBuilder();
     /// Build → "Macromolecules…" / "Water & Ice…": the two molecular-system
@@ -211,6 +216,12 @@ private Q_SLOTS:
     void showBornCharges();
     /// Open the Z* tensor read-out for a completed Born-charges process.
     void openBornChargesResults(const QString& directory);
+    /// Electronics → "Raman and IR Spectroscopy…": stage and launch the
+    /// vibrational-spectroscopy post-process, which consumes a completed Born
+    /// Effective Charges run (and, for Raman, an Optics run's settings).
+    void showRamanIrSpectroscopy();
+    /// Open the spectra + mode table for a completed Raman/IR process.
+    void openRamanIrResults(const QString& directory);
 
     /// Right-click on a process: its viewers, plus the actions the icon bar
     /// already carries (load result, view script, open folder, delete).
@@ -297,9 +308,7 @@ private Q_SLOTS:
     void showElf();
     /// Viewport toolbar → "Lattice Plane…": interactive Miller-index plane +
     /// volumetric color-slice overlay in the main 3D viewport.
-    void showLatticePlane();
     /// Viewport toolbar → "Custom overlay…": geometric-primitive overlay manager.
-    void showCustomOverlay();
     /// Simulation → "Maximally Localized Wannier Functions (MLWF)…": set up +
     /// launch the localization through the standardized wizard (engine
     /// selection + per-engine Conda env). The viewer opens when the job
@@ -562,6 +571,8 @@ private:
     QDockWidget* remoteDock_ = nullptr;
     RemoteAccessPanel* remotePanel_ = nullptr;
     ProcessManagerPanel* processPanel_ = nullptr;
+    /// "Additional overlays" dock — lattice planes, text and primitives.
+    OverlayPanel* overlayPanel_ = nullptr;
     /// Process-panel id of the running local job (-1 when idle).
     int currentTaskId_ = -1;
     /// Document receiving live streamed frames (null outside runs;

@@ -67,7 +67,7 @@ private:
     QDoubleSpinBox* zoomSpin_ = nullptr;   ///< camera distance (Å)
     QDoubleSpinBox* yawSpin_ = nullptr;
     QDoubleSpinBox* pitchSpin_ = nullptr;
-    QDoubleSpinBox* rollSpin_ = nullptr;   ///< scene rotation about the view axis
+    QDoubleSpinBox* rollSpin_ = nullptr;   ///< camera tilt about the view axis
     QDoubleSpinBox* panSpin_[3] = {nullptr, nullptr, nullptr};
     QListWidget* savedList_ = nullptr;
     QPushButton* deleteButton_ = nullptr;

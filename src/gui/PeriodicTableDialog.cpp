@@ -1,14 +1,13 @@
 #include "gui/PeriodicTableDialog.hpp"
 
 #include "core/Element.hpp"
+#include "gui/GuiUtils.hpp"
 
 #include <QDialogButtonBox>
 #include <QGridLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QVBoxLayout>
-
-#include <initializer_list>
 
 namespace calango::gui {
 
@@ -47,39 +46,6 @@ std::pair<int, int> cellFor(int z)
     return {6, z - 104 + 3};
 }
 
-bool oneOf(int z, std::initializer_list<int> values)
-{
-    for (const int v : values)
-        if (z == v)
-            return true;
-    return false;
-}
-
-/// Background color by chemical family (pastels; black text stays legible).
-QColor familyColor(int z)
-{
-    if (oneOf(z, {3, 11, 19, 37, 55, 87}))
-        return {0xFF, 0x8A, 0x65}; // alkali metals
-    if (oneOf(z, {4, 12, 20, 38, 56, 88}))
-        return {0xFF, 0xD5, 0x4F}; // alkaline earth metals
-    if (z >= 57 && z <= 71)
-        return {0x4D, 0xD0, 0xE1}; // lanthanides
-    if (z >= 89 && z <= 103)
-        return {0x4D, 0xB6, 0xAC}; // actinides
-    if ((z >= 21 && z <= 30) || (z >= 39 && z <= 48) || (z >= 72 && z <= 80)
-        || (z >= 104 && z <= 112))
-        return {0x90, 0xCA, 0xF9}; // transition metals
-    if (oneOf(z, {5, 14, 32, 33, 51, 52, 84}))
-        return {0xCE, 0x93, 0xD8}; // metalloids
-    if (oneOf(z, {1, 6, 7, 8, 15, 16, 34}))
-        return {0xA5, 0xD6, 0xA7}; // reactive nonmetals
-    if (oneOf(z, {9, 17, 35, 53, 85, 117}))
-        return {0xDC, 0xE7, 0x75}; // halogens
-    if (oneOf(z, {2, 10, 18, 36, 54, 86, 118}))
-        return {0xF4, 0x8F, 0xB1}; // noble gases
-    return {0xB0, 0xBE, 0xC5};     // post-transition metals / unclassified
-}
-
 } // namespace
 
 PeriodicTableDialog::PeriodicTableDialog(int currentZ, QWidget* parent)
@@ -96,11 +62,22 @@ PeriodicTableDialog::PeriodicTableDialog(int currentZ, QWidget* parent)
             QLatin1String(core::Elements::data(z).symbol), this);
         button->setFixedSize(36, 32);
         button->setToolTip(QStringLiteral("Z = %1").arg(z));
+        // Standard CPK, the same convention the 3D viewport draws the atoms
+        // in. It replaces the chemical-family pastels: this dialog is used to
+        // pick an atom to PLACE, so colouring it the way the atom will appear
+        // makes the table a preview instead of a second, unrelated key the
+        // user has to learn.
+        //
+        // CPK is not a pastel set — hydrogen is pure white and nitrogen a deep
+        // blue — so the label colour has to follow the swatch rather than being
+        // fixed, and the selected-cell outline needs a tone that reads against
+        // both ends of the range.
+        const QColor background = cpkColor(z);
         button->setStyleSheet(
-            QStringLiteral("QPushButton { background-color: %1; color: #202020; "
-                           "border: %2; border-radius: 3px; font-weight: bold; }"
-                           "QPushButton:hover { border: 2px solid #202020; }")
-                .arg(familyColor(z).name(),
+            QStringLiteral("QPushButton { background-color: %1; color: %2; "
+                           "border: %3; border-radius: 3px; font-weight: bold; }"
+                           "QPushButton:hover { border: 2px solid %2; }")
+                .arg(background.name(), readableTextColor(background).name(),
                      z == currentZ ? QStringLiteral("2px solid #d84315")
                                    : QStringLiteral("1px solid #808080")));
         connect(button, &QPushButton::clicked, this, [this, z] {

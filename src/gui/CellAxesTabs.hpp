@@ -74,7 +74,6 @@ private:
     QSlider* scaleSlider_ = nullptr;
     QDoubleSpinBox* scaleSpin_ = nullptr;
     QPushButton* colorButton_ = nullptr;
-    QDoubleSpinBox* minMagnitudeSpin_ = nullptr;
     QCheckBox* arrowHeadsCheck_ = nullptr;
 };
 

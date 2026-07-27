@@ -117,6 +117,11 @@ PointOfView blendPointOfView(const PointOfView& from, const PointOfView& to,
         from.yawDeg + shortestArc(to.yawDeg - from.yawDeg) * t);
     out.pitchDeg = static_cast<float>(
         from.pitchDeg + shortestArc(to.pitchDeg - from.pitchDeg) * t);
+    // Roll takes the same shortest-arc path as the other two: a shot that
+    // tilts from -170 deg to +170 deg should roll 20 deg through the wrap, not
+    // 340 deg the long way round.
+    out.rollDeg = static_cast<float>(
+        from.rollDeg + shortestArc(to.rollDeg - from.rollDeg) * t);
     out.sceneRotation = QQuaternion::slerp(from.sceneRotation, to.sceneRotation,
                                            static_cast<float>(t));
     // Projection is discrete — there is no half-orthographic camera — so it

@@ -13,6 +13,27 @@ enum class CameraProjection {
     Orthographic,
 };
 
+/// The view every new viewport, every reset and every default-constructed
+/// point-of-view starts from. Named constants rather than three separately
+/// maintained literals: the initial view and the one the Reset Camera button
+/// restores must be the same view, and they were previously kept in step by
+/// hand across the struct defaults, the member defaults and resetOrientation().
+///
+/// A slightly rolled three-quarter view rather than a face-on one: it shows
+/// all three axes at once, which is how a crystal structure is conventionally
+/// presented.
+inline constexpr float kDefaultYawDeg = 0.0f;
+inline constexpr float kDefaultPitchDeg = -70.0f;
+inline constexpr float kDefaultRollDeg = 20.0f;
+
+/// Orthographic by default. A perspective view of a periodic cell makes the
+/// far face smaller than the near one, so parallel lattice rows visibly
+/// converge and equal-length cell edges measure differently on screen — an
+/// artefact in exactly the images this application exists to produce.
+/// Crystallography is drawn in parallel projection for that reason.
+inline constexpr CameraProjection kDefaultProjection =
+    CameraProjection::Orthographic;
+
 /// A complete, restorable camera state — "where you were looking from".
 ///
 /// Everything the orbit camera needs and nothing it does not: the target the
@@ -29,9 +50,17 @@ struct PointOfView {
     QVector3D target{0.0f, 0.0f, 0.0f}; ///< what the camera looks at (pan)
     float distance = 20.0f;             ///< dolly distance (zoom)
     float yawDeg = 0.0f;
-    float pitchDeg = 20.0f;
+    float pitchDeg = kDefaultPitchDeg;
+    /// Rotation about the VIEW axis — the camera tilting its head, which turns
+    /// the picture in the screen plane without changing what is in front of it.
+    ///
+    /// Distinct from yaw/pitch, which move the camera around the target, and
+    /// from `sceneRotation`, which turns the structure itself. Roll is the one
+    /// of the three that leaves both the viewpoint and the model alone, so it
+    /// is what tilts a figure to a pleasing angle without re-orbiting it.
+    float rollDeg = kDefaultRollDeg;
     QQuaternion sceneRotation;          ///< extra world-axis rotation
-    CameraProjection projection = CameraProjection::Perspective;
+    CameraProjection projection = kDefaultProjection;
 
     /// True when this holds a real captured view rather than a default-
     /// constructed placeholder. A tab that has never been shown has no view to
@@ -55,12 +84,16 @@ public:
     void rotate(float dxDeg, float dyDeg);
 
     /// Jump to an absolute orientation (used by the view-alignment
-    /// buttons): yaw/pitch in degrees, target and distance unchanged.
+    /// buttons): yaw/pitch/roll in degrees, target and distance unchanged.
     /// Clears any scene rotation so the alignment is truly axis-aligned.
-    void setOrientation(float yawDeg, float pitchDeg)
+    ///
+    /// Roll defaults to 0 because that is what "aligned with a plane" means —
+    /// an axis-aligned view that arrived tilted would not be aligned.
+    void setOrientation(float yawDeg, float pitchDeg, float rollDeg = 0.0f)
     {
         yawDeg_ = yawDeg;
         pitchDeg_ = pitchDeg;
+        rollDeg_ = rollDeg;
         sceneRotation_ = QQuaternion();
     }
 
@@ -75,12 +108,13 @@ public:
     }
 
     /// Restore the default view orientation (Reset Camera): the default
-    /// yaw/pitch and an identity scene rotation. Target/distance are set
+    /// yaw/pitch/roll and an identity scene rotation. Target/distance are set
     /// separately by frame()/frameToFraction().
     void resetOrientation()
     {
-        yawDeg_ = 0.0f;
-        pitchDeg_ = 20.0f;
+        yawDeg_ = kDefaultYawDeg;
+        pitchDeg_ = kDefaultPitchDeg;
+        rollDeg_ = kDefaultRollDeg;
         sceneRotation_ = QQuaternion();
     }
 
@@ -106,6 +140,12 @@ public:
 
     float distance() const { return distance_; }
     QVector3D target() const { return target_; }
+    float yaw() const { return yawDeg_; }
+    float pitch() const { return pitchDeg_; }
+    float roll() const { return rollDeg_; }
+    /// Tilt the camera about its own view axis (turns the picture in the
+    /// screen plane; the viewpoint and the model are unchanged).
+    void setRoll(float degrees) { rollDeg_ = degrees; }
 
     /// World-space eye position / up vector (for ray-tracer scene export).
     QVector3D worldPosition() const;
@@ -119,8 +159,8 @@ public:
     /// view() and projection() reproduce the captured frame.
     PointOfView pointOfView() const
     {
-        return {target_, distance_, yawDeg_, pitchDeg_, sceneRotation_,
-                projectionMode_, true};
+        return {target_,        distance_,      yawDeg_, pitchDeg_,
+                rollDeg_,       sceneRotation_, projectionMode_, true};
     }
     void setPointOfView(const PointOfView& pov)
     {
@@ -132,6 +172,7 @@ public:
         distance_ = std::max(pov.distance, 1e-3f);
         yawDeg_ = pov.yawDeg;
         pitchDeg_ = pov.pitchDeg;
+        rollDeg_ = pov.rollDeg;
         sceneRotation_ = pov.sceneRotation;
         projectionMode_ = pov.projection;
     }
@@ -139,10 +180,11 @@ public:
 private:
     QVector3D target_{0.0f, 0.0f, 0.0f};
     float distance_ = 20.0f;
-    float yawDeg_ = 0.0f;
-    float pitchDeg_ = 20.0f;
+    float yawDeg_ = kDefaultYawDeg;
+    float pitchDeg_ = kDefaultPitchDeg;
+    float rollDeg_ = kDefaultRollDeg;
     QQuaternion sceneRotation_; ///< extra world-axis rotation (identity default)
-    CameraProjection projectionMode_ = CameraProjection::Perspective;
+    CameraProjection projectionMode_ = kDefaultProjection;
 };
 
 } // namespace calango::render

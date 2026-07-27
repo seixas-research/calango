@@ -300,6 +300,14 @@ void ViewportWidget::setShowAtomIndexLabels(bool show)
     update();
 }
 
+void ViewportWidget::setShowCoordinationLabels(bool show)
+{
+    if (showCoordinationLabels_ == show)
+        return;
+    showCoordinationLabels_ = show;
+    update(); // overlay-only: the scalars are already on the renderer
+}
+
 void ViewportWidget::drawAtomLabelsOverlay(QPainter& painter)
 {
     if (!structure_ || structure_->empty())
@@ -325,6 +333,32 @@ void ViewportWidget::drawAtomLabelsOverlay(QPainter& painter)
     const QColor pillColor = darkBg ? QColor(20, 22, 26, 170)
                                     : QColor(245, 246, 248, 190);
 
+    // Scalar overlay ("Show CN / GCN values"): each atom's value of whatever
+    // its OWN cast is coloured by, since a scene can hold a coordination-
+    // coloured slab beside a custom-property-coloured adsorbate and the two
+    // fields are unrelated. Resolved once here rather than per atom.
+    std::vector<render::StructureRenderer::CastStyle> casts;
+    if (showCoordinationLabels_) {
+        casts = render::StructureRenderer::atomCastStyles(structure_.get(),
+                                                          renderer_.style());
+    }
+    const auto scalarLabel = [this, &casts](std::size_t index) -> QString {
+        if (!showCoordinationLabels_ || index >= casts.size())
+            return {};
+        const render::ColorMode mode = casts[index].colorMode;
+        const std::vector<float>* values = renderer_.atomScalars(mode);
+        if (!values || index >= values->size())
+            return {};
+        const double value = static_cast<double>((*values)[index]);
+        // A coordination NUMBER is a count and reads as one; the generalized
+        // coordination number and any custom property are genuinely fractional,
+        // and rounding them would erase the distinction the overlay exists to
+        // show.
+        return mode == render::ColorMode::CoordinationNumber
+            ? QString::number(value, 'f', 0)
+            : QString::number(value, 'f', 2);
+    };
+
     for (std::size_t i = 0; i < atoms.size(); ++i) {
         if (!renderer_.style().showHydrogens && atoms[i].atomicNumber == 1)
             continue; // no sphere under it to label
@@ -341,6 +375,8 @@ void ViewportWidget::drawAtomLabelsOverlay(QPainter& painter)
             const QString idx = QStringLiteral("#%1").arg(i + 1);
             label = label.isEmpty() ? idx : label + QLatin1Char(' ') + idx;
         }
+        if (const QString scalar = scalarLabel(i); !scalar.isEmpty())
+            label = label.isEmpty() ? scalar : label + QLatin1Char(' ') + scalar;
         if (label.isEmpty())
             continue;
 
@@ -351,6 +387,134 @@ void ViewportWidget::drawAtomLabelsOverlay(QPainter& painter)
         painter.drawRoundedRect(pill, 4, 4);
         painter.setPen(textColor);
         painter.drawText(pill, Qt::AlignCenter, label);
+    }
+}
+
+bool ViewportWidget::textOverlayRect(const TextOverlay& overlay,
+                                     QRectF& out) const
+{
+    if (!overlay.visible || overlay.text.isEmpty())
+        return false;
+    QPointF anchor;
+    if (!projectToScreen(overlay.position, anchor))
+        return false;
+    const QFontMetricsF metrics(overlay.font);
+    out = metrics.boundingRect(overlay.text).adjusted(-5, -3, 5, 3);
+    out.moveCenter(anchor);
+    return true;
+}
+
+void ViewportWidget::drawTextOverlays(QPainter& painter)
+{
+    // Same treatment as the atom labels: a translucent pill behind the glyphs
+    // so an annotation stays legible over whatever geometry it lands on.
+    const bool darkBg = backgroundColor_.lightnessF() < 0.5;
+    const QColor pillColor = darkBg ? QColor(20, 22, 26, 150)
+                                    : QColor(245, 246, 248, 170);
+    for (std::size_t i = 0; i < textOverlays_.size(); ++i) {
+        const TextOverlay& overlay = textOverlays_[i];
+        QRectF box;
+        if (!textOverlayRect(overlay, box))
+            continue;
+        painter.setFont(overlay.font);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(pillColor);
+        painter.drawRoundedRect(box, 4, 4);
+        // The one being dragged gets an outline, so it is obvious which label
+        // the cursor has hold of when several overlap.
+        if (static_cast<int>(i) == draggedTextOverlay_) {
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(overlay.color, 1.5));
+            painter.drawRoundedRect(box, 4, 4);
+        }
+        painter.setPen(overlay.color);
+        painter.drawText(box, Qt::AlignCenter, overlay.text);
+    }
+}
+
+void ViewportWidget::drawSelectionInfoOverlay(QPainter& painter)
+{
+    if (!structure_ || selection_.empty())
+        return;
+    const auto& atoms = structure_->atoms();
+
+    // Two genuinely different read-outs, because two different questions are
+    // being asked. One atom selected is "what and where is this?" — identity
+    // and coordinates. Several selected is "what did I just grab?" — a
+    // composition tally, since listing 200 sets of coordinates answers nothing.
+    QStringList lines;
+    if (selection_.size() == 1) {
+        const int index = *selection_.begin();
+        if (index < 0 || static_cast<std::size_t>(index) >= atoms.size())
+            return;
+        const core::Atom& atom = atoms[static_cast<std::size_t>(index)];
+        lines << tr("%1  ·  atom #%2")
+                     .arg(QLatin1String(atom.symbol()))
+                     .arg(index + 1);
+        lines << tr("xyz   %1, %2, %3 Å")
+                     .arg(atom.position.x, 0, 'f', 3)
+                     .arg(atom.position.y, 0, 'f', 3)
+                     .arg(atom.position.z, 0, 'f', 3);
+        // Fractional coordinates only exist with a lattice to be a fraction
+        // OF; for an isolated molecule the row is omitted rather than filled
+        // with zeros that would read as a position.
+        if (structure_->cell().isDefined()) {
+            const core::Vec3 f =
+                structure_->cell().cartesianToFractional(atom.position);
+            lines << tr("uvw   %1, %2, %3")
+                         .arg(f.x, 0, 'f', 4)
+                         .arg(f.y, 0, 'f', 4)
+                         .arg(f.z, 0, 'f', 4);
+        }
+    } else {
+        std::map<QString, int> counts;
+        for (const int index : selection_) {
+            if (index < 0 || static_cast<std::size_t>(index) >= atoms.size())
+                continue;
+            ++counts[QLatin1String(atoms[static_cast<std::size_t>(index)].symbol())];
+        }
+        if (counts.empty())
+            return;
+        lines << tr("%n atom(s) selected", nullptr,
+                    static_cast<int>(selection_.size()));
+        QStringList tally;
+        for (const auto& [symbol, count] : counts)
+            tally << QStringLiteral("%1 %2").arg(symbol).arg(count);
+        lines << tally.join(QStringLiteral("   "));
+    }
+
+    QFont font = painter.font();
+    font.setBold(true);
+    const QFontMetricsF metrics(font);
+    painter.setFont(font);
+
+    const bool darkBg = backgroundColor_.lightnessF() < 0.5;
+    const QColor textColor = darkBg ? QColor(238, 240, 244) : QColor(24, 26, 30);
+    const QColor pillColor = darkBg ? QColor(20, 22, 26, 190)
+                                    : QColor(245, 246, 248, 205);
+
+    double widest = 0.0;
+    for (const QString& line : lines)
+        widest = std::max(widest, metrics.horizontalAdvance(line));
+    const double lineHeight = metrics.height();
+    // Bottom-left: out of the way of the axes triad (bottom-left corner is the
+    // triad's own home, so this sits just above it) and of the measurement
+    // read-out, which uses the top of the canvas.
+    const double margin = 10.0;
+    const double boxHeight = lineHeight * lines.size() + 10.0;
+    QRectF box(margin, height() - margin - boxHeight - axesSizePx_,
+               widest + 16.0, boxHeight);
+
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(pillColor);
+    painter.drawRoundedRect(box, 5, 5);
+    painter.setPen(textColor);
+    double y = box.top() + 5.0;
+    for (const QString& line : lines) {
+        painter.drawText(QRectF(box.left() + 8.0, y, box.width() - 16.0,
+                                lineHeight),
+                         Qt::AlignLeft | Qt::AlignVCenter, line);
+        y += lineHeight;
     }
 }
 
@@ -491,19 +655,28 @@ QImage ViewportWidget::renderToImage(int width, int height, const QColor& backgr
 
 void ViewportWidget::alignToPlane(int plane)
 {
-    // Orbit convention: yaw 0 / pitch 0 looks along -z (XY plane on
-    // screen); pitch 90 looks along -y (XZ); yaw 90 looks along -x (YZ).
+    // Orbit convention, as measured from the view matrix (tests/CameraTest):
+    //     XY (yaw 0,  pitch 0)    looks along -z,  up +y,  right +x
+    //     XZ (yaw 0,  pitch -90)  looks along +y,  up +z,  right +x
+    //     YZ (yaw 90, pitch 0)    looks along +x,  up +y,  right +z
+    //
+    // Every alignment sets roll explicitly to zero. "Aligned with a plane" is a
+    // statement about the screen axes as well as the view direction, and an
+    // alignment that inherited the previous view's tilt would not be one.
     switch (plane) {
     case 1:
-        camera_.setOrientation(0.0f, 90.0f);
+        // Pitch -90, not +90: this looks at the XZ plane from BELOW (along +y),
+        // which puts +x to the right and +z up on screen — the orientation the
+        // XZ toolbar icon draws.
+        camera_.setOrientation(0.0f, -90.0f, 0.0f);
         Q_EMIT cameraChanged();
         break;
     case 2:
-        camera_.setOrientation(90.0f, 0.0f);
+        camera_.setOrientation(90.0f, 0.0f, 0.0f);
         Q_EMIT cameraChanged();
         break;
     default:
-        camera_.setOrientation(0.0f, 0.0f);
+        camera_.setOrientation(0.0f, 0.0f, 0.0f);
         Q_EMIT cameraChanged();
         break;
     }
@@ -813,10 +986,44 @@ void ViewportWidget::ensureUploaded()
                                    customOverlayRanges_, customOverlayVisible_);
         customOverlayDirty_ = false;
     }
+    if (managedOverlayDirty_) {
+        renderer_.setManagedOverlay(managedOverlayFaces_, managedOverlayEdges_,
+                                    managedOverlayRanges_,
+                                    managedOverlayVisible_);
+        managedOverlayDirty_ = false;
+    }
     if (hydrogenBondsDirty_) {
         renderer_.setHydrogenBonds(hydrogenBondSegments_);
         hydrogenBondsDirty_ = false;
     }
+}
+
+void ViewportWidget::setManagedOverlay(
+    std::vector<float> faceTris, std::vector<float> edgeLines,
+    std::vector<render::StructureRenderer::OverlayRange> faceRanges, bool visible)
+{
+    managedOverlayFaces_ = std::move(faceTris);
+    managedOverlayEdges_ = std::move(edgeLines);
+    managedOverlayRanges_ = std::move(faceRanges);
+    managedOverlayVisible_ = visible;
+    managedOverlayDirty_ = true;
+    update();
+}
+
+void ViewportWidget::clearManagedOverlay()
+{
+    managedOverlayFaces_.clear();
+    managedOverlayEdges_.clear();
+    managedOverlayRanges_.clear();
+    managedOverlayVisible_ = false;
+    managedOverlayDirty_ = true;
+    update();
+}
+
+void ViewportWidget::setTextOverlays(std::vector<TextOverlay> overlays)
+{
+    textOverlays_ = std::move(overlays);
+    update(); // painter-only: no GPU buffers to rebuild
 }
 
 void ViewportWidget::setCustomOverlay(
@@ -978,8 +1185,9 @@ void ViewportWidget::paintGL()
     }
 
     if (showAxes_ || showElementLabels_ || showIndexLabels_
-        || !measureAtoms_.empty() || filmFade_ < 1.0f
-        || !filmCrossfadeImage_.isNull()) {
+        || showCoordinationLabels_ || !measureAtoms_.empty() || filmFade_ < 1.0f
+        || !filmCrossfadeImage_.isNull() || !textOverlays_.empty()
+        || !selection_.empty()) {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
         // The dissolve goes UNDER the overlays and over the 3D render: it is
@@ -991,9 +1199,13 @@ void ViewportWidget::paintGL()
         }
         if (showAxes_)
             drawAxesOverlay(painter);
-        if (showElementLabels_ || showIndexLabels_)
+        if (showElementLabels_ || showIndexLabels_ || showCoordinationLabels_)
             drawAtomLabelsOverlay(painter);
+        drawTextOverlays(painter);
         drawMeasurementOverlay(painter);
+        // Last of the annotations: it is a read-out of the CURRENT action, so
+        // it should sit over anything it happens to overlap.
+        drawSelectionInfoOverlay(painter);
         // Film fade, painted over EVERYTHING including the overlays: a fade to
         // black that left the axis triad and the atom labels floating on the
         // black would not read as a cut. Last, for the same reason.
@@ -1093,8 +1305,27 @@ void ViewportWidget::mousePressEvent(QMouseEvent* event)
     shiftDragAtom_ = -1;
     shiftDragBegan_ = false;
 
+    draggedTextOverlay_ = -1;
     if (event->button() != Qt::LeftButton)
         return;
+
+    // A text overlay under the cursor is grabbed before anything else looks at
+    // the click. It sits ON TOP of the scene visually, so it has to be on top
+    // for input too, or a label over an atom could never be picked up. Topmost
+    // wins, matching the paint order (last drawn is last hit-tested).
+    if (!event->modifiers().testFlag(Qt::ShiftModifier)) {
+        for (int i = static_cast<int>(textOverlays_.size()) - 1; i >= 0; --i) {
+            QRectF box;
+            if (!textOverlayRect(textOverlays_[static_cast<std::size_t>(i)], box))
+                continue;
+            if (!box.contains(pressPos_))
+                continue;
+            draggedTextOverlay_ = i;
+            textDragGrabOffset_ = box.center() - pressPos_;
+            update();
+            return;
+        }
+    }
 
     if (event->modifiers().testFlag(Qt::ShiftModifier)) {
         // Translation (Pan) mode: Shift+drag on an atom grabs it for a
@@ -1128,6 +1359,25 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
 {
     const QPointF delta = event->position() - lastMousePos_;
     lastMousePos_ = event->position();
+
+    // A grabbed text overlay follows the cursor in the viewer-facing plane
+    // through its own depth — the same unprojection a dragged atom uses, so a
+    // label keeps the distance from the camera it was placed at instead of
+    // sliding toward or away from the viewer as it moves.
+    if (draggedTextOverlay_ >= 0
+        && draggedTextOverlay_ < static_cast<int>(textOverlays_.size())
+        && event->buttons().testFlag(Qt::LeftButton)) {
+        TextOverlay& overlay =
+            textOverlays_[static_cast<std::size_t>(draggedTextOverlay_)];
+        core::Vec3 moved;
+        if (unprojectToPlane(event->position() + textDragGrabOffset_,
+                             overlay.position, moved)) {
+            overlay.position = moved;
+            Q_EMIT textOverlayMoved(overlay.id, moved);
+            update();
+        }
+        return; // consume the drag — do not orbit the camera
+    }
 
     // Translation (Pan) mode Shift+drag on a grabbed atom: move only that atom,
     // following the cursor in the viewer-facing plane through its start depth.
@@ -1204,6 +1454,13 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent* event)
 {
     if (event->button() != Qt::LeftButton)
         return;
+    // A dragged text overlay applied its moves live; releasing just ends the
+    // grab. Consumed, so the release does not also register as an atom pick.
+    if (draggedTextOverlay_ >= 0) {
+        draggedTextOverlay_ = -1;
+        update();
+        return;
+    }
     // A single-atom Shift+drag already applied its moves live — just end it.
     if (shiftDragAtom_ >= 0) {
         shiftDragAtom_ = -1;
@@ -1425,6 +1682,22 @@ std::set<int> ViewportWidget::atomsInRect(const QRectF& rect) const
             hits.insert(static_cast<int>(i));
     }
     return hits;
+}
+
+bool ViewportWidget::projectToScreen(const core::Vec3& world, QPointF& out) const
+{
+    if (height() <= 0)
+        return false;
+    const float aspect = static_cast<float>(width()) / static_cast<float>(height());
+    const QMatrix4x4 mvp = camera_.projection(aspect) * camera_.view();
+    const QVector4D clip = mvp
+        * QVector4D(static_cast<float>(world.x), static_cast<float>(world.y),
+                    static_cast<float>(world.z), 1.0f);
+    if (clip.w() <= 0.0f)
+        return false; // behind the eye
+    out = QPointF((clip.x() / clip.w() * 0.5f + 0.5f) * width(),
+                  (0.5f - clip.y() / clip.w() * 0.5f) * height());
+    return true;
 }
 
 bool ViewportWidget::projectAtomToScreen(int index, QPointF& out) const

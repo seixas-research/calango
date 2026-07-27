@@ -1,5 +1,7 @@
 #include "gui/GuiUtils.hpp"
 
+#include "core/Element.hpp"
+
 #include <cmath>
 
 #include <QFile>
@@ -80,6 +82,48 @@ void drawWithSubscripts(QPainter& painter, const QRectF& box,
                  .horizontalAdvance(run.text);
     }
     painter.setFont(baseFont);
+}
+
+QColor cpkColor(int atomicNumber)
+{
+    const calango::core::ElementData& data =
+        calango::core::Elements::data(atomicNumber);
+    return {data.rgb[0], data.rgb[1], data.rgb[2]};
+}
+
+QColor readableTextColor(const QColor& background)
+{
+    // WCAG relative luminance, then simply take whichever of black and white
+    // CONTRASTS MORE. No threshold to tune, and provably the better of the two
+    // choices for every possible background.
+    //
+    // A luma threshold was tried first and is not good enough here: Rec. 601
+    // weights green at 0.587, so a saturated bright green like thulium's
+    // #00D452 scores below any sensible cut-off and gets white text at a 1.99
+    // contrast ratio — illegible. Measured over all 119 CPK colours, choosing
+    // by contrast lifts the worst case to 4.12 and puts every element above
+    // the 3.0 WCAG AA bar for large/bold text (which is what these 36x32 bold
+    // swatch buttons are).
+    const auto channel = [](double c) {
+        return c <= 0.03928 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+    };
+    const auto relativeLuminance = [&channel](const QColor& c) {
+        return 0.2126 * channel(c.redF()) + 0.7152 * channel(c.greenF())
+            + 0.0722 * channel(c.blueF());
+    };
+    const auto contrast = [](double a, double b) {
+        return (std::max(a, b) + 0.05) / (std::min(a, b) + 0.05);
+    };
+
+    // Not pure black: #202020 matches the text colour used elsewhere in the
+    // widget layer and is only a hair less contrasty.
+    const QColor dark(0x20, 0x20, 0x20);
+    const QColor light(0xFF, 0xFF, 0xFF);
+    const double luminance = relativeLuminance(background);
+    return contrast(relativeLuminance(dark), luminance)
+            >= contrast(relativeLuminance(light), luminance)
+        ? dark
+        : light;
 }
 
 QJsonObject readJsonObject(const QString& path)

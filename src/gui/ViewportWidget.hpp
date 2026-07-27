@@ -7,6 +7,7 @@
 #include "render/StructureRenderer.hpp"
 
 #include <QColor>
+#include <QFont>
 #include <QImage>
 #include <QOpenGLBuffer>
 #include <QOpenGLFunctions_3_3_Core>
@@ -20,6 +21,7 @@
 #include <utility>
 
 class QPainter;
+class QRectF;
 class QRubberBand;
 
 namespace calango::core {
@@ -98,10 +100,14 @@ public:
     void setBackgroundColor(const QColor& color);
 
     // -- Lattice Plane / volumetric color-slice overlay --------------------
-    /// Push a translucent lattice plane (optionally color-mapped from a
-    /// volumetric scalar field) into the 3D scene. `faceTris` / `edgeLines` are
-    /// interleaved pos(3)+color(3) streams (GL_TRIANGLES / GL_LINES) built by
-    /// LatticePlaneDialog. Passing visible=false (or empty streams) hides it.
+    /// Push a translucent plane (optionally color-mapped from a volumetric
+    /// scalar field) into the 3D scene. `faceTris` / `edgeLines` are
+    /// interleaved pos(3)+color(3) streams (GL_TRIANGLES / GL_LINES).
+    ///
+    /// Now written only by the Volumetric Data panel's colour slice — the
+    /// user's own lattice planes come from the "Additional overlays" dock and
+    /// go through setManagedOverlay(), which supports several of them at once.
+    /// Passing visible=false (or empty streams) hides it.
     void setLatticePlane(std::vector<float> faceTris, std::vector<float> edgeLines,
                          float alpha, bool visible, bool showEdges);
     /// Remove the lattice-plane overlay.
@@ -117,6 +123,36 @@ public:
         bool visible);
     /// Remove the custom-overlay primitives.
     void clearCustomOverlay();
+
+    // -- Managed overlays ("Additional overlays" dock) ----------------------
+    /// Geometry owned by the Additional-overlays dock, in the same interleaved
+    /// pos(3)+color(3) form as setCustomOverlay(). Its own channel, because
+    /// setCustomOverlay() already belongs to the Volumetric Data panel and the
+    /// MLWF viewer — see StructureRenderer::setManagedOverlay().
+    void setManagedOverlay(
+        std::vector<float> faceTris, std::vector<float> edgeLines,
+        std::vector<render::StructureRenderer::OverlayRange> faceRanges,
+        bool visible);
+    void clearManagedOverlay();
+
+    /// A line of text pinned to a point in the SCENE, drawn with QPainter over
+    /// the 3D canvas exactly as the element-symbol and index labels are.
+    ///
+    /// Painter text rather than tessellated glyphs: it stays sharp at any zoom
+    /// and on any DPI, and it costs no geometry. The price is that it does not
+    /// occlude — a label behind an atom is still legible, which for an
+    /// annotation is the wanted behaviour anyway.
+    struct TextOverlay {
+        int id = 0;              ///< matches the dock's list entry
+        QString text;
+        core::Vec3 position;     ///< world anchor (Å)
+        QFont font;
+        QColor color{255, 255, 255};
+        bool visible = true;
+    };
+    /// Replace the whole set of text overlays.
+    void setTextOverlays(std::vector<TextOverlay> overlays);
+    const std::vector<TextOverlay>& textOverlays() const { return textOverlays_; }
 
     // -- Hydrogen bonds -----------------------------------------------------
     /// Geometric hydrogen-bond perception (Bond Editor → "Hydrogen Bonds").
@@ -163,6 +199,16 @@ public Q_SLOTS:
     void setShowAtomIndexLabels(bool show);
     bool showElementLabels() const { return showElementLabels_; }
     bool showAtomIndexLabels() const { return showIndexLabels_; }
+
+    /// Print each atom's value of whatever scalar its cast is COLOURED BY —
+    /// the coordination number, the generalized coordination number or a custom
+    /// property — next to the atom.
+    ///
+    /// The colour ramp says which atoms differ; the number says by how much,
+    /// and a GCN of 6.75 against 7.50 is a distinction the ramp cannot carry.
+    /// Nothing is printed for a cast coloured by Element, which has no scalar.
+    void setShowCoordinationLabels(bool show);
+    bool showCoordinationLabels() const { return showCoordinationLabels_; }
 
     /// Live style access for UI panels. Call styleChanged() afterwards:
     /// geometry-affecting edits (scales, colors, mode) rebuild the GPU
@@ -304,6 +350,9 @@ Q_SIGNALS:
     void deleteSelectionRequested();
     /// A different Structure is now observed (its scalar fields may differ).
     void structureReplaced();
+    /// A text overlay was dragged to a new world position — the dock owns the
+    /// overlay list, so it writes the change back and re-pushes.
+    void textOverlayMoved(int id, const core::Vec3& position);
     /// The scalar color mapping was recomputed (mode, range or data changed).
     void colorMappingChanged();
 
@@ -367,6 +416,15 @@ private:
     void drawMeasurementOverlay(QPainter& painter);
     /// Per-atom element-symbol and/or index text over the sphere centers.
     void drawAtomLabelsOverlay(QPainter& painter);
+    /// The user's text overlays, anchored to their world positions.
+    void drawTextOverlays(QPainter& painter);
+    /// Read-out of the current selection: one atom's identity and coordinates,
+    /// or a per-element tally when several are selected.
+    void drawSelectionInfoOverlay(QPainter& painter);
+    /// Screen rectangle a text overlay occupies, for hit-testing a drag.
+    bool textOverlayRect(const TextOverlay& overlay, QRectF& out) const;
+    /// Project an arbitrary world point to screen; false when behind the eye.
+    bool projectToScreen(const core::Vec3& world, QPointF& out) const;
 
     /// Re-upload instance buffers if dirty (requires a current context).
     void ensureUploaded();
@@ -406,6 +464,18 @@ private:
     std::vector<render::StructureRenderer::OverlayRange> customOverlayRanges_;
     bool customOverlayVisible_ = false;
     bool customOverlayDirty_ = false;
+
+    // Managed-overlay geometry (the Additional-overlays dock), uploaded lazily.
+    std::vector<float> managedOverlayFaces_;
+    std::vector<float> managedOverlayEdges_;
+    std::vector<render::StructureRenderer::OverlayRange> managedOverlayRanges_;
+    bool managedOverlayVisible_ = false;
+    bool managedOverlayDirty_ = false;
+    std::vector<TextOverlay> textOverlays_;
+    /// Text overlay being dragged (-1 = none) and the grab offset, so the
+    /// label does not jump to the cursor when the drag starts off-centre.
+    int draggedTextOverlay_ = -1;
+    QPointF textDragGrabOffset_;
     HydrogenBondStyle hbondStyle_;
     std::vector<float> hydrogenBondSegments_; ///< pre-dashed pos+color stream
     bool hydrogenBondsDirty_ = false;
@@ -415,6 +485,9 @@ private:
     bool axesArrows_ = false;
     bool showElementLabels_ = false; ///< overlay element symbols on atoms
     bool showIndexLabels_ = false;   ///< overlay 1-based atom indices
+    /// Overlay the per-atom value of the active "Color by" scalar (CN / GCN /
+    /// custom property).
+    bool showCoordinationLabels_ = false;
     float filmFade_ = 1.0f;          ///< 1 = normal, 0 = black (film fades)
     QImage filmCrossfadeImage_;      ///< cached outgoing render (dissolve)
     float filmCrossfadeWeight_ = 1.0f; ///< weight of the LIVE render

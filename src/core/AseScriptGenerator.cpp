@@ -27,6 +27,7 @@ std::string toString(CalculatorKind kind)
     case CalculatorKind::ChgNet: return "CHGNet";
     case CalculatorKind::MatterSim: return "MatterSim";
     case CalculatorKind::FairChem: return "FAIRChem";
+    case CalculatorKind::Lammps: return "LAMMPS";
     }
     return "?";
 }
@@ -308,6 +309,164 @@ void emitDispersion(std::ostringstream& out, const CalculatorConfig& c)
         << "\", calc=atoms.calc)\n";
 }
 
+/// Python list literal of strings, or `[]`.
+std::string pythonStringList(const std::vector<std::string>& values,
+                             const std::string& indent)
+{
+    if (values.empty())
+        return "[]";
+    std::ostringstream out;
+    out << "[\n";
+    for (const std::string& value : values)
+        out << indent << "    r\"" << value << "\",\n";
+    out << indent << "]";
+    return out.str();
+}
+
+/// LAMMPS through ASE, in whichever of the two interfaces the user selected.
+///
+/// The two are genuinely different objects with different vocabularies —
+/// LAMMPSlib takes a list of LAMMPS COMMANDS, lammpsrun takes a parameter DICT
+/// it renders into an input deck — so they get separate blocks rather than one
+/// parameterized template that would obscure both.
+void emitLammps(std::ostringstream& out, const CalculatorConfig& c)
+{
+    const bool library = c.lammpsInterface == LammpsInterface::Library;
+
+    out << "# --- LAMMPS "
+           "-------------------------------------------------------\n"
+           "import os\n"
+           "#\n"
+           "# LAMMPS is an ENGINE, not a force field: what is computed below is\n"
+           "# decided entirely by the pair style and its coefficients. Nothing\n"
+           "# here validates them — a pair_coeff that does not match the style,\n"
+           "# or a potential file for the wrong elements, is a physics error\n"
+           "# LAMMPS will happily run.\n"
+           "#\n"
+           "# Units MUST be 'metal' (eV, Angstrom, ps). ASE assumes eV/Angstrom\n"
+           "# throughout, and any other units style returns numbers in the wrong\n"
+           "# scale rather than an error, so the check below is a hard stop.\n";
+
+    if (c.lammpsUnits != "metal") {
+        out << "raise RuntimeError(\n"
+               "    \"LAMMPS units style '" << c.lammpsUnits << "' cannot be used "
+               "through ASE.\\n\"\n"
+               "    \"ASE works in eV and Angstrom, which is LAMMPS's 'metal' "
+               "style; every\\n\"\n"
+               "    \"other style would return energies and forces in a "
+               "different scale\\n\"\n"
+               "    \"with nothing to flag it. Re-open the wizard and select "
+               "'metal'.\")\n";
+        return;
+    }
+
+    // specorder is resolved from the STRUCTURE at run time rather than baked in
+    // by the wizard. LAMMPS addresses species by integer type, and the mapping
+    // from type to element is positional: get it wrong and the run silently
+    // computes a different compound. Deriving it from the atoms object that is
+    // actually loaded is the only way it cannot disagree with the geometry.
+    out << "#\n"
+           "# LAMMPS addresses species by integer TYPE, and the type -> element\n"
+           "# mapping is positional. It is derived here from the structure that\n"
+           "# was actually loaded rather than fixed in the wizard, because a\n"
+           "# hard-coded order that disagrees with the geometry does not fail —\n"
+           "# it computes a different compound. Order the pair_coeff entries to\n"
+           "# match `species` as printed below.\n"
+           "species = sorted(set(atoms.get_chemical_symbols()))\n"
+           "print(f'CALANGO_INFO LAMMPS species order: "
+           "{\" \".join(species)}', flush=True)\n"
+           "\n";
+
+    if (library) {
+        out << "# LAMMPSlib: in-process, through the LAMMPS Python module. No\n"
+               "# file I/O per evaluation, so this is the interface to use for\n"
+               "# MD and relaxation.\n"
+               "# Requires a shared-library LAMMPS build with its Python module:\n"
+               "#   conda install -c conda-forge lammps\n"
+               "from ase.calculators.lammpslib import LAMMPSlib\n"
+               "\n"
+               "lammps_commands = [\n"
+            << "    \"pair_style " << c.lammpsPairStyle << "\",\n";
+        for (const std::string& coeff : c.lammpsPairCoeff)
+            out << "    \"pair_coeff " << coeff << "\",\n";
+        for (const std::string& extra : c.lammpsExtraCommands)
+            out << "    \"" << extra << "\",\n";
+        out << "]\n"
+               "\n"
+               "atoms.calc = LAMMPSlib(\n"
+               "    lmpcmds=lammps_commands,\n"
+               "    atom_types={symbol: index + 1\n"
+               "                for index, symbol in enumerate(species)},\n"
+            << "    log_file="
+            << (c.lammpsKeepLog ? "\"lammps.log\"" : "None") << ",\n"
+               "    keep_alive=True,   # reuse one LAMMPS instance across steps\n"
+               ")\n";
+        if (!c.lammpsPotentialFiles.empty()) {
+            out << "\n"
+                   "# The library interface reads potential files relative to "
+                   "the PROCESS's\n"
+                   "# working directory, not the script's — absolute paths are "
+                   "the safe form.\n"
+                   "for _potential in "
+                << pythonStringList(c.lammpsPotentialFiles, "")
+                << ":\n"
+                   "    if not os.path.isfile(_potential):\n"
+                   "        raise RuntimeError(\n"
+                   "            f'LAMMPS potential file not found: "
+                   "{_potential}\\n'\n"
+                   "            'The pair_coeff line above names it, so the run "
+                   "would fail\\n'\n"
+                   "            'inside LAMMPS with a less specific message.')\n";
+        }
+        return;
+    }
+
+    out << "# lammpsrun: spawns the `lmp` binary once per evaluation and\n"
+           "# exchanges data files. Works with any LAMMPS build, including a\n"
+           "# plain distro package, at the cost of process startup and file I/O\n"
+           "# on every force call — noticeable in MD, irrelevant for a\n"
+           "# single-point.\n"
+           "from ase.calculators.lammpsrun import LAMMPS\n"
+           "\n"
+           "lammps_parameters = {\n"
+        << "    \"units\": \"" << c.lammpsUnits << "\",\n"
+        << "    \"atom_style\": \"" << c.lammpsAtomStyle << "\",\n"
+        << "    \"pair_style\": \"" << c.lammpsPairStyle << "\",\n"
+           "    \"pair_coeff\": [\n";
+    for (const std::string& coeff : c.lammpsPairCoeff)
+        out << "        \"" << coeff << "\",\n";
+    out << "    ],\n";
+    if (!c.lammpsPotentialFiles.empty()) {
+        // `files` is what makes lammpsrun copy the potential into the scratch
+        // directory it runs in; without it the pair_coeff path is resolved
+        // against that temporary directory and is not found.
+        out << "    # Copied into lammpsrun's scratch directory, which is where\n"
+               "    # the pair_coeff paths above are resolved.\n"
+               "    \"files\": "
+            << pythonStringList(c.lammpsPotentialFiles, "    ") << ",\n";
+    }
+    for (const std::string& extra : c.lammpsExtraCommands)
+        out << "    # extra command (add to the deck by hand): " << extra << "\n";
+    out << "}\n"
+           "\n";
+    if (!c.lammpsCommand.empty()) {
+        out << "# The `lmp` binary. ASE reads this from the environment, so it\n"
+               "# is set here rather than passed to the constructor.\n"
+            << "os.environ[\"ASE_LAMMPSRUN_COMMAND\"] = r\"" << c.lammpsCommand
+            << "\"\n"
+               "\n";
+    } else {
+        out << "# No binary configured: ASE falls back to $ASE_LAMMPSRUN_COMMAND\n"
+               "# and then to `lmp` on $PATH.\n";
+    }
+    out << "atoms.calc = LAMMPS(\n"
+           "    specorder=species,\n"
+           "    **lammps_parameters,\n"
+        << "    keep_tmp_files=" << (c.lammpsKeepLog ? "True" : "False")
+        << ",\n"
+           ")\n";
+}
+
 void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
 {
     switch (c.calculator) {
@@ -565,6 +724,10 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
             out << "# EDIT ME: FAIRChem ships no default model — download an\n"
                    "# " << toString(c.fairChemModel)
                 << " checkpoint and point checkpoint_path at it.\n";
+        break;
+
+    case CalculatorKind::Lammps:
+        emitLammps(out, c);
         break;
 
     case CalculatorKind::Vasp:

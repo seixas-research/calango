@@ -32,6 +32,7 @@ QString presetName(core::CalculatorKind kind)
     case core::CalculatorKind::ChgNet: return QStringLiteral("CHGNet");
     case core::CalculatorKind::MatterSim: return QStringLiteral("MatterSim");
     case core::CalculatorKind::FairChem: return QStringLiteral("FAIRChem");
+    case core::CalculatorKind::Lammps: return QStringLiteral("LAMMPS");
     }
     return QStringLiteral("default");
 }
@@ -57,6 +58,7 @@ QString displayName(core::CalculatorKind kind)
     case core::CalculatorKind::MatterSim: return QStringLiteral("MatterSim");
     case core::CalculatorKind::FairChem:
         return QStringLiteral("FAIRChem / OCP");
+    case core::CalculatorKind::Lammps: return QStringLiteral("LAMMPS");
     }
     return QStringLiteral("Default");
 }
@@ -81,6 +83,10 @@ const QVector<core::CalculatorKind>& configurableEngines()
         core::CalculatorKind::ChgNet,
         core::CalculatorKind::MatterSim,
         core::CalculatorKind::FairChem,
+        // LAMMPS gets its own slot for the same reason the MLIP engines do:
+        // conda-forge's `lammps` pulls a complete MPI stack, and sharing an
+        // environment with GPAW (which pulls its own) is how both stop working.
+        core::CalculatorKind::Lammps,
     };
     return kEngines;
 }

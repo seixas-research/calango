@@ -244,6 +244,13 @@ private Q_SLOTS:
 private:
     QWidget* buildCalculatorPage();
     QWidget* buildMaceGroup(QWidget* parent);
+    /// The "LAMMPS settings" group — interface, pair style, coefficients,
+    /// potential files and the executable. LAMMPS is the only engine here that
+    /// brings no force field of its own, so it needs the most configuration.
+    QWidget* buildLammpsGroup(QWidget* parent);
+    /// Show only the LAMMPS rows that apply to the selected interface (the
+    /// binary is meaningless for the in-process library).
+    void updateLammpsRows();
     /// The shared "Machine-Learning Potential" group serving DeepMD, NequIP /
     /// Allegro, CHGNet, MatterSim and FAIRChem (MACE keeps its own group).
     QWidget* buildMlipGroup(QWidget* parent);
@@ -376,6 +383,18 @@ private:
     /// when showsGpawDensityExport() is true (Single-Point).
     QCheckBox* gpawDensityExportCheck_ = nullptr;
     QComboBox* gpawDensityTypeCombo_ = nullptr;
+    // LAMMPS. The engine supplies no force field of its own, so the pair style
+    // and its coefficients ARE the physics and every one of these feeds the
+    // generated script.
+    QGroupBox* lammpsGroup_ = nullptr;
+    QComboBox* lammpsInterfaceCombo_ = nullptr; ///< LAMMPSlib vs lammpsrun
+    QLineEdit* lammpsPairStyleEdit_ = nullptr;
+    QPlainTextEdit* lammpsPairCoeffEdit_ = nullptr;  ///< one pair_coeff per line
+    QPlainTextEdit* lammpsPotentialEdit_ = nullptr;  ///< one file path per line
+    QPlainTextEdit* lammpsExtraEdit_ = nullptr;      ///< one command per line
+    QLineEdit* lammpsCommandEdit_ = nullptr;         ///< `lmp` (Run only)
+    QCheckBox* lammpsLogCheck_ = nullptr;
+
     QGroupBox* orcaGroup_ = nullptr;
     QComboBox* orcaMethodCombo_ = nullptr;
     QComboBox* orcaBasisCombo_ = nullptr;

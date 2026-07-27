@@ -81,6 +81,14 @@ private:
     QCheckBox* gradientBondsCheck_;
     QCheckBox* showHydrogensCheck_;
     QComboBox* surfaceFinishCombo_;
+    // Per-atom text overlays, grouped on the editor row after Element
+    // Settings. The first two moved here from the viewport toolbar: what is
+    // written on an atom is a representation choice, not a navigation one.
+    QPushButton* elementLabelsButton_ = nullptr; ///< chemical symbols
+    QPushButton* indexLabelsButton_ = nullptr;   ///< 1-based atom indices
+    /// "Show CN / GCN values" — overlays the active "Color by" scalar on the
+    /// atoms. Disabled in Element mode, which has no scalar to print.
+    QPushButton* scalarLabelsButton_ = nullptr;
 };
 
 } // namespace calango::gui

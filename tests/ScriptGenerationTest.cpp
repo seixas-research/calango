@@ -17,6 +17,7 @@
 #include "core/GwScriptGenerator.hpp"
 #include "core/OpticsScriptGenerator.hpp"
 #include "core/PhononScriptGenerator.hpp"
+#include "core/RamanIrScriptGenerator.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -168,6 +169,42 @@ int main(int argc, char** argv)
             dump(name, c);
         }
 
+        // LAMMPS: both interfaces, since they emit structurally different
+        // blocks (a command LIST for the library, a parameter DICT for the
+        // executable), plus the units guard, which is a bare `raise` that must
+        // still parse.
+        {
+            CalculatorConfig lammps;
+            lammps.calculator = CalculatorKind::Lammps;
+            lammps.task = TaskKind::SinglePoint;
+            lammps.lammpsPairStyle = "eam/alloy";
+            lammps.lammpsPairCoeff = {"* * Cu_u3.eam.alloy Cu"};
+            // Inside the dump directory, so the accompanying Python check can
+            // create the file and exercise the found branch of the generated
+            // guard as well as the missing one.
+            lammps.lammpsPotentialFiles = {dir + "/Cu_u3.eam.alloy"};
+            lammps.lammpsExtraCommands = {"neighbor 2.0 bin"};
+            dump("lammps_lib.py", lammps);
+
+            CalculatorConfig run = lammps;
+            run.lammpsInterface = LammpsInterface::Run;
+            run.lammpsCommand = "/usr/bin/lmp_serial";
+            run.task = TaskKind::MolecularDynamics;
+            dump("lammps_run.py", run);
+
+            CalculatorConfig multi = lammps;
+            multi.lammpsPairStyle = "lj/cut 10.0";
+            multi.lammpsPairCoeff = {"1 1 0.0103 3.4", "1 2 0.0140 3.1",
+                                     "2 2 0.0180 2.9"};
+            multi.lammpsPotentialFiles.clear();
+            multi.task = TaskKind::GeometryOptimization;
+            dump("lammps_multi.py", multi);
+
+            CalculatorConfig realUnits = lammps;
+            realUnits.lammpsUnits = "real";
+            dump("lammps_bad_units.py", realUnits);
+        }
+
         // Phonon drivers: the plain 6N path and the symmetry-reduced one, each
         // with and without residual force removal. The symmetry-reduced script
         // nests both drivers in functions, so its indentation is worth
@@ -291,6 +328,29 @@ int main(int argc, char** argv)
             subset.atomIndices = {0, 2, 5};
             subset.acousticSumRule = false;
             dumpBorn("born_charges_subset.py", subset);
+        }
+
+        // Raman / IR: nested functions, an einsum-heavy numerical body and a
+        // multi-line f-string in the result marker. Both branches are dumped
+        // because the Raman half is a large chunk of code that only appears
+        // when the toggle is on.
+        {
+            const auto dumpRamanIr = [&dir](const std::string& name,
+                                            const RamanIrConfig& config) {
+                std::ofstream out(dir + "/" + name);
+                out << generateRamanIrScript(config);
+            };
+            RamanIrConfig raman;
+            raman.calculator = gpawConfig();
+            raman.baselinePath = "/tmp/baseline/single_point.gpw";
+            raman.bornChargesPath = "/tmp/born/born_charges.json";
+            dumpRamanIr("raman_ir.py", raman);
+            RamanIrConfig withOptics = raman;
+            withOptics.opticsPath = "/tmp/optics/optics.json";
+            dumpRamanIr("raman_ir_optics.py", withOptics);
+            RamanIrConfig irOnly = raman;
+            irOnly.computeRaman = false;
+            dumpRamanIr("raman_ir_ironly.py", irOnly);
         }
 
         std::ofstream module(dir + "/"
@@ -679,6 +739,69 @@ int main(int argc, char** argv)
         check(countSymmetryKwargs(
                   AseScriptGenerator::calculatorSnippet(gpawConfig())) == 1,
               "and so does the plain GPAW block");
+    }
+
+    // -- LAMMPS -------------------------------------------------------------
+    std::printf("LAMMPS calculator:\n");
+    {
+        CalculatorConfig lammps;
+        lammps.calculator = CalculatorKind::Lammps;
+        lammps.lammpsPairStyle = "eam/alloy";
+        lammps.lammpsPairCoeff = {"* * Cu_u3.eam.alloy Cu"};
+        lammps.lammpsPotentialFiles = {"/potentials/Cu_u3.eam.alloy"};
+        lammps.lammpsExtraCommands = {"neighbor 2.0 bin"};
+
+        const std::string library =
+            AseScriptGenerator::generate(lammps, "structure.extxyz");
+        checkContains(library, "from ase.calculators.lammpslib import LAMMPSlib",
+                      "the library interface uses LAMMPSlib");
+        checkContains(library, "\"pair_style eam/alloy\"",
+                      "pair style reaches the command list");
+        checkContains(library, "\"pair_coeff * * Cu_u3.eam.alloy Cu\"",
+                      "pair coefficients reach the command list");
+        checkContains(library, "\"neighbor 2.0 bin\"",
+                      "extra commands reach the command list");
+        // The type -> element map is the one thing that fails SILENTLY when it
+        // is wrong: LAMMPS addresses species by integer type, so a mismatched
+        // order computes a different compound rather than erroring. It must be
+        // derived from the structure, never baked in by the wizard.
+        checkContains(library, "species = sorted(set(atoms.get_chemical_symbols()))",
+                      "the species order is derived from the structure");
+        checkContains(library, "atom_types={symbol: index + 1",
+                      "and drives the LAMMPS type mapping");
+
+        CalculatorConfig run = lammps;
+        run.lammpsInterface = LammpsInterface::Run;
+        run.lammpsCommand = "/usr/bin/lmp_serial";
+        const std::string executable =
+            AseScriptGenerator::generate(run, "structure.extxyz");
+        checkContains(executable, "from ase.calculators.lammpsrun import LAMMPS",
+                      "the executable interface uses lammpsrun");
+        checkContains(executable, "\"units\": \"metal\"",
+                      "units are pinned to metal");
+        checkContains(executable, "specorder=species",
+                      "lammpsrun is given the derived species order");
+        checkContains(executable, "ASE_LAMMPSRUN_COMMAND",
+                      "the configured binary is exported for ASE");
+        // `files` is what makes lammpsrun copy the potential into the scratch
+        // directory the pair_coeff path is resolved against; without it the run
+        // fails inside LAMMPS with a file-not-found on a path that exists.
+        checkContains(executable, "\"files\":",
+                      "potential files are staged into lammpsrun's scratch dir");
+        check(!contains(executable, "LAMMPSlib"),
+              "the executable interface does not also pull in LAMMPSlib");
+
+        // ASE is hard-wired to eV/Angstrom. Any other units style returns
+        // numbers in a different scale with nothing to flag it, so the
+        // generated script must refuse rather than convert.
+        CalculatorConfig realUnits = lammps;
+        realUnits.lammpsUnits = "real";
+        const std::string refused =
+            AseScriptGenerator::generate(realUnits, "structure.extxyz");
+        checkContains(refused, "raise RuntimeError(",
+                      "a non-metal units style is refused outright");
+        check(!contains(refused, "LAMMPSlib(") && !contains(refused, "LAMMPS("),
+              "and no calculator is constructed after the refusal");
     }
 
     // -- Born effective charges ---------------------------------------------

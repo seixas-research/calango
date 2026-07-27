@@ -15,6 +15,7 @@
 
 #include "gui/GwResultsWindow.hpp"
 #include "gui/OpticsResultsWindow.hpp"
+#include "gui/RamanIrViewer.hpp"
 
 #include <QApplication>
 #include <QComboBox>
@@ -95,6 +96,48 @@ QByteArray opticsJson(bool twoDimensional)
         })";
     }
     json += "\n    }";
+    return json;
+}
+
+/// Mirrors the `summary` dict in core::generateRamanIrScript — same keys, same
+/// nesting, same "raman.computed" flag the viewer keys its selector off.
+QByteArray ramanIrJson(bool ramanComputed)
+{
+    QByteArray json = R"({
+    "formula": "SiO2",
+    "atoms": 3,
+    "symbols": ["Si", "O", "O"],
+    "displacement_A": 0.01,
+    "laser_nm": 532.0,
+    "temperature_K": 300.0,
+    "broadening_cm": 4.0,
+    "volume_A3": 113.0,
+    "born_charges_source": "/tmp/born/born_charges.json",
+    "optics_source": null,
+    "raman": {"computed": )";
+    json += ramanComputed ? "true, \"eta_eV\": 0.05, \"off_diagonal\": true"
+                          : "false";
+    json += R"(},
+    "modes": [
+        {"index": 0, "frequency_cm": 0.0, "frequency_meV": 0.0,
+         "ir_intensity_D2_A2_amu": 0.0, "ir_intensity_e2_amu": 0.0,
+         "raman_activity_A4_amu": 0.0, "raman_intensity": 0.0,
+         "acoustic": true},
+        {"index": 1, "frequency_cm": 464.2, "frequency_meV": 57.6,
+         "ir_intensity_D2_A2_amu": 0.0, "ir_intensity_e2_amu": 0.0,
+         "raman_activity_A4_amu": 21.5, "raman_intensity": 1830.0,
+         "acoustic": false},
+        {"index": 2, "frequency_cm": 1080.0, "frequency_meV": 133.9,
+         "ir_intensity_D2_A2_amu": 4.75, "ir_intensity_e2_amu": 0.206,
+         "raman_activity_A4_amu": 0.4, "raman_intensity": 12.0,
+         "acoustic": false}
+    ],
+    "spectrum": {
+        "frequency_cm": [0.0, 400.0, 800.0, 1200.0],
+        "ir": [0.0, 0.01, 0.2, 3.9],
+        "raman": [0.0, 12.0, 900.0, 4.0]
+    }
+})";
     return json;
 }
 
@@ -188,6 +231,47 @@ int main(int argc, char** argv)
             check(quantity->currentText().contains(QStringLiteral("A(ω)")),
                   "opens on the absorbance");
         }
+    }
+
+    // -- Raman / IR viewer --------------------------------------------------
+    std::printf("Raman/IR viewer reads raman_ir.json:\n");
+    {
+        const QString path = tempDir.filePath(QStringLiteral("raman_ir.json"));
+        check(writeFile(path, ramanIrJson(/*ramanComputed=*/true)),
+              "fixture written");
+
+        RamanIrViewer viewer;
+        check(viewer.loadResults(path), "parses a well-formed summary");
+        auto* table = viewer.findChild<QTableWidget*>();
+        check(table != nullptr, "has a mode table");
+        if (table)
+            check(table->rowCount() == 3, "one row per Γ-point mode");
+        // Both spectra are selectable once the Raman half actually ran.
+        auto* selector = viewer.findChild<QComboBox*>();
+        check(selector != nullptr && selector->isEnabled(),
+              "the spectrum selector is live for a Raman run");
+    }
+    {
+        // An IR-only run. The Raman curve is legitimately absent, and the
+        // selector must not offer a spectrum that was never computed — a flat
+        // curve reads as "every mode is Raman-inactive", which is a different
+        // claim entirely.
+        const QString path =
+            tempDir.filePath(QStringLiteral("raman_ir_ironly.json"));
+        check(writeFile(path, ramanIrJson(/*ramanComputed=*/false)),
+              "IR-only fixture written");
+
+        RamanIrViewer viewer;
+        check(viewer.loadResults(path), "parses an IR-only summary");
+        auto* selector = viewer.findChild<QComboBox*>();
+        check(selector != nullptr && !selector->isEnabled(),
+              "the spectrum selector is disabled when Raman was skipped");
+    }
+    {
+        RamanIrViewer viewer;
+        check(!viewer.loadResults(
+                  tempDir.filePath(QStringLiteral("no_raman.json"))),
+              "a missing file is reported, not asserted");
     }
 
     std::printf(failures == 0 ? "\nAll results-viewer checks passed.\n"

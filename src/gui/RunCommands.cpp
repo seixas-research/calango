@@ -105,6 +105,12 @@ QString solverCommandVariable(core::CalculatorKind kind)
         return QStringLiteral("ASE_VASP_COMMAND");
     case core::CalculatorKind::Orca:
         return QStringLiteral("ASE_ORCA_COMMAND");
+    case core::CalculatorKind::Lammps:
+        // Only the lammpsrun interface spawns a binary at all; the library
+        // interface runs LAMMPS in-process and ignores this entirely. Naming
+        // the variable here is still right — the resolver only exports it when
+        // the user has actually configured a command.
+        return QStringLiteral("ASE_LAMMPSRUN_COMMAND");
     default:
         break;
     }

@@ -29,6 +29,33 @@ enum class CalculatorKind {
     ChgNet,    ///< CHGNet — pretrained universal potential with magmoms
     MatterSim, ///< MatterSim — Microsoft's universal potential (M3GNet-family)
     FairChem,  ///< FAIRChem / OCP — EquiformerV2, eSCN checkpoints
+    /// LAMMPS — the classical molecular-dynamics engine, driven through ASE.
+    ///
+    /// Appended last deliberately: the enum is serialized into saved projects
+    /// by VALUE, so inserting it next to the other classical potentials would
+    /// silently reinterpret every stored calculator after it.
+    ///
+    /// Unlike every other entry here, LAMMPS brings its own force field rather
+    /// than being one: what it computes is decided entirely by the pair style
+    /// and coefficients, which is why it needs its own settings group instead
+    /// of a single constructor line.
+    Lammps,
+};
+
+/// How the LAMMPS calculator talks to LAMMPS. ASE ships two interfaces, and
+/// which one works depends on how LAMMPS was installed — so this is a real
+/// choice the user has to make, not an implementation detail.
+enum class LammpsInterface {
+    /// `ase.calculators.lammpslib.LAMMPSlib` — in-process, through the LAMMPS
+    /// Python module. No file I/O per step, so it is the right choice for MD
+    /// and relaxation; needs LAMMPS built with `-DBUILD_SHARED_LIBS` and its
+    /// Python package installed (conda-forge's `lammps` provides both).
+    Library,
+    /// `ase.calculators.lammpsrun.LAMMPS` — spawns the `lmp` binary per
+    /// evaluation, exchanging data files. Works with ANY LAMMPS build,
+    /// including a plain distro package, at the cost of process startup and
+    /// file I/O on every force call.
+    Run,
 };
 
 /// True for the machine-learning interatomic potentials — the engines that
@@ -404,6 +431,45 @@ struct CalculatorConfig {
     /// it corrects. Empty means "follow the calculator's own xc".
     bool dispersionD4 = false;
     std::string dispersionD4Method;
+
+    // -- LAMMPS (classical molecular dynamics) ------------------------------
+    //
+    // LAMMPS is not a force field, it is an engine that runs one — so unlike
+    // EMT or a foundation MLIP there is no meaningful default. The pair style
+    // and its coefficients ARE the physics, and they are the user's to supply.
+    LammpsInterface lammpsInterface = LammpsInterface::Library;
+    /// `pair_style` argument line, e.g. "eam/alloy", "tersoff",
+    /// "lj/cut 10.0", "sw". Everything after the style name is passed through
+    /// verbatim, which is how cutoffs and style options reach LAMMPS.
+    std::string lammpsPairStyle = "lj/cut 10.0";
+    /// `pair_coeff` lines, one per entry, WITHOUT the leading keyword — e.g.
+    /// "* * Cu_u3.eam.alloy Cu" or "1 1 0.0103 3.4".
+    ///
+    /// A list rather than one string because multi-element systems routinely
+    /// need several, and joining them into a single field would make the
+    /// generated script depend on how the user chose to punctuate.
+    std::vector<std::string> lammpsPairCoeff{"* * 0.0103 3.4"};
+    /// Potential files the pair style reads (EAM tables, Tersoff parameter
+    /// files, ...). lammpsrun copies these into its scratch directory; the
+    /// library interface reads them from wherever LAMMPS's cwd is, so absolute
+    /// paths are the safe form and the generated script says so.
+    std::vector<std::string> lammpsPotentialFiles;
+    /// The `lmp` executable, for the Run interface only. Empty leaves ASE to
+    /// find it through $ASE_LAMMPSRUN_COMMAND / $PATH.
+    std::string lammpsCommand;
+    /// LAMMPS `units` style. "metal" (eV, Å, ps) is the ONLY one that matches
+    /// what ASE expects; anything else silently returns energies in the wrong
+    /// unit, so the generated script refuses rather than converting.
+    std::string lammpsUnits = "metal";
+    /// `atom_style` for the data file / box creation.
+    std::string lammpsAtomStyle = "atomic";
+    /// Extra LAMMPS commands appended after the pair setup (neighbor lists,
+    /// `pair_modify`, per-style `fix` commands). One command per entry.
+    std::vector<std::string> lammpsExtraCommands;
+    /// Write the LAMMPS log to `lammps.log` rather than discarding it. On by
+    /// default: when a pair style rejects its coefficients, that log is the
+    /// only place the reason appears.
+    bool lammpsKeepLog = true;
 
     // -- ORCA (quantum chemistry) ------------------------------------------
     std::string orcaMethod = "B3LYP";   ///< functional / method keyword

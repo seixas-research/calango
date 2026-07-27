@@ -67,6 +67,13 @@ RayTraceExporter::SceneInputs makeInputs(const calango::core::Structure& structu
     in.style.showCell = true;
     in.lights.push_back({});
     in.camera.frame(QVector3D(0.6f, 0.0f, 0.0f), 5.0f);
+    // Explicitly perspective. The viewport's DEFAULT projection is
+    // orthographic (render::kDefaultProjection), and the checks below are
+    // about the perspective code path — the Zoom = 0.5/tan(fov/2) formula and
+    // the "Projection Perspective" declaration — so the fixture has to state
+    // which path it means rather than inherit whatever the default happens to
+    // be. The orthographic path has its own fixture further down.
+    in.camera.setProjectionMode(calango::render::CameraProjection::Perspective);
     in.width = 1920;
     in.height = 1080;
     in.aspect = 1920.0f / 1080.0f;
@@ -488,7 +495,8 @@ int main(int argc, char** argv)
     auto povInputs = makeInputs(structure);
     const QString pov = RayTraceExporter::povray(povInputs);
     check(pov.contains(QStringLiteral("camera {")), "has a camera block");
-    check(pov.contains(QStringLiteral("perspective")), "is perspective by default");
+    check(pov.contains(QStringLiteral("perspective")),
+          "is perspective when the camera says so");
     // POV's `angle` is horizontal; a 16:9 render of a 40° vertical FOV needs
     // ~65.8°, not the 40 that used to be hardcoded.
     const double expectedAngle =

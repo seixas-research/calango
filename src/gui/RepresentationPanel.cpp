@@ -166,6 +166,35 @@ QWidget* RepresentationPanel::buildAppearanceTab()
         QStringLiteral("brush-fill"),
         tr("Element Settings… — per-element colours and radii, and preset "
            "save/load."));
+    // Three per-atom text overlays, together and directly after Element
+    // Settings. All three answer the same question — what is written ON the
+    // atoms — so they read as one group; the first two came from the viewport
+    // toolbar, which is about navigating the scene rather than drawing it.
+    elementLabelsButton_ = makeEditorButton(
+        QStringLiteral("atom-line"),
+        tr("Show element symbols — overlay each atom's chemical symbol "
+           "(Fe, O, Si…) on the 3D viewport."));
+    elementLabelsButton_->setCheckable(true);
+    elementLabelsButton_->setChecked(viewport_->showElementLabels());
+
+    indexLabelsButton_ = makeEditorButton(
+        QStringLiteral("price-tag-fill"),
+        tr("Show atomic indices — overlay each atom's 1-based index "
+           "(#1, #2…) on the 3D viewport."));
+    indexLabelsButton_->setCheckable(true);
+    indexLabelsButton_->setChecked(viewport_->showAtomIndexLabels());
+
+    // The third of the group: it prints the number behind the colour ramp
+    // rather than an identity. It follows "Color by" (one row up) because it is
+    // that setting's read-out — the ramp says which atoms differ, this says by
+    // how much, and a GCN of 6.75 against 7.50 is a distinction no colour scale
+    // conveys.
+    scalarLabelsButton_ = makeEditorButton(
+        QStringLiteral("hashtag"),
+        tr("Show CN / GCN values — print each atom's value of the property "
+           "selected in \"Color by\" on the 3D viewport."));
+    scalarLabelsButton_->setCheckable(true);
+    scalarLabelsButton_->setChecked(viewport_->showCoordinationLabels());
     auto* bondButton = makeEditorButton(
         QStringLiteral("share-fill"),
         tr("Bond Editor… — bond perception, manual bonds, bond order and "
@@ -187,6 +216,12 @@ QWidget* RepresentationPanel::buildAppearanceTab()
         ElementSettingsDialog dialog(viewport_, this);
         dialog.exec();
     });
+    connect(elementLabelsButton_, &QPushButton::toggled, viewport_,
+            &ViewportWidget::setShowElementLabels);
+    connect(indexLabelsButton_, &QPushButton::toggled, viewport_,
+            &ViewportWidget::setShowAtomIndexLabels);
+    connect(scalarLabelsButton_, &QPushButton::toggled, viewport_,
+            &ViewportWidget::setShowCoordinationLabels);
     connect(bondButton, &QPushButton::clicked, this,
             &RepresentationPanel::bondEditorRequested);
     // Modeless: both edit live, and the user needs to see the viewport change
@@ -352,13 +387,17 @@ QWidget* RepresentationPanel::buildAppearanceTab()
            "and every\ncalculation and exported file are unchanged."));
     hydrogenRow->addWidget(showHydrogensCheck_);
     hydrogenRow->addStretch(1);
-    auto* completeHydrogensButton =
-        new QPushButton(tr("Complete with hydrogens"), page);
+    // Icon-only, like the editor row above it: the spelled-out label was the
+    // widest thing in the dock and forced the whole panel wider than any other
+    // control needed. The tooltip carries what the label said.
+    auto* completeHydrogensButton = new QPushButton(page);
+    ui::IconManager::bind(completeHydrogensButton, QStringLiteral("heading"));
+    completeHydrogensButton->setIconSize(QSize(20, 20));
     completeHydrogensButton->setFocusPolicy(Qt::NoFocus);
     completeHydrogensButton->setToolTip(
-        tr("Add the hydrogens each atom's standard valence implies — a "
-           "carbon with three\nbonds gets one, an sp3 oxygen with one bond "
-           "gets one, and so on.\n\n"
+        tr("Complete with hydrogens — add the hydrogens each atom's standard "
+           "valence implies:\na carbon with three bonds gets one, an sp3 "
+           "oxygen with one bond gets one, and so on.\n\n"
            "Positions come from relaxing the new bonds against the existing "
            "ones, so\nthe geometry follows the coordination (tetrahedral, "
            "trigonal, bent).\nMetals and transition metals are left alone. "
@@ -471,6 +510,10 @@ void RepresentationPanel::loadSelectedCast()
         opacitySlider_->setValue(
             static_cast<int>(std::lround(cast.opacity * 100.0f)));
     }
+    // Nothing to print when the cast is coloured by element: CPK is a lookup,
+    // not a measured quantity, so the toggle would produce empty labels.
+    if (scalarLabelsButton_)
+        scalarLabelsButton_->setEnabled(cast.colorMode != render::ColorMode::Element);
 }
 
 void RepresentationPanel::openCastSetup()
