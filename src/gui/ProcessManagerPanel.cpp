@@ -81,11 +81,21 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
         QStringLiteral("folder-open-line"),
         tr("Open Folder — reveal this task's working directory."));
     auto* loadButton = makeButton(
-        QStringLiteral("folder-received-line"),
+        QStringLiteral("slideshow-3-fill"),
         tr("Load Result — open this task's trajectory / bands / final "
            "structure in the workspace."));
+    // The dedicated result viewers (Single-Point, Geometry Optimization,
+    // Molecular Dynamics, MLWF, GW) are reached from HERE rather than from a
+    // top-level menu: a viewer is meaningless without a process to view, and
+    // asking for the process first means only the viewers this run actually
+    // produced are ever offered.
+    auto* viewerButton = makeButton(
+        QStringLiteral("line-chart-line"),
+        tr("Open Viewer — the dedicated results viewer for this run "
+           "(Single-Point, Geometry Optimization, Molecular Dynamics, MLWF, "
+           "GW, Born charges), chosen from the files it produced."));
     auto* scriptButton = makeButton(
-        QStringLiteral("file-code-line"),
+        QStringLiteral("code-box-fill"),
         tr("View ASE Script — show the exact Python/ASE run.py that was "
            "executed."));
     auto* deleteButton = makeButton(
@@ -111,6 +121,10 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
         if (const QString dir = selectedDir(); !dir.isEmpty())
             Q_EMIT loadResultRequested(dir);
     });
+    connect(viewerButton, &QPushButton::clicked, this, [this, selectedDir] {
+        if (const QString dir = selectedDir(); !dir.isEmpty())
+            Q_EMIT openViewerRequested(dir);
+    });
     connect(deleteButton, &QPushButton::clicked, this, [this] {
         if (const auto* item = tree_->currentItem())
             Q_EMIT deleteRequested(item->data(0, kIdRole).toInt());
@@ -120,6 +134,25 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
                 const QString dir = item->data(0, kDirRole).toString();
                 if (!dir.isEmpty())
                     Q_EMIT loadResultRequested(dir);
+            });
+
+    // Right-click a process for everything that can be done WITH that process,
+    // viewers included. The menu itself is built by the controller, which is
+    // what knows how to tell a completed GW run from a completed MD one.
+    tree_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(tree_, &QTreeWidget::customContextMenuRequested, this,
+            [this](const QPoint& pos) {
+                const QTreeWidgetItem* item = tree_->itemAt(pos);
+                if (!item)
+                    return;
+                // Right-clicking an unselected row acts on THAT row, which is
+                // what every other tree in the app does; without this the menu
+                // would silently describe a different process than the one
+                // under the cursor.
+                tree_->setCurrentItem(const_cast<QTreeWidgetItem*>(item));
+                const QString dir = item->data(0, kDirRole).toString();
+                if (!dir.isEmpty())
+                    Q_EMIT contextMenuRequested(dir, tree_->viewport()->mapToGlobal(pos));
             });
 }
 

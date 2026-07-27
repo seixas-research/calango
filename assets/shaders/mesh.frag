@@ -16,6 +16,7 @@ in vec3 vNormalView;
 in vec3 vPosView;
 in vec4 vColor;
 in vec4 vPosLight;
+flat in int vFinish;
 
 uniform int   uLightCount;
 uniform vec3  uLightDir[MAX_LIGHTS];      // direction the light travels
@@ -41,7 +42,13 @@ uniform float uShininess;
 #define FINISH_SHINY    1
 #define FINISH_MATTE    2
 #define FINISH_GLASSY   3
-uniform int   uSurfaceFinish;
+// The finish arrives PER INSTANCE (vFinish, from the instance buffer) so casts
+// can differ — there is no uniform for it.
+// Which of the two mesh passes this is: 0 = opaque (glassy instances are
+// discarded), 1 = the blended pass (everything else is discarded). Splitting
+// them is what lets an opaque cast keep writing depth while a glassy one
+// blends without it.
+uniform int   uFinishPass;
 uniform float uSurfaceOpacity;   // Glassy base alpha
 
 // Directional shadow mapping (Visual Effects -> Shadow). The depth map is
@@ -110,6 +117,16 @@ layout(location = 1) out vec4 gNormal;
 
 void main()
 {
+    int finish = vFinish;
+    bool glassy = finish == FINISH_GLASSY;
+    // An instance is translucent if its material says so OR if its cast was
+    // given an opacity below 1 (which arrives in the colour alpha). Both kinds
+    // belong to the blended pass, so they are split off together.
+    bool translucent = glassy || vColor.a < 0.999;
+    // Each pass draws only the instances it owns.
+    if ((uFinishPass == 0 && translucent) || (uFinishPass == 1 && !translucent))
+        discard;
+
     vec3 n = normalize(vNormalView);
     if (!gl_FrontFacing)
         n = -n;
@@ -119,14 +136,14 @@ void main()
     float specularWeight = 1.0;
     float diffuseWeight  = 1.0;
     float shininess      = uShininess;
-    if (uSurfaceFinish == FINISH_SHINY) {
+    if (finish == FINISH_SHINY) {
         specularWeight = 2.2;
         diffuseWeight  = 0.9;   // let the highlight carry the form
         shininess      = uShininess * 4.0; // small, crisp highlight
-    } else if (uSurfaceFinish == FINISH_MATTE) {
+    } else if (finish == FINISH_MATTE) {
         specularWeight = 0.0;   // fosco: purely diffuse
         diffuseWeight  = 1.15;  // compensate the lost highlight energy
-    } else if (uSurfaceFinish == FINISH_GLASSY) {
+    } else if (glassy) {
         specularWeight = 1.8;
         diffuseWeight  = 0.75;  // let the body read as translucent
         shininess      = uShininess * 2.5; // tighter, glassier highlight
@@ -152,13 +169,19 @@ void main()
                + uLightSpecular[i] * spec * specularWeight * direct;
     }
 
+    // vColor.a carries the cast's own opacity slider.
     float alpha = vColor.a;
-    if (uSurfaceFinish == FINISH_GLASSY) {
+    if (glassy) {
         // Schlick-style Fresnel: face-on is the most transparent, edges
         // approach opaque. This rim is what sells the glass read, and it also
         // keeps silhouettes legible when spheres overlap.
         float fresnel = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 3.0);
-        alpha = clamp(uSurfaceOpacity + (1.0 - uSurfaceOpacity) * fresnel, 0.0, 1.0);
+        float glass = clamp(uSurfaceOpacity + (1.0 - uSurfaceOpacity) * fresnel,
+                            0.0, 1.0);
+        // The two compose rather than one replacing the other: a glassy cast
+        // faded to 0.3 must end up fainter than an opaque glassy one, not
+        // identical to it.
+        alpha = glass * vColor.a;
         color += uLightSpecular[0] * fresnel * 0.25; // subtle edge sheen
     }
     if (uFogMode != 0) {

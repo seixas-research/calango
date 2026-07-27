@@ -812,9 +812,14 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
             << "sample_interval = "
             << (c.mdSampleInterval > 0 ? std::to_string(c.mdSampleInterval)
                                        : std::string("max(1, md_steps // 400)"))
-            << "  # record every N steps\n"
-               "\n"
-               "MaxwellBoltzmannDistribution(atoms, temperature_K=temperature_K)\n"
+            << "  # record every N steps\n";
+        // Constraints go on BEFORE the velocities are drawn: ASE's
+        // MaxwellBoltzmannDistribution consults the constraints and leaves the
+        // frozen degrees of freedom at zero, so a held substrate starts at rest
+        // instead of being given thermal velocities it then has to have
+        // projected out every step.
+        emitConstraints(out, c);
+        out << "MaxwellBoltzmannDistribution(atoms, temperature_K=temperature_K)\n"
                "# Remove the net center-of-mass momentum the random velocities\n"
                "# carry, so the system does not drift as a whole during MD.\n"
                "Stationary(atoms)\n"
@@ -1065,11 +1070,49 @@ std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,
         out << indent << "kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", "
             << c.kpts[2] << "),  # Monkhorst-Pack grid\n";
     // Point-group symmetry reduction of the k-points is on by default; only
-    // write the keyword when the user turned it off (e.g. to expose the full
+    // write "off" when the user turned it off (e.g. to expose the full
     // Brillouin zone for a downstream Wannier localization).
-    if (c.gpawSymmetryOff)
+    //
+    // Molecular dynamics forces it off regardless. GPAW detects the symmetry
+    // group ONCE from the starting geometry and then validates every later set
+    // of positions against it; thermal velocities break that group on the first
+    // step, and the run dies with "Broken symmetry!" (GPAW 25) or
+    // SymmetryBrokenError (GPAW 26). An MD snapshot has no symmetry by
+    // construction, so keeping the reduction on is not an option the user
+    // should be able to pick — it can only fail.
+    //
+    // Geometry optimization is deliberately NOT included: relaxation follows
+    // symmetric forces and stays inside the group it started in.
+    const bool symmetryOff =
+        c.gpawSymmetryOff || c.task == TaskKind::MolecularDynamics;
+    if (symmetryOff) {
         out << indent
             << "symmetry=\"off\",  # no point-group reduction of the k-points\n";
+    } else {
+        // Pin the symmetry-detection tolerance to 1e-5 Å.
+        //
+        // GPAW picks it as `1e-7 if backwards_compatible else 1e-5`, and
+        // `backwards_compatible` still defaults to TRUE (gpaw/new/builder.py),
+        // so an unqualified run inherits the legacy 1e-7. That is tight enough
+        // to be a trap: an atom sitting a few times 1e-7 Å off a symmetry
+        // point — ordinary float32-grade numerical residue, five orders of
+        // magnitude below anything physical — makes the analyser report
+        // operations that do not close under composition, and GPAW aborts the
+        // whole run with
+        //     SymmetryAnalysisBug: Sorry!  Try using spglib.standardize_cell()
+        // The window is narrow (≈1e-7; smaller snaps to the full group, larger
+        // correctly drops to the lower one), which is what makes it look
+        // random: the same workflow runs fine until one structure lands in it.
+        //
+        // 1e-5 Å is not a loosening — it is GPAW's own modern default, and is
+        // still far below any physically meaningful displacement.
+        out << indent
+            << "symmetry={\"tolerance\": 1e-5},  # GPAW's modern default; the\n"
+            << indent
+            << "                               # legacy 1e-7 aborts on ~1e-7 Å\n"
+            << indent
+            << "                               # coordinate noise\n";
+    }
     out << indent << "eigensolver=\"" << toString(c.gpawEigensolver) << "\",\n"
         // Mixer(beta, nmaxold, weight) — GPAW's positional signature.
         << indent << "mixer=" << toString(c.gpawMixer) << "(" << c.gpawMixerBeta

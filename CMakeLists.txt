@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.57
+    VERSION 26.7.58
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -140,6 +140,8 @@ qt_add_executable(calango
     src/core/Coordination.cpp
     src/core/HydrogenBonds.hpp
     src/core/HydrogenBonds.cpp
+    src/core/HydrogenCompletion.hpp
+    src/core/HydrogenCompletion.cpp
     src/core/Distributions.hpp
     src/core/Distributions.cpp
     src/core/StructureFactor.hpp
@@ -174,6 +176,10 @@ qt_add_executable(calango
     src/core/GrapheneOxideBuilder.cpp
     src/core/ElfScriptGenerator.hpp
     src/core/ElfScriptGenerator.cpp
+    src/core/BornChargesScriptGenerator.hpp
+    src/core/BornChargesScriptGenerator.cpp
+    src/core/PdbxFile.hpp
+    src/core/PdbxFile.cpp
     src/core/WannierScriptGenerator.hpp
     src/core/WannierScriptGenerator.cpp
     src/core/AdsorptionSites.hpp
@@ -444,6 +450,12 @@ qt_add_executable(calango
     src/gui/HubbardParametersDialog.cpp
     src/gui/GeometryConstraintsDialog.hpp
     src/gui/GeometryConstraintsDialog.cpp
+    src/gui/BornChargesWizard.hpp
+    src/gui/BornChargesWizard.cpp
+    src/gui/BornChargesViewer.hpp
+    src/gui/BornChargesViewer.cpp
+    src/gui/PointOfViewDialog.hpp
+    src/gui/PointOfViewDialog.cpp
     src/gui/CastSetupDialog.hpp
     src/gui/CastSetupDialog.cpp
     src/gui/AddAdsorbateDialog.hpp
@@ -514,10 +526,15 @@ qt_add_resources(calango "icons"
         assets/.internal/icons/add-circle-line.svg
         assets/.internal/icons/anticlockwise-2-line.svg
         assets/.internal/icons/arrow-go-back-line.svg
+        assets/.internal/icons/atom-line.svg
+        assets/.internal/icons/box-1-fill.svg
         assets/.internal/icons/box-3-line.svg
+        assets/.internal/icons/brush-fill.svg
         assets/.internal/icons/checkbox-circle-line.svg
         assets/.internal/icons/close-circle-line.svg
         assets/.internal/icons/close-line.svg
+        assets/.internal/icons/code-box-fill.svg
+        assets/.internal/icons/color-filter-fill.svg
         assets/.internal/icons/compasses-2-line.svg
         assets/.internal/icons/computer-line.svg
         assets/.internal/icons/cpu-line.svg
@@ -525,18 +542,22 @@ qt_add_resources(calango "icons"
         assets/.internal/icons/delete.svg
         assets/.internal/icons/delete-bin-line.svg
         assets/.internal/icons/drag-move-2-line.svg
+        assets/.internal/icons/eye-fill.svg
         assets/.internal/icons/file-code-line.svg
         assets/.internal/icons/file-copy-line.svg
         assets/.internal/icons/focus-3-line.svg
         assets/.internal/icons/folder-open-line.svg
         assets/.internal/icons/folder-received-line.svg
         assets/.internal/icons/font-size-2.svg
+        assets/.internal/icons/group-fill.svg
         assets/.internal/icons/hard-drive-2-line.svg
         assets/.internal/icons/hashtag.svg
         assets/.internal/icons/information-line.svg
         assets/.internal/icons/loader-4-line.svg
         assets/.internal/icons/magic-line.svg
         assets/.internal/icons/palette-line.svg
+        assets/.internal/icons/puzzle-fill.svg
+        assets/.internal/icons/line-chart-line.svg
         assets/.internal/icons/links-line.svg
         assets/.internal/icons/arrow-right-up-line.svg
         assets/.internal/icons/save-line.svg
@@ -546,9 +567,14 @@ qt_add_resources(calango "icons"
         assets/.internal/icons/ruler-2-line.svg
         assets/.internal/icons/scissors-cut-line.svg
         assets/.internal/icons/shape-line.svg
+        assets/.internal/icons/share-fill.svg
+        assets/.internal/icons/slideshow-3-fill.svg
+        assets/.internal/icons/split-cells-horizontal.svg
+        assets/.internal/icons/stack-fill.svg
         assets/.internal/icons/stack-line.svg
         assets/.internal/icons/stacked-view.svg
         assets/.internal/icons/time-line.svg
+        assets/.internal/icons/triangle-line.svg
 )
 
 qt_add_resources(calango "remote"
@@ -668,6 +694,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/Element.cpp
         src/python_bridge/PythonEngine.cpp
         src/python_bridge/AseBridge.cpp
+        src/core/PdbxFile.cpp
         src/python_bridge/SqsBuilder.cpp
     )
     target_include_directories(calango_sqs_test PRIVATE src)
@@ -684,6 +711,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/AdsorptionSites.cpp
         src/python_bridge/PythonEngine.cpp
         src/python_bridge/AseBridge.cpp
+        src/core/PdbxFile.cpp
         src/python_bridge/SurfaceScience.cpp
     )
     target_include_directories(calango_adsorption_test PRIVATE src)
@@ -699,6 +727,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/Element.cpp
         src/python_bridge/PythonEngine.cpp
         src/python_bridge/AseBridge.cpp
+        src/core/PdbxFile.cpp
     )
     target_include_directories(calango_phonon_test PRIVATE src)
     target_compile_definitions(calango_phonon_test PRIVATE
@@ -734,6 +763,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/Element.cpp
         src/python_bridge/PythonEngine.cpp
         src/python_bridge/AseBridge.cpp
+        src/core/PdbxFile.cpp
     )
     target_include_directories(calango_symmetry_test PRIVATE src)
     target_compile_definitions(calango_symmetry_test PRIVATE
@@ -752,6 +782,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/Element.cpp
         src/python_bridge/PythonEngine.cpp
         src/python_bridge/AseBridge.cpp
+        src/core/PdbxFile.cpp
         src/python_bridge/MaterialsProject.cpp
     )
     target_include_directories(calango_mp_test PRIVATE src)
@@ -769,6 +800,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/Element.cpp
         src/python_bridge/PythonEngine.cpp
         src/python_bridge/AseBridge.cpp
+        src/core/PdbxFile.cpp
         src/python_bridge/RamanAnalysis.cpp
     )
     target_include_directories(calango_raman_test PRIVATE src)
@@ -801,6 +833,8 @@ if(CALANGO_BUILD_TESTS)
         tests/RayTraceSceneTest.cpp
         src/render/RayTraceExporter.cpp
         src/render/StructureRenderer.cpp
+        src/core/MarchingCubes.cpp
+        src/core/VolumetricData.cpp
         src/render/ColorMap.cpp
         src/render/Camera.cpp
         src/core/Structure.cpp
@@ -819,6 +853,8 @@ if(CALANGO_BUILD_TESTS)
     add_executable(calango_ghost_test
         tests/BoundaryGhostTest.cpp
         src/render/StructureRenderer.cpp
+        src/core/MarchingCubes.cpp
+        src/core/VolumetricData.cpp
         src/render/ColorMap.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
@@ -873,6 +909,19 @@ if(CALANGO_BUILD_TESTS)
     )
     target_include_directories(calango_hbond_test PRIVATE src)
     add_test(NAME hydrogen_bonds COMMAND calango_hbond_test)
+
+    # Hydrogen completion: the valence arithmetic that decides HOW MANY
+    # hydrogens an atom is missing, and the repulsion relaxation that decides
+    # WHERE they go.
+    add_executable(calango_hcomplete_test
+        tests/HydrogenCompletionTest.cpp
+        src/core/HydrogenCompletion.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_hcomplete_test PRIVATE src)
+    add_test(NAME hydrogen_completion COMMAND calango_hcomplete_test)
 
     # Shader compilation: a GLSL error renders nothing instead of crashing, so
     # without this a broken shader ships as a black viewport. Needs a real GL
@@ -982,7 +1031,9 @@ if(CALANGO_BUILD_TESTS)
     add_executable(calango_script_test
         tests/ScriptGenerationTest.cpp
         src/core/AseScriptGenerator.cpp
+        src/core/BornChargesScriptGenerator.cpp
         src/core/ElectronicScriptGenerator.cpp
+        src/core/ElfScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
         src/core/OpticsScriptGenerator.cpp
         src/core/GwScriptGenerator.cpp
@@ -1013,6 +1064,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/KPath.cpp
         src/python_bridge/PythonEngine.cpp
         src/python_bridge/AseBridge.cpp
+        src/core/PdbxFile.cpp
     )
     target_include_directories(calango_extxyz_test PRIVATE src)
     target_compile_definitions(calango_extxyz_test PRIVATE

@@ -31,28 +31,45 @@ void collectGeometry(const RayTraceExporter::SceneInputs& in,
                      std::vector<SceneCylinder>& cylinders)
 {
     const auto& atoms = in.structure->atoms();
-    // Per-atom representation, resolved exactly as the viewport does, so an
-    // exported figure keeps the cast split (CPK substrate, ball-and-stick
-    // adsorbate) the user set up on screen.
-    const auto modes = StructureRenderer::atomModes(in.structure, in.style);
+    // Per-atom settings, resolved exactly as the viewport does, so an exported
+    // figure keeps the cast split (CPK substrate, ball-and-stick adsorbate) the
+    // user set up on screen.
+    const auto casts = StructureRenderer::atomCastStyles(in.structure, in.style);
 
     for (std::size_t i = 0; i < atoms.size(); ++i) {
         const auto& atom = atoms[i];
+        // Ribbon and molecular-surface casts have no per-atom geometry; the
+        // external ray tracers get no triangle soup from this exporter, so
+        // those casts export as nothing rather than as misleading spheres.
+        if (isMacromolecularMode(casts[i].mode))
+            continue;
+        // "Show hydrogens" is off: the export has to match what is on screen,
+        // or the figure gains hydrogens the user deliberately hid.
+        if (!in.style.showHydrogens && atom.atomicNumber == 1)
+            continue;
         spheres.push_back(
             {toQt(atom.position),
-             StructureRenderer::displayRadius(atom.atomicNumber, in.style, modes[i]),
+             StructureRenderer::displayRadius(atom.atomicNumber, casts[i]),
              StructureRenderer::atomColor(atom.atomicNumber, in.style)});
     }
 
     {
-        const float baseRadius = in.style.bondRadius * in.style.bondWidthFactor;
         for (const auto& bond : in.structure->detectBonds(in.style.bondTolerance)) {
-            // Space-filling casts carry no bonds — same rule as the viewport.
-            if (modes[static_cast<std::size_t>(bond.i)]
-                    == RepresentationMode::SpaceFilling
-                || modes[static_cast<std::size_t>(bond.j)]
-                    == RepresentationMode::SpaceFilling)
+            const auto& castI = casts[static_cast<std::size_t>(bond.i)];
+            const auto& castJ = casts[static_cast<std::size_t>(bond.j)];
+            // Space-filling and the macromolecular casts carry no bonds —
+            // same rule as the viewport.
+            if (castI.mode == RepresentationMode::SpaceFilling
+                || castJ.mode == RepresentationMode::SpaceFilling
+                || isMacromolecularMode(castI.mode)
+                || isMacromolecularMode(castJ.mode))
                 continue;
+            if (!in.style.showHydrogens
+                && (atoms[static_cast<std::size_t>(bond.i)].atomicNumber == 1
+                    || atoms[static_cast<std::size_t>(bond.j)].atomicNumber == 1))
+                continue;
+            const float baseRadius = in.style.bondRadius * 0.5f
+                * (castI.bondWidthFactor + castJ.bondWidthFactor);
             const auto& a = atoms[static_cast<std::size_t>(bond.i)];
             const auto& b = atoms[static_cast<std::size_t>(bond.j)];
             const QVector3D pa = toQt(a.position);

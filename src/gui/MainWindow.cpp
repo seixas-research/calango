@@ -2,7 +2,9 @@
 
 #include "core/AseScriptGenerator.hpp"
 #include "core/BrillouinZone.hpp"
+#include "core/HydrogenCompletion.hpp"
 #include "core/Noise.hpp"
+#include "core/PdbxFile.hpp"
 #include "core/Structure.hpp"
 #include "gui/BrillouinZoneDialog.hpp"
 #include "gui/CoordinationDialog.hpp"
@@ -12,6 +14,7 @@
 #include "gui/ExamplesDialog.hpp"
 #include "gui/NanoBuilderDialog.hpp"
 #include "gui/PhononBuilderDialog.hpp"
+#include "gui/PointOfViewDialog.hpp"
 #include "gui/RayTraceDialog.hpp"
 #include "gui/RdfDialog.hpp"
 #include "gui/BondEditorDialog.hpp"
@@ -26,6 +29,8 @@
 #include "gui/SlabWizard.hpp"
 #include "gui/AddAdsorbateDialog.hpp"
 #include "gui/AdsorptionDialog.hpp"
+#include "gui/BornChargesViewer.hpp"
+#include "gui/BornChargesWizard.hpp"
 #include "gui/BandPdosWindow.hpp"
 #include "gui/ClusterExpansionDialog.hpp"
 #include "gui/ClusterExpansionWizard.hpp"
@@ -101,7 +106,9 @@
 #include <QColorDialog>
 #include <QComboBox>
 #include <QDateTime>
+#include <QCursor>
 #include <QDesktopServices>
+#include <QUrl>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -413,7 +420,7 @@ MainWindow::MainWindow(QWidget* parent)
                      "separation in Å\n(click empty space to reset)"),
                   ViewportWidget::InteractionMode::MeasureDistance,
                   QKeySequence(Qt::Key_D));
-    addModeAction(QStringLiteral("compasses-2-line"),
+    addModeAction(QStringLiteral("triangle-line"),
                   tr("Angle measurement — click three atoms (vertex second) "
                      "to read the angle in degrees\n(click empty space to "
                      "reset)"),
@@ -430,6 +437,17 @@ MainWindow::MainWindow(QWidget* parent)
     connect(resetAction, &QAction::triggered,
             viewport_, &ViewportWidget::frameStructure);
     frameToolbar->addAction(orthoAction_);
+    // Directly after the projection toggle: both are about how the scene is
+    // LOOKED AT rather than what is drawn, and this is the one that makes a
+    // framing reproducible instead of hand-dragged.
+    QAction* povAction = frameToolbar->addAction(
+        ui::IconManager::icon(QStringLiteral("eye-fill")),
+        tr("Set point-of-view…"));
+    povAction->setToolTip(
+        tr("Set point-of-view… — read out and type the camera's zoom, "
+           "rotation and pan, and save named views to reuse on other "
+           "structures."));
+    connect(povAction, &QAction::triggered, this, &MainWindow::showPointOfView);
     frameToolbar->addSeparator();
     QAction* alignXy = frameToolbar->addAction(
         cameraToolbarIcon(QStringLiteral("xy")), tr("Align view with the XY plane"));
@@ -485,7 +503,8 @@ MainWindow::MainWindow(QWidget* parent)
     // reachable from the tab bar's right-click menu.
     frameToolbar->addSeparator();
     QAction* duplicateAction = frameToolbar->addAction(tr("Duplicate Workspace / Extract Frame to New Tab"));
-    ui::IconManager::bind(duplicateAction, QStringLiteral("file-copy-line"));
+    ui::IconManager::bind(duplicateAction,
+                          QStringLiteral("split-cells-horizontal"));
     duplicateAction->setToolTip(
         tr("Duplicate the active workspace into a new tab. For a trajectory, "
            "extract the frame currently shown as a standalone structure "
@@ -495,11 +514,11 @@ MainWindow::MainWindow(QWidget* parent)
 
     // --- Atom label overlays ----------------------------------------------
     // Two independent checkable toggles that overlay per-atom text on the 3D
-    // canvas: element symbols (font-size glyph) and/or 1-based atom indices
+    // canvas: element symbols (atom glyph) and/or 1-based atom indices
     // (hashtag glyph), both theme-tinted RemixIcons.
     frameToolbar->addSeparator();
     QAction* elementLabelsAction = frameToolbar->addAction(tr("Show element symbols"));
-    ui::IconManager::bind(elementLabelsAction, QStringLiteral("font-size-2"));
+    ui::IconManager::bind(elementLabelsAction, QStringLiteral("atom-line"));
     elementLabelsAction->setCheckable(true);
     elementLabelsAction->setToolTip(
         tr("Show element symbols — overlay each atom's chemical symbol "
@@ -519,7 +538,7 @@ MainWindow::MainWindow(QWidget* parent)
     // --- Lattice Plane / volumetric color-slice overlay -------------------
     frameToolbar->addSeparator();
     QAction* latticePlaneAction = frameToolbar->addAction(tr("Lattice Plane…"));
-    ui::IconManager::bind(latticePlaneAction, QStringLiteral("shape-line"));
+    ui::IconManager::bind(latticePlaneAction, QStringLiteral("stack-fill"));
     latticePlaneAction->setToolTip(
         tr("Lattice Plane… — overlay a translucent Miller-index (h k l) plane, "
            "optionally color-sliced through a loaded volumetric field "
@@ -528,7 +547,7 @@ MainWindow::MainWindow(QWidget* parent)
             &MainWindow::showLatticePlane);
 
     QAction* customOverlayAction = frameToolbar->addAction(tr("Custom overlay…"));
-    ui::IconManager::bind(customOverlayAction, QStringLiteral("stack-line"));
+    ui::IconManager::bind(customOverlayAction, QStringLiteral("puzzle-fill"));
     customOverlayAction->setToolTip(
         tr("Custom overlay… — add geometric primitives (spheres, boxes, "
            "cylinders, planes…) with custom textures and opacity over the "
@@ -547,6 +566,16 @@ MainWindow::MainWindow(QWidget* parent)
     setCentralWidget(central);
 
     connect(tabBar_, &QTabBar::currentChanged, this, &MainWindow::onTabChanged);
+    // Record every camera move into the tab it belongs to, so the outgoing
+    // tab's view is already up to date by the time a switch happens. Capturing
+    // here rather than at switch time also means there is no "previous tab"
+    // index to track and get wrong when tabs are closed or reordered.
+    connect(viewport_, &ViewportWidget::cameraChanged, this, [this] {
+        if (restoringPointOfView_)
+            return; // mid-restore: this echo is not a user camera move
+        if (Document* doc = currentDocument())
+            doc->pointOfView = viewport_->camera().pointOfView();
+    });
     connect(tabBar_, &QTabBar::tabCloseRequested, this, &MainWindow::onTabCloseRequested);
     connect(tabBar_, &QTabBar::tabMoved, this, &MainWindow::onTabMoved);
     // Workspace context menu (Duplicate / Extract Frame, Close) on right-click.
@@ -837,38 +866,53 @@ void MainWindow::createMenusAndDocks()
     simulationMenu->addAction(tr("&Nudged Elastic Band (NEB)…"),
                               this, &MainWindow::openNudgedElasticBand);
     // Cluster Expansion Calculation moved to Modules → Alloys.
-    simulationMenu->addSeparator();
     // "New Remote Calculation…" was removed along with the legacy calculator
     // dialog it opened: remote execution is now chosen inside each wizard
     // (Stage 2 execution mode + the Stage-4 "Run (Remote)" button) and
     // monitored in the Zone-11 Remote Access manager, so a second, parallel
     // entry point would generate scripts the wizards no longer own.
-    simulationMenu->addAction(tr("Electronic &Structure…"),
-                              this, &MainWindow::showBandStructure);
+    // Dataset Manager and Trainer moved to Modules → MLIP.
+
+    // ----- Electronics: everything that reads out the electronic state ------
+    // These all answer questions about the ELECTRONS of an already-solved
+    // system (bands, dielectric response, quasiparticles, localized orbitals)
+    // rather than about where the nuclei end up, which is what the Simulation
+    // menu above is for. They also share a workflow — each inherits a completed
+    // SCF baseline rather than converging its own — so grouping them puts the
+    // whole post-processing chain in one place instead of scattering it down a
+    // long Simulation list.
+    QMenu* electronicsMenu = menuBar()->addMenu(tr("&Electronics"));
+    electronicsMenu->addAction(tr("Electronic &Structure…"),
+                               this, &MainWindow::showBandStructure);
     // Effective Bands (Popescu-Zunger unfolding) reads out of an electronic
     // structure run, so it sits immediately after "Electronic Structure…".
-    simulationMenu->addAction(tr("&Effective Bands (Unfolding)…"),
-                              this, &MainWindow::effectiveBandsCalculation);
+    electronicsMenu->addAction(tr("&Effective Bands (Unfolding)…"),
+                               this, &MainWindow::effectiveBandsCalculation);
     // Linear optical response (dielectric function, absorption, reflectivity,
     // refractive index, energy loss) via GPAW's response module.
-    simulationMenu->addAction(tr("&Optics…"),
-                              this, &MainWindow::showOptics);
-    // G₀W₀ sits with the other post-processes that read a completed SCF —
-    // right after Optics, which is the other response-function calculation —
-    // rather than up among the ground-state runs it depends on.
-    simulationMenu->addAction(tr("&GW Calculations…"), this,
-                              &MainWindow::showGwCalculations)
+    electronicsMenu->addAction(tr("&Optics…"),
+                               this, &MainWindow::showOptics);
+    // G₀W₀ sits right after Optics, the other response-function calculation.
+    electronicsMenu->addAction(tr("&GW Calculations…"), this,
+                               &MainWindow::showGwCalculations)
         ->setToolTip(tr("One-shot G₀W₀ quasiparticle corrections on top of a "
                         "completed SCF (GPAW or Yambo)"));
     // ELF and MLWF are DFT post-processes staged & run through the standardized
     // wizard (engine selection + auto-bound Conda env); their result viewers
-    // open when the job finishes.
-    simulationMenu->addAction(tr("&Electron Localization Function (ELF)…"),
-                              this, &MainWindow::showElf);
-    simulationMenu->addAction(
+    // open from the Processes panel when the job finishes.
+    electronicsMenu->addAction(tr("&Electron Localization Function (ELF)…"),
+                               this, &MainWindow::showElf);
+    electronicsMenu->addAction(
         tr("Maximally Localized &Wannier Functions (MLWF)…"),
         this, &MainWindow::showWannier);
-    // Dataset Manager and Trainer moved to Modules → MLIP.
+    electronicsMenu->addSeparator();
+    // Born charges are the electronic response to a DISPLACEMENT rather than to
+    // a field, which is why they sit slightly apart from the rest.
+    electronicsMenu->addAction(tr("&Born Effective Charges…"), this,
+                               &MainWindow::showBornCharges)
+        ->setToolTip(tr("Z* tensors from the polarization response to atomic "
+                        "displacements — the LO-TO splitting and IR "
+                        "intensities depend on them"));
 
     // ----- Analysis: spec order, reciprocal-space tools at the end ---------
     QMenu* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
@@ -902,21 +946,14 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showAdsorption);
     // Brillouin Zone Builder moved to the Build menu.
 
-    // ----- Results: dedicated viewers for completed calculations -----------
-    // Sits between Analysis and Modules. The viewers read the selected (or most
-    // recent) process's result files; they also open automatically when a run
-    // finishes.
-    QMenu* resultsMenu = menuBar()->addMenu(tr("&Results"));
-    resultsMenu->addAction(tr("&Single-Point Viewer…"),
-                           this, &MainWindow::showSinglePointViewer);
-    resultsMenu->addAction(tr("&Geometry Optimization Viewer…"),
-                           this, &MainWindow::showGeometryOptimizationViewer);
-    resultsMenu->addAction(tr("&Molecular Dynamics Viewer…"),
-                           this, &MainWindow::showMolecularDynamicsViewer);
-    resultsMenu->addAction(tr("&MLWF Viewer…"),
-                           this, &MainWindow::showMlwfViewer);
-    resultsMenu->addAction(tr("&GW Viewer…"),
-                           this, &MainWindow::showGwViewer);
+    // The "Results" menu is gone. Its five entries all began by asking which
+    // process the user meant — and then failed with "select a completed X in
+    // the Processes panel first" when the answer was wrong. The viewers now
+    // open FROM that process (its "Open Viewer" button, its context menu, or a
+    // double-click), so the question is answered by the act of asking, and only
+    // the viewers a given run actually produced are ever offered.
+    // The slots themselves are unchanged and still open automatically when a
+    // run finishes.
 
     // ----- Modules: MLIP + Alloys tool families (between Analysis and Help) -
     // "Modules" gathers the machine-learning-potential workflow and the alloy
@@ -1044,6 +1081,10 @@ void MainWindow::createMenusAndDocks()
             this, &MainWindow::onViewScriptRequested);
     connect(processPanel_, &ProcessManagerPanel::deleteRequested,
             this, &MainWindow::onDeleteProcessRequested);
+    connect(processPanel_, &ProcessManagerPanel::openViewerRequested,
+            this, &MainWindow::onOpenViewerRequested);
+    connect(processPanel_, &ProcessManagerPanel::contextMenuRequested,
+            this, &MainWindow::onProcessContextMenu);
 
     auto* reprDock = new QDockWidget(tr("Representation"), this); // zones 4 & 8
     reprDock->setObjectName(QStringLiteral("representationDock"));
@@ -1052,6 +1093,8 @@ void MainWindow::createMenusAndDocks()
     addDockWidget(Qt::RightDockWidgetArea, reprDock);
     connect(reprPanel, &RepresentationPanel::bondEditorRequested,
             this, &MainWindow::showBondEditor);
+    connect(reprPanel, &RepresentationPanel::hydrogenCompletionRequested,
+            this, &MainWindow::completeWithHydrogens);
 
     // Zone 9. Constructed here (its panel is referenced below) but placed at
     // the END of the bottom row — see the splitDockWidget chain further down.
@@ -1561,7 +1604,17 @@ void MainWindow::syncViewsToCurrent(bool frameCamera)
     Document* doc = currentDocument();
     if (!doc)
         return;
+    // Read the stored view BEFORE setStructure: framing the camera emits
+    // cameraChanged, which would otherwise overwrite it with the auto-framed
+    // one before it could be restored.
+    const render::PointOfView stored = doc->pointOfView;
     viewport_->setStructure(doc->structure, frameCamera);
+    if (stored.valid) {
+        restoringPointOfView_ = true;
+        viewport_->setPointOfView(stored);
+        restoringPointOfView_ = false;
+        doc->pointOfView = stored;
+    }
     infoWidget_->updateFromStructure(doc->structure.get());
     // Volumetric overlays are bound to the workspace that produced them: this
     // hides the previous tab's fields and draws this tab's. Cheap no-op when
@@ -1600,7 +1653,17 @@ void MainWindow::notifyStructureChanged(bool frameCamera)
     Document* doc = currentDocument();
     if (!doc)
         return;
+    // Read the stored view BEFORE setStructure: framing the camera emits
+    // cameraChanged, which would otherwise overwrite it with the auto-framed
+    // one before it could be restored.
+    const render::PointOfView stored = doc->pointOfView;
     viewport_->setStructure(doc->structure, frameCamera);
+    if (stored.valid) {
+        restoringPointOfView_ = true;
+        viewport_->setPointOfView(stored);
+        restoringPointOfView_ = false;
+        doc->pointOfView = stored;
+    }
     infoWidget_->updateFromStructure(doc->structure.get());
 }
 
@@ -1807,9 +1870,13 @@ void MainWindow::openStructure()
 {
     const QStringList paths = QFileDialog::getOpenFileNames(
         this, tr("Open Structure(s)"), QString(),
-        tr("Structure files (*.xyz *.extxyz *.cif POSCAR CONTCAR *.vasp *.traj "
-           "*.in *.pwi *.pwo *.out *.cell *.data *.dump *.lammpstrj *.gjf *.com "
-           "*.res);;"
+        tr("Structure files (*.xyz *.extxyz *.cif *.pdb POSCAR CONTCAR *.vasp "
+           "*.traj *.in *.pwi *.pwo *.out *.cell *.data *.dump *.lammpstrj "
+           "*.gjf *.com *.res);;"
+           // Both CIF flavours share the extension; the reader tells them
+           // apart by content, so one filter serves both.
+           "CIF / PDBx-mmCIF (*.cif);;"
+           "Protein Data Bank (*.pdb);;"
            "Quantum ESPRESSO (*.in *.pwi *.pwo *.out);;"
            "CASTEP (*.cell);;"
            "LAMMPS (*.data *.dump *.lammpstrj);;"
@@ -1848,6 +1915,10 @@ void MainWindow::saveStructureAs()
         {tr("XYZ (*.xyz)"), QString()},
         {tr("Extended XYZ (*.extxyz)"), QStringLiteral("extxyz")},
         {tr("CIF (*.cif)"), QStringLiteral("cif")},
+        // PDBx shares the .cif extension with the crystallographic CIF above,
+        // so the two are separate filters rather than one: which of them the
+        // user wants cannot be read off the file name, only off the choice.
+        {tr("PDBx / mmCIF (*.cif)"), QStringLiteral("pdbx")},
         {tr("VASP POSCAR (*.vasp)"), QStringLiteral("vasp")},
         {tr("Quantum ESPRESSO input (*.pwi *.in)"), QStringLiteral("espresso-in")},
         {tr("LAMMPS data (*.data)"), QStringLiteral("lammps-data")},
@@ -1870,8 +1941,14 @@ void MainWindow::saveStructureAs()
         if (entry.first == selectedFilter)
             format = entry.second;
     try {
-        pybridge::AseBridge::writeStructure(*doc->structure, path.toStdString(),
-                                            format.toStdString());
+        // PDBx is written natively — ASE has no writer for it, and this is the
+        // one format here that carries the residue/chain annotation.
+        if (format == QStringLiteral("pdbx"))
+            core::PdbxFile::write(*doc->structure, path.toStdString());
+        else
+            pybridge::AseBridge::writeStructure(*doc->structure,
+                                                path.toStdString(),
+                                                format.toStdString());
         statusBar()->showMessage(tr("Saved %1").arg(path));
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Save Structure"), QString::fromUtf8(e.what()));
@@ -2681,6 +2758,60 @@ void MainWindow::showBondEditor()
     dialog.exec();
 }
 
+void MainWindow::completeWithHydrogens()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        statusBar()->showMessage(tr("Open a structure first."));
+        return;
+    }
+
+    // Built on a copy so a run that turns out to add nothing leaves the undo
+    // stack untouched — an undo entry that restores an identical structure is
+    // worse than no entry at all.
+    auto updated = std::make_shared<core::Structure>(*doc->structure);
+    core::HydrogenCompletionOptions options;
+    // Perceive bonds exactly as the viewport draws them: an atom's valence is
+    // counted against the bonds the user can see, not a second opinion.
+    options.bondTolerance = viewport_->style().bondTolerance;
+    options.autoBonds = viewport_->style().autoBonds;
+    const core::HydrogenCompletionResult result =
+        core::completeWithHydrogens(*updated, options);
+
+    if (result.added == 0) {
+        statusBar()->showMessage(
+            result.skippedAtoms == static_cast<int>(doc->structure->size())
+                ? tr("No hydrogens added — none of these elements has a "
+                     "standard valence to complete.")
+                : tr("No hydrogens added — every atom already carries its "
+                     "full valence."));
+        return;
+    }
+
+    pushUndo();
+    // A trajectory's displayed frame IS one of doc->frames; replace it there
+    // too, or scrubbing away and back would silently drop the hydrogens.
+    const auto previous = doc->structure;
+    for (auto& frame : doc->frames) {
+        if (frame == previous)
+            frame = updated;
+    }
+    doc->structure = std::move(updated);
+    // Keep the camera put: the structure grew slightly, and re-framing it
+    // would move the view out from under the user for no reason.
+    notifyStructureChanged(/*frameCamera=*/false);
+
+    QString message = tr("Added %1 hydrogen(s) to %2 atom(s).")
+                          .arg(result.added)
+                          .arg(result.completedAtoms);
+    if (result.skippedAtoms > 0) {
+        message += tr(" %1 atom(s) skipped — no standard valence for their "
+                      "element.")
+                       .arg(result.skippedAtoms);
+    }
+    statusBar()->showMessage(message);
+}
+
 void MainWindow::editStructure()
 {
     Document* doc = currentDocument();
@@ -3189,6 +3320,96 @@ QString MainWindow::selectedProcessDirectory() const
     return lastJobDir_;
 }
 
+std::vector<MainWindow::ViewerEntry> MainWindow::viewersFor(
+    const QString& directory) const
+{
+    if (directory.isEmpty())
+        return {};
+    // The marker file IS the test: a run that wrote gw.json produced
+    // quasiparticle data, whatever the process was labelled. That keeps this
+    // honest when a directory is reused or a job is renamed.
+    static const std::vector<ViewerEntry> kAll = {
+        {"single_point.json", tr("Single-Point Viewer"),
+         &MainWindow::openSinglePointResults},
+        {"geometry_optimization.json", tr("Geometry Optimization Viewer"),
+         &MainWindow::openGeometryOptimizationResults},
+        {"born_charges.json", tr("Born Effective Charges Viewer"),
+         &MainWindow::openBornChargesResults},
+        {"wannier.json", tr("MLWF Viewer"), &MainWindow::openMlwfResults},
+        {"gw.json", tr("GW Viewer"), &MainWindow::openGwResults},
+    };
+    std::vector<ViewerEntry> available;
+    for (const ViewerEntry& entry : kAll)
+        if (QFile::exists(directory + QLatin1Char('/')
+                          + QLatin1String(entry.resultFile)))
+            available.push_back(entry);
+
+    // Molecular dynamics has no single summary file — the viewer takes the
+    // directory and finds metrics or a trajectory in it — so it is offered
+    // whenever one of those is present.
+    for (const auto* marker : {"metrics.json", "md.traj", "md.extxyz"}) {
+        if (QFile::exists(directory + QLatin1Char('/')
+                          + QLatin1String(marker))) {
+            available.push_back({"", tr("Molecular Dynamics Viewer"),
+                                 &MainWindow::openMolecularDynamicsResults});
+            break;
+        }
+    }
+    return available;
+}
+
+void MainWindow::onOpenViewerRequested(const QString& directory)
+{
+    const auto available = viewersFor(directory);
+    if (available.empty()) {
+        QMessageBox::information(
+            this, tr("Open Viewer"),
+            tr("This process has no viewable results yet.\n\n"
+               "A viewer opens on the summary a finished run writes "
+               "(single_point.json, gw.json, …); a run that is still going, or "
+               "that failed before writing one, has nothing to show. The Log "
+               "tab and \"Open Folder\" show what it did produce."));
+        return;
+    }
+    // Exactly one viewer: open it. Anything else would be a menu with a single
+    // entry, which is a click asking permission to do the only possible thing.
+    if (available.size() == 1) {
+        (this->*available.front().open)(directory);
+        return;
+    }
+    QMenu menu(this);
+    for (const ViewerEntry& entry : available) {
+        const QString label = entry.label;
+        const auto opener = entry.open;
+        menu.addAction(label, this,
+                       [this, opener, directory] { (this->*opener)(directory); });
+    }
+    menu.exec(QCursor::pos());
+}
+
+void MainWindow::onProcessContextMenu(const QString& directory,
+                                      const QPoint& globalPos)
+{
+    QMenu menu(this);
+    // Viewers first: they are the reason the menu exists, and a completed run
+    // is far more often opened than deleted.
+    for (const ViewerEntry& entry : viewersFor(directory)) {
+        const auto opener = entry.open;
+        menu.addAction(entry.label, this,
+                       [this, opener, directory] { (this->*opener)(directory); });
+    }
+    if (!menu.isEmpty())
+        menu.addSeparator();
+    menu.addAction(tr("Load Result into Workspace"), this,
+                   [this, directory] { onProcessResultRequested(directory); });
+    menu.addAction(tr("View ASE Script…"), this,
+                   [this, directory] { onViewScriptRequested(directory); });
+    menu.addAction(tr("Open Folder"), this, [directory] {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(directory));
+    });
+    menu.exec(globalPos);
+}
+
 void MainWindow::showSinglePointViewer()
 {
     const QString dir = selectedProcessDirectory();
@@ -3244,6 +3465,24 @@ void MainWindow::showMlwfViewer()
         return;
     }
     openMlwfResults(dir);
+}
+
+void MainWindow::showPointOfView()
+{
+    // Modeless and single-instance: it edits the camera live, so it has to stay
+    // open while the user orbits, and a second copy would fight the first over
+    // the same controls.
+    if (povDialog_) {
+        povDialog_->show();
+        povDialog_->raise();
+        povDialog_->activateWindow();
+        return;
+    }
+    povDialog_ = new PointOfViewDialog(viewport_, this);
+    povDialog_->setAttribute(Qt::WA_DeleteOnClose);
+    connect(povDialog_, &QObject::destroyed, this,
+            [this] { povDialog_ = nullptr; });
+    povDialog_->show();
 }
 
 void MainWindow::resetLayout()
@@ -3472,17 +3711,21 @@ void MainWindow::applyAppearanceTheme()
 
 void MainWindow::showWelcomeScreen()
 {
-    // Recent *projects* only: filter the shared recent-files list to workspace
-    // files that still exist.
+    // Split the shared recent-files list into the two things it actually holds
+    // — saved workspaces and bare geometries — dropping entries whose file has
+    // since gone, so nothing on the welcome screen fails when clicked.
     QStringList recentProjects;
+    QStringList recentStructures;
     for (const QString& path : QSettings().value(kRecentFilesKey).toStringList()) {
-        if ((path.endsWith(QStringLiteral(".calproj"), Qt::CaseInsensitive)
-             || path.endsWith(QStringLiteral(".calango"), Qt::CaseInsensitive))
-            && QFileInfo::exists(path))
-            recentProjects << path;
+        if (!QFileInfo::exists(path))
+            continue;
+        const bool project =
+            path.endsWith(QStringLiteral(".calproj"), Qt::CaseInsensitive)
+            || path.endsWith(QStringLiteral(".calango"), Qt::CaseInsensitive);
+        (project ? recentProjects : recentStructures) << path;
     }
 
-    WelcomeDialog dialog(recentProjects, this);
+    WelcomeDialog dialog(recentProjects, recentStructures, this);
     if (dialog.exec() != QDialog::Accepted)
         return; // dismissed — start with the empty workspace
     switch (dialog.choice()) {
@@ -3742,6 +3985,57 @@ void MainWindow::showElf()
     wizard.setDensityBaselines(gpawBaselines());
     runSimulationWizard(wizard, tr("Electron Localization Function"),
                         /*expectFrames=*/false);
+}
+
+void MainWindow::showBornCharges()
+{
+    if (!prepareSimulation(tr("Born Effective Charges")))
+        return;
+    Document* doc = currentDocument();
+    // The Berry-phase polarization is only defined for a periodic crystal, and
+    // the check is cheap enough to make here rather than after the user has
+    // configured a job that cannot run.
+    if (doc && doc->structure && !doc->structure->cell().isDefined()) {
+        QMessageBox::information(
+            this, tr("Born Effective Charges"),
+            tr("Z* is obtained from the macroscopic polarization, which is "
+               "defined only for a periodic crystal — this structure has no "
+               "unit cell.\n\nBuild or import a periodic insulator first."));
+        return;
+    }
+    // Like Electronic Structure and Optics, this starts from a completed
+    // Single-Point Calculation — it supplies the converged geometry and the
+    // calculator every displaced run is rebuilt from.
+    const auto baselines = gpawDensityFiles();
+    if (baselines.isEmpty()) {
+        QMessageBox::critical(
+            this, tr("Born Effective Charges"),
+            tr("This calculation starts from a converged ground state, so it "
+               "needs a completed GPAW Single-Point Calculation that saved its "
+               "wavefunctions (.gpw).\n\n"
+               "Run one on this structure first."));
+        return;
+    }
+
+    BornChargesWizard wizard(doc ? doc->structure : nullptr, this);
+    wizard.setDensityBaselines(baselines);
+    runSimulationWizard(wizard, tr("Born Effective Charges"),
+                        /*expectFrames=*/false);
+}
+
+void MainWindow::openBornChargesResults(const QString& directory)
+{
+    auto* viewer = new BornChargesViewer(this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    if (!viewer->loadResults(directory
+                             + QStringLiteral("/born_charges.json"))) {
+        delete viewer;
+        QMessageBox::information(
+            this, tr("Born Effective Charges"),
+            tr("No born_charges.json found in %1.").arg(directory));
+        return;
+    }
+    viewer->show();
 }
 
 void MainWindow::showWannier()
@@ -4476,7 +4770,10 @@ void MainWindow::molecularDynamics()
     }
     if (!ensureAseAvailable())
         return;
-    MolecularDynamicsWizard wizard(this);
+    // The structure goes in so the wizard's "Geometry constraints…" editor can
+    // list the actual atoms (and the Hubbard editor can complete against the
+    // species present).
+    MolecularDynamicsWizard wizard(doc->structure, this);
     runSimulationWizard(wizard, tr("Molecular Dynamics"));
 }
 
@@ -5134,6 +5431,11 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     // isosurface overlays on the viewport, band-interpolation launcher).
     if (QFile::exists(lastJobDir_ + QStringLiteral("/wannier.json"))) {
         openMlwfResults(lastJobDir_);
+        return;
+    }
+    // Born effective charges: open the Z* tensor table.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/born_charges.json"))) {
+        openBornChargesResults(lastJobDir_);
         return;
     }
     // Charge-density export (from a single-point run with the export toggle,

@@ -26,6 +26,26 @@ struct Bond {
     bool crossesBoundary() const { return imageOffset.dot(imageOffset) > 1e-12; }
 };
 
+/// Macromolecular annotation for one atom, as carried by PDB / PDBx-mmCIF
+/// files: which chain and residue it belongs to and what the residue calls it.
+///
+/// A protein is not just a bag of atoms — the backbone connectivity that makes
+/// a ribbon diagram possible, and the chain colouring that makes a complex
+/// readable, are both statements about residues, not about elements. Without
+/// this the 3000 carbons of a protein are indistinguishable from each other.
+///
+/// Empty/zero for every atom of a structure that came from a format with no
+/// such notion (XYZ, POSCAR, a small-molecule CIF), which is the signal that a
+/// residue-based representation has nothing to work with.
+struct ResidueInfo {
+    std::string chain;    ///< author chain id, e.g. "A"
+    std::string residue;  ///< residue/component name, e.g. "LYS", "HOH"
+    int residueSeq = 0;   ///< author residue sequence number
+    std::string atomName; ///< atom name within the residue, e.g. "CA", "N"
+    /// True for the α-carbon, the atom a backbone trace is drawn through.
+    bool isAlphaCarbon() const { return atomName == "CA"; }
+};
+
 /// The central data model: a collection of atoms plus an optional periodic
 /// cell. Pure data + geometry queries — it knows nothing about rendering,
 /// Qt, files or Python (MVC "Model"). Views observe it read-only; the
@@ -120,12 +140,32 @@ public:
     /// Stores (or replaces) a field; ignored unless values.size() == size().
     void setVectorField(const std::string& name, std::vector<Vec3> values);
 
+    // -- Macromolecular annotation (PDB / PDBx-mmCIF) ----------------------
+    //
+    // Index-aligned with atoms() and maintained by addAtom()/removeAtom()
+    // exactly like the per-atom fields above. Empty when the source format
+    // carried no residue information.
+
+    const std::vector<ResidueInfo>& residues() const { return residues_; }
+    /// True when residue annotation is present and aligned — the precondition
+    /// for any residue-based representation (ribbon, chain colouring).
+    bool hasResidues() const
+    {
+        return residues_.size() == atoms_.size() && !residues_.empty();
+    }
+    /// Annotation of atom `index`, or a default-constructed one when the
+    /// structure carries none. Never throws, so callers can ask per atom.
+    const ResidueInfo& residue(std::size_t index) const;
+    /// Replace the whole annotation; ignored unless values.size() == size().
+    void setResidues(std::vector<ResidueInfo> values);
+
 private:
     std::vector<Atom> atoms_;
     UnitCell cell_;
     std::map<std::pair<int, int>, int> bondOrders_;
     std::map<std::string, std::vector<double>> scalarFields_;
     std::map<std::string, std::vector<Vec3>> vectorFields_;
+    std::vector<ResidueInfo> residues_;
     std::vector<std::pair<int, int>> addedBonds_;
     std::vector<std::pair<int, int>> removedBonds_;
 };

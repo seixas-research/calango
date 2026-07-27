@@ -1,5 +1,7 @@
 #include "python_bridge/AseBridge.hpp"
 
+#include "core/PdbxFile.hpp"
+
 #include <pybind11/eval.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
@@ -262,6 +264,14 @@ py::object AseBridge::toAtoms(const core::Structure& structure)
 
 core::Structure AseBridge::readStructure(const std::string& path)
 {
+    // PDBx/mmCIF is intercepted before ASE sees it. Both it and the
+    // small-molecule CIF that ASE reads end in `.cif`, but they are different
+    // formats — Cartesian coordinates with residue annotation versus
+    // fractional coordinates under a symmetry group — and ASE's reader raises
+    // an opaque StopIteration on the PDBx flavour. The test is on content, so
+    // a crystallographic `.cif` still takes the ASE path.
+    if (core::PdbxFile::looksLikePdbx(path))
+        return core::PdbxFile::read(path);
     try {
         const py::object atoms = py::module_::import("ase.io").attr("read")(path);
         return fromAtoms(atoms);
@@ -320,6 +330,12 @@ void AseBridge::writeTrajectory(
 std::vector<core::Structure> AseBridge::readTrajectory(const std::string& path,
                                                        const std::string& format)
 {
+    // PDBx before ASE, for the same reason as readStructure — and this is the
+    // path the GUI's File → Open actually takes, since it reads every file as a
+    // possible trajectory. A PDBx entry is one model (the reader takes the
+    // first of a multi-model NMR ensemble), so it comes back as a single frame.
+    if (core::PdbxFile::looksLikePdbx(path))
+        return {core::PdbxFile::read(path)};
     try {
         const py::object read = py::module_::import("ase.io").attr("read");
         const py::object images = format.empty()

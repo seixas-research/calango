@@ -107,6 +107,21 @@ void ViewportWidget::setColorMode(render::ColorMode mode, const QString& customF
     refreshStructure();
 }
 
+void ViewportWidget::refreshColorScalars()
+{
+    updateColorScalars();
+    refreshStructure();
+}
+
+void ViewportWidget::setPointOfView(const render::PointOfView& pov)
+{
+    if (!pov.valid)
+        return;
+    camera_.setPointOfView(pov);
+    Q_EMIT cameraChanged();
+    update();
+}
+
 void ViewportWidget::setColorGradient(render::ColorGradient gradient)
 {
     renderer_.style().gradient = gradient;
@@ -180,37 +195,51 @@ void ViewportWidget::setCoordinationOptions(const core::CoordinationOptions& opt
 
 void ViewportWidget::updateColorScalars()
 {
-    std::vector<float> scalars;
-    if (structure_ && !structure_->empty()) {
-        switch (renderer_.style().colorMode) {
-        case render::ColorMode::Element:
-            break;
-        case render::ColorMode::CoordinationNumber: {
-            const auto result = core::computeCoordination(*structure_, coordinationOptions_);
-            scalars.assign(result.cn.begin(), result.cn.end());
-            break;
-        }
-        case render::ColorMode::GeneralizedCoordination: {
-            const auto result = core::computeCoordination(*structure_, coordinationOptions_);
-            scalars.assign(result.gcn.begin(), result.gcn.end());
-            break;
-        }
-        case render::ColorMode::CustomScalar: {
-            const auto& fields = structure_->scalarFields();
-            if (const auto it = fields.find(customField_.toStdString());
-                it != fields.end())
-                scalars.assign(it->second.begin(), it->second.end());
-            break;
-        }
-        }
+    renderer_.clearAtomScalars();
+    scalarRange_ = {};
+    if (!structure_ || structure_->empty()) {
+        Q_EMIT colorMappingChanged();
+        return;
     }
 
-    scalarRange_ = {};
-    if (!scalars.empty()) {
-        const auto [lo, hi] = std::minmax_element(scalars.begin(), scalars.end());
-        scalarRange_ = {true, *lo, *hi};
+    // Every colour mode any CAST asks for needs its own field: a scene can hold
+    // a coordination-coloured slab and a custom-property-coloured adsorbate at
+    // the same time. Collected as a set so the (expensive) coordination
+    // analysis runs once even when several casts share the mode.
+    std::set<render::ColorMode> modes;
+    const auto& style = renderer_.style();
+    for (int cast = 0; cast < style.castCount(); ++cast)
+        modes.insert(style.castStyle(cast).colorMode);
+
+    // Coordination and generalized coordination come out of one analysis.
+    const bool needsCoordination =
+        modes.count(render::ColorMode::CoordinationNumber) > 0
+        || modes.count(render::ColorMode::GeneralizedCoordination) > 0;
+    if (needsCoordination) {
+        const auto result =
+            core::computeCoordination(*structure_, coordinationOptions_);
+        if (modes.count(render::ColorMode::CoordinationNumber) > 0)
+            renderer_.setAtomScalars(
+                render::ColorMode::CoordinationNumber,
+                std::vector<float>(result.cn.begin(), result.cn.end()));
+        if (modes.count(render::ColorMode::GeneralizedCoordination) > 0)
+            renderer_.setAtomScalars(
+                render::ColorMode::GeneralizedCoordination,
+                std::vector<float>(result.gcn.begin(), result.gcn.end()));
     }
-    renderer_.setAtomScalars(std::move(scalars));
+    if (modes.count(render::ColorMode::CustomScalar) > 0) {
+        const auto& fields = structure_->scalarFields();
+        if (const auto it = fields.find(customField_.toStdString());
+            it != fields.end())
+            renderer_.setAtomScalars(
+                render::ColorMode::CustomScalar,
+                std::vector<float>(it->second.begin(), it->second.end()));
+    }
+
+    // The legend describes ONE mapping, so it reports cast 0's — the cast that
+    // exists in every scene and that a single-cast scene is entirely made of.
+    const auto range = renderer_.scalarRangeFor(style.colorMode);
+    scalarRange_ = {range.valid, range.min, range.max};
     Q_EMIT colorMappingChanged();
 }
 
@@ -225,6 +254,7 @@ void ViewportWidget::setOrthographic(bool orthographic)
 {
     camera_.setProjectionMode(orthographic ? render::CameraProjection::Orthographic
                                            : render::CameraProjection::Perspective);
+    Q_EMIT cameraChanged();
     update();
 }
 
@@ -296,6 +326,8 @@ void ViewportWidget::drawAtomLabelsOverlay(QPainter& painter)
                                     : QColor(245, 246, 248, 190);
 
     for (std::size_t i = 0; i < atoms.size(); ++i) {
+        if (!renderer_.style().showHydrogens && atoms[i].atomicNumber == 1)
+            continue; // no sphere under it to label
         QPointF center;
         if (!projectAtomToScreen(static_cast<int>(i), center))
             continue; // behind the camera
@@ -464,12 +496,15 @@ void ViewportWidget::alignToPlane(int plane)
     switch (plane) {
     case 1:
         camera_.setOrientation(0.0f, 90.0f);
+        Q_EMIT cameraChanged();
         break;
     case 2:
         camera_.setOrientation(90.0f, 0.0f);
+        Q_EMIT cameraChanged();
         break;
     default:
         camera_.setOrientation(0.0f, 0.0f);
+        Q_EMIT cameraChanged();
         break;
     }
     update();
@@ -485,6 +520,7 @@ void ViewportWidget::frameStructure()
     // re-centering and re-zooming, so the structure returns to its initial
     // orientation and bounding-box fit rather than staying tilted.
     camera_.resetOrientation();
+    Q_EMIT cameraChanged();
 
     // Intelligent auto-zoom. Periodic crystals: fit the whole unit-cell box
     // (its 8 corners) into ~90% of the view so the full lattice is visible.
@@ -514,6 +550,7 @@ void ViewportWidget::frameStructure()
             {static_cast<float>(center.x), static_cast<float>(center.y),
              static_cast<float>(center.z)},
             std::max(static_cast<float>(radius), 2.0f), 0.9f);
+        Q_EMIT cameraChanged();
         update();
         return;
     }
@@ -524,6 +561,7 @@ void ViewportWidget::frameStructure()
                              static_cast<float>(center.y),
                              static_cast<float>(center.z)},
                             std::max(radius, 1.5f), 0.5f);
+    Q_EMIT cameraChanged();
     update();
 }
 
@@ -972,6 +1010,7 @@ void ViewportWidget::rotateSceneAxis(int axis, double degrees)
                 const double now = value.toDouble();
                 camera_.rotateScene(kAxes[axis],
                                     static_cast<float>(now - *applied));
+                Q_EMIT cameraChanged();
                 *applied = now;
                 update();
             });
@@ -1074,6 +1113,7 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
         const float angle =
             static_cast<float>(delta.x() - delta.y()) * 0.4f;
         camera_.rotateScene(viewDir, angle);
+        Q_EMIT cameraChanged();
         update();
         return;
     }
@@ -1085,6 +1125,7 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
 
     if (forcePan) {
         camera_.pan(static_cast<float>(delta.x()), static_cast<float>(delta.y()), height());
+        Q_EMIT cameraChanged();
     } else if (event->buttons().testFlag(Qt::LeftButton)) {
         switch (interactionMode_) {
         case InteractionMode::Rotate:
@@ -1094,10 +1135,12 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
             // turned between the measurement clicks.
             camera_.rotate(static_cast<float>(delta.x()) * 0.4f,
                            static_cast<float>(delta.y()) * 0.4f);
+            Q_EMIT cameraChanged();
             break;
         case InteractionMode::Pan:
             camera_.pan(static_cast<float>(delta.x()),
                         static_cast<float>(delta.y()), height());
+            Q_EMIT cameraChanged();
             break;
         case InteractionMode::Select:
             if (rubberBand_)
@@ -1223,6 +1266,7 @@ void ViewportWidget::mouseDoubleClickEvent(QMouseEvent*)
 void ViewportWidget::wheelEvent(QWheelEvent* event)
 {
     camera_.zoom(static_cast<float>(event->angleDelta().y()) / 120.0f);
+    Q_EMIT cameraChanged();
     update();
 }
 
@@ -1321,6 +1365,11 @@ std::set<int> ViewportWidget::atomsInRect(const QRectF& rect) const
 
     const auto& atoms = structure_->atoms();
     for (std::size_t i = 0; i < atoms.size(); ++i) {
+        // Same rule as pickAtom(): a box drag selects what is on screen, and
+        // a hidden hydrogen is not — otherwise Delete would silently take
+        // hydrogens the user never saw inside the box.
+        if (!renderer_.style().showHydrogens && atoms[i].atomicNumber == 1)
+            continue;
         const auto& p = atoms[i].position;
         const QVector4D clip = mvp
             * QVector4D(static_cast<float>(p.x), static_cast<float>(p.y),
@@ -1473,14 +1522,18 @@ int ViewportWidget::pickAtom(const QPointF& screenPos) const
     // play differs per atom: a CPK substrate sphere is several times the
     // ball-and-stick node next to it, and picking at one shared radius would
     // miss the big ones and grab empty space around the small ones.
-    const auto modes = render::StructureRenderer::atomModes(structure_.get(),
-                                                            renderer_.style());
+    const auto casts = render::StructureRenderer::atomCastStyles(
+        structure_.get(), renderer_.style());
     for (std::size_t i = 0; i < atoms.size(); ++i) {
+        // A hidden hydrogen is not there to be clicked: picking one would
+        // select, measure from, or delete an atom the user cannot see.
+        if (!renderer_.style().showHydrogens && atoms[i].atomicNumber == 1)
+            continue;
         const QVector3D center(static_cast<float>(atoms[i].position.x),
                                static_cast<float>(atoms[i].position.y),
                                static_cast<float>(atoms[i].position.z));
         const float radius = render::StructureRenderer::displayRadius(
-            atoms[i].atomicNumber, renderer_.style(), modes[i]);
+            atoms[i].atomicNumber, casts[i]);
 
         const QVector3D oc = origin - center;
         const float b = QVector3D::dotProduct(direction, oc);

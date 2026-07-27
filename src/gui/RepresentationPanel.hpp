@@ -1,5 +1,7 @@
 #pragma once
 
+#include "render/StructureRenderer.hpp"
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -38,6 +40,10 @@ Q_SIGNALS:
     /// document. The panel only observes the viewport, so it cannot own an
     /// editor that mutates the structure (and pushes undo).
     void bondEditorRequested();
+    /// "Complete with hydrogens": same reason as above — filling in the
+    /// missing hydrogens ADDS atoms, and only the host owns the mutable
+    /// document and the undo stack that has to record them.
+    void hydrogenCompletionRequested();
 
 private Q_SLOTS:
     void applyColorMode();
@@ -50,11 +56,16 @@ private:
     /// "Appearance" tab: material, mode, colour-by, the editor icon row,
     /// atom/bond scales, gradient bond shading and the background colour.
     QWidget* buildAppearanceTab();
-    /// Re-fill the "Casting" combo from the viewport's cast list and show the
-    /// selected cast's representation in the Mode combo.
+    /// Re-fill the "Casting" combo from the viewport's cast list, then load
+    /// the selected cast into the controls.
     void syncCastsFromViewport();
+    /// Show the selected cast's settings in the controls without writing them
+    /// back — every control edits the current cast, so this must not fire them.
+    void loadSelectedCast();
     /// The cast the panel's representation controls currently edit.
     int selectedCast() const;
+    render::StructureRenderer::CastStyle selectedCastStyle() const;
+    void applyToSelectedCast(const render::StructureRenderer::CastStyle& cast);
 
     ViewportWidget* viewport_;
 
@@ -65,7 +76,10 @@ private:
     QDoubleSpinBox* atomScaleSpin_;
     QSlider* bondWidthSlider_;
     QDoubleSpinBox* bondWidthSpin_;
+    QSlider* opacitySlider_;
+    QDoubleSpinBox* opacitySpin_;
     QCheckBox* gradientBondsCheck_;
+    QCheckBox* showHydrogensCheck_;
     QComboBox* surfaceFinishCombo_;
 };
 

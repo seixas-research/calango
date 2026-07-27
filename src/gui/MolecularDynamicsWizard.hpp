@@ -2,9 +2,17 @@
 
 #include "gui/SimulationWizardBase.hpp"
 
+#include <memory>
+#include <vector>
+
 class QComboBox;
 class QDoubleSpinBox;
+class QLabel;
 class QSpinBox;
+
+namespace calango::core {
+class Structure;
+}
 
 namespace calango::gui {
 
@@ -16,10 +24,17 @@ class MolecularDynamicsWizard : public SimulationWizardBase {
     Q_OBJECT
 
 public:
-    explicit MolecularDynamicsWizard(QWidget* parent = nullptr);
+    /// `structure` is the system being propagated. It is only read to populate
+    /// the "Geometry constraints…" editor and to seed the Hubbard editor's
+    /// element completer; passing null leaves the per-atom constraint table
+    /// empty.
+    explicit MolecularDynamicsWizard(
+        std::shared_ptr<const core::Structure> structure = nullptr,
+        QWidget* parent = nullptr);
 
 protected:
     QString wizardTitle() const override;
+    QStringList calculatorElements() const override;
     QString settingsHeader() const override;
     QWidget* buildSettingsPage() override;
     /// Calculator Settings lead, then the dynamics settings: the forces the
@@ -33,9 +48,20 @@ protected:
 
 private Q_SLOTS:
     void updateEnsembleEnabled();
+    /// "Geometry constraints…": open the editor and keep its result.
+    void editConstraints();
 
 private:
     core::CalculatorConfig config() const;
+    /// One-line description of the active constraints, shown next to the
+    /// button so the page says what is held without being reopened.
+    void refreshConstraintSummary();
+
+    std::shared_ptr<const core::Structure> structure_;
+    /// Frozen degrees of freedom. Owned here rather than in the dialog, which
+    /// is constructed on demand and destroyed on close.
+    std::vector<core::GeometryConstraint> constraints_;
+    QLabel* constraintSummary_ = nullptr;
 
     QComboBox* ensembleCombo_;
     QDoubleSpinBox* temperatureSpin_;

@@ -24,11 +24,14 @@ bool WelcomeDialog::showAtStartupEnabled()
     return QSettings().value(kShowAtStartupKey, true).toBool();
 }
 
-WelcomeDialog::WelcomeDialog(const QStringList& recentProjects, QWidget* parent)
+WelcomeDialog::WelcomeDialog(const QStringList& recentProjects,
+                             const QStringList& recentStructures,
+                             QWidget* parent)
     : QDialog(parent)
 {
     setWindowTitle(tr("Welcome to Calango"));
-    setMinimumWidth(560);
+    // Wider than before: three columns rather than two.
+    setMinimumWidth(760);
 
     auto* layout = new QVBoxLayout(this);
     layout->setSpacing(14);
@@ -50,28 +53,42 @@ WelcomeDialog::WelcomeDialog(const QStringList& recentProjects, QWidget* parent)
     auto* body = new QHBoxLayout;
     layout->addLayout(body, 1);
 
-    // Recent projects.
-    auto* recentColumn = new QVBoxLayout;
-    recentColumn->addWidget(new QLabel(tr("Recent Projects"), this));
-    auto* recentList = new QListWidget(this);
-    if (recentProjects.isEmpty()) {
-        auto* item = new QListWidgetItem(tr("(no recent projects)"), recentList);
-        item->setFlags(Qt::NoItemFlags);
-    } else {
-        for (const QString& path : recentProjects) {
-            auto* item = new QListWidgetItem(QFileInfo(path).fileName(), recentList);
-            item->setToolTip(path);
-            item->setData(Qt::UserRole, path);
+    // Recent projects and recent structures, side by side. Reopening a saved
+    // workspace and opening a bare geometry are different intents, so they get
+    // their own columns instead of one merged list where whichever kind was
+    // touched less recently would be pushed out of view.
+    const auto addRecentColumn = [this, body](const QString& title,
+                                              const QStringList& paths,
+                                              const QString& emptyText) {
+        auto* column = new QVBoxLayout;
+        column->addWidget(new QLabel(title, this));
+        auto* list = new QListWidget(this);
+        if (paths.isEmpty()) {
+            auto* item = new QListWidgetItem(emptyText, list);
+            item->setFlags(Qt::NoItemFlags);
+        } else {
+            for (const QString& path : paths) {
+                auto* item =
+                    new QListWidgetItem(QFileInfo(path).fileName(), list);
+                // The full path in the tooltip: file names alone are routinely
+                // ambiguous ("POSCAR", "structure.cif") across directories.
+                item->setToolTip(path);
+                item->setData(Qt::UserRole, path);
+            }
         }
-    }
-    recentColumn->addWidget(recentList, 1);
-    body->addLayout(recentColumn, 1);
-    connect(recentList, &QListWidget::itemActivated, this,
-            [this](QListWidgetItem* item) {
-                const QString path = item->data(Qt::UserRole).toString();
-                if (!path.isEmpty())
-                    chooseAndAccept(Choice::OpenRecent, path);
-            });
+        column->addWidget(list, 1);
+        body->addLayout(column, 1);
+        connect(list, &QListWidget::itemActivated, this,
+                [this](QListWidgetItem* item) {
+                    const QString path = item->data(Qt::UserRole).toString();
+                    if (!path.isEmpty())
+                        chooseAndAccept(Choice::OpenRecent, path);
+                });
+    };
+    addRecentColumn(tr("Recent Projects"), recentProjects,
+                    tr("(no recent projects)"));
+    addRecentColumn(tr("Recent Structures"), recentStructures,
+                    tr("(no recent structures)"));
 
     // Quick actions.
     auto* actions = new QVBoxLayout;

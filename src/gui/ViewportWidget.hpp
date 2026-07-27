@@ -69,6 +69,10 @@ public:
     /// CN/GCN scalars are (re)computed here and after every structure
     /// replacement — trajectory playback re-colors frame by frame.
     void setColorMode(render::ColorMode mode, const QString& customField = {});
+    /// Recompute the scalar fields every cast's colour mode needs, then
+    /// rebuild. Called when a NON-zero cast changes its colour mode — cast 0
+    /// goes through setColorMode, which does this as part of its work.
+    void refreshColorScalars();
     void setColorGradient(render::ColorGradient gradient);
     /// Reverse the scalar -> color mapping of the current gradient.
     void setGradientInverted(bool inverted);
@@ -168,6 +172,12 @@ public Q_SLOTS:
     void styleChanged(bool rebuildGeometry);
 
     render::OrbitCamera& camera() { return camera_; }
+    const render::OrbitCamera& camera() const { return camera_; }
+
+    /// Apply a stored camera state and repaint. Invalid (never-captured)
+    /// points-of-view are ignored, so restoring a tab that has not been shown
+    /// yet leaves the camera where it is instead of jumping to a default.
+    void setPointOfView(const render::PointOfView& pov);
 
 public:
     // -- Mouse interaction modes -------------------------------------------
@@ -250,6 +260,10 @@ public Q_SLOTS:
 
 Q_SIGNALS:
     void selectionChanged(int count);
+    /// The camera moved — orbit, pan, zoom, projection toggle or an applied
+    /// point-of-view. The Set Point-of-View dialog mirrors it live, and the
+    /// host uses it to keep each workspace tab's stored view current.
+    void cameraChanged();
     /// Insert mode: the user clicked empty space — create an atom there
     /// (world coordinates on the camera-target plane). The viewport never
     /// mutates the structure; MainWindow owns the edit + undo.

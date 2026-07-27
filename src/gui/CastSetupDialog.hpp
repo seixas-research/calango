@@ -74,7 +74,7 @@ private:
     /// Assignment + per-cast modes as they were when the dialog opened, so
     /// Cancel is a real undo rather than "close and hope".
     std::vector<int> initialCasts_;
-    std::vector<render::RepresentationMode> initialCastModes_;
+    std::vector<render::StructureRenderer::CastStyle> initialCastStyles_;
     render::RepresentationMode initialMode_;
 
     QTableWidget* table_ = nullptr;

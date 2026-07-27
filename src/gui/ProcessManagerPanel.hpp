@@ -41,6 +41,17 @@ Q_SIGNALS:
     /// "Load Result" on a task — MainWindow decides what the directory
     /// contains (trajectory, band data, ...) and opens it.
     void loadResultRequested(const QString& directory);
+    /// "Open Viewer" on a task — MainWindow inspects the directory, works out
+    /// which dedicated result viewers that run actually produced, and opens
+    /// the one (or offers the few) that apply.
+    ///
+    /// The panel deliberately does not know the viewers or their result-file
+    /// names: it knows which PROCESS the user means, which is the half the old
+    /// Results menu could not answer.
+    void openViewerRequested(const QString& directory);
+    /// Right-click on a task. MainWindow builds the menu, since what belongs
+    /// in it depends on which result files that run left behind.
+    void contextMenuRequested(const QString& directory, const QPoint& globalPos);
     /// "View ASE Script" — MainWindow opens the run.py in that directory in a
     /// syntax-highlighted viewer.
     void viewScriptRequested(const QString& directory);

@@ -12,10 +12,12 @@ namespace calango::gui {
 
 namespace {
 
-/// Horizontal inset for the property rows, in logical pixels. Small on
-/// purpose: enough to lift the labels off the dock edge without making the
-/// summary look indented relative to the panels above and below it.
-constexpr int kFormSideMargin = 8;
+/// Horizontal inset for the property rows (Formula … Periodic), in logical
+/// pixels. Generous on purpose: the summary is a block of short label/value
+/// pairs, and letting it breathe away from both dock edges is what separates
+/// it visually from the full-width controls above and below rather than
+/// leaving it looking crammed against the window frame.
+constexpr int kFormSideMargin = 24;
 
 double vectorAngleDeg(const core::Vec3& a, const core::Vec3& b)
 {

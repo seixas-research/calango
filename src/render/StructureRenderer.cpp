@@ -1,6 +1,7 @@
 #include "render/StructureRenderer.hpp"
 #include "render/RenderGeometry.hpp"
 
+#include "core/MarchingCubes.hpp"
 #include "core/PeriodicImages.hpp"
 #include "core/Structure.hpp"
 
@@ -11,6 +12,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <map>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -29,27 +32,66 @@ const char* vectorFieldName(VectorOverlay overlay)
 
 namespace {
 
-constexpr int kFloatsPerInstance = 24; // mat4 (16) + rgba (4) + rgba2 (4)
+// mat4 (16) + rgba (4) + rgba2 (4) + surface finish (1).
+//
+// The finish is per-INSTANCE rather than a uniform because it is a per-cast
+// setting: one scene can hold a matte substrate and a glassy adsorbate, and a
+// single uniform could only describe one of them. Per-cast OPACITY rides in
+// the existing alpha channel of the two colours rather than costing a 26th
+// float — the shader already reads vColor.a.
+constexpr int kFloatsPerInstance = 25;
+
+/// Licorice tube radius as a multiple of Style::bondRadius. ~2.5x a default
+/// single bond: thick enough to read as tubing at a glance, thin enough that a
+/// benzene ring's inner opening stays open.
+constexpr float kLicoriceRadius = 2.5f;
 
 /// One instance record. `color` is sampled at the mesh's z = 0 end and
 /// `color2` at z = 1 (mesh.vert interpolates axially — the bond gradient);
 /// pass the same color twice for uniform meshes (spheres, cell tubes).
 void appendInstance(std::vector<float>& data, const QMatrix4x4& model,
-                    const QColor& color, const QColor& color2)
+                    const QColor& color, const QColor& color2,
+                    SurfaceFinish finish, float opacity = 1.0f)
 {
+    const float alpha = std::clamp(opacity, 0.0f, 1.0f);
     const float* m = model.constData(); // column-major, matching the shader
     data.insert(data.end(), m, m + 16);
     data.insert(data.end(),
                 {static_cast<float>(color.redF()), static_cast<float>(color.greenF()),
-                 static_cast<float>(color.blueF()), 1.0f});
+                 static_cast<float>(color.blueF()), alpha});
     data.insert(data.end(),
                 {static_cast<float>(color2.redF()), static_cast<float>(color2.greenF()),
-                 static_cast<float>(color2.blueF()), 1.0f});
+                 static_cast<float>(color2.blueF()), alpha});
+    data.push_back(static_cast<float>(finish));
 }
 
-void appendInstance(std::vector<float>& data, const QMatrix4x4& model, const QColor& color)
+void appendInstance(std::vector<float>& data, const QMatrix4x4& model,
+                    const QColor& color, SurfaceFinish finish,
+                    float opacity = 1.0f)
 {
-    appendInstance(data, model, color, color);
+    appendInstance(data, model, color, color, finish, opacity);
+}
+
+/// Distinct colour per chain identifier, for the ribbon representation.
+///
+/// A qualitative palette, not a gradient: chains are nominal labels with no
+/// order, so neighbouring letters must not get neighbouring hues — the whole
+/// point is telling four chains of one complex apart at a glance.
+QColor chainColor(const std::string& chain)
+{
+    static const QColor kPalette[] = {
+        QColor(102, 170, 255), QColor(255, 153, 102), QColor(120, 210, 140),
+        QColor(220, 130, 220), QColor(240, 210, 100), QColor(120, 220, 220),
+        QColor(230, 120, 150), QColor(170, 170, 190),
+    };
+    constexpr int kCount = static_cast<int>(std::size(kPalette));
+    if (chain.empty())
+        return kPalette[0];
+    // Sum the characters so multi-letter chain ids ("AA", "BB") also spread.
+    int hash = 0;
+    for (const char c : chain)
+        hash += static_cast<unsigned char>(c);
+    return kPalette[hash % kCount];
 }
 
 QColor midpointColor(const QColor& a, const QColor& b)
@@ -305,15 +347,23 @@ std::vector<Light> StructureRenderer::defaultLights()
 
 float StructureRenderer::displayRadius(int atomicNumber, const Style& style)
 {
-    return displayRadius(atomicNumber, style, style.mode);
+    const CastStyle cast = style.castStyle(0);
+    const float base = displayRadius(atomicNumber, cast);
+    // The per-element override lives on the scene-wide style, not on the cast:
+    // "make every sulfur 20% bigger" is a statement about sulfur, not about a
+    // group of atoms.
+    float perElement = 1.0f;
+    if (const auto it = style.radiusScaleOverrides.find(atomicNumber);
+        it != style.radiusScaleOverrides.end())
+        perElement = it->second;
+    return base * perElement;
 }
 
-float StructureRenderer::displayRadius(int atomicNumber, const Style& style,
-                                       RepresentationMode mode)
+float StructureRenderer::displayRadius(int atomicNumber, const CastStyle& cast)
 {
     const float covalent = core::Elements::data(atomicNumber).covalentRadius;
     float radius = 0.25f;
-    switch (mode) {
+    switch (cast.mode) {
     case RepresentationMode::BallAndStick:
         radius = std::max(0.2f, covalent * 0.4f);
         break;
@@ -330,28 +380,48 @@ float StructureRenderer::displayRadius(int atomicNumber, const Style& style,
         // shape, with atoms still visible at the vertices/centers.
         radius = std::max(0.18f, covalent * 0.3f);
         break;
+    case RepresentationMode::Licorice:
+        // Matches the drawn tube (Style::bondRadius default x kLicoriceRadius)
+        // so a click lands where the tube looks, not beside it.
+        radius = 0.078f * kLicoriceRadius;
+        break;
+    case RepresentationMode::Ribbon:
+    case RepresentationMode::MolecularSurface:
+        // No per-atom sphere is drawn in either; the value is what picking
+        // uses, and it stays generous enough that a click still selects the
+        // atom under the ribbon or the surface.
+        radius = std::max(0.3f, covalent * 0.5f);
+        break;
     }
-    float perElement = 1.0f;
-    if (const auto it = style.radiusScaleOverrides.find(atomicNumber);
-        it != style.radiusScaleOverrides.end())
-        perElement = it->second;
-    return radius * style.atomScaleFactor * perElement;
+    return radius * cast.atomScaleFactor;
 }
 
-std::vector<RepresentationMode> StructureRenderer::atomModes(
+std::vector<StructureRenderer::CastStyle> StructureRenderer::atomCastStyles(
     const core::Structure* structure, const Style& style)
 {
     const std::size_t count = structure ? structure->size() : 0;
+    const CastStyle base = style.castStyle(0);
     // A cast assignment that does not match the atom count belongs to a
-    // structure that has since been replaced. Falling back to the uniform mode
-    // is the only safe reading — the alternative is drawing atoms in the casts
-    // of whatever geometry was loaded before.
+    // structure that has since been replaced. Falling back to the uniform
+    // cast-0 style is the only safe reading — the alternative is drawing atoms
+    // in the casts of whatever geometry was loaded before.
     if (style.atomCasts.size() != count)
-        return std::vector<RepresentationMode>(count, style.mode);
-    std::vector<RepresentationMode> modes(count, style.mode);
-    for (std::size_t i = 0; i < count; ++i)
-        modes[i] = style.castMode(style.atomCasts[i]);
-    return modes;
+        return std::vector<CastStyle>(count, base);
+    // Resolve once per CAST, not once per atom: a 15 000-atom protein in two
+    // casts would otherwise copy the same struct 15 000 times.
+    std::vector<CastStyle> byCast;
+    byCast.reserve(static_cast<std::size_t>(style.castCount()));
+    for (int cast = 0; cast < style.castCount(); ++cast)
+        byCast.push_back(style.castStyle(cast));
+
+    std::vector<CastStyle> perAtom(count, base);
+    for (std::size_t i = 0; i < count; ++i) {
+        const int cast = style.atomCasts[i];
+        perAtom[i] = (cast >= 0 && cast < static_cast<int>(byCast.size()))
+            ? byCast[static_cast<std::size_t>(cast)]
+            : base;
+    }
+    return perAtom;
 }
 
 QColor StructureRenderer::atomColor(int atomicNumber, const Style& style)
@@ -363,31 +433,54 @@ QColor StructureRenderer::atomColor(int atomicNumber, const Style& style)
     return QColor(element.rgb[0], element.rgb[1], element.rgb[2]);
 }
 
-void StructureRenderer::setAtomScalars(std::vector<float> scalars)
+void StructureRenderer::setAtomScalars(ColorMode mode, std::vector<float> values)
 {
-    atomScalars_ = std::move(scalars);
-    scalarMin_ = 0.0f;
-    scalarMax_ = 1.0f;
-    if (!atomScalars_.empty()) {
-        const auto [lo, hi] = std::minmax_element(atomScalars_.begin(), atomScalars_.end());
-        scalarMin_ = *lo;
-        scalarMax_ = *hi;
+    if (mode == ColorMode::Element)
+        return; // element colours need no field
+    ScalarField field;
+    field.values = std::move(values);
+    if (!field.values.empty()) {
+        const auto [lo, hi] =
+            std::minmax_element(field.values.begin(), field.values.end());
+        field.min = *lo;
+        field.max = *hi;
     }
+    scalars_[mode] = std::move(field);
 }
 
-QColor StructureRenderer::resolvedAtomColor(std::size_t index, int atomicNumber) const
+void StructureRenderer::clearAtomScalars()
 {
-    if (style_.colorMode == ColorMode::Element || index >= atomScalars_.size())
+    scalars_.clear();
+}
+
+StructureRenderer::ScalarRange StructureRenderer::scalarRangeFor(
+    ColorMode mode) const
+{
+    const auto it = scalars_.find(mode);
+    if (mode == ColorMode::Element || it == scalars_.end()
+        || it->second.values.empty())
+        return {};
+    return {true, it->second.min, it->second.max};
+}
+
+QColor StructureRenderer::resolvedAtomColor(std::size_t index, int atomicNumber,
+                                            ColorMode colorMode) const
+{
+    if (colorMode == ColorMode::Element)
         return atomColor(atomicNumber, style_);
+    const auto it = scalars_.find(colorMode);
+    if (it == scalars_.end() || index >= it->second.values.size())
+        return atomColor(atomicNumber, style_); // no data for this mode
+    const ScalarField& field = it->second;
     // User-pinned bounds win over the data's own range; values outside the
     // window clamp to the ramp ends rather than wrapping.
     const bool custom = style_.useCustomScalarRange;
-    const float lo = custom ? style_.customScalarMin : scalarMin_;
-    const float hi = custom ? style_.customScalarMax : scalarMax_;
+    const float lo = custom ? style_.customScalarMin : field.min;
+    const float hi = custom ? style_.customScalarMax : field.max;
     // A flat field (all atoms identical) maps to the middle of the gradient.
     const float range = hi - lo;
     const float t = range > 1e-12f
-        ? std::clamp((atomScalars_[index] - lo) / range, 0.0f, 1.0f)
+        ? std::clamp((field.values[index] - lo) / range, 0.0f, 1.0f)
         : 0.5f;
     return ColorMap::sample(style_.gradient, t, style_.invertGradient);
 }
@@ -436,6 +529,7 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     createColoredBuffer(wireAtoms_);
     createColoredBuffer(polyhedronFaces_);
     createColoredBuffer(polyhedronEdges_);
+    createColoredBuffer(molecularSurface_);
     createColoredBuffer(latticePlaneFaces_);
     createColoredBuffer(latticePlaneEdges_);
     createColoredBuffer(customOverlayFaces_);
@@ -496,6 +590,13 @@ void StructureRenderer::createMesh(InstancedMesh& mesh,
                                    reinterpret_cast<void*>(sizeof(float) * (16 + 4 * static_cast<std::size_t>(slot))));
         gl_->glVertexAttribDivisor(location, 1);
     }
+    // Location 8: the instance's surface finish, as a float the fragment
+    // shader rounds back to an int (there is no integer attribute path worth
+    // adding for a single value).
+    gl_->glEnableVertexAttribArray(8);
+    gl_->glVertexAttribPointer(8, 1, GL_FLOAT, GL_FALSE, stride,
+                               reinterpret_cast<void*>(sizeof(float) * 24));
+    gl_->glVertexAttribDivisor(8, 1);
 
     mesh.vao.release();
 }
@@ -584,6 +685,261 @@ void StructureRenderer::buildHydrogenBondDashes(
     }
 }
 
+void StructureRenderer::buildRibbon(const core::Structure* structure,
+                                    const std::vector<CastStyle>& casts,
+                                    const std::set<int>* selection,
+                                    std::vector<float>& bondInstances,
+                                    std::vector<float>& atomInstances) const
+{
+    if (!structure || structure->empty() || !structure->hasResidues())
+        return; // no backbone to trace
+
+    // Collect the α-carbon trace of each chain, in residue order. The CA trace
+    // IS the cartoon: it is the one atom per residue that every ribbon
+    // representation in every viewer follows, because it sits on the backbone
+    // and is present in every amino acid.
+    struct Chain {
+        std::vector<QVector3D> points;
+        std::vector<QColor> colors;
+    };
+    std::map<std::string, Chain> chains;
+    const auto& atoms = structure->atoms();
+    for (std::size_t i = 0; i < atoms.size(); ++i) {
+        if (casts[i].mode != RepresentationMode::Ribbon)
+            continue;
+        const core::ResidueInfo& info = structure->residue(i);
+        if (!info.isAlphaCarbon())
+            continue;
+        Chain& chain = chains[info.chain];
+        chain.points.push_back(toQt(atoms[i].position));
+        QColor color = resolvedAtomColor(i, atoms[i].atomicNumber,
+                                         casts[i].colorMode);
+        // In Element mode every α-carbon is the same grey, which would make a
+        // four-chain complex one indistinguishable tangle. Colouring by chain
+        // instead is what a ribbon diagram is FOR, so that is the default the
+        // Element mode maps to here.
+        if (casts[i].colorMode == ColorMode::Element)
+            color = chainColor(info.chain);
+        if (selection && selection->count(static_cast<int>(i)) > 0)
+            color = selectionTint(color);
+        chain.colors.push_back(color);
+    }
+
+    // One representative cast for the tube geometry: every ribbon atom shares
+    // the mode, so its scale and material are the ribbon's.
+    CastStyle ribbonCast{};
+    for (std::size_t i = 0; i < casts.size(); ++i)
+        if (casts[i].mode == RepresentationMode::Ribbon) {
+            ribbonCast = casts[i];
+            break;
+        }
+    // A protein backbone rises ~1.5 Å per residue, so a ~0.3 Å tube reads as a
+    // ribbon rather than as a string of beads or a fat sausage.
+    const float tubeRadius = 0.30f * ribbonCast.bondWidthFactor;
+
+    for (const auto& [name, chain] : chains) {
+        (void)name;
+        if (chain.points.size() < 2)
+            continue;
+        // Catmull-Rom through the CA points: consecutive α-carbons are 3.8 Å
+        // apart, and joining them with straight segments would draw a
+        // zig-zagging polyline rather than the smooth fold the eye is meant to
+        // read. Four subdivisions per segment is enough to hide the corners.
+        constexpr int kSubdivisions = 4;
+        const auto pointAt = [&chain](int index) {
+            const int last = static_cast<int>(chain.points.size()) - 1;
+            return chain.points[static_cast<std::size_t>(std::clamp(index, 0, last))];
+        };
+        const auto colorAt = [&chain](int index) {
+            const int last = static_cast<int>(chain.colors.size()) - 1;
+            return chain.colors[static_cast<std::size_t>(std::clamp(index, 0, last))];
+        };
+
+        QVector3D previous = chain.points.front();
+        QColor previousColor = chain.colors.front();
+        for (std::size_t segment = 0; segment + 1 < chain.points.size(); ++segment) {
+            const auto i = static_cast<int>(segment);
+            // A real chain break (a disordered loop the model omits) leaves a
+            // gap far longer than the 3.8 Å CA-CA spacing. Bridging it would
+            // draw a rod straight through the protein.
+            if (pointAt(i).distanceToPoint(pointAt(i + 1)) > 5.0f) {
+                previous = pointAt(i + 1);
+                previousColor = colorAt(i + 1);
+                continue;
+            }
+            const QVector3D p0 = pointAt(i - 1);
+            const QVector3D p1 = pointAt(i);
+            const QVector3D p2 = pointAt(i + 1);
+            const QVector3D p3 = pointAt(i + 2);
+            for (int step = 1; step <= kSubdivisions; ++step) {
+                const float t = static_cast<float>(step) / kSubdivisions;
+                const float t2 = t * t;
+                const float t3 = t2 * t;
+                const QVector3D point = 0.5f
+                    * ((2.0f * p1) + (-p0 + p2) * t
+                       + (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t2
+                       + (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t3);
+                const QColor color = t < 0.5f ? colorAt(i) : colorAt(i + 1);
+                const QVector3D delta = point - previous;
+                const float length = delta.length();
+                if (length > 1e-4f) {
+                    appendInstance(bondInstances,
+                                   bondTransform(previous, delta / length, length,
+                                                 tubeRadius),
+                                   previousColor, color,
+                                   ribbonCast.surfaceFinish,
+                                   ribbonCast.opacity);
+                    // A sphere at every joint: without it the tube shows a
+                    // visible notch wherever two cylinders meet at an angle.
+                    QMatrix4x4 joint;
+                    joint.translate(point);
+                    joint.scale(tubeRadius);
+                    appendInstance(atomInstances, joint, color,
+                                   ribbonCast.surfaceFinish,
+                                   ribbonCast.opacity);
+                }
+                previous = point;
+                previousColor = color;
+            }
+        }
+    }
+}
+
+void StructureRenderer::buildMolecularSurface(
+    const core::Structure* structure, const std::vector<CastStyle>& casts,
+    std::vector<float>& faceVertices) const
+{
+    if (!structure || structure->empty())
+        return;
+    const auto& atoms = structure->atoms();
+
+    std::vector<std::size_t> members;
+    for (std::size_t i = 0; i < atoms.size(); ++i)
+        if (casts[i].mode == RepresentationMode::MolecularSurface)
+            members.push_back(i);
+    if (members.empty())
+        return;
+
+    // Bounding box padded by the probe reach, so the envelope closes instead of
+    // being clipped flat against the box faces.
+    constexpr double kPadding = 3.0;   // Å
+    core::Vec3 low = atoms[members.front()].position;
+    core::Vec3 high = low;
+    for (const std::size_t i : members) {
+        const core::Vec3& p = atoms[i].position;
+        low = {std::min(low.x, p.x), std::min(low.y, p.y), std::min(low.z, p.z)};
+        high = {std::max(high.x, p.x), std::max(high.y, p.y),
+                std::max(high.z, p.z)};
+    }
+    low = {low.x - kPadding, low.y - kPadding, low.z - kPadding};
+    high = {high.x + kPadding, high.y + kPadding, high.z + kPadding};
+
+    // Grid spacing is a direct time/quality trade, and a protein-sized box at
+    // 0.4 Å would be ~10^8 points. 0.6 Å resolves side-chain grooves while
+    // keeping a 15 000-atom envelope buildable in about a second; the cap
+    // protects against a pathological box rather than a large molecule.
+    double spacing = 0.6;
+    const core::Vec3 extent{high.x - low.x, high.y - low.y, high.z - low.z};
+    constexpr long long kMaxPoints = 24'000'000;
+    for (;;) {
+        const long long nx = static_cast<long long>(extent.x / spacing) + 2;
+        const long long ny = static_cast<long long>(extent.y / spacing) + 2;
+        const long long nz = static_cast<long long>(extent.z / spacing) + 2;
+        if (nx * ny * nz <= kMaxPoints)
+            break;
+        spacing *= 1.25;
+    }
+
+    core::VolumetricData field;
+    field.nx = static_cast<int>(extent.x / spacing) + 2;
+    field.ny = static_cast<int>(extent.y / spacing) + 2;
+    field.nz = static_cast<int>(extent.z / spacing) + 2;
+    field.origin = low;
+    field.spanA = {spacing * (field.nx - 1), 0, 0};
+    field.spanB = {0, spacing * (field.ny - 1), 0};
+    field.spanC = {0, 0, spacing * (field.nz - 1)};
+    field.values.assign(static_cast<std::size_t>(field.nx) * field.ny * field.nz,
+                        0.0);
+    // Nearest-atom index per grid node, so the extracted surface can be
+    // coloured by the atom it actually belongs to rather than uniformly.
+    std::vector<int> nearest(field.values.size(), -1);
+    std::vector<double> nearestWeight(field.values.size(), 0.0);
+
+    // Gaussian "blobby" density, splatted per atom into its own local box.
+    // Summing every atom at every grid point would be O(N · grid) — 10^11 for
+    // a protein — whereas each atom only reaches a few Å, so the splat is
+    // O(N · small) and finishes in a fraction of a second.
+    for (const std::size_t index : members) {
+        const core::Atom& atom = atoms[index];
+        const double radius =
+            core::Elements::data(atom.atomicNumber).covalentRadius + 0.8;
+        const double reach = radius + 1.2;
+        const auto lo = [&](double value, double origin) {
+            return std::max(0, static_cast<int>((value - reach - origin) / spacing));
+        };
+        const int ix0 = lo(atom.position.x, low.x);
+        const int iy0 = lo(atom.position.y, low.y);
+        const int iz0 = lo(atom.position.z, low.z);
+        const int ix1 = std::min(field.nx - 1,
+                                 static_cast<int>((atom.position.x + reach - low.x) / spacing));
+        const int iy1 = std::min(field.ny - 1,
+                                 static_cast<int>((atom.position.y + reach - low.y) / spacing));
+        const int iz1 = std::min(field.nz - 1,
+                                 static_cast<int>((atom.position.z + reach - low.z) / spacing));
+        for (int ix = ix0; ix <= ix1; ++ix) {
+            const double x = low.x + ix * spacing;
+            for (int iy = iy0; iy <= iy1; ++iy) {
+                const double y = low.y + iy * spacing;
+                for (int iz = iz0; iz <= iz1; ++iz) {
+                    const double z = low.z + iz * spacing;
+                    const double dx = x - atom.position.x;
+                    const double dy = y - atom.position.y;
+                    const double dz = z - atom.position.z;
+                    const double d2 = dx * dx + dy * dy + dz * dz;
+                    if (d2 > reach * reach)
+                        continue;
+                    // exp(-(d/r)^2 · 2) falls to ~0.13 at d = r, so an
+                    // isovalue of 0.13 traces the van der Waals envelope.
+                    const double weight = std::exp(-2.0 * d2 / (radius * radius));
+                    const auto slot =
+                        (static_cast<std::size_t>(ix) * field.ny + iy) * field.nz + iz;
+                    field.values[slot] += weight;
+                    if (weight > nearestWeight[slot]) {
+                        nearestWeight[slot] = weight;
+                        nearest[slot] = static_cast<int>(index);
+                    }
+                }
+            }
+        }
+    }
+
+    const core::IsoMesh mesh = core::extractIsosurface(field, 0.13);
+    faceVertices.reserve(mesh.positions.size() * 6);
+    for (const core::Vec3& position : mesh.positions) {
+        // Colour from the nearest atom recorded at the enclosing grid node.
+        const int ix = std::clamp(static_cast<int>((position.x - low.x) / spacing),
+                                  0, field.nx - 1);
+        const int iy = std::clamp(static_cast<int>((position.y - low.y) / spacing),
+                                  0, field.ny - 1);
+        const int iz = std::clamp(static_cast<int>((position.z - low.z) / spacing),
+                                  0, field.nz - 1);
+        const auto slot =
+            (static_cast<std::size_t>(ix) * field.ny + iy) * field.nz + iz;
+        const int owner = nearest[slot];
+        QColor color(200, 200, 210);
+        if (owner >= 0) {
+            const auto index = static_cast<std::size_t>(owner);
+            color = resolvedAtomColor(index, atoms[index].atomicNumber,
+                                      casts[index].colorMode);
+        }
+        appendColoredVertex(faceVertices,
+                            QVector3D(static_cast<float>(position.x),
+                                      static_cast<float>(position.y),
+                                      static_cast<float>(position.z)),
+                            color);
+    }
+}
+
 void StructureRenderer::buildPolyhedra(const core::Structure* structure,
                                        const std::set<int>* selection,
                                        std::vector<float>& faceVertices,
@@ -598,7 +954,7 @@ void StructureRenderer::buildPolyhedra(const core::Structure* structure,
     // neighbour shells are still built from ALL bonds — a polyhedron's vertices
     // are its ligands, which have no reason to be in the same cast as the
     // cation at its centre.
-    const std::vector<RepresentationMode> modes = atomModes(structure, style_);
+    const std::vector<CastStyle> castStyles = atomCastStyles(structure, style_);
 
     // Bonded-neighbor positions per atom in world coordinates, honoring
     // periodic image offsets so a polyhedron straddling a cell boundary stays
@@ -655,7 +1011,7 @@ void StructureRenderer::buildPolyhedra(const core::Structure* structure,
     }
 
     for (std::size_t c = 0; c < count; ++c) {
-        if (modes[c] != RepresentationMode::Polyhedral)
+        if (castStyles[c].mode != RepresentationMode::Polyhedral)
             continue;
         // A coordination polyhedron needs at least four vertices to enclose a
         // volume; fewer neighbors (edges/triangles) are left to the spheres.
@@ -667,7 +1023,8 @@ void StructureRenderer::buildPolyhedra(const core::Structure* structure,
         if (tris.empty())
             continue; // coplanar coordination shell (no volume)
 
-        QColor color = resolvedAtomColor(c, atoms[c].atomicNumber);
+        QColor color = resolvedAtomColor(c, atoms[c].atomicNumber,
+                                         castStyles[c].colorMode);
         if (selection && selection->count(static_cast<int>(c)) > 0)
             color = selectionTint(color);
         const QColor edgeColor = color.darker(170);
@@ -761,19 +1118,31 @@ void StructureRenderer::setStructure(const core::Structure* structure,
     std::vector<float> cellVertices;
     std::vector<float> cellTubeInstances;
 
-    // Per-atom representation: every atom's own cast decides how it is drawn.
-    // With no casts defined this is a vector of one repeated value and every
-    // branch below behaves exactly as the single-mode renderer did.
-    const std::vector<RepresentationMode> modes = atomModes(structure, style_);
-    const auto modeAt = [&modes](std::size_t index) {
-        return modes[index];
+    // Per-atom settings: every atom's own cast decides how it is drawn, from
+    // its mode down to its radius and material. With no casts defined this is
+    // a vector of one repeated value and every branch below behaves exactly as
+    // the single-cast renderer did.
+    const std::vector<CastStyle> casts = atomCastStyles(structure, style_);
+    const auto modeAt = [&casts](std::size_t index) {
+        return casts[index].mode;
     };
-    // Polyhedra are built when ANY cast asks for them; buildPolyhedra then
-    // skips the atoms whose own cast does not.
-    const bool polyhedral =
-        std::any_of(modes.begin(), modes.end(), [](RepresentationMode m) {
-            return m == RepresentationMode::Polyhedral;
-        });
+    const auto anyCastUses = [&casts](RepresentationMode mode) {
+        return std::any_of(casts.begin(), casts.end(),
+                           [mode](const CastStyle& cast) {
+                               return cast.mode == mode;
+                           });
+    };
+    // Polyhedra / ribbons / surfaces are built when ANY cast asks for them;
+    // each builder then skips the atoms whose own cast does not.
+    const bool polyhedral = anyCastUses(RepresentationMode::Polyhedral);
+    const bool ribbon = anyCastUses(RepresentationMode::Ribbon);
+    const bool surface = anyCastUses(RepresentationMode::MolecularSurface);
+    // "Show hydrogens" off drops H spheres, any bond with an H end, and the
+    // H-bond dashes. A bond kept while its hydrogen went would be a stick
+    // ending in mid-air, so the filter has to reach the bond pass too.
+    const auto hiddenHydrogen = [this](int atomicNumber) {
+        return !style_.showHydrogens && atomicNumber == 1;
+    };
 
     if (structure && !structure->empty()) {
         const auto& atoms = structure->atoms();
@@ -794,18 +1163,38 @@ void StructureRenderer::setStructure(const core::Structure* structure,
 
         for (std::size_t index = 0; index < atoms.size(); ++index) {
             const core::Atom& atom = atoms[index];
+            const CastStyle& cast = casts[index];
+            // Ribbon and molecular surface REPLACE the per-atom geometry —
+            // drawing 15 000 spheres underneath a surface would cost the frame
+            // rate for something nothing can see.
+            if (isMacromolecularMode(cast.mode))
+                continue;
+            if (hiddenHydrogen(atom.atomicNumber))
+                continue;
+
             const bool selected =
                 selection && selection->count(static_cast<int>(index)) > 0;
 
-            QColor color = resolvedAtomColor(index, atom.atomicNumber);
+            QColor color =
+                resolvedAtomColor(index, atom.atomicNumber, cast.colorMode);
             if (selected)
                 color = selectionTint(color);
 
-            const RepresentationMode atomMode = modeAt(index);
-            const bool atomWireframe = atomMode == RepresentationMode::Wireframe;
-            const float radius =
-                displayRadius(atom.atomicNumber, style_, atomMode)
+            const bool atomWireframe = cast.mode == RepresentationMode::Wireframe;
+            float radius = displayRadius(atom.atomicNumber, cast)
                 * (selected ? 1.2f : 1.0f);
+            if (const auto it = style_.radiusScaleOverrides.find(atom.atomicNumber);
+                it != style_.radiusScaleOverrides.end())
+                radius *= it->second;
+            if (cast.mode == RepresentationMode::Licorice) {
+                // A sphere of exactly the tube radius at each site: it caps the
+                // bond ends and rounds the joint where two tubes meet at an
+                // angle, which is what makes licorice read as continuous
+                // tubing rather than as a pile of cut cylinders. Element radii
+                // deliberately do NOT apply — uniform thickness is the point.
+                radius = style_.bondRadius * kLicoriceRadius
+                    * cast.bondWidthFactor * (selected ? 1.2f : 1.0f);
+            }
 
             if (atomWireframe) {
                 appendColoredVertex(wireAtomVertices, toQt(atom.position), color);
@@ -813,7 +1202,8 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                 QMatrix4x4 model;
                 model.translate(toQt(atom.position));
                 model.scale(radius);
-                appendInstance(atomInstances, model, color);
+                appendInstance(atomInstances, model, color, cast.surfaceFinish,
+                               cast.opacity);
             }
 
             // Ghosts use the same radius and colour as their source, so the
@@ -828,13 +1218,13 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                     QMatrix4x4 model;
                     model.translate(ghostPosition);
                     model.scale(radius);
-                    appendInstance(atomInstances, model, color);
+                    appendInstance(atomInstances, model, color,
+                                   cast.surfaceFinish, cast.opacity);
                 }
             }
         }
 
         {
-            const float baseRadius = style_.bondRadius * style_.bondWidthFactor;
             for (const core::Bond& bond :
                  structure->detectBonds(style_.bondTolerance, style_.autoBonds)) {
                 // Which cast a bond belongs to is only well defined when both
@@ -842,18 +1232,44 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                 // bond touching a CPK atom is dropped — that is what lets a
                 // CPK metal surface sit under a ball-and-stick molecule
                 // without a thicket of substrate sticks growing through the
-                // vdW spheres. A bond whose two ends disagree on anything else
-                // (one wireframe, one solid) is drawn solid: a half-line,
-                // half-cylinder bond reads as a rendering fault.
-                const RepresentationMode modeI =
-                    modeAt(static_cast<std::size_t>(bond.i));
-                const RepresentationMode modeJ =
-                    modeAt(static_cast<std::size_t>(bond.j));
+                // vdW spheres. Ribbon and surface casts replace their geometry
+                // wholesale, so their bonds go too. A bond whose two ends
+                // disagree on anything else (one wireframe, one solid) is drawn
+                // solid: a half-line, half-cylinder bond reads as a fault.
+                const CastStyle& castI = casts[static_cast<std::size_t>(bond.i)];
+                const CastStyle& castJ = casts[static_cast<std::size_t>(bond.j)];
+                const RepresentationMode modeI = castI.mode;
+                const RepresentationMode modeJ = castJ.mode;
                 if (modeI == RepresentationMode::SpaceFilling
-                    || modeJ == RepresentationMode::SpaceFilling)
+                    || modeJ == RepresentationMode::SpaceFilling
+                    || isMacromolecularMode(modeI) || isMacromolecularMode(modeJ))
+                    continue;
+                if (hiddenHydrogen(
+                        atoms[static_cast<std::size_t>(bond.i)].atomicNumber)
+                    || hiddenHydrogen(
+                        atoms[static_cast<std::size_t>(bond.j)].atomicNumber))
                     continue;
                 const bool wireframe = modeI == RepresentationMode::Wireframe
                     && modeJ == RepresentationMode::Wireframe;
+                // Both ends' width factors average into one radius rather than
+                // each half taking its own: a bond that changed thickness at
+                // its midpoint would read as a modelling error, not a setting.
+                // Licorice draws every bond at one fixed, generous radius —
+                // the uniform thickness IS the representation. A licorice cast
+                // meeting a ball-and-stick one averages, like the widths do.
+                const auto tubeScale = [](const CastStyle& cast) {
+                    return (cast.mode == RepresentationMode::Licorice
+                                ? kLicoriceRadius
+                                : 1.0f)
+                        * cast.bondWidthFactor;
+                };
+                const float baseRadius = style_.bondRadius * 0.5f
+                    * (tubeScale(castI) + tubeScale(castJ));
+                // The material likewise comes from one end — a half-matte,
+                // half-glassy cylinder is not a thing anyone wants.
+                const SurfaceFinish bondFinish = castI.surfaceFinish;
+                const float bondOpacity =
+                    0.5f * (castI.opacity + castJ.opacity);
 
                 // The bond is drawn once at its real position, then once per
                 // ghost translation of EITHER endpoint: an atom duplicated onto
@@ -884,9 +1300,11 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                 const float half = pa.distanceToPoint(pbImage) * 0.5f;
 
                 QColor colorA = resolvedAtomColor(
-                    static_cast<std::size_t>(bond.i), a.atomicNumber);
+                    static_cast<std::size_t>(bond.i), a.atomicNumber,
+                    castI.colorMode);
                 QColor colorB = resolvedAtomColor(
-                    static_cast<std::size_t>(bond.j), b.atomicNumber);
+                    static_cast<std::size_t>(bond.j), b.atomicNumber,
+                    castJ.colorMode);
                 // Keep bond endpoints identical to their spheres, including
                 // the selection highlight (previously spheres tinted but
                 // bonds did not — a visible color mismatch at the joint).
@@ -932,12 +1350,14 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                     appendInstance(bondInstances,
                                    bondTransform(pa + shift, dir, half, radius),
                                    colorA,
-                                   style_.gradientBonds ? mid : colorA);
+                                   style_.gradientBonds ? mid : colorA,
+                                   bondFinish, bondOpacity);
                     if (!bond.crossesBoundary()) {
                         appendInstance(
                             bondInstances,
                             bondTransform(pa + shift + dir * half, dir, half, radius),
-                            style_.gradientBonds ? mid : colorB, colorB);
+                            style_.gradientBonds ? mid : colorB, colorB,
+                            bondFinish, bondOpacity);
                     } else {
                         // Wrapped bond: atom j's half is a stub pointing back
                         // toward its own periodic image of atom i (z = 0 sits
@@ -945,7 +1365,8 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                         appendInstance(
                             bondInstances,
                             bondTransform(pbReal + shift, -dir, half, radius),
-                            colorB, style_.gradientBonds ? mid : colorB);
+                            colorB, style_.gradientBonds ? mid : colorB,
+                            bondFinish, bondOpacity);
                     }
                 }
                 } // ghost offsets
@@ -974,7 +1395,8 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                     return;
                 const float shaftRadius = 0.045f;
                 for (std::size_t index = 0; index < atoms.size(); ++index) {
-                    if (modeAt(index) == RepresentationMode::Wireframe)
+                    if (modeAt(index) == RepresentationMode::Wireframe
+                        || isMacromolecularMode(modeAt(index)))
                         continue;
                     const core::Vec3& v = it->second[index];
                     // Filter on the FIELD magnitude, before the display scale:
@@ -995,7 +1417,7 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                     appendInstance(bondInstances,
                                    bondTransform(origin, dir, shaftLength,
                                                  shaftRadius),
-                                   color);
+                                   color, style_.surfaceFinish);
                     // Arrowhead cone: unit radius scales laterally via
                     // bondTransform's radius parameter. Skipped entirely when
                     // heads are off, so the shaft runs the full length.
@@ -1004,7 +1426,7 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                                        bondTransform(origin + dir * shaftLength,
                                                      dir, headLength,
                                                      shaftRadius * 2.6f),
-                                       color);
+                                       color, style_.surfaceFinish);
                 }
             };
             switch (style_.vectorOverlay) {
@@ -1038,7 +1460,7 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                     appendInstance(cellTubeInstances,
                                    bondTransform(from, dir, from.distanceToPoint(to),
                                                  tubeRadius),
-                                   style_.cellColor);
+                                   style_.cellColor, style_.surfaceFinish);
                 } else {
                     for (const QVector3D& p : {from, to})
                         cellVertices.insert(cellVertices.end(), {p.x(), p.y(), p.z()});
@@ -1046,6 +1468,12 @@ void StructureRenderer::setStructure(const core::Structure* structure,
             }
         }
     }
+
+    // Macromolecular geometry, built after the per-atom pass so it can append
+    // into the same instance streams (the ribbon is cylinders and spheres like
+    // everything else — it just follows a backbone instead of bonds).
+    if (ribbon)
+        buildRibbon(structure, casts, selection, bondInstances, atomInstances);
 
     sphere_.instanceCount = static_cast<int>(atomInstances.size()) / kFloatsPerInstance;
     sphere_.instanceBuffer.bind();
@@ -1072,6 +1500,12 @@ void StructureRenderer::setStructure(const core::Structure* structure,
         buildPolyhedra(structure, selection, polyFaceVertices, polyEdgeVertices);
     uploadColoredBuffer(polyhedronFaces_, polyFaceVertices);
     uploadColoredBuffer(polyhedronEdges_, polyEdgeVertices);
+
+    // Molecular surface (MolecularSurface mode only).
+    std::vector<float> surfaceVertices;
+    if (surface)
+        buildMolecularSurface(structure, casts, surfaceVertices);
+    uploadColoredBuffer(molecularSurface_, surfaceVertices);
 
     cellTube_.instanceCount =
         static_cast<int>(cellTubeInstances.size()) / kFloatsPerInstance;
@@ -1114,8 +1548,8 @@ void StructureRenderer::uploadLights()
     meshProgram_.setUniformValueArray("uLightDiffuse", diffuse, kMaxLights);
     meshProgram_.setUniformValueArray("uLightSpecular", specular, kMaxLights);
     meshProgram_.setUniformValue("uShininess", 48.0f);
-    meshProgram_.setUniformValue("uSurfaceFinish",
-                                 static_cast<int>(style_.surfaceFinish));
+    // The surface finish is no longer a uniform — it rides in the instance
+    // buffer, one value per cast (see appendInstance / mesh.vert's iFinish).
     meshProgram_.setUniformValue("uSurfaceOpacity", style_.glassOpacity);
 
     meshProgram_.setUniformValue("uFogMode", style_.fogMode);
@@ -1303,33 +1737,59 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
         meshProgram_.setUniformValue("uProj", projection);
         uploadLights();
 
-        // Glassy is the only translucent finish. Blend it, and stop writing
-        // depth so spheres behind other spheres remain visible — without
-        // that, the first sphere drawn would occlude everything behind it and
-        // the result would look opaque but dim. Order-independent
-        // transparency is out of scope here; the Fresnel rim in mesh.frag is
-        // what keeps overlapping shapes readable despite the unsorted draw.
-        const bool translucent = style_.surfaceFinish == SurfaceFinish::Glassy;
-        if (translucent) {
+        // Glassy is the only translucent finish, and with per-cast finishes a
+        // scene can hold both kinds at once. So the instances are drawn TWICE
+        // over the same buffers, with the fragment shader discarding whichever
+        // kind the pass does not own:
+        //
+        //   pass 0 — opaque instances, depth writes ON (an opaque cast must
+        //            still occlude what is behind it);
+        //   pass 1 — glassy instances, blended with depth writes OFF, so
+        //            spheres behind other spheres stay visible.
+        //
+        // A single pass with blending forced on for everything (what a global
+        // finish could get away with) would silently strip the opaque casts of
+        // their self-occlusion. Order-independent transparency is out of scope;
+        // the Fresnel rim in mesh.frag is what keeps the unsorted glassy draw
+        // readable.
+        const auto drawMeshes = [this] {
+            for (InstancedMesh* mesh : {&sphere_, &cylinder_, &cone_}) {
+                if (mesh->instanceCount == 0)
+                    continue;
+                mesh->vao.bind();
+                gl_->glDrawElementsInstanced(GL_TRIANGLES, mesh->indexCount,
+                                             GL_UNSIGNED_INT, nullptr,
+                                             mesh->instanceCount);
+                mesh->vao.release();
+            }
+        };
+
+        meshProgram_.setUniformValue("uFinishPass", 0);
+        drawMeshes();
+
+        if (style_.anyTranslucentCast()) {
+            meshProgram_.setUniformValue("uFinishPass", 1);
             gl_->glEnable(GL_BLEND);
             gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             gl_->glDepthMask(GL_FALSE);
-        }
-
-        for (InstancedMesh* mesh : {&sphere_, &cylinder_, &cone_}) {
-            if (mesh->instanceCount == 0)
-                continue;
-            mesh->vao.bind();
-            gl_->glDrawElementsInstanced(GL_TRIANGLES, mesh->indexCount, GL_UNSIGNED_INT,
-                                         nullptr, mesh->instanceCount);
-            mesh->vao.release();
-        }
-
-        if (translucent) {
+            drawMeshes();
             gl_->glDepthMask(GL_TRUE);
             gl_->glDisable(GL_BLEND);
         }
         meshProgram_.release();
+    }
+
+    // Molecular surface: a solid envelope over whatever else is drawn. Opaque
+    // and depth-written — it is the outer shape of the molecule, and making it
+    // see-through would defeat the representation.
+    if (molecularSurface_.vertexCount > 0) {
+        wireProgram_.bind();
+        wireProgram_.setUniformValue("uMvp", projection * view);
+        wireProgram_.setUniformValue("uAlpha", 1.0f);
+        molecularSurface_.vao.bind();
+        gl_->glDrawArrays(GL_TRIANGLES, 0, molecularSurface_.vertexCount);
+        molecularSurface_.vao.release();
+        wireProgram_.release();
     }
 
     // Coordination polyhedra: translucent hull faces over the opaque spheres,
@@ -1445,8 +1905,10 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
 
     // Hydrogen bonds: dashed lines, drawn last so they read on top of the
     // covalent geometry they connect. The dashes are baked into the vertex
-    // stream (core-profile GL has no line stipple).
-    if (hydrogenBonds_.vertexCount > 0) {
+    // stream (core-profile GL has no line stipple). Every dash starts on a
+    // hydrogen, so hiding the hydrogens hides these with them — the alternative
+    // is a dash floating away from an acceptor toward nothing.
+    if (hydrogenBonds_.vertexCount > 0 && style_.showHydrogens) {
         wireProgram_.bind();
         wireProgram_.setUniformValue("uMvp", projection * view);
         wireProgram_.setUniformValue("uAlpha", 1.0f);

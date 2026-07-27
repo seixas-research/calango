@@ -11,7 +11,9 @@
 // against a real ASE install (see the accompanying check in the repo docs).
 
 #include "core/AseScriptGenerator.hpp"
+#include "core/BornChargesScriptGenerator.hpp"
 #include "core/ElectronicScriptGenerator.hpp"
+#include "core/ElfScriptGenerator.hpp"
 #include "core/GwScriptGenerator.hpp"
 #include "core/OpticsScriptGenerator.hpp"
 #include "core/PhononScriptGenerator.hpp"
@@ -258,6 +260,24 @@ int main(int argc, char** argv)
             dumpBands("bands_soc_inline_scf.py", inlineScf);
         }
 
+        // Born effective charges: a nested-function script with an f-string
+        // inside a conditional expression inside an f-string, which is exactly
+        // the shape a hand-check misses.
+        {
+            const auto dumpBorn = [&dir](const std::string& name,
+                                         const BornChargesConfig& config) {
+                std::ofstream out(dir + "/" + name);
+                out << generateBornChargesScript(config);
+            };
+            BornChargesConfig born;
+            born.calculator = gpawConfig();
+            dumpBorn("born_charges.py", born);
+            BornChargesConfig subset = born;
+            subset.atomIndices = {0, 2, 5};
+            subset.acousticSumRule = false;
+            dumpBorn("born_charges_subset.py", subset);
+        }
+
         std::ofstream module(dir + "/"
                              + AseScriptGenerator::loggerModuleFileName());
         module << AseScriptGenerator::loggerModuleSource();
@@ -467,6 +487,227 @@ int main(int argc, char** argv)
             AseScriptGenerator::generate(c, "structure.extxyz");
         check(!contains(script, "ase.constraints"),
               "an unconstrained relaxation imports nothing extra");
+    }
+
+    // -- GPAW API drift (25.7 vs 26.7) ---------------------------------------
+    //
+    // GPAW 26 made its NEW engine the default, which removed three APIs the
+    // generated scripts called. Each failure was silent or fatal in a
+    // different way, and all three were found by running the full mode matrix
+    // against both installed GPAWs.
+    std::printf("GPAW 25.7 / 26.7 compatibility:\n");
+    {
+        ElectronicConfig bands;
+        bands.backend = ElectronicBackend::Gpaw;
+        bands.pdos = true;
+        const std::string script = generateElectronicScript(bands);
+        // get_orbital_ldos is gone from the new engine; every projection was
+        // swallowed by `except Exception: continue`, so the run "succeeded"
+        // with no PDOS at all. DOSCalculator.raw_pdos is identical in both.
+        checkContains(script, "from gpaw.dos import DOSCalculator",
+                      "PDOS goes through the portable DOSCalculator");
+        checkContains(script, "raw_pdos(", "and its raw_pdos entry point");
+        checkContains(script, "shift_fermi_level=False",
+                      "keeping energies on the same scale as efermi");
+        checkContains(script, "no PDOS projections were produced",
+                      "an empty PDOS is now reported, not silent");
+    }
+    {
+        ElfConfig elf;
+        elf.calculator = gpawConfig();
+        const std::string script = generateElfScript(elf);
+        // gpaw.elf.ELF is gone from BOTH 25.7 and 26.7 — ELF was dead on every
+        // currently shipping GPAW until this.
+        checkContains(script, "from gpaw.elf import elf_from_dft_calculation",
+                      "ELF uses the free function that replaced the class");
+        checkContains(script, "getattr(elf_grid, 'data', elf_grid)",
+                      "and unwraps the UGArray it returns");
+    }
+    {
+        // Symmetry is detected once from the starting geometry and validated
+        // against every later one. MD's thermal velocities and a phonon
+        // displacement both break it, killing the run on the first step.
+        CalculatorConfig md;
+        md.calculator = CalculatorKind::Gpaw;
+        md.task = TaskKind::MolecularDynamics;
+        checkContains(AseScriptGenerator::calculatorSnippet(md),
+                      "symmetry=\"off\"",
+                      "MD forces symmetry off");
+        PhononConfig phonon;
+        phonon.calculator = gpawConfig();
+        checkContains(PhononScriptGenerator::generate(phonon, "s.extxyz"),
+                      "symmetry=\"off\"",
+                      "and so do finite-displacement phonons");
+        // Geometry optimization must NOT: relaxation follows symmetric forces
+        // and stays inside its group, so folding the k-points is a real saving.
+        CalculatorConfig opt = gpawConfig();
+        opt.task = TaskKind::GeometryOptimization;
+        check(!contains(AseScriptGenerator::calculatorSnippet(opt),
+                        "symmetry=\"off\""),
+              "but geometry optimization keeps symmetry on");
+    }
+
+    // -- Molecular-dynamics constraints -------------------------------------
+    std::printf("Molecular dynamics constraints:\n");
+    {
+        CalculatorConfig md = constrainedRelaxation();
+        md.task = TaskKind::MolecularDynamics;
+        const std::string script =
+            AseScriptGenerator::generate(md, "structure.extxyz");
+        checkContains(script, "atoms.set_constraint(_constraints)",
+                      "MD honours the same constraint rules as a relaxation");
+        // Order matters: ASE's MaxwellBoltzmannDistribution consults the
+        // constraints and leaves frozen degrees of freedom at zero, so a held
+        // substrate starts at rest instead of being handed thermal velocities.
+        // Compared against the CALL, not the import at the top of the file.
+        check(script.find("atoms.set_constraint")
+                  < script.find("MaxwellBoltzmannDistribution(atoms"),
+              "and applies them BEFORE the velocities are drawn");
+    }
+    {
+        CalculatorConfig plain;
+        plain.task = TaskKind::MolecularDynamics;
+        const std::string script =
+            AseScriptGenerator::generate(plain, "structure.extxyz");
+        check(!contains(script, "ase.constraints"),
+              "an unconstrained MD run imports nothing extra");
+    }
+
+    // -- GPAW symmetry tolerance --------------------------------------------
+    //
+    // Regression for a run that died at the first stress evaluation with
+    //     SymmetryAnalysisBug: Sorry!  Try using spglib.standardize_cell(...)
+    // GPAW resolves its symmetry tolerance as `1e-7 if backwards_compatible
+    // else 1e-5`, and backwards_compatible still defaults to TRUE — so an
+    // unqualified run inherits 1e-7, and an atom a few times 1e-7 A off a
+    // symmetry point (pure numerical residue) aborts the calculation.
+    std::printf("GPAW symmetry tolerance:\n");
+    {
+        const std::string script =
+            AseScriptGenerator::calculatorSnippet(gpawConfig());
+        checkContains(script, "symmetry={\"tolerance\": 1e-5}",
+                      "the tolerance is pinned to GPAW's modern default");
+        check(!contains(script, "symmetry=\"off\""),
+              "and symmetry itself stays ON");
+    }
+    {
+        // "Symmetry: off" must still win outright — and must not emit both.
+        CalculatorConfig off = gpawConfig();
+        off.gpawSymmetryOff = true;
+        const std::string script = AseScriptGenerator::calculatorSnippet(off);
+        checkContains(script, "symmetry=\"off\"", "the off switch is honored");
+        check(!contains(script, "tolerance"),
+              "and no tolerance is written alongside it");
+    }
+    {
+        // Exactly one `symmetry=` keyword, always. Two would be a Python
+        // SyntaxError, which is how the Born-charge script broke when the
+        // tolerance was first added underneath its own `symmetry='off'`.
+        const auto countSymmetryKwargs = [](const std::string& script) {
+            int count = 0;
+            for (std::size_t at = script.find("symmetry=");
+                 at != std::string::npos; at = script.find("symmetry=", at + 1))
+                ++count;
+            return count;
+        };
+        BornChargesConfig born;
+        born.calculator = gpawConfig();
+        check(countSymmetryKwargs(generateBornChargesScript(born)) == 1,
+              "the Born-charge calculator carries one symmetry keyword");
+        checkContains(generateBornChargesScript(born), "symmetry=\"off\"",
+                      "and it is 'off' — Berry phases need the unfolded BZ");
+        check(countSymmetryKwargs(
+                  AseScriptGenerator::calculatorSnippet(gpawConfig())) == 1,
+              "and so does the plain GPAW block");
+    }
+
+    // -- Born effective charges ---------------------------------------------
+    std::printf("Born effective charges:\n");
+    {
+        BornChargesConfig born;
+        born.calculator = gpawConfig();
+        born.displacement = 0.015;
+        const std::string script = generateBornChargesScript(born);
+        // GPAW renamed this (get_polarization_phase -> polarization_phase) and
+        // changed its signature and return type; binding both spellings is
+        // what stops the run dying at import on one GPAW generation.
+        checkContains(script, "from gpaw.berryphase import polarization_phase",
+                      "binds the modern Berry-phase entry point");
+        checkContains(script, "import get_polarization_phase",
+                      "and falls back to the legacy spelling");
+        checkContains(script, "result['phase_c']",
+                      "unwraps the dict the modern call returns");
+        checkContains(script, "delta = 0.015", "displacement is honored");
+        // The Berry phase is only defined on the unsymmetrized BZ; letting
+        // GPAW fold the k-points would silently corrupt the polarization.
+        // Spelled by the shared GPAW keyword block, hence the double quotes.
+        checkContains(script, "symmetry=\"off\"",
+                      "the Berry-phase run disables k-point symmetry folding");
+
+        // The branch fix. The Berry phase is defined modulo 2*pi, and the +u
+        // and -u runs routinely land on different branches: without wrapping
+        // the DIFFERENCE into (-pi, pi], cubic BN came out at -540 e for boron
+        // instead of +1.93, exactly 6 polarization quanta off.
+        checkContains(script, "% (2.0 * np.pi) - np.pi",
+                      "the phase difference is wrapped onto one branch");
+        check(script.find("phase_difference(phases[0], phases[1])")
+                  < script.find("np.array(cell)"),
+              "and wrapped BEFORE the conversion to Cartesian");
+        checkContains(script, "/ (2.0 * delta)",
+                      "Z* is a central difference over 2*delta");
+        checkContains(script, "born -= residual / len(atoms)",
+                      "the acoustic sum rule is imposed by default");
+        // ...but only over the WHOLE cell: a partial sum is not a residual.
+        checkContains(script, "complete = len(indices) == len(atoms)",
+                      "and only when every atom was computed");
+        checkContains(script, "'raw_tensor'",
+                      "the uncorrected tensors are reported alongside");
+        checkContains(script, "CALANGO_RESULT born_charges=born_charges.json",
+                      "emits the marker the controller watches for");
+        // A non-periodic cell has no macroscopic polarization at all.
+        checkContains(script, "if not atoms.pbc.all():",
+                      "refuses a non-periodic structure");
+    }
+    {
+        // Baseline workflow: the run starts from a completed Single-Point,
+        // taking its geometry and rebuilding every displaced calculator from
+        // it — but NOT reusing its density, since Z* is the density's response.
+        BornChargesConfig baseline;
+        baseline.calculator = gpawConfig();
+        baseline.baselinePath = "/jobs/proc_1/single_point.gpw";
+        const std::string script = generateBornChargesScript(baseline);
+        checkContains(script, "_baseline = GPAW(r\"/jobs/proc_1/single_point.gpw\"",
+                      "loads the baseline ground state");
+        checkContains(script, "atoms = _baseline.get_atoms()",
+                      "and displaces about ITS converged geometry");
+        checkContains(script, "_baseline.new(symmetry='off'",
+                      "each displaced run is rebuilt from the baseline");
+        check(!contains(script, "read('structure.extxyz')"),
+              "so the staged structure is not read at all");
+        // The one thing a baseline cannot buy here.
+        check(!contains(script, "fixed_density"),
+              "and there is no fixed-density shortcut");
+    }
+    {
+        BornChargesConfig subset;
+        subset.calculator = gpawConfig();
+        subset.atomIndices = {0, 2, 5};
+        subset.acousticSumRule = false;
+        const std::string script = generateBornChargesScript(subset);
+        checkContains(script, "indices = [0, 2, 5]", "atom subset is honored");
+        check(!contains(script, "born -= residual / len(atoms)"),
+              "the sum rule is not imposed when it was turned off");
+    }
+    {
+        // Every other engine must refuse up front rather than burn 6N SCF
+        // cycles and fail at the polarization step.
+        BornChargesConfig vasp;
+        vasp.calculator.calculator = CalculatorKind::Vasp;
+        const std::string script = generateBornChargesScript(vasp);
+        checkContains(script, "raise RuntimeError",
+                      "a non-GPAW engine fails immediately");
+        check(!contains(script, "get_polarization_phase"),
+              "and never reaches the Berry-phase code");
     }
 
     // -- Spin-orbit coupling (Electronic Structure) --------------------------

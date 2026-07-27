@@ -1,20 +1,44 @@
 #include "gui/MolecularDynamicsWizard.hpp"
 
 #include "core/AseScriptGenerator.hpp"
+#include "core/Structure.hpp"
+#include "gui/GeometryConstraintsDialog.hpp"
 
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QPushButton>
 #include <QSpinBox>
 #include <QWidget>
 
+#include <set>
+
 namespace calango::gui {
 
-MolecularDynamicsWizard::MolecularDynamicsWizard(QWidget* parent)
+MolecularDynamicsWizard::MolecularDynamicsWizard(
+    std::shared_ptr<const core::Structure> structure, QWidget* parent)
     : SimulationWizardBase(parent)
+    , structure_(std::move(structure))
 {
     buildUi();
     updateEnsembleEnabled();
+}
+
+QStringList MolecularDynamicsWizard::calculatorElements() const
+{
+    if (!structure_)
+        return {};
+    // Sorted and unique: this feeds a completer, and repeating "Fe" once per
+    // Fe atom makes it useless.
+    std::set<QString> symbols;
+    for (const core::Atom& atom : structure_->atoms())
+        symbols.insert(QString::fromLatin1(atom.symbol()));
+    QStringList result;
+    for (const QString& symbol : symbols)
+        result << symbol;
+    return result;
 }
 
 QString MolecularDynamicsWizard::wizardTitle() const
@@ -99,6 +123,29 @@ QWidget* MolecularDynamicsWizard::buildSettingsPage()
     sampleSpin_->setToolTip(tr("Record a trajectory frame + metrics every N "
                                "steps (0 = auto)."));
     form->addRow(tr("Sampling frequency:"), sampleSpin_);
+
+    // Frozen degrees of freedom, exactly as Geometry Optimization offers them:
+    // ASE applies FixAtoms / FixCartesian to the integrator the same way it
+    // applies them to an optimizer, so holding a substrate rigid while an
+    // adsorbate moves — or freezing the bottom layers of a slab — works
+    // identically here. Without it the whole cell thermalizes, which for a
+    // surface simulation is rarely what is wanted.
+    auto* constraintRow = new QHBoxLayout;
+    auto* constraintButton = new QPushButton(tr("Geometry constraints…"), page);
+    constraintButton->setToolTip(
+        tr("Hold atoms — or single Cartesian directions of them — fixed for "
+           "the whole trajectory. Select them individually, or by a region "
+           "such as z < 5 Å (the bottom layers of a slab).\n\n"
+           "Frozen atoms are also excluded from the initial Maxwell-Boltzmann "
+           "velocities, so they start and stay at rest."));
+    connect(constraintButton, &QPushButton::clicked, this,
+            &MolecularDynamicsWizard::editConstraints);
+    constraintRow->addWidget(constraintButton);
+    constraintSummary_ = new QLabel(page);
+    constraintSummary_->setWordWrap(true);
+    constraintRow->addWidget(constraintSummary_, 1);
+    form->addRow(constraintRow);
+    refreshConstraintSummary();
     return page;
 }
 
@@ -117,6 +164,41 @@ void MolecularDynamicsWizard::updateEnsembleEnabled()
     pressureSpin_->setEnabled(core::isConstantPressure(ensemble));
 }
 
+void MolecularDynamicsWizard::editConstraints()
+{
+    GeometryConstraintsDialog dialog(structure_, constraints_, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    constraints_ = dialog.constraints();
+    refreshConstraintSummary();
+    refreshPreview();
+}
+
+void MolecularDynamicsWizard::refreshConstraintSummary()
+{
+    if (!constraintSummary_)
+        return;
+    if (constraints_.empty()) {
+        constraintSummary_->setText(tr("None — every atom moves freely."));
+        return;
+    }
+    int fixedAtoms = 0;
+    int regions = 0;
+    for (const core::GeometryConstraint& rule : constraints_) {
+        if (rule.selection == core::GeometryConstraint::Selection::Region)
+            ++regions;
+        else
+            fixedAtoms += static_cast<int>(rule.indices.size());
+    }
+    QStringList parts;
+    if (fixedAtoms > 0)
+        parts << tr("%n atom(s)", nullptr, fixedAtoms);
+    if (regions > 0)
+        parts << tr("%n region(s)", nullptr, regions);
+    constraintSummary_->setText(
+        tr("Constrained: %1.").arg(parts.join(tr(", "))));
+}
+
 core::CalculatorConfig MolecularDynamicsWizard::config() const
 {
     core::CalculatorConfig c = baseCalculatorConfig();
@@ -130,6 +212,7 @@ core::CalculatorConfig MolecularDynamicsWizard::config() const
     c.taupFs = taupSpin_->value();
     c.mdSteps = stepsSpin_->value();
     c.mdSampleInterval = sampleSpin_->value();
+    c.constraints = constraints_;
     return c;
 }
 

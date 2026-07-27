@@ -67,13 +67,8 @@ QWidget* RepresentationPanel::buildAppearanceTab()
         tr("The atom group the representation below applies to. Atoms are moved "
            "between casts in \"Cast change…\" on the editor row."));
     form->addRow(tr("Casting:"), castCombo_);
-    connect(castCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
-        // Switching casts only changes WHICH mode the combo shows; it must not
-        // write that mode back onto the newly selected cast.
-        const QSignalBlocker blocker(modeCombo_);
-        modeCombo_->setCurrentIndex(
-            static_cast<int>(viewport_->style().castMode(selectedCast())));
-    });
+    connect(castCombo_, &QComboBox::currentIndexChanged, this,
+            [this](int) { loadSelectedCast(); });
 
     // --- Style (surface material) ------------------------------------------
     // First control in the panel: the material decides how everything below
@@ -97,32 +92,36 @@ QWidget* RepresentationPanel::buildAppearanceTab()
     form->addRow(tr("Style:"), surfaceFinishCombo_);
     connect(surfaceFinishCombo_, &QComboBox::currentIndexChanged, this,
             [this](int index) {
-                viewport_->style().surfaceFinish =
-                    static_cast<render::SurfaceFinish>(index);
-                // Geometry is unchanged — only the shading uniforms — so this
-                // is a repaint, not an instance-buffer rebuild.
-                viewport_->styleChanged(false);
+                auto cast = selectedCastStyle();
+                cast.surfaceFinish = static_cast<render::SurfaceFinish>(index);
+                applyToSelectedCast(cast);
+                // The finish now travels in the instance buffer (one value per
+                // cast), so changing it IS a geometry rebuild.
+                viewport_->styleChanged(true);
             });
 
     modeCombo_ = new QComboBox(page);
-    modeCombo_->addItems({tr("Ball-and-Stick"), tr("Space-filling (CPK)"),
-                          tr("Wireframe"), tr("Polyhedral")});
+    // Order matches render::RepresentationMode.
+    modeCombo_->addItems({tr("Ball-and-Stick"), tr("Space-filling"),
+                          tr("Wireframe"), tr("Polyhedral"),
+                          tr("Ribbon Diagram"), tr("Molecular Surface"),
+                          tr("Licorice")});
+    modeCombo_->setToolTip(
+        tr("Ribbon Diagram and Molecular Surface need the residue annotation a "
+           "PDB / PDBx-mmCIF file carries: the ribbon follows each chain's "
+           "α-carbon trace, and both replace the per-atom spheres entirely — "
+           "which is the point, since 15 000 atoms drawn individually are an "
+           "opaque hairball.\n\n"
+           "Licorice drops the atom spheres and draws every bond as one "
+           "uniform tube — the connectivity is the model. Standard for "
+           "organics, where ball-and-stick's spheres crowd together until the "
+           "skeleton disappears behind them."));
     form->addRow(tr("Mode:"), modeCombo_);
     connect(modeCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
-        const auto mode = static_cast<render::RepresentationMode>(index);
-        const int cast = selectedCast();
-        if (cast == 0) {
-            // Cast 0's mode IS style.mode, which setRepresentation owns
-            // (it also re-derives the scalar mapping and rebuilds).
-            viewport_->setRepresentation(mode);
-        } else {
-            auto& modes = viewport_->style().castModes;
-            const auto slot = static_cast<std::size_t>(cast - 1);
-            if (slot < modes.size()) {
-                modes[slot] = mode;
-                viewport_->styleChanged(true);
-            }
-        }
+        auto cast = selectedCastStyle();
+        cast.mode = static_cast<render::RepresentationMode>(index);
+        applyToSelectedCast(cast);
+        viewport_->styleChanged(true);
         // The cast dropdown names each cast by its representation, so the label
         // the user just invalidated has to be re-rendered.
         syncCastsFromViewport();
@@ -134,6 +133,10 @@ QWidget* RepresentationPanel::buildAppearanceTab()
                                tr("Coordination number (CN)"),
                                tr("Generalized CN (GCN)"),
                                tr("Custom property")});
+    colorModeCombo_->setToolTip(
+        tr("Per cast: a coordination-coloured slab and a "
+           "custom-property-coloured adsorbate can share one scene, each "
+           "normalized against its own data range."));
     form->addRow(tr("Color by:"), colorModeCombo_);
 
     // Four editors that change WHAT is drawn (rather than how it is shaded),
@@ -156,23 +159,23 @@ QWidget* RepresentationPanel::buildAppearanceTab()
     // the rest of the panel is about, so the editor that moves atoms between
     // casts leads the editors that style them.
     auto* castButton = makeEditorButton(
-        QStringLiteral("stacked-view"),
+        QStringLiteral("group-fill"),
         tr("Cast change… — which cast each atom belongs to, and how many casts "
            "there are. Each cast draws in its own representation."));
     auto* elementsButton = makeEditorButton(
-        QStringLiteral("palette-line"),
+        QStringLiteral("brush-fill"),
         tr("Element Settings… — per-element colours and radii, and preset "
            "save/load."));
     auto* bondButton = makeEditorButton(
-        QStringLiteral("links-line"),
+        QStringLiteral("share-fill"),
         tr("Bond Editor… — bond perception, manual bonds, bond order and "
            "hydrogen-bond detection."));
     auto* polyhedralButton = makeEditorButton(
-        QStringLiteral("box-1-line"),
+        QStringLiteral("box-1-fill"),
         tr("Edit Polyhedral… — coordination-polyhedra opacity, edge wireframe "
            "and per-cation coordination cutoffs."));
     auto* gradientButton = makeEditorButton(
-        QStringLiteral("gradient"),
+        QStringLiteral("color-filter-fill"),
         tr("Edit gradient coloring… — which per-atom property is mapped, "
            "through which gradient, over which value range."));
     editorRow->addStretch(1);
@@ -244,14 +247,77 @@ QWidget* RepresentationPanel::buildAppearanceTab()
 
     form->addRow(tr("Atom radius:"),
                  makeScaleRow(atomScaleSlider_, atomScaleSpin_, [this](float factor) {
-                     viewport_->style().atomScaleFactor = factor;
+                     auto cast = selectedCastStyle();
+                     cast.atomScaleFactor = factor;
+                     applyToSelectedCast(cast);
                      viewport_->styleChanged(true);
                  }));
     form->addRow(tr("Bond width:"),
                  makeScaleRow(bondWidthSlider_, bondWidthSpin_, [this](float factor) {
-                     viewport_->style().bondWidthFactor = factor;
+                     auto cast = selectedCastStyle();
+                     cast.bondWidthFactor = factor;
+                     applyToSelectedCast(cast);
                      viewport_->styleChanged(true);
                  }));
+
+    // --- Opacity -----------------------------------------------------------
+    // Per cast, like everything above it. The combination this exists for is a
+    // faded substrate behind a solid adsorbate: fading the whole scene equally
+    // would hide exactly the thing being looked at.
+    //
+    // Its own row rather than makeScaleRow's 0.20-3.00 factor: opacity is a
+    // fraction with hard physical ends at 0 and 1, not a multiplier.
+    {
+        auto* row = new QWidget(page);
+        auto* rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        opacitySlider_ = new QSlider(Qt::Horizontal, row);
+        opacitySlider_->setRange(0, 100); // percent
+        opacitySlider_->setValue(100);
+        opacitySpin_ = new QDoubleSpinBox(row);
+        opacitySpin_->setRange(0.00, 1.00);
+        opacitySpin_->setDecimals(2);
+        opacitySpin_->setSingleStep(0.05);
+        opacitySpin_->setValue(1.00);
+        rowLayout->addWidget(opacitySlider_, 1);
+        rowLayout->addWidget(opacitySpin_);
+        const QString tip =
+            tr("How opaque this cast is drawn. 1 is fully opaque (the "
+               "default), 0 invisible.\n\n"
+               "Distinct from the Glassy style, which is a material with a "
+               "view-dependent Fresnel rim; this is a flat transparency you "
+               "set. The two compose — a glassy cast faded to 0.3 is fainter "
+               "than an opaque glassy one.");
+        opacitySlider_->setToolTip(tip);
+        opacitySpin_->setToolTip(tip);
+        form->addRow(tr("Opacity:"), row);
+
+        const auto applyOpacity = [this](float value) {
+            auto cast = selectedCastStyle();
+            cast.opacity = value;
+            applyToSelectedCast(cast);
+            // The alpha travels in the instance buffer, so this is a rebuild.
+            viewport_->styleChanged(true);
+        };
+        connect(opacitySlider_, &QSlider::valueChanged, this,
+                [this, applyOpacity](int percent) {
+                    const float value = static_cast<float>(percent) / 100.0f;
+                    {
+                        const QSignalBlocker blocker(opacitySpin_);
+                        opacitySpin_->setValue(value);
+                    }
+                    applyOpacity(value);
+                });
+        connect(opacitySpin_, &QDoubleSpinBox::valueChanged, this,
+                [this, applyOpacity](double value) {
+                    {
+                        const QSignalBlocker blocker(opacitySlider_);
+                        opacitySlider_->setValue(
+                            static_cast<int>(std::lround(value * 100.0)));
+                    }
+                    applyOpacity(static_cast<float>(value));
+                });
+    }
 
     // Bond order used to live here as three buttons acting on the viewport
     // selection. It moved into the Bond Editor's "By Atomic Indices" tab,
@@ -267,6 +333,48 @@ QWidget* RepresentationPanel::buildAppearanceTab()
     connect(gradientBondsCheck_, &QCheckBox::toggled, this, [this](bool on) {
         viewport_->style().gradientBonds = on;
         viewport_->styleChanged(true);
+    });
+
+    // Hydrogens get their own row: hiding them is the single most common way
+    // to make an organic or protein structure readable, and adding the missing
+    // ones is what you do to a heavy-atom-only model straight out of a CIF or
+    // a PDB. They sit together because the second usually follows the first —
+    // you notice the hydrogens are absent, then you build them.
+    auto* hydrogenRow = new QHBoxLayout;
+    hydrogenRow->setSpacing(6);
+    showHydrogensCheck_ = new QCheckBox(tr("Show hydrogens"), page);
+    showHydrogensCheck_->setChecked(viewport_->style().showHydrogens);
+    showHydrogensCheck_->setToolTip(
+        tr("Draw hydrogen atoms, their bonds and the hydrogen-bond dashes.\n"
+           "Off leaves the heavy-atom skeleton, which is how a crowded organic\n"
+           "or protein structure is normally read.\n\n"
+           "Display only — the hydrogens stay in the structure, so the formula "
+           "and every\ncalculation and exported file are unchanged."));
+    hydrogenRow->addWidget(showHydrogensCheck_);
+    hydrogenRow->addStretch(1);
+    auto* completeHydrogensButton =
+        new QPushButton(tr("Complete with hydrogens"), page);
+    completeHydrogensButton->setFocusPolicy(Qt::NoFocus);
+    completeHydrogensButton->setToolTip(
+        tr("Add the hydrogens each atom's standard valence implies — a "
+           "carbon with three\nbonds gets one, an sp3 oxygen with one bond "
+           "gets one, and so on.\n\n"
+           "Positions come from relaxing the new bonds against the existing "
+           "ones, so\nthe geometry follows the coordination (tetrahedral, "
+           "trigonal, bent).\nMetals and transition metals are left alone. "
+           "Undoable."));
+    hydrogenRow->addWidget(completeHydrogensButton);
+    form->addRow(hydrogenRow);
+    connect(showHydrogensCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        viewport_->style().showHydrogens = on;
+        viewport_->styleChanged(true);
+    });
+    connect(completeHydrogensButton, &QPushButton::clicked, this, [this] {
+        // Building hydrogens you cannot see is a no-op as far as the user can
+        // tell, so asking for them turns them back on. A display decision, and
+        // this panel owns the display.
+        showHydrogensCheck_->setChecked(true);
+        Q_EMIT hydrogenCompletionRequested();
     });
 
     // The per-atom vector overlay (property selector, scale, colour) moved
@@ -299,6 +407,17 @@ int RepresentationPanel::selectedCast() const
     return std::max(0, castCombo_->currentIndex());
 }
 
+render::StructureRenderer::CastStyle RepresentationPanel::selectedCastStyle() const
+{
+    return viewport_->style().castStyle(selectedCast());
+}
+
+void RepresentationPanel::applyToSelectedCast(
+    const render::StructureRenderer::CastStyle& cast)
+{
+    viewport_->style().setCastStyle(selectedCast(), cast);
+}
+
 void RepresentationPanel::syncCastsFromViewport()
 {
     const auto& style = viewport_->style();
@@ -307,18 +426,51 @@ void RepresentationPanel::syncCastsFromViewport()
     {
         const QSignalBlocker blocker(castCombo_);
         castCombo_->clear();
-        for (int cast = 0; cast < count; ++cast) {
-            // Naming each cast by its representation is what makes the
-            // dropdown readable at a glance ("Cast: 1 — Ball-and-Stick");
-            // bare indices would say nothing about what they draw.
-            const int mode = static_cast<int>(style.castMode(cast));
-            castCombo_->addItem(tr("Cast: %1 — %2").arg(cast).arg(
-                modeCombo_->itemText(mode)));
-        }
+        // Bare numbers. A cast is an index the user assigns atoms to, and the
+        // Cast Setup dialog, the atom table and this dropdown all refer to the
+        // same thing — spelling it out three different ways just made the
+        // dropdown wide enough to truncate the number itself.
+        for (int cast = 0; cast < count; ++cast)
+            castCombo_->addItem(QString::number(cast));
         castCombo_->setCurrentIndex(keep);
     }
-    const QSignalBlocker blocker(modeCombo_);
-    modeCombo_->setCurrentIndex(static_cast<int>(style.castMode(keep)));
+    loadSelectedCast();
+}
+
+void RepresentationPanel::loadSelectedCast()
+{
+    // Show the selected cast's settings WITHOUT writing them back: every one
+    // of these controls has a handler that edits the current cast, so an
+    // unblocked setCurrentIndex here would copy the previous cast's state onto
+    // the newly selected one the moment the user switched.
+    const auto cast = selectedCastStyle();
+    {
+        const QSignalBlocker blocker(modeCombo_);
+        modeCombo_->setCurrentIndex(static_cast<int>(cast.mode));
+    }
+    {
+        const QSignalBlocker blocker(surfaceFinishCombo_);
+        surfaceFinishCombo_->setCurrentIndex(static_cast<int>(cast.surfaceFinish));
+    }
+    {
+        const QSignalBlocker blocker(colorModeCombo_);
+        colorModeCombo_->setCurrentIndex(static_cast<int>(cast.colorMode));
+    }
+    const auto setScale = [](QSlider* slider, QDoubleSpinBox* spin, float value) {
+        const QSignalBlocker sliderBlocker(slider);
+        const QSignalBlocker spinBlocker(spin);
+        spin->setValue(value);
+        slider->setValue(static_cast<int>(std::lround(value * 100.0f)));
+    };
+    setScale(atomScaleSlider_, atomScaleSpin_, cast.atomScaleFactor);
+    setScale(bondWidthSlider_, bondWidthSpin_, cast.bondWidthFactor);
+    {
+        const QSignalBlocker sliderBlocker(opacitySlider_);
+        const QSignalBlocker spinBlocker(opacitySpin_);
+        opacitySpin_->setValue(cast.opacity);
+        opacitySlider_->setValue(
+            static_cast<int>(std::lround(cast.opacity * 100.0f)));
+    }
 }
 
 void RepresentationPanel::openCastSetup()
@@ -334,8 +486,19 @@ void RepresentationPanel::openCastSetup()
 void RepresentationPanel::applyColorMode()
 {
     const auto mode = static_cast<render::ColorMode>(colorModeCombo_->currentIndex());
+    // A non-zero cast writes straight into its own entry; cast 0 goes through
+    // setColorMode, which also re-derives the scalar fields and rebuilds.
+    if (selectedCast() != 0) {
+        auto cast = selectedCastStyle();
+        cast.colorMode = mode;
+        applyToSelectedCast(cast);
+        viewport_->refreshColorScalars();
+        syncCastsFromViewport();
+        return;
+    }
     if (mode != render::ColorMode::CustomScalar) {
         viewport_->setColorMode(mode);
+        syncCastsFromViewport();
         return;
     }
     // Which property is mapped belongs to the Custom Gradient Coloring dialog.
@@ -351,6 +514,7 @@ void RepresentationPanel::applyColorMode()
         }
     }
     viewport_->setColorMode(mode, field);
+    syncCastsFromViewport();
 }
 
 void RepresentationPanel::syncColoringFromViewport()

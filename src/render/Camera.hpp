@@ -4,11 +4,40 @@
 #include <QQuaternion>
 #include <QVector3D>
 
+#include <algorithm>
+
 namespace calango::render {
 
 enum class CameraProjection {
     Perspective,
     Orthographic,
+};
+
+/// A complete, restorable camera state — "where you were looking from".
+///
+/// Everything the orbit camera needs and nothing it does not: the target the
+/// pan has moved to, the dolly distance (zoom), the two orbit angles, the extra
+/// world-axis scene rotation, and the projection. Restoring one reproduces a
+/// view exactly, which is what makes a saved point-of-view reusable across
+/// sessions and what lets a workspace tab keep its own view while the user
+/// works in another.
+///
+/// Deliberately a plain aggregate: it is stored per tab, serialized to the
+/// project file, and listed in the Set Point-of-View dialog, so it must copy
+/// and compare like data rather than behave like an object.
+struct PointOfView {
+    QVector3D target{0.0f, 0.0f, 0.0f}; ///< what the camera looks at (pan)
+    float distance = 20.0f;             ///< dolly distance (zoom)
+    float yawDeg = 0.0f;
+    float pitchDeg = 20.0f;
+    QQuaternion sceneRotation;          ///< extra world-axis rotation
+    CameraProjection projection = CameraProjection::Perspective;
+
+    /// True when this holds a real captured view rather than a default-
+    /// constructed placeholder. A tab that has never been shown has no view to
+    /// restore, and restoring the default would yank the camera to an
+    /// arbitrary place the first time the user switched to it.
+    bool valid = false;
 };
 
 /// Orbit (turntable) camera: yaw/pitch around a target point, with pan
@@ -85,6 +114,27 @@ public:
     /// View matrix with the translation removed — orientation only
     /// (used by the axes-triad overlay).
     QMatrix4x4 rotationOnlyView() const;
+
+    /// Capture / restore the whole camera state. `apply` is exact: after it,
+    /// view() and projection() reproduce the captured frame.
+    PointOfView pointOfView() const
+    {
+        return {target_, distance_, yawDeg_, pitchDeg_, sceneRotation_,
+                projectionMode_, true};
+    }
+    void setPointOfView(const PointOfView& pov)
+    {
+        if (!pov.valid)
+            return; // nothing was captured; leave the camera alone
+        target_ = pov.target;
+        // A non-positive distance would put the eye at the target and make the
+        // view matrix singular; clamp rather than trust a hand-edited value.
+        distance_ = std::max(pov.distance, 1e-3f);
+        yawDeg_ = pov.yawDeg;
+        pitchDeg_ = pov.pitchDeg;
+        sceneRotation_ = pov.sceneRotation;
+        projectionMode_ = pov.projection;
+    }
 
 private:
     QVector3D target_{0.0f, 0.0f, 0.0f};

@@ -18,6 +18,11 @@ void Structure::addAtom(const Atom& atom)
         (void)name;
         values.push_back(Vec3{});
     }
+    // Only pad the annotation when there IS one: growing it from empty would
+    // make hasResidues() true for a structure that has no residues, and a
+    // ribbon would then be drawn through a pile of blanks.
+    if (!residues_.empty())
+        residues_.emplace_back();
 }
 
 void Structure::removeAtom(std::size_t index)
@@ -35,6 +40,8 @@ void Structure::removeAtom(std::size_t index)
         if (index < values.size())
             values.erase(values.begin() + static_cast<std::ptrdiff_t>(index));
     }
+    if (index < residues_.size())
+        residues_.erase(residues_.begin() + static_cast<std::ptrdiff_t>(index));
     // Bond overrides: drop pairs touching the removed atom, shift the rest.
     const auto removed = static_cast<int>(index);
     for (auto* overrides : {&addedBonds_, &removedBonds_}) {
@@ -65,6 +72,7 @@ void Structure::clear()
     cell_ = UnitCell{};
     scalarFields_.clear();
     vectorFields_.clear();
+    residues_.clear();
 }
 
 void Structure::setScalarField(const std::string& name, std::vector<double> values)
@@ -79,6 +87,22 @@ void Structure::setVectorField(const std::string& name, std::vector<Vec3> values
     if (values.size() != atoms_.size())
         return;
     vectorFields_[name] = std::move(values);
+}
+
+const ResidueInfo& Structure::residue(std::size_t index) const
+{
+    // A shared empty annotation rather than an exception: callers ask this per
+    // atom while walking a structure that may or may not carry residues, and
+    // "no residue" is a normal answer, not an error.
+    static const ResidueInfo kNone;
+    return index < residues_.size() ? residues_[index] : kNone;
+}
+
+void Structure::setResidues(std::vector<ResidueInfo> values)
+{
+    if (values.size() != atoms_.size())
+        return;
+    residues_ = std::move(values);
 }
 
 std::string Structure::chemicalFormula() const

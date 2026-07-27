@@ -51,11 +51,31 @@ enum class SurfaceFinish {
 
 enum class RepresentationMode {
     BallAndStick,
-    SpaceFilling, ///< CPK: van-der-Waals-sized spheres, no bonds
+    SpaceFilling, ///< van-der-Waals-sized spheres, no bonds
     Wireframe,    ///< bonds as colored lines, isolated atoms as points
     Polyhedral,   ///< coordination polyhedra (translucent faces + edges) on
                   ///< atoms with >= 4 bonded neighbors, plus atom spheres
+    // -- Macromolecular representations ------------------------------------
+    // Both answer the same problem: a 15 000-atom protein drawn atom by atom
+    // is an opaque hairball. They abstract it — one to the fold, one to the
+    // shape — and both need the residue annotation a PDB/PDBx file carries.
+    Ribbon,           ///< smooth tube through each chain's α-carbon trace
+    MolecularSurface, ///< the molecule's outer envelope as a solid isosurface
+    /// Uniform-thickness tubes with no atom spheres: the bonds ARE the model.
+    /// Standard for organics and biomolecules, where ball-and-stick's spheres
+    /// crowd together until the connectivity — the thing being looked at —
+    /// disappears behind them.
+    Licorice,
 };
+
+/// True for the representations that replace the per-atom geometry entirely
+/// rather than decorating it: their atoms get no spheres and no bonds, because
+/// the whole point is to stop drawing 15 000 of them.
+constexpr bool isMacromolecularMode(RepresentationMode mode)
+{
+    return mode == RepresentationMode::Ribbon
+        || mode == RepresentationMode::MolecularSurface;
+}
 
 /// One directional light, defined in VIEW space (camera-relative), so the
 /// lighting stays fixed with respect to the viewer while orbiting.
@@ -82,48 +102,103 @@ inline constexpr int kMaxLights = 4;
 /// model or style changes (a current GL context is required).
 class StructureRenderer {
 public:
-    struct Style {
-        /// Representation of CAST 0 — and, since every atom starts in cast 0,
-        /// the representation of the whole structure until casts are used.
+    /// Everything a CAST owns — the settings that describe how one group of
+    /// atoms is drawn, as opposed to the scene-wide settings (background, fog,
+    /// cell, lights) that belong to the whole figure.
+    ///
+    /// A cast is a group of atoms drawn in its own right, so one scene can show
+    /// a metal surface as space-filling spheres and the molecule adsorbed on it
+    /// as ball-and-stick, each with its own material, colouring and scale — the
+    /// standard way a surface-science figure separates substrate from
+    /// adsorbate. Sharing any of these across casts would defeat that: a
+    /// substrate wants matte and big, an adsorbate shiny and small.
+    struct CastStyle {
         RepresentationMode mode = RepresentationMode::BallAndStick;
+        SurfaceFinish surfaceFinish = SurfaceFinish::Standard;
+        ColorMode colorMode = ColorMode::Element;
+        float atomScaleFactor = 1.0f; ///< sphere-radius multiplier
+        float bondWidthFactor = 1.0f; ///< cylinder-width multiplier
+        /// Per-cast opacity in [0, 1]; 1 is fully opaque (the default).
+        ///
+        /// Independent of `surfaceFinish`: Glassy is a MATERIAL (Fresnel rim,
+        /// view-dependent alpha) whereas this is a flat transparency the user
+        /// dials. The pair that makes casts worth having is a faded substrate
+        /// behind a solid adsorbate, and that wants a plain, predictable alpha
+        /// rather than a glass look.
+        float opacity = 1.0f;
+    };
+
+    struct Style {
+        // -- Cast 0 --------------------------------------------------------
+        //
+        // Cast 0 always exists, and every atom starts in it. Its settings live
+        // here as plain members rather than as castStyles[0] so that every
+        // existing reader of style.mode / style.colorMode / style.atomScaleFactor
+        // (ray-trace export, viewport picking, the Element Settings dialog,
+        // saved projects) stays correct for the default single-cast scene.
+        RepresentationMode mode = RepresentationMode::BallAndStick;
+        /// Cast 0's opacity; see CastStyle::opacity.
+        float opacity = 1.0f;
 
         // -- Casts (per-atom representation groups) ------------------------
-        //
-        // A cast is a group of atoms drawn in its OWN representation, so one
-        // scene can show a metal surface as space-filling CPK spheres and the
-        // molecule adsorbed on it as ball-and-stick — the standard way a
-        // surface-science figure separates substrate from adsorbate. Without
-        // this the representation is all-or-nothing and the molecule either
-        // disappears inside the vdW spheres or the surface stops reading as a
-        // surface.
-        //
-        // Cast 0 always exists and its mode is `mode` above; `castModes` holds
-        // casts 1, 2, … in order. Keeping cast 0 in `mode` rather than
-        // duplicating it into the vector means every existing reader of
-        // `style.mode` (ray-trace export, viewport picking, saved projects)
-        // stays correct for the default single-cast scene.
 
         /// Cast index per atom, index-aligned with the structure's atoms().
         /// Empty — or any size that disagrees with the atom count, which is
         /// what a structure replacement leaves behind — means every atom is in
         /// cast 0.
         std::vector<int> atomCasts;
-        /// Representation of casts 1..N (cast 0's is `mode`). An atom whose
-        /// cast index has no entry here falls back to `mode`.
-        std::vector<RepresentationMode> castModes;
+        /// Settings of casts 1..N; cast 0's are the members of this struct.
+        std::vector<CastStyle> castStyles;
 
         /// Number of casts, cast 0 included — always at least 1.
         int castCount() const
         {
-            return 1 + static_cast<int>(castModes.size());
+            return 1 + static_cast<int>(castStyles.size());
         }
-        /// Representation of `cast`, falling back to cast 0's for an index
-        /// outside the current set.
+        /// Settings of `cast`, falling back to cast 0's for an index outside
+        /// the current set.
+        CastStyle castStyle(int cast) const
+        {
+            if (cast > 0 && cast <= static_cast<int>(castStyles.size()))
+                return castStyles[static_cast<std::size_t>(cast - 1)];
+            return {mode, surfaceFinish, colorMode, atomScaleFactor,
+                    bondWidthFactor, opacity};
+        }
+        /// Write `value` back into `cast`. Cast 0 writes through to the
+        /// members above, which is what keeps the two representations of it in
+        /// step — there is only ever one copy of cast 0's state.
+        void setCastStyle(int cast, const CastStyle& value)
+        {
+            if (cast > 0 && cast <= static_cast<int>(castStyles.size())) {
+                castStyles[static_cast<std::size_t>(cast - 1)] = value;
+                return;
+            }
+            mode = value.mode;
+            surfaceFinish = value.surfaceFinish;
+            colorMode = value.colorMode;
+            atomScaleFactor = value.atomScaleFactor;
+            bondWidthFactor = value.bondWidthFactor;
+            opacity = value.opacity;
+        }
+        /// Representation of `cast` — the most-asked-for field of castStyle().
         RepresentationMode castMode(int cast) const
         {
-            if (cast <= 0 || cast > static_cast<int>(castModes.size()))
-                return mode;
-            return castModes[static_cast<std::size_t>(cast - 1)];
+            return castStyle(cast).mode;
+        }
+        /// True when any cast in use needs the blended pass — either the
+        /// Glassy material or an opacity below 1. Both end up in the same
+        /// second, depth-write-off draw.
+        bool anyTranslucentCast() const
+        {
+            const auto translucent = [](SurfaceFinish finish, float alpha) {
+                return finish == SurfaceFinish::Glassy || alpha < 0.999f;
+            };
+            if (translucent(surfaceFinish, opacity))
+                return true;
+            for (const CastStyle& cast : castStyles)
+                if (translucent(cast.surfaceFinish, cast.opacity))
+                    return true;
+            return false;
         }
 
         float atomScaleFactor = 1.0f; ///< global sphere-radius multiplier (UI)
@@ -136,6 +211,16 @@ public:
         /// end blending to atom B color at the other); off = classic
         /// half-and-half coloring.
         bool gradientBonds = true;
+        /// Draw hydrogen atoms at all. Off hides every H sphere, the bonds
+        /// that terminate on one, and the H-bond dashes — the standard way to
+        /// read a crowded organic or protein structure, where the hydrogens
+        /// outnumber the heavy atoms they are attached to and hide the
+        /// skeleton that carries the chemistry.
+        ///
+        /// Purely a display filter: the hydrogens stay in the Structure, so
+        /// the formula, every calculation and every exported file are
+        /// unchanged by hiding them.
+        bool showHydrogens = true;
         // -- Coordination polyhedra (Polyhedral mode) ----------------------
         /// Face opacity. Translucent by default so the coordinated atoms stay
         /// visible through the hull — an opaque polyhedron hides exactly the
@@ -237,22 +322,43 @@ public:
 
     /// Display radius of an atom (Å) — the single source of truth shared
     /// by instance building and by ray-cast picking in the viewport. The
-    /// two-argument form uses cast 0's representation; pass an explicit mode
-    /// for an atom in another cast.
+    /// two-argument form uses cast 0's settings; pass an explicit CastStyle
+    /// for an atom in another cast, since both the mode and the scale factor
+    /// are per-cast.
     static float displayRadius(int atomicNumber, const Style& style);
-    static float displayRadius(int atomicNumber, const Style& style,
-                               RepresentationMode mode);
-
-    /// Representation each atom of `structure` is drawn in, resolved from the
-    /// style's cast assignment. Falls back to a uniform cast-0 mode when the
-    /// assignment is absent or does not match the atom count (which is what a
-    /// structure replacement leaves behind). Public so the viewport's picking
-    /// and the ray-trace exporter resolve radii exactly as the renderer does.
-    static std::vector<RepresentationMode> atomModes(
-        const core::Structure* structure, const Style& style);
+    static float displayRadius(int atomicNumber, const CastStyle& cast);
 
     /// Element color after applying user overrides (default: Jmol CPK).
     static QColor atomColor(int atomicNumber, const Style& style);
+
+    /// Settings each atom of `structure` is drawn with, resolved from the
+    /// style's cast assignment. Falls back to a uniform cast-0 style when the
+    /// assignment is absent or does not match the atom count (which is what a
+    /// structure replacement leaves behind). Public so the viewport's picking
+    /// and the ray-trace exporter resolve radii exactly as the renderer does.
+    static std::vector<CastStyle> atomCastStyles(const core::Structure* structure,
+                                                 const Style& style);
+
+    // -- Macromolecular geometry (GL-free, like boundaryGhostShifts) --------
+    //
+    // Public because they are pure geometry over a Structure — no GL context,
+    // no member state beyond the style — which is what lets them be checked
+    // directly instead of only through a rendered frame.
+
+    /// Smooth tube through each chain's α-carbon trace (Ribbon mode). Emits
+    /// cylinder + sphere instances so the ribbon shares the lit pipeline and
+    /// the shadow pass with everything else.
+    void buildRibbon(const core::Structure* structure,
+                     const std::vector<CastStyle>& casts,
+                     const std::set<int>* selection,
+                     std::vector<float>& bondInstances,
+                     std::vector<float>& atomInstances) const;
+    /// Van-der-Waals envelope of the atoms in a MolecularSurface cast
+    /// (Gaussian density splatted onto a grid, then marching cubes). Emits
+    /// interleaved pos(3)+color(3) triangle vertices.
+    void buildMolecularSurface(const core::Structure* structure,
+                               const std::vector<CastStyle>& casts,
+                               std::vector<float>& faceVertices) const;
 
     /// Must be called once with a current GL context (from initializeGL).
     void initialize(QOpenGLFunctions_3_3_Core* gl);
@@ -271,12 +377,27 @@ public:
                                                        const core::UnitCell& cell,
                                                        float tolerance);
 
-    /// Per-atom scalars driving the non-Element color modes (CN, GCN,
-    /// custom fields). Values are normalized to the [min, max] range
-    /// internally; an empty vector (or a size mismatch with the current
-    /// structure) falls back to element colors. Call setStructure()
-    /// afterwards to rebuild the instance colors.
-    void setAtomScalars(std::vector<float> scalars);
+    /// Per-atom scalars driving one non-Element color mode (CN, GCN, a custom
+    /// field). Values are normalized to their own [min, max] internally; an
+    /// empty vector (or a size mismatch with the current structure) makes that
+    /// mode fall back to element colors.
+    ///
+    /// Keyed BY MODE because casts colour independently: a scene can hold a
+    /// coordination-coloured slab and a custom-property-coloured adsorbate at
+    /// once, and the two fields have unrelated ranges that must not share a
+    /// normalization. Call setStructure() afterwards to rebuild the colors.
+    void setAtomScalars(ColorMode mode, std::vector<float> scalars);
+    /// Drop every stored field (a structure replacement invalidates them all).
+    void clearAtomScalars();
+
+    /// Data range of one mode's field, for the colour-scale legend. `valid` is
+    /// false in Element mode or when that mode has no field.
+    struct ScalarRange {
+        bool valid = false;
+        float min = 0.0f;
+        float max = 1.0f;
+    };
+    ScalarRange scalarRangeFor(ColorMode mode) const;
 
     void render(const QMatrix4x4& view, const QMatrix4x4& projection);
 
@@ -341,9 +462,11 @@ private:
         int vertexCount = 0;
     };
 
-    /// Color of atom `index`: the scalar mapping when active, otherwise
-    /// the (possibly overridden) element color.
-    QColor resolvedAtomColor(std::size_t index, int atomicNumber) const;
+    /// Color of atom `index` under `colorMode`: that mode's scalar mapping
+    /// when it has data, otherwise the (possibly overridden) element color.
+    QColor resolvedAtomColor(std::size_t index, int atomicNumber,
+                             ColorMode colorMode) const;
+
 
     void createMesh(InstancedMesh& mesh,
                     const std::vector<float>& vertices,
@@ -366,9 +489,15 @@ private:
     bool initialized_ = false;
     Style style_;
     std::vector<Light> lights_ = defaultLights();
-    std::vector<float> atomScalars_; ///< per-atom values for scalar coloring
-    float scalarMin_ = 0.0f;
-    float scalarMax_ = 1.0f;
+
+    /// One per-atom field per non-Element color mode, each normalized against
+    /// its OWN range — see setAtomScalars().
+    struct ScalarField {
+        std::vector<float> values;
+        float min = 0.0f;
+        float max = 1.0f;
+    };
+    std::map<ColorMode, ScalarField> scalars_;
 
     /// Fit an orthographic light frustum around the current scene and return
     /// the world -> light-clip matrix used by both the depth pass and the
@@ -392,6 +521,12 @@ private:
     ColoredVertexBuffer wireAtoms_;  ///< GL_POINTS (isolated atoms visible)
     ColoredVertexBuffer polyhedronFaces_; ///< GL_TRIANGLES (translucent)
     ColoredVertexBuffer polyhedronEdges_; ///< GL_LINES (opaque outline)
+    /// Molecular-surface envelope, GL_TRIANGLES with per-vertex colours taken
+    /// from the nearest atom. Drawn through the flat wire program rather than
+    /// the lit one: the surface is a coloured shape, and the marching-cubes
+    /// normals are noisy enough at this grid spacing that specular highlights
+    /// on them read as artifacts.
+    ColoredVertexBuffer molecularSurface_;
     ColoredVertexBuffer latticePlaneFaces_; ///< GL_TRIANGLES (translucent slice)
     ColoredVertexBuffer latticePlaneEdges_; ///< GL_LINES (plane border)
     float latticePlaneAlpha_ = 0.4f;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/CalculatorConfig.hpp"
+#include "render/Camera.hpp"
 
 #include <QMainWindow>
 #include <QByteArray>
@@ -33,6 +34,7 @@ namespace calango::gui {
 class BrandingPanel;
 class JobLogWidget;
 class NebDialog;
+class PointOfViewDialog;
 class SimulationWizardBase;
 class MetricPlotWidget;
 class ProcessManagerPanel;
@@ -105,6 +107,11 @@ private Q_SLOTS:
     void translateSelection();
     void deleteSelectedAtoms();
     void showBondEditor();
+    /// Representation panel -> "Complete with hydrogens": fill in the
+    /// hydrogens each atom's valence implies. Lives here rather than in the
+    /// panel because it ADDS atoms, and only the window owns the mutable
+    /// document and the undo stack.
+    void completeWithHydrogens();
     /// Structure panel → "Edit Structure…": unit cell + atomic positions
     /// editor, applied through the document's undo stack.
     void editStructure();
@@ -183,25 +190,37 @@ private Q_SLOTS:
     /// density.cube from `directory` into the Volumetric Data dock, or export
     /// one from the run's saved .gpw as a job when none exists yet.
     void onGetVolumetricData(const QString& directory);
-    /// Results menu → "Single-Point Viewer…": open the viewer on the selected
-    /// (or most recent) completed Single-Point process.
+    /// The dedicated result viewers. Each opens on the selected (or most
+    /// recent) process; they are reached from the Processes panel — its
+    /// "Open Viewer" button or its context menu — and also open automatically
+    /// when the matching run finishes.
     void showSinglePointViewer();
     void showGeometryOptimizationViewer();
-    /// Results menu → "Molecular Dynamics Viewer…" and its opener: time series
-    /// (T, E, P, V), g(r) and the trajectory player for a finished MD run.
+    /// Time series (T, E, P, V), g(r) and the trajectory player for a
+    /// finished MD run.
     void showMolecularDynamicsViewer();
     void openMolecularDynamicsResults(const QString& directory);
-    /// Results menu → "MLWF Viewer…": open the viewer on the selected (or most
-    /// recent) completed MLWF process.
     void showMlwfViewer();
-    /// Results → "GW Viewer…": open the quasiparticle read-out for the process
-    /// selected in the Processes panel.
     void showGwViewer();
+    /// Electronics → "Born Effective Charges…": stage and launch the Z* run.
+    void showBornCharges();
+    /// Open the Z* tensor read-out for a completed Born-charges process.
+    void openBornChargesResults(const QString& directory);
+
+    /// Processes panel → "Open Viewer": open the run's viewer directly when it
+    /// produced exactly one, or offer the choice when it produced several.
+    void onOpenViewerRequested(const QString& directory);
+    /// Right-click on a process: its viewers, plus the actions the icon bar
+    /// already carries (load result, view script, open folder, delete).
+    void onProcessContextMenu(const QString& directory, const QPoint& globalPos);
+
     /// View → "Reset Layout": restore the default dock arrangement captured at
     /// construction, including the branding panel's visibility.
     void resetLayout();
+    /// View toolbar → "Set point-of-view…": the modeless camera editor.
+    void showPointOfView();
     /// Directory of the process the Results tabs track, else the most recent
-    /// run — the default target for the Results-menu viewers.
+    /// run — the default target for the viewers.
     QString selectedProcessDirectory() const;
     /// "Load Result" from the Process panel: band data, trajectory or
     /// final structure — whatever the task directory contains.
@@ -294,6 +313,17 @@ private Q_SLOTS:
     void about();
 
 private:
+    /// One viewer per result file a run can leave behind: which viewers apply
+    /// to a process directory is decided by what is actually in it, so the
+    /// Processes panel never offers a read-out that has nothing to read.
+    struct ViewerEntry {
+        const char* resultFile; ///< marker file, "" = "no specific marker"
+        QString label;
+        void (MainWindow::*open)(const QString&);
+    };
+    /// The viewers `directory` can offer, in menu order.
+    std::vector<ViewerEntry> viewersFor(const QString& directory) const;
+
     struct Document {
         /// Stable identity of this workspace, independent of the tab's
         /// position (tabs are movable and closable, so an index is not an
@@ -305,6 +335,12 @@ private:
         std::deque<std::shared_ptr<core::Structure>> undoStack;
         std::deque<std::shared_ptr<core::Structure>> redoStack;
         QString fileName;
+        /// This tab's camera state. Kept current by the viewport's
+        /// cameraChanged signal and re-applied when the tab is shown again, so
+        /// switching away and back does not disturb a view the user set up.
+        /// Default-constructed (invalid) until the tab has been displayed
+        /// once, which is what lets the first display frame normally.
+        render::PointOfView pointOfView;
         /// Process / task descriptor shown in the tab title's third field
         /// (e.g. "Single-Point Calculation"); empty for a plain structure.
         QString task;
@@ -389,6 +425,11 @@ private:
     void closeAllDocuments();
 
     std::vector<std::unique_ptr<Document>> documents_;
+    /// True while a stored point-of-view is being re-applied, so the
+    /// cameraChanged echo is not mistaken for a user camera move.
+    bool restoringPointOfView_ = false;
+    /// The modeless Set Point-of-View editor; null when it is not open.
+    PointOfViewDialog* povDialog_ = nullptr;
     /// Monotonic source of Document::id — never reused, so a closed tab's id
     /// cannot be inherited by a later one (and neither can its bound records).
     int nextWorkspaceId_ = 0;

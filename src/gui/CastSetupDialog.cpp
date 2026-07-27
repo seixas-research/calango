@@ -22,9 +22,11 @@ namespace {
 
 enum Column { ColIndex = 0, ColElement, ColX, ColY, ColZ, ColCast, ColumnCount };
 
+/// A cast is referred to by its number alone — here, in the Representation
+/// panel's dropdown and in the atom table. One name for one thing.
 QString castLabel(int cast)
 {
-    return CastSetupDialog::tr("Cast: %1").arg(cast);
+    return QString::number(cast);
 }
 
 /// Human name of a representation, matching the Representation panel's combo.
@@ -34,11 +36,17 @@ QString modeName(render::RepresentationMode mode)
     case render::RepresentationMode::BallAndStick:
         return CastSetupDialog::tr("Ball-and-Stick");
     case render::RepresentationMode::SpaceFilling:
-        return CastSetupDialog::tr("Space-filling (CPK)");
+        return CastSetupDialog::tr("Space-filling");
     case render::RepresentationMode::Wireframe:
         return CastSetupDialog::tr("Wireframe");
     case render::RepresentationMode::Polyhedral:
         return CastSetupDialog::tr("Polyhedral");
+    case render::RepresentationMode::Ribbon:
+        return CastSetupDialog::tr("Ribbon Diagram");
+    case render::RepresentationMode::MolecularSurface:
+        return CastSetupDialog::tr("Molecular Surface");
+    case render::RepresentationMode::Licorice:
+        return CastSetupDialog::tr("Licorice");
     }
     return {};
 }
@@ -56,7 +64,7 @@ CastSetupDialog::CastSetupDialog(ViewportWidget* viewport,
     resize(680, 560);
 
     initialCasts_ = viewport_->style().atomCasts;
-    initialCastModes_ = viewport_->style().castModes;
+    initialCastStyles_ = viewport_->style().castStyles;
     initialMode_ = viewport_->style().mode;
 
     auto* layout = new QVBoxLayout(this);
@@ -237,8 +245,9 @@ void CastSetupDialog::addCast()
     // A new cast starts on Ball-and-Stick regardless of cast 0's mode: the
     // whole point of splitting one off is to draw it DIFFERENTLY, and starting
     // it identical to what it was just split from shows nothing.
-    viewport_->style().castModes.push_back(
-        render::RepresentationMode::BallAndStick);
+    render::StructureRenderer::CastStyle fresh;
+    fresh.mode = render::RepresentationMode::BallAndStick;
+    viewport_->style().castStyles.push_back(fresh);
     refreshCastChoices();
     apply();
     updateSummary();
@@ -246,11 +255,11 @@ void CastSetupDialog::addCast()
 
 void CastSetupDialog::removeLastCast()
 {
-    auto& modes = viewport_->style().castModes;
-    if (modes.empty())
+    auto& styles = viewport_->style().castStyles;
+    if (styles.empty())
         return; // cast 0 is not removable
-    const int removed = static_cast<int>(modes.size()); // its index
-    modes.pop_back();
+    const int removed = static_cast<int>(styles.size()); // its index
+    styles.pop_back();
     // Its atoms fall back to cast 0 rather than being left pointing at an index
     // that no longer exists.
     for (int& cast : casts())
@@ -295,7 +304,7 @@ void CastSetupDialog::updateSummary()
 
     QStringList parts;
     for (int cast = 0; cast < count; ++cast)
-        parts << tr("%1: %2 atom(s) as %3")
+        parts << tr("Cast %1: %2 atom(s) as %3")
                      .arg(castLabel(cast))
                      .arg(populations[static_cast<std::size_t>(cast)])
                      .arg(modeName(viewport_->style().castMode(cast)));
@@ -305,7 +314,7 @@ void CastSetupDialog::updateSummary()
 void CastSetupDialog::reject()
 {
     viewport_->style().atomCasts = initialCasts_;
-    viewport_->style().castModes = initialCastModes_;
+    viewport_->style().castStyles = initialCastStyles_;
     viewport_->style().mode = initialMode_;
     apply();
     QDialog::reject();
