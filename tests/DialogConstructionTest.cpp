@@ -15,6 +15,7 @@
 // what re-enters the slots that read half-built state.
 
 #include "core/Structure.hpp"
+#include "gui/FilmTimelineWidget.hpp"
 #include "gui/GeometryConstraintsDialog.hpp"
 #include "gui/GrapheneOxideWizard.hpp"
 #include "gui/HubbardParametersDialog.hpp"
@@ -28,6 +29,7 @@
 #include <QPushButton>
 #include <QSpinBox>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -186,6 +188,46 @@ int main(int argc, char** argv)
         check(style.gridAlpha >= 0.0 && style.gridAlpha <= 1.0,
               "grid alpha stays in range");
         check(style.axisFontSize > 0, "axis font size stays positive");
+    }
+
+    // The film timeline is where a film's seconds become frames and back.
+    // Both directions have to agree, and re-ranging it (which the production
+    // dialog does on every keystroke) must hold the playhead's POSITION in the
+    // film rather than its frame number — otherwise editing the duration
+    // yanks the live preview back to the start.
+    std::printf("Film timeline widget:\n");
+    {
+        FilmTimelineWidget timeline;
+        timeline.setFilm(10.0, 30);
+        check(!timeline.isPlaying(), "does not autoplay");
+
+        timeline.setCurrentTime(5.0);
+        check(std::fabs(timeline.currentTime() - 5.0) < 0.02,
+              "seconds round-trip through the frame slider");
+
+        timeline.setCurrentTime(0.0);
+        check(timeline.currentTime() == 0.0, "rewinds exactly to zero");
+        timeline.setCurrentTime(10.0);
+        check(std::fabs(timeline.currentTime() - 10.0) < 1e-9,
+              "the end is exactly the duration, not one frame short");
+
+        // Halfway through a 10 s film, then re-timed to 20 s: the playhead
+        // must still be halfway (10 s), not still at 5 s.
+        timeline.setCurrentTime(5.0);
+        timeline.setFilm(20.0, 30);
+        check(std::fabs(timeline.currentTime() - 10.0) < 0.05,
+              "re-ranging holds the position in the film, not the frame index");
+
+        // Out-of-range requests clamp instead of running off the slider.
+        timeline.setCurrentTime(999.0);
+        check(std::fabs(timeline.currentTime() - 20.0) < 1e-9,
+              "past the end clamps to the last frame");
+        timeline.setCurrentTime(-5.0);
+        check(timeline.currentTime() == 0.0, "before the start clamps to zero");
+
+        timeline.stop();
+        check(!timeline.isPlaying() && timeline.currentTime() == 0.0,
+              "stop rewinds and halts");
     }
 
     std::printf(failures == 0 ? "\nAll dialog construction checks passed.\n"

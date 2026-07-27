@@ -978,15 +978,58 @@ void ViewportWidget::paintGL()
     }
 
     if (showAxes_ || showElementLabels_ || showIndexLabels_
-        || !measureAtoms_.empty()) {
+        || !measureAtoms_.empty() || filmFade_ < 1.0f
+        || !filmCrossfadeImage_.isNull()) {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
+        // The dissolve goes UNDER the overlays and over the 3D render: it is
+        // part of the picture being composited, not an annotation on top of it.
+        if (!filmCrossfadeImage_.isNull() && filmCrossfadeWeight_ < 1.0f) {
+            painter.setOpacity(1.0 - static_cast<double>(filmCrossfadeWeight_));
+            painter.drawImage(rect(), filmCrossfadeImage_);
+            painter.setOpacity(1.0);
+        }
         if (showAxes_)
             drawAxesOverlay(painter);
         if (showElementLabels_ || showIndexLabels_)
             drawAtomLabelsOverlay(painter);
         drawMeasurementOverlay(painter);
+        // Film fade, painted over EVERYTHING including the overlays: a fade to
+        // black that left the axis triad and the atom labels floating on the
+        // black would not read as a cut. Last, for the same reason.
+        if (filmFade_ < 1.0f) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(0, 0, 0,
+                                    static_cast<int>(std::lround(
+                                        255.0f * (1.0f - filmFade_)))));
+            painter.drawRect(rect());
+        }
     }
+}
+
+void ViewportWidget::setFilmCrossfade(const QImage& outgoing, float weight)
+{
+    filmCrossfadeImage_ = outgoing;
+    filmCrossfadeWeight_ = std::clamp(weight, 0.0f, 1.0f);
+    update();
+}
+
+void ViewportWidget::clearFilmCrossfade()
+{
+    if (filmCrossfadeImage_.isNull())
+        return;
+    filmCrossfadeImage_ = QImage();
+    filmCrossfadeWeight_ = 1.0f;
+    update();
+}
+
+void ViewportWidget::setFilmFade(float visibility)
+{
+    const float clamped = std::clamp(visibility, 0.0f, 1.0f);
+    if (qFuzzyCompare(filmFade_ + 1.0f, clamped + 1.0f))
+        return;
+    filmFade_ = clamped;
+    update();
 }
 
 void ViewportWidget::rotateSceneAxis(int axis, double degrees)

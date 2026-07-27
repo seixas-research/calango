@@ -2,11 +2,14 @@
 
 #include "core/CalculatorConfig.hpp"
 #include "render/Camera.hpp"
+#include "render/Film.hpp"
 
 #include <QMainWindow>
 #include <QByteArray>
+#include <QImage>
 #include <QList>
 #include <QPair>
+#include <QSize>
 #include <QString>
 
 #include <deque>
@@ -43,6 +46,8 @@ class StructureInfoWidget;
 class VolumetricPanel;
 class SystemStatusBar;
 class TimelineWidget;
+class FilmTimelineWidget;
+class FilmProductionDialog;
 class ViewportWidget;
 
 /// Application shell and MVC "Controller" with a tabbed multi-document
@@ -207,9 +212,6 @@ private Q_SLOTS:
     /// Open the Z* tensor read-out for a completed Born-charges process.
     void openBornChargesResults(const QString& directory);
 
-    /// Processes panel → "Open Viewer": open the run's viewer directly when it
-    /// produced exactly one, or offer the choice when it produced several.
-    void onOpenViewerRequested(const QString& directory);
     /// Right-click on a process: its viewers, plus the actions the icon bar
     /// already carries (load result, view script, open folder, delete).
     void onProcessContextMenu(const QString& directory, const QPoint& globalPos);
@@ -219,6 +221,30 @@ private Q_SLOTS:
     void resetLayout();
     /// View toolbar → "Set point-of-view…": the modeless camera editor.
     void showPointOfView();
+    /// View toolbar -> "Film production...": author the current tab's film.
+    void showFilmProduction();
+    /// Film mode on/off: swaps the trajectory timeline for the film timeline
+    /// and takes the camera over.
+    void setFilmMode(bool on);
+    /// One instant of the film applied to the viewport - camera, fade, cast
+    /// opacities and (with a trajectory) the displayed frame.
+    void showFilmTime(double seconds);
+    /// Re-couple the current tab's film to that tab's trajectory and re-range
+    /// the film timeline. Called on tab switch and whenever frames change.
+    void refreshFilmTimeline();
+    /// Snapshot / restore the Representation panel's cast opacities around a
+    /// film preview: the film ANIMATES them but does not own them.
+    void rememberCastOpacities();
+    void restoreCastOpacities();
+    /// Render one side of a dissolve off-screen, with that shot's own cast
+    /// opacities applied. Both ends of a film transition are static poses, so
+    /// the result is valid for the whole dissolve — see filmCrossfadeKey_.
+    QImage renderFilmShot(const render::PointOfView& pov,
+                          const std::vector<render::FilmCastOpacity>& casts);
+    /// Apply `casts` on top of the film's baseline opacities. Returns true if
+    /// anything actually changed, so callers can skip the renderer rebuild.
+    bool applyFilmCastOpacities(
+        const std::vector<render::FilmCastOpacity>& casts);
     /// Directory of the process the Results tabs track, else the most recent
     /// run — the default target for the viewers.
     QString selectedProcessDirectory() const;
@@ -313,6 +339,16 @@ private Q_SLOTS:
     void about();
 
 private:
+    /// What "Export Animation" is rendering. Carried as the source combo's
+    /// userData rather than as a row index: which rows exist depends on
+    /// whether the workspace has a trajectory and a film.
+    enum class AnimationSource { Turntable, Trajectory, Film };
+    /// One exported film frame, at export resolution — including the dissolve
+    /// mix and the black fade, so the file matches what the preview showed.
+    QImage renderFilmFrame(const render::FilmScript& film, int frame,
+                           int frameCount, int width, int height,
+                           const QColor& background);
+
     /// One viewer per result file a run can leave behind: which viewers apply
     /// to a process directory is decided by what is actually in it, so the
     /// Processes panel never offers a read-out that has nothing to read.
@@ -341,6 +377,11 @@ private:
         /// Default-constructed (invalid) until the tab has been displayed
         /// once, which is what lets the first display frame normally.
         render::PointOfView pointOfView;
+        /// This tab's film. Per workspace for the same reason the camera is:
+        /// a film is authored against one structure's geometry and its casts,
+        /// and carrying it to another tab would aim it at atoms that are not
+        /// there.
+        render::FilmScript film;
         /// Process / task descriptor shown in the tab title's third field
         /// (e.g. "Single-Point Calculation"); empty for a plain structure.
         QString task;
@@ -430,6 +471,38 @@ private:
     bool restoringPointOfView_ = false;
     /// The modeless Set Point-of-View editor; null when it is not open.
     PointOfViewDialog* povDialog_ = nullptr;
+    FilmProductionDialog* filmDialog_ = nullptr;
+    FilmTimelineWidget* filmTimeline_ = nullptr;
+    QAction* filmModeAction_ = nullptr;
+    QAction* filmProductionAction_ = nullptr;
+    /// Guards showFilmTime() against the cameraChanged echo its own camera
+    /// write provokes - without it every film frame would be recorded as a
+    /// user camera move and overwrite the tab's saved point-of-view.
+    bool applyingFilm_ = false;
+    /// The tab's camera as it was when film mode was switched on, restored
+    /// when it is switched off: previewing a film must not cost the view the
+    /// user had set up.
+    render::PointOfView preFilmPov_;
+    /// Cast opacities as the Representation panel had them when film mode
+    /// started, keyed by cast index. Every previewed frame is applied on top
+    /// of these rather than on top of the previous frame.
+    std::map<int, float> filmCastBaseline_;
+    /// Identity of the dissolve the cached outgoing render belongs to:
+    /// the outgoing shot index, the structure it was rendered from, and the
+    /// canvas size. Any of the three changing invalidates it — a cached image
+    /// of the wrong frame, or at the wrong size, is worse than a re-render.
+    struct CrossfadeKey {
+        int shot = -1;
+        const core::Structure* structure = nullptr;
+        QSize size;
+        bool operator==(const CrossfadeKey& other) const
+        {
+            return shot == other.shot && structure == other.structure
+                && size == other.size;
+        }
+    };
+    CrossfadeKey filmCrossfadeKey_;
+    QImage filmCrossfadeCache_;
     /// Monotonic source of Document::id — never reused, so a closed tab's id
     /// cannot be inherited by a later one (and neither can its bound records).
     int nextWorkspaceId_ = 0;

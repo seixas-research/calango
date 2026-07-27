@@ -2,6 +2,7 @@
 #include "gui/GuiUtils.hpp"
 
 #include "gui/ViewportWidget.hpp"
+#include "ui/IconManager.hpp"
 
 #include <QColorDialog>
 #include <QFormLayout>
@@ -28,7 +29,10 @@ LightingPanel::LightingPanel(ViewportWidget* viewport, QWidget* parent)
 
     auto* lightButtons = new QHBoxLayout;
     addLightButton_ = new QPushButton(tr("Add"), this);
+    ui::IconManager::bind(addLightButton_, QStringLiteral("add-circle-fill"));
     removeLightButton_ = new QPushButton(tr("Remove"), this);
+    ui::IconManager::bind(removeLightButton_,
+                          QStringLiteral("indeterminate-circle-fill"));
     lightButtons->addWidget(addLightButton_);
     lightButtons->addWidget(removeLightButton_);
     lightButtons->addStretch(1);

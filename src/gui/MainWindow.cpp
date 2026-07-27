@@ -90,6 +90,8 @@
 #include "gui/ScriptStaging.hpp"
 #include "gui/StructureEditorDialog.hpp"
 #include "gui/StructureInfoWidget.hpp"
+#include "gui/FilmProductionDialog.hpp"
+#include "gui/FilmTimelineWidget.hpp"
 #include "gui/TimelineWidget.hpp"
 #include "gui/ViewportWidget.hpp"
 #include "jobs/JobRunner.hpp"
@@ -153,6 +155,10 @@ namespace calango::gui {
 
 namespace {
 constexpr std::size_t kMaxUndoDepth = 50;
+/// The rate the trajectory timeline plays at, and therefore the rate
+/// "Trajectory priority" means by a trajectory's NATURAL duration —
+/// the length the user already sees when they scrub it.
+constexpr double kTrajectoryPlaybackFps = 15.0;
 /// Version tag for saveState/restoreState. Bumped when the default dock
 /// grid changes so stale saved layouts don't override the new default
 /// (v2 = the 8-zone grid workspace, v3 = the 12-zone grid with the
@@ -327,6 +333,8 @@ MainWindow::MainWindow(QWidget* parent)
     viewport_ = new ViewportWidget(this);
     timeline_ = new TimelineWidget(this);
     timeline_->hide(); // appears when the current document has frames
+    filmTimeline_ = new FilmTimelineWidget(this);
+    filmTimeline_->hide(); // appears only in Film mode
 
     // Compact icon-only camera toolbar living inside the frame panel
     // (replaces the old top application toolbar). Projection toggling lives
@@ -378,7 +386,7 @@ MainWindow::MainWindow(QWidget* parent)
                      "(and their bonds); Delete/Backspace removes them"),
                   ViewportWidget::InteractionMode::Select,
                   QKeySequence(Qt::Key_S));
-    addModeAction(QStringLiteral("add-circle-line"),
+    addModeAction(QStringLiteral("edit-fill"),
                   tr("Insertion mode — click empty space to add an atom of "
                      "the active element;\ndrag from one atom to another to "
                      "bond them"),
@@ -420,7 +428,7 @@ MainWindow::MainWindow(QWidget* parent)
                      "separation in Å\n(click empty space to reset)"),
                   ViewportWidget::InteractionMode::MeasureDistance,
                   QKeySequence(Qt::Key_D));
-    addModeAction(QStringLiteral("triangle-line"),
+    addModeAction(QStringLiteral("triangle-fill"),
                   tr("Angle measurement — click three atoms (vertex second) "
                      "to read the angle in degrees\n(click empty space to "
                      "reset)"),
@@ -448,6 +456,31 @@ MainWindow::MainWindow(QWidget* parent)
            "rotation and pan, and save named views to reuse on other "
            "structures."));
     connect(povAction, &QAction::triggered, this, &MainWindow::showPointOfView);
+
+    // Film mode, directly after the point-of-view it is built out of: a film
+    // IS a sequence of saved points-of-view, so the button that authors one
+    // belongs next to the button that saves them.
+    filmModeAction_ = frameToolbar->addAction(
+        ui::IconManager::icon(QStringLiteral("film-fill")), tr("Film mode"));
+    filmModeAction_->setCheckable(true);
+    filmModeAction_->setToolTip(
+        tr("Film mode — swap the trajectory timeline for a film timeline in "
+           "seconds, and drive the camera from the film.\n\n"
+           "The camera you have now is restored when film mode is switched "
+           "off, so previewing never costs you the view you set up."));
+    connect(filmModeAction_, &QAction::toggled, this, &MainWindow::setFilmMode);
+
+    filmProductionAction_ = frameToolbar->addAction(
+        ui::IconManager::icon(QStringLiteral("clapperboard-fill")),
+        tr("Film production…"));
+    filmProductionAction_->setToolTip(
+        tr("Film production… — build a film from the saved points-of-view: "
+           "transitions between shots, total duration and frame rate, cast "
+           "opacity keyframes, and — with a trajectory in the workspace — "
+           "which of the two timelines sets the length."));
+    connect(filmProductionAction_, &QAction::triggered, this,
+            &MainWindow::showFilmProduction);
+
     frameToolbar->addSeparator();
     QAction* alignXy = frameToolbar->addAction(
         cameraToolbarIcon(QStringLiteral("xy")), tr("Align view with the XY plane"));
@@ -563,6 +596,7 @@ MainWindow::MainWindow(QWidget* parent)
     centralLayout->addWidget(frameToolbar);
     centralLayout->addWidget(viewport_, 1);
     centralLayout->addWidget(timeline_);
+    centralLayout->addWidget(filmTimeline_);
     setCentralWidget(central);
 
     connect(tabBar_, &QTabBar::currentChanged, this, &MainWindow::onTabChanged);
@@ -571,8 +605,8 @@ MainWindow::MainWindow(QWidget* parent)
     // here rather than at switch time also means there is no "previous tab"
     // index to track and get wrong when tabs are closed or reordered.
     connect(viewport_, &ViewportWidget::cameraChanged, this, [this] {
-        if (restoringPointOfView_)
-            return; // mid-restore: this echo is not a user camera move
+        if (restoringPointOfView_ || applyingFilm_)
+            return; // mid-restore or mid-playback: not a user camera move
         if (Document* doc = currentDocument())
             doc->pointOfView = viewport_->camera().pointOfView();
     });
@@ -583,6 +617,8 @@ MainWindow::MainWindow(QWidget* parent)
     connect(tabBar_, &QTabBar::customContextMenuRequested, this,
             &MainWindow::showTabContextMenu);
     connect(timeline_, &TimelineWidget::frameChanged, this, &MainWindow::showFrame);
+    connect(filmTimeline_, &FilmTimelineWidget::timeChanged, this,
+            &MainWindow::showFilmTime);
 
     createMenusAndDocks();
 
@@ -1081,8 +1117,6 @@ void MainWindow::createMenusAndDocks()
             this, &MainWindow::onViewScriptRequested);
     connect(processPanel_, &ProcessManagerPanel::deleteRequested,
             this, &MainWindow::onDeleteProcessRequested);
-    connect(processPanel_, &ProcessManagerPanel::openViewerRequested,
-            this, &MainWindow::onOpenViewerRequested);
     connect(processPanel_, &ProcessManagerPanel::contextMenuRequested,
             this, &MainWindow::onProcessContextMenu);
 
@@ -1625,13 +1659,17 @@ void MainWindow::syncViewsToCurrent(bool frameCamera)
     setWindowTitle(doc->fileName.isEmpty()
                        ? QStringLiteral("Calango")
                        : QStringLiteral("Calango — %1").arg(doc->fileName));
-    if (doc->frames.size() > 1) {
+    if (doc->frames.size() > 1
+        && !(filmModeAction_ && filmModeAction_->isChecked())) {
         timeline_->setFrameCount(static_cast<int>(doc->frames.size()));
         timeline_->show();
     } else {
         timeline_->stop();
         timeline_->hide();
     }
+    // The film is per tab, so a switch re-points the film timeline (and the
+    // dialog, if open) at the incoming tab's film and trajectory.
+    refreshFilmTimeline();
     updateUndoActions();
 }
 
@@ -2396,6 +2434,61 @@ void MainWindow::exportImage()
                                  .arg(image.height()));
 }
 
+QImage MainWindow::renderFilmFrame(const render::FilmScript& film, int frame,
+                                   int frameCount, int width, int height,
+                                   const QColor& background)
+{
+    Document* doc = currentDocument();
+    const double time = frameCount > 1
+        ? film.effectiveDuration() * static_cast<double>(frame)
+            / static_cast<double>(frameCount - 1)
+        : 0.0;
+    const render::FilmSample sample = render::sampleFilm(film, time);
+
+    // Geometry first: a camera moved onto a frame that is about to be replaced
+    // would render one frame of the previous structure from the new angle.
+    if (doc && sample.trajectoryFrame >= 0
+        && sample.trajectoryFrame < static_cast<int>(doc->frames.size())) {
+        viewport_->setStructure(
+            doc->frames[static_cast<std::size_t>(sample.trajectoryFrame)], false);
+    }
+
+    const auto shoot = [&](const render::PointOfView& pov,
+                           const std::vector<render::FilmCastOpacity>& casts) {
+        applyFilmCastOpacities(casts);
+        applyingFilm_ = true;
+        viewport_->setPointOfView(pov);
+        applyingFilm_ = false;
+        return viewport_->renderToImage(width, height, background);
+    };
+
+    QImage image = shoot(sample.camera, sample.castOpacity);
+
+    // A dissolve is a mix of two complete renders. Unlike the live preview,
+    // which caches the outgoing side for the whole transition, the export
+    // simply renders both: it is offline, and re-rendering keeps it correct
+    // even when the trajectory advances underneath the dissolve.
+    if (sample.crossfading && sample.crossfadeWeight < 1.0f) {
+        const QImage outgoing =
+            shoot(sample.crossfadeFrom, sample.crossfadeFromCastOpacity);
+        QPainter painter(&image);
+        painter.setOpacity(1.0 - static_cast<double>(sample.crossfadeWeight));
+        painter.drawImage(0, 0, outgoing);
+    }
+
+    // The fade goes to black, matching the preview: a fade that resolved to
+    // the export background would look different from what was previewed.
+    if (sample.fade < 1.0f) {
+        QPainter painter(&image);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0, 0, 0,
+                                static_cast<int>(std::lround(
+                                    255.0f * (1.0f - sample.fade)))));
+        painter.drawRect(image.rect());
+    }
+    return image;
+}
+
 void MainWindow::exportAnimation()
 {
     Document* doc = currentDocument();
@@ -2408,19 +2501,46 @@ void MainWindow::exportAnimation()
     dialog.setWindowTitle(tr("Export Animation"));
     auto* form = new QFormLayout(&dialog);
 
-    auto* sourceCombo = new QComboBox(&dialog);
-    sourceCombo->addItem(tr("Turntable rotation (360°)"));
+    // The film is coupled to this workspace's trajectory exactly as the film
+    // timeline couples it, so an export reproduces what the preview showed
+    // rather than re-deriving the timing from scratch.
     const bool hasTrajectory = doc->frames.size() > 1;
-    if (hasTrajectory)
-        sourceCombo->addItem(tr("Trajectory frames (%1)").arg(doc->frames.size()));
+    render::FilmScript film = doc->film;
+    film.trajectoryFrames = hasTrajectory ? static_cast<int>(doc->frames.size()) : 0;
+    if (film.trajectoryFps <= 0.0)
+        film.trajectoryFps = kTrajectoryPlaybackFps;
+    const bool hasFilm = film.isValid();
+
+    auto* sourceCombo = new QComboBox(&dialog);
+    // Identified by userData, not by row: which rows exist depends on what
+    // this workspace happens to hold.
+    sourceCombo->addItem(tr("Turntable rotation (360°)"),
+                         static_cast<int>(AnimationSource::Turntable));
+    if (hasTrajectory) {
+        sourceCombo->addItem(tr("Trajectory frames (%1)").arg(doc->frames.size()),
+                             static_cast<int>(AnimationSource::Trajectory));
+    }
+    if (hasFilm) {
+        sourceCombo->addItem(
+            tr("Film production (%1 shots, %2 s)")
+                .arg(film.shots.size())
+                .arg(film.effectiveDuration(), 0, 'f', 2),
+            static_cast<int>(AnimationSource::Film));
+    }
     form->addRow(tr("Source:"), sourceCombo);
+    if (!hasFilm) {
+        auto* filmHint = new QLabel(
+            tr("<i>No film in this workspace — build one in Film "
+               "production… to export it.</i>"),
+            &dialog);
+        filmHint->setWordWrap(true);
+        form->addRow(QString(), filmHint);
+    }
 
     auto* framesSpin = new QSpinBox(&dialog);
     framesSpin->setRange(8, 360);
     framesSpin->setValue(72);
     form->addRow(tr("Rotation frames:"), framesSpin);
-    connect(sourceCombo, &QComboBox::currentIndexChanged, framesSpin,
-            [framesSpin](int index) { framesSpin->setEnabled(index == 0); });
 
     auto* widthSpin = new QSpinBox(&dialog);
     widthSpin->setRange(64, 4096); // up to 4K UHD
@@ -2439,6 +2559,40 @@ void MainWindow::exportAnimation()
     fpsSpin->setRange(1, 60);
     fpsSpin->setValue(24);
     form->addRow(tr("Frames per second:"), fpsSpin);
+
+    auto* countLabel = new QLabel(&dialog);
+    form->addRow(tr("Frames to render:"), countLabel);
+    // Rotation frames only mean anything for the turntable; the trajectory
+    // brings its own count and the film derives one from its duration and
+    // rate. Selecting the film also adopts its rate, so an exported file runs
+    // at the length the Film production dialog promised — exporting a 10 s
+    // film at a different fps would silently change its duration.
+    const auto syncSourceControls = [&] {
+        const auto source =
+            static_cast<AnimationSource>(sourceCombo->currentData().toInt());
+        framesSpin->setEnabled(source == AnimationSource::Turntable);
+        if (source == AnimationSource::Film) {
+            fpsSpin->setValue(std::clamp(film.fps, fpsSpin->minimum(),
+                                         fpsSpin->maximum()));
+        }
+        const int count = source == AnimationSource::Turntable
+            ? framesSpin->value()
+            : source == AnimationSource::Trajectory
+                ? static_cast<int>(doc->frames.size())
+                : film.frameCount();
+        countLabel->setText(
+            source == AnimationSource::Film
+                ? tr("%1  (%2 s at %3 fps)")
+                      .arg(count)
+                      .arg(film.effectiveDuration(), 0, 'f', 2)
+                      .arg(film.fps)
+                : QString::number(count));
+    };
+    connect(sourceCombo, &QComboBox::currentIndexChanged, &dialog,
+            [&syncSourceControls] { syncSourceControls(); });
+    connect(framesSpin, &QSpinBox::valueChanged, &dialog,
+            [&syncSourceControls] { syncSourceControls(); });
+    syncSourceControls();
 
     auto* backgroundCombo = new QComboBox(&dialog);
     backgroundCombo->addItems({tr("Solid white"), tr("Viewport color"),
@@ -2486,9 +2640,13 @@ void MainWindow::exportAnimation()
 
     const int width = widthSpin->value() & ~1;
     const int height = heightSpin->value() & ~1;
-    const bool turntable = sourceCombo->currentIndex() == 0;
-    const int frameCount =
-        turntable ? framesSpin->value() : static_cast<int>(doc->frames.size());
+    const auto source =
+        static_cast<AnimationSource>(sourceCombo->currentData().toInt());
+    const int frameCount = source == AnimationSource::Turntable
+        ? framesSpin->value()
+        : source == AnimationSource::Trajectory
+            ? static_cast<int>(doc->frames.size())
+            : film.frameCount();
 
     QProgressDialog progress(tr("Rendering frames…"), tr("Cancel"), 0, frameCount, this);
     progress.setWindowModality(Qt::WindowModal);
@@ -2497,6 +2655,13 @@ void MainWindow::exportAnimation()
     std::vector<QImage> images;
     images.reserve(static_cast<std::size_t>(frameCount));
     const int restoreFrame = hasTrajectory ? timeline_->currentFrame() : 0;
+    // A film export drives the camera and the cast opacities, so both are put
+    // back afterwards — exporting must not cost the user the view they had.
+    const render::PointOfView restorePov = viewport_->camera().pointOfView();
+    const bool filmSource = source == AnimationSource::Film;
+    const bool ownBaseline = filmSource && filmCastBaseline_.empty();
+    if (ownBaseline)
+        rememberCastOpacities();
 
     for (int i = 0; i < frameCount; ++i) {
         progress.setValue(i);
@@ -2504,18 +2669,35 @@ void MainWindow::exportAnimation()
         if (progress.wasCanceled())
             break;
 
-        if (turntable) {
+        switch (source) {
+        case AnimationSource::Turntable:
             images.push_back(viewport_->renderToImage(
                 width, height, background,
                 360.0f * static_cast<float>(i) / static_cast<float>(frameCount)));
-        } else {
+            break;
+        case AnimationSource::Trajectory:
             viewport_->setStructure(doc->frames[static_cast<std::size_t>(i)], false);
             images.push_back(viewport_->renderToImage(width, height, background));
+            break;
+        case AnimationSource::Film:
+            images.push_back(
+                renderFilmFrame(film, i, frameCount, width, height, background));
+            break;
         }
     }
 
-    if (!turntable)
+    if (source == AnimationSource::Trajectory)
         showFrame(restoreFrame); // put the live view back where it was
+    if (filmSource) {
+        if (hasTrajectory)
+            showFrame(restoreFrame);
+        applyFilmCastOpacities({});
+        if (ownBaseline)
+            filmCastBaseline_.clear();
+        applyingFilm_ = true;
+        viewport_->setPointOfView(restorePov);
+        applyingFilm_ = false;
+    }
     if (progress.wasCanceled())
         return;
     progress.setValue(frameCount);
@@ -3358,35 +3540,6 @@ std::vector<MainWindow::ViewerEntry> MainWindow::viewersFor(
     return available;
 }
 
-void MainWindow::onOpenViewerRequested(const QString& directory)
-{
-    const auto available = viewersFor(directory);
-    if (available.empty()) {
-        QMessageBox::information(
-            this, tr("Open Viewer"),
-            tr("This process has no viewable results yet.\n\n"
-               "A viewer opens on the summary a finished run writes "
-               "(single_point.json, gw.json, …); a run that is still going, or "
-               "that failed before writing one, has nothing to show. The Log "
-               "tab and \"Open Folder\" show what it did produce."));
-        return;
-    }
-    // Exactly one viewer: open it. Anything else would be a menu with a single
-    // entry, which is a click asking permission to do the only possible thing.
-    if (available.size() == 1) {
-        (this->*available.front().open)(directory);
-        return;
-    }
-    QMenu menu(this);
-    for (const ViewerEntry& entry : available) {
-        const QString label = entry.label;
-        const auto opener = entry.open;
-        menu.addAction(label, this,
-                       [this, opener, directory] { (this->*opener)(directory); });
-    }
-    menu.exec(QCursor::pos());
-}
-
 void MainWindow::onProcessContextMenu(const QString& directory,
                                       const QPoint& globalPos)
 {
@@ -3483,6 +3636,259 @@ void MainWindow::showPointOfView()
     connect(povDialog_, &QObject::destroyed, this,
             [this] { povDialog_ = nullptr; });
     povDialog_->show();
+}
+
+void MainWindow::rememberCastOpacities()
+{
+    // Snapshot of what the Representation panel had set, so the film can
+    // animate opacity without owning it. Taken when film mode starts and
+    // handed back when it ends.
+    filmCastBaseline_.clear();
+    const auto& style = viewport_->style();
+    for (int cast = 0; cast < style.castCount(); ++cast)
+        filmCastBaseline_[cast] = style.castStyle(cast).opacity;
+}
+
+void MainWindow::restoreCastOpacities()
+{
+    if (filmCastBaseline_.empty())
+        return;
+    auto& style = viewport_->style();
+    for (const auto& [cast, opacity] : filmCastBaseline_) {
+        if (cast >= style.castCount())
+            continue; // the structure changed under us; nothing to restore
+        render::StructureRenderer::CastStyle value = style.castStyle(cast);
+        value.opacity = opacity;
+        style.setCastStyle(cast, value);
+    }
+    filmCastBaseline_.clear();
+    viewport_->styleChanged(true);
+}
+
+void MainWindow::showFilmProduction()
+{
+    // Modeless and single-instance, like the point-of-view dialog it feeds
+    // from: every edit republishes the film, and watching the transition in
+    // the viewport is the only way to judge it.
+    if (filmDialog_) {
+        filmDialog_->show();
+        filmDialog_->raise();
+        filmDialog_->activateWindow();
+        return;
+    }
+    Document* doc = currentDocument();
+    if (!doc) {
+        statusBar()->showMessage(tr("Open a structure first."));
+        return;
+    }
+    filmDialog_ = new FilmProductionDialog(viewport_, doc->film, this);
+    filmDialog_->setAttribute(Qt::WA_DeleteOnClose);
+    connect(filmDialog_, &QObject::destroyed, this,
+            [this] { filmDialog_ = nullptr; });
+    connect(filmDialog_, &FilmProductionDialog::scriptChanged, this,
+            [this](const render::FilmScript& script) {
+                if (Document* current = currentDocument())
+                    current->film = script;
+                filmTimeline_->setFilm(script.effectiveDuration(), script.fps);
+            });
+    connect(filmDialog_, &FilmProductionDialog::previewRequested, this, [this] {
+        // Previewing implies film mode: the film cannot drive a camera the
+        // trajectory timeline is still steering.
+        if (!filmModeAction_->isChecked())
+            filmModeAction_->setChecked(true);
+        filmTimeline_->stop(); // rewind, so Preview always plays from the top
+        filmTimeline_->play();
+    });
+    refreshFilmTimeline();
+    filmDialog_->show();
+}
+
+void MainWindow::refreshFilmTimeline()
+{
+    Document* doc = currentDocument();
+    if (!doc)
+        return;
+    // The trajectory's natural rate is the one the trajectory timeline plays
+    // it at, so "Trajectory priority" means the length the user already sees
+    // when they scrub it — not a rate invented here.
+    const int frames = doc->frames.size() > 1
+        ? static_cast<int>(doc->frames.size())
+        : 0;
+    doc->film.trajectoryFrames = frames;
+    if (doc->film.trajectoryFps <= 0.0)
+        doc->film.trajectoryFps = kTrajectoryPlaybackFps;
+    if (filmDialog_) {
+        // Order matters: the film first (it is what a tab switch changes),
+        // then the trajectory it has to be reconciled against.
+        filmDialog_->setScript(doc->film);
+        filmDialog_->setTrajectory(frames, doc->film.trajectoryFps);
+    }
+    filmTimeline_->setFilm(doc->film.effectiveDuration(), doc->film.fps);
+}
+
+void MainWindow::setFilmMode(bool on)
+{
+    Document* doc = currentDocument();
+    if (on) {
+        if (!doc || !doc->film.isValid()) {
+            // Nothing to play. Bounce the toggle rather than showing an empty
+            // timeline that moves nothing, and point at the dialog that fixes
+            // it — this is the state every first-time user arrives in.
+            const QSignalBlocker blocker(filmModeAction_);
+            filmModeAction_->setChecked(false);
+            statusBar()->showMessage(
+                tr("No film in this workspace yet — add at least one shot in "
+                   "Film production…"));
+            showFilmProduction();
+            return;
+        }
+        // Remember the working view so switching film mode off puts it back.
+        preFilmPov_ = viewport_->camera().pointOfView();
+        rememberCastOpacities();
+        timeline_->stop();
+        timeline_->hide();
+        refreshFilmTimeline();
+        filmTimeline_->show();
+        showFilmTime(filmTimeline_->currentTime());
+        statusBar()->showMessage(
+            tr("Film mode — scrub or play the timeline to preview the film."));
+        return;
+    }
+
+    filmTimeline_->stop();
+    filmTimeline_->hide();
+    viewport_->setFilmFade(1.0f);
+    viewport_->clearFilmCrossfade();
+    filmCrossfadeCache_ = QImage();
+    filmCrossfadeKey_ = CrossfadeKey{};
+    // Cast opacities are the film's to animate but the panel's to own, so they
+    // are handed back exactly as they were rather than left where the last
+    // previewed frame put them.
+    restoreCastOpacities();
+    if (preFilmPov_.valid) {
+        restoringPointOfView_ = true;
+        viewport_->setPointOfView(preFilmPov_);
+        restoringPointOfView_ = false;
+    }
+    if (doc && doc->frames.size() > 1) {
+        timeline_->setFrameCount(static_cast<int>(doc->frames.size()));
+        timeline_->show();
+    }
+}
+
+void MainWindow::showFilmTime(double seconds)
+{
+    Document* doc = currentDocument();
+    if (!doc || !filmModeAction_->isChecked() || !doc->film.isValid())
+        return;
+
+    const render::FilmSample sample = render::sampleFilm(doc->film, seconds);
+
+    // Trajectory first: moving the camera onto a frame that is about to be
+    // replaced would show one frame of the previous geometry from the new
+    // angle.
+    if (sample.trajectoryFrame >= 0
+        && sample.trajectoryFrame < static_cast<int>(doc->frames.size())) {
+        const auto& frame =
+            doc->frames[static_cast<std::size_t>(sample.trajectoryFrame)];
+        if (doc->structure != frame) {
+            doc->structure = frame;
+            notifyStructureChanged(/*frameCamera=*/false);
+        }
+    }
+
+    // Cast opacities: the film only names the casts it animates, so the rest
+    // keep whatever the Representation panel set.
+    // A dissolve needs the OUTGOING side rendered before the live view is
+    // moved onto the incoming shot, and both sides carry their own cast
+    // opacities — so it is captured first, while the cache key still describes
+    // what is on screen.
+    if (sample.crossfading) {
+        const CrossfadeKey key{
+            sample.trajectoryFrame, doc->structure.get(),
+            viewport_->size() * viewport_->devicePixelRatioF()};
+        if (!(key == filmCrossfadeKey_) || filmCrossfadeCache_.isNull()) {
+            filmCrossfadeCache_ =
+                renderFilmShot(sample.crossfadeFrom, sample.crossfadeFromCastOpacity);
+            filmCrossfadeKey_ = key;
+        }
+        viewport_->setFilmCrossfade(filmCrossfadeCache_, sample.crossfadeWeight);
+    } else if (!filmCrossfadeCache_.isNull()) {
+        filmCrossfadeCache_ = QImage();
+        filmCrossfadeKey_ = CrossfadeKey{};
+        viewport_->clearFilmCrossfade();
+    }
+
+    // Every frame starts from the panel's values and applies the film's
+    // overrides on top, rather than editing whatever the previous frame left
+    // behind: a ramp that only ever wrote would never come back up.
+    applyFilmCastOpacities(sample.castOpacity);
+
+    applyingFilm_ = true;
+    viewport_->setPointOfView(sample.camera);
+    applyingFilm_ = false;
+    viewport_->setFilmFade(sample.fade);
+}
+
+bool MainWindow::applyFilmCastOpacities(
+    const std::vector<render::FilmCastOpacity>& casts)
+{
+    auto& style = viewport_->style();
+    std::map<int, float> wanted = filmCastBaseline_;
+    for (const render::FilmCastOpacity& entry : casts) {
+        if (entry.cast >= 0 && entry.cast < style.castCount())
+            wanted[entry.cast] = entry.opacity;
+    }
+    // styleChanged(true) rebuilds every instance buffer, so it must not fire on
+    // frames where nothing moved — most of a film's frames only move the
+    // camera, and a rebuild per frame would cost the playback its frame rate
+    // for no visible difference.
+    bool changed = false;
+    for (const auto& [cast, opacity] : wanted) {
+        if (cast >= style.castCount())
+            continue;
+        render::StructureRenderer::CastStyle value = style.castStyle(cast);
+        if (qFuzzyCompare(value.opacity + 1.0f, opacity + 1.0f))
+            continue;
+        value.opacity = opacity;
+        style.setCastStyle(cast, value);
+        changed = true;
+    }
+    if (changed)
+        viewport_->styleChanged(true);
+    return changed;
+}
+
+QImage MainWindow::renderFilmShot(
+    const render::PointOfView& pov,
+    const std::vector<render::FilmCastOpacity>& casts)
+{
+    // Off-screen render of one dissolve endpoint. The camera has to be moved
+    // there and back because renderToImage() shoots from the live camera; the
+    // round trip is invisible because nothing repaints in between.
+    const render::PointOfView restore = viewport_->camera().pointOfView();
+    const bool castsChanged = applyFilmCastOpacities(casts);
+
+    applyingFilm_ = true;
+    viewport_->setPointOfView(pov);
+    // Capture at DEVICE resolution, not logical: on a HiDPI display a
+    // logical-size grab would be scaled up when composited and every dissolve
+    // would go visibly soft halfway through.
+    const qreal dpr = viewport_->devicePixelRatioF();
+    const QSize size = viewport_->size() * dpr;
+    QImage image = viewport_->renderToImage(std::max(1, size.width()),
+                                            std::max(1, size.height()),
+                                            viewport_->backgroundColor());
+    image.setDevicePixelRatio(dpr);
+    viewport_->setPointOfView(restore);
+    applyingFilm_ = false;
+
+    if (castsChanged) {
+        // Put the casts back to the baseline; the caller applies the incoming
+        // shot's own values immediately afterwards.
+        applyFilmCastOpacities({});
+    }
+    return image;
 }
 
 void MainWindow::resetLayout()

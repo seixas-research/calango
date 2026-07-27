@@ -179,6 +179,25 @@ public Q_SLOTS:
     /// yet leaves the camera where it is instead of jumping to a default.
     void setPointOfView(const render::PointOfView& pov);
 
+    /// Film fade: 1 = normal, 0 = a fully black frame. Painted over the whole
+    /// canvas including the axis triad and atom labels, because a fade that
+    /// left the overlays visible would not read as a cut. Only the Fade in /
+    /// Fade out film transition drives this.
+    void setFilmFade(float visibility);
+    float filmFade() const { return filmFade_; }
+
+    /// Film crossfade: composite `outgoing` over the live render with weight
+    /// (1 - `weight`), so weight 0 shows only the cached image and 1 only the
+    /// live one.
+    ///
+    /// A dissolve mixes two complete renders, and re-rendering the outgoing
+    /// side every frame would mean two full FBO passes per frame. It does not
+    /// have to: both ends of a film transition are STATIC camera poses, so the
+    /// outgoing image is constant for the whole dissolve and the caller
+    /// captures it once. A null image clears the effect.
+    void setFilmCrossfade(const QImage& outgoing, float weight);
+    void clearFilmCrossfade();
+
 public:
     // -- Mouse interaction modes -------------------------------------------
 
@@ -396,6 +415,9 @@ private:
     bool axesArrows_ = false;
     bool showElementLabels_ = false; ///< overlay element symbols on atoms
     bool showIndexLabels_ = false;   ///< overlay 1-based atom indices
+    float filmFade_ = 1.0f;          ///< 1 = normal, 0 = black (film fades)
+    QImage filmCrossfadeImage_;      ///< cached outgoing render (dissolve)
+    float filmCrossfadeWeight_ = 1.0f; ///< weight of the LIVE render
     int axesSizePx_ = 92;
     QPointF lastMousePos_;
     InteractionMode interactionMode_ = InteractionMode::Rotate;

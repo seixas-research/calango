@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.58
+    VERSION 26.7.59
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -232,6 +232,8 @@ qt_add_executable(calango
     # render — OpenGL "View" over core::Structure (read-only access)
     src/render/Camera.hpp
     src/render/Camera.cpp
+    src/render/Film.hpp
+    src/render/Film.cpp
     src/render/ColorMap.hpp
     src/render/ColorMap.cpp
     src/render/RenderGeometry.hpp
@@ -261,6 +263,10 @@ qt_add_executable(calango
     src/gui/JobLogWidget.cpp
     src/gui/TimelineWidget.hpp
     src/gui/TimelineWidget.cpp
+    src/gui/FilmTimelineWidget.hpp
+    src/gui/FilmTimelineWidget.cpp
+    src/gui/FilmProductionDialog.hpp
+    src/gui/FilmProductionDialog.cpp
     src/gui/MetricPlotWidget.hpp
     src/gui/MetricPlotWidget.cpp
     src/gui/ProjectSerializer.hpp
@@ -523,6 +529,7 @@ qt_add_resources(calango "branding"
 qt_add_resources(calango "icons"
     PREFIX "/"
     FILES
+        assets/.internal/icons/add-circle-fill.svg
         assets/.internal/icons/add-circle-line.svg
         assets/.internal/icons/anticlockwise-2-line.svg
         assets/.internal/icons/arrow-go-back-line.svg
@@ -532,6 +539,7 @@ qt_add_resources(calango "icons"
         assets/.internal/icons/brush-fill.svg
         assets/.internal/icons/checkbox-circle-line.svg
         assets/.internal/icons/close-circle-line.svg
+        assets/.internal/icons/clapperboard-fill.svg
         assets/.internal/icons/close-line.svg
         assets/.internal/icons/code-box-fill.svg
         assets/.internal/icons/color-filter-fill.svg
@@ -542,8 +550,10 @@ qt_add_resources(calango "icons"
         assets/.internal/icons/delete.svg
         assets/.internal/icons/delete-bin-line.svg
         assets/.internal/icons/drag-move-2-line.svg
+        assets/.internal/icons/edit-fill.svg
         assets/.internal/icons/eye-fill.svg
         assets/.internal/icons/file-code-line.svg
+        assets/.internal/icons/film-fill.svg
         assets/.internal/icons/file-copy-line.svg
         assets/.internal/icons/focus-3-line.svg
         assets/.internal/icons/folder-open-line.svg
@@ -552,6 +562,7 @@ qt_add_resources(calango "icons"
         assets/.internal/icons/group-fill.svg
         assets/.internal/icons/hard-drive-2-line.svg
         assets/.internal/icons/hashtag.svg
+        assets/.internal/icons/indeterminate-circle-fill.svg
         assets/.internal/icons/information-line.svg
         assets/.internal/icons/loader-4-line.svg
         assets/.internal/icons/magic-line.svg
@@ -574,7 +585,7 @@ qt_add_resources(calango "icons"
         assets/.internal/icons/stack-line.svg
         assets/.internal/icons/stacked-view.svg
         assets/.internal/icons/time-line.svg
-        assets/.internal/icons/triangle-line.svg
+        assets/.internal/icons/triangle-fill.svg
 )
 
 qt_add_resources(calango "remote"
@@ -848,6 +859,20 @@ if(CALANGO_BUILD_TESTS)
     target_link_libraries(calango_raytrace_test PRIVATE Qt6::Gui Qt6::OpenGL)
     add_test(NAME raytrace_scene_files COMMAND calango_raytrace_test)
 
+    # Film timing and sampling: the transition semantics (a hard cut must not
+    # drift, a fade must reach black exactly at the cut) and the timeline
+    # priority rule that re-times a trajectory against the film. Pure
+    # arithmetic on Qt's math types — no widgets and no GL context.
+    add_executable(calango_film_test
+        tests/FilmTest.cpp
+        src/render/Film.cpp
+        src/render/Camera.cpp
+    )
+    target_include_directories(calango_film_test PRIVATE src)
+    target_compile_definitions(calango_film_test PRIVATE QT_NO_KEYWORDS)
+    target_link_libraries(calango_film_test PRIVATE Qt6::Gui)
+    add_test(NAME film_timeline COMMAND calango_film_test)
+
     # Periodic boundary ghost duplication: the face/edge/vertex combinatorics,
     # and that computing them never touches the structure.
     add_executable(calango_ghost_test
@@ -956,6 +981,7 @@ if(CALANGO_BUILD_TESTS)
     # driven here. Offscreen, no display.
     qt_add_executable(calango_dialog_test
         tests/DialogConstructionTest.cpp
+        src/gui/FilmTimelineWidget.cpp
         src/gui/GrapheneOxideWizard.cpp
         src/gui/HubbardParametersDialog.cpp
         src/gui/GeometryConstraintsDialog.cpp

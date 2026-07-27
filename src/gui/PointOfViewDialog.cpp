@@ -23,6 +23,11 @@ namespace {
 const auto kGroup = QStringLiteral("pointOfView");
 } // namespace
 
+QString PointOfViewDialog::settingsGroup()
+{
+    return kGroup;
+}
+
 PointOfViewDialog::PointOfViewDialog(ViewportWidget* viewport, QWidget* parent)
     : QDialog(parent)
     , viewport_(viewport)

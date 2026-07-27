@@ -38,6 +38,19 @@ public Q_SLOTS:
     /// with the mouse while this dialog is open, or a workspace tab switch.
     void syncFromViewport();
 
+public:
+    /// Saved views live in QSettings under "pointOfView/<name>", encoded as a
+    /// comma-separated tuple so the list survives a restart and can be moved
+    /// between machines with the rest of the settings file.
+    ///
+    /// Public because the Film production dialog reads the same library to
+    /// build its shots: one format, written in one place, so a film and a
+    /// saved view can never disagree about what a camera state is.
+    static QString encode(const render::PointOfView& pov);
+    static render::PointOfView decode(const QString& text);
+    /// QSettings group the saved views live under.
+    static QString settingsGroup();
+
 private Q_SLOTS:
     void applyToViewport();
     void saveCurrent();
@@ -46,11 +59,6 @@ private Q_SLOTS:
 
 private:
     void refreshSavedList();
-    /// Saved views live in QSettings under "pointOfView/<name>", encoded as a
-    /// comma-separated tuple so the list survives a restart and can be moved
-    /// between machines with the rest of the settings file.
-    static QString encode(const render::PointOfView& pov);
-    static render::PointOfView decode(const QString& text);
 
     ViewportWidget* viewport_;
     /// Guards applyToViewport() while syncFromViewport() fills the controls.

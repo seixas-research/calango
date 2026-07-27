@@ -85,15 +85,10 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
         tr("Load Result — open this task's trajectory / bands / final "
            "structure in the workspace."));
     // The dedicated result viewers (Single-Point, Geometry Optimization,
-    // Molecular Dynamics, MLWF, GW) are reached from HERE rather than from a
-    // top-level menu: a viewer is meaningless without a process to view, and
-    // asking for the process first means only the viewers this run actually
-    // produced are ever offered.
-    auto* viewerButton = makeButton(
-        QStringLiteral("line-chart-line"),
-        tr("Open Viewer — the dedicated results viewer for this run "
-           "(Single-Point, Geometry Optimization, Molecular Dynamics, MLWF, "
-           "GW, Born charges), chosen from the files it produced."));
+    // Molecular Dynamics, MLWF, GW, Born charges) have no button of their own:
+    // they are on the right-click menu, which is built per process and so can
+    // offer only the viewers that run's own output files support. A button
+    // has to be present for every selection, viewable or not.
     auto* scriptButton = makeButton(
         QStringLiteral("code-box-fill"),
         tr("View ASE Script — show the exact Python/ASE run.py that was "
@@ -120,10 +115,6 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
     connect(loadButton, &QPushButton::clicked, this, [this, selectedDir] {
         if (const QString dir = selectedDir(); !dir.isEmpty())
             Q_EMIT loadResultRequested(dir);
-    });
-    connect(viewerButton, &QPushButton::clicked, this, [this, selectedDir] {
-        if (const QString dir = selectedDir(); !dir.isEmpty())
-            Q_EMIT openViewerRequested(dir);
     });
     connect(deleteButton, &QPushButton::clicked, this, [this] {
         if (const auto* item = tree_->currentItem())
