@@ -9,17 +9,55 @@ namespace calango::core {
 
 namespace {
 
+/// True when the user asked for a response mesh on at least one axis.
+bool wantsResponseKpts(const OpticsConfig& cfg)
+{
+    return cfg.responseKpts[0] > 0 || cfg.responseKpts[1] > 0
+        || cfg.responseKpts[2] > 0;
+}
+
 /// `kpts=` line for the fixed-density step, or empty to inherit the baseline's
-/// own grid.
+/// grid wholesale.
+///
+/// The mesh is resolved at RUNTIME (see responseKpointsBlock) because a 0 on
+/// one axis means "keep the baseline's value there", and only the baseline
+/// knows what that is. This used to require all three axes to be non-zero and
+/// discarded the whole mesh otherwise — so "24, 24, auto", the natural entry
+/// for a 2D sheet whose out-of-plane direction must stay at one k-point,
+/// silently ran the baseline grid and produced a spectrum indistinguishable
+/// from not having set anything.
 std::string kpointsLine(const OpticsConfig& cfg)
 {
-    if (cfg.responseKpts[0] <= 0 || cfg.responseKpts[1] <= 0
-        || cfg.responseKpts[2] <= 0)
+    if (!wantsResponseKpts(cfg))
         return {};
+    return "    kpts=_response_kpts,  # denser response mesh than the "
+           "baseline SCF\n";
+}
+
+/// Resolves the requested mesh against the baseline's own, and says which is
+/// which in the log. Emitted whether or not a mesh was asked for: reporting
+/// the grid the response actually integrates over is what makes two runs
+/// distinguishable in their output.
+std::string responseKpointsBlock(const OpticsConfig& cfg)
+{
     std::ostringstream out;
-    out << "    kpts=(" << cfg.responseKpts[0] << ", " << cfg.responseKpts[1]
-        << ", " << cfg.responseKpts[2]
-        << "),  # denser response mesh than the baseline SCF\n";
+    out << "# --- Response k-mesh --------------------------------------------\n"
+           "# The baseline's own Monkhorst-Pack dimensions, recovered from its\n"
+           "# Brillouin-zone point set: counting the distinct fractional\n"
+           "# coordinates along each axis gives the grid back without depending\n"
+           "# on how the parameter happened to be spelled when it was set.\n"
+           "_bz = np.asarray(gs.get_bz_k_points())\n"
+           "_baseline_kpts = [int(len(np.unique(np.round(_bz[:, _i], 6))))\n"
+           "                  for _i in range(3)]\n"
+        << "_requested_kpts = (" << cfg.responseKpts[0] << ", "
+        << cfg.responseKpts[1] << ", " << cfg.responseKpts[2]
+        << ")  # 0 = inherit that axis\n"
+           "_response_kpts = tuple(int(_r) if _r > 0 else _baseline_kpts[_i]\n"
+           "                       for _i, _r in enumerate(_requested_kpts))\n"
+           "print(f\"CALANGO_INFO baseline k-mesh={tuple(_baseline_kpts)} \"\n"
+           "      f\"requested={_requested_kpts} \"\n"
+           "      f\"response k-mesh={_response_kpts}\", flush=True)\n"
+           "\n";
     return out.str();
 }
 
@@ -87,7 +125,8 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
         << "gs = GPAW(r\"" << cfg.baselineDensityPath << "\", txt=None)\n"
            "_calango_log.progress(1, 4)\n"
            "\n"
-           "# --- Fixed-density NSCF with extra empty bands "
+        << responseKpointsBlock(cfg)
+        << "# --- Fixed-density NSCF with extra empty bands "
            "----------------------\n"
            "# The dielectric response sums transitions into unoccupied states, so\n"
            "# a generous number of empty bands improves the spectrum. They are\n"
@@ -128,9 +167,33 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
         << "\"\n"
            "results_meta = {\"integrationmode\": integrationmode}\n"
            "\n"
+           "# --- Photon-energy grid ------------------------------------------\n"
+           "# The window and sample count the wizard collected, handed to GPAW\n"
+           "# explicitly. They used to be collected and then dropped: the\n"
+           "# response module was left to build its own default non-linear grid\n"
+           "# and that grid was read back, so changing \"Number of points\" or\n"
+           "# either energy bound changed nothing whatsoever in the output.\n"
+           "#\n"
+           "# hilbert=False is REQUIRED alongside an explicit frequency list.\n"
+           "# GPAW's default path builds a spectral function on its own\n"
+           "# non-linear grid and Hilbert-transforms it, and asserts that\n"
+           "# descriptor's type; turning the transform off evaluates exactly the\n"
+           "# frequencies requested. It costs more — the work is now linear in\n"
+           "# the number of points rather than amortized over the transform —\n"
+           "# which is the honest price of the grid actually being the one that\n"
+           "# was asked for.\n"
+        << "frequencies_eV = np.linspace(" << cfg.omegaMinEv << ", "
+        << cfg.omegaMaxEv << ", " << (cfg.npoints > 1 ? cfg.npoints : 2)
+        << ")\n"
+           "print(f\"CALANGO_INFO photon-energy grid \"\n"
+           "      f\"{frequencies_eV[0]:.3f}..{frequencies_eV[-1]:.3f} eV \"\n"
+           "      f\"in {len(frequencies_eV)} points\", flush=True)\n"
+           "\n"
            "try:\n"
            "    df = DielectricFunction(\n"
            "        \"gs_nscf.gpw\",\n"
+           "        frequencies=frequencies_eV,\n"
+           "        hilbert=False,  # required by an explicit frequency list\n"
         << "        eta=" << cfg.broadeningEv
         << ",  # Lorentzian broadening η, eV\n"
            "        intraband=False,  # semiconductor: no Drude/intraband term\n"
@@ -159,10 +222,16 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "        \"use point integration with the eta broadening.\\n\\n\"\n"
            "        f\"GPAW reported: {exc}\"\n"
            "    ) from exc\n"
-           "# GPAW's response module builds its own non-linear frequency grid;\n"
-           "# read it back (in eV) rather than imposing a linear one, which the\n"
-           "# Hilbert-transform path rejects.\n"
+           "# Read back rather than reused: this is the grid the response\n"
+           "# module actually integrated on, and asserting it against the one\n"
+           "# requested is what would catch a future GPAW quietly substituting\n"
+           "# its own.\n"
            "frequencies = np.asarray(df.get_frequencies(), dtype=float)\n"
+           "if len(frequencies) != len(frequencies_eV):\n"
+           "    print(f\"CALANGO_WARN GPAW evaluated {len(frequencies)} \"\n"
+           "          f\"frequencies where {len(frequencies_eV)} were \"\n"
+           "          f\"requested; the spectra follow the grid it used.\",\n"
+           "          flush=True)\n"
            "_calango_log.progress(3, 4)\n"
            "\n"
            "# ħc = 197.3269804 eV·nm = 197.3269804e-7 eV·cm. With ħω in eV the\n"
@@ -176,6 +245,19 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "# reproducible from its own output.\n"
            "results = {\"energy_eV\": [float(w) for w in frequencies]}\n"
            "results.update(results_meta)\n"
+           "# The sampling that produced these numbers, recorded alongside\n"
+           "# them: two spectra that differ only in k-mesh or grid density are\n"
+           "# otherwise indistinguishable from their own output files.\n"
+           "results[\"sampling\"] = {\n"
+           "    \"response_kpts\": list(_response_kpts),\n"
+           "    \"baseline_kpts\": list(_baseline_kpts),\n"
+           "    \"requested_kpts\": list(_requested_kpts),\n"
+           "    \"npoints\": int(len(frequencies)),\n"
+           "    \"omega_min_eV\": float(frequencies[0]),\n"
+           "    \"omega_max_eV\": float(frequencies[-1]),\n"
+        << "    \"eta_eV\": " << cfg.broadeningEv << ",\n"
+           "    \"ibz_points\": int(len(_ibz)),\n"
+           "}\n"
            "\n"
         << "directions = [" << directions << "]\n"
            "_ok = []\n"

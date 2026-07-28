@@ -365,8 +365,12 @@ void VectorsPanel::refreshAvailability()
     for (int i = 1; i < overlayCombo_->count(); ++i) {
         const auto overlay = static_cast<render::VectorOverlay>(i);
         const std::string field = render::vectorFieldName(overlay);
-        const bool available =
-            structure && structure->vectorFields().count(field) > 0;
+        // hasVectorData, not vectorFields(): a collinear magnetic moment is a
+        // scalar column that the renderer promotes to (0, 0, m). Testing only
+        // for a vector field disabled "Magnetic moment" for every collinear
+        // spin-polarized result — the majority of them — with a tool tip
+        // saying the frame carried no such data when it plainly did.
+        const bool available = structure && structure->hasVectorData(field);
         if (model) {
             if (QStandardItem* item = model->item(i)) {
                 item->setEnabled(available);

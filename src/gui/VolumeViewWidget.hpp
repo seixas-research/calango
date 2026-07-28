@@ -59,6 +59,17 @@ public:
     /// want to be opaque, or every sheet shows through every other.
     void setMeshOpacity(float alpha);
 
+    /// A short caption pinned to a point in the scene.
+    struct Label {
+        QVector3D position; ///< world space
+        QString text;
+        QColor color{230, 230, 235};
+    };
+    /// Replace the text overlay. Drawn with QPainter after the GL pass and
+    /// projected through the live camera, so captions track the geometry as it
+    /// orbits without needing a glyph atlas or a text shader.
+    void setLabels(std::vector<Label> labels);
+
 protected:
     void initializeGL() override;
     void paintGL() override;
@@ -77,6 +88,8 @@ private:
     };
     void upload(Buffer& buffer);
     void draw(Buffer& buffer, GLenum mode, bool unlit, float alpha);
+    /// Project labels_ through the live camera and paint them over the scene.
+    void drawLabels(class QPainter& painter);
 
     render::OrbitCamera camera_;
     QOpenGLShaderProgram program_;
@@ -89,6 +102,7 @@ private:
     /// Slightly translucent by default so a colour slice behind an isosurface
     /// stays readable; setMeshOpacity() overrides it.
     float meshAlpha_ = 0.88f;
+    std::vector<Label> labels_;
     bool initialized_ = false;
 };
 

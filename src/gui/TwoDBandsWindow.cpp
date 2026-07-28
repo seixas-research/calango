@@ -17,6 +17,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QTextStream>
 #include <QVBoxLayout>
 
@@ -51,6 +52,74 @@ void pushVertex(std::vector<float>& out, float x, float y, float z,
                 static_cast<float>(color.redF()),
                 static_cast<float>(color.greenF()),
                 static_cast<float>(color.blueF())});
+}
+
+/// Catmull-Rom weight set for a fractional position between p1 and p2.
+/// Interpolating rather than approximating matters here: the refined surface
+/// must still pass through the computed eigenvalues, or the plot is no longer
+/// showing the calculation's own numbers.
+double catmullRom(double p0, double p1, double p2, double p3, double t)
+{
+    const double t2 = t * t;
+    const double t3 = t2 * t;
+    return 0.5
+        * ((2.0 * p1) + (-p0 + p2) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+           + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3);
+}
+
+/// Sample `grid` at fractional index (u, v), clamping at the edges.
+double sampleGrid(const std::vector<std::vector<double>>& grid, double u,
+                  double v, bool cubic)
+{
+    const auto nx = static_cast<int>(grid.size());
+    if (nx == 0)
+        return 0.0;
+    const auto ny = static_cast<int>(grid.front().size());
+    if (ny == 0)
+        return 0.0;
+    const auto at = [&grid, nx, ny](int i, int j) {
+        i = std::clamp(i, 0, nx - 1);
+        j = std::clamp(j, 0, ny - 1);
+        return grid[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)];
+    };
+    const int i = static_cast<int>(std::floor(u));
+    const int j = static_cast<int>(std::floor(v));
+    const double fu = u - i;
+    const double fv = v - j;
+    if (!cubic) {
+        const double a = at(i, j) * (1 - fu) + at(i + 1, j) * fu;
+        const double b = at(i, j + 1) * (1 - fu) + at(i + 1, j + 1) * fu;
+        return a * (1 - fv) + b * fv;
+    }
+    double column[4];
+    for (int k = 0; k < 4; ++k) {
+        column[k] = catmullRom(at(i - 1, j - 1 + k), at(i, j - 1 + k),
+                               at(i + 1, j - 1 + k), at(i + 2, j - 1 + k), fu);
+    }
+    return catmullRom(column[0], column[1], column[2], column[3], fv);
+}
+
+/// Clip a convex polygon against `k·n ≤ d` (Sutherland-Hodgman). Vertices
+/// carry (x, y, z); the z of a new vertex is interpolated along the cut edge,
+/// which is what keeps a clipped surface lying on the surface.
+std::vector<QVector3D> clipHalfPlane(const std::vector<QVector3D>& polygon,
+                                     double nx, double ny, double d)
+{
+    std::vector<QVector3D> out;
+    const auto n = polygon.size();
+    for (std::size_t i = 0; i < n; ++i) {
+        const QVector3D& a = polygon[i];
+        const QVector3D& b = polygon[(i + 1) % n];
+        const double da = nx * a.x() + ny * a.y() - d;
+        const double db = nx * b.x() + ny * b.y() - d;
+        if (da <= 0.0)
+            out.push_back(a);
+        if ((da < 0.0 && db > 0.0) || (da > 0.0 && db < 0.0)) {
+            const auto t = static_cast<float>(da / (da - db));
+            out.push_back(a + (b - a) * t);
+        }
+    }
+    return out;
 }
 
 } // namespace
@@ -137,15 +206,84 @@ TwoDBandsWindow::TwoDBandsWindow(QWidget* parent) : QDialog(parent)
     controls->addWidget(fermiPlaneCheck_);
 
     controls->addStretch(1);
+    layout->addLayout(controls);
+
+    // Second control row: what the surface is drawn OVER and how smoothly,
+    // as opposed to the first row's colour and vertical scale.
+    auto* controls2 = new QHBoxLayout;
+
+    controls2->addWidget(new QLabel(tr("Interpolation:"), this));
+    interpolationCombo_ = new QComboBox(this);
+    interpolationCombo_->addItem(tr("None (computed grid)"), 0);
+    interpolationCombo_->addItem(tr("Bilinear"), 1);
+    interpolationCombo_->addItem(tr("Bicubic (Catmull-Rom)"), 2);
+    interpolationCombo_->setCurrentIndex(2);
+    interpolationCombo_->setToolTip(
+        tr("Smooth the surface by resampling it between the computed "
+           "k-points.\n\n"
+           "Both schemes pass exactly through the eigenvalues that were "
+           "calculated, so no computed value is altered — what changes is only "
+           "what is drawn between them. Bicubic follows curvature and is the "
+           "better choice for a band edge or a cone; bilinear is faceted but "
+           "never overshoots, which matters next to a sharp crossing.\n\n"
+           "Interpolation is not a substitute for sampling: a feature the "
+           "k-grid missed cannot be recovered by drawing through it."));
+    connect(interpolationCombo_, &QComboBox::currentIndexChanged, this,
+            [this] { rebuild(); });
+    controls2->addWidget(interpolationCombo_);
+
+    refineSpin_ = new QSpinBox(this);
+    refineSpin_->setRange(1, 8);
+    refineSpin_->setValue(3);
+    refineSpin_->setPrefix(tr("×"));
+    refineSpin_->setToolTip(
+        tr("Refinement factor: how many drawn cells replace each computed one "
+           "along each axis. The triangle count grows with its square."));
+    connect(refineSpin_, &QSpinBox::valueChanged, this, [this] { rebuild(); });
+    controls2->addWidget(refineSpin_);
+
+    axesCheck_ = new QCheckBox(tr("Axes"), this);
+    axesCheck_->setChecked(true);
+    axesCheck_->setToolTip(
+        tr("Draw the k_x, k_y and energy axes through the origin, with a tick "
+           "and a caption on each. Turn them off for a clean figure of the "
+           "surface alone."));
+    connect(axesCheck_, &QCheckBox::toggled, this, [this] { rebuild(); });
+    controls2->addWidget(axesCheck_);
+
+    brillouinCheck_ = new QCheckBox(tr("First Brillouin zone"), this);
+    brillouinCheck_->setToolTip(
+        tr("Clip the surface to the first Brillouin zone — the Wigner-Seitz "
+           "(Voronoi) cell of the reciprocal lattice, the set of k closer to Γ "
+           "than to any other reciprocal-lattice point.\n\n"
+           "The sampled grid is a parallelogram spanning one reciprocal unit "
+           "cell, which covers the same area but is NOT the same region: for a "
+           "hexagonal lattice it cuts through the K corners and folds parts of "
+           "the second zone into view. Clipping shows the zone the band "
+           "structure is conventionally drawn over."));
+    connect(brillouinCheck_, &QCheckBox::toggled, this, [this] { rebuild(); });
+    controls2->addWidget(brillouinCheck_);
+
+    labelsCheck_ = new QCheckBox(tr("k-point labels"), this);
+    labelsCheck_->setChecked(true);
+    labelsCheck_->setToolTip(
+        tr("Mark and name the high-symmetry points of this lattice (Γ, M, K, "
+           "…). The labels come from ASE's Bravais-lattice recognition, so "
+           "they are the conventional ones for the cell that was actually "
+           "calculated."));
+    connect(labelsCheck_, &QCheckBox::toggled, this, [this] { rebuild(); });
+    controls2->addWidget(labelsCheck_);
+
+    controls2->addStretch(1);
     auto* exportImageButton = new QPushButton(tr("Export Image…"), this);
     connect(exportImageButton, &QPushButton::clicked, this,
             &TwoDBandsWindow::exportImage);
-    controls->addWidget(exportImageButton);
+    controls2->addWidget(exportImageButton);
     auto* exportDataButton = new QPushButton(tr("Export Data…"), this);
     connect(exportDataButton, &QPushButton::clicked, this,
             &TwoDBandsWindow::exportData);
-    controls->addWidget(exportDataButton);
-    layout->addLayout(controls);
+    controls2->addWidget(exportDataButton);
+    layout->addLayout(controls2);
 }
 
 bool TwoDBandsWindow::loadResults(const QString& jsonPath)
@@ -160,6 +298,30 @@ bool TwoDBandsWindow::loadResults(const QString& jsonPath)
     spinOrbit_ = root.value(QStringLiteral("spin_orbit")).toBool();
     kx_ = readGrid(root.value(QStringLiteral("kx_per_A")).toArray());
     ky_ = readGrid(root.value(QStringLiteral("ky_per_A")).toArray());
+
+    const auto recip =
+        readGrid(root.value(QStringLiteral("reciprocal_2pi_per_A")).toArray());
+    reciprocal_ = {};
+    for (std::size_t i = 0; i < 3 && i < recip.size(); ++i)
+        for (std::size_t j = 0; j < 3 && j < recip[i].size(); ++j)
+            reciprocal_[i][j] = recip[i][j];
+
+    specialPoints_.clear();
+    const QJsonObject special =
+        root.value(QStringLiteral("special_points")).toObject();
+    for (auto it = special.begin(); it != special.end(); ++it) {
+        const QJsonArray cart =
+            it.value().toObject().value(QStringLiteral("k_per_A")).toArray();
+        if (cart.size() < 2)
+            continue;
+        // ASE spells the zone centre "G"; every band-structure figure ever
+        // drawn calls it Γ.
+        const QString label = it.key() == QLatin1String("G")
+            ? QStringLiteral("Γ")
+            : it.key();
+        specialPoints_.push_back(
+            {label, cart.at(0).toDouble(), cart.at(1).toDouble()});
+    }
 
     surfaces_.clear();
     for (const QJsonValue& value : root.value(QStringLiteral("bands")).toArray()) {
@@ -270,6 +432,139 @@ void TwoDBandsWindow::populateBandList()
     }
 }
 
+std::vector<std::array<double, 3>> TwoDBandsWindow::brillouinHalfPlanes() const
+{
+    // The Wigner-Seitz cell of the reciprocal lattice: k is inside when it is
+    // no further from Γ than from any other reciprocal-lattice point G, i.e.
+    // |k| <= |k - G|, which reduces to k·Ĝ <= |G|/2. Neighbours out to two
+    // cells in each direction are more than enough — in 2D the cell is bounded
+    // by the first or second shell for every Bravais lattice.
+    std::vector<std::array<double, 3>> planes;
+    const double b1x = reciprocal_[0][0], b1y = reciprocal_[0][1];
+    const double b2x = reciprocal_[1][0], b2y = reciprocal_[1][1];
+    if (std::hypot(b1x, b1y) < 1e-9 || std::hypot(b2x, b2y) < 1e-9)
+        return planes;
+    for (int i = -2; i <= 2; ++i) {
+        for (int j = -2; j <= 2; ++j) {
+            if (i == 0 && j == 0)
+                continue;
+            const double gx = i * b1x + j * b2x;
+            const double gy = i * b1y + j * b2y;
+            const double length = std::hypot(gx, gy);
+            if (length < 1e-9)
+                continue;
+            planes.push_back({gx / length, gy / length, 0.5 * length});
+        }
+    }
+    return planes;
+}
+
+std::vector<std::array<double, 2>> TwoDBandsWindow::brillouinPolygon() const
+{
+    const auto planes = brillouinHalfPlanes();
+    if (planes.size() < 3)
+        return {};
+    // Intersect a generous starting square with every half-plane; what
+    // survives IS the zone. Cheaper and far less error-prone than enumerating
+    // vertex candidates from plane pairs and filtering them.
+    double reach = 0.0;
+    for (const auto& p : planes)
+        reach = std::max(reach, p[2]);
+    reach *= 2.5;
+    std::vector<QVector3D> polygon = {
+        {static_cast<float>(-reach), static_cast<float>(-reach), 0.0f},
+        {static_cast<float>(reach), static_cast<float>(-reach), 0.0f},
+        {static_cast<float>(reach), static_cast<float>(reach), 0.0f},
+        {static_cast<float>(-reach), static_cast<float>(reach), 0.0f}};
+    for (const auto& plane : planes) {
+        polygon = clipHalfPlane(polygon, plane[0], plane[1], plane[2]);
+        if (polygon.size() < 3)
+            return {};
+    }
+    // Drop duplicate and collinear vertices. For a square lattice the four
+    // diagonal half-planes pass exactly through the corners, so the clipper
+    // emits each corner twice with a zero-length edge between — which would
+    // draw as a degenerate segment and makes the vertex count lie about the
+    // shape (an 8-gon that is really a square).
+    std::vector<std::array<double, 2>> out;
+    out.reserve(polygon.size());
+    for (const QVector3D& v : polygon) {
+        const std::array<double, 2> point{v.x(), v.y()};
+        if (!out.empty()
+            && std::hypot(point[0] - out.back()[0], point[1] - out.back()[1])
+                < 1e-9)
+            continue;
+        out.push_back(point);
+    }
+    while (out.size() > 1
+           && std::hypot(out.front()[0] - out.back()[0],
+                         out.front()[1] - out.back()[1])
+               < 1e-9)
+        out.pop_back();
+    if (out.size() < 3)
+        return {};
+    std::vector<std::array<double, 2>> simplified;
+    simplified.reserve(out.size());
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const auto& prev = out[(i + out.size() - 1) % out.size()];
+        const auto& here = out[i];
+        const auto& next = out[(i + 1) % out.size()];
+        const double cross = (here[0] - prev[0]) * (next[1] - prev[1])
+            - (here[1] - prev[1]) * (next[0] - prev[0]);
+        // Scaled tolerance: the zone's own size sets what "collinear" means,
+        // and these coordinates are inverse ångström of order 1.
+        const double span = std::hypot(next[0] - prev[0], next[1] - prev[1]);
+        if (std::abs(cross) > 1e-9 * std::max(span, 1e-9))
+            simplified.push_back(here);
+    }
+    return simplified.size() >= 3 ? simplified : out;
+}
+
+bool TwoDBandsWindow::refine(const std::vector<std::vector<double>>& energies,
+                             std::vector<std::vector<double>>& outKx,
+                             std::vector<std::vector<double>>& outKy,
+                             std::vector<std::vector<double>>& outEnergies) const
+{
+    const int scheme =
+        interpolationCombo_ ? interpolationCombo_->currentData().toInt() : 0;
+    const int factor = refineSpin_ ? refineSpin_->value() : 1;
+    if (scheme == 0 || factor <= 1 || energies.size() < 2)
+        return false;
+    const bool cubic = scheme == 2;
+    const auto nx = static_cast<int>(energies.size());
+    const auto ny = static_cast<int>(energies.front().size());
+    if (ny < 2 || static_cast<int>(kx_.size()) < nx)
+        return false;
+    // (n - 1) * factor + 1 keeps both endpoints and puts `factor` new cells
+    // where each computed cell was — so the refined grid still contains every
+    // original node, at which every scheme here reproduces the input exactly.
+    const int rx = (nx - 1) * factor + 1;
+    const int ry = (ny - 1) * factor + 1;
+    const auto resize = [rx, ry](std::vector<std::vector<double>>& grid) {
+        grid.assign(static_cast<std::size_t>(rx),
+                    std::vector<double>(static_cast<std::size_t>(ry), 0.0));
+    };
+    resize(outKx);
+    resize(outKy);
+    resize(outEnergies);
+    for (int i = 0; i < rx; ++i) {
+        const double u = static_cast<double>(i) / factor;
+        for (int j = 0; j < ry; ++j) {
+            const double v = static_cast<double>(j) / factor;
+            const auto a = static_cast<std::size_t>(i);
+            const auto b = static_cast<std::size_t>(j);
+            // The k-grid is refined with the SAME scheme as the energies: a
+            // non-orthogonal reciprocal cell has a sheared k-grid, and
+            // refining E on a linearly-spaced k would slide the surface off
+            // the points it was computed at.
+            outKx[a][b] = sampleGrid(kx_, u, v, cubic);
+            outKy[a][b] = sampleGrid(ky_, u, v, cubic);
+            outEnergies[a][b] = sampleGrid(energies, u, v, cubic);
+        }
+    }
+    return true;
+}
+
 void TwoDBandsWindow::rebuild()
 {
     if (!canvas_ || surfaces_.empty())
@@ -308,62 +603,99 @@ void TwoDBandsWindow::rebuild()
     const auto height = [&](double energy) {
         return static_cast<float>((energy - zero) * scale);
     };
+    const bool clipToZone = brillouinCheck_ && brillouinCheck_->isChecked();
+    const auto planes =
+        clipToZone ? brillouinHalfPlanes() : std::vector<std::array<double, 3>>{};
+
+    // Scratch buffers reused across bands so a ×8 refinement of a 64×64 grid
+    // does not reallocate once per surface.
+    std::vector<std::vector<double>> rkx;
+    std::vector<std::vector<double>> rky;
+    std::vector<std::vector<double>> renergies;
 
     for (const int index : selected) {
         const Surface& s = surfaces_[static_cast<std::size_t>(index)];
-        const std::size_t nx = s.energies.size();
+        const bool refined = refine(s.energies, rkx, rky, renergies);
+        const std::vector<std::vector<double>>& gx = refined ? rkx : kx_;
+        const std::vector<std::vector<double>>& gy = refined ? rky : ky_;
+        const std::vector<std::vector<double>>& ge =
+            refined ? renergies : s.energies;
+
+        const auto color = [&](double e) {
+            return render::ColorMap::sample(
+                gradient, static_cast<float>((e - lo) / range));
+        };
+        // One triangle, optionally clipped to the zone. Clipping a triangle
+        // against a convex region yields a convex polygon of up to 3 + planes
+        // vertices, which is fan-triangulated back out.
+        const auto emit = [&](const QVector3D& a, double ea, const QVector3D& b,
+                              double eb, const QVector3D& c, double ec) {
+            QVector3D normal = QVector3D::crossProduct(b - a, c - a).normalized();
+            // Face the +z half-space: the surface is a graph over the k-plane,
+            // so a downward normal is only ever a winding artifact and would
+            // leave that triangle unlit.
+            if (normal.z() < 0.0f)
+                normal = -normal;
+            // Energy travels as a 4th channel would, but the clipper only
+            // carries xyz — so the colour is taken from the interpolated
+            // HEIGHT, which is an affine function of the energy and therefore
+            // exact under the same linear interpolation.
+            const auto energyOf = [&](const QVector3D& p) {
+                return zero + static_cast<double>(p.z()) / scale;
+            };
+            if (planes.empty()) {
+                pushVertex(mesh, a.x(), a.y(), a.z(), normal, color(ea));
+                pushVertex(mesh, b.x(), b.y(), b.z(), normal, color(eb));
+                pushVertex(mesh, c.x(), c.y(), c.z(), normal, color(ec));
+                return;
+            }
+            std::vector<QVector3D> polygon = {a, b, c};
+            for (const auto& plane : planes) {
+                polygon = clipHalfPlane(polygon, plane[0], plane[1], plane[2]);
+                if (polygon.size() < 3)
+                    return; // entirely outside the zone
+            }
+            for (std::size_t k = 1; k + 1 < polygon.size(); ++k) {
+                pushVertex(mesh, polygon[0].x(), polygon[0].y(), polygon[0].z(),
+                           normal, color(energyOf(polygon[0])));
+                pushVertex(mesh, polygon[k].x(), polygon[k].y(), polygon[k].z(),
+                           normal, color(energyOf(polygon[k])));
+                pushVertex(mesh, polygon[k + 1].x(), polygon[k + 1].y(),
+                           polygon[k + 1].z(), normal,
+                           color(energyOf(polygon[k + 1])));
+            }
+        };
+
+        const std::size_t nx = ge.size();
         for (std::size_t i = 0; i + 1 < nx; ++i) {
-            const std::size_t ny = s.energies[i].size();
+            const std::size_t ny = ge[i].size();
             for (std::size_t j = 0; j + 1 < ny; ++j) {
-                if (i + 1 >= kx_.size() || j + 1 >= kx_[i].size()
-                    || j + 1 >= s.energies[i + 1].size())
+                if (i + 1 >= gx.size() || j + 1 >= gx[i].size()
+                    || j + 1 >= ge[i + 1].size())
                     continue;
-                // One grid cell -> two triangles. The quad's corners are not
-                // coplanar in general, so the normal is taken per triangle
-                // rather than per cell; a shared normal makes a saddle look
-                // faceted exactly where the curvature matters.
-                const QVector3D p00(static_cast<float>(kx_[i][j]),
-                                    static_cast<float>(ky_[i][j]),
-                                    height(s.energies[i][j]));
-                const QVector3D p10(static_cast<float>(kx_[i + 1][j]),
-                                    static_cast<float>(ky_[i + 1][j]),
-                                    height(s.energies[i + 1][j]));
-                const QVector3D p01(static_cast<float>(kx_[i][j + 1]),
-                                    static_cast<float>(ky_[i][j + 1]),
-                                    height(s.energies[i][j + 1]));
-                const QVector3D p11(static_cast<float>(kx_[i + 1][j + 1]),
-                                    static_cast<float>(ky_[i + 1][j + 1]),
-                                    height(s.energies[i + 1][j + 1]));
-                const double e00 = s.energies[i][j];
-                const double e10 = s.energies[i + 1][j];
-                const double e01 = s.energies[i][j + 1];
-                const double e11 = s.energies[i + 1][j + 1];
-                const auto color = [&](double e) {
-                    return render::ColorMap::sample(
-                        gradient, static_cast<float>((e - lo) / range));
-                };
-                const auto triangle = [&](const QVector3D& a, double ea,
-                                          const QVector3D& b, double eb,
-                                          const QVector3D& c, double ec) {
-                    QVector3D normal =
-                        QVector3D::crossProduct(b - a, c - a).normalized();
-                    // Face the +z half-space: the surface is a graph over the
-                    // k-plane, so a downward normal is only ever a winding
-                    // artifact and would leave that triangle unlit.
-                    if (normal.z() < 0.0f)
-                        normal = -normal;
-                    pushVertex(mesh, a.x(), a.y(), a.z(), normal, color(ea));
-                    pushVertex(mesh, b.x(), b.y(), b.z(), normal, color(eb));
-                    pushVertex(mesh, c.x(), c.y(), c.z(), normal, color(ec));
-                };
-                triangle(p00, e00, p10, e10, p11, e11);
-                triangle(p00, e00, p11, e11, p01, e01);
+                const QVector3D p00(static_cast<float>(gx[i][j]),
+                                    static_cast<float>(gy[i][j]),
+                                    height(ge[i][j]));
+                const QVector3D p10(static_cast<float>(gx[i + 1][j]),
+                                    static_cast<float>(gy[i + 1][j]),
+                                    height(ge[i + 1][j]));
+                const QVector3D p01(static_cast<float>(gx[i][j + 1]),
+                                    static_cast<float>(gy[i][j + 1]),
+                                    height(ge[i][j + 1]));
+                const QVector3D p11(static_cast<float>(gx[i + 1][j + 1]),
+                                    static_cast<float>(gy[i + 1][j + 1]),
+                                    height(ge[i + 1][j + 1]));
+                // The quad's corners are not coplanar in general, so the
+                // normal is taken per triangle; a shared one makes a saddle
+                // look faceted exactly where the curvature matters.
+                emit(p00, ge[i][j], p10, ge[i + 1][j], p11, ge[i + 1][j + 1]);
+                emit(p00, ge[i][j], p11, ge[i + 1][j + 1], p01, ge[i][j + 1]);
             }
         }
     }
     canvas_->setMesh(std::move(mesh));
 
-    // --- Guide lines: the k axes, and the Fermi plane's outline -------------
+    // --- Guide lines: axes, the zone boundary, the Fermi plane -------------
     std::vector<float> lines;
     const auto line = [&lines](const QVector3D& a, const QVector3D& b,
                                const QColor& color) {
@@ -372,9 +704,39 @@ void TwoDBandsWindow::rebuild()
     };
     const auto extent = static_cast<float>(kExtent_);
     const float base = height(shift ? fermiEv_ : 0.0);
-    const QColor axisColor(150, 152, 160);
-    line({-extent, 0.0f, base}, {extent, 0.0f, base}, axisColor); // kx
-    line({0.0f, -extent, base}, {0.0f, extent, base}, axisColor); // ky
+    std::vector<VolumeViewWidget::Label> labels;
+
+    if (axesCheck_ && axesCheck_->isChecked()) {
+        const QColor axisColor(150, 152, 160);
+        line({-extent, 0.0f, base}, {extent, 0.0f, base}, axisColor);
+        line({0.0f, -extent, base}, {0.0f, extent, base}, axisColor);
+        // The energy axis spans the drawn range rather than a fixed length:
+        // its whole job is to say how tall the vertical exaggeration has made
+        // the plot.
+        line({0.0f, 0.0f, height(lo)}, {0.0f, 0.0f, height(hi)}, axisColor);
+        labels.push_back({{extent, 0.0f, base}, QStringLiteral("k_x (Å⁻¹)"),
+                          axisColor});
+        labels.push_back({{0.0f, extent, base}, QStringLiteral("k_y (Å⁻¹)"),
+                          axisColor});
+        labels.push_back({{0.0f, 0.0f, height(hi)},
+                          shift ? tr("E − E_F (eV)") : tr("E (eV)"),
+                          axisColor});
+    }
+
+    if (clipToZone) {
+        // The zone outline is drawn at the Fermi plane's height, where it
+        // reads as the footprint of the region the surface now covers.
+        const auto polygon = brillouinPolygon();
+        const QColor zoneColor(120, 190, 255);
+        for (std::size_t i = 0; i < polygon.size(); ++i) {
+            const auto& a = polygon[i];
+            const auto& b = polygon[(i + 1) % polygon.size()];
+            line({static_cast<float>(a[0]), static_cast<float>(a[1]), base},
+                 {static_cast<float>(b[0]), static_cast<float>(b[1]), base},
+                 zoneColor);
+        }
+    }
+
     if (fermiPlaneCheck_ && fermiPlaneCheck_->isChecked()) {
         const float z = height(fermiEv_);
         const QColor fermiColor(217, 83, 79);
@@ -383,7 +745,22 @@ void TwoDBandsWindow::rebuild()
         line({extent, extent, z}, {-extent, extent, z}, fermiColor);
         line({-extent, extent, z}, {-extent, -extent, z}, fermiColor);
     }
+
+    if (labelsCheck_ && labelsCheck_->isChecked()) {
+        const QColor pointColor(255, 214, 120);
+        for (const SpecialPoint& point : specialPoints_) {
+            // Pinned to the Fermi plane rather than to a surface: which band
+            // it would sit on is arbitrary when several are drawn, and a label
+            // that jumps between sheets as the selection changes is worse than
+            // one in a fixed place.
+            labels.push_back({{static_cast<float>(point.kx),
+                               static_cast<float>(point.ky), base},
+                              point.label, pointColor});
+        }
+    }
+
     canvas_->setLines(std::move(lines));
+    canvas_->setLabels(std::move(labels));
 
     // Frame the content: half the energy span in plot units, combined with the
     // k half-extent, is the radius that holds the whole surface stack.

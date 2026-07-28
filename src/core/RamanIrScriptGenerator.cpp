@@ -279,35 +279,48 @@ _calango_log.event('info', 'force constants done')
 # Cartesian displacement per unit normal coordinate. The result is in
 # e^2/amu; the (D/A)^2/amu duplicate is the unit the spectroscopy literature
 # quotes, and 1 e*A = 4.803204 D gives the conversion.
-if BORN_CHARGES is None:
-    raise RuntimeError(
-        'CALANGO_ERROR the IR intensities need Born effective charges; no '
-        'born_charges.json was configured.')
+# Optional. Without Z* there is no route to an IR intensity in a periodic
+# crystal, but there is still a complete phonon spectrum and — with the Raman
+# step below — a complete Raman spectrum, which is reason enough to run this
+# module. A missing Born charges run therefore drops the IR column instead of
+# failing the job: `ir.computed` records which happened, and every IR number is
+# written as zero rather than as a plausible-looking wrong value.
+ir_meta = {'computed': False, 'reason': 'no Born effective charges supplied'}
+ir_e2_amu = np.zeros(len(frequencies_cm))
+ir_debye = np.zeros(len(frequencies_cm))
 
-with open(BORN_CHARGES) as handle:
-    born_data = json.load(handle)
+if BORN_CHARGES is not None:
+    with open(BORN_CHARGES) as handle:
+        born_data = json.load(handle)
 
-born = np.zeros((natoms, 3, 3))
-seen = set()
-for entry in born_data.get('atoms', []):
-    index = int(entry['index'])
-    if index >= natoms:
-        continue
-    born[index] = np.asarray(entry['tensor'], dtype=float)
-    seen.add(index)
-missing = [i for i in range(natoms) if i not in seen]
-if missing:
-    # A partial Z* set silently zeroes those atoms' contribution to every
-    # mode, which shows up as a plausible-looking spectrum with the wrong
-    # intensities — far worse than refusing.
-    raise RuntimeError(
-        'CALANGO_ERROR the Born charges run covered only '
-        f'{len(seen)} of {natoms} atoms (missing {missing[:8]}...). '
-        'Re-run Born Effective Charges over ALL atoms: every atom '
-        'contributes to every IR intensity.')
+    born = np.zeros((natoms, 3, 3))
+    seen = set()
+    for entry in born_data.get('atoms', []):
+        index = int(entry['index'])
+        if index >= natoms:
+            continue
+        born[index] = np.asarray(entry['tensor'], dtype=float)
+        seen.add(index)
+    missing = [i for i in range(natoms) if i not in seen]
+    if missing:
+        # A partial Z* set silently zeroes those atoms' contribution to every
+        # mode, which shows up as a plausible-looking spectrum with the wrong
+        # intensities — far worse than refusing. Still fatal, because here the
+        # user DID supply Z* and would otherwise get a quiet half-answer.
+        raise RuntimeError(
+            'CALANGO_ERROR the Born charges run covered only '
+            f'{len(seen)} of {natoms} atoms (missing {missing[:8]}...). '
+            'Re-run Born Effective Charges over ALL atoms: every atom '
+            'contributes to every IR intensity.')
 
-ir_e2_amu = ir_intensities(born, displacements)
-ir_debye = ir_e2_amu * DEBYE_PER_EA ** 2
+    ir_e2_amu = ir_intensities(born, displacements)
+    ir_debye = ir_e2_amu * DEBYE_PER_EA ** 2
+    ir_meta = {'computed': True, 'reason': ''}
+else:
+    print('CALANGO_WARN no Born effective charges supplied — the phonon '
+          'frequencies and the Raman spectrum are computed as usual, but '
+          'every IR intensity is reported as zero. Run Electronics -> "Born '
+          'Effective Charges..." and re-run this to fill them in.', flush=True)
 
 
 # --- 3. Raman activities from the static dielectric response --------------
@@ -473,6 +486,7 @@ summary = {
     'born_charges_source': BORN_CHARGES,
     'optics_source': OPTICS_REFERENCE,
     'raman': raman_meta,
+    'ir': ir_meta,
     'modes': modes,
     'spectrum': {
         'frequency_cm': [float(v) for v in grid],
@@ -483,11 +497,20 @@ summary = {
 with open('raman_ir.json', 'w') as handle:
     json.dump(summary, handle, indent=2)
 
-_strongest = max(modes, key=lambda m: m['ir_intensity_D2_A2_amu'])
+# max() over an all-zero IR column picks an arbitrary mode and reports it as
+# "the strongest", which reads as a result. With no Born charges there is no
+# strongest IR mode to name.
+# max() over an all-zero IR column picks an arbitrary mode and reports it as
+# "the strongest", which reads as a result. With no Born charges there is no
+# strongest IR mode to name, so the field says so.
+_strongest = (max(modes, key=lambda m: m['ir_intensity_D2_A2_amu'])
+              if modes and ir_meta['computed'] else None)
+_strongest_cm = f'{_strongest["frequency_cm"]:.1f}' if _strongest else 'n/a'
 print(f'CALANGO_RESULT raman_ir=raman_ir.json '
       f'modes={len(modes)} '
       f'raman={"yes" if raman_meta["computed"] else "no"} '
-      f'strongest_ir_cm={_strongest["frequency_cm"]:.1f}',
+      f'ir={"yes" if ir_meta["computed"] else "no"} '
+      f'strongest_ir_cm={_strongest_cm}',
       flush=True)
 )PY";
     return out.str();

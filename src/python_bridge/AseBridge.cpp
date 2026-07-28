@@ -143,37 +143,20 @@ core::Structure AseBridge::fromAtoms(const py::handle& atoms)
         // No calculator attached — the common case for a plain structure.
     }
 
-    // Collinear spin: calculators report one scalar moment per atom, but the
-    // viewport's vector overlay needs a direction. Promote m -> (0, 0, m) so
-    // spin-up and spin-down render as opposite arrows along z, the axis a
-    // collinear calculation implicitly quantizes along. Non-collinear runs
-    // already supplied an (N, 3) array and are left alone.
+    // Collinear spin (`magmoms`, `initial_magmoms`) arrives as one scalar per
+    // atom: the calculation quantized the spin along z and reported only that
+    // component. The viewport's arrows need a direction, so the scalar is
+    // promoted to (0, 0, m) — but that now happens in
+    // core::Structure::resolvedVectorField rather than here.
     //
-    // Only the *computed* moments are promoted, never `initial_magmoms`:
-    // those are an input guess (ASE seeds bulk Fe with 2.3 μB whether or not
-    // anything was ever calculated) and drawing them as results would be
-    // actively misleading.
-    // `initial_magmoms` gets the same promotion, and unlike the computed
-    // moments it IS drawn: the Structure editor sets it deliberately, the
-    // viewport offers it as its own overlay entry ("Initial magnetic
-    // moments"), and it is labelled as the guess it is rather than passed off
-    // as a result.
-    for (const char* name : {"magmoms", "initial_magmoms"}) {
-        if (structure.vectorFields().count(name) > 0)
-            continue;
-        const auto scalar = structure.scalarFields().find(name);
-        if (scalar == structure.scalarFields().end()
-            || scalar->second.size() != n)
-            continue;
-        std::vector<core::Vec3> vectors(n);
-        double largest = 0.0;
-        for (std::size_t i = 0; i < n; ++i) {
-            vectors[i] = {0.0, 0.0, scalar->second[i]};
-            largest = std::max(largest, std::abs(scalar->second[i]));
-        }
-        if (largest > 1e-9)
-            structure.setVectorField(name, std::move(vectors));
-    }
+    // It moved because doing it at import only covered structures that came
+    // through THIS bridge. The same moments reloaded from a project file,
+    // produced by an in-app edit, or riding on a trajectory frame kept their
+    // scalar and got no arrows, with the overlay entry greyed out claiming the
+    // frame carried no such data. The old copy also had a magnitude threshold
+    // of its own, so an all-zero moment column disabled the overlay outright.
+    // Non-collinear runs supply a real (N, 3) array and are untouched either
+    // way.
 
     // Velocities derived from momenta/masses (ase get_velocities); only
     // stored when they carry information.

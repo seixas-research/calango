@@ -34,7 +34,11 @@ namespace calango::gui {
 ///   • a Born Effective Charges run — Z*, without which an IR intensity in a
 ///                                  periodic crystal cannot be formed at all
 ///                                  (there is no molecular dipole to
-///                                  differentiate). MANDATORY;
+///                                  differentiate). OPTIONAL: it is what turns
+///                                  the IR column on, and nothing else here
+///                                  depends on it — the phonons come from
+///                                  finite displacements and the Raman
+///                                  activities from dchi/dQ;
 ///   • an Optics run              — optional, and used for its SETTINGS: the
 ///                                  broadening the dielectric response was
 ///                                  validated with, so the static
@@ -57,7 +61,11 @@ public:
     /// (label, absolute path to the .gpw). MANDATORY — call before exec().
     void setDensityBaselines(const QList<QPair<QString, QString>>& baselines);
     /// Completed Born Effective Charges runs, as (label, absolute path to
-    /// born_charges.json). MANDATORY.
+    /// born_charges.json).
+    ///
+    /// Optional; an empty list leaves the selector on "(none)", and the run
+    /// then reports every IR intensity as zero with `ir.computed = false` in
+    /// raman_ir.json rather than failing or inventing one.
     void setBornChargesResults(const QList<QPair<QString, QString>>& results);
     /// Completed Optics runs, as (label, absolute path to optics.json).
     /// Optional; an empty list simply leaves the selector on "(none)".

@@ -273,6 +273,31 @@ void Structure::setVectorField(const std::string& name, std::vector<Vec3> values
     vectorFields_[name] = std::move(values);
 }
 
+std::vector<Vec3> Structure::resolvedVectorField(const std::string& name) const
+{
+    if (const auto it = vectorFields_.find(name); it != vectorFields_.end())
+        return it->second;
+    const auto scalar = scalarFields_.find(name);
+    if (scalar == scalarFields_.end() || scalar->second.size() != atoms_.size())
+        return {};
+    // Collinear -> (0, 0, m). Spin-down atoms carry a negative moment and so
+    // point along -z, which is exactly what makes an antiferromagnet legible:
+    // alternating arrows rather than a uniform field of identical ones.
+    std::vector<Vec3> vectors(scalar->second.size());
+    for (std::size_t i = 0; i < vectors.size(); ++i)
+        vectors[i] = {0.0, 0.0, scalar->second[i]};
+    return vectors;
+}
+
+bool Structure::hasVectorData(const std::string& name) const
+{
+    if (vectorFields_.count(name) > 0)
+        return true;
+    const auto scalar = scalarFields_.find(name);
+    return scalar != scalarFields_.end()
+        && scalar->second.size() == atoms_.size();
+}
+
 const ResidueInfo& Structure::residue(std::size_t index) const
 {
     // A shared empty annotation rather than an exception: callers ask this per

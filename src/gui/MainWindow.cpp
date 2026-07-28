@@ -3872,7 +3872,7 @@ void MainWindow::adoptSinglePointResults(const QString& directory)
     // frameCamera=false: the atoms have not moved, so re-framing the view
     // after a single point would be an unexplained camera jump.
     notifyStructureChanged(/*frameCamera=*/false);
-    if (converged.vectorFields().count("magmoms") > 0)
+    if (converged.hasVectorData("magmoms"))
         statusBar()->showMessage(
             tr("Converged magnetic moments loaded — draw them with Spatial "
                "References → Vectors → Magnetic moment"),
@@ -5093,9 +5093,9 @@ void MainWindow::showRamanIrSpectroscopy()
         return;
     Document* doc = currentDocument();
 
-    // Three preconditions, each reported on its own because each is fixed by a
-    // different action. Collapsing them into one "requirements not met" message
-    // would leave the user guessing which run to go do.
+    // One hard precondition: the converged ground state the displacements are
+    // taken about. Everything else this module can consume is optional and
+    // selected in the wizard.
     const auto baselines = gpawDensityFiles();
     if (baselines.isEmpty()) {
         QMessageBox::critical(
@@ -5105,20 +5105,17 @@ void MainWindow::showRamanIrSpectroscopy()
                "wavefunctions (.gpw).\n\nRun one on this structure first."));
         return;
     }
+    // Born charges are OPTIONAL. They are the only route to an infrared
+    // intensity in a periodic crystal, but nothing else here needs them: the
+    // Γ-point phonons come from finite displacements and the Raman activities
+    // from ∂χ/∂Q. Refusing to open without them made a second, expensive run
+    // the price of admission for results that do not depend on it — and for a
+    // material studied by Raman alone, a price with nothing behind it. The
+    // wizard offers "(none)" and the generated script reports every IR
+    // intensity as zero with `ir.computed = false`, rather than as a
+    // plausible-looking number.
     const auto bornCharges =
         processResults(QStringLiteral("born_charges.json"));
-    if (bornCharges.isEmpty()) {
-        QMessageBox::critical(
-            this, tr("Raman and IR Spectroscopy"),
-            tr("The infrared intensities are the Born effective charges Z* "
-               "contracted with the phonon eigenvectors, and in a periodic "
-               "crystal there is no other route to them — a molecular dipole "
-               "is not defined for a solid.\n\n"
-               "Run Electronics → \"Born Effective Charges…\" on this "
-               "structure first; its born_charges.json is what this module "
-               "reads."));
-        return;
-    }
 
     RamanIrWizard wizard(doc ? doc->structure : nullptr, this);
     wizard.setDensityBaselines(baselines);

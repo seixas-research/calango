@@ -89,14 +89,25 @@ int main()
     check(structure.size() == 4, "4 atoms");
     check(structure.vectorFields().count("forces") == 1, "forces imported as vectors");
     check(structure.vectorFields().count("velocities") == 1, "velocities imported");
-    check(structure.vectorFields().count("magmoms") == 1,
-          "scalar magmoms promoted to (N,3) vectors for the arrow overlay");
-    if (structure.vectorFields().count("magmoms")) {
-        const auto& m = structure.vectorFields().at("magmoms");
-        const bool alongZ = std::abs(m[0].x) < 1e-12 && std::abs(m[0].y) < 1e-12
+    // Collinear moments stay a SCALAR column in the model — that is the real
+    // datum, one number per atom, and the calculation reported nothing else.
+    // The (0, 0, m) promotion the arrow overlay needs is derived on demand by
+    // Structure::resolvedVectorField, so it applies to structures that never
+    // came through this bridge too; asserting a materialized vector field here
+    // would be testing the mechanism rather than the behaviour.
+    check(structure.scalarFields().count("magmoms") == 1,
+          "collinear magmoms imported as the scalar column they are");
+    check(structure.hasVectorData("magmoms"),
+          "and are drawable as vectors by the arrow overlay");
+    {
+        const auto m = structure.resolvedVectorField("magmoms");
+        check(m.size() == structure.size(), "one resolved vector per atom");
+        const bool alongZ = !m.empty() && std::abs(m[0].x) < 1e-12
+            && std::abs(m[0].y) < 1e-12
             && std::abs(std::abs(m[0].z) - 2.25) < 1e-9;
-        check(alongZ, "promoted moment is (0, 0, m) with |m| = 2.25");
-        check(m[0].z * m[1].z < 0.0, "antiferromagnetic sign alternation kept");
+        check(alongZ, "resolved moment is (0, 0, m) with |m| = 2.25");
+        check(m.size() > 1 && m[0].z * m[1].z < 0.0,
+              "antiferromagnetic sign alternation kept");
     }
 
     std::printf("Export back out:\n");

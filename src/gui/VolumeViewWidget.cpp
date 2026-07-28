@@ -1,6 +1,8 @@
 #include "gui/VolumeViewWidget.hpp"
 
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPen>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -156,6 +158,12 @@ void VolumeViewWidget::setMeshOpacity(float alpha)
     update();
 }
 
+void VolumeViewWidget::setLabels(std::vector<Label> labels)
+{
+    labels_ = std::move(labels);
+    update();
+}
+
 void VolumeViewWidget::initializeGL()
 {
     initializeOpenGLFunctions();
@@ -205,6 +213,13 @@ void VolumeViewWidget::draw(Buffer& buffer, GLenum mode, bool unlit, float alpha
 
 void VolumeViewWidget::paintGL()
 {
+    // QPainter is constructed FIRST and the raw GL is bracketed by
+    // begin/endNativePainting: that is the supported way to mix the two on a
+    // QOpenGLWidget, and it is what lets the text overlay below be ordinary
+    // Qt text rather than a glyph atlas and a text shader.
+    QPainter painter(this);
+    painter.beginNativePainting();
+
     glEnable(GL_DEPTH_TEST);
     glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -227,6 +242,49 @@ void VolumeViewWidget::paintGL()
     draw(isoBuffer_, GL_TRIANGLES, false, meshAlpha_);
     glDisable(GL_BLEND);
     program_.release();
+
+    painter.endNativePainting();
+    drawLabels(painter);
+}
+
+void VolumeViewWidget::drawLabels(QPainter& painter)
+{
+    if (labels_.empty())
+        return;
+    const float aspect = height() > 0
+        ? static_cast<float>(width()) / static_cast<float>(height())
+        : 1.0f;
+    const QMatrix4x4 viewProjection = camera_.projection(aspect) * camera_.view();
+
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    QFont font = painter.font();
+    font.setBold(true);
+    painter.setFont(font);
+
+    for (const Label& label : labels_) {
+        const QVector4D clip =
+            viewProjection * QVector4D(label.position, 1.0f);
+        // Behind the eye: the perspective divide would fold it back into view
+        // as a mirrored ghost on the far side of the screen.
+        if (clip.w() <= 0.0f)
+            continue;
+        const QVector3D ndc = clip.toVector3DAffine();
+        if (ndc.x() < -1.2f || ndc.x() > 1.2f || ndc.y() < -1.2f
+            || ndc.y() > 1.2f)
+            continue;
+        const QPointF screen(
+            (ndc.x() * 0.5f + 0.5f) * static_cast<float>(width()),
+            (1.0f - (ndc.y() * 0.5f + 0.5f)) * static_cast<float>(height()));
+        // A dark outline behind the glyphs: the canvas runs from a near-black
+        // background to a bright surface crest, and a single ink colour is
+        // illegible against one end or the other.
+        painter.setPen(QPen(QColor(10, 11, 13, 200), 3.0));
+        painter.drawText(screen + QPointF(6.0, -6.0), label.text);
+        painter.setPen(label.color);
+        painter.drawText(screen + QPointF(6.0, -6.0), label.text);
+        painter.setPen(QPen(label.color, 1.5));
+        painter.drawEllipse(screen, 2.5, 2.5);
+    }
 }
 
 void VolumeViewWidget::mousePressEvent(QMouseEvent* event)

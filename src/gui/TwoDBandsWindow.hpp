@@ -5,6 +5,7 @@
 #include <QDialog>
 #include <QString>
 
+#include <array>
 #include <vector>
 
 class QCheckBox;
@@ -12,6 +13,7 @@ class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class QListWidget;
+class QSpinBox;
 
 namespace calango::gui {
 
@@ -49,8 +51,28 @@ private:
         std::vector<std::vector<double>> energies; ///< [ix][iy], eV
     };
 
+    /// A labelled high-symmetry point of the 2D zone (Γ, M, K, …).
+    struct SpecialPoint {
+        QString label;
+        double kx = 0.0; ///< Å⁻¹
+        double ky = 0.0;
+    };
+
     /// Rebuild the geometry from the current selection and settings.
     void rebuild();
+    /// The half-planes bounding the first Brillouin zone (Wigner-Seitz cell of
+    /// the reciprocal lattice): a point k is inside when k·n̂ ≤ d for all of
+    /// them. Empty when the reciprocal cell is unusable.
+    std::vector<std::array<double, 3>> brillouinHalfPlanes() const;
+    /// Vertices of the first-BZ polygon, counter-clockwise, for its outline.
+    std::vector<std::array<double, 2>> brillouinPolygon() const;
+    /// Upsample the k-grid and one band by the selected scheme and factor.
+    /// Returns false (leaving the outputs untouched) when no refinement
+    /// applies, so the caller can use the original arrays without copying.
+    bool refine(const std::vector<std::vector<double>>& energies,
+                std::vector<std::vector<double>>& outKx,
+                std::vector<std::vector<double>>& outKy,
+                std::vector<std::vector<double>>& outEnergies) const;
     /// Repopulate the band list (called once per load).
     void populateBandList();
     void exportImage();
@@ -61,6 +83,11 @@ private:
     QComboBox* gradientCombo_ = nullptr;
     QCheckBox* shiftFermiCheck_ = nullptr;
     QCheckBox* fermiPlaneCheck_ = nullptr;
+    QCheckBox* axesCheck_ = nullptr;
+    QCheckBox* brillouinCheck_ = nullptr;
+    QCheckBox* labelsCheck_ = nullptr;
+    QComboBox* interpolationCombo_ = nullptr;
+    QSpinBox* refineSpin_ = nullptr;
     QDoubleSpinBox* energyScaleSpin_ = nullptr;
     QLabel* summary_ = nullptr;
 
@@ -72,6 +99,10 @@ private:
     std::vector<std::vector<double>> kx_;
     std::vector<std::vector<double>> ky_;
     std::vector<Surface> surfaces_;
+    std::vector<SpecialPoint> specialPoints_;
+    /// Reciprocal lattice rows b1, b2, b3 in Å⁻¹ (2π included) — the basis the
+    /// first-Brillouin-zone construction is built from.
+    std::array<std::array<double, 3>, 3> reciprocal_{};
     /// Half-extent of the k-grid, used to set the default energy exaggeration
     /// so the first view is legible without touching the control.
     double kExtent_ = 1.0;

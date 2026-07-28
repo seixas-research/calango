@@ -1500,9 +1500,15 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                 * (style_.vectorOverlay == VectorOverlay::Velocity ? 20.0 : 1.0);
             const auto addArrows = [&](const std::string& fieldName,
                                        const QColor& color) {
-                const auto& fields = structure->vectorFields();
-                const auto it = fields.find(fieldName);
-                if (it == fields.end() || it->second.size() != atoms.size())
+                // resolvedVectorField, not vectorFields(): a COLLINEAR
+                // magnetic moment is stored as one scalar per atom — the
+                // calculation quantized the spin along z and reported only
+                // that component — so there is no vector field to find, and
+                // the overlay drew nothing at all. The scalar is promoted to
+                // (0, 0, m) here, which is the direction it always meant.
+                const std::vector<core::Vec3> values =
+                    structure->resolvedVectorField(fieldName);
+                if (values.size() != atoms.size())
                     return;
                 // Baseline 0.045 Å, scaled by the user's width setting.
                 const float shaftRadius =
@@ -1511,7 +1517,7 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                     if (modeAt(index) == RepresentationMode::Wireframe
                         || isMacromolecularMode(modeAt(index)))
                         continue;
-                    const core::Vec3& v = it->second[index];
+                    const core::Vec3& v = values[index];
                     // Filter on the FIELD magnitude, before the display scale:
                     // otherwise the set of hidden atoms would change every time
                     // the arrow length slider moved.

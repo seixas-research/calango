@@ -140,6 +140,28 @@ public:
     /// Stores (or replaces) a field; ignored unless values.size() == size().
     void setVectorField(const std::string& name, std::vector<Vec3> values);
 
+    /// Per-atom vectors for `name`, promoting a same-named SCALAR field to
+    /// (0, 0, m) when no vector field of that name exists. Empty when neither
+    /// is present.
+    ///
+    /// This is what makes a collinear magnetic moment drawable. A collinear
+    /// calculation reports ONE number per atom, because it has quantized the
+    /// spin along a single axis — z, by universal convention — so the scalar
+    /// IS the z component of a vector that was never written down. Anything
+    /// that wants a direction has to reconstruct it.
+    ///
+    /// Derived on demand here rather than materialized at import, which is
+    /// where it used to live: the promotion then only happened for structures
+    /// that arrived through the ASE bridge, so the same moments loaded from a
+    /// project file, produced by an in-app edit, or carried on a trajectory
+    /// frame had a scalar and no arrows — with the overlay entry greyed out
+    /// and claiming the frame carried no data.
+    std::vector<Vec3> resolvedVectorField(const std::string& name) const;
+
+    /// Whether resolvedVectorField(`name`) would return anything — the cheap
+    /// test, for enabling UI without building the vectors.
+    bool hasVectorData(const std::string& name) const;
+
     // -- Macromolecular annotation (PDB / PDBx-mmCIF) ----------------------
     //
     // Index-aligned with atoms() and maintained by addAtom()/removeAtom()

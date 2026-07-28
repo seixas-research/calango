@@ -146,8 +146,15 @@ QWidget* OpticsWizard::buildSettingsPage()
         responseKptsSpin_[i]->setValue(0);
         responseKptsSpin_[i]->setSpecialValueText(tr("auto"));
         responseKptsSpin_[i]->setToolTip(
-            tr("Monkhorst-Pack divisions for the fixed-density response step. "
-               "Leave at \"auto\" to inherit the baseline's own grid."));
+            tr("Monkhorst-Pack divisions for the fixed-density response step, "
+               "set PER AXIS. \"auto\" keeps the baseline's own value on that "
+               "axis, so a 2D sheet can be given a dense in-plane mesh while "
+               "its out-of-plane direction stays where the ground state put "
+               "it — e.g. 24, 24, auto.\n\n"
+               "The dielectric function is a Brillouin-zone integral over "
+               "interband transitions and converges far more slowly with "
+               "k-points than the total energy does, so the grid that "
+               "converged the SCF is routinely too coarse for the spectrum."));
         connect(responseKptsSpin_[i], &QSpinBox::valueChanged, this,
                 [this] { refreshPreview(); });
         meshRow->addWidget(responseKptsSpin_[i]);
@@ -189,7 +196,13 @@ QWidget* OpticsWizard::buildSettingsPage()
     npointsSpin_->setRange(2, 100000);
     npointsSpin_->setValue(500);
     npointsSpin_->setToolTip(
-        tr("Number of samples on the photon-energy grid."));
+        tr("Number of samples on the photon-energy grid, spread linearly over "
+           "the window above.\n\n"
+           "This grid is handed to GPAW explicitly, which means the response "
+           "is evaluated at exactly these frequencies — so the cost grows with "
+           "the count rather than being amortized over an internal transform. "
+           "Raise it to resolve narrow structure; a few hundred points is "
+           "usually enough for an overview spectrum."));
     form->addRow(tr("Number of points:"), npointsSpin_);
 
     // The three diagonal components εxx / εyy / εzz. Off-diagonal terms are not

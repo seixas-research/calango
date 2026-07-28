@@ -1359,8 +1359,16 @@ int main(int argc, char** argv)
                       "refuses a structure with no 2D periodicity");
         checkContains(script, "CALANGO_RESULT bands_2d=bands_2d.json",
                       "emits the marker the controller watches for");
-        check(!contains(script, "bandpath"),
-              "no k-path: the surface IS the object, not a cut through it");
+        // bandpath() IS called — but only to read the lattice's special-point
+        // labels. What must not happen is sampling along it: the surface is
+        // the object, not a set of cuts through it.
+        checkContains(script, "bandpath(npoints=0)",
+                      "the k-path is consulted for labels only");
+        check(!contains(script, "kpts=bandpath")
+                  && !contains(script, "fixed_density(kpts=bandpath"),
+              "and never used as the sampling");
+        checkContains(script, "band_calc = calc.fixed_density(kpts=_kpts",
+                      "the run samples the explicit 2D grid instead");
 
         TwoDBandsConfig soc = cfg;
         soc.spinOrbit = true;
@@ -1413,6 +1421,117 @@ int main(int argc, char** argv)
                       "a symmetry-reduced .gpw is caught before Wannier chokes");
         checkContains(script, "_meta.get('nwannier')",
                       "the recorded Wannier count is preferred over len(centers)");
+    }
+
+    // -- Optics parameter passing --------------------------------------------
+    // The reported symptom was that changing the energy-point count or the
+    // k-mesh produced identical spectra. The cause: the wizard collected
+    // npoints / omega bounds and the generator emitted NONE of them, leaving
+    // GPAW to build its own default frequency grid, which was then read back.
+    std::printf("Optics parameter passing:\n");
+    {
+        const auto optics = [](int npoints, double omegaMin, double omegaMax,
+                               int kx, int ky, int kz) {
+            OpticsConfig c;
+            c.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+            c.npoints = npoints;
+            c.omegaMinEv = omegaMin;
+            c.omegaMaxEv = omegaMax;
+            c.responseKpts[0] = kx;
+            c.responseKpts[1] = ky;
+            c.responseKpts[2] = kz;
+            return generateOpticsScript(c);
+        };
+
+        const std::string base = optics(500, 0.0, 20.0, 0, 0, 0);
+        checkContains(base, "np.linspace(0, 20, 500)",
+                      "the requested frequency grid reaches the script");
+        checkContains(base, "frequencies=frequencies_eV",
+                      "and is handed to DielectricFunction");
+        checkContains(base, "hilbert=False",
+                      "with the transform off, as an explicit grid requires");
+
+        // The actual regression: two different requests must not produce the
+        // same script.
+        check(optics(500, 0.0, 20.0, 0, 0, 0)
+                  != optics(2000, 0.0, 20.0, 0, 0, 0),
+              "changing the point count changes the script");
+        check(optics(500, 0.0, 20.0, 0, 0, 0)
+                  != optics(500, 0.0, 40.0, 0, 0, 0),
+              "changing the energy window changes the script");
+        check(optics(500, 0.0, 20.0, 0, 0, 0)
+                  != optics(500, 0.0, 20.0, 24, 24, 1),
+              "changing the k-mesh changes the script");
+
+        // Per-axis "auto". A 2D sheet is naturally entered as 24, 24, auto —
+        // which used to discard the WHOLE mesh, because the emitter required
+        // all three axes to be non-zero.
+        const std::string partial = optics(500, 0.0, 20.0, 24, 24, 0);
+        checkContains(partial, "kpts=_response_kpts",
+                      "a partially-specified mesh is still applied");
+        checkContains(partial, "_requested_kpts = (24, 24, 0)",
+                      "with the zero axis carried through as \"inherit\"");
+        checkContains(partial, "_baseline_kpts[_i]",
+                      "and resolved against the baseline's own grid");
+        check(optics(500, 0.0, 20.0, 24, 24, 1)
+                  != optics(500, 0.0, 20.0, 24, 24, 0),
+              "an explicit z divisions differs from inheriting it");
+
+        // The sampling has to be recorded, or two runs are indistinguishable
+        // from their own output files.
+        checkContains(base, "\"response_kpts\": list(_response_kpts)",
+                      "the mesh actually used is written into optics.json");
+        checkContains(base, "\"npoints\": int(len(frequencies))",
+                      "along with the grid density");
+    }
+
+    // -- Raman / IR without Born charges -------------------------------------
+    // Z* is the only route to an IR intensity in a periodic crystal, but the
+    // phonons and the Raman spectrum do not depend on it — so a missing Born
+    // charges run must cost the IR column, not the job.
+    std::printf("Raman / IR without Born charges:\n");
+    {
+        RamanIrConfig cfg;
+        cfg.calculator.calculator = CalculatorKind::Gpaw;
+        cfg.baselinePath = "/jobs/proc_1/single_point.gpw";
+        const std::string without = generateRamanIrScript(cfg);
+        checkContains(without, "BORN_CHARGES = None",
+                      "no Born charges selected is representable");
+        checkContains(without, "if BORN_CHARGES is not None:",
+                      "and the IR block becomes conditional");
+        check(!contains(without,
+                        "'CALANGO_ERROR the IR intensities need Born effective"),
+              "the run is no longer refused for want of Z*");
+        checkContains(without, "'ir': ir_meta",
+                      "raman_ir.json records whether IR was computed");
+        checkContains(without, "CALANGO_WARN no Born effective charges",
+                      "and the omission is reported rather than silent");
+
+        cfg.bornChargesPath = "/jobs/proc_2/born_charges.json";
+        const std::string with = generateRamanIrScript(cfg);
+        checkContains(with, "/jobs/proc_2/born_charges.json",
+                      "a supplied Z* set still reaches the script");
+        // A PARTIAL Z* set stays fatal: there the user did ask for IR, and a
+        // silently zeroed atom gives a plausible spectrum with wrong
+        // intensities.
+        checkContains(with, "CALANGO_ERROR the Born charges run covered only",
+                      "a partial Z* set is still refused");
+    }
+
+    // -- 2D bands: high-symmetry points ---------------------------------------
+    std::printf("2D bands high-symmetry points:\n");
+    {
+        TwoDBandsConfig cfg;
+        cfg.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        const std::string script = generateTwoDBandsScript(cfg);
+        checkContains(script, "atoms.cell.bandpath(npoints=0)",
+                      "labels come from ASE's Bravais-lattice recognition");
+        checkContains(script, "if abs(float(_f[2])) > 1e-6:",
+                      "points outside the sampled kz = 0 plane are dropped");
+        checkContains(script, "'special_points': _special",
+                      "and the surviving ones are exported");
+        checkContains(script, "_c = _f @ _recip",
+                      "in the same Cartesian frame as the surface itself");
     }
 
     // -- LAMMPS -------------------------------------------------------------
@@ -1797,8 +1916,10 @@ int main(int argc, char** argv)
         OpticsConfig optics;
         optics.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
         const std::string script = generateOpticsScript(optics);
-        check(!contains(script, "kpts=("),
-              "no k-mesh line when the baseline grid is inherited");
+        check(!contains(script, "kpts=_response_kpts"),
+              "no k-mesh line when every axis is left to the baseline");
+        checkContains(script, "_requested_kpts = (0, 0, 0)",
+                      "and the request is still reported for the log");
         checkContains(script, "symmetry=\"off\"",
                       "full-zone sampling by default");
     }
@@ -1810,7 +1931,7 @@ int main(int argc, char** argv)
         optics.responseKpts[2] = 8;
         optics.includeIbzPoints = true;
         const std::string script = generateOpticsScript(optics);
-        checkContains(script, "kpts=(12, 12, 8)",
+        checkContains(script, "_requested_kpts = (12, 12, 8)",
                       "the denser response mesh overrides the baseline grid");
         // Leaving symmetry ON is what produces the weighted irreducible set;
         // emitting symmetry="off" alongside would cancel the whole feature.
@@ -1822,14 +1943,23 @@ int main(int argc, char** argv)
                       "reports how many points survived the reduction");
     }
     {
-        // A partially specified mesh is not a mesh — 12x12x0 would be an
-        // invalid grid, so it must fall back to inheriting rather than emit it.
+        // A partially specified mesh is a mesh with one axis left to the
+        // baseline. This used to be discarded WHOLESALE on the reasoning that
+        // 12x12x0 is not a valid grid — true, but the fix is to resolve the
+        // zero rather than to throw the other two axes away. "24, 24, auto" is
+        // the natural entry for a 2D sheet, and dropping it produced a
+        // spectrum identical to not having set anything.
         OpticsConfig optics;
         optics.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
         optics.responseKpts[0] = 12;
         optics.responseKpts[1] = 12;
-        check(!contains(generateOpticsScript(optics), "kpts=("),
-              "an incomplete mesh is ignored rather than emitted");
+        const std::string script = generateOpticsScript(optics);
+        checkContains(script, "kpts=_response_kpts",
+                      "a partially specified mesh is applied, not discarded");
+        checkContains(script, "_requested_kpts = (12, 12, 0)",
+                      "with the unset axis carried through");
+        checkContains(script, "_baseline_kpts[_i]",
+                      "and filled in from the baseline at run time");
     }
 
     // -- DFT+U and dispersion ------------------------------------------------

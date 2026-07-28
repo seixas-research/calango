@@ -56,8 +56,11 @@ QWidget* RamanIrWizard::buildSettingsPage()
            "<i>polarization</i> a mode produces, "
            "|Σ<sub>k</sub> Z*<sub>k</sub>·e<sub>k</sub>/√M<sub>k</sub>|². "
            "In a periodic crystal there is no molecular dipole to "
-           "differentiate, so the Born effective charges Z* are the only route "
-           "to it — hence the mandatory Born Charges run below.<br><br>"
+           "differentiate, so the Born effective charges Z* are the only "
+           "route to it. Supplying a Born Charges run is therefore what turns "
+           "the IR column on — without one the phonons and the Raman spectrum "
+           "are computed as usual and every IR intensity is reported as "
+           "zero.<br><br>"
            "<b>Raman</b> activity is built from ∂χ/∂Q, the change in "
            "<i>polarizability</i> — the same response the Optics module "
            "evaluates, taken in the static limit and differentiated by finite "
@@ -85,10 +88,17 @@ QWidget* RamanIrWizard::buildSettingsPage()
             [this] { onBaselineChanged(); });
 
     bornCombo_ = new QComboBox(sourcesGroup);
+    // Optional, and first in the list so that is the default: the phonons and
+    // the Raman spectrum need nothing from Z*, and requiring a Born Charges
+    // run to get either of them made a second, expensive calculation the price
+    // of admission for results that do not depend on it.
+    bornCombo_->addItem(tr("(none — Raman and phonons only, no IR)"), QString());
     bornCombo_->setToolTip(
-        tr("A completed Born Effective Charges run on this structure.\n\n"
-           "It must cover EVERY atom: each one contributes to every IR "
-           "intensity, and a partial Z* set would silently zero those "
+        tr("A completed Born Effective Charges run on this structure. "
+           "Optional: it is what makes the INFRARED intensities computable, "
+           "and nothing else in this module depends on it.\n\n"
+           "When supplied it must cover EVERY atom: each one contributes to "
+           "every IR intensity, and a partial Z* set would silently zero those "
            "contributions — producing a plausible spectrum with the wrong "
            "intensities. The generated script refuses rather than doing that."));
     sourcesForm->addRow(tr("Born charges (Z*):"), bornCombo_);
@@ -271,8 +281,17 @@ void RamanIrWizard::setBornChargesResults(
     if (!bornCombo_)
         return;
     bornCombo_->clear();
+    // The "none" entry is re-added here, not just at construction: clear()
+    // drops it, and without it a user who HAS Born runs available could no
+    // longer choose to skip the IR column.
+    bornCombo_->addItem(tr("(none — Raman and phonons only, no IR)"), QString());
     for (const auto& [label, path] : results)
         bornCombo_->addItem(label, path);
+    // Default to a real Z* set when one exists: the module computes both
+    // spectra by preference, and a user who opened it with a Born run already
+    // finished almost certainly wants the IR column.
+    if (!results.isEmpty())
+        bornCombo_->setCurrentIndex(1);
     refreshPreview();
 }
 

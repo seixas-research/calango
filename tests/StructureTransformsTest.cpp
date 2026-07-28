@@ -256,6 +256,54 @@ int main()
               "a valid swap still applies");
     }
 
+    // Collinear magnetic moments arrive as ONE scalar per atom: the
+    // calculation quantized the spin along z and reported only that
+    // component. The vector overlay needs a direction, and testing only for a
+    // vector field left "Magnetic moment" greyed out for every collinear
+    // spin-polarized result.
+    std::printf("Collinear moment promotion:\n");
+    {
+        calango::core::Structure s;
+        s.addAtom({26, {0.0, 0.0, 0.0}});   // Fe
+        s.addAtom({26, {1.0, 0.0, 0.0}});
+        check(!s.hasVectorData("magmoms"), "no moments, no vector data");
+        check(s.resolvedVectorField("magmoms").empty(), "and nothing to draw");
+
+        // Antiferromagnetic: the sign is the whole point, and it must survive
+        // as a direction rather than as a magnitude.
+        s.setScalarField("magmoms", {2.2, -2.2});
+        check(s.hasVectorData("magmoms"),
+              "a scalar column IS drawable vector data");
+        const auto v = s.resolvedVectorField("magmoms");
+        check(v.size() == 2, "one vector per atom");
+        check(near(v[0].x, 0.0) && near(v[0].y, 0.0) && near(v[0].z, 2.2),
+              "spin up points along +z");
+        check(near(v[1].z, -2.2), "spin down points along -z, not merely down");
+
+        // An all-zero column is still data — the overlay must be offered, and
+        // draw nothing, rather than report the frame as carrying no moments.
+        calango::core::Structure zero;
+        zero.addAtom({23, {0.0, 0.0, 0.0}});
+        zero.setScalarField("magmoms", {0.0});
+        check(zero.hasVectorData("magmoms"),
+              "an all-zero moment column is still present");
+
+        // Non-collinear supplies a real (N, 3) array, which must win.
+        calango::core::Structure nc;
+        nc.addAtom({26, {0.0, 0.0, 0.0}});
+        nc.setScalarField("magmoms", {9.0});
+        nc.setVectorField("magmoms", {{1.0, 0.0, 0.0}});
+        const auto ncv = nc.resolvedVectorField("magmoms");
+        check(ncv.size() == 1 && near(ncv[0].x, 1.0) && near(ncv[0].z, 0.0),
+              "an explicit vector field is never overridden by the scalar");
+
+        // A mismatched column is not per-atom data and must not be promoted.
+        calango::core::Structure bad;
+        bad.addAtom({26, {0.0, 0.0, 0.0}});
+        bad.addAtom({26, {1.0, 0.0, 0.0}});
+        check(!bad.hasVectorData("forces"), "an absent field stays absent");
+    }
+
     std::printf(failures == 0 ? "\nAll structure-transform checks passed.\n"
                               : "\n%d check(s) FAILED.\n",
                 failures);
