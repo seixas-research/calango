@@ -2,6 +2,7 @@
 
 #include "core/Structure.hpp"
 #include "gui/GuiUtils.hpp"
+#include "gui/NeighborCellsDialog.hpp"
 
 #include "gui/ViewportWidget.hpp"
 
@@ -53,6 +54,33 @@ UnitCellPanel::UnitCellPanel(ViewportWidget* viewport, QWidget* parent)
         viewport_->style().showNeighborCellAtoms = on;
         // Extra instances — the geometry buffers must be rebuilt.
         viewport_->styleChanged(true);
+    });
+
+    // Directly under the bond-completion toggle above, because the two are the
+    // periodic-image controls and differ only in scale: that one completes the
+    // bonds that leave the cell, this one repeats the whole cell.
+    auto* neighborCellsButton =
+        new QPushButton(tr("Show neighboring cells…"), this);
+    neighborCellsButton->setToolTip(
+        tr("Draw the periodic images of the cell over a range of fractional "
+           "coordinates — e.g. x from 0 to 2 adds the neighboring cell along "
+           "+x, with its atoms and bonds.\n\n"
+           "Purely visual: the atom count, the formula and every exported "
+           "structure file are unchanged."));
+    form->addRow(neighborCellsButton);
+    connect(neighborCellsButton, &QPushButton::clicked, this, [this] {
+        // Modeless and singleton-per-panel: the dialog applies live, so it has
+        // to stay open beside the viewport while the user judges the result,
+        // and a second copy would fight the first over the same style field.
+        if (!neighborCellsDialog_) {
+            neighborCellsDialog_ = new NeighborCellsDialog(viewport_, this);
+            neighborCellsDialog_->setAttribute(Qt::WA_DeleteOnClose);
+            connect(neighborCellsDialog_, &QObject::destroyed, this,
+                    [this] { neighborCellsDialog_ = nullptr; });
+        }
+        neighborCellsDialog_->show();
+        neighborCellsDialog_->raise();
+        neighborCellsDialog_->activateWindow();
     });
 
     auto* cellColorButton = new QPushButton(this);

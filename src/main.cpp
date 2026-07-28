@@ -78,10 +78,19 @@ int main(int argc, char* argv[])
     // Suppress AppKit's auto-injected Edit-menu items before menus are built.
     disableMacEditMenuInjections();
 #endif
-    // Window / taskbar / dock icon (embedded high-resolution brand icon,
-    // transparent-background variant).
+    // Window / taskbar / dock icon. The two variants differ in more than
+    // style: icon_osx.png carries the ~80% margin the Dock expects, while
+    // icon_linux.png is full-bleed for taskbars that pad the icon themselves.
+    // Using either one everywhere leaves it noticeably mis-sized on the other
+    // platform. (On a macOS .app the Finder icon comes from the bundled
+    // calango.icns instead; this sets the in-session dock/window icon.)
+#ifdef Q_OS_MACOS
     QApplication::setWindowIcon(
-        QIcon(QStringLiteral(":/assets/calango/icon_base.png")));
+        QIcon(QStringLiteral(":/assets/calango/icon_osx.png")));
+#else
+    QApplication::setWindowIcon(
+        QIcon(QStringLiteral(":/assets/calango/icon_linux.png")));
+#endif
 
     // Centralized settings (~/.calango/settings.json): create-with-defaults on
     // first run, otherwise load and apply into QSettings (JSON authoritative).

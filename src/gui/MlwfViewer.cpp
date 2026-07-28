@@ -2,6 +2,7 @@
 
 #include "core/MarchingCubes.hpp"
 #include "core/WannierScriptGenerator.hpp"
+#include "gui/GuiUtils.hpp"
 #include "gui/ViewportWidget.hpp"
 #include "gui/WannierInterpolationDialog.hpp"
 #include "render/ColorMap.hpp"
@@ -9,6 +10,7 @@
 
 #include <QApplication>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -251,6 +253,38 @@ void MlwfViewer::openInterpolationDialog()
 {
     if (jobDir_.isEmpty())
         return;
+    // Pre-flight, because the alternative is what used to happen: the user
+    // fills in the dialog, the job is staged and queued, and it dies on its
+    // first line with "No GPAW wavefunction (.gpw) found in <dir>". The
+    // interpolation restarts GPAW from the wavefunctions the MLWF run used,
+    // and an MLWF that started from a single-point baseline read those from
+    // another job's directory without writing a copy of its own.
+    const QDir dir(jobDir_);
+    const QJsonObject meta =
+        readJsonObject(dir.filePath(QStringLiteral("wannier.json")));
+    const QString recorded = meta.value(QStringLiteral("gpw")).toString();
+    const bool haveRecorded =
+        !recorded.isEmpty() && QFileInfo::exists(recorded);
+    const bool haveLocal =
+        !dir.entryList({QStringLiteral("*.gpw")}, QDir::Files).isEmpty();
+    if (!haveRecorded && !haveLocal) {
+        QMessageBox::warning(
+            this, tr("Wannier Interpolation"),
+            recorded.isEmpty()
+                ? tr("This MLWF run recorded no path to the GPAW wavefunctions "
+                     "it localized, and left no .gpw in its own directory.\n\n"
+                     "That happens when it started from a single-point "
+                     "baseline: it read the wavefunctions from that job's "
+                     "directory and wrote none of its own. Runs from this "
+                     "version of Calango record the path; re-run the MLWF "
+                     "calculation and the interpolation will find it.")
+                : tr("The GPAW wavefunctions this MLWF run localized are no "
+                     "longer at\n\n%1\n\nRe-run the MLWF calculation, or "
+                     "restore that file.")
+                      .arg(recorded));
+        return;
+    }
+
     WannierInterpolationDialog dialog(structure_, this);
     if (dialog.exec() != QDialog::Accepted)
         return;

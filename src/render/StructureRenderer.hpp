@@ -11,6 +11,9 @@
 #include <QOpenGLVertexArrayObject>
 #include <QVector3D>
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <map>
 #include <set>
 #include <vector>
@@ -98,6 +101,76 @@ struct Light {
 
 /// Hard cap mirrored by MAX_LIGHTS in mesh.frag.
 inline constexpr int kMaxLights = 4;
+
+/// Which periodic images of the cell are drawn, as a window in fractional
+/// coordinates — the "Show neighboring cells…" setting.
+///
+/// The default 0 → 1 along each axis is the home cell alone, i.e. exactly what
+/// was drawn before this existed. Widening an axis to 0 → 2 adds the image one
+/// lattice vector along it, and the window may run negative (−1 → 1 shows the
+/// home cell and its neighbour on the low side).
+///
+/// A cell is drawn whenever the window touches it AT ALL, so the drawn set is
+/// always whole cells: 0 → 1.5 draws two complete cells rather than slicing
+/// the second one open. Cutting atoms mid-cell would need a per-atom
+/// fractional test, which is a different feature — and one that would hide
+/// atoms of an unwrapped structure whose coordinates already lie outside
+/// [0, 1).
+///
+/// Purely a rendering duplication, like showNeighborCellAtoms: the images are
+/// extra GPU instances and never enter the Structure, so the atom count, the
+/// chemical formula and every exported POSCAR/CIF are unchanged.
+struct NeighborCellRange {
+    double min[3] = {0.0, 0.0, 0.0};
+    double max[3] = {1.0, 1.0, 1.0};
+    /// Draw the 12 wireframe edges around each image as well. Off draws only
+    /// the atoms and bonds of the neighbours, leaving the home cell's own box
+    /// (which `showCell` governs) as the only visible boundary.
+    bool showEdges = true;
+
+    /// Integer lattice translations (i, j, k) the window covers, always at
+    /// least one entry.
+    ///
+    /// Defined inline so the rule can be pinned by a test without linking the
+    /// renderer (and the GL context it needs): it is pure arithmetic, and its
+    /// off-by-one behaviour at integer bounds is the whole contract.
+    std::vector<std::array<int, 3>> cellOffsets() const
+    {
+        // Cell index i along an axis spans fractional [i, i+1), and is drawn
+        // when the window touches it at all. The epsilon keeps an exact
+        // integer bound from pulling in the cell that merely starts there:
+        // with max = 1, ceil(1) - 1 = 0, so 0 -> 1 is the home cell alone
+        // rather than two.
+        constexpr double kEps = 1e-9;
+        int lo[3];
+        int hi[3];
+        for (int axis = 0; axis < 3; ++axis) {
+            const double a = std::min(min[axis], max[axis]);
+            const double b = std::max(min[axis], max[axis]);
+            lo[axis] = static_cast<int>(std::floor(a + kEps));
+            hi[axis] = static_cast<int>(std::ceil(b - kEps)) - 1;
+            if (hi[axis] < lo[axis])
+                hi[axis] = lo[axis]; // a degenerate window still draws one cell
+        }
+        std::vector<std::array<int, 3>> offsets;
+        for (int i = lo[0]; i <= hi[0]; ++i)
+            for (int j = lo[1]; j <= hi[1]; ++j)
+                for (int k = lo[2]; k <= hi[2]; ++k)
+                    offsets.push_back({i, j, k});
+        if (offsets.empty())
+            offsets.push_back({0, 0, 0});
+        return offsets;
+    }
+
+    /// True when the window selects the home cell and nothing else — the
+    /// default, for which the renderer skips replication entirely.
+    bool homeCellOnly() const
+    {
+        const auto offsets = cellOffsets();
+        return offsets.size() == 1
+            && offsets.front() == std::array<int, 3>{0, 0, 0};
+    }
+};
 
 /// Draws a core::Structure. Depending on the representation mode:
 ///   - atoms  -> instanced unit spheres (covalent- or vdW-scaled)
@@ -308,6 +381,11 @@ public:
         /// and never enter the Structure, so the atom count, the chemical
         /// formula and every exported POSCAR/CIF are unchanged.
         bool showNeighborCellAtoms = false;
+        /// Which periodic images of the whole cell are drawn ("Show
+        /// neighboring cells…"). Independent of showNeighborCellAtoms above,
+        /// which completes individual wrapped BONDS: this repeats the entire
+        /// contents of the cell, atoms, bonds and all.
+        NeighborCellRange neighborCells;
         QColor cellColor{166, 166, 178};
         /// 1 = plain GL lines; > 1 renders the edges as thin lit tubes
         /// (core-profile GL clamps glLineWidth, so tubes are the portable

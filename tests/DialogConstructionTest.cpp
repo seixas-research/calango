@@ -26,9 +26,12 @@
 #include "gui/XasResultsWindow.hpp"
 #include "gui/XasWizard.hpp"
 #include "gui/EditVolumetricRenderDialog.hpp"
+#include "gui/GuiUtils.hpp"
 #include "gui/RandomNoiseWizard.hpp"
 #include "gui/SinglePointWizard.hpp"
+#include "gui/TwoDBandsWizard.hpp"
 #include "python_bridge/PythonEngine.hpp"
+#include "render/StructureRenderer.hpp"
 
 #include <QAbstractButton>
 #include <QApplication>
@@ -39,7 +42,9 @@
 #include <QComboBox>
 #include <QGroupBox>
 #include <QDoubleSpinBox>
+#include <QLineEdit>
 #include <QListWidget>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSpinBox>
@@ -762,6 +767,232 @@ int main(int argc, char** argv)
         timeline.stop();
         check(!timeline.isPlaying() && timeline.currentTime() == 0.0,
               "stop rewinds and halts");
+    }
+
+    // The 2D Bands wizard hides the whole engine/DFT chrome (it inherits the
+    // SCF from its baseline) and builds its extras page on top of that, which
+    // is exactly the construction-order shape this file exists to catch.
+    std::printf("2D Bands wizard:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        auto structure = std::make_shared<calango::core::Structure>();
+        TwoDBandsWizard wizard(structure);
+        check(true, "constructs");
+        wizard.setDensityBaselines(
+            {{QStringLiteral("proc_1 — Si"), QStringLiteral("/jobs/1/sp.gpw")}});
+        check(true, "accepts a baseline list");
+
+        // The grid spin box is the one control that changes the cost
+        // quadratically; driving it exercises the note it refreshes.
+        const auto spins = wizard.findChildren<QSpinBox*>();
+        const auto grid = std::find_if(
+            spins.begin(), spins.end(), [](const QSpinBox* spin) {
+                return spin->minimum() == 3 && spin->maximum() == 512;
+            });
+        check(grid != spins.end(), "has the N x N grid control");
+        if (grid != spins.end()) {
+            (*grid)->setValue(48);
+            check((*grid)->value() == 48, "which takes a new value");
+        }
+
+        // The script must name the selected baseline and the chosen grid --
+        // a wizard that generates a script ignoring its own controls is the
+        // failure mode worth pinning here. Read off the live preview, which is
+        // what the user actually reviews before the job is staged.
+        const auto* preview = wizard.findChild<QPlainTextEdit*>();
+        check(preview != nullptr, "has a script preview");
+        if (preview) {
+            const QString script = preview->toPlainText();
+            check(script.contains(QStringLiteral("/jobs/1/sp.gpw")),
+                  "the previewed script restarts from the selected baseline");
+            check(script.contains(QStringLiteral("_n = 48")),
+                  "and uses the grid the dialog shows");
+        }
+    }
+
+    // The smearing combo carries core::SmearingMethod as itemData for the same
+    // reason the eigensolver combo does — the menu is ordered for the user and
+    // no longer mirrors the enum. It also has to show only the parameters the
+    // selected method actually takes.
+    std::printf("GPAW smearing methods:\n");
+    {
+        using calango::core::SmearingMethod;
+        calango::pybridge::PythonEngine python;
+        SinglePointWizard wizard;
+        wizard.show(); // isVisibleTo() needs the page realized
+
+        auto* engine = wizard.findChild<QComboBox*>();
+        const int gpaw = engine
+            ? engine->findData(static_cast<int>(calango::core::CalculatorKind::Gpaw))
+            : -1;
+        if (gpaw >= 0)
+            engine->setCurrentIndex(gpaw);
+
+        const auto combos = wizard.findChildren<QComboBox*>();
+        const auto smearing = std::find_if(
+            combos.begin(), combos.end(), [](const QComboBox* combo) {
+                return combo->itemText(0) == QStringLiteral("Fermi-Dirac");
+            });
+        check(smearing != combos.end(), "the smearing combo is present");
+        if (smearing != combos.end()) {
+            // Every method the request named must be reachable, and each must
+            // carry its own enum rather than its row number.
+            for (const auto& [label, method] :
+                 {std::pair{"Fermi-Dirac", SmearingMethod::FermiDirac},
+                  std::pair{"Gaussian", SmearingMethod::Gaussian},
+                  std::pair{"Methfessel-Paxton", SmearingMethod::MethfesselPaxton},
+                  std::pair{"Marzari-Vanderbilt", SmearingMethod::MarzariVanderbilt},
+                  std::pair{"Tetrahedron method", SmearingMethod::TetrahedronMethod},
+                  std::pair{"Improved tetrahedron method",
+                            SmearingMethod::ImprovedTetrahedronMethod},
+                  std::pair{"Orbital-free", SmearingMethod::OrbitalFree},
+                  std::pair{"Fixed", SmearingMethod::FixedOccupations}}) {
+                const int row = (*smearing)->findText(QLatin1String(label));
+                check(row >= 0, "the method is offered");
+                if (row >= 0)
+                    check((*smearing)->itemData(row).toInt()
+                              == static_cast<int>(method),
+                          "and carries its enum as item data, not its row");
+            }
+
+            // The width spin box: 3 decimals, eV, ≤ 5 — distinct from the SCF
+            // tolerance, which shares the suffix but not the decimals.
+            const auto spins = wizard.findChildren<QDoubleSpinBox*>();
+            const auto width = std::find_if(
+                spins.begin(), spins.end(), [](const QDoubleSpinBox* spin) {
+                    return spin->decimals() == 3 && spin->maximum() == 5.0
+                        && spin->suffix().contains(QStringLiteral("eV"));
+                });
+            const auto ints = wizard.findChildren<QSpinBox*>();
+            const auto order = std::find_if(
+                ints.begin(), ints.end(), [](const QSpinBox* spin) {
+                    return spin->maximum() == 10 && spin->minimum() == 0;
+                });
+            check(width != spins.end(), "the width spin box is present");
+            check(order != ints.end(), "and the Methfessel-Paxton order box");
+
+            const auto select = [&smearing](SmearingMethod method) {
+                (*smearing)->setCurrentIndex(
+                    (*smearing)->findData(static_cast<int>(method)));
+            };
+            if (width != spins.end() && order != ints.end()) {
+                select(SmearingMethod::FermiDirac);
+                check((*width)->isVisibleTo(&wizard), "Fermi-Dirac shows a width");
+                check(!(*order)->isVisibleTo(&wizard), "and no order");
+
+                select(SmearingMethod::MethfesselPaxton);
+                check((*width)->isVisibleTo(&wizard), "MP shows a width");
+                check((*order)->isVisibleTo(&wizard), "and its expansion order");
+
+                select(SmearingMethod::MarzariVanderbilt);
+                check((*width)->isVisibleTo(&wizard), "MV shows a width");
+                check(!(*order)->isVisibleTo(&wizard), "and no order");
+
+                // The exact BZ integrators take neither: showing a width there
+                // would advertise a parameter GPAW rejects.
+                select(SmearingMethod::TetrahedronMethod);
+                check(!(*width)->isVisibleTo(&wizard),
+                      "the tetrahedron method shows no width");
+                check(!(*order)->isVisibleTo(&wizard), "and no order");
+
+                select(SmearingMethod::OrbitalFree);
+                check(!(*width)->isVisibleTo(&wizard),
+                      "orbital-free shows no width either");
+            }
+
+            // "Fixed" swaps in an occupation-number field, and refuses to be
+            // a valid configuration until it is filled — there is no default
+            // GPAW could fall back on.
+            select(SmearingMethod::FixedOccupations);
+            const auto edits = wizard.findChildren<QLineEdit*>();
+            const auto numbers = std::find_if(
+                edits.begin(), edits.end(), [](const QLineEdit* edit) {
+                    return edit->placeholderText().contains(
+                        QStringLiteral("2 2 2 0 0"));
+                });
+            check(numbers != edits.end(),
+                  "Fixed shows an occupation-number field");
+            if (numbers != edits.end()) {
+                check((*numbers)->isVisibleTo(&wizard), "and it is visible");
+                select(SmearingMethod::FermiDirac);
+                check(!(*numbers)->isVisibleTo(&wizard),
+                      "and hidden again for a method that does not take one");
+            }
+        }
+        wizard.hide();
+    }
+
+    // Every file the generators write must reach the Volumetric Data dock with
+    // a readable name. The Hartree potential did not: the dock's table was
+    // keyed off a literal that had drifted from the one the script emits, so
+    // it arrived labelled "potential_hartree.cube". Both ends now share
+    // core::densityFiles, and this asserts the mapping is total over it.
+    std::printf("Volumetric display names:\n");
+    {
+        using namespace calango::core::densityFiles;
+        check(volumetricDisplayName(QLatin1String(kHartree))
+                  == QStringLiteral("Hartree potential"),
+              "the Hartree potential is named, not spelled as its file");
+        for (const char* file : {kAllElectron, kPseudo, kSpin, kHartree, kElf,
+                                 kKineticEnergy, kDensity,
+                                 kChargeDensityDifference}) {
+            const QString name = QLatin1String(file);
+            check(volumetricDisplayName(name) != name,
+                  "every generated density file has a display label");
+        }
+        for (const char* vasp : {"CHGCAR", "AECCAR0", "AECCAR2", "LOCPOT",
+                                 "ELFCAR"}) {
+            const QString name = QLatin1String(vasp);
+            check(volumetricDisplayName(name) != name,
+                  "and so does every VASP grid");
+        }
+        // A cube dropped in by hand keeps its file name: that is the only
+        // honest label available for it, and dropping it would leave the row
+        // blank.
+        check(volumetricDisplayName(QStringLiteral("my_field.cube"))
+                  == QStringLiteral("my_field.cube"),
+              "an unknown file falls back to its own name");
+    }
+
+    // The fractional window of the "Show neighboring cells" dialog. Whole
+    // cells, and the off-by-one at integer bounds is the entire contract:
+    // 0 -> 1 must be ONE cell, not two.
+    std::printf("Neighboring-cell window:\n");
+    {
+        using calango::render::NeighborCellRange;
+        NeighborCellRange range; // the default
+        check(range.homeCellOnly(), "0 -> 1 on every axis is the home cell alone");
+        check(range.cellOffsets().size() == 1, "and draws exactly one cell");
+
+        NeighborCellRange plusX;
+        plusX.max[0] = 2.0;
+        check(!plusX.homeCellOnly(), "0 -> 2 along x is more than the home cell");
+        const auto offsets = plusX.cellOffsets();
+        check(offsets.size() == 2, "and draws two cells");
+        check(offsets[0] == (std::array<int, 3>{0, 0, 0})
+                  && offsets[1] == (std::array<int, 3>{1, 0, 0}),
+              "the home cell and its neighbour along +x");
+
+        NeighborCellRange negative;
+        negative.min[1] = -1.0;
+        check(negative.cellOffsets().size() == 2,
+              "a negative minimum extends the other way");
+
+        NeighborCellRange partial;
+        partial.max[2] = 1.5;
+        check(partial.cellOffsets().size() == 2,
+              "a window that only reaches into a cell still draws it whole");
+
+        NeighborCellRange block;
+        block.max[0] = 2.0;
+        block.max[1] = 2.0;
+        block.max[2] = 2.0;
+        check(block.cellOffsets().size() == 8, "the window is a 3D block");
+
+        NeighborCellRange degenerate;
+        degenerate.max[0] = 0.0; // min == max
+        check(degenerate.cellOffsets().size() == 1,
+              "a degenerate window still draws one cell rather than none");
     }
 
     std::printf(failures == 0 ? "\nAll dialog construction checks passed.\n"

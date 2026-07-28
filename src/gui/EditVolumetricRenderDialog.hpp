@@ -51,6 +51,15 @@ public:
     /// value range (no signal emitted).
     void setFieldRange(double fieldMin, double fieldMax);
 
+    /// Adopt `style` / `mode` wholesale, refreshing every control (no signal
+    /// emitted — the caller already holds these values).
+    ///
+    /// Needed because this dialog is modeless and survives a workspace-tab
+    /// change: the panel keeps one render style per tab, so when the user
+    /// switches tabs the dialog on screen has to start showing the incoming
+    /// tab's settings instead of the outgoing tab's.
+    void setStyle(const VolumetricStyle& style, VolumetricRenderMode mode);
+
     /// Populate the Potential-Map base / secondary field selectors from the
     /// panel's dataset labels; `currentIndex` is the tree's current selection
     /// (offered as the default base). No signal emitted.
@@ -107,6 +116,7 @@ private:
     QCheckBox* sliceBorderCheck_ = nullptr;
 
     // Potential-map colouring (inside the Isosurfaces page)
+    QGroupBox* potentialGroup_ = nullptr; ///< checkable: drives potentialColoring
     QComboBox* potentialSecondaryCombo_ = nullptr;
     QCheckBox* potentialInvertCheck_ = nullptr;
     QComboBox* potentialGradientCombo_ = nullptr;

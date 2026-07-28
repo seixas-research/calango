@@ -87,7 +87,7 @@ StructureInfoWidget::StructureInfoWidget(QWidget* parent)
     makeAction(vacuumButton_, QStringLiteral("expand-height-line"),
                tr("Add vacuum… — extend the cell along chosen lattice "
                   "directions and re-center the atoms in the enlarged cell."));
-    makeAction(wrapButton_, QStringLiteral("contract-left-right-line"),
+    makeAction(wrapButton_, QStringLiteral("map-2-fill"),
                tr("Wrap within the unit cell — translate atoms by whole "
                   "lattice vectors until they lie inside the cell. Acts on the "
                   "viewport selection, or on every atom when nothing is "

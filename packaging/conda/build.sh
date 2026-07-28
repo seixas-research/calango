@@ -33,6 +33,10 @@ if [[ "$(uname)" == "Linux" ]]; then
         "$PREFIX/share/applications/calango.desktop"
     install -Dm644 "$SRC_DIR/packaging/linux/calango-mime.xml" \
         "$PREFIX/share/mime/packages/calango-mime.xml"
-    install -Dm644 "$SRC_DIR/assets/calango/icon_base.png" \
+    # The full-bleed Linux badge, not the margined macOS squircle. Only the
+    # size-agnostic pixmaps slot is filled here: the exact-size hicolor
+    # variants need a scaler that the conda build environment does not
+    # guarantee (the .deb build installs them when ImageMagick is present).
+    install -Dm644 "$SRC_DIR/assets/calango/icon_linux.png" \
         "$PREFIX/share/pixmaps/calango.png"
 fi

@@ -120,12 +120,70 @@ std::string toString(GpawMixerKind mixer)
 std::string toString(SmearingMethod method)
 {
     switch (method) {
-    case SmearingMethod::None: return "None (fixed occupations)";
+    case SmearingMethod::None: return "None (zero-width occupations)";
     case SmearingMethod::Gaussian: return "Gaussian";
     case SmearingMethod::FermiDirac: return "Fermi-Dirac";
     case SmearingMethod::MethfesselPaxton: return "Methfessel-Paxton";
+    case SmearingMethod::MarzariVanderbilt: return "Marzari-Vanderbilt";
+    case SmearingMethod::TetrahedronMethod: return "Tetrahedron method";
+    case SmearingMethod::ImprovedTetrahedronMethod:
+        return "Improved tetrahedron method";
+    case SmearingMethod::OrbitalFree: return "Orbital-free";
+    case SmearingMethod::FixedOccupations: return "Fixed occupations";
     }
-    return "Gaussian";
+    return "Fermi-Dirac";
+}
+
+bool smearingUsesWidth(SmearingMethod method)
+{
+    switch (method) {
+    case SmearingMethod::Gaussian:
+    case SmearingMethod::FermiDirac:
+    case SmearingMethod::MethfesselPaxton:
+    case SmearingMethod::MarzariVanderbilt:
+        return true;
+    case SmearingMethod::None:
+    case SmearingMethod::TetrahedronMethod:
+    case SmearingMethod::ImprovedTetrahedronMethod:
+    case SmearingMethod::OrbitalFree:
+    case SmearingMethod::FixedOccupations:
+        break;
+    }
+    return false;
+}
+
+bool smearingUsesOrder(SmearingMethod method)
+{
+    return method == SmearingMethod::MethfesselPaxton;
+}
+
+bool smearingUsesFixedOccupations(SmearingMethod method)
+{
+    return method == SmearingMethod::FixedOccupations;
+}
+
+std::string gpawSmearingName(SmearingMethod method)
+{
+    switch (method) {
+    // Gaussian smearing is the zeroth-order Methfessel-Paxton expansion —
+    // that is its definition, not an approximation of it — and GPAW has no
+    // separate name for it. Emitting it as such is what makes the menu entry
+    // mean what it says; the previous code sent every non-Fermi-Dirac choice
+    // through as Fermi-Dirac, which is a different occupation function.
+    case SmearingMethod::Gaussian:
+    case SmearingMethod::MethfesselPaxton: return "methfessel-paxton";
+    case SmearingMethod::FermiDirac: return "fermi-dirac";
+    case SmearingMethod::MarzariVanderbilt: return "marzari-vanderbilt";
+    case SmearingMethod::TetrahedronMethod: return "tetrahedron-method";
+    case SmearingMethod::ImprovedTetrahedronMethod:
+        return "improved-tetrahedron-method";
+    case SmearingMethod::OrbitalFree: return "orbital-free";
+    case SmearingMethod::FixedOccupations: return "fixed";
+    // "None" is not a GPAW name: it is Fermi-Dirac at zero width, which is
+    // how GPAW itself spells "do not smear".
+    case SmearingMethod::None: break;
+    }
+    return "fermi-dirac";
 }
 
 namespace {
@@ -393,7 +451,31 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
         ismear = -1;
         break;
     case SmearingMethod::MethfesselPaxton:
-        ismear = 1;
+        // ISMEAR is literally the MP order, so the order spin box maps
+        // straight onto it. Clamped at 1 because order 0 is Gaussian, which
+        // the user would have selected by name if that is what they wanted.
+        ismear = std::max(1, c.smearingOrder);
+        break;
+    case SmearingMethod::TetrahedronMethod:
+        // -4 is the plain linear tetrahedron method, -5 adds Blöchl's
+        // curvature correction — the same distinction GPAW draws between its
+        // tetrahedron and improved-tetrahedron schemes. Both need a
+        // Γ-centred mesh; VASP refuses them for a single k-point.
+        ismear = -4;
+        break;
+    case SmearingMethod::ImprovedTetrahedronMethod:
+        ismear = -5;
+        break;
+    case SmearingMethod::MarzariVanderbilt:
+    case SmearingMethod::OrbitalFree:
+    case SmearingMethod::FixedOccupations:
+        // No VASP analogue: Marzari-Vanderbilt cold smearing is not one of
+        // VASP's ISMEAR schemes, orbital-free DFT is not what VASP does at
+        // all, and explicitly fixed occupations would mean FERWE/FERDO, which
+        // is a different input entirely. A narrow Gaussian is the closest
+        // thing that still runs, and the generated INCAR block says so.
+        ismear = 0;
+        sigma = smearingUsesWidth(c.smearing) ? c.smearingWidthEv : 0.05;
         break;
     }
 
@@ -445,8 +527,23 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
         << "    algo=\"" << algo << "\",\n"
         << "    nelm=" << c.vaspNelm << ",\n"
         << "    ediff=" << c.vaspEdiff << ",\n"
-        << "    ismear=" << ismear << ",\n"
-        << "    sigma=" << sigma << ",\n"
+        << "    ismear=" << ismear << ",  # " << toString(c.smearing) << "\n"
+        << "    sigma=" << sigma << ",\n";
+    // Say so in the script when the selected method had to be approximated,
+    // rather than letting a run silently use a different occupation scheme
+    // than the one named in the wizard.
+    switch (c.smearing) {
+    case SmearingMethod::MarzariVanderbilt:
+    case SmearingMethod::OrbitalFree:
+    case SmearingMethod::FixedOccupations:
+        out << "    # NOTE: " << toString(c.smearing)
+            << " has no VASP ISMEAR equivalent; a narrow Gaussian is used\n"
+               "    #       instead. Select GPAW to run this scheme as chosen.\n";
+        break;
+    default:
+        break;
+    }
+    out
         << "    lreal=" << (c.vaspLreal == "False" ? std::string("False")
                                                    : "\"" + c.vaspLreal + "\"")
         << ",\n";
@@ -988,12 +1085,13 @@ std::string gpawDensityExportBlock(const CalculatorConfig& c)
            "_calc = atoms.calc\n";
 
     if (fields.allElectron) {
-        out << "_calango_export('density_all_electron.cube', 'all_electron',\n"
+        out << "_calango_export('" << densityFiles::kAllElectron
+            << "', 'all_electron',\n"
                "                lambda: _calc.get_all_electron_density("
                "gridrefinement=2))\n";
     }
     if (fields.pseudo) {
-        out << "_calango_export('density_pseudo.cube', 'pseudo',\n"
+        out << "_calango_export('" << densityFiles::kPseudo << "', 'pseudo',\n"
                "                lambda: _calc.get_pseudo_density())\n";
     }
     if (fields.spin) {
@@ -1015,11 +1113,11 @@ std::string gpawDensityExportBlock(const CalculatorConfig& c)
                "meaningful field')\n"
                "    return up - down\n"
                "\n"
-               "_calango_export('density_spin.cube', 'spin', "
-               "_calango_spin_density)\n";
+               "_calango_export('"
+            << densityFiles::kSpin << "', 'spin', _calango_spin_density)\n";
     }
     if (fields.hartree) {
-        out << "_calango_export('potential_hartree.cube', 'hartree',\n"
+        out << "_calango_export('" << densityFiles::kHartree << "', 'hartree',\n"
                "                lambda: _calc.get_electrostatic_potential())\n";
     }
     if (fields.elf) {
@@ -1035,7 +1133,8 @@ std::string gpawDensityExportBlock(const CalculatorConfig& c)
                "        handle.update()\n"
                "        return handle.get_electronic_localization_function()\n"
                "\n"
-               "_calango_export('elf.cube', 'elf', _calango_elf)\n";
+               "_calango_export('"
+            << densityFiles::kElf << "', 'elf', _calango_elf)\n";
     }
     if (fields.kineticEnergy) {
         out << "def _calango_kinetic_energy_density():\n"
@@ -1047,8 +1146,8 @@ std::string gpawDensityExportBlock(const CalculatorConfig& c)
                "    density.update_ked(dft.ibzwfs)\n"
                "    return _np.asarray(density.taut_sR.data).sum(axis=0)\n"
                "\n"
-               "_calango_export('kinetic_energy_density.cube', "
-               "'kinetic_energy',\n"
+               "_calango_export('"
+            << densityFiles::kKineticEnergy << "', 'kinetic_energy',\n"
                "                _calango_kinetic_energy_density)\n";
     }
     return out.str();
@@ -1181,8 +1280,15 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                 << "#   energy tolerance   : " << c.scfEnergyTolEv << " eV\n"
                 << "#   spin polarization  : "
                 << (c.spinPolarized ? "on" : "off") << "\n"
-                << "#   smearing           : " << toString(c.smearing)
-                << " (width " << c.smearingWidthEv << " eV)\n";
+                << "#   smearing           : " << toString(c.smearing);
+            // Only report the parameters the method actually reads — a width
+            // printed beside "Tetrahedron method" reads as a setting that was
+            // applied, when nothing consumes it.
+            if (smearingUsesWidth(c.smearing))
+                out << " (width " << c.smearingWidthEv << " eV)";
+            if (smearingUsesOrder(c.smearing))
+                out << " (order " << c.smearingOrder << ")";
+            out << "\n";
         }
         out << "import numpy as _np\n"
                "import json\n"
@@ -1211,7 +1317,17 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "try:\n"
                "    _magmom = float(atoms.get_magnetic_moment())\n"
                "except Exception:\n"
-               "    _magmom = None\n";
+               "    _magmom = None\n"
+               "# Per-atom moments, which is what a magnetic structure is\n"
+               "# actually about: the total is 0 for any antiferromagnet, so\n"
+               "# reporting only the total said \"not magnetic\" about exactly\n"
+               "# the cases worth looking at. Collinear gives (N,); a\n"
+               "# non-collinear run gives (N, 3) and is kept as such.\n"
+               "try:\n"
+               "    _magmoms = _np.asarray(atoms.get_magnetic_moments(),\n"
+               "                           dtype=float).tolist()\n"
+               "except Exception:\n"
+               "    _magmoms = None\n";
         // 1 Hartree = 27.211386245988 eV (CODATA). The convergence targets the
         // wizard collected are echoed into the summary so the viewer can show
         // the tolerance the run was held to.
@@ -1222,6 +1338,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "    \"fmax_eV_per_A\": fmax,\n"
                "    \"fmax_atom\": _fmax_atom,\n"
                "    \"total_magnetic_moment\": _magmom,\n"
+               "    \"magnetic_moments\": _magmoms,\n"
                "    \"natoms\": int(len(atoms)),\n"
                "    \"forces_eV_per_A\": [[float(v) for v in row] "
                "for row in _forces],\n"
@@ -1235,6 +1352,15 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "with open(\"single_point.json\", \"w\") as _fh:\n"
                "    json.dump(_summary, _fh, indent=2)\n"
                "print(\"CALANGO_RESULT single_point=single_point.json\", "
+               "flush=True)\n"
+               "# The same geometry with the CONVERGED per-atom results\n"
+               "# attached. ase.io.extxyz writes the calculator's results as\n"
+               "# columns (forces:R:3, magmoms:R:1), which is how the computed\n"
+               "# moments reach the viewport's vector overlay — a single point\n"
+               "# writes no trajectory, so without this file the overlay had\n"
+               "# nothing but the input guess to draw.\n"
+               "write(\"single_point.extxyz\", atoms)\n"
+               "print(\"CALANGO_RESULT structure=single_point.extxyz\", "
                "flush=True)\n";
         if (c.calculator == CalculatorKind::Gpaw) {
             // Save the converged charge density so a later Electronic Structure
@@ -1716,19 +1842,56 @@ std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,
                          "magnetic moments\n";
     else if (c.spinMode == SpinMode::Collinear || c.spinPolarized)
         out << indent << "spinpol=True,\n";
-    if (c.smearing != SmearingMethod::None) {
-        // GPAW exposes only Fermi-Dirac / Marzari-Vanderbilt broadening; the
-        // Gaussian and Methfessel-Paxton choices in the shared smearing combo
-        // have no GPAW equivalent, so they map onto Fermi-Dirac and say so.
-        out << indent << "occupations={\"name\": \"fermi-dirac\", \"width\": "
-            << c.smearingWidthEv << "},\n";
-        if (c.smearing != SmearingMethod::FermiDirac)
-            out << indent << "# (" << toString(c.smearing)
-                << " has no GPAW equivalent — using Fermi-Dirac at the same "
-                   "width.)\n";
-    } else {
+    // Occupations. Each method gets its own GPAW `name` and only the keys that
+    // name accepts — a width on a tetrahedron scheme or an order on Fermi-Dirac
+    // is not a harmless extra, GPAW raises on it.
+    // https://gpaw.readthedocs.io/documentation/smearing.html
+    if (c.smearing == SmearingMethod::None) {
+        // GPAW's own way of spelling "do not smear".
         out << indent
             << "occupations={\"name\": \"fermi-dirac\", \"width\": 0.0},\n";
+    } else {
+        out << indent << "occupations={\"name\": \"" << gpawSmearingName(c.smearing)
+            << "\"";
+        if (smearingUsesWidth(c.smearing))
+            out << ", \"width\": " << c.smearingWidthEv;
+        if (smearingUsesOrder(c.smearing))
+            out << ", \"order\": " << c.smearingOrder;
+        else if (c.smearing == SmearingMethod::Gaussian)
+            // Written out rather than left to GPAW's default: order 0 is what
+            // makes this Gaussian rather than some other MP expansion, and a
+            // change to that default would otherwise silently alter the run.
+            out << ", \"order\": 0";
+        if (smearingUsesFixedOccupations(c.smearing)) {
+            out << ", \"numbers\": [";
+            for (std::size_t s = 0; s < c.fixedOccupations.size(); ++s) {
+                out << (s ? ", [" : "[");
+                const auto& channel = c.fixedOccupations[s];
+                for (std::size_t n = 0; n < channel.size(); ++n)
+                    out << (n ? ", " : "") << channel[n];
+                out << "]";
+            }
+            out << "]";
+        }
+        out << "},";
+        if (c.smearing == SmearingMethod::Gaussian)
+            out << "  # Gaussian == Methfessel-Paxton at order 0";
+        // An empty `numbers` is not something the generator can paper over —
+        // there is no configuration to guess. Marked loudly here so the
+        // script-review stage shows the gap rather than the run failing later
+        // with a message that does not name the cause.
+        if (smearingUsesFixedOccupations(c.smearing) && c.fixedOccupations.empty())
+            out << "  # <- EMPTY: enter one occupation number per band in the "
+                   "setup dialog";
+        out << "\n";
+        if (c.smearing == SmearingMethod::TetrahedronMethod
+            || c.smearing == SmearingMethod::ImprovedTetrahedronMethod)
+            out << indent
+                << "# The tetrahedron methods integrate the BZ over a "
+                   "Monkhorst-Pack grid;\n"
+                << indent
+                << "# they take no width and will fail on a Gamma-only "
+                   "sampling.\n";
     }
     return out.str();
 }
@@ -1784,11 +1947,11 @@ std::string AseScriptGenerator::densityCubeScript(const std::string& gpwDir,
            "_density = _np.ascontiguousarray(\n"
            "    _np.asarray(getattr(_density, 'data', _density), dtype=float))\n"
            "from ase.io.cube import write_cube\n"
-           "with open('density.cube', 'w') as _dfh:\n"
+        << "with open('" << densityFiles::kDensity << "', 'w') as _dfh:\n"
            "    write_cube(_dfh, atoms, data=_density)\n"
            "_log.progress(2, 2)\n"
-        << "print('CALANGO_RESULT density_cube=density.cube "
-        << (allElectron ? "all_electron" : "pseudo") << "', flush=True)\n";
+        << "print('CALANGO_RESULT density_cube=" << densityFiles::kDensity
+        << " " << (allElectron ? "all_electron" : "pseudo") << "', flush=True)\n";
     return out.str();
 }
 
@@ -1820,18 +1983,40 @@ std::string AseScriptGenerator::generate(const CalculatorConfig& config,
         // fallback — overwriting real per-atom moments with one number was
         // how a carefully-set antiferromagnetic seed became a ferromagnetic
         // one without a word.
+        // The test is whether the structure CARRIES the column, not whether
+        // the values in it are non-zero. Those are different questions, and
+        // conflating them silently overwrote a deliberate all-zero seed with
+        // the uniform fallback: a user who set every moment to 0 in Edit
+        // Structure got 1 uB per atom instead, and no way to ask for the
+        // non-magnetic starting point of a spin-polarized run.
+        //
+        // atoms.has() is exactly this distinction — ase.io.extxyz round-trips
+        // an all-zero `initial_magmoms` column faithfully, while a structure
+        // that never had one reports no array at all.
         out << "import numpy as _np\n"
                "_seeded = _np.asarray(atoms.get_initial_magnetic_moments(),\n"
                "                      dtype=float)\n"
-               "if _np.abs(_seeded).max(initial=0.0) > 1e-12:\n"
+               "if atoms.has('initial_magmoms'):\n"
                "    print(f\"CALANGO_INFO initial magnetic moments from the \"\n"
                "          f\"structure: {_np.round(_seeded, 3).tolist()}\",\n"
                "          flush=True)\n"
+               "    if _np.abs(_seeded).max(initial=0.0) <= 1e-12:\n"
+               "        # Deliberate, and honored: an all-zero seed is the\n"
+               "        # non-magnetic starting point. It is still worth a note,\n"
+               "        # because a spin-polarized SCF started there usually\n"
+               "        # stays there — the symmetric solution is a stationary\n"
+               "        # point, so this finds a magnetic ground state only if\n"
+               "        # something else breaks the symmetry.\n"
+               "        print(\"CALANGO_INFO every initial magnetic moment is \"\n"
+               "              \"zero — this is the non-magnetic seed, used as \"\n"
+               "              \"set. A spin-polarized SCF started from it \"\n"
+               "              \"normally converges back to the non-magnetic \"\n"
+               "              \"solution.\", flush=True)\n"
                "else:\n"
-               "    # Nothing set anywhere. A spin-polarized run seeded with\n"
-               "    # all-zero moments converges straight back to the\n"
-               "    # non-magnetic solution, which looks like \"this system\n"
-               "    # is not magnetic\" but is really \"nobody asked\".\n";
+               "    # No column at all: nothing was ever set. A spin-polarized\n"
+               "    # run seeded with all-zero moments converges straight back\n"
+               "    # to the non-magnetic solution, which looks like \"this\n"
+               "    # system is not magnetic\" but is really \"nobody asked\".\n";
         if (nc)
             out << "    atoms.set_initial_magnetic_moments(\n"
                    "        [[0.0, 0.0, " << config.initialMagMoment

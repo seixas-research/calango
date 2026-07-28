@@ -340,6 +340,7 @@ QWidget* EditVolumetricRenderDialog::buildIsosurfacePage()
     // as a checkbox here it is what it actually is — an option on this
     // surface.
     auto* potentialGroup = new QGroupBox(tr("Potential Map Color"), page);
+    potentialGroup_ = potentialGroup; // setStyle() has to re-check it
     potentialGroup->setCheckable(true);
     potentialGroup->setChecked(style_.potentialColoring);
     potentialGroup->setToolTip(
@@ -690,6 +691,80 @@ void EditVolumetricRenderDialog::setDatasets(const QStringList& labels,
     potentialSecondaryCombo_->setCurrentIndex(idx >= 0 ? idx : 0);
     style_.potentialSecondaryIndex =
         potentialSecondaryCombo_->currentData().toInt();
+    updating_ = false;
+}
+
+void EditVolumetricRenderDialog::setStyle(const VolumetricStyle& style,
+                                          VolumetricRenderMode mode)
+{
+    // `updating_` suppresses emitChange() for the whole sweep: every setValue()
+    // below fires the control's own handler, and without the guard restoring a
+    // tab's saved style would emit two dozen styleChanged signals — each one a
+    // full re-extraction of the isosurface.
+    updating_ = true;
+    style_ = style;
+
+    modeCombo_->setCurrentIndex(static_cast<int>(mode));
+    stack_->setCurrentIndex(static_cast<int>(mode));
+
+    // Isosurfaces.
+    isoSpin_->setValue(std::clamp(style_.isovalue, fieldMin_, fieldMax_));
+    syncIsoSlider();
+    drawStyleCombo_->setCurrentIndex(
+        drawStyleCombo_->findData(static_cast<int>(style_.drawStyle)));
+    dotSizeSpin_->setValue(style_.dotSize);
+    dotStrideSpin_->setValue(style_.dotStride);
+    meshShadeSpin_->setValue(style_.meshShade);
+    isoOpacitySpin_->setValue(style_.isoOpacity);
+    shadingCombo_->setCurrentIndex(
+        shadingCombo_->findData(static_cast<int>(style_.shading)));
+    ambientSpin_->setValue(style_.ambient);
+    specularSpin_->setValue(style_.specular);
+    smoothingSpin_->setValue(style_.smoothing);
+    updateColorButton(posColorButton_, style_.positiveColor);
+    updateColorButton(negColorButton_, style_.negativeColor);
+    isoInterpCombo_->setCurrentIndex(static_cast<int>(style_.gridInterpolation));
+
+    // Potential-map colouring.
+    potentialGroup_->setChecked(style_.potentialColoring);
+    potentialGradientCombo_->setCurrentIndex(
+        static_cast<int>(std::max<qsizetype>(
+            0, volumetricGradients().indexOf(style_.gradient))));
+    potentialInvertCheck_->setChecked(style_.invertGradient);
+    potentialBoundsCheck_->setChecked(style_.potentialUseBounds);
+    potentialMinSpin_->setValue(style_.potentialMin);
+    potentialMaxSpin_->setValue(style_.potentialMax);
+    potentialMinSpin_->setEnabled(style_.potentialUseBounds);
+    potentialMaxSpin_->setEnabled(style_.potentialUseBounds);
+    // The secondary-field index is a registry position and belongs to the
+    // OTHER tab's dataset list; setDatasets() re-resolves it against this
+    // tab's, which the panel calls right after restoring.
+
+    // Colour slice.
+    for (int i = 0; i < 3; ++i)
+        millerSpins_[i]->setValue(i == 0   ? style_.millerH
+                                      : i == 1 ? style_.millerK
+                                               : style_.millerL);
+    sliceOffsetSlider_->setValue(static_cast<int>(
+        std::clamp(style_.sliceOffset, 0.0, 1.0) * kSliderSteps));
+    const int extentIndex =
+        sliceExtentCombo_->findData(std::clamp(style_.sliceReplicas, 1, 5));
+    sliceExtentCombo_->setCurrentIndex(extentIndex >= 0 ? extentIndex : 0);
+    sliceBorderCheck_->setChecked(style_.sliceShowBorder);
+    sliceGradientCombo_->setCurrentIndex(
+        static_cast<int>(std::max<qsizetype>(
+            0, volumetricGradients().indexOf(style_.gradient))));
+    sliceInvertCheck_->setChecked(style_.invertGradient);
+    sliceBoundsCheck_->setChecked(style_.sliceUseBounds);
+    sliceMinSpin_->setValue(style_.sliceMin);
+    sliceMaxSpin_->setValue(style_.sliceMax);
+    sliceMinSpin_->setEnabled(style_.sliceUseBounds);
+    sliceMaxSpin_->setEnabled(style_.sliceUseBounds);
+    sliceInterpCombo_->setCurrentIndex(
+        static_cast<int>(style_.sliceInterpolation));
+    sliceOpacitySpin_->setValue(style_.sliceOpacity);
+
+    syncIsoStyleEnabled();
     updating_ = false;
 }
 

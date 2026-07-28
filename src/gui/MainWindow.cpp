@@ -63,6 +63,8 @@
 #include "gui/WannierDialog.hpp"
 #include "gui/MlwfViewer.hpp"
 #include "gui/SinglePointViewer.hpp"
+#include "gui/TwoDBandsWindow.hpp"
+#include "gui/TwoDBandsWizard.hpp"
 #include "gui/VolumetricPanel.hpp"
 #include "gui/WannierWizard.hpp"
 #include "gui/XasResultsWindow.hpp"
@@ -1051,6 +1053,14 @@ void MainWindow::createMenusAndDocks()
                                   &MainWindow::show2DOptics)
         ->setToolTip(tr("Absorbance A(ω), 2D conductivity σ₂D and sheet "
                         "polarizability α₂D from an inherited ground state"));
+    // Directly after 2D Optics: both are response properties of a sheet
+    // evaluated over its own two-dimensional Brillouin zone, and both inherit
+    // a converged ground state rather than computing one.
+    twoDimensionalMenu->addAction(tr("2D &Bands…"), this,
+                                  &MainWindow::show2DBands)
+        ->setToolTip(tr("Band structure of a sheet as surfaces "
+                        "E_n(kx, ky) over the 2D Brillouin zone, rather than "
+                        "along a k-path"));
     twoDimensionalMenu->addAction(tr("&Graphene Oxide…"), this,
                                   &MainWindow::openGrapheneOxideBuilder)
         ->setToolTip(tr("Functionalized graphene: epoxides, hydroxyls, "
@@ -3773,6 +3783,102 @@ void MainWindow::openGwResults(const QString& directory)
     window->show();
 }
 
+void MainWindow::show2DBands()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()
+        || !doc->structure->cell().isDefined()) {
+        QMessageBox::information(this, tr("2D Bands"),
+                                 tr("Open a periodic structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    // GPAW only, and a saved .gpw specifically: the method is
+    // calc.fixed_density() on the stored wavefunctions. A VASP CHGCAR — which
+    // the 1D Electronic Structure wizard accepts, since VASP can restart from
+    // one with ICHARG = 11 — cannot serve here.
+    const QList<QPair<QString, QString>> baselines = gpawDensityFiles();
+    if (baselines.isEmpty()) {
+        QMessageBox::critical(
+            this, tr("2D Bands"),
+            tr("2D band surfaces are evaluated non-self-consistently on a "
+               "converged density, so a completed GPAW Single-Point "
+               "Calculation is required first.\n\n"
+               "Run one with wavefunction export enabled — it writes "
+               "single_point.gpw, which is what this restarts from."));
+        return;
+    }
+
+    TwoDBandsWizard wizard(doc->structure, this);
+    wizard.setDensityBaselines(baselines);
+    runSimulationWizard(wizard, tr("2D Bands"), /*expectFrames=*/false);
+}
+
+void MainWindow::open2DBandsResults(const QString& directory)
+{
+    auto* viewer = new TwoDBandsWindow(this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    if (!viewer->loadResults(directory + QStringLiteral("/bands_2d.json"))) {
+        delete viewer;
+        QMessageBox::warning(
+            this, tr("2D Bands"),
+            tr("Could not read bands_2d.json in %1.").arg(directory));
+        return;
+    }
+    viewer->show();
+}
+
+void MainWindow::adoptSinglePointResults(const QString& directory)
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure)
+        return;
+    const QString path = directory + QStringLiteral("/single_point.extxyz");
+    if (!QFile::exists(path))
+        return; // a run from an older Calango, or a non-ASE backend
+
+    core::Structure converged;
+    try {
+        converged = pybridge::AseBridge::readStructure(path.toStdString());
+    } catch (const std::exception&) {
+        return; // the summary viewer still opens; the overlay simply stays as-is
+    }
+    // Same system, or nothing doing. Writing one run's per-atom results onto a
+    // different structure would be silently, confidently wrong.
+    if (converged.size() != doc->structure->size())
+        return;
+
+    // Only the computed columns. `initial_magmoms` is deliberately NOT copied:
+    // it is the user's input guess, it is already on the structure, and
+    // overwriting it with what ASE echoed back would quietly redefine the seed
+    // for the next run.
+    int adopted = 0;
+    for (const auto& [name, values] : converged.scalarFields()) {
+        if (name == "initial_magmoms")
+            continue;
+        doc->structure->setScalarField(name, values);
+        ++adopted;
+    }
+    for (const auto& [name, vectors] : converged.vectorFields()) {
+        if (name == "initial_magmoms")
+            continue;
+        doc->structure->setVectorField(name, vectors);
+    }
+    if (adopted == 0)
+        return;
+
+    // frameCamera=false: the atoms have not moved, so re-framing the view
+    // after a single point would be an unexplained camera jump.
+    notifyStructureChanged(/*frameCamera=*/false);
+    if (converged.vectorFields().count("magmoms") > 0)
+        statusBar()->showMessage(
+            tr("Converged magnetic moments loaded — draw them with Spatial "
+               "References → Vectors → Magnetic moment"),
+            8000);
+}
+
 void MainWindow::openSinglePointResults(const QString& directory)
 {
     auto* viewer = new SinglePointViewer(this);
@@ -3790,29 +3896,11 @@ int MainWindow::registerDensityCubes(const QString& directory)
 {
     if (!volumetricPanel_)
         return 0;
-    // Names the generated scripts write, with the label each field deserves in
-    // the dock. Anything else found is registered under its own file name
-    // rather than skipped — a hand-dropped cube is still a grid the user wants
+    // The file -> display-label mapping lives in GuiUtils, keyed off the same
+    // core::densityFiles constants the generators emit, so the two ends cannot
+    // drift apart again. Anything unrecognized keeps its own file name rather
+    // than being skipped — a hand-dropped cube is still a grid the user wants
     // to see.
-    static const QHash<QString, QString> kLabels = {
-        {QStringLiteral("density_all_electron.cube"), tr("All-electron density")},
-        {QStringLiteral("density_pseudo.cube"), tr("Pseudodensity")},
-        {QStringLiteral("density_spin.cube"), tr("Spin density")},
-        {QStringLiteral("hartree_potential.cube"), tr("Hartree potential")},
-        {QStringLiteral("elf.cube"), tr("ELF η(r)")},
-        {QStringLiteral("kinetic_energy_density.cube"),
-         tr("Kinetic energy density τ(r)")},
-        {QStringLiteral("density.cube"), tr("Charge density")},
-        {QStringLiteral("cdd.cube"), tr("Charge density difference Δρ")},
-        // VASP writes its density as a CHGCAR rather than a cube, so the sweep
-        // has to look for it by name — there is no extension to glob for.
-        {QStringLiteral("CHGCAR"), tr("Charge density (CHGCAR)")},
-        {QStringLiteral("AECCAR0"), tr("Core charge density (AECCAR0)")},
-        {QStringLiteral("AECCAR2"), tr("All-electron density (AECCAR2)")},
-        {QStringLiteral("LOCPOT"), tr("Local potential (LOCPOT)")},
-        {QStringLiteral("ELFCAR"), tr("ELF η(r) (ELFCAR)")},
-    };
-
     Document* doc = currentDocument();
     const QString structLabel = (doc && doc->structure)
         ? QString::fromStdString(doc->structure->chemicalFormula())
@@ -3843,7 +3931,7 @@ int MainWindow::registerDensityCubes(const QString& directory)
         if (name.startsWith(QStringLiteral("wannier_")))
             continue;
         volumetricPanel_->registerResultFile(dir.filePath(name),
-                                             kLabels.value(name, name),
+                                             volumetricDisplayName(name),
                                              structLabel);
         ++added;
     }
@@ -4003,6 +4091,8 @@ std::vector<MainWindow::ViewerEntry> MainWindow::viewersFor(
         {"raman_ir.json", tr("Raman / IR Spectroscopy Viewer"),
          &MainWindow::openRamanIrResults},
         {"wannier.json", tr("MLWF Viewer"), &MainWindow::openMlwfResults},
+        {"bands_2d.json", tr("2D Band Surfaces Viewer"),
+         &MainWindow::open2DBandsResults},
         {"gw.json", tr("GW Viewer"), &MainWindow::openGwResults},
     };
     std::vector<ViewerEntry> available;
@@ -4507,6 +4597,10 @@ void MainWindow::onProcessResultRequested(const QString& directory)
     }
     if (QFile::exists(directory + QStringLiteral("/wannier.json"))) {
         openMlwfResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/bands_2d.json"))) {
+        open2DBandsResults(directory);
         return;
     }
     if (QFile::exists(directory + QStringLiteral("/xas.json"))) {
@@ -6340,6 +6434,11 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         openMlwfResults(lastJobDir_);
         return;
     }
+    // 2D Bands: open the surface viewer.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/bands_2d.json"))) {
+        open2DBandsResults(lastJobDir_);
+        return;
+    }
     // Born effective charges: open the Z* tensor table.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/born_charges.json"))) {
         openBornChargesResults(lastJobDir_);
@@ -6389,6 +6488,12 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     }
     // Single-point runs: open the dedicated summary viewer.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/single_point.json"))) {
+        // First, hand the converged per-atom results to the structure on
+        // screen, so the viewport's "Magnetic moment" and "Force" overlays
+        // draw the RESULT rather than staying empty (or, worse, showing only
+        // the initial guess). A single point writes no trajectory, so this
+        // file is the only place those columns ever appear.
+        adoptSinglePointResults(lastJobDir_);
         openSinglePointResults(lastJobDir_);
         return;
     }
@@ -6463,9 +6568,10 @@ void MainWindow::about()
 
     QMessageBox box(this);
     box.setWindowTitle(tr("About Calango"));
-    // Brand banner: the app icon, scaled for the dialog.
+    // Brand banner: the bare mark rather than either platform app icon, so the
+    // dialog does not show a second rounded plate inside the dialog's own.
     box.setIconPixmap(
-        QPixmap(QStringLiteral(":/assets/calango/icon_base.png"))
+        QPixmap(QStringLiteral(":/assets/calango/logo.png"))
             .scaled(140, 140, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     box.setTextFormat(Qt::RichText);
     box.setText(

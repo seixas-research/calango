@@ -127,6 +127,35 @@ void VolumeViewWidget::frameBox()
     update();
 }
 
+void VolumeViewWidget::setMesh(std::vector<float> interleavedPosNormalColor)
+{
+    isoBuffer_.staging = std::move(interleavedPosNormalColor);
+    isoBuffer_.vertexCount = static_cast<int>(isoBuffer_.staging.size() / 9);
+    isoBuffer_.dirty = true;
+    update();
+}
+
+void VolumeViewWidget::setLines(std::vector<float> interleavedPosNormalColor)
+{
+    boxBuffer_.staging = std::move(interleavedPosNormalColor);
+    boxBuffer_.vertexCount = static_cast<int>(boxBuffer_.staging.size() / 9);
+    boxBuffer_.dirty = true;
+    update();
+}
+
+void VolumeViewWidget::setBounds(const QVector3D& center, float radius)
+{
+    boxCenter_ = center;
+    boxRadius_ = std::max(radius, 1e-3f);
+    frameBox();
+}
+
+void VolumeViewWidget::setMeshOpacity(float alpha)
+{
+    meshAlpha_ = std::clamp(alpha, 0.0f, 1.0f);
+    update();
+}
+
 void VolumeViewWidget::initializeGL()
 {
     initializeOpenGLFunctions();
@@ -195,7 +224,7 @@ void VolumeViewWidget::paintGL()
     // The isosurface last, slightly translucent, so slices stay readable.
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    draw(isoBuffer_, GL_TRIANGLES, false, 0.88f);
+    draw(isoBuffer_, GL_TRIANGLES, false, meshAlpha_);
     glDisable(GL_BLEND);
     program_.release();
 }

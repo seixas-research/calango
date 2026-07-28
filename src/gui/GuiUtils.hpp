@@ -32,6 +32,19 @@ namespace calango::gui {
 /// Representation, Lighting and Unit Cell & Axes panels.
 void setButtonColor(QPushButton* button, const QColor& color);
 
+/// The label a volumetric file registered from a finished run should carry in
+/// the Volumetric Data dock — "Hartree potential" rather than
+/// `potential_hartree.cube`.
+///
+/// Covers every field the generators write (core::densityFiles) plus the VASP
+/// grids, which are recognized by name because they carry no extension. An
+/// unknown name maps to ITSELF: a cube dropped in by hand is still a grid the
+/// user wants to see, and its file name is the only honest label for it.
+///
+/// A free function rather than a table inside MainWindow so the mapping can be
+/// pinned by a test — it drifted out of sync with the generator once already.
+QString volumetricDisplayName(const QString& fileName);
+
 /// The chemical species present in `structure`, sorted and unique.
 ///
 /// Every wizard that offers the Hubbard editor needs this to seed its element

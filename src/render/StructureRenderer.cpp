@@ -47,6 +47,41 @@ constexpr int kFloatsPerInstance = 25;
 /// benzene ring's inner opening stays open.
 constexpr float kLicoriceRadius = 2.5f;
 
+/// Repeat `data` once per entry of `shifts`, translating each copy.
+///
+/// Works on any of the renderer's float streams: `stride` is the record length
+/// and `offset` the index of the record's x component — 12 for an instance
+/// (the translation column of the column-major model matrix), 0 for a vertex.
+/// The whole stream is copied once and re-emitted per shift, which is what
+/// makes replication independent of HOW a record was built: an atom, a bond,
+/// an arrowhead and a ribbon segment all travel by the same lattice vector,
+/// and none of the builders above needs to know this exists.
+void replicateStream(std::vector<float>& data, int stride, int offset,
+                     const std::vector<QVector3D>& shifts)
+{
+    if (data.empty() || shifts.empty())
+        return;
+    // Nothing to do for the identity-only case, which is the default and must
+    // not pay for a copy of every buffer on every rebuild.
+    if (shifts.size() == 1 && shifts.front().isNull())
+        return;
+    const std::vector<float> base = data;
+    data.clear();
+    data.reserve(base.size() * shifts.size());
+    const auto span = static_cast<std::size_t>(stride);
+    for (const QVector3D& shift : shifts) {
+        const std::size_t start = data.size();
+        data.insert(data.end(), base.begin(), base.end());
+        if (shift.isNull())
+            continue;
+        for (std::size_t r = start; r + span <= data.size(); r += span) {
+            data[r + static_cast<std::size_t>(offset) + 0] += shift.x();
+            data[r + static_cast<std::size_t>(offset) + 1] += shift.y();
+            data[r + static_cast<std::size_t>(offset) + 2] += shift.z();
+        }
+    }
+}
+
 /// One instance record. `color` is sampled at the mesh's z = 0 end and
 /// `color2` at z = 1 (mesh.vert interpolates axially — the bond gradient);
 /// pass the same color twice for uniform meshes (spheres, cell tubes).
@@ -1558,6 +1593,54 @@ void StructureRenderer::setStructure(const core::Structure* structure,
     if (ribbon)
         buildRibbon(structure, casts, selection, bondInstances, atomInstances);
 
+    // --- Neighbouring cells -------------------------------------------------
+    // Done here, on the finished streams, rather than inside each builder: the
+    // scene of one cell is already assembled, and every periodic image of it
+    // is that same scene translated by a lattice vector. One pass over the
+    // buffers therefore replicates atoms, bonds, vector arrows, wireframe
+    // geometry and ribbons alike, with no builder above aware of it.
+    //
+    // `cellShifts` is empty when there is nothing to do, which is the default
+    // (0 -> 1 on every axis) and costs nothing.
+    std::vector<QVector3D> cellShifts;
+    if (structure && structure->cell().isDefined()
+        && !style_.neighborCells.homeCellOnly()) {
+        const auto& vectors = structure->cell().vectors();
+        QVector3D mean;
+        for (const auto& offset : style_.neighborCells.cellOffsets()) {
+            const core::Vec3 shift = vectors[0] * static_cast<double>(offset[0])
+                + vectors[1] * static_cast<double>(offset[1])
+                + vectors[2] * static_cast<double>(offset[2]);
+            cellShifts.push_back(toQt(shift));
+            mean += cellShifts.back();
+        }
+        // Re-centre the shadow/depth volume on the replicated set. Leaving it
+        // around the home cell alone would clip the images out of the shadow
+        // map, which shows as neighbours that cast and receive no shadow.
+        mean /= static_cast<float>(cellShifts.size());
+        float reach = 0.0f;
+        for (const QVector3D& shift : cellShifts)
+            reach = std::max(reach, (shift - mean).length());
+        sceneCenter_ += mean;
+        sceneRadius_ += reach;
+    }
+    if (!cellShifts.empty()) {
+        for (std::vector<float>* stream :
+             {&atomInstances, &bondInstances, &coneInstances})
+            replicateStream(*stream, kFloatsPerInstance, /*offset=*/12,
+                            cellShifts);
+        for (std::vector<float>* stream : {&wireBondVertices, &wireAtomVertices})
+            replicateStream(*stream, /*stride=*/6, /*offset=*/0, cellShifts);
+        // The cell wireframe follows only when the user asked for the boxes.
+        // Unchecked, the home cell keeps its own outline (that is `showCell`'s
+        // business) and the neighbours are drawn as bare atoms and bonds.
+        if (style_.neighborCells.showEdges) {
+            replicateStream(cellTubeInstances, kFloatsPerInstance,
+                            /*offset=*/12, cellShifts);
+            replicateStream(cellVertices, /*stride=*/3, /*offset=*/0, cellShifts);
+        }
+    }
+
     sphere_.instanceCount = static_cast<int>(atomInstances.size()) / kFloatsPerInstance;
     sphere_.instanceBuffer.bind();
     sphere_.instanceBuffer.allocate(atomInstances.data(),
@@ -1581,6 +1664,11 @@ void StructureRenderer::setStructure(const core::Structure* structure,
     std::vector<float> polyEdgeVertices;
     if (polyhedral)
         buildPolyhedra(structure, selection, polyFaceVertices, polyEdgeVertices);
+    // Built after the replication block above, so they are repeated here — a
+    // coordination polyhedron or a molecular surface is part of the cell's
+    // contents like everything else.
+    replicateStream(polyFaceVertices, /*stride=*/6, /*offset=*/0, cellShifts);
+    replicateStream(polyEdgeVertices, /*stride=*/6, /*offset=*/0, cellShifts);
     uploadColoredBuffer(polyhedronFaces_, polyFaceVertices);
     uploadColoredBuffer(polyhedronEdges_, polyEdgeVertices);
 
@@ -1588,6 +1676,7 @@ void StructureRenderer::setStructure(const core::Structure* structure,
     std::vector<float> surfaceVertices;
     if (surface)
         buildMolecularSurface(structure, casts, surfaceVertices);
+    replicateStream(surfaceVertices, /*stride=*/6, /*offset=*/0, cellShifts);
     uploadColoredBuffer(molecularSurface_, surfaceVertices);
 
     cellTube_.instanceCount =

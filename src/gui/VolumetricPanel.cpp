@@ -382,18 +382,53 @@ void VolumetricPanel::applyWorkspaceFilter()
     }
 }
 
+void VolumetricPanel::stashWorkspaceState()
+{
+    if (activeWorkspace_ >= 0)
+        workspaceStates_[activeWorkspace_] = WorkspaceState{style_, mode_};
+}
+
 void VolumetricPanel::setActiveWorkspace(int id)
 {
     if (activeWorkspace_ == id)
         return;
+    // Hand the outgoing tab its render settings back before adopting the
+    // incoming tab's. The atoms, bonds and camera have been per-tab for a long
+    // time; the volumetric style was the one piece of the scene still held in
+    // a single global, so every tab change reset it.
+    stashWorkspaceState();
     activeWorkspace_ = id;
+
+    const auto it = workspaceStates_.find(id);
+    const bool restored = it != workspaceStates_.end();
+    if (restored) {
+        style_ = it->second.style;
+        mode_ = it->second.mode;
+    } else {
+        // A tab seen for the first time starts from the defaults rather than
+        // inheriting the outgoing tab's: an isovalue is a number in one
+        // specific field's units and usually falls outside the next field's
+        // range entirely, which shows as an empty viewport.
+        style_ = VolumetricStyle{};
+        mode_ = VolumetricRenderMode::Isosurface;
+    }
+
     applyWorkspaceFilter();
     // Drop whatever the previous tab was showing before drawing this tab's set.
     ++isoGeneration_;
     isoPending_ = false;
     clearViewportOverlay();
+    if (editDialog_)
+        editDialog_->setStyle(style_, mode_);
+    // After setStyle: the secondary-field index is a registry position, and
+    // this re-resolves it against the datasets THIS tab actually owns.
     syncEditDialogDatasets();
+    // A restored style carries the user's own isovalue. Re-deriving it from
+    // whichever dataset the filter just selected is precisely the reset this
+    // per-tab state exists to prevent, so it is suppressed for this one call.
+    restoringWorkspace_ = restored;
     onSelectionChanged();
+    restoringWorkspace_ = false;
 }
 
 void VolumetricPanel::onItemChanged(QTreeWidgetItem* item, int column)
@@ -515,7 +550,8 @@ void VolumetricPanel::defaultIsovalueForField()
 void VolumetricPanel::onSelectionChanged()
 {
     if (const core::VolumetricData* field = currentField()) {
-        defaultIsovalueForField();
+        if (!restoringWorkspace_)
+            defaultIsovalueForField();
         if (editDialog_)
             editDialog_->setFieldRange(field->minValue(), field->maxValue());
     }

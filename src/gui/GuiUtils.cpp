@@ -1,5 +1,6 @@
 #include "gui/GuiUtils.hpp"
 
+#include "core/CalculatorConfig.hpp"
 #include "core/Element.hpp"
 #include "core/Structure.hpp"
 
@@ -7,6 +8,7 @@
 
 #include <QCheckBox>
 #include <QCoreApplication>
+#include <QHash>
 #include <QFile>
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -27,6 +29,50 @@
 #include <vector>
 
 namespace calango::gui {
+
+QString volumetricDisplayName(const QString& fileName)
+{
+    // Keyed off core::densityFiles rather than off repeated string literals:
+    // the generator and this table are the two ends of one contract, and when
+    // they were written out independently they drifted — the dock looked up
+    // "hartree_potential.cube" while the script wrote "potential_hartree.cube",
+    // so the Hartree potential arrived labelled with its raw file name.
+    static const QHash<QString, QString> kLabels = {
+        {QLatin1String(core::densityFiles::kAllElectron),
+         QCoreApplication::translate("calango::gui", "All-electron density")},
+        {QLatin1String(core::densityFiles::kPseudo),
+         QCoreApplication::translate("calango::gui", "Pseudodensity")},
+        {QLatin1String(core::densityFiles::kSpin),
+         QCoreApplication::translate("calango::gui", "Spin density")},
+        {QLatin1String(core::densityFiles::kHartree),
+         QCoreApplication::translate("calango::gui", "Hartree potential")},
+        {QLatin1String(core::densityFiles::kElf),
+         QCoreApplication::translate("calango::gui", "ELF η(r)")},
+        {QLatin1String(core::densityFiles::kKineticEnergy),
+         QCoreApplication::translate("calango::gui",
+                                     "Kinetic energy density τ(r)")},
+        {QLatin1String(core::densityFiles::kDensity),
+         QCoreApplication::translate("calango::gui", "Charge density")},
+        {QLatin1String(core::densityFiles::kChargeDensityDifference),
+         QCoreApplication::translate("calango::gui",
+                                     "Charge density difference Δρ")},
+        // VASP writes its grids without an extension, so they are matched by
+        // their exact file name.
+        {QStringLiteral("CHGCAR"),
+         QCoreApplication::translate("calango::gui", "Charge density (CHGCAR)")},
+        {QStringLiteral("AECCAR0"),
+         QCoreApplication::translate("calango::gui",
+                                     "Core charge density (AECCAR0)")},
+        {QStringLiteral("AECCAR2"),
+         QCoreApplication::translate("calango::gui",
+                                     "All-electron density (AECCAR2)")},
+        {QStringLiteral("LOCPOT"),
+         QCoreApplication::translate("calango::gui", "Local potential (LOCPOT)")},
+        {QStringLiteral("ELFCAR"),
+         QCoreApplication::translate("calango::gui", "ELF η(r) (ELFCAR)")},
+    };
+    return kLabels.value(fileName, fileName);
+}
 
 QStringList structureElements(const core::Structure* structure)
 {

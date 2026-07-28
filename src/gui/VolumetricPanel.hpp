@@ -10,6 +10,7 @@
 #include <QWidget>
 
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 class QTreeWidget;
@@ -106,6 +107,23 @@ private:
         bool potential = false;
     };
 
+    /// Everything about HOW a workspace tab's volumetric data is drawn, as
+    /// opposed to WHICH datasets it owns (that is `Entry::workspaceId`).
+    ///
+    /// Kept per tab for the same reason the camera and the atom/bond style
+    /// are: these settings are authored against one field of one structure —
+    /// an isovalue is a number in that field's own units, and a slice plane is
+    /// a direction in that cell. Carrying one tab's values to the next was
+    /// only half the problem; the worse half was that switching back
+    /// re-derived the isovalue from the field and silently discarded whatever
+    /// the user had dialled in.
+    struct WorkspaceState {
+        VolumetricStyle style;
+        VolumetricRenderMode mode = VolumetricRenderMode::Isosurface;
+    };
+    /// Copy the live style/mode into `workspaceStates_[activeWorkspace_]`.
+    void stashWorkspaceState();
+
     void addEntry(std::shared_ptr<const core::VolumetricData> field,
                   const QString& label, const QString& path,
                   const QString& structureLabel, int workspaceId);
@@ -137,11 +155,20 @@ private:
 
     ViewportWidget* viewport_ = nullptr;
     std::vector<Entry> entries_;
+    /// The live style/mode — always those of `activeWorkspace_`. Saved into
+    /// `workspaceStates_` on the way out of a tab and reloaded on the way in.
     VolumetricStyle style_;
     VolumetricRenderMode mode_ = VolumetricRenderMode::Isosurface;
     EditVolumetricRenderDialog* editDialog_ = nullptr; ///< modeless, lazy
     /// Workspace tab whose datasets are listed and rendered (-1 = none yet).
     int activeWorkspace_ = -1;
+    /// Per-tab render settings. Workspace ids are handed out monotonically and
+    /// never reused, so a closed tab's entry can never be adopted by a new one.
+    std::unordered_map<int, WorkspaceState> workspaceStates_;
+    /// True while a tab switch is installing a saved style, which suppresses
+    /// the automatic isovalue derivation in onSelectionChanged(). Without it
+    /// the restore is undone one call later — that WAS the bug.
+    bool restoringWorkspace_ = false;
 
     QTreeWidget* registry_ = nullptr;
 

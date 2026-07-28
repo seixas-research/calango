@@ -21,6 +21,8 @@
 #include "core/PhononScriptGenerator.hpp"
 #include "core/RamanIrScriptGenerator.hpp"
 #include "core/RandomNoiseScriptGenerator.hpp"
+#include "core/TwoDBandsScriptGenerator.hpp"
+#include "core/WannierScriptGenerator.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -903,13 +905,15 @@ int main(int argc, char** argv)
                       "ismear=1", "Methfessel-Paxton maps to first-order MP");
         CalculatorConfig none = vasp;
         none.smearing = SmearingMethod::None;
-        const std::string fixed = AseScriptGenerator::generate(none, "s.extxyz");
-        // NOT -5: the tetrahedron method fails outright on the Gamma-only
-        // meshes that small test cells use, which is the first thing anyone
-        // runs.
-        checkContains(fixed, "ismear=0",
-                      "fixed occupations use a narrow Gaussian, not ISMEAR=-5");
-        checkContains(fixed, "sigma=0.01", "with a small width");
+        const std::string noSmearing =
+            AseScriptGenerator::generate(none, "s.extxyz");
+        // "None" is NOT the tetrahedron method: -5 fails outright on the
+        // Gamma-only meshes that small test cells use, which is the first
+        // thing anyone runs. A user who wants tetrahedron integration now has
+        // its own entry in the method list and gets -4 / -5 from that.
+        checkContains(noSmearing, "ismear=0",
+                      "None uses a narrow Gaussian, not ISMEAR=-5");
+        checkContains(noSmearing, "sigma=0.01", "with a small width");
 
         CalculatorConfig magnetic = vasp;
         magnetic.spinPolarized = true;
@@ -1179,6 +1183,236 @@ int main(int argc, char** argv)
             AseScriptGenerator::generate(legacy, "structure.extxyz");
         checkContains(legacyScript, "density_all_electron.cube",
                       "an empty selection falls back to the legacy density type");
+
+        // The file names are a contract with the GUI, which maps each one to a
+        // display label in the Volumetric Data dock. They drifted once — the
+        // dock looked for "hartree_potential.cube" while the script wrote
+        // "potential_hartree.cube" — so the constants both ends now share are
+        // asserted against the emitted text here.
+        checkContains(script, densityFiles::kAllElectron, "shared constant: all-electron");
+        checkContains(script, densityFiles::kPseudo, "shared constant: pseudo");
+        checkContains(script, densityFiles::kSpin, "shared constant: spin");
+        checkContains(script, densityFiles::kHartree, "shared constant: Hartree");
+        checkContains(script, densityFiles::kElf, "shared constant: ELF");
+        checkContains(script, densityFiles::kKineticEnergy,
+                      "shared constant: kinetic energy density");
+        checkContains(AseScriptGenerator::densityCubeScript("/jobs/proc_1", false),
+                      densityFiles::kDensity, "shared constant: plain density");
+    }
+
+    // -- Occupation smearing -------------------------------------------------
+    // Every method must emit its OWN GPAW occupation function with only the
+    // keys that method accepts. They all used to collapse onto Fermi-Dirac,
+    // which silently ran a different physical model than the one selected.
+    std::printf("GPAW occupation smearing:\n");
+    {
+        const auto snippet = [](SmearingMethod method, double width = 0.15,
+                                int order = 2) {
+            CalculatorConfig c = gpawConfig();
+            c.smearing = method;
+            c.smearingWidthEv = width;
+            c.smearingOrder = order;
+            return AseScriptGenerator::calculatorSnippet(c);
+        };
+
+        checkContains(snippet(SmearingMethod::FermiDirac),
+                      "occupations={\"name\": \"fermi-dirac\", \"width\": 0.15}",
+                      "Fermi-Dirac carries only a width");
+
+        // Gaussian IS Methfessel-Paxton at order 0 — that is its definition,
+        // and GPAW has no separate name for it.
+        const std::string gaussian = snippet(SmearingMethod::Gaussian);
+        checkContains(gaussian, "\"name\": \"methfessel-paxton\"",
+                      "Gaussian resolves to methfessel-paxton");
+        checkContains(gaussian, "\"order\": 0", "at order 0");
+
+        const std::string mp = snippet(SmearingMethod::MethfesselPaxton);
+        checkContains(mp, "\"name\": \"methfessel-paxton\"", "MP by name");
+        checkContains(mp, "\"width\": 0.15", "MP carries the width");
+        checkContains(mp, "\"order\": 2", "and the user's expansion order");
+
+        checkContains(snippet(SmearingMethod::MarzariVanderbilt),
+                      "\"name\": \"marzari-vanderbilt\", \"width\": 0.15",
+                      "Marzari-Vanderbilt cold smearing");
+
+        // The exact BZ integrators take no width at all, and GPAW raises on an
+        // unexpected key rather than ignoring it.
+        for (const auto& [method, name] :
+             {std::pair{SmearingMethod::TetrahedronMethod, "tetrahedron-method"},
+              std::pair{SmearingMethod::ImprovedTetrahedronMethod,
+                        "improved-tetrahedron-method"},
+              std::pair{SmearingMethod::OrbitalFree, "orbital-free"}}) {
+            const std::string script = snippet(method);
+            checkContains(script, std::string("{\"name\": \"") + name + "\"}",
+                          std::string(name) + " takes no parameters");
+            check(!contains(script, std::string("\"") + name + "\", \"width\""),
+                  std::string(name) + " emits no width");
+        }
+
+        CalculatorConfig fixed = gpawConfig();
+        fixed.smearing = SmearingMethod::FixedOccupations;
+        fixed.fixedOccupations = {{1, 0, 1, 0}, {1, 1, 0, 0}};
+        checkContains(AseScriptGenerator::calculatorSnippet(fixed),
+                      "{\"name\": \"fixed\", \"numbers\": [[1, 0, 1, 0], "
+                      "[1, 1, 0, 0]]}",
+                      "fixed occupations emit one list per spin channel");
+
+        // No occupation numbers is not something the generator can guess a
+        // value for, so it marks the gap instead of emitting a plausible run.
+        CalculatorConfig empty = gpawConfig();
+        empty.smearing = SmearingMethod::FixedOccupations;
+        checkContains(AseScriptGenerator::calculatorSnippet(empty), "<- EMPTY",
+                      "an empty occupation list is flagged in the script");
+
+        checkContains(snippet(SmearingMethod::None),
+                      "occupations={\"name\": \"fermi-dirac\", \"width\": 0.0}",
+                      "None is zero-width Fermi-Dirac");
+
+        // VASP encodes method and order in one integer. The tetrahedron
+        // schemes have real ISMEAR equivalents; the rest do not, and the
+        // script has to say which run it is actually about to perform.
+        const auto vasp = [](SmearingMethod method, int order = 1) {
+            CalculatorConfig c;
+            c.calculator = CalculatorKind::Vasp;
+            c.task = TaskKind::SinglePoint;
+            c.smearing = method;
+            c.smearingOrder = order;
+            return AseScriptGenerator::calculatorSnippet(c);
+        };
+        checkContains(vasp(SmearingMethod::FermiDirac), "ismear=-1",
+                      "ISMEAR -1 is Fermi-Dirac");
+        checkContains(vasp(SmearingMethod::Gaussian), "ismear=0",
+                      "ISMEAR 0 is Gaussian");
+        checkContains(vasp(SmearingMethod::MethfesselPaxton, 3), "ismear=3",
+                      "ISMEAR N is the MP order itself");
+        checkContains(vasp(SmearingMethod::TetrahedronMethod), "ismear=-4",
+                      "ISMEAR -4 is the linear tetrahedron method");
+        checkContains(vasp(SmearingMethod::ImprovedTetrahedronMethod),
+                      "ismear=-5", "ISMEAR -5 adds the Blochl correction");
+        checkContains(vasp(SmearingMethod::MarzariVanderbilt),
+                      "no VASP ISMEAR equivalent",
+                      "an approximated method says so in the script");
+    }
+
+    // -- Initial magnetic moments -------------------------------------------
+    // Whether the structure CARRIES an initial_magmoms column and whether the
+    // values in it are non-zero are different questions. Conflating them
+    // overwrote a deliberate all-zero seed with the uniform fallback, so a
+    // user who set every moment to 0 in Edit Structure got 1 uB per atom.
+    std::printf("Initial magnetic moments:\n");
+    {
+        CalculatorConfig spin = gpawConfig();
+        spin.spinMode = SpinMode::Collinear;
+        spin.spinPolarized = true;
+        spin.initialMagMoment = 1.0;
+        const std::string script =
+            AseScriptGenerator::generate(spin, "structure.extxyz");
+        checkContains(script, "if atoms.has('initial_magmoms'):",
+                      "the seed is chosen on the column's PRESENCE");
+        check(!contains(script, "if _np.abs(_seeded).max(initial=0.0) > 1e-12:"),
+              "not on whether its values happen to be non-zero");
+        // The fallback must still exist for a structure that carries nothing.
+        checkContains(script, "atoms.set_initial_magnetic_moments(",
+                      "a structure with no moments still gets the fallback");
+        checkContains(script, "CALANGO_WARN the structure carries no initial",
+                      "and says so");
+        // An all-zero column is a legitimate, reported choice.
+        checkContains(script, "every initial magnetic moment is",
+                      "an all-zero seed is reported as deliberate");
+    }
+    {
+        // The converged moments have to leave the run, or the viewer and the
+        // viewport have nothing but the input guess to show.
+        CalculatorConfig spin = gpawConfig();
+        spin.spinMode = SpinMode::Collinear;
+        const std::string script =
+            AseScriptGenerator::generate(spin, "structure.extxyz");
+        checkContains(script, "atoms.get_magnetic_moments()",
+                      "per-atom moments are read back");
+        checkContains(script, "\"magnetic_moments\": _magmoms",
+                      "and written into the summary");
+        checkContains(script, "write(\"single_point.extxyz\", atoms)",
+                      "a result structure carries them to the viewport");
+    }
+
+    // -- 2D band surfaces ----------------------------------------------------
+    std::printf("2D band surfaces:\n");
+    {
+        TwoDBandsConfig cfg;
+        cfg.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        cfg.gridSamples = 32;
+        const std::string script = generateTwoDBandsScript(cfg);
+        checkContains(script, "/jobs/proc_1/single_point.gpw",
+                      "restarts from the selected baseline density");
+        checkContains(script, "_n = 32", "honors the requested grid");
+        checkContains(script, "np.linspace(-0.5, 0.5, _n)",
+                      "Gamma-centred and inclusive of both zone edges");
+        checkContains(script, "symmetry='off'",
+                      "keeps every grid point rather than an irreducible wedge");
+        // kz is never written, so it stays 0: the 2D zone is the kz = 0 plane.
+        checkContains(script, "_kpts[:, 1] = _fy.ravel()",
+                      "samples kx and ky only");
+        check(!contains(script, "_kpts[:, 2] ="), "leaving kz at zero");
+        checkContains(script, "2.0 * np.pi * np.asarray(atoms.cell.reciprocal())",
+                      "exports Cartesian k in 1/A with the 2pi restored");
+        checkContains(script, "if not (_pbc[0] and _pbc[1]):",
+                      "refuses a structure with no 2D periodicity");
+        checkContains(script, "CALANGO_RESULT bands_2d=bands_2d.json",
+                      "emits the marker the controller watches for");
+        check(!contains(script, "bandpath"),
+              "no k-path: the surface IS the object, not a cut through it");
+
+        TwoDBandsConfig soc = cfg;
+        soc.spinOrbit = true;
+        checkContains(generateTwoDBandsScript(soc), "soc_eigenstates",
+                      "spin-orbit re-diagonalizes in the spinor basis");
+
+        // N <= 2 cannot be triangulated into a surface; the generator clamps
+        // rather than emitting a grid the viewer would silently drop.
+        TwoDBandsConfig tiny = cfg;
+        tiny.gridSamples = 1;
+        checkContains(generateTwoDBandsScript(tiny), "_n = 3",
+                      "a degenerate grid request is clamped");
+    }
+
+    // -- MLWF -> Wannier interpolation handoff --------------------------------
+    // The reported crash: an MLWF started from a single-point baseline reads
+    // that baseline's .gpw and writes none of its own, so the interpolation's
+    // glob of the MLWF directory found nothing and it died on line 11.
+    std::printf("Wannier interpolation handoff:\n");
+    {
+        WannierConfig baseline;
+        baseline.baselineDir = "/jobs/proc_100";
+        const std::string mlwf = generateWannierScript(baseline);
+        checkContains(mlwf, "_gpw_path = os.path.abspath(_gpw[0])",
+                      "an MLWF from a baseline records where the .gpw actually is");
+        checkContains(mlwf, "'gpw': _gpw_path",
+                      "and writes that path into wannier.json");
+        checkContains(mlwf, "'nwannier': int(nwannier)",
+                      "along with the count the interpolation must reproduce");
+
+        WannierConfig fresh; // no baseline: runs its own SCF
+        fresh.calculator.calculator = CalculatorKind::Gpaw;
+        const std::string own = generateWannierScript(fresh);
+        checkContains(own, "calc.write('wannier.gpw', mode='all')",
+                      "a fresh SCF writes its own wavefunctions");
+        checkContains(own, "_gpw_path = os.path.abspath('wannier.gpw')",
+                      "and records that path too");
+
+        WannierInterpolationConfig interp;
+        const std::string script =
+            generateWannierInterpolationScript("/jobs/proc_101", interp);
+        checkContains(script, "_gpw_path = _meta.get('gpw')",
+                      "the interpolation reads the recorded path first");
+        checkContains(script, "glob.glob(os.path.join(_base, '*.gpw'))",
+                      "and falls back to the MLWF directory");
+        checkContains(script, "Re-run the MLWF calculation",
+                      "the failure names the fix rather than the directory");
+        checkContains(script, "len(calc.get_ibz_k_points()) < "
+                              "len(calc.get_bz_k_points())",
+                      "a symmetry-reduced .gpw is caught before Wannier chokes");
+        checkContains(script, "_meta.get('nwannier')",
+                      "the recorded Wannier count is preferred over len(centers)");
     }
 
     // -- LAMMPS -------------------------------------------------------------

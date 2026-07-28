@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/CalculatorConfig.hpp" // densityFiles::
+
 #include <string>
 #include <vector>
 
@@ -47,7 +49,7 @@ struct CddRunConfig {
     /// the identity the difference relies on.
     std::vector<int> subsystemB;
 
-    std::string outputCube = "cdd.cube";
+    std::string outputCube = densityFiles::kChargeDensityDifference;
     std::string resultsJson = "cdd.json";
 };
 

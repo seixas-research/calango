@@ -41,6 +41,24 @@ public:
 
     void frameBox();
 
+    // --- Generic geometry -------------------------------------------------
+    // The canvas itself is not volumetric: it is an orbit camera over a lit
+    // triangle soup and an unlit line soup. These expose that directly, so a
+    // second 3D plot (the 2D band surfaces) reuses the camera, the shader and
+    // the interaction rather than growing a near-identical widget beside it.
+    // Layout matches the internal one: pos(3) + normal(3) + color(3).
+
+    /// Replace the shaded triangle geometry.
+    void setMesh(std::vector<float> interleavedPosNormalColor);
+    /// Replace the unlit line geometry (axes, boundaries, guide lines).
+    void setLines(std::vector<float> interleavedPosNormalColor);
+    /// Frame an arbitrary bounding sphere, for content with no grid box.
+    void setBounds(const QVector3D& center, float radius);
+    /// Opacity of the shaded triangles. Isosurfaces default to slightly
+    /// translucent so a slice behind one stays readable; stacked band surfaces
+    /// want to be opaque, or every sheet shows through every other.
+    void setMeshOpacity(float alpha);
+
 protected:
     void initializeGL() override;
     void paintGL() override;
@@ -68,6 +86,9 @@ private:
     QPointF lastMousePos_;
     QVector3D boxCenter_;
     float boxRadius_ = 10.0f;
+    /// Slightly translucent by default so a colour slice behind an isosurface
+    /// stays readable; setMeshOpacity() overrides it.
+    float meshAlpha_ = 0.88f;
     bool initialized_ = false;
 };
 

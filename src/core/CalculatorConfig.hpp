@@ -144,13 +144,54 @@ enum class TaskKind {
 };
 
 /// Occupation-number broadening for the electronic states (DFT backends).
-/// Enum order is the smearing-method combo order in the Single-point wizard.
+///
+/// The set GPAW accepts, plus `None`:
+/// https://gpaw.readthedocs.io/documentation/smearing.html
+///
+/// NOT in combo order any more. New methods are appended rather than inserted
+/// where they belong in the menu, because the value is what a saved
+/// configuration holds — renumbering the original four would silently change
+/// the meaning of every one already written. The GUI carries the enum as combo
+/// item data instead of relying on the row number, so the two orders are free
+/// to differ.
 enum class SmearingMethod {
-    None,             ///< fixed occupations (insulators / molecules)
+    None,             ///< no broadening — zero-width occupations
     Gaussian,
     FermiDirac,
     MethfesselPaxton,
+    MarzariVanderbilt,
+    /// Linear tetrahedron BZ integration. Needs a Monkhorst-Pack k-grid and
+    /// takes no width — it integrates the Brillouin zone exactly rather than
+    /// broadening the occupations.
+    TetrahedronMethod,
+    /// Tetrahedron integration with the Blöchl curvature correction.
+    ImprovedTetrahedronMethod,
+    /// Thomas-Fermi occupations for orbital-free DFT. No width.
+    OrbitalFree,
+    /// Occupation numbers given explicitly, one list per spin channel —
+    /// GPAW's {'name': 'fixed', 'numbers': [[...]]}. The way to force a
+    /// specific electronic configuration (a core hole, an excited state)
+    /// rather than letting the aufbau principle decide.
+    FixedOccupations,
 };
+
+/// Whether `method` takes a broadening width σ.
+///
+/// False for the tetrahedron schemes (they integrate the BZ exactly), for
+/// orbital-free, and for explicitly fixed occupations. Offering a width there
+/// would present a knob that changes nothing — and GPAW rejects the key.
+bool smearingUsesWidth(SmearingMethod method);
+/// Whether `method` takes the Methfessel-Paxton expansion order N.
+bool smearingUsesOrder(SmearingMethod method);
+/// Whether `method` needs explicit occupation numbers.
+bool smearingUsesFixedOccupations(SmearingMethod method);
+/// The `name` GPAW's `occupations` dict expects for `method`.
+///
+/// Gaussian resolves to "methfessel-paxton" at order 0, which is what Gaussian
+/// smearing IS — GPAW has no separate name for it, and the previous code's
+/// silent fall-back to Fermi-Dirac gave a genuinely different occupation
+/// function than the one the user picked.
+std::string gpawSmearingName(SmearingMethod method);
 
 /// Who actually drives a VASP geometry optimization.
 ///
@@ -222,6 +263,28 @@ struct GpawDensityExports {
         return allElectron || pseudo || spin || hartree || elf || kineticEnergy;
     }
 };
+
+/// The file each GpawDensityExports flag writes, plus the two densities the
+/// other generators produce.
+///
+/// Named once here rather than spelled as a literal at both ends. The GUI has
+/// to map every file back to a display label for the Volumetric Data dock, and
+/// when the two copies drifted — the dock looked up "hartree_potential.cube"
+/// while the script wrote "potential_hartree.cube" — the Hartree potential
+/// silently arrived labelled with its raw file name. A shared symbol makes
+/// that particular bug unrepresentable.
+namespace densityFiles {
+inline constexpr const char* kAllElectron = "density_all_electron.cube";
+inline constexpr const char* kPseudo = "density_pseudo.cube";
+inline constexpr const char* kSpin = "density_spin.cube";
+inline constexpr const char* kHartree = "potential_hartree.cube";
+inline constexpr const char* kElf = "elf.cube";
+inline constexpr const char* kKineticEnergy = "kinetic_energy_density.cube";
+/// The single charge density a plain "export the density" run writes.
+inline constexpr const char* kDensity = "density.cube";
+/// Charge-density difference, written by the CDD generator.
+inline constexpr const char* kChargeDensityDifference = "cdd.cube";
+} // namespace densityFiles
 
 /// Local optimizers ASE ships for structural relaxation. Enum order is the
 /// optimizer combo order in the Geometry Optimization dialog; the value maps
@@ -376,8 +439,24 @@ struct CalculatorConfig {
     double initialMagMoment = 1.0;
     /// Electronic occupation smearing (DFT backends; classical potentials
     /// ignore it). smearingWidthEv is the broadening / electronic temperature.
-    SmearingMethod smearing = SmearingMethod::Gaussian;
+    /// Fermi-Dirac rather than Gaussian, matching the wizard combo's own
+    /// default. The two used to disagree, which did not show while every
+    /// method was emitted as Fermi-Dirac anyway; now that each one generates
+    /// its own occupation function, a wizard that exposes no smearing control
+    /// (the Electronic Structure setup, which inherits its SCF) would
+    /// otherwise silently switch from Fermi-Dirac to Gaussian.
+    SmearingMethod smearing = SmearingMethod::FermiDirac;
     double smearingWidthEv = 0.1;
+    /// Methfessel-Paxton expansion order N. 1 rather than GPAW's own 0
+    /// default: order 0 IS Gaussian smearing, which has its own entry in the
+    /// method list, so a user who explicitly picked Methfessel-Paxton means
+    /// N ≥ 1. Read only when smearingUsesOrder(smearing).
+    int smearingOrder = 1;
+    /// Explicit occupation numbers for SmearingMethod::FixedOccupations — one
+    /// inner list per spin channel, as GPAW's `numbers` key expects. Empty
+    /// leaves the key off, which GPAW rejects; the wizard therefore refuses to
+    /// generate until it is filled.
+    std::vector<std::vector<double>> fixedOccupations;
 
     // Molecular dynamics
     MdEnsemble ensemble = MdEnsemble::LangevinNVT;

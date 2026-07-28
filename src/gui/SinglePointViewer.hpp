@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QString>
 
+class QGroupBox;
 class QLabel;
 class QPushButton;
 class QTableWidget;
@@ -57,6 +58,9 @@ private:
     QLabel* forceLabel_ = nullptr;
     QLabel* magmomLabel_ = nullptr;
     QLabel* scfLabel_ = nullptr;
+    /// Titled from the run: the moment column is only meaningful, and only
+    /// mentioned, for a spin-polarized result.
+    QGroupBox* forcesGroup_ = nullptr;
     QTableWidget* forcesTable_ = nullptr;
     QPushButton* volumetricButton_ = nullptr;
 };

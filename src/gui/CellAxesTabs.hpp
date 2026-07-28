@@ -11,6 +11,7 @@ class QSlider;
 namespace calango::gui {
 
 class ViewportWidget;
+class NeighborCellsDialog;
 
 /// The two tabs that formerly made up the standalone "Unit Cell & Axes" dock,
 /// plus the per-atom vector overlay controls, gathered into the
@@ -33,6 +34,8 @@ public:
 
 private:
     ViewportWidget* viewport_;
+    /// "Show neighboring cells…" — modeless, lazily created, at most one.
+    NeighborCellsDialog* neighborCellsDialog_ = nullptr;
 };
 
 /// "Axes triad" tab: corner orientation triad visibility, arrowheads, the

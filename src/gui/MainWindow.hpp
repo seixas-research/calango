@@ -175,6 +175,13 @@ private Q_SLOTS:
     /// question and the 2D observables derived from it.
     void showOptics();
     void show2DOptics();
+    /// Modules → 2D Materials → "2D Bands…": band surfaces E_n(kx, ky) over
+    /// the two-dimensional Brillouin zone. Needs a completed single point with
+    /// a saved GPAW density, exactly as Electronic Structure does.
+    void show2DBands();
+    /// Open the 2D band-surface viewer for a finished job directory
+    /// (reads its bands_2d.json).
+    void open2DBandsResults(const QString& directory);
     /// Simulation → "GW Calculations…": one-shot G₀W₀ on a completed SCF.
     void showGwCalculations();
     /// Completed Quantum ESPRESSO runs with a saved `.save` directory — the
@@ -208,6 +215,17 @@ private Q_SLOTS:
     /// Open the dedicated Single-Point Viewer on a finished job directory
     /// (reads its single_point.json summary).
     void openSinglePointResults(const QString& directory);
+    /// Copy the converged per-atom results (forces, magnetic moments) from a
+    /// finished single point's `single_point.extxyz` onto the structure in the
+    /// active tab, so the viewport's vector overlays can draw them.
+    ///
+    /// Copies the FIELDS rather than swapping the structure: a single point
+    /// does not move the atoms, and replacing the object would discard the
+    /// selection, the undo stack and any editing the user has done since. A
+    /// mismatched atom count (the tab was changed, or another structure is
+    /// forward) is a no-op — this must never write one run's moments onto a
+    /// different system.
+    void adoptSinglePointResults(const QString& directory);
     /// Open the Geometry Optimization Viewer on a finished relaxation's
     /// directory (reads geometry_optimization.json + opt.traj).
     void openGeometryOptimizationResults(const QString& directory);

@@ -65,15 +65,25 @@ launch elsewhere unless you sign with a Developer ID and notarize.
 
 ### App icon
 
-`make_icns.sh` scales `assets/calango/icon_base.png` straight into every
-iconset slot, so **the source PNG must already carry the macOS icon margin**:
+The three brand PNGs in `assets/calango/` are not interchangeable:
+
+| File | Used for |
+| --- | --- |
+| `icon_osx.png` | macOS `.icns` (Finder/Dock) and the macOS window icon — squircle **with** the macOS margin |
+| `icon_linux.png` | `/usr/share/pixmaps` + the hicolor theme in the `.deb`, and the window icon everywhere except macOS — full-bleed circular badge |
+| `logo.png` | in-app branding (the About dialog banner) — the bare mark, no plate |
+
+`make_icns.sh` scales `assets/calango/icon_osx.png` straight into every
+iconset slot, so **that source PNG must already carry the macOS icon margin**:
 on a 1024 px canvas the icon body is 824 px (~80.5%) centred, the rest
 transparent. A full-bleed source renders visibly larger than every other app in
-the Dock. Check a candidate before committing it:
+the Dock. `icon_linux.png` is the opposite case — freedesktop launchers apply
+their own padding, so it is full-bleed on purpose and must not be swapped in
+here. Check a candidate before committing it:
 
 ```sh
-python3 -c "import sys;import matplotlib.image as m,numpy as np;a=m.imread(sys.argv[1]);y,x=np.nonzero(a[:,:,3]>0.02);print('%.1f%% wide'%(100*(x.max()-x.min()+1)/a.shape[1]))" assets/calango/icon_base.png
-# expect ~80%, not 100%
+python3 -c "import sys;import matplotlib.image as m,numpy as np;a=m.imread(sys.argv[1]);y,x=np.nonzero(a[:,:,3]>0.02);print('%.1f%% wide'%(100*(x.max()-x.min()+1)/a.shape[1]))" assets/calango/icon_osx.png
+# expect ~80% for icon_osx.png, ~100% for icon_linux.png
 ```
 
 Manual equivalent:
@@ -100,6 +110,15 @@ cmake --build build-deb -j"$(nproc)"
 Ships the `.desktop` launcher, the `application/x-calango-project` MIME type for
 `.calproj` files, and the app icon. `dpkg-shlibdeps` derives the Qt6/OpenGL/
 libpython runtime dependencies from the linked shared libraries.
+
+The icon is `assets/calango/icon_linux.png` (never the margined `icon_osx.png`
+— see [App icon](#app-icon) above). It always lands in
+`/usr/share/pixmaps/calango.png`, which is size-agnostic and resolves the
+`.desktop` `Icon=calango` lookup on its own. If ImageMagick (`magick` or
+`convert`) is on `PATH` at configure time, CMake additionally scales it into
+the exact-size `hicolor` slots (32–512 px) that modern desktops prefer;
+without it the configure step logs that it is installing the pixmaps icon
+only, and the launcher still works.
 
 ---
 

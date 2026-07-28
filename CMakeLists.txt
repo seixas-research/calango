@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.65
+    VERSION 26.7.66
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -183,6 +183,7 @@ qt_add_executable(calango
     src/core/PdbxFile.hpp
     src/core/PdbxFile.cpp
     src/core/WannierScriptGenerator.hpp
+    src/core/TwoDBandsScriptGenerator.cpp
     src/core/WannierScriptGenerator.cpp
     src/core/AdsorptionSites.hpp
     src/core/AdsorptionSites.cpp
@@ -291,6 +292,9 @@ qt_add_executable(calango
     src/gui/CollapsibleSection.cpp
     src/gui/CellAxesTabs.hpp
     src/gui/CellAxesTabs.cpp
+    src/gui/NeighborCellsDialog.cpp
+    src/gui/TwoDBandsWizard.cpp
+    src/gui/TwoDBandsWindow.cpp
     src/gui/LightingPanel.hpp
     src/gui/LightingPanel.cpp
     src/gui/ElementSettingsDialog.hpp
@@ -536,11 +540,16 @@ qt_add_resources(calango "shaders"
         assets/shaders/ssao_composite.frag
 )
 
+# Brand artwork. The two app icons are platform-specific by design and are NOT
+# interchangeable: icon_osx.png is a squircle carrying the ~80% macOS icon
+# margin, icon_linux.png is a full-bleed circular badge as freedesktop expects.
+# logo.png is the bare mark with no plate behind it, for in-app use (About).
 qt_add_resources(calango "branding"
     PREFIX "/"
     FILES
-        assets/calango/icon_base.png
-        assets/calango/panel.png
+        assets/calango/icon_osx.png
+        assets/calango/icon_linux.png
+        assets/calango/logo.png
         assets/calango/logo_dark.png
         assets/calango/logo_light.png
 )
@@ -596,6 +605,7 @@ qt_add_resources(calango "icons"
         assets/icons/information-line.svg
         assets/icons/loader-4-line.svg
         assets/icons/magic-line.svg
+        assets/icons/map-2-fill.svg
         assets/icons/palette-line.svg
         assets/icons/price-tag-fill.svg
         assets/icons/puzzle-fill.svg
@@ -630,7 +640,7 @@ qt_add_resources(calango "remote"
 # workflow, with the window/dock icon set at runtime from the embedded
 # resource. The bundle icon uses a committed assets/calango/calango.icns
 # when present, otherwise it is rendered at build time from
-# icon_base.png with the stock sips/iconutil tools.
+# icon_osx.png with the stock sips/iconutil tools.
 option(CALANGO_MACOS_BUNDLE "Build calango as a macOS .app bundle" OFF)
 if(APPLE AND CALANGO_MACOS_BUNDLE)
     set_target_properties(calango PROPERTIES
@@ -652,11 +662,11 @@ if(APPLE AND CALANGO_MACOS_BUNDLE)
             # executable bit from the script.
             add_custom_command(OUTPUT "${CALANGO_ICNS}"
                 COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/make_icns.sh"
-                        "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/icon_base.png"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/icon_osx.png"
                         "${CALANGO_ICNS}"
-                DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/icon_base.png"
+                DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/icon_osx.png"
                         "${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/make_icns.sh"
-                COMMENT "Rendering calango.icns from icon_base.png")
+                COMMENT "Rendering calango.icns from icon_osx.png")
         else()
             message(WARNING "sips/iconutil not found — the .app bundle will "
                             "have no Finder icon")
@@ -1055,6 +1065,8 @@ if(CALANGO_BUILD_TESTS)
         # where a newly added engine re-arms the construction-order hazard this
         # test exists for.
         src/gui/SinglePointWizard.cpp
+        src/gui/TwoDBandsWizard.cpp
+        src/core/TwoDBandsScriptGenerator.cpp
         src/gui/RandomNoiseWizard.cpp
         src/gui/CddWizard.cpp
         src/gui/XasWizard.cpp
@@ -1253,6 +1265,8 @@ if(CALANGO_BUILD_TESTS)
         src/core/CddScriptGenerator.cpp
         src/core/XasScriptGenerator.cpp
         src/core/UnfoldingScriptGenerator.cpp
+        src/core/TwoDBandsScriptGenerator.cpp
+        src/core/WannierScriptGenerator.cpp
         src/core/BandUnfolding.cpp
         src/core/UnitCell.cpp
     )
@@ -1548,13 +1562,45 @@ elseif(UNIX AND NOT APPLE)
             DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
     install(FILES packaging/linux/calango-mime.xml
             DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages)
-    # No vector source exists in the repo (only the master PNG), so ship the
-    # PNG as the pixmaps icon — it resolves the .desktop "Icon=calango"
-    # lookup. Add a hicolor/scalable/apps/calango.svg install here if a real
-    # SVG is committed later.
-    install(FILES assets/calango/icon_base.png
+    # icon_linux.png, not the macOS icon_osx.png: freedesktop themes expect a
+    # full-bleed icon and apply their own shape/padding, so the ~80% margin
+    # baked into the macOS squircle would render Calango visibly smaller than
+    # its neighbours in every launcher.
+    #
+    # /usr/share/pixmaps is size-agnostic, so the master PNG goes there as-is;
+    # it resolves the .desktop "Icon=calango" lookup everywhere. The hicolor
+    # theme below is where modern desktops actually look, but its directories
+    # are exact-size, so those variants are only installed when a scaler is
+    # available (same optional-tool pattern as sips/iconutil on macOS). Add a
+    # hicolor/scalable/apps/calango.svg install here if a real SVG is
+    # committed later.
+    install(FILES assets/calango/icon_linux.png
             DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps
             RENAME calango.png)
+
+    find_program(MAGICK_EXECUTABLE NAMES magick convert)
+    if(MAGICK_EXECUTABLE)
+        set(CALANGO_ICON_SOURCE
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/icon_linux.png")
+        foreach(size 32 48 64 128 256 512)
+            set(scaled "${CMAKE_CURRENT_BINARY_DIR}/icons/${size}/calango.png")
+            add_custom_command(OUTPUT "${scaled}"
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                        "${CMAKE_CURRENT_BINARY_DIR}/icons/${size}"
+                COMMAND "${MAGICK_EXECUTABLE}" "${CALANGO_ICON_SOURCE}"
+                        -resize ${size}x${size} "${scaled}"
+                DEPENDS "${CALANGO_ICON_SOURCE}"
+                COMMENT "Scaling calango.png to ${size}x${size}")
+            list(APPEND CALANGO_SCALED_ICONS "${scaled}")
+            install(FILES "${scaled}"
+                    DESTINATION
+                    ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${size}x${size}/apps)
+        endforeach()
+        add_custom_target(calango_linux_icons ALL DEPENDS ${CALANGO_SCALED_ICONS})
+    else()
+        message(STATUS "ImageMagick not found — installing the pixmaps icon "
+                       "only, without the hicolor theme sizes")
+    endif()
 
     if(CALANGO_EMBEDDED_PYTHON_DIR)
         install(DIRECTORY "${CALANGO_EMBEDDED_PYTHON_DIR}/"

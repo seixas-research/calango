@@ -2,10 +2,15 @@
 
 #include "core/CalculatorConfig.hpp"
 
+#include <QString>
+
+#include <vector>
+
 class QComboBox;
 class QDoubleSpinBox;
 class QFormLayout;
 class QLabel;
+class QLineEdit;
 class QObject;
 class QSpinBox;
 class QWidget;
@@ -41,10 +46,23 @@ public:
     /// Spin polarization mode and the initial magnetic moments.
     void buildSpinRows(QFormLayout* form, QObject* owner);
 
-    /// Grey out what the current selections make meaningless (the width of a
-    /// disabled smearing, the moments of an unpolarized run). Safe before the
-    /// rows are built.
+    /// Show only the parameters the selected smearing method actually takes,
+    /// and grey out what the other selections make meaningless (the moments of
+    /// an unpolarized run). Safe before the rows are built.
+    ///
+    /// Show/hide rather than enable/disable for the smearing parameters: the
+    /// methods take genuinely different inputs (a width, a width plus an
+    /// expansion order, an occupation list, or nothing at all), and a row of
+    /// permanently greyed boxes reads as broken rather than as inapplicable.
     void updateEnabled();
+
+    /// Empty when the current selection is a valid, complete configuration;
+    /// otherwise the reason it is not, ready to show the user.
+    ///
+    /// Exists for exactly one case: "Fixed" occupations carry no default GPAW
+    /// could fall back on, so generating a script from an empty list produces
+    /// a run that dies on import. Better to say so in the wizard.
+    QString validationError() const;
 
     /// Two controls this class OWNS but does not place: the base class puts
     /// them where they belong physically rather than where they happen to be
@@ -59,8 +77,28 @@ public:
     void applyTo(core::CalculatorConfig& config) const;
 
 private:
+    /// The method behind the combo's current row. Read through item data
+    /// rather than the row number, so the menu can be ordered for the user
+    /// (Fermi-Dirac first) while core::SmearingMethod keeps the declaration
+    /// order that saved configurations depend on.
+    core::SmearingMethod selectedMethod() const;
+    /// Parse the occupation-number field: whitespace- or comma-separated
+    /// numbers, with `;` starting a second spin channel. Empty on a parse
+    /// failure, which validationError() reports.
+    std::vector<std::vector<double>> parseFixedOccupations() const;
+
     QComboBox* smearingCombo_ = nullptr;
     QDoubleSpinBox* smearingWidthSpin_ = nullptr;
+    QLabel* smearingWidthLabel_ = nullptr;
+    QSpinBox* smearingOrderSpin_ = nullptr;
+    QLabel* smearingOrderLabel_ = nullptr;
+    /// The form the smearing rows live in, kept so the parameter rows below
+    /// the method row can be shown and hidden (QFormLayout::setRowVisible).
+    QFormLayout* convForm_ = nullptr;
+    QLineEdit* fixedOccupationsEdit_ = nullptr;
+    /// Per-method explanation shown under the smearing row (what the method is
+    /// for, and what GPAW requires of it).
+    QLabel* smearingNote_ = nullptr;
     QDoubleSpinBox* scfTolSpin_ = nullptr;
     QSpinBox* scfStepsSpin_ = nullptr;
     QComboBox* spinModeCombo_ = nullptr; ///< Unpolarized / Collinear / Non-collinear

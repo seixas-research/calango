@@ -73,13 +73,18 @@ SinglePointViewer::SinglePointViewer(QWidget* parent) : QDialog(parent)
 
     layout->addWidget(summaryGroup);
 
-    // --- Per-atom forces ---------------------------------------------------
-    auto* forcesGroup = new QGroupBox(tr("Atomic forces (eV/Å)"), this);
-    auto* forcesLayout = new QVBoxLayout(forcesGroup);
-    forcesTable_ = new QTableWidget(0, 4, forcesGroup);
+    // --- Per-atom results --------------------------------------------------
+    // Forces and magnetic moments in ONE table, keyed by atom index: they are
+    // the two per-site results of an SCF, and reading "which atom carries the
+    // moment" against "which atom is under strain" means having them side by
+    // side. The moment column is filled only for a spin-polarized run.
+    forcesGroup_ = new QGroupBox(tr("Per-atom results"), this);
+    auto* forcesLayout = new QVBoxLayout(forcesGroup_);
+    QGroupBox* forcesGroup = forcesGroup_;
+    forcesTable_ = new QTableWidget(0, 5, forcesGroup);
     forcesTable_->setHorizontalHeaderLabels(
         {tr("atom #"), QStringLiteral("Fx"), QStringLiteral("Fy"),
-         QStringLiteral("Fz")});
+         QStringLiteral("Fz"), tr("moment (μB)")});
     forcesTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     forcesTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     forcesTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -175,14 +180,48 @@ bool SinglePointViewer::loadResults(const QString& jsonPath)
             .arg(scf.value(QStringLiteral("energy_tol_eV")).toDouble(), 0, 'g', 3)
             .arg(scf.value(QStringLiteral("max_steps")).toInt()));
 
-    // Per-atom forces, with the maximum-force site highlighted.
+    // Per-atom forces and converged moments, with the maximum-force site
+    // highlighted.
     const QJsonArray forces =
         data_.value(QStringLiteral("forces_eV_per_A")).toArray();
+    const QJsonArray moments =
+        data_.value(QStringLiteral("magnetic_moments")).toArray();
+    // Collinear runs report one number per atom; non-collinear reports a
+    // vector, which is shown as its magnitude with the components in the tool
+    // tip — the table has one column, and |m| is the quantity that answers
+    // "is this site magnetic".
+    const auto momentText = [](const QJsonValue& value) -> QPair<QString, QString> {
+        if (value.isDouble())
+            return {QString::number(value.toDouble(), 'f', 4), QString()};
+        if (value.isArray()) {
+            const QJsonArray v = value.toArray();
+            double squared = 0.0;
+            QStringList parts;
+            for (const QJsonValue& c : v) {
+                squared += c.toDouble() * c.toDouble();
+                parts << QString::number(c.toDouble(), 'f', 4);
+            }
+            return {QString::number(std::sqrt(squared), 'f', 4),
+                    QStringLiteral("(%1) μB").arg(parts.join(QStringLiteral(", ")))};
+        }
+        return {QStringLiteral("—"), QString()};
+    };
+    // The whole group is titled for what it actually contains, so an
+    // unpolarized run does not advertise an empty moment column.
+    const bool magnetic = !moments.isEmpty();
+    forcesGroup_->setTitle(magnetic
+                               ? tr("Per-atom results — forces (eV/Å) and "
+                                    "converged magnetic moments (μB)")
+                               : tr("Per-atom results — forces (eV/Å)"));
+    forcesTable_->setColumnHidden(4, !magnetic);
     forcesTable_->setRowCount(forces.size());
     for (int row = 0; row < forces.size(); ++row) {
         const QJsonArray f = forces.at(row).toArray();
-        const auto cell = [&](int col, const QString& text) {
+        const auto cell = [&](int col, const QString& text,
+                              const QString& tip = QString()) {
             auto* item = new QTableWidgetItem(text);
+            if (!tip.isEmpty())
+                item->setToolTip(tip);
             if (row == fmaxAtom) {
                 QFont bold = item->font();
                 bold.setBold(true);
@@ -194,6 +233,12 @@ bool SinglePointViewer::loadResults(const QString& jsonPath)
         cell(0, QString::number(row));
         for (int k = 0; k < 3 && k < f.size(); ++k)
             cell(k + 1, QString::number(f.at(k).toDouble(), 'f', 5));
+        if (magnetic) {
+            const auto [text, tip] = row < moments.size()
+                ? momentText(moments.at(row))
+                : QPair<QString, QString>{QStringLiteral("—"), QString()};
+            cell(4, text, tip);
+        }
     }
     if (fmaxAtom >= 0 && fmaxAtom < forcesTable_->rowCount())
         forcesTable_->scrollToItem(forcesTable_->item(fmaxAtom, 0));
@@ -278,6 +323,23 @@ void SinglePointViewer::exportCsv()
         const QJsonValue magmom = data_.value(QStringLiteral("total_magnetic_moment"));
         if (!magmom.isNull() && !magmom.isUndefined())
             out << "total_magnetic_moment," << magmom.toDouble() << ",bohr_magneton\n";
+        // Per-atom moments as their own rows: the total is zero for every
+        // antiferromagnet, so a CSV carrying only the total loses the result.
+        const QJsonArray moments =
+            data_.value(QStringLiteral("magnetic_moments")).toArray();
+        for (int i = 0; i < moments.size(); ++i) {
+            const QJsonValue value = moments.at(i);
+            if (value.isArray()) {
+                const QJsonArray v = value.toArray();
+                for (int k = 0; k < v.size(); ++k)
+                    out << "magnetic_moment_" << i << "_"
+                        << QLatin1Char(static_cast<char>('x' + k)) << ","
+                        << v.at(k).toDouble() << ",bohr_magneton\n";
+            } else {
+                out << "magnetic_moment_" << i << "," << value.toDouble()
+                    << ",bohr_magneton\n";
+            }
+        }
         out << "scf_iterations,"
             << scf.value(QStringLiteral("iterations")).toInt(-1) << ",count\n";
         out << "energy_tolerance,"
