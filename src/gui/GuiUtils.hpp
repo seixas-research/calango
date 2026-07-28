@@ -11,6 +11,7 @@
 
 #include <functional>
 
+class QCheckBox;
 class QJsonArray;
 class QPainter;
 class QPushButton;
@@ -87,6 +88,19 @@ QJsonObject readJsonObject(const QString& path);
 /// and the effective-band heatmap.
 void drawWithSubscripts(QPainter& painter, const QRectF& box,
                         const QString& text);
+
+/// A check box whose caption is RICH TEXT — the widget-layer counterpart of
+/// drawWithSubscripts().
+///
+/// QCheckBox draws its text plainly, so "E<sub>F</sub>" would appear as literal
+/// markup and the usual fallback, "E_F", as a literal underscore. This pairs an
+/// unlabelled check box with a QLabel that does render the markup, and forwards
+/// clicks on the caption to the box so it still behaves like one widget.
+///
+/// Returns the row widget to put in the layout; `box` receives the check box
+/// itself, which is what callers connect to and read.
+QWidget* richTextCheckBox(const QString& html, QCheckBox*& box,
+                          QWidget* parent);
 
 /// A QDoubleSpinBox that renders its value COMPACTLY: three significant
 /// figures, switching to exponential notation ("1.23e-2") when a fixed-point

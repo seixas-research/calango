@@ -89,6 +89,26 @@ public:
     };
     ScalarRange scalarRange() const { return scalarRange_; }
 
+    /// The frames the trajectory-wide scalar range is computed over — the open
+    /// tab's whole trajectory. MainWindow re-pushes it on every tab switch and
+    /// as a live run streams frames in; an empty list (or a single frame)
+    /// means there is nothing beyond the displayed structure.
+    ///
+    /// The viewport does NOT render these; it holds them only so a colour
+    /// scale can describe the run rather than one instant of it.
+    void setTrajectory(std::vector<std::shared_ptr<const core::Structure>> frames);
+
+    /// Min/max of the per-atom field `field` across EVERY frame of the
+    /// trajectory, for auto-scaling a colour ramp that must not shift as the
+    /// timeline is scrubbed. `valid` is false without a trajectory or when no
+    /// frame carries the field.
+    ///
+    /// Only stored scalar fields are covered — the derived modes
+    /// (coordination, generalized coordination) would need the full analysis
+    /// re-run on every frame, which for a long MD costs more than the ramp is
+    /// worth; those keep their per-frame range.
+    ScalarRange trajectoryScalarRange(const QString& field) const;
+
     /// Pin the scalar color ramp to explicit bounds instead of auto-scaling to
     /// the data. Passing enabled=false restores auto-scaling. Re-colors the
     /// atoms (and their bond halves) without touching the scalars themselves.
@@ -115,10 +135,12 @@ public:
     /// `faceTris` / `edgeLines` are interleaved pos(3)+color(3) streams;
     /// `faceRanges` slices `faceTris` into per-primitive runs so each blends at
     /// its own opacity. visible=false (or empty streams) hides the overlay.
+    /// `edgeAlpha` blends the line stream (opaque by default) — see
+    /// StructureRenderer::setCustomOverlay().
     void setCustomOverlay(
         std::vector<float> faceTris, std::vector<float> edgeLines,
         std::vector<render::StructureRenderer::OverlayRange> faceRanges,
-        bool visible);
+        bool visible, float edgeAlpha = 1.0f);
     /// Remove the custom-overlay primitives.
     void clearCustomOverlay();
 
@@ -449,6 +471,16 @@ private:
     render::OrbitCamera camera_;
     render::StructureRenderer renderer_;
     std::shared_ptr<const core::Structure> structure_;
+    /// The open tab's trajectory — see setTrajectory(). Held for the scalar
+    /// range only; `structure_` is what gets drawn.
+    std::vector<std::shared_ptr<const core::Structure>> trajectory_;
+    /// Incremental cache for trajectoryScalarRange(). A streaming run appends
+    /// a frame at a time and the colour dialog re-reads the range on each one,
+    /// so a full rescan per frame would be quadratic in the run length; the
+    /// cache remembers how far it got and merges only the new frames.
+    mutable QString rangeCacheField_;
+    mutable std::size_t rangeCacheFrames_ = 0;
+    mutable ScalarRange rangeCache_;
     std::set<int> selection_;
     QString customField_;
     core::CoordinationOptions coordinationOptions_;
@@ -469,6 +501,7 @@ private:
     std::vector<float> customOverlayEdges_;
     std::vector<render::StructureRenderer::OverlayRange> customOverlayRanges_;
     bool customOverlayVisible_ = false;
+    float customOverlayEdgeAlpha_ = 1.0f;
     bool customOverlayDirty_ = false;
 
     // Managed-overlay geometry (the Additional-overlays dock), uploaded lazily.

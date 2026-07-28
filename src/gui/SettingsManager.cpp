@@ -24,7 +24,7 @@ struct Managed {
     const char* jsonName = nullptr;
 };
 
-std::array<Managed, 10> managedKeys()
+std::array<Managed, 11> managedKeys()
 {
     return {{
         {SettingsManager::kTheme, QStringLiteral("system")},
@@ -42,6 +42,8 @@ std::array<Managed, 10> managedKeys()
         {SettingsManager::kShowWelcome, true, "show_welcome_screen"},
         {SettingsManager::kEnvFilePath, QString()},
         {SettingsManager::kMaterialsProjectApiKey, QString()},
+        // Encoded camera state restored by "Reset camera"; empty = auto-frame.
+        {SettingsManager::kDefaultPointOfView, QString()},
     }};
 }
 

@@ -249,6 +249,10 @@ private Q_SLOTS:
     void resetLayout();
     /// View toolbar → "Set point-of-view…": the modeless camera editor.
     void showPointOfView();
+    /// View toolbar → "Reset camera" [F]: apply the default point-of-view the
+    /// user stored in ~/.calango/settings.json, or auto-frame the structure
+    /// when none has been stored.
+    void resetCamera();
     /// View toolbar -> "Film production...": author the current tab's film.
     void showFilmProduction();
     /// Film mode on/off: swaps the trajectory timeline for the film timeline
@@ -446,6 +450,18 @@ private:
     /// The one path every whole-structure transform goes through.
     void installEditedStructure(std::shared_ptr<core::Structure> edited,
                                 const QString& message);
+    /// Hand `doc`'s trajectory to the viewport, which needs it so the Custom
+    /// Gradient dialog can auto-scale a colour ramp over the whole run instead
+    /// of over the one frame on screen. Cheap: it copies shared_ptrs.
+    void pushTrajectoryToViewport(const Document* doc);
+    /// Park the timeline and the viewport on the last frame of `doc`'s
+    /// trajectory. Called when a frame-producing run (geometry optimization,
+    /// molecular dynamics, NEB) finishes: the result of a relaxation IS its
+    /// final step, and leaving the playhead wherever the run left it showed
+    /// the starting geometry to anyone who had scrubbed back — or, for a
+    /// trajectory loaded from disk at the end of the job, frame 0.
+    /// No-op for a single-structure tab or one that is not on screen.
+    void showFinalFrame(const Document* doc);
     void notifyStructureChanged(bool frameCamera = true);
     void pushUndo();
     void updateUndoActions();

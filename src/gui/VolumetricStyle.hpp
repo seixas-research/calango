@@ -20,6 +20,30 @@ namespace calango::gui {
 /// It is now an option under Isosurface.
 enum class VolumetricRenderMode { Isosurface, ColorSlice };
 
+/// What the extracted isosurface is turned into on screen.
+///
+/// The mesh is the same in every case — marching cubes at one isovalue — so
+/// these are presentation, not extraction: a filled surface hides the atoms it
+/// encloses, a wire mesh shows them through it, and a dot cloud reads as a
+/// density without claiming the hard boundary a solid skin does. Solid+Mesh is
+/// the figure convention for showing an orbital's shape and its curvature at
+/// once.
+enum class IsoDrawStyle { Solid, Mesh, SolidMesh, Dots };
+
+/// How the isosurface's colour is shaded before it is uploaded.
+///
+/// The main viewport draws volumetric overlays through the FLAT per-vertex-
+/// colour path, so the shading is baked into the vertex colours here, from the
+/// marching-cubes gradient normals against the same fixed studio light
+/// directions the atoms use. It therefore does not swing with the camera the
+/// way the lit atom spheres do — the trade for shape-revealing shading on a
+/// surface the renderer treats as unlit geometry.
+enum class IsoShading {
+    Flat,    ///< one uniform colour, no normals used (the historical look)
+    Diffuse, ///< Lambertian key + fill, ambient floor
+    Glossy,  ///< diffuse plus a Blinn-Phong highlight scaled by `specular`
+};
+
 /// Appearance settings for a rendered volumetric field, shared between the
 /// Volumetric Data panel (which applies it) and the "Edit Volumetric Render"
 /// dialog (which edits it). The specular material term is carried for the lit
@@ -35,6 +59,35 @@ struct VolumetricStyle {
     QColor negativeColor = QColor(0x47, 0x82, 0xff); ///< negative phase (−ψ)
     /// Grid refinement applied before marching cubes (smoother meshes).
     core::GridInterpolation gridInterpolation = core::GridInterpolation::None;
+
+    // -- Isosurface presentation -------------------------------------------
+    IsoDrawStyle drawStyle = IsoDrawStyle::Solid;
+    IsoShading shading = IsoShading::Flat;
+    /// Ambient floor of the baked shading: the fraction of the base colour a
+    /// face turned fully away from every light keeps. 0 makes unlit faces
+    /// black, which on a translucent surface reads as a hole rather than as
+    /// shadow, so the default keeps a healthy floor.
+    double ambient = 0.35;
+    /// Laplacian smoothing passes applied to the extracted mesh before it is
+    /// coloured. Marching cubes on a coarse voxel grid leaves stair-steps that
+    /// no amount of shading hides; averaging each vertex toward its triangle
+    /// neighbours removes them without the memory cost of refining the grid
+    /// (which multiplies the voxel count instead of the vertex count).
+    /// Shrinks the surface slightly at high counts — it is a smoother, not a
+    /// re-extraction.
+    int smoothing = 0;
+    /// Half-length (Å) of the little crosses that stand in for points in the
+    /// Dots style — core-profile GL has no size-varying point sprite here, so
+    /// a "dot" is three short segments through the vertex.
+    double dotSize = 0.06;
+    /// Keep every Nth mesh vertex in the Dots style. A refined grid can carry
+    /// hundreds of thousands of vertices, where a dot per vertex is both a
+    /// solid wall of ink and a large buffer; thinning is what makes the style
+    /// read as a cloud.
+    int dotStride = 3;
+    /// Darkening applied to the wire colour when a mesh is drawn OVER a solid
+    /// surface, so the wires read against the fill they sit on.
+    double meshShade = 0.45;
 
     /// Colour the isosurface by a second field sampled at its vertices — the
     /// electrostatic-potential map. Off, the surface takes the flat phase

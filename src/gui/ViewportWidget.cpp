@@ -227,6 +227,57 @@ void ViewportWidget::updateColorScalars()
     Q_EMIT colorMappingChanged();
 }
 
+void ViewportWidget::setTrajectory(
+    std::vector<std::shared_ptr<const core::Structure>> frames)
+{
+    // A live run appends to the list it already pushed, and re-scanning every
+    // frame each time would make the colour scale quadratic in the run length.
+    // Same first frame and no shrink == an append, so the cache survives and
+    // trajectoryScalarRange() merges only what is new.
+    const bool appended = !trajectory_.empty() && !frames.empty()
+        && frames.size() >= trajectory_.size()
+        && frames.front() == trajectory_.front();
+    trajectory_ = std::move(frames);
+    if (!appended) {
+        rangeCacheField_.clear();
+        rangeCacheFrames_ = 0;
+        rangeCache_ = {};
+    }
+}
+
+ViewportWidget::ScalarRange
+ViewportWidget::trajectoryScalarRange(const QString& field) const
+{
+    if (trajectory_.size() < 2 || field.isEmpty())
+        return {};
+    if (rangeCacheField_ != field) {
+        rangeCacheField_ = field;
+        rangeCacheFrames_ = 0;
+        rangeCache_ = {};
+    }
+    const std::string name = field.toStdString();
+    for (std::size_t i = rangeCacheFrames_; i < trajectory_.size(); ++i) {
+        const auto& frame = trajectory_[i];
+        if (!frame)
+            continue;
+        const auto& fields = frame->scalarFields();
+        const auto it = fields.find(name);
+        if (it == fields.end())
+            continue; // a frame that simply does not carry this column
+        for (const double value : it->second) {
+            const auto v = static_cast<float>(value);
+            if (!rangeCache_.valid) {
+                rangeCache_ = {true, v, v};
+                continue;
+            }
+            rangeCache_.min = std::min(rangeCache_.min, v);
+            rangeCache_.max = std::max(rangeCache_.max, v);
+        }
+    }
+    rangeCacheFrames_ = trajectory_.size();
+    return rangeCache_;
+}
+
 void ViewportWidget::setBackgroundColor(const QColor& color)
 {
     backgroundColor_ = color;
@@ -983,7 +1034,8 @@ void ViewportWidget::ensureUploaded()
     }
     if (customOverlayDirty_) {
         renderer_.setCustomOverlay(customOverlayFaces_, customOverlayEdges_,
-                                   customOverlayRanges_, customOverlayVisible_);
+                                   customOverlayRanges_, customOverlayVisible_,
+                                   customOverlayEdgeAlpha_);
         customOverlayDirty_ = false;
     }
     if (managedOverlayDirty_) {
@@ -1028,12 +1080,14 @@ void ViewportWidget::setTextOverlays(std::vector<TextOverlay> overlays)
 
 void ViewportWidget::setCustomOverlay(
     std::vector<float> faceTris, std::vector<float> edgeLines,
-    std::vector<render::StructureRenderer::OverlayRange> faceRanges, bool visible)
+    std::vector<render::StructureRenderer::OverlayRange> faceRanges,
+    bool visible, float edgeAlpha)
 {
     customOverlayFaces_ = std::move(faceTris);
     customOverlayEdges_ = std::move(edgeLines);
     customOverlayRanges_ = std::move(faceRanges);
     customOverlayVisible_ = visible;
+    customOverlayEdgeAlpha_ = edgeAlpha;
     customOverlayDirty_ = true;
     update();
 }
@@ -1044,6 +1098,7 @@ void ViewportWidget::clearCustomOverlay()
     customOverlayEdges_.clear();
     customOverlayRanges_.clear();
     customOverlayVisible_ = false;
+    customOverlayEdgeAlpha_ = 1.0f;
     customOverlayDirty_ = true;
     update();
 }

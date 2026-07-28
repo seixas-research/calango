@@ -61,6 +61,11 @@ VIRTUAL_ENV env -> build-time CALANGO_DEFAULT_PYTHON. Verify with:
                                              dataclass dataset APIs)
 [runtime][optional] matplotlib ............. >= 3.6   (tested 3.11.1)  offline figure export
 [runtime][optional] paramiko ............... >= 3.0   (tested 5.0.0)   Remote Access SSH/SFTP panel
+[runtime][required] imageio ................ >= 2.28  animation export (GIF + video writers)
+[runtime][required] imageio-ffmpeg ......... >= 0.4   bundled ffmpeg binary the MP4/MOV/WebM
+                                             writers encode through. Installed with imageio
+                                             because every video format in the animation
+                                             export dialog fails at import without it.
 
   Core DFT / MLIP stack (required for the electronic-structure and MLIP
   workflows). The conda package pulls these in as run deps: MACE via the
@@ -103,6 +108,8 @@ SciPy            >= 1.9   (optional)
 spglib           >= 2.0   (optional)
 matplotlib       >= 3.6   (optional)
 paramiko         >= 3.0   (optional, remote)
+imageio          >= 2.28  (required, animation export)
+imageio-ffmpeg   >= 0.4   (required, video encoding)
 GPAW             >= 24.1  (required, DFT; tested 25.7.0)
 mace-torch       >= 0.3   (required, MLIP)
 torch            >= 2.0   (required, MLIP)

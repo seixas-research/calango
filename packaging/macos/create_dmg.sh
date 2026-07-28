@@ -27,7 +27,8 @@
 #   CALANGO_EMBEDDED_PYTHON_DIR  standalone Python payload to bundle; when unset
 #                             the script downloads and builds one automatically
 #   CALANGO_EMBEDDED_PACKAGES pip packages for that payload
-#                             (default: ase numpy scipy spglib matplotlib)
+#                             (default: ase numpy scipy spglib matplotlib
+#                              imageio imageio-ffmpeg)
 #   JOBS                      parallel build jobs (default: CPU count)
 #
 # NOTE on the Python version: PythonEngine runs an *in-process* interpreter
@@ -51,7 +52,7 @@ BUILD_DIR="${BUILD_DIR:-build-macos-bundle}"
 DIST_DIR="${DIST_DIR:-$REPO_ROOT}"
 QT_PREFIX="${CMAKE_PREFIX_PATH:-/opt/homebrew/opt/qt}"
 EMBED_PY="${CALANGO_EMBEDDED_PYTHON_DIR:-}"
-EMBED_PKGS="${CALANGO_EMBEDDED_PACKAGES:-ase numpy scipy spglib matplotlib}"
+EMBED_PKGS="${CALANGO_EMBEDDED_PACKAGES:-ase numpy scipy spglib matplotlib imageio imageio-ffmpeg}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 
 # Whether the build tree already exists must be sampled before anything

@@ -98,11 +98,14 @@ CustomGradientColoringDialog::CustomGradientColoringDialog(
     autoRangeCheck_ = new QCheckBox(tr("Auto-scale to data"), this);
     autoRangeCheck_->setChecked(true);
     autoRangeCheck_->setToolTip(
-        tr("On: the color ramp spans the property's own minimum and maximum in "
-           "the current structure, and the fields above track it.\n"
+        tr("On: the color ramp spans the property's own minimum and maximum, "
+           "and the fields above track it. With a trajectory open that is the "
+           "range over EVERY frame, not just the one displayed — a ramp "
+           "renormalized frame by frame makes the colors flicker as the "
+           "timeline plays and means a different value at every step.\n"
            "Off: the ramp is pinned to the Min/Max you type — values beyond "
-           "them clamp to the ramp ends — so several structures or frames can "
-           "be compared on one fixed scale."));
+           "them clamp to the ramp ends — so several structures or "
+           "trajectories can be compared on one fixed scale."));
     form->addRow(autoRangeCheck_);
 
     // Editing a bound is itself the intent to override, so it switches off
@@ -211,20 +214,35 @@ void CustomGradientColoringDialog::syncFromViewport()
     // starts from the real numbers when they switch to custom bounds. Once
     // pinned, they are the user's values and must not be overwritten.
     if (autoScale) {
-        const auto range = viewport_->scalarRange();
+        // "The data" for a trajectory is the WHOLE trajectory. Scaling to the
+        // displayed frame renormalizes the ramp on every scrub, so a color
+        // means a different number at every step and playback flickers —
+        // which is exactly what an auto-scaled scale should not do.
+        const auto trajectory =
+            mode == render::ColorMode::CustomScalar
+                ? viewport_->trajectoryScalarRange(propertyCombo_->currentText())
+                : ViewportWidget::ScalarRange{};
+        trajectoryScaled_ = trajectory.valid;
+        const auto range = trajectory.valid ? trajectory : viewport_->scalarRange();
         const QSignalBlocker minBlocker(rangeMinSpin_);
         const QSignalBlocker maxBlocker(rangeMaxSpin_);
         syncingRange_ = true;
         rangeMinSpin_->setValue(range.valid ? range.min : 0.0);
         rangeMaxSpin_->setValue(range.valid ? range.max : 1.0);
         syncingRange_ = false;
+    } else {
+        trajectoryScaled_ = false;
     }
     applyColorRange();
 }
 
 void CustomGradientColoringDialog::applyColorRange()
 {
-    const bool custom = !autoRangeCheck_->isChecked();
+    // A trajectory-wide auto-scale is still a PINNED window at the renderer:
+    // "auto" says where the numbers came from, not that they may move. Left
+    // un-pinned the renderer would re-normalize to each frame and undo the
+    // whole point of spanning the run.
+    const bool custom = !autoRangeCheck_->isChecked() || trajectoryScaled_;
     // An inverted or degenerate window would map every atom to one color;
     // order the two bounds rather than silently flattening the figure.
     const auto lo = static_cast<float>(

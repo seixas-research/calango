@@ -20,7 +20,8 @@ packaging/macos/create_dmg.sh
 ```
 
 It downloads a relocatable CPython (python-build-standalone) matching
-`PYTHON_BIN`'s version, installs `ase numpy scipy spglib matplotlib` into it,
+`PYTHON_BIN`'s version, installs
+`ase numpy scipy spglib matplotlib imageio imageio-ffmpeg` into it,
 and ships it at `calango.app/Contents/Resources/python`, so the installed app
 needs no Python on the target machine. The tree is cached under
 `$BUILD_DIR/embedded-python`, so only the first run needs network access.
@@ -157,7 +158,8 @@ Notes:
 - Build/host deps: `cmake`, `ninja`, a C++20 `cxx-compiler`, `pkg-config`,
   `qt6-main`, `pybind11`, `python`.
 - Run deps (conda): `qt6-main`, `numpy`, `ase`, `scipy`, `spglib`, `pymatgen`,
-  `paramiko`, `pymace` (MACE + backend), `gpaw` (x86_64 only), `gpaw-data`.
+  `paramiko`, `imageio` + `imageio-ffmpeg` (animation export), `pymace`
+  (MACE + backend), `gpaw` (x86_64 only), `gpaw-data`.
 - osx-arm64 only: `pip install gpaw` (no conda-forge arm64 build yet).
   Full annotated list + version constraints: `packaging/dependencies.txt`.
 - `qcustomplot` and `nlohmann_json` from the original spec were dropped:

@@ -54,22 +54,28 @@ BandPdosWindow::BandPdosWindow(const QString& directory, QWidget* parent)
            "of the run, not a display setting, so it is shown rather than "
            "edited."));
     {
-        // A QFormLayout row header is a QLabel, so the subscript can be typeset
-        // properly here (the plot's axis title does the same via
-        // drawWithSubscripts; a QCheckBox is plain-text only, so the shift
-        // toggle below keeps the conventional "E_F" spelling).
+        // A QFormLayout row header is a QLabel, so the subscript is typeset
+        // properly here; the plot's axis title does the same via
+        // drawWithSubscripts, and the check boxes below via richTextCheckBox.
+        // Every E_F in this window is a real subscript — a literal underscore
+        // in one of them next to a typeset one in the others reads as a bug.
         auto* fermiCaption = new QLabel(tr("Fermi level E<sub>F</sub>:"), this);
         fermiCaption->setTextFormat(Qt::RichText);
         form->addRow(fermiCaption, fermiLabel_);
     }
 
-    showFermiCheck_ = new QCheckBox(tr("Show Fermi level"), this);
+    QWidget* showFermiRow =
+        richTextCheckBox(tr("Show Fermi level E<sub>F</sub>"), showFermiCheck_,
+                         this);
     showFermiCheck_->setChecked(true);
-    showFermiCheck_->setToolTip(
-        tr("Visibility of the dashed E_F reference line. Independent of the "
-           "shift below: you can plot E − E_F without drawing the line at "
-           "zero, or show absolute energies with the line marking E_F."));
-    form->addRow(QString(), showFermiCheck_);
+    // Rich text in a tool tip too, so the subscript survives there: a tip that
+    // is rich text needs <br> rather than \n for its line breaks.
+    showFermiRow->setToolTip(
+        tr("Visibility of the dashed E<sub>F</sub> reference line. Independent "
+           "of the shift below: you can plot E − E<sub>F</sub> without drawing "
+           "the line at zero, or show absolute energies with the line marking "
+           "E<sub>F</sub>."));
+    form->addRow(QString(), showFermiRow);
     connect(showFermiCheck_, &QCheckBox::toggled, this, [this](bool on) {
         auto style = view_->style();
         style.showFermi = on;
@@ -80,14 +86,15 @@ BandPdosWindow::BandPdosWindow(const QString& directory, QWidget* parent)
     // the reference is E_F (bands sit around zero, the conventional
     // presentation) or 0 (raw eigenvalues on the calculator's own scale,
     // which is what you need when comparing against another code's output).
-    shiftFermiCheck_ =
-        new QCheckBox(tr("Shift Fermi level to zero (E − E_F = 0)"), this);
+    QWidget* shiftFermiRow = richTextCheckBox(
+        tr("Shift Fermi level to zero (E − E<sub>F</sub> = 0)"),
+        shiftFermiCheck_, this);
     shiftFermiCheck_->setChecked(true);
-    shiftFermiCheck_->setToolTip(
-        tr("On: energies are plotted relative to E_F, which is drawn as the "
-           "dashed line at zero.\nOff: absolute eigenvalues, with the dashed "
-           "line at the Fermi level itself."));
-    form->addRow(QString(), shiftFermiCheck_);
+    shiftFermiRow->setToolTip(
+        tr("On: energies are plotted relative to E<sub>F</sub>, which is drawn "
+           "as the dashed line at zero.<br>Off: absolute eigenvalues, with the "
+           "dashed line at the Fermi level itself."));
+    form->addRow(QString(), shiftFermiRow);
 
     // Directly below the Fermi readout and its shift toggle: the gap is read
     // against E_F, so the three belong together.
@@ -301,12 +308,13 @@ void BandPdosWindow::refreshBandGap()
     if (!info.valid) {
         gapLabel_->setText(
             tr("<b>Band gap:</b> not determinable — the plotted bands lie "
-               "entirely on one side of E_F."));
+               "entirely on one side of E<sub>F</sub>."));
         return;
     }
     if (info.metallic) {
         gapLabel_->setText(
-            tr("<b>Metallic</b> — a band crosses E_F, so there is no gap."));
+            tr("<b>Metallic</b> — a band crosses E<sub>F</sub>, so there is no "
+               "gap."));
         return;
     }
 
@@ -363,10 +371,15 @@ void BandPdosWindow::applyFermiShift()
     // its sensible defaults differ: ±10 eV around E_F when shifted, but a
     // window that still brackets E_F when showing absolute energies.
     minSpin_->setToolTip(shift ? tr("Lower edge of the plotted window, "
-                                    "relative to E_F")
+                                    "relative to E<sub>F</sub>")
                                : tr("Lower edge of the plotted window, on the "
                                     "absolute energy scale"));
-    maxSpin_->setToolTip(minSpin_->toolTip());
+    // Its own text, not a copy of the minimum's: this row is the UPPER edge,
+    // and the shared tip said "Lower edge" over the E max field.
+    maxSpin_->setToolTip(shift ? tr("Upper edge of the plotted window, "
+                                    "relative to E<sub>F</sub>")
+                               : tr("Upper edge of the plotted window, on the "
+                                    "absolute energy scale"));
 }
 
 } // namespace calango::gui

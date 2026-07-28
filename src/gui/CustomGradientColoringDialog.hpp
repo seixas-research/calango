@@ -17,10 +17,11 @@ class ViewportWidget;
 /// it does anything until "Color by" leaves Element, so as permanent rows it
 /// was five inert controls in the app's tallest dock.
 ///
-/// The Min/Max bounds matter more than they look: auto-scaling renormalizes the
-/// ramp to whatever the current frame contains, which makes two figures of the
-/// same property incomparable. Typing bounds pins the scale so one colour means
-/// one value across frames, structures and exported images.
+/// The Min/Max bounds matter more than they look. Auto-scaling spans the whole
+/// trajectory — every frame, not the displayed one — because a ramp
+/// renormalized per frame flickers through playback and means a different value
+/// at every step. Typing bounds pins the scale further, so one colour means one
+/// value across separate structures and exported images too.
 ///
 /// Modeless and live: edits apply to the viewport as they are made.
 class CustomGradientColoringDialog : public QDialog {
@@ -53,6 +54,11 @@ private:
     /// True while the bounds fields are being repopulated from the data, so
     /// their valueChanged does not read as a user override.
     bool syncingRange_ = false;
+    /// True when the auto-scaled bounds came from the whole trajectory rather
+    /// than from the displayed frame. Those bounds are pushed to the renderer
+    /// as an explicit window — otherwise it would re-normalize per frame and
+    /// the trajectory-wide scale would never actually apply.
+    bool trajectoryScaled_ = false;
 };
 
 } // namespace calango::gui

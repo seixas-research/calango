@@ -107,7 +107,10 @@ QWidget* GwWizard::buildSettingsPage()
     belowSpin_ = new QSpinBox(convergenceGroup);
     belowSpin_->setRange(1, 200);
     belowSpin_->setValue(4);
-    convergenceForm->addRow(tr("Corrected bands below E_F:"), belowSpin_);
+    // A QFormLayout row header is a QLabel, so the subscript is typeset rather
+    // than spelled with a literal underscore — as everywhere else E_F appears.
+    convergenceForm->addRow(tr("Corrected bands below E<sub>F</sub>:"),
+                            belowSpin_);
     aboveSpin_ = new QSpinBox(convergenceGroup);
     aboveSpin_->setRange(1, 200);
     aboveSpin_->setValue(4);
@@ -116,7 +119,8 @@ QWidget* GwWizard::buildSettingsPage()
            "quasiparticle correction. The band edges are what a gap "
            "renormalization needs; correcting the whole spectrum costs far "
            "more for information rarely used."));
-    convergenceForm->addRow(tr("Corrected bands above E_F:"), aboveSpin_);
+    convergenceForm->addRow(tr("Corrected bands above E<sub>F</sub>:"),
+                            aboveSpin_);
 
     coresSpin_ = new QSpinBox(convergenceGroup);
     coresSpin_->setRange(1, 4096);

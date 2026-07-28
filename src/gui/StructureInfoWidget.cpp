@@ -91,7 +91,10 @@ StructureInfoWidget::StructureInfoWidget(QWidget* parent)
                tr("Wrap within the unit cell — translate atoms by whole "
                   "lattice vectors until they lie inside the cell. Acts on the "
                   "viewport selection, or on every atom when nothing is "
-                  "selected."));
+                  "selected.\n\n"
+                  "On a trajectory it wraps every frame, not just the one on "
+                  "screen: wrapping a single frame would make atoms jump "
+                  "between lattice images as the timeline is scrubbed."));
     makeAction(supercellButton_, QStringLiteral("grid-line"),
                tr("Supercell… — build a supercell from a repetition or "
                   "transformation matrix."));

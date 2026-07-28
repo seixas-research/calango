@@ -46,6 +46,11 @@ requirements:
     - spglib >=2.0                   # symmetry detection
     - pymatgen                       # Materials Project / structure interop
     - paramiko >=3.0                 # Remote Access SSH/SFTP panel
+    # Animation export (trajectory / film → GIF and MP4). imageio-ffmpeg ships
+    # the ffmpeg binary the MP4 writers need, so both are run deps: without
+    # them every video format in the export dialog fails at import time.
+    - imageio >=2.28
+    - imageio-ffmpeg >=0.4
     # MLIP: MACE is packaged on conda-forge as `pymace`, which pulls its full
     # backend (pytorch, e3nn, cuequivariance-torch, torch-ema, torchmetrics).
     - pymace >=0.3

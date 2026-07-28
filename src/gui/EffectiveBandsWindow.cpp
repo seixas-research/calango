@@ -1,5 +1,6 @@
 #include "gui/EffectiveBandsWindow.hpp"
 
+#include "gui/GuiUtils.hpp"
 #include "gui/SpectralHeatmapWidget.hpp"
 #include "render/ColorMap.hpp"
 
@@ -76,10 +77,14 @@ EffectiveBandsWindow::EffectiveBandsWindow(const QString& directory,
     connect(sigmaSpin, &QDoubleSpinBox::valueChanged, this,
             [this](double v) { plot_->setSigma(v); });
 
-    auto* shiftCheck = new QCheckBox(tr("E − E_F"), this);
+    // richTextCheckBox rather than a plain QCheckBox: this caption is nothing
+    // BUT the symbol, so a literal "E_F" would be the whole label wrong.
+    QCheckBox* shiftCheck = nullptr;
+    QWidget* shiftRow =
+        richTextCheckBox(tr("E − E<sub>F</sub>"), shiftCheck, this);
     shiftCheck->setChecked(true);
-    shiftCheck->setToolTip(tr("Plot energies relative to the Fermi level."));
-    row->addWidget(shiftCheck);
+    shiftRow->setToolTip(tr("Plot energies relative to the Fermi level."));
+    row->addWidget(shiftRow);
     connect(shiftCheck, &QCheckBox::toggled, this,
             [this](bool on) { plot_->setShiftFermiToZero(on); });
 

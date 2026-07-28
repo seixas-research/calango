@@ -445,11 +445,17 @@ public:
     /// "Custom Overlay" geometric primitives (spheres, boxes, cylinders,
     /// planes…) drawn over the structure. `faces`/`edges` are interleaved
     /// pos(3)+color(3) streams; `faceRanges` slices `faces` into per-primitive
-    /// runs so each blends at its own opacity. Edges render opaque.
+    /// runs so each blends at its own opacity.
+    ///
+    /// `edgeAlpha` blends the whole edge stream; it defaults to opaque, which
+    /// is right for a wireframe drawn as an outline. The Volumetric panel's
+    /// mesh and dot styles pass the isosurface's own opacity instead — there
+    /// the lines ARE the surface, and an opaque one would ignore the opacity
+    /// the user set.
     void setCustomOverlay(const std::vector<float>& faces,
                           const std::vector<float>& edges,
                           const std::vector<OverlayRange>& faceRanges,
-                          bool visible);
+                          bool visible, float edgeAlpha = 1.0f);
 
     /// The "Additional overlays" dock's geometry — the user's lattice planes
     /// and primitives — in the same interleaved pos(3)+color(3) form as
@@ -577,6 +583,7 @@ private:
     ColoredVertexBuffer customOverlayEdges_; ///< GL_LINES (primitive wireframes)
     std::vector<OverlayRange> customOverlayRanges_;
     bool customOverlayVisible_ = false;
+    float customOverlayEdgeAlpha_ = 1.0f;
     ColoredVertexBuffer managedOverlayFaces_; ///< GL_TRIANGLES (overlay dock)
     ColoredVertexBuffer managedOverlayEdges_; ///< GL_LINES (overlay dock)
     std::vector<OverlayRange> managedOverlayRanges_;

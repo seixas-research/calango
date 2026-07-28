@@ -1,5 +1,6 @@
 #include "gui/PointOfViewDialog.hpp"
 
+#include "gui/SettingsManager.hpp"
 #include "gui/ViewportWidget.hpp"
 
 #include <QDialogButtonBox>
@@ -26,6 +27,25 @@ const auto kGroup = QStringLiteral("pointOfView");
 QString PointOfViewDialog::settingsGroup()
 {
     return kGroup;
+}
+
+render::PointOfView PointOfViewDialog::defaultPointOfView()
+{
+    const QString encoded =
+        QSettings()
+            .value(QLatin1String(SettingsManager::kDefaultPointOfView))
+            .toString();
+    // decode() already returns an invalid POV for anything unparseable, so a
+    // hand-edited settings.json cannot make Reset camera aim at nonsense — it
+    // just falls back to framing the structure.
+    return encoded.isEmpty() ? render::PointOfView{} : decode(encoded);
+}
+
+void PointOfViewDialog::setDefaultPointOfView(const render::PointOfView& pov)
+{
+    QSettings().setValue(QLatin1String(SettingsManager::kDefaultPointOfView),
+                         pov.valid ? encode(pov) : QString());
+    SettingsManager::save(); // mirror to ~/.calango/settings.json immediately
 }
 
 PointOfViewDialog::PointOfViewDialog(ViewportWidget* viewport, QWidget* parent)
@@ -108,6 +128,41 @@ PointOfViewDialog::PointOfViewDialog(ViewportWidget* viewport, QWidget* parent)
     form->addRow(tr("Pan (target, Å):"), panRow);
     layout->addWidget(manual);
 
+    // -- Default point-of-view ----------------------------------------------
+    // A saved view is recalled deliberately; THIS one is what the toolbar's
+    // Reset camera button (and 'F') snaps back to, so a preferred orientation
+    // becomes the resting state of every structure rather than something to
+    // re-apply by hand after each stray drag.
+    auto* defaultGroup = new QGroupBox(tr("Default Point-of-View"), this);
+    auto* defaultLayout = new QVBoxLayout(defaultGroup);
+    defaultLabel_ = new QLabel(defaultGroup);
+    defaultLabel_->setWordWrap(true);
+    defaultLayout->addWidget(defaultLabel_);
+    auto* defaultButtons = new QHBoxLayout;
+    auto* setDefaultButton =
+        new QPushButton(tr("Set point-of-view as default"), defaultGroup);
+    setDefaultButton->setToolTip(
+        tr("Write the camera on screen to ~/.calango/settings.json as the "
+           "default view. The toolbar's \"Reset camera\" button (and the F "
+           "key) then restores exactly this framing instead of re-fitting the "
+           "structure to the window.\n\n"
+           "It is stored verbatim — zoom, rotation and pan — so it reproduces "
+           "the same view across structures and across sessions."));
+    clearDefaultButton_ = new QPushButton(tr("Clear"), defaultGroup);
+    clearDefaultButton_->setToolTip(
+        tr("Forget the stored default, so \"Reset camera\" goes back to "
+           "centering and framing whatever structure is open."));
+    defaultButtons->addWidget(setDefaultButton);
+    defaultButtons->addWidget(clearDefaultButton_);
+    defaultButtons->addStretch(1);
+    defaultLayout->addLayout(defaultButtons);
+    layout->addWidget(defaultGroup);
+
+    connect(setDefaultButton, &QPushButton::clicked, this,
+            &PointOfViewDialog::saveAsDefault);
+    connect(clearDefaultButton_, &QPushButton::clicked, this,
+            &PointOfViewDialog::clearDefault);
+
     // -- Saved views --------------------------------------------------------
     auto* saved = new QGroupBox(tr("Saved Points-of-View"), this);
     auto* savedLayout = new QVBoxLayout(saved);
@@ -154,8 +209,43 @@ PointOfViewDialog::PointOfViewDialog(ViewportWidget* viewport, QWidget* parent)
             &PointOfViewDialog::syncFromViewport);
 
     refreshSavedList();
+    refreshDefaultState();
     syncFromViewport();
     deleteButton_->setEnabled(false);
+}
+
+void PointOfViewDialog::refreshDefaultState()
+{
+    const render::PointOfView pov = defaultPointOfView();
+    clearDefaultButton_->setEnabled(pov.valid);
+    if (!pov.valid) {
+        defaultLabel_->setText(
+            tr("No default set — \"Reset camera\" centers and frames the "
+               "structure."));
+        return;
+    }
+    defaultLabel_->setText(
+        tr("\"Reset camera\" restores: zoom %1 Å, yaw %2°, pitch %3°, "
+           "roll %4°, target (%5, %6, %7) Å.")
+            .arg(pov.distance, 0, 'f', 2)
+            .arg(pov.yawDeg, 0, 'f', 1)
+            .arg(pov.pitchDeg, 0, 'f', 1)
+            .arg(pov.rollDeg, 0, 'f', 1)
+            .arg(pov.target.x(), 0, 'f', 2)
+            .arg(pov.target.y(), 0, 'f', 2)
+            .arg(pov.target.z(), 0, 'f', 2));
+}
+
+void PointOfViewDialog::saveAsDefault()
+{
+    setDefaultPointOfView(viewport_->camera().pointOfView());
+    refreshDefaultState();
+}
+
+void PointOfViewDialog::clearDefault()
+{
+    setDefaultPointOfView(render::PointOfView{}); // invalid == "no default"
+    refreshDefaultState();
 }
 
 void PointOfViewDialog::syncFromViewport()

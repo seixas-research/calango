@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.64
+    VERSION 26.7.65
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -1603,7 +1603,12 @@ elseif(UNIX AND NOT APPLE)
         # No bundled interpreter: the embedded runtime resolves the system
         # python3, which needs ASE for structure I/O and job features.
         set(CPACK_DEBIAN_PACKAGE_DEPENDS "python3 (>= 3.9)")
-        set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "python3-ase")
+        # imageio drives the animation export. Its ffmpeg companion is
+        # `imageio-ffmpeg`, which Debian does not package under that name — a
+        # system ffmpeg satisfies the same need, so it is suggested here and
+        # the pip name is documented in packaging/dependencies.txt.
+        set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "python3-ase, python3-imageio")
+        set(CPACK_DEBIAN_PACKAGE_SUGGESTS "ffmpeg")
     endif()
     # Refresh MIME/desktop/icon caches on install and removal.
     set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA

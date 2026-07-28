@@ -468,12 +468,15 @@ MainWindow::MainWindow(QWidget* parent)
     frameToolbar->addSeparator();
 
     QAction* resetAction = frameToolbar->addAction(
-        tr("Reset camera (center and frame the structure)  [F]"));
+        tr("Reset camera  [F]"));
     ui::IconManager::bind(resetAction, QStringLiteral("focus-3-line"));
+    resetAction->setToolTip(
+        tr("Reset camera — restore the default point-of-view saved in "
+           "~/.calango/settings.json, or, when none has been set, center and "
+           "frame the structure.  [F]"));
     // The 'F' shortcut lives here now that the View → Alignment submenu is gone.
     resetAction->setShortcut(QKeySequence(Qt::Key_F));
-    connect(resetAction, &QAction::triggered,
-            viewport_, &ViewportWidget::frameStructure);
+    connect(resetAction, &QAction::triggered, this, &MainWindow::resetCamera);
     frameToolbar->addAction(orthoAction_);
     // Directly after the projection toggle: both are about how the scene is
     // LOOKED AT rather than what is drawn, and this is the one that makes a
@@ -1703,6 +1706,10 @@ void MainWindow::syncViewsToCurrent(bool frameCamera)
     // cameraChanged, which would otherwise overwrite it with the auto-framed
     // one before it could be restored.
     const render::PointOfView stored = doc->pointOfView;
+    // Before setStructure: the colour mapping is recomputed inside it and the
+    // Custom Gradient dialog re-reads its auto-scale from the trajectory, so
+    // the viewport has to already know which trajectory this tab is.
+    pushTrajectoryToViewport(doc);
     viewport_->setStructure(doc->structure, frameCamera);
     if (stored.valid) {
         restoringPointOfView_ = true;
@@ -1756,6 +1763,9 @@ void MainWindow::notifyStructureChanged(bool frameCamera)
     // cameraChanged, which would otherwise overwrite it with the auto-framed
     // one before it could be restored.
     const render::PointOfView stored = doc->pointOfView;
+    // An edit that replaces a frame (wrap, centering, a streamed arrival)
+    // changes what the trajectory-wide colour scale spans.
+    pushTrajectoryToViewport(doc);
     viewport_->setStructure(doc->structure, frameCamera);
     if (stored.valid) {
         restoringPointOfView_ = true;
@@ -1985,6 +1995,36 @@ void MainWindow::showFrame(int index)
         return;
     doc->structure = doc->frames[static_cast<std::size_t>(index)];
     notifyStructureChanged(false);
+}
+
+void MainWindow::pushTrajectoryToViewport(const Document* doc)
+{
+    std::vector<std::shared_ptr<const core::Structure>> frames;
+    if (doc) {
+        frames.reserve(doc->frames.size());
+        for (const auto& frame : doc->frames)
+            frames.push_back(frame);
+    }
+    viewport_->setTrajectory(std::move(frames));
+}
+
+void MainWindow::showFinalFrame(const Document* doc)
+{
+    if (!doc || doc->frames.size() < 2)
+        return;
+    const int index = indexOfDocument(doc);
+    if (index < 0 || tabBar_->currentIndex() != index)
+        return; // another tab is forward; switching to this one re-syncs it
+    const int last = static_cast<int>(doc->frames.size()) - 1;
+    timeline_->extendFrameCount(static_cast<int>(doc->frames.size()));
+    timeline_->show();
+    // setCurrentFrame() drives the slider, and a slider already sitting on
+    // `last` emits nothing — which is exactly the case after a run the user
+    // never scrubbed. Call showFrame() directly there.
+    if (timeline_->currentFrame() == last)
+        showFrame(last);
+    else
+        timeline_->setCurrentFrame(last);
 }
 
 void MainWindow::saveStructureAs()
@@ -3043,6 +3083,57 @@ void MainWindow::wrapStructureIntoCell()
         if (index >= 0)
             indices.push_back(static_cast<std::size_t>(index));
     }
+
+    // A trajectory is wrapped WHOLE. Wrapping only the displayed frame would
+    // make the atoms jump between lattice images as the timeline is scrubbed —
+    // the very artifact the button exists to remove — and an MD run is
+    // precisely where atoms diffuse out of the box in the first place.
+    if (doc->frames.size() > 1) {
+        std::vector<std::shared_ptr<core::Structure>> wrapped;
+        wrapped.reserve(doc->frames.size());
+        int movedTotal = 0;
+        int framesChanged = 0;
+        std::shared_ptr<core::Structure> displayed;
+        for (const auto& frame : doc->frames) {
+            if (!frame) {
+                wrapped.push_back(frame);
+                continue;
+            }
+            auto copy = std::make_shared<core::Structure>(*frame);
+            const int moved = core::wrapIntoCell(*copy, indices);
+            movedTotal += moved;
+            if (moved > 0)
+                ++framesChanged;
+            // The frame the viewport is on has to become the same object the
+            // trajectory now holds, or scrubbing away and back would revert it.
+            if (frame == doc->structure)
+                displayed = copy;
+            wrapped.push_back(std::move(copy));
+        }
+        if (movedTotal == 0) {
+            statusBar()->showMessage(
+                indices.empty()
+                    ? tr("Every atom of every frame already lies inside the "
+                         "unit cell.")
+                    : tr("Every selected atom already lies inside the unit "
+                         "cell, in every frame."));
+            return;
+        }
+        pushUndo();
+        doc->frames = std::move(wrapped);
+        // `displayed` is null only if the shown structure was not one of the
+        // frames (an edited structure never re-inserted); leave it alone then.
+        if (displayed)
+            doc->structure = std::move(displayed);
+        notifyStructureChanged(/*frameCamera=*/false);
+        statusBar()->showMessage(
+            tr("Wrapped %n atom(s) into the cell across %1 of %2 trajectory "
+               "frames", nullptr, movedTotal)
+                .arg(framesChanged)
+                .arg(doc->frames.size()));
+        return;
+    }
+
     auto edited = std::make_shared<core::Structure>(*doc->structure);
     const int moved = core::wrapIntoCell(*edited, indices);
     if (moved == 0) {
@@ -3969,6 +4060,29 @@ void MainWindow::openGeometryOptimizationResults(const QString& directory)
     connect(viewer, &GeometryOptimizationViewer::getVolumetricDataRequested,
             this, &MainWindow::onGetVolumetricData);
     viewer->show();
+}
+
+void MainWindow::resetCamera()
+{
+    // A stored default wins over auto-framing: a user who has said "this is
+    // how I want structures to look" means it for every structure, and the
+    // fitted view they would otherwise get is exactly what they overrode.
+    const render::PointOfView pov = PointOfViewDialog::defaultPointOfView();
+    if (!pov.valid) {
+        viewport_->frameStructure();
+        return;
+    }
+    viewport_->setPointOfView(pov);
+    // The stored view carries its projection, so the toolbar's Orthographic
+    // toggle has to follow it — a checked box over a perspective view is worse
+    // than no box at all. Blocked: the toggle drives the camera the other way.
+    const bool ortho =
+        pov.projection == render::CameraProjection::Orthographic;
+    if (orthoAction_->isChecked() != ortho) {
+        const QSignalBlocker blocker(orthoAction_);
+        orthoAction_->setChecked(ortho);
+    }
+    statusBar()->showMessage(tr("Default point-of-view restored"), 2000);
 }
 
 void MainWindow::showPointOfView()
@@ -6144,6 +6258,9 @@ void MainWindow::onRemoteResultsReady(const QString& localDir)
         const QString path = localDir + QLatin1Char('/') + QLatin1String(candidate);
         if (QFile::exists(path)) {
             loadFile(path);
+            // Same rule as a local run: a finished trajectory is shown at its
+            // final step, not rewound to the input geometry.
+            showFinalFrame(currentDocument());
             statusBar()->showMessage(
                 tr("Remote results loaded from %1").arg(localDir));
             return;
@@ -6180,6 +6297,9 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
             tabBar_->setTabText(index, streamed->fileName);
             if (tabBar_->currentIndex() == index)
                 syncViewsToCurrent(false);
+            // The run is over, so its answer is the last frame — and
+            // syncViewsToCurrent() above has just rewound the timeline to 0.
+            showFinalFrame(streamed);
             if (!failed)
                 statusBar()->showMessage(
                     tr("Run finished — %n streamed frame(s)", nullptr,
@@ -6281,8 +6401,12 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         if (!QFile::exists(trajectoryPath))
             continue;
         loadFile(trajectoryPath);
+        // Opened at frame 0 like any trajectory; a finished relaxation or MD
+        // run is read from its end, so land the playhead there.
+        showFinalFrame(currentDocument());
         statusBar()->showMessage(
-            tr("Run finished — trajectory %1 opened in a new tab")
+            tr("Run finished — trajectory %1 opened in a new tab at its final "
+               "step")
                 .arg(QLatin1String(trajectory)),
             8000);
         return;

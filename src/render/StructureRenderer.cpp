@@ -669,7 +669,7 @@ void StructureRenderer::setLatticePlane(const std::vector<float>& faceTris,
 void StructureRenderer::setCustomOverlay(const std::vector<float>& faces,
                                          const std::vector<float>& edges,
                                          const std::vector<OverlayRange>& faceRanges,
-                                         bool visible)
+                                         bool visible, float edgeAlpha)
 {
     if (!initialized_)
         return;
@@ -677,6 +677,7 @@ void StructureRenderer::setCustomOverlay(const std::vector<float>& faces,
     uploadColoredBuffer(customOverlayEdges_, edges);
     customOverlayRanges_ = faceRanges;
     customOverlayVisible_ = visible;
+    customOverlayEdgeAlpha_ = std::clamp(edgeAlpha, 0.0f, 1.0f);
 }
 
 void StructureRenderer::setManagedOverlay(
@@ -2031,10 +2032,23 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
             gl_->glDisable(GL_BLEND);
         }
         if (customOverlayEdges_.vertexCount > 0) {
-            wireProgram_.setUniformValue("uAlpha", 1.0f);
+            // Translucent wires (the volumetric mesh/dot styles) blend without
+            // writing depth, exactly as the faces above do; an opaque outline
+            // takes the plain path and keeps occluding what is behind it.
+            const bool blendEdges = customOverlayEdgeAlpha_ < 1.0f;
+            if (blendEdges) {
+                gl_->glEnable(GL_BLEND);
+                gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                gl_->glDepthMask(GL_FALSE);
+            }
+            wireProgram_.setUniformValue("uAlpha", customOverlayEdgeAlpha_);
             customOverlayEdges_.vao.bind();
             gl_->glDrawArrays(GL_LINES, 0, customOverlayEdges_.vertexCount);
             customOverlayEdges_.vao.release();
+            if (blendEdges) {
+                gl_->glDepthMask(GL_TRUE);
+                gl_->glDisable(GL_BLEND);
+            }
         }
         wireProgram_.release();
     }

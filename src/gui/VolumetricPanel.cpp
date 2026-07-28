@@ -23,12 +23,166 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <unordered_map>
 
 namespace calango::gui {
 
 namespace {
 constexpr int kRefineFactor = 2; // upsampling factor for grid interpolation
+
+/// The two directions the baked isosurface shading is lit from — the key and
+/// fill of StructureRenderer::defaultLights(), negated into "direction toward
+/// the light". Reusing the atoms' studio setup is what makes a shaded surface
+/// look like it shares their scene instead of being lit from somewhere else.
+const core::Vec3 kKeyLight = core::Vec3{0.4, 0.5, 1.0}.normalized();
+const core::Vec3 kFillLight = core::Vec3{-0.7, -0.25, 0.55}.normalized();
+/// Blinn-Phong half-vector for the Glossy finish. The overlay path is unlit and
+/// the geometry is uploaded once, so there is no camera to reflect about; the
+/// highlight is fixed to the key light seen from roughly in front, which reads
+/// as a sheen on the surface rather than as a moving specular.
+const core::Vec3 kHalfVector =
+    (kKeyLight + core::Vec3{0.0, 0.0, 1.0}).normalized();
+constexpr double kGlossExponent = 24.0;
+
+/// Baked shading factor for a vertex normal, in [0, 1+] (Glossy can exceed 1,
+/// which the caller clamps after scaling the colour).
+struct ShadeTerms {
+    double diffuse = 1.0;
+    double specular = 0.0;
+};
+
+ShadeTerms shadeNormal(const core::Vec3& normal, const VolumetricStyle& style)
+{
+    if (style.shading == IsoShading::Flat)
+        return {};
+    const double length = normal.norm();
+    if (length < 1e-12)
+        return {}; // a degenerate normal: leave the colour alone
+    const core::Vec3 n = normal * (1.0 / length);
+    // std::abs on both dots: an isosurface is a closed shell whose back faces
+    // are as visible as its front ones (through the lobe, or when the camera
+    // is inside it). Signed lighting would paint half of every orbital black.
+    const double key = std::abs(n.dot(kKeyLight));
+    const double fill = 0.35 * std::abs(n.dot(kFillLight));
+    const double ambient = std::clamp(style.ambient, 0.0, 1.0);
+    ShadeTerms terms;
+    terms.diffuse =
+        ambient + (1.0 - ambient) * std::clamp(key + fill, 0.0, 1.0);
+    if (style.shading == IsoShading::Glossy) {
+        terms.specular = std::clamp(style.specular, 0.0, 1.0)
+            * std::pow(std::abs(n.dot(kHalfVector)), kGlossExponent);
+    }
+    return terms;
 }
+
+/// Laplacian smoothing of a marching-cubes triangle soup.
+///
+/// The mesh has no shared vertices — every triangle carries its own three —
+/// so neighbours are found by welding on quantized position first. Positions
+/// AND normals are smoothed: leaving the normals alone would keep the faceted
+/// shading the smoothing was meant to remove.
+void smoothMesh(core::IsoMesh& mesh, int passes)
+{
+    if (passes <= 0 || mesh.positions.size() < 3)
+        return;
+    // Weld tolerance: marching-cubes vertices that should be one point are
+    // bit-identical or within rounding of each other, never merely close, so a
+    // tight grid is enough and distinct nearby surfaces stay distinct.
+    constexpr double kWeld = 1e-5;
+    const auto key = [](const core::Vec3& p) {
+        return std::array<long long, 3>{
+            static_cast<long long>(std::llround(p.x / kWeld)),
+            static_cast<long long>(std::llround(p.y / kWeld)),
+            static_cast<long long>(std::llround(p.z / kWeld))};
+    };
+    struct KeyHash {
+        std::size_t operator()(const std::array<long long, 3>& k) const
+        {
+            std::size_t h = 1469598103934665603ULL;
+            for (const long long v : k)
+                h = (h ^ static_cast<std::size_t>(v)) * 1099511628211ULL;
+            return h;
+        }
+    };
+
+    const std::size_t count = mesh.positions.size();
+    std::unordered_map<std::array<long long, 3>, int, KeyHash> unique;
+    unique.reserve(count);
+    std::vector<int> weld(count);
+    std::vector<core::Vec3> points;
+    points.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto [it, inserted] =
+            unique.try_emplace(key(mesh.positions[i]),
+                               static_cast<int>(points.size()));
+        if (inserted)
+            points.push_back(mesh.positions[i]);
+        weld[i] = it->second;
+    }
+
+    // Adjacency over the welded points, from the triangle edges.
+    std::vector<std::vector<int>> neighbors(points.size());
+    const std::size_t triangles = count / 3;
+    for (std::size_t t = 0; t < triangles; ++t) {
+        const int a = weld[3 * t], b = weld[3 * t + 1], c = weld[3 * t + 2];
+        const int edges[3][2] = {{a, b}, {b, c}, {c, a}};
+        for (const auto& e : edges) {
+            if (e[0] == e[1])
+                continue;
+            neighbors[static_cast<std::size_t>(e[0])].push_back(e[1]);
+            neighbors[static_cast<std::size_t>(e[1])].push_back(e[0]);
+        }
+    }
+
+    // Under-relaxed (lambda < 1) so the surface creeps toward its neighbours
+    // instead of collapsing: at lambda = 1 a few passes visibly shrink a lobe.
+    constexpr double kLambda = 0.5;
+    std::vector<core::Vec3> next(points.size());
+    for (int pass = 0; pass < passes; ++pass) {
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            const auto& adjacent = neighbors[i];
+            if (adjacent.empty()) {
+                next[i] = points[i];
+                continue;
+            }
+            core::Vec3 sum{0.0, 0.0, 0.0};
+            for (const int j : adjacent)
+                sum = sum + points[static_cast<std::size_t>(j)];
+            const core::Vec3 average = sum * (1.0 / adjacent.size());
+            next[i] = points[i] + (average - points[i]) * kLambda;
+        }
+        points.swap(next);
+    }
+
+    for (std::size_t i = 0; i < count; ++i)
+        mesh.positions[i] = points[static_cast<std::size_t>(weld[i])];
+
+    // Re-derive the normals from the smoothed geometry, area-weighted over the
+    // triangles meeting each welded point.
+    if (!mesh.normals.empty()) {
+        std::vector<core::Vec3> accumulated(points.size(),
+                                            core::Vec3{0.0, 0.0, 0.0});
+        for (std::size_t t = 0; t < triangles; ++t) {
+            const core::Vec3& p0 = mesh.positions[3 * t];
+            const core::Vec3& p1 = mesh.positions[3 * t + 1];
+            const core::Vec3& p2 = mesh.positions[3 * t + 2];
+            const core::Vec3 face = (p1 - p0).cross(p2 - p0);
+            for (int k = 0; k < 3; ++k) {
+                const auto index = static_cast<std::size_t>(weld[3 * t + k]);
+                accumulated[index] = accumulated[index] + face;
+            }
+        }
+        for (std::size_t i = 0; i < count; ++i) {
+            const core::Vec3& n =
+                accumulated[static_cast<std::size_t>(weld[i])];
+            // A cancelled-out sum leaves the extraction's own normal, which is
+            // still the field gradient and better than a zero vector.
+            if (n.norm() > 1e-12)
+                mesh.normals[i] = n.normalized();
+        }
+    }
+}
+} // namespace
 
 VolumetricPanel::VolumetricPanel(ViewportWidget* viewport, QWidget* parent)
     : QWidget(parent), viewport_(viewport)
@@ -662,10 +816,15 @@ void VolumetricPanel::pumpIsoExtraction()
 
     const double requestedIso = std::abs(style_.isovalue);
     const core::GridInterpolation interp = style_.gridInterpolation;
+    // Smoothing runs here, not in pushResults(): it is the expensive half of
+    // the geometry work (a weld + adjacency build over every vertex), and this
+    // is the thread that already exists to keep that off the GUI.
+    const int smoothing = std::clamp(style_.smoothing, 0, 20);
 
     isoWatcher_.setFuture(QtConcurrent::run(
         [bases = std::move(bases), secondary = std::move(secondary),
-         requestedIso, potential, interp]() -> std::vector<ExtractResult> {
+         requestedIso, potential, interp,
+         smoothing]() -> std::vector<ExtractResult> {
             std::vector<ExtractResult> results;
             results.reserve(bases.size());
             for (const auto& base : bases) {
@@ -694,6 +853,8 @@ void VolumetricPanel::pumpIsoExtraction()
                     if (signedField && iso > 0.0)
                         r.negative = core::extractIsosurface(bf, -iso, nullptr);
                 }
+                smoothMesh(r.positive, smoothing);
+                smoothMesh(r.negative, smoothing);
                 results.push_back(std::move(r));
             }
             return results;
@@ -715,11 +876,27 @@ void VolumetricPanel::pushResults(const std::vector<ExtractResult>& results)
     if (!viewport_)
         return;
     std::vector<float> faces;
+    std::vector<float> lines;
     std::vector<render::StructureRenderer::OverlayRange> ranges;
     const float alpha = static_cast<float>(style_.isoOpacity);
+    const IsoDrawStyle draw = style_.drawStyle;
+    const bool wantFaces =
+        draw == IsoDrawStyle::Solid || draw == IsoDrawStyle::SolidMesh;
+    const bool wantMesh =
+        draw == IsoDrawStyle::Mesh || draw == IsoDrawStyle::SolidMesh;
+    const bool wantDots = draw == IsoDrawStyle::Dots;
+    // Wires drawn OVER a fill have to be darker than it to be seen; wires that
+    // ARE the surface keep its colour.
+    const double wireShade = draw == IsoDrawStyle::SolidMesh
+        ? std::clamp(style_.meshShade, 0.0, 1.0)
+        : 1.0;
+    const double dot = std::max(style_.dotSize, 1e-3);
+    const std::size_t stride =
+        static_cast<std::size_t>(std::max(style_.dotStride, 1));
 
     // Every extracted dataset appends into one interleaved stream; each mesh
-    // gets its own OverlayRange so it blends at the shared opacity.
+    // gets its own OverlayRange so it blends at the shared opacity. Lines (the
+    // Mesh and Dots styles) go into a second stream that blends as a whole.
     const auto appendMesh = [&](const core::IsoMesh& mesh,
                                 const QColor& uniformColor, bool colorByValue,
                                 double lo, double hi) {
@@ -730,24 +907,77 @@ void VolumetricPanel::pushResults(const std::vector<ExtractResult>& results)
         const float ur = static_cast<float>(uniformColor.redF());
         const float ug = static_cast<float>(uniformColor.greenF());
         const float ub = static_cast<float>(uniformColor.blueF());
+
+        // Per-vertex colour: the flat phase colour or the potential-map ramp,
+        // then the baked shading term.
+        std::vector<std::array<float, 3>> colors(mesh.positions.size());
         for (std::size_t i = 0; i < mesh.positions.size(); ++i) {
-            const core::Vec3& p = mesh.positions[i];
-            float r = ur, g = ug, b = ub;
+            double r = ur, g = ug, b = ub;
             if (colorByValue && i < mesh.colorValues.size()) {
                 const QColor c = render::ColorMap::sample(
                     style_.gradient,
                     static_cast<float>(
                         std::clamp((mesh.colorValues[i] - lo) / range, 0.0, 1.0)),
                     style_.invertGradient);
-                r = static_cast<float>(c.redF());
-                g = static_cast<float>(c.greenF());
-                b = static_cast<float>(c.blueF());
+                r = c.redF();
+                g = c.greenF();
+                b = c.blueF();
             }
-            faces.insert(faces.end(),
-                         {static_cast<float>(p.x), static_cast<float>(p.y),
-                          static_cast<float>(p.z), r, g, b});
+            if (style_.shading != IsoShading::Flat && i < mesh.normals.size()) {
+                const ShadeTerms terms = shadeNormal(mesh.normals[i], style_);
+                r = r * terms.diffuse + terms.specular;
+                g = g * terms.diffuse + terms.specular;
+                b = b * terms.diffuse + terms.specular;
+            }
+            colors[i] = {static_cast<float>(std::clamp(r, 0.0, 1.0)),
+                         static_cast<float>(std::clamp(g, 0.0, 1.0)),
+                         static_cast<float>(std::clamp(b, 0.0, 1.0))};
         }
-        ranges.push_back({first, static_cast<int>(mesh.positions.size()), alpha});
+
+        const auto emitVertex = [](std::vector<float>& out, const core::Vec3& p,
+                                   const std::array<float, 3>& c, double tint) {
+            out.insert(out.end(),
+                       {static_cast<float>(p.x), static_cast<float>(p.y),
+                        static_cast<float>(p.z),
+                        static_cast<float>(c[0] * tint),
+                        static_cast<float>(c[1] * tint),
+                        static_cast<float>(c[2] * tint)});
+        };
+
+        if (wantFaces) {
+            for (std::size_t i = 0; i < mesh.positions.size(); ++i)
+                emitVertex(faces, mesh.positions[i], colors[i], 1.0);
+            ranges.push_back(
+                {first, static_cast<int>(mesh.positions.size()), alpha});
+        }
+        if (wantMesh) {
+            // Three edges per triangle. Shared edges are emitted twice — the
+            // welding that would deduplicate them costs more than the second
+            // line does, and the two are collinear so nothing shows.
+            const std::size_t triangles = mesh.positions.size() / 3;
+            for (std::size_t t = 0; t < triangles; ++t) {
+                for (int k = 0; k < 3; ++k) {
+                    const std::size_t a = 3 * t + static_cast<std::size_t>(k);
+                    const std::size_t b = 3 * t + (k + 1) % 3;
+                    emitVertex(lines, mesh.positions[a], colors[a], wireShade);
+                    emitVertex(lines, mesh.positions[b], colors[b], wireShade);
+                }
+            }
+        }
+        if (wantDots) {
+            // A "dot" is a small axis-aligned cross centred on the vertex:
+            // core-profile GL gives no per-draw point size here, and three
+            // short segments read as a mark at any zoom.
+            for (std::size_t i = 0; i < mesh.positions.size(); i += stride) {
+                const core::Vec3& p = mesh.positions[i];
+                const core::Vec3 axes[3] = {
+                    {dot, 0.0, 0.0}, {0.0, dot, 0.0}, {0.0, 0.0, dot}};
+                for (const core::Vec3& axis : axes) {
+                    emitVertex(lines, p - axis, colors[i], 1.0);
+                    emitVertex(lines, p + axis, colors[i], 1.0);
+                }
+            }
+        }
     };
 
     for (const ExtractResult& result : results) {
@@ -775,12 +1005,13 @@ void VolumetricPanel::pushResults(const std::vector<ExtractResult>& results)
         }
     }
 
-    if (faces.empty()) {
+    if (faces.empty() && lines.empty()) {
         viewport_->clearCustomOverlay();
         return;
     }
-    viewport_->setCustomOverlay(std::move(faces), {}, std::move(ranges),
-                                /*visible=*/true);
+    viewport_->setCustomOverlay(std::move(faces), std::move(lines),
+                                std::move(ranges),
+                                /*visible=*/true, alpha);
 }
 
 } // namespace calango::gui

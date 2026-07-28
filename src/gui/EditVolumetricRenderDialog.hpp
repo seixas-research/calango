@@ -62,6 +62,8 @@ Q_SIGNALS:
 private:
     QWidget* buildIsosurfacePage();
     QWidget* buildColorSlicePage();
+    /// Enable only the controls the selected draw style / shading model reads.
+    void syncIsoStyleEnabled();
     void emitChange();
     double isovalueFromSlider() const;
     void syncIsoSlider();
@@ -78,6 +80,13 @@ private:
     // Isosurfaces
     QSlider* isoSlider_ = nullptr;
     QDoubleSpinBox* isoSpin_ = nullptr;
+    QComboBox* drawStyleCombo_ = nullptr;  ///< solid / mesh / both / dots
+    QDoubleSpinBox* dotSizeSpin_ = nullptr;
+    QSpinBox* dotStrideSpin_ = nullptr;
+    QDoubleSpinBox* meshShadeSpin_ = nullptr;
+    QComboBox* shadingCombo_ = nullptr;    ///< flat / diffuse / glossy
+    QDoubleSpinBox* ambientSpin_ = nullptr;
+    QSpinBox* smoothingSpin_ = nullptr;
     QDoubleSpinBox* isoOpacitySpin_ = nullptr;
     QDoubleSpinBox* specularSpin_ = nullptr;
     QPushButton* posColorButton_ = nullptr;

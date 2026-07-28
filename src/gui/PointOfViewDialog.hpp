@@ -51,14 +51,30 @@ public:
     /// QSettings group the saved views live under.
     static QString settingsGroup();
 
+    /// The camera state "Reset camera" restores, read from
+    /// SettingsManager::kDefaultPointOfView. Returns an INVALID point-of-view
+    /// when no default has been set, which is the signal to auto-frame the
+    /// structure instead — the behaviour the button has always had.
+    static render::PointOfView defaultPointOfView();
+    /// Persist `pov` as that default (and flush ~/.calango/settings.json).
+    /// An invalid `pov` clears it.
+    static void setDefaultPointOfView(const render::PointOfView& pov);
+
 private Q_SLOTS:
     void applyToViewport();
     void saveCurrent();
     void loadSelected();
     void deleteSelected();
+    /// "Set point-of-view as default" — store the camera on screen as the one
+    /// the toolbar's Reset camera button restores, in ~/.calango/settings.json.
+    void saveAsDefault();
+    /// Drop that default, so Reset camera goes back to auto-framing.
+    void clearDefault();
 
 private:
     void refreshSavedList();
+    /// Enable/disable the clear button and describe the stored default.
+    void refreshDefaultState();
 
     ViewportWidget* viewport_;
     /// Guards applyToViewport() while syncFromViewport() fills the controls.
@@ -71,6 +87,8 @@ private:
     QDoubleSpinBox* panSpin_[3] = {nullptr, nullptr, nullptr};
     QListWidget* savedList_ = nullptr;
     QPushButton* deleteButton_ = nullptr;
+    QPushButton* clearDefaultButton_ = nullptr;
+    QLabel* defaultLabel_ = nullptr; ///< what Reset camera currently restores
     QLabel* summaryLabel_ = nullptr;
 };
 

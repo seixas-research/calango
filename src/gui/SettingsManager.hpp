@@ -31,6 +31,15 @@ public:
     /// MPI rank count substituted for {cores} in those templates.
     static constexpr auto kRunCores = "jobs/runCores";
     static constexpr auto kShowWelcome = "welcome/showAtStartup";
+    /// The camera state the "Reset camera" toolbar button restores, encoded by
+    /// PointOfViewDialog::encode(). Empty (the default) means "no default has
+    /// been set", and Reset camera falls back to auto-framing the structure.
+    ///
+    /// Mirrored to settings.json rather than left in QSettings alone because it
+    /// is a figure-making preference: the same framing is wanted on the next
+    /// machine, and — being one plain comma-separated line — it can be pasted
+    /// between config files or hand-edited.
+    static constexpr auto kDefaultPointOfView = "camera/defaultPointOfView";
     static constexpr auto kEnvFilePath = "config/envFilePath";
     static constexpr auto kMaterialsProjectApiKey = "materialsProject/apiKey";
 

@@ -5,11 +5,15 @@
 
 #include <cmath>
 
+#include <QCheckBox>
 #include <QCoreApplication>
 #include <QFile>
+#include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QFontMetricsF>
+#include <QLabel>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QRectF>
 #include <QMessageBox>
@@ -141,6 +145,55 @@ void drawWithSubscripts(QPainter& painter, const QRectF& box,
                  .horizontalAdvance(run.text);
     }
     painter.setFont(baseFont);
+}
+
+namespace {
+
+/// Forwards a left click on a rich-text caption to the check box it labels, so
+/// richTextCheckBox() behaves like the single widget it looks like. No
+/// Q_OBJECT: it declares no signals or slots, only the virtual it overrides.
+class CaptionClickForwarder : public QObject {
+public:
+    CaptionClickForwarder(QCheckBox* box, QObject* parent)
+        : QObject(parent), box_(box)
+    {
+    }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (event->type() == QEvent::MouseButtonRelease && box_
+            && box_->isEnabled()
+            && static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
+            box_->toggle();
+            return true;
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QCheckBox* box_;
+};
+
+} // namespace
+
+QWidget* richTextCheckBox(const QString& html, QCheckBox*& box, QWidget* parent)
+{
+    auto* row = new QWidget(parent);
+    auto* layout = new QHBoxLayout(row);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
+    box = new QCheckBox(row);
+    auto* caption = new QLabel(html, row);
+    caption->setTextFormat(Qt::RichText);
+    // The buddy makes the caption's mnemonic (if the caller wrote one) reach
+    // the box; the filter makes a plain click do the same.
+    caption->setBuddy(box);
+    caption->installEventFilter(new CaptionClickForwarder(box, caption));
+    layout->addWidget(box);
+    layout->addWidget(caption);
+    layout->addStretch(1);
+    return row;
 }
 
 QColor cpkColor(int atomicNumber)

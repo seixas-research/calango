@@ -116,6 +116,87 @@ QWidget* EditVolumetricRenderDialog::buildIsosurfacePage()
         emitChange();
     });
 
+    // -- Draw style ---------------------------------------------------------
+    // Presentation of the same extracted mesh, not a different extraction.
+    drawStyleCombo_ = new QComboBox(page);
+    drawStyleCombo_->addItem(tr("Solid surface"),
+                             static_cast<int>(IsoDrawStyle::Solid));
+    drawStyleCombo_->addItem(tr("Wireframe mesh"),
+                             static_cast<int>(IsoDrawStyle::Mesh));
+    drawStyleCombo_->addItem(tr("Solid + mesh"),
+                             static_cast<int>(IsoDrawStyle::SolidMesh));
+    drawStyleCombo_->addItem(tr("Dot cloud"),
+                             static_cast<int>(IsoDrawStyle::Dots));
+    drawStyleCombo_->setCurrentIndex(
+        drawStyleCombo_->findData(static_cast<int>(style_.drawStyle)));
+    drawStyleCombo_->setToolTip(
+        tr("How the extracted surface is drawn.\n\n"
+           "Solid — a filled skin; the clearest shape, but it hides the atoms "
+           "it encloses.\n"
+           "Wireframe mesh — the triangle edges only, so the structure stays "
+           "readable through the surface.\n"
+           "Solid + mesh — both, the usual figure convention for showing an "
+           "orbital's shape and its curvature at once.\n"
+           "Dot cloud — a thinned scatter of marks over the surface, which "
+           "reads as a density rather than as a hard boundary."));
+    form->addRow(tr("Draw style:"), drawStyleCombo_);
+    connect(drawStyleCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        if (updating_)
+            return;
+        style_.drawStyle = static_cast<IsoDrawStyle>(
+            drawStyleCombo_->currentData().toInt());
+        syncIsoStyleEnabled();
+        emitChange();
+    });
+
+    dotSizeSpin_ = new QDoubleSpinBox(page);
+    dotSizeSpin_->setRange(0.01, 1.0);
+    dotSizeSpin_->setDecimals(3);
+    dotSizeSpin_->setSingleStep(0.01);
+    dotSizeSpin_->setSuffix(tr(" Å"));
+    dotSizeSpin_->setValue(style_.dotSize);
+    dotSizeSpin_->setToolTip(
+        tr("Size of each mark in the dot cloud, in ångström — a real length in "
+           "the scene, so the dots keep their scale relative to the structure "
+           "as the camera zooms."));
+    form->addRow(tr("Dot size:"), dotSizeSpin_);
+    connect(dotSizeSpin_, &QDoubleSpinBox::valueChanged, this, [this](double v) {
+        style_.dotSize = v;
+        emitChange();
+    });
+
+    dotStrideSpin_ = new QSpinBox(page);
+    dotStrideSpin_->setRange(1, 50);
+    dotStrideSpin_->setValue(style_.dotStride);
+    dotStrideSpin_->setPrefix(tr("every "));
+    dotStrideSpin_->setSuffix(tr(" vertices"));
+    dotStrideSpin_->setToolTip(
+        tr("Thin the cloud by keeping only every Nth surface vertex. A "
+           "refined grid carries hundreds of thousands of them, where a mark "
+           "on each is a solid wall of ink; raising this is what turns the "
+           "surface back into a cloud."));
+    form->addRow(tr("Dot density:"), dotStrideSpin_);
+    connect(dotStrideSpin_, &QSpinBox::valueChanged, this, [this](int v) {
+        style_.dotStride = v;
+        emitChange();
+    });
+
+    meshShadeSpin_ = new QDoubleSpinBox(page);
+    meshShadeSpin_->setRange(0.0, 1.0);
+    meshShadeSpin_->setSingleStep(0.05);
+    meshShadeSpin_->setValue(style_.meshShade);
+    meshShadeSpin_->setToolTip(
+        tr("How dark the wires are drawn relative to the fill they sit on, in "
+           "the Solid + mesh style. At 1 the mesh takes the surface color "
+           "exactly and disappears into it; lower values are what make the "
+           "triangulation legible."));
+    form->addRow(tr("Mesh darkening:"), meshShadeSpin_);
+    connect(meshShadeSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double v) {
+                style_.meshShade = v;
+                emitChange();
+            });
+
     isoOpacitySpin_ = new QDoubleSpinBox(page);
     isoOpacitySpin_->setRange(0.0, 1.0);
     isoOpacitySpin_->setSingleStep(0.05);
@@ -128,18 +209,81 @@ QWidget* EditVolumetricRenderDialog::buildIsosurfacePage()
                 emitChange();
             });
 
+    // -- Shading ------------------------------------------------------------
+    shadingCombo_ = new QComboBox(page);
+    shadingCombo_->addItem(tr("Flat (unshaded)"),
+                           static_cast<int>(IsoShading::Flat));
+    shadingCombo_->addItem(tr("Diffuse"), static_cast<int>(IsoShading::Diffuse));
+    shadingCombo_->addItem(tr("Glossy"), static_cast<int>(IsoShading::Glossy));
+    shadingCombo_->setCurrentIndex(
+        shadingCombo_->findData(static_cast<int>(style_.shading)));
+    shadingCombo_->setToolTip(
+        tr("Light the surface using the normals marching cubes derives from "
+           "the field gradient.\n\n"
+           "Flat leaves every facet the same color — a silhouette, which is "
+           "what makes two overlapping lobes indistinguishable. Diffuse adds "
+           "the shape back; Glossy adds a highlight on top, scaled by the "
+           "Specular finish below.\n\n"
+           "The shading is baked into the vertex colors against the same fixed "
+           "studio lights the atoms use, so it does not swing with the "
+           "camera — the main viewport draws volumetric overlays through its "
+           "unlit path."));
+    form->addRow(tr("Shading:"), shadingCombo_);
+    connect(shadingCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        if (updating_)
+            return;
+        style_.shading =
+            static_cast<IsoShading>(shadingCombo_->currentData().toInt());
+        syncIsoStyleEnabled();
+        emitChange();
+    });
+
+    ambientSpin_ = new QDoubleSpinBox(page);
+    ambientSpin_->setRange(0.0, 1.0);
+    ambientSpin_->setSingleStep(0.05);
+    ambientSpin_->setValue(style_.ambient);
+    ambientSpin_->setToolTip(
+        tr("How much of its color a face turned away from every light keeps. "
+           "At 0 unlit faces go black, which on a translucent surface reads as "
+           "a hole rather than as shadow; raising it flattens the shading back "
+           "toward a uniform fill."));
+    form->addRow(tr("Ambient:"), ambientSpin_);
+    connect(ambientSpin_, &QDoubleSpinBox::valueChanged, this, [this](double v) {
+        style_.ambient = v;
+        emitChange();
+    });
+
     specularSpin_ = new QDoubleSpinBox(page);
     specularSpin_->setRange(0.0, 1.0);
     specularSpin_->setSingleStep(0.05);
     specularSpin_->setValue(style_.specular);
     specularSpin_->setToolTip(
-        tr("Specular material finish (lit volume viewers only)."));
+        tr("Strength of the Glossy highlight, and the specular material term "
+           "used by the lit volume viewers."));
     form->addRow(tr("Specular finish:"), specularSpin_);
     connect(specularSpin_, &QDoubleSpinBox::valueChanged, this,
             [this](double v) {
                 style_.specular = v;
                 emitChange();
             });
+
+    smoothingSpin_ = new QSpinBox(page);
+    smoothingSpin_->setRange(0, 20);
+    smoothingSpin_->setValue(style_.smoothing);
+    smoothingSpin_->setSuffix(tr(" passes"));
+    smoothingSpin_->setToolTip(
+        tr("Laplacian smoothing of the extracted mesh: each vertex creeps "
+           "toward the average of its neighbors, removing the stair-steps "
+           "marching cubes leaves on a coarse voxel grid.\n\n"
+           "Cheaper than Grid Interpolation below, which refines the voxels "
+           "instead — this touches only the vertices. High counts shrink the "
+           "surface slightly: it is a smoother, not a re-extraction, so read "
+           "isovalues off an unsmoothed surface."));
+    form->addRow(tr("Mesh smoothing:"), smoothingSpin_);
+    connect(smoothingSpin_, &QSpinBox::valueChanged, this, [this](int v) {
+        style_.smoothing = v;
+        emitChange();
+    });
 
     posColorButton_ = new QPushButton(page);
     updateColorButton(posColorButton_, style_.positiveColor);
@@ -307,7 +451,23 @@ QWidget* EditVolumetricRenderDialog::buildIsosurfacePage()
     });
     form->addRow(potentialGroup);
 
+    syncIsoStyleEnabled();
     return page;
+}
+
+void EditVolumetricRenderDialog::syncIsoStyleEnabled()
+{
+    // Grey out what the current draw style and shading model do not read,
+    // rather than hiding it: a control that vanishes reads as a missing
+    // feature, while a disabled one says "this belongs to another style".
+    const bool dots = style_.drawStyle == IsoDrawStyle::Dots;
+    const bool solidMesh = style_.drawStyle == IsoDrawStyle::SolidMesh;
+    dotSizeSpin_->setEnabled(dots);
+    dotStrideSpin_->setEnabled(dots);
+    meshShadeSpin_->setEnabled(solidMesh);
+    ambientSpin_->setEnabled(style_.shading != IsoShading::Flat);
+    // Specular still drives the lit volume viewers with Flat shading on, so it
+    // is only ever informative here — never disabled.
 }
 
 QWidget* EditVolumetricRenderDialog::buildColorSlicePage()
