@@ -301,3 +301,6 @@ capture.png
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+
+# Symbolic link
+calango
