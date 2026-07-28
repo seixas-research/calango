@@ -42,6 +42,23 @@ if [[ -L "$sp" ]]; then
     mkdir "$sp"
 fi
 
+# PythonEngine runs an in-process interpreter against THIS framework's
+# libpython, so sys.path comes from the framework's own prefix — a framework
+# build derives it from the framework location, not from config.executable.
+# The bundled environment in Resources/python is therefore invisible to it.
+# Bridge the two with a .pth: paths inside a .pth are resolved relative to the
+# directory holding it, so this stays valid wherever the .app is dragged.
+embedded_sp="$app/Contents/Resources/python/lib/python$ver/site-packages"
+if [[ -d "$embedded_sp" ]]; then
+    echo "Pointing framework site-packages at the embedded environment"
+    mkdir -p "$sp"
+    # site-packages -> ... -> Contents is seven levels up; see the layout
+    # Contents/Frameworks/Python.framework/Versions/$ver/lib/python$ver/site-packages
+    printf '%s\n' \
+        "../../../../../../../Resources/python/lib/python$ver/site-packages" \
+        > "$sp/calango-embedded.pth"
+fi
+
 # codesign validates nested frameworks and insists on the canonical
 # framework layout — recreate the top-level symlinks ditto did not copy.
 fw="$app/Contents/Frameworks/Python.framework"

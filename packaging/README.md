@@ -10,12 +10,69 @@ The user-facing version is the single source of truth in `CMakeLists.txt`
 
 ## macOS `.dmg` (drag-and-install)
 
-Automated end-to-end by the helper script (configure → build → macdeployqt →
-embed Python.framework → CPack DragNDrop → verify):
+Automated end-to-end by the helper script (provision standalone Python →
+configure → build → macdeployqt → embed Python.framework → CPack DragNDrop →
+verify). No further steps:
 
 ```sh
 packaging/macos/create_dmg.sh
-# → build-macos-bundle/calango-<version>-macos-<arch>.dmg  (+ .sha256)
+# → Calango-<version>-macOS.dmg in the repository root
+```
+
+It downloads a relocatable CPython (python-build-standalone) matching
+`PYTHON_BIN`'s version, installs `ase numpy scipy spglib matplotlib` into it,
+and ships it at `calango.app/Contents/Resources/python`, so the installed app
+needs no Python on the target machine. The tree is cached under
+`$BUILD_DIR/embedded-python`, so only the first run needs network access.
+
+Flags: `--no-python` (skip the payload), `--skip-build` (repackage only),
+`--manual` (bypass CPack). Environment: `DIST_DIR`, `PYTHON_BIN`,
+`CALANGO_EMBEDDED_PACKAGES`, `CALANGO_EMBEDDED_PYTHON_DIR` (supply your own
+tree), `JOBS`, `CMAKE_PREFIX_PATH`. On a 16 GB machine prefer `JOBS=4`; the
+default is the CPU count and the Qt translation units are memory-hungry.
+
+Three non-obvious constraints, all of which have already caused broken
+installers — please do not "simplify" them away:
+
+- **The bundled Python must match `PYTHON_BIN`'s X.Y.** `PythonEngine` runs an
+  *in-process* interpreter against the libpython the binary links, so the
+  bundled tree only supplies modules; its extension modules must match that
+  ABI. `create_dmg.sh` derives the version automatically.
+- **A framework libpython derives `sys.path` from the framework, not from
+  `config.executable`**, so `Resources/python` alone is invisible to it.
+  `embed_python_framework.sh` bridges this with a `calango-embedded.pth`
+  written into the embedded framework's `site-packages`.
+- **The Python payload is staged after `macdeployqt`** (see the install-rule
+  order in `CMakeLists.txt`). macdeployqt rewrites every Mach-O file it finds;
+  with the payload already in place it mangles the standalone interpreter's
+  stdlib extensions and fails on `_tkinter`, which has no headerpad to grow
+  into.
+
+`macdeployqt` prints `ERROR: Cannot resolve rpath ...` for dependencies it
+cannot see on a given pass, recovers on the next one, and still exits 0.
+`deploy_qt.sh` runs the two passes, keeps that output in
+`$BUILD_DIR/macdeployqt.log`, and prints one summary line — a non-zero exit is
+still fatal. A healthy build should be judged by the script's exit code and its
+final `Probe` line, not by the absence of the word ERROR.
+
+The script finishes by mounting the image and running `calango --probe-python`
+against it, failing the build if the packaged app cannot import ASE:
+`hdiutil imageinfo` alone passes happily on a bundle whose Python is broken.
+
+The image is **ad-hoc signed and not notarized**; Gatekeeper will warn on first
+launch elsewhere unless you sign with a Developer ID and notarize.
+
+### App icon
+
+`make_icns.sh` scales `assets/calango/icon_base.png` straight into every
+iconset slot, so **the source PNG must already carry the macOS icon margin**:
+on a 1024 px canvas the icon body is 824 px (~80.5%) centred, the rest
+transparent. A full-bleed source renders visibly larger than every other app in
+the Dock. Check a candidate before committing it:
+
+```sh
+python3 -c "import sys;import matplotlib.image as m,numpy as np;a=m.imread(sys.argv[1]);y,x=np.nonzero(a[:,:,3]>0.02);print('%.1f%% wide'%(100*(x.max()-x.min()+1)/a.shape[1]))" assets/calango/icon_base.png
+# expect ~80%, not 100%
 ```
 
 Manual equivalent:
