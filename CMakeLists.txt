@@ -1478,16 +1478,13 @@ include(GNUInstallDirs)
 if(APPLE AND CALANGO_MACOS_BUNDLE)
     install(TARGETS calango BUNDLE DESTINATION .)
 
-    # Embedded interpreter — PythonEngine looks this location up at runtime.
-    if(CALANGO_EMBEDDED_PYTHON_DIR)
-        install(DIRECTORY "${CALANGO_EMBEDDED_PYTHON_DIR}/"
-                DESTINATION calango.app/Contents/Resources/python
-                USE_SOURCE_PERMISSIONS)
-    endif()
-
     # macdeployqt copies the Qt frameworks/plugins into the bundle and
     # rewrites the load paths. It runs at install/package time against the
-    # staged .app, after the Python payload is in place.
+    # staged .app, BEFORE the Python payload is staged — macdeployqt walks
+    # every Mach-O file it finds and would otherwise try to rewrite the load
+    # commands of the standalone interpreter's stdlib extensions. That both
+    # fails loudly (e.g. _tkinter has no headerpad to grow into) and risks
+    # corrupting/invalidating modules that need no Qt deployment at all.
     get_target_property(_qmake_location Qt6::qmake IMPORTED_LOCATION)
     get_filename_component(_qt_bin_dir "${_qmake_location}" DIRECTORY)
     find_program(MACDEPLOYQT_EXECUTABLE macdeployqt HINTS "${_qt_bin_dir}")
@@ -1521,9 +1518,20 @@ if(APPLE AND CALANGO_MACOS_BUNDLE)
                         "the packaged .app will not be self-contained")
     endif()
 
+    # Embedded interpreter — PythonEngine looks this location up at runtime.
+    # Staged after macdeployqt (see above) and before the script below, which
+    # needs the payload in place to bridge it into the framework's sys.path.
+    if(CALANGO_EMBEDDED_PYTHON_DIR)
+        install(DIRECTORY "${CALANGO_EMBEDDED_PYTHON_DIR}/"
+                DESTINATION calango.app/Contents/Resources/python
+                USE_SOURCE_PERMISSIONS)
+    endif()
+
     # macdeployqt skips the linked Python.framework (libpython from
     # Development.Embed) — copy it into the bundle and retarget the load
     # command so the app launches without the build machine's Python.
+    # Also re-signs the whole bundle, which is why it must run last: the
+    # Python payload above has to be inside the signature.
     install(CODE "
         execute_process(
             COMMAND bash
