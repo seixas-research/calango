@@ -2060,6 +2060,71 @@ int main(int argc, char** argv)
                       "and filled in from the baseline at run time");
     }
 
+    // -- VASP optics: the standard two-step LOPTICS protocol ------------------
+    std::printf("VASP optics:\n");
+    {
+        OpticsConfig optics;
+        optics.calculator.calculator = CalculatorKind::Vasp;
+        optics.calculator.task = TaskKind::SinglePoint;
+        optics.broadeningEv = 0.15;
+        optics.npoints = 2400;
+        const std::string script = generateOpticsScript(optics);
+        // The recipe, tag by tag: SCF leaves the density, then an exact-
+        // diagonalization restart at fixed density computes ε(ω).
+        checkContains(script, "lwave=True, lcharg=True",
+                      "the SCF step keeps CHGCAR and WAVECAR for the restart");
+        checkContains(script, "icharg=11", "the optics step fixes the density");
+        checkContains(script, "algo=\"Exact\"",
+                      "exact diagonalization for a semilocal functional");
+        checkContains(script, "nelm=1", "one diagonalization pass");
+        checkContains(script, "loptics=True", "LOPTICS drives the response");
+        checkContains(script, "cshift=0.15",
+                      "the broadening maps onto CSHIFT");
+        checkContains(script, "nedos=2400",
+                      "the frequency-point count maps onto NEDOS");
+        checkContains(script, "params[\"nbands\"] = int(round(3 * nbands_scf))",
+                      "NBANDS enlarged from the SCF band count");
+        checkContains(script, "dielectricfunction",
+                      "reads ε(ω) back from vasprun.xml");
+        checkContains(script, "\"density\" in (candidate.get(\"comment\")",
+                      "prefers the density-density block (VASP 6 writes two)");
+        check(!contains(script, ".gpw"),
+              "self-contained: no GPAW baseline is referenced");
+        check(!contains(script, "twod_"),
+              "a bulk run emits no 2D observables");
+    }
+    {
+        // Exact exchange: the semilocal ALGO=Exact path does not apply the
+        // exact-exchange operator to the new empty states — hybrids must
+        // diagonalize with ALGO=Eigenval instead.
+        OpticsConfig optics;
+        optics.calculator.calculator = CalculatorKind::Vasp;
+        optics.calculator.vaspXc = "HSE06";
+        const std::string script = generateOpticsScript(optics);
+        checkContains(script, "algo=\"Eigenval\"",
+                      "a hybrid functional switches the restart to Eigenval");
+        check(!contains(script, "algo=\"Exact\""),
+              "and does not also emit the semilocal ALGO");
+    }
+    {
+        // The 2D sheet variant and the denser optics mesh, VASP flavour.
+        OpticsConfig sheet;
+        sheet.calculator.calculator = CalculatorKind::Vasp;
+        sheet.vacuumAxis = 2;
+        sheet.calculator.kpts[0] = 6;
+        sheet.calculator.kpts[1] = 6;
+        sheet.calculator.kpts[2] = 1;
+        sheet.responseKpts[0] = 18;
+        sheet.responseKpts[1] = 18;
+        const std::string script = generateOpticsScript(sheet);
+        checkContains(script, "params[\"kpts\"] = (18, 18, 1)",
+                      "the optics mesh densifies, unset axes inherit the SCF");
+        checkContains(script, "def twod_observables(omega_eV, eps1, eps2, L_z):",
+                      "the same sheet observables as the GPAW path");
+        checkContains(script, "atoms.cell.lengths()[2]",
+                      "thickness from the chosen vacuum axis");
+    }
+
     // -- DFT+U and dispersion ------------------------------------------------
     std::printf("DFT+U and dispersion:\n");
     {

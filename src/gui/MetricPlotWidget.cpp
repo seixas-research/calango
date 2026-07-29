@@ -241,9 +241,13 @@ void MetricPlotWidget::paintEvent(QPaintEvent*)
         const QSizeF size(metrics.horizontalAdvance(label) + 8.0,
                           metrics.height() + 2.0);
         // Sit just above the line, flipping below it when the line is close
-        // to the top edge so the annotation is never clipped.
+        // to the top edge so the annotation is never clipped. Anchored LEFT,
+        // beside the y-axis: the setpoint is an axis-value annotation, and
+        // it reads as one when it sits with the axis labels — on the right
+        // it collided with the freshest samples, which is exactly where the
+        // eye is during a run.
         const bool below = y - size.height() - 2.0 < plot.top();
-        const QRectF box(plot.right() - size.width() - 4.0,
+        const QRectF box(plot.left() + 4.0,
                          below ? y + 2.0 : y - size.height() - 2.0,
                          size.width(), size.height());
         // Opaque backing: the label often overlaps the data curve.

@@ -3881,18 +3881,10 @@ void MainWindow::openOpticsWizard(bool twoDimensional)
     if (!ensureAseAvailable())
         return;
 
-    // The baseline is mandatory: the run evaluates the response at the fixed
-    // density of a prior single point rather than converging its own.
+    // The GPAW path inherits a completed single point's .gpw; without one
+    // the wizard opens on the self-contained VASP engine instead of refusing
+    // (it disables the GPAW option and says why).
     const auto baselines = gpawDensityFiles();
-    if (baselines.isEmpty()) {
-        QMessageBox::critical(
-            this, label,
-            tr("This calculation inherits a converged ground state and never "
-               "re-runs the SCF, so it needs a completed GPAW Single-Point "
-               "Calculation that saved its wavefunctions (.gpw).\n\n"
-               "Run one first, with \"Export Charge Density\" enabled."));
-        return;
-    }
 
     OpticsWizard wizard(doc->structure, twoDimensional, this);
     wizard.setDensityBaselines(baselines);
@@ -5999,6 +5991,12 @@ void MainWindow::kPointsConvergence()
 void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
                                      const QString& label, bool expectFrames)
 {
+    // Hand the wizard the active structure's chemistry before it opens, so
+    // the per-element suggested defaults (~/.calango/calculator_parameters
+    // .json) resolve for wizards that do not hold a structure themselves.
+    if (const Document* doc = currentDocument(); doc && doc->structure)
+        wizard.setStructureElements(structureElements(doc->structure.get()));
+
     if (wizard.exec() != QDialog::Accepted)
         return;
 

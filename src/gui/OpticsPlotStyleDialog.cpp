@@ -156,10 +156,25 @@ OpticsPlotStyleDialog::OpticsPlotStyleDialog(const OpticsPlotStyle& style,
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Close | QDialogButtonBox::RestoreDefaults, this);
     layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::accept);
+    // The Close button dismisses THIS dialog and nothing else — wired to the
+    // button's own click rather than the box's accept/reject roles, so no
+    // dialog-level done() semantics are involved that a hosting window could
+    // be sensitive to.
+    connect(buttons->button(QDialogButtonBox::Close), &QPushButton::clicked,
+            this, &QWidget::close);
     connect(buttons->button(QDialogButtonBox::RestoreDefaults),
             &QPushButton::clicked, this,
             &OpticsPlotStyleDialog::restoreDefaults);
+
+    // In a QDialog every push button (the color swatches included) is
+    // autoDefault, so Return after typing in a spin box "clicks" the first
+    // one — which is how adjusting a value could dismiss the dialog, or
+    // worse pop a color picker, before the change was even seen. Styling is
+    // judged live against the plot; no button here earns Return.
+    for (QPushButton* button : findChildren<QPushButton*>()) {
+        button->setAutoDefault(false);
+        button->setDefault(false);
+    }
 
     syncToControls();
 

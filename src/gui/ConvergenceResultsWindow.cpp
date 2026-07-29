@@ -1,5 +1,7 @@
 #include "gui/ConvergenceResultsWindow.hpp"
 
+#include "gui/CalculatorParametersDialog.hpp"
+
 #include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -134,6 +136,15 @@ void ConvergencePlotWidget::setThresholdBand(double low, double high,
     update();
 }
 
+void ConvergencePlotWidget::setFixedYRange(double minimum, double maximum,
+                                           bool enabled)
+{
+    fixedYMin_ = std::min(minimum, maximum);
+    fixedYMax_ = std::max(minimum, maximum);
+    fixedYEnabled_ = enabled && fixedYMax_ > fixedYMin_;
+    update();
+}
+
 void ConvergencePlotWidget::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
@@ -170,17 +181,25 @@ bool ConvergencePlotWidget::renderTo(QPainter& p, QSize size) const
     }
     double yMin = std::numeric_limits<double>::infinity();
     double yMax = -std::numeric_limits<double>::infinity();
-    for (double v : y_) {
-        if (std::isfinite(v)) {
-            yMin = std::min(yMin, v);
-            yMax = std::max(yMax, v);
+    if (fixedYEnabled_) {
+        // Pinned by the σ×threshold zoom — exactly the requested window, no
+        // padding: the whole point is a scale defined by the criterion
+        // rather than by the worst point. Data outside draws clipped.
+        yMin = fixedYMin_;
+        yMax = fixedYMax_;
+    } else {
+        for (double v : y_) {
+            if (std::isfinite(v)) {
+                yMin = std::min(yMin, v);
+                yMax = std::max(yMax, v);
+            }
         }
-    }
-    // The threshold corridor belongs in the visible range: judging
-    // convergence against a band that is off-scale would be guesswork.
-    if (bandVisible_) {
-        yMin = std::min(yMin, bandLow_);
-        yMax = std::max(yMax, bandHigh_);
+        // The threshold corridor belongs in the visible range: judging
+        // convergence against a band that is off-scale would be guesswork.
+        if (bandVisible_) {
+            yMin = std::min(yMin, bandLow_);
+            yMax = std::max(yMax, bandHigh_);
+        }
     }
     if (!(xMax > xMin))
         xMax = xMin + 1.0;
@@ -190,9 +209,11 @@ bool ConvergencePlotWidget::renderTo(QPainter& p, QSize size) const
     }
     if (!(yMax > yMin))
         yMax = yMin + std::max(1e-12, std::abs(yMin) * 1e-6);
-    const double pad = (yMax - yMin) * 0.08;
-    yMin -= pad;
-    yMax += pad;
+    if (!fixedYEnabled_) {
+        const double pad = (yMax - yMin) * 0.08;
+        yMin -= pad;
+        yMax += pad;
+    }
 
     const auto mapX = [&](double v) {
         return plot.left() + (v - xMin) / (xMax - xMin) * plot.width();
@@ -357,19 +378,20 @@ ConvergenceResultsWindow::ConvergenceResultsWindow(Sweep sweep,
     applyData(Quantity::ForceError, forcePlot_);
     applyData(Quantity::EigenvalueMad, eigenPlot_);
 
-    // -- Threshold + appearance controls -------------------------------------
-    auto* controls = new QHBoxLayout;
+    // -- Threshold controls ---------------------------------------------------
+    auto* thresholds = new QHBoxLayout;
 
     thresholdCheck_ = new QCheckBox(tr("Convergence thresholds:"), this);
     thresholdCheck_->setToolTip(
         tr("Hatch the corridor within which a sweep point counts as "
            "converged: |ΔE| ≤ threshold on the energy panel, force error ≤ "
-           "threshold on the force panel."));
+           "threshold on the force panel, band-energy MAD ≤ threshold on "
+           "the eigenvalue panel."));
     // On by default: the corridor is the criterion, and a convergence plot
     // without a criterion invites reading the answer off the flattest-
     // looking stretch.
     thresholdCheck_->setChecked(true);
-    controls->addWidget(thresholdCheck_);
+    thresholds->addWidget(thresholdCheck_);
 
     energyThresholdSpin_ = new QDoubleSpinBox(this);
     energyThresholdSpin_->setRange(0.001, 1000.0);
@@ -379,8 +401,8 @@ ConvergenceResultsWindow::ConvergenceResultsWindow(Sweep sweep,
     energyThresholdSpin_->setToolTip(
         tr("Half-width of the energy corridor. 1 meV/atom is a common "
            "production target for total-energy differences."));
-    controls->addWidget(new QLabel(tr("Energy"), this));
-    controls->addWidget(energyThresholdSpin_);
+    thresholds->addWidget(new QLabel(tr("Energy"), this));
+    thresholds->addWidget(energyThresholdSpin_);
 
     forceThresholdSpin_ = new QDoubleSpinBox(this);
     forceThresholdSpin_->setRange(0.001, 1000.0);
@@ -390,19 +412,74 @@ ConvergenceResultsWindow::ConvergenceResultsWindow(Sweep sweep,
     forceThresholdSpin_->setToolTip(
         tr("Ceiling of the force-error corridor. 10 meV/Å (0.01 eV/Å) is a "
            "typical tolerance for forces feeding a relaxation."));
-    controls->addWidget(new QLabel(tr("Force"), this));
-    controls->addWidget(forceThresholdSpin_);
+    thresholds->addWidget(new QLabel(tr("Force"), this));
+    thresholds->addWidget(forceThresholdSpin_);
+
+    eigenThresholdSpin_ = new QDoubleSpinBox(this);
+    eigenThresholdSpin_->setRange(0.001, 1000.0);
+    eigenThresholdSpin_->setDecimals(3);
+    eigenThresholdSpin_->setValue(10.0);
+    eigenThresholdSpin_->setSuffix(tr(" meV"));
+    eigenThresholdSpin_->setToolTip(
+        tr("Ceiling of the eigenvalue corridor: the mean absolute drift of "
+           "the k-averaged band energies. 10 meV holds spectral features "
+           "(gaps, band edges) steady on the scale optical work reads "
+           "them."));
+    thresholds->addWidget(new QLabel(tr("Eigenvalues"), this));
+    thresholds->addWidget(eigenThresholdSpin_);
+
+    thresholds->addStretch(1);
+    layout->addLayout(thresholds);
+
+    // -- y-zoom + appearance + close ------------------------------------------
+    auto* controls = new QHBoxLayout;
+
+    scaleCheck_ = new QCheckBox(tr("Clamp y-axis to ±σ × threshold, σ ="),
+                                this);
+    scaleCheck_->setToolTip(
+        tr("Pin each panel's y-axis to [−σ·τ, +σ·τ] of its own threshold τ. "
+           "Without it the far-from-converged early points set the scale "
+           "and flatten the tail — which is where convergence is decided — "
+           "into a line. Off-scale points draw clipped."));
+    controls->addWidget(scaleCheck_);
+    sigmaSpin_ = new QDoubleSpinBox(this);
+    sigmaSpin_->setRange(0.5, 100.0);
+    sigmaSpin_->setDecimals(1);
+    sigmaSpin_->setSingleStep(0.5);
+    sigmaSpin_->setValue(5.0);
+    controls->addWidget(sigmaSpin_);
 
     controls->addStretch(1);
+
+    // The cutoff study ends with a number worth keeping: the converged
+    // cutoff. This is the shortest path from reading it off the curve to
+    // every future wizard opening on it (per element, via
+    // ~/.calango/calculator_parameters.json).
+    if (sweep_ == Sweep::PlaneWaveCutoff) {
+        auto* parametersButton =
+            new QPushButton(tr("Define calculator settings…"), this);
+        parametersButton->setToolTip(
+            tr("Edit the per-element suggested defaults (plane-wave cutoff, "
+               "k-point mesh) the simulation wizards open with."));
+        controls->addWidget(parametersButton);
+        connect(parametersButton, &QPushButton::clicked, this, [this] {
+            auto* dialog = new CalculatorParametersDialog(this);
+            dialog->setAttribute(Qt::WA_DeleteOnClose);
+            dialog->show();
+        });
+    }
 
     auto* styleButton = new QPushButton(tr("Customize Appearance…"), this);
     controls->addWidget(styleButton);
     connect(styleButton, &QPushButton::clicked, this,
             &ConvergenceResultsWindow::customizeAppearance);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
-    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-    controls->addWidget(buttons);
+    auto* closeButton = new QPushButton(tr("Close"), this);
+    // Wired to close() by explicit click, not through QDialogButtonBox
+    // accept/reject roles — and see the autoDefault sweep below for why no
+    // button in this window may be a default.
+    connect(closeButton, &QPushButton::clicked, this, &QWidget::close);
+    controls->addWidget(closeButton);
     layout->addLayout(controls);
 
     thresholdSummary_ = new QLabel(this);
@@ -412,9 +489,21 @@ ConvergenceResultsWindow::ConvergenceResultsWindow(Sweep sweep,
 
     connect(thresholdCheck_, &QCheckBox::toggled, this,
             &ConvergenceResultsWindow::updateThresholdBands);
-    for (QDoubleSpinBox* spin : {energyThresholdSpin_, forceThresholdSpin_})
+    connect(scaleCheck_, &QCheckBox::toggled, this,
+            &ConvergenceResultsWindow::updateThresholdBands);
+    for (QDoubleSpinBox* spin : {energyThresholdSpin_, forceThresholdSpin_,
+                                 eigenThresholdSpin_, sigmaSpin_})
         connect(spin, &QDoubleSpinBox::valueChanged, this,
                 &ConvergenceResultsWindow::updateThresholdBands);
+
+    // In a QDialog every push button is autoDefault, so Return anywhere —
+    // including finishing a threshold edit in a spin box — "clicks" the
+    // first such button. That is how editing a value could close the whole
+    // window. No button here earns Return.
+    for (QPushButton* button : findChildren<QPushButton*>()) {
+        button->setAutoDefault(false);
+        button->setDefault(false);
+    }
 
     for (ConvergencePlotWidget* plot : {energyPlot_, forcePlot_, eigenPlot_})
         plot->setStyle(style_);
@@ -569,16 +658,31 @@ void ConvergenceResultsWindow::updateThresholdBands()
     const bool show = thresholdCheck_->isChecked();
     const double energyHalfWidthMev = energyThresholdSpin_->value();
     const double forceCeilingMev = forceThresholdSpin_->value();
+    const double eigenCeilingMev = eigenThresholdSpin_->value();
     energyThresholdSpin_->setEnabled(show);
     forceThresholdSpin_->setEnabled(show);
+    eigenThresholdSpin_->setEnabled(show);
 
     // Every curve is a difference against the reference, so the corridors
-    // sit on zero: |ΔE| ≤ τ is symmetric, the force error is non-negative
-    // so its corridor is one-sided. The eigenvalue panel carries no
-    // criterion — it is a diagnostic, not a gate.
+    // sit on zero: |ΔE| ≤ τ is symmetric; the force error and the
+    // band-energy MAD are non-negative, so their corridors are one-sided.
     energyPlot_->setThresholdBand(-energyHalfWidthMev, energyHalfWidthMev,
                                   show);
     forcePlot_->setThresholdBand(0.0, forceCeilingMev, show);
+    eigenPlot_->setThresholdBand(0.0, eigenCeilingMev, show);
+
+    // σ×threshold y-zoom, each panel against its own criterion. Independent
+    // of whether the corridor is drawn — the scale is useful even with the
+    // hatching off.
+    const bool clamp = scaleCheck_->isChecked();
+    const double sigma = sigmaSpin_->value();
+    sigmaSpin_->setEnabled(clamp);
+    energyPlot_->setFixedYRange(-sigma * energyHalfWidthMev,
+                                sigma * energyHalfWidthMev, clamp);
+    forcePlot_->setFixedYRange(-sigma * forceCeilingMev,
+                               sigma * forceCeilingMev, clamp);
+    eigenPlot_->setFixedYRange(-sigma * eigenCeilingMev,
+                               sigma * eigenCeilingMev, clamp);
 
     if (!show) {
         thresholdSummary_->clear();
@@ -603,6 +707,8 @@ void ConvergenceResultsWindow::updateThresholdBands()
         convergedFrom(deltaEnergyMevPerAtom_, energyHalfWidthMev);
     const std::size_t forceFrom =
         convergedFrom(forceErrorMevPerA_, forceCeilingMev);
+    const std::size_t eigenFrom =
+        convergedFrom(eigenvalueMadMev_, eigenCeilingMev);
     const auto describe = [this](std::size_t from) {
         if (from >= xValues_.size())
             return tr("not reached in this sweep");
@@ -610,9 +716,17 @@ void ConvergenceResultsWindow::updateThresholdBands()
             return tr("only at the reference itself — extend the sweep");
         return tr("from %1").arg(xValueLabel(from));
     };
+    // A NaN never satisfies |v| ≤ τ, so a sweep without eigenvalue data
+    // would read "not reached" — say what actually happened instead.
+    const bool anyEigen =
+        std::any_of(eigenvalueMadMev_.begin(), eigenvalueMadMev_.end(),
+                    [](double v) { return std::isfinite(v); });
     thresholdSummary_->setText(
-        tr("Within threshold and staying there: energy %1; forces %2.")
-            .arg(describe(energyFrom), describe(forceFrom)));
+        tr("Within threshold and staying there: energy %1; forces %2; "
+           "eigenvalues %3.")
+            .arg(describe(energyFrom), describe(forceFrom),
+                 anyEigen ? describe(eigenFrom)
+                          : tr("no eigenvalue data in this run")));
 }
 
 void ConvergenceResultsWindow::exportCsv(Quantity quantity)

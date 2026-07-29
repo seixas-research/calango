@@ -12,6 +12,7 @@
 #include <QGroupBox>
 #include <QLabel>
 #include <QSpinBox>
+#include <QStandardItemModel>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -26,6 +27,9 @@ OpticsWizard::OpticsWizard(std::shared_ptr<core::Structure> structure,
     , twoDimensional_(twoDimensional)
 {
     buildUi();
+    // Now that every stage exists, bring the engine-dependent visibility,
+    // labels and the hidden base engine selection into their initial state.
+    onEngineChanged();
 }
 
 QString OpticsWizard::wizardTitle() const
@@ -44,8 +48,33 @@ QWidget* OpticsWizard::buildSettingsPage()
     auto* page = new QWidget(this);
     auto* layout = new QVBoxLayout(page);
 
-    // -- Mandatory ground-state baseline ------------------------------------
-    auto* baselineGroup = new QGroupBox(tr("Ground-State Baseline"), page);
+    // -- Engine ---------------------------------------------------------------
+    // Chosen here rather than on a Calculator Settings stage: the two engines
+    // need entirely different stage-1 content (a baseline selector vs. a
+    // compact ground-state group), so the choice must precede the page.
+    auto* engineRow = new QHBoxLayout;
+    engineRow->addWidget(new QLabel(tr("Engine:"), page));
+    engineCombo_ = new QComboBox(page);
+    engineCombo_->addItem(
+        tr("GPAW — inherit a converged ground state (.gpw)"),
+        static_cast<int>(core::CalculatorKind::Gpaw));
+    engineCombo_->addItem(
+        tr("VASP — SCF + LOPTICS in one job"),
+        static_cast<int>(core::CalculatorKind::Vasp));
+    engineCombo_->setToolTip(
+        tr("GPAW evaluates the response at the fixed density of a completed "
+           "single point (gpaw.response.df). VASP runs the standard LOPTICS "
+           "protocol: a normal SCF, then an exact-diagonalization restart "
+           "(ICHARG=11) with LOPTICS=.TRUE., enlarged NBANDS, CSHIFT "
+           "broadening and a NEDOS frequency grid."));
+    engineRow->addWidget(engineCombo_, 1);
+    layout->addLayout(engineRow);
+    connect(engineCombo_, &QComboBox::currentIndexChanged, this,
+            [this] { onEngineChanged(); });
+
+    // -- Mandatory ground-state baseline (GPAW) ------------------------------
+    baselineGroup_ = new QGroupBox(tr("Ground-State Baseline"), page);
+    auto* baselineGroup = baselineGroup_;
     auto* baselineForm = new QFormLayout(baselineGroup);
     auto* baselineNote = new QLabel(
         tr("The response is evaluated at the FIXED density of a completed "
@@ -67,6 +96,69 @@ QWidget* OpticsWizard::buildSettingsPage()
     connect(baselineCombo_, &QComboBox::currentIndexChanged, this,
             [this] { onBaselineChanged(); });
     layout->addWidget(baselineGroup);
+
+    // -- VASP ground state (self-contained run) ------------------------------
+    vaspGroup_ = new QGroupBox(tr("VASP Ground State"), page);
+    auto* vaspForm = new QFormLayout(vaspGroup_);
+    auto* vaspNote = new QLabel(
+        tr("Self-contained: the job runs its own SCF, then restarts at fixed "
+           "density for the LOPTICS step. POTCARs come from Preferences → "
+           "External Files (VASP_PP_PATH)."),
+        vaspGroup_);
+    vaspNote->setWordWrap(true);
+    vaspForm->addRow(vaspNote);
+    vaspEncutSpin_ = new QDoubleSpinBox(vaspGroup_);
+    vaspEncutSpin_->setRange(100.0, 2000.0);
+    vaspEncutSpin_->setDecimals(0);
+    vaspEncutSpin_->setValue(500.0);
+    vaspEncutSpin_->setSuffix(tr(" eV"));
+    vaspEncutSpin_->setToolTip(
+        tr("ENCUT for both steps. Optical spectra inherit the ground "
+           "state's convergence — run the Plane-wave Cutoff Convergence "
+           "module first if in doubt."));
+    vaspForm->addRow(tr("Plane-wave cutoff (ENCUT):"), vaspEncutSpin_);
+    auto* vaspKptRow = new QHBoxLayout;
+    for (int axis = 0; axis < 3; ++axis) {
+        vaspKptSpins_[axis] = new QSpinBox(vaspGroup_);
+        vaspKptSpins_[axis]->setRange(1, 64);
+        vaspKptSpins_[axis]->setValue(7);
+        vaspKptRow->addWidget(vaspKptSpins_[axis]);
+        connect(vaspKptSpins_[axis], &QSpinBox::valueChanged, this,
+                [this] { refreshPreview(); });
+    }
+    vaspKptRow->addStretch(1);
+    vaspForm->addRow(tr("SCF k-point grid:"), vaspKptRow);
+    vaspXcCombo_ = new QComboBox(vaspGroup_);
+    // The functionals the AseScriptGenerator VASP branch accepts; the hybrids
+    // switch the LOPTICS step to ALGO=Eigenval automatically.
+    vaspXcCombo_->addItems({QStringLiteral("PBE"), QStringLiteral("PBEsol"),
+                            QStringLiteral("LDA"), QStringLiteral("SCAN"),
+                            QStringLiteral("HSE06"), QStringLiteral("PBE0")});
+    vaspXcCombo_->setToolTip(
+        tr("Exchange-correlation functional for both steps. With a hybrid "
+           "(exact exchange) the optics restart uses ALGO=Eigenval, as the "
+           "semilocal ALGO=Exact path does not apply the exact-exchange "
+           "operator to the new empty states."));
+    vaspForm->addRow(tr("XC functional:"), vaspXcCombo_);
+    vaspNbandsFactorSpin_ = new QDoubleSpinBox(vaspGroup_);
+    vaspNbandsFactorSpin_->setRange(1.5, 10.0);
+    vaspNbandsFactorSpin_->setDecimals(1);
+    vaspNbandsFactorSpin_->setSingleStep(0.5);
+    vaspNbandsFactorSpin_->setValue(3.0);
+    vaspNbandsFactorSpin_->setToolTip(
+        tr("NBANDS for the LOPTICS step, as a multiple of the SCF run's own "
+           "band count. The dielectric function sums transitions into empty "
+           "states; ~3× is the VASP wiki's working rule, more for a "
+           "converged high-energy tail."));
+    vaspForm->addRow(tr("Empty-band factor (NBANDS):"), vaspNbandsFactorSpin_);
+    layout->addWidget(vaspGroup_);
+
+    connect(vaspEncutSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+    connect(vaspXcCombo_, &QComboBox::currentIndexChanged, this,
+            [this] { refreshPreview(); });
+    connect(vaspNbandsFactorSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
 
     if (twoDimensional_) {
         auto* sheetGroup = new QGroupBox(tr("2D Sheet"), page);
@@ -106,6 +198,7 @@ QWidget* OpticsWizard::buildSettingsPage()
     layout->addWidget(intro);
 
     auto* form = new QFormLayout;
+    responseForm_ = form;
     layout->addLayout(form);
 
     broadeningSpin_ = new QDoubleSpinBox(page);
@@ -240,12 +333,65 @@ QWidget* OpticsWizard::buildSettingsPage()
             [this] { refreshPreview(); });
 
     layout->addStretch(1);
+    // Initial visibility only — the full onEngineChanged() also refreshes
+    // the preview and syncs the base engine combo, neither of which exists
+    // yet while this page is being built (it is constructed first).
+    vaspGroup_->setVisible(false);
     return page;
 }
 
 bool OpticsWizard::calculatorAllowed(core::CalculatorKind kind) const
 {
-    return kind == core::CalculatorKind::Gpaw;
+    return kind == core::CalculatorKind::Gpaw
+        || kind == core::CalculatorKind::Vasp;
+}
+
+core::CalculatorKind OpticsWizard::selectedEngine() const
+{
+    return engineCombo_ ? static_cast<core::CalculatorKind>(
+               engineCombo_->currentData().toInt())
+                        : core::CalculatorKind::Gpaw;
+}
+
+void OpticsWizard::onEngineChanged()
+{
+    const core::CalculatorKind engine = selectedEngine();
+    const bool vasp = engine == core::CalculatorKind::Vasp;
+    // Keep the base class's (hidden) engine selection in step, so the launch
+    // command template, the calculator provenance and the interpreter all
+    // resolve for the engine actually chosen here.
+    selectCalculator(engine);
+
+    if (baselineGroup_)
+        baselineGroup_->setVisible(!vasp);
+    if (vaspGroup_)
+        vaspGroup_->setVisible(vasp);
+
+    if (responseForm_) {
+        // The integration options are gpaw.response knobs; VASP's LOPTICS
+        // has no tetrahedron/IBZ switch of this kind.
+        const auto setRowVisible = [this](QWidget* field, bool visible) {
+            int row = -1;
+            QFormLayout::ItemRole role{};
+            responseForm_->getWidgetPosition(field, &row, &role);
+            if (row >= 0)
+                responseForm_->setRowVisible(row, visible);
+        };
+        setRowVisible(ibzCheck_, !vasp);
+        setRowVisible(tetrahedronCheck_, !vasp);
+        // Shared spins, engine-specific vocabulary: the broadening is GPAW's
+        // η and VASP's CSHIFT; the sample count is an explicit grid for GPAW
+        // and the NEDOS tag for VASP.
+        if (auto* label = qobject_cast<QLabel*>(
+                responseForm_->labelForField(broadeningSpin_)))
+            label->setText(vasp ? tr("Broadening (CSHIFT):")
+                                : tr("Broadening η:"));
+        if (auto* label = qobject_cast<QLabel*>(
+                responseForm_->labelForField(npointsSpin_)))
+            label->setText(vasp ? tr("Frequency grid (NEDOS):")
+                                : tr("Number of points:"));
+    }
+    refreshPreview();
 }
 
 
@@ -257,6 +403,24 @@ void OpticsWizard::setDensityBaselines(
     baselineCombo_->clear();
     for (const auto& [label, path] : baselines)
         baselineCombo_->addItem(label, path);
+    // Without a .gpw the GPAW path has nothing to inherit — steer to VASP
+    // (self-contained) instead of refusing to open, and say why.
+    if (baselines.isEmpty() && engineCombo_) {
+        const int gpawIndex = engineCombo_->findData(
+            static_cast<int>(core::CalculatorKind::Gpaw));
+        if (auto* model =
+                qobject_cast<QStandardItemModel*>(engineCombo_->model());
+            model && gpawIndex >= 0) {
+            model->item(gpawIndex)->setEnabled(false);
+            engineCombo_->setItemData(
+                gpawIndex,
+                tr("Needs a completed GPAW Single-Point Calculation that "
+                   "saved its wavefunctions (.gpw) — run one first."),
+                Qt::ToolTipRole);
+        }
+        engineCombo_->setCurrentIndex(engineCombo_->findData(
+            static_cast<int>(core::CalculatorKind::Vasp)));
+    }
     onBaselineChanged();
 }
 
@@ -291,7 +455,10 @@ void OpticsWizard::onBaselineChanged()
 
 QString OpticsWizard::pythonExecutable() const
 {
-    if (inherited_ && !inherited_->pythonExecutable.isEmpty())
+    // The baseline's interpreter only binds the GPAW path — a VASP run has
+    // no baseline and resolves through the standard per-engine mapping.
+    if (selectedEngine() == core::CalculatorKind::Gpaw && inherited_
+        && !inherited_->pythonExecutable.isEmpty())
         return inherited_->pythonExecutable;
     return SimulationWizardBase::pythonExecutable();
 }
@@ -334,6 +501,21 @@ QString OpticsWizard::generateScript() const
     if (twoDimensional_ && vacuumAxisCombo_)
         cfg.vacuumAxis = vacuumAxisCombo_->currentData().toInt();
     cfg.calculator = baseCalculatorConfig();
+    cfg.calculator.calculator = selectedEngine();
+    if (selectedEngine() == core::CalculatorKind::Vasp) {
+        // The VASP run is self-contained, so its ground-state knobs come
+        // from the stage-1 group rather than an inherited .gpw.
+        cfg.calculator.task = core::TaskKind::SinglePoint;
+        cfg.calculator.planeWaveCutoffEv = vaspEncutSpin_->value();
+        for (int axis = 0; axis < 3; ++axis)
+            cfg.calculator.kpts[axis] = vaspKptSpins_[axis]->value();
+        cfg.calculator.vaspXc =
+            vaspXcCombo_->currentText().toStdString();
+        // The restart step reads the density and wavefunctions from disk.
+        cfg.calculator.vaspLcharg = true;
+        cfg.calculator.vaspLwave = true;
+        cfg.vaspNbandsFactor = vaspNbandsFactorSpin_->value();
+    }
     cfg.broadeningEv = broadeningSpin_->value();
     cfg.omegaMinEv = omegaMinSpin_->value();
     cfg.omegaMaxEv = omegaMaxSpin_->value();

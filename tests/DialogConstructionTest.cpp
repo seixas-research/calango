@@ -99,6 +99,15 @@ int main(int argc, char** argv)
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QCoreApplication::setOrganizationName(QStringLiteral("CalangoTest"));
     QCoreApplication::setApplicationName(QStringLiteral("DialogTest"));
+    // Sandbox every ~/.calango file the exercised dialogs touch. The org/app
+    // names above already isolate QSettings, but SettingsManager mirrors to
+    // a JSON file at a fixed path — without this, running the test rewrote
+    // the developer's real settings.json. Belt and braces with the ctest
+    // ENVIRONMENT property, so a bare ./calango_dialog_test is safe too.
+    if (qgetenv("CALANGO_CONFIG_DIR").isEmpty())
+        qputenv("CALANGO_CONFIG_DIR",
+                (QDir::tempPath() + QStringLiteral("/calango-dialog-test"))
+                    .toLocal8Bit());
     QApplication app(argc, argv);
 
     std::printf("Graphene Oxide wizard:\n");
@@ -422,6 +431,66 @@ int main(int argc, char** argv)
                       QStringLiteral("kpts={\"size\": tuple(kpts), "
                                      "\"gamma\": True}")),
                   "and checking it emits a Γ-centered mesh");
+    }
+
+    // Element-aware suggested defaults: a calculator_parameters.json in the
+    // (sandboxed) config dir must repopulate the shared cutoff / k-grid
+    // spins for the elements the host announces, and an element without an
+    // entry must leave the hardcoded defaults alone.
+    std::printf("Calculator parameter suggestions:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        const QString configDir =
+            qEnvironmentVariable("CALANGO_CONFIG_DIR");
+        QDir().mkpath(configDir);
+        const QString parametersPath =
+            configDir + QStringLiteral("/calculator_parameters.json");
+        {
+            QFile file(parametersPath);
+            file.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            file.write("{\"GPAW\": {\"elements\": {\"Fe\": "
+                       "{\"pw\": 750, \"kpts\": [11, 9, 7]}}}}");
+        }
+
+        SinglePointWizard wizard;
+        // Suggestions resolve for the SELECTED engine; the file only knows
+        // GPAW, so pick it the way a user would.
+        if (auto* engine = wizard.findChild<QComboBox*>()) {
+            const int gpaw = engine->findData(
+                static_cast<int>(calango::core::CalculatorKind::Gpaw));
+            if (gpaw >= 0)
+                engine->setCurrentIndex(gpaw);
+        }
+        wizard.setStructureElements({QStringLiteral("Fe")});
+        QDoubleSpinBox* cutoff = nullptr;
+        for (QDoubleSpinBox* spin : wizard.findChildren<QDoubleSpinBox*>())
+            if (spin->maximum() == 2000.0) {
+                cutoff = spin;
+                break;
+            }
+        check(cutoff != nullptr && cutoff->value() == 750.0,
+              "Fe pulls its suggested plane-wave cutoff");
+        bool k11 = false;
+        bool k9 = false;
+        for (const QSpinBox* spin : wizard.findChildren<QSpinBox*>()) {
+            k11 = k11 || spin->value() == 11;
+            k9 = k9 || spin->value() == 9;
+        }
+        check(k11 && k9, "and its suggested k-grid");
+
+        SinglePointWizard fallback;
+        fallback.setStructureElements({QStringLiteral("H")});
+        QDoubleSpinBox* fallbackCutoff = nullptr;
+        for (QDoubleSpinBox* spin :
+             fallback.findChildren<QDoubleSpinBox*>())
+            if (spin->maximum() == 2000.0) {
+                fallbackCutoff = spin;
+                break;
+            }
+        check(fallbackCutoff != nullptr && fallbackCutoff->value() == 500.0,
+              "an element without an entry keeps the hardcoded default");
+
+        QFile::remove(parametersPath); // leave no state for later blocks
     }
 
     // The plane-wave cutoff is only a parameter of the plane-wave basis. In FD

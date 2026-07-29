@@ -11,6 +11,8 @@
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
+class QFormLayout;
+class QGroupBox;
 class QLabel;
 class QSpinBox;
 
@@ -23,17 +25,27 @@ namespace calango::gui {
 /// Simulation → "Optical Properties…" and Modules → 2D Materials → "2D
 /// Optics…": a task-first wizard for the linear dielectric-response workflow.
 ///
-/// Stage 1 selects the MANDATORY ground-state baseline — a completed
+/// Two engines, chosen on Stage 1:
+///
+/// GPAW — selects the MANDATORY ground-state baseline (a completed
 /// Single-Point Calculation whose .gpw the run loads and evaluates at fixed
-/// density — and collects the response settings (η broadening, the ħω window,
-/// the frequency-point count and the xx/yy/zz directions). Stage 2 is the
-/// shared ASE Script Review. GPAW only: the response module is what computes
-/// the dielectric function.
+/// density) and computes ε(ω) with gpaw.response.df.
+///
+/// VASP — self-contained: a normal SCF followed by the standard LOPTICS
+/// protocol (exact-diagonalization restart at fixed density with enlarged
+/// NBANDS, CSHIFT broadening, NEDOS frequency grid; ALGO=Eigenval when the
+/// functional carries exact exchange). Its ground-state knobs (ENCUT,
+/// k-grid, XC) live in a compact group on the same stage.
+///
+/// Both engines share the response settings (broadening, ħω window,
+/// frequency-point count, xx/yy/zz directions, optional denser optics
+/// k-mesh) and write the same optics.json, so one results window serves
+/// both. Stage 2 is the shared ASE Script Review.
 ///
 /// The Calculator Settings stage is dropped (showsCalculatorStage() == false),
-/// as in the MLWF wizard: every ground-state parameter is restored from the
-/// baseline .gpw, so asking for a cutoff or k-grid here would present knobs
-/// that cannot affect the run.
+/// as in the MLWF wizard: for GPAW every ground-state parameter is restored
+/// from the baseline .gpw, and for VASP the few that matter are asked on
+/// Stage 1 where the engine is chosen.
 ///
 /// In 2D mode the wizard additionally asks which axis carries the vacuum and
 /// derives the sheet observables. That question has no sensible default the
@@ -69,8 +81,8 @@ protected:
     {
         return QStringLiteral("optics.py");
     }
-    /// GPAW only — the linear-response dielectric function is computed by
-    /// gpaw.response, which the other engines do not expose.
+    /// GPAW (linear-response module) and VASP (LOPTICS protocol) — the only
+    /// engines here with a frequency-dependent dielectric function.
     bool calculatorAllowed(core::CalculatorKind kind) const override;
     bool hasTaskSettingsStage() const override { return true; }
     bool settingsStageFirst() const override { return true; }
@@ -86,9 +98,24 @@ private:
     /// Re-read the selected baseline's calculator.json, refresh the inheritance
     /// note and the script preview.
     void onBaselineChanged();
+    /// Show the engine's own groups and rows (baseline vs. VASP ground
+    /// state; the GPAW-only integration options), retitle the shared labels
+    /// (η vs. CSHIFT, points vs. NEDOS) and sync the base class's engine
+    /// selection so the run command and interpreter resolve for the engine
+    /// actually chosen here.
+    void onEngineChanged();
+    core::CalculatorKind selectedEngine() const;
 
     std::shared_ptr<core::Structure> structure_;
     bool twoDimensional_ = false;
+    QComboBox* engineCombo_ = nullptr;
+    QGroupBox* baselineGroup_ = nullptr;
+    QGroupBox* vaspGroup_ = nullptr;
+    QDoubleSpinBox* vaspEncutSpin_ = nullptr;
+    QSpinBox* vaspKptSpins_[3] = {nullptr, nullptr, nullptr};
+    QComboBox* vaspXcCombo_ = nullptr;
+    QDoubleSpinBox* vaspNbandsFactorSpin_ = nullptr;
+    QFormLayout* responseForm_ = nullptr;
     QComboBox* baselineCombo_ = nullptr;
     QComboBox* vacuumAxisCombo_ = nullptr;
     QLabel* inheritanceNote_ = nullptr;

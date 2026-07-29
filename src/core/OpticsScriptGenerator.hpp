@@ -11,11 +11,18 @@ namespace calango::core {
 /// k-grid); the remaining fields describe the frequency sampling of the
 /// dielectric function and which Cartesian directions to evaluate.
 struct OpticsConfig {
-    /// Retained for provenance only (which engine the baseline ran under, for
-    /// the script header and the interpreter the job binds to). The generator
-    /// does NOT emit any of these values: mode, cutoff, xc, k-grid and smearing
-    /// all come back from the inherited .gpw on restart, and re-declaring them
-    /// here would let the wizard silently disagree with the baseline.
+    /// The engine and its ground-state knobs. Two regimes:
+    ///
+    /// GPAW — retained for provenance only (which engine the baseline ran
+    /// under, for the script header and the interpreter the job binds to).
+    /// The generator does NOT emit any of these values: mode, cutoff, xc,
+    /// k-grid and smearing all come back from the inherited .gpw on restart,
+    /// and re-declaring them here would let the wizard silently disagree
+    /// with the baseline.
+    ///
+    /// VASP — consulted in full: there is no .gpw to inherit, so the run is
+    /// self-contained (SCF, then LOPTICS at fixed density) and ENCUT / KPTS
+    /// / xc / the INCAR extras all come from here.
     CalculatorConfig calculator;
     /// ABSOLUTE path to the baseline GPAW restart file (`.gpw`, written with
     /// mode="all") from a completed Single-Point Calculation. Mandatory: the
@@ -78,13 +85,22 @@ struct OpticsConfig {
     /// analysis and risk contradicting it.
     bool includeIbzPoints = false;
 
-    double broadeningEv = 0.1;  ///< Lorentzian broadening η, eV
+    double broadeningEv = 0.1;  ///< Lorentzian broadening η (GPAW) / CSHIFT (VASP), eV
     double omegaMinEv = 0.0;    ///< lower photon energy of the spectrum, eV
     double omegaMaxEv = 20.0;   ///< upper photon energy of the spectrum, eV
-    int npoints = 500;          ///< frequency-grid samples
+    /// Frequency-grid samples: GPAW evaluates exactly this many points over
+    /// the window; VASP's grid density is a tag (NEDOS), so there it sets
+    /// NEDOS and the window is applied when the spectrum is read back.
+    int npoints = 500;
     bool dirX = true;           ///< εxx (light polarized along x)
     bool dirY = true;           ///< εyy
     bool dirZ = true;           ///< εzz
+
+    /// VASP only: NBANDS for the LOPTICS step, as a multiple of the SCF
+    /// run's own band count. LOPTICS sums interband transitions into empty
+    /// states and VASP's default NBANDS barely covers occupation; ~3× is
+    /// the VASP wiki's working rule for a converged spectrum tail.
+    double vaspNbandsFactor = 3.0;
 };
 
 /// Standalone run.py: loads the baseline ground state, runs a fixed-density

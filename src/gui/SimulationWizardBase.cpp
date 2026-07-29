@@ -1,5 +1,6 @@
 #include "gui/SimulationWizardBase.hpp"
 
+#include "gui/CalculatorParameters.hpp"
 #include "gui/SettingsManager.hpp"
 #include "gui/HubbardParametersDialog.hpp"
 
@@ -1565,7 +1566,11 @@ void SimulationWizardBase::updateCalculatorEnabled()
     // GPAW-only or subclass-injected rows; Output (density export) is
     // GPAW-only.
     modeBasisGroup_->setVisible(isDft);
-    bzGroup_->setVisible(isDft);
+    // Both of the group's rows (the k-grid and the Γ/symmetry toggles) are
+    // owned by the sweep stage in a wizard that hides the k-grid row
+    // (K-points Convergence), which would leave an empty titled box here —
+    // so the group hides as a whole with them.
+    bzGroup_->setVisible(isDft && showsKpointGridRow());
     convGroup_->setVisible(isGpaw || (isDft && hasConvergenceExtras()));
     spinGroup_->setVisible(isDft && hasSpinExtras());
     outputGroup_->setVisible(isGpaw && showsGpawDensityExport());
@@ -1645,7 +1650,41 @@ void SimulationWizardBase::updateCalculatorEnabled()
                 ? tr("Settings for %1:").arg(calcCombo_->currentText())
                 : tr("%1 has no additional settings — continue to the script "
                      "review.").arg(calcCombo_->currentText()));
+    // Engine decided (whether by construction or by the combo): pull any
+    // per-element suggested cutoff / k-grid for it. After the row updates,
+    // so a suggestion lands in controls already shaped for this engine.
+    applySuggestedParameters();
     updateCalculatorExtras(kind);
+}
+
+void SimulationWizardBase::setStructureElements(const QStringList& symbols)
+{
+    structureElements_ = symbols;
+    applySuggestedParameters();
+}
+
+QStringList SimulationWizardBase::suggestionElements() const
+{
+    const QStringList own = calculatorElements();
+    return own.isEmpty() ? structureElements_ : own;
+}
+
+void SimulationWizardBase::applySuggestedParameters()
+{
+    if (!cutoffSpin_ || !kptSpins_[0])
+        return; // calculator page not built yet
+    // Inherited calculators lock these knobs to the baseline .gpw; writing a
+    // suggestion into hidden controls would silently diverge from it.
+    if (inheritsCalculatorFromBaseline())
+        return;
+    const CalculatorParameters::Suggestion suggestion =
+        CalculatorParameters::suggestionFor(selectedCalculator(),
+                                            suggestionElements());
+    if (suggestion.planeWaveCutoffEv)
+        cutoffSpin_->setValue(*suggestion.planeWaveCutoffEv);
+    if (suggestion.kpts)
+        for (int axis = 0; axis < 3; ++axis)
+            kptSpins_[axis]->setValue((*suggestion.kpts)[axis]);
 }
 
 int SimulationWizardBase::calculatorKpoint(int axis) const

@@ -41,12 +41,15 @@ struct OpticsPlotStyle {
     QColor gridColor{228, 228, 228};
     double gridAlpha = 1.0;  ///< [0, 1], folded into gridColor's alpha
 
-    /// Threshold-corridor styling, used by the convergence viewers' hatched
-    /// band. Inert for windows that draw no band; the dialog offers these
-    /// controls only when asked to (see the second constructor).
-    QColor thresholdBandColor{0x2c, 0xa0, 0x2c};
-    Qt::BrushStyle thresholdBandPattern = Qt::BDiagPattern;
-    double thresholdBandOpacity = 0.45;  ///< [0, 1]
+    /// Threshold-corridor styling, used by the convergence viewers' band.
+    /// Inert for windows that draw no band; the dialog offers these controls
+    /// only when asked to (see the second constructor). Default: a quiet
+    /// solid gray — the corridor is context, and the earlier green hatch
+    /// competed with the curve; the hatch patterns remain available in
+    /// Customize Appearance.
+    QColor thresholdBandColor{128, 128, 128};
+    Qt::BrushStyle thresholdBandPattern = Qt::SolidPattern;
+    double thresholdBandOpacity = 0.30;  ///< [0, 1]
 
     QFont axisFont() const;
     /// `gridColor` with `gridAlpha` applied to its alpha channel.

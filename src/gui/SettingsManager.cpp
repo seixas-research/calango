@@ -132,6 +132,16 @@ QJsonValue variantToJson(const QVariant& value, const QVariant& prototype)
 
 QString SettingsManager::directory()
 {
+    // CALANGO_CONFIG_DIR redirects every config file this class (and its
+    // neighbours, e.g. CalculatorParameters) reads or writes. It exists for
+    // test isolation: the unit tests construct real dialogs whose code paths
+    // call save(), and before this override a `ctest` run silently rewrote
+    // the developer's own ~/.calango/settings.json with whatever the test
+    // QSettings happened to hold. CMake points every test at a scratch
+    // directory inside the build tree; a user never needs to set this.
+    const QByteArray override = qgetenv("CALANGO_CONFIG_DIR");
+    if (!override.isEmpty())
+        return QString::fromLocal8Bit(override);
     return QDir::homePath() + QStringLiteral("/.calango");
 }
 

@@ -36,6 +36,11 @@ public:
     /// visible it is drawn as a hatched band and included in the y-range, so
     /// a tight threshold cannot vanish off-scale.
     void setThresholdBand(double low, double high, bool visible);
+    /// Pin the y-axis to exactly [minimum, maximum] (no padding), instead of
+    /// fitting the data. The σ×threshold zoom uses this: the far-from-
+    /// converged early points would otherwise set the scale and flatten the
+    /// interesting tail into a line. Off-range points draw clipped.
+    void setFixedYRange(double minimum, double maximum, bool enabled);
 
     /// Draw the chart into `painter` filling a logical area of `size` — used
     /// by both paintEvent and the image export, so the file shows exactly
@@ -54,6 +59,9 @@ private:
     double bandLow_ = 0.0;
     double bandHigh_ = 0.0;
     bool bandVisible_ = false;
+    double fixedYMin_ = 0.0;
+    double fixedYMax_ = 0.0;
+    bool fixedYEnabled_ = false;
 };
 
 /// Result window shared by the Parameters Convergence modules. Three panels
@@ -134,6 +142,12 @@ private:
     QCheckBox* thresholdCheck_ = nullptr;
     QDoubleSpinBox* energyThresholdSpin_ = nullptr;
     QDoubleSpinBox* forceThresholdSpin_ = nullptr;
+    QDoubleSpinBox* eigenThresholdSpin_ = nullptr;
+    /// σ×threshold y-axis zoom: each panel clamps to ±σ·τ of its own
+    /// criterion, so the converged tail is inspectable at the scale that
+    /// decides it.
+    QCheckBox* scaleCheck_ = nullptr;
+    QDoubleSpinBox* sigmaSpin_ = nullptr;
     QLabel* thresholdSummary_ = nullptr;
 };
 

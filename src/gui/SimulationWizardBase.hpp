@@ -89,6 +89,14 @@ public:
     static QString vaspPotcarDirectory();
     static void setVaspPotcarDirectory(const QString& path);
 
+    /// Chemical elements of the structure this wizard will run on, supplied
+    /// by the host for wizards that do not hold a structure themselves.
+    /// Feeds the ~/.calango/calculator_parameters.json suggestion lookup
+    /// (and nothing else): setting it re-resolves the suggested plane-wave
+    /// cutoff and k-grid for the selected engine. Wizards that DO hold a
+    /// structure keep their calculatorElements() override as the authority.
+    void setStructureElements(const QStringList& symbols);
+
 protected:
     explicit SimulationWizardBase(QWidget* parent = nullptr);
 
@@ -286,6 +294,16 @@ private Q_SLOTS:
     void updateCalculatorEnabled();
 
 private:
+    /// Elements for the suggestion lookup: the subclass's own structure when
+    /// it has one, else what the host supplied via setStructureElements().
+    QStringList suggestionElements() const;
+    /// Pull suggested cutoff / k-grid defaults for the selected engine and
+    /// elements from ~/.calango/calculator_parameters.json into the shared
+    /// spin boxes. No file, no engine entry, no element match — no change:
+    /// the hardcoded defaults stand. Skipped entirely when the calculator is
+    /// inherited from a baseline (those knobs are locked to the .gpw).
+    void applySuggestedParameters();
+
     QWidget* buildCalculatorPage();
     QWidget* buildMaceGroup(QWidget* parent);
     /// The "VASP settings" group — the primary INCAR tags plus the POTCAR
@@ -321,6 +339,8 @@ private:
     void refreshRunCommand();
 
     Action action_ = Action::None;
+    /// Host-supplied element symbols (see setStructureElements()).
+    QStringList structureElements_;
     int stage_ = 0;
     bool hasSettingsStage_ = true; ///< resolved from hasTaskSettingsStage()
     bool settingsFirst_ = true;    ///< resolved from settingsStageFirst()

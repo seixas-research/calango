@@ -2,6 +2,8 @@
 
 #include "core/AseScriptGenerator.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <string>
 
@@ -74,18 +76,93 @@ std::string symmetryLine(const OpticsConfig& cfg)
                       "zone\n");
 }
 
-} // namespace
-
-std::string generateOpticsScript(const OpticsConfig& cfg)
+/// The 2D-observables block appended to both engine scripts. It only assumes
+/// `atoms`, `omega_eV`, `_ok` (the direction keys that produced spectra) and
+/// `results["eps_<key>"]` exist — which both scripts guarantee — so the sheet
+/// physics is written once and cannot drift between engines.
+std::string twoDObservablesBlock(int vacuumAxis)
 {
-    // Note: cfg.calculator is deliberately NOT consulted. Every ground-state
-    // parameter (mode, cutoff, xc, k-grid, smearing) comes from the inherited
-    // .gpw, which GPAW restores on restart. Emitting them here would let a
-    // wizard-side value silently disagree with the baseline it claims to use.
+    std::ostringstream out;
+    // A supercell calculation of a sheet reports a dielectric function
+    // diluted by whatever vacuum was used, so eps_3D is NOT a property of
+    // the material — double the vacuum and it moves. Dividing the vacuum
+    // thickness back out gives quantities that do not: the sheet
+    // polarizability, the 2D conductivity and the absorbance.
+    out << "\n"
+           "# --- 2D observables (vacuum truncation) "
+           "-------------------------\n"
+        << "L_z = float(atoms.cell.lengths()[" << vacuumAxis << "])"
+           "  # vacuum-direction cell length, Å\n"
+           "results[\"vacuum_axis\"] = "
+        << vacuumAxis << "\n"
+           "results[\"L_z_A\"] = L_z\n"
+           "\n"
+           "# Physical constants in the units used here: ħc in eV·Å and the\n"
+           "# fine-structure constant (dimensionless).\n"
+           "hbar_c_eV_A = 1973.269804\n"
+           "alpha_fs = 1.0 / 137.035999084\n"
+           "\n"
+           "\n"
+           "def twod_observables(omega_eV, eps1, eps2, L_z):\n"
+           "    \"\"\"Sheet observables from a slab's eps_3D.\n"
+           "\n"
+           "    omega_eV: photon energies (eV); eps1/eps2: the SUPERCELL\n"
+           "    dielectric function; L_z: vacuum-direction cell length (Å).\n"
+           "\n"
+           "    Every quantity returned is independent of L_z — that is the\n"
+           "    point. eps_3D itself is not: double the vacuum and it moves,\n"
+           "    because the sheet's polarization is diluted over more cell.\n"
+           "    \"\"\"\n"
+           "    omega_eV = np.asarray(omega_eV, dtype=float)\n"
+           "    eps1 = np.asarray(eps1, dtype=float)\n"
+           "    eps2 = np.asarray(eps2, dtype=float)\n"
+           "    # k = omega / (hbar c), in 1/Å.\n"
+           "    k = omega_eV / hbar_c_eV_A\n"
+           "    # alpha_2D(omega) = L_z / (4 pi) * (eps_3D - 1)   [Å]\n"
+           "    # The -1 removes the vacuum's own contribution, which is\n"
+           "    # what makes the result a property of the SHEET.\n"
+           "    alpha2d_re = L_z / (4.0 * np.pi) * (eps1 - 1.0)\n"
+           "    alpha2d_im = L_z / (4.0 * np.pi) * eps2\n"
+           "    # A(omega) = (omega L_z / c) Im[eps_3D]. For graphene this\n"
+           "    # returns the universal pi*alpha = 2.29%.\n"
+           "    absorbance = k * L_z * eps2\n"
+           "    # sigma_2D = -i omega alpha_2D, i.e.\n"
+           "    #   Re[sigma_2D] = omega Im[alpha_2D]\n"
+           "    #   Im[sigma_2D] = -omega Re[alpha_2D]\n"
+           "    # Those are Gaussian sigma/c (dimensionless). The literature\n"
+           "    # quotes 2D conductivity in e^2/h, where graphene's universal\n"
+           "    # value is pi/2 ~ 1.5708, so convert: sigma[e^2/h] =\n"
+           "    # (sigma/c) * 2 pi / alpha. Equivalently A / (2 alpha).\n"
+           "    to_e2_over_h = 2.0 * np.pi / alpha_fs\n"
+           "    sigma_re = k * alpha2d_im * to_e2_over_h\n"
+           "    sigma_im = -k * alpha2d_re * to_e2_over_h\n"
+           "    return {\n"
+           "        \"alpha_2D_re_A\": [float(v) for v in alpha2d_re],\n"
+           "        \"alpha_2D_im_A\": [float(v) for v in alpha2d_im],\n"
+           "        \"absorbance\": [float(v) for v in absorbance],\n"
+           "        \"sigma_2D_re\": [float(v) for v in sigma_re],\n"
+           "        \"sigma_2D_im\": [float(v) for v in sigma_im],\n"
+           "    }\n"
+           "\n"
+           "\n"
+           "for key in list(_ok):\n"
+           "    twod = twod_observables(omega_eV,\n"
+           "                            results[\"eps_\" + key][\"eps1\"],\n"
+           "                            results[\"eps_\" + key][\"eps2\"],\n"
+           "                            L_z)\n"
+           "    results[\"twod_\" + key] = twod\n"
+           "    absorbance = np.asarray(twod[\"absorbance\"], dtype=float)\n"
+           "    _peak = int(np.argmax(absorbance)) if absorbance.size else 0\n"
+           "    print(f\"CALANGO_RESULT twod_{key} peak_absorbance=\"\n"
+           "          f\"{absorbance[_peak]:.4f} at {omega_eV[_peak]:.3f} eV\","
+           " flush=True)\n";
+    return out.str();
+}
 
-    // The list of (json-key, GPAW axis) pairs the response loop iterates over,
-    // filtered to the directions the user asked for. Guard against an empty
-    // selection so the script always produces at least one spectrum.
+/// The directions literal both scripts iterate: `("xx", "x"), …`, filtered to
+/// the user's selection, never empty.
+std::string directionsLiteral(const OpticsConfig& cfg)
+{
     std::string directions;
     const auto addDirection = [&directions](bool enabled, const char* key,
                                             const char* axis) {
@@ -100,6 +177,243 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
     addDirection(cfg.dirZ, "zz", "z");
     if (directions.empty())
         directions = "(\"xx\", \"x\")";
+    return directions;
+}
+
+/// True when the configured XC functional carries exact exchange. LOPTICS
+/// after a hybrid ground state must diagonalize with ALGO=Eigenval — the
+/// semilocal recipe's ALGO=Exact path does not apply the exact-exchange
+/// operator to the empty states it generates.
+bool usesExactExchange(const OpticsConfig& cfg)
+{
+    std::string xc = cfg.calculator.vaspXc;
+    std::transform(xc.begin(), xc.end(), xc.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return xc == "hse06" || xc == "hse03" || xc == "pbe0" || xc == "b3lyp"
+        || xc == "hf";
+}
+
+/// VASP linear optics: the two-step protocol from the VASP wiki ("Dielectric
+/// properties" / LOPTICS): a self-consistent run that leaves CHGCAR+WAVECAR,
+/// then an exact-diagonalization restart at fixed density (ICHARG=11) with
+/// LOPTICS=.TRUE., an enlarged NBANDS, CSHIFT as the broadening and NEDOS as
+/// the frequency-grid density. ε(ω) is read back from vasprun.xml's
+/// <dielectricfunction> block and written to the same optics.json schema the
+/// GPAW path produces, so one results window serves both engines.
+std::string generateVaspOpticsScript(const OpticsConfig& cfg)
+{
+    // Step-2 k-mesh: 0 on an axis inherits the SCF grid — resolvable here at
+    // generation time, since for VASP the SCF grid is the config's own.
+    const bool densify = wantsResponseKpts(cfg);
+    int responseKpts[3];
+    for (int axis = 0; axis < 3; ++axis)
+        responseKpts[axis] = cfg.responseKpts[axis] > 0
+            ? cfg.responseKpts[axis]
+            : cfg.calculator.kpts[axis];
+
+    const char* algo = usesExactExchange(cfg) ? "Eigenval" : "Exact";
+
+    std::ostringstream out;
+    out << "# Optical properties (VASP, frequency-dependent dielectric "
+           "function) — generated by Calango\n"
+           "import json\n"
+           "import xml.etree.ElementTree as ET\n"
+           "\n"
+           "import numpy as np\n"
+           "from ase.io import read\n"
+           "from ase.calculators.vasp import Vasp\n"
+           "\n"
+        << AseScriptGenerator::jsonLoggerPreamble()
+        << "atoms = read(\"structure.extxyz\")\n"
+           "_calango_log.progress(0, 4)\n"
+           "\n"
+           "# --- Step 1: self-consistent ground state ------------------------\n"
+           "# Standard VASP optics is a TWO-step protocol: a normal SCF that\n"
+           "# writes CHGCAR and WAVECAR, then an exact-diagonalization restart\n"
+           "# with LOPTICS on the frozen density. One combined run would\n"
+           "# diagonalize the enlarged band set self-consistently — slower and\n"
+           "# not what the reference recipe measures.\n";
+    {
+        // The same VASP calculator block every generated script uses (ENCUT,
+        // KPTS, xc, INCAR extras) — the ground state is defined once, by the
+        // shared config, not re-spelled here.
+        out << AseScriptGenerator::calculatorSnippet(cfg.calculator);
+    }
+    out << "# The restart needs the density and wavefunctions on disk,\n"
+           "# whatever the calculator's own output defaults say.\n"
+           "atoms.calc.set(lwave=True, lcharg=True)\n"
+           "energy = float(atoms.get_potential_energy())\n"
+           "print(f\"CALANGO_INFO scf_energy_eV={energy:.6f}\", flush=True)\n"
+           "try:\n"
+           "    nbands_scf = int(atoms.calc.get_number_of_bands())\n"
+           "except Exception:\n"
+           "    nbands_scf = 0\n"
+           "_calango_log.progress(1, 4)\n"
+           "\n"
+           "# --- Step 2: LOPTICS at fixed density ----------------------------\n"
+           "params = dict(atoms.calc.parameters)\n"
+           "params.update(\n"
+           "    icharg=11,   # non-selfconsistent: fix the step-1 density\n"
+        << "    algo=\"" << algo << "\",  "
+        << (usesExactExchange(cfg)
+                ? "# hybrid functional: Eigenval applies the exact-exchange\n"
+                  "                        # operator to the new empty states"
+                : "# exact diagonalization over the enlarged band set")
+        << "\n"
+           "    nelm=1,      # one diagonalization pass — nothing to converge\n"
+           "    loptics=True,   # frequency-dependent dielectric function\n"
+        << "    cshift=" << cfg.broadeningEv
+        << ",  # complex shift — the Lorentzian broadening of ε(ω)\n"
+        << "    nedos=" << (cfg.npoints > 100 ? cfg.npoints : 100)
+        << ",  # frequency-grid density of the ε(ω) output\n"
+           "    lwave=False,\n"
+           "    lcharg=False,\n"
+           ")\n"
+           "if nbands_scf > 0:\n"
+        << "    # LOPTICS sums transitions into empty states, and VASP's\n"
+           "    # default NBANDS barely covers occupation.\n"
+        << "    params[\"nbands\"] = int(round(" << cfg.vaspNbandsFactor
+        << " * nbands_scf))\n"
+           "else:\n"
+           "    print(\"CALANGO_WARN could not read the SCF band count — \"\n"
+           "          \"running LOPTICS with VASP's default NBANDS; the \"\n"
+           "          \"high-energy tail of the spectrum will be \"\n"
+           "          \"underconverged.\", flush=True)\n";
+    if (densify)
+        out << "# Denser optics k-mesh than the SCF (legitimate under\n"
+               "# ICHARG=11 — the density is fixed, only the sampling of the\n"
+               "# transitions changes).\n"
+               "params[\"kpts\"] = ("
+            << responseKpts[0] << ", " << responseKpts[1] << ", "
+            << responseKpts[2] << ")\n";
+    out << "atoms.calc = Vasp(**params)\n"
+           "atoms.get_potential_energy()  # triggers the LOPTICS run\n"
+           "_calango_log.progress(2, 4)\n"
+           "\n"
+           "# --- ε(ω) from vasprun.xml ---------------------------------------\n"
+           "tree = ET.parse(\"vasprun.xml\")\n"
+           "nodes = tree.getroot().findall(\".//dielectricfunction\")\n"
+           "if not nodes:\n"
+           "    raise RuntimeError(\n"
+           "        \"vasprun.xml holds no <dielectricfunction> — the LOPTICS \"\n"
+           "        \"step produced no optics output (check OUTCAR).\")\n"
+           "# VASP 6 writes density-density AND current-current responses; the\n"
+           "# density-density block is the standard IPA spectrum.\n"
+           "node = nodes[0]\n"
+           "for candidate in nodes:\n"
+           "    if \"density\" in (candidate.get(\"comment\") or \"\"):\n"
+           "        node = candidate\n"
+           "        break\n"
+           "\n"
+           "\n"
+           "def _rows(section):\n"
+           "    return np.asarray([[float(x) for x in r.text.split()]\n"
+           "                       for r in section.findall(\".//r\")],\n"
+           "                      dtype=float)\n"
+           "\n"
+           "\n"
+           "imag = _rows(node.find(\"imag\"))\n"
+           "real = _rows(node.find(\"real\"))\n"
+           "omega_all = real[:, 0]\n"
+           "# Columns per row: energy, xx, yy, zz, xy, yz, zx.\n"
+           "_component = {\"xx\": 1, \"yy\": 2, \"zz\": 3}\n"
+           "_calango_log.progress(3, 4)\n"
+           "\n"
+        << "window = (omega_all >= " << cfg.omegaMinEv
+        << ") & (omega_all <= " << cfg.omegaMaxEv
+        << ")\n"
+           "if not np.any(window):\n"
+           "    window = np.ones_like(omega_all, dtype=bool)\n"
+           "    print(\"CALANGO_WARN the requested photon-energy window lies \"\n"
+           "          \"outside VASP's ε(ω) grid; writing the full grid \"\n"
+           "          \"instead.\", flush=True)\n"
+           "omega_eV = omega_all[window]\n"
+           "\n"
+           "# ħc = 197.3269804 eV·nm = 197.3269804e-7 eV·cm. With ħω in eV the\n"
+           "# absorption coefficient α = 2 (ω / ħc) k then comes out in cm^-1.\n"
+           "hbar_c_eV_cm = 197.3269804e-7\n"
+           "\n"
+           "\n"
+           "def derived_spectra(omega_eV, eps):\n"
+           "    \"\"\"The seven per-direction spectra from complex ε(ω) — the\n"
+           "    same formulas the GPAW path uses, so the two engines are\n"
+           "    comparable panel by panel.\"\"\"\n"
+           "    eps = np.where(np.isfinite(eps), eps, 0.0)\n"
+           "    eps1 = eps.real\n"
+           "    eps2 = eps.imag\n"
+           "    refractive = np.sqrt(eps.astype(complex))  # N = n + i k\n"
+           "    n = refractive.real\n"
+           "    k = refractive.imag\n"
+           "    absorption = 2.0 * (omega_eV / hbar_c_eV_cm) * k  # cm^-1\n"
+           "    reflectivity = ((n - 1.0) ** 2 + k ** 2) / \\\n"
+           "        ((n + 1.0) ** 2 + k ** 2)\n"
+           "    _denom = np.where(np.abs(eps) > 1e-12, eps, 1e-12)\n"
+           "    loss = (-1.0 / _denom).imag  # energy-loss function -Im(1/ε)\n"
+           "    return {\n"
+           "        \"eps1\": [float(v) for v in eps1],\n"
+           "        \"eps2\": [float(v) for v in eps2],\n"
+           "        \"absorption\": [float(v) for v in absorption],\n"
+           "        \"reflectivity\": [float(v) for v in reflectivity],\n"
+           "        \"n\": [float(v) for v in n],\n"
+           "        \"k\": [float(v) for v in k],\n"
+           "        \"loss\": [float(v) for v in loss],\n"
+           "    }\n"
+           "\n"
+           "\n"
+           "results = {\"energy_eV\": [float(w) for w in omega_eV]}\n"
+           "results[\"engine\"] = \"VASP\"\n"
+           "results[\"sampling\"] = {\n"
+        << "    \"nedos\": " << (cfg.npoints > 100 ? cfg.npoints : 100)
+        << ",\n"
+        << "    \"cshift_eV\": " << cfg.broadeningEv << ",\n"
+        << "    \"algo\": \"" << algo << "\",\n"
+        << "    \"nbands_factor\": " << cfg.vaspNbandsFactor << ",\n"
+        << "    \"response_kpts\": [" << responseKpts[0] << ", "
+        << responseKpts[1] << ", " << responseKpts[2] << "],\n"
+           "    \"npoints\": int(len(omega_eV)),\n"
+           "    \"omega_min_eV\": float(omega_eV[0]) if len(omega_eV) else 0.0,\n"
+           "    \"omega_max_eV\": float(omega_eV[-1]) if len(omega_eV) else 0.0,\n"
+           "}\n"
+           "\n"
+        << "directions = [" << directionsLiteral(cfg) << "]\n"
+        << "_ok = []\n"
+           "for key, _axis in directions:\n"
+           "    column = _component[key]\n"
+           "    eps = real[window, column] + 1j * imag[window, column]\n"
+           "    results[key] = derived_spectra(omega_eV, eps)\n"
+           "    results[\"eps_\" + key] = {\n"
+           "        \"eps1\": results[key][\"eps1\"],\n"
+           "        \"eps2\": results[key][\"eps2\"],\n"
+           "    }\n"
+           "    _ok.append(key)\n";
+    if (cfg.vacuumAxis >= 0 && cfg.vacuumAxis <= 2)
+        out << twoDObservablesBlock(cfg.vacuumAxis);
+    out << "\n"
+           "with open(\"optics.json\", \"w\") as handle:\n"
+           "    json.dump(results, handle)\n"
+           "_calango_log.progress(4, 4)\n"
+           "print(\"CALANGO_RESULT optics=optics.json\", flush=True)\n";
+    return out.str();
+}
+
+} // namespace
+
+std::string generateOpticsScript(const OpticsConfig& cfg)
+{
+    // Engine dispatch: VASP is self-contained (SCF + LOPTICS in one job);
+    // everything else runs the GPAW response workflow below.
+    if (cfg.calculator.calculator == CalculatorKind::Vasp)
+        return generateVaspOpticsScript(cfg);
+
+    // Note: cfg.calculator is deliberately NOT consulted. Every ground-state
+    // parameter (mode, cutoff, xc, k-grid, smearing) comes from the inherited
+    // .gpw, which GPAW restores on restart. Emitting them here would let a
+    // wizard-side value silently disagree with the baseline it claims to use.
+
+    // The list of (json-key, GPAW axis) pairs the response loop iterates over,
+    // filtered to the directions the user asked for. Guard against an empty
+    // selection so the script always produces at least one spectrum.
+    const std::string directions = directionsLiteral(cfg);
 
     std::ostringstream out;
     out << "# Optical properties (linear dielectric response) — generated by "
@@ -306,82 +620,8 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "    raise RuntimeError('DielectricFunction produced no valid "
            "direction — check the k-point sampling and empty-band count.')\n";
 
-    if (cfg.vacuumAxis >= 0 && cfg.vacuumAxis <= 2) {
-        // --- 2D observables -------------------------------------------------
-        // A supercell calculation of a sheet reports a dielectric function
-        // diluted by whatever vacuum was used, so eps_3D is NOT a property of
-        // the material — double the vacuum and it moves. Dividing the vacuum
-        // thickness back out gives quantities that do not: the sheet
-        // polarizability, the 2D conductivity and the absorbance.
-        out << "\n"
-               "# --- 2D observables (vacuum truncation) "
-               "-------------------------\n"
-            << "L_z = float(atoms.cell.lengths()[" << cfg.vacuumAxis << "])"
-               "  # vacuum-direction cell length, Å\n"
-               "results[\"vacuum_axis\"] = "
-            << cfg.vacuumAxis << "\n"
-               "results[\"L_z_A\"] = L_z\n"
-               "\n"
-               "# Physical constants in the units used here: ħc in eV·Å and the\n"
-               "# fine-structure constant (dimensionless).\n"
-               "hbar_c_eV_A = 1973.269804\n"
-               "alpha_fs = 1.0 / 137.035999084\n"
-               "\n"
-               "\n"
-               "def twod_observables(omega_eV, eps1, eps2, L_z):\n"
-               "    \"\"\"Sheet observables from a slab's eps_3D.\n"
-               "\n"
-               "    omega_eV: photon energies (eV); eps1/eps2: the SUPERCELL\n"
-               "    dielectric function; L_z: vacuum-direction cell length (Å).\n"
-               "\n"
-               "    Every quantity returned is independent of L_z — that is the\n"
-               "    point. eps_3D itself is not: double the vacuum and it moves,\n"
-               "    because the sheet's polarization is diluted over more cell.\n"
-               "    \"\"\"\n"
-               "    omega_eV = np.asarray(omega_eV, dtype=float)\n"
-               "    eps1 = np.asarray(eps1, dtype=float)\n"
-               "    eps2 = np.asarray(eps2, dtype=float)\n"
-               "    # k = omega / (hbar c), in 1/Å.\n"
-               "    k = omega_eV / hbar_c_eV_A\n"
-               "    # alpha_2D(omega) = L_z / (4 pi) * (eps_3D - 1)   [Å]\n"
-               "    # The -1 removes the vacuum's own contribution, which is\n"
-               "    # what makes the result a property of the SHEET.\n"
-               "    alpha2d_re = L_z / (4.0 * np.pi) * (eps1 - 1.0)\n"
-               "    alpha2d_im = L_z / (4.0 * np.pi) * eps2\n"
-               "    # A(omega) = (omega L_z / c) Im[eps_3D]. For graphene this\n"
-               "    # returns the universal pi*alpha = 2.29%.\n"
-               "    absorbance = k * L_z * eps2\n"
-               "    # sigma_2D = -i omega alpha_2D, i.e.\n"
-               "    #   Re[sigma_2D] = omega Im[alpha_2D]\n"
-               "    #   Im[sigma_2D] = -omega Re[alpha_2D]\n"
-               "    # Those are Gaussian sigma/c (dimensionless). The literature\n"
-               "    # quotes 2D conductivity in e^2/h, where graphene's universal\n"
-               "    # value is pi/2 ~ 1.5708, so convert: sigma[e^2/h] =\n"
-               "    # (sigma/c) * 2 pi / alpha. Equivalently A / (2 alpha).\n"
-               "    to_e2_over_h = 2.0 * np.pi / alpha_fs\n"
-               "    sigma_re = k * alpha2d_im * to_e2_over_h\n"
-               "    sigma_im = -k * alpha2d_re * to_e2_over_h\n"
-               "    return {\n"
-               "        \"alpha_2D_re_A\": [float(v) for v in alpha2d_re],\n"
-               "        \"alpha_2D_im_A\": [float(v) for v in alpha2d_im],\n"
-               "        \"absorbance\": [float(v) for v in absorbance],\n"
-               "        \"sigma_2D_re\": [float(v) for v in sigma_re],\n"
-               "        \"sigma_2D_im\": [float(v) for v in sigma_im],\n"
-               "    }\n"
-               "\n"
-               "\n"
-               "for key in list(_ok):\n"
-               "    twod = twod_observables(omega_eV,\n"
-               "                            results[\"eps_\" + key][\"eps1\"],\n"
-               "                            results[\"eps_\" + key][\"eps2\"],\n"
-               "                            L_z)\n"
-               "    results[\"twod_\" + key] = twod\n"
-               "    absorbance = np.asarray(twod[\"absorbance\"], dtype=float)\n"
-               "    _peak = int(np.argmax(absorbance)) if absorbance.size else 0\n"
-               "    print(f\"CALANGO_RESULT twod_{key} peak_absorbance=\"\n"
-               "          f\"{absorbance[_peak]:.4f} at {omega_eV[_peak]:.3f} eV\","
-               " flush=True)\n";
-    }
+    if (cfg.vacuumAxis >= 0 && cfg.vacuumAxis <= 2)
+        out << twoDObservablesBlock(cfg.vacuumAxis);
 
     out << "with open(\"optics.json\", \"w\") as handle:\n"
            "    json.dump(results, handle)\n"

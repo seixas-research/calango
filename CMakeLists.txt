@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.70
+    VERSION 26.7.71
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -395,6 +395,10 @@ qt_add_executable(calango
     src/gui/WelcomeDialog.cpp
     src/gui/SettingsManager.hpp
     src/gui/SettingsManager.cpp
+    src/gui/CalculatorParameters.hpp
+    src/gui/CalculatorParameters.cpp
+    src/gui/CalculatorParametersDialog.hpp
+    src/gui/CalculatorParametersDialog.cpp
     src/gui/ThemeManager.hpp
     src/gui/ThemeManager.cpp
     src/ui/IconManager.hpp
@@ -1140,6 +1144,7 @@ if(CALANGO_BUILD_TESTS)
         src/gui/RunCommands.cpp
         src/gui/ScriptStaging.cpp
         src/gui/SettingsManager.cpp
+        src/gui/CalculatorParameters.cpp
         src/core/AseScriptGenerator.cpp
         src/core/GrapheneOxideBuilder.cpp
         src/core/Structure.cpp
@@ -1529,6 +1534,18 @@ if(CALANGO_BUILD_TESTS)
     add_test(NAME optics_silicon
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/optics_silicon_benchmark.py)
+
+    # Every test runs with its Calango config sandboxed into the build tree.
+    # SettingsManager mirrors QSettings to a JSON file at a fixed home-dir
+    # path; without this, any test that constructs a dialog whose code path
+    # calls SettingsManager::save() rewrites the DEVELOPER'S own
+    # ~/.calango/settings.json. APPEND, so tests that already declare their
+    # own ENVIRONMENT entries (materials_project_mp1434) keep them.
+    get_property(_calango_all_tests DIRECTORY PROPERTY TESTS)
+    if(_calango_all_tests)
+        set_property(TEST ${_calango_all_tests} APPEND PROPERTY ENVIRONMENT
+            "CALANGO_CONFIG_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-config")
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
