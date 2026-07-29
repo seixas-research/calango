@@ -35,11 +35,12 @@ protected:
     QString wizardTitle() const override;
     QString settingsHeader() const override { return tr("Cutoff Sweep"); }
     QWidget* buildSettingsPage() override;
-    /// GPAW only: the sweep drives GPAW's PW(ecut) directly; the
-    /// script-template engines would each need their own sweep script.
+    /// The plane-wave engines with a first-class sweep script: GPAW
+    /// (PW(ecut) per point) and VASP (ENCUT per point, one directory each).
     bool calculatorAllowed(core::CalculatorKind kind) const override
     {
-        return kind == core::CalculatorKind::Gpaw;
+        return kind == core::CalculatorKind::Gpaw
+            || kind == core::CalculatorKind::Vasp;
     }
     QString calculatorSettingsHeader() const override
     {

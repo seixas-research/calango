@@ -282,24 +282,30 @@ void PhononPlotWindow::writeCsv(const QString& caption,
         && !band.energies.front().empty()) {
         const auto& kpts = band.energies.front(); // single (non-spin) channel
         const std::size_t branches = kpts.front().size();
-        out << "# Phonon band structure (frequency in cm^-1)\n";
-        // High-symmetry point labels and their k-path positions.
-        out << "# high_symmetry_points:";
-        for (int i = 0; i < band.specialLabels.size()
-                 && static_cast<std::size_t>(i) < band.specialX.size(); ++i) {
-            QString label = band.specialLabels[i];
-            if (label == QLatin1String("G"))
-                label = QStringLiteral("Gamma");
-            out << ' ' << label << '@'
-                << QString::number(band.specialX[static_cast<std::size_t>(i)], 'f', 6);
-        }
-        out << '\n';
-        out << "k_distance";
+        // A CSV starts with its header row — no '#' comment lines. The
+        // high-symmetry labels ride along as a data column instead: empty
+        // for ordinary rows, "Gamma@<x>"-style markers where a special
+        // point sits, so nothing is lost to the standardization.
+        out << "k_distance,high_symmetry_label";
         for (std::size_t b = 0; b < branches; ++b)
             out << ",branch_" << (b + 1) << "_cm1";
         out << '\n';
+        const auto specialLabelAt = [&band](double x) {
+            for (int i = 0; i < band.specialLabels.size()
+                 && static_cast<std::size_t>(i) < band.specialX.size(); ++i) {
+                if (std::abs(band.specialX[static_cast<std::size_t>(i)] - x)
+                    < 1e-6) {
+                    QString label = band.specialLabels[i];
+                    if (label == QLatin1String("G"))
+                        label = QStringLiteral("Gamma");
+                    return label;
+                }
+            }
+            return QString();
+        };
         for (std::size_t k = 0; k < kpts.size() && k < band.x.size(); ++k) {
-            out << QString::number(band.x[k], 'f', 6);
+            out << QString::number(band.x[k], 'f', 6) << ','
+                << specialLabelAt(band.x[k]);
             for (std::size_t b = 0; b < branches && b < kpts[k].size(); ++b)
                 out << ',' << QString::number(kpts[k][b], 'f', 4);
             out << '\n';
@@ -308,7 +314,6 @@ void PhononPlotWindow::writeCsv(const QString& caption,
 
     // --- Phonon DOS: frequency + intensity ---------------------------------
     if (wantDos && dos.valid()) {
-        out << "# Phonon density of states\n";
         out << "frequency_cm1";
         for (const auto& [label, curve] : dos.projections) {
             (void)curve;

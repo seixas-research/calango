@@ -193,8 +193,8 @@ void RdfDialog::exportData()
     const QString pairA = elementACombo_->currentText();
     const QString pairB = elementBCombo_->currentText();
     if (csv) {
-        out << "# Calango radial distribution function, pair " << pairA << "-"
-            << pairB << ", averaged over " << lastFrameCount_ << " frame(s)\n";
+        // A CSV starts with its header row; the '#' provenance comments
+        // stay with the .dat flavour below, where they are the convention.
         out << "r_angstrom,g_r\n";
         for (std::size_t i = 0; i < lastResult_.r.size(); ++i)
             out << QString::number(lastResult_.r[i], 'f', 6) << ','

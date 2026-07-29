@@ -14,6 +14,7 @@
 
 #include <deque>
 #include <map>
+#include <set>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -137,6 +138,9 @@ private Q_SLOTS:
     void redo();
 
     void singlePointCalculation();
+    /// Workflow → "Add Workflow…": open a new node-based pipeline editor
+    /// seeded with the currently open structures as assignable materials.
+    void addWorkflow();
     /// Modules → Parameters Convergence → "Plane-wave Cutoff Convergence…":
     /// single points over an ascending cutoff list, judged against the run at
     /// the highest cutoff.
@@ -630,6 +634,11 @@ private:
     };
     std::map<int, ProcessRecord> processRecords_;
     int selectedProcessId_ = -1; ///< process whose data the Results tabs show
+    /// Workflow node jobs currently executing (each WorkflowWindow drives
+    /// one at a time, but several windows may run concurrently). Their
+    /// metrics.json is polled alongside the main window's own job, so the
+    /// Results tabs treat workflow-driven processes like standalone ones.
+    std::set<int> workflowRunningIds_;
 
     QTabBar* tabBar_ = nullptr;
     ViewportWidget* viewport_ = nullptr;

@@ -445,20 +445,22 @@ void PhononThermodynamicsDialog::exportCsv(bool entropy)
         return;
     }
     QTextStream out(&file);
-    out << "# Harmonic vibrational thermodynamics from the phonon DOS\n"
-        << "# zero_point_energy_eV," << result_.zeroPointEnergyEv << "\n";
+    // A CSV starts with its header row — no '#' comment lines. The zero-
+    // point energy used to be a comment; it rides as a constant column now,
+    // so the file still carries it without breaking standard readers.
     if (entropy) {
         // Cv rides with the entropy column: both are temperature derivatives
         // of the same curve, and a user plotting S almost always wants Cv too.
-        out << "temperature_K,S_vib_eV_per_K,Cv_eV_per_K\n";
+        out << "temperature_K,S_vib_eV_per_K,Cv_eV_per_K,zero_point_energy_eV\n";
         for (const auto& p : result_.points)
             out << p.temperatureK << ',' << p.entropyEvPerK << ','
-                << p.heatCapacityEvPerK << '\n';
+                << p.heatCapacityEvPerK << ',' << result_.zeroPointEnergyEv
+                << '\n';
     } else {
-        out << "temperature_K,U_vib_eV,F_vib_eV\n";
+        out << "temperature_K,U_vib_eV,F_vib_eV,zero_point_energy_eV\n";
         for (const auto& p : result_.points)
             out << p.temperatureK << ',' << p.internalEnergyEv << ','
-                << p.freeEnergyEv << '\n';
+                << p.freeEnergyEv << ',' << result_.zeroPointEnergyEv << '\n';
     }
 }
 

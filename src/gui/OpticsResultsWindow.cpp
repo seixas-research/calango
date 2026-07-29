@@ -400,7 +400,8 @@ void OpticsResultsWindow::exportCsv()
         return;
     }
     QTextStream out(&file);
-    out << "# Optical properties (direction " << label << ")\n";
+    // A CSV starts with its header row — the direction is in the suggested
+    // file name, not a '#' line a CSV reader trips over.
     out << "energy_eV,eps1,eps2,absorption_cm-1,reflectivity,n,k,loss";
     // The 2D columns are appended only for a sheet job, so a bulk export keeps
     // exactly the column set it always had.

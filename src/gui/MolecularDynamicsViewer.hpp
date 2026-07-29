@@ -9,21 +9,25 @@
 #include <vector>
 
 class QLabel;
-class QPushButton;
-class QSlider;
 class QTabWidget;
-class QTimer;
 
 namespace calango::gui {
 
-class ViewportWidget;
 class SeriesPlotWidget;
 
 /// Results → "Molecular Dynamics Viewer": the read-out for a completed MD run.
 ///
 /// It reads the `metrics.json` the generated script logs live (temperature,
 /// potential and kinetic energy, pressure, volume) and the saved trajectory,
-/// and presents them as time series plus a g(r) computed from a chosen frame.
+/// and presents them as time series plus a g(r) computed from the final
+/// frame.
+///
+/// Deliberately WITHOUT its own frame player: trajectory playback belongs to
+/// the main viewport's timeline, where every loaded trajectory is scrubbed
+/// and played. The host loads this run's frames (frames()) into a workspace
+/// tab, so one set of playback controls serves MD runs and file-loaded
+/// trajectories alike — the second slider this dialog used to carry fought
+/// the global one over the same viewport.
 ///
 /// The quantity that actually says whether the run was sound is the TOTAL
 /// energy: in NVE it should be conserved, and its drift is the integrator's
@@ -34,32 +38,32 @@ class MolecularDynamicsViewer : public QDialog {
     Q_OBJECT
 
 public:
-    /// `viewport` receives the scrubbed frames; null disables the player.
-    explicit MolecularDynamicsViewer(ViewportWidget* viewport,
-                                     QWidget* parent = nullptr);
-    ~MolecularDynamicsViewer() override;
+    explicit MolecularDynamicsViewer(QWidget* parent = nullptr);
 
     /// Load a finished MD job directory (metrics.json + trajectory). Returns
     /// false when neither is present.
     bool loadDirectory(const QString& directory);
 
+    /// The trajectory read from the job directory, for the host to open as
+    /// a scrubbable workspace tab on the main timeline. Empty when the run
+    /// kept no trajectory.
+    const std::vector<std::shared_ptr<core::Structure>>& frames() const
+    {
+        return frames_;
+    }
+
 private Q_SLOTS:
-    void showFrame(int index);
-    void togglePlay();
-    void advanceFrame();
     void recomputeRdf();
     void exportCsv();
     void exportImage();
 
 private:
     void buildUi();
-    void restoreViewport();
     /// Mean and RMS fluctuation of a series, the pair that says whether a
     /// thermostat is holding its setpoint.
     static void statistics(const std::vector<double>& values, double& mean,
                            double& rms);
 
-    ViewportWidget* viewport_ = nullptr;
     QString directory_;
 
     std::vector<double> time_;        ///< ps
@@ -70,7 +74,6 @@ private:
     std::vector<double> pressure_;    ///< GPa
     std::vector<double> volume_;      ///< Å³
     std::vector<std::shared_ptr<core::Structure>> frames_;
-    std::shared_ptr<const core::Structure> viewportStructureBefore_;
 
     QTabWidget* tabs_ = nullptr;
     SeriesPlotWidget* temperaturePlot_ = nullptr;
@@ -78,10 +81,6 @@ private:
     SeriesPlotWidget* pressurePlot_ = nullptr;
     SeriesPlotWidget* rdfPlot_ = nullptr;
     QLabel* summaryLabel_ = nullptr;
-    QLabel* frameLabel_ = nullptr;
-    QSlider* frameSlider_ = nullptr;
-    QPushButton* playButton_ = nullptr;
-    QTimer* timer_ = nullptr;
 };
 
 } // namespace calango::gui

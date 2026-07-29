@@ -327,9 +327,12 @@ void ConvexHullPlotWidget::exportData()
         return;
     }
     QTextStream out(&file);
-    out << "# Calango cluster-expansion formation-energy hull\n";
-    if (!axisSpecies_.isEmpty())
-        out << "# concentration axis: x(" << axisSpecies_ << ")\n";
+    // '#' comments only in the .dat flavour — a CSV starts with its header.
+    if (path.endsWith(QStringLiteral(".dat"), Qt::CaseInsensitive)) {
+        out << "# Calango cluster-expansion formation-energy hull\n";
+        if (!axisSpecies_.isEmpty())
+            out << "# concentration axis: x(" << axisSpecies_ << ")\n";
+    }
     out << "frame,formula,natoms,concentration,energy_per_atom_eV,"
            "formation_energy_eV_per_atom,energy_above_hull_eV_per_atom,on_hull\n";
     for (const auto& p : result_.points) {

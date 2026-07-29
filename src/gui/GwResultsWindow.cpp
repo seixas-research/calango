@@ -295,9 +295,8 @@ void GwResultsWindow::exportCsv()
         return;
     }
     QTextStream out(&file);
-    out << "# " << plainTextSummary().replace(QLatin1Char('\n'),
-                                              QStringLiteral("\n# "))
-        << '\n';
+    // A CSV starts with its header row — the run summary lives in the
+    // window and in gw.json, not as '#' lines a CSV reader trips over.
     out << "kpoint,band,eps_dft_eV,e_qp_eV,correction_eV\n";
 
     const auto dft = readMatrix(data_, "dft_eigenvalues_eV");

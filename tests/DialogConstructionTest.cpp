@@ -337,10 +337,12 @@ int main(int argc, char** argv)
         CutoffConvergenceWizard wizard;
         check(true, "constructs");
         auto* engine = wizard.findChild<QComboBox*>();
-        check(engine != nullptr && engine->count() == 1
+        check(engine != nullptr && engine->count() == 2
                   && engine->findData(static_cast<int>(
-                         calango::core::CalculatorKind::Gpaw)) == 0,
-              "offers exactly one engine, GPAW");
+                         calango::core::CalculatorKind::Gpaw)) == 0
+                  && engine->findData(static_cast<int>(
+                         calango::core::CalculatorKind::Vasp)) >= 0,
+              "offers GPAW (default) and VASP");
         // The preview is generated on entering the review stage or on a sweep
         // edit — drive the latter, as a user adjusting the stride would.
         const auto spins = wizard.findChildren<QDoubleSpinBox*>();
@@ -381,6 +383,17 @@ int main(int argc, char** argv)
                     && spin->maximum() == 2000.0 && spin->isVisibleTo(&wizard));
         check(!cutoffRowShown,
               "the calculator page hides the single-cutoff row");
+        // Selecting VASP swaps the sweep script onto ASE's Vasp calculator
+        // with ENCUT as the loop variable.
+        if (engine) {
+            engine->setCurrentIndex(engine->findData(
+                static_cast<int>(calango::core::CalculatorKind::Vasp)));
+            const QString vaspScript = wizard.script();
+            check(vaspScript.contains(
+                      QStringLiteral("atoms.calc.set(encut=float(ecut)"))
+                      && vaspScript.contains(QStringLiteral("istart=0")),
+                  "VASP sweeps ENCUT with fresh restarts per point");
+        }
     }
 
     // The K-points Convergence wizard is the cutoff sweep's sibling: GPAW
@@ -393,10 +406,12 @@ int main(int argc, char** argv)
         KpointsConvergenceWizard wizard;
         check(true, "constructs");
         auto* engine = wizard.findChild<QComboBox*>();
-        check(engine != nullptr && engine->count() == 1
+        check(engine != nullptr && engine->count() == 2
                   && engine->findData(static_cast<int>(
-                         calango::core::CalculatorKind::Gpaw)) == 0,
-              "offers exactly one engine, GPAW");
+                         calango::core::CalculatorKind::Gpaw)) == 0
+                  && engine->findData(static_cast<int>(
+                         calango::core::CalculatorKind::Vasp)) >= 0,
+              "offers GPAW (default) and VASP");
         // Drive a sweep control so the preview regenerates (see above).
         const auto spins = wizard.findChildren<QSpinBox*>();
         check(!spins.isEmpty(), "has sweep spin boxes");
@@ -431,6 +446,17 @@ int main(int argc, char** argv)
                       QStringLiteral("kpts={\"size\": tuple(kpts), "
                                      "\"gamma\": True}")),
                   "and checking it emits a Γ-centered mesh");
+        // Selecting VASP swaps the sweep script onto ASE's Vasp calculator
+        // with the mesh (and the Γ toggle) as KPOINTS keywords.
+        if (engine) {
+            engine->setCurrentIndex(engine->findData(
+                static_cast<int>(calango::core::CalculatorKind::Vasp)));
+            const QString vaspScript = wizard.script();
+            check(vaspScript.contains(
+                      QStringLiteral("atoms.calc.set(kpts=tuple(kpts)"))
+                      && vaspScript.contains(QStringLiteral("gamma=True")),
+                  "VASP sweeps KPOINTS, honoring the Γ toggle");
+        }
     }
 
     // Element-aware suggested defaults: a calculator_parameters.json in the

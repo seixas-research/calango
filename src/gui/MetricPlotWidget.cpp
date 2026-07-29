@@ -293,15 +293,12 @@ void MetricPlotWidget::exportData()
         return;
     }
     QTextStream out(&file);
-    out << "# Calango job " << spec_.quantity.toLower() << " series ("
-        << spec_.marker << " markers)\n";
     const bool withTarget = !spec_.csvTargetColumn.isEmpty() && hasTarget_;
-    if (withTarget)
-        out << "# setpoint: " << QString::number(target_, 'f', spec_.exportDecimals)
-            << ' ' << spec_.unit << '\n';
     const QString target =
         withTarget ? QString::number(target_, 'f', spec_.exportDecimals) : QString();
 
+    // A CSV starts with its header row and nothing else — '#' comment lines
+    // belong to the .dat convention (gnuplot) and break naive CSV readers.
     if (csv) {
         out << "step," << spec_.csvColumn;
         if (!spec_.csvTargetColumn.isEmpty())
@@ -315,6 +312,12 @@ void MetricPlotWidget::exportData()
             out << '\n';
         }
     } else {
+        out << "# Calango job " << spec_.quantity.toLower() << " series ("
+            << spec_.marker << " markers)\n";
+        if (withTarget)
+            out << "# setpoint: "
+                << QString::number(target_, 'f', spec_.exportDecimals) << ' '
+                << spec_.unit << '\n';
         out << "#     step " << QString::asprintf("%18s", qPrintable(spec_.csvColumn));
         if (!spec_.csvTargetColumn.isEmpty())
             out << QString::asprintf(" %15s", qPrintable(spec_.csvTargetColumn));

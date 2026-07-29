@@ -44,11 +44,12 @@ protected:
         return tr("k-Point Mesh Sweep");
     }
     QWidget* buildSettingsPage() override;
-    /// GPAW only, like the cutoff sweep: the generated script drives GPAW's
-    /// kpts= directly.
+    /// GPAW (kpts= per point) and VASP (KPOINTS per point via ASE's kpts +
+    /// gamma keywords, one directory each).
     bool calculatorAllowed(core::CalculatorKind kind) const override
     {
-        return kind == core::CalculatorKind::Gpaw;
+        return kind == core::CalculatorKind::Gpaw
+            || kind == core::CalculatorKind::Vasp;
     }
     QString calculatorSettingsHeader() const override
     {

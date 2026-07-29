@@ -114,7 +114,9 @@ private:
     QDoubleSpinBox* vaspEncutSpin_ = nullptr;
     QSpinBox* vaspKptSpins_[3] = {nullptr, nullptr, nullptr};
     QComboBox* vaspXcCombo_ = nullptr;
-    QDoubleSpinBox* vaspNbandsFactorSpin_ = nullptr;
+    /// Additional empty bands as % of occupied — engine-independent, feeds
+    /// GPAW's NSCF band count and VASP's LOPTICS NBANDS alike.
+    QSpinBox* emptyBandsSpin_ = nullptr;
     QFormLayout* responseForm_ = nullptr;
     QComboBox* baselineCombo_ = nullptr;
     QComboBox* vacuumAxisCombo_ = nullptr;

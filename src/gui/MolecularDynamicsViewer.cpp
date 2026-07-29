@@ -189,18 +189,12 @@ void SeriesPlotWidget::render(QPainter& painter, const QRectF& target) const
 
 // ---------------------------------------------------------------------------
 
-MolecularDynamicsViewer::MolecularDynamicsViewer(ViewportWidget* viewport,
-                                                 QWidget* parent)
-    : QDialog(parent), viewport_(viewport)
+MolecularDynamicsViewer::MolecularDynamicsViewer(QWidget* parent)
+    : QDialog(parent)
 {
     setWindowTitle(tr("Molecular Dynamics Viewer"));
     resize(880, 640);
     buildUi();
-}
-
-MolecularDynamicsViewer::~MolecularDynamicsViewer()
-{
-    restoreViewport();
 }
 
 void MolecularDynamicsViewer::buildUi()
@@ -223,37 +217,17 @@ void MolecularDynamicsViewer::buildUi()
     tabs_->addTab(rdfPlot_, tr("g(r)"));
     layout->addWidget(tabs_, 1);
 
-    // -- Frame player -------------------------------------------------------
-    auto* playerRow = new QHBoxLayout;
-    playButton_ = new QPushButton(tr("Play"), this);
-    playButton_->setEnabled(false);
-    playerRow->addWidget(playButton_);
-    auto* stepBack = new QPushButton(QStringLiteral("‹"), this);
-    auto* stepForward = new QPushButton(QStringLiteral("›"), this);
-    stepBack->setToolTip(tr("Previous frame"));
-    stepForward->setToolTip(tr("Next frame"));
-    playerRow->addWidget(stepBack);
-    playerRow->addWidget(stepForward);
-    frameSlider_ = new QSlider(Qt::Horizontal, this);
-    frameSlider_->setEnabled(false);
-    playerRow->addWidget(frameSlider_, 1);
-    frameLabel_ = new QLabel(tr("no trajectory"), this);
-    playerRow->addWidget(frameLabel_);
-    layout->addLayout(playerRow);
-
-    connect(playButton_, &QPushButton::clicked, this,
-            &MolecularDynamicsViewer::togglePlay);
-    connect(frameSlider_, &QSlider::valueChanged, this,
-            &MolecularDynamicsViewer::showFrame);
-    connect(stepBack, &QPushButton::clicked, this,
-            [this] { frameSlider_->setValue(frameSlider_->value() - 1); });
-    connect(stepForward, &QPushButton::clicked, this,
-            [this] { frameSlider_->setValue(frameSlider_->value() + 1); });
-
-    timer_ = new QTimer(this);
-    timer_->setInterval(60);
-    connect(timer_, &QTimer::timeout, this,
-            &MolecularDynamicsViewer::advanceFrame);
+    // No frame player here: the run's trajectory is opened by the host as a
+    // workspace tab, and the main viewport's timeline (slider + play/pause)
+    // scrubs it — one set of playback controls for every trajectory, rather
+    // than a second slider in this dialog fighting the global one over the
+    // same viewport.
+    auto* playbackNote = new QLabel(
+        tr("Trajectory playback: use the main viewport's timeline — this "
+           "run's frames are open there as a scrubbable tab."),
+        this);
+    playbackNote->setWordWrap(true);
+    layout->addWidget(playbackNote);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     auto* csvButton =
@@ -357,15 +331,6 @@ bool MolecularDynamicsViewer::loadDirectory(const QString& directory)
             tabs_->setTabEnabled(2, false);
     }
 
-    // -- Frame player --------------------------------------------------------
-    if (!frames_.empty() && viewport_) {
-        frameSlider_->setRange(0, static_cast<int>(frames_.size()) - 1);
-        frameSlider_->setEnabled(frames_.size() > 1);
-        playButton_->setEnabled(frames_.size() > 1);
-        viewportStructureBefore_ = viewport_->structure();
-        frameSlider_->setValue(0);
-        showFrame(0);
-    }
     recomputeRdf();
 
     // -- Summary -------------------------------------------------------------
@@ -425,48 +390,6 @@ void MolecularDynamicsViewer::recomputeRdf()
                       tr("r (Å)"), tr("g(r)"));
 }
 
-void MolecularDynamicsViewer::showFrame(int index)
-{
-    if (index < 0 || index >= static_cast<int>(frames_.size()))
-        return;
-    frameLabel_->setText(tr("frame %1 / %2")
-                             .arg(index + 1)
-                             .arg(static_cast<int>(frames_.size())));
-    // frameCamera=false: re-framing on every step would make the structure
-    // jump instead of showing the dynamics.
-    if (viewport_)
-        viewport_->setStructure(frames_[static_cast<std::size_t>(index)], false);
-}
-
-void MolecularDynamicsViewer::togglePlay()
-{
-    if (timer_->isActive()) {
-        timer_->stop();
-        playButton_->setText(tr("Play"));
-    } else {
-        timer_->start();
-        playButton_->setText(tr("Pause"));
-    }
-}
-
-void MolecularDynamicsViewer::advanceFrame()
-{
-    if (frames_.empty())
-        return;
-    const int next = (frameSlider_->value() + 1)
-        % static_cast<int>(frames_.size());
-    frameSlider_->setValue(next);
-}
-
-void MolecularDynamicsViewer::restoreViewport()
-{
-    if (timer_)
-        timer_->stop();
-    if (viewport_ && viewportStructureBefore_) {
-        viewport_->setStructure(viewportStructureBefore_, false);
-        viewportStructureBefore_.reset();
-    }
-}
 
 void MolecularDynamicsViewer::exportCsv()
 {
@@ -483,8 +406,8 @@ void MolecularDynamicsViewer::exportCsv()
         return;
     }
     QTextStream out(&file);
-    out << "# Molecular dynamics time series\n"
-        << "time_ps,temperature_K,E_pot_eV,E_kin_eV,E_tot_eV";
+    // A CSV starts with its header row — no '#' comment lines.
+    out << "time_ps,temperature_K,E_pot_eV,E_kin_eV,E_tot_eV";
     if (!pressure_.empty())
         out << ",pressure_GPa";
     if (!volume_.empty())

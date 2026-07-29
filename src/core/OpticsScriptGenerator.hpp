@@ -96,11 +96,15 @@ struct OpticsConfig {
     bool dirY = true;           ///< εyy
     bool dirZ = true;           ///< εzz
 
-    /// VASP only: NBANDS for the LOPTICS step, as a multiple of the SCF
-    /// run's own band count. LOPTICS sums interband transitions into empty
-    /// states and VASP's default NBANDS barely covers occupation; ~3× is
-    /// the VASP wiki's working rule for a converged spectrum tail.
-    double vaspNbandsFactor = 3.0;
+    /// Additional empty bands for the response step, as a percentage of the
+    /// occupied bands: 100 allocates as many empty bands as occupied ones,
+    /// 200 twice as many. Engine-independent — GPAW's fixed-density NSCF and
+    /// VASP's LOPTICS NBANDS both consume it. The dielectric function sums
+    /// interband transitions INTO these states, so the percentage bounds the
+    /// photon energy up to which the spectrum's tail is trustworthy. A small
+    /// floor of empty states is always kept, or a tiny cell would truncate
+    /// the sum to nothing.
+    int emptyBandsPercent = 200;
 };
 
 /// Standalone run.py: loads the baseline ground state, runs a fixed-density

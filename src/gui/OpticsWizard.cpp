@@ -140,24 +140,11 @@ QWidget* OpticsWizard::buildSettingsPage()
            "semilocal ALGO=Exact path does not apply the exact-exchange "
            "operator to the new empty states."));
     vaspForm->addRow(tr("XC functional:"), vaspXcCombo_);
-    vaspNbandsFactorSpin_ = new QDoubleSpinBox(vaspGroup_);
-    vaspNbandsFactorSpin_->setRange(1.5, 10.0);
-    vaspNbandsFactorSpin_->setDecimals(1);
-    vaspNbandsFactorSpin_->setSingleStep(0.5);
-    vaspNbandsFactorSpin_->setValue(3.0);
-    vaspNbandsFactorSpin_->setToolTip(
-        tr("NBANDS for the LOPTICS step, as a multiple of the SCF run's own "
-           "band count. The dielectric function sums transitions into empty "
-           "states; ~3× is the VASP wiki's working rule, more for a "
-           "converged high-energy tail."));
-    vaspForm->addRow(tr("Empty-band factor (NBANDS):"), vaspNbandsFactorSpin_);
     layout->addWidget(vaspGroup_);
 
     connect(vaspEncutSpin_, &QDoubleSpinBox::valueChanged, this,
             [this] { refreshPreview(); });
     connect(vaspXcCombo_, &QComboBox::currentIndexChanged, this,
-            [this] { refreshPreview(); });
-    connect(vaspNbandsFactorSpin_, &QDoubleSpinBox::valueChanged, this,
             [this] { refreshPreview(); });
 
     if (twoDimensional_) {
@@ -297,6 +284,24 @@ QWidget* OpticsWizard::buildSettingsPage()
            "Raise it to resolve narrow structure; a few hundred points is "
            "usually enough for an overview spectrum."));
     form->addRow(tr("Number of points:"), npointsSpin_);
+
+    // Engine-independent: GPAW's fixed-density NSCF and VASP's LOPTICS
+    // NBANDS both size their empty-state set from this.
+    emptyBandsSpin_ = new QSpinBox(page);
+    emptyBandsSpin_->setRange(25, 1000);
+    emptyBandsSpin_->setSingleStep(25);
+    emptyBandsSpin_->setValue(200);
+    emptyBandsSpin_->setSuffix(tr(" %"));
+    emptyBandsSpin_->setToolTip(
+        tr("Additional empty bands as a percentage of the occupied bands: "
+           "100 % allocates as many empty bands as occupied ones. The "
+           "dielectric function sums interband transitions INTO these "
+           "states, so this bounds the photon energy up to which the "
+           "spectrum's high-energy tail is converged. A floor of 12 empty "
+           "bands is always kept."));
+    form->addRow(tr("Additional empty bands:"), emptyBandsSpin_);
+    connect(emptyBandsSpin_, &QSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
 
     // The three diagonal components εxx / εyy / εzz. Off-diagonal terms are not
     // requested here, so this covers the full response of an orthorhombic (or
@@ -514,8 +519,8 @@ QString OpticsWizard::generateScript() const
         // The restart step reads the density and wavefunctions from disk.
         cfg.calculator.vaspLcharg = true;
         cfg.calculator.vaspLwave = true;
-        cfg.vaspNbandsFactor = vaspNbandsFactorSpin_->value();
     }
+    cfg.emptyBandsPercent = emptyBandsSpin_->value();
     cfg.broadeningEv = broadeningSpin_->value();
     cfg.omegaMinEv = omegaMinSpin_->value();
     cfg.omegaMaxEv = omegaMaxSpin_->value();

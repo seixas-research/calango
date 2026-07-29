@@ -149,10 +149,12 @@ void DistributionDialog::exportData()
         return;
     }
     QTextStream out(&file);
-    out << "# Calango " << (lastWasAngles_ ? "bond angle" : "bond length")
-        << " distribution, species " << elementACombo_->currentText() << "-"
-        << elementBCombo_->currentText() << ", cutoff "
-        << QString::number(cutoffSpin_->value(), 'f', 2) << " A\n";
+    // '#' comments only in the .dat flavour — a CSV starts with its header.
+    if (!csv)
+        out << "# Calango " << (lastWasAngles_ ? "bond angle" : "bond length")
+            << " distribution, species " << elementACombo_->currentText()
+            << "-" << elementBCombo_->currentText() << ", cutoff "
+            << QString::number(cutoffSpin_->value(), 'f', 2) << " A\n";
     if (csv) {
         out << (lastWasAngles_ ? "angle_deg,count\n" : "r_angstrom,count\n");
         for (std::size_t i = 0; i < lastResult_.x.size(); ++i)

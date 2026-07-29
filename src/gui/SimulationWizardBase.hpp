@@ -97,6 +97,20 @@ public:
     /// structure keep their calculatorElements() override as the authority.
     void setStructureElements(const QStringList& symbols);
 
+    /// Workflow-canvas mode: the wizard CONFIGURES a process node rather
+    /// than launching a job. The review stage's "Run (Local)" button reads
+    /// "Save process node" — accepting hands the generated script back to
+    /// the canvas, nothing executes — and "Run (Remote)" is withdrawn,
+    /// because queueing is the canvas's concern, not the wizard's. Call
+    /// after construction, before exec().
+    void enterWorkflowMode();
+
+    /// Preselect the engine combo (no-op if the kind isn't offered). Public
+    /// because hosts other than the wizard's own pages legitimately choose
+    /// the engine — the workflow canvas opens a node's wizard on the engine
+    /// the node already shows.
+    void selectCalculator(core::CalculatorKind kind);
+
 protected:
     explicit SimulationWizardBase(QWidget* parent = nullptr);
 
@@ -264,9 +278,6 @@ protected:
     /// Stages 2–3; the subclass adds its task fields to build the final config.
     core::CalculatorConfig baseCalculatorConfig() const;
     core::CalculatorKind selectedCalculator() const;
-    /// Preselect the engine combo (no-op if the kind isn't offered). Call after
-    /// buildUi() to open a wizard on a specific default engine.
-    void selectCalculator(core::CalculatorKind kind);
 
 protected Q_SLOTS:
     void refreshPreview();

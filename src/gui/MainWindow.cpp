@@ -47,6 +47,7 @@
 #include "gui/ConvergenceResultsWindow.hpp"
 #include "gui/CutoffConvergenceWizard.hpp"
 #include "gui/KpointsConvergenceWizard.hpp"
+#include "gui/WorkflowWindow.hpp"
 #include "gui/EnginePresets.hpp"
 #include "gui/SinglePointWizard.hpp"
 #include "gui/MonteCarloWizard.hpp"
@@ -1204,6 +1205,14 @@ void MainWindow::createMenusAndDocks()
                         "meshes; energy per atom and maximum force plotted "
                         "against the mesh density, referenced to the densest "
                         "one"));
+
+    // ----- Workflow: node-based simulation pipelines ------------------------
+    QMenu* workflowMenu = menuBar()->addMenu(tr("&Workflow"));
+    workflowMenu
+        ->addAction(tr("&Add Workflow…"), this, &MainWindow::addWorkflow)
+        ->setToolTip(tr("A node-based pipeline editor: chain processes "
+                        "(Geometry Optimization → Single-Point → …) so each "
+                        "one runs on its parent's results automatically"));
 
     // Help trails the menu bar: online resources first, About last (as is
     // conventional). New documentation/support links belong in kHelpLinks.
@@ -3759,7 +3768,7 @@ void MainWindow::openBandResults(const QString& directory)
 
 void MainWindow::openMolecularDynamicsResults(const QString& directory)
 {
-    auto* viewer = new MolecularDynamicsViewer(viewport_, this);
+    auto* viewer = new MolecularDynamicsViewer(this);
     viewer->setAttribute(Qt::WA_DeleteOnClose);
     if (!viewer->loadDirectory(directory)) {
         delete viewer;
@@ -3767,6 +3776,34 @@ void MainWindow::openMolecularDynamicsResults(const QString& directory)
             this, tr("Molecular Dynamics Viewer"),
             tr("No MD metrics or trajectory found in %1.").arg(directory));
         return;
+    }
+
+    // Playback lives on the main viewport's timeline: the run's frames open
+    // as a scrubbable workspace tab, and the global slider + play/pause
+    // drive the 3D rendering — the viewer itself only analyzes. The tab is
+    // labeled by job directory so re-opening the same results re-focuses it
+    // instead of stacking copies.
+    if (!viewer->frames().empty()) {
+        const QString label = tr("%1 — MD trajectory")
+                                  .arg(QFileInfo(directory).fileName());
+        int existing = -1;
+        for (std::size_t i = 0; i < documents_.size(); ++i)
+            if (documents_[i]->fileName == label) {
+                existing = static_cast<int>(i);
+                break;
+            }
+        if (existing >= 0) {
+            tabBar_->setCurrentIndex(existing);
+        } else {
+            const auto& frames = viewer->frames();
+            const int tab = addDocument(
+                std::make_shared<core::Structure>(*frames.front()), label,
+                frames, tr("Molecular Dynamics"));
+            tabBar_->setCurrentIndex(tab);
+            // A finished run is read from its end; land the playhead there.
+            showFinalFrame(documents_[static_cast<std::size_t>(tab)].get());
+            isDirty_ = true;
+        }
     }
     viewer->show();
 }
@@ -5962,6 +5999,59 @@ bool MainWindow::prepareSimulation(const QString& title)
     return true;
 }
 
+void MainWindow::addWorkflow()
+{
+    // Every open document is an assignable material; snapshot name +
+    // structure so the workflow keeps working if tabs close afterwards.
+    QList<QPair<QString, std::shared_ptr<const core::Structure>>> materials;
+    for (const auto& doc : documents_)
+        if (doc && doc->structure && !doc->structure->empty())
+            materials.append({doc->fileName, doc->structure});
+    // The global Processes panel rides along: every dispatched node shows
+    // up there (Queued → Running → Completed/Failed) with its directory, so
+    // "Load Result" works on workflow jobs like on any wizard run.
+    auto* window = new WorkflowWindow(
+        materials,
+        [this](core::CalculatorKind kind) { return pythonForEngine(kind); },
+        processPanel_, this);
+
+    // Results-panel integration: a workflow node's job is a process like any
+    // other. Register its record and selector entry when it starts, poll its
+    // metrics.json while it runs, finalize and persist when it ends — the
+    // same lifecycle runScript()/onJobFinished() give a standalone job.
+    connect(window, &WorkflowWindow::nodeStarted, this,
+            [this](int id, const QString& label, const QString& directory) {
+                ProcessRecord record;
+                record.label = label;
+                record.directory = directory;
+                processRecords_[id] = std::move(record);
+                addProcessToSelector(id, label);
+                workflowRunningIds_.insert(id);
+                if (!metricsTimer_->isActive())
+                    metricsTimer_->start();
+            });
+    connect(window, &WorkflowWindow::nodeFinished, this,
+            [this](int id, bool) {
+                workflowRunningIds_.erase(id);
+                if (auto it = processRecords_.find(id);
+                    it != processRecords_.end()
+                    && !it->second.directory.isEmpty()) {
+                    // Final read so the last steps are captured, then persist
+                    // like any finished process, and refresh the plots if
+                    // this is the process the Results tabs are showing.
+                    readMetricsJson(it->second.directory, it->second);
+                    writeProcessMetrics(id);
+                    if (id == selectedProcessId_)
+                        syncResultsToProcess(id);
+                }
+                if (workflowRunningIds_.empty() && currentTaskId_ < 0)
+                    metricsTimer_->stop();
+            });
+
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    window->show();
+}
+
 void MainWindow::singlePointCalculation()
 {
     if (!prepareSimulation(tr("Single-point Calculation")))
@@ -6350,12 +6440,28 @@ bool MainWindow::readMetricsJson(const QString& directory,
 
 void MainWindow::pollLiveMetrics()
 {
-    auto it = processRecords_.find(currentTaskId_);
-    if (it == processRecords_.end() || it->second.directory.isEmpty())
-        return;
-    if (!readMetricsJson(it->second.directory, it->second))
-        return;
-    if (currentTaskId_ != selectedProcessId_)
+    // Every live job feeds its record: the main window's own run plus any
+    // workflow-driven node jobs. Only the SELECTED process repaints the
+    // plots, but the others' records still accumulate, so switching the
+    // Results selector to a workflow process mid-run shows its history.
+    std::vector<int> liveIds;
+    if (currentTaskId_ >= 0)
+        liveIds.push_back(currentTaskId_);
+    liveIds.insert(liveIds.end(), workflowRunningIds_.begin(),
+                   workflowRunningIds_.end());
+
+    auto it = processRecords_.end();
+    for (int id : liveIds) {
+        auto record = processRecords_.find(id);
+        if (record == processRecords_.end()
+            || record->second.directory.isEmpty())
+            continue;
+        if (!readMetricsJson(record->second.directory, record->second))
+            continue;
+        if (id == selectedProcessId_)
+            it = record;
+    }
+    if (it == processRecords_.end())
         return;
     // Repaint the four metric plots + progress bar from the freshly-read data.
     const ProcessRecord& r = it->second;
@@ -6661,7 +6767,10 @@ void MainWindow::onRemoteResultsReady(const QString& localDir)
 
 void MainWindow::onJobFinished(int exitCode, bool crashed)
 {
-    metricsTimer_->stop();
+    // The timer also serves any workflow node still executing — it only
+    // rests when nothing at all is live.
+    if (workflowRunningIds_.empty())
+        metricsTimer_->stop();
     const bool failed = crashed || exitCode != 0;
     if (currentTaskId_ >= 0) {
         processPanel_->setTaskStatus(currentTaskId_,

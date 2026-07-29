@@ -319,14 +319,14 @@ void SpectralHeatmapWidget::exportData(QWidget* dialogParent)
         return;
     }
     QTextStream out(&file);
-    out << "# Calango effective band structure — spectral function A(k, E)\n";
-    out << "# Popescu-Zunger unfolding; sigma = " << options_.sigma << " eV";
-    out << (shiftFermi_ ? ", energies relative to E_F\n"
-                        : ", absolute energies\n");
-    out << "# E_F = " << QString::number(fermi_, 'f', 6) << " eV\n";
+    // A CSV starts with its header row — no '#' comment lines. Whether the
+    // energies are Fermi-relative is load-bearing, so it moved into the
+    // column NAME rather than being dropped with the comments.
     // Long format: one row per (k, E) cell. Wide format would need one column
     // per k-point, which spreadsheets cap well below a typical path length.
-    out << "path_coordinate,energy_eV,intensity\n";
+    out << (shiftFermi_
+                ? "path_coordinate,energy_minus_ef_eV,intensity\n"
+                : "path_coordinate,energy_eV,intensity\n");
     for (std::size_t x = 0; x < spectral_.intensity.size(); ++x) {
         for (std::size_t y = 0; y < spectral_.energies.size(); ++y) {
             out << QString::number(spectral_.pathCoordinates[x], 'f', 6) << ','

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.71
+    VERSION 26.7.72
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -477,6 +477,8 @@ qt_add_executable(calango
     src/gui/KpointsConvergenceWizard.cpp
     src/gui/ConvergenceResultsWindow.hpp
     src/gui/ConvergenceResultsWindow.cpp
+    src/gui/WorkflowWindow.hpp
+    src/gui/WorkflowWindow.cpp
     src/gui/RandomNoiseWizard.hpp
     src/gui/RandomNoiseWizard.cpp
     src/gui/CddWizard.hpp
@@ -1165,6 +1167,73 @@ if(CALANGO_BUILD_TESTS)
     target_link_libraries(calango_dialog_test
         PRIVATE Qt6::Widgets Qt6::OpenGL pybind11::embed)
     add_test(NAME dialog_construction COMMAND calango_dialog_test)
+
+    # Workflow pipeline validation on silicon: two linked nodes (geometry
+    # optimization with cell relaxation → phonon) sent to processes for
+    # real, with Lennard-Jones so the ASE runs finish in seconds. Pins the
+    # Waiting/Running/Done lifecycle and that the relaxed structure flows
+    # along the link into the phonon node. Self-skips without ASE.
+    qt_add_executable(calango_workflow_si_test
+        tests/WorkflowSiTest.cpp
+        src/gui/WorkflowWindow.cpp
+        src/gui/SimulationWizardBase.cpp
+        src/gui/SinglePointWizard.cpp
+        src/gui/GeometryOptimizationWizard.cpp
+        src/gui/MolecularDynamicsWizard.cpp
+        src/gui/PhononWizard.cpp
+        src/gui/GeometryConstraintsDialog.cpp
+        src/gui/EmbeddedKPathEditor.cpp
+        src/gui/BrillouinZoneWidget.cpp
+        src/gui/BrillouinZoneView.cpp
+        src/gui/BrillouinZoneStyleDialog.cpp
+        src/ui/IconManager.cpp
+        src/gui/ThemeManager.cpp
+        src/gui/ProcessManagerPanel.cpp
+        src/render/Camera.cpp
+        src/core/BrillouinZone.cpp
+        src/core/KPath.cpp
+        src/gui/GpawElectronicRows.cpp
+        src/gui/HubbardParametersDialog.cpp
+        src/gui/CondaEnvs.cpp
+        src/gui/EnginePresets.cpp
+        src/gui/PythonHighlighter.cpp
+        src/gui/RunCommands.cpp
+        src/gui/ScriptStaging.cpp
+        src/gui/SettingsManager.cpp
+        src/gui/CalculatorParameters.cpp
+        src/gui/GuiUtils.cpp
+        src/gui/OverlayModel.cpp
+        src/render/ColorMap.cpp
+        src/render/ShaderProfile.cpp
+        src/core/VolumetricData.cpp
+        src/core/AseScriptGenerator.cpp
+        src/core/PhononScriptGenerator.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/core/PdbxFile.cpp
+        src/python_bridge/AseBridge.cpp
+        src/python_bridge/PythonEngine.cpp
+        src/jobs/JobRunner.cpp
+    )
+    target_include_directories(calango_workflow_si_test PRIVATE src
+        "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_compile_definitions(calango_workflow_si_test PRIVATE
+        CALANGO_VERSION="${PROJECT_VERSION}"
+        # Without this the embedded engine cannot name its interpreter and
+        # the test's job-launching python resolves to nonsense.
+        CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}"
+        QT_NO_KEYWORDS)
+    target_link_libraries(calango_workflow_si_test
+        PRIVATE Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg pybind11::embed)
+    if(APPLE)
+        target_link_libraries(calango_workflow_si_test
+            PRIVATE "-framework OpenGL")
+    else()
+        target_link_libraries(calango_workflow_si_test PRIVATE OpenGL::GL)
+    endif()
+    add_test(NAME workflow_si_pipeline COMMAND calango_workflow_si_test)
+    set_tests_properties(workflow_si_pipeline PROPERTIES TIMEOUT 900)
 
     # Theme-adaptive icons: that a Light-mode glyph is dark (the white-on-white
     # bug) and that a bound icon is re-tinted when the theme changes. Checks

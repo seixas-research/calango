@@ -1946,6 +1946,9 @@ int main(int argc, char** argv)
                       "loads the baseline ground state");
         checkContains(script, "gs.fixed_density(",
                       "evaluates the response at fixed density");
+        checkContains(script,
+                      "n_empty = max(int(round(n_occ * 200 / 100.0)), 12)",
+                      "empty bands sized as a percentage of the occupied");
         // The whole point of the feature: a self-consistent cycle inside the
         // optics job would produce a spectrum from a DIFFERENT SCF solution
         // than the one the user inspected, with no visible sign of it.
@@ -2082,8 +2085,12 @@ int main(int argc, char** argv)
                       "the broadening maps onto CSHIFT");
         checkContains(script, "nedos=2400",
                       "the frequency-point count maps onto NEDOS");
-        checkContains(script, "params[\"nbands\"] = int(round(3 * nbands_scf))",
-                      "NBANDS enlarged from the SCF band count");
+        checkContains(script,
+                      "n_empty = max(int(round(n_occ * 200 / 100.0)), 12)",
+                      "empty bands sized as a percentage of the occupied");
+        checkContains(script,
+                      "params[\"nbands\"] = max(n_occ + n_empty, nbands_scf)",
+                      "NBANDS = occupied + empty, never below the SCF's own");
         checkContains(script, "dielectricfunction",
                       "reads ε(ω) back from vasprun.xml");
         checkContains(script, "\"density\" in (candidate.get(\"comment\")",

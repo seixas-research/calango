@@ -748,8 +748,8 @@ void ConvergenceResultsWindow::exportCsv(Quantity quantity)
         return;
     }
     QTextStream out(&file);
-    out << "# " << words.windowTitle << " (reference " << referenceLabel_
-        << ")\n";
+    // A CSV starts with its header row — the reference is recoverable from
+    // the data itself (the row whose deltas are zero).
     out << words.csvXColumn;
     // A mesh is three numbers, not one — the sweep index alone would hide
     // the pinned axes of a slab sweep.

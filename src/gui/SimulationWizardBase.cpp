@@ -1655,6 +1655,25 @@ void SimulationWizardBase::updateCalculatorEnabled()
     // so a suggestion lands in controls already shaped for this engine.
     applySuggestedParameters();
     updateCalculatorExtras(kind);
+    // The generated script is a function of the engine, so switching it
+    // must regenerate the preview — otherwise script() serves the previous
+    // engine's text until some other control happens to change. Guarded:
+    // this also runs during buildUi(), before the review page exists.
+    if (preview_)
+        refreshPreview();
+}
+
+void SimulationWizardBase::enterWorkflowMode()
+{
+    if (runLocalButton_) {
+        runLocalButton_->setText(tr("Save process node"));
+        runLocalButton_->setToolTip(
+            tr("Commit this configuration to the workflow node. Nothing "
+               "runs now — execution happens when the workflow is sent to "
+               "processes."));
+    }
+    if (runRemoteButton_)
+        runRemoteButton_->hide();
 }
 
 void SimulationWizardBase::setStructureElements(const QStringList& symbols)

@@ -179,9 +179,11 @@ void XrdDialog::exportCurve()
         return;
     }
     QTextStream out(&file);
-    out << "# Calango simulated XRD (Debye), lambda "
-        << QString::number(wavelength(), 'f', 5) << " A, form factors "
-        << QString::fromStdString(lastResult_.method) << "\n";
+    // '#' comments only in the .dat flavour — a CSV starts with its header.
+    if (!csv)
+        out << "# Calango simulated XRD (Debye), lambda "
+            << QString::number(wavelength(), 'f', 5) << " A, form factors "
+            << QString::fromStdString(lastResult_.method) << "\n";
     if (csv) {
         out << "two_theta_deg,intensity\n";
         for (std::size_t i = 0; i < lastResult_.twoTheta.size(); ++i)
@@ -237,8 +239,10 @@ void XrdDialog::exportPeaks()
         return;
     }
     QTextStream out(&file);
-    out << "# Calango simulated XRD peaks, lambda "
-        << QString::number(wavelength(), 'f', 5) << " A\n";
+    // '#' comments only in the .dat flavour — a CSV starts with its header.
+    if (!csv)
+        out << "# Calango simulated XRD peaks, lambda "
+            << QString::number(wavelength(), 'f', 5) << " A\n";
     if (csv) {
         out << "two_theta_deg,intensity,d_angstrom\n";
         for (const Peak& peak : peaks)
