@@ -25,12 +25,14 @@ class ViewportWidget;
 /// total minimization spread Ω_tot = Ω_I + Ω_D̃, plus the localization
 /// functional (the trial-projection overlap metric).
 ///
-/// Post-processing actions:
-///   * per-orbital checkboxes toggle the real-space isosurface ψ_n(r) of each
-///     Wannier orbital directly onto the MAIN 3D viewport (each in its own
-///     color), so they overlay the atomic structure;
-///   * "Wannier Interpolation…" opens a setup dialog for interpolated band
-///     structure + PDOS, whose job is emitted via runRequested().
+/// Per-orbital checkboxes toggle the real-space isosurface ψ_n(r) of each
+/// Wannier orbital directly onto the MAIN 3D viewport (each in its own
+/// color), so they overlay the atomic structure.
+///
+/// Purely a read-out: the Wannier post-processes that CONSUME this run
+/// (Wannier Interpolation, Fermi Surface, Topological Charge) are standalone
+/// modules under Electronics, each with its own completed-MLWF prerequisite
+/// check — they no longer launch from here.
 class MlwfViewer : public QDialog {
     Q_OBJECT
 
@@ -43,20 +45,8 @@ public:
     /// per-orbital cubes are resolved relative to the JSON's directory.
     void loadResults(const QString& jsonPath);
 
-Q_SIGNALS:
-    /// Generated band-interpolation script + a task label; the host stages and
-    /// runs it, then opens the band viewer on the resulting bands.json.
-    void runRequested(const QString& script, const QString& label);
-
 private Q_SLOTS:
     void onOrbitalToggled(QTableWidgetItem* item);
-    void openInterpolationDialog();
-    /// "Fermi Surface…": interpolate E_n(k) onto a dense 3D grid and
-    /// extract the E = E_F sheets.
-    void openFermiSurfaceDialog();
-    /// "Topological Invariants…": Chern number and Z2 index from the
-    /// hybrid Wannier centre flow.
-    void openTopologyDialog();
 
 private:
     /// Rebuild the combined viewport overlay from the currently checked
@@ -74,7 +64,6 @@ private:
     QTableWidget* table_ = nullptr;
     QLabel* totalSpreadLabel_ = nullptr;
     QLabel* functionalLabel_ = nullptr;
-    QPushButton* bandsButton_ = nullptr;
 };
 
 } // namespace calango::gui

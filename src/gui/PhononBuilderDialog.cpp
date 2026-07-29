@@ -10,6 +10,7 @@
 #include <QDialogButtonBox>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -92,11 +93,27 @@ PhononBuilderDialog::PhononBuilderDialog(
                               QStringLiteral("large")});
     maceSizeCombo_->setCurrentIndex(1);
 
-    maceModelPathEdit_ = new QLineEdit(this);
-    maceModelPathEdit_->setPlaceholderText(tr("path/to/model.model or .pt"));
+    maceDispersionCheck_ = new QCheckBox(tr("Dispersion"), this);
+    maceDispersionCheck_->setChecked(false);
+    maceDispersionCheck_->setToolTip(
+        tr("mace_mp(dispersion=True): add the D3(BJ) van der Waals correction "
+           "the MACE-MP-0 foundation model ships. Needs the torch-dftd "
+           "package in the job environment."));
+
+    // Custom checkpoints: a dropdown over the ML potentials directory
+    // (Preferences), editable for hand-typed paths, Browse… for elsewhere.
+    maceModelFileCombo_ = new QComboBox(this);
+    maceModelFileCombo_->setEditable(true);
+    maceModelFileCombo_->lineEdit()->setPlaceholderText(
+        tr("path/to/model.model or .pt"));
+    for (const QString& path : SettingsManager::mlModelFiles())
+        maceModelFileCombo_->addItem(QFileInfo(path).fileName(), path);
+    maceModelFileCombo_->setCurrentIndex(-1);
     maceBrowseButton_ = new QPushButton(tr("Browse…"), this);
-    auto* macePathRow = new QHBoxLayout;
-    macePathRow->addWidget(maceModelPathEdit_, 1);
+    maceModelFileRow_ = new QWidget(this);
+    auto* macePathRow = new QHBoxLayout(maceModelFileRow_);
+    macePathRow->setContentsMargins(0, 0, 0, 0);
+    macePathRow->addWidget(maceModelFileCombo_, 1);
     macePathRow->addWidget(maceBrowseButton_);
     connect(maceBrowseButton_, &QPushButton::clicked,
             this, &PhononBuilderDialog::browseMaceModel);
@@ -110,13 +127,21 @@ PhononBuilderDialog::PhononBuilderDialog(
     bandPointsSpin_->setValue(100);
     bandPointsSpin_->setEnabled(periodic_);
 
-    dosGridSpin_ = new QSpinBox(this);
-    dosGridSpin_->setRange(2, 64);
-    dosGridSpin_->setValue(20);
-    dosGridSpin_->setToolTip(tr("Monkhorst-Pack n×n×n grid for the phonon DOS"));
-    dosGridSpin_->setEnabled(periodic_);
+    // One spin box per reciprocal axis — anisotropic cells want anisotropic
+    // q-meshes (a slab samples q_z once, not twenty times).
+    auto* dosGridRow = new QHBoxLayout;
+    for (QSpinBox*& spin : dosGridSpins_) {
+        spin = new QSpinBox(this);
+        spin->setRange(1, 64);
+        spin->setValue(20);
+        spin->setToolTip(
+            tr("Monkhorst-Pack q-grid for the phonon DOS, per axis"));
+        spin->setEnabled(periodic_);
+        dosGridRow->addWidget(spin);
+    }
 
     auto* form = new QFormLayout;
+    form_ = form;
     form->addRow(infoLabel);
     form->addRow(tr("Mode:"), modeCombo_);
     form->addRow(tr("Supercell (a × b × c):"), supercellRow);
@@ -125,10 +150,11 @@ PhononBuilderDialog::PhononBuilderDialog(
     form->addRow(tr("Calculator:"), calculatorCombo_);
     form->addRow(tr("MACE model:"), maceModelCombo_);
     form->addRow(tr("MACE model size:"), maceSizeCombo_);
-    form->addRow(tr("Custom model file:"), macePathRow);
+    form->addRow(maceDispersionCheck_);
+    form->addRow(tr("Custom model file:"), maceModelFileRow_);
     form->addRow(tr("MACE device:"), maceDeviceCombo_);
     form->addRow(tr("Band-path points:"), bandPointsSpin_);
-    form->addRow(tr("DOS k-grid:"), dosGridSpin_);
+    form->addRow(tr("DOS q-grid (qx·qy·qz):"), dosGridRow);
 
     // Execution environment (shared setting with the calculator dialog).
     auto* envGroup = new QGroupBox(tr("Execution Environment"), this);
@@ -221,10 +247,12 @@ PhononBuilderDialog::PhononBuilderDialog(
     connect(calculatorCombo_, &QComboBox::currentIndexChanged, this, refresh);
     connect(maceModelCombo_, &QComboBox::currentIndexChanged, this, refresh);
     connect(maceSizeCombo_, &QComboBox::currentIndexChanged, this, refresh);
-    connect(maceModelPathEdit_, &QLineEdit::textChanged, this, refresh);
+    connect(maceModelFileCombo_, &QComboBox::editTextChanged, this, refresh);
+    connect(maceDispersionCheck_, &QCheckBox::toggled, this, refresh);
     connect(maceDeviceCombo_, &QComboBox::currentIndexChanged, this, refresh);
     connect(bandPointsSpin_, &QSpinBox::valueChanged, this, refresh);
-    connect(dosGridSpin_, &QSpinBox::valueChanged, this, refresh);
+    for (QSpinBox* spin : dosGridSpins_)
+        connect(spin, &QSpinBox::valueChanged, this, refresh);
 
     refreshPreview();
 }
@@ -242,13 +270,28 @@ core::PhononConfig PhononBuilderDialog::config() const
         c.supercell[i] = supercellSpins_[i]->value();
     c.deltaAngstrom = deltaSpin_->value();
     c.bandPathPoints = bandPointsSpin_->value();
-    c.dosKptGrid = dosGridSpin_->value();
+    for (int i = 0; i < 3; ++i)
+        c.dosKptGrid[i] = dosGridSpins_[i]->value();
 
     c.calculator.calculator = kPhononCalculators[calculatorCombo_->currentIndex()];
     c.calculator.maceSource =
         static_cast<core::MaceModelSource>(maceModelCombo_->currentIndex());
     c.calculator.maceSize = maceSizeCombo_->currentText().toStdString();
-    c.calculator.maceModelPath = maceModelPathEdit_->text().trimmed().toStdString();
+    // A picked list entry resolves to its stored absolute path; typed or
+    // browsed text is taken verbatim. Foundation models carry no file.
+    QString modelFile;
+    if (c.calculator.maceSource == core::MaceModelSource::CustomFile) {
+        const int index = maceModelFileCombo_->currentIndex();
+        modelFile = index >= 0
+                && maceModelFileCombo_->currentText()
+                    == maceModelFileCombo_->itemText(index)
+            ? maceModelFileCombo_->itemData(index).toString()
+            : maceModelFileCombo_->currentText().trimmed();
+    }
+    c.calculator.maceModelPath = modelFile.toStdString();
+    c.calculator.maceDispersion =
+        c.calculator.maceSource == core::MaceModelSource::FoundationMP
+        && maceDispersionCheck_->isChecked();
     c.calculator.maceDevice = maceDeviceCombo_->currentText().toStdString();
     return c;
 }
@@ -278,10 +321,12 @@ void PhononBuilderDialog::browseMaceModel()
 {
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Select MACE Model"),
-        SettingsManager::mlPotentialsStartPath(maceModelPathEdit_->text()),
+        SettingsManager::mlPotentialsStartPath(
+            maceModelFileCombo_->currentText()),
         tr("MACE models (*.model *.pt);;All files (*)"));
     if (!path.isEmpty())
-        maceModelPathEdit_->setText(path); // textChanged refreshes the preview
+        // editTextChanged refreshes the preview
+        maceModelFileCombo_->setCurrentText(path);
 }
 
 void PhononBuilderDialog::refreshPreview()
@@ -306,12 +351,30 @@ void PhononBuilderDialog::refreshPreview()
     runButton_->setText(displacedOnly ? tr("Generate") : tr("Run"));
     calculatorCombo_->setEnabled(!displacedOnly);
     maceModelCombo_->setEnabled(!displacedOnly && isMace);
+    // The foundation families take a size keyword and no file; a custom
+    // checkpoint is the reverse. The rows are hidden, not merely disabled —
+    // a disabled field still claims space and invites reading.
+    const auto setRowVisible = [this](QWidget* field, bool visible) {
+        int row = -1;
+        QFormLayout::ItemRole role{};
+        form_->getWidgetPosition(field, &row, &role);
+        if (row >= 0)
+            form_->setRowVisible(row, visible);
+    };
+    setRowVisible(maceSizeCombo_, isMace && !isCustomMace);
+    setRowVisible(maceModelFileRow_, isCustomMace);
+    setRowVisible(maceDispersionCheck_,
+                  isMace
+                      && c.calculator.maceSource
+                          == core::MaceModelSource::FoundationMP);
     maceSizeCombo_->setEnabled(!displacedOnly && isMace && !isCustomMace);
-    maceModelPathEdit_->setEnabled(!displacedOnly && isCustomMace);
+    maceModelFileCombo_->setEnabled(!displacedOnly && isCustomMace);
     maceBrowseButton_->setEnabled(!displacedOnly && isCustomMace);
+    maceDispersionCheck_->setEnabled(!displacedOnly && isMace);
     maceDeviceCombo_->setEnabled(!displacedOnly && isMace);
     bandPointsSpin_->setEnabled(!displacedOnly && periodic_);
-    dosGridSpin_->setEnabled(!displacedOnly && periodic_);
+    for (QSpinBox* spin : dosGridSpins_)
+        spin->setEnabled(!displacedOnly && periodic_);
     preview_->setEnabled(!displacedOnly);
 
     // Never clobber the user's manual edits; "Regenerate" re-enables sync.

@@ -13,6 +13,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFileInfo>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QDoubleValidator>
@@ -705,24 +706,46 @@ QWidget* SimulationWizardBase::buildMaceGroup(QWidget* parent)
     maceSizeCombo_->setCurrentIndex(1);
     form->addRow(tr("Model size:"), maceSizeCombo_);
 
-    // Weights file: required for "Custom trained model", optional for the
-    // foundation families (where it pins a downloaded checkpoint so a run
-    // does not silently change when the cached model is updated upstream).
-    maceModelPathEdit_ = new QLineEdit(maceGroup_);
-    maceModelPathEdit_->setPlaceholderText(
-        tr("path/to/weights.model or .pt (e.g. mace-off23-small.model)"));
+    // MACE-MP-0's optional dispersion head: a constructor flag of mace_mp
+    // only, so updateMaceRows() hides the row for MACE-OFF and custom models.
+    maceDispersionCheck_ = new QCheckBox(tr("Dispersion"), maceGroup_);
+    maceDispersionCheck_->setChecked(false);
+    maceDispersionCheck_->setToolTip(
+        tr("mace_mp(dispersion=True): add the D3(BJ) van der Waals correction "
+           "the MACE-MP-0 foundation model ships.\n"
+           "The bare model has no long-range dispersion, so layered and "
+           "molecular-crystal systems come out under-bound without it. Needs "
+           "the torch-dftd package in the job environment."));
+    connect(maceDispersionCheck_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
+    form->addRow(maceDispersionCheck_);
+
+    // Weights file: only "Custom trained model" needs one (the foundation
+    // families download and cache theirs). A dropdown over the ML models
+    // directory configured in Preferences, editable so a path can still be
+    // typed, with Browse… for checkpoints living elsewhere.
+    maceModelFileCombo_ = new QComboBox(maceGroup_);
+    maceModelFileCombo_->setEditable(true);
+    maceModelFileCombo_->lineEdit()->setPlaceholderText(
+        tr("path/to/weights.model or .pt"));
+    for (const QString& path : SettingsManager::mlModelFiles())
+        maceModelFileCombo_->addItem(QFileInfo(path).fileName(), path);
+    maceModelFileCombo_->setCurrentIndex(-1);
     maceBrowseButton_ = new QPushButton(tr("Browse…"), maceGroup_);
-    auto* pathRow = new QHBoxLayout;
-    pathRow->addWidget(maceModelPathEdit_, 1);
-    pathRow->addWidget(maceBrowseButton_);
-    form->addRow(tr("Model file:"), pathRow);
+    maceModelFileRow_ = new QWidget(maceGroup_);
+    auto* pathLayout = new QHBoxLayout(maceModelFileRow_);
+    pathLayout->setContentsMargins(0, 0, 0, 0);
+    pathLayout->addWidget(maceModelFileCombo_, 1);
+    pathLayout->addWidget(maceBrowseButton_);
+    form->addRow(tr("Model file:"), maceModelFileRow_);
     connect(maceBrowseButton_, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getOpenFileName(
             this, tr("Select MACE Model File"),
-            SettingsManager::mlPotentialsStartPath(maceModelPathEdit_->text()),
+            SettingsManager::mlPotentialsStartPath(
+                maceModelFileCombo_->currentText()),
             tr("MACE models (*.model *.pt *.pth);;All files (*)"));
         if (!path.isEmpty()) {
-            maceModelPathEdit_->setText(path);
+            maceModelFileCombo_->setCurrentText(path);
             refreshPreview();
         }
     });
@@ -758,11 +781,25 @@ QWidget* SimulationWizardBase::buildMaceGroup(QWidget* parent)
             refreshPreview();
         });
     }
-    connect(maceModelPathEdit_, &QLineEdit::textChanged, this,
+    connect(maceModelFileCombo_, &QComboBox::editTextChanged, this,
             [this] { refreshPreview(); });
 
     updateMaceRows();
     return maceGroup_;
+}
+
+QString SimulationWizardBase::maceModelFilePath() const
+{
+    if (!maceModelFileCombo_)
+        return {};
+    // A picked list entry resolves to its stored absolute path; anything the
+    // user typed or browsed to is taken verbatim.
+    const int index = maceModelFileCombo_->currentIndex();
+    if (index >= 0
+        && maceModelFileCombo_->currentText()
+            == maceModelFileCombo_->itemText(index))
+        return maceModelFileCombo_->itemData(index).toString();
+    return maceModelFileCombo_->currentText().trimmed();
 }
 
 QWidget* SimulationWizardBase::buildMlipGroup(QWidget* parent)
@@ -960,15 +997,28 @@ void SimulationWizardBase::updateMlipRows()
 
 void SimulationWizardBase::updateMaceRows()
 {
-    const bool custom = maceModelCombo_->currentIndex()
-        == static_cast<int>(core::MaceModelSource::CustomFile);
-    // A custom checkpoint carries its own architecture — the size keyword is
-    // meaningless there.
-    maceSizeCombo_->setEnabled(!custom);
+    const auto source = static_cast<core::MaceModelSource>(
+        maceModelCombo_->currentIndex());
+    const bool custom = source == core::MaceModelSource::CustomFile;
+    // The foundation families take a size keyword and download their own
+    // weights, so they show the size row and nothing about files; a custom
+    // checkpoint carries its own architecture, so the size row disappears and
+    // the model-file dropdown (fed from the ML models directory in
+    // Preferences) appears instead.
+    setFormRowVisible(maceGroup_, maceSizeCombo_, !custom);
+    setFormRowVisible(maceGroup_, maceModelFileRow_, custom);
+    setFormRowVisible(maceGroup_, maceModelPathHint_, custom);
+    // Dispersion is a mace_mp constructor flag — MP-0 only.
+    setFormRowVisible(maceGroup_, maceDispersionCheck_,
+                      source == core::MaceModelSource::FoundationMP);
     maceModelPathHint_->setText(
-        custom ? tr("Required: MACECalculator loads these weights directly.")
-               : tr("Optional: leave empty to download and cache the "
-                    "foundation model, or point at a checkpoint to pin it."));
+        maceModelFileCombo_->count() > 0
+            ? tr("Required: MACECalculator loads these weights directly. The "
+                 "list shows the model files in the ML potentials directory "
+                 "(Preferences).")
+            : tr("Required: MACECalculator loads these weights directly. Set "
+                 "the ML potentials directory in Preferences to list your "
+                 "models here, or Browse…"));
 
     // MPS has no float64 kernels in PyTorch; warn rather than silently
     // generating a script that dies at the first forward pass.
@@ -1036,10 +1086,19 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
                             QStringLiteral("revPBE"), QStringLiteral("RPBE"),
                             QStringLiteral("PBEsol"), QStringLiteral("HSE06"),
                             QStringLiteral("B3LYP"), QStringLiteral("SCAN"),
-                            QStringLiteral("r2SCAN")});
+                            QStringLiteral("r2SCAN"),
+                            QStringLiteral("vdW-DF"), QStringLiteral("vdW-DF2"),
+                            QStringLiteral("vdW-DF-cx"),
+                            QStringLiteral("optPBE-vdW"),
+                            QStringLiteral("optB88-vdW"),
+                            QStringLiteral("BEEF-vdW"), QStringLiteral("VV10"),
+                            QStringLiteral("rVV10")});
     gpawXcCombo_->setToolTip(
         tr("The hybrids (HSE06, B3LYP) and meta-GGAs (SCAN, r2SCAN) need a "
-           "GPAW build with libxc, and are far more expensive than the GGAs."));
+           "GPAW build with libxc, and are far more expensive than the GGAs.\n"
+           "The van der Waals functionals (vdW-DF family, VV10, rVV10) carry "
+           "their own non-local correlation — no D4 correction needed — and "
+           "require GPAW compiled with libvdwxc."));
     modeForm->addRow(tr("XC functional:"), gpawXcCombo_);
 
     // DFT+U and the dispersion correction sit directly under the XC combo:
@@ -1064,8 +1123,8 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
     dispersionD4Check_ =
         new QCheckBox(tr("van der Waals Correction (DFTD4)"), modeBasisGroup_);
     dispersionD4Check_->setToolTip(
-        tr("Wrap the calculator in ASE's DFTD4, adding Grimme's D4 dispersion "
-           "energy and forces.\n"
+        tr("Couple the calculator with DFTD4 through ASE's SumCalculator, "
+           "adding Grimme's D4 dispersion energy and forces.\n"
            "Semilocal functionals carry no long-range correlation, so layered "
            "and molecular systems come out under-bound without it. D4 is "
            "charge-dependent, which is what separates it from D3.\n"
@@ -1737,7 +1796,13 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
     c.maceSource =
         static_cast<core::MaceModelSource>(maceModelCombo_->currentIndex());
     c.maceSize = maceSizeCombo_->currentText().toStdString();
-    c.maceModelPath = maceModelPathEdit_->text().trimmed().toStdString();
+    // Only a custom run names a checkpoint; the foundation families download
+    // and cache their own weights (their model-file row is hidden).
+    c.maceModelPath = c.maceSource == core::MaceModelSource::CustomFile
+        ? maceModelFilePath().toStdString()
+        : std::string();
+    c.maceDispersion = c.maceSource == core::MaceModelSource::FoundationMP
+        && maceDispersionCheck_ && maceDispersionCheck_->isChecked();
     // Device combo carries a friendly suffix; keep only the device token.
     c.maceDevice =
         maceDeviceCombo_->currentText().section(QLatin1Char(' '), 0, 0).toStdString();

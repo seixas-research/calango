@@ -217,6 +217,21 @@ QString SettingsManager::mlPotentialsStartPath(const QString& currentValue)
     return {};
 }
 
+QStringList SettingsManager::mlModelFiles()
+{
+    const QString directory = mlPotentialsStartPath();
+    if (directory.isEmpty())
+        return {};
+    QStringList files;
+    const QDir dir(directory);
+    for (const QFileInfo& info :
+         dir.entryInfoList({QStringLiteral("*.model"), QStringLiteral("*.pt"),
+                            QStringLiteral("*.pth"), QStringLiteral("*.pb")},
+                           QDir::Files | QDir::Readable, QDir::Name))
+        files.append(info.absoluteFilePath());
+    return files;
+}
+
 QString SettingsManager::simulationsDirectory()
 {
     QString configured =

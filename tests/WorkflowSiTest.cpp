@@ -167,7 +167,7 @@ int main(int argc, char** argv)
             calango::core::CalculatorKind::LennardJones;
         config.supercell[0] = config.supercell[1] = config.supercell[2] = 2;
         config.bandPathPoints = 40;
-        config.dosKptGrid = 6;
+        config.dosKptGrid[0] = config.dosKptGrid[1] = config.dosKptGrid[2] = 6;
         window.configureNode(
             phonon,
             QString::fromStdString(

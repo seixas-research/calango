@@ -108,6 +108,14 @@ public:
     /// identically by all four model pickers instead of three of them
     /// forgetting.
     static QString mlPotentialsStartPath(const QString& currentValue = {});
+
+    /// The model checkpoints (*.model, *.pt, *.pth, *.pb) in the configured
+    /// ML potentials directory (Preferences → Directories), as absolute
+    /// paths, sorted by name. Empty when the preference is unset or the
+    /// directory does not exist — callers show their empty-state hint then.
+    /// Feeds the "Custom trained model" dropdowns so every MACE setup lists
+    /// the same models the same way.
+    static QStringList mlModelFiles();
 };
 
 } // namespace calango::gui

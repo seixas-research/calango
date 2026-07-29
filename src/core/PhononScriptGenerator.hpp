@@ -28,7 +28,9 @@ struct PhononConfig {
     /// path for the structure's Bravais lattice (same convention as the
     /// electronic band path).
     std::string kpath;
-    int dosKptGrid = 20;      ///< Monkhorst-Pack n×n×n grid for the DOS (mesh)
+    /// Monkhorst-Pack q-grid for the DOS (mesh), one entry per reciprocal
+    /// axis — anisotropic cells (slabs, chains) want anisotropic meshes.
+    int dosKptGrid[3] = {20, 20, 20};
     /// Gaussian broadening applied when sampling the phonon DOS onto its
     /// frequency grid (cm⁻¹). Too small and the DOS is a comb of delta
     /// spikes from the finite k-mesh; too large and real van Hove features

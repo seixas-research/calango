@@ -3,9 +3,11 @@
 #include "core/PhononScriptGenerator.hpp"
 #include "core/Structure.hpp"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
 #include <QDoubleSpinBox>
+#include <QFormLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
@@ -61,11 +63,18 @@ private:
     QComboBox* calculatorCombo_;
     QComboBox* maceModelCombo_;
     QComboBox* maceSizeCombo_;
-    QLineEdit* maceModelPathEdit_;
+    /// MACE-MP-0 only — mace_mp(dispersion=True).
+    QCheckBox* maceDispersionCheck_;
+    /// Custom-model dropdown over the ML potentials directory (editable,
+    /// Browse… for files elsewhere); item data holds the absolute path.
+    QComboBox* maceModelFileCombo_;
+    QWidget* maceModelFileRow_;
     QPushButton* maceBrowseButton_;
     QComboBox* maceDeviceCombo_;
+    /// Held so refreshPreview() can show/hide whole MACE rows by model.
+    QFormLayout* form_;
     QSpinBox* bandPointsSpin_;
-    QSpinBox* dosGridSpin_;
+    QSpinBox* dosGridSpins_[3]; ///< qx, qy, qz
     QLineEdit* envPathEdit_;
     QLabel* envStatusLabel_;
     QLabel* editedNotice_;

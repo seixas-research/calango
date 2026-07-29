@@ -8,6 +8,8 @@
 
 #include <QCheckBox>
 #include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QHash>
 #include <QFile>
 #include <QHBoxLayout>
@@ -360,6 +362,91 @@ QValidator::State CompactDoubleSpinBox::validate(QString& input, int& pos) const
     }
     return parsed < minimum() || parsed > maximum() ? QValidator::Intermediate
                                                     : QValidator::Acceptable;
+}
+
+bool mlwfWavefunctionsAvailable(const QString& jobDir, QString* reason)
+{
+    const QDir dir(jobDir);
+    const QJsonObject meta =
+        readJsonObject(dir.filePath(QStringLiteral("wannier.json")));
+    const QString recorded = meta.value(QStringLiteral("gpw")).toString();
+    if (!recorded.isEmpty() && QFileInfo::exists(recorded))
+        return true;
+    if (!dir.entryList({QStringLiteral("*.gpw")}, QDir::Files).isEmpty())
+        return true;
+    if (reason) {
+        *reason = recorded.isEmpty()
+            ? QCoreApplication::translate(
+                  "MlwfPreflight",
+                  "This MLWF run recorded no path to the GPAW wavefunctions "
+                  "it localized, and left no .gpw in its own directory. "
+                  "Re-run the MLWF calculation — runs from this version "
+                  "record the path.")
+            : QCoreApplication::translate(
+                  "MlwfPreflight",
+                  "The GPAW wavefunctions this MLWF run localized are no "
+                  "longer at\n\n%1\n\nRe-run the MLWF calculation, or restore "
+                  "that file.")
+                  .arg(recorded);
+    }
+    return false;
+}
+
+QString schoenfliesPointGroup(const QString& hermannMauguin)
+{
+    // The 32 crystallographic point groups, keyed by the short international
+    // symbol exactly as spglib prints it (overbar as a leading '-'). Symbols
+    // arrive with stray spaces from some spglib versions, hence the cleanup.
+    static const QHash<QString, QString> kTable = {
+        {QStringLiteral("1"), QStringLiteral("C<sub>1</sub>")},
+        {QStringLiteral("-1"), QStringLiteral("C<sub>i</sub>")},
+        {QStringLiteral("2"), QStringLiteral("C<sub>2</sub>")},
+        {QStringLiteral("m"), QStringLiteral("C<sub>s</sub>")},
+        {QStringLiteral("2/m"), QStringLiteral("C<sub>2h</sub>")},
+        {QStringLiteral("222"), QStringLiteral("D<sub>2</sub>")},
+        {QStringLiteral("mm2"), QStringLiteral("C<sub>2v</sub>")},
+        {QStringLiteral("mmm"), QStringLiteral("D<sub>2h</sub>")},
+        {QStringLiteral("4"), QStringLiteral("C<sub>4</sub>")},
+        {QStringLiteral("-4"), QStringLiteral("S<sub>4</sub>")},
+        {QStringLiteral("4/m"), QStringLiteral("C<sub>4h</sub>")},
+        {QStringLiteral("422"), QStringLiteral("D<sub>4</sub>")},
+        {QStringLiteral("4mm"), QStringLiteral("C<sub>4v</sub>")},
+        {QStringLiteral("-42m"), QStringLiteral("D<sub>2d</sub>")},
+        {QStringLiteral("-4m2"), QStringLiteral("D<sub>2d</sub>")},
+        {QStringLiteral("4/mmm"), QStringLiteral("D<sub>4h</sub>")},
+        {QStringLiteral("3"), QStringLiteral("C<sub>3</sub>")},
+        {QStringLiteral("-3"), QStringLiteral("C<sub>3i</sub>")},
+        {QStringLiteral("32"), QStringLiteral("D<sub>3</sub>")},
+        {QStringLiteral("3m"), QStringLiteral("C<sub>3v</sub>")},
+        {QStringLiteral("-3m"), QStringLiteral("D<sub>3d</sub>")},
+        {QStringLiteral("6"), QStringLiteral("C<sub>6</sub>")},
+        {QStringLiteral("-6"), QStringLiteral("C<sub>3h</sub>")},
+        {QStringLiteral("6/m"), QStringLiteral("C<sub>6h</sub>")},
+        {QStringLiteral("622"), QStringLiteral("D<sub>6</sub>")},
+        {QStringLiteral("6mm"), QStringLiteral("C<sub>6v</sub>")},
+        {QStringLiteral("-6m2"), QStringLiteral("D<sub>3h</sub>")},
+        {QStringLiteral("-62m"), QStringLiteral("D<sub>3h</sub>")},
+        {QStringLiteral("6/mmm"), QStringLiteral("D<sub>6h</sub>")},
+        {QStringLiteral("23"), QStringLiteral("T")},
+        {QStringLiteral("m-3"), QStringLiteral("T<sub>h</sub>")},
+        {QStringLiteral("m3"), QStringLiteral("T<sub>h</sub>")},
+        {QStringLiteral("432"), QStringLiteral("O")},
+        {QStringLiteral("-43m"), QStringLiteral("T<sub>d</sub>")},
+        {QStringLiteral("m-3m"), QStringLiteral("O<sub>h</sub>")},
+        {QStringLiteral("m3m"), QStringLiteral("O<sub>h</sub>")},
+    };
+    QString key = hermannMauguin;
+    key.remove(QLatin1Char(' '));
+    return kTable.value(key);
+}
+
+QString pointGroupDisplay(const QString& hermannMauguin)
+{
+    const QString trimmed = hermannMauguin.trimmed();
+    const QString schoenflies = schoenfliesPointGroup(trimmed);
+    return schoenflies.isEmpty()
+        ? trimmed
+        : QStringLiteral("%1 (%2)").arg(trimmed, schoenflies);
 }
 
 } // namespace calango::gui

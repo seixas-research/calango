@@ -485,6 +485,10 @@ struct CalculatorConfig {
     std::string maceModelPath;
     std::string maceDevice = "cpu";    ///< "cpu" | "cuda" | "mps"
     MacePrecision macePrecision = MacePrecision::Float64;
+    /// MACE-MP-0 only: pass `dispersion=True` to mace.calculators.mace_mp,
+    /// enabling the D3(BJ) dispersion head the foundation model ships with.
+    /// Ignored by MACE-OFF and custom checkpoints, which take no such flag.
+    bool maceDispersion = false;
 
     // -- Machine-learning interatomic potentials (DeepMD … FAIRChem) --------
     // One shared device selector: every backend below is a PyTorch/TF model

@@ -12,6 +12,8 @@
 #include <QSignalBlocker>
 #include <QVBoxLayout>
 
+#include <algorithm>
+
 namespace calango::gui {
 
 namespace {
@@ -114,6 +116,15 @@ NeighborCellsDialog::NeighborCellsDialog(ViewportWidget* viewport,
     layout->addWidget(buttons);
 
     updateSummary();
+
+    // Default size: the word-wrapping labels (intro, summary, and the
+    // no-unit-cell warning the summary can grow into) make sizeHint()
+    // underestimate the height at the default width, clipping the button row.
+    // Give the wrapped text a comfortable width and take the matching
+    // height-for-width, so everything is visible without manual resizing.
+    setMinimumWidth(440);
+    adjustSize();
+    resize(std::max(width(), 460), std::max(height(), heightForWidth(460)));
 }
 
 void NeighborCellsDialog::apply()

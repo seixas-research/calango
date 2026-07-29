@@ -1,6 +1,7 @@
 #include "gui/SymmetryDialog.hpp"
 
 #include "core/Element.hpp"
+#include "gui/GuiUtils.hpp"
 #include "python_bridge/AseBridge.hpp"
 
 #include <QApplication>
@@ -102,7 +103,10 @@ void SymmetryDialog::detect()
     spaceGroupLabel_->setText(QStringLiteral("%1 (No. %2)")
                                   .arg(QString::fromStdString(info.spaceGroupSymbol))
                                   .arg(info.spaceGroupNumber));
-    pointGroupLabel_->setText(QString::fromStdString(info.pointGroup));
+    // Both crystallographic conventions: "3m (C<sub>3v</sub>)" — the
+    // Hermann-Mauguin symbol spglib reports plus its Schönflies counterpart.
+    pointGroupLabel_->setText(
+        pointGroupDisplay(QString::fromStdString(info.pointGroup)));
     crystalLabel_->setText(QString::fromStdString(info.crystalSystem));
     hallLabel_->setText(info.hallNumber > 0 ? QString::number(info.hallNumber)
                                             : QStringLiteral("—"));

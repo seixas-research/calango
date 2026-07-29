@@ -1,5 +1,6 @@
 #include "gui/RamanDialog.hpp"
 
+#include "gui/GuiUtils.hpp"
 #include "python_bridge/RamanAnalysis.hpp"
 
 #include <QApplication>
@@ -80,7 +81,7 @@ void RamanDialog::compute()
            "%9 silent.")
             .arg(QString::fromStdString(result.spaceGroupSymbol))
             .arg(result.spaceGroupNumber)
-            .arg(QString::fromStdString(result.pointGroup))
+            .arg(pointGroupDisplay(QString::fromStdString(result.pointGroup)))
             .arg(result.atomsPrimitive)
             .arg(3 * result.atomsPrimitive)
             .arg(3 * result.atomsPrimitive - 3)

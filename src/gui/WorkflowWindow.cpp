@@ -415,6 +415,13 @@ void WorkflowScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent* event)
         event->accept();
         return;
     }
+    // Empty canvas: a double-click means "add a process here" — the fastest
+    // way to grow a pipeline, mirroring every node editor's convention.
+    if (event->button() == Qt::LeftButton) {
+        Q_EMIT addNodeRequested(event->scenePos());
+        event->accept();
+        return;
+    }
     QGraphicsScene::mouseDoubleClickEvent(event);
 }
 
@@ -459,8 +466,9 @@ WorkflowWindow::WorkflowWindow(
            "right-hand port onto another node runs the second after the "
            "first and feeds it the results — a relaxed geometry becomes the "
            "next input structure, a saved ground state (.gpw) rides along. "
-           "Double-click a node to configure it in its setup wizard. Wheel "
-           "zooms, middle-drag pans."),
+           "Double-click empty canvas to add a process there; double-click a "
+           "node to configure it in its setup wizard. Wheel zooms, "
+           "middle-drag pans."),
         this);
     intro->setWordWrap(true);
     layout->addWidget(intro);
@@ -471,6 +479,8 @@ WorkflowWindow::WorkflowWindow(
             &WorkflowWindow::connectNodes);
     connect(scene_, &WorkflowScene::nodeActivated, this,
             &WorkflowWindow::openNodeWizard);
+    connect(scene_, &WorkflowScene::addNodeRequested, this,
+            &WorkflowWindow::addNodeAt);
     view_ = new WorkflowView(scene_, this);
     layout->addWidget(view_, 1);
 
@@ -511,6 +521,16 @@ WorkflowWindow::WorkflowWindow(
 
 void WorkflowWindow::addNode()
 {
+    promptAddNode(nullptr);
+}
+
+void WorkflowWindow::addNodeAt(const QPointF& scenePos)
+{
+    promptAddNode(&scenePos);
+}
+
+void WorkflowWindow::promptAddNode(const QPointF* scenePos)
+{
     if (materials_.isEmpty()) {
         QMessageBox::information(
             this, tr("Add Process"),
@@ -547,10 +567,13 @@ void WorkflowWindow::addNode()
     if (dialog.exec() != QDialog::Accepted)
         return;
 
-    addProcessNode(
+    WorkflowNodeItem* node = addProcessNode(
         static_cast<WorkflowTask>(taskCombo->currentData().toInt()),
         materialCombo->currentIndex(),
         static_cast<core::CalculatorKind>(engineCombo->currentData().toInt()));
+    if (node && scenePos)
+        node->setPos(*scenePos
+                     - QPointF(kNodeWidth / 2.0, kNodeHeight / 2.0));
 }
 
 WorkflowNodeItem* WorkflowWindow::addProcessNode(WorkflowTask task,

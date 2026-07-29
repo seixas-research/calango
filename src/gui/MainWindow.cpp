@@ -68,8 +68,11 @@
 #include "gui/MlwfViewer.hpp"
 #include "gui/SinglePointViewer.hpp"
 #include "gui/DefectDiagramWindow.hpp"
+#include "gui/FermiSurfaceDialog.hpp"
 #include "gui/FermiSurfaceWindow.hpp"
+#include "gui/TopologyDialog.hpp"
 #include "gui/TopologyWindow.hpp"
+#include "gui/WannierInterpolationDialog.hpp"
 #include "gui/DefectWizard.hpp"
 #include "gui/TwoDBandsWindow.hpp"
 #include "gui/TwoDBandsWizard.hpp"
@@ -1062,6 +1065,24 @@ void MainWindow::createMenusAndDocks()
     electronicsMenu->addAction(
         tr("Maximally Localized &Wannier Functions (MLWF)…"),
         this, &MainWindow::showWannier);
+    // The three Wannier post-processes are standalone modules with a strict
+    // prerequisite: each diagonalizes the localized H(R) a completed MLWF run
+    // produced, so each begins by selecting one (and refuses without it).
+    electronicsMenu
+        ->addAction(tr("Wannier &Interpolation…"), this,
+                    &MainWindow::showWannierInterpolation)
+        ->setToolTip(tr("Interpolated band structure + projected DOS "
+                        "(H(R) → H(k)) from a completed MLWF process"));
+    electronicsMenu
+        ->addAction(tr("&Fermi Surface…"), this, &MainWindow::showFermiSurface)
+        ->setToolTip(tr("E_n(k) = E_F sheets on a dense interpolated k-grid, "
+                        "from a completed MLWF process"));
+    electronicsMenu
+        ->addAction(tr("&Topological Charge…"), this,
+                    &MainWindow::showTopologicalCharge)
+        ->setToolTip(tr("Chern number and Z₂ index from the hybrid Wannier "
+                        "centre (Wilson loop) flow, from a completed MLWF "
+                        "process"));
     // Charged defects sit with the other post-processes that consume a
     // completed SCF. Its two inputs are both Single-Point runs, which is what
     // distinguishes it from everything above: the physics is in the
@@ -4314,27 +4335,13 @@ void MainWindow::openMlwfResults(const QString& directory)
     // Data dock so it can be visualized on demand (spec: MLWF volume pipeline).
     registerWannierOrbitals(directory);
 
-    // The MLWF viewer overlays orbital isosurfaces on the main viewport and can
-    // launch a Wannier interpolation (bands + PDOS), which runs through the
-    // normal local-job path (its bands.json/pdos.json then open the band/PDOS
-    // viewer).
+    // The MLWF viewer overlays orbital isosurfaces on the main viewport. The
+    // post-processes that consume the run (Wannier Interpolation, Fermi
+    // Surface, Topological Charge) are standalone Electronics-menu modules.
     Document* doc = currentDocument();
     auto* viewer = new MlwfViewer(doc ? doc->structure : nullptr, viewport_,
                                   this);
     viewer->setAttribute(Qt::WA_DeleteOnClose);
-    connect(viewer, &MlwfViewer::runRequested, this,
-            [this](const QString& script, const QString& label) {
-                if (jobRunner_->isRunning()) {
-                    QMessageBox::information(
-                        this, label,
-                        tr("A calculation is already running — kill it first."));
-                    return;
-                }
-                runScript(script,
-                          QString::fromStdString(
-                              pybridge::PythonEngine::instance().executable()),
-                          label, /*expectFrames=*/false);
-            });
     viewer->show();
     viewer->loadResults(directory + QStringLiteral("/wannier.json"));
 }
@@ -5256,6 +5263,118 @@ void MainWindow::showChargeDensityDifference()
     wizard.setDensityBaselines(std::move(sources));
     runSimulationWizard(wizard, tr("Charge Density Difference"),
                         /*expectFrames=*/false);
+}
+
+QString MainWindow::selectCompletedMlwfRun(const QString& title)
+{
+    // Strict prerequisite: these modules diagonalize the localized H(R) a
+    // finished MLWF run produced — nothing else can stand in for it. The
+    // marker is wannier.json, which the MLWF script only writes on success.
+    QList<QPair<QString, QString>> runs; // label -> job directory
+    for (const auto& [label, jsonPath] :
+         processResults(QStringLiteral("wannier.json")))
+        runs.append({label, QFileInfo(jsonPath).absolutePath()});
+    if (runs.isEmpty()) {
+        QMessageBox::information(
+            this, title,
+            tr("%1 requires a successfully completed Maximally Localized "
+               "Wannier Functions (MLWF) process — it post-processes the "
+               "localized Hamiltonian that run produces.\n\nRun Electronics → "
+               "Maximally Localized Wannier Functions (MLWF)… first; once it "
+               "completes, this module will find it.")
+                .arg(title));
+        return {};
+    }
+
+    QString directory = runs.front().second;
+    if (runs.size() > 1) {
+        QStringList labels;
+        for (const auto& [label, dir] : runs)
+            labels << label;
+        bool accepted = false;
+        const QString choice = QInputDialog::getItem(
+            this, title, tr("Completed MLWF process to post-process:"), labels,
+            labels.size() - 1, /*editable=*/false, &accepted);
+        if (!accepted)
+            return {};
+        directory = runs.at(labels.indexOf(choice)).second;
+    }
+
+    // The run must not only have completed — its wavefunctions must still be
+    // reachable, or the job dies on its first line after being staged.
+    QString reason;
+    if (!mlwfWavefunctionsAvailable(directory, &reason)) {
+        QMessageBox::warning(this, title, reason);
+        return {};
+    }
+    return directory;
+}
+
+void MainWindow::showWannierInterpolation()
+{
+    if (jobRunner_->isRunning()) {
+        QMessageBox::information(
+            this, tr("Wannier Interpolation"),
+            tr("A calculation is already running — kill it first."));
+        return;
+    }
+    const QString mlwfDir =
+        selectCompletedMlwfRun(tr("Wannier Interpolation"));
+    if (mlwfDir.isEmpty())
+        return;
+    Document* doc = currentDocument();
+    WannierInterpolationDialog dialog(doc ? doc->structure : nullptr, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    runScript(QString::fromStdString(core::generateWannierInterpolationScript(
+                  mlwfDir.toStdString(), dialog.config())),
+              QString::fromStdString(
+                  pybridge::PythonEngine::instance().executable()),
+              tr("Wannier Interpolation"), /*expectFrames=*/false);
+}
+
+void MainWindow::showFermiSurface()
+{
+    if (jobRunner_->isRunning()) {
+        QMessageBox::information(
+            this, tr("Fermi Surface"),
+            tr("A calculation is already running — kill it first."));
+        return;
+    }
+    const QString mlwfDir = selectCompletedMlwfRun(tr("Fermi Surface"));
+    if (mlwfDir.isEmpty())
+        return;
+    FermiSurfaceDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    core::FermiSurfaceConfig cfg = dialog.config();
+    cfg.mlwfDir = mlwfDir.toStdString();
+    runScript(QString::fromStdString(core::generateFermiSurfaceScript(cfg)),
+              QString::fromStdString(
+                  pybridge::PythonEngine::instance().executable()),
+              tr("Fermi Surface"), /*expectFrames=*/false);
+}
+
+void MainWindow::showTopologicalCharge()
+{
+    if (jobRunner_->isRunning()) {
+        QMessageBox::information(
+            this, tr("Topological Charge"),
+            tr("A calculation is already running — kill it first."));
+        return;
+    }
+    const QString mlwfDir = selectCompletedMlwfRun(tr("Topological Charge"));
+    if (mlwfDir.isEmpty())
+        return;
+    TopologyDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    core::TopologyConfig cfg = dialog.config();
+    cfg.mlwfDir = mlwfDir.toStdString();
+    runScript(QString::fromStdString(core::generateTopologyScript(cfg)),
+              QString::fromStdString(
+                  pybridge::PythonEngine::instance().executable()),
+              tr("Topological Charge"), /*expectFrames=*/false);
 }
 
 QList<QPair<QString, QString>> MainWindow::processResults(

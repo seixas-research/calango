@@ -360,11 +360,17 @@ void emitDispersion(std::ostringstream& out, const CalculatorConfig& c)
            "# Semilocal functionals carry no long-range correlation, so layered\n"
            "# and molecular systems come out under-bound without this. D4 is\n"
            "# charge-dependent, which is what separates it from D3.\n"
+           "# The DFTD4 calculator comes from the dftd4 package itself and is\n"
+           "# coupled to the electronic-structure calculator through ASE's\n"
+           "# SumCalculator: each computes independently, energies and forces\n"
+           "# add. (DFTD4 is not a wrapper — passing it another calculator is\n"
+           "# not supported.)\n"
            "# Requires:  pip install dftd4   (or conda install -c conda-forge dftd4)\n"
-           "from ase.calculators.dftd4 import DFTD4\n"
+           "from ase.calculators.mixing import SumCalculator\n"
+           "from dftd4.ase import DFTD4\n"
            "\n"
-        << "atoms.calc = DFTD4(method=\"" << method
-        << "\", calc=atoms.calc)\n";
+        << "atoms.calc = SumCalculator([DFTD4(method=\"" << method
+        << "\"), atoms.calc])\n";
 }
 
 /// Python list literal of strings, or `[]`.
@@ -820,12 +826,19 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
             else
                 out << "# The MACE-MP-0 foundation model is downloaded automatically on\n"
                        "# first use and cached under ~/.cache/mace.\n";
+            if (c.maceDispersion)
+                out << "# dispersion=True: adds the D3(BJ) van der Waals "
+                       "correction mace_mp ships\n"
+                       "# (needs the torch-dftd package in the job "
+                       "environment).\n";
             out << "from mace.calculators import mace_mp\n"
                    "\n"
                 << "atoms.calc = mace_mp(model="
                 << (pinnedFile ? "r\"" + c.maceModelPath + "\"" : "\"" + c.maceSize + "\"")
                 << ", device=\"" << c.maceDevice
-                << "\", default_dtype=\"" << precision << "\")\n";
+                << "\", default_dtype=\"" << precision
+                << "\", dispersion=" << (c.maceDispersion ? "True" : "False")
+                << ")\n";
             break;
         case MaceModelSource::FoundationOFF:
             if (pinnedFile)
@@ -1750,7 +1763,24 @@ std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,
             << indent << "basis=\"" << c.gpawBasis << "\",\n";
         break;
     }
-    out << indent << "xc=\"" << c.gpawXc << "\",\n";
+    // The van der Waals functionals carry a non-local correlation kernel that
+    // GPAW evaluates through libvdwxc — selected with the {'name', 'backend'}
+    // dict rather than the plain string (which would fall back to the old
+    // slow FFT implementation, or fail outright for VV10/rVV10). Needs a GPAW
+    // build compiled against libvdwxc.
+    static const char* const kLibvdwxcFunctionals[] = {
+        "vdW-DF",     "vdW-DF2",    "vdW-DF-cx", "optPBE-vdW",
+        "optB88-vdW", "BEEF-vdW",   "VV10",      "rVV10",
+    };
+    const bool vdwXc =
+        std::any_of(std::begin(kLibvdwxcFunctionals),
+                    std::end(kLibvdwxcFunctionals),
+                    [&c](const char* name) { return c.gpawXc == name; });
+    if (vdwXc)
+        out << indent << "xc={\"name\": \"" << c.gpawXc
+            << "\", \"backend\": \"libvdwxc\"},  # non-local vdW functional\n";
+    else
+        out << indent << "xc=\"" << c.gpawXc << "\",\n";
     if (c.gpawGammaCentered)
         // Γ-centered Monkhorst-Pack grid: the {'size', 'gamma'} dict form.
         out << indent << "kpts={\"size\": (" << c.kpts[0] << ", " << c.kpts[1]

@@ -116,24 +116,31 @@ QWidget* PhononWizard::buildSecondSettingsPage()
     acousticCheck_->setEnabled(periodic_);
     form->addRow(acousticCheck_);
 
-    meshSpin_ = new QSpinBox(group);
     // A smooth PhDOS needs a dense q-mesh: the DOS is a histogram over
     // sampled frequencies, so 20x20x20 leaves visible sampling noise on the
     // van Hove features. Interpolating force constants onto a mesh is cheap
     // compared with the force evaluations already done, so the cap is high.
-    meshSpin_->setRange(2, 200);
-    meshSpin_->setValue(30);
-    meshSpin_->setSingleStep(5);
-    meshSpin_->setToolTip(
-        tr("Monkhorst-Pack n×n×n q-mesh for the phonon DOS.\n"
-           "20 is adequate for a first look; 30–50 gives a smooth spectrum; "
-           "beyond that the cost is memory rather than force evaluations "
-           "(the force constants are already computed, the mesh only "
-           "interpolates them).\n"
-           "Raise the mesh before lowering the Gaussian σ below — a sharp σ on "
-           "a coarse mesh produces spikes, not resolution."));
-    meshSpin_->setEnabled(periodic_);
-    form->addRow(tr("Mesh density (DOS):"), meshSpin_);
+    // One spin box per reciprocal axis: anisotropic cells (slabs, chains)
+    // want anisotropic meshes — a 2D material samples q_z once, not 30 times.
+    auto* meshRow = new QHBoxLayout;
+    for (QSpinBox*& spin : meshSpins_) {
+        spin = new QSpinBox(group);
+        spin->setRange(1, 200);
+        spin->setValue(30);
+        spin->setSingleStep(5);
+        spin->setToolTip(
+            tr("Monkhorst-Pack q-mesh for the phonon DOS, per axis.\n"
+               "20 is adequate for a first look; 30–50 gives a smooth "
+               "spectrum; beyond that the cost is memory rather than force "
+               "evaluations (the force constants are already computed, the "
+               "mesh only interpolates them). Use 1 along a non-periodic "
+               "axis.\n"
+               "Raise the mesh before lowering the Gaussian σ below — a "
+               "sharp σ on a coarse mesh produces spikes, not resolution."));
+        spin->setEnabled(periodic_);
+        meshRow->addWidget(spin);
+    }
+    form->addRow(tr("q-mesh (DOS) (qx·qy·qz):"), meshRow);
 
     dosWidthSpin_ = new QDoubleSpinBox(group);
     dosWidthSpin_->setRange(0.1, 200.0);
@@ -152,7 +159,8 @@ QWidget* PhononWizard::buildSecondSettingsPage()
     for (QDoubleSpinBox* spin : {deltaSpin_, dosWidthSpin_})
         connect(spin, &QDoubleSpinBox::valueChanged, this,
                 [this] { refreshPreview(); });
-    for (QSpinBox* spin : {meshSpin_, supercellSpins_[0], supercellSpins_[1],
+    for (QSpinBox* spin : {meshSpins_[0], meshSpins_[1], meshSpins_[2],
+                           supercellSpins_[0], supercellSpins_[1],
                            supercellSpins_[2]})
         connect(spin, &QSpinBox::valueChanged, this,
                 [this] { refreshPreview(); });
@@ -443,7 +451,8 @@ QString PhononWizard::generateScript() const
                                : 100;
     if (kpath_)
         pc.kpath = kpath_->path().toStdString();
-    pc.dosKptGrid = meshSpin_->value();
+    for (int i = 0; i < 3; ++i)
+        pc.dosKptGrid[i] = meshSpins_[i]->value();
     pc.dosWidthCm = dosWidthSpin_->value();
     pc.acousticSumRule = acousticCheck_->isChecked();
     pc.symmetryReducedDisplacements = symmetryCheck_->isChecked();

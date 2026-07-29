@@ -343,6 +343,9 @@ private:
     void updateStage();
     /// Show only the MACE rows that apply to the selected model source.
     void updateMaceRows();
+    /// The custom checkpoint the MACE model-file dropdown currently names:
+    /// the selected entry's full path, or the hand-typed text.
+    QString maceModelFilePath() const;
     /// Show only the GPAW rows that apply to the selected discretization.
     void updateGpawRows();
     /// Re-fill the "Running:" line from the selected engine's template, unless
@@ -392,9 +395,17 @@ private:
     QComboBox* maceSizeCombo_ = nullptr;
     QComboBox* maceDeviceCombo_ = nullptr;
     QComboBox* macePrecisionCombo_ = nullptr;
-    QLineEdit* maceModelPathEdit_ = nullptr;
+    /// "Custom trained model" only: an editable dropdown listing the model
+    /// checkpoints found in the ML potentials directory (Preferences), with
+    /// Browse… as the escape hatch for files elsewhere. Item data carries the
+    /// absolute path; the edit line accepts a hand-typed one.
+    QWidget* maceModelFileRow_ = nullptr;
+    QComboBox* maceModelFileCombo_ = nullptr;
     QPushButton* maceBrowseButton_ = nullptr;
     QLabel* maceModelPathHint_ = nullptr;
+    /// MACE-MP-0 only: mace_mp(dispersion=True) — the D3(BJ) correction the
+    /// foundation model ships. Hidden for MACE-OFF and custom checkpoints.
+    QCheckBox* maceDispersionCheck_ = nullptr;
 
     // Shared MLIP controls (DeepMD / NequIP / Allegro / CHGNet / MatterSim /
     // FAIRChem). One model-file row and one device selector serve them all;

@@ -1,30 +1,20 @@
 #include "gui/MlwfViewer.hpp"
 
 #include "core/MarchingCubes.hpp"
-#include "core/FermiSurfaceScriptGenerator.hpp"
-#include "core/TopologyScriptGenerator.hpp"
-#include "core/WannierScriptGenerator.hpp"
-#include "gui/GuiUtils.hpp"
 #include "gui/ViewportWidget.hpp"
-#include "gui/FermiSurfaceDialog.hpp"
-#include "gui/TopologyDialog.hpp"
-#include "gui/WannierInterpolationDialog.hpp"
 #include "render/ColorMap.hpp"
 #include "render/StructureRenderer.hpp"
 
 #include <QApplication>
 #include <QDialogButtonBox>
-#include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QMessageBox>
-#include <QPushButton>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -72,44 +62,16 @@ MlwfViewer::MlwfViewer(std::shared_ptr<const core::Structure> structure,
            "the trial-projection overlap metric of the localization."));
     layout->addWidget(functionalLabel_);
 
-    auto* actionRow = new QHBoxLayout;
-    bandsButton_ = new QPushButton(tr("Wannier Interpolation…"), this);
-    bandsButton_->setToolTip(
-        tr("Configure and run a Wannier interpolation (H(R) → H(k)): "
-           "interpolated band structure + projected DOS from the saved "
-           "wavefunctions. Opens in the band/PDOS viewer when it finishes."));
-    connect(bandsButton_, &QPushButton::clicked, this,
-            &MlwfViewer::openInterpolationDialog);
-    actionRow->addWidget(bandsButton_);
-
-    // Both of these consume the SAME localized Hamiltonian the interpolation
-    // does, which is why they live here rather than in a menu: the MLWF run is
-    // the prerequisite, and this is the window that knows one has finished.
-    auto* fermiButton = new QPushButton(tr("Fermi Surface…"), this);
-    fermiButton->setToolTip(
-        tr("Interpolate E_n(k) onto a dense 3D k-grid and extract the sheets "
-           "E_n(k) = E_F, drawn inside the first Brillouin zone.\n\n"
-           "Interpolation is what makes this affordable: a Fermi surface is a "
-           "surface in 3D, so resolving one needs a grid no SCF could pay "
-           "for, while the localized H(R) gives each point for the cost of a "
-           "small diagonalization."));
-    connect(fermiButton, &QPushButton::clicked, this,
-            &MlwfViewer::openFermiSurfaceDialog);
-    actionRow->addWidget(fermiButton);
-
-    auto* topologyButton = new QPushButton(tr("Topological Invariants…"), this);
-    topologyButton->setToolTip(
-        tr("Chern number and Z₂ index from the hybrid Wannier centre "
-           "(Wilson loop) flow of the occupied manifold.\n\n"
-           "Both invariants come from the same object — the Berry phases "
-           "accumulated along one reciprocal direction — and differ only in "
-           "what is counted: the net winding for Chern, the parity of the "
-           "largest-gap crossings for Z₂."));
-    connect(topologyButton, &QPushButton::clicked, this,
-            &MlwfViewer::openTopologyDialog);
-    actionRow->addWidget(topologyButton);
-    actionRow->addStretch(1);
-    layout->addLayout(actionRow);
+    // The Wannier post-processes that consume this run — interpolation,
+    // Fermi surface, topological charge — are standalone Electronics-menu
+    // modules with their own completed-MLWF prerequisite check, so this
+    // window is purely the orbital read-out.
+    auto* hint = new QLabel(
+        tr("Post-process this run under <b>Electronics</b>: Wannier "
+           "Interpolation, Fermi Surface, Topological Charge."),
+        this);
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -190,7 +152,6 @@ void MlwfViewer::loadResults(const QString& jsonPath)
             tr("Trial projection: %1").arg(projection));
     }
 
-    bandsButton_->setEnabled(!jobDir_.isEmpty());
     rebuildOverlay();
 }
 
@@ -289,118 +250,6 @@ void MlwfViewer::rebuildOverlay()
     else
         viewport_->setCustomOverlay(std::move(faces), {}, std::move(ranges),
                                     /*visible=*/true);
-}
-
-namespace {
-
-/// The wavefunction pre-flight both post-processes share: an MLWF started
-/// from a single-point baseline read that baseline's .gpw and wrote none of
-/// its own, so a bare glob of this directory finds nothing.
-bool wavefunctionsAvailable(const QString& jobDir, QString& reason)
-{
-    const QDir dir(jobDir);
-    const QJsonObject meta =
-        readJsonObject(dir.filePath(QStringLiteral("wannier.json")));
-    const QString recorded = meta.value(QStringLiteral("gpw")).toString();
-    if (!recorded.isEmpty() && QFileInfo::exists(recorded))
-        return true;
-    if (!dir.entryList({QStringLiteral("*.gpw")}, QDir::Files).isEmpty())
-        return true;
-    reason = recorded.isEmpty()
-        ? QObject::tr("This MLWF run recorded no path to the GPAW "
-                      "wavefunctions it localized, and left no .gpw in its own "
-                      "directory. Re-run the MLWF calculation — runs from this "
-                      "version record the path.")
-        : QObject::tr("The GPAW wavefunctions this MLWF run localized are no "
-                      "longer at\n\n%1\n\nRe-run the MLWF calculation, or "
-                      "restore that file.")
-              .arg(recorded);
-    return false;
-}
-
-} // namespace
-
-void MlwfViewer::openFermiSurfaceDialog()
-{
-    if (jobDir_.isEmpty())
-        return;
-    QString reason;
-    if (!wavefunctionsAvailable(jobDir_, reason)) {
-        QMessageBox::warning(this, tr("Fermi Surface"), reason);
-        return;
-    }
-    FermiSurfaceDialog dialog(this);
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-    core::FermiSurfaceConfig cfg = dialog.config();
-    cfg.mlwfDir = jobDir_.toStdString();
-    Q_EMIT runRequested(
-        QString::fromStdString(core::generateFermiSurfaceScript(cfg)),
-        tr("Fermi Surface"));
-}
-
-void MlwfViewer::openTopologyDialog()
-{
-    if (jobDir_.isEmpty())
-        return;
-    QString reason;
-    if (!wavefunctionsAvailable(jobDir_, reason)) {
-        QMessageBox::warning(this, tr("Topological Invariants"), reason);
-        return;
-    }
-    TopologyDialog dialog(this);
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-    core::TopologyConfig cfg = dialog.config();
-    cfg.mlwfDir = jobDir_.toStdString();
-    Q_EMIT runRequested(
-        QString::fromStdString(core::generateTopologyScript(cfg)),
-        tr("Topological Invariants"));
-}
-
-void MlwfViewer::openInterpolationDialog()
-{
-    if (jobDir_.isEmpty())
-        return;
-    // Pre-flight, because the alternative is what used to happen: the user
-    // fills in the dialog, the job is staged and queued, and it dies on its
-    // first line with "No GPAW wavefunction (.gpw) found in <dir>". The
-    // interpolation restarts GPAW from the wavefunctions the MLWF run used,
-    // and an MLWF that started from a single-point baseline read those from
-    // another job's directory without writing a copy of its own.
-    const QDir dir(jobDir_);
-    const QJsonObject meta =
-        readJsonObject(dir.filePath(QStringLiteral("wannier.json")));
-    const QString recorded = meta.value(QStringLiteral("gpw")).toString();
-    const bool haveRecorded =
-        !recorded.isEmpty() && QFileInfo::exists(recorded);
-    const bool haveLocal =
-        !dir.entryList({QStringLiteral("*.gpw")}, QDir::Files).isEmpty();
-    if (!haveRecorded && !haveLocal) {
-        QMessageBox::warning(
-            this, tr("Wannier Interpolation"),
-            recorded.isEmpty()
-                ? tr("This MLWF run recorded no path to the GPAW wavefunctions "
-                     "it localized, and left no .gpw in its own directory.\n\n"
-                     "That happens when it started from a single-point "
-                     "baseline: it read the wavefunctions from that job's "
-                     "directory and wrote none of its own. Runs from this "
-                     "version of Calango record the path; re-run the MLWF "
-                     "calculation and the interpolation will find it.")
-                : tr("The GPAW wavefunctions this MLWF run localized are no "
-                     "longer at\n\n%1\n\nRe-run the MLWF calculation, or "
-                     "restore that file.")
-                      .arg(recorded));
-        return;
-    }
-
-    WannierInterpolationDialog dialog(structure_, this);
-    if (dialog.exec() != QDialog::Accepted)
-        return;
-    const QString script = QString::fromStdString(
-        core::generateWannierInterpolationScript(jobDir_.toStdString(),
-                                                 dialog.config()));
-    Q_EMIT runRequested(script, tr("Wannier Interpolation"));
 }
 
 } // namespace calango::gui

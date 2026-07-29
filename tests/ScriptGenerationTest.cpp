@@ -561,6 +561,22 @@ int main(int argc, char** argv)
         checkContains(script, "MACECalculator", "custom checkpoint calculator");
         checkContains(script, "model_paths=r\"/models/fine_tuned.pt\"",
                       "custom weights path");
+        check(!contains(script, "dispersion="),
+              "custom checkpoints take no dispersion flag");
+    }
+    {
+        // MP-0's Dispersion checkbox maps to mace_mp's constructor argument,
+        // off by default; mace_off never receives the flag.
+        CalculatorConfig c = maceConfig();
+        checkContains(AseScriptGenerator::calculatorSnippet(c),
+                      "dispersion=False", "dispersion defaults to off");
+        c.maceDispersion = true;
+        checkContains(AseScriptGenerator::calculatorSnippet(c),
+                      "dispersion=True", "dispersion flag reaches mace_mp");
+        c.maceSource = MaceModelSource::FoundationOFF;
+        check(!contains(AseScriptGenerator::calculatorSnippet(c),
+                        "dispersion="),
+              "mace_off takes no dispersion flag");
     }
 
     // -- GPAW parameter expansion -------------------------------------------
@@ -2159,19 +2175,36 @@ int main(int argc, char** argv)
         c.gpawXc = "PBEsol";
         const std::string script =
             AseScriptGenerator::generate(c, "structure.extxyz");
-        checkContains(script, "from ase.calculators.dftd4 import DFTD4",
-                      "imports the ASE DFTD4 wrapper");
+        checkContains(script, "from dftd4.ase import DFTD4",
+                      "imports the dftd4 package's own calculator");
+        checkContains(script, "from ase.calculators.mixing import SumCalculator",
+                      "couples through ASE's SumCalculator");
         // The damping parameters are fitted per functional, so D4 must be told
         // which one it corrects — following the calculator's own xc.
-        checkContains(script, "atoms.calc = DFTD4(method=\"PBEsol\", calc=atoms.calc)",
-                      "wraps the calculator and follows its functional");
+        checkContains(
+            script,
+            "atoms.calc = SumCalculator([DFTD4(method=\"PBEsol\"), atoms.calc])",
+            "sums D4 onto the calculator and follows its functional");
     }
     {
-        // The wrap must apply to every calculator, not just GPAW.
+        // The coupling must apply to every calculator, not just GPAW.
         CalculatorConfig c = maceConfig();
         c.dispersionD4 = true;
         checkContains(AseScriptGenerator::generate(c, "structure.extxyz"),
-                      "calc=atoms.calc)", "wraps a non-DFT calculator too");
+                      "SumCalculator([DFTD4(method=\"PBE\"), atoms.calc])",
+                      "couples D4 to a non-DFT calculator too");
+    }
+    {
+        // vdW-corrected functionals (VV10, rVV10, the vdW-DF family) go
+        // through libvdwxc's backend dict, not the plain xc string.
+        CalculatorConfig c = gpawConfig();
+        c.gpawXc = "rVV10";
+        checkContains(AseScriptGenerator::generate(c, "structure.extxyz"),
+                      "xc={\"name\": \"rVV10\", \"backend\": \"libvdwxc\"}",
+                      "vdW functional selects the libvdwxc backend");
+        c.gpawXc = "PBE";
+        checkContains(AseScriptGenerator::generate(c, "structure.extxyz"),
+                      "xc=\"PBE\"", "semilocal functionals keep the string form");
     }
 
     // -- GW quasiparticle pipelines -----------------------------------------

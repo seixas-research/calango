@@ -161,6 +161,8 @@ Q_SIGNALS:
     void connectionRequested(WorkflowNodeItem* from, WorkflowNodeItem* to);
     /// The user double-clicked a node — open its setup wizard.
     void nodeActivated(WorkflowNodeItem* node);
+    /// The user double-clicked empty canvas — add a new process node there.
+    void addNodeRequested(const QPointF& scenePos);
 
 protected:
     void mousePressEvent(QGraphicsSceneMouseEvent* event) override;
@@ -240,6 +242,9 @@ Q_SIGNALS:
 
 private Q_SLOTS:
     void addNode();
+    /// Double-click on empty canvas: same Add Process dialog, but the new
+    /// node lands where the user clicked.
+    void addNodeAt(const QPointF& scenePos);
     void removeSelected();
     void onJobFinished(int exitCode, bool crashed);
     /// Double-click: open the node's standard setup wizard in workflow mode
@@ -247,6 +252,9 @@ private Q_SLOTS:
     void openNodeWizard(WorkflowNodeItem* node);
 
 private:
+    /// The Add Process dialog; on accept, creates the node (at `scenePos`
+    /// when given, else staggered left-to-right).
+    void promptAddNode(const QPointF* scenePos);
     void connectNodes(WorkflowNodeItem* from, WorkflowNodeItem* to);
     /// True if linking from→to would close a cycle (child reaches parent).
     bool wouldCreateCycle(WorkflowNodeItem* from, WorkflowNodeItem* to) const;

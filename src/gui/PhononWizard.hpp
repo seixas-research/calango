@@ -107,7 +107,7 @@ private:
     QCheckBox* acousticCheck_ = nullptr;
     QCheckBox* symmetryCheck_ = nullptr;  ///< symmetry-reduced displacements
     QCheckBox* residualCheck_ = nullptr;  ///< remove residual forces
-    QSpinBox* meshSpin_ = nullptr;
+    QSpinBox* meshSpins_[3] = {nullptr, nullptr, nullptr}; ///< qx, qy, qz
     QDoubleSpinBox* dosWidthSpin_ = nullptr;
     EmbeddedKPathEditor* kpath_ = nullptr;
 

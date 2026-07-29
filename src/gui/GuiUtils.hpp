@@ -143,4 +143,27 @@ protected:
 /// matching QJsonValue::toDouble()'s contract.
 std::vector<double> toDoubleVector(const QJsonArray& array);
 
+/// Whether the GPAW wavefunctions (.gpw) an MLWF run localized are still
+/// reachable — the pre-flight every Wannier post-process (interpolation,
+/// Fermi surface, topological invariants) runs before staging a job that
+/// would otherwise die on its first line. An MLWF started from a single-point
+/// baseline read that baseline's .gpw and wrote none of its own, so a bare
+/// glob of the MLWF directory finds nothing; the recorded path in
+/// wannier.json is checked first. On failure `reason` (if non-null) receives
+/// the user-facing explanation.
+bool mlwfWavefunctionsAvailable(const QString& jobDir, QString* reason);
+
+/// Schönflies symbol of a crystallographic point group given its
+/// Hermann-Mauguin (international) symbol as spglib reports it — e.g.
+/// "3m" → "C<sub>3v</sub>", "m-3m" → "O<sub>h</sub>". Rich text (HTML
+/// subscripts), ready for a QLabel. Empty when the symbol is not one of the
+/// 32 crystallographic point groups.
+QString schoenfliesPointGroup(const QString& hermannMauguin);
+
+/// "3m (C<sub>3v</sub>)" — the Hermann-Mauguin symbol with its Schönflies
+/// counterpart appended, falling back to the plain H-M symbol when the
+/// Schönflies form is unknown. Shared by the Symmetry and Raman Modes
+/// dialogs so the two labels cannot drift apart.
+QString pointGroupDisplay(const QString& hermannMauguin);
+
 } // namespace calango::gui

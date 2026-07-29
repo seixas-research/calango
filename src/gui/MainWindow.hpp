@@ -376,6 +376,21 @@ private Q_SLOTS:
     /// selection + per-engine Conda env). The viewer opens when the job
     /// finishes.
     void showWannier();
+    /// Electronics → "Wannier Interpolation…": interpolated band structure +
+    /// projected DOS (H(R) → H(k)) from a completed MLWF run.
+    void showWannierInterpolation();
+    /// Electronics → "Fermi Surface…": E_n(k) = E_F sheets on a dense
+    /// interpolated k-grid, from a completed MLWF run.
+    void showFermiSurface();
+    /// Electronics → "Topological Charge…": Chern number / Z₂ index from the
+    /// hybrid Wannier centre flow, from a completed MLWF run.
+    void showTopologicalCharge();
+    /// The strict prerequisite shared by the three Wannier post-processes
+    /// above: a successfully completed MLWF process whose localized
+    /// wavefunctions are still reachable. Returns the chosen run's directory
+    /// (asking when there are several), or empty — with the user already
+    /// told why — when the prerequisite is not met.
+    QString selectCompletedMlwfRun(const QString& title);
     /// Completed processes that saved GPAW wavefunctions (.gpw), as (label,
     /// directory) pairs — the baselines the MLWF post-process can restart from.
     QList<QPair<QString, QString>> gpawBaselines() const;

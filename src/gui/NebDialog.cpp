@@ -215,9 +215,9 @@ NebDialog::NebDialog(std::vector<NamedStructure> openDocs, QWidget* parent)
     dispersionD4Check_ =
         new QCheckBox(tr("van der Waals Correction (DFTD4)"), calcBox);
     dispersionD4Check_->setToolTip(
-        tr("Wrap the calculator in ASE's DFTD4, adding Grimme's D4 dispersion "
-           "energy and forces. Needs the dftd4 package in the job "
-           "environment."));
+        tr("Couple the calculator with DFTD4 through ASE's SumCalculator, "
+           "adding Grimme's D4 dispersion energy and forces. Needs the dftd4 "
+           "package in the job environment."));
     // No connect: this dialog builds its script when the run is launched
     // rather than previewing it live, so the checkbox is simply read then.
     calcForm->addRow(dispersionD4Check_);
