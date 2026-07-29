@@ -67,8 +67,10 @@ void JobRunner::start(const QString& commandLine, const QString& pythonExe,
     // per-process thread pools used by numpy/BLAS and OpenMP-parallel solvers;
     // 0 leaves the environment untouched (let the libraries auto-detect). Set
     // before the interpreter starts so it takes effect ahead of numpy import.
+    // The fallback matches SettingsManager's managed default of 1 thread —
+    // MPI ranks and a threaded BLAS would fight for the same cores.
     const int ompThreads = QSettings().value(QStringLiteral("jobs/ompThreads"),
-                                             0).toInt();
+                                             1).toInt();
     if (ompThreads > 0) {
         const QString value = QString::number(ompThreads);
         for (const auto* var : {"OMP_NUM_THREADS", "MKL_NUM_THREADS",

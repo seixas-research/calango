@@ -53,7 +53,11 @@ PointOfViewDialog::PointOfViewDialog(ViewportWidget* viewport, QWidget* parent)
     , viewport_(viewport)
 {
     setWindowTitle(tr("Set Point-of-View"));
-    resize(440, 560);
+    // Tall enough that the intro note, the three group boxes and the saved-
+    // views list are all fully visible without clipping or scrolling; the
+    // minimum keeps a stray drag from squeezing rows out of sight again.
+    resize(560, 780);
+    setMinimumSize(520, 700);
 
     auto* layout = new QVBoxLayout(this);
 

@@ -30,7 +30,21 @@ QColor OpticsPlotStyle::effectiveGridColor() const
     return color;
 }
 
+QColor OpticsPlotStyle::effectiveThresholdBandColor() const
+{
+    QColor color = thresholdBandColor;
+    color.setAlphaF(qBound(0.0, thresholdBandOpacity, 1.0));
+    return color;
+}
+
 OpticsPlotStyleDialog::OpticsPlotStyleDialog(const OpticsPlotStyle& style,
+                                             QWidget* parent)
+    : OpticsPlotStyleDialog(style, /*withThresholdBand=*/false, parent)
+{
+}
+
+OpticsPlotStyleDialog::OpticsPlotStyleDialog(const OpticsPlotStyle& style,
+                                             bool withThresholdBand,
                                              QWidget* parent)
     : QDialog(parent)
     , style_(style)
@@ -97,6 +111,47 @@ OpticsPlotStyleDialog::OpticsPlotStyleDialog(const OpticsPlotStyle& style,
            "0.3–0.5 keeps it readable as a reference without doing so."));
     gridForm->addRow(tr("Grid opacity:"), gridAlphaSpin_);
     layout->addWidget(gridGroup);
+
+    if (withThresholdBand) {
+        auto* bandGroup = new QGroupBox(tr("Threshold Band"), this);
+        auto* bandForm = new QFormLayout(bandGroup);
+        bandButton_ = colorButton(&style_.thresholdBandColor);
+        bandForm->addRow(tr("Band color:"), bandButton_);
+        bandPatternCombo_ = new QComboBox(bandGroup);
+        bandPatternCombo_->addItem(tr("Diagonal hatch (⟋)"),
+                                   static_cast<int>(Qt::BDiagPattern));
+        bandPatternCombo_->addItem(tr("Diagonal hatch (⟍)"),
+                                   static_cast<int>(Qt::FDiagPattern));
+        bandPatternCombo_->addItem(tr("Cross hatch"),
+                                   static_cast<int>(Qt::DiagCrossPattern));
+        bandPatternCombo_->addItem(tr("Dotted fill"),
+                                   static_cast<int>(Qt::Dense4Pattern));
+        bandPatternCombo_->addItem(tr("Solid fill"),
+                                   static_cast<int>(Qt::SolidPattern));
+        bandForm->addRow(tr("Fill pattern:"), bandPatternCombo_);
+        bandOpacitySpin_ = new QDoubleSpinBox(bandGroup);
+        bandOpacitySpin_->setRange(0.05, 1.0);
+        bandOpacitySpin_->setSingleStep(0.05);
+        bandOpacitySpin_->setDecimals(2);
+        bandOpacitySpin_->setToolTip(
+            tr("Band opacity. The corridor is context, not data — keep it "
+               "light enough that the curve stays the loudest thing on the "
+               "plot."));
+        bandForm->addRow(tr("Opacity:"), bandOpacitySpin_);
+        layout->addWidget(bandGroup);
+
+        connect(bandPatternCombo_, &QComboBox::currentIndexChanged, this,
+                [this] {
+                    style_.thresholdBandPattern = static_cast<Qt::BrushStyle>(
+                        bandPatternCombo_->currentData().toInt());
+                    emitStyle();
+                });
+        connect(bandOpacitySpin_, &QDoubleSpinBox::valueChanged, this,
+                [this](double v) {
+                    style_.thresholdBandOpacity = v;
+                    emitStyle();
+                });
+    }
 
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Close | QDialogButtonBox::RestoreDefaults, this);
@@ -192,6 +247,16 @@ void OpticsPlotStyleDialog::syncToControls()
     paintSwatch(curveButton_, style_.curveColor);
     paintSwatch(labelButton_, style_.axisLabelColor);
     paintSwatch(gridButton_, style_.gridColor);
+
+    // Present only when the dialog was built with the band group.
+    if (bandButton_) {
+        const QSignalBlocker b8(bandPatternCombo_);
+        const QSignalBlocker b9(bandOpacitySpin_);
+        paintSwatch(bandButton_, style_.thresholdBandColor);
+        bandPatternCombo_->setCurrentIndex(bandPatternCombo_->findData(
+            static_cast<int>(style_.thresholdBandPattern)));
+        bandOpacitySpin_->setValue(style_.thresholdBandOpacity);
+    }
 }
 
 void OpticsPlotStyleDialog::restoreDefaults()

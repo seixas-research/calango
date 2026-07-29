@@ -137,6 +137,14 @@ private Q_SLOTS:
     void redo();
 
     void singlePointCalculation();
+    /// Modules → Parameters Convergence → "Plane-wave Cutoff Convergence…":
+    /// single points over an ascending cutoff list, judged against the run at
+    /// the highest cutoff.
+    void planeWaveCutoffConvergence();
+    /// Modules → Parameters Convergence → "K-points Convergence…": single
+    /// points over an ascending sequence of Monkhorst-Pack meshes, judged
+    /// against the densest one.
+    void kPointsConvergence();
     void geometryOptimization();
     void molecularDynamics();
     void openMonteCarlo();
@@ -236,6 +244,11 @@ private Q_SLOTS:
     /// forward) is a no-op — this must never write one run's moments onto a
     /// different system.
     void adoptSinglePointResults(const QString& directory);
+    /// Open the two-panel convergence window (energy per atom and maximum
+    /// force vs. the swept parameter) on a finished sweep's directory —
+    /// cutoff_convergence.json / kpoints_convergence.json respectively.
+    void openCutoffConvergenceResults(const QString& directory);
+    void openKpointsConvergenceResults(const QString& directory);
     /// Open the Geometry Optimization Viewer on a finished relaxation's
     /// directory (reads geometry_optimization.json + opt.traj).
     void openGeometryOptimizationResults(const QString& directory);

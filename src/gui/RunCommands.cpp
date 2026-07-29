@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSettings>
+#include <QThread>
 
 #include <algorithm>
 
@@ -90,7 +91,10 @@ void setTemplateFor(core::CalculatorKind kind, const QString& commandTemplate)
 
 int cores()
 {
-    return QSettings().value(QLatin1String(SettingsManager::kRunCores), 1).toInt();
+    return QSettings()
+        .value(QLatin1String(SettingsManager::kRunCores),
+               std::max(1, QThread::idealThreadCount() / 2))
+        .toInt();
 }
 
 void setCores(int coreCount)

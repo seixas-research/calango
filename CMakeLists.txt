@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.69
+    VERSION 26.7.70
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -204,6 +204,10 @@ qt_add_executable(calango
     src/core/ClusterExpansionScriptGenerator.cpp
     src/core/RandomNoiseScriptGenerator.hpp
     src/core/RandomNoiseScriptGenerator.cpp
+    src/core/CutoffConvergenceScriptGenerator.hpp
+    src/core/CutoffConvergenceScriptGenerator.cpp
+    src/core/KpointsConvergenceScriptGenerator.hpp
+    src/core/KpointsConvergenceScriptGenerator.cpp
     src/core/CddScriptGenerator.hpp
     src/core/CddScriptGenerator.cpp
     src/core/XasScriptGenerator.hpp
@@ -463,6 +467,12 @@ qt_add_executable(calango
     src/gui/MolecularDynamicsWizard.cpp
     src/gui/SinglePointWizard.hpp
     src/gui/SinglePointWizard.cpp
+    src/gui/CutoffConvergenceWizard.hpp
+    src/gui/CutoffConvergenceWizard.cpp
+    src/gui/KpointsConvergenceWizard.hpp
+    src/gui/KpointsConvergenceWizard.cpp
+    src/gui/ConvergenceResultsWindow.hpp
+    src/gui/ConvergenceResultsWindow.cpp
     src/gui/RandomNoiseWizard.hpp
     src/gui/RandomNoiseWizard.cpp
     src/gui/CddWizard.hpp
@@ -1115,6 +1125,10 @@ if(CALANGO_BUILD_TESTS)
         # so the headless dialog test constructs it fine.
         src/render/ShaderProfile.cpp
         src/core/RandomNoiseScriptGenerator.cpp
+        src/gui/CutoffConvergenceWizard.cpp
+        src/core/CutoffConvergenceScriptGenerator.cpp
+        src/gui/KpointsConvergenceWizard.cpp
+        src/core/KpointsConvergenceScriptGenerator.cpp
         src/core/CddScriptGenerator.cpp
         src/core/Noise.cpp
         src/gui/SimulationWizardBase.cpp

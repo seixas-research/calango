@@ -1112,6 +1112,17 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
     }
     kptRow->addStretch(1);
     bzForm->addRow(tr("k-point grid (Monkhorst-Pack):"), kptRow);
+    // Hidden once at build time when the wizard's sweep stage owns the mesh
+    // (K-points Convergence): unlike the cutoff row this one is never
+    // re-toggled per engine — bzGroup_ visibility handles that wholesale — so
+    // there is no dynamic site to gate.
+    if (!showsKpointGridRow()) {
+        int row = -1;
+        QFormLayout::ItemRole role{};
+        bzForm->getLayoutPosition(kptRow, &row, &role);
+        if (row >= 0)
+            bzForm->setRowVisible(row, false);
+    }
 
     // Γ-centered mesh (gamma=True) — GPAW k-point option, offered for every
     // GPAW wizard.
@@ -1437,8 +1448,12 @@ void SimulationWizardBase::updateGpawRows()
     // Also hidden when the whole calculator is inherited from a baseline SCF:
     // the cutoff is then fixed by that .gpw and offering it would invite an
     // edit that the restart ignores.
+    // ... and hidden outright for a wizard whose sweep stage owns the cutoff
+    // (Cutoff Convergence) — there the row would be a control the generated
+    // script ignores.
     setRowVisible(cutoffSpin_, mode == core::GpawMode::PlaneWave
-                      && !inheritsCalculatorFromBaseline());
+                      && !inheritsCalculatorFromBaseline()
+                      && showsPlaneWaveCutoffRow());
 }
 
 // ---------------------------------------------------------------------------
@@ -1573,8 +1588,12 @@ void SimulationWizardBase::updateCalculatorEnabled()
     }
 
     // GPAW-only Brillouin-zone options: Γ-centering and the symmetry toggle
-    // share one row, so the row hides as a unit for non-GPAW engines.
-    setFormRowVisible(bzGroup_, gpawBzTogglesRow_, isGpaw);
+    // share one row, so the row hides as a unit for non-GPAW engines — and
+    // for a wizard whose sweep stage owns the mesh (K-points Convergence),
+    // where Γ-centering is defined with the rest of the sweep and a second
+    // toggle here would be a control the generated script ignores.
+    setFormRowVisible(bzGroup_, gpawBzTogglesRow_,
+                      isGpaw && showsKpointGridRow());
 
     // The XC note applies only to the script-template DFT backends; GPAW picks
     // XC in its own combo. Mode / grid / basis / XC combo and the density
@@ -1610,7 +1629,8 @@ void SimulationWizardBase::updateCalculatorEnabled()
     if (isGpaw)
         updateGpawRows();
     else
-        setFormRowVisible(modeBasisGroup_, cutoffSpin_, isDft);
+        setFormRowVisible(modeBasisGroup_, cutoffSpin_,
+                          isDft && showsPlaneWaveCutoffRow());
     if (inheritGpaw) {
         setFormRowVisible(modeBasisGroup_, gpawXcCombo_, false);
         setFormRowVisible(modeBasisGroup_, gpawModeCombo_, false);

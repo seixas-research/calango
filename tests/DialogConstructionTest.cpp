@@ -27,6 +27,8 @@
 #include "gui/XasWizard.hpp"
 #include "gui/EditVolumetricRenderDialog.hpp"
 #include "gui/GuiUtils.hpp"
+#include "gui/CutoffConvergenceWizard.hpp"
+#include "gui/KpointsConvergenceWizard.hpp"
 #include "gui/RandomNoiseWizard.hpp"
 #include "gui/SinglePointWizard.hpp"
 #include "gui/TwoDBandsWizard.hpp"
@@ -314,6 +316,112 @@ int main(int argc, char** argv)
         }
         check(!wizard.script().isEmpty(),
               "the review stage has a script to show");
+    }
+
+    // The Cutoff Convergence wizard restricts the engine combo to GPAW and
+    // generates a sweep script whose loop variable replaces the calculator
+    // page's single cutoff — both worth pinning at construction, since either
+    // regressing would produce a sweep that quietly varies nothing.
+    std::printf("Cutoff Convergence wizard:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        CutoffConvergenceWizard wizard;
+        check(true, "constructs");
+        auto* engine = wizard.findChild<QComboBox*>();
+        check(engine != nullptr && engine->count() == 1
+                  && engine->findData(static_cast<int>(
+                         calango::core::CalculatorKind::Gpaw)) == 0,
+              "offers exactly one engine, GPAW");
+        // The preview is generated on entering the review stage or on a sweep
+        // edit — drive the latter, as a user adjusting the stride would.
+        const auto spins = wizard.findChildren<QDoubleSpinBox*>();
+        for (QDoubleSpinBox* spin : spins) {
+            if (spin->suffix().contains(QStringLiteral("eV"))) {
+                spin->setValue(spin->value() + spin->singleStep());
+                break;
+            }
+        }
+        const QString script = wizard.script();
+        check(script.contains(QStringLiteral("mode=PW(ecut)")),
+              "the script sweeps the cutoff, not a fixed PW(...)");
+        check(script.contains(QStringLiteral("cutoff_convergence.json")),
+              "and writes the results file the viewer reads");
+        check(script.contains(QStringLiteral("CUTOFFS = [")),
+              "with an explicit cutoff list");
+        // The three convergence metrics the viewer plots: ΔE/atom, the
+        // atom-wise force error, and the band-energy MAD.
+        check(script.contains(QStringLiteral("delta_energy_per_atom_eV"))
+                  && script.contains(QStringLiteral("force_error_eV_per_A"))
+                  && script.contains(QStringLiteral("eigenvalue_mad_eV")),
+              "computes all three convergence metrics vs the reference");
+        // The sweep owns the cutoff, so the calculator page must not offer a
+        // second, single-value cutoff field the script would ignore. The
+        // page is stage 2 — advance to it, or every widget on it reports
+        // invisible regardless of the row state and the check is vacuous.
+        wizard.show(); // isVisibleTo() needs the page realized
+        for (QPushButton* button : wizard.findChildren<QPushButton*>())
+            if (button->text().contains(QStringLiteral("Next"))) {
+                button->click();
+                break;
+            }
+        bool cutoffRowShown = false;
+        for (const QDoubleSpinBox* spin :
+             wizard.findChildren<QDoubleSpinBox*>())
+            cutoffRowShown = cutoffRowShown
+                || (spin->suffix().contains(QStringLiteral("eV"))
+                    && spin->maximum() == 2000.0 && spin->isVisibleTo(&wizard));
+        check(!cutoffRowShown,
+              "the calculator page hides the single-cutoff row");
+    }
+
+    // The K-points Convergence wizard is the cutoff sweep's sibling: GPAW
+    // only, mesh list generated from min/max/stride and the axis toggles,
+    // k-grid row hidden on the calculator page for the same reason the
+    // cutoff sweep hides the cutoff row.
+    std::printf("K-points Convergence wizard:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        KpointsConvergenceWizard wizard;
+        check(true, "constructs");
+        auto* engine = wizard.findChild<QComboBox*>();
+        check(engine != nullptr && engine->count() == 1
+                  && engine->findData(static_cast<int>(
+                         calango::core::CalculatorKind::Gpaw)) == 0,
+              "offers exactly one engine, GPAW");
+        // Drive a sweep control so the preview regenerates (see above).
+        const auto spins = wizard.findChildren<QSpinBox*>();
+        check(!spins.isEmpty(), "has sweep spin boxes");
+        if (!spins.isEmpty())
+            spins.first()->setValue(spins.first()->value() + 1);
+        const QString script = wizard.script();
+        check(script.contains(QStringLiteral("kpts=tuple(kpts)"))
+                  || script.contains(
+                      QStringLiteral("kpts={\"size\": tuple(kpts)")),
+              "the script sweeps the mesh, not a fixed kpts=(…)");
+        check(script.contains(QStringLiteral("kpoints_convergence.json")),
+              "and writes the results file the viewer reads");
+        check(script.contains(QStringLiteral("MESHES = [")),
+              "with an explicit mesh list");
+        check(script.contains(QStringLiteral("delta_energy_per_atom_eV"))
+                  && script.contains(QStringLiteral("force_error_eV_per_A"))
+                  && script.contains(QStringLiteral("eigenvalue_mad_eV")),
+              "computes all three convergence metrics vs the reference");
+        // The sweep stage's Γ toggle must reach the generated calculator.
+        // The base class builds its own (hidden) "Gamma-centered Grid" box
+        // with the same label, so check every match — the sweep stage's one
+        // is what runConfig() reads.
+        int gammaBoxes = 0;
+        for (QCheckBox* box : wizard.findChildren<QCheckBox*>())
+            if (box->text().contains(QStringLiteral("Gamma"))) {
+                box->setChecked(true);
+                ++gammaBoxes;
+            }
+        check(gammaBoxes > 0, "offers Γ-centering on the sweep stage");
+        if (gammaBoxes > 0)
+            check(wizard.script().contains(
+                      QStringLiteral("kpts={\"size\": tuple(kpts), "
+                                     "\"gamma\": True}")),
+                  "and checking it emits a Γ-centered mesh");
     }
 
     // The plane-wave cutoff is only a parameter of the plane-wave basis. In FD

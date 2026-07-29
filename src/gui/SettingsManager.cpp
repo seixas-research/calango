@@ -11,6 +11,7 @@
 #include <QThread>
 #include <QVariant>
 
+#include <algorithm>
 #include <array>
 
 namespace calango::gui {
@@ -31,7 +32,9 @@ std::array<Managed, 19> managedKeys()
     return {{
         {SettingsManager::kTheme, QStringLiteral("system")},
         // 0 = "auto" (leave the environment untouched); >0 pins OMP_NUM_THREADS.
-        {SettingsManager::kOmpThreads, QThread::idealThreadCount()},
+        // Default 1: the engines parallelize over MPI ranks, and a threaded
+        // BLAS underneath an MPI decomposition fights it for the same cores.
+        {SettingsManager::kOmpThreads, 1},
         {SettingsManager::kCondaDir, QString()},
         // Empty means "use the shipped default", which is resolved at read
         // time rather than baked in here: the home directory is not knowable
@@ -45,7 +48,10 @@ std::array<Managed, 19> managedKeys()
         // Per-calculator launch command templates (Preferences → "Run"), also
         // a JSON-object string. Empty = every engine uses its shipped default.
         {SettingsManager::kRunCommands, QString()},
-        {SettingsManager::kRunCores, 1},
+        // Half the machine's cores: enough parallelism to be useful out of the
+        // box without claiming a workstation that is running anything else.
+        {SettingsManager::kRunCores,
+         std::max(1, QThread::idealThreadCount() / 2)},
         // Exposed as a top-level `show_welcome_screen` boolean in settings.json.
         {SettingsManager::kShowWelcome, true, "show_welcome_screen"},
         {SettingsManager::kEnvFilePath, QString()},

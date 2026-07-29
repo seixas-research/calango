@@ -44,6 +44,9 @@
 #include "gui/RandomNoiseWizard.hpp"
 #include "gui/CddWizard.hpp"
 #include "gui/CondaEnvs.hpp"
+#include "gui/ConvergenceResultsWindow.hpp"
+#include "gui/CutoffConvergenceWizard.hpp"
+#include "gui/KpointsConvergenceWizard.hpp"
 #include "gui/EnginePresets.hpp"
 #include "gui/SinglePointWizard.hpp"
 #include "gui/MonteCarloWizard.hpp"
@@ -116,6 +119,8 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QGuiApplication>
+#include <QScreen>
+#include <QScrollArea>
 #include <QStyleHints>
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -915,8 +920,16 @@ void MainWindow::createMenusAndDocks()
     // Supercell creation is unified under Build → Supercell (Transformation
     // Matrix); the old Edit → Unit Cell → Create Supercell entry was removed.
     editMenu->addSeparator();
-    editMenu->addAction(tr("&Preferences…"), QKeySequence::Preferences,
-                        this, &MainWindow::showPreferences);
+    // Ctrl+P (⌘P on macOS — Qt maps the Ctrl modifier to Command there).
+    // Spelled literally instead of QKeySequence::Preferences so the shortcut
+    // is the same on every platform; nothing in the app prints, so the
+    // conventional Print binding is free.
+    QAction* preferencesAction =
+        editMenu->addAction(tr("&Preferences…"), QKeySequence(tr("Ctrl+P")),
+                            this, &MainWindow::showPreferences);
+    // Application-wide, so Preferences opens even while a results window or
+    // undocked panel has focus rather than only from the main window.
+    preferencesAction->setShortcutContext(Qt::ApplicationShortcut);
     updateUndoActions();
 
 #ifdef Q_OS_MACOS
@@ -1172,6 +1185,25 @@ void MainWindow::createMenusAndDocks()
                           this, &MainWindow::openSqsBuilder);
     alloysMenu->addAction(tr("&Warren-Cowley Analysis…"),
                           this, &MainWindow::showWarrenCowley);
+
+    // Parameters Convergence: sweeps that answer "is this setting tight
+    // enough?" with a curve instead of folklore. The plane-wave cutoff is the
+    // first; a k-point sweep is the natural next tenant.
+    QMenu* convergenceMenu =
+        modulesMenu->addMenu(tr("&Parameters Convergence"));
+    convergenceMenu
+        ->addAction(tr("Plane-wave &Cutoff Convergence…"), this,
+                    &MainWindow::planeWaveCutoffConvergence)
+        ->setToolTip(tr("Single points over a range of PW cutoffs; energy "
+                        "per atom and maximum force plotted against the "
+                        "cutoff, referenced to the highest one"));
+    convergenceMenu
+        ->addAction(tr("&K-points Convergence…"), this,
+                    &MainWindow::kPointsConvergence)
+        ->setToolTip(tr("Single points over a sequence of Monkhorst-Pack "
+                        "meshes; energy per atom and maximum force plotted "
+                        "against the mesh density, referenced to the densest "
+                        "one"));
 
     // Help trails the menu bar: online resources first, About last (as is
     // conventional). New documentation/support links belong in kHelpLinks.
@@ -4076,6 +4108,36 @@ void MainWindow::openSinglePointResults(const QString& directory)
     viewer->show();
 }
 
+void MainWindow::openCutoffConvergenceResults(const QString& directory)
+{
+    auto* window = new ConvergenceResultsWindow(
+        ConvergenceResultsWindow::Sweep::PlaneWaveCutoff, directory, this);
+    if (!window->hasData()) {
+        delete window;
+        statusBar()->showMessage(
+            tr("Could not read cutoff_convergence.json in %1.")
+                .arg(directory));
+        return;
+    }
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    window->show();
+}
+
+void MainWindow::openKpointsConvergenceResults(const QString& directory)
+{
+    auto* window = new ConvergenceResultsWindow(
+        ConvergenceResultsWindow::Sweep::KpointGrid, directory, this);
+    if (!window->hasData()) {
+        delete window;
+        statusBar()->showMessage(
+            tr("Could not read kpoints_convergence.json in %1.")
+                .arg(directory));
+        return;
+    }
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    window->show();
+}
+
 int MainWindow::registerDensityCubes(const QString& directory)
 {
     if (!volumetricPanel_)
@@ -4268,6 +4330,10 @@ std::vector<MainWindow::ViewerEntry> MainWindow::viewersFor(
     static const std::vector<ViewerEntry> kAll = {
         {"single_point.json", tr("Single-Point Viewer"),
          &MainWindow::openSinglePointResults},
+        {"cutoff_convergence.json", tr("Cutoff Convergence Viewer"),
+         &MainWindow::openCutoffConvergenceResults},
+        {"kpoints_convergence.json", tr("K-points Convergence Viewer"),
+         &MainWindow::openKpointsConvergenceResults},
         {"geometry_optimization.json", tr("Geometry Optimization Viewer"),
          &MainWindow::openGeometryOptimizationResults},
         {"born_charges.json", tr("Born Effective Charges Viewer"),
@@ -4807,6 +4873,15 @@ void MainWindow::onProcessResultRequested(const QString& directory)
     }
     if (QFile::exists(directory + QStringLiteral("/xas.json"))) {
         openXasResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/cutoff_convergence.json"))) {
+        openCutoffConvergenceResults(directory);
+        return;
+    }
+    if (QFile::exists(directory
+                      + QStringLiteral("/kpoints_convergence.json"))) {
+        openKpointsConvergenceResults(directory);
         return;
     }
     if (QFile::exists(directory + QStringLiteral("/single_point.json"))) {
@@ -5903,6 +5978,24 @@ void MainWindow::singlePointCalculation()
     runSimulationWizard(wizard, tr("Single-Point Calculation"), /*expectFrames=*/false);
 }
 
+void MainWindow::planeWaveCutoffConvergence()
+{
+    if (!prepareSimulation(tr("Plane-wave Cutoff Convergence")))
+        return;
+    CutoffConvergenceWizard wizard(this);
+    runSimulationWizard(wizard, tr("Cutoff Convergence"),
+                        /*expectFrames=*/false);
+}
+
+void MainWindow::kPointsConvergence()
+{
+    if (!prepareSimulation(tr("K-points Convergence")))
+        return;
+    KpointsConvergenceWizard wizard(this);
+    runSimulationWizard(wizard, tr("K-points Convergence"),
+                        /*expectFrames=*/false);
+}
+
 void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
                                      const QString& label, bool expectFrames)
 {
@@ -6703,6 +6796,19 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         if (!QFile::exists(lastJobDir_ + QStringLiteral("/single_point.json")))
             return;
     }
+    // Convergence sweeps: open the two-panel convergence window. Before the
+    // single-point check — a sweep writes no single_point.json, but its
+    // metrics.json must not route it into the MD/trajectory fallbacks either.
+    if (QFile::exists(lastJobDir_
+                      + QStringLiteral("/cutoff_convergence.json"))) {
+        openCutoffConvergenceResults(lastJobDir_);
+        return;
+    }
+    if (QFile::exists(lastJobDir_
+                      + QStringLiteral("/kpoints_convergence.json"))) {
+        openKpointsConvergenceResults(lastJobDir_);
+        return;
+    }
     // Single-point runs: open the dedicated summary viewer.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/single_point.json"))) {
         // First, hand the converged per-atom results to the structure on
@@ -6783,23 +6889,124 @@ void MainWindow::about()
                  row(tr("Qt Framework"), QStringLiteral(QT_VERSION_STR)),
                  row(tr("ASE (Atomic Simulation Environment)"), aseVersion));
 
-    QMessageBox box(this);
-    box.setWindowTitle(tr("About Calango"));
-    // Brand banner: the bare mark rather than either platform app icon, so the
-    // dialog does not show a second rounded plate inside the dialog's own.
-    box.setIconPixmap(
+    // Open-source dependencies and their licenses. This is license
+    // transparency, not a build manifest: everything Calango links against,
+    // embeds, or drives at runtime is named together with the terms it is
+    // distributed under. Keep this list in step with CMakeLists.txt (linked
+    // libraries) and the packages the generated scripts import.
+    struct Dependency {
+        const char* name;
+        QString role;
+        const char* license;
+    };
+    const Dependency dependencies[] = {
+        {"Qt 6", tr("cross-platform GUI, OpenGL viewport and concurrency"),
+         "LGPL v3"},
+        {"Python", tr("embedded interpreter driving every simulation"),
+         "PSF License"},
+        {"pybind11", tr("C++ ↔ Python bridge for the embedded interpreter"),
+         "BSD 3-Clause"},
+        {"ASE", tr("atomistic structures, calculators and dynamics"),
+         "LGPL v2.1+"},
+        {"GPAW", tr("density-functional theory engine (PAW / plane waves)"),
+         "GPL v3+"},
+        {"NumPy", tr("numerical arrays underpinning the Python tool-chain"),
+         "BSD 3-Clause"},
+        {"spglib", tr("crystal-symmetry detection and space groups"),
+         "BSD 3-Clause"},
+        {"phonopy", tr("phonon band structures and thermodynamics"),
+         "BSD 3-Clause"},
+        {"MACE", tr("machine-learning interatomic potentials"), "MIT"},
+        {"icet", tr("cluster expansions and special quasirandom structures"),
+         "MIT"},
+        {"Remix Icon", tr("the icon set used throughout the interface"),
+         "Apache 2.0"},
+    };
+    QString dependencyRows;
+    for (const auto& dependency : dependencies) {
+        dependencyRows += QStringLiteral(
+                              "<tr><td style='padding-right:14px; "
+                              "white-space:nowrap;'><b>%1</b></td>"
+                              "<td style='padding-right:14px;'>%2</td>"
+                              "<td style='white-space:nowrap;'>%3</td></tr>")
+                              .arg(QLatin1String(dependency.name),
+                                   dependency.role.toHtmlEscaped(),
+                                   QLatin1String(dependency.license));
+    }
+    const QString dependencyTable =
+        QStringLiteral("<table cellspacing='0' cellpadding='1'>%1</table>")
+            .arg(dependencyRows);
+
+    // A plain QDialog rather than QMessageBox: a message box sizes itself to
+    // its text with no upper bound, and with the dependency table the About
+    // content outgrew smaller screens, pushing the bottom rows and the OK
+    // button past the screen edge. Here the long content scrolls inside a
+    // dialog clamped to the available screen, so every row stays reachable
+    // however small the display — and on a normal one nothing scrolls at all.
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("About Calango"));
+    auto* layout = new QVBoxLayout(&dialog);
+
+    // Brand banner: the bare mark rather than either platform app icon, so
+    // the dialog does not show a second rounded plate inside the dialog's
+    // own. 96 px — the previous 140 px banner was a third of a small screen's
+    // height on its own.
+    auto* header = new QHBoxLayout;
+    auto* logo = new QLabel(&dialog);
+    logo->setPixmap(
         QPixmap(QStringLiteral(":/assets/calango/logo.png"))
-            .scaled(140, 140, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    box.setTextFormat(Qt::RichText);
-    box.setText(
+            .scaled(96, 96, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    logo->setAlignment(Qt::AlignTop);
+    header->addWidget(logo);
+    auto* heading = new QLabel(
         tr("<h3>Calango %1</h3>"
            "<p>For visual atomistic modeling</p>"
-           "<p><b>Developed by</b><br>Leandro Seixas Rocha</p>"
-           "<p><b>Runtime &amp; build diagnostics</b></p>"
-           "%2")
-            .arg(QStringLiteral(CALANGO_VERSION), diagnostics));
-    box.setStandardButtons(QMessageBox::Ok);
-    box.exec();
+           "<p><b>Developed by</b><br>Leandro Seixas Rocha</p>")
+            .arg(QStringLiteral(CALANGO_VERSION)),
+        &dialog);
+    heading->setTextFormat(Qt::RichText);
+    heading->setWordWrap(true);
+    header->addWidget(heading, 1);
+    layout->addLayout(header);
+
+    auto* body = new QLabel(
+        tr("<p><b>Runtime &amp; build diagnostics</b></p>"
+           "%1"
+           "<p><b>Open-source dependencies</b><br>"
+           "Calango is built on the following open-source software; each "
+           "component remains under its own license:</p>"
+           "%2"
+           "<p style='margin-top:8px;'>GPL/LGPL components are dynamically "
+           "linked or invoked as separate tools; their source code is "
+           "available from the respective upstream projects.</p>")
+            .arg(diagnostics, dependencyTable),
+        &dialog);
+    body->setTextFormat(Qt::RichText);
+    body->setWordWrap(true);
+    body->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    auto* scroll = new QScrollArea(&dialog);
+    scroll->setWidget(body);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    layout->addWidget(scroll, 1);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    layout->addWidget(buttons);
+
+    // Fit the content, clamped to the screen the dialog will appear on. The
+    // width is fixed first so the word-wrapped body's height is knowable;
+    // the +150 covers header, button row and layout margins.
+    const QScreen* screen =
+        dialog.screen() ? dialog.screen() : QGuiApplication::primaryScreen();
+    const QSize available = screen->availableGeometry().size();
+    const int width = std::min(620, available.width() * 9 / 10);
+    const int contentHeight = body->heightForWidth(width - 40) + 150;
+    dialog.resize(width,
+                  std::min(contentHeight, available.height() * 85 / 100));
+    dialog.exec();
 }
 
 } // namespace calango::gui

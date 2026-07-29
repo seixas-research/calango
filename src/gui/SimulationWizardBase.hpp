@@ -179,6 +179,18 @@ protected:
     /// the user to redefine it, giving a strict 2-stage wizard.
     virtual bool showsCalculatorStage() const { return true; }
 
+    /// When false the shared "Plane-wave cutoff:" row is hidden from the
+    /// calculator page. The Cutoff Convergence wizard overrides this: its
+    /// sweep stage defines the cutoffs as a range, and a second, single-value
+    /// cutoff field would be a knob the generated script ignores.
+    virtual bool showsPlaneWaveCutoffRow() const { return true; }
+
+    /// When false the "k-point grid (Monkhorst-Pack):" row is hidden from the
+    /// calculator page. The K-points Convergence wizard overrides this for
+    /// the same reason the cutoff sweep hides the cutoff row: the mesh is the
+    /// sweep variable, defined on the sweep stage.
+    virtual bool showsKpointGridRow() const { return true; }
+
     /// When true a "Symmetry: off" checkbox is shown in the GPAW settings group,
     /// letting the user emit `symmetry="off"` (no point-group k-point
     /// reduction). Only the Single-Point wizard exposes it — a Single-Point run

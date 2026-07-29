@@ -70,7 +70,39 @@ install_name_tool -change "$link" \
     "@executable_path/../Frameworks/Python.framework/Versions/$ver/Python" \
     "$bin"
 
+# Strip extended attributes from the whole bundle before signing.
+#
+# codesign treats any xattr as "resource fork, Finder information, or similar
+# detritus": the bundle signs, then fails `codesign --verify --strict` and is
+# rejected by spctl. hdiutil copies xattrs into the .dmg, so a shipped app
+# inherits the problem.
+#
+# Must run BEFORE codesign: clearing xattrs on a signed bundle can strip the
+# signature's own storage.
+#
+# Best-effort, because it CANNOT succeed everywhere. A cloud file provider
+# (Dropbox, iCloud Drive) tags every file it syncs — `com.dropbox.attrs` — and
+# denies the removal with EPERM, so a staging tree inside a synced folder can
+# never be cleaned in place. The verify below is what actually enforces the
+# result; the fix when it fails is to stage outside the synced folder, which
+# is what BUILD_DIR is for (see create_dmg.sh).
+xattr -cr "$app" 2>/dev/null || true
+
 # Ad-hoc re-sign the whole bundle: install_name_tool invalidated the main
 # binary's signature, and macdeployqt leaves the Qt plugins/frameworks it
 # rewrote with stale signatures (arm64 refuses to load either).
 codesign --force --deep --sign - "$app"
+
+# Verified here rather than left to the caller: every prior step in this
+# script (ditto, symlink surgery, install_name_tool) can produce a bundle that
+# signs without complaint and still fails strict validation, and the failure
+# only surfaces on a user's machine.
+if ! codesign --verify --deep --strict "$app"; then
+    echo "error: $app fails strict signature validation" >&2
+    echo "hint: if the message mentions 'resource fork, Finder information, or" >&2
+    echo "      similar detritus', the staging tree is inside a cloud-synced" >&2
+    echo "      folder whose provider stamps xattrs that cannot be removed." >&2
+    echo "      Re-run with BUILD_DIR outside it, e.g." >&2
+    echo "      BUILD_DIR=/tmp/calango-build packaging/macos/create_dmg.sh" >&2
+    exit 1
+fi

@@ -20,6 +20,14 @@
 #
 # Overridable via environment:
 #   BUILD_DIR                 build/output directory (default build-macos-bundle)
+#                             Point this OUTSIDE any cloud-synced folder. A
+#                             provider such as Dropbox stamps an xattr on every
+#                             file it syncs and refuses to let it be removed,
+#                             which makes the signed bundle fail
+#                             `codesign --verify --strict`. Absolute paths work;
+#                             prefer a scratch location such as
+#                             /tmp/calango-build over the home directory, which
+#                             this override should never clutter.
 #   DIST_DIR                  where the .dmg lands   (default: repo root)
 #   CMAKE_PREFIX_PATH         Qt prefix          (default /opt/homebrew/opt/qt)
 #   PYTHON_BIN                interpreter the app links libpython against

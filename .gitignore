@@ -306,3 +306,6 @@ capture.png
 # "calango" also matches the assets/calango/ directory, which silently kept
 # every brand asset out of the index.
 /calango
+
+# DMG
+packaging/macos/dmg

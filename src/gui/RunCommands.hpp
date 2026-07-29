@@ -64,9 +64,10 @@ QString templateFor(core::CalculatorKind kind);
 /// engine falls back to the default again.
 void setTemplateFor(core::CalculatorKind kind, const QString& commandTemplate);
 
-/// MPI rank count substituted for `{cores}`. Defaults to 1 — a template that
-/// silently launched as many ranks as the machine has cores would oversubscribe
-/// any node already running something else.
+/// MPI rank count substituted for `{cores}`. Defaults to half the machine's
+/// cores — parallel enough to be useful out of the box, while a template that
+/// silently claimed every core would oversubscribe any node already running
+/// something else.
 int cores();
 void setCores(int cores);
 

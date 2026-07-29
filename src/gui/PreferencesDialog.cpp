@@ -111,8 +111,8 @@ PreferencesDialog::PreferencesDialog(QWidget* parent)
     threadsSpin_->setRange(0, 1024);
     threadsSpin_->setSpecialValueText(tr("auto (library default)"));
     threadsSpin_->setValue(
-        QSettings().value(QLatin1String(SettingsManager::kOmpThreads),
-                          QThread::idealThreadCount()).toInt());
+        QSettings().value(QLatin1String(SettingsManager::kOmpThreads), 1)
+            .toInt());
     threadsSpin_->setToolTip(
         tr("OMP_NUM_THREADS injected into simulation runs (also MKL / "
            "OpenBLAS). 0 leaves the libraries to auto-detect."));
@@ -541,9 +541,9 @@ QWidget* PreferencesDialog::buildRunTab()
     runCoresSpin_->setRange(1, 4096);
     runCoresSpin_->setValue(RunCommands::cores());
     runCoresSpin_->setToolTip(
-        tr("MPI rank count substituted for {cores}. Defaults to 1: a template "
-           "that silently claimed every core would oversubscribe a machine "
-           "already running something else."));
+        tr("MPI rank count substituted for {cores}. Defaults to half the "
+           "machine's cores: a template that silently claimed every core "
+           "would oversubscribe a machine already running something else."));
     coresRow->addWidget(runCoresSpin_);
     coresRow->addStretch(1);
     layout->addLayout(coresRow);

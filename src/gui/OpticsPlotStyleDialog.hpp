@@ -41,9 +41,18 @@ struct OpticsPlotStyle {
     QColor gridColor{228, 228, 228};
     double gridAlpha = 1.0;  ///< [0, 1], folded into gridColor's alpha
 
+    /// Threshold-corridor styling, used by the convergence viewers' hatched
+    /// band. Inert for windows that draw no band; the dialog offers these
+    /// controls only when asked to (see the second constructor).
+    QColor thresholdBandColor{0x2c, 0xa0, 0x2c};
+    Qt::BrushStyle thresholdBandPattern = Qt::BDiagPattern;
+    double thresholdBandOpacity = 0.45;  ///< [0, 1]
+
     QFont axisFont() const;
     /// `gridColor` with `gridAlpha` applied to its alpha channel.
     QColor effectiveGridColor() const;
+    /// `thresholdBandColor` with `thresholdBandOpacity` applied.
+    QColor effectiveThresholdBandColor() const;
 };
 
 /// "Customize Appearance…" for the optics viewers. Edits apply live through
@@ -55,6 +64,11 @@ class OpticsPlotStyleDialog : public QDialog {
 public:
     explicit OpticsPlotStyleDialog(const OpticsPlotStyle& style,
                                    QWidget* parent = nullptr);
+    /// `withThresholdBand` adds the "Threshold Band" group (color, hatch
+    /// pattern, opacity) — for the convergence viewers, whose corridor is
+    /// part of the figure. The spectrum windows keep the shorter dialog.
+    OpticsPlotStyleDialog(const OpticsPlotStyle& style, bool withThresholdBand,
+                          QWidget* parent = nullptr);
 
     OpticsPlotStyle style() const { return style_; }
 
@@ -85,6 +99,10 @@ private:
     QSpinBox* fontSizeSpin_ = nullptr;
     QCheckBox* gridCheck_ = nullptr;
     QDoubleSpinBox* gridAlphaSpin_ = nullptr;
+    // Threshold-band controls; null unless the dialog was built with them.
+    QPushButton* bandButton_ = nullptr;
+    QComboBox* bandPatternCombo_ = nullptr;
+    QDoubleSpinBox* bandOpacitySpin_ = nullptr;
 };
 
 } // namespace calango::gui
