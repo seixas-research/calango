@@ -1,5 +1,6 @@
 #include "gui/SimulationWizardBase.hpp"
 
+#include "gui/SettingsManager.hpp"
 #include "gui/HubbardParametersDialog.hpp"
 
 #include "gui/CondaEnvs.hpp"
@@ -716,7 +717,8 @@ QWidget* SimulationWizardBase::buildMaceGroup(QWidget* parent)
     form->addRow(tr("Model file:"), pathRow);
     connect(maceBrowseButton_, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getOpenFileName(
-            this, tr("Select MACE Model File"), maceModelPathEdit_->text(),
+            this, tr("Select MACE Model File"),
+            SettingsManager::mlPotentialsStartPath(maceModelPathEdit_->text()),
             tr("MACE models (*.model *.pt *.pth);;All files (*)"));
         if (!path.isEmpty()) {
             maceModelPathEdit_->setText(path);
@@ -783,7 +785,8 @@ QWidget* SimulationWizardBase::buildMlipGroup(QWidget* parent)
     form->addRow(mlipModelLabel_, mlipModelRow_);
     connect(browse, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getOpenFileName(
-            this, tr("Select Model File"), mlipModelEdit_->text(),
+            this, tr("Select Model File"),
+            SettingsManager::mlPotentialsStartPath(mlipModelEdit_->text()),
             tr("Model files (*.pb *.pt *.pth *.model);;All files (*)"));
         if (!path.isEmpty())
             mlipModelEdit_->setText(path); // textChanged → refreshPreview

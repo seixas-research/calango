@@ -5,6 +5,10 @@
 
 #include <QComboBox>
 #include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QGroupBox>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -176,7 +180,26 @@ QWidget* PhononWizard::buildSecondSettingsPage()
            "exactly\nwhat a finite-displacement supercell cannot see. Leave "
            "this at None for a\nnon-polar crystal (Si, diamond, a metal): "
            "there is no splitting to add."));
-    loToForm->addRow(tr("Born charges:"), bornCombo_);
+    // The combo lists completed runs in THIS workspace. A Z* file is a plain
+    // JSON table, though, and a perfectly ordinary thing to have from another
+    // session, another machine, or a cluster — so it must also be possible to
+    // point at one directly. Without this, a user who has the physics in hand
+    // is told to spend 6 SCF runs per atom recomputing it.
+    auto* bornRow = new QHBoxLayout;
+    bornRow->setSpacing(4);
+    bornRow->addWidget(bornCombo_, 1);
+    auto* bornLoadButton = new QPushButton(tr("Load…"), loToGroup_);
+    bornLoadButton->setToolTip(
+        tr("Load a born_charges.json written by a Born Effective Charges run "
+           "— this session\'s or any other.\n\n"
+           "It must be Z* for THIS structure: the correction indexes the "
+           "tensors by atom, so a file from a different cell or a different "
+           "atom order produces a dispersion that is wrong without being "
+           "obviously wrong."));
+    connect(bornLoadButton, &QPushButton::clicked, this,
+            &PhononWizard::loadBornChargesFile);
+    bornRow->addWidget(bornLoadButton);
+    loToForm->addRow(tr("Born charges:"), bornRow);
 
     opticsCombo_ = new QComboBox(loToGroup_);
     opticsCombo_->addItem(tr("Enter manually"), QString());
@@ -241,6 +264,11 @@ void PhononWizard::setBornChargeProcesses(
     bornCombo_->addItem(tr("None — no LO-TO splitting"), QString());
     for (const auto& [label, file] : processes)
         bornCombo_->addItem(label, file);
+    // Re-added after the workspace entries: this refills from the process list
+    // whenever a run finishes, and a file the user loaded by hand must survive
+    // that or it disappears mid-setup for no reason they can see.
+    for (const auto& [label, file] : loadedBornFiles_)
+        bornCombo_->addItem(label, file);
     const int restored = bornCombo_->findData(previous);
     bornCombo_->setCurrentIndex(restored >= 0 ? restored : 0);
     updateLoToState();
@@ -286,6 +314,55 @@ bool PhononWizard::loadDielectricFromOptics(const QString& file)
     return any;
 }
 
+void PhononWizard::loadBornChargesFile()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Load Born Effective Charges"), QString(),
+        tr("Born charges (born_charges.json *.json);;All files (*)"));
+    if (path.isEmpty())
+        return;
+
+    // Validated before it is offered, not when the script runs: a bad path
+    // discovered by the generated Python fails hours into a supercell job,
+    // where a dialog here costs the user one click.
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, tr("Load Born Effective Charges"),
+                             tr("Could not open %1.").arg(path));
+        return;
+    }
+    QJsonParseError error{};
+    const QJsonDocument document =
+        QJsonDocument::fromJson(file.readAll(), &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject()
+        || document.object().value(QStringLiteral("atoms")).toArray().isEmpty()) {
+        QMessageBox::warning(
+            this, tr("Load Born Effective Charges"),
+            tr("%1 is not a Born Effective Charges result.\n\n"
+               "Expected a JSON object with a non-empty \"atoms\" array, as "
+               "written by Electronics → Born Effective Charges…")
+                .arg(QFileInfo(path).fileName()));
+        return;
+    }
+
+    const int atoms =
+        document.object().value(QStringLiteral("atoms")).toArray().size();
+    // The atom count is in the label because it is the one thing that makes a
+    // mismatched file obvious at a glance.
+    const QString label = tr("%1 (loaded, %n atom(s))", nullptr, atoms)
+                              .arg(QFileInfo(path).fileName());
+    const int existing = bornCombo_->findData(path);
+    if (existing >= 0) {
+        bornCombo_->setCurrentIndex(existing);
+        return;
+    }
+    loadedBornFiles_.append({label, path});
+    bornCombo_->addItem(label, path);
+    bornCombo_->setCurrentIndex(bornCombo_->count() - 1);
+    updateLoToState();
+    refreshPreview();
+}
+
 void PhononWizard::updateLoToState()
 {
     if (!loToGroup_ || !bornCombo_)
@@ -302,7 +379,8 @@ void PhononWizard::updateLoToState()
                      "correct for a non-polar crystal.</i>")
                 : tr("<i>No Born Effective Charges run is available. Run one "
                      "from <b>Electronics → Born Effective Charges…</b> on this "
-                     "structure first; it is what supplies Z*.</i>"));
+                     "structure, or <b>Load…</b> a born_charges.json from an "
+                     "earlier run; either supplies Z*.</i>"));
         return;
     }
     // eps_inf = 1 is vacuum. Nothing screens the field, so the splitting comes

@@ -107,7 +107,23 @@ QWidget* GeometryOptimizationWizard::buildSettingsPage()
     stressMaskCombo_ = new QComboBox(page);
     stressMaskCombo_->addItem(tr("Anisotropic (full stress)"));
     stressMaskCombo_->addItem(tr("Hydrostatic (isotropic)"));
+    // A named preset rather than "set the six ticks yourself": relaxing a 2D
+    // sheet in-plane is the single most common non-trivial mask, and getting
+    // it wrong is silent — leaving zz free lets the vacuum gap collapse onto
+    // the slab over a few dozen steps, which looks like a converging
+    // relaxation until the structure is unrecognizable.
+    stressMaskCombo_->addItem(tr("2Dxy (in-plane only)"));
     stressMaskCombo_->addItem(tr("Custom (Voigt mask)"));
+    stressMaskCombo_->setItemData(
+        2,
+        tr("Relax only the components that live in the xy plane — xx, yy and "
+           "xy — and hold zz, xz and yz fixed.\n\n"
+           "For a slab or a 2D material with a vacuum gap along z: the "
+           "in-plane lattice constants are physical and should relax, while "
+           "the cell height is an arbitrary padding whose stress is "
+           "meaningless. It also keeps the layer flat, since a free xz or yz "
+           "shears the vacuum."),
+        Qt::ToolTipRole);
     form->addRow(tr("Stress mask:"), stressMaskCombo_);
     connect(stressMaskCombo_, &QComboBox::currentIndexChanged, this,
             &GeometryOptimizationWizard::updateCellEnabled);
@@ -124,6 +140,7 @@ QWidget* GeometryOptimizationWizard::buildSettingsPage()
         voigtLayout->addWidget(voigtChecks_[i]);
     }
     form->addRow(tr("Voigt components:"), voigtRow_);
+    updateCellEnabled();
     return page;
 }
 
@@ -167,7 +184,26 @@ void GeometryOptimizationWizard::updateCellEnabled()
     const bool relax = relaxCellCheck_->isChecked();
     cellFilterCombo_->setEnabled(relax);
     stressMaskCombo_->setEnabled(relax);
-    voigtRow_->setEnabled(relax && stressMaskCombo_->currentIndex() == 2);
+
+    const int mask = stressMaskCombo_->currentIndex();
+    if (mask == kStressMask2Dxy) {
+        // Voigt order is [xx, yy, zz, yz, xz, xy]: relax 0, 1 and 5; hold
+        // 2, 3 and 4. Written into the ticks rather than only into config()
+        // so the preset is VISIBLE — the row below is the read-out of what
+        // "2Dxy" means, which is how a user learns the mask instead of
+        // trusting a label.
+        static constexpr bool kInPlane[6] = {true, true, false,
+                                             false, false, true};
+        for (int i = 0; i < 6; ++i) {
+            const QSignalBlocker blocker(voigtChecks_[i]);
+            voigtChecks_[i]->setChecked(kInPlane[i]);
+        }
+    }
+    // Shown for both mask-carrying modes, editable only for Custom: under the
+    // preset the ticks are a read-out, and letting them be edited would leave
+    // the combo claiming "2Dxy" for an arbitrary mask.
+    voigtRow_->setVisible(relax && mask >= kStressMask2Dxy);
+    voigtRow_->setEnabled(relax && mask == kStressMaskCustom);
 }
 
 core::CalculatorConfig GeometryOptimizationWizard::config() const
@@ -187,7 +223,10 @@ core::CalculatorConfig GeometryOptimizationWizard::config() const
         ? core::CellFilter::UnitCell
         : core::CellFilter::FrechetCell;
     c.cellHydrostatic = stressMaskCombo_->currentIndex() == 1;
-    c.cellCustomMask = stressMaskCombo_->currentIndex() == 2;
+    // Both the 2Dxy preset and Custom write an explicit Voigt mask; they
+    // differ only in who chose the six bits. updateCellEnabled() has already
+    // put the preset's mask into the checkboxes, so one read serves both.
+    c.cellCustomMask = stressMaskCombo_->currentIndex() >= kStressMask2Dxy;
     for (int i = 0; i < 6; ++i)
         c.cellMask[i] = voigtChecks_[i]->isChecked();
     return c;

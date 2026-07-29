@@ -233,6 +233,10 @@ PreferencesDialog::PreferencesDialog(QWidget* parent)
     auto* tabs = new QTabWidget(this);
     tabs->addTab(generalPage, tr("General"));
     tabs->addTab(buildPythonEnvTab(), tr("Python && Environments"));
+    // Directly after Python & Environments, and shaped like it: both answer
+    // "where does this machine keep the thing a run needs", one for the
+    // interpreter, one for the data files.
+    tabs->addTab(buildExternalFilesTab(), tr("External Files"));
     tabs->addTab(buildRunTab(), tr("Run"));
 
     auto* layout = new QVBoxLayout(this);
@@ -271,6 +275,102 @@ void PreferencesDialog::updateSimulationsStatus()
                         "sessions, and only to runs started from now on — "
                         "existing job folders are not moved."));
     simulationsStatusLabel_->setText(text);
+}
+
+QWidget* PreferencesDialog::buildExternalFilesTab()
+{
+    auto* page = new QWidget(this);
+    auto* layout = new QVBoxLayout(page);
+
+    auto* note = new QLabel(
+        tr("Where this machine keeps the data files a run needs but does not "
+           "generate. Set once here rather than per run: a pseudopotential "
+           "library is installed once and a job that silently used the wrong "
+           "set produces a plausible number, not an error.\n\n"
+           "Each pseudopotential path is exported as the environment variable "
+           "its engine already reads, so a blank row leaves the environment "
+           "untouched and whatever the shell already exports keeps working."),
+        page);
+    note->setWordWrap(true);
+    layout->addWidget(note);
+
+    // Same two-column table as the Python page: name on the left, an editable
+    // value with its own browse button on the right.
+    struct Row {
+        const char* key;
+        QString label;
+        QString tip;
+    };
+    const QVector<Row> rows = {
+        {SettingsManager::kPseudopotentialsVasp, tr("VASP (VASP_PP_PATH)"),
+         tr("The directory CONTAINING the potpaw_* folders, not one of them: "
+            "VASP appends potpaw_PBE/<element>/POTCAR to this. Licensed "
+            "separately from the code, so it is never where the binary is.")},
+        {SettingsManager::kPseudopotentialsEspresso,
+         tr("Quantum Espresso (ESPRESSO_PSEUDO)"),
+         tr("Directory of .UPF files. Mixing generations of the same library "
+            "in one run is the usual cause of an irreproducible total "
+            "energy, so one directory per library is worth keeping.")},
+        {SettingsManager::kPseudopotentialsSiesta, tr("SIESTA (SIESTA_PP_PATH)"),
+         tr("Directory of .psf / .psml files, named by element symbol.")},
+        {SettingsManager::kMlPotentialsDir, tr("ML potentials")},
+    };
+
+    externalFilesTable_ = new QTableWidget(rows.size(), 2, page);
+    externalFilesTable_->setHorizontalHeaderLabels(
+        {tr("Resource"), tr("Directory (blank = leave the environment alone)")});
+    externalFilesTable_->verticalHeader()->setVisible(false);
+    externalFilesTable_->setSelectionMode(QAbstractItemView::NoSelection);
+    externalFilesTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    externalFilesTable_->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::ResizeToContents);
+    externalFilesTable_->horizontalHeader()->setSectionResizeMode(
+        1, QHeaderView::Stretch);
+
+    for (int row = 0; row < rows.size(); ++row) {
+        const Row& spec = rows.at(row);
+        const QString key = QLatin1String(spec.key);
+
+        auto* nameItem = new QTableWidgetItem(spec.label);
+        nameItem->setFlags(Qt::ItemIsEnabled);
+        if (!spec.tip.isEmpty())
+            nameItem->setToolTip(spec.tip);
+        externalFilesTable_->setItem(row, 0, nameItem);
+
+        auto* cell = new QWidget(externalFilesTable_);
+        auto* cellLayout = new QHBoxLayout(cell);
+        cellLayout->setContentsMargins(2, 0, 2, 0);
+        cellLayout->setSpacing(4);
+        auto* edit = new QLineEdit(cell);
+        edit->setText(QSettings().value(key).toString());
+        edit->setPlaceholderText(
+            row == rows.size() - 1
+                ? tr("e.g. ~/models — where trained ML potentials are saved "
+                     "and loaded")
+                : tr("e.g. ~/pseudos/…"));
+        if (!spec.tip.isEmpty())
+            edit->setToolTip(spec.tip);
+        cellLayout->addWidget(edit, 1);
+        auto* browse = new QPushButton(tr("Browse…"), cell);
+        cellLayout->addWidget(browse);
+        externalFilesTable_->setCellWidget(row, 1, cell);
+
+        // Written on every keystroke, like the other path fields on this
+        // dialog: there is no OK button to defer to, and SettingsManager::save()
+        // mirrors QSettings to settings.json when the dialog closes.
+        connect(edit, &QLineEdit::textChanged, this, [key](const QString& text) {
+            QSettings().setValue(key, text.trimmed());
+        });
+        connect(browse, &QPushButton::clicked, this,
+                [this, edit, label = spec.label] {
+                    const QString chosen = QFileDialog::getExistingDirectory(
+                        this, label, edit->text().trimmed());
+                    if (!chosen.isEmpty())
+                        edit->setText(chosen);
+                });
+    }
+    layout->addWidget(externalFilesTable_, 1);
+    return page;
 }
 
 QWidget* PreferencesDialog::buildPythonEnvTab()

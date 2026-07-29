@@ -77,6 +77,31 @@ void JobRunner::start(const QString& commandLine, const QString& pythonExe,
             env.insert(QLatin1String(var), value);
     }
 
+    // Pseudopotential libraries (Preferences → External Files). Exported as
+    // the variable each engine already reads, so a run picks the configured
+    // set up with no change to the generated input. Written only when the
+    // preference is non-empty: a machine that already exports one in its shell
+    // profile must keep it rather than have it silently blanked.
+    //
+    // These are read from QSettings directly, like the thread pinning above,
+    // rather than threaded through the job config — they describe the MACHINE,
+    // and every engine on it wants the same answer.
+    {
+        const QSettings settings;
+        const std::pair<const char*, const char*> kPseudoVars[] = {
+            {"pseudopotentials/vasp", "VASP_PP_PATH"},
+            {"pseudopotentials/quantumEspresso", "ESPRESSO_PSEUDO"},
+            {"pseudopotentials/siesta", "SIESTA_PP_PATH"},
+            {"mlPotentials/directory", "CALANGO_ML_POTENTIALS"},
+        };
+        for (const auto& [key, variable] : kPseudoVars) {
+            const QString value =
+                settings.value(QLatin1String(key)).toString().trimmed();
+            if (!value.isEmpty())
+                env.insert(QLatin1String(variable), value);
+        }
+    }
+
     // Make the selected environment self-contained: its bin directory wins
     // over any globally installed solver binaries.
     const QFileInfo interpreter(pythonExe);

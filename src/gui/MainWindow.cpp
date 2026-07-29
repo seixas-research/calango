@@ -588,7 +588,76 @@ MainWindow::MainWindow(QWidget* parent)
         }
     }
 
+    // --- Display toggles ---------------------------------------------------
+    // Four one-bit "is this drawn" switches, moved up from the Representation
+    // dock. They are the settings flipped most often while READING a structure
+    // — hide the hydrogens to see the skeleton, turn on the indices to find
+    // the atom a log mentions — and a dock the user may have collapsed is the
+    // wrong place for something reached that constantly.
+    //
+    // Unlike the rest of that dock they are also not per-cast: each one is a
+    // single viewport-wide bit, which is exactly what a toolbar toggle models.
+    frameToolbar->addSeparator();
+    const auto addToggle = [this, frameToolbar](const QString& iconName,
+                                                const QString& text,
+                                                bool checked) {
+        QAction* action = frameToolbar->addAction(text);
+        ui::IconManager::bind(action, iconName);
+        action->setCheckable(true);
+        action->setChecked(checked);
+        return action;
+    };
+
+    QAction* elementLabelsAction =
+        addToggle(QStringLiteral("atom-line"), tr("Show element symbols"),
+                  viewport_->showElementLabels());
+    elementLabelsAction->setToolTip(
+        tr("Show element symbols — overlay each atom's chemical symbol "
+           "(Fe, O, Si…) on the 3D viewport."));
+    connect(elementLabelsAction, &QAction::toggled, viewport_,
+            &ViewportWidget::setShowElementLabels);
+
+    QAction* indexLabelsAction =
+        addToggle(QStringLiteral("price-tag-fill"), tr("Show atomic indices"),
+                  viewport_->showAtomIndexLabels());
+    indexLabelsAction->setToolTip(
+        tr("Show atomic indices — overlay each atom's 1-based index "
+           "(#1, #2…) on the 3D viewport."));
+    connect(indexLabelsAction, &QAction::toggled, viewport_,
+            &ViewportWidget::setShowAtomIndexLabels);
+
+    // "H", literally — the heading glyph is an H.
+    showHydrogensAction_ =
+        addToggle(QStringLiteral("heading"), tr("Draw hydrogen atoms"),
+                  viewport_->style().showHydrogens);
+    showHydrogensAction_->setToolTip(
+        tr("Draw hydrogen atoms, their bonds and the hydrogen-bond dashes.\n"
+           "Off leaves the heavy-atom skeleton, which is how a crowded organic\n"
+           "or protein structure is normally read.\n\n"
+           "Display only — the hydrogens stay in the structure, so the formula "
+           "and every\ncalculation and exported file are unchanged."));
+    connect(showHydrogensAction_, &QAction::toggled, this, [this](bool on) {
+        viewport_->style().showHydrogens = on;
+        viewport_->styleChanged(true);
+    });
+
+    // A staircase: the stepped ramp from one colour to the next, which the
+    // flat half-and-half split it replaces does not do.
+    QAction* gradientBondsAction =
+        addToggle(QStringLiteral("stairs-fill"), tr("Show bonds smoothly"),
+                  viewport_->style().gradientBonds);
+    gradientBondsAction->setToolTip(
+        tr("Blend each bond smoothly from one atom's color to the other's\n"
+           "instead of the classic half-and-half split."));
+    connect(gradientBondsAction, &QAction::toggled, this, [this](bool on) {
+        viewport_->style().gradientBonds = on;
+        viewport_->styleChanged(true);
+    });
+
     // --- Workspace duplication / frame extraction -------------------------
+    // LAST on the toolbar, deliberately: it is the only entry that creates a
+    // new workspace rather than changing this one, and anything added later
+    // belongs before it.
     // Clones the on-screen geometry into a new tab (a trajectory yields just
     // its current frame as a static structure). Theme-tinted RemixIcon; also
     // reachable from the tab bar's right-click menu.
@@ -603,11 +672,6 @@ MainWindow::MainWindow(QWidget* parent)
     connect(duplicateAction, &QAction::triggered, this,
             &MainWindow::duplicateOrExtractFrame);
 
-    // The two atom-label overlays (element symbols, atomic indices) moved to
-    // the Representation dock's editor row, beside the other controls that
-    // decide how atoms are DRAWN. The viewport toolbar is about navigating and
-    // measuring the scene; what is written on the atoms is a representation
-    // choice and belongs with the rest of them.
 
     // The Lattice Plane and Custom overlay buttons are gone from this toolbar.
     // Both opened a modeless dialog that owned its own private overlay list, so
@@ -3444,10 +3508,11 @@ void MainWindow::completeWithHydrogens()
 
     pushUndo();
     // Building hydrogens the user cannot see is a no-op as far as they can
-    // tell, so asking for them turns the display back on. Routed through the
-    // panel rather than set on the style directly, so its toggle follows.
-    if (representationPanel_)
-        representationPanel_->setShowHydrogens(true);
+    // tell, so asking for them turns the display back on. Set through the
+    // toolbar action rather than on the style directly, so the toggle beside
+    // this button follows instead of going stale.
+    if (showHydrogensAction_)
+        showHydrogensAction_->setChecked(true);
     // A trajectory's displayed frame IS one of doc->frames; replace it there
     // too, or scrubbing away and back would silently drop the hydrogens.
     const auto previous = doc->structure;

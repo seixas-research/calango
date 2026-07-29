@@ -61,6 +61,20 @@ enum class SurfaceFinish {
     Glassy,   ///< alpha-blended, tight highlight, Fresnel rim
 };
 
+/// How the unit-cell wireframe is stroked.
+///
+/// Broken strokes are built by CUTTING each of the 12 edges into pieces on the
+/// CPU, not by a line-stipple mode: core-profile GL removed glLineStipple, and
+/// a shader-based dash needs a per-vertex arc-length attribute the cell buffer
+/// does not carry. Splitting the geometry costs a few dozen extra vertices
+/// once per rebuild and works identically on the thin-line path and the lit
+/// tube path, which a fragment-stage trick would not.
+enum class CellLineStyle {
+    Solid,  ///< one segment per edge (the historical output)
+    Dashed, ///< long marks, short gaps
+    Dotted, ///< short marks, long gaps
+};
+
 enum class RepresentationMode {
     BallAndStick,
     SpaceFilling, ///< van-der-Waals-sized spheres, no bonds
@@ -416,6 +430,10 @@ public:
         /// (core-profile GL clamps glLineWidth, so tubes are the portable
         /// way to get thick cell wireframes).
         float cellLineWidth = 2.0f;
+        /// Solid, dashed or dotted. Applies to both the thin-line and the lit
+        /// tube path, because the break is cut into the geometry rather than
+        /// painted by the fragment stage.
+        CellLineStyle cellLineStyle = CellLineStyle::Solid;
         std::map<int, QColor> colorOverrides;      ///< Z -> user color
         std::map<int, float> radiusScaleOverrides; ///< Z -> per-element radius factor
         /// Scalar color mapping: Element uses the CPK palette; the other

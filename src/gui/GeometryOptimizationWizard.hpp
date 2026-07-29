@@ -102,6 +102,11 @@ private:
     QComboBox* cellFilterCombo_;
     QComboBox* stressMaskCombo_;   // anisotropic / hydrostatic / custom
     QWidget* voigtRow_;            // custom Voigt mask checkbox row
+    /// Indices into stressMaskCombo_. Named because three call sites compare
+    /// against them and a bare 2/3 is where an inserted entry breaks the mask.
+    static constexpr int kStressMask2Dxy = 2;
+    static constexpr int kStressMaskCustom = 3;
+
     QCheckBox* voigtChecks_[6];    // [xx, yy, zz, yz, xz, xy]
 
     /// Smearing / SCF / spin rows, shared with the Single-Point wizard.

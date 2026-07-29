@@ -52,6 +52,27 @@ public:
     /// machine, and — being one plain comma-separated line — it can be pasted
     /// between config files or hand-edited.
     static constexpr auto kDefaultPointOfView = "camera/defaultPointOfView";
+    /// Where each plane-wave engine's pseudopotential library lives.
+    ///
+    /// These are properties of the MACHINE, not of a run: a VASP POTCAR
+    /// library is licensed and installed once, and re-typing its path in every
+    /// wizard is how a job ends up pointing at the wrong set. Each maps onto
+    /// the environment variable the engine already reads, so the value is
+    /// exported for a run rather than substituted into the input file:
+    ///   VASP            -> VASP_PP_PATH
+    ///   Quantum Espresso-> ESPRESSO_PSEUDO
+    ///   SIESTA          -> SIESTA_PP_PATH
+    /// Empty means "leave the environment alone", which is the right default:
+    /// a machine that already exports one must not have it silently replaced.
+    static constexpr auto kPseudopotentialsVasp = "pseudopotentials/vasp";
+    static constexpr auto kPseudopotentialsEspresso =
+        "pseudopotentials/quantumEspresso";
+    static constexpr auto kPseudopotentialsSiesta = "pseudopotentials/siesta";
+    /// Where trained machine-learning potentials are read from and written to
+    /// (MACE, NequIP, a fine-tuned checkpoint). One directory rather than one
+    /// per architecture: a model file is identified by its own name, and the
+    /// thing the user actually wants is "my models live here".
+    static constexpr auto kMlPotentialsDir = "mlPotentials/directory";
     static constexpr auto kEnvFilePath = "config/envFilePath";
     static constexpr auto kMaterialsProjectApiKey = "materialsProject/apiKey";
 
@@ -79,6 +100,14 @@ public:
     static QString simulationsDirectory();
     /// The shipped default, exposed so Preferences can offer "Reset".
     static QString defaultSimulationsDirectory();
+
+    /// Where a model-file picker should open, given whatever path the field
+    /// already holds. The field wins when it is non-empty (the user is editing
+    /// an existing choice); otherwise the configured ML potentials directory;
+    /// otherwise Qt's default. Exists so the preference is honoured
+    /// identically by all four model pickers instead of three of them
+    /// forgetting.
+    static QString mlPotentialsStartPath(const QString& currentValue = {});
 };
 
 } // namespace calango::gui

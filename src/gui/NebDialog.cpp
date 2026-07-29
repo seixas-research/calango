@@ -1,4 +1,5 @@
 #include "gui/CondaEnvs.hpp"
+#include "gui/SettingsManager.hpp"
 #include "gui/NebDialog.hpp"
 
 #include <QCheckBox>
@@ -186,7 +187,8 @@ NebDialog::NebDialog(std::vector<NamedStructure> openDocs, QWidget* parent)
     calcForm->addRow(tr("ML model file:"), mlipRow);
     connect(mlipBrowse, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getOpenFileName(
-            this, tr("Select Model File"), mlipModelEdit_->text(),
+            this, tr("Select Model File"),
+            SettingsManager::mlPotentialsStartPath(mlipModelEdit_->text()),
             tr("Model files (*.pb *.pt *.pth *.model);;All files (*)"));
         if (!path.isEmpty())
             mlipModelEdit_->setText(path);

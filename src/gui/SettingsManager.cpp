@@ -26,7 +26,7 @@ struct Managed {
     const char* jsonName = nullptr;
 };
 
-std::array<Managed, 15> managedKeys()
+std::array<Managed, 19> managedKeys()
 {
     return {{
         {SettingsManager::kTheme, QStringLiteral("system")},
@@ -49,6 +49,15 @@ std::array<Managed, 15> managedKeys()
         // Exposed as a top-level `show_welcome_screen` boolean in settings.json.
         {SettingsManager::kShowWelcome, true, "show_welcome_screen"},
         {SettingsManager::kEnvFilePath, QString()},
+        // External libraries installed on the machine (Preferences ->
+        // "External Files"). All empty by default: an unset path means "do not
+        // touch the environment", and guessing a location would be worse than
+        // asking — a wrong POTCAR set produces a plausible number, not an
+        // error.
+        {SettingsManager::kPseudopotentialsVasp, QString()},
+        {SettingsManager::kPseudopotentialsEspresso, QString()},
+        {SettingsManager::kPseudopotentialsSiesta, QString()},
+        {SettingsManager::kMlPotentialsDir, QString()},
         {SettingsManager::kMaterialsProjectApiKey, QString()},
         // Encoded camera state restored by "Reset camera"; empty = auto-frame.
         {SettingsManager::kDefaultPointOfView, QString()},
@@ -176,6 +185,20 @@ QString SettingsManager::defaultSimulationsDirectory()
     // both targets, and the folder name is deliberately plain so it reads the
     // same in Finder and in a Linux file manager.
     return QDir::homePath() + QStringLiteral("/My Simulations");
+}
+
+QString SettingsManager::mlPotentialsStartPath(const QString& currentValue)
+{
+    if (!currentValue.trimmed().isEmpty())
+        return currentValue.trimmed();
+    const QString configured =
+        QSettings().value(QLatin1String(kMlPotentialsDir)).toString().trimmed();
+    // Checked rather than trusted: the value is hand-editable and portable
+    // between machines, and handing a non-existent path to a file dialog puts
+    // the user somewhere arbitrary rather than where they asked.
+    if (!configured.isEmpty() && QFileInfo(configured).isDir())
+        return configured;
+    return {};
 }
 
 QString SettingsManager::simulationsDirectory()

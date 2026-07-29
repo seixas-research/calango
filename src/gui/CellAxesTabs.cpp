@@ -121,6 +121,32 @@ UnitCellPanel::UnitCellPanel(ViewportWidget* viewport, QWidget* parent)
         viewport_->styleChanged(true);
     });
 
+    auto* lineStyleCombo = new QComboBox(this);
+    // Order matches render::CellLineStyle.
+    lineStyleCombo->addItem(tr("Solid"));
+    lineStyleCombo->addItem(tr("Dashed"));
+    lineStyleCombo->addItem(tr("Dotted"));
+    lineStyleCombo->setCurrentIndex(
+        static_cast<int>(viewport_->style().cellLineStyle));
+    lineStyleCombo->setToolTip(
+        tr("How the cell edges are stroked.\n\n"
+           "A broken stroke is the convention for a boundary that is a "
+           "CONSTRUCTION rather than a physical object: the cell edge is a "
+           "choice of origin and axes, not a wall, and a dashed box says so "
+           "without a caption. It also stops the wireframe competing with the "
+           "bonds it crosses in a dense structure.\n\n"
+           "Each edge is cut into a whole number of marks, so the pattern "
+           "always starts and ends exactly on a corner and a small cell reads "
+           "the same as a large one."));
+    form->addRow(tr("Cell line style:"), lineStyleCombo);
+    connect(lineStyleCombo, &QComboBox::currentIndexChanged, this,
+            [this](int index) {
+                viewport_->style().cellLineStyle =
+                    static_cast<render::CellLineStyle>(index);
+                // The break is cut into the geometry, so this is a rebuild.
+                viewport_->styleChanged(true);
+            });
+
     auto* cellWidthSpin = new QDoubleSpinBox(this);
     cellWidthSpin->setRange(1.0, 8.0);
     cellWidthSpin->setSingleStep(0.5);

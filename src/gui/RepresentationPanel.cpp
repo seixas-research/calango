@@ -91,12 +91,6 @@ void RepresentationPanel::syncSurfaceFinishEnabled()
     // the same thing permanently, in a dock that has no rows to spare.
 }
 
-void RepresentationPanel::setShowHydrogens(bool on)
-{
-    if (!showHydrogensButton_ || showHydrogensButton_->isChecked() == on)
-        return;
-    showHydrogensButton_->setChecked(on); // its own signal applies the style
-}
 
 QWidget* RepresentationPanel::buildAppearanceTab()
 {
@@ -323,83 +317,12 @@ QWidget* RepresentationPanel::buildAppearanceTab()
     scalarLabelsButton_->setChecked(viewport_->showCoordinationLabels());
     form->addRow(tr("Color by:"), colorRow);
 
-    // The display toggles, on one compact icon row. Icon-only with tooltips:
-    // the labels spelled out consumed a full-width row each in a dock that is
-    // already the tallest in the app, and these are recognized by glyph once
-    // learned. Every button on this row is a checkable "is this drawn" switch
-    // — the three that OPEN something sit in their own row further down, so a
-    // click that toggles and a click that opens a window never look alike.
-    auto* editorRow = new QHBoxLayout;
-    editorRow->setSpacing(4);
-    const auto makeEditorButton = [page, editorRow](const QString& icon,
-                                                    const QString& tip) {
-        auto* button = new QPushButton(page);
-        ui::IconManager::bind(button, icon);
-        button->setIconSize(QSize(20, 20));
-        button->setToolTip(tip);
-        button->setFocusPolicy(Qt::NoFocus);
-        editorRow->addWidget(button);
-        return button;
-    };
-    // The two per-atom text overlays, directly after Element Settings: both
-    // answer the same question — what is written ON the atoms — and both came
-    // from the viewport toolbar, which is about navigating the scene rather
-    // than drawing it. The third of that group, the CN/GCN value read-out,
-    // moved up to the "Color by" row whose number it prints.
-    elementLabelsButton_ = makeEditorButton(
-        QStringLiteral("atom-line"),
-        tr("Show element symbols — overlay each atom's chemical symbol "
-           "(Fe, O, Si…) on the 3D viewport."));
-    elementLabelsButton_->setCheckable(true);
-    elementLabelsButton_->setChecked(viewport_->showElementLabels());
+    // The four display toggles that stood here — element symbols, atomic
+    // indices, hydrogens, gradient bonds — moved to the viewport toolbar.
+    // Each was a single viewport-wide bit rather than a per-cast setting, and
+    // they are the switches flipped most often while reading a structure, so
+    // a dock the user may have collapsed was the wrong place for them.
 
-    indexLabelsButton_ = makeEditorButton(
-        QStringLiteral("price-tag-fill"),
-        tr("Show atomic indices — overlay each atom's 1-based index "
-           "(#1, #2…) on the 3D viewport."));
-    indexLabelsButton_->setCheckable(true);
-    indexLabelsButton_->setChecked(viewport_->showAtomIndexLabels());
-
-    // ---- 3) The two display toggles, directly after the index labels -------
-    // They had a row of their own under Opacity. They are one-bit "is this
-    // drawn" switches, which is what the two label toggles beside them are
-    // too, so the row was a second copy of a group that already existed.
-    //
-    // "H", literally — the heading glyph is an H, so the icon IS the label.
-    showHydrogensButton_ = makeEditorButton(
-        QStringLiteral("heading"),
-        tr("Draw hydrogen atoms, their bonds and the hydrogen-bond dashes.\n"
-           "Off leaves the heavy-atom skeleton, which is how a crowded organic\n"
-           "or protein structure is normally read.\n\n"
-           "Display only — the hydrogens stay in the structure, so the formula "
-           "and every\ncalculation and exported file are unchanged."));
-    showHydrogensButton_->setCheckable(true);
-    showHydrogensButton_->setChecked(viewport_->style().showHydrogens);
-    connect(showHydrogensButton_, &QPushButton::toggled, this, [this](bool on) {
-        viewport_->style().showHydrogens = on;
-        viewport_->styleChanged(true);
-    });
-
-    // A staircase: the stepped ramp from one colour to the next, which is what
-    // the flat half-and-half split this replaces does NOT do.
-    gradientBondsButton_ = makeEditorButton(
-        QStringLiteral("stairs-fill"),
-        tr("Blend each bond smoothly from one atom's color to the other's\n"
-           "instead of the classic half-and-half split."));
-    gradientBondsButton_->setCheckable(true);
-    gradientBondsButton_->setChecked(viewport_->style().gradientBonds);
-    connect(gradientBondsButton_, &QPushButton::toggled, this, [this](bool on) {
-        viewport_->style().gradientBonds = on;
-        viewport_->styleChanged(true);
-    });
-
-    editorRow->addStretch(1);
-    form->addRow(editorRow);
-
-    connect(elementLabelsButton_, &QPushButton::toggled, viewport_,
-            &ViewportWidget::setShowElementLabels);
-    connect(indexLabelsButton_, &QPushButton::toggled, viewport_,
-            &ViewportWidget::setShowAtomIndexLabels);
     connect(scalarLabelsButton_, &QPushButton::toggled, viewport_,
             &ViewportWidget::setShowCoordinationLabels);
     connect(gradientButton, &QPushButton::clicked, this, [this] {

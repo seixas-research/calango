@@ -112,12 +112,19 @@ private:
     EmbeddedKPathEditor* kpath_ = nullptr;
 
     // -- LO-TO splitting ---------------------------------------------------
+    /// Z* files adopted through "Load…" rather than discovered as workspace
+    /// runs. Held so they can be re-added when setBornChargeProcesses()
+    /// rebuilds the combo, which happens every time a job finishes.
+    QList<QPair<QString, QString>> loadedBornFiles_;
     /// Fill eps_inf from a completed Optics run's optics.json, taking the
     /// zero-frequency limit of eps_1 along each axis. Returns false (and says
     /// why) when the file cannot supply it.
     bool loadDielectricFromOptics(const QString& file);
     /// Enable/disable the eps_inf controls with the Born selection, and warn
     /// when the tensor is still the physically impossible identity.
+    /// "Load…" beside the Born-charges combo: adopt a born_charges.json from
+    /// outside this workspace.
+    void loadBornChargesFile();
     void updateLoToState();
 
     QGroupBox* loToGroup_ = nullptr;

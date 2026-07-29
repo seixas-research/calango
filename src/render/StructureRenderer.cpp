@@ -1998,18 +1998,50 @@ void StructureRenderer::setStructure(const core::Structure* structure,
             const auto corners = structure->cell().corners();
             const bool tubes = style_.cellLineWidth > 1.01f;
             const float tubeRadius = 0.015f * style_.cellLineWidth;
+            // A broken stroke is cut into the geometry: each edge becomes N
+            // marks with gaps between them, and a solid edge is the N = 1
+            // case, so both styles run the same emit below.
+            //
+            // The mark count is derived PER EDGE rather than from a fixed
+            // period in angstrom. A whole number of marks is what makes the
+            // pattern start and finish exactly on the two corners — a fixed
+            // period leaves the last mark truncated at a random fraction,
+            // which reads as a rendering fault rather than as a dash. It also
+            // keeps a 3 A cell and a 30 A slab looking like the same style.
+            const float duty = style_.cellLineStyle == CellLineStyle::Dotted
+                ? 0.30f
+                : 0.62f;
+            const int marks = style_.cellLineStyle == CellLineStyle::Solid
+                ? 1
+                : (style_.cellLineStyle == CellLineStyle::Dotted ? 14 : 8);
             for (const auto& [i, j] : core::UnitCell::edges()) {
                 const QVector3D from = toQt(corners[static_cast<std::size_t>(i)]);
                 const QVector3D to = toQt(corners[static_cast<std::size_t>(j)]);
-                if (tubes) {
-                    const QVector3D dir = (to - from).normalized();
-                    appendInstance(cellTubeInstances,
-                                   bondTransform(from, dir, from.distanceToPoint(to),
-                                                 tubeRadius),
-                                   style_.cellColor, style_.surfaceFinish);
-                } else {
-                    for (const QVector3D& p : {from, to})
-                        cellVertices.insert(cellVertices.end(), {p.x(), p.y(), p.z()});
+                const float length = from.distanceToPoint(to);
+                if (length <= 0.0f)
+                    continue;
+                const QVector3D dir = (to - from) / length;
+                for (int m = 0; m < marks; ++m) {
+                    // Marks are centred in their slot, so the gaps at the two
+                    // ends are half-width and the corners stay closed.
+                    const float slot = length / static_cast<float>(marks);
+                    const float markLength =
+                        marks == 1 ? length : slot * duty;
+                    const QVector3D a =
+                        from + dir * (static_cast<float>(m) * slot
+                                      + 0.5f * (slot - markLength));
+                    const QVector3D b = a + dir * markLength;
+                    if (tubes) {
+                        appendInstance(cellTubeInstances,
+                                       bondTransform(a, dir, markLength,
+                                                     tubeRadius),
+                                       style_.cellColor, style_.surfaceFinish);
+                    } else {
+                        for (const QVector3D& p : {a, b}) {
+                            cellVertices.insert(cellVertices.end(),
+                                                {p.x(), p.y(), p.z()});
+                        }
+                    }
                 }
             }
         }

@@ -48,13 +48,6 @@ public Q_SLOTS:
     /// modal, so the host calls this when that dialog closes. Two controls on
     /// one setting is only acceptable while neither can go stale.
     void syncShadingFromRegistry();
-    /// Turn the hydrogen display on/off from outside the panel.
-    ///
-    /// "Complete with hydrogens" lives on the viewport toolbar (it adds atoms,
-    /// so the window owns it), but building hydrogens the user cannot see is a
-    /// no-op as far as they can tell — so the host switches them back on
-    /// through here, and the toggle in this panel follows.
-    void setShowHydrogens(bool on);
 
 private Q_SLOTS:
     void applyColorMode();
@@ -94,22 +87,11 @@ private:
     QDoubleSpinBox* bondWidthSpin_;
     QSlider* opacitySlider_ = nullptr;
     QDoubleSpinBox* opacitySpin_;
-    /// The two display toggles, side by side as checkable buttons rather than
-    /// as two full-width check-box rows: both are one-bit "is this drawn"
-    /// switches flipped constantly while reading a structure, and a button
-    /// that stays visibly pressed says so at a glance where a tick does not.
-    QPushButton* gradientBondsButton_ = nullptr;
-    QPushButton* showHydrogensButton_ = nullptr;
     QComboBox* surfaceFinishCombo_;
     /// Which BRDF shades every atom and bond (Blinn-Phong / PBR / Toon).
     /// Application-wide and persisted, unlike everything else in this panel —
     /// see the note beside it.
     QComboBox* shadingCombo_ = nullptr;
-    // Per-atom text overlays, grouped on the editor row after Element
-    // Settings. The first two moved here from the viewport toolbar: what is
-    // written on an atom is a representation choice, not a navigation one.
-    QPushButton* elementLabelsButton_ = nullptr; ///< chemical symbols
-    QPushButton* indexLabelsButton_ = nullptr;   ///< 1-based atom indices
     /// "Show CN / GCN values" — overlays the active "Color by" scalar on the
     /// atoms. Disabled in Element mode, which has no scalar to print.
     QPushButton* scalarLabelsButton_ = nullptr;

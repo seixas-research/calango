@@ -624,6 +624,10 @@ private:
     /// setting as the panel's "Shading" row, and that dialog is modal: the row
     /// has to be re-read when it closes or the two go out of step.
     RepresentationPanel* representationPanel_ = nullptr;
+    /// Viewport-toolbar "Draw hydrogen atoms". Held because "Complete with
+    /// hydrogens" switches it on after building them — hydrogens the user
+    /// cannot see are a no-op as far as they can tell.
+    QAction* showHydrogensAction_ = nullptr;
     BrandingPanel* brandingPanel_ = nullptr;      ///< zone 1 (theme-aware logo)
     SystemStatusBar* systemStatusBar_ = nullptr;  ///< permanent status widgets
     QMenu* recentMenu_ = nullptr; ///< File → Open → Open Recent (dynamic)

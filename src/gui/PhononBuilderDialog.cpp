@@ -1,5 +1,6 @@
 #include "gui/PhononBuilderDialog.hpp"
 
+#include "gui/SettingsManager.hpp"
 #include "gui/CondaEnvs.hpp"
 #include "gui/ScriptStaging.hpp"
 #include "gui/PythonHighlighter.hpp"
@@ -276,7 +277,8 @@ void PhononBuilderDialog::regenerateScript()
 void PhononBuilderDialog::browseMaceModel()
 {
     const QString path = QFileDialog::getOpenFileName(
-        this, tr("Select MACE Model"), QString(),
+        this, tr("Select MACE Model"),
+        SettingsManager::mlPotentialsStartPath(maceModelPathEdit_->text()),
         tr("MACE models (*.model *.pt);;All files (*)"));
     if (!path.isEmpty())
         maceModelPathEdit_->setText(path); // textChanged refreshes the preview

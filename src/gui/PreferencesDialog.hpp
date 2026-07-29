@@ -44,6 +44,9 @@ private:
     void updateCondaStatus();
     /// Build the "Python & Environments" tab (engine → Conda env table).
     QWidget* buildPythonEnvTab();
+    /// "External Files": pseudopotential libraries per engine and the ML
+    /// model directory. Machine properties, not run parameters.
+    QWidget* buildExternalFilesTab();
     /// Build the "Run" tab (engine → launch command template + core count).
     QWidget* buildRunTab();
     /// Build the "Rendering" tab (per-slot shader profile + GL diagnostics).
@@ -62,6 +65,7 @@ private:
     QLineEdit* condaDirEdit_ = nullptr;
     QLabel* condaStatusLabel_ = nullptr;
     QTableWidget* engineEnvTable_ = nullptr;
+    QTableWidget* externalFilesTable_ = nullptr;
     QTableWidget* runCommandTable_ = nullptr;
     QSpinBox* runCoresSpin_ = nullptr;
     /// One combo per render::ShaderSlot, in slot order.
