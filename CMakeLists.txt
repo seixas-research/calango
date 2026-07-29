@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.67
+    VERSION 26.7.68
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -183,6 +183,9 @@ qt_add_executable(calango
     src/core/PdbxFile.hpp
     src/core/PdbxFile.cpp
     src/core/WannierScriptGenerator.hpp
+    src/core/DefectScriptGenerator.cpp
+    src/core/FermiSurfaceScriptGenerator.cpp
+    src/core/TopologyScriptGenerator.cpp
     src/core/TwoDBandsScriptGenerator.cpp
     src/core/WannierScriptGenerator.cpp
     src/core/AdsorptionSites.hpp
@@ -249,6 +252,7 @@ qt_add_executable(calango
     src/render/ColorMap.cpp
     src/render/RenderGeometry.hpp
     src/render/StructureRenderer.hpp
+    src/render/ShaderProfile.cpp
     src/render/StructureRenderer.cpp
     src/render/RayTraceExporter.hpp
     src/render/RayTraceExporter.cpp
@@ -295,6 +299,12 @@ qt_add_executable(calango
     src/gui/NeighborCellsDialog.cpp
     src/gui/TwoDBandsWizard.cpp
     src/gui/TwoDBandsWindow.cpp
+    src/gui/DefectWizard.cpp
+    src/gui/DefectDiagramWindow.cpp
+    src/gui/FermiSurfaceDialog.cpp
+    src/gui/FermiSurfaceWindow.cpp
+    src/gui/TopologyDialog.cpp
+    src/gui/TopologyWindow.cpp
     src/gui/LightingPanel.hpp
     src/gui/LightingPanel.cpp
     src/gui/ElementSettingsDialog.hpp
@@ -530,6 +540,14 @@ qt_add_resources(calango "shaders"
         assets/shaders/line.frag
         assets/shaders/wire.vert
         assets/shaders/wire.frag
+        assets/shaders/isosurface.vert
+        assets/shaders/isosurface.frag
+        assets/shaders/impostor_sphere.vert
+        assets/shaders/impostor_sphere.frag
+        assets/shaders/impostor_cylinder.vert
+        assets/shaders/impostor_cylinder.frag
+        assets/shaders/raymarch.vert
+        assets/shaders/raymarch.frag
         assets/shaders/volume.vert
         assets/shaders/volume.frag
         assets/shaders/dof.vert
@@ -615,6 +633,10 @@ qt_add_resources(calango "icons"
         assets/icons/save-line.svg
         assets/icons/box-1-line.svg
         assets/icons/gradient.svg
+        assets/icons/stairs-fill.svg
+        assets/icons/home-2-fill.svg
+        assets/icons/home-office-fill.svg
+        assets/icons/community-fill.svg
         assets/icons/ram-line.svg
         assets/icons/ruler-2-line.svg
         assets/icons/scissors-cut-line.svg
@@ -885,6 +907,7 @@ if(CALANGO_BUILD_TESTS)
         tests/RayTraceSceneTest.cpp
         src/render/RayTraceExporter.cpp
         src/render/StructureRenderer.cpp
+        src/render/ShaderProfile.cpp
         src/core/MarchingCubes.cpp
         src/core/VolumetricData.cpp
         src/render/ColorMap.cpp
@@ -988,7 +1011,9 @@ if(CALANGO_BUILD_TESTS)
     # Shader compilation: a GLSL error renders nothing instead of crashing, so
     # without this a broken shader ships as a black viewport. Needs a real GL
     # 3.3 context and self-skips when there is none.
-    qt_add_executable(calango_shader_test tests/ShaderCompileTest.cpp)
+    qt_add_executable(calango_shader_test tests/ShaderCompileTest.cpp
+        src/render/ShaderProfile.cpp)
+    target_include_directories(calango_shader_test PRIVATE src)
     qt_add_resources(calango_shader_test "test_shaders"
         PREFIX "/"
         FILES
@@ -1002,6 +1027,14 @@ if(CALANGO_BUILD_TESTS)
             assets/shaders/wire.frag
             assets/shaders/volume.vert
             assets/shaders/volume.frag
+            assets/shaders/isosurface.vert
+            assets/shaders/isosurface.frag
+            assets/shaders/impostor_sphere.vert
+            assets/shaders/impostor_sphere.frag
+            assets/shaders/impostor_cylinder.vert
+            assets/shaders/impostor_cylinder.frag
+            assets/shaders/raymarch.vert
+            assets/shaders/raymarch.frag
             assets/shaders/dof.vert
             assets/shaders/dof.frag
             assets/shaders/ssao.frag
@@ -1018,6 +1051,7 @@ if(CALANGO_BUILD_TESTS)
     qt_add_executable(calango_translucent_render_test
         tests/TranslucentRenderTest.cpp
         src/render/StructureRenderer.cpp
+        src/render/ShaderProfile.cpp
         src/render/Camera.cpp
         src/render/ColorMap.cpp
         src/core/Structure.cpp
@@ -1075,6 +1109,11 @@ if(CALANGO_BUILD_TESTS)
         src/core/XasScriptGenerator.cpp
         src/gui/EditVolumetricRenderDialog.cpp
         src/gui/VolumetricStyle.cpp
+        # The isosurface "Lit surface" checkbox reads and writes the shader
+        # profile registry. It queries no GL context here — ShaderRegistry
+        # answers "unsupported is unknown, assume yes" with none current —
+        # so the headless dialog test constructs it fine.
+        src/render/ShaderProfile.cpp
         src/core/RandomNoiseScriptGenerator.cpp
         src/core/CddScriptGenerator.cpp
         src/core/Noise.cpp
@@ -1193,6 +1232,7 @@ if(CALANGO_BUILD_TESTS)
         tests/AlembicExportTest.cpp
         src/python_bridge/AlembicExporter.cpp
         src/render/StructureRenderer.cpp
+        src/render/ShaderProfile.cpp
         src/render/ColorMap.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
@@ -1267,6 +1307,9 @@ if(CALANGO_BUILD_TESTS)
         src/core/UnfoldingScriptGenerator.cpp
         src/core/TwoDBandsScriptGenerator.cpp
         src/core/WannierScriptGenerator.cpp
+        src/core/DefectScriptGenerator.cpp
+        src/core/FermiSurfaceScriptGenerator.cpp
+        src/core/TopologyScriptGenerator.cpp
         src/core/BandUnfolding.cpp
         src/core/UnitCell.cpp
     )

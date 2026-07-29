@@ -18,7 +18,16 @@ namespace calango::gui {
 /// re-pick the base field they had already selected, and made "show me this
 /// surface, coloured by the potential" a mode switch rather than a checkbox.
 /// It is now an option under Isosurface.
-enum class VolumetricRenderMode { Isosurface, ColorSlice };
+/// What the Volumetric Data dock draws for the selected field.
+///
+/// DirectVolume is a different kind of object from the other two, not another
+/// presentation of the same one: an isosurface and a slice are geometry
+/// extracted once and drawn like anything else, while direct volume rendering
+/// resamples the WHOLE field per pixel per frame. It shows a density's core,
+/// its bonding region and its tail at once, where an isosurface has to pick
+/// one level and discard everything else — at the cost of being the only mode
+/// whose price is paid every frame rather than once per parameter change.
+enum class VolumetricRenderMode { Isosurface, ColorSlice, DirectVolume };
 
 /// What the extracted isosurface is turned into on screen.
 ///
@@ -29,6 +38,24 @@ enum class VolumetricRenderMode { Isosurface, ColorSlice };
 /// the figure convention for showing an orbital's shape and its curvature at
 /// once.
 enum class IsoDrawStyle { Solid, Mesh, SolidMesh, Dots };
+
+/// Direct-volume-rendering controls (VolumetricRenderMode::DirectVolume).
+struct DirectVolumeSettings {
+    /// Samples along the ray. The single quality/cost dial: too few and the
+    /// field shows as concentric shells where the step pattern beats against
+    /// its own structure.
+    int steps = 256;
+    /// Global opacity scale applied on top of the transfer function.
+    double density = 1.0;
+    /// Values below this contribute nothing. A density's vacuum tail fills
+    /// most of the box with near-zero values that would otherwise fog the
+    /// whole cell grey.
+    double threshold = 0.02;
+    /// Shade each sample from the field gradient. Six extra texture taps per
+    /// lit sample, and what makes a molecular orbital read as a shape rather
+    /// than as coloured smoke.
+    bool lit = true;
+};
 
 /// How the isosurface's colour is shaded before it is uploaded.
 ///
@@ -62,6 +89,7 @@ struct VolumetricStyle {
 
     // -- Isosurface presentation -------------------------------------------
     IsoDrawStyle drawStyle = IsoDrawStyle::Solid;
+    DirectVolumeSettings directVolume;
     IsoShading shading = IsoShading::Flat;
     /// Ambient floor of the baked shading: the fraction of the base colour a
     /// face turned fully away from every light keeps. 0 makes unlit faces

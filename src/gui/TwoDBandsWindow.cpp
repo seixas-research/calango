@@ -6,10 +6,14 @@
 #include "render/ColorMap.hpp"
 
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFormLayout>
+#include <QGridLayout>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -17,6 +21,8 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QSlider>
 #include <QSpinBox>
 #include <QTextStream>
 #include <QVBoxLayout>
@@ -155,23 +161,183 @@ TwoDBandsWindow::TwoDBandsWindow(QWidget* parent) : QDialog(parent)
     canvas_ = new VolumeViewWidget(this);
     // Opaque: stacked band sheets seen through each other read as noise.
     canvas_->setMeshOpacity(1.0f);
+    connect(canvas_, &VolumeViewWidget::viewChanged, this,
+            &TwoDBandsWindow::syncOrientationReadout);
     body->addWidget(canvas_, 1);
+
+    // Everything configurable lives in one column to the RIGHT of the canvas.
+    // It used to be two rows underneath, which cost the plot vertical space —
+    // the scarce dimension for a surface seen in perspective — and put related
+    // controls (the colour ramp and the solid-colour swatch) on different
+    // lines with unrelated ones between them.
+    body->addWidget(buildSettingsPanel());
     layout->addLayout(body, 1);
+}
 
-    auto* controls = new QHBoxLayout;
+QWidget* TwoDBandsWindow::buildSettingsPanel()
+{
+    auto* panel = new QWidget(this);
+    panel->setFixedWidth(268);
+    auto* outer = new QVBoxLayout(panel);
+    outer->setContentsMargins(0, 0, 0, 0);
 
-    controls->addWidget(new QLabel(tr("Colormap:"), this));
-    gradientCombo_ = new QComboBox(this);
+    // Scrollable: the panel holds four groups and a short dialog would
+    // otherwise clip the last one with no way to reach it.
+    auto* scroll = new QScrollArea(panel);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    auto* inner = new QWidget(scroll);
+    auto* layout = new QVBoxLayout(inner);
+    layout->setContentsMargins(0, 0, 6, 0);
+
+    // ---------------------------------------------------------------- View --
+    auto* viewGroup = new QGroupBox(tr("View"), inner);
+    auto* viewLayout = new QVBoxLayout(viewGroup);
+
+    auto* viewNote = new QLabel(
+        tr("Drag to rotate (arcball); drag outside the centre circle to roll. "
+           "Shift-drag or middle-drag pans, the wheel zooms, double-click "
+           "re-frames."),
+        viewGroup);
+    viewNote->setWordWrap(true);
+    viewLayout->addWidget(viewNote);
+
+    // Named orientations. The arcball is good at exploring and bad at landing
+    // exactly on an axis, which is what a reproducible figure needs.
+    auto* presetGrid = new QGridLayout;
+    const struct {
+        QString label;
+        float yaw, pitch, roll;
+        QString tip;
+    } kPresets[] = {
+        {tr("Top"), 0.0f, -90.0f, 0.0f,
+         tr("Straight down the energy axis — the surface as a map over the "
+            "k-plane, which is where a Fermi contour is read off.")},
+        {tr("Front"), 0.0f, 0.0f, 0.0f, tr("Along −k_y, energy up.")},
+        {tr("Side"), 90.0f, 0.0f, 0.0f, tr("Along −k_x, energy up.")},
+        {tr("Iso"), 0.0f, -70.0f, 20.0f,
+         tr("The default three-quarter view: all three axes at once.")},
+    };
+    for (int i = 0; i < 4; ++i) {
+        auto* button = new QPushButton(kPresets[i].label, viewGroup);
+        button->setToolTip(kPresets[i].tip);
+        const float y = kPresets[i].yaw;
+        const float p = kPresets[i].pitch;
+        const float r = kPresets[i].roll;
+        connect(button, &QPushButton::clicked, this, [this, y, p, r] {
+            canvas_->setViewOrientation(y, p, r);
+            syncOrientationReadout();
+        });
+        presetGrid->addWidget(button, i / 2, i % 2);
+    }
+    viewLayout->addLayout(presetGrid);
+
+    // Nudges about the CAMERA axes, so each arrow does what it looks like
+    // whatever the current orientation is.
+    auto* nudgeGrid = new QGridLayout;
+    const struct {
+        QString label;
+        int axis;
+        float degrees;
+        int row, column;
+    } kNudges[] = {
+        {QStringLiteral("↑"), 0, -15.0f, 0, 1},
+        {QStringLiteral("←"), 1, -15.0f, 1, 0},
+        {QStringLiteral("→"), 1, 15.0f, 1, 2},
+        {QStringLiteral("↓"), 0, 15.0f, 2, 1},
+    };
+    for (const auto& nudge : kNudges) {
+        auto* button = new QPushButton(nudge.label, viewGroup);
+        button->setFixedWidth(38);
+        button->setToolTip(tr("Turn 15° about the screen %1 axis.")
+                               .arg(nudge.axis == 0 ? tr("horizontal")
+                                                    : tr("vertical")));
+        const int axis = nudge.axis;
+        const float degrees = nudge.degrees;
+        connect(button, &QPushButton::clicked, this, [this, axis, degrees] {
+            canvas_->nudgeView(axis, degrees);
+            syncOrientationReadout();
+        });
+        nudgeGrid->addWidget(button, nudge.row, nudge.column);
+    }
+    auto* resetButton = new QPushButton(tr("Reset"), viewGroup);
+    resetButton->setToolTip(tr("Back to the default view, re-framed."));
+    connect(resetButton, &QPushButton::clicked, this, [this] {
+        canvas_->resetView();
+        syncOrientationReadout();
+    });
+    nudgeGrid->addWidget(resetButton, 1, 1);
+    viewLayout->addLayout(nudgeGrid);
+
+    auto* rollRow = new QHBoxLayout;
+    rollRow->addWidget(new QLabel(tr("Roll:"), viewGroup));
+    rollSlider_ = new QSlider(Qt::Horizontal, viewGroup);
+    rollSlider_->setRange(-180, 180);
+    rollSlider_->setValue(0);
+    rollSlider_->setToolTip(
+        tr("Turn the picture in the screen plane. The viewpoint and the "
+           "surface are unchanged — this is the camera tilting its head, which "
+           "is how a figure is levelled without re-orbiting it."));
+    connect(rollSlider_, &QSlider::valueChanged, this, [this](int value) {
+        canvas_->setViewRoll(static_cast<float>(value));
+        syncOrientationReadout();
+    });
+    rollRow->addWidget(rollSlider_, 1);
+    viewLayout->addLayout(rollRow);
+
+    orientationLabel_ = new QLabel(viewGroup);
+    orientationLabel_->setWordWrap(true);
+    viewLayout->addWidget(orientationLabel_);
+    layout->addWidget(viewGroup);
+
+    // ---------------------------------------------------------- Appearance --
+    auto* appearance = new QGroupBox(tr("Appearance"), inner);
+    auto* appearanceForm = new QFormLayout(appearance);
+
+    colorModeCombo_ = new QComboBox(appearance);
+    colorModeCombo_->addItem(tr("Colormap by energy"), 0);
+    colorModeCombo_->addItem(tr("Solid colour"), 1);
+    colorModeCombo_->setToolTip(
+        tr("A colormap encodes energy as hue, which is what a single surface "
+           "wants.\n\n"
+           "Several surfaces at once are better told apart by giving each a "
+           "flat colour — and a figure often wants one deliberate colour "
+           "rather than a rainbow that competes with the shape."));
+    appearanceForm->addRow(tr("Colouring:"), colorModeCombo_);
+    connect(colorModeCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        const bool solid = colorModeCombo_->currentData().toInt() == 1;
+        gradientCombo_->setEnabled(!solid);
+        solidColorButton_->setEnabled(solid);
+        rebuild();
+    });
+
+    solidColorButton_ = new QPushButton(appearance);
+    solidColorButton_->setFixedHeight(22);
+    setButtonColor(solidColorButton_, solidColor_);
+    solidColorButton_->setEnabled(false);
+    solidColorButton_->setToolTip(tr("The single colour every drawn surface "
+                                     "takes in solid mode."));
+    connect(solidColorButton_, &QPushButton::clicked, this, [this] {
+        const QColor chosen = QColorDialog::getColor(
+            solidColor_, this, tr("Band surface colour"));
+        if (!chosen.isValid())
+            return;
+        solidColor_ = chosen;
+        setButtonColor(solidColorButton_, solidColor_);
+        rebuild();
+    });
+    appearanceForm->addRow(tr("Solid colour:"), solidColorButton_);
+
+    gradientCombo_ = new QComboBox(appearance);
     gradientCombo_->addItems(volumetricGradientNames());
     gradientCombo_->setCurrentIndex(
         std::max(0, static_cast<int>(volumetricGradients().indexOf(
                         render::ColorGradient::Viridis))));
     connect(gradientCombo_, &QComboBox::currentIndexChanged, this,
             [this] { rebuild(); });
-    controls->addWidget(gradientCombo_);
+    appearanceForm->addRow(tr("Colormap:"), gradientCombo_);
 
-    controls->addWidget(new QLabel(tr("Energy scale:"), this));
-    energyScaleSpin_ = new QDoubleSpinBox(this);
+    energyScaleSpin_ = new QDoubleSpinBox(appearance);
     energyScaleSpin_->setRange(0.01, 100.0);
     energyScaleSpin_->setDecimals(3);
     energyScaleSpin_->setSingleStep(0.05);
@@ -185,35 +351,30 @@ TwoDBandsWindow::TwoDBandsWindow(QWidget* parent) : QDialog(parent)
            "caption, so the distortion is never silent."));
     connect(energyScaleSpin_, &QDoubleSpinBox::valueChanged, this,
             [this] { rebuild(); });
-    controls->addWidget(energyScaleSpin_);
+    appearanceForm->addRow(tr("Energy scale:"), energyScaleSpin_);
 
     QCheckBox* shift = nullptr;
-    QWidget* shiftRow =
-        richTextCheckBox(tr("E − E<sub>F</sub>"), shift, this);
+    QWidget* shiftRow = richTextCheckBox(tr("E − E<sub>F</sub>"), shift, appearance);
     shiftFermiCheck_ = shift;
     shiftFermiCheck_->setChecked(true);
     shiftRow->setToolTip(tr("Plot energies relative to the Fermi level."));
-    connect(shiftFermiCheck_, &QCheckBox::toggled, this,
-            [this] { rebuild(); });
-    controls->addWidget(shiftRow);
+    connect(shiftFermiCheck_, &QCheckBox::toggled, this, [this] { rebuild(); });
+    appearanceForm->addRow(shiftRow);
 
-    fermiPlaneCheck_ = new QCheckBox(tr("Fermi plane"), this);
+    fermiPlaneCheck_ = new QCheckBox(tr("Fermi plane"), appearance);
     fermiPlaneCheck_->setChecked(true);
     fermiPlaneCheck_->setToolTip(
         tr("Outline the plane at the Fermi level. Where a surface crosses it "
            "is the Fermi surface of the sheet."));
     connect(fermiPlaneCheck_, &QCheckBox::toggled, this, [this] { rebuild(); });
-    controls->addWidget(fermiPlaneCheck_);
+    appearanceForm->addRow(fermiPlaneCheck_);
+    layout->addWidget(appearance);
 
-    controls->addStretch(1);
-    layout->addLayout(controls);
+    // ------------------------------------------------------------- Surface --
+    auto* surface = new QGroupBox(tr("Surface"), inner);
+    auto* surfaceForm = new QFormLayout(surface);
 
-    // Second control row: what the surface is drawn OVER and how smoothly,
-    // as opposed to the first row's colour and vertical scale.
-    auto* controls2 = new QHBoxLayout;
-
-    controls2->addWidget(new QLabel(tr("Interpolation:"), this));
-    interpolationCombo_ = new QComboBox(this);
+    interpolationCombo_ = new QComboBox(surface);
     interpolationCombo_->addItem(tr("None (computed grid)"), 0);
     interpolationCombo_->addItem(tr("Bilinear"), 1);
     interpolationCombo_->addItem(tr("Bicubic (Catmull-Rom)"), 2);
@@ -230,9 +391,9 @@ TwoDBandsWindow::TwoDBandsWindow(QWidget* parent) : QDialog(parent)
            "k-grid missed cannot be recovered by drawing through it."));
     connect(interpolationCombo_, &QComboBox::currentIndexChanged, this,
             [this] { rebuild(); });
-    controls2->addWidget(interpolationCombo_);
+    surfaceForm->addRow(tr("Interpolation:"), interpolationCombo_);
 
-    refineSpin_ = new QSpinBox(this);
+    refineSpin_ = new QSpinBox(surface);
     refineSpin_->setRange(1, 8);
     refineSpin_->setValue(3);
     refineSpin_->setPrefix(tr("×"));
@@ -240,18 +401,23 @@ TwoDBandsWindow::TwoDBandsWindow(QWidget* parent) : QDialog(parent)
         tr("Refinement factor: how many drawn cells replace each computed one "
            "along each axis. The triangle count grows with its square."));
     connect(refineSpin_, &QSpinBox::valueChanged, this, [this] { rebuild(); });
-    controls2->addWidget(refineSpin_);
+    surfaceForm->addRow(tr("Refinement:"), refineSpin_);
+    layout->addWidget(surface);
 
-    axesCheck_ = new QCheckBox(tr("Axes"), this);
+    // -------------------------------------------------------------- Domain --
+    auto* domain = new QGroupBox(tr("Domain && annotation"), inner);
+    auto* domainLayout = new QVBoxLayout(domain);
+
+    axesCheck_ = new QCheckBox(tr("Axes"), domain);
     axesCheck_->setChecked(true);
     axesCheck_->setToolTip(
         tr("Draw the k_x, k_y and energy axes through the origin, with a tick "
            "and a caption on each. Turn them off for a clean figure of the "
            "surface alone."));
     connect(axesCheck_, &QCheckBox::toggled, this, [this] { rebuild(); });
-    controls2->addWidget(axesCheck_);
+    domainLayout->addWidget(axesCheck_);
 
-    brillouinCheck_ = new QCheckBox(tr("First Brillouin zone"), this);
+    brillouinCheck_ = new QCheckBox(tr("First Brillouin zone"), domain);
     brillouinCheck_->setToolTip(
         tr("Clip the surface to the first Brillouin zone — the Wigner-Seitz "
            "(Voronoi) cell of the reciprocal lattice, the set of k closer to Γ "
@@ -262,9 +428,9 @@ TwoDBandsWindow::TwoDBandsWindow(QWidget* parent) : QDialog(parent)
            "the second zone into view. Clipping shows the zone the band "
            "structure is conventionally drawn over."));
     connect(brillouinCheck_, &QCheckBox::toggled, this, [this] { rebuild(); });
-    controls2->addWidget(brillouinCheck_);
+    domainLayout->addWidget(brillouinCheck_);
 
-    labelsCheck_ = new QCheckBox(tr("k-point labels"), this);
+    labelsCheck_ = new QCheckBox(tr("k-point labels"), domain);
     labelsCheck_->setChecked(true);
     labelsCheck_->setToolTip(
         tr("Mark and name the high-symmetry points of this lattice (Γ, M, K, "
@@ -272,18 +438,41 @@ TwoDBandsWindow::TwoDBandsWindow(QWidget* parent) : QDialog(parent)
            "they are the conventional ones for the cell that was actually "
            "calculated."));
     connect(labelsCheck_, &QCheckBox::toggled, this, [this] { rebuild(); });
-    controls2->addWidget(labelsCheck_);
+    domainLayout->addWidget(labelsCheck_);
+    layout->addWidget(domain);
 
-    controls2->addStretch(1);
-    auto* exportImageButton = new QPushButton(tr("Export Image…"), this);
+    layout->addStretch(1);
+    scroll->setWidget(inner);
+    outer->addWidget(scroll, 1);
+
+    auto* exportRow = new QHBoxLayout;
+    auto* exportImageButton = new QPushButton(tr("Image…"), panel);
     connect(exportImageButton, &QPushButton::clicked, this,
             &TwoDBandsWindow::exportImage);
-    controls2->addWidget(exportImageButton);
-    auto* exportDataButton = new QPushButton(tr("Export Data…"), this);
+    exportRow->addWidget(exportImageButton);
+    auto* exportDataButton = new QPushButton(tr("Data…"), panel);
     connect(exportDataButton, &QPushButton::clicked, this,
             &TwoDBandsWindow::exportData);
-    controls2->addWidget(exportDataButton);
-    layout->addLayout(controls2);
+    exportRow->addWidget(exportDataButton);
+    outer->addLayout(exportRow);
+
+    syncOrientationReadout();
+    return panel;
+}
+
+void TwoDBandsWindow::syncOrientationReadout()
+{
+    if (!orientationLabel_ || !canvas_)
+        return;
+    orientationLabel_->setText(
+        tr("<span style='color:gray;'>yaw %1° · pitch %2° · roll %3°</span>")
+            .arg(canvas_->viewYaw(), 0, 'f', 1)
+            .arg(canvas_->viewPitch(), 0, 'f', 1)
+            .arg(canvas_->viewRoll(), 0, 'f', 1));
+    if (rollSlider_) {
+        const QSignalBlocker blocker(rollSlider_);
+        rollSlider_->setValue(static_cast<int>(std::lround(canvas_->viewRoll())));
+    }
 }
 
 bool TwoDBandsWindow::loadResults(const QString& jsonPath)
@@ -621,7 +810,16 @@ void TwoDBandsWindow::rebuild()
         const std::vector<std::vector<double>>& ge =
             refined ? renergies : s.energies;
 
+        // Solid mode ignores the energy entirely — that is the point of it: the
+        // height already carries the energy, so a flat colour frees hue to
+        // separate one surface from another, or simply to make a printable
+        // figure. The parameter stays so the two modes are interchangeable at
+        // every call site below.
+        const bool solid =
+            colorModeCombo_ && colorModeCombo_->currentData().toInt() == 1;
         const auto color = [&](double e) {
+            if (solid)
+                return solidColor_;
             return render::ColorMap::sample(
                 gradient, static_cast<float>((e - lo) / range));
         };

@@ -1,5 +1,8 @@
 #include "gui/EditVolumetricRenderDialog.hpp"
 
+#include "gui/SettingsManager.hpp"
+#include "render/ShaderProfile.hpp"
+
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
@@ -49,7 +52,16 @@ EditVolumetricRenderDialog::EditVolumetricRenderDialog(
     // Central mode selector (replaces the former tab widget).
     auto* modeRow = new QFormLayout;
     modeCombo_ = new QComboBox(this);
-    modeCombo_->addItems({tr("Isosurfaces"), tr("Color Slice")});
+    modeCombo_->addItems({tr("Isosurfaces"), tr("Color Slice"),
+                          tr("Direct Volume (ray march)")});
+    modeCombo_->setItemData(
+        2,
+        tr("Ray-march the whole field instead of extracting one isovalue from "
+           "it.\n\nAn isosurface has to pick a level and discard everything "
+           "else; this shows the core, the bonding region and the tail at "
+           "once, weighted by the colour ramp. It is the only mode whose cost "
+           "is paid every frame rather than once per parameter change."),
+        Qt::ToolTipRole);
     modeCombo_->setCurrentIndex(static_cast<int>(mode));
     modeRow->addRow(tr("Render Mode:"), modeCombo_);
     layout->addLayout(modeRow);
@@ -57,6 +69,7 @@ EditVolumetricRenderDialog::EditVolumetricRenderDialog(
     stack_ = new QStackedWidget(this);
     stack_->addWidget(buildIsosurfacePage());  // index 0 = Isosurface
     stack_->addWidget(buildColorSlicePage());  // index 1 = ColorSlice
+    stack_->addWidget(buildDirectVolumePage()); // index 2 = DirectVolume
     stack_->setCurrentIndex(static_cast<int>(mode));
     layout->addWidget(stack_, 1);
 
@@ -210,6 +223,42 @@ QWidget* EditVolumetricRenderDialog::buildIsosurfacePage()
             });
 
     // -- Shading ------------------------------------------------------------
+    // "Lit surface" was a two-entry dropdown in Preferences → Rendering. Two
+    // entries IS a checkbox, and the switch belongs here: it decides whether
+    // the three controls directly below it still reach the main viewport, and
+    // a control whose relevance is decided in another window is not one the
+    // user can reason about.
+    litSurfaceCheck_ = new QCheckBox(tr("Lit surface (GPU shading)"), page);
+    litSurfaceCheck_->setChecked(
+        !render::ShaderRegistry::activeProfile(render::ShaderSlot::Isosurfaces)
+             .isLegacy);
+    litSurfaceCheck_->setToolTip(
+        tr("Shade the surface on the GPU from the normals marching cubes "
+           "already derives, using the SAME lights as the atoms — so the "
+           "highlight tracks the camera and the surface sits in the scene "
+           "rather than on top of it. It also writes a real normal into the "
+           "G-buffer, so isosurfaces take part in ambient occlusion.\n\n"
+           "Off is the historical path: an unlit fill whose shading is "
+           "computed on the CPU and baked into the vertex colours by the "
+           "Shading row below, with the highlight frozen to a fixed "
+           "direction. Kept for reproducing older figures.\n\n"
+           "Unlike everything else in this dialog, this applies to every "
+           "isosurface in the application and persists between sessions."));
+    form->addRow(litSurfaceCheck_);
+    connect(litSurfaceCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        if (updating_)
+            return;
+        render::ShaderRegistry::setActiveProfileId(
+            render::ShaderSlot::Isosurfaces,
+            on ? QStringLiteral("lit") : QStringLiteral("legacy"));
+        SettingsManager::save();
+        syncIsoStyleEnabled();
+        // The vertex COLOURS differ between the two paths — the legacy one
+        // bakes the shading into them — so this is a re-extraction, not a
+        // repaint. emitChange() is what drives that.
+        emitChange();
+    });
+
     shadingCombo_ = new QComboBox(page);
     shadingCombo_->addItem(tr("Flat (unshaded)"),
                            static_cast<int>(IsoShading::Flat));
@@ -217,17 +266,9 @@ QWidget* EditVolumetricRenderDialog::buildIsosurfacePage()
     shadingCombo_->addItem(tr("Glossy"), static_cast<int>(IsoShading::Glossy));
     shadingCombo_->setCurrentIndex(
         shadingCombo_->findData(static_cast<int>(style_.shading)));
-    shadingCombo_->setToolTip(
-        tr("Light the surface using the normals marching cubes derives from "
-           "the field gradient.\n\n"
-           "Flat leaves every facet the same color — a silhouette, which is "
-           "what makes two overlapping lobes indistinguishable. Diffuse adds "
-           "the shape back; Glossy adds a highlight on top, scaled by the "
-           "Specular finish below.\n\n"
-           "The shading is baked into the vertex colors against the same fixed "
-           "studio lights the atoms use, so it does not swing with the "
-           "camera — the main viewport draws volumetric overlays through its "
-           "unlit path."));
+    // The tool tip is set by syncIsoStyleEnabled() instead of here: it depends
+    // on the Lit surface checkbox above, and two places writing it would let
+    // them disagree.
     form->addRow(tr("Shading:"), shadingCombo_);
     connect(shadingCombo_, &QComboBox::currentIndexChanged, this, [this] {
         if (updating_)
@@ -466,9 +507,107 @@ void EditVolumetricRenderDialog::syncIsoStyleEnabled()
     dotSizeSpin_->setEnabled(dots);
     dotStrideSpin_->setEnabled(dots);
     meshShadeSpin_->setEnabled(solidMesh);
+    // Shading / Ambient bake the lighting into the vertex colours, which only
+    // the legacy path reads. They are not disabled under "Lit surface" because
+    // they are not dead: the standalone volume viewer windows shade through
+    // them either way. The label says which is which instead.
+    const bool baked = !litSurfaceCheck_ || !litSurfaceCheck_->isChecked();
+    shadingCombo_->setToolTip(
+        baked ? tr("Bake the lighting into the vertex colours, against the "
+                   "same fixed studio lights the atoms use.\n\n"
+                   "Flat leaves every facet the same colour — a silhouette, "
+                   "which is what makes two overlapping lobes "
+                   "indistinguishable. Diffuse adds the shape back; Glossy "
+                   "adds a highlight on top, scaled by the Specular finish "
+                   "below.\n\n"
+                   "Baked shading does not swing with the camera. Turn on "
+                   "\"Lit surface\" above for shading that does.")
+              : tr("Baked shading. With \"Lit surface\" on, the main viewport "
+                   "shades on the GPU instead and ignores this — it still "
+                   "drives the standalone volume viewer windows."));
     ambientSpin_->setEnabled(style_.shading != IsoShading::Flat);
     // Specular still drives the lit volume viewers with Flat shading on, so it
     // is only ever informative here — never disabled.
+}
+
+QWidget* EditVolumetricRenderDialog::buildDirectVolumePage()
+{
+    auto* page = new QWidget(this);
+    auto* form = new QFormLayout(page);
+
+    auto* intro = new QLabel(
+        tr("The field is uploaded as a 3D texture and integrated along the "
+           "view ray. The colour ramp on the <b>Color Slice</b> page is the "
+           "transfer function; opacity rises with value, so the dense core "
+           "shows through the diffuse tail."),
+        page);
+    intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
+    form->addRow(intro);
+
+    volumeStepsSpin_ = new QSpinBox(page);
+    volumeStepsSpin_->setRange(8, 2048);
+    volumeStepsSpin_->setValue(256);
+    volumeStepsSpin_->setSingleStep(32);
+    volumeStepsSpin_->setToolTip(
+        tr("Samples along each ray — the quality/cost dial, paid every "
+           "frame.\n\n"
+           "Too few and the field shows as concentric shells where the step "
+           "pattern beats against its own structure. 128 is fluid to orbit; "
+           "512 is what a still wants."));
+    form->addRow(tr("Ray steps:"), volumeStepsSpin_);
+
+    volumeDensitySpin_ = new QDoubleSpinBox(page);
+    volumeDensitySpin_->setRange(0.01, 20.0);
+    volumeDensitySpin_->setDecimals(2);
+    volumeDensitySpin_->setSingleStep(0.1);
+    volumeDensitySpin_->setValue(1.0);
+    volumeDensitySpin_->setToolTip(
+        tr("Global opacity scale on top of the transfer function. Raise it "
+           "until the structure reads; past that the volume goes solid and "
+           "hides its own interior."));
+    form->addRow(tr("Density:"), volumeDensitySpin_);
+
+    volumeThresholdSpin_ = new QDoubleSpinBox(page);
+    volumeThresholdSpin_->setRange(0.0, 1.0);
+    volumeThresholdSpin_->setDecimals(4);
+    volumeThresholdSpin_->setSingleStep(0.005);
+    volumeThresholdSpin_->setValue(0.02);
+    volumeThresholdSpin_->setToolTip(
+        tr("Normalized value below which a sample contributes nothing.\n\n"
+           "A density's vacuum tail fills most of the cell with near-zero "
+           "values; without a threshold they fog the whole box grey and bury "
+           "everything inside it."));
+    form->addRow(tr("Threshold:"), volumeThresholdSpin_);
+
+    volumeLitCheck_ = new QCheckBox(tr("Shade from the field gradient"), page);
+    volumeLitCheck_->setChecked(true);
+    volumeLitCheck_->setToolTip(
+        tr("Light each sample by the local gradient, which is the surface "
+           "normal wherever the field has structure. Six extra texture taps "
+           "per sample, and what makes an orbital read as a shape rather than "
+           "as coloured smoke."));
+    form->addRow(QString(), volumeLitCheck_);
+
+    connect(volumeStepsSpin_, &QSpinBox::valueChanged, this, [this](int v) {
+        style_.directVolume.steps = v;
+        emitChange();
+    });
+    connect(volumeDensitySpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double v) {
+                style_.directVolume.density = v;
+                emitChange();
+            });
+    connect(volumeThresholdSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double v) {
+                style_.directVolume.threshold = v;
+                emitChange();
+            });
+    connect(volumeLitCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        style_.directVolume.lit = on;
+        emitChange();
+    });
+    return page;
 }
 
 QWidget* EditVolumetricRenderDialog::buildColorSlicePage()
@@ -718,6 +857,12 @@ void EditVolumetricRenderDialog::setStyle(const VolumetricStyle& style,
     isoOpacitySpin_->setValue(style_.isoOpacity);
     shadingCombo_->setCurrentIndex(
         shadingCombo_->findData(static_cast<int>(style_.shading)));
+    // Not part of `style` — it is the global profile — but re-read here all
+    // the same, so a dialog reopened or switched to another tab shows what is
+    // actually drawing rather than what it last remembered.
+    litSurfaceCheck_->setChecked(
+        !render::ShaderRegistry::activeProfile(render::ShaderSlot::Isosurfaces)
+             .isLegacy);
     ambientSpin_->setValue(style_.ambient);
     specularSpin_->setValue(style_.specular);
     smoothingSpin_->setValue(style_.smoothing);
@@ -763,6 +908,12 @@ void EditVolumetricRenderDialog::setStyle(const VolumetricStyle& style,
     sliceInterpCombo_->setCurrentIndex(
         static_cast<int>(style_.sliceInterpolation));
     sliceOpacitySpin_->setValue(style_.sliceOpacity);
+
+    // Direct volume.
+    volumeStepsSpin_->setValue(style_.directVolume.steps);
+    volumeDensitySpin_->setValue(style_.directVolume.density);
+    volumeThresholdSpin_->setValue(style_.directVolume.threshold);
+    volumeLitCheck_->setChecked(style_.directVolume.lit);
 
     syncIsoStyleEnabled();
     updating_ = false;

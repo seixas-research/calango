@@ -666,16 +666,28 @@ int main(int argc, char** argv)
             });
         check(modeCombo != combos.end(), "has a render-mode combo");
         if (modeCombo != combos.end()) {
-            // Exactly two — an entry past the end of VolumetricRenderMode
-            // would cast to an invalid enumerator the panel then switches on.
-            check((*modeCombo)->count() == 2,
-                  "offers exactly two modes, matching the enum");
+            // The combo index is cast straight to VolumetricRenderMode, so
+            // the count must equal the enumerator count exactly: one entry
+            // past the end casts to an invalid enumerator the panel then
+            // switches on, and one short leaves a mode unreachable.
+            check((*modeCombo)->count() == 3,
+                  "offers exactly three modes, matching the enum");
             check((*modeCombo)->itemText(1).contains(QStringLiteral("Slice")),
-                  "Isosurfaces and Color Slice");
+                  "Isosurfaces, Color Slice");
+            check((*modeCombo)->itemText(2).contains(QStringLiteral("Volume")),
+                  "and Direct Volume");
+            // Every index must round-trip to the enumerator it names — the
+            // failure this guards is a reordering that silently maps one mode
+            // onto another's renderer.
             (*modeCombo)->setCurrentIndex(1);
             check(dialog.mode() == VolumetricRenderMode::ColorSlice,
-                  "and selecting one reports it");
+                  "index 1 reports ColorSlice");
+            (*modeCombo)->setCurrentIndex(2);
+            check(dialog.mode() == VolumetricRenderMode::DirectVolume,
+                  "index 2 reports DirectVolume");
             (*modeCombo)->setCurrentIndex(0);
+            check(dialog.mode() == VolumetricRenderMode::Isosurface,
+                  "index 0 reports Isosurface");
         }
 
         // Potential-map colouring is a checkable group on the Isosurfaces

@@ -31,10 +31,8 @@ NeighborCellsDialog::NeighborCellsDialog(ViewportWidget* viewport,
     auto* layout = new QVBoxLayout(this);
 
     auto* intro = new QLabel(
-        tr("Draw the periodic images of the cell over a window in fractional "
-           "coordinates. The default <b>0 → 1</b> is the home cell alone; "
-           "<b>0 → 2</b> along an axis adds the neighbour one lattice vector "
-           "along it, and negative values extend the other way."),
+        tr("Periodic images over a window in fractional coordinates. "
+           "<b>0 → 1</b> is the home cell alone."),
         this);
     intro->setWordWrap(true);
     layout->addWidget(intro);
@@ -91,14 +89,9 @@ NeighborCellsDialog::NeighborCellsDialog(ViewportWidget* viewport,
     connect(edgesCheck_, &QCheckBox::toggled, this, [this] { apply(); });
     layout->addWidget(edgesCheck_);
 
-    auto* note = new QLabel(
-        tr("<i>Purely visual: the images are extra geometry only. The atom "
-           "count, the chemical formula and every exported structure file are "
-           "unchanged — use Edit → Build Supercell to make the repetition "
-           "real.</i>"),
-        this);
-    note->setWordWrap(true);
-    layout->addWidget(note);
+    // The "purely visual" note that stood here is gone: it repeated what the
+    // edges tool tip and the summary line already say, and a dialog this small
+    // cannot afford a paragraph that only restates its neighbours.
 
     // Reset, not OK/Cancel: the dialog applies live, so there is no pending
     // state to accept — but there is a default worth one click.

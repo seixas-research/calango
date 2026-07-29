@@ -51,6 +51,12 @@ Q_SIGNALS:
 private Q_SLOTS:
     void onOrbitalToggled(QTableWidgetItem* item);
     void openInterpolationDialog();
+    /// "Fermi Surface…": interpolate E_n(k) onto a dense 3D grid and
+    /// extract the E = E_F sheets.
+    void openFermiSurfaceDialog();
+    /// "Topological Invariants…": Chern number and Z2 index from the
+    /// hybrid Wannier centre flow.
+    void openTopologyDialog();
 
 private:
     /// Rebuild the combined viewport overlay from the currently checked

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMatrix4x4>
+#include <QPointF>
 #include <QQuaternion>
 #include <QVector3D>
 
@@ -60,6 +61,16 @@ struct PointOfView {
     /// is what tilts a figure to a pleasing angle without re-orbiting it.
     float rollDeg = kDefaultRollDeg;
     QQuaternion sceneRotation;          ///< extra world-axis rotation
+    /// The camera orientation as a quaternion — the authoritative value since
+    /// the rotation model became an arcball.
+    ///
+    /// yaw/pitch/roll above are kept, derived from this, because they are what
+    /// the Set Point-of-View dialog edits and what older saved views and
+    /// project files contain. An identity quaternion means "this view predates
+    /// the arcball", and the Euler triple is used instead — which is exact,
+    /// because a stored identity can only have come from yaw = pitch = roll =
+    /// 0 and those rebuild the identity anyway.
+    QQuaternion orientation;
     CameraProjection projection = kDefaultProjection;
 
     /// True when this holds a real captured view rather than a default-
@@ -81,6 +92,26 @@ public:
     void setProjectionMode(CameraProjection mode) { projectionMode_ = mode; }
     CameraProjection projectionMode() const { return projectionMode_; }
 
+    /// Arcball (trackball) rotation from one cursor position to another.
+    ///
+    /// Both points are in widget pixels; `width`/`height` size the virtual
+    /// sphere. This replaced the yaw/pitch model, which had two defects a user
+    /// feels immediately: dragging in a circle did not return the object to
+    /// where it started (Euler composition is not commutative, so the net
+    /// rotation depended on the path), and pitch had to be clamped at ±89° to
+    /// avoid gimbal lock — so the scene could never be turned fully over.
+    ///
+    /// Inside the sphere the drag rotates about an axis in the screen plane;
+    /// outside it, the projection falls to the rim and the motion becomes pure
+    /// roll about the view axis. That is the conventional arcball behaviour and
+    /// it means roll no longer needs a control of its own to reach.
+    void rotateArcball(const QPointF& from, const QPointF& to, int width,
+                       int height);
+
+    /// Programmatic turntable step: yaw about the world up axis, pitch about
+    /// the camera's own right axis. Kept for the animation paths (the film
+    /// turntable), which want a reproducible angular step rather than a
+    /// pointer gesture.
     void rotate(float dxDeg, float dyDeg);
 
     /// Jump to an absolute orientation (used by the view-alignment
@@ -91,9 +122,7 @@ public:
     /// an axis-aligned view that arrived tilted would not be aligned.
     void setOrientation(float yawDeg, float pitchDeg, float rollDeg = 0.0f)
     {
-        yawDeg_ = yawDeg;
-        pitchDeg_ = pitchDeg;
-        rollDeg_ = rollDeg;
+        orientation_ = fromEuler(yawDeg, pitchDeg, rollDeg);
         sceneRotation_ = QQuaternion();
     }
 
@@ -112,9 +141,8 @@ public:
     /// separately by frame()/frameToFraction().
     void resetOrientation()
     {
-        yawDeg_ = kDefaultYawDeg;
-        pitchDeg_ = kDefaultPitchDeg;
-        rollDeg_ = kDefaultRollDeg;
+        orientation_ =
+            fromEuler(kDefaultYawDeg, kDefaultPitchDeg, kDefaultRollDeg);
         sceneRotation_ = QQuaternion();
     }
 
@@ -140,12 +168,35 @@ public:
 
     float distance() const { return distance_; }
     QVector3D target() const { return target_; }
-    float yaw() const { return yawDeg_; }
-    float pitch() const { return pitchDeg_; }
-    float roll() const { return rollDeg_; }
+    /// Euler read-outs, DERIVED from the orientation quaternion.
+    ///
+    /// They exist for the UI (the Set Point-of-View dialog's three spin boxes)
+    /// and for serialization. Any rotation can be written as this ZXY triple,
+    /// so the round trip is exact except exactly at pitch = ±90°, where roll
+    /// and yaw become the same axis and the split between them is arbitrary.
+    float yaw() const { return toEuler(orientation_).y(); }
+    float pitch() const { return toEuler(orientation_).x(); }
+    float roll() const { return toEuler(orientation_).z(); }
     /// Tilt the camera about its own view axis (turns the picture in the
     /// screen plane; the viewpoint and the model are unchanged).
-    void setRoll(float degrees) { rollDeg_ = degrees; }
+    void setRoll(float degrees)
+    {
+        const QVector3D e = toEuler(orientation_);
+        orientation_ = fromEuler(e.y(), e.x(), degrees);
+    }
+    /// The orientation itself, for callers that want it without the Euler
+    /// round trip.
+    QQuaternion orientation() const { return orientation_; }
+    void setOrientation(const QQuaternion& q) { orientation_ = q.normalized(); }
+
+    /// Build the view rotation from an Euler triple, in exactly the order
+    /// view() composes them: roll about z, then pitch about x, then yaw about
+    /// y. Public and static so the point-of-view plumbing can convert without
+    /// duplicating the convention — getting the order wrong here silently
+    /// mirrors a restored view.
+    static QQuaternion fromEuler(float yawDeg, float pitchDeg, float rollDeg);
+    /// The inverse: (pitch, yaw, roll) in degrees.
+    static QVector3D toEuler(const QQuaternion& q);
 
     /// World-space eye position / up vector (for ray-tracer scene export).
     QVector3D worldPosition() const;
@@ -159,8 +210,21 @@ public:
     /// view() and projection() reproduce the captured frame.
     PointOfView pointOfView() const
     {
-        return {target_,        distance_,      yawDeg_, pitchDeg_,
-                rollDeg_,       sceneRotation_, projectionMode_, true};
+        // Both representations are written: the quaternion is what restores
+        // exactly, the Euler triple is what the dialog shows and what an older
+        // build would read.
+        const QVector3D e = toEuler(orientation_);
+        PointOfView pov;
+        pov.target = target_;
+        pov.distance = distance_;
+        pov.pitchDeg = e.x();
+        pov.yawDeg = e.y();
+        pov.rollDeg = e.z();
+        pov.sceneRotation = sceneRotation_;
+        pov.orientation = orientation_;
+        pov.projection = projectionMode_;
+        pov.valid = true;
+        return pov;
     }
     void setPointOfView(const PointOfView& pov)
     {
@@ -170,19 +234,28 @@ public:
         // A non-positive distance would put the eye at the target and make the
         // view matrix singular; clamp rather than trust a hand-edited value.
         distance_ = std::max(pov.distance, 1e-3f);
-        yawDeg_ = pov.yawDeg;
-        pitchDeg_ = pov.pitchDeg;
-        rollDeg_ = pov.rollDeg;
+        // An identity quaternion means the view predates the arcball (or is a
+        // genuine zero rotation, which the Euler path reproduces identically),
+        // so the Euler triple is the right source in both cases.
+        orientation_ = pov.orientation.isIdentity()
+            ? fromEuler(pov.yawDeg, pov.pitchDeg, pov.rollDeg)
+            : pov.orientation.normalized();
         sceneRotation_ = pov.sceneRotation;
         projectionMode_ = pov.projection;
     }
 
 private:
+    /// Map a cursor position onto the virtual arcball. Inside the ball the
+    /// point lies on the sphere; outside it falls to the rim, which turns the
+    /// drag into pure roll.
+    static QVector3D mapToSphere(const QPointF& p, int width, int height);
+
     QVector3D target_{0.0f, 0.0f, 0.0f};
     float distance_ = 20.0f;
-    float yawDeg_ = kDefaultYawDeg;
-    float pitchDeg_ = kDefaultPitchDeg;
-    float rollDeg_ = kDefaultRollDeg;
+    /// The camera rotation. Single source of truth — yaw/pitch/roll are
+    /// derived from it, not stored beside it, so the two can never disagree.
+    QQuaternion orientation_ =
+        fromEuler(kDefaultYawDeg, kDefaultPitchDeg, kDefaultRollDeg);
     QQuaternion sceneRotation_; ///< extra world-axis rotation (identity default)
     CameraProjection projectionMode_ = kDefaultProjection;
 };

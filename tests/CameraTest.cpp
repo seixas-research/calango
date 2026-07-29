@@ -224,6 +224,100 @@ int main()
               "and a wrap takes the short way round, not 340 degrees the long way");
     }
 
+    // --- Arcball rotation ---------------------------------------------------
+    // The Euler model it replaced had two defects a user feels directly: a
+    // drag depended on the path taken (Euler composition does not commute),
+    // and pitch was clamped at +/-89 to dodge gimbal lock, so the scene could
+    // never be turned over.
+    std::printf("Arcball rotation:\n");
+    {
+        using render::OrbitCamera;
+        constexpr int W = 800;
+        constexpr int H = 600;
+        const auto sameRotation = [](const QQuaternion& a, const QQuaternion& b) {
+            // q and -q name the same rotation.
+            const float d = std::abs(
+                QQuaternion::dotProduct(a.normalized(), b.normalized()));
+            return std::abs(d - 1.0f) < 1e-3f;
+        };
+
+        // The Euler triple is what the point-of-view dialog edits and what
+        // older project files hold, so the conversion has to be exact.
+        for (const QVector3D e : {QVector3D(0.0f, -70.0f, 20.0f),
+                                  QVector3D(30.0f, 45.0f, -15.0f),
+                                  QVector3D(0.0f, 0.0f, 0.0f),
+                                  QVector3D(-120.0f, 10.0f, 170.0f)}) {
+            const QQuaternion q = OrbitCamera::fromEuler(e.x(), e.y(), e.z());
+            const QVector3D back = OrbitCamera::toEuler(q); // (pitch, yaw, roll)
+            check(sameRotation(
+                      q, OrbitCamera::fromEuler(back.y(), back.x(), back.z())),
+                  "Euler <-> quaternion round trip reproduces the rotation");
+        }
+
+        // Reversibility: dragging out and back must land exactly where it
+        // started. Under the old model it did not, because the yaw and pitch
+        // increments composed in a fixed order regardless of the path.
+        {
+            OrbitCamera c;
+            const QQuaternion start = c.orientation();
+            c.rotateArcball(QPointF(400, 300), QPointF(560, 380), W, H);
+            c.rotateArcball(QPointF(560, 380), QPointF(400, 300), W, H);
+            check(sameRotation(c.orientation(), start),
+                  "a drag out and back returns exactly to the start");
+        }
+
+        // A drag beyond where the old clamp sat must actually get there.
+        {
+            OrbitCamera c;
+            c.setOrientation(0.0f, 0.0f, 0.0f);
+            c.rotateArcball(QPointF(400, 300), QPointF(400, 595), W, H);
+            check(std::abs(c.pitch()) > 60.0f,
+                  "a vertical drag passes freely through the old +/-89 clamp");
+        }
+
+        // Outside the ball the projection falls to the rim, which turns the
+        // drag into roll about the view axis — the arcball's way of offering
+        // roll without a control of its own.
+        {
+            OrbitCamera c;
+            c.setOrientation(0.0f, 0.0f, 0.0f);
+            // Two points well outside the sphere, swept around the centre.
+            c.rotateArcball(QPointF(790, 300), QPointF(400, 10), W, H);
+            check(std::abs(c.roll()) > 10.0f,
+                  "dragging outside the ball rolls the view");
+        }
+
+        // Capture/restore must carry the exact orientation, including one no
+        // Euler triple was ever asked to represent.
+        {
+            OrbitCamera c;
+            c.rotateArcball(QPointF(300, 200), QPointF(520, 410), W, H);
+            const render::PointOfView pov = c.pointOfView();
+            check(!pov.orientation.isIdentity(),
+                  "a captured view carries the quaternion");
+            render::OrbitCamera restored;
+            restored.setPointOfView(pov);
+            check(sameRotation(restored.orientation(), c.orientation()),
+                  "and restores it exactly");
+        }
+
+        // A point-of-view saved before the arcball has no quaternion; it must
+        // still load, from its Euler triple.
+        {
+            render::PointOfView legacy;
+            legacy.yawDeg = 15.0f;
+            legacy.pitchDeg = -70.0f;
+            legacy.rollDeg = 20.0f;
+            legacy.distance = 12.0f;
+            legacy.valid = true;
+            OrbitCamera c;
+            c.setPointOfView(legacy);
+            check(sameRotation(c.orientation(),
+                               OrbitCamera::fromEuler(15.0f, -70.0f, 20.0f)),
+                  "a pre-arcball saved view falls back to its Euler triple");
+        }
+    }
+
     std::printf(failures == 0 ? "\nAll camera checks passed.\n"
                               : "\n%d check(s) FAILED.\n",
                 failures);

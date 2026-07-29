@@ -149,6 +149,10 @@ private:
 
     void render();               ///< dispatch by mode for the visible datasets
     void renderSlice();          ///< build + push a color slice (synchronous)
+    /// Upload the selected field as a 3D texture + transfer function for
+    /// direct volume rendering. Synchronous: the work is one normalizing
+    /// pass over the grid, and the marching itself happens on the GPU.
+    void pushDirectVolume();
     void requestExtraction();    ///< queue an off-thread isosurface extraction
     void pumpIsoExtraction();
     void pushResults(const std::vector<ExtractResult>& results);

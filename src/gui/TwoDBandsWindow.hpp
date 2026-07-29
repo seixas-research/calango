@@ -13,6 +13,8 @@ class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class QListWidget;
+class QPushButton;
+class QSlider;
 class QSpinBox;
 
 namespace calango::gui {
@@ -75,12 +77,28 @@ private:
                 std::vector<std::vector<double>>& outEnergies) const;
     /// Repopulate the band list (called once per load).
     void populateBandList();
+    /// Build the settings panel that sits to the right of the canvas.
+    QWidget* buildSettingsPanel();
+    /// Refresh the orientation read-out from the canvas after any view change.
+    void syncOrientationReadout();
     void exportImage();
     void exportData();
 
     VolumeViewWidget* canvas_ = nullptr;
     QListWidget* bandList_ = nullptr;
     QComboBox* gradientCombo_ = nullptr;
+    /// Colormap vs. one solid colour. A colormap encodes energy as hue, which
+    /// is what a single surface wants; several surfaces at once are better
+    /// told apart by giving each a flat colour, and a figure often wants one
+    /// deliberate colour rather than a rainbow.
+    QComboBox* colorModeCombo_ = nullptr;
+    QPushButton* solidColorButton_ = nullptr;
+    QColor solidColor_{255, 170, 60};
+    // Explicit view controls beside the canvas. The arcball covers free
+    // rotation; these cover the things a pointer gesture is bad at — landing
+    // exactly on an axis, and repeating an orientation for a figure.
+    QSlider* rollSlider_ = nullptr;
+    QLabel* orientationLabel_ = nullptr;
     QCheckBox* shiftFermiCheck_ = nullptr;
     QCheckBox* fermiPlaneCheck_ = nullptr;
     QCheckBox* axesCheck_ = nullptr;

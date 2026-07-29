@@ -63,6 +63,10 @@
 #include "gui/WannierDialog.hpp"
 #include "gui/MlwfViewer.hpp"
 #include "gui/SinglePointViewer.hpp"
+#include "gui/DefectDiagramWindow.hpp"
+#include "gui/FermiSurfaceWindow.hpp"
+#include "gui/TopologyWindow.hpp"
+#include "gui/DefectWizard.hpp"
 #include "gui/TwoDBandsWindow.hpp"
 #include "gui/TwoDBandsWizard.hpp"
 #include "gui/VolumetricPanel.hpp"
@@ -452,6 +456,25 @@ MainWindow::MainWindow(QWidget* parent)
                 }
             });
     frameToolbar->addWidget(elementButton_);
+
+    // "Complete with hydrogens", directly after the element selector and
+    // inside the editing group. It came from the Representation dock, which
+    // was the wrong home: everything else in that panel changes how the
+    // existing atoms are DRAWN, while this one adds atoms and pushes an undo
+    // entry. It belongs with Insertion mode and the element it inserts.
+    QAction* completeHydrogensAction =
+        frameToolbar->addAction(tr("Complete with hydrogens"));
+    ui::IconManager::bind(completeHydrogensAction, QStringLiteral("magic-line"));
+    completeHydrogensAction->setToolTip(
+        tr("Complete with hydrogens — add the hydrogens each atom's standard "
+           "valence implies:\na carbon with three bonds gets one, an sp3 "
+           "oxygen with one bond gets one, and so on.\n\n"
+           "Positions come from relaxing the new bonds against the existing "
+           "ones, so\nthe geometry follows the coordination (tetrahedral, "
+           "trigonal, bent).\nMetals and transition metals are left alone. "
+           "Undoable."));
+    connect(completeHydrogensAction, &QAction::triggered, this,
+            &MainWindow::completeWithHydrogens);
 
     // Visual break: navigation/editing + element selector | measurement modes.
     frameToolbar->addSeparator();
@@ -961,6 +984,16 @@ void MainWindow::createMenusAndDocks()
     electronicsMenu->addAction(
         tr("Maximally Localized &Wannier Functions (MLWF)…"),
         this, &MainWindow::showWannier);
+    // Charged defects sit with the other post-processes that consume a
+    // completed SCF. Its two inputs are both Single-Point runs, which is what
+    // distinguishes it from everything above: the physics is in the
+    // DIFFERENCE between a host cell and a defect cell.
+    electronicsMenu->addAction(tr("&Charged defects…"), this,
+                               &MainWindow::showChargedDefects)
+        ->setToolTip(tr("Formation energies E_f(q, E_F), thermodynamic "
+                        "transition levels and the charged-defect diagram, "
+                        "with the Freysoldt-Neugebauer-Van de Walle "
+                        "finite-size correction"));
     electronicsMenu->addSeparator();
     // Born charges are the electronic response to a DISPLACEMENT rather than to
     // a field, which is why they sit slightly apart from the rest.
@@ -1194,13 +1227,11 @@ void MainWindow::createMenusAndDocks()
 
     auto* reprDock = new QDockWidget(tr("Representation"), this); // zones 4 & 8
     reprDock->setObjectName(QStringLiteral("representationDock"));
-    auto* reprPanel = new RepresentationPanel(viewport_, reprDock);
-    reprDock->setWidget(reprPanel);
+    representationPanel_ = new RepresentationPanel(viewport_, reprDock);
+    reprDock->setWidget(representationPanel_);
     addDockWidget(Qt::RightDockWidgetArea, reprDock);
-    connect(reprPanel, &RepresentationPanel::bondEditorRequested,
+    connect(representationPanel_, &RepresentationPanel::bondEditorRequested,
             this, &MainWindow::showBondEditor);
-    connect(reprPanel, &RepresentationPanel::hydrogenCompletionRequested,
-            this, &MainWindow::completeWithHydrogens);
 
     // Zone 9. Constructed here (its panel is referenced below) but placed at
     // the END of the bottom row — see the splitDockWidget chain further down.
@@ -3412,6 +3443,11 @@ void MainWindow::completeWithHydrogens()
     }
 
     pushUndo();
+    // Building hydrogens the user cannot see is a no-op as far as they can
+    // tell, so asking for them turns the display back on. Routed through the
+    // panel rather than set on the style directly, so its toggle follows.
+    if (representationPanel_)
+        representationPanel_->setShowHydrogens(true);
     // A trajectory's displayed frame IS one of doc->frames; replace it there
     // too, or scrubbing away and back would silently drop the hydrogens.
     const auto previous = doc->structure;
@@ -3487,6 +3523,15 @@ void MainWindow::showPreferences()
     // appearance/thread changes live (theme palette + Zone-1 logo + status bar).
     SettingsManager::save();
     applyAppearanceTheme();
+    // A shader-profile change takes effect on the next redraw. rebuildGeometry
+    // is true because a profile MAY declare a different vertex layout (the
+    // impostor profiles will); rebuilding is cheap next to the surprise of a
+    // stale buffer being drawn by a program that expects another format.
+    if (viewport_)
+        viewport_->styleChanged(/*rebuildGeometry=*/true);
+    // Preferences no longer edits the shader profiles — the "Rendering" page
+    // is gone — so the Representation panel's "Shading" row is now the only
+    // control on them and has nothing to re-read.
 }
 
 // ---------------------------------------------------------------------------
@@ -3816,6 +3861,80 @@ void MainWindow::show2DBands()
     runSimulationWizard(wizard, tr("2D Bands"), /*expectFrames=*/false);
 }
 
+void MainWindow::showChargedDefects()
+{
+    if (!prepareSimulation(tr("Charged Defects")))
+        return;
+    Document* doc = currentDocument();
+
+    // TWO completed single points are needed, and they must be different runs:
+    // the pristine host and the neutral defect. One is not enough, and the
+    // wizard cannot tell them apart on its own — nothing in a .gpw says
+    // "this one has the vacancy".
+    const auto baselines = gpawDensityFiles();
+    if (baselines.size() < 2) {
+        QMessageBox::critical(
+            this, tr("Charged Defects"),
+            tr("A defect formation energy is a difference between two "
+               "supercells, so this needs <b>two</b> completed GPAW "
+               "Single-Point Calculations that saved their wavefunctions:\n\n"
+               "  • the pristine host supercell;\n"
+               "  • the same supercell containing the neutral defect.\n\n"
+               "%1 found. Run the missing one first — same cell, same "
+               "settings, so that everything except the defect is identical.")
+                .arg(baselines.isEmpty() ? tr("None was")
+                                         : tr("Only one was")));
+        return;
+    }
+
+    DefectWizard wizard(doc ? doc->structure : nullptr, this);
+    wizard.setDensityBaselines(baselines);
+    runSimulationWizard(wizard, tr("Charged Defects"), /*expectFrames=*/false);
+}
+
+void MainWindow::openChargedDefectResults(const QString& directory)
+{
+    auto* viewer = new DefectDiagramWindow(this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    if (!viewer->loadResults(directory
+                             + QStringLiteral("/charged_defects.json"))) {
+        delete viewer;
+        QMessageBox::warning(
+            this, tr("Charged Defects"),
+            tr("Could not read charged_defects.json in %1.").arg(directory));
+        return;
+    }
+    viewer->show();
+}
+
+void MainWindow::openFermiSurfaceResults(const QString& directory)
+{
+    auto* viewer = new FermiSurfaceWindow(this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    if (!viewer->loadResults(directory + QStringLiteral("/fermi_surface.json"))) {
+        delete viewer;
+        QMessageBox::warning(
+            this, tr("Fermi Surface"),
+            tr("Could not read fermi_surface.json in %1.").arg(directory));
+        return;
+    }
+    viewer->show();
+}
+
+void MainWindow::openTopologyResults(const QString& directory)
+{
+    auto* viewer = new TopologyWindow(this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    if (!viewer->loadResults(directory + QStringLiteral("/topology.json"))) {
+        delete viewer;
+        QMessageBox::warning(
+            this, tr("Topological Invariants"),
+            tr("Could not read topology.json in %1.").arg(directory));
+        return;
+    }
+    viewer->show();
+}
+
 void MainWindow::open2DBandsResults(const QString& directory)
 {
     auto* viewer = new TwoDBandsWindow(this);
@@ -4093,6 +4212,12 @@ std::vector<MainWindow::ViewerEntry> MainWindow::viewersFor(
         {"wannier.json", tr("MLWF Viewer"), &MainWindow::openMlwfResults},
         {"bands_2d.json", tr("2D Band Surfaces Viewer"),
          &MainWindow::open2DBandsResults},
+        {"charged_defects.json", tr("Charged Defect Diagram"),
+         &MainWindow::openChargedDefectResults},
+        {"fermi_surface.json", tr("Fermi Surface Viewer"),
+         &MainWindow::openFermiSurfaceResults},
+        {"topology.json", tr("Topological Invariants Viewer"),
+         &MainWindow::openTopologyResults},
         {"gw.json", tr("GW Viewer"), &MainWindow::openGwResults},
     };
     std::vector<ViewerEntry> available;
@@ -4601,6 +4726,18 @@ void MainWindow::onProcessResultRequested(const QString& directory)
     }
     if (QFile::exists(directory + QStringLiteral("/bands_2d.json"))) {
         open2DBandsResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/charged_defects.json"))) {
+        openChargedDefectResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/topology.json"))) {
+        openTopologyResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/fermi_surface.json"))) {
+        openFermiSurfaceResults(directory);
         return;
     }
     if (QFile::exists(directory + QStringLiteral("/xas.json"))) {
@@ -6127,9 +6264,14 @@ QString MainWindow::stageJob(const QString& script, int procId)
     // .calango_tmp/ folder next to the .calproj (checkpoints, trajectory
     // dumps and logs stay with the project, reachable from the Process
     // panel); unsaved sessions fall back to the per-user app-data store.
+    // A SAVED project keeps its jobs beside the .calproj so the project stays
+    // self-contained and movable. An unsaved session has no such anchor, and
+    // its runs now go to the user's own simulations folder (Preferences →
+    // General) rather than to the platform's application-data location —
+    // which is the right place for application state and the wrong one for a
+    // trajectory somebody wants to keep.
     const QString jobsRoot = projectPath_.isEmpty()
-        ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-            + QStringLiteral("/jobs")
+        ? SettingsManager::simulationsDirectory()
         : QFileInfo(projectPath_).absolutePath()
             + QStringLiteral("/.calango_tmp");
     // Per-process metric store: proc_<id> keeps each run's outputs (energy.csv,
@@ -6434,6 +6576,19 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     // 2D Bands: open the surface viewer.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/bands_2d.json"))) {
         open2DBandsResults(lastJobDir_);
+        return;
+    }
+    // Charged defects: open the formation-energy diagram.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/charged_defects.json"))) {
+        openChargedDefectResults(lastJobDir_);
+        return;
+    }
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/topology.json"))) {
+        openTopologyResults(lastJobDir_);
+        return;
+    }
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/fermi_surface.json"))) {
+        openFermiSurfaceResults(lastJobDir_);
         return;
     }
     // Born effective charges: open the Z* tensor table.

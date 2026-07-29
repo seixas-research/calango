@@ -1,11 +1,13 @@
 #include "gui/SettingsManager.hpp"
 
 #include <QDir>
+#include <QFileInfo>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QThread>
 #include <QVariant>
 
@@ -24,13 +26,19 @@ struct Managed {
     const char* jsonName = nullptr;
 };
 
-std::array<Managed, 11> managedKeys()
+std::array<Managed, 15> managedKeys()
 {
     return {{
         {SettingsManager::kTheme, QStringLiteral("system")},
         // 0 = "auto" (leave the environment untouched); >0 pins OMP_NUM_THREADS.
         {SettingsManager::kOmpThreads, QThread::idealThreadCount()},
         {SettingsManager::kCondaDir, QString()},
+        // Empty means "use the shipped default", which is resolved at read
+        // time rather than baked in here: the home directory is not knowable
+        // when this table is written, and storing a resolved absolute path
+        // would follow a settings.json copied to another machine or another
+        // user and point at a home that is not theirs.
+        {SettingsManager::kSimulationsDir, QString()},
         {SettingsManager::kEnvironmentPath, QString()},
         // Per-calculator env presets, stored as a JSON-object string.
         {SettingsManager::kEnvironmentPresets, QString()},
@@ -44,6 +52,25 @@ std::array<Managed, 11> managedKeys()
         {SettingsManager::kMaterialsProjectApiKey, QString()},
         // Encoded camera state restored by "Reset camera"; empty = auto-frame.
         {SettingsManager::kDefaultPointOfView, QString()},
+        // Which shader profile draws each class of geometry (Preferences →
+        // "Rendering"). Stored by id and validated against the driver on every
+        // read — a settings file is portable between machines, and the one
+        // that has to run it is not the one that wrote it.
+        //
+        // Spelled literally rather than pulled from render::ShaderRegistry:
+        // mirroring settings to JSON is not a rendering concern, and taking
+        // the keys from there would drag QOpenGLContext into every target that
+        // merely wants to read a preference. ShaderRegistry::settingsKey()
+        // remains the single source of truth for the renderer and the
+        // Preferences tab; these three strings must match it, and the
+        // settings_shader_keys test asserts that they do.
+        // Impostors are OPT-IN while the profile is under review: it changes
+        // how every atom and bond is rasterized, and a rendering change of
+        // that size should be a decision rather than a surprise after an
+        // update. Switch these to "impostor" to make them the shipped default.
+        {"render/atomShaderProfile", QStringLiteral("legacy")},
+        {"render/bondShaderProfile", QStringLiteral("legacy")},
+        {"render/isosurfaceShaderProfile", QStringLiteral("lit")},
     }};
 }
 
@@ -141,6 +168,42 @@ void SettingsManager::loadOrInitialize()
             continue;
         settings.setValue(key, jsonToVariant(value, managed.defaultValue));
     }
+}
+
+QString SettingsManager::defaultSimulationsDirectory()
+{
+    // QDir::homePath() rather than a platform switch: it is the user's home on
+    // both targets, and the folder name is deliberately plain so it reads the
+    // same in Finder and in a Linux file manager.
+    return QDir::homePath() + QStringLiteral("/My Simulations");
+}
+
+QString SettingsManager::simulationsDirectory()
+{
+    QString configured =
+        QSettings().value(QLatin1String(kSimulationsDir)).toString().trimmed();
+    if (configured.isEmpty())
+        configured = defaultSimulationsDirectory();
+
+    // Usable means: it exists as a directory (or can be created) and is
+    // writable. Checked rather than assumed, because the failure mode of not
+    // checking is a run that produces no output and reports no reason.
+    const QFileInfo info(configured);
+    if (info.exists() && !info.isDir()) {
+        qWarning("Calango: the configured simulations directory %s is a file, "
+                 "not a directory; falling back to the application data store.",
+                 qPrintable(configured));
+    } else if (QDir().mkpath(configured)
+               && QFileInfo(configured).isWritable()) {
+        return configured;
+    } else {
+        qWarning("Calango: could not use the simulations directory %s "
+                 "(not creatable or not writable); falling back to the "
+                 "application data store.",
+                 qPrintable(configured));
+    }
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+        + QStringLiteral("/jobs");
 }
 
 void SettingsManager::save()

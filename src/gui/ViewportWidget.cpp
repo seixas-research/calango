@@ -1092,6 +1092,34 @@ void ViewportWidget::setCustomOverlay(
     update();
 }
 
+void ViewportWidget::setVolumeField(int nx, int ny, int nz,
+                                    const std::vector<float>& values,
+                                    const std::vector<float>& transfer,
+                                    const QMatrix4x4& boxTransform)
+{
+    // makeCurrent, because the upload allocates GL textures and the caller is
+    // a panel reacting to a UI event, not a paint. Every other upload in this
+    // widget is staged and flushed in ensureUploaded(); a 3D texture is big
+    // enough that staging a second copy of it in RAM is the worse trade.
+    makeCurrent();
+    renderer_.setVolumeField(nx, ny, nz, values, transfer, boxTransform);
+    doneCurrent();
+    update();
+}
+
+void ViewportWidget::clearVolumeField()
+{
+    renderer_.clearVolumeField();
+    update();
+}
+
+void ViewportWidget::setVolumeParams(int steps, float density, float isoLevel,
+                                     bool lit)
+{
+    renderer_.setVolumeParams(steps, density, isoLevel, lit);
+    update();
+}
+
 void ViewportWidget::clearCustomOverlay()
 {
     customOverlayFaces_.clear();
@@ -1481,8 +1509,12 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent* event)
         case InteractionMode::MeasureAngle:
             // Measure modes keep orbit-on-drag so the structure can be
             // turned between the measurement clicks.
-            camera_.rotate(static_cast<float>(delta.x()) * 0.4f,
-                           static_cast<float>(delta.y()) * 0.4f);
+            // Arcball: the FROM and TO cursor positions, not a delta.
+            // The rotation depends on where on the virtual ball the drag
+            // happened, so the two endpoints are the input — a delta alone
+            // cannot express it.
+            camera_.rotateArcball(lastMousePos_ - delta, lastMousePos_,
+                                  width(), height());
             Q_EMIT cameraChanged();
             break;
         case InteractionMode::Pan:

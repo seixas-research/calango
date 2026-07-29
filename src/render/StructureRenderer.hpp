@@ -126,7 +126,11 @@ struct NeighborCellRange {
     /// Draw the 12 wireframe edges around each image as well. Off draws only
     /// the atoms and bonds of the neighbours, leaving the home cell's own box
     /// (which `showCell` governs) as the only visible boundary.
-    bool showEdges = true;
+    ///
+    /// Off by default: a figure of an extended structure wants the atoms to
+    /// read as one continuous lattice, and a box drawn around every image cuts
+    /// it back into tiles. The home cell keeps its own outline either way.
+    bool showEdges = false;
 
     /// Integer lattice translations (i, j, k) the window covers, always at
     /// least one entry.
@@ -196,7 +200,11 @@ public:
     /// substrate wants matte and big, an adsorbate shiny and small.
     struct CastStyle {
         RepresentationMode mode = RepresentationMode::BallAndStick;
-        SurfaceFinish surfaceFinish = SurfaceFinish::Standard;
+        /// Shiny rather than Standard: a tight, bright highlight is what makes
+        /// a sphere read as a sphere rather than as a flat disc of colour, and
+        /// a structure is almost entirely spheres. Standard's broad, weak
+        /// highlight leaves a crowded model looking washed out.
+        SurfaceFinish surfaceFinish = SurfaceFinish::Shiny;
         ColorMode colorMode = ColorMode::Element;
         float atomScaleFactor = 1.0f; ///< sphere-radius multiplier
         float bondWidthFactor = 1.0f; ///< cylinder-width multiplier
@@ -323,7 +331,8 @@ public:
         /// center (mesh representations only). Data comes from the
         /// structure's vector fields "forces" / "velocities".
         VectorOverlay vectorOverlay = VectorOverlay::None;
-        SurfaceFinish surfaceFinish = SurfaceFinish::Standard;
+        /// Kept in step with CastStyle::surfaceFinish above.
+        SurfaceFinish surfaceFinish = SurfaceFinish::Shiny;
         // -- Directional shadow mapping (Visual Effects -> Shadow) ---------
         /// Off by default: the depth pass roughly doubles draw calls, and
         /// shadows help far more in a figure than while orbiting a structure.
@@ -381,6 +390,22 @@ public:
         /// and never enter the Structure, so the atom count, the chemical
         /// formula and every exported POSCAR/CIF are unchanged.
         bool showNeighborCellAtoms = false;
+        /// Isosurface shading, read by the "Lit surface" profile. Mirrors the
+        /// Edit Volumetric Render dialog: 0 = Flat, 1 = Diffuse, 2 = Glossy.
+        /// The legacy profile ignores these and uses the baked colours.
+        /// PBR material defaults (Preferences -> Rendering). Global rather
+        /// than per-cast for now: they describe how the installation renders,
+        /// and a per-object override belongs on the cast alongside the surface
+        /// finish when PBR stops being opt-in.
+        float metallic = 0.15f;
+        float roughness = 0.35f;
+        /// Toon quantization.
+        int toonBands = 4;
+        float toonRim = 0.35f;
+        int isoShadingMode = 0;
+        float isoAmbient = 0.35f;
+        float isoSpecular = 0.35f;
+        float isoShininess = 48.0f;
         /// Which periodic images of the whole cell are drawn ("Show
         /// neighboring cells…"). Independent of showNeighborCellAtoms above,
         /// which completes individual wrapped BONDS: this repeats the entire
@@ -530,6 +555,41 @@ public:
     /// mesh and dot styles pass the isosurface's own opacity instead — there
     /// the lines ARE the surface, and an opaque one would ignore the opacity
     /// the user set.
+    /// Upload a scalar field as a 3D texture for direct volume rendering.
+    ///
+    /// A different object from the isosurface overlay, not a mode of it: an
+    /// isosurface is geometry extracted once and drawn like anything else,
+    /// while this is the whole field resampled per pixel per frame. `values`
+    /// is normalized to [0,1] by the caller against the range it wants mapped;
+    /// `transfer` is a 256-entry RGBA lookup the shader indexes with that
+    /// normalized value.
+    void setVolumeField(int nx, int ny, int nz, const std::vector<float>& values,
+                        const std::vector<float>& transfer,
+                        const QMatrix4x4& boxTransform);
+    void clearVolumeField();
+    /// Ray-march parameters, applied on the next draw.
+    void setVolumeParams(int steps, float density, float isoLevel, bool lit);
+
+    /// Floats per vertex in the `faces` stream of setCustomOverlay():
+    /// pos(3) + normal(3) + color(3).
+    ///
+    /// Public because the PRODUCERS need it. When this widened from 6 to 9 the
+    /// Volumetric panel kept emitting 6 and computing its range offsets as
+    /// size/6, while the VAO read 9 — so every position was sampled from the
+    /// wrong offset and the isosurface exploded into a fan of triangles. The
+    /// two ends now share one number instead of each spelling their own.
+    static constexpr int kOverlayFaceFloats = 9;
+    /// Floats per vertex in the `edges` stream: pos(3) + color(3). A line has
+    /// no orientation to light, so it carries no normal.
+    static constexpr int kOverlayEdgeFloats = 6;
+
+    /// `faces` is interleaved pos(3) + normal(3) + color(3); `edges` stays
+    /// pos(3) + color(3), since a line has no orientation to light.
+    ///
+    /// The normal channel is what the "Lit surface" isosurface profile shades
+    /// from. It replaces the CPU-side baking the Volumetric panel used to do,
+    /// which froze the highlight to a fixed direction and left the surface out
+    /// of the SSAO G-buffer entirely.
     void setCustomOverlay(const std::vector<float>& faces,
                           const std::vector<float>& edges,
                           const std::vector<OverlayRange>& faceRanges,
@@ -582,13 +642,63 @@ private:
         QOpenGLBuffer instanceBuffer{QOpenGLBuffer::VertexBuffer};
         int indexCount = 0;
         int instanceCount = 0;
+
+        // Impostor path: a second VAO over a 2-triangle quad and THE SAME
+        // instance buffer.
+        //
+        // A second binding rather than a second copy of the instances, and
+        // rather than swapping the base geometry in place. Both alternatives
+        // were worse: duplicating the instance data costs a megabyte per
+        // 10 000 atoms for no reason, and swapping the buffer would drag the
+        // shadow pass along with it — which must keep casting from real
+        // tessellated geometry, because the depth-only pass has no fragment
+        // stage in which to ray-trace an impostor.
+        QOpenGLVertexArrayObject impostorVao;
+        QOpenGLBuffer quadVertexBuffer{QOpenGLBuffer::VertexBuffer};
+        QOpenGLBuffer quadIndexBuffer{QOpenGLBuffer::IndexBuffer};
+        int quadIndexCount = 0;
     };
+
+    /// Build the impostor quad + its VAO over `mesh`'s existing instance
+    /// buffer. Called once, beside createMesh().
+    void createImpostorQuad(InstancedMesh& mesh);
+    /// Whether the impostor profile is active for `slot` AND its program
+    /// linked. Links lazily, falling back to the tessellated path with a
+    /// warning if the driver rejects it.
+    bool useImpostors(int slot);
+    /// Shared per-frame uniforms for an impostor program (lights, shadow, fog,
+    /// material) — the same values mesh.frag receives, so the two profiles
+    /// agree about the scene.
+    void uploadImpostorUniforms(QOpenGLShaderProgram& program,
+                                const QMatrix4x4& view,
+                                const QMatrix4x4& projection,
+                                const QMatrix4x4& lightSpace);
 
     struct ColoredVertexBuffer { // pos(3) + color(3) per vertex
         QOpenGLVertexArrayObject vao;
         QOpenGLBuffer vbo{QOpenGLBuffer::VertexBuffer};
         int vertexCount = 0;
     };
+
+    /// pos(3) + normal(3) + color(3). A separate type from
+    /// ColoredVertexBuffer rather than a widening of it: the wireframe,
+    /// polyhedra and lattice-plane streams genuinely have no surface normal,
+    /// and giving them a zeroed one would only cost bandwidth and invite a
+    /// future reader to light geometry that has no orientation.
+    struct LitVertexBuffer {
+        QOpenGLVertexArrayObject vao;
+        QOpenGLBuffer vbo{QOpenGLBuffer::VertexBuffer};
+        int vertexCount = 0;
+    };
+    void createLitBuffer(LitVertexBuffer& buffer);
+    /// Whether the lit isosurface program should be used: the Preferences
+    /// selection says so AND the program linked. Links it on first ask.
+    bool useLitIsosurface();
+    /// Push the scene lights into the bound isosurface program, in the same
+    /// view-space convention mesh.frag uses — so an isosurface and the atoms
+    /// inside it are lit by one set of lights rather than two.
+    void uploadIsosurfaceLights();
+    void uploadLitBuffer(LitVertexBuffer& buffer, const std::vector<float>& data);
 
     /// Color of atom `index` under `colorMode`: that mode's scalar mapping
     /// when it has data, otherwise the (possibly overridden) element color.
@@ -636,7 +746,36 @@ private:
     QOpenGLShaderProgram meshProgram_;
     QOpenGLShaderProgram shadowProgram_; ///< depth-only, light's-eye pass
     QOpenGLShaderProgram lineProgram_; ///< uniform-color lines (unit cell)
-    QOpenGLShaderProgram wireProgram_; ///< per-vertex-color lines/points
+    QOpenGLShaderProgram wireProgram_;
+    /// "Lit surface" isosurface profile. Linked lazily on first use so a
+    /// driver that rejects it falls back to the legacy path with a warning
+    /// instead of taking the whole viewport down.
+    QOpenGLShaderProgram isosurfaceProgram_;
+    bool isosurfaceProgramReady_ = false;
+    bool isosurfaceProgramTried_ = false;
+    /// Impostor programs, indexed by render::ShaderSlot (0 = atoms/sphere,
+    /// 1 = bonds/cylinder). Linked lazily on first use, like the isosurface
+    /// one, so a driver that rejects them degrades instead of failing.
+    /// Direct volume rendering. Lazily linked like the others.
+    QOpenGLShaderProgram raymarchProgram_;
+    bool raymarchReady_ = false;
+    bool raymarchTried_ = false;
+    unsigned volumeTexture_ = 0;
+    unsigned transferTexture_ = 0;
+    QOpenGLVertexArrayObject volumeVao_;
+    QOpenGLBuffer volumeVbo_{QOpenGLBuffer::VertexBuffer};
+    QOpenGLBuffer volumeIbo_{QOpenGLBuffer::IndexBuffer};
+    QMatrix4x4 volumeTransform_;
+    bool volumeVisible_ = false;
+    int volumeSteps_ = 256;
+    float volumeDensity_ = 1.0f;
+    float volumeIsoLevel_ = 0.02f;
+    bool volumeLit_ = true;
+    void drawVolume(const QMatrix4x4& view, const QMatrix4x4& projection);
+
+    QOpenGLShaderProgram impostorProgram_[2];
+    bool impostorReady_[2] = {false, false};
+    bool impostorTried_[2] = {false, false}; ///< per-vertex-color lines/points
 
     InstancedMesh sphere_;
     InstancedMesh cylinder_;
@@ -657,7 +796,9 @@ private:
     float latticePlaneAlpha_ = 0.4f;
     bool latticePlaneVisible_ = false;
     bool latticePlaneEdgesOn_ = true;
-    ColoredVertexBuffer customOverlayFaces_; ///< GL_TRIANGLES (custom primitives)
+    /// Isosurface / primitive faces. Carries normals so the lit isosurface
+    /// program can shade them on the GPU; the legacy profile ignores them.
+    LitVertexBuffer customOverlayFaces_;     ///< GL_TRIANGLES (custom primitives)
     ColoredVertexBuffer customOverlayEdges_; ///< GL_LINES (primitive wireframes)
     std::vector<OverlayRange> customOverlayRanges_;
     bool customOverlayVisible_ = false;

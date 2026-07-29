@@ -17,6 +17,11 @@ namespace calango::gui {
 ///     Computation (OMP thread count, Conda environments directory).
 ///   • "Python & Environments" — the per-engine Conda environment mapping
 ///     (GPAW/MACE/QE/SIESTA/…) that the simulation wizards resolve silently.
+///   • "Rendering" — which shader profile draws atoms, bonds and volumetric
+///     isosurfaces, plus what the current OpenGL driver reports. Selections
+///     are global (they describe the installation's rendering, like the
+///     theme); per-object appearance stays on render::Style in the
+///     Representation panel.
 ///   • "Run" — the per-engine shell command template each job launches with
 ///     (MPI ranks, OMP pinning, solver invocation) plus the core count those
 ///     templates substitute for {cores}.
@@ -41,6 +46,14 @@ private:
     QWidget* buildPythonEnvTab();
     /// Build the "Run" tab (engine → launch command template + core count).
     QWidget* buildRunTab();
+    /// Build the "Rendering" tab (per-slot shader profile + GL diagnostics).
+    /// Refresh the per-slot descriptions and the capability warnings from the
+    /// live GL context. Called on construction and after every selection, so
+    /// an unsupported choice explains itself immediately rather than at the
+    /// next redraw.
+    /// Report the directory runs will ACTUALLY use, including the
+    /// fallback when the configured one is unusable.
+    void updateSimulationsStatus();
 
     QLineEdit* envPathEdit_;
     QLabel* statusLabel_;
@@ -51,6 +64,9 @@ private:
     QTableWidget* engineEnvTable_ = nullptr;
     QTableWidget* runCommandTable_ = nullptr;
     QSpinBox* runCoresSpin_ = nullptr;
+    /// One combo per render::ShaderSlot, in slot order.
+    QLineEdit* simulationsDirEdit_ = nullptr;
+    QLabel* simulationsStatusLabel_ = nullptr;
 };
 
 } // namespace calango::gui

@@ -76,8 +76,24 @@ QWidget* ElectronicBandsWizard::buildCalculatorExtras()
     auto* pdosKptRow = new QHBoxLayout;
     for (auto*& spin : pdosKptsSpin_) {
         spin = new QSpinBox(pdosGroup_);
-        spin->setRange(1, 128);
+        // 1024, not 128. The PDOS is a Brillouin-zone integral and converges
+        // far more slowly with k-points than the total energy does; a fine
+        // d-band feature or a small Fermi pocket can need a mesh well past the
+        // old ceiling, and the ceiling was a UI limit rather than a physical
+        // one. The cost is the user's to weigh — the tool tip states how it
+        // grows — so the field should not decide for them.
+        spin->setRange(1, 1024);
         spin->setValue(14);
+        spin->setToolTip(
+            tr("Monkhorst-Pack divisions for the fixed-density PDOS mesh, per "
+               "axis.\n\n"
+               "The PDOS is a Brillouin-zone integral and converges far more "
+               "slowly with k-points than the total energy does, so the grid "
+               "that converged the SCF is routinely too coarse for a clean "
+               "density of states.\n\n"
+               "Cost grows as the PRODUCT of the three divisions: 64x64x64 is "
+               "262 144 k-points. A 2D sheet should leave its vacuum "
+               "direction at 1."));
         pdosKptRow->addWidget(spin);
         connect(spin, &QSpinBox::valueChanged, this, [this] {
             // A manual edit freezes the auto-scaling.

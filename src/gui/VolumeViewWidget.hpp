@@ -41,6 +41,23 @@ public:
 
     void frameBox();
 
+    // --- View orientation ---------------------------------------------------
+    // Exposed so a host dialog can offer explicit rotation controls beside the
+    // canvas. The camera is an arcball, so its state is a quaternion; these
+    // take the Euler triple because that is what a numeric control can show
+    // and what a named preset ("view down z") is naturally written as.
+    void setViewOrientation(float yawDeg, float pitchDeg, float rollDeg = 0.0f);
+    /// Turn the view by `degrees` about a CAMERA-space axis (0 = right,
+    /// 1 = up, 2 = view). Camera-space rather than world, so a nudge button
+    /// does what its arrow suggests whatever the current orientation is.
+    void nudgeView(int axis, float degrees);
+    void setViewRoll(float degrees);
+    float viewYaw() const;
+    float viewPitch() const;
+    float viewRoll() const;
+    /// Restore the default orientation and re-frame the content.
+    void resetView();
+
     // --- Generic geometry -------------------------------------------------
     // The canvas itself is not volumetric: it is an orbit camera over a lit
     // triangle soup and an unlit line soup. These expose that directly, so a
@@ -69,6 +86,13 @@ public:
     /// projected through the live camera, so captions track the geometry as it
     /// orbits without needing a glyph atlas or a text shader.
     void setLabels(std::vector<Label> labels);
+
+Q_SIGNALS:
+    /// The camera orientation changed through a pointer gesture. Emitted so a
+    /// host dialog showing the orientation numerically can stay honest — a
+    /// read-out that only tracked the buttons beside it would go stale the
+    /// moment the user dragged the canvas instead.
+    void viewChanged();
 
 protected:
     void initializeGL() override;

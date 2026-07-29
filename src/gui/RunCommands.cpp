@@ -36,12 +36,18 @@ QString defaultTemplate(core::CalculatorKind kind)
 {
     switch (kind) {
     case core::CalculatorKind::Gpaw:
-        // GPAW parallelizes by running the SCRIPT under MPI; `gpaw -P n python`
-        // is its own launcher wrapper. OMP_NUM_THREADS=1 is deliberate: GPAW's
-        // own MPI decomposition and a threaded BLAS underneath it fight for the
-        // same cores and the run gets slower, not faster.
+        // GPAW parallelizes by running the SCRIPT under MPI. mpirun directly
+        // rather than `gpaw -P n python`, its own launcher wrapper: the
+        // wrapper has to find and re-exec the right mpirun itself, which is
+        // where it fails on a machine with more than one MPI installed or with
+        // the scheduler's launcher first on PATH. Calling mpirun by name uses
+        // whichever one the environment already resolved.
+        //
+        // OMP_NUM_THREADS=1 is deliberate: GPAW's own MPI decomposition and a
+        // threaded BLAS underneath it fight for the same cores and the run
+        // gets slower, not faster.
         return QStringLiteral(
-            "OMP_NUM_THREADS=1 gpaw -P {cores} python {script}");
+            "OMP_NUM_THREADS=1 mpirun -n {cores} gpaw python {script}");
     case core::CalculatorKind::QuantumEspresso:
         return QStringLiteral("mpirun -np {cores} pw.x -in {input} > {output}");
     case core::CalculatorKind::Siesta:

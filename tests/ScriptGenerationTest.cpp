@@ -21,6 +21,9 @@
 #include "core/PhononScriptGenerator.hpp"
 #include "core/RamanIrScriptGenerator.hpp"
 #include "core/RandomNoiseScriptGenerator.hpp"
+#include "core/DefectScriptGenerator.hpp"
+#include "core/FermiSurfaceScriptGenerator.hpp"
+#include "core/TopologyScriptGenerator.hpp"
 #include "core/TwoDBandsScriptGenerator.hpp"
 #include "core/WannierScriptGenerator.hpp"
 
@@ -1532,6 +1535,101 @@ int main(int argc, char** argv)
                       "and the surviving ones are exported");
         checkContains(script, "_c = _f @ _recip",
                       "in the same Cartesian frame as the surface itself");
+    }
+
+    // -- Charged defects (FNV) ------------------------------------------------
+    std::printf("Charged defects:\n");
+    {
+        DefectConfig cfg;
+        cfg.calculator.calculator = CalculatorKind::Gpaw;
+        cfg.pristinePath = "/jobs/host/single_point.gpw";
+        cfg.neutralDefectPath = "/jobs/defect/single_point.gpw";
+        cfg.charges = {-1, 1};   // note: no 0
+        cfg.species = {{"S", -1, -4.13}};
+        cfg.dielectricConstant = 9.5;
+        const std::string script = generateDefectScript(cfg);
+
+        // q = 0 is the reference the whole diagram is anchored on, so it is
+        // present whatever the caller listed.
+        checkContains(script, "CHARGES = [-1, 0, 1]",
+                      "q = 0 is inserted and the list sorted");
+        checkContains(script, "'symbol': 'S', 'count': -1, 'mu_eV': -4.13",
+                      "the exchanged species reach the script");
+        checkContains(script, "EPSILON = 9.5", "and the dielectric constant");
+        checkContains(script, "q * E_VBM", "E_F is referenced to the host VBM");
+        checkContains(script, "charged_defect_corrections",
+                      "the FNV correction uses GPAW's own implementation");
+        checkContains(script, "if E_GAP <= 1e-3:",
+                      "a metallic host is refused — there is no gap to place "
+                      "the levels in");
+        checkContains(script, "CALANGO_RESULT charged_defects=",
+                      "emits the marker the controller watches for");
+
+        // Without the correction the run must still work — that is what makes
+        // a supercell-convergence study possible — and must say so.
+        DefectConfig raw = cfg;
+        raw.applyFnvCorrection = false;
+        const std::string uncorrected = generateDefectScript(raw);
+        checkContains(uncorrected, "APPLY_FNV = False", "FNV can be disabled");
+        checkContains(uncorrected, "CALANGO_WARN FNV correction disabled",
+                      "and the omission is reported");
+    }
+
+    // -- Wannier Fermi surface -------------------------------------------------
+    std::printf("Wannier Fermi surface:\n");
+    {
+        FermiSurfaceConfig cfg;
+        cfg.mlwfDir = "/jobs/proc_9";
+        cfg.gridSamples = 36;
+        const std::string script = generateFermiSurfaceScript(cfg);
+        checkContains(script, "_n = 36", "honors the requested grid");
+        checkContains(script, "get_hamiltonian_kpoint",
+                      "interpolates H(R) -> H(k) rather than re-running SCF");
+        checkContains(script, "(np.arange(_n) / _n) - 0.5",
+                      "Gamma-centred grid with the upper endpoint excluded");
+        checkContains(script, "_meta.get('gpw')",
+                      "resolves the wavefunctions the MLWF run recorded");
+        checkContains(script, "len(calc.get_ibz_k_points()) < "
+                              "len(calc.get_bz_k_points())",
+                      "refuses a symmetry-reduced .gpw");
+        checkContains(script, "'crosses_fermi'",
+                      "records which bands can contribute a sheet");
+        checkContains(script, "CALANGO_RESULT fermi_surface=",
+                      "emits its result marker");
+
+        FermiSurfaceConfig tiny = cfg;
+        tiny.gridSamples = 1;
+        checkContains(generateFermiSurfaceScript(tiny), "_n = 4",
+                      "a grid too small to triangulate is clamped");
+    }
+
+    // -- Topological invariants ------------------------------------------------
+    std::printf("Topological invariants:\n");
+    {
+        TopologyConfig cfg;
+        cfg.mlwfDir = "/jobs/proc_9";
+        cfg.direction = 1;
+        const std::string script = generateTopologyScript(cfg);
+        checkContains(script, "parallel_transport",
+                      "the flow comes from GPAW's parallel transport");
+        checkContains(script, "_direction = 1", "along the requested axis");
+        checkContains(script, "step -= np.round(step)",
+                      "the Chern winding is accumulated on the nearest branch");
+        checkContains(script, "np.argmax(gaps)",
+                      "Z2 follows the largest gap between centres");
+        checkContains(script, "'residual'",
+                      "reports how far the winding sits from an integer");
+        checkContains(script, "CALANGO_WARN the band structure has no gap",
+                      "an ungapped manifold is flagged — the integers would "
+                      "describe a partition that is not separated");
+        checkContains(script, "Z2 assumes TIME-REVERSAL SYMMETRY",
+                      "and the symmetry requirement is stated");
+
+        TopologyConfig chernOnly = cfg;
+        chernOnly.invariant = TopologicalInvariant::Chern;
+        const std::string only = generateTopologyScript(chernOnly);
+        checkContains(only, "_want_z2 = False", "Z2 can be skipped");
+        checkContains(only, "_want_chern = True", "leaving Chern alone");
     }
 
     // -- LAMMPS -------------------------------------------------------------

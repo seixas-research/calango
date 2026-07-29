@@ -19,6 +19,18 @@ public:
     static constexpr auto kTheme = "appearance/theme";       ///< system|dark|light
     static constexpr auto kOmpThreads = "jobs/ompThreads";   ///< int (OMP_NUM_THREADS)
     static constexpr auto kCondaDir = "jobs/condaDir";       ///< conda envs directory
+    /// Where a job's working directory is created for an UNSAVED session.
+    ///
+    /// The default used to be the platform's application-data location, which
+    /// on macOS is ~/Library/Application Support/... and on Linux
+    /// ~/.local/share/... — correct places for an application's own state, and
+    /// the wrong place for a user's simulation output: buried, hidden by the
+    /// file manager, and not where anyone looks for a trajectory they want to
+    /// keep. It now defaults to ~/My Simulations and is editable.
+    ///
+    /// A SAVED project is unaffected: its jobs stay in .calango_tmp/ beside
+    /// the .calproj, so a project remains self-contained and movable.
+    static constexpr auto kSimulationsDir = "jobs/simulationsDir";
     static constexpr auto kEnvironmentPath = "jobs/environmentPath";
     /// Per-calculator environment presets: a JSON-object string mapping a
     /// calculator name ("GPAW", "MACE", …) to its last-used Python/Conda env.
@@ -54,6 +66,19 @@ public:
 
     /// Serialize the managed keys (read from QSettings) to settings.json.
     static void save();
+
+    /// The directory new job folders are created under for an unsaved session
+    /// — the configured one when it is usable, otherwise the application-data
+    /// fallback.
+    ///
+    /// Resolved rather than read raw because the configured path can fail on a
+    /// machine the settings file was copied to: a home directory that moved, a
+    /// read-only volume, a path pointing at a file. Silently writing nowhere
+    /// would lose a run's output, so an unusable setting degrades to the
+    /// location that always works.
+    static QString simulationsDirectory();
+    /// The shipped default, exposed so Preferences can offer "Reset".
+    static QString defaultSimulationsDirectory();
 };
 
 } // namespace calango::gui

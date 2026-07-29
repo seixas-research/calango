@@ -144,6 +144,15 @@ public:
     /// Remove the custom-overlay primitives.
     void clearCustomOverlay();
 
+    /// Direct volume rendering: upload a scalar field as a 3D texture plus its
+    /// transfer function. Forwards to StructureRenderer; deferred to the next
+    /// paint so it runs with a current context.
+    void setVolumeField(int nx, int ny, int nz, const std::vector<float>& values,
+                        const std::vector<float>& transfer,
+                        const QMatrix4x4& boxTransform);
+    void clearVolumeField();
+    void setVolumeParams(int steps, float density, float isoLevel, bool lit);
+
     // -- Managed overlays ("Additional overlays" dock) ----------------------
     /// Geometry owned by the Additional-overlays dock, in the same interleaved
     /// pos(3)+color(3) form as setCustomOverlay(). Its own channel, because

@@ -543,8 +543,8 @@ void BrillouinZoneView::mouseMoveEvent(QMouseEvent* event)
         && event->modifiers().testFlag(Qt::ShiftModifier)) {
         camera_.pan(static_cast<float>(delta.x()), static_cast<float>(delta.y()), height());
     } else if (event->buttons().testFlag(Qt::LeftButton)) {
-        camera_.rotate(static_cast<float>(delta.x()) * 0.4f,
-                       static_cast<float>(delta.y()) * 0.4f);
+        camera_.rotateArcball(lastMousePos_ - delta, lastMousePos_, width(),
+                              height());
     } else {
         return;
     }

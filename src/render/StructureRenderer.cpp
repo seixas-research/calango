@@ -1,4 +1,6 @@
 #include "render/StructureRenderer.hpp"
+
+#include "render/ShaderProfile.hpp"
 #include "render/RenderGeometry.hpp"
 
 #include "core/MarchingCubes.hpp"
@@ -570,6 +572,12 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     buildCone(20, vertices, indices);
     createMesh(cone_, vertices, indices);
 
+    // Impostor quads over the same instance buffers. Built unconditionally:
+    // they are 4 vertices each, and having them ready means switching profiles
+    // in Preferences never has to touch GL resources mid-frame.
+    createImpostorQuad(sphere_);
+    createImpostorQuad(cylinder_);
+
     createColoredBuffer(wireBonds_);
     createColoredBuffer(wireAtoms_);
     createColoredBuffer(polyhedronFaces_);
@@ -577,7 +585,7 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     createColoredBuffer(molecularSurface_);
     createColoredBuffer(latticePlaneFaces_);
     createColoredBuffer(latticePlaneEdges_);
-    createColoredBuffer(customOverlayFaces_);
+    createLitBuffer(customOverlayFaces_);
     createColoredBuffer(customOverlayEdges_);
     createColoredBuffer(managedOverlayFaces_);
     createColoredBuffer(managedOverlayEdges_);
@@ -666,6 +674,405 @@ void StructureRenderer::createMesh(InstancedMesh& mesh,
     mesh.vao.release();
 }
 
+void StructureRenderer::createImpostorQuad(InstancedMesh& mesh)
+{
+    // A unit quad in the xy-plane. The impostor vertex shaders read aPos.xy as
+    // corner offsets in [-1, 1] and expand it in view space, so the quad's own
+    // orientation never matters — only its corners.
+    static const float kQuad[] = {
+        -1.0f, -1.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+         1.0f, -1.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+         1.0f,  1.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+        -1.0f,  1.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+    };
+    static const unsigned int kIndices[] = {0, 1, 2, 0, 2, 3};
+    mesh.quadIndexCount = 6;
+
+    mesh.impostorVao.create();
+    mesh.impostorVao.bind();
+
+    mesh.quadVertexBuffer.create();
+    mesh.quadVertexBuffer.bind();
+    mesh.quadVertexBuffer.allocate(kQuad, sizeof(kQuad));
+    gl_->glEnableVertexAttribArray(0);
+    gl_->glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
+                               nullptr);
+    gl_->glEnableVertexAttribArray(1);
+    gl_->glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
+                               reinterpret_cast<void*>(3 * sizeof(float)));
+
+    mesh.quadIndexBuffer.create();
+    mesh.quadIndexBuffer.bind();
+    mesh.quadIndexBuffer.allocate(kIndices, sizeof(kIndices));
+
+    // The SAME instance buffer the tessellated VAO uses — bound again here
+    // with the identical attribute layout, so nothing has to be uploaded twice
+    // and the two paths can never disagree about what they are drawing.
+    mesh.instanceBuffer.bind();
+    const auto stride = kFloatsPerInstance * static_cast<int>(sizeof(float));
+    for (int column = 0; column < 4; ++column) {
+        const auto location = static_cast<GLuint>(2 + column);
+        gl_->glEnableVertexAttribArray(location);
+        gl_->glVertexAttribPointer(
+            location, 4, GL_FLOAT, GL_FALSE, stride,
+            reinterpret_cast<void*>(sizeof(float) * 4
+                                    * static_cast<std::size_t>(column)));
+        gl_->glVertexAttribDivisor(location, 1);
+    }
+    for (int slot = 0; slot < 2; ++slot) {
+        const auto location = static_cast<GLuint>(6 + slot);
+        gl_->glEnableVertexAttribArray(location);
+        gl_->glVertexAttribPointer(
+            location, 4, GL_FLOAT, GL_FALSE, stride,
+            reinterpret_cast<void*>(sizeof(float)
+                                    * (16 + 4 * static_cast<std::size_t>(slot))));
+        gl_->glVertexAttribDivisor(location, 1);
+    }
+    gl_->glEnableVertexAttribArray(8);
+    gl_->glVertexAttribPointer(8, 1, GL_FLOAT, GL_FALSE, stride,
+                               reinterpret_cast<void*>(sizeof(float) * 24));
+    gl_->glVertexAttribDivisor(8, 1);
+
+    mesh.impostorVao.release();
+}
+
+bool StructureRenderer::useImpostors(int slot)
+{
+    const auto shaderSlot = slot == 0 ? ShaderSlot::Atoms : ShaderSlot::Bonds;
+    // The PROFILE says whether it wants impostor geometry — not "is it
+    // legacy". PBR and Toon are separate profiles that happen to share the
+    // impostor path, and a future mesh-based profile must not be forced onto
+    // it by an is-legacy test.
+    if (!ShaderRegistry::activeProfile(shaderSlot).impostorGeometry)
+        return false;
+    if (impostorTried_[slot])
+        return impostorReady_[slot];
+    impostorTried_[slot] = true;
+    const char* vert = slot == 0 ? ":/assets/shaders/impostor_sphere.vert"
+                                 : ":/assets/shaders/impostor_cylinder.vert";
+    const char* frag = slot == 0 ? ":/assets/shaders/impostor_sphere.frag"
+                                 : ":/assets/shaders/impostor_cylinder.frag";
+    impostorReady_[slot] =
+        impostorProgram_[slot].addShaderFromSourceFile(QOpenGLShader::Vertex, vert)
+        && impostorProgram_[slot].addShaderFromSourceFile(QOpenGLShader::Fragment,
+                                                          frag)
+        && impostorProgram_[slot].link();
+    if (!impostorReady_[slot]) {
+        qWarning("Calango: the %s impostor shader did not build on this "
+                 "driver; falling back to tessellated geometry. Log:\n%s",
+                 slot == 0 ? "sphere" : "cylinder",
+                 qPrintable(impostorProgram_[slot].log()));
+    }
+    return impostorReady_[slot];
+}
+
+void StructureRenderer::uploadImpostorUniforms(QOpenGLShaderProgram& program,
+                                               const QMatrix4x4& view,
+                                               const QMatrix4x4& projection,
+                                               const QMatrix4x4& lightSpace)
+{
+    program.setUniformValue("uView", view);
+    program.setUniformValue("uProj", projection);
+    program.setUniformValue("uLightSpace", lightSpace);
+    // The impostor's surface does not exist until the ray is solved, so the
+    // shadow lookup needs to get from the hit point back to world space —
+    // which the tessellated path does in its vertex stage and cannot here.
+    program.setUniformValue("uInvView", view.inverted());
+    // 48.0 is the same literal the mesh path uses; keeping them in step is
+    // what makes a Shiny atom look identical under either profile.
+    program.setUniformValue("uShininess", 48.0f);
+    program.setUniformValue("uSurfaceOpacity", style_.glassOpacity);
+
+    const int count = std::min(static_cast<int>(lights_.size()), kMaxLights);
+    program.setUniformValue("uLightCount", count);
+    const auto rgb = [](const QColor& c) {
+        return QVector3D(static_cast<float>(c.redF()),
+                         static_cast<float>(c.greenF()),
+                         static_cast<float>(c.blueF()));
+    };
+    for (int i = 0; i < count; ++i) {
+        const Light& light = lights_[static_cast<std::size_t>(i)];
+        const QString index = QStringLiteral("[%1]").arg(i);
+        program.setUniformValue(qPrintable(QStringLiteral("uLightDir") + index),
+                                light.direction.normalized());
+        program.setUniformValue(
+            qPrintable(QStringLiteral("uLightAmbient") + index),
+            rgb(light.ambient));
+        program.setUniformValue(
+            qPrintable(QStringLiteral("uLightDiffuse") + index),
+            rgb(light.diffuse));
+        program.setUniformValue(
+            qPrintable(QStringLiteral("uLightSpecular") + index),
+            rgb(light.specular));
+    }
+
+    program.setUniformValue("uShadowEnabled", style_.shadowsEnabled ? 1 : 0);
+    program.setUniformValue("uShadowStrength", style_.shadowStrength);
+    program.setUniformValue("uShadowRadius", style_.shadowSoftness);
+    program.setUniformValue("uShadowTexelSize",
+                            1.0f / static_cast<float>(kShadowMapSize));
+    program.setUniformValue("uShadowMap", 0);
+
+    program.setUniformValue("uFogMode", static_cast<int>(style_.fogMode));
+    program.setUniformValue("uFogColor",
+                            QVector3D(static_cast<float>(style_.fogColor.redF()),
+                                      static_cast<float>(style_.fogColor.greenF()),
+                                      static_cast<float>(style_.fogColor.blueF())));
+    program.setUniformValue("uFogStart", style_.fogStart);
+    program.setUniformValue("uFogEnd", style_.fogEnd);
+    program.setUniformValue("uFogDensity", style_.fogDensity);
+
+    // Shading model + its material parameters. The model comes from the
+    // PROFILE (which BRDF), the parameters from the style (how that BRDF is
+    // configured) — so switching profiles never silently rewrites the user's
+    // material settings.
+    program.setUniformValue("uMetallic", style_.metallic);
+    program.setUniformValue("uRoughness", style_.roughness);
+    program.setUniformValue("uToonBands", style_.toonBands);
+    program.setUniformValue("uToonRim", style_.toonRim);
+}
+
+void StructureRenderer::setVolumeField(int nx, int ny, int nz,
+                                       const std::vector<float>& values,
+                                       const std::vector<float>& transfer,
+                                       const QMatrix4x4& boxTransform)
+{
+    if (!gl_ || nx < 2 || ny < 2 || nz < 2
+        || values.size() != static_cast<std::size_t>(nx) * ny * nz) {
+        clearVolumeField();
+        return;
+    }
+    volumeTransform_ = boxTransform;
+
+    if (volumeTexture_ == 0)
+        gl_->glGenTextures(1, &volumeTexture_);
+    gl_->glBindTexture(GL_TEXTURE_3D, volumeTexture_);
+    // GL_R32F: a scalar field, at the precision it was computed in. A
+    // normalized 8-bit format would band visibly wherever the transfer
+    // function is steep, which is exactly where the interesting structure is.
+    gl_->glTexImage3D(GL_TEXTURE_3D, 0, GL_R32F, nx, ny, nz, 0, GL_RED,
+                      GL_FLOAT, values.data());
+    gl_->glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gl_->glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    // Clamp, not repeat: a ray leaving the box must not wrap around and
+    // sample the far side, which would smear the cell's own edge across it.
+    for (const GLenum axis : {GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T,
+                              GL_TEXTURE_WRAP_R})
+        gl_->glTexParameteri(GL_TEXTURE_3D, axis, GL_CLAMP_TO_EDGE);
+
+    if (transferTexture_ == 0)
+        gl_->glGenTextures(1, &transferTexture_);
+    gl_->glBindTexture(GL_TEXTURE_1D, transferTexture_);
+    gl_->glTexImage1D(GL_TEXTURE_1D, 0, GL_RGBA8,
+                      static_cast<GLsizei>(transfer.size() / 4), 0, GL_RGBA,
+                      GL_FLOAT, transfer.data());
+    gl_->glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gl_->glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    gl_->glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl_->glBindTexture(GL_TEXTURE_1D, 0);
+    gl_->glBindTexture(GL_TEXTURE_3D, 0);
+
+    // The unit cube the ray is clipped against, built once.
+    if (!volumeVao_.isCreated()) {
+        static const float kCube[] = {
+            0, 0, 0, 0, 0, 1, 0, 0, 0,   1, 0, 0, 0, 0, 1, 0, 0, 0,
+            1, 1, 0, 0, 0, 1, 0, 0, 0,   0, 1, 0, 0, 0, 1, 0, 0, 0,
+            0, 0, 1, 0, 0, 1, 0, 0, 0,   1, 0, 1, 0, 0, 1, 0, 0, 0,
+            1, 1, 1, 0, 0, 1, 0, 0, 0,   0, 1, 1, 0, 0, 1, 0, 0, 0};
+        static const unsigned int kIndices[] = {
+            0, 1, 2, 0, 2, 3,  4, 6, 5, 4, 7, 6,
+            0, 4, 5, 0, 5, 1,  3, 2, 6, 3, 6, 7,
+            0, 3, 7, 0, 7, 4,  1, 5, 6, 1, 6, 2};
+        volumeVao_.create();
+        volumeVao_.bind();
+        volumeVbo_.create();
+        volumeVbo_.bind();
+        volumeVbo_.allocate(kCube, sizeof(kCube));
+        gl_->glEnableVertexAttribArray(0);
+        gl_->glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float),
+                                   nullptr);
+        volumeIbo_.create();
+        volumeIbo_.bind();
+        volumeIbo_.allocate(kIndices, sizeof(kIndices));
+        volumeVao_.release();
+    }
+    volumeVisible_ = true;
+}
+
+void StructureRenderer::clearVolumeField()
+{
+    volumeVisible_ = false;
+}
+
+void StructureRenderer::setVolumeParams(int steps, float density,
+                                        float isoLevel, bool lit)
+{
+    volumeSteps_ = steps;
+    volumeDensity_ = density;
+    volumeIsoLevel_ = isoLevel;
+    volumeLit_ = lit;
+}
+
+void StructureRenderer::drawVolume(const QMatrix4x4& view,
+                                   const QMatrix4x4& projection)
+{
+    if (!volumeVisible_ || volumeTexture_ == 0)
+        return;
+    if (!raymarchTried_) {
+        raymarchTried_ = true;
+        raymarchReady_ =
+            raymarchProgram_.addShaderFromSourceFile(
+                QOpenGLShader::Vertex, ":/assets/shaders/raymarch.vert")
+            && raymarchProgram_.addShaderFromSourceFile(
+                QOpenGLShader::Fragment, ":/assets/shaders/raymarch.frag")
+            && raymarchProgram_.link();
+        if (!raymarchReady_)
+            qWarning("Calango: the volume ray-marching shader did not build on "
+                     "this driver. Log:\n%s",
+                     qPrintable(raymarchProgram_.log()));
+    }
+    if (!raymarchReady_)
+        return;
+
+    raymarchProgram_.bind();
+    raymarchProgram_.setUniformValue("uView", view);
+    raymarchProgram_.setUniformValue("uProj", projection);
+    raymarchProgram_.setUniformValue("uModel", volumeTransform_);
+    raymarchProgram_.setUniformValue("uInvModel", volumeTransform_.inverted());
+    raymarchProgram_.setUniformValue("uInvView", view.inverted());
+    // The eye in WORLD space: the ray is built in the cube's own space, and
+    // getting there from the camera needs the world position, not the view one
+    // (which is the origin by definition).
+    const QVector3D eyeWorld = view.inverted().map(QVector3D(0.0f, 0.0f, 0.0f));
+    raymarchProgram_.setUniformValue("uEyeWorld", eyeWorld);
+    raymarchProgram_.setUniformValue("uSteps", volumeSteps_);
+    raymarchProgram_.setUniformValue("uDensity", volumeDensity_);
+    raymarchProgram_.setUniformValue("uIsoLevel", volumeIsoLevel_);
+    raymarchProgram_.setUniformValue("uLightingOn", volumeLit_ ? 1 : 0);
+    raymarchProgram_.setUniformValue("uVolume", 1);
+    raymarchProgram_.setUniformValue("uTransfer", 2);
+
+    gl_->glActiveTexture(GL_TEXTURE1);
+    gl_->glBindTexture(GL_TEXTURE_3D, volumeTexture_);
+    gl_->glActiveTexture(GL_TEXTURE2);
+    gl_->glBindTexture(GL_TEXTURE_1D, transferTexture_);
+
+    // Back faces, so the box still covers the screen when the camera is inside
+    // the volume — the common case once a density is zoomed into. Depth writes
+    // off: the volume is a participating medium, not a surface, and writing
+    // depth would let it occlude atoms it should be blended over.
+    gl_->glEnable(GL_CULL_FACE);
+    gl_->glCullFace(GL_FRONT);
+    gl_->glEnable(GL_BLEND);
+    gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    gl_->glDepthMask(GL_FALSE);
+    volumeVao_.bind();
+    gl_->glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, nullptr);
+    volumeVao_.release();
+    gl_->glDepthMask(GL_TRUE);
+    gl_->glDisable(GL_BLEND);
+    gl_->glCullFace(GL_BACK);
+    gl_->glDisable(GL_CULL_FACE);
+
+    gl_->glActiveTexture(GL_TEXTURE0);
+    raymarchProgram_.release();
+}
+
+bool StructureRenderer::useLitIsosurface()
+{
+    if (ShaderRegistry::activeProfile(ShaderSlot::Isosurfaces).isLegacy)
+        return false;
+    if (isosurfaceProgramTried_)
+        return isosurfaceProgramReady_;
+    isosurfaceProgramTried_ = true;
+    // Linked lazily and guarded: a driver that rejects the program must fall
+    // back to the path that always works rather than take the viewport with
+    // it. Qt logs the compiler output, which is what makes a report from a
+    // machine we do not have actionable.
+    isosurfaceProgramReady_ =
+        isosurfaceProgram_.addShaderFromSourceFile(
+            QOpenGLShader::Vertex, ":/assets/shaders/isosurface.vert")
+        && isosurfaceProgram_.addShaderFromSourceFile(
+            QOpenGLShader::Fragment, ":/assets/shaders/isosurface.frag")
+        && isosurfaceProgram_.link();
+    if (!isosurfaceProgramReady_) {
+        qWarning("Calango: the lit isosurface shader did not build on this "
+                 "driver; falling back to the legacy unlit path. Log:\n%s",
+                 qPrintable(isosurfaceProgram_.log()));
+    }
+    return isosurfaceProgramReady_;
+}
+
+void StructureRenderer::uploadIsosurfaceLights()
+{
+    // Deliberately the same uniform names and the same view-space direction
+    // convention as mesh.frag: the two programs describe one scene, and a
+    // second lighting convention here is exactly how the surface would drift
+    // out of agreement with the atoms the first time the lights are edited.
+    const int count = std::min(static_cast<int>(lights_.size()), kMaxLights);
+    isosurfaceProgram_.setUniformValue("uLightCount", count);
+    for (int i = 0; i < count; ++i) {
+        const Light& light = lights_[static_cast<std::size_t>(i)];
+        const QString index = QStringLiteral("[%1]").arg(i);
+        isosurfaceProgram_.setUniformValue(
+            qPrintable(QStringLiteral("uLightDir") + index),
+            light.direction.normalized());
+        const auto rgb = [](const QColor& c) {
+            return QVector3D(static_cast<float>(c.redF()),
+                             static_cast<float>(c.greenF()),
+                             static_cast<float>(c.blueF()));
+        };
+        isosurfaceProgram_.setUniformValue(
+            qPrintable(QStringLiteral("uLightAmbient") + index),
+            rgb(light.ambient));
+        isosurfaceProgram_.setUniformValue(
+            qPrintable(QStringLiteral("uLightDiffuse") + index),
+            rgb(light.diffuse));
+        isosurfaceProgram_.setUniformValue(
+            qPrintable(QStringLiteral("uLightSpecular") + index),
+            rgb(light.specular));
+    }
+}
+
+void StructureRenderer::createLitBuffer(LitVertexBuffer& buffer)
+{
+    buffer.vao.create();
+    buffer.vao.bind();
+    buffer.vbo.create();
+    buffer.vbo.bind();
+    constexpr int stride = kOverlayFaceFloats * sizeof(float);
+    // ATTRIBUTE ORDER IS NOT THE MEMORY ORDER, and deliberately so.
+    //
+    // The data is laid out pos(3), normal(3), colour(3) — but location 1 is
+    // bound to the COLOUR, not the normal, so that locations 0 and 1 mean
+    // exactly what they mean in the old 6-float layout. wire.vert (the legacy
+    // isosurface profile) declares 0 = position, 1 = colour and knows nothing
+    // about normals; binding the normal to location 1 made it paint the
+    // surface orientation as its colour, which showed as a hue sweep across
+    // every lobe.
+    //
+    // Keeping the 9-float layout a strict SUPERSET of the 6-float one is what
+    // lets one buffer serve both programs with no second VAO and no branch.
+    gl_->glEnableVertexAttribArray(0); // position   (offset 0)
+    gl_->glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, nullptr);
+    gl_->glEnableVertexAttribArray(1); // colour     (offset 6) -- see above
+    gl_->glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride,
+                               reinterpret_cast<void*>(6 * sizeof(float)));
+    gl_->glEnableVertexAttribArray(2); // normal     (offset 3)
+    gl_->glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, stride,
+                               reinterpret_cast<void*>(3 * sizeof(float)));
+    buffer.vao.release();
+}
+
+void StructureRenderer::uploadLitBuffer(LitVertexBuffer& buffer,
+                                        const std::vector<float>& data)
+{
+    buffer.vertexCount = static_cast<int>(data.size()) / 9;
+    buffer.vbo.bind();
+    buffer.vbo.allocate(data.data(),
+                        static_cast<int>(data.size() * sizeof(float)));
+}
+
 void StructureRenderer::createColoredBuffer(ColoredVertexBuffer& buffer)
 {
     buffer.vao.create();
@@ -708,7 +1115,22 @@ void StructureRenderer::setCustomOverlay(const std::vector<float>& faces,
 {
     if (!initialized_)
         return;
-    uploadColoredBuffer(customOverlayFaces_, faces);
+    // Reject a stream that is not a whole number of 9-float vertices, and one
+    // whose triangle count is not a multiple of 3. Either means a producer is
+    // writing a different vertex layout than the VAO reads — which does not
+    // fail loudly on its own: the draw simply samples positions from the wrong
+    // offsets and the surface explodes into a fan of triangles that looks like
+    // a physics bug rather than a buffer one.
+    const int faceFloats = static_cast<int>(faces.size());
+    if (faceFloats % (kOverlayFaceFloats * 3) != 0) {
+        qWarning("Calango: custom-overlay face stream is %d floats, which is "
+                 "not a whole number of %d-float triangles. Dropping it rather "
+                 "than drawing garbage.",
+                 faceFloats, kOverlayFaceFloats * 3);
+        uploadLitBuffer(customOverlayFaces_, {});
+    } else {
+        uploadLitBuffer(customOverlayFaces_, faces);
+    }
     uploadColoredBuffer(customOverlayEdges_, edges);
     customOverlayRanges_ = faceRanges;
     customOverlayVisible_ = visible;
@@ -1942,20 +2364,59 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
         // their self-occlusion. Order-independent transparency is out of scope;
         // the Fresnel rim in mesh.frag is what keeps the unsorted glassy draw
         // readable.
-        const auto drawMeshes = [this] {
-            for (InstancedMesh* mesh : {&sphere_, &cylinder_, &cone_}) {
+        // Each primitive is drawn by whichever profile its slot selects.
+        // Spheres and cylinders have an impostor form; the vector-arrow cones
+        // do not — an arrowhead is a one-off shape with no analytic
+        // intersection worth writing — so they always take the tessellated
+        // path. The caller has meshProgram_ bound and its uFinishPass set;
+        // this restores that state on the way out so the two passes below can
+        // treat it as unchanged.
+        const auto drawMeshes = [this, &view, &projection, &lightSpace](
+                                    int finishPass) {
+            struct Entry {
+                InstancedMesh* mesh;
+                int slot; // render::ShaderSlot index, or -1 for "no impostor"
+            };
+            const Entry entries[] = {
+                {&sphere_, 0}, {&cylinder_, 1}, {&cone_, -1}};
+            for (const Entry& entry : entries) {
+                InstancedMesh* mesh = entry.mesh;
                 if (mesh->instanceCount == 0)
                     continue;
-                mesh->vao.bind();
-                gl_->glDrawElementsInstanced(GL_TRIANGLES, mesh->indexCount,
+                const bool impostor =
+                    entry.slot >= 0 && useImpostors(entry.slot);
+                if (!impostor) {
+                    mesh->vao.bind();
+                    gl_->glDrawElementsInstanced(GL_TRIANGLES, mesh->indexCount,
+                                                 GL_UNSIGNED_INT, nullptr,
+                                                 mesh->instanceCount);
+                    mesh->vao.release();
+                    continue;
+                }
+                QOpenGLShaderProgram& program = impostorProgram_[entry.slot];
+                meshProgram_.release();
+                program.bind();
+                uploadImpostorUniforms(program, view, projection, lightSpace);
+                program.setUniformValue(
+                    "uShadingModel",
+                    ShaderRegistry::activeProfile(
+                        entry.slot == 0 ? ShaderSlot::Atoms : ShaderSlot::Bonds)
+                        .shadingModel);
+                program.setUniformValue("uFinishPass", finishPass);
+                mesh->impostorVao.bind();
+                // Two triangles per instance instead of 1200 (spheres) or 48
+                // (cylinders) — the whole point of the profile.
+                gl_->glDrawElementsInstanced(GL_TRIANGLES, mesh->quadIndexCount,
                                              GL_UNSIGNED_INT, nullptr,
                                              mesh->instanceCount);
-                mesh->vao.release();
+                mesh->impostorVao.release();
+                program.release();
+                meshProgram_.bind();
             }
         };
 
         meshProgram_.setUniformValue("uFinishPass", 0);
-        drawMeshes();
+        drawMeshes(0);
 
         if (style_.anyTranslucentCast()) {
             meshProgram_.setUniformValue("uFinishPass", 1);
@@ -1972,7 +2433,7 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
             // opaque pass already put in the colour buffer, whichever order the
             // instances happen to arrive in.
             gl_->glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-            drawMeshes();
+            drawMeshes(1);
             gl_->glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
             gl_->glEnable(GL_BLEND);
@@ -1981,7 +2442,7 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
             // LEQUAL, not LESS: the fragments that survive are exactly the ones
             // the pre-pass just stored, so they must compare equal and pass.
             gl_->glDepthFunc(GL_LEQUAL);
-            drawMeshes();
+            drawMeshes(1);
             gl_->glDepthFunc(GL_LESS);
             gl_->glDepthMask(GL_TRUE);
             gl_->glDisable(GL_BLEND);
@@ -2102,15 +2563,36 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
         wireProgram_.release();
     }
 
+    // Direct volume rendering, before the translucent overlays so an
+    // isosurface drawn at the same time blends over the medium rather than
+    // being swallowed by it.
+    drawVolume(view, projection);
+
     // Custom Overlay primitives: each face run blends at its own opacity, so
     // draw them range by range (opaque ones first would be ideal, but convex
     // primitives read fine without a global sort). Wireframes render opaque.
     if (customOverlayVisible_
         && (customOverlayFaces_.vertexCount > 0
             || customOverlayEdges_.vertexCount > 0)) {
-        wireProgram_.bind();
-        wireProgram_.setUniformValue("uMvp", projection * view);
         if (customOverlayFaces_.vertexCount > 0 && !customOverlayRanges_.empty()) {
+            // Which program shades the surface is the Preferences "Rendering"
+            // selection. The lit profile needs the scene lights and the view
+            // matrix; the legacy one only needs the MVP, because its shading
+            // was already baked into the vertex colours.
+            const bool lit = useLitIsosurface();
+            QOpenGLShaderProgram& program = lit ? isosurfaceProgram_ : wireProgram_;
+            program.bind();
+            if (lit) {
+                program.setUniformValue("uView", view);
+                program.setUniformValue("uProj", projection);
+                uploadIsosurfaceLights();
+                program.setUniformValue("uShadingMode", style_.isoShadingMode);
+                program.setUniformValue("uAmbient", style_.isoAmbient);
+                program.setUniformValue("uSpecular", style_.isoSpecular);
+                program.setUniformValue("uShininess", style_.isoShininess);
+            } else {
+                program.setUniformValue("uMvp", projection * view);
+            }
             gl_->glEnable(GL_BLEND);
             gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             gl_->glDepthMask(GL_FALSE);
@@ -2119,13 +2601,16 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
                 if (r.count <= 0 || r.first < 0
                     || r.first + r.count > customOverlayFaces_.vertexCount)
                     continue;
-                wireProgram_.setUniformValue("uAlpha", r.alpha);
+                program.setUniformValue("uAlpha", r.alpha);
                 gl_->glDrawArrays(GL_TRIANGLES, r.first, r.count);
             }
             customOverlayFaces_.vao.release();
             gl_->glDepthMask(GL_TRUE);
             gl_->glDisable(GL_BLEND);
+            program.release();
         }
+        wireProgram_.bind();
+        wireProgram_.setUniformValue("uMvp", projection * view);
         if (customOverlayEdges_.vertexCount > 0) {
             // Translucent wires (the volumetric mesh/dot styles) blend without
             // writing depth, exactly as the faces above do; an opaque outline

@@ -7,7 +7,9 @@
 #include "gui/PolyhedralSettingsDialog.hpp"
 #include "ui/IconManager.hpp"
 #include "gui/GuiUtils.hpp"
+#include "gui/SettingsManager.hpp"
 #include "gui/ViewportWidget.hpp"
+#include "render/ShaderProfile.hpp"
 
 #include <QColorDialog>
 #include <QComboBox>
@@ -45,6 +47,55 @@ RepresentationPanel::RepresentationPanel(ViewportWidget* viewport, QWidget* pare
 
     syncColoringFromViewport();
     syncCastsFromViewport();
+    syncShadingFromRegistry();
+}
+
+void RepresentationPanel::syncShadingFromRegistry()
+{
+    if (!shadingCombo_)
+        return;
+    // The atom slot answers for both: the row writes them together, and if a
+    // hand-edited settings file has them disagreeing, the atoms are what the
+    // eye reads first.
+    const int model = render::ShaderRegistry::activeProfile(
+                          render::ShaderSlot::Atoms)
+                          .shadingModel;
+    const int index = shadingCombo_->findData(model);
+    if (index >= 0) {
+        const QSignalBlocker blocker(shadingCombo_);
+        shadingCombo_->setCurrentIndex(index);
+    }
+    syncSurfaceFinishEnabled();
+}
+
+void RepresentationPanel::syncSurfaceFinishEnabled()
+{
+    if (!surfaceFinishCombo_ || !shadingCombo_)
+        return;
+    const bool classic = shadingCombo_->currentData().toInt() == 0;
+    if (auto* model =
+            qobject_cast<QStandardItemModel*>(surfaceFinishCombo_->model())) {
+        // Indices 0..2 are Standard / Shiny / Matte — the three that only
+        // configure the Blinn-Phong branch. Index 3 (Glassy) is the
+        // translucency pass and applies under every shading model, so it stays
+        // selectable: without it there would be no way to make a PBR structure
+        // transparent at all.
+        for (int i = 0; i < 3; ++i) {
+            if (QStandardItem* item = model->item(i))
+                item->setEnabled(classic);
+        }
+    }
+    // Greyed rather than removed, and the current selection is left alone: the
+    // user's material comes back untouched when they return to Classic. The
+    // greying is the whole message — a paragraph of prose under the row said
+    // the same thing permanently, in a dock that has no rows to spare.
+}
+
+void RepresentationPanel::setShowHydrogens(bool on)
+{
+    if (!showHydrogensButton_ || showHydrogensButton_->isChecked() == on)
+        return;
+    showHydrogensButton_->setChecked(on); // its own signal applies the style
 }
 
 QWidget* RepresentationPanel::buildAppearanceTab()
@@ -64,17 +115,120 @@ QWidget* RepresentationPanel::buildAppearanceTab()
     // styling before you choose how.
     castCombo_ = new QComboBox(page);
     castCombo_->setToolTip(
-        tr("The atom group the representation below applies to. Atoms are moved "
-           "between casts in \"Cast change…\" on the editor row."));
-    form->addRow(tr("Casting:"), castCombo_);
+        tr("The atom group the representation below applies to. The button "
+           "beside it moves atoms between casts."));
     connect(castCombo_, &QComboBox::currentIndexChanged, this,
             [this](int) { loadSelectedCast(); });
 
+    // The cast editor sits ON this row rather than at the head of the editor
+    // icon row further down. It is the only one of those buttons that acts on
+    // the control beside it — it decides what the dropdown can even offer —
+    // so separating the two put a question and its answer in different places.
+    auto* castRow = new QHBoxLayout;
+    castRow->setSpacing(4);
+    castRow->addWidget(castCombo_, 1);
+    auto* castButton = new QPushButton(page);
+    ui::IconManager::bind(castButton, QStringLiteral("group-fill"));
+    castButton->setIconSize(QSize(20, 20));
+    castButton->setFocusPolicy(Qt::NoFocus);
+    castButton->setToolTip(
+        tr("Cast change… — which cast each atom belongs to, and how many casts "
+           "there are. Each cast draws in its own representation."));
+    castRow->addWidget(castButton);
+    form->addRow(tr("Casting:"), castRow);
+    connect(castButton, &QPushButton::clicked, this,
+            &RepresentationPanel::openCastSetup);
+
+    // --- Shading (which BRDF) ----------------------------------------------
+    // Directly above Style, because it decides which of the two the finish
+    // below even feeds: Standard / Shiny / Matte configure Blinn-Phong, and
+    // PBR and Toon replace it.
+    //
+    // These used to be reachable only from Preferences → Rendering, which is
+    // the wrong place for them: PBR and Toon are LOOKS, and nobody hunts
+    // through Preferences to make a figure look like a cartoon. Preferences
+    // keeps the per-slot expert view (atoms and bonds independently, plus the
+    // impostor geometry choice) — this row moves the two the user actually
+    // picks between into the panel where the rest of the material lives.
+    //
+    // One row for atoms AND bonds: an atom shaded as metal beside a bond
+    // shaded as a cartoon is not a figure anyone wants, and the slot split
+    // exists for the geometry paths, not for the shading.
+    shadingCombo_ = new QComboBox(page);
+    {
+        // Item data is the shadingModel index the profiles declare, not a
+        // profile id: the id differs per slot for the same look, while the
+        // BRDF number is exactly what the two slots share.
+        const auto& atomProfiles =
+            render::ShaderRegistry::profiles(render::ShaderSlot::Atoms);
+        shadingCombo_->addItem(tr("Classic (Blinn-Phong)"), 0);
+        shadingCombo_->setItemData(
+            0,
+            tr("The shading the application has always used: diffuse plus a "
+               "Blinn-Phong highlight, configured by the Style row below."),
+            Qt::ToolTipRole);
+        for (const render::ShaderProfile& profile : atomProfiles) {
+            if (profile.shadingModel == 0)
+                continue;
+            QString reason;
+            const bool supported =
+                render::ShaderRegistry::isSupported(profile, &reason);
+            shadingCombo_->addItem(supported ? profile.displayName
+                                             : tr("%1 — unavailable")
+                                                   .arg(profile.displayName),
+                                   profile.shadingModel);
+            const int added = shadingCombo_->count() - 1;
+            shadingCombo_->setItemData(added, profile.description,
+                                       Qt::ToolTipRole);
+            if (!supported) {
+                // Listed but disabled with the driver's own reason, the same
+                // treatment Preferences gives it. A look that simply vanishes
+                // reads as a missing feature; one that says why is actionable.
+                if (auto* model = qobject_cast<QStandardItemModel*>(
+                        shadingCombo_->model())) {
+                    if (QStandardItem* item = model->item(added)) {
+                        item->setEnabled(false);
+                        item->setToolTip(reason);
+                    }
+                }
+            }
+        }
+    }
+    form->addRow(tr("Shading:"), shadingCombo_);
+
+    connect(shadingCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        const int model = shadingCombo_->currentData().toInt();
+        for (const render::ShaderSlot slot :
+             {render::ShaderSlot::Atoms, render::ShaderSlot::Bonds}) {
+            // Classic has TWO profiles (tessellated mesh and impostor) that
+            // differ only in geometry, so it resolves to whichever matches the
+            // geometry path already in use. That makes PBR → Classic → PBR
+            // lossless instead of silently dropping the user back to the
+            // tessellated path they had opted out of.
+            const bool impostor =
+                render::ShaderRegistry::activeProfile(slot).impostorGeometry;
+            for (const render::ShaderProfile& profile :
+                 render::ShaderRegistry::profiles(slot)) {
+                if (profile.shadingModel != model)
+                    continue;
+                if (model == 0 && profile.impostorGeometry != impostor)
+                    continue;
+                render::ShaderRegistry::setActiveProfileId(slot, profile.id);
+                break;
+            }
+        }
+        SettingsManager::save();
+        syncSurfaceFinishEnabled();
+        // PBR and Toon are impostor-only, so switching into or out of them can
+        // change the vertex layout — rebuild rather than merely redraw.
+        viewport_->styleChanged(true);
+    });
+
     // --- Style (surface material) ------------------------------------------
-    // First control in the panel: the material decides how everything below
-    // it reads on screen, and it is the setting most often changed when
-    // preparing a figure. Applies to every lit mesh (atom spheres, bond
-    // cylinders, cell tubes) so a figure reads as one material.
+    // The material decides how everything below it reads on screen, and it is
+    // the setting most often changed when preparing a figure. Applies to every
+    // lit mesh (atom spheres, bond cylinders, cell tubes) so a figure reads as
+    // one material.
     surfaceFinishCombo_ = new QComboBox(page);
     // Order matches render::SurfaceFinish.
     surfaceFinishCombo_->addItem(tr("Standard"));
@@ -137,12 +291,44 @@ QWidget* RepresentationPanel::buildAppearanceTab()
         tr("Per cast: a coordination-colored slab and a "
            "custom-property-colored adsorbate can share one scene, each "
            "normalized against its own data range."));
-    form->addRow(tr("Color by:"), colorModeCombo_);
+    // The colour-by row carries its own two satellites: the editor that
+    // defines the mapping, and the toggle that prints the mapped number on the
+    // atoms. Both are meaningless without this dropdown and both answer a
+    // question it raises — through which ramp, and by how much — so they
+    // belong on its row rather than anonymous in the editor strip below.
+    auto* colorRow = new QHBoxLayout;
+    colorRow->setSpacing(4);
+    colorRow->addWidget(colorModeCombo_, 1);
+    const auto makeColorButton = [page, colorRow](const QString& icon,
+                                                  const QString& tip) {
+        auto* button = new QPushButton(page);
+        ui::IconManager::bind(button, icon);
+        button->setIconSize(QSize(20, 20));
+        button->setToolTip(tip);
+        button->setFocusPolicy(Qt::NoFocus);
+        colorRow->addWidget(button);
+        return button;
+    };
+    auto* gradientButton = makeColorButton(
+        QStringLiteral("color-filter-fill"),
+        tr("Edit gradient coloring… — which per-atom property is mapped, "
+           "through which gradient, over which value range."));
+    // The ramp says which atoms differ; this says by how much. A GCN of 6.75
+    // against 7.50 is a distinction no colour scale conveys.
+    scalarLabelsButton_ = makeColorButton(
+        QStringLiteral("hashtag"),
+        tr("Show CN / GCN values — print each atom's value of the property "
+           "selected in \"Color by\" on the 3D viewport."));
+    scalarLabelsButton_->setCheckable(true);
+    scalarLabelsButton_->setChecked(viewport_->showCoordinationLabels());
+    form->addRow(tr("Color by:"), colorRow);
 
-    // Four editors that change WHAT is drawn (rather than how it is shaded),
-    // on one compact icon row. Icon-only with tooltips: the four labels spelled
-    // out consumed four full-width rows of a dock that is already the tallest
-    // in the app, and these are recognized by glyph once learned.
+    // The display toggles, on one compact icon row. Icon-only with tooltips:
+    // the labels spelled out consumed a full-width row each in a dock that is
+    // already the tallest in the app, and these are recognized by glyph once
+    // learned. Every button on this row is a checkable "is this drawn" switch
+    // — the three that OPEN something sit in their own row further down, so a
+    // click that toggles and a click that opens a window never look alike.
     auto* editorRow = new QHBoxLayout;
     editorRow->setSpacing(4);
     const auto makeEditorButton = [page, editorRow](const QString& icon,
@@ -155,21 +341,11 @@ QWidget* RepresentationPanel::buildAppearanceTab()
         editorRow->addWidget(button);
         return button;
     };
-    // First on the row, ahead of Element Settings: a cast decides WHICH atoms
-    // the rest of the panel is about, so the editor that moves atoms between
-    // casts leads the editors that style them.
-    auto* castButton = makeEditorButton(
-        QStringLiteral("group-fill"),
-        tr("Cast change… — which cast each atom belongs to, and how many casts "
-           "there are. Each cast draws in its own representation."));
-    auto* elementsButton = makeEditorButton(
-        QStringLiteral("brush-fill"),
-        tr("Element Settings… — per-element colors and radii, and preset "
-           "save/load."));
-    // Three per-atom text overlays, together and directly after Element
-    // Settings. All three answer the same question — what is written ON the
-    // atoms — so they read as one group; the first two came from the viewport
-    // toolbar, which is about navigating the scene rather than drawing it.
+    // The two per-atom text overlays, directly after Element Settings: both
+    // answer the same question — what is written ON the atoms — and both came
+    // from the viewport toolbar, which is about navigating the scene rather
+    // than drawing it. The third of that group, the CN/GCN value read-out,
+    // moved up to the "Color by" row whose number it prints.
     elementLabelsButton_ = makeEditorButton(
         QStringLiteral("atom-line"),
         tr("Show element symbols — overlay each atom's chemical symbol "
@@ -184,53 +360,48 @@ QWidget* RepresentationPanel::buildAppearanceTab()
     indexLabelsButton_->setCheckable(true);
     indexLabelsButton_->setChecked(viewport_->showAtomIndexLabels());
 
-    // The third of the group: it prints the number behind the colour ramp
-    // rather than an identity. It follows "Color by" (one row up) because it is
-    // that setting's read-out — the ramp says which atoms differ, this says by
-    // how much, and a GCN of 6.75 against 7.50 is a distinction no colour scale
-    // conveys.
-    scalarLabelsButton_ = makeEditorButton(
-        QStringLiteral("hashtag"),
-        tr("Show CN / GCN values — print each atom's value of the property "
-           "selected in \"Color by\" on the 3D viewport."));
-    scalarLabelsButton_->setCheckable(true);
-    scalarLabelsButton_->setChecked(viewport_->showCoordinationLabels());
-    auto* bondButton = makeEditorButton(
-        QStringLiteral("share-fill"),
-        tr("Bond Editor… — bond perception, manual bonds, bond order and "
-           "hydrogen-bond detection."));
-    auto* polyhedralButton = makeEditorButton(
-        QStringLiteral("box-1-fill"),
-        tr("Edit Polyhedral… — coordination-polyhedra opacity, edge wireframe "
-           "and per-cation coordination cutoffs."));
-    auto* gradientButton = makeEditorButton(
-        QStringLiteral("color-filter-fill"),
-        tr("Edit gradient coloring… — which per-atom property is mapped, "
-           "through which gradient, over which value range."));
+    // ---- 3) The two display toggles, directly after the index labels -------
+    // They had a row of their own under Opacity. They are one-bit "is this
+    // drawn" switches, which is what the two label toggles beside them are
+    // too, so the row was a second copy of a group that already existed.
+    //
+    // "H", literally — the heading glyph is an H, so the icon IS the label.
+    showHydrogensButton_ = makeEditorButton(
+        QStringLiteral("heading"),
+        tr("Draw hydrogen atoms, their bonds and the hydrogen-bond dashes.\n"
+           "Off leaves the heavy-atom skeleton, which is how a crowded organic\n"
+           "or protein structure is normally read.\n\n"
+           "Display only — the hydrogens stay in the structure, so the formula "
+           "and every\ncalculation and exported file are unchanged."));
+    showHydrogensButton_->setCheckable(true);
+    showHydrogensButton_->setChecked(viewport_->style().showHydrogens);
+    connect(showHydrogensButton_, &QPushButton::toggled, this, [this](bool on) {
+        viewport_->style().showHydrogens = on;
+        viewport_->styleChanged(true);
+    });
+
+    // A staircase: the stepped ramp from one colour to the next, which is what
+    // the flat half-and-half split this replaces does NOT do.
+    gradientBondsButton_ = makeEditorButton(
+        QStringLiteral("stairs-fill"),
+        tr("Blend each bond smoothly from one atom's color to the other's\n"
+           "instead of the classic half-and-half split."));
+    gradientBondsButton_->setCheckable(true);
+    gradientBondsButton_->setChecked(viewport_->style().gradientBonds);
+    connect(gradientBondsButton_, &QPushButton::toggled, this, [this](bool on) {
+        viewport_->style().gradientBonds = on;
+        viewport_->styleChanged(true);
+    });
+
     editorRow->addStretch(1);
     form->addRow(editorRow);
 
-    connect(castButton, &QPushButton::clicked, this,
-            &RepresentationPanel::openCastSetup);
-    connect(elementsButton, &QPushButton::clicked, this, [this] {
-        ElementSettingsDialog dialog(viewport_, this);
-        dialog.exec();
-    });
     connect(elementLabelsButton_, &QPushButton::toggled, viewport_,
             &ViewportWidget::setShowElementLabels);
     connect(indexLabelsButton_, &QPushButton::toggled, viewport_,
             &ViewportWidget::setShowAtomIndexLabels);
     connect(scalarLabelsButton_, &QPushButton::toggled, viewport_,
             &ViewportWidget::setShowCoordinationLabels);
-    connect(bondButton, &QPushButton::clicked, this,
-            &RepresentationPanel::bondEditorRequested);
-    // Modeless: both edit live, and the user needs to see the viewport change
-    // while dragging a slider.
-    connect(polyhedralButton, &QPushButton::clicked, this, [this] {
-        auto* dialog = new PolyhedralSettingsDialog(viewport_, this);
-        dialog->setAttribute(Qt::WA_DeleteOnClose);
-        dialog->show();
-    });
     connect(gradientButton, &QPushButton::clicked, this, [this] {
         auto* dialog = new CustomGradientColoringDialog(viewport_, this);
         dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -302,6 +473,10 @@ QWidget* RepresentationPanel::buildAppearanceTab()
     //
     // Its own row rather than makeScaleRow's 0.20-3.00 factor: opacity is a
     // fraction with hard physical ends at 0 and 1, not a multiplier.
+    //
+    // A slider, matching Atom radius and Bond width directly above it: three
+    // stacked value controls that behave identically should look identical,
+    // and the left-to-right travel reads as 0 → 1 without being learned.
     {
         auto* row = new QWidget(page);
         auto* rowLayout = new QHBoxLayout(row);
@@ -359,62 +534,61 @@ QWidget* RepresentationPanel::buildAppearanceTab()
     // which already owns per-pair bond edits and can also express Aromatic —
     // one place to assign a pair's chemistry instead of two.
 
-    gradientBondsCheck_ = new QCheckBox(tr("Gradient bond coloring"), page);
-    gradientBondsCheck_->setChecked(viewport_->style().gradientBonds);
-    gradientBondsCheck_->setToolTip(tr("Blend each bond smoothly from one atom's "
-                                       "color to the other's\ninstead of the classic "
-                                       "half-and-half split"));
-    form->addRow(gradientBondsCheck_);
-    connect(gradientBondsCheck_, &QCheckBox::toggled, this, [this](bool on) {
-        viewport_->style().gradientBonds = on;
-        viewport_->styleChanged(true);
+    // --- Editors ------------------------------------------------------------
+    // The three that open a window, below Opacity rather than mixed in with
+    // the display toggles above. They are a different kind of act — a click
+    // here costs a dialog, a click up there flips a bit — and mixing the two
+    // on one strip of identical square buttons meant the only way to know
+    // which you were about to get was to have learned the glyph.
+    //
+    // Order is by what they edit, widening outward: one element, then the
+    // bonds between elements, then the polyhedron a coordination shell forms.
+    auto* dialogRow = new QHBoxLayout;
+    dialogRow->setSpacing(4);
+    const auto makeDialogButton = [page, dialogRow](const QString& icon,
+                                                    const QString& tip) {
+        auto* button = new QPushButton(page);
+        ui::IconManager::bind(button, icon);
+        button->setIconSize(QSize(20, 20));
+        button->setToolTip(tip);
+        button->setFocusPolicy(Qt::NoFocus);
+        dialogRow->addWidget(button);
+        return button;
+    };
+    auto* elementsButton = makeDialogButton(
+        QStringLiteral("brush-fill"),
+        tr("Element Settings… — per-element colors and radii, and preset "
+           "save/load."));
+    auto* bondButton = makeDialogButton(
+        QStringLiteral("share-fill"),
+        tr("Bond Editor… — bond perception, manual bonds, bond order and "
+           "hydrogen-bond detection."));
+    auto* polyhedralButton = makeDialogButton(
+        QStringLiteral("box-1-fill"),
+        tr("Edit Polyhedral… — coordination-polyhedra opacity, edge wireframe "
+           "and per-cation coordination cutoffs."));
+    dialogRow->addStretch(1);
+    form->addRow(dialogRow);
+
+    connect(elementsButton, &QPushButton::clicked, this, [this] {
+        ElementSettingsDialog dialog(viewport_, this);
+        dialog.exec();
+    });
+    connect(bondButton, &QPushButton::clicked, this,
+            &RepresentationPanel::bondEditorRequested);
+    // Modeless: it edits live, and the user needs to see the viewport change
+    // while dragging a slider.
+    connect(polyhedralButton, &QPushButton::clicked, this, [this] {
+        auto* dialog = new PolyhedralSettingsDialog(viewport_, this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->show();
     });
 
-    // Hydrogens get their own row: hiding them is the single most common way
-    // to make an organic or protein structure readable, and adding the missing
-    // ones is what you do to a heavy-atom-only model straight out of a CIF or
-    // a PDB. They sit together because the second usually follows the first —
-    // you notice the hydrogens are absent, then you build them.
-    auto* hydrogenRow = new QHBoxLayout;
-    hydrogenRow->setSpacing(6);
-    showHydrogensCheck_ = new QCheckBox(tr("Show hydrogens"), page);
-    showHydrogensCheck_->setChecked(viewport_->style().showHydrogens);
-    showHydrogensCheck_->setToolTip(
-        tr("Draw hydrogen atoms, their bonds and the hydrogen-bond dashes.\n"
-           "Off leaves the heavy-atom skeleton, which is how a crowded organic\n"
-           "or protein structure is normally read.\n\n"
-           "Display only — the hydrogens stay in the structure, so the formula "
-           "and every\ncalculation and exported file are unchanged."));
-    hydrogenRow->addWidget(showHydrogensCheck_);
-    hydrogenRow->addStretch(1);
-    // Icon-only, like the editor row above it: the spelled-out label was the
-    // widest thing in the dock and forced the whole panel wider than any other
-    // control needed. The tooltip carries what the label said.
-    auto* completeHydrogensButton = new QPushButton(page);
-    ui::IconManager::bind(completeHydrogensButton, QStringLiteral("heading"));
-    completeHydrogensButton->setIconSize(QSize(20, 20));
-    completeHydrogensButton->setFocusPolicy(Qt::NoFocus);
-    completeHydrogensButton->setToolTip(
-        tr("Complete with hydrogens — add the hydrogens each atom's standard "
-           "valence implies:\na carbon with three bonds gets one, an sp3 "
-           "oxygen with one bond gets one, and so on.\n\n"
-           "Positions come from relaxing the new bonds against the existing "
-           "ones, so\nthe geometry follows the coordination (tetrahedral, "
-           "trigonal, bent).\nMetals and transition metals are left alone. "
-           "Undoable."));
-    hydrogenRow->addWidget(completeHydrogensButton);
-    form->addRow(hydrogenRow);
-    connect(showHydrogensCheck_, &QCheckBox::toggled, this, [this](bool on) {
-        viewport_->style().showHydrogens = on;
-        viewport_->styleChanged(true);
-    });
-    connect(completeHydrogensButton, &QPushButton::clicked, this, [this] {
-        // Building hydrogens you cannot see is a no-op as far as the user can
-        // tell, so asking for them turns them back on. A display decision, and
-        // this panel owns the display.
-        showHydrogensCheck_->setChecked(true);
-        Q_EMIT hydrogenCompletionRequested();
-    });
+    // "Complete with hydrogens" used to sit beside the toggle above. It moved
+    // to the viewport toolbar, with the other actions that EDIT the structure:
+    // it adds atoms and pushes an undo entry, which is a different kind of act
+    // from everything else in this panel, all of which only changes how the
+    // existing atoms are drawn.
 
     // The per-atom vector overlay (property selector, scale, colour) moved
     // into "Edit Vector Overlay…" on the icon row above: three controls that

@@ -43,6 +43,7 @@ class MetricPlotWidget;
 class OverlayPanel;
 class ProcessManagerPanel;
 class RemoteAccessPanel;
+class RepresentationPanel;
 class StructureInfoWidget;
 class VolumetricPanel;
 class SystemStatusBar;
@@ -182,6 +183,15 @@ private Q_SLOTS:
     /// Open the 2D band-surface viewer for a finished job directory
     /// (reads its bands_2d.json).
     void open2DBandsResults(const QString& directory);
+    /// Electronics → "Charged defects…": formation energies and transition
+    /// levels from a pristine host + neutral defect pair of single points.
+    void showChargedDefects();
+    /// Open the charged-defect formation-energy diagram for a finished job.
+    void openChargedDefectResults(const QString& directory);
+    /// Open the Wannier-interpolated Fermi-surface viewer for a finished job.
+    void openFermiSurfaceResults(const QString& directory);
+    /// Open the topological-invariants viewer for a finished job.
+    void openTopologyResults(const QString& directory);
     /// Simulation → "GW Calculations…": one-shot G₀W₀ on a completed SCF.
     void showGwCalculations();
     /// Completed Quantum ESPRESSO runs with a saved `.save` directory — the
@@ -610,6 +620,10 @@ private:
 
     QTabBar* tabBar_ = nullptr;
     ViewportWidget* viewport_ = nullptr;
+    /// Kept because Preferences → Rendering reaches the same shader-profile
+    /// setting as the panel's "Shading" row, and that dialog is modal: the row
+    /// has to be re-read when it closes or the two go out of step.
+    RepresentationPanel* representationPanel_ = nullptr;
     BrandingPanel* brandingPanel_ = nullptr;      ///< zone 1 (theme-aware logo)
     SystemStatusBar* systemStatusBar_ = nullptr;  ///< permanent status widgets
     QMenu* recentMenu_ = nullptr; ///< File → Open → Open Recent (dynamic)

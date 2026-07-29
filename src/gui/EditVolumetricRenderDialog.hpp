@@ -71,6 +71,7 @@ Q_SIGNALS:
 private:
     QWidget* buildIsosurfacePage();
     QWidget* buildColorSlicePage();
+    QWidget* buildDirectVolumePage();
     /// Enable only the controls the selected draw style / shading model reads.
     void syncIsoStyleEnabled();
     void emitChange();
@@ -87,6 +88,12 @@ private:
     QStackedWidget* stack_ = nullptr;
 
     // Isosurfaces
+    /// The isosurface shader profile, as a checkbox: legacy (baked CPU
+    /// shading) vs lit (GPU, scene lights). Application-wide and persisted
+    /// through QSettings, unlike every other control here — it lives in this
+    /// dialog because it decides whether the Shading row below still reaches
+    /// the main viewport.
+    QCheckBox* litSurfaceCheck_ = nullptr;
     QSlider* isoSlider_ = nullptr;
     QDoubleSpinBox* isoSpin_ = nullptr;
     QComboBox* drawStyleCombo_ = nullptr;  ///< solid / mesh / both / dots
@@ -114,6 +121,12 @@ private:
     QDoubleSpinBox* sliceOpacitySpin_ = nullptr;
     QComboBox* sliceExtentCombo_ = nullptr;
     QCheckBox* sliceBorderCheck_ = nullptr;
+
+    // Direct volume rendering
+    QSpinBox* volumeStepsSpin_ = nullptr;
+    QDoubleSpinBox* volumeDensitySpin_ = nullptr;
+    QDoubleSpinBox* volumeThresholdSpin_ = nullptr;
+    QCheckBox* volumeLitCheck_ = nullptr;
 
     // Potential-map colouring (inside the Isosurfaces page)
     QGroupBox* potentialGroup_ = nullptr; ///< checkable: drives potentialColoring

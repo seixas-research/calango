@@ -3,6 +3,7 @@
 #include "core/Structure.hpp"
 #include "gui/GuiUtils.hpp"
 #include "gui/NeighborCellsDialog.hpp"
+#include "ui/IconManager.hpp"
 
 #include "gui/ViewportWidget.hpp"
 
@@ -28,16 +29,37 @@ UnitCellPanel::UnitCellPanel(ViewportWidget* viewport, QWidget* parent)
 {
     auto* form = new QFormLayout(this);
 
-    auto* cellShowCheck = new QCheckBox(tr("Show unit cell"), this);
-    cellShowCheck->setChecked(viewport_->style().showCell);
-    form->addRow(cellShowCheck);
-    connect(cellShowCheck, &QCheckBox::toggled,
+    // The three periodic-image controls on one icon row. They are the same
+    // question at three scales — draw the cell boundary, complete the bonds
+    // that leave it, repeat the whole cell — so they read as a group; stacked
+    // as two full-width check boxes and a labelled button they read as three
+    // unrelated settings, and cost three rows to say it.
+    auto* cellRow = new QHBoxLayout;
+    cellRow->setSpacing(4);
+    const auto makeCellButton = [this, cellRow](const QString& icon,
+                                                const QString& tip) {
+        auto* button = new QPushButton(this);
+        ui::IconManager::bind(button, icon);
+        button->setIconSize(QSize(20, 20));
+        button->setFocusPolicy(Qt::NoFocus);
+        button->setToolTip(tip);
+        cellRow->addWidget(button);
+        return button;
+    };
+
+    // The three read as one story: the home cell, the home cell with what its
+    // bonds reach into next door, and the whole neighbourhood.
+    auto* cellShowButton = makeCellButton(
+        QStringLiteral("home-2-fill"),
+        tr("Show unit cell — draw the cell edges as a wireframe box."));
+    cellShowButton->setCheckable(true);
+    cellShowButton->setChecked(viewport_->style().showCell);
+    connect(cellShowButton, &QPushButton::toggled,
             viewport_, &ViewportWidget::setShowCell);
 
-    auto* ghostCheck =
-        new QCheckBox(tr("Show atoms of the neighboring unit cell"), this);
-    ghostCheck->setChecked(viewport_->style().showNeighborCellAtoms);
-    ghostCheck->setToolTip(
+    // The home cell plus the annex its bonds spill into.
+    auto* ghostButton = makeCellButton(
+        QStringLiteral("home-office-fill"),
         tr("Draw the periodic images the home cell's bonds actually reach "
            "into:\n"
            "• the far end of every bond that wraps around the cell, so a "
@@ -49,25 +71,27 @@ UnitCellPanel::UnitCellPanel(ViewportWidget* viewport, QWidget* parent)
            "sliced off at two faces.\n\n"
            "Purely visual: the atom count, the chemical formula and every "
            "exported POSCAR/CIF are unchanged."));
-    form->addRow(ghostCheck);
-    connect(ghostCheck, &QCheckBox::toggled, this, [this](bool on) {
+    ghostButton->setCheckable(true);
+    ghostButton->setChecked(viewport_->style().showNeighborCellAtoms);
+    connect(ghostButton, &QPushButton::toggled, this, [this](bool on) {
         viewport_->style().showNeighborCellAtoms = on;
         // Extra instances — the geometry buffers must be rebuilt.
         viewport_->styleChanged(true);
     });
 
-    // Directly under the bond-completion toggle above, because the two are the
-    // periodic-image controls and differ only in scale: that one completes the
-    // bonds that leave the cell, this one repeats the whole cell.
-    auto* neighborCellsButton =
-        new QPushButton(tr("Show neighboring cells…"), this);
-    neighborCellsButton->setToolTip(
-        tr("Draw the periodic images of the cell over a range of fractional "
+    // A row of dwellings: this one repeats the whole cell over a range. Not
+    // checkable — it opens a dialog rather than flipping a bit, which is why
+    // it keeps a push button's look beside the two toggles.
+    auto* neighborCellsButton = makeCellButton(
+        QStringLiteral("community-fill"),
+        tr("Show neighboring cells… — draw the periodic images of the "
+           "cell over a range of fractional "
            "coordinates — e.g. x from 0 to 2 adds the neighboring cell along "
            "+x, with its atoms and bonds.\n\n"
            "Purely visual: the atom count, the formula and every exported "
            "structure file are unchanged."));
-    form->addRow(neighborCellsButton);
+    cellRow->addStretch(1);
+    form->addRow(cellRow);
     connect(neighborCellsButton, &QPushButton::clicked, this, [this] {
         // Modeless and singleton-per-panel: the dialog applies live, so it has
         // to stay open beside the viewport while the user judges the result,

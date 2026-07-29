@@ -1,5 +1,7 @@
 #include "gui/VolumetricPanel.hpp"
 
+#include "render/ShaderProfile.hpp"
+
 #include "core/GridInterpolation.hpp"
 #include "gui/EditVolumetricRenderDialog.hpp"
 #include "gui/ViewportWidget.hpp"
@@ -611,12 +613,21 @@ void VolumetricPanel::render()
 {
     if (!viewport_)
         return;
+    // The volume texture belongs to DirectVolume alone; leaving it bound while
+    // another mode draws would composite a medium nobody asked for over the
+    // isosurface that replaced it.
+    if (mode_ != VolumetricRenderMode::DirectVolume)
+        viewport_->clearVolumeField();
     // Only checked datasets bound to the workspace tab on screen are drawn;
     // everything else (other tabs, unticked rows) stays off the viewport.
     if (renderableRows().empty()) {
         clearViewportOverlay();
         ++isoGeneration_;
         isoPending_ = false;
+        return;
+    }
+    if (mode_ == VolumetricRenderMode::DirectVolume) {
+        pushDirectVolume();
         return;
     }
     if (mode_ == VolumetricRenderMode::ColorSlice) {
@@ -628,6 +639,73 @@ void VolumetricPanel::render()
         viewport_->clearLatticePlane();
         requestExtraction();
     }
+}
+
+void VolumetricPanel::pushDirectVolume()
+{
+    const core::VolumetricData* field = currentField();
+    if (!field || field->empty()) {
+        viewport_->clearVolumeField();
+        viewport_->update();
+        return;
+    }
+    // Normalize into [0,1] against the field's own range, so the transfer
+    // function is expressed once against a fixed axis and does not have to be
+    // rebuilt when the dataset changes.
+    const double lo = field->minValue();
+    const double hi = field->maxValue();
+    const double range = std::max(hi - lo, 1e-30);
+    std::vector<float> values;
+    values.reserve(field->values.size());
+    for (const double v : field->values)
+        values.push_back(
+            static_cast<float>(std::clamp((v - lo) / range, 0.0, 1.0)));
+
+    // The transfer function: the dialog's colour ramp, with opacity rising
+    // from the threshold. A linear ramp rather than an editable curve for now
+    // — the curve editor is a feature of its own, and the threshold plus the
+    // density scale already cover the common "show me the shell, not the fog"
+    // adjustment.
+    constexpr int kLutSize = 256;
+    std::vector<float> transfer;
+    transfer.reserve(kLutSize * 4);
+    for (int i = 0; i < kLutSize; ++i) {
+        const float t = static_cast<float>(i) / (kLutSize - 1);
+        const QColor c = render::ColorMap::sample(style_.gradient, t,
+                                                  style_.invertGradient);
+        transfer.push_back(static_cast<float>(c.redF()));
+        transfer.push_back(static_cast<float>(c.greenF()));
+        transfer.push_back(static_cast<float>(c.blueF()));
+        // Opacity grows as t^2: a linear ramp makes the low-value bulk of a
+        // density as visible as its core, which buries the structure in haze.
+        transfer.push_back(t * t);
+    }
+
+    // The unit cube -> the grid's own parallelepiped. Built from the span
+    // vectors rather than from a bounding box, so a triclinic cell is handled
+    // without a special case.
+    QMatrix4x4 box;
+    box.setColumn(0, QVector4D(static_cast<float>(field->spanA.x),
+                               static_cast<float>(field->spanA.y),
+                               static_cast<float>(field->spanA.z), 0.0f));
+    box.setColumn(1, QVector4D(static_cast<float>(field->spanB.x),
+                               static_cast<float>(field->spanB.y),
+                               static_cast<float>(field->spanB.z), 0.0f));
+    box.setColumn(2, QVector4D(static_cast<float>(field->spanC.x),
+                               static_cast<float>(field->spanC.y),
+                               static_cast<float>(field->spanC.z), 0.0f));
+    box.setColumn(3, QVector4D(static_cast<float>(field->origin.x),
+                               static_cast<float>(field->origin.y),
+                               static_cast<float>(field->origin.z), 1.0f));
+
+    viewport_->clearCustomOverlay();
+    viewport_->setVolumeField(field->nx, field->ny, field->nz, values, transfer,
+                              box);
+    viewport_->setVolumeParams(style_.directVolume.steps,
+                               static_cast<float>(style_.directVolume.density),
+                               static_cast<float>(style_.directVolume.threshold),
+                               style_.directVolume.lit);
+    viewport_->update();
 }
 
 void VolumetricPanel::renderSlice()
@@ -939,13 +1017,18 @@ void VolumetricPanel::pushResults(const std::vector<ExtractResult>& results)
         if (mesh.positions.empty())
             return;
         const double range = std::max(hi - lo, 1e-30);
-        const int first = static_cast<int>(faces.size() / 6);
+        const int first = static_cast<int>(
+            faces.size()
+            / render::StructureRenderer::kOverlayFaceFloats);
         const float ur = static_cast<float>(uniformColor.redF());
         const float ug = static_cast<float>(uniformColor.greenF());
         const float ub = static_cast<float>(uniformColor.blueF());
 
-        // Per-vertex colour: the flat phase colour or the potential-map ramp,
-        // then the baked shading term.
+        // Per-vertex colour: the flat phase colour or the potential-map ramp.
+        // The SHADING is folded in only for the legacy profile — see below.
+        const bool baked = render::ShaderRegistry::activeProfile(
+                               render::ShaderSlot::Isosurfaces)
+                               .isLegacy;
         std::vector<std::array<float, 3>> colors(mesh.positions.size());
         for (std::size_t i = 0; i < mesh.positions.size(); ++i) {
             double r = ur, g = ug, b = ub;
@@ -959,7 +1042,12 @@ void VolumetricPanel::pushResults(const std::vector<ExtractResult>& results)
                 g = c.greenF();
                 b = c.blueF();
             }
-            if (style_.shading != IsoShading::Flat && i < mesh.normals.size()) {
+            // Baked ONLY for the legacy profile. The lit profile shades on
+            // the GPU from the normals emitted below, which is what lets the
+            // highlight follow the camera; baking as well would apply the
+            // shading twice.
+            if (baked && style_.shading != IsoShading::Flat
+                && i < mesh.normals.size()) {
                 const ShadeTerms terms = shadeNormal(mesh.normals[i], style_);
                 r = r * terms.diffuse + terms.specular;
                 g = g * terms.diffuse + terms.specular;
@@ -980,9 +1068,28 @@ void VolumetricPanel::pushResults(const std::vector<ExtractResult>& results)
                         static_cast<float>(c[2] * tint)});
         };
 
+        // Faces carry a normal; lines do not. Marching cubes already derives
+        // one per vertex from the field gradient, so nothing extra is computed
+        // to feed the lit profile.
+        const auto emitFace = [](std::vector<float>& out, const core::Vec3& p,
+                                 const core::Vec3& n,
+                                 const std::array<float, 3>& c) {
+            out.insert(out.end(),
+                       {static_cast<float>(p.x), static_cast<float>(p.y),
+                        static_cast<float>(p.z), static_cast<float>(n.x),
+                        static_cast<float>(n.y), static_cast<float>(n.z),
+                        c[0], c[1], c[2]});
+            static_assert(render::StructureRenderer::kOverlayFaceFloats == 9,
+                          "emitFace writes 9 floats per vertex");
+        };
+
         if (wantFaces) {
-            for (std::size_t i = 0; i < mesh.positions.size(); ++i)
-                emitVertex(faces, mesh.positions[i], colors[i], 1.0);
+            for (std::size_t i = 0; i < mesh.positions.size(); ++i) {
+                const core::Vec3 n = i < mesh.normals.size()
+                    ? mesh.normals[i]
+                    : core::Vec3{0.0, 0.0, 1.0};
+                emitFace(faces, mesh.positions[i], n, colors[i]);
+            }
             ranges.push_back(
                 {first, static_cast<int>(mesh.positions.size()), alpha});
         }
@@ -1045,6 +1152,14 @@ void VolumetricPanel::pushResults(const std::vector<ExtractResult>& results)
         viewport_->clearCustomOverlay();
         return;
     }
+    // The shading controls reach the GPU as uniforms for the lit profile;
+    // they still drive the CPU baking above for the legacy one, so the two
+    // agree about what the dialog means.
+    auto& style = viewport_->style();
+    style.isoShadingMode = static_cast<int>(style_.shading);
+    style.isoAmbient = static_cast<float>(style_.ambient);
+    style.isoSpecular = static_cast<float>(style_.specular);
+    style.isoShininess = static_cast<float>(kGlossExponent);
     viewport_->setCustomOverlay(std::move(faces), std::move(lines),
                                 std::move(ranges),
                                 /*visible=*/true, alpha);

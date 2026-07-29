@@ -129,6 +129,43 @@ void VolumeViewWidget::frameBox()
     update();
 }
 
+void VolumeViewWidget::setViewOrientation(float yawDeg, float pitchDeg,
+                                         float rollDeg)
+{
+    camera_.setOrientation(yawDeg, pitchDeg, rollDeg);
+    update();
+}
+
+void VolumeViewWidget::nudgeView(int axis, float degrees)
+{
+    // Composed on the LEFT, in camera space: "rotate about the axis pointing
+    // right on screen" has to stay true after the view has already been
+    // turned, which a world-axis rotation would not.
+    const QVector3D axes[3] = {QVector3D(1.0f, 0.0f, 0.0f),
+                               QVector3D(0.0f, 1.0f, 0.0f),
+                               QVector3D(0.0f, 0.0f, 1.0f)};
+    const QQuaternion delta = QQuaternion::fromAxisAndAngle(
+        axes[std::clamp(axis, 0, 2)], degrees);
+    camera_.setOrientation(delta * camera_.orientation());
+    update();
+}
+
+void VolumeViewWidget::setViewRoll(float degrees)
+{
+    camera_.setRoll(degrees);
+    update();
+}
+
+float VolumeViewWidget::viewYaw() const { return camera_.yaw(); }
+float VolumeViewWidget::viewPitch() const { return camera_.pitch(); }
+float VolumeViewWidget::viewRoll() const { return camera_.roll(); }
+
+void VolumeViewWidget::resetView()
+{
+    camera_.resetOrientation();
+    frameBox();
+}
+
 void VolumeViewWidget::setMesh(std::vector<float> interleavedPosNormalColor)
 {
     isoBuffer_.staging = std::move(interleavedPosNormalColor);
@@ -302,10 +339,11 @@ void VolumeViewWidget::mouseMoveEvent(QMouseEvent* event)
     if (pan)
         camera_.pan(static_cast<float>(delta.x()), static_cast<float>(delta.y()),
                     height());
-    else if (event->buttons().testFlag(Qt::LeftButton))
-        camera_.rotate(static_cast<float>(delta.x()) * 0.4f,
-                       static_cast<float>(delta.y()) * 0.4f);
-    else
+    else if (event->buttons().testFlag(Qt::LeftButton)) {
+        camera_.rotateArcball(lastMousePos_ - delta, lastMousePos_, width(),
+                              height());
+        Q_EMIT viewChanged();
+    } else
         return;
     update();
 }

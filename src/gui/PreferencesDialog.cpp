@@ -22,19 +22,32 @@
 #include <QSettings>
 #include <QSpinBox>
 #include <QTableWidget>
+
 #include <QTabWidget>
 #include <QThread>
 #include <QVBoxLayout>
 
 namespace calango::gui {
 
+// The "Rendering" page is gone. Its two useful choices moved to where the work
+// happens — the shading model to the Representation panel's "Shading" row, the
+// isosurface profile to a checkbox in "Edit Volumetric Render" — and what was
+// left was per-slot plumbing plus a driver read-out.
+//
+// The impostor geometry paths and the GL_RENDERER summary therefore have no UI
+// now. The profile ids are still readable and editable as render/atomShaderProfile
+// and render/bondShaderProfile in ~/.calango/settings.json.
 PreferencesDialog::PreferencesDialog(QWidget* parent)
     : QDialog(parent)
     , envPathEdit_(new QLineEdit(this))
     , statusLabel_(new QLabel(this))
 {
     setWindowTitle(tr("Preferences"));
-    resize(560, 460);
+    // Sized so no page has to scroll or elide at the default font. The Run tab
+    // shows full shell command templates and the Python tab full interpreter
+    // paths — both are long single lines that a narrow dialog turns into
+    // ellipses, which is the one thing a settings field must never do.
+    resize(820, 640);
 
     auto* envGroup = new QGroupBox(tr("Environment File (.env)"), this);
     auto* envLayout = new QVBoxLayout(envGroup);
@@ -134,6 +147,63 @@ PreferencesDialog::PreferencesDialog(QWidget* parent)
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
     // -- General ------------------------------------------------------------
+    // -- Simulation files ---------------------------------------------------
+    auto* storageGroup = new QGroupBox(tr("Simulation Files"), this);
+    auto* storageLayout = new QVBoxLayout(storageGroup);
+
+    auto* storageRow = new QHBoxLayout;
+    simulationsDirEdit_ = new QLineEdit(storageGroup);
+    simulationsDirEdit_->setText(
+        QSettings()
+            .value(QLatin1String(SettingsManager::kSimulationsDir))
+            .toString());
+    simulationsDirEdit_->setPlaceholderText(
+        SettingsManager::defaultSimulationsDirectory());
+    simulationsDirEdit_->setToolTip(
+        tr("Where a run's working directory is created — its script, logs, "
+           "metrics and trajectory.\n\n"
+           "Leave empty to use %1. Jobs used to go to the platform's "
+           "application-data folder, which is the right place for the "
+           "application's own state and the wrong place for output you want "
+           "to find again.")
+            .arg(SettingsManager::defaultSimulationsDirectory()));
+    storageRow->addWidget(simulationsDirEdit_, 1);
+
+    auto* browseSimulations = new QPushButton(tr("Browse…"), storageGroup);
+    connect(browseSimulations, &QPushButton::clicked, this, [this] {
+        const QString start = simulationsDirEdit_->text().trimmed().isEmpty()
+            ? SettingsManager::defaultSimulationsDirectory()
+            : simulationsDirEdit_->text();
+        const QString chosen = QFileDialog::getExistingDirectory(
+            this, tr("Simulation files directory"), start);
+        if (!chosen.isEmpty()) {
+            simulationsDirEdit_->setText(chosen);
+            updateSimulationsStatus();
+        }
+    });
+    storageRow->addWidget(browseSimulations);
+
+    auto* resetSimulations = new QPushButton(tr("Reset"), storageGroup);
+    resetSimulations->setToolTip(tr("Return to %1.")
+                                    .arg(SettingsManager::defaultSimulationsDirectory()));
+    connect(resetSimulations, &QPushButton::clicked, this, [this] {
+        simulationsDirEdit_->clear();
+        updateSimulationsStatus();
+    });
+    storageRow->addWidget(resetSimulations);
+    storageLayout->addLayout(storageRow);
+
+    simulationsStatusLabel_ = new QLabel(storageGroup);
+    simulationsStatusLabel_->setWordWrap(true);
+    simulationsStatusLabel_->setTextFormat(Qt::RichText);
+    storageLayout->addWidget(simulationsStatusLabel_);
+
+    connect(simulationsDirEdit_, &QLineEdit::textChanged, this, [this] {
+        QSettings().setValue(QLatin1String(SettingsManager::kSimulationsDir),
+                             simulationsDirEdit_->text().trimmed());
+        updateSimulationsStatus();
+    });
+
     auto* generalGroup = new QGroupBox(tr("General"), this);
     auto* generalLayout = new QVBoxLayout(generalGroup);
     auto* welcomeCheck = new QCheckBox(tr("Show Welcome Screen on Startup"),
@@ -156,6 +226,7 @@ PreferencesDialog::PreferencesDialog(QWidget* parent)
     generalPageLayout->addWidget(generalGroup);
     generalPageLayout->addWidget(envGroup);
     generalPageLayout->addWidget(appearanceGroup);
+    generalPageLayout->addWidget(storageGroup);
     generalPageLayout->addWidget(computeGroup);
     generalPageLayout->addStretch(1);
 
@@ -170,6 +241,36 @@ PreferencesDialog::PreferencesDialog(QWidget* parent)
 
     updateStatus();
     updateCondaStatus();
+    updateSimulationsStatus();
+}
+
+void PreferencesDialog::updateSimulationsStatus()
+{
+    if (!simulationsStatusLabel_)
+        return;
+    const QString configured = simulationsDirEdit_->text().trimmed();
+    const QString effective = SettingsManager::simulationsDirectory();
+    const bool usingDefault = configured.isEmpty();
+    // Report the path that will ACTUALLY be used, not the one that was typed:
+    // an unusable directory falls back silently in the resolver, and a user
+    // who is not told would look for their output in the wrong place.
+    const bool fellBack =
+        !usingDefault && QDir(effective) != QDir(configured);
+    QString text = usingDefault
+        ? tr("Using the default: <b>%1</b>").arg(effective)
+        : tr("Runs will be written to <b>%1</b>").arg(effective);
+    if (fellBack)
+        text = tr("<span style='color:#d9534f;'>⚠ <b>%1</b> is not usable "
+                  "(missing, not a directory, or not writable). Falling back "
+                  "to <b>%2</b>.</span>")
+                   .arg(configured, effective);
+    text += QStringLiteral("<br><i>%1</i>")
+                .arg(tr("A saved project keeps its runs in .calango_tmp/ beside "
+                        "the .calproj instead, so the project stays "
+                        "self-contained. This setting applies to unsaved "
+                        "sessions, and only to runs started from now on — "
+                        "existing job folders are not moved."));
+    simulationsStatusLabel_->setText(text);
 }
 
 QWidget* PreferencesDialog::buildPythonEnvTab()
