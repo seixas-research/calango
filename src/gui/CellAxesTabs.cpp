@@ -57,6 +57,35 @@ UnitCellPanel::UnitCellPanel(ViewportWidget* viewport, QWidget* parent)
     connect(cellShowButton, &QPushButton::toggled,
             viewport_, &ViewportWidget::setShowCell);
 
+    // Directly beside "Show unit cell", because it selects WHICH CELL that
+    // button draws rather than adding a second thing to the scene. The two are
+    // the same lattice: the parallelepiped depends on which basis vectors
+    // happened to be chosen, the Wigner-Seitz cell does not.
+    auto* voronoiButton = makeCellButton(
+        QStringLiteral("hexagon-fill"),
+        tr("Draw the Voronoi (Wigner-Seitz) cell instead of the "
+           "parallelepiped — the set of points closer to the lattice point at "
+           "the origin than to any other.\n\n"
+           "It is the same lattice, shown in the form that carries the "
+           "lattice's full point symmetry: a hexagonal lattice reads as "
+           "hexagonal here and as an oblique box in the parallelepiped, which "
+           "is an artefact of the basis vectors rather than the crystal.\n\n"
+           "Drawn about the centre of the conventional cell, so it encloses "
+           "the same structure the box did and the two can be compared by "
+           "toggling. Its shape and volume are exact; only which point it is "
+           "centred on is a viewing choice — the construction itself is "
+           "centred on a lattice point.\n\n"
+           "Every setting below applies to it unchanged: line style, line "
+           "width, colour, and the fill and its opacity."));
+    voronoiButton->setCheckable(true);
+    voronoiButton->setChecked(viewport_->style().showVoronoiCell);
+    connect(voronoiButton, &QPushButton::toggled, this, [this](bool on) {
+        viewport_->style().showVoronoiCell = on;
+        // A different polyhedron entirely — vertices, edges and faces all
+        // change, so the geometry buffers are rebuilt.
+        viewport_->styleChanged(true);
+    });
+
     // Directly beside "Show unit cell", because it is the SAME box drawn a
     // second way rather than a different thing to draw: the wireframe says
     // where the edges are, the fill says which side of them is inside. A bare

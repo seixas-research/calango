@@ -41,18 +41,31 @@ FermiSurfaceDialog::FermiSurfaceDialog(
 
     auto* form = new QFormLayout;
 
-    samplesSpin_ = new QSpinBox(this);
-    samplesSpin_->setRange(4, 128);
-    samplesSpin_->setValue(32);
-    samplesSpin_->setToolTip(
-        tr("Samples along each reciprocal direction; the grid is N³ and the "
-           "cost is cubic.\n\n"
-           "This is what decides whether a small pocket is resolved or missed "
-           "entirely. 24–32 gives a recognizable surface; a nesting study or a "
-           "narrow neck wants 48 or more."));
-    form->addRow(tr("Grid samples (N × N × N):"), samplesSpin_);
-    connect(samplesSpin_, &QSpinBox::valueChanged, this,
-            [this] { refreshCostNote(); });
+    // One count per reciprocal direction, not one for all three. Reciprocal
+    // cells are rarely cubic, and on a layered material the out-of-plane
+    // direction carries almost no dispersion — sampling it as finely as the
+    // other two multiplies the cost to resolve nothing.
+    auto* meshRow = new QHBoxLayout;
+    for (int axis = 0; axis < 3; ++axis) {
+        samplesSpins_[axis] = new QSpinBox(this);
+        samplesSpins_[axis]->setRange(4, 128);
+        samplesSpins_[axis]->setValue(32);
+        samplesSpins_[axis]->setToolTip(
+            tr("Samples along b%1.\n\n"
+               "The grid is the product of the three, so the cost is too. This "
+               "is what decides whether a small pocket is resolved or missed "
+               "entirely: 24–32 per direction gives a recognizable surface, "
+               "and a nesting study or a narrow neck wants 48 or more along "
+               "the directions that carry the structure.")
+                .arg(axis + 1));
+        meshRow->addWidget(samplesSpins_[axis]);
+        if (axis < 2)
+            meshRow->addWidget(new QLabel(QStringLiteral("×"), this));
+        connect(samplesSpins_[axis], &QSpinBox::valueChanged, this,
+                [this] { refreshCostNote(); });
+    }
+    meshRow->addStretch(1);
+    form->addRow(tr("Grid samples (k₁ × k₂ × k₃):"), meshRow);
 
     costNote_ = new QLabel(this);
     costNote_->setWordWrap(true);
@@ -117,20 +130,25 @@ QString FermiSurfaceDialog::mlwfDirectory() const
 
 void FermiSurfaceDialog::refreshCostNote()
 {
-    const int n = samplesSpin_->value();
+    const int nx = samplesSpins_[0]->value();
+    const int ny = samplesSpins_[1]->value();
+    const int nz = samplesSpins_[2]->value();
     // Stated as a diagonalization count rather than a time: how long one takes
     // depends on the Wannier count, but "this is 32768 of them" makes the
-    // cubic growth concrete before the job is queued.
-    costNote_->setText(tr("%1³ = %2 interpolated k-points.")
-                           .arg(n)
-                           .arg(static_cast<qlonglong>(n) * n * n));
+    // multiplicative growth concrete before the job is queued.
+    costNote_->setText(tr("%1 × %2 × %3 = %4 interpolated k-points.")
+                           .arg(nx)
+                           .arg(ny)
+                           .arg(nz)
+                           .arg(static_cast<qlonglong>(nx) * ny * nz));
 }
 
 core::FermiSurfaceConfig FermiSurfaceDialog::config() const
 {
     core::FermiSurfaceConfig cfg;
     cfg.mlwfDir = source_->directory().toStdString();
-    cfg.gridSamples = samplesSpin_->value();
+    for (int axis = 0; axis < 3; ++axis)
+        cfg.gridSamples[axis] = samplesSpins_[axis]->value();
     cfg.energyOffsetEv = offsetSpin_->value();
     cfg.maxIterations = iterationsSpin_->value();
     return cfg;

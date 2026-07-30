@@ -1734,12 +1734,20 @@ int main(int argc, char** argv)
     {
         FermiSurfaceConfig cfg;
         cfg.mlwfDir = "/jobs/proc_9";
-        cfg.gridSamples = 36;
+        // Three DIFFERENT counts: a single number would pass even if the
+        // generator collapsed the mesh back to one axis.
+        cfg.gridSamples[0] = 36;
+        cfg.gridSamples[1] = 24;
+        cfg.gridSamples[2] = 12;
         const std::string script = generateFermiSurfaceScript(cfg);
-        checkContains(script, "_n = 36", "honors the requested grid");
+        checkContains(script, "_nx = 36", "honors the requested k1 count");
+        checkContains(script, "_ny = 24", "and k2 independently");
+        checkContains(script, "_nz = 12", "and k3 independently");
+        checkContains(script, "'samples': [int(_nx), int(_ny), int(_nz)]",
+                      "records all three for the viewer");
         checkContains(script, "get_hamiltonian_kpoint",
                       "interpolates H(R) -> H(k) rather than re-running SCF");
-        checkContains(script, "(np.arange(_n) / _n) - 0.5",
+        checkContains(script, "(np.arange(_nx) / _nx) - 0.5",
                       "Gamma-centred grid with the upper endpoint excluded");
         checkContains(script, "_meta.get('gpw')",
                       "resolves the wavefunctions the MLWF run recorded");
@@ -1752,9 +1760,13 @@ int main(int argc, char** argv)
                       "emits its result marker");
 
         FermiSurfaceConfig tiny = cfg;
-        tiny.gridSamples = 1;
-        checkContains(generateFermiSurfaceScript(tiny), "_n = 4",
+        tiny.gridSamples[0] = 1;
+        tiny.gridSamples[1] = 1;
+        tiny.gridSamples[2] = 1;
+        const std::string clamped = generateFermiSurfaceScript(tiny);
+        checkContains(clamped, "_nx = 4",
                       "a grid too small to triangulate is clamped");
+        checkContains(clamped, "_nz = 4", "on every axis");
     }
 
     // -- Topological invariants ------------------------------------------------

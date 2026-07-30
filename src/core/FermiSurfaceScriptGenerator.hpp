@@ -18,9 +18,15 @@ struct FermiSurfaceConfig {
     /// path to the wavefunctions it localized).
     std::string mlwfDir;
 
-    /// Samples along each reciprocal-lattice direction. Cost is cubic, and
-    /// this sets whether a small pocket is resolved or missed entirely.
-    int gridSamples = 32;
+    /// Samples along b1, b2 and b3 — independently.
+    ///
+    /// Not one number, because reciprocal cells are rarely cubic. A slab's
+    /// short real-space c gives a long b3, and sampling it as densely as the
+    /// two in-plane directions spends most of the (multiplicative) cost
+    /// resolving a direction the physics is flat along. Anisotropic sampling
+    /// is how a layered material's surface is resolved at all at a tractable
+    /// point count.
+    int gridSamples[3] = {32, 32, 32};
 
     /// Fermi level offset, eV. 0 is the calculation's own E_F; scanning it is
     /// how a rigid-band doping study is done, and how nested features are

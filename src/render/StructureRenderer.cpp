@@ -3,6 +3,7 @@
 #include "render/ShaderProfile.hpp"
 #include "render/RenderGeometry.hpp"
 
+#include "core/BrillouinZone.hpp"
 #include "core/MarchingCubes.hpp"
 #include "core/PeriodicImages.hpp"
 #include "core/Structure.hpp"
@@ -15,6 +16,7 @@
 #include <array>
 #include <cmath>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1997,7 +1999,70 @@ void StructureRenderer::setStructure(const core::Structure* structure,
         }
 
         if (structure->cell().isDefined()) {
-            const auto corners = structure->cell().corners();
+            // The cell outline, as a vertex list + edges + polygon faces.
+            //
+            // Two shapes go through this: the parallelepiped of the basis
+            // vectors, and the Wigner-Seitz cell of the same lattice. They are
+            // built into ONE representation so that every style below — the
+            // dash pattern, the lit-tube threshold, the translucent fill — is
+            // written once and applies to both. A second copy of that code for
+            // the Voronoi case would be four settings with two implementations
+            // apiece and no reason for them ever to agree.
+            std::vector<QVector3D> outlinePoints;
+            std::vector<std::pair<int, int>> outlineEdges;
+            std::vector<std::vector<int>> outlineFaces;
+
+            if (style_.showVoronoiCell) {
+                // Drawn about the CENTRE of the conventional cell, not about
+                // the origin.
+                //
+                // The construction itself is centred on a lattice point, and
+                // the origin is one — but a structure's atoms are given in
+                // fractional [0, 1), so an origin-centred cell encloses one
+                // corner of the model and leaves the rest of it outside. It is
+                // the correct polyhedron in a place that makes the picture
+                // read as a rendering fault. Since this REPLACES the box, it is
+                // drawn where the box was: same volume, same contents, so
+                // toggling between the two compares like with like.
+                //
+                // Shape and volume are exact either way; only which point it is
+                // centred on is a viewing choice, and the tool tip says so.
+                const core::PolyhedronMesh ws =
+                    core::computeWignerSeitzCell(structure->cell());
+                const auto& vectors = structure->cell().vectors();
+                const QVector3D centre =
+                    toQt((vectors[0] + vectors[1] + vectors[2]) * 0.5);
+                outlinePoints.reserve(ws.vertices.size());
+                for (const core::Vec3& v : ws.vertices)
+                    outlinePoints.push_back(toQt(v) + centre);
+                outlineFaces = ws.faces;
+                // Edges from the faces, each shared pair emitted once — a
+                // convex polyhedron has every edge in exactly two faces, so
+                // without the de-duplication every line would be drawn twice
+                // (visible as double-density dashes, and twice the tubes).
+                std::set<std::pair<int, int>> unique;
+                for (const std::vector<int>& face : outlineFaces) {
+                    for (std::size_t k = 0; k < face.size(); ++k) {
+                        const int a = face[k];
+                        const int b = face[(k + 1) % face.size()];
+                        unique.insert({std::min(a, b), std::max(a, b)});
+                    }
+                }
+                outlineEdges.assign(unique.begin(), unique.end());
+            } else {
+                const auto corners = structure->cell().corners();
+                for (const core::Vec3& corner : corners)
+                    outlinePoints.push_back(toQt(corner));
+                for (const auto& [i, j] : core::UnitCell::edges())
+                    outlineEdges.emplace_back(i, j);
+                // Corner index i encodes the fractional coordinate in its bits
+                // (bit 0 = a, bit 1 = b, bit 2 = c), so each face is the four
+                // corners that agree on one bit.
+                outlineFaces = {{0, 2, 6, 4}, {1, 5, 7, 3},  // a = 0, a = 1
+                                {0, 4, 5, 1}, {2, 3, 7, 6},  // b = 0, b = 1
+                                {0, 1, 3, 2}, {4, 6, 7, 5}}; // c = 0, c = 1
+            }
+
             const bool tubes = style_.cellLineWidth > 1.01f;
             const float tubeRadius = 0.015f * style_.cellLineWidth;
             // A broken stroke is cut into the geometry: each edge becomes N
@@ -2016,9 +2081,9 @@ void StructureRenderer::setStructure(const core::Structure* structure,
             const int marks = style_.cellLineStyle == CellLineStyle::Solid
                 ? 1
                 : (style_.cellLineStyle == CellLineStyle::Dotted ? 14 : 8);
-            for (const auto& [i, j] : core::UnitCell::edges()) {
-                const QVector3D from = toQt(corners[static_cast<std::size_t>(i)]);
-                const QVector3D to = toQt(corners[static_cast<std::size_t>(j)]);
+            for (const auto& [i, j] : outlineEdges) {
+                const QVector3D from = outlinePoints[static_cast<std::size_t>(i)];
+                const QVector3D to = outlinePoints[static_cast<std::size_t>(j)];
                 const float length = from.distanceToPoint(to);
                 if (length <= 0.0f)
                     continue;
@@ -2047,34 +2112,29 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                 }
             }
 
-            // Filled cell: the six faces as triangles ("hatched cell" in the
-            // Unit Cell tab). Built alongside the wireframe rather than
-            // instead of it — the two are independent depictions of the same
-            // box, and Style::fillCell decides at DRAW time whether this
-            // stream is used, exactly as showCell does for the edges above.
+            // Filled cell: the faces as triangles ("hatched cell" in the Unit
+            // Cell tab). Built alongside the wireframe rather than instead of
+            // it — the two are independent depictions of the same shape, and
+            // Style::fillCell decides at DRAW time whether this stream is
+            // used, exactly as showCell does for the edges above.
             //
-            // Corner index i encodes the fractional coordinate in its bits
-            // (bit 0 = a, bit 1 = b, bit 2 = c), so each face is the four
-            // corners that agree on one bit. Winding is irrelevant here: face
-            // culling is off in the main pass, which is what a translucent box
-            // needs — you see its far side through its near one.
-            static constexpr int kFaces[6][4] = {
-                {0, 2, 6, 4}, {1, 5, 7, 3}, // a = 0, a = 1
-                {0, 4, 5, 1}, {2, 3, 7, 6}, // b = 0, b = 1
-                {0, 1, 3, 2}, {4, 6, 7, 5}, // c = 0, c = 1
-            };
+            // Fanned from each polygon's first vertex, which is valid because
+            // both shapes are convex and their faces arrive wound in order.
+            // Winding itself is irrelevant here: face culling is off in the
+            // main pass, which is what a translucent cell needs — you see its
+            // far side through its near one.
             const float fillR = static_cast<float>(style_.cellFillColor.redF());
             const float fillG = static_cast<float>(style_.cellFillColor.greenF());
             const float fillB = static_cast<float>(style_.cellFillColor.blueF());
-            for (const auto& face : kFaces) {
-                const int triangles[6] = {face[0], face[1], face[2],
-                                          face[0], face[2], face[3]};
-                for (const int corner : triangles) {
-                    const QVector3D p =
-                        toQt(corners[static_cast<std::size_t>(corner)]);
-                    cellFaceVertices.insert(
-                        cellFaceVertices.end(),
-                        {p.x(), p.y(), p.z(), fillR, fillG, fillB});
+            for (const std::vector<int>& face : outlineFaces) {
+                for (std::size_t k = 1; k + 1 < face.size(); ++k) {
+                    for (const int index : {face[0], face[k], face[k + 1]}) {
+                        const QVector3D p =
+                            outlinePoints[static_cast<std::size_t>(index)];
+                        cellFaceVertices.insert(
+                            cellFaceVertices.end(),
+                            {p.x(), p.y(), p.z(), fillR, fillG, fillB});
+                    }
                 }
             }
         }

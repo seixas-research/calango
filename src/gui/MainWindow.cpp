@@ -757,6 +757,14 @@ MainWindow::MainWindow(QWidget* parent)
             jobLogWidget_, &JobLogWidget::onJobFinished);
     connect(jobRunner_, &jobs::JobRunner::finished,
             this, &MainWindow::onJobFinished);
+    // Connected AFTER onJobFinished, deliberately. Qt delivers to slots in
+    // connection order, so the finished run has already persisted its metrics,
+    // released currentTaskId_ and opened its result viewer by the time the
+    // queue binds the next job as the current task — and onJobFinished has a
+    // dozen early returns, so pumping from inside it would need the call
+    // repeated on every one of them.
+    connect(jobRunner_, &jobs::JobRunner::finished,
+            this, [this](int, bool) { startNextQueuedJob(); });
     connect(jobRunner_, &jobs::JobRunner::frameStreamed,
             this, &MainWindow::onFrameStreamed);
     connect(jobLogWidget_, &JobLogWidget::terminateRequested,
@@ -4341,12 +4349,6 @@ void MainWindow::onGetVolumetricData(const QString& directory)
                "wrote a .gpw file."));
         return;
     }
-    if (jobRunner_->isRunning()) {
-        QMessageBox::information(
-            this, tr("Get Volumetric Data"),
-            tr("A calculation is already running — kill it first."));
-        return;
-    }
     // All-electron by default; the pseudo/all-electron choice was made at run
     // time and is not recoverable post-hoc, so use the fuller density.
     const QString script = QString::fromStdString(
@@ -4844,12 +4846,19 @@ void MainWindow::onDeleteProcessRequested(int id)
     const QString label = it != processRecords_.end() ? it->second.label
                                                        : tr("this process");
     const bool running = id == currentTaskId_;
+    const bool queued =
+        std::any_of(jobQueue_.begin(), jobQueue_.end(),
+                    [id](const QueuedJob& job) { return job.processId == id; });
 
     const auto choice = QMessageBox::question(
         this, tr("Delete Process"),
         running
             ? tr("Process #%1 (%2) is still running. Stop it and permanently "
                  "delete its data folder?").arg(id).arg(label)
+            : queued
+            ? tr("Process #%1 (%2) is queued and has not started. Remove it "
+                 "from the queue and permanently delete its data folder?")
+                  .arg(id).arg(label)
             : tr("Permanently delete process #%1 (%2) and its data folder?")
                   .arg(id).arg(label),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
@@ -4861,6 +4870,16 @@ void MainWindow::onDeleteProcessRequested(int id)
         jobRunner_->terminate();
         currentTaskId_ = -1; // its finish must not write metrics back
         liveDoc_ = nullptr;
+    }
+    // Cancelling a job that has not started yet: drop it from the queue, or
+    // startNextQueuedJob() would later launch a shell in the directory this
+    // function is about to delete.
+    if (queued) {
+        jobQueue_.erase(std::remove_if(jobQueue_.begin(), jobQueue_.end(),
+                                       [id](const QueuedJob& job) {
+                                           return job.processId == id;
+                                       }),
+                        jobQueue_.end());
     }
 
     // Purge the managed .calango_tmp/proc_<id>/ folder.
@@ -5158,12 +5177,6 @@ void MainWindow::openMaceTrainer()
         statusBar()->showMessage(tr("Submitting %1 to the cluster…").arg(label));
         return;
     }
-
-    if (jobRunner_->isRunning()) {
-        QMessageBox::information(this, label,
-                                 tr("A calculation is already running — kill it first."));
-        return;
-    }
     runScript(dialog.runnerScript(), dialog.pythonExecutable(), label,
               /*expectFrames=*/false);
 }
@@ -5250,12 +5263,6 @@ void MainWindow::showPartialCharge()
     dialog->setDensityBaselines(baselines);
     connect(dialog, &PartialChargeDialog::runRequested, this,
             [this](const QString& script, const QString& label) {
-                if (jobRunner_->isRunning()) {
-                    QMessageBox::information(
-                        this, label,
-                        tr("A calculation is already running — kill it first."));
-                    return;
-                }
                 runScript(script,
                           QString::fromStdString(
                               pybridge::PythonEngine::instance().executable()),
@@ -5292,12 +5299,6 @@ void MainWindow::showChargeDensityDifference()
     // in front is a perfectly good starting point.
     if (!ensureAseAvailable())
         return;
-    if (jobRunner_->isRunning()) {
-        QMessageBox::information(
-            this, tr("Charge Density Difference"),
-            tr("A calculation is already running — kill it first."));
-        return;
-    }
     const QList<QPair<QString, QString>> baselines = gpawBaselines();
     if (baselines.isEmpty()) {
         QMessageBox::information(
@@ -5400,12 +5401,6 @@ bool MainWindow::requireMlwfPrerequisite(const QString& title)
 
 void MainWindow::showWannierInterpolation()
 {
-    if (jobRunner_->isRunning()) {
-        QMessageBox::information(
-            this, tr("Wannier Interpolation"),
-            tr("A calculation is already running — kill it first."));
-        return;
-    }
     if (!requireMlwfPrerequisite(tr("Wannier Interpolation")))
         return;
     Document* doc = currentDocument();
@@ -5424,12 +5419,6 @@ void MainWindow::showWannierInterpolation()
 
 void MainWindow::showFermiSurface()
 {
-    if (jobRunner_->isRunning()) {
-        QMessageBox::information(
-            this, tr("Fermi Surface"),
-            tr("A calculation is already running — kill it first."));
-        return;
-    }
     if (!requireMlwfPrerequisite(tr("Fermi Surface")))
         return;
     FermiSurfaceDialog dialog(completedMlwfRuns(), this);
@@ -5444,12 +5433,6 @@ void MainWindow::showFermiSurface()
 
 void MainWindow::showTopologicalCharge()
 {
-    if (jobRunner_->isRunning()) {
-        QMessageBox::information(
-            this, tr("Topological Charge"),
-            tr("A calculation is already running — kill it first."));
-        return;
-    }
     if (!requireMlwfPrerequisite(tr("Topological Charge")))
         return;
     TopologyDialog dialog(completedMlwfRuns(), this);
@@ -5930,13 +5913,6 @@ void MainWindow::effectiveBandsCalculation()
         statusBar()->showMessage(tr("Submitting unfolding run to the cluster…"));
         return;
     }
-    if (jobRunner_->isRunning()) {
-        QMessageBox::information(this, tr("Effective Bands"),
-                                 tr("A calculation is already running — kill "
-                                    "it first."));
-        stagedPrimitive_.reset();
-        return;
-    }
     runScript(wizard.script(), wizard.pythonExecutable(), tr("Effective Bands"),
               /*expectFrames=*/false, wizard.calculatorKind(),
               wizard.runCommand());
@@ -6194,11 +6170,6 @@ bool MainWindow::prepareSimulation(const QString& title)
     }
     if (!ensureAseAvailable())
         return false;
-    if (jobRunner_->isRunning()) {
-        QMessageBox::information(this, title,
-                                 tr("A calculation is already running — kill it first."));
-        return false;
-    }
     return true;
 }
 
@@ -6323,12 +6294,6 @@ void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
         statusBar()->showMessage(tr("Submitting %1 run to the cluster…").arg(label));
         return;
     }
-
-    if (jobRunner_->isRunning()) {
-        QMessageBox::information(this, label,
-                                 tr("A calculation is already running — kill it first."));
-        return;
-    }
     runScript(wizard.script(), wizard.pythonExecutable(), label, expectFrames,
               wizard.calculatorKind(), wizard.runCommand());
 }
@@ -6417,11 +6382,6 @@ void MainWindow::openNudgedElasticBand()
     connect(nebDialog_, &NebDialog::runRequested, this, [this] {
         if (!nebDialog_)
             return;
-        if (jobRunner_->isRunning()) {
-            QMessageBox::information(this, tr("Nudged Elastic Band"),
-                                     tr("A calculation is already running — kill it first."));
-            return;
-        }
         stagedBandFrames_ = nebDialog_->band();
         runScript(nebDialog_->script(), nebDialog_->pythonExecutable(),
                   tr("NEB"), /*expectFrames=*/true,
@@ -6864,41 +6824,17 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe,
     }
     processPanel_->setTaskDirectory(procId, jobDir);
 
-    lastJobDir_ = jobDir;
     isDirty_ = true; // the run console + metric series persist in .calproj
-    currentTaskId_ = procId;
     ProcessRecord record;
     record.label = label;
     record.directory = jobDir;
     processRecords_[procId] = std::move(record);
-    // Adding + selecting the process repopulates (clears) the tabs for the
-    // fresh run; its live samples then flow into the now-selected process.
-    addProcessToSelector(procId, label);
-    processPanel_->setTaskStatus(procId, ProcessManagerPanel::Status::Running);
-
-    // Live viewport streaming: MD/relaxation scripts emit CALANGO_FRAME
-    // blocks — open the trajectory tab NOW and let frames pour in.
-    liveDoc_ = nullptr;
-    if (expectFrames) {
-        Document* doc = currentDocument();
-        if (doc && doc->structure) {
-            // The input geometry is shown while the first frame is computed,
-            // but it is NOT seeded as trajectory frame 0: it carries no
-            // evaluated forces or velocities, so scrubbing onto it blanked the
-            // vector overlay that every other frame has. The trajectory starts
-            // empty and the run's first streamed frame becomes frame 0.
-            auto first = std::make_shared<core::Structure>(*doc->structure);
-            const int tab = addDocument(
-                first,
-                tr("%1 (live)").arg(taskLabel.isEmpty() ? tr("run") : taskLabel),
-                {}, label);
-            liveDoc_ = documents_[static_cast<std::size_t>(tab)].get();
-            tabBar_->setCurrentIndex(tab);
-        }
-    }
 
     // Resolve the launch command: the engine's template from Preferences →
     // "Run", or the wizard's hand-edited "Running:" line when it supplied one.
+    // Resolved NOW, not at launch: it depends on the engine and the wizard's
+    // "Running:" line, neither of which survives to the moment a queued job
+    // reaches the front.
     RunCommands::Context context;
     context.pythonExecutable = pythonExe;
     context.scriptFile = QStringLiteral("run.py");
@@ -6906,13 +6842,106 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe,
     const RunCommands::Resolved resolved =
         RunCommands::resolve(kind, context, runCommand);
 
+    QueuedJob job;
+    job.processId = procId;
+    job.label = label;
+    job.jobDir = jobDir;
+    job.pythonExecutable = pythonExe;
+    job.commandLine = resolved.commandLine;
+    job.environment = resolved.environment;
+    job.expectFrames = expectFrames;
+    // Snapshot the geometry the live tab would be seeded from. Deferring the
+    // lookup to launch time would seed it from whatever tab happens to be
+    // current then, which for a queued job is routinely a different structure
+    // than the one the run was launched against.
+    if (expectFrames) {
+        if (Document* doc = currentDocument(); doc && doc->structure)
+            job.liveSeed = std::make_shared<core::Structure>(*doc->structure);
+    }
+
+    if (jobRunner_->isRunning() || !jobQueue_.empty()) {
+        // Queued, not refused. The job is fully staged — its directory exists
+        // and its script is on disk, so it can be inspected (or deleted) while
+        // it waits, and nothing about it depends on the state of the GUI when
+        // its turn comes.
+        //
+        // The `!jobQueue_.empty()` half matters as much as the first: without
+        // it a submission made in the window between one job finishing and the
+        // queue being pumped would jump ahead of everything already waiting.
+        jobQueue_.push_back(std::move(job));
+        processPanel_->setTaskStatus(procId,
+                                     ProcessManagerPanel::Status::Queued);
+        jobDock_->show();
+        jobDock_->raise();
+        statusBar()->showMessage(
+            tr("Queued %1 as process #%2 — %n job(s) waiting", nullptr,
+               static_cast<int>(jobQueue_.size()))
+                .arg(label)
+                .arg(procId));
+        return;
+    }
+
+    launchJob(job);
+}
+
+void MainWindow::launchJob(const QueuedJob& job)
+{
+    lastJobDir_ = job.jobDir;
+    currentTaskId_ = job.processId;
+    // Adding + selecting the process repopulates (clears) the tabs for the
+    // fresh run; its live samples then flow into the now-selected process.
+    addProcessToSelector(job.processId, job.label);
+    processPanel_->setTaskStatus(job.processId,
+                                 ProcessManagerPanel::Status::Running);
+
+    // Live viewport streaming: MD/relaxation scripts emit CALANGO_FRAME
+    // blocks — open the trajectory tab NOW and let frames pour in.
+    liveDoc_ = nullptr;
+    if (job.expectFrames && job.liveSeed) {
+        // The input geometry is shown while the first frame is computed,
+        // but it is NOT seeded as trajectory frame 0: it carries no
+        // evaluated forces or velocities, so scrubbing onto it blanked the
+        // vector overlay that every other frame has. The trajectory starts
+        // empty and the run's first streamed frame becomes frame 0.
+        auto first = std::make_shared<core::Structure>(*job.liveSeed);
+        const int tab = addDocument(
+            first, tr("%1 (live)").arg(job.label), {}, job.label);
+        liveDoc_ = documents_[static_cast<std::size_t>(tab)].get();
+        tabBar_->setCurrentIndex(tab);
+    }
+
     jobDock_->show();
     jobDock_->raise();
-    jobRunner_->start(resolved.commandLine, pythonExe, jobDir,
-                      resolved.environment);
+    jobRunner_->start(job.commandLine, job.pythonExecutable, job.jobDir,
+                      job.environment);
     metricsTimer_->start(); // poll metrics.json for live Results-graph updates
     statusBar()->showMessage(tr("Running in %1 — %2")
-                                 .arg(jobDir, resolved.commandLine));
+                                 .arg(job.jobDir, job.commandLine));
+}
+
+void MainWindow::startNextQueuedJob()
+{
+    if (jobQueue_.empty() || jobRunner_->isRunning())
+        return;
+    const QueuedJob job = std::move(jobQueue_.front());
+    jobQueue_.pop_front();
+    // The staging directory is the job. If it has gone — the user deleted the
+    // process while it waited, or cleared the simulations folder — there is
+    // nothing to run, so drop it and move on rather than starting a shell in a
+    // directory that does not exist.
+    if (!QDir(job.jobDir).exists()) {
+        processPanel_->setTaskStatus(job.processId,
+                                     ProcessManagerPanel::Status::Failed);
+        startNextQueuedJob();
+        return;
+    }
+    launchJob(job);
+    if (!jobQueue_.empty()) {
+        statusBar()->showMessage(
+            tr("Started %1 — %n job(s) still queued", nullptr,
+               static_cast<int>(jobQueue_.size()))
+                .arg(job.label));
+    }
 }
 
 int MainWindow::indexOfDocument(const Document* document) const

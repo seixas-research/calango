@@ -15,36 +15,31 @@ struct Plane {
 
 } // namespace
 
-BrillouinZoneData computeBrillouinZone(const UnitCell& cell)
+PolyhedronMesh wignerSeitzCell(const std::array<Vec3, 3>& basis)
 {
-    if (!cell.isDefined())
-        throw std::invalid_argument("Brillouin zone requires a non-degenerate unit cell");
+    const double volume = basis[0].dot(basis[1].cross(basis[2]));
+    if (!(std::abs(volume) > 1e-12))
+        throw std::invalid_argument(
+            "Wigner-Seitz cell requires a non-degenerate lattice basis");
 
-    const auto& a = cell.vectors();
-    const double volume = a[0].dot(a[1].cross(a[2]));
-    const double twoPi = 2.0 * M_PI;
+    PolyhedronMesh bz;
 
-    BrillouinZoneData bz;
-    bz.reciprocal = {a[1].cross(a[2]) * (twoPi / volume),
-                     a[2].cross(a[0]) * (twoPi / volume),
-                     a[0].cross(a[1]) * (twoPi / volume)};
-
-    // Bisector planes of reciprocal lattice points in the ±2 shells.
+    // Bisector planes of the lattice points in the ±2 shells.
     std::vector<Plane> planes;
     for (int n1 = -2; n1 <= 2; ++n1) {
         for (int n2 = -2; n2 <= 2; ++n2) {
             for (int n3 = -2; n3 <= 2; ++n3) {
                 if (n1 == 0 && n2 == 0 && n3 == 0)
                     continue;
-                const Vec3 g = bz.reciprocal[0] * n1 + bz.reciprocal[1] * n2
-                    + bz.reciprocal[2] * n3;
+                const Vec3 g =
+                    basis[0] * n1 + basis[1] * n2 + basis[2] * n3;
                 planes.push_back({g, 0.5 * g.dot(g)});
             }
         }
     }
 
     double scale = 0.0;
-    for (const auto& b : bz.reciprocal)
+    for (const auto& b : basis)
         scale = std::max(scale, b.norm());
     const double tol = 1e-6 * scale * scale; // tolerance on x·g - d
     const double dedupeSq = 1e-10 * scale * scale;
@@ -111,6 +106,37 @@ BrillouinZoneData computeBrillouinZone(const UnitCell& cell)
     }
 
     return bz;
+}
+
+BrillouinZoneData computeBrillouinZone(const UnitCell& cell)
+{
+    if (!cell.isDefined())
+        throw std::invalid_argument(
+            "Brillouin zone requires a non-degenerate unit cell");
+
+    const auto& a = cell.vectors();
+    const double volume = a[0].dot(a[1].cross(a[2]));
+    const double twoPi = 2.0 * M_PI;
+
+    BrillouinZoneData bz;
+    bz.reciprocal = {a[1].cross(a[2]) * (twoPi / volume),
+                     a[2].cross(a[0]) * (twoPi / volume),
+                     a[0].cross(a[1]) * (twoPi / volume)};
+
+    PolyhedronMesh mesh = wignerSeitzCell(bz.reciprocal);
+    bz.vertices = std::move(mesh.vertices);
+    bz.faces = std::move(mesh.faces);
+    return bz;
+}
+
+PolyhedronMesh computeWignerSeitzCell(const UnitCell& cell)
+{
+    // Empty rather than throwing: this one is called from the render path on
+    // whatever structure is loaded, including molecules with no cell at all.
+    // A caller that has a cell already knows it does.
+    if (!cell.isDefined())
+        return {};
+    return wignerSeitzCell(cell.vectors());
 }
 
 } // namespace calango::core

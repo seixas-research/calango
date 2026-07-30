@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.76
+    VERSION 26.7.77
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -637,6 +637,7 @@ qt_add_resources(calango "icons"
         assets/icons/box-1-line.svg
         assets/icons/gradient.svg
         assets/icons/stairs-fill.svg
+        assets/icons/hexagon-fill.svg
         assets/icons/home-2-fill.svg
         assets/icons/home-office-fill.svg
         assets/icons/community-fill.svg
@@ -910,6 +911,9 @@ if(CALANGO_BUILD_TESTS)
         tests/RayTraceSceneTest.cpp
         src/render/RayTraceExporter.cpp
         src/render/StructureRenderer.cpp
+        # The renderer builds the Voronoi (Wigner-Seitz) cell outline from
+        # the same half-space intersection the Brillouin zone uses.
+        src/core/BrillouinZone.cpp
         src/render/ShaderProfile.cpp
         src/core/MarchingCubes.cpp
         src/core/VolumetricData.cpp
@@ -1054,6 +1058,9 @@ if(CALANGO_BUILD_TESTS)
     qt_add_executable(calango_translucent_render_test
         tests/TranslucentRenderTest.cpp
         src/render/StructureRenderer.cpp
+        # The renderer builds the Voronoi (Wigner-Seitz) cell outline from
+        # the same half-space intersection the Brillouin zone uses.
+        src/core/BrillouinZone.cpp
         src/render/ShaderProfile.cpp
         src/render/Camera.cpp
         src/render/ColorMap.cpp
@@ -1395,6 +1402,9 @@ if(CALANGO_BUILD_TESTS)
         tests/AlembicExportTest.cpp
         src/python_bridge/AlembicExporter.cpp
         src/render/StructureRenderer.cpp
+        # The renderer builds the Voronoi (Wigner-Seitz) cell outline from
+        # the same half-space intersection the Brillouin zone uses.
+        src/core/BrillouinZone.cpp
         src/render/ShaderProfile.cpp
         src/render/ColorMap.cpp
         src/core/Structure.cpp

@@ -10,9 +10,11 @@ namespace calango::core {
 std::string generateFermiSurfaceScript(const FermiSurfaceConfig& cfg)
 {
     // 4 is the smallest grid marching cubes can produce anything from; the
-    // upper bound is a guard rail on a cubic cost (64^3 is already 262k
-    // diagonalizations).
-    const int n = std::clamp(cfg.gridSamples, 4, 128);
+    // upper bound is a guard rail on a multiplicative cost (64^3 is already
+    // 262k diagonalizations).
+    const int nx = std::clamp(cfg.gridSamples[0], 4, 128);
+    const int ny = std::clamp(cfg.gridSamples[1], 4, 128);
+    const int nz = std::clamp(cfg.gridSamples[2], 4, 128);
     const int maxIter = cfg.maxIterations > 0 ? cfg.maxIterations : 50;
 
     std::ostringstream out;
@@ -31,7 +33,9 @@ std::string generateFermiSurfaceScript(const FermiSurfaceConfig& cfg)
            "\n"
         << AseScriptGenerator::jsonLoggerPreamble()
         << "_base = r\"" << cfg.mlwfDir << "\"\n"
-        << "_n = " << n << "\n"
+        << "_nx = " << nx << "\n"
+        << "_ny = " << ny << "\n"
+        << "_nz = " << nz << "\n"
         << "_offset = " << cfg.energyOffsetEv << "\n"
         << "_max_iter = " << maxIter << "\n"
         << R"PY(
@@ -101,17 +105,24 @@ _calango_progress(2, 4)
 # Fractional -1/2 .. 1/2, endpoint EXCLUDED: -1/2 and +1/2 are the same k by
 # periodicity, and including both would duplicate a face of the grid, which
 # marching cubes would then close the surface across.
-_frac = (np.arange(_n) / _n) - 0.5
-print(f'CALANGO_INFO interpolating {_n}^3 = {_n ** 3} k-points over '
-      f'{nwannier} Wannier bands', flush=True)
+#
+# One sample count per reciprocal direction. They are independent because the
+# reciprocal cell generally is not cubic — a slab with a short c has a long b3,
+# and sampling that as finely as the in-plane directions spends the budget
+# resolving the axis with the least structure along it.
+_frac_x = (np.arange(_nx) / _nx) - 0.5
+_frac_y = (np.arange(_ny) / _ny) - 0.5
+_frac_z = (np.arange(_nz) / _nz) - 0.5
+print(f'CALANGO_INFO interpolating {_nx}x{_ny}x{_nz} = {_nx * _ny * _nz} '
+      f'k-points over {nwannier} Wannier bands', flush=True)
 
-_energies = np.empty((_n, _n, _n, nwannier), dtype=float)
-for i, kx in enumerate(_frac):
-    for j, ky in enumerate(_frac):
-        for k, kz in enumerate(_frac):
+_energies = np.empty((_nx, _ny, _nz, nwannier), dtype=float)
+for i, kx in enumerate(_frac_x):
+    for j, ky in enumerate(_frac_y):
+        for k, kz in enumerate(_frac_z):
             H_ww = wan.get_hamiltonian_kpoint(np.array([kx, ky, kz]))
             _energies[i, j, k] = np.linalg.eigvalsh(H_ww)
-    _calango_progress(2 + (i + 1) / len(_frac), 4)
+    _calango_progress(2 + (i + 1) / len(_frac_x), 4)
 
 # 2*pi restored so the axes are the 1/Angstrom every Fermi-surface figure is
 # drawn in; ASE's reciprocal() omits it.
@@ -143,7 +154,10 @@ result = {
     'fermi_eV': efermi,
     'energy_offset_eV': float(_offset),
     'target_energy_eV': float(_target),
-    'samples': int(_n),
+    # A three-element list now. Older runs wrote a single int, and the viewer
+    # still accepts that — an isotropic grid is the special case, not a
+    # different schema.
+    'samples': [int(_nx), int(_ny), int(_nz)],
     'nwannier': int(nwannier),
     'formula': atoms.get_chemical_formula(),
     'cell_A': [[float(v) for v in row] for row in np.asarray(atoms.cell)],

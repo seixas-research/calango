@@ -498,6 +498,7 @@ private:
     };
 
     struct ProcessRecord; // full definition below
+    struct QueuedJob;     // full definition below
 
     void createMenusAndDocks();
 
@@ -571,15 +572,29 @@ private:
     /// command line plus any solver-command environment. Callers that are not
     /// engine-driven (a density export, a Raman post-process) leave both at
     /// their defaults and get a plain `python run.py`.
+    /// Stage `script` as a job and either start it or QUEUE it.
+    ///
+    /// Submitting while something else runs no longer fails — the job is
+    /// staged, registered as Queued, and started automatically when the runner
+    /// frees up. Callers therefore need no "is a job running?" guard of their
+    /// own, and none of them has one any more.
     void runScript(const QString& script, const QString& pythonExe,
                    const QString& taskLabel, bool expectFrames = false,
                    core::CalculatorKind kind = core::CalculatorKind::EMT,
                    const QString& runCommand = QString());
+    /// Hand one prepared job to the runner: bind it as the current task, open
+    /// its live trajectory tab if it wants one, and start the subprocess.
+    void launchJob(const QueuedJob& job);
+    /// Start the next queued job if the runner is idle. Connected to
+    /// JobRunner::finished AFTER onJobFinished, so the finished run has fully
+    /// settled (metrics persisted, viewers opened) before the next one binds
+    /// itself as the current task.
+    void startNextQueuedJob();
     int indexOfDocument(const Document* document) const;
     bool ensureAseAvailable();
     /// Shared preconditions for the dedicated Simulation dialogs: a non-empty
-    /// current structure, ASE available, and no job already running. Shows the
-    /// appropriate message (titled `title`) and returns false if not ready.
+    /// current structure and ASE available. It no longer checks whether a job
+    /// is running — that is what the queue is for.
     bool prepareSimulation(const QString& title);
     /// Run a 4-stage simulation wizard: exec it, then launch its script
     /// locally or submit it remotely per the chosen action. `expectFrames`
@@ -713,6 +728,31 @@ private:
     ProcessManagerPanel* processPanel_ = nullptr;
     /// "Additional overlays" dock — lattice planes, text and primitives.
     OverlayPanel* overlayPanel_ = nullptr;
+
+    /// A job that is staged and registered but not yet started.
+    ///
+    /// Everything needed to launch it is captured HERE, at submission time,
+    /// because none of it can be recovered later: the script came from a
+    /// dialog that is about to be destroyed, and `currentDocument()` will be
+    /// whatever tab the user has wandered to by the time the queue reaches
+    /// this entry.
+    struct QueuedJob {
+        int processId = -1;
+        QString label;
+        QString jobDir;         ///< already staged — proc_<processId>/
+        QString pythonExecutable;
+        QString commandLine;    ///< resolved launch command
+        QMap<QString, QString> environment;
+        /// Open a live trajectory tab when this one starts (MD/relaxation).
+        bool expectFrames = false;
+        /// Geometry the live tab is seeded from, captured at submission for
+        /// the reason above. Null when `expectFrames` is false.
+        std::shared_ptr<core::Structure> liveSeed;
+    };
+    /// Jobs waiting for the runner, oldest first. Submitting while something
+    /// runs appends here instead of being refused; each finish pops one.
+    std::deque<QueuedJob> jobQueue_;
+
     /// Process-panel id of the running local job (-1 when idle).
     int currentTaskId_ = -1;
     /// Document receiving live streamed frames (null outside runs;

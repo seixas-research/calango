@@ -444,6 +444,20 @@ public:
         /// depictions of the same box and either may be wanted alone (a solid
         /// block with no wireframe, or the historical wireframe with no fill).
         bool fillCell = false;
+        /// Draw the Wigner-Seitz (Voronoi) cell of the lattice in place of the
+        /// parallelepiped: the set of points closer to the lattice point at
+        /// the origin than to any other.
+        ///
+        /// It is the SAME lattice shown a different way. The parallelepiped
+        /// depends on which basis vectors were chosen and generally hides the
+        /// lattice's point symmetry; the Wigner-Seitz cell has the full point
+        /// group by construction, which is why a hexagonal lattice reads as
+        /// hexagonal in it and as an oblique box in the other.
+        ///
+        /// Every other cell setting — line style, line width, colour, fill and
+        /// fill alpha — applies to it unchanged: the two shapes are built into
+        /// one outline representation and share every style path.
+        bool showVoronoiCell = false;
         /// Fill tint. Distinct from `cellColor` on purpose — the edge colour
         /// is chosen to READ against the atoms, whereas the fill is chosen to
         /// stay behind them, and one value cannot do both.

@@ -39,7 +39,7 @@ private:
     void refreshCostNote();
 
     MlwfSourceSelector* source_ = nullptr;
-    QSpinBox* samplesSpin_ = nullptr;
+    QSpinBox* samplesSpins_[3] = {nullptr, nullptr, nullptr};
     QDoubleSpinBox* offsetSpin_ = nullptr;
     QSpinBox* iterationsSpin_ = nullptr;
     QLabel* costNote_ = nullptr;

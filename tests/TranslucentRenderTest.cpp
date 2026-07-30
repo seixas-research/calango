@@ -279,6 +279,99 @@ int main(int argc, char** argv)
               "a higher fill alpha shades the box more strongly");
     }
 
+    std::printf("The Voronoi cell inherits the unit cell's styling:\n");
+    {
+        // The Wigner-Seitz cell replaces the parallelepiped in the SAME style
+        // pipeline: dash pattern, tube threshold, colour and the translucent
+        // fill all come from the cell settings. What is pinned here is that
+        // (a) it draws something different from the box, and (b) each of those
+        // settings still moves the picture once it is on — the failure mode
+        // being a second geometry path that quietly ignores half of them.
+        // An FCC PRIMITIVE cell, not the cubic scene above. For simple cubic
+        // the Wigner-Seitz cell IS the box — correct, and useless as a test,
+        // since a comparison of the two images would be measuring nothing. The
+        // fcc primitive rhombohedron has a rhombic dodecahedron for its
+        // Wigner-Seitz cell: 12 faces against the parallelepiped's 6, which is
+        // the case the toggle exists for.
+        core::Structure fcc;
+        constexpr double kA = 8.0;
+        fcc.setCell(core::UnitCell({0.0, kA / 2, kA / 2},
+                                   {kA / 2, 0.0, kA / 2},
+                                   {kA / 2, kA / 2, 0.0}));
+        {
+            core::Atom atom;
+            atom.atomicNumber = 79; // Au, for the bright CPK colour
+            atom.position = {kA / 2, kA / 2, kA / 2};
+            fcc.addAtom(atom);
+        }
+
+        const auto renderCell = [&](bool voronoi, bool fill, float lineWidth,
+                                    render::CellLineStyle lineStyle) {
+            QOpenGLFramebufferObject fbo(
+                kSize, kSize, QOpenGLFramebufferObject::CombinedDepthStencil);
+            fbo.bind();
+            gl->glViewport(0, 0, kSize, kSize);
+            gl->glEnable(GL_DEPTH_TEST);
+            gl->glClearColor(0.1f, 0.11f, 0.13f, 1.0f);
+            gl->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            render::StructureRenderer renderer;
+            renderer.initialize(gl);
+            renderer.style().showCell = true;
+            renderer.style().showVoronoiCell = voronoi;
+            renderer.style().fillCell = fill;
+            renderer.style().cellFillAlpha = 0.5f;
+            renderer.style().cellLineWidth = lineWidth;
+            renderer.style().cellLineStyle = lineStyle;
+            renderer.style().atomScaleFactor = 0.4f;
+            renderer.setStructure(&fcc);
+            render::OrbitCamera camera;
+            camera.frame(QVector3D(4.0f, 4.0f, 4.0f), 7.0f);
+            camera.rotate(25.0f, 15.0f);
+            renderer.render(camera.view(), camera.projection(1.0f));
+            gl->glFinish();
+            QImage image(kSize, kSize, QImage::Format_RGB888);
+            gl->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            gl->glReadPixels(0, 0, kSize, kSize, GL_RGB, GL_UNSIGNED_BYTE,
+                             image.bits());
+            fbo.release();
+            return image;
+        };
+
+        const QImage box =
+            renderCell(false, false, 2.0f, render::CellLineStyle::Solid);
+        const QImage voronoi =
+            renderCell(true, false, 2.0f, render::CellLineStyle::Solid);
+        if (qEnvironmentVariableIsSet("CALANGO_DUMP_FRAMES")) {
+            const QString dir = qEnvironmentVariable("CALANGO_DUMP_FRAMES");
+            box.flipped(Qt::Vertical).save(dir + "/cell_box.png");
+            voronoi.flipped(Qt::Vertical).save(dir + "/cell_voronoi.png");
+        }
+        check(drawnPixels(voronoi) > 1000, "the Voronoi cell draws something");
+        std::printf("       mean |Δ| box vs voronoi = %.2f\n",
+                    meanDifference(box, voronoi));
+        check(meanDifference(box, voronoi) > 1.0,
+              "and is a different shape from the parallelepiped");
+
+        // Each inherited setting has to reach it.
+        const QImage dashed =
+            renderCell(true, false, 2.0f, render::CellLineStyle::Dashed);
+        check(meanDifference(voronoi, dashed) > 0.5,
+              "the cell line style applies to it");
+        const QImage thin =
+            renderCell(true, false, 1.0f, render::CellLineStyle::Solid);
+        check(meanDifference(voronoi, thin) > 0.5,
+              "the cell line width applies to it");
+        const QImage filled =
+            renderCell(true, true, 2.0f, render::CellLineStyle::Solid);
+        check(meanDifference(voronoi, filled) > 1.0,
+              "and so does the fill, at its own opacity");
+        if (qEnvironmentVariableIsSet("CALANGO_DUMP_FRAMES")) {
+            filled.flipped(Qt::Vertical).save(
+                qEnvironmentVariable("CALANGO_DUMP_FRAMES")
+                + "/cell_voronoi_filled.png");
+        }
+    }
+
     std::printf(failures == 0 ? "\nAll translucent-render checks passed.\n"
                               : "\n%d check(s) FAILED.\n",
                 failures);
