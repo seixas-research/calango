@@ -122,14 +122,33 @@ QWidget* WannierWizard::buildSettingsPage()
            "occupied bands / valence orbitals)."));
     form->addRow(tr("Wannier functions:"), nWannier_);
 
-    // Disentanglement energy window → ASE's Wannier(fixedenergy=…).
-    energyWindowCheck_ = new QCheckBox(
-        tr("Fix states within an energy window"), mlwfGroup);
-    energyWindowCheck_->setToolTip(
-        tr("Enable the disentanglement window: states up to the threshold "
-           "below stay frozen (ASE's fixedenergy), while higher states are "
-           "allowed to mix into the Wannier subspace."));
-    form->addRow(tr("Disentanglement:"), energyWindowCheck_);
+    // How the FIXED (frozen) part of the Hilbert space is chosen. ASE takes
+    // `fixedenergy` OR `fixedstates` and raises if given both, so this is one
+    // three-way choice rather than two independent toggles.
+    fixedModeCombo_ = new QComboBox(mlwfGroup);
+    fixedModeCombo_->addItem(
+        tr("Exactly the Wannier count (no extra freedom)"),
+        static_cast<int>(core::WannierConfig::FixedStatesMode::FromWannierCount));
+    fixedModeCombo_->addItem(
+        tr("Every state below an energy window"),
+        static_cast<int>(core::WannierConfig::FixedStatesMode::EnergyWindow));
+    fixedModeCombo_->addItem(
+        tr("An explicit number of bands"),
+        static_cast<int>(core::WannierConfig::FixedStatesMode::BandCount));
+    fixedModeCombo_->setToolTip(
+        tr("Which states are FIXED — reproduced exactly by the Wannier "
+           "manifold — as opposed to the extra degrees of freedom that are "
+           "free to mix.\n\n"
+           "• Wannier count — ASE fixes exactly as many states as there are "
+           "Wannier functions. No disentanglement.\n"
+           "• Energy window — ASE's fixedenergy: everything below a cutoff is "
+           "fixed, so the count follows the band structure and may differ "
+           "between k-points.\n"
+           "• Band count — ASE's fixedstates: the same explicit number at "
+           "every k-point.\n\n"
+           "The last two are mutually exclusive in ASE, which is why this is "
+           "one selector."));
+    form->addRow(tr("Fixed states:"), fixedModeCombo_);
 
     energyWindowSpin_ = new QDoubleSpinBox(mlwfGroup);
     energyWindowSpin_->setDecimals(2);
@@ -137,10 +156,34 @@ QWidget* WannierWizard::buildSettingsPage()
     energyWindowSpin_->setSingleStep(0.5);
     energyWindowSpin_->setValue(0.0);
     energyWindowSpin_->setSuffix(tr(" eV"));
+    // The reference level is NOT unconditionally E_F. ASE's choose_states()
+    // uses the conduction band minimum whenever the system has a gap and the
+    // cutoff is >= 0.01 eV. The label used to promise "above E_F", which is
+    // wrong for every semiconductor — and wrong invisibly, since the run
+    // succeeds and simply fixes a different set of states than intended.
     energyWindowSpin_->setToolTip(
-        tr("Energy-window threshold relative to the Fermi level (eV). States "
-           "at or below this energy are kept fixed during the localization."));
-    form->addRow(tr("Energy window (above E_F):"), energyWindowSpin_);
+        tr("Energy cutoff below which states are kept fixed.\n\n"
+           "Measured from the CONDUCTION BAND MINIMUM when the system has a "
+           "gap (> 0.01 eV) and this value is at least 0.01 eV; measured from "
+           "the Fermi level otherwise — for a metal, or for a cutoff below "
+           "0.01 eV. That is ASE's rule (choose_states in ase/dft/wannier.py), "
+           "not a convention chosen here.\n\n"
+           "So on silicon, 2.0 eV means 2 eV above the conduction band "
+           "minimum, not 2 eV above E_F."));
+    energyWindowLabel_ = new QLabel(tr("Energy window (from CBM / E_F):"),
+                                    mlwfGroup);
+    form->addRow(energyWindowLabel_, energyWindowSpin_);
+
+    fixedStatesSpin_ = new QSpinBox(mlwfGroup);
+    fixedStatesSpin_->setRange(1, 4096);
+    fixedStatesSpin_->setValue(4);
+    fixedStatesSpin_->setToolTip(
+        tr("ASE's fixedstates: how many bands are fixed at every k-point. Must "
+           "not exceed the number of Wannier functions — ASE computes the "
+           "extra degrees of freedom as (Wannier functions − fixed states) and "
+           "a negative value fails during setup."));
+    fixedStatesLabel_ = new QLabel(tr("Fixed bands:"), mlwfGroup);
+    form->addRow(fixedStatesLabel_, fixedStatesSpin_);
 
     maxIterSpin_ = new QSpinBox(mlwfGroup);
     maxIterSpin_->setRange(1, 100000);
@@ -151,23 +194,34 @@ QWidget* WannierWizard::buildSettingsPage()
     form->addRow(tr("Max. minimization iterations:"), maxIterSpin_);
     layout->addWidget(mlwfGroup);
 
-    const auto syncWindowEnabled = [this] {
-        if (energyWindowSpin_)
-            energyWindowSpin_->setEnabled(energyWindowCheck_
-                                          && energyWindowCheck_->isChecked());
+    // Only the row belonging to the selected mode is shown: the other one is
+    // not merely inapplicable, it is a value ASE would refuse alongside.
+    const auto syncFixedMode = [this] {
+        const auto mode = static_cast<core::WannierConfig::FixedStatesMode>(
+            fixedModeCombo_->currentData().toInt());
+        const bool energy =
+            mode == core::WannierConfig::FixedStatesMode::EnergyWindow;
+        const bool count =
+            mode == core::WannierConfig::FixedStatesMode::BandCount;
+        energyWindowLabel_->setVisible(energy);
+        energyWindowSpin_->setVisible(energy);
+        fixedStatesLabel_->setVisible(count);
+        fixedStatesSpin_->setVisible(count);
     };
-    syncWindowEnabled();
+    syncFixedMode();
 
     connect(projectionCombo_, &QComboBox::currentIndexChanged, this,
             [this] { refreshPreview(); });
     connect(nWannier_, &QSpinBox::valueChanged, this,
             [this] { refreshPreview(); });
-    connect(energyWindowCheck_, &QCheckBox::toggled, this,
-            [this, syncWindowEnabled] {
-                syncWindowEnabled();
+    connect(fixedModeCombo_, &QComboBox::currentIndexChanged, this,
+            [this, syncFixedMode] {
+                syncFixedMode();
                 refreshPreview();
             });
     connect(energyWindowSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+    connect(fixedStatesSpin_, &QSpinBox::valueChanged, this,
             [this] { refreshPreview(); });
     connect(maxIterSpin_, &QSpinBox::valueChanged, this,
             [this] { refreshPreview(); });
@@ -247,8 +301,12 @@ QString WannierWizard::generateScript() const
         projectionCombo_
             ? projectionCombo_->currentData().toString().toStdString()
             : std::string("orbitals");
-    cfg.useEnergyWindow = energyWindowCheck_ && energyWindowCheck_->isChecked();
+    cfg.fixedMode = fixedModeCombo_
+        ? static_cast<core::WannierConfig::FixedStatesMode>(
+              fixedModeCombo_->currentData().toInt())
+        : core::WannierConfig::FixedStatesMode::FromWannierCount;
     cfg.energyWindowEv = energyWindowSpin_ ? energyWindowSpin_->value() : 0.0;
+    cfg.fixedStates = fixedStatesSpin_ ? fixedStatesSpin_->value() : 0;
     cfg.maxIterations = maxIterSpin_ ? maxIterSpin_->value() : 50;
     return QString::fromStdString(core::generateWannierScript(cfg));
 }

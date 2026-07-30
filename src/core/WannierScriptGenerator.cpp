@@ -106,15 +106,45 @@ std::string generateWannierScript(const WannierConfig& cfg)
 
     const int maxIter = cfg.maxIterations > 0 ? cfg.maxIterations : 50;
 
-    // Optional disentanglement window → ASE's Wannier(fixedenergy=…). Keeps the
-    // occupied states up to `energyWindowEv` (eV, relative to E_F) frozen while
-    // the remaining manifold mixes.
-    std::string fixedEnergyKw;
-    if (cfg.useEnergyWindow) {
-        std::ostringstream fe;
-        fe << "              fixedenergy=" << cfg.energyWindowEv
-           << ",  # eV above E_F; disentanglement outer window\n";
-        fixedEnergyKw = fe.str();
+    // How the fixed (frozen) part of the Hilbert space is chosen.
+    //
+    // ASE takes `fixedenergy` OR `fixedstates` and raises RuntimeError('You can
+    // not set both fixedenergy and fixedstates') when handed both, so they are
+    // emitted as two variables of which AT MOST ONE is ever non-None. Both None
+    // is the documented default: ASE then fixes exactly `nwannier` states per
+    // k-point with no extra degrees of freedom.
+    std::ostringstream fixedVars;
+    fixedVars << "# The fixed (frozen) part of the Hilbert space. ASE accepts "
+                 "one of\n"
+                 "# these or neither — passing both raises.\n";
+    switch (cfg.fixedMode) {
+    case WannierConfig::FixedStatesMode::EnergyWindow:
+        // The reference level is ASE's, not ours: the CONDUCTION BAND MINIMUM
+        // for a gapped system, the Fermi level for a metal (choose_states() in
+        // ase/dft/wannier.py). Spelled out because the number on its own reads
+        // as "above E_F" and is not.
+        fixedVars << "# fixedenergy is measured from the CONDUCTION BAND "
+                     "MINIMUM when the\n"
+                     "# system has a gap (> 0.01 eV) and the value is >= 0.01 "
+                     "eV; from the\n"
+                     "# Fermi level otherwise. This is ASE's rule, not a "
+                     "Calango choice.\n"
+                  << "_fixedenergy = " << cfg.energyWindowEv << "\n"
+                  << "_fixedstates = None\n";
+        break;
+    case WannierConfig::FixedStatesMode::BandCount:
+        fixedVars << "# An explicit band count, applied at every k-point.\n"
+                  << "_fixedenergy = None\n"
+                  << "_fixedstates = "
+                  << (cfg.fixedStates > 0 ? cfg.fixedStates : nWannier)
+                  << "\n";
+        break;
+    case WannierConfig::FixedStatesMode::FromWannierCount:
+        fixedVars << "# Neither: ASE fixes exactly nwannier states per "
+                     "k-point.\n"
+                     "_fixedenergy = None\n"
+                     "_fixedstates = None\n";
+        break;
     }
 
     // Marzari-Vanderbilt localization via ASE. Guard the import so a missing
@@ -128,11 +158,51 @@ std::string generateWannierScript(const WannierConfig& cfg)
            "                       'require ase.dft.wannier, which is not '\n"
            "                       'available in this ASE install: ' + repr(_e))\n"
         << "nwannier = " << nWannier << "\n"
+        << fixedVars.str()
         << "# initialwannier seeds the trial projections (atomic orbitals give\n"
            "# good initial overlaps + center estimates).\n"
-           "wan = Wannier(nwannier=nwannier, calc=calc,\n"
-        << fixedEnergyKw
-        << "              initialwannier='" << init << "')\n"
+           "#\n"
+           "# ASE derives the extra degrees of freedom as\n"
+           "#     edf_k = nwannier - fixedstates_k\n"
+           "# and never checks the sign. Fixing more states than there are\n"
+           "# Wannier functions makes it negative, and the run then dies inside\n"
+           "# the rotation setup with a shape error naming neither number — so\n"
+           "# the construction is wrapped to say which two disagree.\n"
+           "try:\n"
+        << "    wan = Wannier(nwannier=nwannier, calc=calc,\n"
+           "                  fixedenergy=_fixedenergy, "
+           "fixedstates=_fixedstates,\n"
+        << "                  initialwannier='" << init << "')\n"
+           "except Exception as _e:\n"
+           "    _fixed = None\n"
+           "    try:\n"
+           "        # Best effort: ASE's own state chooser, so the numbers "
+           "reported\n"
+           "        # are the ones it actually computed. Guarded because it is\n"
+           "        # module-internal and may move between ASE versions.\n"
+           "        from ase.dft.wannier import choose_states, get_calcdata\n"
+           "        _cd = get_calcdata(calc)\n"
+           "        _fs, _ = choose_states(_cd, _fixedenergy, _fixedstates,\n"
+           "                               len(_cd.kpt_kc), nwannier,\n"
+           "                               lambda *a, **k: None, 0)\n"
+           "        _fixed = int(max(_fs))\n"
+           "    except Exception:\n"
+           "        pass\n"
+           "    if _fixed is not None and _fixed > nwannier:\n"
+           "        raise RuntimeError(\n"
+           "            'The frozen window fixes %d states at some k-point, "
+           "but only '\n"
+           "            '%d Wannier functions were requested — ASE needs at "
+           "least as '\n"
+           "            'many Wannier functions as fixed states. Raise the "
+           "Wannier '\n"
+           "            'count to %d or more, or narrow the window.'\n"
+           "            % (_fixed, nwannier, _fixed)) from _e\n"
+           "    raise\n"
+           "_calango_event('info', 'fixed states per k-point: %s, extra "
+           "degrees of '\n"
+           "                       'freedom: %s' % (wan.fixedstates_k, "
+           "wan.edf_k))\n"
         << "# Iterative Marzari-Vanderbilt minimization (Omega = Omega_I +\n"
            "# Omega_tilde_D). Repeat localize() until the spread functional\n"
            "# stops decreasing (early exit), capped at the requested maximum.\n"
@@ -294,21 +364,55 @@ std::string generateWannierInterpolationScript(
            "MLWF '\n"
            "                       'run did not complete.')\n"
            "projection = _meta.get('projection', 'orbitals')\n"
-           "from ase.dft.wannier import Wannier\n";
-    // Frozen energy window → fixedenergy (relative to E_F).
-    if (cfg.useFrozenWindow) {
-        out << "wan = Wannier(nwannier=nwannier, calc=calc, "
-               "initialwannier=projection,\n"
-            << "              fixedenergy=" << cfg.frozenEnergyEv << ")\n";
+           "from ase.dft.wannier import Wannier\n"
+           "\n"
+           "# --- Disentanglement windows -------------------------------------\n"
+           "#\n"
+           "# INNER (frozen) window  -> fixedenergy : states below it are\n"
+           "#     reproduced exactly by the Wannier manifold.\n"
+           "# OUTER window           -> nbands     : the Bloch states the\n"
+           "#     manifold may be drawn from at all. ASE documents nbands as\n"
+           "#     \"bands to include in localization\", which is precisely what\n"
+           "#     an outer window selects, so the cutoff is turned into a band\n"
+           "#     count here rather than written down and ignored.\n";
+
+    // INNER (frozen) window → fixedenergy.
+    if (cfg.useInnerWindow) {
+        out << "# NOTE: ASE measures fixedenergy from the CONDUCTION BAND "
+               "MINIMUM when\n"
+               "# the system has a gap (> 0.01 eV) and the value is >= 0.01 "
+               "eV; from the\n"
+               "# Fermi level otherwise.\n"
+            << "_fixedenergy = " << cfg.innerWindowEv << "\n";
     } else {
-        out << "wan = Wannier(nwannier=nwannier, calc=calc, "
-               "initialwannier=projection)\n";
+        out << "_fixedenergy = None\n";
     }
-    if (cfg.useDisentangle) {
-        out << "# Disentanglement windows (eV, relative to E_F): inner="
-            << cfg.innerWindowEv << ", outer=" << cfg.outerWindowEv << "\n"
-            << "# (recorded; ASE's Wannier disentanglement is limited.)\n";
+
+    // OUTER window → nbands, resolved from the eigenvalues at run time.
+    if (cfg.useOuterWindow) {
+        out << "_outer = " << cfg.outerWindowEv << "  # eV above E_F\n"
+            << R"PY(# Count the bands that stay below the outer cutoff. The MAXIMUM over
+# k-points is taken, not the minimum: nbands is a single number for the
+# whole calculation, and truncating to the smallest k-point's count would
+# silently drop states that are inside the window everywhere else.
+_eps_kn = np.asarray([calc.get_eigenvalues(kpt=_k, spin=0)
+                      for _k in range(len(calc.get_ibz_k_points()))])
+_nbands = int(max(int(np.searchsorted(np.sort(_row), efermi + _outer))
+                  for _row in _eps_kn))
+# nbands must still span the manifold being built, and cannot exceed what
+# the calculator actually holds.
+_nbands = max(_nbands, nwannier)
+_nbands = min(_nbands, _eps_kn.shape[1])
+_calango_event('info',
+               'outer window %.3f eV above E_F -> nbands=%d of %d'
+               % (_outer, _nbands, _eps_kn.shape[1]))
+)PY";
+    } else {
+        out << "_nbands = None  # every band the calculator holds\n";
     }
+    out << "wan = Wannier(nwannier=nwannier, calc=calc, "
+           "initialwannier=projection,\n"
+           "              fixedenergy=_fixedenergy, nbands=_nbands)\n";
     out << "_prev = None\n"
            "for _it in range(50):\n"
            "    wan.localize(step=0.25, tolerance=1e-6)\n"

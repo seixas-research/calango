@@ -490,6 +490,45 @@ int main(int argc, char** argv)
             dumpRamanIr("raman_ir_ironly.py", irOnly);
         }
 
+        // The MLWF scripts, one per fixed-state mode, plus the interpolation
+        // with and without its windows. Every branch emits different Python
+        // around the Wannier() call, and a byte-compile is what catches an
+        // indentation slip in a keyword block that only one mode produces.
+        {
+            const auto dumpWannier = [&dir](const std::string& name,
+                                            const WannierConfig& config) {
+                std::ofstream out(dir + "/" + name);
+                out << generateWannierScript(config);
+            };
+            WannierConfig plain;
+            plain.calculator = gpawConfig();
+            dumpWannier("wannier_nwannier.py", plain);
+            WannierConfig window = plain;
+            window.fixedMode = WannierConfig::FixedStatesMode::EnergyWindow;
+            window.energyWindowEv = 2.5;
+            dumpWannier("wannier_fixedenergy.py", window);
+            WannierConfig bands = plain;
+            bands.fixedMode = WannierConfig::FixedStatesMode::BandCount;
+            bands.fixedStates = 6;
+            dumpWannier("wannier_fixedstates.py", bands);
+
+            const auto dumpInterp =
+                [&dir](const std::string& name,
+                       const WannierInterpolationConfig& config) {
+                    std::ofstream out(dir + "/" + name);
+                    out << generateWannierInterpolationScript("/jobs/mlwf",
+                                                              config);
+                };
+            WannierInterpolationConfig openWindows;
+            dumpInterp("wannier_interp.py", openWindows);
+            WannierInterpolationConfig bounded;
+            bounded.useInnerWindow = true;
+            bounded.innerWindowEv = 1.5;
+            bounded.useOuterWindow = true;
+            bounded.outerWindowEv = 8.0;
+            dumpInterp("wannier_interp_windows.py", bounded);
+        }
+
         std::printf("scripts written to %s\n", dir.c_str());
         return EXIT_SUCCESS;
     }
@@ -1451,6 +1490,94 @@ int main(int argc, char** argv)
                       "a symmetry-reduced .gpw is caught before Wannier chokes");
         checkContains(script, "_meta.get('nwannier')",
                       "the recorded Wannier count is preferred over len(centers)");
+    }
+
+    // -- MLWF fixed states: exactly one of ASE's two selectors ---------------
+    //
+    // ase.dft.wannier.choose_states() raises RuntimeError('You can not set
+    // both fixedenergy and fixedstates'), so the two are one choice. Verified
+    // against ase 3.29.0: the keywords, their mutual exclusivity and the
+    // reference level below are all read off that implementation.
+    std::printf("MLWF fixed-state selection:\n");
+    {
+        WannierConfig def; // FromWannierCount
+        const std::string plain = generateWannierScript(def);
+        checkContains(plain, "_fixedenergy = None",
+                      "the default passes no energy window");
+        checkContains(plain, "_fixedstates = None",
+                      "and no explicit band count");
+
+        WannierConfig window;
+        window.fixedMode = WannierConfig::FixedStatesMode::EnergyWindow;
+        window.energyWindowEv = 2.5;
+        const std::string byEnergy = generateWannierScript(window);
+        checkContains(byEnergy, "_fixedenergy = 2.5",
+                      "the energy window reaches ASE as fixedenergy");
+        checkContains(byEnergy, "_fixedstates = None",
+                      "and leaves fixedstates unset — ASE refuses both");
+        // The reference level is ASE's, and it is NOT the Fermi level for a
+        // gapped system. The script has to say so, because the number alone
+        // reads as "above E_F".
+        checkContains(byEnergy, "CONDUCTION BAND MINIMUM",
+                      "the script states the real reference level");
+
+        WannierConfig bands;
+        bands.fixedMode = WannierConfig::FixedStatesMode::BandCount;
+        bands.fixedStates = 6;
+        const std::string byCount = generateWannierScript(bands);
+        checkContains(byCount, "_fixedstates = 6",
+                      "an explicit band count reaches ASE as fixedstates");
+        checkContains(byCount, "_fixedenergy = None",
+                      "and leaves fixedenergy unset");
+
+        // Both keywords are always passed by name, so the call is valid for
+        // all three modes without the generator splicing kwargs together.
+        checkContains(byCount,
+                      "fixedenergy=_fixedenergy, fixedstates=_fixedstates",
+                      "one call form covers every mode");
+
+        // edf_k = nwannier - fixedstates_k, unchecked by ASE: fixing more
+        // states than there are Wannier functions dies in the rotation setup.
+        checkContains(plain, "ASE needs at least as",
+                      "the run explains a negative extra-degrees-of-freedom "
+                      "count instead of failing opaquely");
+    }
+
+    // -- Interpolation windows actually reach ASE ----------------------------
+    //
+    // The inner/outer windows used to be emitted as a COMMENT: the dialog
+    // offered them, the script recorded them, and the calculation ignored
+    // them. Inner is fixedenergy; outer is nbands ("bands to include in
+    // localization"), resolved from the eigenvalues at run time.
+    std::printf("Wannier interpolation windows:\n");
+    {
+        WannierInterpolationConfig off;
+        const std::string none = generateWannierInterpolationScript("/j", off);
+        checkContains(none, "_fixedenergy = None",
+                      "no inner window means no fixedenergy");
+        checkContains(none, "_nbands = None",
+                      "no outer window means every band is available");
+
+        WannierInterpolationConfig on;
+        on.useInnerWindow = true;
+        on.innerWindowEv = 1.5;
+        on.useOuterWindow = true;
+        on.outerWindowEv = 8.0;
+        const std::string windows = generateWannierInterpolationScript("/j", on);
+        checkContains(windows, "_fixedenergy = 1.5",
+                      "the inner window is passed as fixedenergy");
+        checkContains(windows, "_outer = 8",
+                      "the outer window is carried into the script");
+        checkContains(windows, "fixedenergy=_fixedenergy, nbands=_nbands",
+                      "and both are handed to Wannier, not written in a "
+                      "comment");
+        checkContains(windows, "calc.get_eigenvalues",
+                      "the outer cutoff becomes a band count from the real "
+                      "eigenvalues");
+        checkContains(windows, "_nbands = max(_nbands, nwannier)",
+                      "clamped so the pool still spans the manifold");
+        check(!contains(windows, "ASE's Wannier disentanglement is limited"),
+              "the old \"recorded but not applied\" disclaimer is gone");
     }
 
     // -- Optics parameter passing --------------------------------------------

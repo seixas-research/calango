@@ -28,10 +28,14 @@
 #include "gui/EditVolumetricRenderDialog.hpp"
 #include "gui/GuiUtils.hpp"
 #include "gui/CutoffConvergenceWizard.hpp"
+#include "gui/FermiSurfaceDialog.hpp"
 #include "gui/KpointsConvergenceWizard.hpp"
+#include "gui/MlwfSourceSelector.hpp"
+#include "gui/TopologyDialog.hpp"
 #include "gui/MaceTrainerDialog.hpp"
 #include "gui/RandomNoiseViewer.hpp"
 #include "gui/RandomNoiseWizard.hpp"
+#include "gui/SimulationWizardBase.hpp"
 #include "gui/SinglePointWizard.hpp"
 #include "gui/TwoDBandsWizard.hpp"
 #include "python_bridge/PythonEngine.hpp"
@@ -40,6 +44,7 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QCheckBox>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
 #include <QLabel>
@@ -1210,6 +1215,129 @@ int main(int argc, char** argv)
         degenerate.max[0] = 0.0; // min == max
         check(degenerate.cellOffsets().size() == 1,
               "a degenerate window still draws one cell rather than none");
+    }
+
+    // -- MLWF source step: the gate on every Wannier post-process ------------
+    //
+    // Wannier Interpolation, Fermi Surface and Topological Charge all
+    // diagonalize the localized H(R) an MLWF run produced. The step that picks
+    // that run used to be a QInputDialog raised BEFORE the settings dialog;
+    // it is now the dialog's own first group, which means the dialog is also
+    // where "you picked a run whose wavefunctions are gone" has to surface.
+    std::printf("MLWF source selection:\n");
+    {
+        const QString root =
+            QDir::tempPath() + QStringLiteral("/calango-mlwf-source-test");
+        const QString good = root + QStringLiteral("/complete");
+        const QString stale = root + QStringLiteral("/stale");
+        const QString notARun = root + QStringLiteral("/empty");
+        for (const QString& dir : {good, stale, notARun})
+            QDir().mkpath(dir);
+
+        // A complete run: wannier.json plus the .gpw it recorded.
+        {
+            QFile gpw(good + QStringLiteral("/wannier.gpw"));
+            gpw.open(QIODevice::WriteOnly);
+            gpw.write("x");
+            QFile json(good + QStringLiteral("/wannier.json"));
+            json.open(QIODevice::WriteOnly | QIODevice::Text);
+            json.write(QStringLiteral(
+                           R"({"nwannier": 4, "projection": "orbitals",)"
+                           R"( "total_spread": 12.5, "gpw": "%1"})")
+                           .arg(good + QStringLiteral("/wannier.gpw"))
+                           .toUtf8());
+        }
+        // Complete, but the wavefunctions it borrowed from a single-point
+        // baseline are gone — the case a bare "did it finish?" check misses.
+        {
+            QFile json(stale + QStringLiteral("/wannier.json"));
+            json.open(QIODevice::WriteOnly | QIODevice::Text);
+            json.write(R"({"nwannier": 4, "gpw": "/nowhere/single_point.gpw"})");
+        }
+
+        const QList<QPair<QString, QString>> runs{
+            {QStringLiteral("#1 — stale"), stale},
+            {QStringLiteral("#2 — complete"), good}};
+
+        // Preselects the newest, which is the one being followed up.
+        MlwfSourceSelector selector(runs);
+        check(selector.directory() == good,
+              "the most recent completed run is preselected");
+        check(selector.isValid(), "and validates when its .gpw is reachable");
+        check(selector.invalidReason().isEmpty(),
+              "with no complaint to make about it");
+
+        // Selecting the stale run must fail HERE, not after a job is staged.
+        if (auto* combo = selector.findChild<QComboBox*>()) {
+            combo->setCurrentIndex(0);
+            check(selector.directory() == stale, "the selection follows the combo");
+            check(!selector.isValid(),
+                  "a run whose wavefunctions are gone is refused up front");
+            check(selector.invalidReason().contains(
+                      QLatin1String("/nowhere/single_point.gpw")),
+                  "and the reason names the file that is missing");
+        }
+
+        MlwfSourceSelector none({});
+        check(!none.isValid(), "an empty candidate list is not valid");
+
+        // The interpreter these modules run under has to come from the MLWF
+        // run's own calculator.json, because every one of their scripts does
+        // `from gpaw import GPAW`. Launching them under the embedded
+        // interpreter — which carries ASE but no GPAW — is a
+        // ModuleNotFoundError a hundred lines into a staged job, and that is
+        // exactly what shipped. The provenance file is the record of where
+        // GPAW actually is.
+        {
+            QFile provenance(good + QStringLiteral("/calculator.json"));
+            provenance.open(QIODevice::WriteOnly | QIODevice::Text);
+            provenance.write(
+                QStringLiteral(R"({"engine": "GPAW", "engine_kind": 5,)"
+                               R"( "python": "%1", "conda_env": "%2"})")
+                    .arg(good + QStringLiteral("/bin/python"),
+                         good)
+                    .toUtf8());
+        }
+        const auto inherited =
+            SimulationWizardBase::readCalculatorProvenance(good);
+        check(inherited.has_value(),
+              "a completed MLWF run carries its calculator provenance");
+        check(inherited && inherited->pythonExecutable
+                               == good + QStringLiteral("/bin/python"),
+              "including the interpreter its GPAW ran under — which is what "
+              "the post-processes must be launched with, not the embedded one");
+
+        // Each of the three dialogs carries the step and refuses to accept
+        // without it. The Fermi Surface and Topology dialogs also fold the
+        // choice into config(), so the caller no longer patches mlwfDir in.
+        FermiSurfaceDialog fermi(runs);
+        check(fermi.mlwfDirectory() == good,
+              "Fermi Surface takes its source from the step");
+        check(fermi.config().mlwfDir == good.toStdString(),
+              "and reports it in config() rather than leaving it blank");
+
+        TopologyDialog topology(runs);
+        check(topology.config().mlwfDir == good.toStdString(),
+              "Topological Charge does the same");
+
+        // With nothing to pick, OK must be unavailable in all three.
+        // Wannier Interpolation carries the same step wired the same way; it
+        // is not constructed here because reaching it means linking the
+        // embedded k-path editor and its QOpenGLWidget Brillouin-zone view.
+        for (QWidget* dialog : {static_cast<QWidget*>(new FermiSurfaceDialog({})),
+                                static_cast<QWidget*>(new TopologyDialog({}))}) {
+            bool anyAcceptEnabled = false;
+            for (QDialogButtonBox* box : dialog->findChildren<QDialogButtonBox*>())
+                for (QAbstractButton* button : box->buttons())
+                    if (box->buttonRole(button) == QDialogButtonBox::AcceptRole
+                        && button->isEnabled())
+                        anyAcceptEnabled = true;
+            check(!anyAcceptEnabled,
+                  "no MLWF run selected leaves the accept button disabled");
+            delete dialog;
+        }
+
+        QDir(root).removeRecursively();
     }
 
     // -- Random Noise Viewer: the JSON schema is a two-file contract ---------

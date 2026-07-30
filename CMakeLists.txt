@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.75
+    VERSION 26.7.76
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -288,6 +288,10 @@ qt_add_executable(calango
     src/gui/FermiSurfaceWindow.cpp
     src/gui/TopologyDialog.cpp
     src/gui/TopologyWindow.cpp
+    # The "Source MLWF process" step shared by the three Wannier
+    # post-processes (interpolation, Fermi surface, topological invariants).
+    src/gui/MlwfSourceSelector.hpp
+    src/gui/MlwfSourceSelector.cpp
     src/gui/LightingPanel.hpp
     src/gui/LightingPanel.cpp
     src/gui/ElementSettingsDialog.hpp
@@ -1133,6 +1137,20 @@ if(CALANGO_BUILD_TESTS)
         # uses, and its launcher has to be valid Python. All three fail at run
         # time on someone else's cluster, hours in, so they are pinned here.
         src/gui/MaceTrainerDialog.cpp
+        # The "Source MLWF process" step and two of the three dialogs that
+        # carry it. What is pinned is the refusal: a run whose wavefunctions
+        # have gone must be caught in the dialog, not after a job is staged
+        # against it.
+        #
+        # Wannier Interpolation is deliberately NOT here. Its source step is
+        # the same MlwfSourceSelector wired the same way, but reaching it means
+        # linking the embedded k-path editor, the Brillouin-zone view (a
+        # QOpenGLWidget) and AseBridge — a dozen translation units and a GL
+        # dependency added to a construction smoke test, for a third copy of
+        # three lines already covered twice.
+        src/gui/MlwfSourceSelector.cpp
+        src/gui/FermiSurfaceDialog.cpp
+        src/gui/TopologyDialog.cpp
         src/gui/EnginePresets.cpp
         src/gui/PythonHighlighter.cpp
         src/gui/RunCommands.cpp

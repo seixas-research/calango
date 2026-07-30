@@ -1,6 +1,7 @@
 #include "gui/WannierInterpolationDialog.hpp"
 
 #include "gui/EmbeddedKPathEditor.hpp"
+#include "gui/MlwfSourceSelector.hpp"
 
 #include <QCheckBox>
 #include <QDialogButtonBox>
@@ -9,6 +10,7 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
@@ -16,11 +18,12 @@
 namespace calango::gui {
 
 WannierInterpolationDialog::WannierInterpolationDialog(
+    const QList<QPair<QString, QString>>& mlwfRuns,
     std::shared_ptr<const core::Structure> structure, QWidget* parent)
     : QDialog(parent)
 {
     setWindowTitle(tr("Wannier Interpolation"));
-    resize(560, 640);
+    resize(560, 700);
 
     auto* layout = new QVBoxLayout(this);
 
@@ -31,6 +34,16 @@ WannierInterpolationDialog::WannierInterpolationDialog(
         this);
     intro->setWordWrap(true);
     layout->addWidget(intro);
+
+    // Step 1: the localization being interpolated. The Wannier count and the
+    // trial projections are read back from this run's wannier.json — the
+    // interpolation rebuilds the SAME localization, so it is not a setting
+    // that could be overridden below.
+    auto* sourceGroup = new QGroupBox(tr("Source MLWF process"), this);
+    auto* sourceLayout = new QVBoxLayout(sourceGroup);
+    source_ = new MlwfSourceSelector(mlwfRuns, sourceGroup);
+    sourceLayout->addWidget(source_);
+    layout->addWidget(sourceGroup);
 
     // --- Band-structure k-path --------------------------------------------
     auto* bandGroup = new QGroupBox(tr("Band structure — k-path E_n(k)"), this);
@@ -71,44 +84,60 @@ WannierInterpolationDialog::WannierInterpolationDialog(
     pdosForm->addRow(tr("Broadening:"), pdosWidthSpin_);
     layout->addWidget(pdosGroup);
 
-    // --- Disentanglement / energy windows ---------------------------------
-    auto* winGroup =
-        new QGroupBox(tr("Disentanglement && energy windows"), this);
+    // --- Disentanglement windows ------------------------------------------
+    //
+    // Two windows, two ASE parameters, one control each. There used to be
+    // three controls for two quantities: "frozen window" and "inner window"
+    // were both fixedenergy, and only the first reached ASE — the inner/outer
+    // pair was written into the generated script as a comment and changed
+    // nothing about the calculation.
+    auto* winGroup = new QGroupBox(tr("Disentanglement windows"), this);
     auto* winForm = new QFormLayout(winGroup);
 
-    frozenCheck_ = new QCheckBox(tr("Freeze states within a window"), winGroup);
-    frozenCheck_->setToolTip(
-        tr("ASE's Wannier(fixedenergy=…): states up to the threshold stay "
-           "frozen (fully preserved) during the localization."));
-    winForm->addRow(tr("Frozen window:"), frozenCheck_);
-    frozenSpin_ = new QDoubleSpinBox(winGroup);
-    frozenSpin_->setRange(-100.0, 100.0);
-    frozenSpin_->setDecimals(2);
-    frozenSpin_->setValue(0.0);
-    frozenSpin_->setSuffix(tr(" eV"));
-    frozenSpin_->setToolTip(tr("Frozen-window threshold E_f (relative to E_F)."));
-    winForm->addRow(tr("E_f (above E_F):"), frozenSpin_);
+    auto* winNote = new QLabel(
+        tr("The <b>inner</b> window is the frozen manifold — states below it "
+           "are reproduced exactly. The <b>outer</b> window is the pool those "
+           "states may be drawn from. Both are measured from the conduction "
+           "band minimum in a gapped system and from the Fermi level in a "
+           "metal, which is ASE's convention, not a choice made here."),
+        winGroup);
+    winNote->setWordWrap(true);
+    winNote->setTextFormat(Qt::RichText);
+    winForm->addRow(winNote);
 
-    disentangleCheck_ =
-        new QCheckBox(tr("Set inner / outer windows"), winGroup);
-    disentangleCheck_->setToolTip(
-        tr("Inner (frozen) and outer (disentanglement) energy windows. ASE's "
-           "Wannier disentanglement is limited, so these bound the interpolated "
-           "energy range rather than performing a full Wannier90 "
-           "disentanglement."));
-    winForm->addRow(tr("Disentanglement:"), disentangleCheck_);
+    innerCheck_ =
+        new QCheckBox(tr("Freeze states below an inner window"), winGroup);
+    innerCheck_->setToolTip(
+        tr("ASE's Wannier(fixedenergy=…). States below the threshold are "
+           "reproduced exactly by the Wannier manifold; the rest are free to "
+           "mix.\n\n"
+           "Fixing more states than there are Wannier functions is an error — "
+           "ASE needs at least as many Wannier functions as fixed states, and "
+           "the run reports which two numbers disagree."));
+    winForm->addRow(innerCheck_);
     innerSpin_ = new QDoubleSpinBox(winGroup);
     innerSpin_->setRange(-100.0, 100.0);
     innerSpin_->setDecimals(2);
     innerSpin_->setValue(0.0);
     innerSpin_->setSuffix(tr(" eV"));
-    winForm->addRow(tr("Inner window (above E_F):"), innerSpin_);
+    winForm->addRow(tr("Inner window:"), innerSpin_);
+
+    outerCheck_ =
+        new QCheckBox(tr("Restrict the pool to an outer window"), winGroup);
+    outerCheck_->setToolTip(
+        tr("Excludes Bloch states above the threshold from the localization "
+           "entirely, by converting the cutoff into ASE's Wannier(nbands=…) — "
+           "\"bands to include in localization\".\n\n"
+           "Off, every band the calculator holds is available. Narrowing it is "
+           "what keeps high-lying free-electron-like states out of a manifold "
+           "meant to describe a few valence bands."));
+    winForm->addRow(outerCheck_);
     outerSpin_ = new QDoubleSpinBox(winGroup);
     outerSpin_->setRange(-100.0, 100.0);
     outerSpin_->setDecimals(2);
     outerSpin_->setValue(5.0);
     outerSpin_->setSuffix(tr(" eV"));
-    winForm->addRow(tr("Outer window (above E_F):"), outerSpin_);
+    winForm->addRow(tr("Outer window:"), outerSpin_);
     layout->addWidget(winGroup);
 
     layout->addStretch(1);
@@ -117,23 +146,39 @@ WannierInterpolationDialog::WannierInterpolationDialog(
     auto* runButton = buttons->addButton(tr("Plot Bands && PDOS"),
                                          QDialogButtonBox::AcceptRole);
     runButton->setDefault(true);
-    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::accepted, this, [this] {
+        if (!source_->isValid()) {
+            QMessageBox::warning(this, tr("Wannier Interpolation"),
+                                 source_->invalidReason());
+            return;
+        }
+        accept();
+    });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
 
-    connect(frozenCheck_, &QCheckBox::toggled, this,
+    const auto syncAccept = [this, runButton] {
+        runButton->setEnabled(source_->isValid());
+    };
+    syncAccept();
+    connect(source_, &MlwfSourceSelector::changed, this, syncAccept);
+
+    connect(innerCheck_, &QCheckBox::toggled, this,
             &WannierInterpolationDialog::updateEnabled);
-    connect(disentangleCheck_, &QCheckBox::toggled, this,
+    connect(outerCheck_, &QCheckBox::toggled, this,
             &WannierInterpolationDialog::updateEnabled);
     updateEnabled();
 }
 
+QString WannierInterpolationDialog::mlwfDirectory() const
+{
+    return source_->directory();
+}
+
 void WannierInterpolationDialog::updateEnabled()
 {
-    frozenSpin_->setEnabled(frozenCheck_->isChecked());
-    const bool dis = disentangleCheck_->isChecked();
-    innerSpin_->setEnabled(dis);
-    outerSpin_->setEnabled(dis);
+    innerSpin_->setEnabled(innerCheck_->isChecked());
+    outerSpin_->setEnabled(outerCheck_->isChecked());
 }
 
 core::WannierInterpolationConfig WannierInterpolationDialog::config() const
@@ -144,10 +189,9 @@ core::WannierInterpolationConfig WannierInterpolationDialog::config() const
     for (int i = 0; i < 3; ++i)
         c.kmesh[i] = kmeshSpins_[i]->value();
     c.pdosWidth = pdosWidthSpin_->value();
-    c.useFrozenWindow = frozenCheck_->isChecked();
-    c.frozenEnergyEv = frozenSpin_->value();
-    c.useDisentangle = disentangleCheck_->isChecked();
+    c.useInnerWindow = innerCheck_->isChecked();
     c.innerWindowEv = innerSpin_->value();
+    c.useOuterWindow = outerCheck_->isChecked();
     c.outerWindowEv = outerSpin_->value();
     return c;
 }

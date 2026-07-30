@@ -1,16 +1,23 @@
 #include "gui/TopologyDialog.hpp"
 
+#include "gui/MlwfSourceSelector.hpp"
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QLabel>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
 namespace calango::gui {
 
-TopologyDialog::TopologyDialog(QWidget* parent) : QDialog(parent)
+TopologyDialog::TopologyDialog(const QList<QPair<QString, QString>>& mlwfRuns,
+                               QWidget* parent)
+    : QDialog(parent)
 {
     setWindowTitle(tr("Topological Invariants"));
 
@@ -26,6 +33,15 @@ TopologyDialog::TopologyDialog(QWidget* parent) : QDialog(parent)
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
     layout->addWidget(intro);
+
+    // Step 1: the localization whose occupied manifold is being transported.
+    // The invariant is a property of THAT manifold, so the source is chosen
+    // before anything that describes how to walk it.
+    auto* sourceGroup = new QGroupBox(tr("Source MLWF process"), this);
+    auto* sourceLayout = new QVBoxLayout(sourceGroup);
+    source_ = new MlwfSourceSelector(mlwfRuns, sourceGroup);
+    sourceLayout->addWidget(source_);
+    layout->addWidget(sourceGroup);
 
     auto* form = new QFormLayout;
 
@@ -94,11 +110,29 @@ TopologyDialog::TopologyDialog(QWidget* parent) : QDialog(parent)
 
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::accepted, this, [this] {
+        if (!source_->isValid()) {
+            QMessageBox::warning(this, tr("Topological Invariants"),
+                                 source_->invalidReason());
+            return;
+        }
+        accept();
+    });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
 
+    const auto syncAccept = [this, buttons] {
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(source_->isValid());
+    };
+    syncAccept();
+    connect(source_, &MlwfSourceSelector::changed, this, syncAccept);
+
     refreshApplicabilityNote();
+}
+
+QString TopologyDialog::mlwfDirectory() const
+{
+    return source_->directory();
 }
 
 void TopologyDialog::refreshApplicabilityNote()
@@ -125,6 +159,7 @@ void TopologyDialog::refreshApplicabilityNote()
 core::TopologyConfig TopologyDialog::config() const
 {
     core::TopologyConfig cfg;
+    cfg.mlwfDir = source_->directory().toStdString();
     cfg.invariant = static_cast<core::TopologicalInvariant>(
         invariantCombo_->currentData().toInt());
     cfg.direction = directionCombo_->currentData().toInt();

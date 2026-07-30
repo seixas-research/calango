@@ -85,8 +85,16 @@ private:
     QLabel* inheritedLabel_ = nullptr;     ///< inherited-calculator note
     QComboBox* projectionCombo_ = nullptr; ///< trial-orbital initialization
     QSpinBox* nWannier_ = nullptr;         ///< number of Wannier functions
-    QCheckBox* energyWindowCheck_ = nullptr;   ///< enable disentanglement window
-    QDoubleSpinBox* energyWindowSpin_ = nullptr; ///< fixedenergy (eV above E_F)
+    /// Which of ASE's two mutually-exclusive fixed-state selectors is used —
+    /// fixedenergy, fixedstates, or neither. One selector rather than two
+    /// toggles, because ASE raises when handed both.
+    QComboBox* fixedModeCombo_ = nullptr;
+    /// fixedenergy, in eV. NOT simply "above E_F" — ASE measures from the
+    /// conduction band minimum in a gapped system; see WannierConfig.
+    QDoubleSpinBox* energyWindowSpin_ = nullptr;
+    QLabel* energyWindowLabel_ = nullptr;
+    QSpinBox* fixedStatesSpin_ = nullptr; ///< fixedstates (bands per k-point)
+    QLabel* fixedStatesLabel_ = nullptr;
     QSpinBox* maxIterSpin_ = nullptr;      ///< max minimization iterations
 
     /// Calculator inherited from the currently selected baseline (from its

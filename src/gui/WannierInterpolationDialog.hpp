@@ -4,6 +4,9 @@
 #include "core/WannierScriptGenerator.hpp"
 
 #include <QDialog>
+#include <QList>
+#include <QPair>
+#include <QString>
 
 #include <memory>
 
@@ -14,6 +17,7 @@ class QSpinBox;
 namespace calango::gui {
 
 class EmbeddedKPathEditor;
+class MlwfSourceSelector;
 
 /// "Wannier Interpolation…" setup dialog, launched from the MLWF Viewer. It
 /// configures a fast real-space→reciprocal-space interpolation (H(R) → H(k))
@@ -31,25 +35,35 @@ class WannierInterpolationDialog : public QDialog {
     Q_OBJECT
 
 public:
-    explicit WannierInterpolationDialog(
+    /// `mlwfRuns` are the completed MLWF processes to offer as sources —
+    /// (label, job directory) pairs; the user may also browse to one.
+    WannierInterpolationDialog(
+        const QList<QPair<QString, QString>>& mlwfRuns,
         std::shared_ptr<const core::Structure> structure,
         QWidget* parent = nullptr);
 
     /// The interpolation settings the user configured.
     core::WannierInterpolationConfig config() const;
 
+    /// Directory of the selected MLWF run — the localization being
+    /// interpolated.
+    QString mlwfDirectory() const;
+
 private Q_SLOTS:
     void updateEnabled();
 
 private:
+    MlwfSourceSelector* source_ = nullptr;
     EmbeddedKPathEditor* kpath_ = nullptr;
     QSpinBox* bandPointsSpin_ = nullptr;
     QSpinBox* kmeshSpins_[3] = {nullptr, nullptr, nullptr};
     QDoubleSpinBox* pdosWidthSpin_ = nullptr;
-    QCheckBox* frozenCheck_ = nullptr;
-    QDoubleSpinBox* frozenSpin_ = nullptr;
-    QCheckBox* disentangleCheck_ = nullptr;
+    // One control per ASE parameter. The old "frozen window" and "inner
+    // window" pair were two names for fixedenergy, and only the first of them
+    // was passed.
+    QCheckBox* innerCheck_ = nullptr;
     QDoubleSpinBox* innerSpin_ = nullptr;
+    QCheckBox* outerCheck_ = nullptr;
     QDoubleSpinBox* outerSpin_ = nullptr;
 };
 

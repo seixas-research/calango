@@ -30,13 +30,44 @@ struct WannierConfig {
     /// "random" pass straight through.
     std::string initialWannier = "orbitals";
 
-    /// Disentanglement energy window: when true, states up to `energyWindowEv`
-    /// (in eV, relative to the Fermi level) are kept fixed in the localization,
-    /// which is ASE's `Wannier(fixedenergy=…)`. This is the outer/disentangle
-    /// bound separating the frozen occupied manifold from the states that are
-    /// allowed to mix. When false ASE picks the window from `nWannier`.
-    bool useEnergyWindow = false;
+    /// How the FIXED (frozen) part of the Hilbert space is chosen — the states
+    /// that are reproduced exactly, as opposed to the extra degrees of freedom
+    /// that are allowed to mix. ASE takes this as `fixedenergy` OR
+    /// `fixedstates`, and raises `RuntimeError` if given both, so this is one
+    /// choice rather than two independent settings.
+    enum class FixedStatesMode {
+        /// Neither is passed: ASE fixes exactly `nWannier` states per k-point
+        /// and there are no extra degrees of freedom.
+        FromWannierCount,
+        /// `fixedenergy=…` — every state below an energy cutoff is fixed.
+        EnergyWindow,
+        /// `fixedstates=…` — an explicit band count per k-point.
+        BandCount,
+    };
+    FixedStatesMode fixedMode = FixedStatesMode::FromWannierCount;
+
+    /// Cutoff for FixedStatesMode::EnergyWindow, in eV.
+    ///
+    /// NOT simply "above E_F". ASE's reference level is the CONDUCTION BAND
+    /// MINIMUM whenever the system has a finite gap (> 0.01 eV) and this value
+    /// is >= 0.01 eV; only for a metal — or for a cutoff below 0.01 eV — is it
+    /// the Fermi level. See `choose_states()` in ase/dft/wannier.py:
+    ///
+    ///     if calcdata.gap < 0.01 or fixedenergy < 0.01:
+    ///         cutoff = fixedenergy + calcdata.fermi_level
+    ///     else:
+    ///         cutoff = fixedenergy + calcdata.lumo
+    ///
+    /// The UI must say so: a user who reads "above E_F" and types 2.0 for
+    /// silicon gets CBM + 2 eV, roughly a gap higher than they asked for, with
+    /// nothing in the output to reveal it.
     double energyWindowEv = 0.0;
+
+    /// Band count for FixedStatesMode::BandCount → ASE's `fixedstates`. The
+    /// same number is used at every k-point (ASE also accepts a per-k list;
+    /// there is no sensible UI for that and a uniform count is what a fixed
+    /// occupied manifold means).
+    int fixedStates = 0;
 
     /// Maximum Marzari-Vanderbilt minimization iterations (the localize() loop
     /// cap). The loop still exits early once the spread functional converges.
@@ -60,18 +91,30 @@ struct WannierInterpolationConfig {
     int kmesh[3] = {8, 8, 8};  ///< Monkhorst-Pack grid for the PDOS
     double pdosWidth = 0.1;     ///< Gaussian broadening of the PDOS (eV)
 
-    /// Frozen energy window → ASE's Wannier(fixedenergy=…): states up to this
-    /// energy (eV, relative to E_F) stay frozen in the localization.
-    bool useFrozenWindow = false;
-    double frozenEnergyEv = 0.0;
+    /// INNER (frozen) window → ASE's `Wannier(fixedenergy=…)`: states below the
+    /// cutoff are reproduced exactly by the Wannier manifold.
+    ///
+    /// Same reference-level caveat as WannierConfig::energyWindowEv — the CBM
+    /// for a gapped system, the Fermi level for a metal.
+    ///
+    /// This used to be TWO controls, "frozen window" and "inner window", which
+    /// were the same ASE parameter: the first was passed and the second was
+    /// written into the script as a comment. One control, one parameter.
+    bool useInnerWindow = false;
+    double innerWindowEv = 0.0;
 
-    /// Inner / outer disentanglement windows (eV, relative to E_F). ASE's
-    /// Wannier has only a limited disentanglement, so these are recorded in the
-    /// script header and bound the energy range shown; full Wannier90-style
-    /// disentanglement is out of scope.
-    bool useDisentangle = false;
-    double innerWindowEv = 0.0; ///< inner (frozen) window upper bound
-    double outerWindowEv = 5.0; ///< outer (disentanglement) window upper bound
+    /// OUTER (disentanglement) window → ASE's `Wannier(nbands=…)`: the Bloch
+    /// states the manifold may be drawn from at all. The script counts the
+    /// bands lying below this cutoff and passes that count, because `nbands` is
+    /// exactly "bands to include in localization" — truncating from the top is
+    /// what an outer window does.
+    ///
+    /// It used to be emitted as a comment and nothing else, so the control
+    /// changed no number in the calculation. A window that silently does
+    /// nothing is worse than no window at all: it reads as a converged result
+    /// obtained under a constraint that was never applied.
+    bool useOuterWindow = false;
+    double outerWindowEv = 5.0;
 };
 
 /// ASE/GPAW script for Wannier-interpolated electronic properties: it restarts

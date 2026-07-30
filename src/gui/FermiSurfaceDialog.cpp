@@ -1,15 +1,22 @@
 #include "gui/FermiSurfaceDialog.hpp"
 
+#include "gui/MlwfSourceSelector.hpp"
+
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QLabel>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
 namespace calango::gui {
 
-FermiSurfaceDialog::FermiSurfaceDialog(QWidget* parent) : QDialog(parent)
+FermiSurfaceDialog::FermiSurfaceDialog(
+    const QList<QPair<QString, QString>>& mlwfRuns, QWidget* parent)
+    : QDialog(parent)
 {
     setWindowTitle(tr("Fermi Surface"));
 
@@ -22,6 +29,15 @@ FermiSurfaceDialog::FermiSurfaceDialog(QWidget* parent) : QDialog(parent)
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
     layout->addWidget(intro);
+
+    // Step 1, before anything else: WHICH localization is being interpolated.
+    // Every setting below is a detail of how to sample the Hamiltonian this
+    // choice supplies, so it comes first and the OK button waits on it.
+    auto* sourceGroup = new QGroupBox(tr("Source MLWF process"), this);
+    auto* sourceLayout = new QVBoxLayout(sourceGroup);
+    source_ = new MlwfSourceSelector(mlwfRuns, sourceGroup);
+    sourceLayout->addWidget(source_);
+    layout->addWidget(sourceGroup);
 
     auto* form = new QFormLayout;
 
@@ -69,11 +85,34 @@ FermiSurfaceDialog::FermiSurfaceDialog(QWidget* parent) : QDialog(parent)
 
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::accepted, this, [this] {
+        // The selector already says what is wrong in its status line; repeat it
+        // here because a disabled-looking OK with no explanation is worse than
+        // a box that names the missing file.
+        if (!source_->isValid()) {
+            QMessageBox::warning(this, tr("Fermi Surface"),
+                                 source_->invalidReason());
+            return;
+        }
+        accept();
+    });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
 
+    // Gate OK on the source being usable, live: browsing to a directory that
+    // turns out not to be an MLWF run greys the button out again.
+    const auto syncAccept = [this, buttons] {
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(source_->isValid());
+    };
+    syncAccept();
+    connect(source_, &MlwfSourceSelector::changed, this, syncAccept);
+
     refreshCostNote();
+}
+
+QString FermiSurfaceDialog::mlwfDirectory() const
+{
+    return source_->directory();
 }
 
 void FermiSurfaceDialog::refreshCostNote()
@@ -90,6 +129,7 @@ void FermiSurfaceDialog::refreshCostNote()
 core::FermiSurfaceConfig FermiSurfaceDialog::config() const
 {
     core::FermiSurfaceConfig cfg;
+    cfg.mlwfDir = source_->directory().toStdString();
     cfg.gridSamples = samplesSpin_->value();
     cfg.energyOffsetEv = offsetSpin_->value();
     cfg.maxIterations = iterationsSpin_->value();

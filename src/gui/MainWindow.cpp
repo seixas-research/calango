@@ -145,7 +145,6 @@
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QImageWriter>
-#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -5340,49 +5339,63 @@ void MainWindow::showChargeDensityDifference()
                         /*expectFrames=*/false);
 }
 
-QString MainWindow::selectCompletedMlwfRun(const QString& title)
+QList<QPair<QString, QString>> MainWindow::completedMlwfRuns() const
 {
-    // Strict prerequisite: these modules diagonalize the localized H(R) a
-    // finished MLWF run produced — nothing else can stand in for it. The
-    // marker is wannier.json, which the MLWF script only writes on success.
-    QList<QPair<QString, QString>> runs; // label -> job directory
+    // The marker is wannier.json, which the MLWF script writes only on
+    // success — so a directory that has one is a run that finished.
+    //
+    // Validity beyond that (are the wavefunctions still on disk?) is NOT
+    // decided here: the dialogs' MlwfSourceSelector re-checks whichever entry
+    // is selected and says so in place, which is also the only way a browsed
+    // directory outside this list could be checked at all.
+    QList<QPair<QString, QString>> runs;
     for (const auto& [label, jsonPath] :
          processResults(QStringLiteral("wannier.json")))
         runs.append({label, QFileInfo(jsonPath).absolutePath()});
-    if (runs.isEmpty()) {
-        QMessageBox::information(
-            this, title,
-            tr("%1 requires a successfully completed Maximally Localized "
-               "Wannier Functions (MLWF) process — it post-processes the "
-               "localized Hamiltonian that run produces.\n\nRun Electronics → "
-               "Maximally Localized Wannier Functions (MLWF)… first; once it "
-               "completes, this module will find it.")
-                .arg(title));
-        return {};
-    }
+    return runs;
+}
 
-    QString directory = runs.front().second;
-    if (runs.size() > 1) {
-        QStringList labels;
-        for (const auto& [label, dir] : runs)
-            labels << label;
-        bool accepted = false;
-        const QString choice = QInputDialog::getItem(
-            this, title, tr("Completed MLWF process to post-process:"), labels,
-            labels.size() - 1, /*editable=*/false, &accepted);
-        if (!accepted)
-            return {};
-        directory = runs.at(labels.indexOf(choice)).second;
+QString MainWindow::pythonForMlwfRun(const QString& mlwfDir) const
+{
+    // These three modules all restart GPAW from the .gpw the MLWF run
+    // localized, so they must run WHERE GPAW IS. That is the environment the
+    // MLWF run itself used — recorded in its calculator.json when it was
+    // staged — and it is very rarely the embedded interpreter: the bundled
+    // .venv carries ASE (so the script imports fine, and the structure loads)
+    // but no GPAW, which is why hardcoding it here failed every one of these
+    // modules on `from gpaw import GPAW`, a hundred lines in.
+    if (const auto provenance =
+            SimulationWizardBase::readCalculatorProvenance(mlwfDir);
+        provenance && !provenance->pythonExecutable.isEmpty()
+        && QFileInfo::exists(provenance->pythonExecutable)) {
+        return provenance->pythonExecutable;
     }
+    // No provenance (a run from before Calango recorded it), or the
+    // interpreter it named has since been removed: fall back to the GPAW
+    // environment configured in Preferences, which pythonForEngine resolves —
+    // and which itself falls back to the embedded interpreter, so this is
+    // still best-effort rather than a refusal.
+    return pythonForEngine(core::CalculatorKind::Gpaw);
+}
 
-    // The run must not only have completed — its wavefunctions must still be
-    // reachable, or the job dies on its first line after being staged.
-    QString reason;
-    if (!mlwfWavefunctionsAvailable(directory, &reason)) {
-        QMessageBox::warning(this, title, reason);
-        return {};
-    }
-    return directory;
+bool MainWindow::requireMlwfPrerequisite(const QString& title)
+{
+    // Only the "nothing at all" case is refused up front. Anything else is the
+    // dialog's business now — opening a source picker with an empty list and a
+    // disabled OK button would be a worse way to say "run MLWF first".
+    if (!completedMlwfRuns().isEmpty())
+        return true;
+    QMessageBox::information(
+        this, title,
+        tr("%1 requires a successfully completed Maximally Localized "
+           "Wannier Functions (MLWF) process — it post-processes the "
+           "localized Hamiltonian that run produces.\n\nRun Electronics → "
+           "Maximally Localized Wannier Functions (MLWF)… first; once it "
+           "completes, this module will find it. A finished job from an "
+           "earlier session can also be picked with the dialog's Browse… "
+           "button.")
+            .arg(title));
+    return false;
 }
 
 void MainWindow::showWannierInterpolation()
@@ -5393,18 +5406,19 @@ void MainWindow::showWannierInterpolation()
             tr("A calculation is already running — kill it first."));
         return;
     }
-    const QString mlwfDir =
-        selectCompletedMlwfRun(tr("Wannier Interpolation"));
-    if (mlwfDir.isEmpty())
+    if (!requireMlwfPrerequisite(tr("Wannier Interpolation")))
         return;
     Document* doc = currentDocument();
-    WannierInterpolationDialog dialog(doc ? doc->structure : nullptr, this);
+    // The MLWF run is now chosen in the dialog's first step rather than in a
+    // prompt before it, so the choice sits beside the settings that depend on
+    // it and can be revised without starting over.
+    WannierInterpolationDialog dialog(completedMlwfRuns(),
+                                      doc ? doc->structure : nullptr, this);
     if (dialog.exec() != QDialog::Accepted)
         return;
     runScript(QString::fromStdString(core::generateWannierInterpolationScript(
-                  mlwfDir.toStdString(), dialog.config())),
-              QString::fromStdString(
-                  pybridge::PythonEngine::instance().executable()),
+                  dialog.mlwfDirectory().toStdString(), dialog.config())),
+              pythonForMlwfRun(dialog.mlwfDirectory()),
               tr("Wannier Interpolation"), /*expectFrames=*/false);
 }
 
@@ -5416,17 +5430,15 @@ void MainWindow::showFermiSurface()
             tr("A calculation is already running — kill it first."));
         return;
     }
-    const QString mlwfDir = selectCompletedMlwfRun(tr("Fermi Surface"));
-    if (mlwfDir.isEmpty())
+    if (!requireMlwfPrerequisite(tr("Fermi Surface")))
         return;
-    FermiSurfaceDialog dialog(this);
+    FermiSurfaceDialog dialog(completedMlwfRuns(), this);
     if (dialog.exec() != QDialog::Accepted)
         return;
-    core::FermiSurfaceConfig cfg = dialog.config();
-    cfg.mlwfDir = mlwfDir.toStdString();
+    // config() now carries mlwfDir — the dialog owns that choice.
+    const core::FermiSurfaceConfig cfg = dialog.config();
     runScript(QString::fromStdString(core::generateFermiSurfaceScript(cfg)),
-              QString::fromStdString(
-                  pybridge::PythonEngine::instance().executable()),
+              pythonForMlwfRun(dialog.mlwfDirectory()),
               tr("Fermi Surface"), /*expectFrames=*/false);
 }
 
@@ -5438,17 +5450,14 @@ void MainWindow::showTopologicalCharge()
             tr("A calculation is already running — kill it first."));
         return;
     }
-    const QString mlwfDir = selectCompletedMlwfRun(tr("Topological Charge"));
-    if (mlwfDir.isEmpty())
+    if (!requireMlwfPrerequisite(tr("Topological Charge")))
         return;
-    TopologyDialog dialog(this);
+    TopologyDialog dialog(completedMlwfRuns(), this);
     if (dialog.exec() != QDialog::Accepted)
         return;
-    core::TopologyConfig cfg = dialog.config();
-    cfg.mlwfDir = mlwfDir.toStdString();
+    const core::TopologyConfig cfg = dialog.config();
     runScript(QString::fromStdString(core::generateTopologyScript(cfg)),
-              QString::fromStdString(
-                  pybridge::PythonEngine::instance().executable()),
+              pythonForMlwfRun(dialog.mlwfDirectory()),
               tr("Topological Charge"), /*expectFrames=*/false);
 }
 

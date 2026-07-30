@@ -387,12 +387,21 @@ private Q_SLOTS:
     /// Electronics → "Topological Charge…": Chern number / Z₂ index from the
     /// hybrid Wannier centre flow, from a completed MLWF run.
     void showTopologicalCharge();
-    /// The strict prerequisite shared by the three Wannier post-processes
-    /// above: a successfully completed MLWF process whose localized
-    /// wavefunctions are still reachable. Returns the chosen run's directory
-    /// (asking when there are several), or empty — with the user already
-    /// told why — when the prerequisite is not met.
-    QString selectCompletedMlwfRun(const QString& title);
+    /// Completed MLWF processes, as (label, job directory) — the candidates
+    /// each Wannier post-process offers in its "Source MLWF process" step.
+    /// Keyed on wannier.json, which the MLWF script writes only on success.
+    QList<QPair<QString, QString>> completedMlwfRuns() const;
+    /// Interpreter a Wannier post-process must run under: the one the MLWF run
+    /// in `mlwfDir` itself used (from its calculator.json), else the GPAW
+    /// environment from Preferences. NOT the embedded interpreter — it has ASE
+    /// but no GPAW, and these scripts all restart GPAW from the localized
+    /// wavefunctions.
+    QString pythonForMlwfRun(const QString& mlwfDir) const;
+    /// True when at least one completed MLWF run exists; otherwise explains
+    /// what to run first and returns false. Only this case is refused before
+    /// the dialog opens — which run to use, and whether its wavefunctions are
+    /// still on disk, is the dialog's own first step.
+    bool requireMlwfPrerequisite(const QString& title);
     /// Completed processes that saved GPAW wavefunctions (.gpw), as (label,
     /// directory) pairs — the baselines the MLWF post-process can restart from.
     QList<QPair<QString, QString>> gpawBaselines() const;
