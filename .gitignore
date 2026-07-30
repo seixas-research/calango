@@ -302,10 +302,11 @@ capture.png
 *.fdb_latexmk
 *.synctex.gz
 
-# Symbolic link (./calango -> build/calango). Anchored: an unanchored
-# "calango" also matches the assets/calango/ directory, which silently kept
-# every brand asset out of the index.
-/calango
+# Symbolic link (./calango -> build/calango).
+calango
 
 # DMG
 packaging/macos/dmg
+
+# Continue
+.continue

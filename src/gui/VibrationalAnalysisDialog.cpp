@@ -160,6 +160,11 @@ void VibrationalAnalysisDialog::load(const QString& directory)
                                    .arg(qpoint.q[2], 0, 'g', 3);
             qpoint.frequenciesCm =
                 toDoubleVector(object.value(QStringLiteral("frequencies")).toArray());
+            // Γ-only irrep labels; runs predating the export simply lack the
+            // key and the combo shows plain frequencies.
+            for (const auto& irrep :
+                 object.value(QStringLiteral("irreps")).toArray())
+                qpoint.irreps.push_back(irrep.toString());
             for (const auto& branch :
                  object.value(QStringLiteral("eigenvectors")).toArray()) {
                 std::vector<core::Vec3> real;
@@ -237,9 +242,18 @@ void VibrationalAnalysisDialog::onQPointChanged(int index)
     modeCombo_->clear();
     for (std::size_t branch = 0; branch < qpoint.frequenciesCm.size(); ++branch) {
         const double frequency = qpoint.frequenciesCm[branch];
-        modeCombo_->addItem(tr("#%1 — %2 cm⁻¹%3")
+        // At Γ each branch carries its irreducible representation, when the
+        // run could assign one — the mode's symmetry name, next to its
+        // frequency.
+        const QString irrep = branch < qpoint.irreps.size()
+            ? qpoint.irreps[branch]
+            : QString();
+        modeCombo_->addItem(tr("#%1 — %2 cm⁻¹%3%4")
                                 .arg(branch + 1)
                                 .arg(frequency, 0, 'f', 2)
+                                .arg(irrep.isEmpty()
+                                         ? QString()
+                                         : QStringLiteral("  [%1]").arg(irrep))
                                 .arg(frequency < 0.0 ? tr("  (imaginary)")
                                                      : QString()));
     }
@@ -268,10 +282,18 @@ void VibrationalAnalysisDialog::updateModeLabel()
         return;
     }
     const double cm = frequencies[static_cast<std::size_t>(branch)];
-    modeLabel_->setText(tr("%1 cm⁻¹   ·   %2 meV   ·   %3 THz")
+    const auto& irreps = qpoints_[static_cast<std::size_t>(q)].irreps;
+    const QString irrep =
+        static_cast<std::size_t>(branch) < irreps.size()
+        ? irreps[static_cast<std::size_t>(branch)]
+        : QString();
+    modeLabel_->setText(tr("%1 cm⁻¹   ·   %2 meV   ·   %3 THz%4")
                             .arg(cm, 0, 'f', 2)
                             .arg(cm * kCmToMev, 0, 'f', 3)
-                            .arg(cm * 0.0299792458, 0, 'f', 3));
+                            .arg(cm * 0.0299792458, 0, 'f', 3)
+                            .arg(irrep.isEmpty()
+                                     ? QString()
+                                     : tr("   ·   irrep %1").arg(irrep)));
 }
 
 std::shared_ptr<core::Structure> VibrationalAnalysisDialog::displacedAt(

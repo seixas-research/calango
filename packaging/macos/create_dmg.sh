@@ -60,7 +60,11 @@ BUILD_DIR="${BUILD_DIR:-build-macos-bundle}"
 DIST_DIR="${DIST_DIR:-$REPO_ROOT}"
 QT_PREFIX="${CMAKE_PREFIX_PATH:-/opt/homebrew/opt/qt}"
 EMBED_PY="${CALANGO_EMBEDDED_PYTHON_DIR:-}"
-EMBED_PKGS="${CALANGO_EMBEDDED_PACKAGES:-ase numpy scipy spglib matplotlib imageio imageio-ffmpeg}"
+# dftd4 / torch-dftd / phonopy ride along as dynamically linked Python
+# dependencies: dftd4 ships its shared library inside the wheel, torch-dftd
+# backs mace_mp(dispersion=True), and phonopy drives the symmetry-reduced
+# phonon path, LO-TO splitting and Γ-mode irrep labels.
+EMBED_PKGS="${CALANGO_EMBEDDED_PACKAGES:-ase numpy scipy spglib matplotlib imageio imageio-ffmpeg dftd4 torch-dftd phonopy}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 
 # Whether the build tree already exists must be sampled before anything

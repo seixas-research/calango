@@ -212,14 +212,23 @@ void emitSymmetryReducedPhonons(std::ostringstream& out, const PhononConfig& c)
                "\n";
     }
     out << "\n"
-           "# Gamma-point frequencies (THz from phonopy -> cm^-1).\n"
+           "# Gamma-point frequencies (THz from phonopy -> cm^-1), with the\n"
+           "# irreducible representation of each branch from the eigenvector\n"
+           "# subspace projection (phonopy's eigenvectors are the\n"
+           "# mass-weighted columns _gamma_irreps expects).\n"
            "THZ_TO_CM1 = 33.35641\n"
-           "gamma = np.asarray(phonon.get_frequencies([0.0, 0.0, 0.0]))\n"
+           "_g_omega, _g_vectors = phonon.get_frequencies_with_eigenvectors(\n"
+           "    [0.0, 0.0, 0.0])\n"
+           "gamma = np.asarray(_g_omega)\n"
+           "gamma_irreps = _gamma_irreps(atoms, gamma * THZ_TO_CM1,\n"
+           "                             np.asarray(_g_vectors))\n"
            "n_acoustic = int(np.sum(np.abs(gamma * THZ_TO_CM1) < 1.0))\n"
            "for i, freq in enumerate(gamma):\n"
+           "    _ir = gamma_irreps[i] if gamma_irreps else \"\"\n"
            "    print(f\"CALANGO_RESULT mode={i:3d} \"\n"
            "          f\"freq_cm1={freq * THZ_TO_CM1:10.2f} \"\n"
-           "          f\"freq_meV={freq * 4.135667:9.3f}\", flush=True)\n"
+           "          f\"freq_meV={freq * 4.135667:9.3f}\"\n"
+           "          + (f\" irrep={_ir}\" if _ir else \"\"), flush=True)\n"
            "\n"        << (c.loToSplitting()
                 ? "# The Gamma frequencies above are the TRANSVERSE ones: with "
                   "no\n"
@@ -316,7 +325,7 @@ void emitSymmetryReducedPhonons(std::ostringstream& out, const PhononConfig& c)
            "    omega, vectors = phonon.get_frequencies_with_eigenvectors(q)\n"
            "    columns = np.asarray(vectors)\n"
            "    natoms = columns.shape[0] // 3\n"
-           "    mode_qpoints.append({\n"
+           "    entry = {\n"
            "        \"label\": str(label),\n"
            "        \"q\": q,\n"
            "        \"frequencies\": [float(w * THZ_TO_CM1) for w in omega],\n"
@@ -325,7 +334,12 @@ void emitSymmetryReducedPhonons(std::ostringstream& out, const PhononConfig& c)
            "              \"im\": [float(v) for v in columns[3 * a:3 * a + 3, b].imag]}\n"
            "             for a in range(natoms)]\n"
            "            for b in range(columns.shape[1])],\n"
-           "    })\n"
+           "    }\n"
+           "    # Irrep labels exist only at Gamma: away from the zone center\n"
+           "    # the factor group is not the little group of q.\n"
+           "    if np.linalg.norm(q) < 1e-8 and gamma_irreps:\n"
+           "        entry[\"irreps\"] = list(gamma_irreps)\n"
+           "    mode_qpoints.append(entry)\n"
            "if mode_qpoints:\n"
            "    with open(\"phonon_modes.json\", \"w\") as f:\n"
            "        json.dump({\"unit\": \"cm^-1\", \"qpoints\": mode_qpoints}, f)\n"
@@ -358,12 +372,24 @@ void emitAsePhonons(std::ostringstream& out, const PhononConfig& c)
            "# Force constants -> dynamical matrix.\n"
         << "ph.read(acoustic=" << (c.acousticSumRule ? "True" : "False") << ")\n"
            "\n"
-           "# Gamma-point frequencies (3 acoustic modes -> 0).\n"
-           "gamma = np.asarray(ph.band_structure([[0.0, 0.0, 0.0]])[0])\n"
+           "# Gamma-point frequencies (3 acoustic modes -> 0), with the\n"
+           "# irreducible representation of each branch. ASE hands back\n"
+           "# displacement patterns u = e / sqrt(m); restore the mass\n"
+           "# weighting so the projection runs on orthonormal eigenvectors.\n"
+           "_g_omega, _g_modes = ph.band_structure([[0.0, 0.0, 0.0]],\n"
+           "                                       modes=True)\n"
+           "gamma = np.asarray(_g_omega)[0]\n"
+           "_g_columns = np.array([\n"
+           "    (np.sqrt(atoms.get_masses())[:, None]\n"
+           "     * np.asarray(mode).real).reshape(-1)\n"
+           "    for mode in np.asarray(_g_modes)[0]]).T\n"
+           "gamma_irreps = _gamma_irreps(atoms, gamma / invcm, _g_columns)\n"
            "n_acoustic = int(np.sum(np.abs(gamma / invcm) < 1.0))\n"
            "for i, freq in enumerate(gamma):\n"
+           "    _ir = gamma_irreps[i] if gamma_irreps else \"\"\n"
            "    print(f\"CALANGO_RESULT mode={i:3d} freq_cm1={freq / invcm:10.2f} \"\n"
-           "          f\"freq_meV={freq * 1e3:9.3f}\", flush=True)\n"
+           "          f\"freq_meV={freq * 1e3:9.3f}\"\n"
+           "          + (f\" irrep={_ir}\" if _ir else \"\"), flush=True)\n"
            "\n"
            "# Dispersion along the requested (or ASE-suggested) BZ path.\n"
         << "path_str = " << (c.kpath.empty() ? "None" : "\"" + c.kpath + "\"")
@@ -417,13 +443,18 @@ void emitAsePhonons(std::ostringstream& out, const PhononConfig& c)
            "    q = [float(c) for c in path.kpts[index]]\n"
            "    omega, vectors = ph.band_structure([q], modes=True)\n"
            "    # vectors[kpt][branch][atom][xyz] — ASE returns real modes.\n"
-           "    mode_qpoints.append({\n"
+           "    entry = {\n"
            "        \"label\": str(label),\n"
            "        \"q\": q,\n"
            "        \"frequencies\": [float(w / invcm) for w in omega[0]],\n"
            "        \"eigenvectors\": [[[float(c) for c in atom] for atom in branch]\n"
            "                         for branch in np.asarray(vectors[0]).real],\n"
-           "    })\n"
+           "    }\n"
+           "    # Irrep labels exist only at Gamma: away from the zone center\n"
+           "    # the factor group is not the little group of q.\n"
+           "    if np.linalg.norm(q) < 1e-8 and gamma_irreps:\n"
+           "        entry[\"irreps\"] = list(gamma_irreps)\n"
+           "    mode_qpoints.append(entry)\n"
            "if mode_qpoints:\n"
            "    with open(\"phonon_modes.json\", \"w\") as f:\n"
            "        json.dump({\"unit\": \"cm^-1\", \"qpoints\": mode_qpoints}, f)\n"
@@ -449,6 +480,264 @@ void emitPeriodicPhonons(std::ostringstream& out, const PhononConfig& c)
         << "delta = " << c.deltaAngstrom << "  # Å\n"
            "base_calc = atoms.calc\n"
            "\n";
+
+    // Mulliken labels for the Γ modes. Same class-sum (Burnside) character
+    // table construction as the in-app Raman analysis
+    // (python_bridge/RamanAnalysis.cpp) — duplicated here because this copy
+    // must run inside the job environment, not the embedded interpreter —
+    // followed by a projection of each degenerate frequency cluster's
+    // eigenvector subspace onto the irreps. Best-effort by design: any
+    // failure returns None and the run proceeds unlabeled.
+    out << R"PY(
+def _gamma_irreps(atoms, freqs_cm1, eigvec_columns):
+    """Irreducible-representation label of every Gamma-point branch.
+
+    eigvec_columns: complex (3N, 3N) array whose column b is the
+    mass-weighted eigenvector of branch b. Returns a list of labels
+    ('' where no clean assignment exists), or None when the analysis
+    is unavailable (no spglib, non-primitive cell, ...).
+    """
+    try:
+        import spglib
+
+        cell = (atoms.cell[:], atoms.get_scaled_positions(), atoms.numbers)
+        sym = spglib.get_symmetry(cell, symprec=1e-4)
+        if sym is None:
+            return None
+        rots = [np.array(r) for r in sym["rotations"]]
+        trans = [np.array(t) for t in sym["translations"]]
+        order = len(rots)
+        key = lambda m: tuple(int(x) for x in np.rint(m).flatten())
+        index = {key(r): i for i, r in enumerate(rots)}
+        if len(index) != order:
+            # Centering translations: the cell is not primitive, so Gamma
+            # carries folded modes a factor-group label would mislabel.
+            print("CALANGO_INFO gamma_irreps=skipped (non-primitive cell)",
+                  flush=True)
+            return None
+        identity = index[key(np.eye(3))]
+        mult = [[index[key(rots[i] @ rots[j])] for j in range(order)]
+                for i in range(order)]
+        inv = [mult[i].index(identity) for i in range(order)]
+
+        class_of = [-1] * order
+        classes = []
+        for i in range(order):
+            if class_of[i] >= 0:
+                continue
+            members = sorted({mult[mult[g][i]][inv[g]] for g in range(order)})
+            for m in members:
+                class_of[m] = len(classes)
+            classes.append(members)
+        nclasses = len(classes)
+
+        # Character table from the class-sum algebra (Burnside).
+        a = np.zeros((nclasses, nclasses, nclasses))
+        for i, ci in enumerate(classes):
+            for j, cj in enumerate(classes):
+                for x in ci:
+                    for y in cj:
+                        a[i, j, class_of[mult[x][y]]] += 1.0
+        for l, cl in enumerate(classes):
+            a[:, :, l] /= len(cl)
+        rng = np.random.default_rng(12345)
+        combo = np.tensordot(rng.random(nclasses), a, axes=(0, 0))
+        _, vectors = np.linalg.eig(combo)
+        characters = []
+        for col in vectors.T:
+            lam = col / col[class_of[identity]]
+            dim = np.sqrt(order / np.sum(np.abs(lam) ** 2
+                                         / [len(c) for c in classes]))
+            characters.append(dim * lam / [len(c) for c in classes])
+        characters = np.array(characters)
+
+        used = [False] * len(characters)
+        irreps = []  # (chi_real, dim, paired)
+        for i, chi in enumerate(characters):
+            if used[i]:
+                continue
+            if np.max(np.abs(chi.imag)) < 1e-6:
+                irreps.append((chi.real,
+                               int(round(chi[class_of[identity]].real)),
+                               False))
+                used[i] = True
+                continue
+            for j in range(i + 1, len(characters)):
+                if not used[j] and np.max(np.abs(characters[j]
+                                                 - chi.conj())) < 1e-6:
+                    summed = (chi + characters[j]).real
+                    irreps.append((summed,
+                                   int(round(summed[class_of[identity]])),
+                                   True))
+                    used[i] = used[j] = True
+                    break
+            else:
+                return None
+
+        # Mulliken labels (same heuristic as Calango's Raman analysis).
+        basis = np.array(atoms.cell[:]).T
+        to_cart = np.linalg.inv(basis)
+        rot_cart = [basis @ np.array(rots[c[0]], dtype=float) @ to_cart
+                    for c in classes]
+        dets = [int(round(np.linalg.det(m))) for m in rot_cart]
+        traces = [float(np.trace(m)) for m in rot_cart]
+
+        def rotation_order(cls):
+            if dets[cls] < 0:
+                return 0
+            theta = np.arccos(np.clip((traces[cls] - 1.0) / 2.0, -1.0, 1.0))
+            return 1 if theta < 1e-6 else int(round(2 * np.pi / theta))
+
+        def axis_vector(matrix, eig):
+            vals, vecs = np.linalg.eig(matrix.astype(float))
+            for v, vec in zip(vals, vecs.T):
+                if abs(v - eig) < 1e-6:
+                    return np.real(vec)
+            return None
+
+        orders = [rotation_order(c) for c in range(nclasses)]
+        proper_max = max(orders)
+        principal = orders.index(proper_max)
+        principal_axis = axis_vector(rot_cart[principal], 1.0)
+        inversion = next((c for c in range(nclasses)
+                          if np.allclose(rot_cart[c], -np.eye(3), atol=1e-6)),
+                         None)
+
+        def is_perp(u, v):
+            return u is not None and v is not None \
+                and abs(np.dot(u, v)) < 1e-4 * np.linalg.norm(u) \
+                * np.linalg.norm(v) + 1e-6
+
+        c2prime = next((c for c in range(nclasses)
+                        if orders[c] == 2 and c != principal
+                        and is_perp(axis_vector(rot_cart[c], 1.0),
+                                    principal_axis)), None)
+        sigma_h = None
+        sigma_v = None
+        for c in range(nclasses):
+            if dets[c] < 0 and abs(traces[c] - 1.0) < 1e-6:
+                normal = axis_vector(rot_cart[c], -1.0)
+                if principal_axis is not None and normal is not None \
+                        and abs(abs(np.dot(normal, principal_axis))
+                                - np.linalg.norm(normal)
+                                * np.linalg.norm(principal_axis)) < 1e-4:
+                    sigma_h = c
+                elif sigma_v is None:
+                    sigma_v = c
+
+        labels = []
+        # Several equivalent principal axes = a cubic group, whose 1D irreps
+        # are all A by convention (no B labels exist in T..Oh).
+        cubic = len(classes[principal]) > 2
+        for chi, dim, _ in irreps:
+            letter = {1: "A", 2: "E", 3: "T"}.get(dim, f"G{dim}")
+            if dim == 1 and proper_max > 1 and not cubic \
+                    and chi[principal] < -0.5:
+                letter = "B"
+            parity = ""
+            if inversion is not None:
+                parity = "g" if chi[inversion] > 0 else "u"
+            prime = ""
+            if inversion is None and sigma_h is not None:
+                prime = "'" if chi[sigma_h] > 0 else "''"
+            labels.append([letter, parity, prime, chi])
+        from collections import defaultdict
+
+        groups = defaultdict(list)
+        for i, (letter, parity, prime, chi) in enumerate(labels):
+            groups[(letter, parity, prime)].append(i)
+        final = [None] * len(labels)
+        for (letter, parity, prime), members in groups.items():
+            if len(members) == 1:
+                final[members[0]] = letter + parity + prime
+                continue
+
+            def sort_key(i):
+                chi = labels[i][3]
+                aux = c2prime if irreps[i][1] == 1 else principal
+                if aux is None:
+                    aux = sigma_v if sigma_v is not None else principal
+                # Totally symmetric first (A1 by definition), then more +1
+                # characters rank earlier — deterministic and matching the
+                # textbook subscript convention. Rounded throughout: the
+                # characters carry ~1e-15 eigendecomposition noise, and
+                # unrounded keys let it outrank the real ±1 distinctions.
+                symmetric = round(sum(len(classes[c]) * chi[c]
+                                      for c in range(nclasses)))
+                return (-symmetric,
+                        -round(chi[aux], 6) if aux is not None else 0.0,
+                        tuple(-round(chi[c], 6) for c in range(nclasses)), i)
+
+            for rank, i in enumerate(sorted(members, key=sort_key), start=1):
+                final[i] = f"{letter}{rank}{parity}{prime}"
+
+        # Atom permutation of every operation, so the 3N-dimensional action
+        # S e = (W ⊗ permutation) e can be applied to the eigenvectors.
+        pos = atoms.get_scaled_positions()
+        numbers = atoms.numbers
+        perms = []
+        for R, t in zip(rots, trans):
+            mapped = (pos @ np.array(R).T) + t
+            perm = np.full(len(pos), -1, dtype=int)
+            for a_i, x in enumerate(mapped):
+                d = pos - x
+                d -= np.rint(d)
+                j = int(np.argmin(np.linalg.norm(d, axis=1)))
+                if np.linalg.norm(d[j]) > 1e-3 or numbers[j] != numbers[a_i]:
+                    return None
+                perm[a_i] = j
+            perms.append(perm)
+        rot_cart_op = [basis @ np.array(R, dtype=float) @ to_cart
+                      for R in rots]
+
+        # Degenerate clusters by frequency, then project each cluster's
+        # subspace character chi(R) = sum_m <e_m | S(R) e_m> onto the irreps.
+        # The label is only committed when the multiplicities exactly account
+        # for the cluster's dimension — an accidental degeneracy shows up as
+        # a joined label (e.g. "A1g+Eg") rather than a wrong single one.
+        freqs = np.asarray(freqs_cm1, dtype=float)
+        nmodes = len(freqs)
+        vec = np.asarray(eigvec_columns, dtype=complex)
+        for b in range(vec.shape[1]):
+            norm = np.linalg.norm(vec[:, b])
+            if norm > 0:
+                vec[:, b] /= norm
+        clusters = []
+        start = 0
+        for b in range(1, nmodes + 1):
+            if b == nmodes or abs(freqs[b] - freqs[start]) > 1.0:  # cm^-1
+                clusters.append(list(range(start, b)))
+                start = b
+        out = [""] * nmodes
+        natoms = len(pos)
+        for cluster in clusters:
+            chi_ops = np.zeros(order, dtype=complex)
+            for op in range(order):
+                W = rot_cart_op[op]
+                perm = perms[op]
+                for b in cluster:
+                    e = vec[:, b].reshape(natoms, 3)
+                    Se = np.zeros_like(e)
+                    Se[perm] = e @ W.T
+                    chi_ops[op] += np.vdot(vec[:, b], Se.reshape(-1))
+            counts = []
+            for chi, dim, paired in irreps:
+                per_op = np.array([chi[class_of[i]] for i in range(order)])
+                n = np.sum(chi_ops * per_op).real / order
+                counts.append(n / (2.0 if paired else 1.0))
+            sel = [(i, int(round(n))) for i, n in enumerate(counts)
+                   if int(round(n)) >= 1 and abs(n - round(n)) < 0.1]
+            if sel and sum(irreps[i][1] * m for i, m in sel) == len(cluster):
+                text = "+".join((final[i] if m == 1 else f"{m}{final[i]}")
+                                for i, m in sel)
+                for b in cluster:
+                    out[b] = text
+        return out
+    except Exception as error:  # labels are best-effort, never fatal
+        print(f"CALANGO_INFO gamma_irreps_failed={error!r}", flush=True)
+        return None
+
+)PY";
 
     if (c.removeResidualForces)
         emitResidualFreeCalculator(out);

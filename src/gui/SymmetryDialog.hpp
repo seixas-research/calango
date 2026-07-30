@@ -7,6 +7,7 @@
 #include <memory>
 
 class QDoubleSpinBox;
+class QGroupBox;
 class QLabel;
 class QPushButton;
 class QTableWidget;
@@ -15,7 +16,9 @@ namespace calango::gui {
 
 /// Analysis → "Symmetry…": a standalone crystallographic symmetry
 /// report (extracted from the Structure panel). It shows the space group
-/// (symbol + number), point group, Hall number, crystal system, and the
+/// (symbol + number), point group, Hall number, crystal system, the
+/// character table of the detected point group (generated numerically from
+/// the group's class-sum algebra, not looked up), and the
 /// symmetry-inequivalent sites with their Wyckoff letters at an adjustable
 /// tolerance. Inspection only — the cell-transform actions ("Standardize
 /// Cell" / "Reduce to Primitive Cell") live in the Edit Structure dialog.
@@ -30,6 +33,10 @@ private Q_SLOTS:
     void detect();
 
 private:
+    /// Rebuild the character-table group for the current detection (or clear
+    /// it, with the group's title saying why).
+    void updateCharacterTable();
+
     std::shared_ptr<const core::Structure> structure_;
 
     QDoubleSpinBox* tolSpin_;
@@ -40,6 +47,8 @@ private:
     QLabel* sitesLabel_;
     QLabel* statusLabel_;
     QTableWidget* table_;
+    QGroupBox* characterGroup_;
+    QTableWidget* characterTable_;
 };
 
 } // namespace calango::gui

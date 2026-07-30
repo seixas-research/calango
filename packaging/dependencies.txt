@@ -82,6 +82,14 @@ VIRTUAL_ENV env -> build-time CALANGO_DEFAULT_PYTHON. Verify with:
                                               geometry-opt, band structure + PDOS
                                               (conda on x86_64; pip on osx-arm64)
 [runtime][required] gpaw-data .............. PAW datasets for GPAW (conda-forge, all platforms)
+[runtime][required] dftd4 .................. >= 3.6   Grimme DFT-D4 dispersion; the Python wheel
+                                              dynamically links the dftd4 shared library.
+                                              Coupled to any calculator via ASE's SumCalculator
+                                              (pip: dftd4; conda-forge: dftd4-python)
+[runtime][required] torch-dftd ............. >= 0.4   PyTorch DFT-D implementation backing
+                                              mace_mp(dispersion=True)
+[runtime][required] phonopy ................ >= 2.20  symmetry-reduced phonon displacements,
+                                              LO-TO splitting (NAC) and Γ-mode irrep labels
 
 ------------------------------------------------------------------------------
 4. Optional job / calculator environments (user-selected conda env, NOT the
@@ -114,6 +122,9 @@ paramiko         >= 3.0   (optional, remote)
 imageio          >= 2.28  (required, animation export)
 imageio-ffmpeg   >= 0.4   (required, video encoding)
 GPAW             >= 24.1  (required, DFT; tested 25.7.0)
+dftd4            >= 3.6   (required, D4 dispersion; conda-forge: dftd4-python)
+torch-dftd       >= 0.4   (required, MACE-MP dispersion head)
+phonopy          >= 2.20  (required, phonon symmetry / NAC / irreps)
 mace-torch       >= 0.3   (required, MLIP)
 torch            >= 2.0   (required, MLIP)
 torch-geometric  >= 2.4   (required, MLIP)

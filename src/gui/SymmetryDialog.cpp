@@ -3,6 +3,7 @@
 #include "core/Element.hpp"
 #include "gui/GuiUtils.hpp"
 #include "python_bridge/AseBridge.hpp"
+#include "python_bridge/RamanAnalysis.hpp"
 
 #include <QApplication>
 #include <QDialogButtonBox>
@@ -16,6 +17,8 @@
 #include <QTableWidget>
 #include <QVBoxLayout>
 
+#include <cmath>
+
 namespace calango::gui {
 
 SymmetryDialog::SymmetryDialog(std::shared_ptr<const core::Structure> structure,
@@ -23,7 +26,9 @@ SymmetryDialog::SymmetryDialog(std::shared_ptr<const core::Structure> structure,
     : QDialog(parent), structure_(std::move(structure))
 {
     setWindowTitle(tr("Symmetry"));
-    resize(520, 560);
+    // Taller than the pre-character-table layout: the new group needs room
+    // without squeezing the equivalent-positions table into a two-row slit.
+    resize(560, 720);
 
     auto* layout = new QVBoxLayout(this);
 
@@ -57,6 +62,27 @@ SymmetryDialog::SymmetryDialog(std::shared_ptr<const core::Structure> structure,
     infoForm->addRow(tr("Hall number:"), hallLabel_);
     infoForm->addRow(tr("Inequivalent sites:"), sitesLabel_);
     layout->addWidget(infoBox);
+
+    // The character table of the detected point group, generated numerically
+    // from the group's own operations (class-sum algebra) rather than looked
+    // up — so it follows the tolerance-dependent detection above.
+    characterGroup_ = new QGroupBox(tr("Character table"), this);
+    auto* characterLayout = new QVBoxLayout(characterGroup_);
+    characterTable_ = new QTableWidget(0, 0, characterGroup_);
+    characterTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    characterTable_->setSelectionMode(QAbstractItemView::NoSelection);
+    characterTable_->horizontalHeader()->setSectionResizeMode(
+        QHeaderView::Stretch);
+    characterTable_->setToolTip(
+        tr("Rows: irreducible representations (Mulliken symbols). Columns: "
+           "conjugacy classes of the point group, identity first. Paired "
+           "complex-conjugate irreps are shown as their physically real 2D "
+           "sum, the spectroscopic convention."));
+    // Tall enough for the cubic groups' ten rows without starving the
+    // positions table below.
+    characterTable_->setMaximumHeight(190);
+    characterLayout->addWidget(characterTable_);
+    layout->addWidget(characterGroup_);
 
     layout->addWidget(new QLabel(tr("Equivalent atomic positions (fractional):"),
                                  this));
@@ -96,6 +122,9 @@ void SymmetryDialog::detect()
                           hallLabel_, sitesLabel_})
             l->setText(QStringLiteral("—"));
         table_->setRowCount(0);
+        characterTable_->setRowCount(0);
+        characterTable_->setColumnCount(0);
+        characterGroup_->setTitle(tr("Character table"));
         statusLabel_->setText(tr("No symmetry: %1").arg(reason));
         return;
     }
@@ -136,6 +165,70 @@ void SymmetryDialog::detect()
             : -1;
         set(5, cls >= 0 ? tr("%1  (class %2)").arg(wyckoff).arg(cls) : wyckoff);
     }
+
+    updateCharacterTable();
+}
+
+void SymmetryDialog::updateCharacterTable()
+{
+    characterTable_->clear();
+    characterTable_->setRowCount(0);
+    characterTable_->setColumnCount(0);
+
+    // Same tolerance as the detection above, so the table always describes
+    // the point group the labels report.
+    const auto analysis =
+        pybridge::RamanAnalysis::analyze(*structure_, tolSpin_->value());
+    if (!analysis.error.empty() || analysis.characterTable.empty()) {
+        characterGroup_->setTitle(tr("Character table — unavailable"));
+        characterGroup_->setToolTip(
+            analysis.error.empty()
+                ? QString()
+                : QString::fromStdString(analysis.error));
+        return;
+    }
+
+    // Group-box titles are plain text, so strip the rich-text subscripts the
+    // shared point-group formatter emits.
+    QString pointGroup =
+        pointGroupDisplay(QString::fromStdString(analysis.pointGroup));
+    pointGroup.remove(QStringLiteral("<sub>"));
+    pointGroup.remove(QStringLiteral("</sub>"));
+    characterGroup_->setTitle(
+        tr("Character table — point group %1").arg(pointGroup));
+    characterGroup_->setToolTip(QString());
+
+    characterTable_->setColumnCount(
+        static_cast<int>(analysis.classLabels.size()));
+    QStringList headers;
+    for (const std::string& label : analysis.classLabels)
+        headers << QString::fromStdString(label);
+    characterTable_->setHorizontalHeaderLabels(headers);
+    characterTable_->setRowCount(
+        static_cast<int>(analysis.characterTable.size()));
+    for (int row = 0; row < static_cast<int>(analysis.characterTable.size());
+         ++row) {
+        const auto& irrep =
+            analysis.characterTable[static_cast<std::size_t>(row)];
+        characterTable_->setVerticalHeaderItem(
+            row, new QTableWidgetItem(QString::fromStdString(irrep.label)));
+        for (int col = 0;
+             col < static_cast<int>(irrep.characters.size()); ++col) {
+            const double chi =
+                irrep.characters[static_cast<std::size_t>(col)];
+            // Every crystallographic character is an integer; the guard only
+            // matters if numerical noise (or a non-crystallographic group)
+            // ever produces something else — then show it honestly.
+            const double rounded = std::round(chi);
+            auto* item = new QTableWidgetItem(
+                std::abs(chi - rounded) < 1e-4
+                    ? QString::number(static_cast<int>(rounded))
+                    : QString::number(chi, 'g', 3));
+            item->setTextAlignment(Qt::AlignCenter);
+            characterTable_->setItem(row, col, item);
+        }
+    }
+    characterTable_->resizeRowsToContents();
 }
 
 } // namespace calango::gui

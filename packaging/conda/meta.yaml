@@ -59,6 +59,13 @@ requirements:
     # (`pip install gpaw`). gpaw-data ships the PAW datasets on every platform.
     - gpaw           # [x86_64]
     - gpaw-data
+    # Dispersion + phonons. dftd4-python is the Python API over the dftd4
+    # shared library (the DFT-D4 correction the SumCalculator coupling uses);
+    # torch-dftd backs mace_mp(dispersion=True); phonopy drives the
+    # symmetry-reduced phonon path, LO-TO splitting and Γ-mode irrep labels.
+    - dftd4-python
+    - torch-dftd
+    - phonopy >=2.20
 
 test:
   commands:

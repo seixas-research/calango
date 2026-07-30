@@ -33,12 +33,26 @@ public:
         bool irActive = false;
     };
 
+    /// One row of the point group's character table: an irrep and its
+    /// character under each conjugacy class (same order as
+    /// Result::classLabels). Paired complex-conjugate irreps appear as their
+    /// physically real 2D sum, the spectroscopic convention.
+    struct IrrepRow {
+        std::string label;              ///< Mulliken symbol
+        std::vector<double> characters; ///< one per class
+    };
+
     struct Result {
         std::string spaceGroupSymbol;
         int spaceGroupNumber = 0;
         std::string pointGroup;
         int atomsPrimitive = 0; ///< atoms in the primitive cell (3N modes)
         std::vector<Mode> modes;
+        /// Conjugacy-class headers ("E", "8C3", "3σh", …), identity first.
+        std::vector<std::string> classLabels;
+        /// The full character table of the isogonal point group, one row per
+        /// irrep, computed from the class-sum algebra — not looked up.
+        std::vector<IrrepRow> characterTable;
         std::string error; ///< empty on success
     };
 

@@ -207,7 +207,10 @@ constexpr double kTrajectoryPlaybackFps = 15.0;
 //      and Processes. A new dock is exactly the case the version guards: a
 //      layout saved under 12 has no slot for it, and restoring one would hide
 //      the dock permanently with no way back short of Reset Layout.
-constexpr int kLayoutVersion = 13;
+//  14: the branding card grew a version caption under the logo, raising its
+//      minimum height; a layout saved under 13 pins the old 30 px strip and
+//      would clip the caption forever.
+constexpr int kLayoutVersion = 14;
 
 /// Painted icons for the frame-panel camera toolbar (icon-only buttons).
 /// Plane icons use the axes-triad colors: x red, y green, z blue.
@@ -1557,9 +1560,12 @@ void MainWindow::createMenusAndDocks()
     // the minimum width is what actually holds the column.
     constexpr int kColumnWidth = 290;
     // The branding card is a thin strip heading the left column. BrandingPanel
-    // scales the logo to fit, so this is a free choice — but it has to stay at
-    // or above the panel's own minimum height or resizeDocks is overridden.
-    constexpr int kBrandingHeight = 30;
+    // scales the logo to fit, so this is nearly a free choice — but it has to
+    // stay at or above the panel's own minimum height or resizeDocks is
+    // overridden, and that minimum is what now accounts for the version
+    // caption drawn under the logo. Read it back rather than repeating the
+    // number here.
+    const int kBrandingHeight = brandingPanel_->minimumHeight();
     // All three right-column docks now share one width — Visual Effects has
     // joined them, and its five tab headers set the widest floor of the three.
     const QVector<QDockWidget*> rightColumn{reprDock, overlaysDock,
@@ -7140,8 +7146,15 @@ void MainWindow::about()
          "BSD 3-Clause"},
         {"spglib", tr("crystal-symmetry detection and space groups"),
          "BSD 3-Clause"},
-        {"phonopy", tr("phonon band structures and thermodynamics"),
+        {"phonopy", tr("phonon band structures, thermodynamics and "
+                       "irreducible representations"),
          "BSD 3-Clause"},
+        {"dftd4", tr("Grimme DFT-D4 van der Waals dispersion (dynamically "
+                     "linked shared library)"),
+         "LGPL v3+"},
+        {"torch-dftd", tr("PyTorch DFT-D dispersion backing MACE-MP's "
+                          "dispersion option"),
+         "MIT"},
         {"MACE", tr("machine-learning interatomic potentials"), "MIT"},
         {"icet", tr("cluster expansions and special quasirandom structures"),
          "MIT"},

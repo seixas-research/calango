@@ -192,9 +192,13 @@ for c in range(nclasses):
             sigma_v = c
 
 labels = []
+# A class of more than two principal rotations means several equivalent
+# principal axes — a cubic group, whose 1D irreps are all A by convention
+# (no B labels exist in T..Oh).
+cubic = len(classes[principal]) > 2
 for chi, dim, _ in irreps:
     letter = {1: "A", 2: "E", 3: "T"}.get(dim, f"G{dim}")
-    if dim == 1 and proper_max > 1 and chi[principal] < -0.5:
+    if dim == 1 and proper_max > 1 and not cubic and chi[principal] < -0.5:
         letter = "B"
     parity = ""
     if inversion is not None:
@@ -221,9 +225,57 @@ for (letter, parity, prime), members in groups.items():
         aux = c2prime if irreps[i][1] == 1 else principal
         if aux is None:
             aux = sigma_v if sigma_v is not None else principal
-        return (-chi[aux] if aux is not None else 0.0, i)
+        # The totally symmetric irrep is A1 by definition (sum over the
+        # whole group is |G| for it, 0 for every other); after that, more
+        # +1 characters rank earlier — the textbook subscript convention
+        # for the C2'/σv distinctions, and a deterministic tiebreak.
+        # Everything is rounded: the characters carry ~1e-15 numerical
+        # noise from the eigendecomposition, and unrounded keys let that
+        # noise outrank the real ±1 distinctions.
+        symmetric = round(sum(len(classes[c]) * chi[c]
+                              for c in range(nclasses)))
+        return (-symmetric,
+                -round(chi[aux], 6) if aux is not None else 0.0,
+                tuple(-round(chi[c], 6) for c in range(nclasses)), i)
     for rank, i in enumerate(sorted(members, key=sort_key), start=1):
         final[i] = f"{letter}{rank}{parity}{prime}"
+
+# --- character table (for display) ---------------------------------------
+# Conjugacy classes named by their representative operation: proper
+# rotations E/Cn, then i, mirrors (σh when the normal is the principal
+# axis; the first remaining mirror class is σv, later ones σd) and improper
+# rotations Sn from the rotation angle of the proper part
+# (trace(S(θ)) = 2cosθ − 1). Prefixed with the class size.
+# Identity first, the conventional leading column of every character table.
+col_order = [class_of[identity]] + [c for c in range(nclasses)
+                                    if c != class_of[identity]]
+class_labels = []
+_mirror_rank = 0
+for c in col_order:
+    if dets[c] > 0:
+        k = orders[c]
+        symbol = "E" if k == 1 else f"C{k}"
+    elif inversion is not None and c == inversion:
+        symbol = "i"
+    elif abs(traces[c] - 1.0) < 1e-6:
+        if c == sigma_h:
+            symbol = "σh"
+        else:
+            symbol = "σv" if _mirror_rank == 0 else "σd"
+            _mirror_rank += 1
+    else:
+        cos = np.clip((traces[c] + 1.0) / 2.0, -1.0, 1.0)
+        symbol = f"S{int(round(2.0 * np.pi / np.arccos(cos)))}"
+    n = len(classes[c])
+    class_labels.append(symbol if n == 1 else f"{n}{symbol}")
+
+# Rows ordered as tables print them: 1D irreps first, then E, then T. The
+# paired complex-conjugate irreps appear as their physically real 2D sum,
+# the spectroscopic convention.
+row_order = sorted(range(len(irreps)), key=lambda i: (irreps[i][1], final[i]))
+character_table = [{"label": final[i],
+                    "chi": [float(irreps[i][0][c]) for c in col_order]}
+                   for i in row_order]
 
 # --- assemble -----------------------------------------------------------
 modes = []
@@ -247,6 +299,8 @@ result = {
     "pointgroup": str(field("pointgroup")).strip(),
     "atoms_primitive": int(len(pnum)),
     "modes": modes,
+    "classes": class_labels,
+    "character_table": character_table,
 }
 )PY";
 
@@ -285,6 +339,16 @@ RamanAnalysis::Result RamanAnalysis::analyze(const core::Structure& structure,
             mode.ramanActive = m["raman"].cast<bool>();
             mode.irActive = m["ir"].cast<bool>();
             result.modes.push_back(std::move(mode));
+        }
+        for (const auto& entry : data["classes"].cast<py::list>())
+            result.classLabels.push_back(entry.cast<std::string>());
+        for (const auto& entry : data["character_table"].cast<py::list>()) {
+            const py::dict row = entry.cast<py::dict>();
+            IrrepRow irrep;
+            irrep.label = row["label"].cast<std::string>();
+            for (const auto& value : row["chi"].cast<py::list>())
+                irrep.characters.push_back(value.cast<double>());
+            result.characterTable.push_back(std::move(irrep));
         }
     } catch (const py::error_already_set& e) {
         result.error = std::string("Raman analysis failed:\n") + e.what();

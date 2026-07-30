@@ -87,6 +87,11 @@ private:
         /// Empty when the run did not export them.
         std::vector<std::vector<core::Vec3>> eigenvectorsReal;
         std::vector<std::vector<core::Vec3>> eigenvectorsImag;
+        /// Irreducible-representation label per branch ("T2g", "Eu+A1g", …).
+        /// Only Γ carries these — the factor group is not the little group of
+        /// any other q — and only when the run could assign them; empty
+        /// entries mean "no clean assignment".
+        std::vector<QString> irreps;
     };
 
     std::shared_ptr<const core::Structure> reference_;

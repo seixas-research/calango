@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.73
+    VERSION 26.7.74
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -1861,7 +1861,12 @@ elseif(UNIX AND NOT APPLE)
         # `imageio-ffmpeg`, which Debian does not package under that name — a
         # system ffmpeg satisfies the same need, so it is suggested here and
         # the pip name is documented in packaging/dependencies.txt.
-        set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "python3-ase, python3-imageio")
+        # python3-dftd4 (the dynamically linked DFT-D4 library + Python API)
+        # and python3-phonopy back the dispersion coupling and the phonon
+        # symmetry features; torch-dftd has no Debian package — its pip name
+        # is documented in packaging/dependencies.txt.
+        set(CPACK_DEBIAN_PACKAGE_RECOMMENDS
+            "python3-ase, python3-imageio, python3-dftd4, python3-phonopy")
         set(CPACK_DEBIAN_PACKAGE_SUGGESTS "ffmpeg")
     endif()
     # Refresh MIME/desktop/icon caches on install and removal.
