@@ -57,6 +57,25 @@ UnitCellPanel::UnitCellPanel(ViewportWidget* viewport, QWidget* parent)
     connect(cellShowButton, &QPushButton::toggled,
             viewport_, &ViewportWidget::setShowCell);
 
+    // Directly beside "Show unit cell", because it is the SAME box drawn a
+    // second way rather than a different thing to draw: the wireframe says
+    // where the edges are, the fill says which side of them is inside. A bare
+    // wireframe box is genuinely ambiguous about that — the Necker-cube flip —
+    // and a faint tinted solid settles it without a caption.
+    auto* fillButton = makeCellButton(
+        QStringLiteral("paint-fill"),
+        tr("Fill the unit cell — shade its six faces with a translucent "
+           "solid, so the box reads as a volume rather than as twelve "
+           "lines.\n\n"
+           "Independent of \"Show unit cell\": either depiction may be used "
+           "alone, so a solid block with no wireframe is available as well as "
+           "the wireframe with no fill. The colour and opacity are below, "
+           "under the line settings.\n\n"
+           "Purely visual — nothing about the structure or any exported file "
+           "changes."));
+    fillButton->setCheckable(true);
+    fillButton->setChecked(viewport_->style().fillCell);
+
     // The home cell plus the annex its bonds spill into.
     auto* ghostButton = makeCellButton(
         QStringLiteral("home-office-fill"),
@@ -157,6 +176,93 @@ UnitCellPanel::UnitCellPanel(ViewportWidget* viewport, QWidget* parent)
         viewport_->style().cellLineWidth = static_cast<float>(value);
         viewport_->styleChanged(true);
     });
+
+    // -- Filled cell ------------------------------------------------------
+    //
+    // Below the two line settings, because the order on the page is the order
+    // of the box's parts: how its edges are stroked, then how its interior is
+    // shaded. Both rows follow the fill toggle above and are greyed out with
+    // it — a colour nothing is drawn in is a control with no effect.
+    auto* fillColorButton = new QPushButton(this);
+    fillColorButton->setFixedHeight(22);
+    setButtonColor(fillColorButton, viewport_->style().cellFillColor);
+    fillColorButton->setToolTip(
+        tr("Tint of the filled faces. Kept separate from \"Cell color\" on "
+           "purpose: the edge colour is chosen to READ against the atoms, "
+           "while the fill is chosen to stay behind them, and one value "
+           "cannot do both."));
+    auto* fillColorLabel = new QLabel(tr("Cell fill color:"), this);
+    form->addRow(fillColorLabel, fillColorButton);
+    connect(fillColorButton, &QPushButton::clicked, this, [this, fillColorButton] {
+        const QColor chosen = QColorDialog::getColor(
+            viewport_->style().cellFillColor, this, tr("Unit Cell Fill Color"));
+        if (!chosen.isValid())
+            return;
+        setButtonColor(fillColorButton, chosen);
+        viewport_->style().cellFillColor = chosen;
+        // The tint is baked into the face vertices, so this is a rebuild.
+        viewport_->styleChanged(true);
+    });
+
+    // Slider (coarse) + spin box (exact), bidirectionally synced — the same
+    // pairing the Vectors tab uses for its continuous quantities.
+    auto* alphaRow = new QWidget(this);
+    auto* alphaLayout = new QHBoxLayout(alphaRow);
+    alphaLayout->setContentsMargins(0, 0, 0, 0);
+    auto* alphaSlider = new QSlider(Qt::Horizontal, alphaRow);
+    alphaSlider->setRange(0, 100); // percent
+    auto* alphaSpin = new QSpinBox(alphaRow);
+    alphaSpin->setRange(0, 100);
+    alphaSpin->setSuffix(tr(" %"));
+    const int alphaPercent =
+        static_cast<int>(std::lround(viewport_->style().cellFillAlpha * 100.0f));
+    alphaSlider->setValue(alphaPercent);
+    alphaSpin->setValue(alphaPercent);
+    alphaRow->setToolTip(
+        tr("Opacity of the filled faces. Low values are the useful range: the "
+           "fill exists to say where the box is, and much above ~30% it starts "
+           "washing out the structure it is drawn around.\n\n"
+           "The fill never occludes the atoms whatever this is set to — it "
+           "blends without writing depth."));
+    alphaLayout->addWidget(alphaSlider, 1);
+    alphaLayout->addWidget(alphaSpin);
+    auto* alphaLabel = new QLabel(tr("Cell fill opacity:"), this);
+    form->addRow(alphaLabel, alphaRow);
+    // Opacity is a shader uniform rather than baked geometry, so it repaints
+    // instead of rebuilding — which is what keeps dragging the slider smooth.
+    connect(alphaSlider, &QSlider::valueChanged, this, [this, alphaSpin](int percent) {
+        {
+            const QSignalBlocker blocker(alphaSpin);
+            alphaSpin->setValue(percent);
+        }
+        viewport_->style().cellFillAlpha = static_cast<float>(percent) / 100.0f;
+        viewport_->styleChanged(false);
+    });
+    connect(alphaSpin, &QSpinBox::valueChanged, this, [this, alphaSlider](int percent) {
+        {
+            const QSignalBlocker blocker(alphaSlider);
+            alphaSlider->setValue(percent);
+        }
+        viewport_->style().cellFillAlpha = static_cast<float>(percent) / 100.0f;
+        viewport_->styleChanged(false);
+    });
+
+    // The faces are always in the vertex buffer; the toggle only decides
+    // whether the draw happens, so it repaints rather than rebuilding.
+    const auto syncFillControls = [fillColorLabel, fillColorButton, alphaLabel,
+                                   alphaRow](bool on) {
+        for (QWidget* widget : {static_cast<QWidget*>(fillColorLabel),
+                                static_cast<QWidget*>(fillColorButton),
+                                static_cast<QWidget*>(alphaLabel), alphaRow})
+            widget->setEnabled(on);
+    };
+    syncFillControls(fillButton->isChecked());
+    connect(fillButton, &QPushButton::toggled, this,
+            [this, syncFillControls](bool on) {
+                viewport_->style().fillCell = on;
+                syncFillControls(on);
+                viewport_->styleChanged(false);
+            });
 
     form->addRow(new QWidget(this)); // trailing spacer keeps the rows top-aligned
 }

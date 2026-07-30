@@ -132,7 +132,7 @@ std::string KpointsConvergenceScriptGenerator::generate(
            "evaluated = []  # per successful point: record + forces + eigenvalues\n"
            "\n"
            "for index, kpts in enumerate(MESHES):\n"
-           "    _calango_log.progress(index, len(MESHES))\n"
+           "    _calango_progress(index, len(MESHES))\n"
            "    record = {\"kpts\": list(kpts),\n"
            "              \"k_per_axis\": int(K_PER_AXIS[index])}\n"
            "    label = \"x\".join(str(k) for k in kpts)\n"
@@ -173,7 +173,7 @@ std::string KpointsConvergenceScriptGenerator::generate(
            "                  f\"{eig_error}\", flush=True)\n"
            "        evaluated.append({\"record\": record, \"forces\": forces,\n"
            "                          \"band_means\": band_means})\n"
-           "        _calango_log.metric(index, energy=energy, max_force=fmax)\n"
+           "        _calango_metric(index, energy=energy, max_force=fmax)\n"
            "        print(f\"CALANGO_MEMBER kpts={label} E={energy:.6f} \"\n"
            "              f\"fmax={fmax:.6f}\", flush=True)\n"
            "    except Exception as error:\n";
@@ -181,8 +181,8 @@ std::string KpointsConvergenceScriptGenerator::generate(
         out << "        # One diverging coarse-mesh SCF must not lose the\n"
                "        # rest of the curve.\n"
                "        record[\"error\"] = str(error)\n"
-               "        _calango_log.event(\"error\",\n"
-               "                           f\"kpts {label} failed: {error}\")\n"
+               "        _calango_event(\"error\",\n"
+               "                       f\"kpts {label} failed: {error}\")\n"
                "        print(f\"CALANGO_WARN kpts={label} failed: {error}\",\n"
                "              flush=True)\n";
     } else {
@@ -190,7 +190,7 @@ std::string KpointsConvergenceScriptGenerator::generate(
     }
     out << "    points.append(record)\n"
            "\n"
-           "_calango_log.progress(len(MESHES), len(MESHES))\n"
+           "_calango_progress(len(MESHES), len(MESHES))\n"
            "\n"
            "# -- Convergence relative to the best run --------------------------\n"
            "if not evaluated:\n"
@@ -250,10 +250,10 @@ std::string KpointsConvergenceScriptGenerator::generate(
            "print(f\"CALANGO_INFO wrote {results_path}\", flush=True)\n"
            "print(\"CALANGO_RESULT kpoints_convergence=\" + results_path,\n"
            "      flush=True)\n"
-           "_calango_log.event(\"done\",\n"
-           "                   f\"{len(converged)} of {len(points)} meshes \"\n"
-           "                   f\"evaluated; reference \"\n"
-           "                   + \"x\".join(str(k) for k in reference[\"kpts\"]))\n";
+           "_calango_event(\"done\",\n"
+           "               f\"{len(converged)} of {len(points)} meshes \"\n"
+           "               f\"evaluated; reference \"\n"
+           "               + \"x\".join(str(k) for k in reference[\"kpts\"]))\n";
     return out.str();
 }
 

@@ -24,7 +24,6 @@ Usage:  yambo_pipeline_test.py <calango_script_test binary>
 """
 import json
 import os
-import shutil
 import stat
 import subprocess
 import sys
@@ -129,7 +128,6 @@ def build_script(binary, workdir, baseline):
     run_py = os.path.join(workdir, "gw.py")
     with open(run_py, "w") as handle:
         handle.write(script)
-    shutil.copy(os.path.join(dump, "calango_log.py"), workdir)
     return run_py
 
 
@@ -150,7 +148,6 @@ def run_pipeline(binary, workdir, fail_on_run=False):
     job = os.path.join(workdir, "job")
     os.makedirs(job)
     run_py = build_script(binary, workdir, baseline)
-    shutil.copy(os.path.join(workdir, "calango_log.py"), job)
 
     env = dict(os.environ)
     env["PATH"] = bindir + os.pathsep + env["PATH"]

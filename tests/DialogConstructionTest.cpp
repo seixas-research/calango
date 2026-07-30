@@ -29,6 +29,8 @@
 #include "gui/GuiUtils.hpp"
 #include "gui/CutoffConvergenceWizard.hpp"
 #include "gui/KpointsConvergenceWizard.hpp"
+#include "gui/MaceTrainerDialog.hpp"
+#include "gui/RandomNoiseViewer.hpp"
 #include "gui/RandomNoiseWizard.hpp"
 #include "gui/SinglePointWizard.hpp"
 #include "gui/TwoDBandsWizard.hpp"
@@ -1208,6 +1210,192 @@ int main(int argc, char** argv)
         degenerate.max[0] = 0.0; // min == max
         check(degenerate.cellOffsets().size() == 1,
               "a degenerate window still draws one cell rather than none");
+    }
+
+    // -- Random Noise Viewer: the JSON schema is a two-file contract ---------
+    //
+    // random_noise.json is written by a generated Python script and read by
+    // this C++ window; neither file mentions the other, so a key renamed on
+    // one side fails silently on the other — the window opens showing dashes
+    // where the spread should be. The fixture below is a verbatim excerpt of
+    // what RandomNoiseScriptGenerator emits, so renaming a key breaks here.
+    std::printf("Random Noise viewer:\n");
+    {
+        const QString dir =
+            QDir::tempPath() + QStringLiteral("/calango-noise-viewer-test");
+        QDir().mkpath(dir);
+        {
+            QFile json(dir + QStringLiteral("/random_noise.json"));
+            json.open(QIODevice::WriteOnly | QIODevice::Text);
+            json.write(R"({
+  "summary": {
+    "members": 4, "evaluated": 3, "failed": 1,
+    "energy_mean": 0.09, "energy_std": 0.0677,
+    "energy_min": -0.02, "energy_max": 0.23, "energy_range": 0.25,
+    "reference_energy": -0.02, "mean_shift": 0.113,
+    "energy_per_atom_mean": 0.0225, "energy_per_atom_std": 0.0169,
+    "force_samples": 6,
+    "force_component_mean": 0.0, "force_component_std": 0.509,
+    "force_magnitude_mean": 0.78, "force_magnitude_std": 0.405,
+    "force_magnitude_max": 1.61
+  },
+  "members": [
+    {"frame": 0, "natoms": 4, "energy": -0.02, "energy_per_atom": -0.005},
+    {"frame": 1, "natoms": 4, "energy": 0.07, "energy_per_atom": 0.0175},
+    {"frame": 2, "natoms": 4, "energy": 0.23, "energy_per_atom": 0.0575},
+    {"frame": 3, "natoms": 4, "energy": null, "error": "SCF failed"}
+  ],
+  "force_magnitudes": [0.11, 0.42, 0.78, 0.91, 1.2, 1.61]
+})");
+        }
+        // No trajectory beside it: Export must degrade to a disabled button
+        // rather than offering to copy a file that is not there.
+        RandomNoiseViewer viewer(dir);
+        check(viewer.hasData(), "reads the schema the generator writes");
+
+        // The summary text is the deliverable — the standard deviations of the
+        // energies and of the forces, both read from the file rather than
+        // recomputed, so the window and random_noise.json cannot disagree.
+        // QStringLiteral, not QLatin1String: "σ" is two UTF-8 bytes, which
+        // Latin-1 would read as two separate characters and never match.
+        QString summary;
+        for (QLabel* label : viewer.findChildren<QLabel*>())
+            if (label->text().contains(QStringLiteral("σ")))
+                summary = label->text();
+        check(summary.contains(QLatin1String("0.0677")),
+              "reports the energy standard deviation");
+        check(summary.contains(QLatin1String("0.509")),
+              "reports the force standard deviation");
+        check(summary.contains(QLatin1String("16.9")),
+              "and the per-atom energy spread, converted to meV");
+        check(summary.contains(QLatin1String("1 failed")),
+              "says how many members failed, since they are excluded");
+
+        // Both histograms exist and were fed: the energy panel takes the three
+        // finite member energies (the failed one is skipped, not binned as a
+        // NaN edge), the force panel the pooled per-atom magnitudes.
+        check(viewer.findChildren<HistogramPlotWidget*>().size() == 2,
+              "draws an energy and a force histogram");
+
+        exerciseControls(&viewer);
+        check(true, "survives re-binning across the whole range");
+
+        // Export copies the evaluated trajectory. With none written — a run
+        // where every member failed — the button must be off rather than
+        // offering to copy a file that is not there.
+        const auto exportButton = [](const QWidget& window) -> QAbstractButton* {
+            for (QAbstractButton* button :
+                 window.findChildren<QAbstractButton*>())
+                if (button->text().startsWith(QLatin1String("Export")))
+                    return button;
+            return nullptr;
+        };
+        QAbstractButton* button = exportButton(viewer);
+        check(button != nullptr && !button->isEnabled(),
+              "Export is disabled when the run wrote no trajectory");
+
+        {
+            QFile traj(dir + QStringLiteral("/noise_singlepoint.extxyz"));
+            traj.open(QIODevice::WriteOnly | QIODevice::Text);
+            traj.write("1\nProperties=species:S:1:pos:R:3 energy=-0.02\n"
+                       "Cu 0.0 0.0 0.0\n");
+        }
+        RandomNoiseViewer withTrajectory(dir);
+        QAbstractButton* enabled = exportButton(withTrajectory);
+        check(enabled != nullptr && enabled->isEnabled(),
+              "and enabled once the trajectory is beside the results");
+
+        QFile::remove(dir + QStringLiteral("/noise_singlepoint.extxyz"));
+        QFile::remove(dir + QStringLiteral("/random_noise.json"));
+        QDir().rmdir(dir);
+    }
+    {
+        // A directory with no results at all: the caller checks hasData() and
+        // deletes the window, so this must not crash on the way to false.
+        RandomNoiseViewer empty(QDir::tempPath()
+                                + QStringLiteral("/calango-does-not-exist"));
+        check(!empty.hasData(), "reports no data for a directory without one");
+    }
+
+    // -- MACE Trainer: the config MACE will actually accept ------------------
+    //
+    // Everything here was verified against mace-torch 0.3.15's own
+    // `mace.tools.arg_parser`. The failures it guards against all happen on
+    // the training machine, minutes-to-hours after the dialog closed:
+    //
+    //  * MACE loads the config through configargparse, which ABORTS on a key
+    //    it does not recognise — an invented setting is a dead run.
+    //  * Its default reference-data keys are REF_energy / REF_forces. ASE —
+    //    and so every dataset Calango exports — puts the energy and forces on
+    //    a SinglePointCalculator, leaving atoms.info and atoms.arrays empty on
+    //    read-back. With the defaults, MACE finds neither key and stops.
+    //  * E0s is not optional. Without it, and without config_type=IsolatedAtom
+    //    frames in the training file, MACE raises "E0s not found in training
+    //    file and not specified in command line" before the first epoch.
+    std::printf("MACE trainer configuration:\n");
+    {
+        MaceTrainerDialog dialog;
+        check(true, "constructs without dereferencing a half-built widget");
+
+        const QString yaml = dialog.yaml();
+        const auto has = [&yaml](const char* needle) {
+            return yaml.contains(QLatin1String(needle));
+        };
+        check(has("energy_key:"), "names the energy key rather than "
+                                  "inheriting MACE's REF_energy default");
+        check(has("forces_key:"), "names the forces key too");
+        check(has("energy_key: \"energy\"") && has("forces_key: \"forces\""),
+              "and defaults them to what ASE writes");
+        check(has("E0s:"), "supplies isolated-atom energies");
+        check(has("num_interactions:"),
+              "spells num_interactions in full (the singular form only works "
+              "by argparse prefix matching)");
+        check(has("default_dtype:"), "pins the training precision");
+        check(has("save_cpu:"),
+              "saves a CPU copy, so the model loads without the training GPU");
+        // A zero weight under `loss: weighted` fits nothing; emitting it reads
+        // as a stress term that exists when none does.
+        check(!has("stress_weight: 0") && !has("virials_weight: 0"),
+              "omits the loss weights that are switched off");
+
+        // Stage two must leave room for at least one evaluation — that is when
+        // MACE writes the stage-two checkpoint it then reloads at the end of
+        // the run. Too late a start produces no checkpoint, and MACE dies
+        // loading it after training successfully to the last epoch.
+        QSpinBox* epochs = nullptr;
+        QSpinBox* swaStart = nullptr;
+        for (QSpinBox* spin : dialog.findChildren<QSpinBox*>()) {
+            if (spin->value() == 200 && spin->maximum() == 100000)
+                epochs = spin;
+            if (spin->value() == 150)
+                swaStart = spin;
+        }
+        check(epochs != nullptr && swaStart != nullptr,
+              "the epoch and stage-two controls are present");
+        if (epochs && swaStart) {
+            epochs->setValue(20);
+            check(swaStart->value() < 20,
+                  "shrinking the epoch budget pulls the stage-two start in "
+                  "with it");
+            epochs->setValue(200);
+        }
+
+        exerciseControls(&dialog);
+        check(true, "survives every control being toggled");
+
+        // The launcher is Python that has to parse on a machine Calango is not
+        // installed on. Pin the invocation shape rather than only the text: it
+        // must drive MACE's own entry point, and it must not reach for a
+        // Calango helper module.
+        const QString runner = dialog.runnerScript();
+        check(runner.contains(QLatin1String("from mace.cli.run_train import "
+                                            "main as mace_run_train")),
+              "drives MACE's documented in-process entry point");
+        check(runner.contains(QLatin1String("logging.getLogger().handlers"
+                                            ".clear()")),
+              "clears our log handlers so MACE does not double every line");
+        check(!runner.contains(QLatin1String("calango_log")),
+              "the launcher is self-contained too");
     }
 
     std::printf(failures == 0 ? "\nAll dialog construction checks passed.\n"

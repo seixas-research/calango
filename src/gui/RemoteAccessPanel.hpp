@@ -21,8 +21,9 @@ namespace calango::gui {
 /// keep it usable at bottom-row height.
 ///
 /// The submission flow is driven by MainWindow: a simulation wizard's
-/// Stage-4 "Run (Remote)" makes it stage run.py + calango_log.py +
-/// structure.extxyz into a fresh job directory (same staging as local jobs)
+/// Stage-4 "Run (Remote)" makes it stage run.py + structure.extxyz into a
+/// fresh job directory (same staging as local jobs — run.py is self-contained,
+/// so those two files are the whole job)
 /// and hand it to submitStagedJob(). This panel supplies the scheduler
 /// settings that submission is wrapped with, and monitors the result.
 class RemoteAccessPanel : public QWidget {

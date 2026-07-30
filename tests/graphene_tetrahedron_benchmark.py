@@ -36,7 +36,6 @@ Usage:  graphene_tetrahedron_benchmark.py <calango_script_test binary>
 """
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -172,7 +171,6 @@ def main() -> int:
         run_py = os.path.join(job, "optics.py")
         with open(run_py, "w") as handle:
             handle.write(script)
-        shutil.copy(os.path.join(dump, "calango_log.py"), job)
         # The script reads the structure it was staged with.
         from ase.build import graphene
         from ase.io import write as ase_write

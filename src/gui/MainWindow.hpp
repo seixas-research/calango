@@ -52,6 +52,7 @@ class TimelineWidget;
 class FilmTimelineWidget;
 class FilmProductionDialog;
 class ViewportWidget;
+class WorkflowWindow;
 
 /// Application shell and MVC "Controller" with a tabbed multi-document
 /// workspace: each tab is a Document (structure + optional trajectory +
@@ -138,9 +139,6 @@ private Q_SLOTS:
     void redo();
 
     void singlePointCalculation();
-    /// Workflow → "Add Workflow…": open a new node-based pipeline editor
-    /// seeded with the currently open structures as assignable materials.
-    void addWorkflow();
     /// Modules → Parameters Convergence → "Plane-wave Cutoff Convergence…":
     /// single points over an ascending cutoff list, judged against the run at
     /// the highest cutoff.
@@ -253,6 +251,10 @@ private Q_SLOTS:
     /// cutoff_convergence.json / kpoints_convergence.json respectively.
     void openCutoffConvergenceResults(const QString& directory);
     void openKpointsConvergenceResults(const QString& directory);
+    /// Open the Random Noise Viewer (energy and force distributions, their
+    /// standard deviations, and the ensemble export) on a finished run's
+    /// directory — reads random_noise.json.
+    void openRandomNoiseResults(const QString& directory);
     /// Open the Geometry Optimization Viewer on a finished relaxation's
     /// directory (reads geometry_optimization.json + opt.traj).
     void openGeometryOptimizationResults(const QString& directory);
@@ -489,6 +491,12 @@ private:
     struct ProcessRecord; // full definition below
 
     void createMenusAndDocks();
+
+    /// Build the Workflow canvas for the bottom-row dock: seeds it with the
+    /// open documents, installs the provider that keeps that list current, and
+    /// wires each dispatched node's job into the Results panel (process
+    /// selector, live metric plots, persistence) exactly as a wizard run is.
+    WorkflowWindow* createWorkflowPanel(QWidget* parent);
     Document* currentDocument();
     /// Creates an empty "Untitled" tab when none exists (for Add Atom).
     Document& ensureDocument();
@@ -687,6 +695,11 @@ private:
     QDockWidget* jobDock_ = nullptr;
     QDockWidget* visualEffectsDock_ = nullptr; ///< zone 9 (Lighting + effects)
     QDockWidget* remoteDock_ = nullptr;
+    /// Zone 14 — the node canvas, leading the bottom row. It replaced the
+    /// former "Workflow → Add Workflow…" window, so there is exactly one of
+    /// them and it outlives the tabs it draws its materials from.
+    QDockWidget* workflowDock_ = nullptr;
+    WorkflowWindow* workflowPanel_ = nullptr;
     RemoteAccessPanel* remotePanel_ = nullptr;
     ProcessManagerPanel* processPanel_ = nullptr;
     /// "Additional overlays" dock — lattice planes, text and primitives.

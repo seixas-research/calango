@@ -78,7 +78,7 @@ if nwannier <= 0:
     raise RuntimeError('wannier.json records no Wannier-function count — the '
                        'MLWF run did not complete.')
 projection = _meta.get('projection', 'orbitals')
-_calango_log.progress(1, 4)
+_calango_progress(1, 4)
 
 # --- Rebuild the localization --------------------------------------------
 # The SAME localization the MLWF run produced, from the same wavefunctions
@@ -95,7 +95,7 @@ for _it in range(_max_iter):
     _prev = _val
 print(f'CALANGO_INFO localization functional = {float(wan.get_functional_value()):.6f}',
       flush=True)
-_calango_log.progress(2, 4)
+_calango_progress(2, 4)
 
 # --- Interpolate onto a 3D k-grid ----------------------------------------
 # Fractional -1/2 .. 1/2, endpoint EXCLUDED: -1/2 and +1/2 are the same k by
@@ -111,12 +111,12 @@ for i, kx in enumerate(_frac):
         for k, kz in enumerate(_frac):
             H_ww = wan.get_hamiltonian_kpoint(np.array([kx, ky, kz]))
             _energies[i, j, k] = np.linalg.eigvalsh(H_ww)
-    _calango_log.progress(2 + (i + 1) / len(_frac), 4)
+    _calango_progress(2 + (i + 1) / len(_frac), 4)
 
 # 2*pi restored so the axes are the 1/Angstrom every Fermi-surface figure is
 # drawn in; ASE's reciprocal() omits it.
 _recip = 2.0 * np.pi * np.asarray(atoms.cell.reciprocal())
-_calango_log.progress(3, 4)
+_calango_progress(3, 4)
 
 # Only bands that actually CROSS the target energy can contribute a sheet.
 # Reporting the others would make the viewer extract empty isosurfaces from
@@ -153,7 +153,7 @@ result = {
 }
 with open('fermi_surface.json', 'w') as _fh:
     json.dump(result, _fh)
-_calango_log.progress(4, 4)
+_calango_progress(4, 4)
 print('CALANGO_RESULT fermi_surface=fermi_surface.json', flush=True)
 print('CALANGO_DONE', flush=True)
 )PY";

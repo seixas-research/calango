@@ -27,7 +27,6 @@ Usage:  gw_silicon_benchmark.py <calango_script_test binary>
 """
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -124,7 +123,6 @@ def main() -> int:
         run_py = os.path.join(workdir, "gw.py")
         with open(run_py, "w") as handle:
             handle.write(script)
-        shutil.copy(os.path.join(dump, "calango_log.py"), workdir)
 
         # 3. Run it the way the job runner would.
         print("Generated G0W0 script:")

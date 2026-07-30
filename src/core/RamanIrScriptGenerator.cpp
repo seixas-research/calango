@@ -105,7 +105,7 @@ symbols = atoms.get_chemical_symbols()
 natoms = len(atoms)
 volume = float(atoms.get_volume()) if atoms.pbc.any() else 0.0
 
-_calango_log.event('start', f'{natoms} atoms, {6 * natoms} displacements')
+_calango_event('start', f'{natoms} atoms, {6 * natoms} displacements')
 
 # 1 e*A expressed in debye, for the (D/A)^2/amu unit the IR literature quotes.
 DEBYE_PER_EA = 4.803204
@@ -270,7 +270,7 @@ except AttributeError:
     hessian = np.asarray(vib.H, dtype=float)
 
 frequencies_cm, displacements = mass_weighted_modes(hessian, masses)
-_calango_log.event('info', 'force constants done')
+_calango_event('info', 'force constants done')
 
 
 # --- 2. IR intensities from the Born effective charges --------------------
@@ -381,17 +381,17 @@ if COMPUTE_RAMAN:
                 optics_meta = json.load(handle)
             eta = float(optics_meta.get('eta_eV', eta))
         except Exception as exc:
-            _calango_log.event('warning',
-                               f'could not read the optics reference: {exc!r}')
+            _calango_event('warning',
+                           f'could not read the optics reference: {exc!r}')
 
     # Empty-band count for the response step. Four times the occupied count is
     # the same rule the Optics workflow uses, with a floor for very small cells
     # where 4x occupied is still only a handful of bands.
     _occupied = max(1, int(round(_baseline.get_number_of_electrons() / 2.0)))
     RESPONSE_BANDS = max(4 * _occupied, 24)
-    _calango_log.event('info',
-                       f'response NSCF with {RESPONSE_BANDS} bands '
-                       f'({_occupied} occupied)')
+    _calango_event('info',
+                   f'response NSCF with {RESPONSE_BANDS} bands '
+                   f'({_occupied} occupied)')
 
     # dchi/du for every atom and axis, by central differences of the static
     # dielectric tensor. chi = (eps - 1)/(4 pi).
@@ -436,7 +436,7 @@ if COMPUTE_RAMAN:
                         if os.path.exists(path):
                             os.remove(path)
                 step += 1
-                _calango_log.progress(step, total)
+                _calango_progress(step, total)
             depsilon[atom_index, axis] = (tensors[0] - tensors[1]) / (2.0 * DELTA)
 
     # chi = (eps - 1) / 4pi, so dchi/du = deps/du / 4pi. The conventional
@@ -445,8 +445,8 @@ if COMPUTE_RAMAN:
     raman_activity = raman_activities(dalpha, displacements)
     raman_meta = {'computed': True, 'eta_eV': eta, 'off_diagonal': True}
 else:
-    _calango_log.event('info',
-                       'Raman disabled: only the IR spectrum is computed')
+    _calango_event('info',
+                   'Raman disabled: only the IR spectrum is computed')
 
 
 # --- 4. Stokes intensities and the broadened spectra ----------------------

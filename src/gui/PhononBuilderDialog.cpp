@@ -396,9 +396,8 @@ void PhononBuilderDialog::saveScript()
     if (path.isEmpty())
         return;
 
-    // Stages calango_log.py beside the script (it imports CalangoLog).
     QString error;
-    if (!writeScriptWithLogger(path, script(), &error))
+    if (!writeScript(path, script(), &error))
         QMessageBox::warning(this, tr("Save Script"), error);
 }
 

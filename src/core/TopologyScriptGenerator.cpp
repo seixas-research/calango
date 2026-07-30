@@ -53,7 +53,7 @@ if not _gpw_path:
 from gpaw import GPAW
 calc = GPAW(_gpw_path, txt='gpaw_topology.txt')
 atoms = calc.get_atoms()
-_calango_log.progress(1, 3)
+_calango_progress(1, 3)
 
 # The parallel transport walks a closed loop through the FULL zone; a
 # symmetry-reduced mesh has no such loop to walk.
@@ -101,7 +101,7 @@ S_km = np.asarray(S_km)
 _nk, _nm = phi_km.shape
 print(f'CALANGO_INFO transported {_nm} centres over {_nk} loop points',
       flush=True)
-_calango_log.progress(2, 3)
+_calango_progress(2, 3)
 
 # Centres in units of the lattice constant, wrapped to [0, 1).
 wcc_km = (phi_km / (2.0 * np.pi)) % 1.0
@@ -205,7 +205,7 @@ if _want_z2:
 
 with open('topology.json', 'w') as _fh:
     json.dump(result, _fh)
-_calango_log.progress(3, 3)
+_calango_progress(3, 3)
 print('CALANGO_RESULT topology=topology.json', flush=True)
 print('CALANGO_DONE', flush=True)
 )PY";

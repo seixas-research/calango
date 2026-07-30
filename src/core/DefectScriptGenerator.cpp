@@ -109,7 +109,7 @@ if E_GAP <= 1e-3:
 
 print(f'CALANGO_INFO host E_VBM={E_VBM:.4f} eV E_CBM={E_CBM:.4f} eV '
       f'E_gap={E_GAP:.4f} eV', flush=True)
-_calango_log.progress(1, len(CHARGES) + 2)
+_calango_progress(1, len(CHARGES) + 2)
 
 # --- Neutral defect ------------------------------------------------------
 neutral = GPAW(NEUTRAL, txt=None)
@@ -150,7 +150,7 @@ for step, q in enumerate(CHARGES):
     results[q] = {'E_tot_eV': E_q, 'gpw': gpw_q, 'correction_eV': 0.0,
                   'correction_terms': {}}
     print(f'CALANGO_INFO charge q={q:+d} E_tot={E_q:.6f} eV', flush=True)
-    _calango_log.progress(step + 2, len(CHARGES) + 2)
+    _calango_progress(step + 2, len(CHARGES) + 2)
 
 # --- FNV corrections -----------------------------------------------------
 # q = 0 needs none: there is no net charge, so no spurious image interaction
@@ -278,7 +278,7 @@ summary = {
 with open('charged_defects.json', 'w') as handle:
     json.dump(summary, handle, indent=2)
 
-_calango_log.progress(len(CHARGES) + 2, len(CHARGES) + 2)
+_calango_progress(len(CHARGES) + 2, len(CHARGES) + 2)
 print(f'CALANGO_RESULT charged_defects=charged_defects.json '
       f'charges={len(CHARGES)} transitions={len(transitions)} '
       f'gap={E_GAP:.3f}', flush=True)

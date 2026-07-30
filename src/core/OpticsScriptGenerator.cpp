@@ -225,7 +225,7 @@ std::string generateVaspOpticsScript(const OpticsConfig& cfg)
            "\n"
         << AseScriptGenerator::jsonLoggerPreamble()
         << "atoms = read(\"structure.extxyz\")\n"
-           "_calango_log.progress(0, 4)\n"
+           "_calango_progress(0, 4)\n"
            "\n"
            "# --- Step 1: self-consistent ground state ------------------------\n"
            "# Standard VASP optics is a TWO-step protocol: a normal SCF that\n"
@@ -256,7 +256,7 @@ std::string generateVaspOpticsScript(const OpticsConfig& cfg)
            "        float(atoms.calc.get_number_of_electrons()) / 2.0))\n"
            "except Exception:\n"
            "    n_occ = nbands_scf\n"
-           "_calango_log.progress(1, 4)\n"
+           "_calango_progress(1, 4)\n"
            "\n"
            "# --- Step 2: LOPTICS at fixed density ----------------------------\n"
            "params = dict(atoms.calc.parameters)\n"
@@ -302,7 +302,7 @@ std::string generateVaspOpticsScript(const OpticsConfig& cfg)
             << responseKpts[2] << ")\n";
     out << "atoms.calc = Vasp(**params)\n"
            "atoms.get_potential_energy()  # triggers the LOPTICS run\n"
-           "_calango_log.progress(2, 4)\n"
+           "_calango_progress(2, 4)\n"
            "\n"
            "# --- ε(ω) from vasprun.xml ---------------------------------------\n"
            "tree = ET.parse(\"vasprun.xml\")\n"
@@ -331,7 +331,7 @@ std::string generateVaspOpticsScript(const OpticsConfig& cfg)
            "omega_all = real[:, 0]\n"
            "# Columns per row: energy, xx, yy, zz, xy, yz, zx.\n"
            "_component = {\"xx\": 1, \"yy\": 2, \"zz\": 3}\n"
-           "_calango_log.progress(3, 4)\n"
+           "_calango_progress(3, 4)\n"
            "\n"
         << "window = (omega_all >= " << cfg.omegaMinEv
         << ") & (omega_all <= " << cfg.omegaMaxEv
@@ -405,7 +405,7 @@ std::string generateVaspOpticsScript(const OpticsConfig& cfg)
     out << "\n"
            "with open(\"optics.json\", \"w\") as handle:\n"
            "    json.dump(results, handle)\n"
-           "_calango_log.progress(4, 4)\n"
+           "_calango_progress(4, 4)\n"
            "print(\"CALANGO_RESULT optics=optics.json\", flush=True)\n";
     return out.str();
 }
@@ -439,7 +439,7 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "\n"
         << AseScriptGenerator::jsonLoggerPreamble()
         << "atoms = read(\"structure.extxyz\")\n"
-           "_calango_log.progress(0, 4)\n"
+           "_calango_progress(0, 4)\n"
            "\n"
            "# --- Baseline ground state (inherited, NOT re-converged) "
            "---------\n"
@@ -451,7 +451,7 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "from gpaw import GPAW\n"
            "\n"
         << "gs = GPAW(r\"" << cfg.baselineDensityPath << "\", txt=None)\n"
-           "_calango_log.progress(1, 4)\n"
+           "_calango_progress(1, 4)\n"
            "\n"
         << responseKpointsBlock(cfg)
         << "# --- Fixed-density NSCF with extra empty bands "
@@ -484,7 +484,7 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "      f\"weight_sum={float(sum(nscf.get_k_point_weights())):.4f}\",\n"
            "      flush=True)\n"
            "nscf.write(\"gs_nscf.gpw\", mode=\"all\")\n"
-           "_calango_log.progress(2, 4)\n"
+           "_calango_progress(2, 4)\n"
            "\n"
            "# --- Dielectric function via GPAW's response module "
            "-----------------\n"
@@ -568,7 +568,7 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "          f\"frequencies where {len(frequencies_eV)} were \"\n"
            "          f\"requested; the spectra follow the grid it used.\",\n"
            "          flush=True)\n"
-           "_calango_log.progress(3, 4)\n"
+           "_calango_progress(3, 4)\n"
            "\n"
            "# ħc = 197.3269804 eV·nm = 197.3269804e-7 eV·cm. With ħω in eV the\n"
            "# absorption coefficient α = 2 (ω / ħc) k then comes out in cm^-1.\n"
@@ -605,8 +605,8 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "    try:\n"
            "        eps_nlfc, eps_lfc = df.get_dielectric_function(direction=axis)\n"
            "    except Exception as _e:\n"
-           "        _calango_log.event('warning',\n"
-           "                           'direction %s failed: %r' % (axis, _e))\n"
+           "        _calango_event('warning',\n"
+           "                       'direction %s failed: %r' % (axis, _e))\n"
            "        continue\n"
            "    eps = np.asarray(eps_lfc)\n"
            "    # Drop any non-finite frequency points (missing grid entries /\n"
@@ -647,7 +647,7 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
 
     out << "with open(\"optics.json\", \"w\") as handle:\n"
            "    json.dump(results, handle)\n"
-           "_calango_log.progress(4, 4)\n"
+           "_calango_progress(4, 4)\n"
            "print(\"CALANGO_RESULT optics=optics.json\", flush=True)\n";
     return out.str();
 }

@@ -74,9 +74,11 @@ core::Structure makeScene()
     return structure;
 }
 
-/// Render one frame at the given cast-0 opacity.
+/// Render one frame at the given cast-0 opacity, optionally with the unit
+/// cell's faces filled.
 QImage renderAt(QOpenGLFunctions_3_3_Core* gl, const core::Structure& structure,
-                float opacity)
+                float opacity, bool fillCell = false,
+                float fillAlpha = 0.15f)
 {
     QOpenGLFramebufferObject fbo(kSize, kSize,
                                  QOpenGLFramebufferObject::CombinedDepthStencil);
@@ -92,6 +94,8 @@ QImage renderAt(QOpenGLFunctions_3_3_Core* gl, const core::Structure& structure,
     renderer.style().opacity = opacity;
     renderer.style().showCell = true;
     renderer.style().cellLineWidth = 2.0f;   // > 1 → the lit-tube path
+    renderer.style().fillCell = fillCell;
+    renderer.style().cellFillAlpha = fillAlpha;
     // Big spheres and fat bonds: the whole point is to put a lot of overlapping
     // translucent geometry on screen, since a scene that barely covers any
     // pixels cannot show an ordering error however wrong the ordering is.
@@ -229,6 +233,50 @@ int main(int argc, char** argv)
         const double difference = meanDifference(opaque, translucent);
         std::printf("       mean |Δ| = %.2f / 255\n", difference);
         check(difference > 2.0, "0.50 opacity does visibly differ from opaque");
+    }
+
+    std::printf("The filled unit cell shades the box without hiding it:\n");
+    {
+        // Three properties, and the failure modes behind each one:
+        //
+        //  * it draws something — the faces stream must actually reach the GPU
+        //    (an unregistered VAO or an unrebuilt buffer draws nothing and
+        //    looks exactly like the toggle being off);
+        //  * it does NOT write depth — a filled box that occludes is the whole
+        //    point of using a blended pass, and getting that wrong hides every
+        //    atom inside the cell, which is every atom;
+        //  * it scales with the alpha control — a fill wired to a constant
+        //    would pass the first two checks and ignore the slider.
+        const QImage unfilled = renderAt(gl, structure, 1.00f, false);
+        const QImage filled = renderAt(gl, structure, 1.00f, true, 0.25f);
+        const QImage heavier = renderAt(gl, structure, 1.00f, true, 0.60f);
+        if (qEnvironmentVariableIsSet("CALANGO_DUMP_FRAMES")) {
+            const QString dir = qEnvironmentVariable("CALANGO_DUMP_FRAMES");
+            filled.flipped(Qt::Vertical).save(dir + "/cell_filled.png");
+            heavier.flipped(Qt::Vertical).save(dir + "/cell_filled_heavy.png");
+        }
+
+        const double lightDifference = meanDifference(unfilled, filled);
+        std::printf("       mean |Δ| vs unfilled: 0.25 alpha %.2f\n",
+                    lightDifference);
+        check(lightDifference > 1.0, "the fill is actually drawn");
+
+        // The faces cover far more of the frame than the wireframe does, so
+        // switching them on can only ADD lit pixels. A drop means the fill is
+        // writing depth and eating the scene behind it.
+        const int unfilledDrawn = drawnPixels(unfilled);
+        const int filledDrawn = drawnPixels(filled);
+        std::printf("       drawn px: unfilled %d, filled %d\n", unfilledDrawn,
+                    filledDrawn);
+        check(filledDrawn >= unfilledDrawn,
+              "filling the cell never removes drawn pixels — it blends "
+              "without writing depth");
+
+        const double heavyDifference = meanDifference(unfilled, heavier);
+        std::printf("       mean |Δ| vs unfilled: 0.60 alpha %.2f\n",
+                    heavyDifference);
+        check(heavyDifference > lightDifference,
+              "a higher fill alpha shades the box more strongly");
     }
 
     std::printf(failures == 0 ? "\nAll translucent-render checks passed.\n"

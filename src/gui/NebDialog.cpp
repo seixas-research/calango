@@ -666,7 +666,7 @@ QString NebDialog::buildNebScript() const
             << ", method=\"improvedtangent\")\n"
             << "opt = " << optimizer << "(neb, logfile=\"-\")\n\n"
                "def _report():\n"
-               "    _calango_log.progress(opt.nsteps, max_steps)\n"
+               "    _calango_progress(opt.nsteps, max_steps)\n"
                "    _stream_band()\n\n"
                "opt.attach(_report)\n"
                "_stream_band()\n"
@@ -678,7 +678,7 @@ QString NebDialog::buildNebScript() const
            "energies = [img.get_potential_energy() for img in images]\n"
            "e0 = energies[0]\n"
            "for i, e in enumerate(energies):\n"
-           "    _calango_log.metric(i, energy=e - e0)\n"
+           "    _calango_metric(i, energy=e - e0)\n"
            "barrier = max(energies) - e0\n"
            "print(f\"CALANGO_RESULT barrier_eV={barrier:.6f}\", flush=True)\n"
            "print(\"CALANGO_DONE\", flush=True)\n";

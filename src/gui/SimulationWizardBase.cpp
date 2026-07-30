@@ -2042,10 +2042,10 @@ void SimulationWizardBase::exportScript()
         this, tr("Export Script"), exportFileName(), tr("Python scripts (*.py)"));
     if (path.isEmpty())
         return;
-    // The script imports CalangoLog, so the helper module is exported beside
-    // it — an exported script stays runnable standalone.
+    // One file, nothing beside it: the script carries its own logging block,
+    // so what lands on disk here is what runs on a cluster.
     QString error;
-    if (!writeScriptWithLogger(path, script(), &error))
+    if (!writeScript(path, script(), &error))
         QMessageBox::warning(this, tr("Export Script"), error);
 }
 

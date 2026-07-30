@@ -33,7 +33,7 @@ std::string generateTwoDBandsScript(const TwoDBandsConfig& cfg)
         << "\", txt=\"gpaw_2d_bands.txt\")\n"
            "atoms = calc.get_atoms()\n"
            "efermi = float(calc.get_fermi_level())\n"
-           "_calango_log.progress(1, 4)\n"
+           "_calango_progress(1, 4)\n"
            "\n"
            "# --- Geometry sanity ----------------------------------------------\n"
            "# The kz = 0 plane is the whole Brillouin zone only for a sheet:\n"
@@ -78,7 +78,7 @@ std::string generateTwoDBandsScript(const TwoDBandsConfig& cfg)
     if (cfg.totalBands > 0)
         out << "                               nbands=" << cfg.totalBands << ",\n";
     out << "                               txt='gpaw_2d_bands.txt')\n"
-           "_calango_log.progress(2, 4)\n"
+           "_calango_progress(2, 4)\n"
            "\n";
 
     if (cfg.spinOrbit) {
@@ -102,7 +102,7 @@ std::string generateTwoDBandsScript(const TwoDBandsConfig& cfg)
                "    dtype=float)  # (nspin, nk, nband)\n";
     }
 
-    out << "_calango_log.progress(3, 4)\n"
+    out << "_calango_progress(3, 4)\n"
            "\n"
            "# --- Band selection -----------------------------------------------\n"
            "# Every band that crosses E_F is kept whatever the counts say: those\n"
@@ -196,7 +196,7 @@ std::string generateTwoDBandsScript(const TwoDBandsConfig& cfg)
            "}\n"
            "with open('bands_2d.json', 'w') as _fh:\n"
            "    json.dump(result, _fh)\n"
-           "_calango_log.progress(4, 4)\n"
+           "_calango_progress(4, 4)\n"
            "print('CALANGO_RESULT bands_2d=bands_2d.json', flush=True)\n"
            "print('CALANGO_DONE', flush=True)\n";
     return out.str();

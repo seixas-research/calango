@@ -590,6 +590,7 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     createColoredBuffer(managedOverlayFaces_);
     createColoredBuffer(managedOverlayEdges_);
     createColoredBuffer(hydrogenBonds_);
+    createColoredBuffer(cellFaces_);
 
     cellVao_.create();
     cellVao_.bind();
@@ -1579,6 +1580,7 @@ void StructureRenderer::setStructure(const core::Structure* structure,
     std::vector<float> wireAtomVertices;
     std::vector<float> cellVertices;
     std::vector<float> cellTubeInstances;
+    std::vector<float> cellFaceVertices;
 
     // Per-atom settings: every atom's own cast decides how it is drawn, from
     // its mode down to its radius and material. With no casts defined this is
@@ -2044,6 +2046,37 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                     }
                 }
             }
+
+            // Filled cell: the six faces as triangles ("hatched cell" in the
+            // Unit Cell tab). Built alongside the wireframe rather than
+            // instead of it — the two are independent depictions of the same
+            // box, and Style::fillCell decides at DRAW time whether this
+            // stream is used, exactly as showCell does for the edges above.
+            //
+            // Corner index i encodes the fractional coordinate in its bits
+            // (bit 0 = a, bit 1 = b, bit 2 = c), so each face is the four
+            // corners that agree on one bit. Winding is irrelevant here: face
+            // culling is off in the main pass, which is what a translucent box
+            // needs — you see its far side through its near one.
+            static constexpr int kFaces[6][4] = {
+                {0, 2, 6, 4}, {1, 5, 7, 3}, // a = 0, a = 1
+                {0, 4, 5, 1}, {2, 3, 7, 6}, // b = 0, b = 1
+                {0, 1, 3, 2}, {4, 6, 7, 5}, // c = 0, c = 1
+            };
+            const float fillR = static_cast<float>(style_.cellFillColor.redF());
+            const float fillG = static_cast<float>(style_.cellFillColor.greenF());
+            const float fillB = static_cast<float>(style_.cellFillColor.blueF());
+            for (const auto& face : kFaces) {
+                const int triangles[6] = {face[0], face[1], face[2],
+                                          face[0], face[2], face[3]};
+                for (const int corner : triangles) {
+                    const QVector3D p =
+                        toQt(corners[static_cast<std::size_t>(corner)]);
+                    cellFaceVertices.insert(
+                        cellFaceVertices.end(),
+                        {p.x(), p.y(), p.z(), fillR, fillG, fillB});
+                }
+            }
         }
     }
 
@@ -2098,6 +2131,10 @@ void StructureRenderer::setStructure(const core::Structure* structure,
             replicateStream(cellTubeInstances, kFloatsPerInstance,
                             /*offset=*/12, cellShifts);
             replicateStream(cellVertices, /*stride=*/3, /*offset=*/0, cellShifts);
+            // The fill is the same box as the edges, so it follows the same
+            // rule: boxes around the images means filled boxes around them.
+            replicateStream(cellFaceVertices, /*stride=*/6, /*offset=*/0,
+                            cellShifts);
         }
     }
 
@@ -2150,6 +2187,8 @@ void StructureRenderer::setStructure(const core::Structure* structure,
     cellVbo_.bind();
     cellVbo_.allocate(cellVertices.data(),
                       static_cast<int>(cellVertices.size() * sizeof(float)));
+
+    uploadColoredBuffer(cellFaces_, cellFaceVertices);
 }
 
 void StructureRenderer::uploadLights()
@@ -2521,6 +2560,30 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
             polyhedronEdges_.vao.release();
             gl_->glLineWidth(1.0f);
         }
+        wireProgram_.release();
+    }
+
+    // Filled unit cell, drawn BEFORE the wireframe so the edges land on top of
+    // their own fill instead of being half-swallowed by it. Same unlit,
+    // depth-write-off blend as the polyhedra faces: the box encloses the
+    // structure, so it must never occlude the atoms inside it.
+    //
+    // Gated on fillCell alone, not on showCell: the fill and the edges are two
+    // independent depictions of one box, and a solid block with no wireframe is
+    // as legitimate a figure as the wireframe with no fill.
+    if (style_.fillCell && cellFaces_.vertexCount > 0) {
+        wireProgram_.bind();
+        wireProgram_.setUniformValue("uMvp", projection * view);
+        wireProgram_.setUniformValue("uAlpha",
+                                     std::clamp(style_.cellFillAlpha, 0.0f, 1.0f));
+        gl_->glEnable(GL_BLEND);
+        gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        gl_->glDepthMask(GL_FALSE);
+        cellFaces_.vao.bind();
+        gl_->glDrawArrays(GL_TRIANGLES, 0, cellFaces_.vertexCount);
+        cellFaces_.vao.release();
+        gl_->glDepthMask(GL_TRUE);
+        gl_->glDisable(GL_BLEND);
         wireProgram_.release();
     }
 

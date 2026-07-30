@@ -24,7 +24,7 @@ void emitGpawGw(std::ostringstream& out, const GwConfig& c)
         << "n_bands = " << (c.bands > 0 ? std::to_string(c.bands)
                                         : std::string("max(8 * n_occ, 40)"))
         << "\n"
-           "_calango_log.progress(1, 4)\n"
+           "_calango_progress(1, 4)\n"
            "\n"
            "# --- Fixed-density NSCF with the empty bands GW sums over -------\n"
            "# The self-energy sums over unoccupied states, so the baseline's\n"
@@ -39,7 +39,7 @@ void emitGpawGw(std::ostringstream& out, const GwConfig& c)
            "    txt=\"gpaw_nscf.txt\",\n"
            ")\n"
            "nscf.write(\"gw_gs.gpw\", mode=\"all\")\n"
-           "_calango_log.progress(2, 4)\n"
+           "_calango_progress(2, 4)\n"
            "\n"
            "# --- G0W0 quasiparticle correction -------------------------------\n"
            "from gpaw.response.g0w0 import G0W0\n"
@@ -65,7 +65,7 @@ void emitGpawGw(std::ostringstream& out, const GwConfig& c)
            "    nblocks=1,\n"
            ")\n"
            "result = gw.calculate()\n"
-           "_calango_log.progress(3, 4)\n"
+           "_calango_progress(3, 4)\n"
            "\n"
            "# result['qp'] is (spin, kpoint, band) in eV; 'eps' holds the DFT\n"
            "# eigenvalues over the same window, so the two are directly\n"
@@ -131,7 +131,7 @@ void emitYamboGw(std::ostringstream& out, const GwConfig& c)
            "        \"completed pw.x run's saved wavefunctions.\")\n"
            "save_dir = saves[0]\n"
            "print(f\"CALANGO_INFO baseline save={save_dir}\", flush=True)\n"
-           "_calango_log.progress(1, 4)\n"
+           "_calango_progress(1, 4)\n"
            "\n"
            "# 2. p2y converts it into a Yambo SAVE/ database. It writes into\n"
            "#    its working directory, so it runs INSIDE the .save.\n"
@@ -144,7 +144,7 @@ void emitYamboGw(std::ostringstream& out, const GwConfig& c)
            "shutil.copytree(produced, \"SAVE\")\n"
            "# Initialize the database in the job directory.\n"
            "run([\"yambo\"], step=\"yambo (database initialization)\")\n"
-           "_calango_log.progress(2, 4)\n"
+           "_calango_progress(2, 4)\n"
            "\n"
            "# 3. Generate the G0W0 input. -g n selects the GW solver, -p p the\n"
            "#    plasmon-pole screening (-p r would be the real-axis form).\n"
@@ -186,7 +186,7 @@ void emitYamboGw(std::ostringstream& out, const GwConfig& c)
            "command = ([\"mpirun\", \"-np\", str(cores)] if cores > 1 else []) + \\\n"
            "          [\"yambo\", \"-F\", \"gw.in\", \"-J\", \"gw\"]\n"
            "run(command, step=\"yambo (G0W0)\")\n"
-           "_calango_log.progress(3, 4)\n"
+           "_calango_progress(3, 4)\n"
            "\n"
            "# 5. Parse the quasiparticle report.\n"
            "#    Yambo writes o-<job>.qp with a commented header naming the\n"
@@ -334,7 +334,7 @@ std::string generateGwScript(const GwConfig& config)
            "import numpy as np\n"
            "\n"
         << AseScriptGenerator::jsonLoggerPreamble()
-        << "_calango_log.progress(0, 4)\n"
+        << "_calango_progress(0, 4)\n"
            "\n";
 
     if (config.engine == GwEngine::Gpaw)
@@ -375,7 +375,7 @@ std::string generateGwScript(const GwConfig& config)
            "}\n"
            "with open(\"gw.json\", \"w\") as handle:\n"
            "    json.dump(summary, handle)\n"
-           "_calango_log.progress(4, 4)\n"
+           "_calango_progress(4, 4)\n"
            "if summary[\"gap_renormalization_eV\"] is not None:\n"
            "    print(f\"CALANGO_RESULT dft_gap_eV={dft_gap:.4f} \"\n"
            "          f\"gw_gap_eV={gw_gap:.4f} \"\n"

@@ -152,12 +152,12 @@ std::string generateUnfoldingScript(const UnfoldingConfig& c)
                ")\n"
                "atoms.get_potential_energy()\n"
                "efermi = float(atoms.calc.get_fermi_level())\n"
-               "_calango_log.progress(1, 3)\n"
+               "_calango_progress(1, 3)\n"
                "\n"
                "# Non-self-consistent pass at the folded wavevectors.\n"
                "band_calc = atoms.calc.fixed_density(\n"
                "    kpts=folded, symmetry=\"off\", txt=\"unfold_bands.txt\")\n"
-               "_calango_log.progress(2, 3)\n"
+               "_calango_progress(2, 3)\n"
             << kProjection
             << "\n"
                "columns = []\n"
@@ -169,7 +169,7 @@ std::string generateUnfoldingScript(const UnfoldingConfig& c)
                "        \"energies\": [float(e) for e in energies],\n"
                "        \"weights\": [float(w) for w in weights],\n"
                "    })\n"
-               "    _calango_log.progress(2 + index / max(1, len(kpts_primitive)), 3)\n";
+               "    _calango_progress(2 + index / max(1, len(kpts_primitive)), 3)\n";
         break;
     case UnfoldingBackend::Espresso:
     case UnfoldingBackend::Siesta:
@@ -206,7 +206,7 @@ std::string generateUnfoldingScript(const UnfoldingConfig& c)
            "with open(\"effective_bands.json\", \"w\") as handle:\n"
            "    json.dump(summary, handle)\n"
            "print(\"CALANGO_INFO wrote effective_bands.json\", flush=True)\n"
-           "_calango_log.progress(3, 3)\n"
+           "_calango_progress(3, 3)\n"
            "\n"
            "print(f\"CALANGO_RESULT kpoints={len(columns)} efermi_eV={efermi:.6f}\",\n"
            "      flush=True)\n"

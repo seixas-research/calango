@@ -434,6 +434,24 @@ public:
         /// tube path, because the break is cut into the geometry rather than
         /// painted by the fragment stage.
         CellLineStyle cellLineStyle = CellLineStyle::Solid;
+        /// Fill the cell's six faces with a translucent solid, so the box
+        /// reads as a VOLUME rather than as twelve lines. A wireframe alone is
+        /// ambiguous about which way it encloses — the classic Necker-cube
+        /// flip — and a faint tinted fill resolves it, which is what a figure
+        /// of a slab or a molecule inside its box actually needs.
+        ///
+        /// Independent of `showCell`: the fill and the edges are two
+        /// depictions of the same box and either may be wanted alone (a solid
+        /// block with no wireframe, or the historical wireframe with no fill).
+        bool fillCell = false;
+        /// Fill tint. Distinct from `cellColor` on purpose — the edge colour
+        /// is chosen to READ against the atoms, whereas the fill is chosen to
+        /// stay behind them, and one value cannot do both.
+        QColor cellFillColor{110, 150, 210};
+        /// Fill opacity in [0, 1]. Low by default: the fill exists to say
+        /// where the box is, and anything much above ~0.3 starts washing out
+        /// the structure it is drawn around.
+        float cellFillAlpha = 0.15f;
         std::map<int, QColor> colorOverrides;      ///< Z -> user color
         std::map<int, float> radiusScaleOverrides; ///< Z -> per-element radius factor
         /// Scalar color mapping: Element uses the CPK palette; the other
@@ -799,6 +817,11 @@ private:
     InstancedMesh cylinder_;
     InstancedMesh cone_;     ///< arrowheads of force/velocity vectors
     InstancedMesh cellTube_; ///< thick cell wireframe (cellLineWidth > 1)
+    /// The six cell faces as triangles, GL_TRIANGLES with a flat per-vertex
+    /// colour. Blended at Style::cellFillAlpha without writing depth, like the
+    /// polyhedra faces — the box is scene furniture and must never occlude the
+    /// atoms it encloses.
+    ColoredVertexBuffer cellFaces_;
     ColoredVertexBuffer wireBonds_;  ///< GL_LINES
     ColoredVertexBuffer wireAtoms_;  ///< GL_POINTS (isolated atoms visible)
     ColoredVertexBuffer polyhedronFaces_; ///< GL_TRIANGLES (translucent)

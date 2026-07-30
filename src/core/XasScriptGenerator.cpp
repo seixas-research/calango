@@ -183,11 +183,11 @@ std::string XasScriptGenerator::generate(const XasRunConfig& c,
            "    txt='xas_gs.txt',\n"
            ")\n"
            "atoms.calc = calc\n"
-           "_calango_log.progress(1, 3)\n"
+           "_calango_progress(1, 3)\n"
            "energy = atoms.get_potential_energy()\n"
            "print(f'CALANGO_RESULT energy_eV={energy:.6f}', flush=True)\n"
            "calc.write('xas.gpw', mode='all')\n"
-           "_calango_log.progress(2, 3)\n"
+           "_calango_progress(2, 3)\n"
            "\n";
 
     // -- Optional delta-Kohn-Sham calibration -------------------------------
@@ -259,7 +259,7 @@ std::string XasScriptGenerator::generate(const XasRunConfig& c,
            "                                        dks=dks_energy)\n"
            "stick_energies, stick_intensities = xas.get_spectra(\n"
            "    stick=True, dks=dks_energy)\n"
-           "_calango_log.progress(3, 3)\n"
+           "_calango_progress(3, 3)\n"
            "\n"
            "# get_spectra returns (3, N): the x, y and z polarizations. The\n"
            "# isotropic spectrum — what a powder or solution measurement sees —\n"
@@ -297,7 +297,7 @@ std::string XasScriptGenerator::generate(const XasRunConfig& c,
            "transitions={len(stick_energies)} '\n"
            "      f'range=[{energies.min():.2f}, {energies.max():.2f}] eV',\n"
            "      flush=True)\n"
-           "_calango_log.event('done', f'XAS spectrum written to "
+           "_calango_event('done', f'XAS spectrum written to "
            "{results_path}')\n";
     return out.str();
 }

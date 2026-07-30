@@ -88,7 +88,7 @@ std::string ClusterExpansionScriptGenerator::generate(
 
     out << "\n"
            "for index, atoms in enumerate(configs):\n"
-           "    _calango_log.progress(index, len(configs))\n"
+           "    _calango_progress(index, len(configs))\n"
            "    formula = atoms.get_chemical_formula()\n"
            "    x = concentration_of(atoms)\n"
            "    record = {\n"
@@ -122,15 +122,15 @@ std::string ClusterExpansionScriptGenerator::generate(
         out << "        # One bad decoration must not lose the rest of the ensemble.\n"
                "        record[\"error\"] = str(error)\n"
                "        record[\"energy_per_atom\"] = math.nan\n"
-               "        _calango_log.event(\"error\",\n"
-               "                           f\"configuration {index} ({formula}) failed: {error}\")\n"
+               "        _calango_event(\"error\",\n"
+               "                       f\"configuration {index} ({formula}) failed: {error}\")\n"
                "        print(f\"CALANGO_WARN frame={index} failed: {error}\", flush=True)\n";
     } else {
         out << "        raise\n";
     }
     out << "    records.append(record)\n"
            "\n"
-           "_calango_log.progress(len(configs), len(configs))\n"
+           "_calango_progress(len(configs), len(configs))\n"
            "\n"
            "if relaxed:\n"
            "    write(output_path, relaxed)\n"

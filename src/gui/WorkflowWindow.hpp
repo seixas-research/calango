@@ -16,7 +16,6 @@
 #include <vector>
 
 class QComboBox;
-class QLabel;
 class QPushButton;
 
 namespace calango::core {
@@ -177,7 +176,7 @@ private:
     QGraphicsPathItem* pendingPreview_ = nullptr;
 };
 
-/// Workflow → "Add Workflow…": a node-based editor for automated simulation
+/// The "Workflow" dock: a node-based editor for automated simulation
 /// pipelines. Processes are nodes on a pannable, zoomable canvas; drawing a
 /// link from one node's output port to another node makes the second run
 /// after the first, consuming its outputs — the relaxed geometry of a
@@ -187,11 +186,20 @@ private:
 /// Execution is sequential in dependency order (the app runs one local job
 /// at a time by design); each node stages its own job directory under a
 /// per-workflow folder in the simulations directory, using the same script
-/// generators, logger module and launch-command machinery as the wizards.
-class WorkflowWindow : public QDialog {
+/// generators and launch-command machinery as the wizards.
+///
+/// A plain QWidget rather than a QDialog: it lives in the bottom dock area
+/// beside Results, so it is a persistent workspace panel rather than
+/// something opened, used and dismissed. That is also why it carries no
+/// Close button — the dock's own title bar and the View menu own its
+/// visibility.
+class WorkflowWindow : public QWidget {
     Q_OBJECT
 
 public:
+    using MaterialList =
+        QList<QPair<QString, std::shared_ptr<const core::Structure>>>;
+
     /// `materials` are the open documents (name + structure snapshot) a node
     /// can be assigned; `pythonResolver` maps an engine to the interpreter
     /// its jobs run under (Preferences → Python & Environments);
@@ -200,11 +208,20 @@ public:
     /// jobs are tracked and reloadable like any other run. Null (headless)
     /// simply skips the mirroring.
     WorkflowWindow(
-        const QList<QPair<QString, std::shared_ptr<const core::Structure>>>&
-            materials,
+        const MaterialList& materials,
         std::function<QString(core::CalculatorKind)> pythonResolver,
         ProcessManagerPanel* processPanel = nullptr,
         QWidget* parent = nullptr);
+
+    /// Install a callback asked for the open documents each time the Add
+    /// Process dialog is raised.
+    ///
+    /// The constructor's `materials` is a SNAPSHOT, which was right when the
+    /// panel was a dialog opened on demand and wrong now that it is a dock
+    /// outliving every tab it was built from: without this, a workflow added
+    /// an hour into a session still offers whatever was open when the window
+    /// was created. Unset (the headless tests) keeps the snapshot.
+    void setMaterialsProvider(std::function<MaterialList()> provider);
 
     // -- Programmatic pipeline API -------------------------------------------
     // What the buttons and gestures call, exposed so a pipeline can also be
@@ -267,18 +284,19 @@ private:
     /// Mark every descendant of a failed node Skipped — their inputs will
     /// never exist.
     void skipDescendants(WorkflowNodeItem* node);
-    void updateStatusLabel(const QString& message = QString());
 
     /// Mirror one node's state onto its Processes-panel row, if any.
     void updateProcessPanel(WorkflowNodeItem* node);
 
-    QList<QPair<QString, std::shared_ptr<const core::Structure>>> materials_;
+    MaterialList materials_;
+    std::function<MaterialList()> materialsProvider_;
     std::function<QString(core::CalculatorKind)> pythonResolver_;
     ProcessManagerPanel* processPanel_ = nullptr;
 
     WorkflowScene* scene_ = nullptr;
     QGraphicsView* view_ = nullptr;
-    QLabel* statusLabel_ = nullptr;
+    /// The only control the panel keeps a handle on: it is disabled for the
+    /// duration of a run. The other two are icon buttons wired and forgotten.
     QPushButton* runButton_ = nullptr;
 
     std::vector<WorkflowNodeItem*> nodes_;

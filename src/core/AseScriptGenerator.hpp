@@ -24,24 +24,22 @@ public:
     /// for embedding in other generated scripts (e.g. the phonon builder).
     static std::string calculatorSnippet(const CalculatorConfig& config);
 
-    /// The structured-logging preamble shared by every generated script:
-    /// imports CalangoLog from the staged `calango_log.py` module and installs
-    /// it as `_calango_log`, a thread-safe JSON logger writing step metrics to
-    /// metrics.json and events to log.json (and routing Python warnings to
-    /// warnings.log). Other generators (Monte Carlo, NEB, MACE trainer)
-    /// prepend this and call `_calango_log.metric(step, energy=..., ...)`
-    /// instead of printing.
+    /// The structured-logging preamble shared by every generated script: a
+    /// plain dict plus the three functions
+    /// `_calango_metric(step, energy=..., ...)`, `_calango_progress(step,
+    /// total)` and `_calango_event(level, message)`. They write metrics.json
+    /// and log.json (which Calango's Results panel polls) and route Python
+    /// warnings to warnings.log. Other generators (Monte Carlo, NEB, MACE
+    /// trainer) prepend this and call those functions instead of printing.
     ///
-    /// Every caller that *writes a script somewhere* must also write
-    /// loggerModuleSource() as loggerModuleFileName() beside it, or the
-    /// import fails at run time.
+    /// It is EMBEDDED, not imported. Nothing in a generated script refers to
+    /// Calango, so the file can be copied to a cluster and run as-is wherever
+    /// ASE and the calculator are installed — which is the whole point of
+    /// generating a script rather than driving the calculation in-process. It
+    /// used to be `from calango_log import CalangoLog`, which quietly made
+    /// every script a two-file bundle and failed on line 5 anywhere the helper
+    /// module had not been copied along with it.
     static std::string jsonLoggerPreamble();
-
-    /// Full text of the `calango_log.py` helper module (the single copy lives
-    /// at assets/calango/scripts/calango_log.py and is baked in at build
-    /// time). Staged next to run.py by the job launcher and next to an
-    /// exported script by the wizards' Export action.
-    static std::string loggerModuleSource();
 
     /// GPAW import line for the configured mode/mixer, and the keyword
     /// arguments of a GPAW(...) call (mode, xc, k-points, eigensolver, mixer,
@@ -54,10 +52,6 @@ public:
     static std::string gpawImports(const CalculatorConfig& config);
     static std::string gpawKeywordArguments(const CalculatorConfig& config,
                                             const std::string& indent);
-
-    /// File name the module must be written under for the generated
-    /// `from calango_log import CalangoLog` to resolve.
-    static const char* loggerModuleFileName();
 
     /// Standalone script that restarts GPAW from the `*.gpw` in `gpwDir` and
     /// writes the charge density to `density.cube` (all-electron when

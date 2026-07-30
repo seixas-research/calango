@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.74
+    VERSION 26.7.75
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -79,36 +79,15 @@ if(NOT pybind11_FOUND)
     FetchContent_MakeAvailable(pybind11)
 endif()
 
-# ---------------------------------------------------------------------------
-# Embedded Python helper modules
-# ---------------------------------------------------------------------------
-# assets/calango/scripts/calango_log.py is the ONE copy of the job logger.
-# Generated ASE scripts `from calango_log import CalangoLog`, and the module
-# is staged next to run.py (and next to an exported script) at run time.
-# Baking its text into a header lets the Qt-free core/ layer hand it out
-# without a Qt resource; CONFIGURE_DEPENDS-style re-runs come from listing
-# the .py as a configure dependency below.
-set(CALANGO_LOG_MODULE_PY
-    "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/scripts/calango_log.py")
-if(NOT EXISTS "${CALANGO_LOG_MODULE_PY}")
-    message(FATAL_ERROR
-        "Missing ${CALANGO_LOG_MODULE_PY} — generated ASE scripts import it. "
-        "If this is a Dropbox online-only placeholder, download the file first.")
-endif()
-file(READ "${CALANGO_LOG_MODULE_PY}" CALANGO_LOG_MODULE_SOURCE)
-# The header embeds the text in an R"CALANGOPY(...)CALANGOPY" literal; that
-# delimiter must not appear in the module itself.
-string(FIND "${CALANGO_LOG_MODULE_SOURCE}" ")CALANGOPY" _calango_log_clash)
-if(NOT _calango_log_clash EQUAL -1)
-    message(FATAL_ERROR
-        "calango_log.py contains the raw-string delimiter )CALANGOPY")
-endif()
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CalangoLogModule.hpp.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/core/CalangoLogModule.hpp"
-    @ONLY)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${CALANGO_LOG_MODULE_PY}")
+# Embedded Python helper modules: there are none.
+#
+# assets/calango/scripts/calango_log.py used to be baked into a generated
+# header so the Qt-free core/ layer could stage it beside every generated
+# script, which imported it. That made a generated script a two-file bundle
+# and broke the one thing the generator exists to promise — a .py you can
+# copy to an HPC box and run under stock ASE. The logging block is now
+# embedded in the scripts themselves (AseScriptGenerator::jsonLoggerPreamble),
+# so the module, the generated header and this whole configure step are gone.
 
 # ---------------------------------------------------------------------------
 # Target
@@ -481,6 +460,8 @@ qt_add_executable(calango
     src/gui/WorkflowWindow.cpp
     src/gui/RandomNoiseWizard.hpp
     src/gui/RandomNoiseWizard.cpp
+    src/gui/RandomNoiseViewer.hpp
+    src/gui/RandomNoiseViewer.cpp
     src/gui/CddWizard.hpp
     src/gui/CddWizard.cpp
     src/gui/XasWizard.hpp
@@ -640,7 +621,9 @@ qt_add_resources(calango "icons"
         assets/icons/loader-4-line.svg
         assets/icons/magic-line.svg
         assets/icons/map-2-fill.svg
+        assets/icons/paint-fill.svg
         assets/icons/palette-line.svg
+        assets/icons/play-circle-fill.svg
         assets/icons/price-tag-fill.svg
         assets/icons/puzzle-fill.svg
         assets/icons/line-chart-line.svg
@@ -1118,6 +1101,10 @@ if(CALANGO_BUILD_TESTS)
         src/gui/TwoDBandsWizard.cpp
         src/core/TwoDBandsScriptGenerator.cpp
         src/gui/RandomNoiseWizard.cpp
+        # Its results window: the JSON schema the generated script writes and
+        # the viewer reads is a contract between two files that never see each
+        # other, so the first GUI test to touch it pins the keys.
+        src/gui/RandomNoiseViewer.cpp
         src/gui/CddWizard.cpp
         src/gui/XasWizard.cpp
         src/gui/XasResultsWindow.cpp
@@ -1141,6 +1128,11 @@ if(CALANGO_BUILD_TESTS)
         src/gui/GpawElectronicRows.cpp
         src/gui/HubbardParametersDialog.cpp
         src/gui/CondaEnvs.cpp
+        # The MACE trainer: its YAML has to name keys mace.tools.arg_parser
+        # accepts and the reference-data keys the exported dataset actually
+        # uses, and its launcher has to be valid Python. All three fail at run
+        # time on someone else's cluster, hours in, so they are pinned here.
+        src/gui/MaceTrainerDialog.cpp
         src/gui/EnginePresets.cpp
         src/gui/PythonHighlighter.cpp
         src/gui/RunCommands.cpp

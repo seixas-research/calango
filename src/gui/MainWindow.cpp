@@ -41,6 +41,7 @@
 #include "gui/GeometryOptimizationWizard.hpp"
 #include "gui/ElectronicBandsWizard.hpp"
 #include "gui/MolecularDynamicsWizard.hpp"
+#include "gui/RandomNoiseViewer.hpp"
 #include "gui/RandomNoiseWizard.hpp"
 #include "gui/CddWizard.hpp"
 #include "gui/CondaEnvs.hpp"
@@ -210,7 +211,11 @@ constexpr double kTrajectoryPlaybackFps = 15.0;
 //  14: the branding card grew a version caption under the logo, raising its
 //      minimum height; a layout saved under 13 pins the old 30 px strip and
 //      would clip the caption forever.
-constexpr int kLayoutVersion = 14;
+//  15: "Workflow" joined the bottom row, which is now Workflow | Remote Access
+//      | Results — a new dock, so a layout saved under 14 has no slot for it
+//      and would strand the canvas with no way back. Remote Access and
+//      Additional Overlays also became hidden-by-default in the same change.
+constexpr int kLayoutVersion = 15;
 
 /// Painted icons for the frame-panel camera toolbar (icon-only buttons).
 /// Plane icons use the axes-triad colors: x red, y green, z blue.
@@ -1230,13 +1235,13 @@ void MainWindow::createMenusAndDocks()
                         "against the mesh density, referenced to the densest "
                         "one"));
 
-    // ----- Workflow: node-based simulation pipelines ------------------------
-    QMenu* workflowMenu = menuBar()->addMenu(tr("&Workflow"));
-    workflowMenu
-        ->addAction(tr("&Add Workflow…"), this, &MainWindow::addWorkflow)
-        ->setToolTip(tr("A node-based pipeline editor: chain processes "
-                        "(Geometry Optimization → Single-Point → …) so each "
-                        "one runs on its parent's results automatically"));
+    // The "Workflow" menu and its single "Add Workflow…" action are gone: the
+    // node canvas is now a permanent dock in the bottom row (see below) rather
+    // than a modeless window a menu item conjures up. A whole top-level menu
+    // for one action that opened one window was the most prominent thing in
+    // the menu bar and the least used; as a dock the canvas is simply THERE,
+    // beside the Results panel that reports on the jobs it dispatches, and
+    // View → Workflow toggles it like every other panel.
 
     // Help trails the menu bar: online resources first, About last (as is
     // conventional). New documentation/support links belong in kHelpLinks.
@@ -1338,6 +1343,13 @@ void MainWindow::createMenusAndDocks()
     overlayPanel_ = new OverlayPanel(viewport_, overlayDock);
     overlayDock->setWidget(overlayPanel_);
     splitDockWidget(volumetricDock, overlayDock, Qt::Vertical);
+    // Hidden by default. Annotating a figure with planes, labels and
+    // primitives is a finishing step, not something every session does, and
+    // the panel was taking a quarter of the left column from the Structure and
+    // Volumetric Data panels that ARE read on sight. View → Additional
+    // Overlays brings it back; restoreState() below still reinstates whatever
+    // the user left visible.
+    overlayDock->setVisible(false);
 
     // Compact Process Manager at the foot of the left column.
     auto* processDock = new QDockWidget(tr("Processes"), this);
@@ -1368,8 +1380,9 @@ void MainWindow::createMenusAndDocks()
     visualEffectsDock_->setObjectName(QStringLiteral("visualEffectsDock"));
     visualEffectsDock_->setWidget(new VisualEffectsPanel(viewport_, visualEffectsDock_));
 
-    // Results leads the bottom row now that Visual Effects has moved to its
-    // right-hand end, so it is the dock that establishes the row.
+    // Results now TRAILS the bottom row (Workflow | Remote Access | Results),
+    // so it is built here but placed further down, once the dock that leads
+    // the row exists — see the splitDockWidget chain after Remote Access.
     jobDock_ = new QDockWidget(tr("Results"), this); // zone 10
     jobDock_->setObjectName(QStringLiteral("resultsDock"));
     auto* jobTabs = new QTabWidget(jobDock_);
@@ -1503,7 +1516,6 @@ void MainWindow::createMenusAndDocks()
     jobLayout->addWidget(jobTabs);
     jobTabs->setDocumentMode(true); // flat tab bar, no frame to overlap
     jobDock_->setWidget(jobContainer);
-    addDockWidget(Qt::BottomDockWidgetArea, jobDock_);
 
     remoteDock_ = new QDockWidget(tr("Remote Access"), this); // zone 11
     remoteDock_->setObjectName(QStringLiteral("remoteDock"));
@@ -1511,9 +1523,27 @@ void MainWindow::createMenusAndDocks()
         QString::fromStdString(pybridge::PythonEngine::instance().executable()),
         remoteDock_);
     remoteDock_->setWidget(remotePanel_);
-    splitDockWidget(jobDock_, remoteDock_, Qt::Horizontal);
-    // The bottom row ends here: Results | Remote Access. Visual Effects joins
-    // the right column below — see the splitDockWidget chain further down.
+
+    // Zone 14 — "Workflow": the node canvas, formerly a modeless window behind
+    // a top-level menu. It leads the bottom row, so it is the dock that
+    // establishes the row and the two job panels split off it.
+    //
+    // The row reads left to right in the order the work happens: you build a
+    // pipeline (Workflow), choose where it runs (Remote Access), and read what
+    // came back (Results).
+    workflowDock_ = new QDockWidget(tr("Workflow"), this);
+    workflowDock_->setObjectName(QStringLiteral("workflowDock"));
+    workflowPanel_ = createWorkflowPanel(workflowDock_);
+    workflowDock_->setWidget(workflowPanel_);
+    addDockWidget(Qt::BottomDockWidgetArea, workflowDock_);
+    splitDockWidget(workflowDock_, remoteDock_, Qt::Horizontal);
+    splitDockWidget(remoteDock_, jobDock_, Qt::Horizontal);
+    // Remote Access is hidden by default: submitting to a cluster is a
+    // deliberate act a minority of sessions perform, and the panel is a login
+    // form that says nothing until it is used — unlike Workflow and Results,
+    // which are useful on sight. View → Remote Access brings it back, and
+    // restoreState() below still reinstates whatever the user left visible.
+    remoteDock_->setVisible(false);
 
     // Zone 12 — "Spatial References": the cell wireframe, the orientation
     // triad and the per-atom vector arrows.
@@ -1603,18 +1633,22 @@ void MainWindow::createMenusAndDocks()
     // Processes panels below it.
     resizeDocks({brandingDock, infoDock, volumetricDock, processDock},
                 {kBrandingHeight, 220, 300, 300}, Qt::Vertical);
-    resizeDocks({jobDock_, remoteDock_}, {250, 250}, Qt::Vertical);
-    // The bottom row is Results | Remote Access. Remote Access is held to the
-    // narrowest width that still shows its whole form — its own minimum size
-    // hint, asked of the panel rather than guessed at — and Results absorbs
-    // everything left over.
+    resizeDocks({workflowDock_, jobDock_, remoteDock_}, {250, 250, 250},
+                Qt::Vertical);
+    // The bottom row is Workflow | Remote Access | Results. Remote Access is
+    // held to the narrowest width that still shows its whole form — its own
+    // minimum size hint, asked of the panel rather than guessed at — and the
+    // other two split what is left.
     const int remoteWidth = remotePanel_->minimumSizeHint().width();
     remoteDock_->setMinimumWidth(remoteWidth);
-    // Results is given a plain preferred width rather than an enormous one:
-    // resizeDocks normalizes the numbers it is handed, and an extreme ratio
-    // makes the solver claw the difference out of the LEFT column, which is
-    // not part of this call at all.
-    resizeDocks({jobDock_, remoteDock_}, {560, remoteWidth}, Qt::Horizontal);
+    // Workflow and Results are given plain preferred widths rather than
+    // enormous ones: resizeDocks normalizes the numbers it is handed, and an
+    // extreme ratio makes the solver claw the difference out of the LEFT
+    // column, which is not part of this call at all. Workflow gets the wider
+    // share of the two — it is a canvas, and a canvas narrower than a couple
+    // of nodes cannot show a pipeline.
+    resizeDocks({workflowDock_, remoteDock_, jobDock_},
+                {560, remoteWidth, 460}, Qt::Horizontal);
 
     // Dock titles at 1.2× the theme default across all zones (the earlier
     // 1.5× reduced by 0.8×). The font is set on the QDockWidget (whose
@@ -1629,16 +1663,22 @@ void MainWindow::createMenusAndDocks()
             dock->widget()->setFont(contentFont);
     }
 
+    // Every dock is listed here, in the reading order of the layout: left
+    // column, right column, then the bottom row. A dock missing from this list
+    // is one the user cannot get back after closing it — which is what had
+    // happened to Additional Overlays.
     viewMenu->addSeparator();
     viewMenu->addAction(brandingDock->toggleViewAction());
     viewMenu->addAction(infoDock->toggleViewAction());
     viewMenu->addAction(volumetricDock->toggleViewAction());
+    viewMenu->addAction(overlayDock->toggleViewAction());
     viewMenu->addAction(processDock->toggleViewAction());
     viewMenu->addAction(reprDock->toggleViewAction());
     viewMenu->addAction(visualEffectsDock_->toggleViewAction());
     viewMenu->addAction(overlaysDock->toggleViewAction());
-    viewMenu->addAction(jobDock_->toggleViewAction());
+    viewMenu->addAction(workflowDock_->toggleViewAction());
     viewMenu->addAction(remoteDock_->toggleViewAction());
+    viewMenu->addAction(jobDock_->toggleViewAction());
 
     // Bottom system status bar: Calango's own CPU / GPU / memory / threads,
     // plus the running job's. The runner is bound so the job group can sample
@@ -4194,6 +4234,27 @@ void MainWindow::openKpointsConvergenceResults(const QString& directory)
     window->show();
 }
 
+void MainWindow::openRandomNoiseResults(const QString& directory)
+{
+    auto* window = new RandomNoiseViewer(directory, this);
+    if (!window->hasData()) {
+        delete window;
+        statusBar()->showMessage(
+            tr("Could not read random_noise.json in %1.").arg(directory));
+        return;
+    }
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    window->show();
+    // The ensemble itself opens in a tab as well: the distributions say how
+    // wide the spread is, and scrubbing the trajectory is how you see what a
+    // member at the edge of it actually looks like.
+    if (const QString trajectory =
+            directory + QStringLiteral("/noise_singlepoint.extxyz");
+        QFile::exists(trajectory)) {
+        loadFile(trajectory);
+    }
+}
+
 int MainWindow::registerDensityCubes(const QString& directory)
 {
     if (!volumetricPanel_)
@@ -4924,6 +4985,14 @@ void MainWindow::onProcessResultRequested(const QString& directory)
     if (QFile::exists(directory
                       + QStringLiteral("/kpoints_convergence.json"))) {
         openKpointsConvergenceResults(directory);
+        return;
+    }
+    // Before the single-point branch below: a Random Noise run IS a batch of
+    // single points, and its directory can carry both files. The ensemble's
+    // distributions are what the run was for, and its viewer opens the
+    // trajectory in a tab as well, so nothing is lost by preferring it.
+    if (QFile::exists(directory + QStringLiteral("/random_noise.json"))) {
+        openRandomNoiseResults(directory);
         return;
     }
     if (QFile::exists(directory + QStringLiteral("/single_point.json"))) {
@@ -6124,21 +6193,27 @@ bool MainWindow::prepareSimulation(const QString& title)
     return true;
 }
 
-void MainWindow::addWorkflow()
+WorkflowWindow* MainWindow::createWorkflowPanel(QWidget* parent)
 {
-    // Every open document is an assignable material; snapshot name +
-    // structure so the workflow keeps working if tabs close afterwards.
-    QList<QPair<QString, std::shared_ptr<const core::Structure>>> materials;
-    for (const auto& doc : documents_)
-        if (doc && doc->structure && !doc->structure->empty())
-            materials.append({doc->fileName, doc->structure});
+    // The panel is built once and lives in the dock, so the material list is
+    // supplied by a callback rather than snapshotted: it must reflect the tabs
+    // open at the moment "Add Process…" is pressed, not the (empty) set that
+    // existed while the window was being constructed.
+    const auto materialsNow = [this] {
+        WorkflowWindow::MaterialList materials;
+        for (const auto& doc : documents_)
+            if (doc && doc->structure && !doc->structure->empty())
+                materials.append({doc->fileName, doc->structure});
+        return materials;
+    };
     // The global Processes panel rides along: every dispatched node shows
     // up there (Queued → Running → Completed/Failed) with its directory, so
     // "Load Result" works on workflow jobs like on any wizard run.
     auto* window = new WorkflowWindow(
-        materials,
+        materialsNow(),
         [this](core::CalculatorKind kind) { return pythonForEngine(kind); },
-        processPanel_, this);
+        processPanel_, parent);
+    window->setMaterialsProvider(materialsNow);
 
     // Results-panel integration: a workflow node's job is a process like any
     // other. Register its record and selector entry when it starts, poll its
@@ -6173,8 +6248,10 @@ void MainWindow::addWorkflow()
                     metricsTimer_->stop();
             });
 
-    window->setAttribute(Qt::WA_DeleteOnClose);
-    window->show();
+    // No WA_DeleteOnClose: the dock owns the panel for the life of the window.
+    // Closing the dock hides it, and the pipeline on the canvas survives to be
+    // reopened — which is the point of it being a panel rather than a dialog.
+    return window;
 }
 
 void MainWindow::singlePointCalculation()
@@ -6731,15 +6808,10 @@ QString MainWindow::stageJob(const QString& script, int procId)
         QTextStream(&scriptFile) << script;
         scriptFile.close();
 
-        // The generated script does `from calango_log import CalangoLog`;
-        // Python puts the script's own directory first on sys.path, so the
-        // module resolves from here for local runs. Remote submissions upload
-        // every file in this directory, so it travels with the job too.
-        if (!writeLoggerModule(jobDir)) {
-            throw std::runtime_error(
-                "Could not write the calango_log.py helper module into "
-                + jobDir.toStdString());
-        }
+        // Nothing else to stage for the script to run: its logging block is
+        // embedded, so run.py alone is the whole program. That is what lets a
+        // remote submission upload this directory and have the job work on a
+        // machine where Calango has never been installed.
 
         // Calculator provenance sidecar: lets the MLWF wizard inherit the
         // engine + parameters + Conda env from this completed baseline. Written

@@ -16,6 +16,7 @@
 #include "gui/SinglePointWizard.hpp"
 #include "jobs/JobRunner.hpp"
 #include "python_bridge/AseBridge.hpp"
+#include "ui/IconManager.hpp"
 
 #include <QComboBox>
 #include <QDateTime>
@@ -25,7 +26,6 @@
 #include <QFormLayout>
 #include <QGraphicsSceneMouseEvent>
 #include <QHBoxLayout>
-#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPainter>
@@ -45,6 +45,30 @@ namespace {
 constexpr double kNodeWidth = 200.0;
 constexpr double kNodeHeight = 88.0;
 constexpr double kPortRadius = 7.0;
+
+// -- Canvas palette ---------------------------------------------------------
+//
+// The canvas is dark REGARDLESS of the application theme, like every other
+// data canvas in Calango (the metric plots, the convergence curves, the Random
+// Noise histograms all fill this same 28/30/34). The Workflow dock sits
+// immediately beside Results in the bottom row, so anything else would put two
+// differently-lit canvases side by side; and a diagram of light nodes on a
+// dark field is the convention every node editor uses, because it is the node
+// bodies that carry the information and the field that must recede.
+//
+// These three belong together and MUST move together: the nodes are painted
+// white with dark text, so they take care of themselves, but both link colours
+// are drawn straight onto the background and were chosen against it. The edge
+// pen in particular used to be 0x50 grey — on this background that is a link
+// you cannot see, which on a node canvas means a pipeline whose structure has
+// become invisible.
+const QColor kCanvasBackground(28, 30, 34);
+/// Committed links. Light enough to read on the dark field, muted enough to
+/// still sit UNDER the nodes as plumbing rather than competing with them.
+const QColor kEdgeColor(150, 156, 166);
+/// The dashed link being dragged. Deliberately the brightest thing on the
+/// canvas while the gesture is live — it is a preview the user is steering.
+const QColor kPendingLinkColor(0x66, 0x99, 0xff);
 
 QString taskDisplayName(WorkflowTask task)
 {
@@ -125,7 +149,28 @@ public:
         setRenderHint(QPainter::Antialiasing, true);
         setDragMode(QGraphicsView::RubberBandDrag);
         setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
-        setBackgroundBrush(QColor(0xf2, 0xf3, 0xf5));
+        setBackgroundBrush(kCanvasBackground);
+        // The brush paints the SCENE; the viewport widget and the frame around
+        // it are still styled by the application theme, which under Light
+        // leaves a pale border and pale scroll bars framing a dark rectangle.
+        // The style sheet dresses the widget to match what the brush paints.
+        //
+        // NoFrame rather than a dark border: the dock already draws an edge
+        // around this panel, and a second one inside it reads as a box within
+        // a box at the ~250 px height the bottom row gives us.
+        setFrameShape(QFrame::NoFrame);
+        setStyleSheet(QStringLiteral(
+                          "QGraphicsView { background: %1; border: none; }"
+                          "QScrollBar:vertical, QScrollBar:horizontal {"
+                          "  background: %1; border: none; }"
+                          "QScrollBar::handle:vertical,"
+                          "QScrollBar::handle:horizontal {"
+                          "  background: #4a4f57; border-radius: 4px; }"
+                          "QScrollBar::add-line, QScrollBar::sub-line {"
+                          "  height: 0px; width: 0px; }"
+                          "QScrollBar::add-page, QScrollBar::sub-page {"
+                          "  background: transparent; }")
+                          .arg(kCanvasBackground.name()));
     }
 
 protected:
@@ -338,7 +383,7 @@ WorkflowEdgeItem::WorkflowEdgeItem(WorkflowNodeItem* from,
     : from_(from)
     , to_(to)
 {
-    setPen(QPen(QColor(0x50, 0x50, 0x50), 2.0));
+    setPen(QPen(kEdgeColor, 2.0));
     setZValue(-1.0); // under the nodes, so it reads as plumbing
     from_->registerEdge(this);
     to_->registerEdge(this);
@@ -382,9 +427,9 @@ void WorkflowScene::mousePressEvent(QGraphicsSceneMouseEvent* event)
             auto* node = dynamic_cast<WorkflowNodeItem*>(item);
             if (node && node->hitsOutputPort(event->scenePos())) {
                 pendingFrom_ = node;
-                pendingPreview_ = addPath(QPainterPath(),
-                                          QPen(QColor(0x1f, 0x77, 0xb4), 2.0,
-                                               Qt::DashLine));
+                pendingPreview_ = addPath(
+                    QPainterPath(),
+                    QPen(kPendingLinkColor, 2.0, Qt::DashLine));
                 event->accept();
                 return; // the gesture owns this press — no node drag
             }
@@ -451,28 +496,22 @@ WorkflowWindow::WorkflowWindow(
         materials,
     std::function<QString(core::CalculatorKind)> pythonResolver,
     ProcessManagerPanel* processPanel, QWidget* parent)
-    : QDialog(parent)
+    : QWidget(parent)
     , materials_(materials)
     , pythonResolver_(std::move(pythonResolver))
     , processPanel_(processPanel)
 {
     setWindowTitle(tr("Workflow"));
-    resize(1000, 640);
 
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(4, 4, 4, 4);
+    layout->setSpacing(4);
 
-    auto* intro = new QLabel(
-        tr("Each node is one simulation process; a link drawn from a node's "
-           "right-hand port onto another node runs the second after the "
-           "first and feeds it the results — a relaxed geometry becomes the "
-           "next input structure, a saved ground state (.gpw) rides along. "
-           "Double-click empty canvas to add a process there; double-click a "
-           "node to configure it in its setup wizard. Wheel zooms, "
-           "middle-drag pans."),
-        this);
-    intro->setWordWrap(true);
-    layout->addWidget(intro);
-
+    // No instructional line above the canvas. It was a standing caption
+    // explaining a gesture the user needs told once, charged against a dock
+    // that is ~250 px tall — and every pixel it took came out of the canvas,
+    // which is the panel. The same text is the canvas's tool tip, so it is
+    // still one hover away on the day it is wanted.
     scene_ = new WorkflowScene(this);
     scene_->setSceneRect(-2000, -2000, 4000, 4000);
     connect(scene_, &WorkflowScene::connectionRequested, this,
@@ -482,23 +521,64 @@ WorkflowWindow::WorkflowWindow(
     connect(scene_, &WorkflowScene::addNodeRequested, this,
             &WorkflowWindow::addNodeAt);
     view_ = new WorkflowView(scene_, this);
+    view_->setToolTip(
+        tr("Each node is one simulation process; a link drawn from a node's "
+           "right-hand port onto another node runs the second after the "
+           "first and feeds it the results — a relaxed geometry becomes the "
+           "next input structure, a saved ground state (.gpw) rides along. "
+           "Double-click empty canvas to add a process there; double-click a "
+           "node to configure it in its setup wizard. Wheel zooms, "
+           "middle-drag pans."));
     layout->addWidget(view_, 1);
 
+    // Icon-only action bar, built exactly like the Processes panel's: same
+    // IconManager binding (so the glyphs re-tint on a theme switch), same
+    // 20 px icons, same "Label — what it does" tool tips carrying the text
+    // the buttons no longer show. The two panels sit side by side in the
+    // bottom row, and matching them makes the row read as one strip of tools
+    // rather than two unrelated widgets.
     auto* controls = new QHBoxLayout;
-    auto* addButton = new QPushButton(tr("Add Process…"), this);
-    auto* removeButton = new QPushButton(tr("Remove Selected"), this);
-    runButton_ = new QPushButton(tr("Send to Processes"), this);
-    runButton_->setToolTip(
-        tr("Queue every node (they show as \"waiting\") and execute the "
-           "pipeline in dependency order, one process at a time."));
-    auto* closeButton = new QPushButton(tr("Close"), this);
-    controls->addWidget(addButton);
-    controls->addWidget(removeButton);
+    const auto makeButton = [this, controls](const QString& iconName,
+                                             const QString& tip) {
+        auto* button = new QPushButton(this);
+        ui::IconManager::bind(button, iconName);
+        button->setIconSize(QSize(20, 20));
+        button->setToolTip(tip);
+        button->setFocusPolicy(Qt::NoFocus);
+        controls->addWidget(button);
+        return button;
+    };
+
+    auto* addButton = makeButton(
+        QStringLiteral("add-circle-fill"),
+        tr("Add Process… — put a new simulation node on the canvas.\n\n"
+           "Double-clicking empty canvas does the same and drops the node "
+           "where you clicked."));
+    auto* removeButton = makeButton(
+        QStringLiteral("delete-bin-line"),
+        tr("Remove Selected — delete the selected nodes and every link "
+           "that touched them."));
     controls->addStretch(1);
-    statusLabel_ = new QLabel(this);
-    controls->addWidget(statusLabel_);
-    controls->addWidget(runButton_);
-    controls->addWidget(closeButton);
+    // Trailing and set apart by the stretch: it is the one button that
+    // COMMITS — everything to its left edits the pipeline, this one runs it.
+    runButton_ = makeButton(
+        QStringLiteral("play-circle-fill"),
+        tr("Send to Processes — queue every node (they show as \"waiting\") "
+           "and execute the pipeline in dependency order, one process at a "
+           "time.\n\n"
+           "Each node appears in the Processes panel as it is dispatched, and "
+           "its metrics stream into Results."));
+    // No Close button: as a dock the panel's visibility belongs to its own
+    // title bar and to View → Workflow. A button calling close() here would
+    // hide the widget INSIDE the dock and leave an empty frame behind.
+    //
+    // No status label either. It reported the node/link count, the running
+    // node and the "Workflow finished: …" summary — of which the count is
+    // decoration, and the other two are already told properly by the
+    // Processes panel (per-node Queued → Running → Completed/Failed) and by
+    // Results. What it alone used to carry was the two REFUSAL messages, and
+    // those are now message boxes: a pipeline that would not start is not
+    // something to whisper in a corner of the toolbar.
     layout->addLayout(controls);
 
     connect(addButton, &QPushButton::clicked, this, &WorkflowWindow::addNode);
@@ -506,7 +586,6 @@ WorkflowWindow::WorkflowWindow(
             &WorkflowWindow::removeSelected);
     connect(runButton_, &QPushButton::clicked, this,
             &WorkflowWindow::sendToProcesses);
-    connect(closeButton, &QPushButton::clicked, this, &QWidget::close);
     for (QPushButton* button : findChildren<QPushButton*>()) {
         button->setAutoDefault(false);
         button->setDefault(false);
@@ -515,8 +594,6 @@ WorkflowWindow::WorkflowWindow(
     jobRunner_ = new jobs::JobRunner(this);
     connect(jobRunner_, &jobs::JobRunner::finished, this,
             &WorkflowWindow::onJobFinished);
-
-    updateStatusLabel();
 }
 
 void WorkflowWindow::addNode()
@@ -529,8 +606,18 @@ void WorkflowWindow::addNodeAt(const QPointF& scenePos)
     promptAddNode(&scenePos);
 }
 
+void WorkflowWindow::setMaterialsProvider(std::function<MaterialList()> provider)
+{
+    materialsProvider_ = std::move(provider);
+}
+
 void WorkflowWindow::promptAddNode(const QPointF* scenePos)
 {
+    // Re-read the open documents before offering them: the panel is docked and
+    // long-lived, so the list it was constructed with is stale by now.
+    if (materialsProvider_)
+        materials_ = materialsProvider_();
+
     if (materials_.isEmpty()) {
         QMessageBox::information(
             this, tr("Add Process"),
@@ -592,7 +679,6 @@ WorkflowNodeItem* WorkflowWindow::addProcessNode(WorkflowTask task,
                  0.0);
     scene_->addItem(node);
     nodes_.push_back(node);
-    updateStatusLabel();
     return node;
 }
 
@@ -645,7 +731,6 @@ void WorkflowWindow::openNodeWizard(WorkflowNodeItem* node)
         return;
     node->setConfiguration(wizard->script(), wizard->pythonExecutable(),
                            wizard->runCommand(), wizard->calculatorKind());
-    updateStatusLabel(tr("%1 configured.").arg(node->title()));
 }
 
 void WorkflowWindow::removeSelected()
@@ -675,7 +760,6 @@ void WorkflowWindow::removeSelected()
             ++it;
         }
     }
-    updateStatusLabel();
 }
 
 void WorkflowWindow::connectNodes(WorkflowNodeItem* from,
@@ -694,7 +778,6 @@ void WorkflowWindow::connectNodes(WorkflowNodeItem* from,
     auto* edge = new WorkflowEdgeItem(from, to);
     scene_->addItem(edge);
     edges_.push_back(edge);
-    updateStatusLabel();
 }
 
 bool WorkflowWindow::wouldCreateCycle(WorkflowNodeItem* from,
@@ -788,7 +871,16 @@ void WorkflowWindow::sendToProcesses()
     WorkflowNodeItem* first = nextRunnable();
     if (!first || !startNode(first)) {
         runButton_->setEnabled(true);
-        updateStatusLabel(tr("Nothing could start — check the first node."));
+        // A box, not a toolbar caption. The user just pressed Run and NOTHING
+        // happened; a line of grey text beside the button is exactly the way
+        // to have that read as the button being broken.
+        QMessageBox::warning(
+            this, tr("Workflow"),
+            tr("Nothing could start — check the first node.\n\n"
+               "Every node either has no parent (and runs on its assigned "
+               "material) or inherits its parent's results. A node whose "
+               "parent produced no usable geometry is refused rather than "
+               "run on the wrong structure."));
     }
 }
 
@@ -830,9 +922,19 @@ bool WorkflowWindow::startNode(WorkflowNodeItem* node)
         if (source.isEmpty()
             || !QFile::copy(source,
                             dir + QStringLiteral("/structure.extxyz"))) {
-            updateStatusLabel(
-                tr("%1: no usable geometry found in the parent's results "
-                   "(%2) — the node was not started.")
+            // The strict-handoff refusal. This is the message that explains
+            // why a pipeline stopped rather than silently computing the wrong
+            // thing on an un-relaxed structure, so it must be impossible to
+            // miss — it was the one thing the removed status label carried
+            // that nothing else reports.
+            QMessageBox::warning(
+                this, tr("Workflow"),
+                tr("%1 was not started: no usable geometry in its parent's "
+                   "results (%2).\n\n"
+                   "A node with a parent inherits that parent's output "
+                   "structure. Running it on its own original material "
+                   "instead would quietly compute the wrong thing, so it is "
+                   "refused.")
                     .arg(node->title(), parentDir));
             return false;
         }
@@ -887,8 +989,7 @@ bool WorkflowWindow::startNode(WorkflowNodeItem* node)
         }
     }
     QString error;
-    if (!writeScriptWithLogger(dir + QStringLiteral("/run.py"), script,
-                               &error))
+    if (!writeScript(dir + QStringLiteral("/run.py"), script, &error))
         return false;
 
     // --- Launch through the shared command machinery -----------------------
@@ -905,8 +1006,6 @@ bool WorkflowWindow::startNode(WorkflowNodeItem* node)
     node->setJobDirectory(dir);
     updateProcessPanel(node);
     runningNode_ = node;
-    updateStatusLabel(tr("Running %1 (%2)…")
-                          .arg(node->title(), node->materialName()));
     jobRunner_->start(resolved.commandLine, context.pythonExecutable, dir,
                       resolved.environment);
     if (node->processTaskId() >= 0)
@@ -957,23 +1056,10 @@ void WorkflowWindow::onJobFinished(int exitCode, bool crashed)
         skipDescendants(next);
     }
 
+    // The run is over; the button goes live again. No summary line: each
+    // node's own status strip says done/failed on the canvas, and the
+    // Processes panel holds the same per-node verdict with its directory.
     runButton_->setEnabled(true);
-    int done = 0;
-    int failed = 0;
-    for (const WorkflowNodeItem* node : nodes_) {
-        done += node->status() == WorkflowNodeItem::Status::Done;
-        failed += node->status() == WorkflowNodeItem::Status::Failed;
-    }
-    updateStatusLabel(failed
-                          ? tr("Workflow finished: %1 done, %2 failed — "
-                               "results under %3.")
-                                .arg(done)
-                                .arg(failed)
-                                .arg(workflowRoot_)
-                          : tr("Workflow finished: %1 process(es) done — "
-                               "results under %2.")
-                                .arg(done)
-                                .arg(workflowRoot_));
 }
 
 void WorkflowWindow::updateProcessPanel(WorkflowNodeItem* node)
@@ -1007,18 +1093,6 @@ void WorkflowWindow::updateProcessPanel(WorkflowNodeItem* node)
     case WorkflowNodeItem::Status::Pending:
         break; // never mirrored: pending nodes were not dispatched
     }
-}
-
-void WorkflowWindow::updateStatusLabel(const QString& message)
-{
-    if (!message.isEmpty()) {
-        statusLabel_->setText(message);
-        return;
-    }
-    statusLabel_->setText(tr("%n node(s), ", nullptr,
-                             static_cast<int>(nodes_.size()))
-                          + tr("%n link(s)", nullptr,
-                               static_cast<int>(edges_.size())));
 }
 
 } // namespace calango::gui

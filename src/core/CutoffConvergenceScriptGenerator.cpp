@@ -125,7 +125,7 @@ std::string CutoffConvergenceScriptGenerator::generate(
            "evaluated = []  # per successful point: record + forces + eigenvalues\n"
            "\n"
            "for index, ecut in enumerate(CUTOFFS):\n"
-           "    _calango_log.progress(index, len(CUTOFFS))\n"
+           "    _calango_progress(index, len(CUTOFFS))\n"
            "    record = {\"ecut_eV\": float(ecut)}\n"
            "    try:\n"
            "        attach_calculator(atoms, ecut)\n"
@@ -162,7 +162,7 @@ std::string CutoffConvergenceScriptGenerator::generate(
            "                  f\"{eig_error}\", flush=True)\n"
            "        evaluated.append({\"record\": record, \"forces\": forces,\n"
            "                          \"band_means\": band_means})\n"
-           "        _calango_log.metric(index, energy=energy, max_force=fmax)\n"
+           "        _calango_metric(index, energy=energy, max_force=fmax)\n"
            "        print(f\"CALANGO_MEMBER ecut={ecut:g} E={energy:.6f} \"\n"
            "              f\"fmax={fmax:.6f}\", flush=True)\n"
            "    except Exception as error:\n";
@@ -170,8 +170,8 @@ std::string CutoffConvergenceScriptGenerator::generate(
         out << "        # One diverging low-cutoff SCF must not lose the rest\n"
                "        # of the curve.\n"
                "        record[\"error\"] = str(error)\n"
-               "        _calango_log.event(\"error\",\n"
-               "                           f\"ecut {ecut:g} failed: {error}\")\n"
+               "        _calango_event(\"error\",\n"
+               "                       f\"ecut {ecut:g} failed: {error}\")\n"
                "        print(f\"CALANGO_WARN ecut={ecut:g} failed: {error}\",\n"
                "              flush=True)\n";
     } else {
@@ -179,7 +179,7 @@ std::string CutoffConvergenceScriptGenerator::generate(
     }
     out << "    points.append(record)\n"
            "\n"
-           "_calango_log.progress(len(CUTOFFS), len(CUTOFFS))\n"
+           "_calango_progress(len(CUTOFFS), len(CUTOFFS))\n"
            "\n"
            "# -- Convergence relative to the best run --------------------------\n"
            "if not evaluated:\n"
@@ -238,10 +238,10 @@ std::string CutoffConvergenceScriptGenerator::generate(
            "print(f\"CALANGO_INFO wrote {results_path}\", flush=True)\n"
            "print(\"CALANGO_RESULT cutoff_convergence=\" + results_path,\n"
            "      flush=True)\n"
-           "_calango_log.event(\"done\",\n"
-           "                   f\"{len(converged)} of {len(points)} cutoffs \"\n"
-           "                   f\"evaluated; reference \"\n"
-           "                   f\"{reference['ecut_eV']:g} eV\")\n";
+           "_calango_event(\"done\",\n"
+           "               f\"{len(converged)} of {len(points)} cutoffs \"\n"
+           "               f\"evaluated; reference \"\n"
+           "               f\"{reference['ecut_eV']:g} eV\")\n";
     return out.str();
 }
 

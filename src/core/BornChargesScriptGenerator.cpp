@@ -112,7 +112,7 @@ std::string generateBornChargesScript(const BornChargesConfig& config)
            "volume = atoms.get_volume()\n"
            "reference = atoms.get_positions().copy()\n"
            "total_steps = 6 * len(indices)\n"
-           "_calango_log.event('start', "
+           "_calango_event('start', "
            "f'{len(indices)} atom(s), {total_steps} SCF runs')\n"
            "\n"
            "\n"
@@ -225,7 +225,7 @@ std::string generateBornChargesScript(const BornChargesConfig& config)
            "            tag = f'{atom_index}_{axis}_{\"p\" if sign > 0 else \"m\"}'\n"
            "            phases.append(displaced_phase(moved, tag))\n"
            "            step += 1\n"
-           "            _calango_log.progress(step, total_steps)\n"
+           "            _calango_progress(step, total_steps)\n"
            "        # The branch is resolved on the PHASE, in crystal\n"
            "        # coordinates, before anything is converted to Cartesian.\n"
            "        dphi_c = phase_difference(phases[0], phases[1])\n"
@@ -234,8 +234,8 @@ std::string generateBornChargesScript(const BornChargesConfig& config)
            "        # displacement (A) leaves a result in units of e.\n"
            "        born[atom_index, :, axis] = (\n"
            "            (dphi_c / (2.0 * np.pi)) @ np.array(cell) / (2.0 * delta))\n"
-           "    _calango_log.metric(atom_index,\n"
-           "                        z_iso=float(np.trace(born[atom_index]) / 3.0))\n"
+           "    _calango_metric(atom_index,\n"
+           "                    z_iso=float(np.trace(born[atom_index]) / 3.0))\n"
            "\n"
            "raw = born.copy()\n";
 

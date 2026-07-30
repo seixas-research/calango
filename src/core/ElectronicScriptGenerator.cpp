@@ -26,7 +26,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
         << "\n"
            "bandpath = atoms.cell.bandpath(path_str, npoints=npoints)\n"
            "print(f\"CALANGO_INFO k-path {bandpath.path}\", flush=True)\n"
-           "_calango_log.progress(1, 4)\n"
+           "_calango_progress(1, 4)\n"
            "\n"
            "pdos = None\n";
 
@@ -40,7 +40,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                "                           kpts={\"path\": bandpath.path,\n"
                "                                 \"npoints\": npoints})\n"
                "atoms.get_potential_energy()\n"
-               "_calango_log.progress(3, 4)\n"
+               "_calango_progress(3, 4)\n"
                "bs = atoms.calc.band_structure()\n"
                "efermi = float(bs.reference)\n";
         break;
@@ -57,13 +57,13 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                 << "\", txt=\"gpaw_bands.txt\")\n"
                    "atoms = calc.get_atoms()\n"
                    "efermi = float(calc.get_fermi_level())\n"
-                   "_calango_log.progress(2, 4)\n"
+                   "_calango_progress(2, 4)\n"
                    "\n"
                    "band_calc = calc.fixed_density(kpts=bandpath, "
                    "symmetry=\"off\",\n"
                    "                               txt=\"gpaw_bands.txt\")\n"
                    "bs = band_calc.band_structure()\n"
-                   "_calango_log.progress(3, 4)\n";
+                   "_calango_progress(3, 4)\n";
         } else {
             // Legacy self-contained path: converge the SCF density inline, then
             // the NSCF band run reuses it via fixed_density.
@@ -74,13 +74,13 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    "atoms.calc = calc\n"
                    "atoms.get_potential_energy()\n"
                    "efermi = float(calc.get_fermi_level())\n"
-                   "_calango_log.progress(2, 4)\n"
+                   "_calango_progress(2, 4)\n"
                    "\n"
                    "band_calc = calc.fixed_density(kpts=bandpath, "
                    "symmetry=\"off\",\n"
                    "                               txt=\"gpaw_bands.txt\")\n"
                    "bs = band_calc.band_structure()\n"
-                   "_calango_log.progress(3, 4)\n";
+                   "_calango_progress(3, 4)\n";
         }
         if (c.spinOrbit)
             // Non-perturbative SOC: the scalar-relativistic states along the
@@ -202,7 +202,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                "atoms.calc = scf\n"
                "atoms.get_potential_energy()\n"
                "efermi = float(atoms.calc.get_fermi_level())\n"
-               "_calango_log.progress(2, 4)\n"
+               "_calango_progress(2, 4)\n"
                "\n"
                "bands = Espresso(pseudopotentials=pseudopotentials,\n"
                "                 input_data={\"control\": {\"calculation\": \"bands\",\n"
@@ -214,7 +214,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                "atoms.get_potential_energy()\n"
                "bs = atoms.calc.band_structure()\n"
                "bs._reference = efermi\n"
-               "_calango_log.progress(3, 4)\n";
+               "_calango_progress(3, 4)\n";
         break;
 
     case ElectronicBackend::Siesta:
@@ -230,7 +230,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                "atoms.calc = scf\n"
                "atoms.get_potential_energy()\n"
                "efermi = float(atoms.calc.get_fermi_level())\n"
-               "_calango_log.progress(2, 4)\n"
+               "_calango_progress(2, 4)\n"
                "\n"
                "# Non-self-consistent band run along the path.\n"
                "bands = Siesta(xc=\"PBE\", mesh_cutoff=200 * Ry,\n"
@@ -239,7 +239,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                "atoms.get_potential_energy()\n"
                "bs = atoms.calc.band_structure()\n"
                "bs._reference = efermi\n"
-               "_calango_log.progress(3, 4)\n";
+               "_calango_progress(3, 4)\n";
         break;
 
     case ElectronicBackend::Vasp:
@@ -275,7 +275,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    "print(f'CALANGO_INFO reusing the charge density from "
                    "{_baseline}',\n"
                    "      flush=True)\n"
-                   "_calango_log.progress(2, 4)\n"
+                   "_calango_progress(2, 4)\n"
                    "\n"
                 << "bands = Vasp(xc=\"PBE\", encut=" << c.ecutEv
                 << ", icharg=11,\n"
@@ -286,7 +286,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    "efermi = float(atoms.calc.get_fermi_level())\n"
                    "bs = atoms.calc.band_structure()\n"
                    "bs._reference = efermi\n"
-                   "_calango_log.progress(3, 4)\n";
+                   "_calango_progress(3, 4)\n";
         } else {
             out << "# No baseline was selected, so the SCF runs here first and\n"
                    "# the band pass reuses ITS density (ICHARG = 11).\n"
@@ -296,7 +296,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    "atoms.calc = scf\n"
                    "atoms.get_potential_energy()\n"
                    "efermi = float(atoms.calc.get_fermi_level())\n"
-                   "_calango_log.progress(2, 4)\n"
+                   "_calango_progress(2, 4)\n"
                    "\n"
                    "# Non-self-consistent band run on the density just written.\n"
                 << "bands = Vasp(xc=\"PBE\", encut=" << c.ecutEv
@@ -307,7 +307,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    "atoms.get_potential_energy()\n"
                    "bs = atoms.calc.band_structure()\n"
                    "bs._reference = efermi\n"
-                   "_calango_log.progress(3, 4)\n";
+                   "_calango_progress(3, 4)\n";
         }
         break;
     }
@@ -328,7 +328,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
            "if pdos is not None:\n"
            "    with open(\"pdos.json\", \"w\") as handle:\n"
            "        json.dump(pdos, handle)\n"
-           "_calango_log.progress(4, 4)\n"
+           "_calango_progress(4, 4)\n"
            "print(f\"CALANGO_RESULT bands={len(data['energies'][0][0])} \"\n"
            "      f\"kpts={len(data['x'])} efermi_eV={efermi:.4f}\", flush=True)\n";
     return out.str();

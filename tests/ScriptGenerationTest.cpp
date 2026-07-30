@@ -1,10 +1,11 @@
 // Generated-ASE-script test.
 //
 // Covers the two things that can silently break a run long after the wizard
-// closed: (1) the script must import the logger from the staged calango_log
-// module rather than carrying its own inline copy, and (2) the calculator
-// blocks must spell out the parameters the wizard collected (MACE precision /
-// weights file / device; GPAW mode, xc, eigensolver, mixer, convergence).
+// closed: (1) the script must be SELF-CONTAINED — its logging block inlined,
+// with no import of any Calango helper module — so it still runs on a cluster
+// that has ASE and nothing else, and (2) the calculator blocks must spell out
+// the parameters the wizard collected (MACE precision / weights file / device;
+// GPAW mode, xc, eigensolver, mixer, convergence).
 //
 // GUI-free and Python-free. With `--dump <dir>` it writes each generated
 // script to disk instead of asserting, so a shell step can byte-compile them
@@ -489,39 +490,49 @@ int main(int argc, char** argv)
             dumpRamanIr("raman_ir_ironly.py", irOnly);
         }
 
-        std::ofstream module(dir + "/"
-                             + AseScriptGenerator::loggerModuleFileName());
-        module << AseScriptGenerator::loggerModuleSource();
         std::printf("scripts written to %s\n", dir.c_str());
         return EXIT_SUCCESS;
     }
 
-    // -- The logger is imported, never inlined ------------------------------
-    std::printf("Logger module refactoring:\n");
+    // -- Generated scripts are self-contained -------------------------------
+    //
+    // The contract this pins is the reason the generator exists: a user copies
+    // run.py to a cluster that has ASE and their calculator and nothing else,
+    // and it runs. Anything Calango-private in the text — an import of a
+    // helper module above all — silently breaks that, and breaks it at run
+    // time on the remote machine rather than here.
+    std::printf("Self-contained script logging:\n");
     {
         const std::string script =
             AseScriptGenerator::generate(CalculatorConfig{}, "structure.extxyz");
-        checkContains(script, "from calango_log import CalangoLog",
-                      "generated script imports the module");
-        checkContains(script, "_calango_log = CalangoLog()",
-                      "and instantiates it under the historical name");
-        // The whole point of the refactor: the class body must be gone.
-        check(!contains(script, "class _CalangoLog"),
-              "no inline logger class definition remains");
-        check(!contains(script, "_json.dump"),
-              "no inline JSON flushing remains");
-        check(!contains(script, "captureWarnings"),
-              "warning routing moved into the module too");
-
-        const std::string module = AseScriptGenerator::loggerModuleSource();
-        check(!module.empty(), "module source is baked into the binary");
-        checkContains(module, "class CalangoLog", "module defines CalangoLog");
-        checkContains(module, "def metric", "module has metric()");
-        checkContains(module, "def progress", "module has progress()");
-        checkContains(module, "def event", "module has event()");
-        check(std::string(AseScriptGenerator::loggerModuleFileName())
-                  == "calango_log.py",
-              "module file name matches the import");
+        check(!contains(script, "calango_log"),
+              "no import of the retired calango_log helper module");
+        check(!contains(script, "CalangoLog"),
+              "no reference to the retired CalangoLog class");
+        // The logger it replaced it with: a dict, three functions, stdlib only.
+        checkContains(script, "def _calango_metric(",
+                      "metric() is defined in the script itself");
+        checkContains(script, "def _calango_progress(",
+                      "progress() is defined in the script itself");
+        checkContains(script, "def _calango_event(",
+                      "event() is defined in the script itself");
+        checkContains(script, "_json.dump",
+                      "the JSON writing is inline");
+        checkContains(script, "captureWarnings",
+                      "warning routing to warnings.log is inline");
+        // The on-disk contract the Results panel polls must not have moved.
+        checkContains(script, "metrics.json", "still writes metrics.json");
+        checkContains(script, "log.json", "still writes log.json");
+        // Standard library only. Named individually rather than checked as a
+        // set, so adding a third-party import to the block that is supposed to
+        // be dependency-free has to go through this test first.
+        for (const char* module : {"import json as _json", "import os as _os",
+                                   "import logging as _logging",
+                                   "import threading as _threading",
+                                   "import warnings as _warnings"}) {
+            checkContains(script, module,
+                          std::string("logging block imports ") + module);
+        }
     }
 
     // -- MACE parameter expansion -------------------------------------------

@@ -1,5 +1,7 @@
 #include "core/CddScriptGenerator.hpp"
 
+#include "core/AseScriptGenerator.hpp"
+
 #include <sstream>
 
 namespace calango::core {
@@ -37,10 +39,8 @@ std::string CddScriptGenerator::generate(const CddRunConfig& c)
         << c.resultsJson
         << "\"\n"
            "\n"
-           "from calango_log import CalangoLog\n"
-           "_log = CalangoLog()\n"
-           "\n"
-           "_gpw = sorted(glob.glob(os.path.join(baseline_dir, '*.gpw')))\n"
+        << AseScriptGenerator::jsonLoggerPreamble()
+        << "_gpw = sorted(glob.glob(os.path.join(baseline_dir, '*.gpw')))\n"
            "if not _gpw:\n"
            "    raise RuntimeError(\n"
            "        'No GPAW wavefunction (.gpw) in ' + baseline_dir + '. The "
@@ -170,13 +170,13 @@ std::string CddScriptGenerator::generate(const CddRunConfig& c)
            "        + '\\n  '.join(failures))\n"
            "\n"
            "\n"
-           "_log.progress(0, 3)\n"
+           "_calango_progress(0, 3)\n"
            "rho_ab = density_of(parent)\n"
-           "_log.progress(1, 3)\n"
+           "_calango_progress(1, 3)\n"
            "atoms_a, rho_a, how_a = fragment_density(subsystem_a, 'a')\n"
-           "_log.progress(2, 3)\n"
+           "_calango_progress(2, 3)\n"
            "atoms_b, rho_b, how_b = fragment_density(subsystem_b, 'b')\n"
-           "_log.progress(3, 3)\n"
+           "_calango_progress(3, 3)\n"
            "\n"
            "if not (rho_ab.shape == rho_a.shape == rho_b.shape):\n"
            "    raise RuntimeError(\n"
@@ -238,7 +238,7 @@ std::string CddScriptGenerator::generate(const CddRunConfig& c)
            "'\n"
            "          f'electron count (net {net:+.3e} e) — check convergence',\n"
            "          flush=True)\n"
-           "_log.event('done', f'charge density difference written to "
+           "_calango_event('done', f'charge density difference written to "
            "{output_cube}')\n"
            "print(f'CALANGO_INFO wrote {results_path}', flush=True)\n";
     return out.str();

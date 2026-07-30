@@ -1,5 +1,6 @@
 #include "gui/PartialChargeDialog.hpp"
 
+#include "core/AseScriptGenerator.hpp"
 #include "gui/ViewportWidget.hpp"
 #include "render/ColorMap.hpp"
 
@@ -182,13 +183,13 @@ void PartialChargeDialog::loadResultsFile(const QString& path)
 QString PartialChargeDialog::generateScript(Method method) const
 {
     const QString preamble = QStringLiteral(
-        "import json\n"
-        "import os\n"
-        "import glob\n"
-        "import numpy as np\n"
-        "from ase.io import read\n"
-        "from calango_log import CalangoLog\n"
-        "_log = CalangoLog()\n");
+                                 "import json\n"
+                                 "import os\n"
+                                 "import glob\n"
+                                 "import numpy as np\n"
+                                 "from ase.io import read\n"
+                                 "\n")
+        + QString::fromStdString(core::AseScriptGenerator::jsonLoggerPreamble());
 
     // Density acquisition. Either load & standardize a baseline process's
     // charge density (unified pipeline), or — when none is selected — run a
@@ -236,18 +237,18 @@ QString PartialChargeDialog::generateScript(Method method) const
             "from ase.io.cube import write_cube\n"
             "with open('density.cube', 'w') as _fh:\n"
             "    write_cube(_fh, atoms, data=rho)\n"
-            "_log.progress(1, 3)\n").arg(baseline);
+            "_calango_progress(1, 3)\n").arg(baseline);
     } else {
         acquisition = QStringLiteral(
             "atoms = read('structure.extxyz')\n"
-            "_log.progress(1, 3)\n"
+            "_calango_progress(1, 3)\n"
             "from gpaw import GPAW, PW\n"
             "calc = GPAW(mode=PW(500), xc='PBE', kpts=(7, 7, 7), txt='gpaw.txt')\n"
             "atoms.calc = calc\n"
             "atoms.get_potential_energy()\n"
             "rho = np.ascontiguousarray(\n"
             "    calc.get_all_electron_density(gridrefinement=2), dtype=float)\n"
-            "_log.progress(2, 3)\n");
+            "_calango_progress(2, 3)\n");
     }
 
     // Shared grid setup: consumes the standardized `rho` grid + `atoms` from the
@@ -376,7 +377,7 @@ QString PartialChargeDialog::generateScript(Method method) const
         "json.dump({'method': method, 'charges': out},\n"
         "          open('partial_charges.json', 'w'), indent=2)\n"
         "print('CALANGO_RESULT partial_charges=partial_charges.json', flush=True)\n"
-        "_log.progress(3, 3)\n");
+        "_calango_progress(3, 3)\n");
 
     return preamble + acquisition + body + tail;
 }

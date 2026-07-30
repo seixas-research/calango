@@ -1,6 +1,5 @@
 #include "core/AseScriptGenerator.hpp"
 
-#include "core/CalangoLogModule.hpp" // generated from calango_log.py by CMake
 
 #include <algorithm>
 #include <sstream>
@@ -231,22 +230,87 @@ constexpr const char* kStreamFrameHelper =
     "\n";
 
 /// Structured logging preamble, emitted once near the top of every generated
-/// script. The logger itself lives in calango_log.py (staged beside run.py by
-/// MainWindow::stageJob and beside an exported script by the wizards' Export
-/// action), so the ~55 lines of class definition no longer get pasted into
-/// every generated script. Constructing CalangoLog also installs the warning
-/// routing (Python warnings from ASE, PyTorch, SciPy, GPAW … go to
-/// warnings.log instead of stdout, keeping the Results "Log" tab readable).
+/// script.
 ///
-/// The instance keeps its historical `_calango_log` name so every existing
-/// call site (`_calango_log.metric(...)`) is unaffected.
+/// Deliberately EMBEDDED rather than imported. It used to be
+/// `from calango_log import CalangoLog`, with the module staged beside the
+/// script — which meant a generated script was not a script but a two-file
+/// bundle, and copying just the .py to a cluster produced an ImportError on
+/// line 5 for a run that had nothing to do with logging. The whole promise of
+/// this generator is a file you can scp to an HPC box and run under stock ASE;
+/// a private helper import broke that promise for the sake of ~40 lines.
+///
+/// So it is a plain dict and three functions over the standard library: no
+/// class, no Calango import, nothing the receiving machine has to have. The
+/// on-disk contract is unchanged — metrics.json (polled live by the Results
+/// panel for the metric plots and the progress bar), log.json (the Log tab)
+/// and warnings.log (Python warnings from ASE, PyTorch, SciPy, GPAW …, kept
+/// out of stdout so the Log tab stays readable).
 constexpr const char* kJsonLoggerHelper =
-    "# Structured job logging. calango_log.py is staged next to this script;\n"
-    "# it writes metrics.json / log.json (read live by Calango's Results\n"
-    "# panel) and routes Python warnings to warnings.log.\n"
-    "from calango_log import CalangoLog\n"
+    "# --- Structured job logging (standard library only) -------------------\n"
+    "#\n"
+    "# Writes metrics.json and log.json into the working directory and routes\n"
+    "# Python warnings to warnings.log. Calango's Results panel polls those\n"
+    "# files, but nothing here needs Calango: this block is self-contained so\n"
+    "# the script runs unchanged wherever ASE and the calculator are present.\n"
+    "# Delete it and the calls to _calango_progress / _calango_metric /\n"
+    "# _calango_event below if you want the script silent.\n"
+    "import json as _json\n"
+    "import logging as _logging\n"
+    "import os as _os\n"
+    "import threading as _threading\n"
+    "import warnings as _warnings\n"
     "\n"
-    "_calango_log = CalangoLog()\n"
+    "_calango_lock = _threading.Lock()\n"
+    "_calango_metrics = {\"metrics\": []}\n"
+    "_calango_events = {\"log\": []}\n"
+    "\n"
+    "_calango_warnings = _logging.getLogger(\"py.warnings\")\n"
+    "_calango_warnings.handlers = [_logging.FileHandler(\"warnings.log\",\n"
+    "                                                   mode=\"w\")]\n"
+    "_calango_warnings.propagate = False\n"
+    "_logging.captureWarnings(True)\n"
+    "# \"default\", not \"ignore\": every distinct warning is recorded once per\n"
+    "# location, which is what makes warnings.log useful for diagnosis.\n"
+    "_warnings.simplefilter(\"default\")\n"
+    "\n"
+    "\n"
+    "def _calango_write(path, data):\n"
+    "    \"\"\"Replace `path` atomically — a reader must never see half a file.\"\"\"\n"
+    "    with open(path + \".tmp\", \"w\") as handle:\n"
+    "        _json.dump(data, handle)\n"
+    "    _os.replace(path + \".tmp\", path)\n"
+    "\n"
+    "\n"
+    "def _calango_metric(step, **fields):\n"
+    "    \"\"\"Record one sample. None fields are skipped, not written as null.\"\"\"\n"
+    "    entry = {\"step\": int(step)}\n"
+    "    entry.update({k: float(v) for k, v in fields.items() if v is not None})\n"
+    "    with _calango_lock:\n"
+    "        _calango_metrics[\"metrics\"].append(entry)\n"
+    "        _calango_write(\"metrics.json\", _calango_metrics)\n"
+    "\n"
+    "\n"
+    "def _calango_progress(step, total):\n"
+    "    \"\"\"Update the completion fraction driving the progress bar.\"\"\"\n"
+    "    step, total = int(step), int(total)\n"
+    "    with _calango_lock:\n"
+    "        _calango_metrics[\"progress\"] = {\n"
+    "            \"step\": step,\n"
+    "            \"total\": total,\n"
+    "            \"percent\": (100.0 * step / total) if total > 0 else 0.0,\n"
+    "        }\n"
+    "        _calango_write(\"metrics.json\", _calango_metrics)\n"
+    "\n"
+    "\n"
+    "def _calango_event(level, message):\n"
+    "    \"\"\"Append a log event (level is free-form: info/warning/error).\"\"\"\n"
+    "    with _calango_lock:\n"
+    "        _calango_events[\"log\"].append(\n"
+    "            {\"level\": str(level), \"message\": str(message)})\n"
+    "        _calango_write(\"log.json\", _calango_events)\n"
+    "\n"
+    "# --- end of logging block ---------------------------------------------\n"
     "\n";
 
 /// Frozen degrees of freedom, emitted as an ASE constraint list bound to
@@ -1194,7 +1258,7 @@ void emitVaspInternalRelaxation(std::ostringstream& out,
            "\n"
         << "max_steps = " << c.maxSteps
         << "\n"
-           "_calango_log.progress(0, max_steps)\n"
+           "_calango_progress(0, max_steps)\n"
            "print('CALANGO_INFO VASP is driving the relaxation; '\n"
            "      'ionic steps are reported when it returns', flush=True)\n"
            "\n"
@@ -1229,12 +1293,12 @@ void emitVaspInternalRelaxation(std::ostringstream& out,
            "            _energy = float(_frame.get_potential_energy())\n"
            "            _fmax = float(_np.linalg.norm(_frame.get_forces(),\n"
            "                                          axis=1).max())\n"
-           "            _calango_log.metric(_step, energy=_energy,\n"
-           "                                max_force=_fmax)\n"
+           "            _calango_metric(_step, energy=_energy,\n"
+           "                            max_force=_fmax)\n"
            "        except Exception:\n"
            "            pass  # a frame without a calculator attached\n"
            "    _traj.close()\n"
-           "    _calango_log.progress(len(_frames), max(max_steps, len(_frames)))\n"
+           "    _calango_progress(len(_frames), max(max_steps, len(_frames)))\n"
            "\n"
            "energy = atoms.get_potential_energy()\n"
            "_forces = _np.asarray(atoms.get_forces(), dtype=float)\n"
@@ -1311,7 +1375,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "else _np.zeros(0)\n"
                "fmax = float(_fnorms.max()) if _fnorms.size else 0.0\n"
                "_fmax_atom = int(_fnorms.argmax()) if _fnorms.size else -1\n"
-               "_calango_log.metric(0, energy=energy, max_force=fmax)\n"
+               "_calango_metric(0, energy=energy, max_force=fmax)\n"
                "print(f\"CALANGO_RESULT energy_eV={energy:.6f}\", flush=True)\n"
                "print(f\"CALANGO_RESULT fmax_eV_per_A={fmax:.6f}\", flush=True)\n"
                "# Fermi level: defined for periodic / smeared DFT; many\n"
@@ -1442,10 +1506,10 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
             << "def _report():\n"
                "    if opt.nsteps == 0:\n"
                "        return  # skip the unevaluated input geometry\n"
-               "    _calango_log.progress(opt.nsteps, max_steps)\n"
+               "    _calango_progress(opt.nsteps, max_steps)\n"
                "    energy = atoms.get_potential_energy()\n"
                "    fmax_now = abs(atoms.get_forces()).max()\n"
-               "    _calango_log.metric(opt.nsteps, energy=energy, max_force=fmax_now)\n"
+               "    _calango_metric(opt.nsteps, energy=energy, max_force=fmax_now)\n"
                "    _opt_traj.write()\n"
                "    _stream_frame()\n"
                "\n"
@@ -1666,8 +1730,8 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "            snapshot, energy=atoms.get_potential_energy(),\n"
                "            forces=atoms.get_forces())\n"
                "    except Exception as error:\n"
-               "        _calango_log.event(\"warning\",\n"
-               "                           f\"no forces for the extxyz dump: {error}\")\n"
+               "        _calango_event(\"warning\",\n"
+               "                       f\"no forces for the extxyz dump: {error}\")\n"
                "    write(_md_xyz, snapshot, format=\"extxyz\", append=True)\n"
                "\n"
                "# No t = 0 dump: the raw input geometry has no evaluated\n"
@@ -1696,26 +1760,26 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "    ekin = atoms.get_kinetic_energy()\n"
                "    temp = atoms.get_temperature()\n"
                "    fmax_now = abs(atoms.get_forces()).max()\n"
-               "    _calango_log.progress(dyn.nsteps, md_steps)\n";
+               "    _calango_progress(dyn.nsteps, md_steps)\n";
 
         if (isConstantPressure(c.ensemble))
             out << "    # Scalar pressure P = -tr(σ)/3 from the full stress tensor\n"
                    "    # (eV/Å³ → GPa); only meaningful with a barostatted cell.\n"
                    "    stress = atoms.get_stress(voigt=True)\n"
                    "    pressure_GPa = -(stress[0] + stress[1] + stress[2]) / 3.0 / units.GPa\n"
-                   "    _calango_log.metric(dyn.nsteps, energy=epot, temperature=temp,\n"
-                   "                        kinetic=ekin, volume=atoms.get_volume(),\n"
-                   "                        max_force=fmax_now, pressure=pressure_GPa)\n";
+                   "    _calango_metric(dyn.nsteps, energy=epot, temperature=temp,\n"
+                   "                    kinetic=ekin, volume=atoms.get_volume(),\n"
+                   "                    max_force=fmax_now, pressure=pressure_GPa)\n";
         else
             out << "    # Kinetic energy and volume are logged alongside the\n"
                    "    # potential energy so the MD Viewer can show E_tot =\n"
                    "    # E_pot + E_kin (whose drift is the integrator health\n"
                    "    # check) rather than only the potential term.\n"
-                   "    _calango_log.metric(dyn.nsteps, energy=epot, temperature=temp,\n"
-                   "                        kinetic=ekin,\n"
-                   "                        volume=(atoms.get_volume() if atoms.cell.rank == 3\n"
-                   "                                else 0.0),\n"
-                   "                        max_force=fmax_now)\n";
+                   "    _calango_metric(dyn.nsteps, energy=epot, temperature=temp,\n"
+                   "                    kinetic=ekin,\n"
+                   "                    volume=(atoms.get_volume() if atoms.cell.rank == 3\n"
+                   "                            else 0.0),\n"
+                   "                    max_force=fmax_now)\n";
 
         out << "    print(f\"CALANGO_MD step={dyn.nsteps} epot_eV={epot:.4f} ekin_eV={ekin:.4f}"
                " T_K={temp:.1f}\", flush=True)\n"
@@ -1938,16 +2002,6 @@ std::string AseScriptGenerator::jsonLoggerPreamble()
     return kJsonLoggerHelper;
 }
 
-std::string AseScriptGenerator::loggerModuleSource()
-{
-    return generated::kCalangoLogModule;
-}
-
-const char* AseScriptGenerator::loggerModuleFileName()
-{
-    return "calango_log.py";
-}
-
 std::string AseScriptGenerator::densityCubeScript(const std::string& gpwDir,
                                                   bool allElectron)
 {
@@ -1956,8 +2010,8 @@ std::string AseScriptGenerator::densityCubeScript(const std::string& gpwDir,
            "import os\n"
            "import glob\n"
            "import numpy as _np\n"
-           "from calango_log import CalangoLog\n"
-           "_log = CalangoLog()\n"
+           "\n"
+        << kJsonLoggerHelper
         << "_base = r\"" << gpwDir << "\"\n"
         << "_gpw = sorted(glob.glob(os.path.join(_base, '*.gpw')))\n"
            "if not _gpw:\n"
@@ -1969,7 +2023,7 @@ std::string AseScriptGenerator::densityCubeScript(const std::string& gpwDir,
            "from gpaw import GPAW\n"
            "calc = GPAW(_gpw[0], txt='gpaw_density.txt')\n"
            "atoms = calc.get_atoms()\n"
-           "_log.progress(1, 2)\n"
+           "_calango_progress(1, 2)\n"
         << "_density = calc."
         << (allElectron ? "get_all_electron_density(gridrefinement=2)"
                         : "get_pseudo_density()")
@@ -1979,7 +2033,7 @@ std::string AseScriptGenerator::densityCubeScript(const std::string& gpwDir,
            "from ase.io.cube import write_cube\n"
         << "with open('" << densityFiles::kDensity << "', 'w') as _dfh:\n"
            "    write_cube(_dfh, atoms, data=_density)\n"
-           "_log.progress(2, 2)\n"
+           "_calango_progress(2, 2)\n"
         << "print('CALANGO_RESULT density_cube=" << densityFiles::kDensity
         << " " << (allElectron ? "all_electron" : "pseudo") << "', flush=True)\n";
     return out.str();

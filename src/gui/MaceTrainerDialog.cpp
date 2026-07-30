@@ -49,6 +49,87 @@ MaceTrainerDialog::MaceTrainerDialog(QWidget* parent) : QDialog(parent)
     trainRow->addWidget(trainBrowse);
     dataForm->addRow(tr("Training file:"), trainRow);
 
+    auto* validRow = new QHBoxLayout;
+    validFileEdit_ = new QLineEdit(dataGroup);
+    validFileEdit_->setPlaceholderText(tr("optional — else 10% is held out"));
+    validFileEdit_->setToolTip(
+        tr("An explicit validation set, as the Dataset Manager's split "
+           "produces. Left empty, MACE holds out a tenth of the training file "
+           "at random (valid_fraction), which is fine for a first look and "
+           "wrong for comparing runs — the held-out set differs every time."));
+    auto* validBrowse = new QPushButton(tr("Browse…"), dataGroup);
+    validRow->addWidget(validFileEdit_, 1);
+    validRow->addWidget(validBrowse);
+    dataForm->addRow(tr("Validation file:"), validRow);
+
+    // The two keys that decide whether the run learns anything at all.
+    //
+    // MACE defaults to REF_energy / REF_forces. Calango writes its datasets
+    // with plain ASE, which stores the energy and forces on a
+    // SinglePointCalculator — read back, atoms.info and atoms.arrays carry
+    // NEITHER key. MACE does not fail on that: it warns, sets the per-property
+    // weight to zero, and trains a model on nothing. Naming the keys "energy"
+    // and "forces" takes MACE's ASE-compatibility path, which pulls the values
+    // off the calculator and rewrites them as REF_*.
+    energyKeyCombo_ = new QComboBox(dataGroup);
+    energyKeyCombo_->setEditable(true);
+    energyKeyCombo_->addItems({QStringLiteral("energy"),
+                               QStringLiteral("REF_energy")});
+    energyKeyCombo_->setToolTip(
+        tr("Where the reference energy is stored in the training file.\n\n"
+           "\"energy\" is what ASE writes — and therefore what a dataset "
+           "exported from Calango carries. \"REF_energy\" is MACE's own "
+           "default, for sets prepared with MACE's conventions.\n\n"
+           "Getting this wrong does not fail the run: MACE drops the energy "
+           "term to zero weight and trains anyway."));
+    dataForm->addRow(tr("Energy key:"), energyKeyCombo_);
+
+    forcesKeyCombo_ = new QComboBox(dataGroup);
+    forcesKeyCombo_->setEditable(true);
+    forcesKeyCombo_->addItems({QStringLiteral("forces"),
+                               QStringLiteral("REF_forces")});
+    forcesKeyCombo_->setToolTip(
+        tr("Where the reference forces are stored. Same rule as the energy "
+           "key above: \"forces\" for an ASE/Calango dataset, \"REF_forces\" "
+           "for a MACE-native one."));
+    dataForm->addRow(tr("Forces key:"), forcesKeyCombo_);
+
+    // Isolated-atom energies. Not optional in any sense that matters: with
+    // E0s unset and no config_type=IsolatedAtom entries in the training file
+    // — which a Calango-exported set never has — MACE raises
+    // "E0s not found in training file and not specified in command line"
+    // before the first epoch.
+    e0sModeCombo_ = new QComboBox(dataGroup);
+    e0sModeCombo_->addItem(tr("Average (least-squares fit to the set)"),
+                           QStringLiteral("average"));
+    e0sModeCombo_->addItem(tr("From a JSON file (Z → energy)"),
+                           QStringLiteral("file"));
+    e0sModeCombo_->addItem(tr("Isolated atoms in the training file"),
+                           QStringLiteral("dataset"));
+    e0sModeCombo_->setToolTip(
+        tr("The one-atom reference energies MACE subtracts before fitting, so "
+           "the model learns interactions rather than the huge constant "
+           "offsets of the atomic totals.\n\n"
+           "• Average — regress them out of the training set itself. The "
+           "right default: it needs nothing extra and is what MACE recommends "
+           "when isolated-atom calculations are not to hand.\n"
+           "• JSON file — {\"42\": -5.0448, \"16\": -0.9036} from your own "
+           "isolated-atom runs. The most accurate option, and the one to use "
+           "when several models must share a reference.\n"
+           "• Isolated atoms in the training file — only if the set contains "
+           "single-atom frames tagged config_type=IsolatedAtom.\n\n"
+           "There is no \"leave it out\": with none of these, MACE aborts "
+           "before the first epoch."));
+    dataForm->addRow(tr("Isolated-atom energies:"), e0sModeCombo_);
+
+    auto* e0sRow = new QHBoxLayout;
+    e0sFileEdit_ = new QLineEdit(dataGroup);
+    e0sFileEdit_->setPlaceholderText(tr("E0s.json"));
+    auto* e0sBrowse = new QPushButton(tr("Browse…"), dataGroup);
+    e0sRow->addWidget(e0sFileEdit_, 1);
+    e0sRow->addWidget(e0sBrowse);
+    dataForm->addRow(tr("E0s file:"), e0sRow);
+
     sizeCombo_ = new QComboBox(dataGroup);
     sizeCombo_->addItems({tr("small"), tr("medium"), tr("large")});
     sizeCombo_->setCurrentIndex(1);
@@ -113,11 +194,79 @@ MaceTrainerDialog::MaceTrainerDialog(QWidget* parent) : QDialog(parent)
     optForm->addRow(tr("Stress weight:"), stressWeightSpin_);
     optForm->addRow(tr("Virials weight:"), virialsWeightSpin_);
 
+    patienceSpin_ = new QSpinBox(optGroup);
+    patienceSpin_->setRange(1, 100000);
+    patienceSpin_->setValue(50);
+    patienceSpin_->setToolTip(
+        tr("Stop after this many epochs with no improvement in the validation "
+           "loss. MACE's own default is 2048 — i.e. effectively never — which "
+           "means an over-long run keeps burning time after it has converged."));
+    optForm->addRow(tr("Early-stopping patience:"), patienceSpin_);
+
+    evalIntervalSpin_ = new QSpinBox(optGroup);
+    evalIntervalSpin_->setRange(1, 1000);
+    evalIntervalSpin_->setValue(5);
+    evalIntervalSpin_->setToolTip(
+        tr("Evaluate on the validation set every N epochs. Every epoch (MACE's "
+           "default) is a real cost on a large set for a curve that barely "
+           "moves in one step."));
+    optForm->addRow(tr("Validation interval:"), evalIntervalSpin_);
+
+    dtypeCombo_ = new QComboBox(optGroup);
+    dtypeCombo_->addItems({QStringLiteral("float64"), QStringLiteral("float32")});
+    dtypeCombo_->setCurrentIndex(1);
+    dtypeCombo_->setToolTip(
+        tr("Training precision. float32 is roughly twice as fast and is what "
+           "production MACE models are trained in; float64 matches MACE's own "
+           "default and is worth it when the model must reproduce DFT energy "
+           "differences at the meV level.\n\n"
+           "Whatever is chosen here, the ASE calculator that later loads the "
+           "model has to be told the same dtype."));
+    optForm->addRow(tr("Precision:"), dtypeCombo_);
+
     seedSpin_ = new QSpinBox(optGroup);
     seedSpin_->setRange(0, 1000000);
     seedSpin_->setValue(123);
     optForm->addRow(tr("Base random seed:"), seedSpin_);
     settings->addWidget(optGroup);
+
+    // Stage two: MACE's standard two-phase schedule. The second phase raises
+    // the energy weight sharply and drops the learning rate, which is what
+    // turns a model with good forces into one with good energies as well.
+    swaGroup_ = new QGroupBox(tr("Stage two (SWA) && averaging"), this);
+    swaGroup_->setCheckable(true);
+    swaGroup_->setChecked(true);
+    swaGroup_->setToolTip(
+        tr("Switch to the stage-two loss after the epoch below. Standard "
+           "practice for MACE and off by default in MACE itself, so a config "
+           "that does not ask for it trains in stage one only."));
+    auto* swaForm = new QFormLayout(swaGroup_);
+    swaStartSpin_ = new QSpinBox(swaGroup_);
+    swaStartSpin_->setRange(1, 100000);
+    swaStartSpin_->setValue(150);
+    swaStartSpin_->setToolTip(
+        tr("Epoch at which stage two begins. Conventionally around three "
+           "quarters of the epoch budget — early enough for the second phase "
+           "to converge, late enough that the first has done its work."));
+    swaForm->addRow(tr("Start at epoch:"), swaStartSpin_);
+
+    emaCheck_ = new QCheckBox(tr("Exponential moving average of the weights"),
+                              swaGroup_);
+    emaCheck_->setChecked(true);
+    emaCheck_->setToolTip(
+        tr("Evaluate and save an exponentially-weighted average of the "
+           "weights rather than the last step's. Costs nothing and reliably "
+           "smooths the noise a small batch size puts into the final model."));
+    swaForm->addRow(QString(), emaCheck_);
+
+    emaDecaySpin_ = new QDoubleSpinBox(swaGroup_);
+    emaDecaySpin_->setDecimals(4);
+    emaDecaySpin_->setRange(0.5, 0.9999);
+    emaDecaySpin_->setSingleStep(0.01);
+    emaDecaySpin_->setValue(0.99);
+    swaForm->addRow(tr("EMA decay:"), emaDecaySpin_);
+    connect(emaCheck_, &QCheckBox::toggled, emaDecaySpin_, &QWidget::setEnabled);
+    settings->addWidget(swaGroup_);
 
     // Active learning / Query by Committee.
     qbcGroup_ = new QGroupBox(tr("Active Learning (Query by Committee)"), this);
@@ -195,24 +344,61 @@ MaceTrainerDialog::MaceTrainerDialog(QWidget* parent) : QDialog(parent)
     // Wiring: any setting change regenerates the preview (unless hand-edited).
     for (QDoubleSpinBox* spin : {rMaxSpin_, lrSpin_, energyWeightSpin_,
                                  forcesWeightSpin_, stressWeightSpin_,
-                                 virialsWeightSpin_, uncertaintySpin_})
+                                 virialsWeightSpin_, uncertaintySpin_,
+                                 emaDecaySpin_})
         connect(spin, &QDoubleSpinBox::valueChanged, this,
                 &MaceTrainerDialog::refreshPreview);
     for (QSpinBox* spin : {channelsSpin_, maxLSpin_, batchSpin_, epochsSpin_,
-                           seedSpin_, committeeSpin_})
+                           seedSpin_, committeeSpin_, patienceSpin_,
+                           evalIntervalSpin_, swaStartSpin_})
         connect(spin, &QSpinBox::valueChanged, this,
                 &MaceTrainerDialog::refreshPreview);
-    connect(deviceCombo_, &QComboBox::currentIndexChanged, this,
-            &MaceTrainerDialog::refreshPreview);
-    connect(trainFileEdit_, &QLineEdit::textChanged, this,
-            &MaceTrainerDialog::refreshPreview);
-    connect(qbcGroup_, &QGroupBox::toggled, this,
+    for (QComboBox* combo : {deviceCombo_, dtypeCombo_, energyKeyCombo_,
+                             forcesKeyCombo_, e0sModeCombo_})
+        connect(combo, &QComboBox::currentTextChanged, this,
+                &MaceTrainerDialog::refreshPreview);
+    for (QLineEdit* edit : {trainFileEdit_, validFileEdit_, e0sFileEdit_})
+        connect(edit, &QLineEdit::textChanged, this,
+                &MaceTrainerDialog::refreshPreview);
+    for (QGroupBox* group : {qbcGroup_, swaGroup_})
+        connect(group, &QGroupBox::toggled, this,
+                &MaceTrainerDialog::refreshPreview);
+    connect(emaCheck_, &QCheckBox::toggled, this,
             &MaceTrainerDialog::refreshPreview);
     connect(sizeCombo_, &QComboBox::currentIndexChanged, this,
             &MaceTrainerDialog::applySizePreset);
 
+    // Stage two must have room to run AND to checkpoint. MACE saves a
+    // checkpoint on the evaluation cadence, so a start_swa that leaves fewer
+    // than eval_interval epochs behind it produces no stage-two checkpoint —
+    // and MACE then dies at the very end of an otherwise successful run,
+    // trying to load the checkpoint it never wrote ("No SWA checkpoint found",
+    // then an UnboundLocalError from its checkpoint handler). Clamping the
+    // control is the only way a user finds that out before burning the epochs.
+    const auto syncSwaRange = [this] {
+        const int room = epochsSpin_->value() - evalIntervalSpin_->value();
+        swaStartSpin_->setMaximum(qMax(1, room));
+    };
+    syncSwaRange();
+    connect(epochsSpin_, &QSpinBox::valueChanged, this, syncSwaRange);
+    connect(evalIntervalSpin_, &QSpinBox::valueChanged, this, syncSwaRange);
+
+    // The E0s file row is only meaningful for the "from a JSON file" mode.
+    const auto syncE0sFileRow = [this, e0sBrowse] {
+        const bool fromFile =
+            e0sModeCombo_->currentData().toString() == QLatin1String("file");
+        e0sFileEdit_->setEnabled(fromFile);
+        e0sBrowse->setEnabled(fromFile);
+    };
+    syncE0sFileRow();
+    connect(e0sModeCombo_, &QComboBox::currentIndexChanged, this, syncE0sFileRow);
+
     connect(trainBrowse, &QPushButton::clicked, this,
             &MaceTrainerDialog::browseTrainFile);
+    connect(validBrowse, &QPushButton::clicked, this,
+            &MaceTrainerDialog::browseValidFile);
+    connect(e0sBrowse, &QPushButton::clicked, this,
+            &MaceTrainerDialog::browseE0sFile);
     connect(regenerate, &QPushButton::clicked, this, [this] {
         manuallyEdited_ = false;
         refreshPreview();
@@ -246,31 +432,101 @@ void MaceTrainerDialog::applySizePreset()
     refreshPreview();
 }
 
+QString MaceTrainerDialog::e0sValue() const
+{
+    const QString mode = e0sModeCombo_->currentData().toString();
+    if (mode == QLatin1String("dataset"))
+        return QString(); // the training file carries IsolatedAtom frames
+    if (mode == QLatin1String("file")) {
+        const QString path = e0sFileEdit_->text().trimmed();
+        // An empty path would emit `E0s: ""`, which MACE parses as neither a
+        // file nor a dict and rejects with a confusing message. Fall back to
+        // the mode that always works.
+        if (path.isEmpty())
+            return QStringLiteral("average");
+        return QFileInfo(path).absoluteFilePath();
+    }
+    return QStringLiteral("average");
+}
+
 QString MaceTrainerDialog::buildYaml() const
 {
     const QString trainFile = trainFileEdit_->text().trimmed().isEmpty()
         ? QStringLiteral("train.xyz")
         : QFileInfo(trainFileEdit_->text().trimmed()).absoluteFilePath();
+    const QString validFile = validFileEdit_->text().trimmed();
 
     QString y;
-    y += QStringLiteral("# MACE training configuration — generated by Calango\n");
+    y += QStringLiteral("# MACE training configuration — generated by Calango.\n");
+    y += QStringLiteral("# Every key below is one mace.tools.arg_parser "
+                        "accepts; MACE aborts on any it does not.\n");
     y += QStringLiteral("model: MACE\n");
     y += QStringLiteral("name: mace_model\n");
     y += QStringLiteral("train_file: \"%1\"\n").arg(trainFile);
-    y += QStringLiteral("valid_fraction: 0.1\n");
+    if (validFile.isEmpty()) {
+        y += QStringLiteral("valid_fraction: 0.1\n");
+    } else {
+        y += QStringLiteral("valid_file: \"%1\"\n")
+                 .arg(QFileInfo(validFile).absoluteFilePath());
+    }
+
+    // Where the reference values live in the training file. Always written,
+    // never left to MACE's default: its default (REF_energy / REF_forces) does
+    // not match what ASE — and therefore Calango's dataset export — writes,
+    // and the mismatch costs a silent zero-weight run rather than an error.
+    y += QStringLiteral("energy_key: \"%1\"\n")
+             .arg(energyKeyCombo_->currentText().trimmed());
+    y += QStringLiteral("forces_key: \"%1\"\n")
+             .arg(forcesKeyCombo_->currentText().trimmed());
+    // Isolated-atom energies. Without this (and without IsolatedAtom frames in
+    // the training file) MACE raises before the first epoch.
+    if (const QString e0s = e0sValue(); !e0s.isEmpty())
+        y += QStringLiteral("E0s: \"%1\"\n").arg(e0s);
+
     y += QStringLiteral("r_max: %1\n").arg(rMaxSpin_->value());
     y += QStringLiteral("num_channels: %1\n").arg(channelsSpin_->value());
     y += QStringLiteral("max_L: %1\n").arg(maxLSpin_->value());
+    // Plural. `num_interaction` also happens to work, because argparse accepts
+    // any unambiguous prefix of a long option — which makes a typo here look
+    // deliberate and survive review.
     y += QStringLiteral("num_interactions: 2\n");
     y += QStringLiteral("correlation: 3\n");
     y += QStringLiteral("batch_size: %1\n").arg(batchSpin_->value());
     y += QStringLiteral("max_num_epochs: %1\n").arg(epochsSpin_->value());
     y += QStringLiteral("lr: %1\n").arg(lrSpin_->value());
+    y += QStringLiteral("patience: %1\n").arg(patienceSpin_->value());
+    y += QStringLiteral("eval_interval: %1\n").arg(evalIntervalSpin_->value());
     y += QStringLiteral("loss: weighted\n");
     y += QStringLiteral("energy_weight: %1\n").arg(energyWeightSpin_->value());
     y += QStringLiteral("forces_weight: %1\n").arg(forcesWeightSpin_->value());
-    y += QStringLiteral("stress_weight: %1\n").arg(stressWeightSpin_->value());
-    y += QStringLiteral("virials_weight: %1\n").arg(virialsWeightSpin_->value());
+    // Emitted only when they carry weight. `loss: weighted` fits energy and
+    // forces alone, so a zero stress/virials weight is a line that says
+    // something is being fitted when nothing is — and it reads as a bug in the
+    // dataset when the resulting model has no stress term.
+    if (stressWeightSpin_->value() > 0.0)
+        y += QStringLiteral("stress_weight: %1\n").arg(stressWeightSpin_->value());
+    if (virialsWeightSpin_->value() > 0.0)
+        y += QStringLiteral("virials_weight: %1\n").arg(virialsWeightSpin_->value());
+
+    if (swaGroup_->isChecked()) {
+        // MACE's two-phase schedule. `swa` is the historical spelling of what
+        // the docs now call stage two; both map to the same argument.
+        y += QStringLiteral("swa: true\n");
+        y += QStringLiteral("start_swa: %1\n").arg(swaStartSpin_->value());
+        if (emaCheck_->isChecked()) {
+            y += QStringLiteral("ema: true\n");
+            y += QStringLiteral("ema_decay: %1\n").arg(emaDecaySpin_->value());
+        }
+    }
+    y += QStringLiteral("amsgrad: true\n");
+    // Resume from the newest checkpoint instead of restarting from scratch —
+    // the difference between a killed job costing an hour and costing the run.
+    y += QStringLiteral("restart_latest: true\n");
+    // Save a CPU copy of the model as well: a model saved only in CUDA tensors
+    // cannot be loaded for inference on a machine without the training GPU,
+    // which is exactly where an MLIP is used afterwards.
+    y += QStringLiteral("save_cpu: true\n");
+    y += QStringLiteral("default_dtype: %1\n").arg(dtypeCombo_->currentText());
     y += QStringLiteral("device: %1\n").arg(deviceCombo_->currentText());
     y += QStringLiteral("seed: %1\n").arg(seedSpin_->value());
 
@@ -313,9 +569,52 @@ QString MaceTrainerDialog::runnerScript() const
 
     QString s;
     s += QStringLiteral("#!/usr/bin/env python3\n");
-    s += QStringLiteral("# MACE training launcher generated by Calango.\n");
-    s += QStringLiteral("import subprocess\n");
-    s += QStringLiteral("import sys\n\n");
+    s += QStringLiteral(
+        "# MACE training launcher generated by Calango.\n"
+        "#\n"
+        "# Self-contained: needs mace-torch and nothing from Calango, so it\n"
+        "# can be copied to a cluster and run as it stands.\n"
+        "import os\n"
+        "import subprocess\n"
+        "import sys\n"
+        "\n"
+        "\n"
+        "def train_mace(config_file_path):\n"
+        "    \"\"\"Run MACE's trainer in-process against one config file.\n"
+        "\n"
+        "    This is MACE's own documented entry point rather than\n"
+        "    `python -m mace.cli.run_train`: run_train.main() reads its\n"
+        "    parameters from sys.argv, so handing it the argv it expects is\n"
+        "    the invocation MACE actually supports, and it keeps working when\n"
+        "    the package ships no runnable __main__.\n"
+        "    \"\"\"\n"
+        "    import logging\n"
+        "    import warnings\n"
+        "\n"
+        "    warnings.filterwarnings(\"ignore\")\n"
+        "    from mace.cli.run_train import main as mace_run_train\n"
+        "\n"
+        "    # MACE installs its own root handlers. Ours are still attached at\n"
+        "    # this point, so without clearing them every line of the training\n"
+        "    # log is emitted twice.\n"
+        "    logging.getLogger().handlers.clear()\n"
+        "    sys.argv = [\"program\", \"--config\", config_file_path]\n"
+        "    mace_run_train()\n"
+        "\n"
+        "\n"
+        "# Re-entry: `python <this file> <config.yaml>` trains exactly ONE\n"
+        "# model and exits. The committee loop below launches the script this\n"
+        "# way once per seed, because run_train.main() leaves global torch and\n"
+        "# logging state behind that a second call in the same process\n"
+        "# inherits — the seeds would stop being independent, which is the one\n"
+        "# property a Query-by-Committee ensemble needs.\n"
+        "#\n"
+        "# The guard precedes the logging block deliberately: a child must not\n"
+        "# truncate the metrics.json and warnings.log its parent is writing.\n"
+        "if len(sys.argv) > 1:\n"
+        "    train_mace(sys.argv[1])\n"
+        "    raise SystemExit(0)\n"
+        "\n");
     // Shared JSON logger (warnings.log + metrics.json progress) so training
     // progress is written to metrics.json instead of stdout.
     s += QString::fromStdString(core::AseScriptGenerator::jsonLoggerPreamble());
@@ -324,21 +623,44 @@ QString MaceTrainerDialog::runnerScript() const
     if (!yaml().endsWith(QLatin1Char('\n')))
         s += QLatin1Char('\n');
     s += QStringLiteral("\"\"\"\n\n");
-    s += QStringLiteral("with open(\"mace_train.yaml\", \"w\") as _fh:\n");
-    s += QStringLiteral("    _fh.write(CONFIG)\n\n");
+    s += QStringLiteral(
+        "\n"
+        "def config_for(seed, name):\n"
+        "    \"\"\"CONFIG with `seed` and `name` replaced, as one YAML file.\n"
+        "\n"
+        "    Per-seed files rather than `--seed`/`--name` overrides on the\n"
+        "    command line: MACE reads the config through configargparse, so\n"
+        "    the file is the whole parameter set and one reviewable document\n"
+        "    per model is what makes a committee reproducible afterwards.\n"
+        "    \"\"\"\n"
+        "    # Only column-0 keys are top level — the nested entries under\n"
+        "    # E0s: are indented and must survive.\n"
+        "    kept = [line for line in CONFIG.splitlines()\n"
+        "            if not line.startswith((\"seed:\", \"name:\"))]\n"
+        "    kept += [f'name: \"{name}\"', f\"seed: {seed}\"]\n"
+        "    return \"\\n\".join(kept) + \"\\n\"\n"
+        "\n"
+        "\n");
     s += QStringLiteral("# Query-by-Committee ensemble: one training run per "
                         "seed.\n");
     s += QStringLiteral("seeds = [%1]\n").arg(seeds.join(QStringLiteral(", ")));
-    s += QStringLiteral("for _i, _seed in enumerate(seeds):\n");
-    s += QStringLiteral("    _calango_log.progress(_i, len(seeds))\n");
-    s += QStringLiteral("    print(f\"CALANGO_INFO training MACE model "
-                        "seed={_seed}\", flush=True)\n");
-    s += QStringLiteral("    subprocess.run([sys.executable, \"-m\", "
-                        "\"mace.cli.run_train\",\n");
-    s += QStringLiteral("                    \"--config\", \"mace_train.yaml\",\n");
-    s += QStringLiteral("                    \"--seed\", str(_seed),\n");
-    s += QStringLiteral("                    \"--name\", f\"mace_model_{_seed}\"],\n");
-    s += QStringLiteral("                   check=True)\n\n");
+    s += QStringLiteral(
+        "for _i, _seed in enumerate(seeds):\n"
+        "    _calango_progress(_i, len(seeds))\n"
+        "    _name = f\"mace_model_{_seed}\" if len(seeds) > 1 else "
+        "\"mace_model\"\n"
+        "    _config = f\"mace_train_{_seed}.yaml\"\n"
+        "    with open(_config, \"w\") as _fh:\n"
+        "        _fh.write(config_for(_seed, _name))\n"
+        "    print(f\"CALANGO_INFO training MACE model seed={_seed}\", "
+        "flush=True)\n"
+        "    _calango_event(\"info\", f\"training {_name} from {_config}\")\n"
+        "    subprocess.run([sys.executable, os.path.abspath(__file__), "
+        "_config],\n"
+        "                   check=True)\n"
+        "\n"
+        "_calango_progress(len(seeds), len(seeds))\n"
+        "_calango_event(\"done\", f\"{len(seeds)} MACE model(s) trained\")\n");
     s += QStringLiteral("print(\"CALANGO_RESULT models_trained=\" + "
                         "str(len(seeds)), flush=True)\n");
     s += QStringLiteral("print(\"CALANGO_DONE\", flush=True)\n");
@@ -377,6 +699,24 @@ void MaceTrainerDialog::browseTrainFile()
         tr("Structures (*.xyz *.extxyz);;All files (*)"));
     if (!path.isEmpty())
         trainFileEdit_->setText(path);
+}
+
+void MaceTrainerDialog::browseValidFile()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Select Validation Set"), validFileEdit_->text(),
+        tr("Structures (*.xyz *.extxyz);;All files (*)"));
+    if (!path.isEmpty())
+        validFileEdit_->setText(path);
+}
+
+void MaceTrainerDialog::browseE0sFile()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Select Isolated-Atom Energies"), e0sFileEdit_->text(),
+        tr("JSON files (*.json);;All files (*)"));
+    if (!path.isEmpty())
+        e0sFileEdit_->setText(path);
 }
 
 } // namespace calango::gui
