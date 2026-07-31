@@ -8,6 +8,7 @@ class QGroupBox;
 class QLabel;
 class QDoubleSpinBox;
 class QListWidget;
+class QPushButton;
 
 #include <QString>
 
@@ -28,9 +29,27 @@ public:
     /// True when bands.json was found and parsed.
     bool hasData() const { return hasData_; }
 
+    /// The orbital weights as a delimited TIDY table: a header row, then one
+    /// row per electronic state — k-path distance, spin, band, energy, and one
+    /// weight column per projection channel.
+    ///
+    /// One row per state rather than the wide layout the band export uses: a
+    /// weight is uninterpretable without the energy of the state it belongs
+    /// to, and pairing the two in a wide table would take channels x bands
+    /// columns. This shape loads directly into pandas or gnuplot as the
+    /// (x, y, weight) triples a fatband plot consumes.
+    ///
+    /// Empty when the run wrote no weights. Public — and separate from the
+    /// file dialog that normally calls it — so the format can be pinned by a
+    /// test.
+    QString fatbandTable(QChar separator = QLatin1Char(',')) const;
+
 private Q_SLOTS:
     void exportBands();
     void exportPdos();
+    /// Orbital weights as a TIDY table: one row per (k-point, spin, band),
+    /// carrying the state's energy and one column per projection channel.
+    void exportFatbands();
 
 private:
     void loadDirectory(const QString& directory);
@@ -68,6 +87,9 @@ private:
     QGroupBox* fatbandGroup_ = nullptr;
     QComboBox* fatbandModeCombo_ = nullptr;
     QListWidget* fatbandList_ = nullptr;
+    /// Hidden alongside the group above, for the same reason: an export button
+    /// that can only ever report "this run has no fatbands" is noise.
+    QPushButton* exportFatbandsButton_ = nullptr;
 
     // -- Band symmetry ------------------------------------------------------
     QGroupBox* symmetryGroup_ = nullptr;

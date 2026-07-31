@@ -1,6 +1,7 @@
 #include "gui/DatasetManagerDialog.hpp"
 
 #include "core/DatasetSplit.hpp"
+#include "gui/GuiUtils.hpp"
 
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
@@ -130,10 +131,13 @@ int DatasetManagerDialog::totalFrames() const
 
 void DatasetManagerDialog::addFiles()
 {
+    // The shared application-wide filter list, so Extended XYZ is the
+    // pre-selected default here as everywhere else, with the one format only a
+    // dataset takes appended: an ASE .db is a whole collection of structures
+    // rather than a single geometry, so it belongs to this dialog alone.
     const QStringList paths = QFileDialog::getOpenFileNames(
         this, tr("Add Structures / Trajectories"), QString(),
-        tr("Structures (*.xyz *.extxyz *.traj *.cif *.vasp POSCAR* CONTCAR* "
-           "*.db);;All files (*)"));
+        structureOpenFilters() + tr(";;ASE database (*.db)"));
     if (paths.isEmpty())
         return;
 

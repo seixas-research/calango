@@ -58,17 +58,30 @@ loading a geometry.
 \begin{description}
   \item[\menu{File}\menusep\menu{Save}\menusep\menu{Structure As}]
     \kbd{Ctrl}+\kbd{Shift}+\kbd{S}. Writes the currently displayed frame.
-    The format follows the extension you type.
+    The name is suggested from the document's own, with the default
+    extension; the format follows the filter you pick, and a name typed
+    without an extension is given the filter's own.
   \item[\menu{File}\menusep\menu{Save}\menusep\menu{Trajectory As}]
     \kbd{Ctrl}+\kbd{Shift}+\kbd{T}. Writes all frames of the active
     document as extended XYZ, multi-frame XYZ, ASE \file{.traj}, or
     multi-model PDB.
 \end{description}
 
-\begin{caltip}
-Extended XYZ round-trips more than plain XYZ --- cell, periodicity and
-per-atom arrays all survive. When in doubt, save \file{.extxyz}.
-\end{caltip}
+\begin{calnote}
+\textbf{Extended XYZ is the default everywhere.} It is pre-selected in every
+open and save dialog in the application --- structures, trajectories, NEB
+endpoints, dataset imports --- and it is what \menu{Save Structure As}
+writes unless you choose otherwise. The reason is that it is the only format
+in the list that round-trips everything a Calango document carries: cell and
+periodicity, per-atom magnetic moments and charges, forces and velocities,
+and arbitrary extra columns. Plain \file{.xyz} silently drops the cell; CIF
+drops the calculator results; POSCAR drops nearly everything but the
+positions.
+
+Every other format is still one entry down in the same list, so nothing has
+become harder to reach --- only the \emph{default} changed, to the format
+that loses nothing.
+\end{calnote}
 
 \section{The database and preset browser}
 \label{sec:database}

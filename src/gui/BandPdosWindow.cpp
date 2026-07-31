@@ -136,19 +136,28 @@ BandPdosWindow::BandPdosWindow(const QString& directory, QWidget* parent)
         tr("Colour scale"), static_cast<int>(BandPdosView::FatbandMode::Color));
     fatbandModeCombo_->addItem(
         tr("Width + colour"), static_cast<int>(BandPdosView::FatbandMode::Both));
-    fatbandModeCombo_->setCurrentIndex(1);
+    // Width + colour is the default: the width is the classic fatband, and the
+    // colormap — transparent at zero weight — is what keeps several channels
+    // readable on the same axes.
+    fatbandModeCombo_->setCurrentIndex(
+        fatbandModeCombo_->findData(
+            static_cast<int>(BandPdosView::FatbandMode::Both)));
     fatbandModeCombo_->setToolTip(
         tr("How the orbital weight of each band is drawn.\n\n"
            "Line width is the classic fatband: the band thickens where the "
            "selected orbital contributes. Colour scale keeps the width "
-           "constant and fades the overlay instead, which stays readable where "
-           "many bands run close together. Both applies each."));
+           "constant and maps the weight onto the channel's sequential "
+           "colormap instead, which stays readable where many bands run close "
+           "together. Both applies each."));
     fatbandLayout->addWidget(fatbandModeCombo_);
     fatbandList_ = new QListWidget(fatbandGroup_);
     fatbandList_->setToolTip(
         tr("Channels drawn over the dispersion. Several at once is the point: "
            "seeing metal d and ligand p on the same plot is how "
-           "hybridization becomes visible."));
+           "hybridization becomes visible.\n\n"
+           "Each channel has its own sequential colormap (Greens, Blues, "
+           "Reds, …) that is fully transparent at zero weight, so the "
+           "channels superimpose instead of painting over one another."));
     fatbandLayout->addWidget(fatbandList_, 1);
     side->addWidget(fatbandGroup_, 1);
     fatbandGroup_->setVisible(false);
@@ -226,8 +235,19 @@ BandPdosWindow::BandPdosWindow(const QString& directory, QWidget* parent)
 
     auto* exportBandsButton = new QPushButton(tr("Export Bands…"), this);
     auto* exportPdosButton = new QPushButton(tr("Export PDOS…"), this);
+    exportFatbandsButton_ = new QPushButton(tr("Export Fatbands…"), this);
+    exportFatbandsButton_->setToolTip(
+        tr("The orbital weights themselves, as one row per (k-point, spin, "
+           "band) carrying that state's energy and one column per projection "
+           "channel.\n\nThat shape rather than the wide one the band export "
+           "uses: a weight is meaningless without the energy it belongs to, "
+           "and a wide table would need channels × bands columns to keep the "
+           "two together."));
+    // Shown by loadFatbands() when the run actually wrote weights.
+    exportFatbandsButton_->setVisible(false);
     side->addWidget(exportBandsButton);
     side->addWidget(exportPdosButton);
+    side->addWidget(exportFatbandsButton_);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     side->addWidget(buttons);
@@ -248,6 +268,8 @@ BandPdosWindow::BandPdosWindow(const QString& directory, QWidget* parent)
             this, &BandPdosWindow::exportBands);
     connect(exportPdosButton, &QPushButton::clicked,
             this, &BandPdosWindow::exportPdos);
+    connect(exportFatbandsButton_, &QPushButton::clicked,
+            this, &BandPdosWindow::exportFatbands);
 
     loadDirectory(directory);
 }
@@ -342,11 +364,19 @@ bool BandPdosWindow::loadFatbands(const QString& directory)
         auto* item = new QListWidgetItem(label, fatbandList_);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(Qt::Checked);
-        item->setForeground(BandPdosView::fatbandColor(index++));
+        item->setForeground(BandPdosView::fatbandColor(index));
+        // Name the colormap on the row itself. A figure caption has to say
+        // which orbital got which colour, and the swatch alone does not tell a
+        // reader that "reddish" means the Reds map rather than the Oranges one.
+        item->setToolTip(tr("%1 — %2 colormap")
+                             .arg(label,
+                                  BandPdosView::fatbandColormapName(index)));
+        ++index;
     }
     view_->setFatbandData(std::move(data));
     view_->setFatbandMode(static_cast<BandPdosView::FatbandMode>(
         fatbandModeCombo_->currentData().toInt()));
+    exportFatbandsButton_->setVisible(true);
     return true;
 }
 
@@ -476,6 +506,73 @@ void BandPdosWindow::exportPdos()
             out << "\n";
         }
     });
+}
+
+QString BandPdosWindow::fatbandTable(QChar separator) const
+{
+    const auto& fatbands = view_->fatbandData();
+    const auto& bands = view_->bandData();
+    if (!fatbands.valid() || !bands.valid())
+        return {};
+
+    QString table;
+    QTextStream out(&table);
+    out << "k_distance" << separator << "spin" << separator << "band"
+        << separator << "energy_eV";
+    for (const auto& [label, weights] : fatbands.projections) {
+        (void)weights;
+        out << separator
+            << QString(label).replace(QLatin1Char(' '), QLatin1Char('_'));
+    }
+    out << "\n";
+
+    for (std::size_t spin = 0; spin < bands.energies.size(); ++spin) {
+        const auto& kEnergies = bands.energies[spin];
+        for (std::size_t k = 0; k < kEnergies.size() && k < bands.x.size();
+             ++k) {
+            for (std::size_t band = 0; band < kEnergies[k].size(); ++band) {
+                // Energies are ABSOLUTE, as bands.json carries them and as the
+                // band export writes them — not shifted by the viewer's
+                // current Fermi reference, which is a display setting.
+                out << bands.x[k] << separator << (spin + 1) << separator
+                    << (band + 1) << separator << kEnergies[k][band];
+                for (const auto& [label, weights] : fatbands.projections) {
+                    (void)label;
+                    // A channel can legitimately be shorter than the band
+                    // manifold: the weights come from a separate GPAW pass
+                    // that may have covered fewer bands. Missing entries are
+                    // zero weight, not a truncated file.
+                    double weight = 0.0;
+                    if (spin < weights.size() && k < weights[spin].size()
+                        && band < weights[spin][k].size())
+                        weight = weights[spin][k][band];
+                    out << separator << weight;
+                }
+                out << "\n";
+            }
+        }
+    }
+    return table;
+}
+
+void BandPdosWindow::exportFatbands()
+{
+    if (!view_->fatbandData().valid() || !view_->bandData().valid()) {
+        QMessageBox::information(
+            this, windowTitle(),
+            tr("This run has no orbital projections.\n\nTick \"Orbital "
+               "projections (fatbands)\" in the Electronic Structure wizard "
+               "before running to have the weights written."));
+        return;
+    }
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export Fatband Weights"), QStringLiteral("fatbands.csv"),
+        tr("CSV (*.csv);;Gnuplot data (*.dat)"));
+    if (path.isEmpty())
+        return;
+    const QChar separator =
+        path.endsWith(QLatin1String(".dat")) ? QChar(' ') : QChar(',');
+    writeTextFile(this, path, fatbandTable(separator));
 }
 
 void BandPdosWindow::refreshBandGap()

@@ -3,6 +3,8 @@
 #include <QColor>
 #include <QDoubleSpinBox>
 #include <QJsonObject>
+#include <QList>
+#include <QPair>
 #include <QString>
 
 #include <vector>
@@ -159,6 +161,60 @@ bool mlwfWavefunctionsAvailable(const QString& jobDir, QString* reason);
 /// subscripts), ready for a QLabel. Empty when the symbol is not one of the
 /// 32 crystallographic point groups.
 QString schoenfliesPointGroup(const QString& hermannMauguin);
+
+// ---------------------------------------------------------------------------
+// Structure file I/O: one set of filters for the whole application
+// ---------------------------------------------------------------------------
+//
+// EXTENDED XYZ IS THE DEFAULT EVERYWHERE. It is the only format in this list
+// that round-trips everything a Calango document actually carries — cell and
+// pbc flags, per-atom magnetic moments and charges, forces and velocities, and
+// arbitrary extra columns — so it is what a save should produce unless the
+// user deliberately asks for something a downstream code needs. Plain .xyz
+// silently drops the cell; CIF drops the calculator results; POSCAR drops the
+// element names into a separate line and everything else on the floor.
+//
+// The filter lists therefore all start with Extended XYZ, which is what
+// QFileDialog pre-selects. The umbrella "all supported structures" filter is
+// one entry down in the open dialogs, so nothing becomes unreachable.
+
+/// ASE's format name for Extended XYZ, as passed to write()/read().
+QString defaultStructureFormat();
+/// ".extxyz" — the suffix a structure is saved with unless told otherwise.
+QString defaultStructureSuffix();
+/// `stem` with the default structure suffix, sanitized for use as a file name.
+/// Empty or extension-only stems fall back to "structure".
+QString defaultStructureFileName(const QString& stem);
+
+/// ";;"-joined QFileDialog filters for OPENING structure files, Extended XYZ
+/// first.
+QString structureOpenFilters();
+/// The same for multi-frame trajectories.
+QString trajectoryOpenFilters();
+
+/// (filter text, explicit ASE format) pairs for SAVING. An empty format means
+/// "infer from the extension"; every entry here names its format explicitly so
+/// that a user who types a bare name still gets the format they picked.
+/// Extended XYZ is first in both lists.
+const QList<QPair<QString, QString>>& structureSaveFormats();
+const QList<QPair<QString, QString>>& trajectorySaveFormats();
+
+/// Look up the ASE format belonging to `filter` in `formats`. Falls back to
+/// the FIRST entry's format, which is the extxyz default — an unmatched filter
+/// means the dialog returned something unexpected, and inferring from the
+/// extension there is how a file ends up written in a format the user did not
+/// choose.
+QString formatForFilter(const QList<QPair<QString, QString>>& formats,
+                        const QString& filter);
+
+/// Append `filter`'s primary extension to `path` when the user typed a name
+/// without one.
+///
+/// The static QFileDialog helpers have no setDefaultSuffix(), so "Save As"
+/// with a bare name would otherwise produce an extension-less file that
+/// nothing — not the app's own open dialog, not ASE's format sniffing — can
+/// identify afterwards.
+QString withFilterSuffix(const QString& path, const QString& filter);
 
 /// "3m (C<sub>3v</sub>)" — the Hermann-Mauguin symbol with its Schönflies
 /// counterpart appended, falling back to the plain H-M symbol when the

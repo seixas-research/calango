@@ -305,7 +305,8 @@ std::shared_ptr<const core::Structure> NebDialog::endpoint(QComboBox* combo) con
 
 void NebDialog::browseInitial()
 {
-    const QString path = QFileDialog::getOpenFileName(this, tr("Open Initial State"));
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Open Initial State"), QString(), structureOpenFilters());
     if (path.isEmpty())
         return;
     try {
@@ -321,7 +322,8 @@ void NebDialog::browseInitial()
 
 void NebDialog::browseFinal()
 {
-    const QString path = QFileDialog::getOpenFileName(this, tr("Open Final State"));
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Open Final State"), QString(), structureOpenFilters());
     if (path.isEmpty())
         return;
     try {

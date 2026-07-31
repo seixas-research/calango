@@ -385,7 +385,114 @@ int main(int argc, char** argv)
                 channels = group->findChild<QListWidget*>();
         check(channels != nullptr && channels->count() == 2,
               "the channel list is populated from the file");
+
+        // -- The CSV export ------------------------------------------------
+        //
+        // Tidy layout: one row per (k, spin, band) with the state's energy and
+        // one weight column per channel. Two k-points x one spin x two bands
+        // is four rows plus the header.
+        const QString csv = window.fatbandTable();
+        const QStringList rows = csv.split(QLatin1Char('\n'),
+                                           Qt::SkipEmptyParts);
+        check(rows.size() == 5, "the fatband export is header + one row per state");
+        check(!rows.isEmpty()
+                  && rows.front()
+                         == QStringLiteral("k_distance,spin,band,energy_eV,"
+                                           "C_p_z,C_s"),
+              "with the energy beside the weights and a column per channel");
+        if (rows.size() == 5) {
+            // Row order is k-major, then band — k = 0, band 2 is the third
+            // row, and it is the state carrying the 0.8 p_z weight the
+            // fixture put there.
+            check(rows[2] == QStringLiteral("0,1,2,2,0.8,0"),
+                  "and each row pairs the weight with the energy of its state");
+        }
+        // Spaces would split a "C p_z" column header into two fields.
+        check(!rows.isEmpty() && !rows.front().contains(QStringLiteral("C p")),
+              "channel labels are underscored so the header stays parseable");
+        // Space-separated variant for gnuplot, same table.
+        check(window.fatbandTable(QLatin1Char(' '))
+                  .startsWith(QStringLiteral("k_distance spin band energy_eV")),
+              "the .dat variant swaps the separator and nothing else");
     }
+    // -- Fatband colormaps -------------------------------------------------
+    //
+    // The transparent low end is not cosmetic: it is the whole reason several
+    // orbital channels can be drawn on one set of axes. An opaque zero-weight
+    // colour paints over every channel already drawn AND over the dispersion
+    // itself, so a six-orbital plot would show only whichever channel happened
+    // to be painted last. That property is asserted here rather than left to
+    // the eye.
+    std::printf("Fatband colormaps superimpose:\n");
+    {
+        const char* expected[] = {"Greens", "Blues",  "Reds",
+                                  "Oranges", "Greys", "Purples"};
+        bool namesMatch = true;
+        for (int i = 0; i < 6; ++i)
+            namesMatch = namesMatch
+                && BandPdosView::fatbandColormapName(i)
+                    == QString::fromLatin1(expected[i]);
+        check(namesMatch, "six sequential colormaps in the documented order");
+        check(BandPdosView::fatbandColormapName(6)
+                  == BandPdosView::fatbandColormapName(0),
+              "and a seventh channel wraps rather than reading out of bounds");
+
+        bool zeroTransparent = true;
+        bool fullOpaque = true;
+        bool monotone = true;
+        for (int map = 0; map < 6; ++map) {
+            for (const bool dark : {false, true}) {
+                zeroTransparent = zeroTransparent
+                    && BandPdosView::fatbandColorAt(map, 0.0, dark).alpha() == 0;
+                fullOpaque = fullOpaque
+                    && BandPdosView::fatbandColorAt(map, 1.0, dark).alpha() == 255;
+                int previous = -1;
+                for (int step = 0; step <= 20; ++step) {
+                    const int alpha =
+                        BandPdosView::fatbandColorAt(map, step / 20.0, dark)
+                            .alpha();
+                    monotone = monotone && alpha >= previous;
+                    previous = alpha;
+                }
+            }
+        }
+        check(zeroTransparent,
+              "zero weight is FULLY TRANSPARENT, so channels do not occlude");
+        check(fullOpaque, "maximum weight is fully opaque");
+        check(monotone, "and opacity never decreases with weight");
+
+        // A sequential map is a luminance ramp away from the page. Drawn on a
+        // near-black plot background, the matplotlib originals put maximum
+        // weight in near-black — invisible. The dark rendering mirrors
+        // lightness so the ramp still runs away from the background.
+        const QColor lightMax = BandPdosView::fatbandColorAt(1, 1.0, false);
+        const QColor darkMax = BandPdosView::fatbandColorAt(1, 1.0, true);
+        check(lightMax.lightness() < 96,
+              "Blues runs to a dark navy on a light background");
+        check(darkMax.lightness() > 160,
+              "and to a light blue on a dark one, so it stays visible");
+        check(std::abs(lightMax.hslHue() - darkMax.hslHue()) < 20,
+              "with the hue preserved — Blues is blue either way");
+
+        // Distinct channels must be distinguishable at full weight, which is
+        // where a reader identifies them.
+        bool distinct = true;
+        for (int a = 0; a < 6; ++a)
+            for (int b = a + 1; b < 6; ++b)
+                distinct = distinct
+                    && BandPdosView::fatbandColorAt(a, 1.0, true)
+                        != BandPdosView::fatbandColorAt(b, 1.0, true);
+        check(distinct, "and every pair of channels differs at full weight");
+
+        // The list swatch is opaque: it is drawn on the widget palette, not
+        // composited over the plot, and a transparent legend entry is blank.
+        bool swatchesOpaque = true;
+        for (int map = 0; map < 6; ++map)
+            swatchesOpaque =
+                swatchesOpaque && BandPdosView::fatbandColor(map).alpha() == 255;
+        check(swatchesOpaque, "while the channel-list swatches stay opaque");
+    }
+
     {
         // The same window with neither sidecar: the dispersion still loads and
         // the two panels stay hidden.

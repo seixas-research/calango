@@ -102,6 +102,7 @@
 #include "gui/MolecularDynamicsViewer.hpp"
 #include "gui/RunCommands.hpp"
 #include "gui/WaterIceWizard.hpp"
+#include "gui/LiquidInterfaceWizard.hpp"
 #include "gui/SqsDialog.hpp"
 #include "gui/WarrenCowleyDialog.hpp"
 #include "gui/LocalEntropyDialog.hpp"
@@ -1112,6 +1113,14 @@ void MainWindow::createMenusAndDocks()
                          this, &MainWindow::openWaterIceBuilder)
         ->setToolTip(tr("Liquid water and the ice polymorphs, with "
                         "Bernal-Fowler proton disorder"));
+    // Third in the molecular-systems block because it CONSUMES a structure
+    // rather than generating one from nothing: it needs a slab (from Surface
+    // Slab, above) to open a region on.
+    buildMenu->addAction(tr("&Liquid / Gas Interface…"),
+                         this, &MainWindow::openLiquidInterfaceBuilder)
+        ->setToolTip(tr("Open a fluid region on the current structure and pack "
+                        "it with a liquid, a gas, a mixture, or an ionic "
+                        "solution — solid/liquid and solid/gas interfaces"));
     // Cluster Expansion, SQS and Warren-Cowley now live under Modules → Alloys;
     // the alloy toolchain is grouped there rather than split across Build /
     // Simulation / Analysis.
@@ -2317,21 +2326,10 @@ void MainWindow::loadFile(const QString& path)
 
 void MainWindow::openStructure()
 {
+    // Filters come from GuiUtils so every dialog in the application offers the
+    // same list and pre-selects the same default (Extended XYZ).
     const QStringList paths = QFileDialog::getOpenFileNames(
-        this, tr("Open Structure(s)"), QString(),
-        tr("Structure files (*.xyz *.extxyz *.cif *.pdb POSCAR CONTCAR *.vasp "
-           "*.traj *.in *.pwi *.pwo *.out *.cell *.data *.dump *.lammpstrj "
-           "*.gjf *.com *.res);;"
-           // Both CIF flavours share the extension; the reader tells them
-           // apart by content, so one filter serves both.
-           "CIF / PDBx-mmCIF (*.cif);;"
-           "Protein Data Bank (*.pdb);;"
-           "Quantum ESPRESSO (*.in *.pwi *.pwo *.out);;"
-           "CASTEP (*.cell);;"
-           "LAMMPS (*.data *.dump *.lammpstrj);;"
-           "Gaussian (*.gjf *.com);;"
-           "SHELX (*.res);;"
-           "All files (*)"));
+        this, tr("Open Structure(s)"), QString(), structureOpenFilters());
     for (const QString& path : paths)
         loadFile(path);
 }
@@ -2339,8 +2337,7 @@ void MainWindow::openStructure()
 void MainWindow::openTrajectory()
 {
     const QString path = QFileDialog::getOpenFileName(
-        this, tr("Open Trajectory"), QString(),
-        tr("Trajectories (*.traj *.extxyz *.xyz);;All files (*)"));
+        this, tr("Open Trajectory"), QString(), trajectoryOpenFilters());
     if (!path.isEmpty())
         loadFile(path); // multi-frame aware — activates the timeline
 }
@@ -2389,36 +2386,26 @@ void MainWindow::saveStructureAs()
     Document* doc = currentDocument();
     if (!doc || !doc->structure || !ensureAseAvailable())
         return;
-    // Filter -> explicit ASE format (empty = infer from extension).
-    static const QList<QPair<QString, QString>> kSaveFormats = {
-        {tr("XYZ (*.xyz)"), QString()},
-        {tr("Extended XYZ (*.extxyz)"), QStringLiteral("extxyz")},
-        {tr("CIF (*.cif)"), QStringLiteral("cif")},
-        // PDBx shares the .cif extension with the crystallographic CIF above,
-        // so the two are separate filters rather than one: which of them the
-        // user wants cannot be read off the file name, only off the choice.
-        {tr("PDBx / mmCIF (*.cif)"), QStringLiteral("pdbx")},
-        {tr("VASP POSCAR (*.vasp)"), QStringLiteral("vasp")},
-        {tr("Quantum ESPRESSO input (*.pwi *.in)"), QStringLiteral("espresso-in")},
-        {tr("LAMMPS data (*.data)"), QStringLiteral("lammps-data")},
-        {tr("CASTEP cell (*.cell)"), QStringLiteral("castep-cell")},
-        {tr("Gaussian input (*.com *.gjf)"), QStringLiteral("gaussian-in")},
-        {tr("SHELX (*.res)"), QStringLiteral("res")},
-    };
+    // Filter -> explicit ASE format, shared with every other save dialog in
+    // the application; Extended XYZ is first and therefore pre-selected.
+    const auto& saveFormats = structureSaveFormats();
     QStringList filters;
-    for (const auto& entry : kSaveFormats)
+    for (const auto& entry : saveFormats)
         filters << entry.first;
 
     QString selectedFilter;
-    const QString path = QFileDialog::getSaveFileName(
-        this, tr("Save Structure As"), QString(), filters.join(QStringLiteral(";;")),
-        &selectedFilter);
+    // Suggest the document's own name with the default suffix, so the common
+    // case — open a CIF, edit, save — writes "quartz.extxyz" rather than
+    // leaving the name blank and the format to chance.
+    QString path = QFileDialog::getSaveFileName(
+        this, tr("Save Structure As"), defaultStructureFileName(doc->fileName),
+        filters.join(QStringLiteral(";;")), &selectedFilter);
     if (path.isEmpty())
         return;
-    QString format;
-    for (const auto& entry : kSaveFormats)
-        if (entry.first == selectedFilter)
-            format = entry.second;
+    // A typed name with no extension gets the selected filter's own, so the
+    // file can be recognized again later.
+    path = withFilterSuffix(path, selectedFilter);
+    const QString format = formatForFilter(saveFormats, selectedFilter);
     try {
         // PDBx is written natively — ASE has no writer for it, and this is the
         // one format here that carries the residue/chain annotation.
@@ -2447,26 +2434,20 @@ void MainWindow::saveTrajectoryAs()
     if (!ensureAseAvailable())
         return;
 
-    static const QList<QPair<QString, QString>> kTrajectoryFormats = {
-        {tr("Extended XYZ trajectory (*.extxyz)"), QStringLiteral("extxyz")},
-        {tr("XYZ multi-frame (*.xyz)"), QStringLiteral("xyz")},
-        {tr("ASE trajectory (*.traj)"), QStringLiteral("traj")},
-        {tr("PDB multi-model (*.pdb)"), QStringLiteral("proteindatabank")},
-    };
+    const auto& trajectoryFormats = trajectorySaveFormats();
     QStringList filters;
-    for (const auto& entry : kTrajectoryFormats)
+    for (const auto& entry : trajectoryFormats)
         filters << entry.first;
 
     QString selectedFilter;
-    const QString path = QFileDialog::getSaveFileName(
-        this, tr("Save Trajectory As"), QStringLiteral("trajectory.extxyz"),
+    QString path = QFileDialog::getSaveFileName(
+        this, tr("Save Trajectory As"),
+        defaultStructureFileName(QStringLiteral("trajectory")),
         filters.join(QStringLiteral(";;")), &selectedFilter);
     if (path.isEmpty())
         return;
-    QString format;
-    for (const auto& entry : kTrajectoryFormats)
-        if (entry.first == selectedFilter)
-            format = entry.second;
+    path = withFilterSuffix(path, selectedFilter);
+    const QString format = formatForFilter(trajectoryFormats, selectedFilter);
 
     try {
         pybridge::AseBridge::writeTrajectory(doc->frames, path.toStdString(),
@@ -5909,6 +5890,54 @@ void MainWindow::openMacromoleculeBuilder()
             .arg(QString::fromStdString(generated.description))
             .arg(static_cast<int>(generated.structure.size()))
             .arg(generated.densityGCm3, 0, 'f', 3));
+}
+
+void MainWindow::openLiquidInterfaceBuilder()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(
+            this, tr("Liquid / Gas Interface"),
+            tr("Open or build a structure first.\n\nThis builder opens a fluid "
+               "region on an existing one — typically a surface slab from "
+               "Build → Surface Slab…"));
+        return;
+    }
+    if (!doc->structure->cell().isDefined()) {
+        QMessageBox::information(
+            this, tr("Liquid / Gas Interface"),
+            tr("This structure has no periodic cell.\n\nThe fluid region is "
+               "opened along a lattice vector, so the substrate needs one. Add "
+               "a cell from the Structure panel, or start from a surface "
+               "slab."));
+        return;
+    }
+
+    LiquidInterfaceWizard wizard(doc->structure, this);
+    if (wizard.exec() != QDialog::Accepted || !wizard.result())
+        return;
+    const auto& generated = *wizard.result();
+    const int tab = addDocument(
+        std::make_shared<core::Structure>(generated.structure),
+        QString::fromStdString(generated.description));
+    tabBar_->setCurrentIndex(tab);
+    isDirty_ = true;
+    statusBar()->showMessage(
+        tr("%1 molecules packed — %2 g/cm³ over %3 Å³")
+            .arg(generated.totalMolecules)
+            .arg(generated.density, 0, 'f', 3)
+            .arg(generated.regionVolume, 0, 'f', 0));
+
+    // Warnings are shown AFTER the tab opens, not instead of it: a saturated
+    // packing still produces a usable cell, and hiding it behind a modal that
+    // looks like a failure would be worse than the shortfall it reports.
+    if (!generated.warnings.empty()) {
+        QStringList lines;
+        for (const std::string& warning : generated.warnings)
+            lines << QStringLiteral("• ") + QString::fromStdString(warning);
+        QMessageBox::warning(this, tr("Liquid / Gas Interface"),
+                             lines.join(QStringLiteral("\n\n")));
+    }
 }
 
 void MainWindow::openWaterIceBuilder()

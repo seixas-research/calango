@@ -116,9 +116,12 @@ public:
         /// base `bandLineWidth` is what a zero-weight band keeps, so a band
         /// never disappears — it just stops being fat.
         double fatbandScale = 7.0;
-        /// Opacity floor in Color/Both mode, so a weak-but-nonzero
-        /// contribution is still visible rather than invisible.
-        int fatbandMinAlpha = 25;
+        /// Opacity floor in Color/Both mode. ZERO by design: the colormaps
+        /// below run from fully transparent at zero weight to opaque at the
+        /// maximum, which is what lets several channels be superimposed
+        /// without the first one painted hiding the rest. Raise it only to
+        /// make a very weak contribution visible at the cost of that.
+        int fatbandMinAlpha = 0;
 
         // -- Symmetry labels ------------------------------------------------
         QColor symmetryLabelColor{235, 220, 150};
@@ -161,9 +164,34 @@ public:
     /// looks at first.
     void setSymmetryLineLabelsVisible(bool visible);
 
-    /// Colour used for fatband channel `index` (the viewer's channel list
-    /// reuses it, so list and plot cannot disagree).
+    /// Opaque, legible stand-in colour for fatband channel `index` — the
+    /// swatch its entry gets in the viewer's channel list, and the ink used in
+    /// Width mode, where there is no weight-to-colour mapping to sample. Taken
+    /// from the middle of the channel's colormap, which is the one stop that
+    /// reads clearly on both a light and a dark plot background.
     static QColor fatbandColor(int index);
+
+    /// Channel `index`'s SEQUENTIAL COLORMAP sampled at `t` ∈ [0, 1], where t
+    /// is the orbital weight normalized to FatbandData::maxWeight.
+    ///
+    /// The maps are the ColorBrewer sequentials matplotlib ships — Greens,
+    /// Blues, Reds, Oranges, Greys, Purples, in that order — with one
+    /// deliberate modification: the alpha channel ramps linearly with t, so
+    /// the lowest value is not white but INVISIBLE. That is what makes the
+    /// channels superimposable. A plain white low end would paint over every
+    /// channel drawn before it and over the dispersion itself, turning a
+    /// six-orbital plot into whichever orbital happened to be drawn last.
+    ///
+    /// `darkBackground` mirrors the ramp's lightness. A sequential colormap is
+    /// a luminance ramp AWAY from the page: on white it has to run dark, on a
+    /// dark plot background it has to run light, or maximum weight is drawn in
+    /// near-black on near-black. Hue and saturation are untouched, so Blues
+    /// stays blue either way.
+    static QColor fatbandColorAt(int index, double t, bool darkBackground);
+
+    /// Name of that colormap ("Greens", "Blues", …). Shown in the viewer so a
+    /// reader can name the mapping in a figure caption.
+    static QString fatbandColormapName(int index);
 
     /// Reference energy: plots show E − reference (default: file E_F).
     void setReference(double referenceEv);
@@ -203,7 +231,10 @@ private:
     PdosData pdos_;
     FatbandData fatbands_;
     SymmetryData symmetry_;
-    FatbandMode fatbandMode_ = FatbandMode::Width;
+    /// Width AND colour by default: the width is the classic fatband, and the
+    /// colormap's transparent low end is what keeps several channels legible
+    /// on the same axes. Either one alone gives up half of that.
+    FatbandMode fatbandMode_ = FatbandMode::Both;
     /// Channel label -> drawn. Absent means visible (matches `visible_`).
     std::map<QString, bool> fatbandVisible_;
     bool symmetryVisible_ = true;

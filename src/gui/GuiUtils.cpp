@@ -449,4 +449,148 @@ QString pointGroupDisplay(const QString& hermannMauguin)
         : QStringLiteral("%1 (%2)").arg(trimmed, schoenflies);
 }
 
+// ---------------------------------------------------------------------------
+// Structure file I/O filters
+// ---------------------------------------------------------------------------
+
+QString defaultStructureFormat()
+{
+    return QStringLiteral("extxyz");
+}
+
+QString defaultStructureSuffix()
+{
+    return QStringLiteral(".extxyz");
+}
+
+QString defaultStructureFileName(const QString& stem)
+{
+    // Strip whatever extension the source file had — a document opened from
+    // "quartz.cif" should be offered as "quartz.extxyz", not "quartz.cif" with
+    // an extxyz filter selected, which is how a CIF-named file ends up holding
+    // XYZ text.
+    QString base = QFileInfo(stem.trimmed()).completeBaseName();
+    // Path separators would send the save somewhere the user did not point at.
+    base.remove(QLatin1Char('/'));
+    base.remove(QLatin1Char('\\'));
+    if (base.isEmpty())
+        base = QStringLiteral("structure");
+    return base + defaultStructureSuffix();
+}
+
+QString structureOpenFilters()
+{
+    return QCoreApplication::translate(
+        "calango::gui",
+        // Extended XYZ first, so it is what the dialog pre-selects. Both
+        // spellings are in the pattern: ASE writes extended XYZ into plain
+        // .xyz files too, and a user with such a file should not have to
+        // switch filters to see it.
+        "Extended XYZ (*.extxyz *.xyz);;"
+        "All supported structures (*.xyz *.extxyz *.cif *.pdb POSCAR CONTCAR "
+        "*.vasp *.traj *.in *.pwi *.pwo *.out *.cell *.data *.dump *.lammpstrj "
+        "*.gjf *.com *.res);;"
+        // Both CIF flavours share the extension; the reader tells them apart
+        // by content, so one filter serves both.
+        "CIF / PDBx-mmCIF (*.cif);;"
+        "Protein Data Bank (*.pdb);;"
+        "VASP (POSCAR CONTCAR *.vasp);;"
+        "ASE trajectory (*.traj);;"
+        "Quantum ESPRESSO (*.in *.pwi *.pwo *.out);;"
+        "CASTEP (*.cell);;"
+        "LAMMPS (*.data *.dump *.lammpstrj);;"
+        "Gaussian (*.gjf *.com);;"
+        "SHELX (*.res);;"
+        "All files (*)");
+}
+
+QString trajectoryOpenFilters()
+{
+    return QCoreApplication::translate(
+        "calango::gui",
+        "Extended XYZ trajectory (*.extxyz *.xyz);;"
+        "All supported trajectories (*.traj *.extxyz *.xyz *.pdb);;"
+        "ASE trajectory (*.traj);;"
+        "PDB multi-model (*.pdb);;"
+        "All files (*)");
+}
+
+const QList<QPair<QString, QString>>& structureSaveFormats()
+{
+    static const QList<QPair<QString, QString>> kFormats = {
+        {QCoreApplication::translate("calango::gui", "Extended XYZ (*.extxyz)"),
+         QStringLiteral("extxyz")},
+        {QCoreApplication::translate("calango::gui", "XYZ (*.xyz)"),
+         QStringLiteral("xyz")},
+        {QCoreApplication::translate("calango::gui", "CIF (*.cif)"),
+         QStringLiteral("cif")},
+        // PDBx shares the .cif extension with the crystallographic CIF above,
+        // so the two are separate filters rather than one: which of them the
+        // user wants cannot be read off the file name, only off the choice.
+        {QCoreApplication::translate("calango::gui", "PDBx / mmCIF (*.cif)"),
+         QStringLiteral("pdbx")},
+        {QCoreApplication::translate("calango::gui", "VASP POSCAR (*.vasp)"),
+         QStringLiteral("vasp")},
+        {QCoreApplication::translate("calango::gui",
+                                     "Quantum ESPRESSO input (*.pwi *.in)"),
+         QStringLiteral("espresso-in")},
+        {QCoreApplication::translate("calango::gui", "LAMMPS data (*.data)"),
+         QStringLiteral("lammps-data")},
+        {QCoreApplication::translate("calango::gui", "CASTEP cell (*.cell)"),
+         QStringLiteral("castep-cell")},
+        {QCoreApplication::translate("calango::gui",
+                                     "Gaussian input (*.com *.gjf)"),
+         QStringLiteral("gaussian-in")},
+        {QCoreApplication::translate("calango::gui", "SHELX (*.res)"),
+         QStringLiteral("res")},
+    };
+    return kFormats;
+}
+
+const QList<QPair<QString, QString>>& trajectorySaveFormats()
+{
+    static const QList<QPair<QString, QString>> kFormats = {
+        {QCoreApplication::translate("calango::gui",
+                                     "Extended XYZ trajectory (*.extxyz)"),
+         QStringLiteral("extxyz")},
+        {QCoreApplication::translate("calango::gui", "XYZ multi-frame (*.xyz)"),
+         QStringLiteral("xyz")},
+        {QCoreApplication::translate("calango::gui", "ASE trajectory (*.traj)"),
+         QStringLiteral("traj")},
+        {QCoreApplication::translate("calango::gui", "PDB multi-model (*.pdb)"),
+         QStringLiteral("proteindatabank")},
+    };
+    return kFormats;
+}
+
+QString formatForFilter(const QList<QPair<QString, QString>>& formats,
+                        const QString& filter)
+{
+    for (const auto& entry : formats)
+        if (entry.first == filter)
+            return entry.second;
+    return formats.isEmpty() ? defaultStructureFormat() : formats.front().second;
+}
+
+QString withFilterSuffix(const QString& path, const QString& filter)
+{
+    if (path.isEmpty() || !QFileInfo(path).suffix().isEmpty())
+        return path;
+    // The first "*.ext" inside the parentheses is the filter's primary
+    // extension. Filters whose pattern is a bare file name (VASP's "POSCAR")
+    // have none, and a path typed against one of those is left alone — POSCAR
+    // is a complete file name already.
+    const int open = filter.indexOf(QLatin1Char('('));
+    if (open < 0)
+        return path;
+    const int star = filter.indexOf(QLatin1String("*."), open);
+    if (star < 0)
+        return path;
+    int end = star + 2;
+    while (end < filter.size() && (filter.at(end).isLetterOrNumber()))
+        ++end;
+    const QString suffix = filter.mid(star + 1, end - star - 1);
+    return suffix.size() > 1 ? path + suffix : path;
+}
+
 } // namespace calango::gui

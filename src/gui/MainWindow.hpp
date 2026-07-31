@@ -111,6 +111,11 @@ private Q_SLOTS:
     /// builders. Each opens its generated cell as a new workspace tab.
     void openMacromoleculeBuilder();
     void openWaterIceBuilder();
+    /// Build → "Liquid / Gas Interface…": open a fluid region on the current
+    /// structure and pack it with a liquid, a gas, a mixture or an ionic
+    /// solution. Opens the result as a new workspace tab, leaving the
+    /// substrate's own tab untouched.
+    void openLiquidInterfaceBuilder();
     /// Modules → 2D Materials → "Graphene Oxide…": functionalized
     /// graphene at target coverages, opened as a new workspace tab.
     void openGrapheneOxideBuilder();

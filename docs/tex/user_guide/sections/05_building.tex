@@ -62,6 +62,110 @@ shows the finished slab, with atom count, slab thickness and total cell
 height. \ui{Finish} inserts it as a new tab labelled, for example,
 \emph{(1 1 1) slab, 8 layers}.
 
+\section{Liquid and gas interfaces}
+\label{sec:liquid-interface}
+
+\menu{Build}\menusep\menu{Liquid / Gas Interface} opens a fluid region on the
+structure in the current tab and packs it with a liquid, a gas, a mixture, or
+an ionic solution --- the solid/liquid and solid/gas cells that electro\-chem\-istry,
+catalysis and adsorption studies start from. It consumes a structure rather
+than generating one, so build or open the substrate first; a surface slab
+from \S\ref{sec:slab-wizard} is the usual input. The result opens as a new
+tab and the substrate's own tab is left untouched.
+
+\subsection{Stage 1 --- geometry and region}
+
+\begin{description}
+  \item[\ui{Interface direction}] Which lattice vector the region is opened
+    along; \emph{c} for a slab built by this application. The region is
+    bounded by planes normal to the \emph{other} two lattice vectors, so it
+    stays commensurate with the cell even when that cell is tilted.
+  \item[\ui{Region thickness}] The gap between the top face of the structure
+    and the bottom face of its own periodic image. The cell is grown --- or
+    shrunk --- to make this \emph{exact}, whatever vacuum the input already
+    carried. Asking for 20\,\AA{} of water and silently getting 20\,\AA{}
+    plus the slab's existing 15\,\AA{} is the usual way to end up with an
+    accidentally dilute interface.
+  \item[\ui{Lateral supercell}] Repeats the substrate in the two directions
+    that lie \emph{in} the interface plane, before the region is opened. A
+    wider cell is usually what a solvation study needs: the fluid's
+    correlation length is several \AA{}, and a $1\times1$ surface cell forces
+    it to be periodic on a shorter length than that.
+  \item[\ui{Surface clearance}] Closest approach between any fluid atom and
+    any substrate atom (default 2.2\,\AA{}).
+  \item[\ui{Move the substrate to the bottom of the cell}] On by default, so
+    the fluid region is one contiguous block. Turn it off when the slab was
+    positioned deliberately --- a symmetric slab centred in its cell, for
+    instance.
+\end{description}
+
+The summary underneath reports the cell before and after, the fillable
+volume, and how many water molecules that volume holds at ambient density.
+
+\subsection{Stage 2 --- solvation and mixture}
+
+\ui{Liquid / gas mixture} is a table of species and mole fractions. The
+fractions are normalised, so $\{3\ \text{water},\ 1\ \text{ammonia}\}$ and
+$\{0.75,\ 0.25\}$ request the same mixture. \ui{Amount} chooses between a
+target mass density and an explicit molecule count.
+
+\ui{Ionic species} inserts salts or bare ions by \emph{formula unit}. A salt
+expands into its ions, so three units of (NH$_4$)$_2$SO$_4$ is six ammonium
+and three sulfate and the cell stays neutral by construction. Bare ions are
+offered too, for the cases where an unbalanced charge is deliberate; the net
+charge is reported below the table, in orange when it is not zero.
+
+Ions are placed \emph{before} the solvent and their mass counts against the
+density target. Both matter: a packing that saturated could otherwise drop an
+ion and silently change the stoichiometry, and a density target that ignored
+the ions would give a brine at the density of water with salt added on top of
+it.
+
+\begin{caltip}
+A gas at its 1\,bar density comes to a fraction of a molecule in a cell of
+interface size, so picking a gas switches the page to an explicit molecule
+count. That is the physically meaningful control: in a periodic cell the
+molecule count \emph{is} the partial pressure.
+\end{caltip}
+
+\subsection{What the packer does, and what it does not}
+
+Molecules are proposed at random positions with uniformly random
+orientations and kept when they clear everything already placed. Two fluid
+molecules are excluded on their centres, using a tabulated effective radius
+per species, with an atom-level floor on top so that two molecules facing
+each other cannot interlock their hydrogens; the substrate is checked atom by
+atom, because that surface is fixed and a molecule started inside it cannot
+relax out. The packing is seeded and therefore reproducible.
+
+\begin{calwarn}
+The result is a legitimate \emph{starting point} --- right composition, right
+density, no overlaps --- and it is not an equilibrated liquid. A random
+packing has no hydrogen-bond network and a potential energy far above the
+equilibrium one. Quoting a diffusion coefficient, an interface energy or a
+work of adhesion computed directly on this cell would be reporting a property
+of the random number generator. Equilibrate with molecular dynamics
+(\S\ref{sec:md}) first.
+\end{calwarn}
+
+Random sequential packing saturates below the equilibrium density of a
+hydrogen-bonded liquid; around 90\% of the target is typical for water and is
+perfectly usable. A larger shortfall is reported explicitly after the cell
+opens, together with what to do about it.
+
+\begin{calnote}
+The species library holds only molecules whose geometry is fixed by symmetry
+plus a bond length and, where needed, one angle: water, ammonia, HF, H$_2$S,
+the common diatomic and small polyatomic gases, the noble gases, the alkali
+and alkaline-earth cations, the halides, and the molecular ions
+NH$_4^{+}$, H$_3$O$^{+}$, OH$^{-}$, NO$_3^{-}$, CO$_3^{2-}$, SO$_4^{2-}$ and
+PO$_4^{3-}$. Species that need a real optimised geometry --- the alcohols,
+anything with a torsional degree of freedom --- are deliberately absent
+rather than approximated: a molecule with plausible-looking but wrong
+internal coordinates produces a cell that nobody notices is wrong until the
+first relaxation step tears it apart.
+\end{calnote}
+
 \section{Nanomaterials}
 
 \menu{Build}\menusep\menu{Nanomaterial Builder} generates four families of

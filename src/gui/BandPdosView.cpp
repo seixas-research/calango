@@ -31,6 +31,70 @@ constexpr double kLabelScale = 1.5;
 
 
 
+/// One sequential colormap: the nine ColorBrewer class colours matplotlib
+/// interpolates its map of the same name from, lightest first.
+///
+/// Nine stops rather than a two-point gradient because these ramps are not
+/// linear in RGB — ColorBrewer chose them to be perceptually even, and a
+/// straight white-to-navy interpolation goes through a washed-out grey-blue
+/// that makes the middle of the weight range unreadable.
+struct SequentialColormap {
+    const char* name;
+    unsigned stops[9]; ///< 0xRRGGBB, light -> saturated
+};
+
+constexpr int kColormapStops = 9;
+
+const SequentialColormap kFatbandColormaps[] = {
+    {"Greens",  {0xF7FCF5, 0xE5F5E0, 0xC7E9C0, 0xA1D99B, 0x74C476, 0x41AB5D,
+                 0x238B45, 0x006D2C, 0x00441B}},
+    {"Blues",   {0xF7FBFF, 0xDEEBF7, 0xC6DBEF, 0x9ECAE1, 0x6BAED6, 0x4292C6,
+                 0x2171B5, 0x08519C, 0x08306B}},
+    {"Reds",    {0xFFF5F0, 0xFEE0D2, 0xFCBBA1, 0xFC9272, 0xFB6A4A, 0xEF3B2C,
+                 0xCB181D, 0xA50F15, 0x67000D}},
+    {"Oranges", {0xFFF5EB, 0xFEE6CE, 0xFDD0A2, 0xFDAE6B, 0xFD8D3C, 0xF16913,
+                 0xD94801, 0xA63603, 0x7F2704}},
+    {"Greys",   {0xFFFFFF, 0xF0F0F0, 0xD9D9D9, 0xBDBDBD, 0x969696, 0x737373,
+                 0x525252, 0x252525, 0x000000}},
+    {"Purples", {0xFCFBFD, 0xEFEDF5, 0xDADAEB, 0xBCBDDC, 0x9E9AC8, 0x807DBA,
+                 0x6A51A3, 0x54278F, 0x3F007D}},
+};
+
+constexpr int kColormapCount =
+    static_cast<int>(sizeof(kFatbandColormaps) / sizeof(kFatbandColormaps[0]));
+
+const SequentialColormap& colormapFor(int index)
+{
+    // Negative indices reach here only from a caller that lost count; wrap
+    // them onto the first map rather than reading out of bounds.
+    return kFatbandColormaps[static_cast<std::size_t>(std::max(index, 0))
+                             % kColormapCount];
+}
+
+QColor stopColor(const SequentialColormap& map, int stop)
+{
+    const unsigned rgb = map.stops[std::clamp(stop, 0, kColormapStops - 1)];
+    return QColor(static_cast<int>((rgb >> 16) & 0xFF),
+                  static_cast<int>((rgb >> 8) & 0xFF),
+                  static_cast<int>(rgb & 0xFF));
+}
+
+/// Mirror a colour's HSL lightness, keeping hue and saturation.
+///
+/// This is the dark-background rendering of a sequential map: on white paper
+/// the ramp runs towards black, and the same ramp on a near-black plot has to
+/// run towards white or its high-weight end is invisible. Mirroring lightness
+/// (rather than reversing the stop ORDER, which would put the pale end at high
+/// weight and invert the whole reading of the figure) preserves both the hue
+/// identity and the direction of the ramp.
+QColor mirrorLightness(const QColor& color)
+{
+    // hslHue() reports -1 for achromatic colours (the whole Greys map); hue is
+    // irrelevant at zero saturation, so any valid channel will do.
+    const int hue = std::max(color.hslHue(), 0);
+    return QColor::fromHsl(hue, color.hslSaturation(), 255 - color.lightness());
+}
+
 QString prettyLabel(const QString& raw)
 {
     // ASE spells Gamma as "G"; band plots conventionally use the glyph.
@@ -117,17 +181,46 @@ void BandPdosView::setProjectionVisible(const QString& label, bool visible)
 
 QColor BandPdosView::fatbandColor(int index)
 {
-    // A palette of its own rather than a reuse of projectionColor: the fatband
-    // overlay is drawn ON TOP of the dispersion in the same panel, so its
-    // colours have to stay legible against the band colours instead of merely
-    // being distinct from each other, and the first PDOS colour is the first
-    // band colour.
-    static const QColor kPalette[] = {
-        {255, 128, 96},  {96, 220, 160},  {180, 140, 255}, {255, 205, 100},
-        {120, 200, 255}, {245, 140, 200}, {160, 230, 110}, {255, 170, 130},
-    };
-    return kPalette[static_cast<std::size_t>(std::max(index, 0))
-                    % (sizeof(kPalette) / sizeof(kPalette[0]))];
+    // Stop 5 of 9 — the most saturated stop that is still clearly legible on
+    // BOTH a white page and the dark default plot background, which is what a
+    // list swatch has to be: it is drawn on the widget palette, not on the
+    // plot, and the two need not agree.
+    return stopColor(colormapFor(index), 5);
+}
+
+QString BandPdosView::fatbandColormapName(int index)
+{
+    return QString::fromLatin1(colormapFor(index).name);
+}
+
+QColor BandPdosView::fatbandColorAt(int index, double t, bool darkBackground)
+{
+    const SequentialColormap& map = colormapFor(index);
+    t = std::clamp(t, 0.0, 1.0);
+
+    // Piecewise-linear interpolation between the two bracketing class colours.
+    const double scaled = t * (kColormapStops - 1);
+    const int low = std::clamp(static_cast<int>(std::floor(scaled)), 0,
+                               kColormapStops - 1);
+    const int high = std::min(low + 1, kColormapStops - 1);
+    const double f = scaled - low;
+    QColor a = stopColor(map, low);
+    QColor b = stopColor(map, high);
+    if (darkBackground) {
+        a = mirrorLightness(a);
+        b = mirrorLightness(b);
+    }
+    QColor mixed(static_cast<int>(std::lround(a.red() + (b.red() - a.red()) * f)),
+                 static_cast<int>(std::lround(a.green()
+                                              + (b.green() - a.green()) * f)),
+                 static_cast<int>(std::lround(a.blue()
+                                              + (b.blue() - a.blue()) * f)));
+    // The modification that makes the maps superimposable: alpha rises
+    // linearly with the weight, so t = 0 is fully transparent instead of the
+    // opaque white (or, mirrored, opaque black) the map's own low end is.
+    // This is exactly matplotlib's cmap[:, -1] = linspace(0, 1, N) recipe.
+    mixed.setAlpha(static_cast<int>(std::lround(255.0 * t)));
+    return mixed;
 }
 
 void BandPdosView::setFatbandData(FatbandData data)
@@ -423,6 +516,11 @@ void BandPdosView::paintFatbands(QPainter& painter, const QRectF& rect,
         || fatbandMode_ == FatbandMode::Both;
     const bool fade = fatbandMode_ == FatbandMode::Color
         || fatbandMode_ == FatbandMode::Both;
+    // Which end of each sequential map is the "away from the page" end. Keyed
+    // off the plot background rather than the application theme: the
+    // background is a style setting the user can change independently, and
+    // an exported figure carries the plot's colours, not the app's.
+    const bool dark = style_.background.lightness() < 128;
 
     int channel = -1;
     for (const auto& [label, weights] : fatbands_.projections) {
@@ -430,7 +528,10 @@ void BandPdosView::paintFatbands(QPainter& painter, const QRectF& rect,
         const auto shown = fatbandVisible_.find(label);
         if (shown != fatbandVisible_.end() && !shown->second)
             continue;
-        const QColor base = fatbandColor(channel);
+        // Width-only mode has no weight-to-colour mapping to sample, so it
+        // uses the channel's swatch colour throughout — the thickness alone
+        // carries the weight there.
+        const QColor flat = fatbandColor(channel);
 
         for (std::size_t spin = 0;
              spin < weights.size() && spin < bands_.energies.size(); ++spin) {
@@ -462,13 +563,18 @@ void BandPdosView::paintFatbands(QPainter& painter, const QRectF& rect,
                     if ((y0 < rect.top() && y1 < rect.top())
                         || (y0 > rect.bottom() && y1 > rect.bottom()))
                         continue;
-                    QColor color = base;
-                    color.setAlpha(fade
-                        ? std::clamp(static_cast<int>(
-                              style_.fatbandMinAlpha
-                              + (255 - style_.fatbandMinAlpha) * fraction),
-                              0, 255)
-                        : 210);
+                    QColor color = flat;
+                    if (fade) {
+                        color = fatbandColorAt(channel, fraction, dark);
+                        // The style's floor is zero by default, which leaves
+                        // the colormap's own ramp untouched; a user who raises
+                        // it is asking for weak contributions to stay visible.
+                        if (color.alpha() < style_.fatbandMinAlpha)
+                            color.setAlpha(std::clamp(style_.fatbandMinAlpha,
+                                                      0, 255));
+                    } else {
+                        color.setAlpha(210);
+                    }
                     const double width = style_.bandLineWidth
                         + (widen ? style_.fatbandScale * fraction : 0.0);
                     painter.setPen(QPen(color, width, Qt::SolidLine,

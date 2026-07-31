@@ -98,6 +98,9 @@ legend.
     with the path distance followed by every band (and spin channel).
   \item[\ui{Export PDOS\ldots}] CSV or \file{.dat}: one row per energy, one
     column per projection.
+  \item[\ui{Export Fatbands\ldots}] CSV or \file{.dat}: one row per
+    electronic state. Present only when the run wrote orbital projections
+    --- see \S\ref{sec:fatband-export}.
 \end{description}
 
 \begin{calnote}
@@ -234,15 +237,67 @@ colours and offers three drawing modes:
 \begin{description}
   \item[\ui{Line width}] The classic fatband: the band thickens where the
     selected orbital contributes.
-  \item[\ui{Colour scale}] Constant width, opacity proportional to the
-    weight. Stays readable where many bands run close together.
-  \item[\ui{Width + colour}] Both.
+  \item[\ui{Colour scale}] Constant width, with the weight mapped onto the
+    channel's colormap. Stays readable where many bands run close together.
+  \item[\ui{Width + colour}] Both, and the default.
 \end{description}
 
 Several channels can be shown at once, which is the point: seeing metal $d$
 and ligand $p$ on the same plot is how hybridization becomes visible. All
 channels share one normalization, so a channel contributing 2\% of a state
 does not look as strong as one contributing 90\%.
+
+\subsection{Colormaps and superposition}
+\label{sec:fatband-colormaps}
+
+Each channel gets its own \emph{sequential} colormap, assigned in order:
+Greens, Blues, Reds, Oranges, Greys, Purples --- the ColorBrewer maps
+matplotlib ships under the same names, with one deliberate modification.
+\textbf{The alpha channel ramps linearly with the weight, so the lowest
+value is fully transparent rather than white.}
+
+That single change is what makes overlapping projections readable. An opaque
+low end would paint over every channel already drawn \emph{and} over the
+dispersion itself, so a six-orbital plot would show only whichever orbital
+happened to be drawn last. With a transparent floor each channel deposits
+ink only where it actually has weight, and the overlaps composite.
+
+The plot background decides which way each ramp runs. A sequential colormap
+is a luminance ramp \emph{away from the page}: on a white background it runs
+towards the saturated dark end, exactly as in matplotlib, and on the dark
+default plot background its lightness is mirrored so maximum weight is a
+bright hue instead of near-black. Hue and saturation are untouched, so Blues
+is blue either way. The channel list shows each channel's swatch, and its
+tooltip names the colormap --- which is the name to put in a figure caption.
+
+\subsection{Exporting the weights}
+\label{sec:fatband-export}
+
+\ui{Export Fatbands\ldots} writes the weights themselves, as CSV or as a
+space-separated \file{.dat}. The table is \emph{tidy}: one row per
+electronic state, not one row per $k$-point.
+
+\begin{center}
+\small
+\begin{tabular}{@{}llllll@{}}
+\toprule
+\texttt{k\_distance} & \texttt{spin} & \texttt{band} &
+\texttt{energy\_eV} & \texttt{C\_p\_z} & \texttt{C\_s} \\
+\midrule
+0.000 & 1 & 1 & $-20.14$ & 0.01 & 0.83 \\
+0.000 & 1 & 2 & $-8.72$  & 0.79 & 0.02 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The shape is deliberate. A weight is uninterpretable without the energy of
+the state it belongs to, and keeping the two together in the wide layout the
+band export uses would take (channels $\times$ bands) columns. As written,
+the file drops straight into pandas or gnuplot as the
+$(x,\,y,\,\text{weight})$ triples a fatband plot consumes. Energies are
+absolute, matching \ui{Export Bands\ldots}, not shifted by the viewer's
+current Fermi reference; channel labels are underscored so a name like
+\texttt{C p\_z} stays one column.
 
 \begin{calnote}
 GPAW backend only --- the weights are the PAW projector overlaps, read through

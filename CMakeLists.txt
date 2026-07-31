@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.80
+    VERSION 26.7.81
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -200,6 +200,8 @@ qt_add_executable(calango
     src/core/SqsGenerator.cpp
     src/core/IceBuilder.hpp
     src/core/IceBuilder.cpp
+    src/core/SolvationBuilder.hpp
+    src/core/SolvationBuilder.cpp
     src/core/PolymerBuilder.hpp
     src/core/PolymerBuilder.cpp
     src/core/Vacf.hpp
@@ -333,6 +335,8 @@ qt_add_executable(calango
     src/gui/NanoBuilderDialog.cpp
     src/gui/WaterIceWizard.hpp
     src/gui/WaterIceWizard.cpp
+    src/gui/LiquidInterfaceWizard.hpp
+    src/gui/LiquidInterfaceWizard.cpp
     src/gui/MacromoleculeWizard.hpp
     src/gui/MacromoleculeWizard.cpp
     src/gui/PhononBuilderDialog.hpp
@@ -1002,6 +1006,21 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_ice_test PRIVATE src)
     add_test(NAME ice_builder COMMAND calango_ice_test)
 
+    # Solid-liquid / solid-gas interface packing. Re-derives the region
+    # geometry, the composition and the exclusion distances from the RETURNED
+    # coordinates: a packer that quietly overlaps two molecules, drops an ion,
+    # or leaves the cell the wrong length produces a structure that looks
+    # entirely normal until a calculation explodes on it.
+    add_executable(calango_solvation_test
+        tests/SolvationBuilderTest.cpp
+        src/core/SolvationBuilder.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_solvation_test PRIVATE src)
+    add_test(NAME solvation_builder COMMAND calango_solvation_test)
+
     # Harmonic phonon thermodynamics: checked against the closed-form Einstein
     # oscillator and the limits that are laws (Third Law, Dulong-Petit).
     add_executable(calango_phonon_thermo_test
@@ -1187,6 +1206,12 @@ if(CALANGO_BUILD_TESTS)
         # ase.Atoms).
         src/gui/MagneticSpaceGroupDialog.cpp
         src/python_bridge/MagneticSpaceGroup.cpp
+        # The Liquid / Gas Interface wizard: its stage-2 page seeds a table row
+        # inside its own constructor and both pages recompute a live summary on
+        # every control change — the construction-order shape this test exists
+        # for. Qt-only, so it costs one extra core translation unit.
+        src/gui/LiquidInterfaceWizard.cpp
+        src/core/SolvationBuilder.cpp
         src/python_bridge/AseBridge.cpp
         src/core/PdbxFile.cpp
         # The "Source MLWF process" step and two of the three dialogs that

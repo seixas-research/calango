@@ -34,6 +34,7 @@
 #include "gui/TopologyDialog.hpp"
 #include "gui/MaceTrainerDialog.hpp"
 #include "gui/ElectronicBandsWizard.hpp"
+#include "gui/LiquidInterfaceWizard.hpp"
 #include "gui/MagneticSpaceGroupDialog.hpp"
 #include "gui/RandomNoiseViewer.hpp"
 #include "gui/RandomNoiseWizard.hpp"
@@ -1814,6 +1815,63 @@ int main(int argc, char** argv)
 
         exerciseControls(&dialog);
         check(true, "survives every control being toggled");
+    }
+
+    // The Liquid / Gas Interface wizard. Both of its pages recompute a live
+    // summary from the wizard's shared parameter block on every control
+    // change, and stage 2 seeds a table row inside its own constructor —
+    // exactly the seed-during-construction shape that segfaulted the
+    // Electronic Structure wizard. Its pages are also QWizardPages, whose
+    // initializePage() runs on a page transition rather than at construction,
+    // so both are pushed here.
+    {
+        std::printf("Liquid / Gas Interface wizard:\n");
+
+        constexpr double a = 4.05;
+        auto slab = std::make_shared<calango::core::Structure>();
+        calango::core::UnitCell cell;
+        cell.setVectors({calango::core::Vec3{a, 0.0, 0.0},
+                         calango::core::Vec3{0.0, a, 0.0},
+                         calango::core::Vec3{0.0, 0.0, 3.0 * a}});
+        cell.setPbc({true, true, true});
+        slab->setCell(cell);
+        for (int layer = 0; layer < 3; ++layer) {
+            calango::core::Atom atom;
+            atom.atomicNumber = 13;
+            atom.position = {0.0, 0.0, layer * a * 0.5};
+            slab->addAtom(atom);
+        }
+
+        LiquidInterfaceWizard wizard(slab);
+        check(true, "constructs with a slab");
+        wizard.restart();
+        check(wizard.currentPage() != nullptr, "and opens on its first page");
+
+        // Stage 1 must accept these defaults, or Next is dead and the wizard
+        // cannot be used at all.
+        check(wizard.currentPage()->isComplete(),
+              "whose defaults are a complete request");
+        exerciseControls(wizard.currentPage());
+        check(true, "stage 1 survives every control being toggled");
+
+        wizard.next();
+        check(wizard.currentPage() != nullptr
+                  && wizard.currentPage()->isComplete(),
+              "stage 2 opens seeded with one solvent row");
+        exerciseControls(wizard.currentPage());
+        check(true, "and survives every control being toggled");
+
+        // The parameters the pages wrote have to be the ones the builder is
+        // handed: a live summary that reads its own widgets while the build
+        // reads a stale struct is a wizard that lies about what it produced.
+        QString error;
+        const bool built = wizard.build(&error);
+        check(built, built ? "the collected parameters build a cell"
+                           : ("the collected parameters build a cell — "
+                              + error.toStdString())
+                                 .c_str());
+        check(built && wizard.result() && wizard.result()->totalMolecules > 0,
+              "with molecules actually packed into the region");
     }
 
     std::printf(failures == 0 ? "\nAll dialog construction checks passed.\n"
