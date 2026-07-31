@@ -13,6 +13,8 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QStandardItemModel>
+#include <QStringList>
 #include <QWidget>
 
 #include <set>
@@ -47,6 +49,26 @@ QWidget* MolecularDynamicsWizard::buildSettingsPage()
 {
     auto* page = new QWidget(this);
     auto* form = new QFormLayout(page);
+    dynamicsForm_ = form;
+
+    // Mode leads the page because it decides what the rest of it means: in
+    // Annealing the single "Temperature" setpoint is replaced by a ramp, and
+    // showing both at once invites a run configured at a temperature the
+    // schedule immediately overwrites.
+    modeCombo_ = new QComboBox(page);
+    // Named so the dialog test can drive the mode without matching on
+    // translated item text.
+    modeCombo_->setObjectName(QStringLiteral("mdModeCombo"));
+    modeCombo_->addItem(tr("Constant temperature"), false);
+    modeCombo_->addItem(tr("Annealing — scheduled temperature ramp"), true);
+    modeCombo_->setToolTip(
+        tr("Annealing runs the same integrator with a MOVING setpoint: the "
+           "thermostat target is swept from an initial to a final temperature "
+           "over the course of the run. Everything else — ensemble, "
+           "constraints, sampling, trajectory — is unchanged."));
+    form->addRow(tr("Mode:"), modeCombo_);
+    connect(modeCombo_, &QComboBox::currentIndexChanged, this,
+            &MolecularDynamicsWizard::updateAnnealingMode);
 
     ensembleCombo_ = new QComboBox(page);
     // Order mirrors core::MdEnsemble.
@@ -65,6 +87,71 @@ QWidget* MolecularDynamicsWizard::buildSettingsPage()
     temperatureSpin_->setValue(300.0);
     temperatureSpin_->setSuffix(tr(" K"));
     form->addRow(tr("Temperature:"), temperatureSpin_);
+
+    // ----- Annealing schedule ---------------------------------------------
+    scheduleCombo_ = new QComboBox(page);
+    scheduleCombo_->setObjectName(QStringLiteral("mdScheduleCombo"));
+    // Item data is the enum value, so the combo order is free to change
+    // without silently re-mapping onto a different law.
+    scheduleCombo_->addItem(tr("Linear"),
+                            static_cast<int>(core::AnnealingSchedule::Linear));
+    scheduleCombo_->addItem(
+        tr("Exponential"), static_cast<int>(core::AnnealingSchedule::Exponential));
+    scheduleCombo_->addItem(
+        tr("Logarithmic"), static_cast<int>(core::AnnealingSchedule::Logarithmic));
+    scheduleCombo_->setToolTip(
+        tr("How the setpoint travels between the two temperatures, as a "
+           "function of the run fraction x = step / total steps:\n\n"
+           "  Linear:       T = T₀ + (T₁ − T₀)·x\n"
+           "  Exponential:  T = T₁ + (T₀ − T₁)·(e^(−kx) − e^(−k))/(1 − e^(−k))\n"
+           "  Logarithmic:  T = T₀ + (T₁ − T₀)·ln(1 + kx)/ln(1 + k)\n\n"
+           "All three end exactly on the final temperature. Exponential moves "
+           "most of the way early and crawls at the end (quenching a melt); "
+           "Logarithmic is the slowest of the three near the target."));
+    form->addRow(tr("Schedule:"), scheduleCombo_);
+    connect(scheduleCombo_, &QComboBox::currentIndexChanged, this,
+            &MolecularDynamicsWizard::updateAnnealingMode);
+
+    annealStartSpin_ = new QDoubleSpinBox(page);
+    annealStartSpin_->setRange(0.0, 100000.0);
+    annealStartSpin_->setValue(1000.0);
+    annealStartSpin_->setSuffix(tr(" K"));
+    annealStartSpin_->setToolTip(
+        tr("Setpoint at step 0. The initial Maxwell-Boltzmann velocities are "
+           "drawn here too, so the run starts where the schedule says it "
+           "starts instead of spending its first picosecond catching up."));
+    form->addRow(tr("Initial temperature:"), annealStartSpin_);
+
+    annealEndSpin_ = new QDoubleSpinBox(page);
+    annealEndSpin_->setRange(0.0, 100000.0);
+    annealEndSpin_->setValue(300.0);
+    annealEndSpin_->setSuffix(tr(" K"));
+    annealEndSpin_->setToolTip(
+        tr("Setpoint at the last step. Higher than the initial temperature is "
+           "legal — a heating ramp is generated exactly the same way."));
+    form->addRow(tr("Final temperature:"), annealEndSpin_);
+
+    annealCoefficientSpin_ = new QDoubleSpinBox(page);
+    annealCoefficientSpin_->setRange(0.01, 50.0);
+    annealCoefficientSpin_->setDecimals(2);
+    annealCoefficientSpin_->setSingleStep(0.25);
+    annealCoefficientSpin_->setValue(3.0);
+    annealCoefficientSpin_->setToolTip(
+        tr("How far the ramp bends away from a straight line. Small k is "
+           "nearly linear; large k front-loads almost the whole temperature "
+           "change into the first part of the run. Ignored by the Linear "
+           "schedule, which has no free coefficient."));
+    form->addRow(tr("Ramp curvature k:"), annealCoefficientSpin_);
+
+    annealSummary_ = new QLabel(page);
+    annealSummary_->setWordWrap(true);
+    annealSummary_->setTextFormat(Qt::RichText);
+    form->addRow(annealSummary_);
+
+    for (QDoubleSpinBox* spin :
+         {annealStartSpin_, annealEndSpin_, annealCoefficientSpin_})
+        connect(spin, &QDoubleSpinBox::valueChanged, this,
+                [this](double) { refreshAnnealingSummary(); });
 
     pressureSpin_ = new QDoubleSpinBox(page);
     pressureSpin_->setRange(0.0, 1.0e7);
@@ -107,6 +194,13 @@ QWidget* MolecularDynamicsWizard::buildSettingsPage()
     stepsSpin_->setRange(1, 100000000);
     stepsSpin_->setValue(1000);
     form->addRow(tr("Total steps:"), stepsSpin_);
+    // The schedule is written against the run FRACTION, so its shape does not
+    // depend on the step count — but the elapsed time it spans does, and that
+    // is the number that decides whether a "slow" anneal is slow.
+    connect(stepsSpin_, &QSpinBox::valueChanged, this,
+            [this](int) { refreshAnnealingSummary(); });
+    connect(timestepSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double) { refreshAnnealingSummary(); });
 
     sampleSpin_ = new QSpinBox(page);
     sampleSpin_->setRange(0, 1000000);
@@ -138,7 +232,79 @@ QWidget* MolecularDynamicsWizard::buildSettingsPage()
     constraintRow->addWidget(constraintSummary_, 1);
     form->addRow(constraintRow);
     refreshConstraintSummary();
+    updateAnnealingMode();
     return page;
+}
+
+bool MolecularDynamicsWizard::annealingSelected() const
+{
+    return modeCombo_ && modeCombo_->currentData().toBool();
+}
+
+void MolecularDynamicsWizard::updateAnnealingMode()
+{
+    if (!dynamicsForm_ || !scheduleCombo_)
+        return;
+    const bool annealing = annealingSelected();
+
+    dynamicsForm_->setRowVisible(temperatureSpin_, !annealing);
+    for (QWidget* row : {static_cast<QWidget*>(scheduleCombo_),
+                         static_cast<QWidget*>(annealStartSpin_),
+                         static_cast<QWidget*>(annealEndSpin_),
+                         static_cast<QWidget*>(annealCoefficientSpin_),
+                         static_cast<QWidget*>(annealSummary_)})
+        dynamicsForm_->setRowVisible(row, annealing);
+    // Only the Exponential and Logarithmic laws have a coefficient; Linear is
+    // fixed by its two endpoints, so leaving the box live would offer a knob
+    // that changes nothing.
+    const auto schedule = static_cast<core::AnnealingSchedule>(
+        scheduleCombo_->currentData().toInt());
+    annealCoefficientSpin_->setEnabled(
+        annealing && schedule != core::AnnealingSchedule::Linear);
+
+    // A schedule needs something to retarget. NVE has no thermostat, so it is
+    // withdrawn rather than accepted and quietly ignored — and the ensemble is
+    // moved to Langevin if it was the one selected.
+    if (auto* model = qobject_cast<QStandardItemModel*>(ensembleCombo_->model()))
+        if (QStandardItem* nve = model->item(
+                static_cast<int>(core::MdEnsemble::VelocityVerletNVE)))
+            nve->setEnabled(!annealing);
+    if (annealing
+        && ensembleCombo_->currentIndex()
+            == static_cast<int>(core::MdEnsemble::VelocityVerletNVE))
+        ensembleCombo_->setCurrentIndex(
+            static_cast<int>(core::MdEnsemble::LangevinNVT));
+
+    updateEnsembleEnabled();
+    refreshAnnealingSummary();
+    refreshPreview();
+}
+
+void MolecularDynamicsWizard::refreshAnnealingSummary()
+{
+    if (!annealSummary_ || !annealingSelected())
+        return;
+    const auto schedule = static_cast<core::AnnealingSchedule>(
+        scheduleCombo_->currentData().toInt());
+    const double start = annealStartSpin_->value();
+    const double end = annealEndSpin_->value();
+    const double k = annealCoefficientSpin_->value();
+
+    QStringList stops;
+    for (const double x : {0.0, 0.25, 0.5, 0.75, 1.0})
+        stops << QString::number(
+            core::annealingTemperature(schedule, start, end, k, x), 'f', 0);
+
+    const double picoseconds =
+        stepsSpin_->value() * timestepSpin_->value() * 1.0e-3;
+    QString text =
+        tr("Setpoint at 0 / 25 / 50 / 75 / 100 %% of the run: "
+           "<b>%1</b> K, over %2 ps.")
+            .arg(stops.join(QStringLiteral(" → ")))
+            .arg(picoseconds, 0, 'f', picoseconds < 10.0 ? 2 : 1);
+    if (start < end)
+        text += QLatin1Char(' ') + tr("This is a heating ramp.");
+    annealSummary_->setText(text);
 }
 
 void MolecularDynamicsWizard::updateEnsembleEnabled()
@@ -207,6 +373,12 @@ core::CalculatorConfig MolecularDynamicsWizard::config() const
     c.mdSteps = stepsSpin_->value();
     c.mdSampleInterval = sampleSpin_->value();
     c.constraints = constraints_;
+    c.annealing = annealingSelected();
+    c.annealingSchedule = static_cast<core::AnnealingSchedule>(
+        scheduleCombo_->currentData().toInt());
+    c.annealStartK = annealStartSpin_->value();
+    c.annealEndK = annealEndSpin_->value();
+    c.annealCoefficient = annealCoefficientSpin_->value();
     return c;
 }
 

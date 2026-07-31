@@ -12,7 +12,7 @@ namespace calango::gui {
 
 /// "Source MLWF process" — the first step of every module that post-processes
 /// a Maximally Localized Wannier Functions run (Wannier Interpolation, Fermi
-/// Surface, Topological Charge).
+/// Surface, Topological Invariants).
 ///
 /// All three diagonalize the localized Hamiltonian H(R) an MLWF run produced,
 /// so none of them can be configured meaningfully until that run is chosen:

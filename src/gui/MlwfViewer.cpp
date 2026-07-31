@@ -68,7 +68,7 @@ MlwfViewer::MlwfViewer(std::shared_ptr<const core::Structure> structure,
     // window is purely the orbital read-out.
     auto* hint = new QLabel(
         tr("Post-process this run under <b>Electronics</b>: Wannier "
-           "Interpolation, Fermi Surface, Topological Charge."),
+           "Interpolation, Fermi Surface, Topological Invariants."),
         this);
     hint->setWordWrap(true);
     layout->addWidget(hint);

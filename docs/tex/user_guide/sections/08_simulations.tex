@@ -77,6 +77,74 @@ contaminates every subsequent analysis --- diffusion coefficients most of
 all.
 \end{calnote}
 
+\subsection{Simulated annealing}
+\label{sec:annealing}
+
+The \ui{Mode} selector at the top of the dynamics page switches the run
+between \ui{Constant temperature} --- ordinary MD at a fixed setpoint ---
+and \ui{Annealing}, which sweeps the thermostat target from an
+\ui{Initial temperature} to a \ui{Final temperature} over the course of
+the run. Everything else is unchanged: the same integrator, the same
+constraints, the same sampling, the same streamed trajectory. Only the
+target moves, and it is retargeted on \emph{every} step rather than once
+per sampling interval.
+
+Three schedules are offered, written in terms of the run fraction
+$x = n / N$ where $n$ is the current step and $N$ the total:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{8.4cm}@{}}
+\toprule
+Schedule & $T(x)$ \\
+\midrule
+Linear & $T_0 + (T_1 - T_0)\,x$ \\
+Exponential & $T_1 + (T_0 - T_1)\dfrac{e^{-kx} - e^{-k}}{1 - e^{-k}}$ \\
+Logarithmic & $T_0 + (T_1 - T_0)\dfrac{\ln(1 + kx)}{\ln(1 + k)}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All three are \emph{endpoint-exact}: $T(0) = T_0$ and $T(1) = T_1$
+whatever the coefficient $k$. That is deliberate --- a schedule that only
+approaches its target asymptotically ends the run at a temperature nobody
+asked for, and the discrepancy is invisible in a plot that has been
+cooling for 50\,ps. The coefficient $k$ (\ui{Ramp curvature}) is a
+curvature rather than a rate constant with units: it says how far the
+ramp bends away from a straight line, and every schedule degenerates to
+Linear as $k \to 0$. Linear has no free coefficient, so the field is
+disabled there.
+
+Exponential moves most of the way early and crawls at the end, which is
+the shape wanted for quenching a melt. Logarithmic is the slowest of the
+three near the target; it is the practical, endpoint-exact relative of
+the Geman--Geman $\sim 1/\ln n$ schedule, the one with the
+global-optimum convergence proof and a run length nobody can afford.
+
+The page restates the chosen schedule as the temperatures it actually
+produces, at $0/25/50/75/100\,\%$ of the run, together with the elapsed
+time the ramp spans. A named curve is not a number anyone can check;
+``1000 $\to$ 631 $\to$ 419 $\to$ 315 $\to$ 300\,K over 20\,ps'' is.
+
+\begin{calnote}
+Annealing needs a thermostat to retarget, so NVE is withdrawn from the
+ensemble list while the mode is selected (and the ensemble is moved to
+Langevin if NVE was the one chosen). The initial Maxwell-Boltzmann
+velocities are drawn at the \emph{initial} temperature, not at the
+constant-temperature field, so a 1000\,K quench starts where the schedule
+says it starts instead of spending its first picosecond catching up.
+\end{calnote}
+
+\begin{caltip}
+The MD Viewer plots the moving setpoint underneath the measured
+temperature, and the CSV export carries it as its own column
+(\texttt{target\_temperature\_K}). That second trace is what answers the
+only question an annealing run is asking --- is the system following the
+schedule? --- and it is invisible from the temperature alone. A
+constant-temperature run has no such series; it reports its single
+setpoint as a dashed reference line instead.
+\end{caltip}
+
 \subsection{DFT and ORCA parameters}
 
 DFT calculators expose \ui{Plane-wave cutoff} and a \ui{k-point grid}.

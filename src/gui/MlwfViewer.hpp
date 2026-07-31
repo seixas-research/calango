@@ -30,7 +30,7 @@ class ViewportWidget;
 /// color), so they overlay the atomic structure.
 ///
 /// Purely a read-out: the Wannier post-processes that CONSUME this run
-/// (Wannier Interpolation, Fermi Surface, Topological Charge) are standalone
+/// (Wannier Interpolation, Fermi Surface, Topological Invariants) are standalone
 /// modules under Electronics, each with its own completed-MLWF prerequisite
 /// check — they no longer launch from here.
 class MlwfViewer : public QDialog {

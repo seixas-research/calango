@@ -21,8 +21,15 @@ namespace calango::gui {
 
 /// Simulation → "Molecular Dynamics…": a 3-stage wizard. Stage 1 is the shared
 /// Calculator Settings (engine, XC functional, cutoff, k-grid); Stage 2 is the
-/// dynamics settings (ensemble, temperature, pressure, time step, total steps,
-/// friction / coupling times); Stage 3 is the ASE script review.
+/// dynamics settings (mode, ensemble, temperature, pressure, time step, total
+/// steps, friction / coupling times); Stage 3 is the ASE script review.
+///
+/// Stage 2 offers two MODES. "Constant temperature" is ordinary MD at a fixed
+/// setpoint. "Annealing" sweeps the setpoint from an initial to a final
+/// temperature along a Linear, Exponential or Logarithmic schedule — the same
+/// integrator, the same constraints, the same sampling, retargeted every step.
+/// Annealing needs a thermostat to retarget, so the NVE entry is withdrawn
+/// while it is selected rather than being offered and silently ignored.
 class MolecularDynamicsWizard : public SimulationWizardBase {
     Q_OBJECT
 
@@ -81,11 +88,20 @@ protected:
 
 private Q_SLOTS:
     void updateEnsembleEnabled();
+    /// Show/hide the constant-temperature row against the annealing rows, keep
+    /// the ensemble list legal for the chosen mode, and refresh the preview.
+    void updateAnnealingMode();
+    /// Restate the chosen schedule as the temperatures it actually produces,
+    /// at five points along the run. A named curve is not a number anyone can
+    /// check; "1000 → 631 → 419 → 315 → 300 K" is.
+    void refreshAnnealingSummary();
     /// "Geometry constraints…": open the editor and keep its result.
     void editConstraints();
 
 private:
     core::CalculatorConfig config() const;
+    /// True while the Annealing mode is selected.
+    bool annealingSelected() const;
     /// One-line description of the active constraints, shown next to the
     /// button so the page says what is held without being reopened.
     void refreshConstraintSummary();
@@ -100,8 +116,22 @@ private:
     std::vector<core::GeometryConstraint> constraints_;
     QLabel* constraintSummary_ = nullptr;
 
+    /// The stage-2 form, kept so the annealing rows can be shown and hidden
+    /// (setRowVisible drops the label and the vertical space with the field,
+    /// which a bare setVisible on the widget does not).
+    QFormLayout* dynamicsForm_ = nullptr;
+
+    QComboBox* modeCombo_;
     QComboBox* ensembleCombo_;
     QDoubleSpinBox* temperatureSpin_;
+
+    // Annealing rows — created always, shown only in Annealing mode.
+    QComboBox* scheduleCombo_ = nullptr;
+    QDoubleSpinBox* annealStartSpin_ = nullptr;
+    QDoubleSpinBox* annealEndSpin_ = nullptr;
+    QDoubleSpinBox* annealCoefficientSpin_ = nullptr;
+    QLabel* annealSummary_ = nullptr;
+
     QDoubleSpinBox* pressureSpin_; // bar (converted to GPa in config())
     QDoubleSpinBox* timestepSpin_;
     QDoubleSpinBox* frictionSpin_;

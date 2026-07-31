@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -322,6 +324,97 @@ constexpr bool isConstantTemperature(MdEnsemble ensemble)
     return ensemble != MdEnsemble::VelocityVerletNVE;
 }
 
+/// How the thermostat setpoint is swept over a SIMULATED-ANNEALING run.
+///
+/// All three are written in terms of the run fraction x = step / total steps,
+/// and all three are ENDPOINT-EXACT: T(0) is the initial temperature and T(1)
+/// the final one, whatever the coefficient. That is deliberate. A schedule
+/// that only approaches its target asymptotically ends the run at a
+/// temperature nobody asked for, and the discrepancy is invisible in a plot
+/// that has been cooling for 50 ps.
+///
+/// The coefficient k is a CURVATURE, not a rate constant with units: it says
+/// how far the ramp bends away from a straight line, and every schedule
+/// degenerates to Linear as k -> 0. One knob, one meaning, whichever law is
+/// selected.
+enum class AnnealingSchedule {
+    /// T = T0 + (T1 - T0) x. Constant dT/dt; no coefficient.
+    Linear,
+    /// T = T1 + (T0 - T1) (e^{-kx} - e^{-k}) / (1 - e^{-k}).
+    /// Geometric-style cooling: most of the temperature change happens early,
+    /// with a long tail near T1. The usual choice for quenching a melt.
+    Exponential,
+    /// T = T0 + (T1 - T0) ln(1 + kx) / ln(1 + k).
+    /// The slowest of the three near the end — the practical, endpoint-exact
+    /// relative of the Geman-Geman ~1/ln(n) schedule, which is the one with
+    /// the global-optimum convergence proof and a run length nobody can
+    /// afford.
+    Logarithmic,
+};
+
+/// The thermostat setpoint (K) at run fraction `x` in [0, 1]. Shared by the
+/// script generator and the wizard preview so the curve the user is shown and
+/// the curve the run follows cannot drift apart.
+///
+/// `coefficient` at or below this threshold is treated as Linear rather than
+/// evaluated: both non-linear laws are 0/0 there.
+inline double annealingTemperature(AnnealingSchedule schedule, double startK,
+                                   double endK, double coefficient, double x)
+{
+    x = std::clamp(x, 0.0, 1.0);
+    const double linear = startK + (endK - startK) * x;
+    constexpr double kFlat = 1.0e-6;
+    if (schedule == AnnealingSchedule::Linear || coefficient <= kFlat)
+        return linear;
+
+    switch (schedule) {
+    case AnnealingSchedule::Exponential: {
+        const double decay = std::exp(-coefficient);
+        return endK + (startK - endK) * (std::exp(-coefficient * x) - decay)
+            / (1.0 - decay);
+    }
+    case AnnealingSchedule::Logarithmic:
+        return startK
+            + (endK - startK) * std::log1p(coefficient * x)
+            / std::log1p(coefficient);
+    case AnnealingSchedule::Linear:
+        break;
+    }
+    return linear;
+}
+
+/// The Python expression the generated script evaluates for the setpoint, as a
+/// function of the local names `x`, `T_initial`, `T_final` and `anneal_k`.
+/// Emitted as ONE expression rather than a branch chain so the script says
+/// which law it is running in a form that can be read, edited and pasted into
+/// a plot.
+inline std::string annealingPythonExpression(AnnealingSchedule schedule)
+{
+    switch (schedule) {
+    case AnnealingSchedule::Exponential:
+        return "T_final + (T_initial - T_final) * "
+               "(math.exp(-anneal_k * x) - math.exp(-anneal_k)) "
+               "/ (1.0 - math.exp(-anneal_k))";
+    case AnnealingSchedule::Logarithmic:
+        return "T_initial + (T_final - T_initial) * "
+               "math.log1p(anneal_k * x) / math.log1p(anneal_k)";
+    case AnnealingSchedule::Linear:
+        break;
+    }
+    return "T_initial + (T_final - T_initial) * x";
+}
+
+/// Schedule name as it appears in the generated script and in the run report.
+inline std::string toString(AnnealingSchedule schedule)
+{
+    switch (schedule) {
+    case AnnealingSchedule::Exponential: return "exponential";
+    case AnnealingSchedule::Logarithmic: return "logarithmic";
+    case AnnealingSchedule::Linear:      break;
+    }
+    return "linear";
+}
+
 /// True for every barostatted ensemble — drives the CALANGO_PRESSURE /
 /// CALANGO_TARGET_PRESSURE markers and the Pressure-tab reference line
 /// (constant-volume ensembles never report a pressure series).
@@ -471,6 +564,26 @@ struct CalculatorConfig {
     /// Trajectory / metric sampling frequency (record every N MD steps).
     /// 0 means auto (~400 streamed frames over the whole run).
     int mdSampleInterval = 0;
+
+    // Simulated annealing — the same integrator, with a moving setpoint.
+    //
+    // Annealing is a MODE of molecular dynamics rather than a task of its own:
+    // it runs one of the thermostatted ensembles above and retargets it every
+    // step. Keeping it here (instead of as a TaskKind) is what lets the
+    // constraints, the sampling, the streamed trajectory and every calculator
+    // setting stay shared with a constant-temperature run.
+    bool annealing = false;
+    AnnealingSchedule annealingSchedule = AnnealingSchedule::Linear;
+    /// Setpoint at the first and last step. Cooling (start > end) is the usual
+    /// direction, but heating ramps are legal and are generated the same way.
+    /// When annealing is on, the initial Maxwell-Boltzmann velocities are drawn
+    /// at annealStartK, not at temperatureK.
+    double annealStartK = 1000.0;
+    double annealEndK = 300.0;
+    /// Curvature of the Exponential / Logarithmic laws; ignored by Linear.
+    /// Must stay > 0; both laws are singular at exactly 0 and both tend to
+    /// Linear there.
+    double annealCoefficient = 3.0;
 
     // DFT common knobs (used by the QE/VASP templates)
     double planeWaveCutoffEv = 500.0;

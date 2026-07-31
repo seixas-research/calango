@@ -127,6 +127,45 @@ automatic rule and manual overrides:
 
 Overrides live on the structure and are saved in the project file.
 
+\subsection{Rules apply to the whole trajectory}
+\label{sec:bond-rules-trajectory}
+
+Every rule entered in the Bond Editor is applied to \emph{every frame} of
+the active trajectory, not only to the frame on screen. Bonding is a
+statement about the chemistry of a system, and a system does not change
+its chemistry between two samples of the same run --- an override that
+existed on frame 0 and vanished on frame 1 was never a physical statement,
+only an artifact of which frame happened to be displayed when the button
+was pressed. It also made every trajectory-wide export (the extended-XYZ
+writer, the ray-traced film, the animated GIF) disagree with the viewport.
+
+The two kinds of rule propagate \emph{differently}, and the difference is
+the point:
+
+\begin{description}
+  \item[By Atomic Indices] Names atoms. An atom keeps its index for the
+    whole run, so the same pair --- and the same bond order --- is marked
+    on every frame.
+  \item[By Chemical Elements] Names a \emph{geometric condition}: every
+    Si--O pair between 1.4 and 1.9\,\AA{}. The rule is therefore
+    re-evaluated against each frame's own coordinates. Copying the first
+    frame's match list forward would freeze a bond onto a pair that has
+    since dissociated --- precisely the event a reactive trajectory is
+    being watched for, rendered invisible.
+\end{description}
+
+The scope is stated on the panel where the rules are entered, and the
+element-rule match count says which frame it was counted on. Frames whose
+atom count differs from the displayed one are skipped and reported: an
+index there refers to a different atom.
+
+\begin{calnote}
+Hydrogen bonds are the exception, and deliberately so. They are perceived
+geometrically rather than stored as overrides, so they re-evaluate
+whenever the geometry moves --- they already follow a trajectory instead
+of freezing at the frame they were detected on.
+\end{calnote}
+
 \section{Bond orders}
 \label{sec:bond-orders}
 

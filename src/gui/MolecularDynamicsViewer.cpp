@@ -268,6 +268,9 @@ bool MolecularDynamicsViewer::loadDirectory(const QString& directory)
         potential_.push_back(epot);
         kinetic_.push_back(ekin);
         total_.push_back(epot + ekin);
+        if (sample.contains(QStringLiteral("target_temperature")))
+            targetTemperature_.push_back(
+                sample.value(QStringLiteral("target_temperature")).toDouble());
         if (sample.contains(QStringLiteral("pressure")))
             pressure_.push_back(sample.value(QStringLiteral("pressure")).toDouble());
         if (sample.contains(QStringLiteral("volume")))
@@ -299,9 +302,19 @@ bool MolecularDynamicsViewer::loadDirectory(const QString& directory)
 
     // -- Plots ---------------------------------------------------------------
     if (!time_.empty()) {
-        temperaturePlot_->setData(time_,
-                                  {{tr("T"), QColor(214, 96, 77), temperature_}},
-                                  tr("Time (ps)"), tr("Temperature (K)"));
+        // An annealing run logged the setpoint it was aiming at when each
+        // sample was taken. Drawing it under the measured trace is what turns
+        // the plot into an answer: a thermostat that lags the ramp, or a
+        // system whose latent heat stalls it at a plateau, is invisible
+        // against the temperature alone.
+        std::vector<SeriesPlotWidget::Series> thermal{
+            {tr("T"), QColor(214, 96, 77), temperature_}};
+        if (targetTemperature_.size() == temperature_.size()
+            && !targetTemperature_.empty())
+            thermal.push_back(
+                {tr("T target"), QColor(120, 120, 130), targetTemperature_});
+        temperaturePlot_->setData(time_, thermal, tr("Time (ps)"),
+                                  tr("Temperature (K)"));
         energyPlot_->setData(
             time_,
             {{tr("E_tot"), QColor(60, 60, 60), total_},
@@ -408,6 +421,8 @@ void MolecularDynamicsViewer::exportCsv()
     QTextStream out(&file);
     // A CSV starts with its header row — no '#' comment lines.
     out << "time_ps,temperature_K,E_pot_eV,E_kin_eV,E_tot_eV";
+    if (!targetTemperature_.empty())
+        out << ",target_temperature_K";
     if (!pressure_.empty())
         out << ",pressure_GPa";
     if (!volume_.empty())
@@ -416,6 +431,9 @@ void MolecularDynamicsViewer::exportCsv()
     for (std::size_t i = 0; i < time_.size(); ++i) {
         out << time_[i] << ',' << temperature_[i] << ',' << potential_[i] << ','
             << kinetic_[i] << ',' << total_[i];
+        if (!targetTemperature_.empty())
+            out << ','
+                << (i < targetTemperature_.size() ? targetTemperature_[i] : 0.0);
         if (!pressure_.empty())
             out << ',' << (i < pressure_.size() ? pressure_[i] : 0.0);
         if (!volume_.empty())

@@ -116,6 +116,14 @@ private Q_SLOTS:
     /// solution. Opens the result as a new workspace tab, leaving the
     /// substrate's own tab untouched.
     void openLiquidInterfaceBuilder();
+    /// Build → "Dislocation…": insert a Volterra line defect into the current
+    /// structure by displacing its atoms with a closed-form elastic field.
+    /// Opens the result as a new workspace tab.
+    void openDislocationBuilder();
+    /// Build → "Solid Interface…": stacking faults, twin boundaries,
+    /// bicrystals and (multi-phase) polycrystals built from the current
+    /// structure as the parent lattice. Also a new tab.
+    void openSolidInterfaceBuilder();
     /// Modules → 2D Materials → "Graphene Oxide…": functionalized
     /// graphene at target coverages, opened as a new workspace tab.
     void openGrapheneOxideBuilder();
@@ -393,9 +401,9 @@ private Q_SLOTS:
     /// Electronics → "Fermi Surface…": E_n(k) = E_F sheets on a dense
     /// interpolated k-grid, from a completed MLWF run.
     void showFermiSurface();
-    /// Electronics → "Topological Charge…": Chern number / Z₂ index from the
+    /// Electronics → "Topological Invariants…": Chern number / Z₂ index from the
     /// hybrid Wannier centre flow, from a completed MLWF run.
-    void showTopologicalCharge();
+    void showTopologicalInvariants();
     /// Completed MLWF processes, as (label, job directory) — the candidates
     /// each Wannier post-process offers in its "Source MLWF process" step.
     /// Keyed on wannier.json, which the MLWF script writes only on success.

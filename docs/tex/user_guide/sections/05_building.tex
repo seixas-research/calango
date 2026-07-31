@@ -166,6 +166,217 @@ internal coordinates produces a cell that nobody notices is wrong until the
 first relaxation step tears it apart.
 \end{calnote}
 
+\section{Dislocations}
+\label{sec:dislocations}
+
+\menu{Build}\menusep\menu{Dislocation} inserts a Volterra line defect into
+the structure in the current tab by displacing its atoms with a
+closed-form elastic field. The result opens as a new tab; the parent is
+left alone.
+
+A dislocation is one operation: cut the crystal along a half-plane bounded
+by a line, slide the two faces past each other by a lattice vector
+$\mathbf{b}$, and weld them back together. Everything the module does is
+that operation, evaluated analytically at every atom.
+
+\subsection{Stage 1 --- type and geometry}
+
+\ui{Line direction} names the Cartesian axis the dislocation line runs
+along; the other two axes follow in cyclic order as $(\mathbf{e}_1,
+\mathbf{e}_2)$. For a line along $z$ those are $(x, y)$, and an edge
+dislocation then has $\mathbf{b}$ along $x$ with its glide plane normal
+along $y$ --- so naming the line names everything.
+
+\ui{Burgers vector} is $|\mathbf{b}|$ in \AA{}. Use a lattice repeat of
+the host: a perfect dislocation's Burgers vector \emph{is} a lattice
+vector, and any other length leaves a stacking fault trailing behind the
+line that this module does not model. \ui{Line position} places the line
+in the plane normal to it, as a fraction of the structure's extent. The
+default is deliberately a little off centre --- linear elasticity is
+singular \emph{on} the line, so a line placed exactly on a lattice site
+evaluates that atom's displacement at infinity.
+
+\begin{description}
+  \item[Edge] Single edge dislocation. $\mathbf{b} \perp$ line, the
+    crystal carries an extra half-plane ending on it, and the atom count
+    is unchanged --- this is the elastic field, not a plane of atoms
+    inserted by hand.
+  \item[Screw] Single screw dislocation. $\mathbf{b} \parallel$ line; the
+    lattice planes around it form one continuous helical ramp, and only
+    the component along the line moves.
+  \item[Glide] Two edge dislocations of opposite sign in the \emph{same}
+    glide plane --- what a dislocation leaves behind after gliding a
+    distance $d$. Between the cores the crystal above the glide plane has
+    slipped by exactly one $\mathbf{b}$ relative to the crystal below.
+    Conservative: no atom is created or destroyed.
+  \item[Climb] Two edge dislocations of opposite sign stacked normal to
+    the glide plane, with a platelet of \emph{missing} material between
+    them --- a collapsed vacancy disc one $\mathbf{b}$ thick. Climb is
+    mass transport, so this is the one construction that changes the atom
+    count, and that change is how you tell it happened.
+  \item[Anisotropic] A single dislocation solved from the full elastic
+    tensor via Stroh's sextic formalism. The only option that can describe
+    a \emph{mixed} dislocation --- one whose Burgers vector has both an
+    edge and a screw component --- and the only one that is correct for a
+    strongly anisotropic crystal.
+\end{description}
+
+\subsection{Stage 2 --- elasticity}
+
+The isotropic types read a single \ui{Poisson ratio}; a screw dislocation
+does not depend on it at all. The two dipoles read a \ui{Core separation}
+--- the distance the dislocation travelled, for glide, and the height of
+the vacancy platelet, for climb.
+
+The anisotropic type reads an elastic tensor instead, built from the
+constants of a chosen \ui{Elastic symmetry} (cubic, hexagonal or
+isotropic), with room-temperature single-crystal presets for Cu, Al,
+$\alpha$-Fe, Ni, W and Si. Only the \emph{ratios} of the constants reach
+the displacement field --- the absolute scale cancels --- but keeping
+physical units means numbers can be read straight off a table. The
+\ui{Burgers direction} gives $\mathbf{b}$'s components in the dislocation
+frame: $(1,0,0)$ is a pure edge, $(0,0,1)$ a pure screw, anything between
+a mixed dislocation.
+
+The page runs the real builder on every change and reports what it
+produced --- atom count, largest displacement, closest resulting pair, and
+any warnings. It is not a model of what \menu{Finish} will do; it is what
+\menu{Finish} does.
+
+\subsection{Periodicity}
+
+A single dislocation has a net Burgers vector, so its displacement field
+is multivalued: it cannot be made periodic in the two directions normal
+to the line, whatever the cell. Edge, Screw and Anisotropic therefore
+leave the cell periodic \emph{only along the line} and say so --- which is
+the correct setup for a cylinder with free lateral surfaces, the usual way
+core structures are computed.
+
+A dipole has zero net Burgers vector, so Glide and Climb stay periodic in
+all three directions. Reaching that takes one extra step: superposing two
+opposite fields cancels the net Burgers vector but leaves the average
+plastic distortion the pair carries, so a compensating uniform distortion
+--- a simple shear for glide, a uniaxial contraction for climb --- is
+applied to the atoms \emph{and} to the cell vectors. Without it the
+construction looks perfectly normal in a viewer and carries a
+$|\mathbf{b}|$-sized discontinuity at the periodic boundary.
+
+\begin{calwarn}
+Nothing here is relaxed, and linear elasticity is singular at the line.
+The handful of atoms nearest the core arrive at positions that are
+qualitatively right and numerically meaningless. Relax the core before
+quoting anything about it --- a core energy, a Peierls barrier, a
+dissociation width.
+\end{calwarn}
+
+\begin{calnote}
+Only the vacancy sense of climb is built (material removed). The
+interstitial sense would mean inserting a partial plane of atoms, which
+needs the periodicity of the host lattice and not merely its Burgers
+vector; it is refused rather than approximated. The module also reports
+when the requested $|\mathbf{b}|$ is smaller than the plane spacing it was
+meant to remove, in which case the result is an elastic dipole with no
+mass transport at all.
+\end{calnote}
+
+\section{Solid interfaces}
+\label{sec:solid-interfaces}
+
+\menu{Build}\menusep\menu{Solid Interface} builds the constructions that
+put two pieces of crystal next to each other. All five are the same
+operation seen from different distances: decide, for every point of space,
+which crystal orientation occupies it; fill each region with that lattice;
+reconcile the seams.
+
+\begin{description}
+  \item[Stacking fault] Everything above the chosen plane is shifted
+    rigidly by a fraction of an in-plane lattice vector. The cheapest
+    planar defect there is, and the one whose energy decides how readily a
+    dislocation splits into partials.
+  \item[Twin boundary] The half above the plane is discarded and replaced
+    by the mirror image of the half below it. A coherent twin: every atom
+    on the boundary is shared between the two orientations, so the
+    interface carries no free volume. Anything that existed only in the
+    replaced half is gone --- that is what twinning does.
+  \item[Bicrystal] Two grains with independent orientations filling the
+    two halves of a box built from the parent cell. The general grain
+    boundary.
+  \item[Polycrystal] A Voronoi tessellation: $N$ seeds scattered in the
+    box, each with a uniformly random orientation, every point of space
+    joining the grain whose seed is nearest.
+  \item[Multi-phase polycrystal] The same tessellation, with each grain
+    drawing its lattice from a different phase. Every grain is
+    single-phase; the interfaces between them are phase boundaries.
+\end{description}
+
+\subsection{Stage 1 --- interface and plane}
+
+\ui{Boundary normal} names a \emph{lattice} vector rather than a Cartesian
+axis, which is what keeps the boundary plane --- spanned by the other two
+lattice vectors --- commensurate with the cell by construction.
+\ui{Boundary position} places it as a cell fraction.
+
+The stacking fault reads a \ui{Fault vector}, given as fractions of the
+two in-plane lattice vectors; $\tfrac{1}{3}$ along one of them is the
+classic partial-dislocation fault vector of a close-packed plane. Both
+planar defects can open a \ui{Boundary gap} perpendicular to the
+interface, which gives a relaxation somewhere to start from instead of two
+planes on top of each other.
+
+The space-filling kinds read a \ui{Merge tolerance} instead: atoms landing
+closer than this to one already placed are deleted. Two crystals meeting
+at an arbitrary angle always overlap somewhere, and without this the
+boundary is a pile-up rather than a boundary. Too large and it starts
+eating the grains themselves --- watch the reported atom count.
+
+\subsection{Stage 2 --- grains}
+
+\ui{Box repeats} sets the size of the constructed cell in multiples of the
+parent. A bicrystal reads two rotations about the boundary normal, so the
+pair forms a twist boundary and the misorientation is their difference;
+$36.87^{\circ}$ is the $\Sigma5$ coincidence-site relationship of a cubic
+lattice. A polycrystal reads a \ui{Grains} count and a \ui{Random seed};
+the same seed rebuilds the same cell exactly, which is what makes a
+published polycrystal reproducible. A multi-phase polycrystal adds a table
+of the open workspace tabs with a weight each --- a weight of zero
+excludes that phase entirely.
+
+Every atom of a space-filling construction carries its grain index and
+phase index as per-atom scalar fields, so the tessellation can be
+\emph{seen} in the viewport (Representation \menusep{} colour by scalar
+field) rather than assumed.
+
+\begin{calwarn}
+A periodic cell cannot contain an odd number of parallel interfaces.
+Insert one boundary at the middle of a cell and you have inserted two: the
+one you asked for, and the one where the top face meets the bottom face of
+the next image. That is not a defect of the implementation, it is what
+periodic boundary conditions mean, and every result reports both. A
+calculation that attributes the whole excess energy of the cell to ``the''
+boundary is out by a factor of two.
+\end{calwarn}
+
+\begin{calnote}
+Rotating a lattice and demanding it still fit the box is a strong
+condition: only the coincidence-site (CSL) misorientations satisfy it
+exactly. At any other angle the two crystals meet the periodic boundary
+out of register. The mismatch is measured and reported in \AA{} rather
+than hidden, so a bicrystal built at an arbitrary angle announces what it
+is.
+
+Twinning additionally requires that the stacking vector be perpendicular
+to the boundary plane. Reflecting a tilted cell would produce a
+half-crystal that is periodic with a \emph{different} cell, so the
+construction is refused with a message asking for an orthogonalised cell
+rather than returning a box that describes neither half.
+\end{calnote}
+
+\begin{calwarn}
+Nothing here is relaxed. Grain boundaries have structure --- free volume,
+reconstruction, segregation --- that no geometric construction produces.
+These are starting points.
+\end{calwarn}
+
 \section{Nanomaterials}
 
 \menu{Build}\menusep\menu{Nanomaterial Builder} generates four families of

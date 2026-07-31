@@ -17,8 +17,10 @@
 
 namespace calango::gui {
 
-BondEditorDialog::BondEditorDialog(std::shared_ptr<core::Structure> structure,
-                                   ViewportWidget* viewport, QWidget* parent)
+BondEditorDialog::BondEditorDialog(
+    std::shared_ptr<core::Structure> structure,
+    std::vector<std::shared_ptr<core::Structure>> frames,
+    ViewportWidget* viewport, QWidget* parent)
     : QDialog(parent)
     , structure_(std::move(structure))
     , viewport_(viewport)
@@ -32,6 +34,8 @@ BondEditorDialog::BondEditorDialog(std::shared_ptr<core::Structure> structure,
 {
     setWindowTitle(tr("Bond Editor"));
     resize(520, 620);
+
+    collectTargets(std::move(frames));
 
     // --- Automatic perception ---------------------------------------------
     auto* autoGroup = new QGroupBox(tr("Automatic Perception"), this);
@@ -113,11 +117,21 @@ BondEditorDialog::BondEditorDialog(std::shared_ptr<core::Structure> structure,
     connect(removeElementsButton, &QPushButton::clicked, this,
             &BondEditorDialog::removeBondsByElements);
     // Live count of how many pairs the current selection/window would affect.
+    // Counted on the DISPLAYED frame, and said so: the rule is re-evaluated
+    // per frame, so a single number cannot stand for the whole trajectory and
+    // pretending otherwise would be the more misleading answer.
     const auto refreshElementMatch = [this] {
-        const std::size_t n = matchingElementPairs().size();
+        const std::size_t n =
+            core::matchingPairs(*structure_, currentElementRule()).size();
         elementMatchLabel_->setText(
-            tr("%1 atom pair(s) match the current element/distance window.")
-                .arg(n));
+            targets_.size() > 1
+                ? tr("%1 atom pair(s) match on this frame; the rule is "
+                     "re-evaluated on each of the %2 frames.")
+                      .arg(n)
+                      .arg(targets_.size())
+                : tr("%1 atom pair(s) match the current element/distance "
+                     "window.")
+                      .arg(n));
     };
     for (QComboBox* combo : {elementACombo_, elementBCombo_})
         connect(combo, &QComboBox::currentIndexChanged, this,
@@ -269,6 +283,16 @@ BondEditorDialog::BondEditorDialog(std::shared_ptr<core::Structure> structure,
 
     manualLayout->addWidget(modeTabs);
 
+    // The scope of every rule above, stated where the rules are entered. A
+    // trajectory-wide edit that announces itself only in the status bar is one
+    // the user finds out about on frame 200.
+    if (const QString scope = scopeSummary(); !scope.isEmpty()) {
+        auto* scopeLabel = new QLabel(scope, manualGroup);
+        scopeLabel->setWordWrap(true);
+        scopeLabel->setStyleSheet(QStringLiteral("color: palette(mid);"));
+        manualLayout->addWidget(scopeLabel);
+    }
+
     // ----- Shared override list -------------------------------------------
     manualLayout->addWidget(new QLabel(tr("Active overrides:"), manualGroup));
     manualLayout->addWidget(overrideList_, 1);
@@ -305,6 +329,68 @@ BondEditorDialog::BondEditorDialog(std::shared_ptr<core::Structure> structure,
     refreshOverrideList();
 }
 
+void BondEditorDialog::collectTargets(
+    std::vector<std::shared_ptr<core::Structure>> frames)
+{
+    // The displayed frame leads, so a rule that can only be applied to one
+    // structure still lands on the one the user is looking at.
+    targets_.push_back(structure_);
+    for (auto& frame : frames) {
+        if (!frame || frame == structure_)
+            continue;
+        // An index rule names atom 12; on a frame with a different atom count
+        // that is a different atom (or none). Skipping is the only honest
+        // option — and the count is reported rather than swallowed.
+        if (frame->size() != structure_->size()) {
+            ++skippedFrames_;
+            continue;
+        }
+        // Frames are shared_ptrs and the same object can legitimately appear
+        // twice in a trajectory; applying an edit to it twice is harmless for
+        // the override lists but not for anything counting.
+        if (std::find(targets_.begin(), targets_.end(), frame) != targets_.end())
+            continue;
+        targets_.push_back(frame);
+    }
+}
+
+std::vector<core::Structure*> BondEditorDialog::targetFrames() const
+{
+    std::vector<core::Structure*> frames;
+    frames.reserve(targets_.size());
+    for (const auto& frame : targets_)
+        frames.push_back(frame.get());
+    return frames;
+}
+
+core::ElementBondRule BondEditorDialog::currentElementRule() const
+{
+    core::ElementBondRule rule;
+    if (!elementACombo_ || !elementBCombo_ || elementACombo_->count() == 0)
+        return rule;
+    rule.elementA = elementACombo_->currentData().toInt();
+    rule.elementB = elementBCombo_->currentData().toInt();
+    rule.minDistance = minCutoffSpin_->value();
+    rule.maxDistance = maxCutoffSpin_->value();
+    return rule;
+}
+
+QString BondEditorDialog::scopeSummary() const
+{
+    if (targets_.size() <= 1)
+        return {};
+    QString text = tr("Rules apply to all %n frame(s) of this trajectory, not "
+                      "only the one on screen. Element rules are re-matched "
+                      "against each frame's own geometry.",
+                      nullptr, static_cast<int>(targets_.size()));
+    if (skippedFrames_ > 0)
+        text += QLatin1Char(' ')
+            + tr("%n frame(s) with a different atom count are left "
+                 "untouched.",
+                 nullptr, skippedFrames_);
+    return text;
+}
+
 QComboBox* BondEditorDialog::makeElementCombo()
 {
     auto* combo = new QComboBox(this);
@@ -318,52 +404,23 @@ QComboBox* BondEditorDialog::makeElementCombo()
     return combo;
 }
 
-std::vector<std::pair<int, int>> BondEditorDialog::matchingElementPairs() const
-{
-    std::vector<std::pair<int, int>> pairs;
-    if (!elementACombo_ || !elementBCombo_ || elementACombo_->count() == 0)
-        return pairs;
-    const int za = elementACombo_->currentData().toInt();
-    const int zb = elementBCombo_->currentData().toInt();
-    const double dmin = minCutoffSpin_->value();
-    const double dmax = maxCutoffSpin_->value();
-    const auto& atoms = structure_->atoms();
-    for (std::size_t i = 0; i + 1 < atoms.size(); ++i) {
-        for (std::size_t j = i + 1; j < atoms.size(); ++j) {
-            const int zi = atoms[i].atomicNumber;
-            const int zj = atoms[j].atomicNumber;
-            const bool match = (zi == za && zj == zb) || (zi == zb && zj == za);
-            if (!match)
-                continue;
-            const double d = (atoms[j].position - atoms[i].position).norm();
-            if (d >= dmin && d <= dmax)
-                pairs.emplace_back(static_cast<int>(i), static_cast<int>(j));
-        }
-    }
-    return pairs;
-}
-
 void BondEditorDialog::addBondsByElements()
 {
-    const auto pairs = matchingElementPairs();
-    for (const auto& [i, j] : pairs)
-        structure_->addBondOverride(i, j);
+    // Re-matched per frame: the window is a geometric condition, and the
+    // geometry is what a trajectory varies.
+    const int total =
+        core::applyElementRule(targetFrames(), currentElementRule(), true);
     refreshOverrideList();
-    if (!pairs.empty())
+    if (total > 0)
         Q_EMIT bondsEdited();
 }
 
 void BondEditorDialog::removeBondsByElements()
 {
-    const auto pairs = matchingElementPairs();
-    for (const auto& [i, j] : pairs) {
-        // Both directions: drop an explicit "added" override and, failing that,
-        // suppress the auto-perceived bond so the window truly unbonds the pair.
-        structure_->clearBondOverride(i, j);
-        structure_->removeBondOverride(i, j);
-    }
+    const int total =
+        core::applyElementRule(targetFrames(), currentElementRule(), false);
     refreshOverrideList();
-    if (!pairs.empty())
+    if (total > 0)
         Q_EMIT bondsEdited();
 }
 
@@ -388,8 +445,9 @@ void BondEditorDialog::addBond()
     if (i == j)
         return;
     const int order = bondOrderCombo_ ? bondOrderCombo_->currentData().toInt() : 1;
-    structure_->addBondOverride(i, j);
-    structure_->setBondOrder(i, j, order);
+    // An index pair means the same two atoms on every frame — atoms keep their
+    // index for the whole run — so the rule is copied rather than re-derived.
+    core::applyIndexBond(targetFrames(), i, j, order);
     refreshOverrideList();
     Q_EMIT bondsEdited();
 }
@@ -397,7 +455,7 @@ void BondEditorDialog::addBond()
 void BondEditorDialog::suppressBond()
 {
     const auto [i, j] = currentPair();
-    structure_->removeBondOverride(i, j);
+    core::applyIndexSuppression(targetFrames(), i, j);
     refreshOverrideList();
     Q_EMIT bondsEdited();
 }
@@ -408,14 +466,14 @@ void BondEditorDialog::clearSelectedOverride()
     if (!item)
         return;
     const QPoint pair = item->data(Qt::UserRole).toPoint();
-    structure_->clearBondOverride(pair.x(), pair.y());
+    core::clearPairOnAllFrames(targetFrames(), pair.x(), pair.y());
     refreshOverrideList();
     Q_EMIT bondsEdited();
 }
 
 void BondEditorDialog::clearAllOverrides()
 {
-    structure_->clearBondOverrides();
+    core::clearAllOnAllFrames(targetFrames());
     refreshOverrideList();
     Q_EMIT bondsEdited();
 }

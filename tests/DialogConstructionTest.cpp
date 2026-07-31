@@ -34,11 +34,14 @@
 #include "gui/TopologyDialog.hpp"
 #include "gui/MaceTrainerDialog.hpp"
 #include "gui/ElectronicBandsWizard.hpp"
+#include "gui/DislocationWizard.hpp"
 #include "gui/LiquidInterfaceWizard.hpp"
+#include "gui/SolidInterfaceWizard.hpp"
 #include "gui/MagneticSpaceGroupDialog.hpp"
 #include "gui/RandomNoiseViewer.hpp"
 #include "gui/RandomNoiseWizard.hpp"
 #include "gui/SimulationWizardBase.hpp"
+#include "gui/MolecularDynamicsWizard.hpp"
 #include "gui/SinglePointWizard.hpp"
 #include "gui/TwoDBandsWizard.hpp"
 #include "python_bridge/PythonEngine.hpp"
@@ -1350,7 +1353,7 @@ int main(int argc, char** argv)
 
     // -- MLWF source step: the gate on every Wannier post-process ------------
     //
-    // Wannier Interpolation, Fermi Surface and Topological Charge all
+    // Wannier Interpolation, Fermi Surface and Topological Invariants all
     // diagonalize the localized H(R) an MLWF run produced. The step that picks
     // that run used to be a QInputDialog raised BEFORE the settings dialog;
     // it is now the dialog's own first group, which means the dialog is also
@@ -1449,7 +1452,7 @@ int main(int argc, char** argv)
 
         TopologyDialog topology(runs);
         check(topology.config().mlwfDir == good.toStdString(),
-              "Topological Charge does the same");
+              "Topological Invariants does the same");
 
         // With nothing to pick, OK must be unavailable in all three.
         // Wannier Interpolation carries the same step wired the same way; it
@@ -1872,6 +1875,198 @@ int main(int argc, char** argv)
                                  .c_str());
         check(built && wizard.result() && wizard.result()->totalMolecules > 0,
               "with molecules actually packed into the region");
+    }
+
+    std::printf("Molecular Dynamics wizard — annealing mode:\n");
+    {
+        // Same reason as the Single-Point block: SimulationWizardBase reads
+        // the embedded interpreter while building its Calculator Settings
+        // stage, and PythonEngine::instance() asserts rather than lazily
+        // constructing one.
+        calango::pybridge::PythonEngine python;
+        MolecularDynamicsWizard wizard;
+        check(true, "constructs");
+
+        auto* mode = wizard.findChild<QComboBox*>(QStringLiteral("mdModeCombo"));
+        auto* schedule =
+            wizard.findChild<QComboBox*>(QStringLiteral("mdScheduleCombo"));
+        check(mode != nullptr && schedule != nullptr,
+              "has a mode selector and a schedule selector");
+        check(schedule != nullptr && schedule->count() == 3,
+              "offering Linear, Exponential and Logarithmic");
+
+        // The script is the deliverable, and script() returns the review
+        // stage's live preview — the same text the run is staged from, not a
+        // re-derivation that could agree with the generator while the wizard
+        // disagreed with both.
+        const auto scriptFor = [&wizard](bool annealing, int scheduleIndex) {
+            auto* modeCombo =
+                wizard.findChild<QComboBox*>(QStringLiteral("mdModeCombo"));
+            auto* scheduleCombo =
+                wizard.findChild<QComboBox*>(QStringLiteral("mdScheduleCombo"));
+            // Away and back, so the mode combo always emits: setCurrentIndex
+            // to the value already held is silent, and the preview would then
+            // still be showing whatever the previous call left in it.
+            modeCombo->setCurrentIndex(annealing ? 0 : 1);
+            scheduleCombo->setCurrentIndex(scheduleIndex);
+            modeCombo->setCurrentIndex(annealing ? 1 : 0);
+            return wizard.script();
+        };
+
+        const QString constant = scriptFor(false, 0);
+        check(!constant.contains(QStringLiteral("_anneal_target")),
+              "constant-temperature mode generates no schedule");
+        check(constant.contains(QStringLiteral("CALANGO_TARGET_TEMP")),
+              "and keeps the single thermostat setpoint marker");
+
+        const QString exponential = scriptFor(true, 1);
+        check(exponential.contains(QStringLiteral("math.exp(-anneal_k * x)")),
+              "picking Exponential writes the exponential law");
+        check(exponential.contains(QStringLiteral("_set_target_temperature")),
+              "and retargets the thermostat during the run");
+        check(!exponential.contains(QStringLiteral("CALANGO_TARGET_TEMP")),
+              "with no static reference line, which a ramp does not have");
+
+        const QString logarithmic = scriptFor(true, 2);
+        check(logarithmic.contains(QStringLiteral("math.log1p(anneal_k * x)")),
+              "and picking Logarithmic writes the logarithmic one");
+
+        // Switching back has to leave nothing behind: a stale `import math`
+        // is harmless, a stale retargeting observer is a run that anneals
+        // when the user asked it not to.
+        const QString backToConstant = scriptFor(false, 0);
+        check(!backToConstant.contains(QStringLiteral("_anneal_target")),
+              "switching back to constant temperature drops the schedule again");
+
+        // Annealing needs a thermostat, so NVE must not remain selectable.
+        auto* modeCombo =
+            wizard.findChild<QComboBox*>(QStringLiteral("mdModeCombo"));
+        modeCombo->setCurrentIndex(1);
+        QComboBox* ensemble = nullptr;
+        for (QComboBox* combo : wizard.findChildren<QComboBox*>())
+            if (combo->count() == 7
+                && combo->itemText(0).contains(QStringLiteral("NVE")))
+                ensemble = combo;
+        check(ensemble != nullptr, "the ensemble combo is findable");
+        if (ensemble) {
+            check(ensemble->currentIndex() != 0,
+                  "annealing moves off NVE rather than annealing nothing");
+            check(!ensemble->model()->index(0, 0).flags().testFlag(
+                      Qt::ItemIsEnabled),
+                  "and NVE is withdrawn from the list while it is selected");
+            modeCombo->setCurrentIndex(0);
+            check(ensemble->model()->index(0, 0).flags().testFlag(
+                      Qt::ItemIsEnabled),
+                  "returning to constant temperature offers NVE again");
+        }
+
+        exerciseControls(&wizard);
+        check(true, "survives every control being toggled in either mode");
+    }
+
+    // A small crystal both defect wizards can chew on: 4x4x4 simple cubic.
+    const auto cubicCrystal = [] {
+        auto structure = std::make_shared<calango::core::Structure>();
+        for (int i = 0; i < 4; ++i)
+            for (int j = 0; j < 4; ++j)
+                for (int k = 0; k < 4; ++k) {
+                    calango::core::Atom atom;
+                    atom.atomicNumber = 13;
+                    atom.position = {i * 3.0, j * 3.0, k * 3.0};
+                    structure->addAtom(atom);
+                }
+        structure->setCell(calango::core::UnitCell({12, 0, 0}, {0, 12, 0},
+                                                   {0, 0, 12},
+                                                   {true, true, true}));
+        return structure;
+    };
+
+    std::printf("Dislocation wizard:\n");
+    {
+        DislocationWizard wizard(cubicCrystal());
+        check(true, "constructs with a crystal");
+        wizard.restart();
+        check(wizard.currentPage() != nullptr
+                  && wizard.currentPage()->isComplete(),
+              "and opens on a first page whose defaults are buildable");
+        exerciseControls(wizard.currentPage());
+        check(true, "stage 1 survives every control being toggled");
+
+        // Each of the five types has to reach a buildable state, including the
+        // anisotropic one — whose sextic solver is the part most likely to
+        // refuse a tensor the UI happily offered.
+        auto* type =
+            wizard.findChild<QComboBox*>(QStringLiteral("dislocationTypeCombo"));
+        check(type != nullptr && type->count() == 5,
+              "all five dislocation types are offered");
+        if (type) {
+            int buildable = 0;
+            for (int i = 0; i < type->count(); ++i) {
+                type->setCurrentIndex(i);
+                wizard.restart();
+                wizard.next();
+                exerciseControls(wizard.currentPage());
+                // exerciseControls walks every combo to its last entry, so put
+                // the type back before building.
+                type->setCurrentIndex(i);
+                QString error;
+                if (wizard.build(&error) && wizard.result()
+                    && !wizard.result()->structure.empty())
+                    ++buildable;
+                else
+                    std::printf("      (%s: %s)\n",
+                                qPrintable(type->itemText(i)),
+                                qPrintable(error));
+            }
+            check(buildable == type->count(),
+                  "and every one of them produces a structure");
+        }
+    }
+
+    std::printf("Solid Interface wizard:\n");
+    {
+        std::vector<PhaseSource> phases;
+        phases.emplace_back(QStringLiteral("Al"), cubicCrystal());
+        phases.emplace_back(QStringLiteral("Al (second phase)"), cubicCrystal());
+        SolidInterfaceWizard wizard(phases);
+        check(true, "constructs with two candidate phases");
+        wizard.restart();
+        check(wizard.currentPage() != nullptr
+                  && wizard.currentPage()->isComplete(),
+              "and opens on a complete first page");
+        exerciseControls(wizard.currentPage());
+        check(true, "stage 1 survives every control being toggled");
+
+        auto* kind =
+            wizard.findChild<QComboBox*>(QStringLiteral("interfaceKindCombo"));
+        check(kind != nullptr && kind->count() == 5,
+              "all five interface kinds are offered");
+        if (kind) {
+            int buildable = 0;
+            for (int i = 0; i < kind->count(); ++i) {
+                kind->setCurrentIndex(i);
+                wizard.restart();
+                wizard.next();
+                // Keep the boxes small: this is a construction smoke test, not
+                // a benchmark, and a 4x4x4 repeat of a 64-atom cell is already
+                // four thousand atoms per grain.
+                for (QSpinBox* spin : wizard.currentPage()
+                                          ->findChildren<QSpinBox*>())
+                    if (spin->maximum() >= 200)
+                        spin->setValue(2);
+                kind->setCurrentIndex(i);
+                QString error;
+                if (wizard.build(&error) && wizard.result()
+                    && !wizard.result()->structure.empty())
+                    ++buildable;
+                else
+                    std::printf("      (%s: %s)\n",
+                                qPrintable(kind->itemText(i)),
+                                qPrintable(error));
+            }
+            check(buildable == kind->count(),
+                  "and every one of them produces a structure");
+        }
     }
 
     std::printf(failures == 0 ? "\nAll dialog construction checks passed.\n"

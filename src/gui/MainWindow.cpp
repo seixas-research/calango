@@ -102,7 +102,9 @@
 #include "gui/MolecularDynamicsViewer.hpp"
 #include "gui/RunCommands.hpp"
 #include "gui/WaterIceWizard.hpp"
+#include "gui/DislocationWizard.hpp"
 #include "gui/LiquidInterfaceWizard.hpp"
+#include "gui/SolidInterfaceWizard.hpp"
 #include "gui/SqsDialog.hpp"
 #include "gui/WarrenCowleyDialog.hpp"
 #include "gui/LocalEntropyDialog.hpp"
@@ -1121,6 +1123,21 @@ void MainWindow::createMenusAndDocks()
         ->setToolTip(tr("Open a fluid region on the current structure and pack "
                         "it with a liquid, a gas, a mixture, or an ionic "
                         "solution — solid/liquid and solid/gas interfaces"));
+    buildMenu->addSeparator();
+    // Crystal defects: both CONSUME the current structure as a parent lattice
+    // and both are pure geometry (no engine, no Python), so they group
+    // together and sit after the molecular builders rather than among them.
+    buildMenu->addAction(tr("&Dislocation…"), this,
+                         &MainWindow::openDislocationBuilder)
+        ->setToolTip(tr("Edge, screw, glide and climb dislocations, plus the "
+                        "anisotropic (Stroh) solution for a mixed Burgers "
+                        "vector — inserted by displacing the current "
+                        "structure's atoms"));
+    buildMenu->addAction(tr("Solid &Interface…"), this,
+                         &MainWindow::openSolidInterfaceBuilder)
+        ->setToolTip(tr("Stacking faults, twin boundaries, bicrystals and "
+                        "(multi-phase) polycrystals built from the open "
+                        "structures as parent lattices"));
     // Cluster Expansion, SQS and Warren-Cowley now live under Modules → Alloys;
     // the alloy toolchain is grouped there rather than split across Build /
     // Simulation / Analysis.
@@ -1206,8 +1223,8 @@ void MainWindow::createMenusAndDocks()
         ->setToolTip(tr("E_n(k) = E_F sheets on a dense interpolated k-grid, "
                         "from a completed MLWF process"));
     electronicsMenu
-        ->addAction(tr("&Topological Charge…"), this,
-                    &MainWindow::showTopologicalCharge)
+        ->addAction(tr("&Topological Invariants…"), this,
+                    &MainWindow::showTopologicalInvariants)
         ->setToolTip(tr("Chern number and Z₂ index from the hybrid Wannier "
                         "centre (Wilson loop) flow, from a completed MLWF "
                         "process"));
@@ -3703,7 +3720,10 @@ void MainWindow::showBondEditor()
 
     // One undo snapshot per editing session (the dialog applies live).
     pushUndo();
-    BondEditorDialog dialog(doc->structure, viewport_, this);
+    // The whole trajectory goes in, not just the displayed frame: bond rules
+    // describe the system's chemistry, which does not change between two
+    // samples of the same run. See BondEditorDialog's class comment.
+    BondEditorDialog dialog(doc->structure, doc->frames, viewport_, this);
     connect(&dialog, &BondEditorDialog::bondsEdited, this,
             [this] { notifyStructureChanged(false); });
     dialog.exec();
@@ -4523,7 +4543,7 @@ void MainWindow::openMlwfResults(const QString& directory)
 
     // The MLWF viewer overlays orbital isosurfaces on the main viewport. The
     // post-processes that consume the run (Wannier Interpolation, Fermi
-    // Surface, Topological Charge) are standalone Electronics-menu modules.
+    // Surface, Topological Invariants) are standalone Electronics-menu modules.
     Document* doc = currentDocument();
     auto* viewer = new MlwfViewer(doc ? doc->structure : nullptr, viewport_,
                                   this);
@@ -5529,9 +5549,9 @@ void MainWindow::showFermiSurface()
               tr("Fermi Surface"), /*expectFrames=*/false);
 }
 
-void MainWindow::showTopologicalCharge()
+void MainWindow::showTopologicalInvariants()
 {
-    if (!requireMlwfPrerequisite(tr("Topological Charge")))
+    if (!requireMlwfPrerequisite(tr("Topological Invariants")))
         return;
     TopologyDialog dialog(completedMlwfRuns(), this);
     if (dialog.exec() != QDialog::Accepted)
@@ -5539,7 +5559,7 @@ void MainWindow::showTopologicalCharge()
     const core::TopologyConfig cfg = dialog.config();
     runScript(QString::fromStdString(core::generateTopologyScript(cfg)),
               pythonForMlwfRun(dialog.mlwfDirectory()),
-              tr("Topological Charge"), /*expectFrames=*/false);
+              tr("Topological Invariants"), /*expectFrames=*/false);
 }
 
 QList<QPair<QString, QString>> MainWindow::processResults(
@@ -5936,6 +5956,108 @@ void MainWindow::openLiquidInterfaceBuilder()
         for (const std::string& warning : generated.warnings)
             lines << QStringLiteral("• ") + QString::fromStdString(warning);
         QMessageBox::warning(this, tr("Liquid / Gas Interface"),
+                             lines.join(QStringLiteral("\n\n")));
+    }
+}
+
+void MainWindow::openDislocationBuilder()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(
+            this, tr("Dislocation"),
+            tr("Open or build a crystal first.\n\nA dislocation is inserted by "
+               "displacing an existing lattice — there is nothing to displace "
+               "yet."));
+        return;
+    }
+    if (!doc->structure->cell().isDefined()) {
+        QMessageBox::information(
+            this, tr("Dislocation"),
+            tr("This structure has no periodic cell.\n\nThe dislocation line "
+               "runs along a lattice direction and the field is periodic along "
+               "it, so the host needs a cell."));
+        return;
+    }
+
+    DislocationWizard wizard(doc->structure, this);
+    if (wizard.exec() != QDialog::Accepted || !wizard.result())
+        return;
+    const auto& generated = *wizard.result();
+    const int tab = addDocument(
+        std::make_shared<core::Structure>(generated.structure),
+        QString::fromStdString(generated.description));
+    tabBar_->setCurrentIndex(tab);
+    isDirty_ = true;
+    statusBar()->showMessage(
+        tr("%1 — largest displacement %2 Å, closest pair %3 Å")
+            .arg(QString::fromStdString(generated.description))
+            .arg(generated.maxDisplacement, 0, 'f', 3)
+            .arg(generated.minSeparation, 0, 'f', 3));
+
+    // Shown after the tab opens: an unrelaxed core and a cell that is periodic
+    // only along the line are both expected outcomes, not failures, and hiding
+    // the result behind a modal that reads like one would be worse than the
+    // caveat it carries.
+    if (!generated.warnings.empty()) {
+        QStringList lines;
+        for (const std::string& warning : generated.warnings)
+            lines << QStringLiteral("• ") + QString::fromStdString(warning);
+        QMessageBox::warning(this, tr("Dislocation"),
+                             lines.join(QStringLiteral("\n\n")));
+    }
+}
+
+void MainWindow::openSolidInterfaceBuilder()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(
+            this, tr("Solid Interface"),
+            tr("Open or build a crystal first.\n\nEvery construction here "
+               "fills space by repeating a parent lattice."));
+        return;
+    }
+
+    // Every open tab is offered as a phase, with the active one first: a
+    // multi-phase polycrystal needs a second lattice, and the only place one
+    // can come from is another workspace.
+    std::vector<PhaseSource> phases;
+    phases.emplace_back(tabBar_->tabText(tabBar_->currentIndex()),
+                        doc->structure);
+    for (const auto& other : documents_) {
+        if (!other || !other->structure || other->structure->empty()
+            || other->structure == doc->structure
+            || !other->structure->cell().isDefined())
+            continue;
+        phases.emplace_back(other->fileName.isEmpty()
+                                ? QString::fromStdString(
+                                      other->structure->chemicalFormula())
+                                : other->fileName,
+                            other->structure);
+    }
+
+    SolidInterfaceWizard wizard(std::move(phases), this);
+    if (wizard.exec() != QDialog::Accepted || !wizard.result())
+        return;
+    const auto& generated = *wizard.result();
+    const int tab = addDocument(
+        std::make_shared<core::Structure>(generated.structure),
+        QString::fromStdString(generated.description));
+    tabBar_->setCurrentIndex(tab);
+    isDirty_ = true;
+    statusBar()->showMessage(
+        tr("%1 — %2 atoms, %3 g/cm³, %4 merged at the seams")
+            .arg(QString::fromStdString(generated.description))
+            .arg(static_cast<int>(generated.structure.size()))
+            .arg(generated.density, 0, 'f', 3)
+            .arg(generated.mergedAtoms));
+
+    if (!generated.warnings.empty()) {
+        QStringList lines;
+        for (const std::string& warning : generated.warnings)
+            lines << QStringLiteral("• ") + QString::fromStdString(warning);
+        QMessageBox::warning(this, tr("Solid Interface"),
                              lines.join(QStringLiteral("\n\n")));
     }
 }

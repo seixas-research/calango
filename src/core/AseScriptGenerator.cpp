@@ -1575,12 +1575,39 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
         break;
     }
 
-    case TaskKind::MolecularDynamics:
+    case TaskKind::MolecularDynamics: {
+        // Annealing is a thermostat schedule, so it needs a thermostat. NVE
+        // has none; the wizard does not offer the combination, and if one
+        // arrives anyway (a project file written before this existed, a
+        // headless caller) the run degrades to plain NVE rather than
+        // pretending to anneal.
+        const bool annealing = c.annealing && isConstantTemperature(c.ensemble);
+        // Velocities are drawn at the setpoint the run STARTS from. Seeding a
+        // 1000 K quench with 300 K velocities would spend the first
+        // picosecond letting the thermostat pump the system up to where the
+        // schedule already claims it is.
+        const double seedTemperature = annealing ? c.annealStartK : c.temperatureK;
+
         out << "from ase import units\n"
                "from ase.md.velocitydistribution import (MaxwellBoltzmannDistribution,\n"
                "                                         Stationary, ZeroRotation)\n"
-               "\n"
-            << "temperature_K = " << c.temperatureK << "\n"
+               "\n";
+        if (annealing)
+            out << "import math\n"
+                   "\n"
+                   "# ---- Simulated annealing --------------------------------\n"
+                   "# One ordinary thermostatted MD run whose SETPOINT moves.\n"
+                   "# The integrator, the constraints, the sampling and the\n"
+                   "# trajectory are exactly those of a constant-temperature\n"
+                   "# run; only the target is retargeted, every step.\n"
+                << "T_initial = " << c.annealStartK << "  # K, at step 0\n"
+                << "T_final = " << c.annealEndK << "  # K, at the last step\n"
+                << "anneal_k = " << std::max(c.annealCoefficient, 1.0e-3)
+                << "  # ramp curvature (-> 0 is a straight line)\n"
+                   "\n";
+        out << "temperature_K = " << seedTemperature
+            << (annealing ? "  # starting setpoint; the schedule moves it\n"
+                          : "\n")
             << "md_steps = " << c.mdSteps << "\n"
             << "sample_interval = "
             << (c.mdSampleInterval > 0 ? std::to_string(c.mdSampleInterval)
@@ -1691,6 +1718,63 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
             break;
         }
 
+        if (annealing) {
+            out << "\n"
+                   "def _anneal_target(step):\n"
+                   "    \"\"\"Thermostat setpoint (K) at MD step `step`.\n"
+                   "\n"
+                   "    x runs 0 -> 1 over the run. The law is endpoint-exact:\n"
+                   "    T(0) == T_initial and T(md_steps) == T_final whatever\n"
+                   "    anneal_k is, so the run finishes at the temperature that\n"
+                   "    was asked for rather than near it.\n"
+                   "    \"\"\"\n"
+                   "    x = min(1.0, max(0.0, step / md_steps)) if md_steps > 0 else 1.0\n"
+                << "    return "
+                << annealingPythonExpression(c.annealingSchedule) << "\n"
+                   "\n"
+                   "\n"
+                   "def _set_target_temperature(value):\n"
+                   "    \"\"\"Retarget the running thermostat.\n"
+                   "\n"
+                   "    ASE has no single spelling for this. Most integrators\n"
+                   "    expose set_temperature(); the Nose-Hoover chain keeps its\n"
+                   "    target inside a thermostat object whose fictitious masses\n"
+                   "    are PROPORTIONAL TO kT, so the masses have to move with it\n"
+                   "    — leaving them behind gives a chain tuned for a\n"
+                   "    temperature it is no longer aiming at, which shows up as a\n"
+                   "    thermostat that lags further behind the ramp the further\n"
+                   "    the run gets from where it started.\n"
+                   "    \"\"\"\n"
+                   "    setter = getattr(dyn, \"set_temperature\", None)\n"
+                   "    if setter is not None:\n"
+                   "        setter(temperature_K=value)\n"
+                   "        return\n"
+                   "    thermostat = getattr(dyn, \"_thermostat\", None)\n"
+                   "    if thermostat is not None and hasattr(thermostat, \"_kT\"):\n"
+                   "        previous = thermostat._kT\n"
+                   "        thermostat._kT = units.kB * value\n"
+                   "        if previous > 0 and hasattr(thermostat, \"_Q\"):\n"
+                   "            thermostat._Q *= thermostat._kT / previous\n"
+                   "        for attribute, new in ((\"_kT\", thermostat._kT),\n"
+                   "                               (\"_temperature_K\", value)):\n"
+                   "            if hasattr(dyn, attribute):\n"
+                   "                setattr(dyn, attribute, new)\n"
+                   "        return\n"
+                   "    _calango_event(\"warning\",\n"
+                   "                   \"this integrator cannot be retargeted; the \"\n"
+                   "                   \"run is at a fixed temperature, not annealed\")\n"
+                   "\n"
+                   "\n"
+                   "# Retargeted EVERY step, not every sample_interval: a setpoint\n"
+                   "# that jumps in sampling-sized increments is a staircase, and\n"
+                   "# every riser is a thermal shock the thermostat then has to\n"
+                   "# absorb — visible as sawtooth ringing on the temperature\n"
+                   "# trace that has nothing to do with the physics.\n"
+                   "dyn.attach(lambda: _set_target_temperature(_anneal_target(dyn.nsteps)),\n"
+                   "           interval=1)\n"
+                   "_set_target_temperature(_anneal_target(0))\n";
+        }
+
         // Live viewport trajectory: stream a frame every few MD steps
         // (capped at ~400 streamed frames per run). The t=0 frame is already
         // seeded on the C++ side from the starting structure, so the observer
@@ -1748,7 +1832,17 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "dyn.attach(lambda: _dump_extxyz() if dyn.nsteps > 0 else None,\n"
                "           interval=sample_interval)\n";
 
-        if (isConstantTemperature(c.ensemble))
+        if (annealing)
+            // Deliberately NOT CALANGO_TARGET_TEMP: that marker draws ONE
+            // dashed reference line, and a horizontal line through a ramp is
+            // a claim about the run that is wrong at every step but two. The
+            // moving setpoint is logged per sample instead (below), which is
+            // what the viewer plots against the measured temperature.
+            out << "\n"
+                << "print(f\"CALANGO_INFO annealing {T_initial:g} K -> {T_final:g} K"
+                << " over {md_steps} steps (" << toString(c.annealingSchedule)
+                << " schedule)\", flush=True)\n";
+        else if (isConstantTemperature(c.ensemble))
             out << "\n"
                    "# Thermostat target — drives the dashed reference line in the\n"
                    "# Temperature tab (omitted for NVE).\n"
@@ -1769,13 +1863,23 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "    fmax_now = abs(atoms.get_forces()).max()\n"
                "    _calango_progress(dyn.nsteps, md_steps)\n";
 
+        // The setpoint the thermostat is aiming at when the sample is taken.
+        // Logged as its own series so the MD Viewer can draw the ramp under
+        // the measured temperature: without it, "is the system following the
+        // schedule?" — the only question an annealing run is asking — cannot
+        // be answered from the plot at all.
+        const char* const targetField =
+            annealing ? "                    target_temperature=_anneal_target(dyn.nsteps),\n"
+                      : "";
+
         if (isConstantPressure(c.ensemble))
             out << "    # Scalar pressure P = -tr(σ)/3 from the full stress tensor\n"
                    "    # (eV/Å³ → GPa); only meaningful with a barostatted cell.\n"
                    "    stress = atoms.get_stress(voigt=True)\n"
                    "    pressure_GPa = -(stress[0] + stress[1] + stress[2]) / 3.0 / units.GPa\n"
                    "    _calango_metric(dyn.nsteps, energy=epot, temperature=temp,\n"
-                   "                    kinetic=ekin, volume=atoms.get_volume(),\n"
+                << targetField
+                << "                    kinetic=ekin, volume=atoms.get_volume(),\n"
                    "                    max_force=fmax_now, pressure=pressure_GPa)\n";
         else
             out << "    # Kinetic energy and volume are logged alongside the\n"
@@ -1783,13 +1887,17 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                    "    # E_pot + E_kin (whose drift is the integrator health\n"
                    "    # check) rather than only the potential term.\n"
                    "    _calango_metric(dyn.nsteps, energy=epot, temperature=temp,\n"
-                   "                    kinetic=ekin,\n"
+                << targetField
+                << "                    kinetic=ekin,\n"
                    "                    volume=(atoms.get_volume() if atoms.cell.rank == 3\n"
                    "                            else 0.0),\n"
                    "                    max_force=fmax_now)\n";
 
         out << "    print(f\"CALANGO_MD step={dyn.nsteps} epot_eV={epot:.4f} ekin_eV={ekin:.4f}"
-               " T_K={temp:.1f}\", flush=True)\n"
+               " T_K={temp:.1f}";
+        if (annealing)
+            out << " T_target_K={_anneal_target(dyn.nsteps):.1f}";
+        out << "\", flush=True)\n"
                "\n"
                "dyn.attach(_report, interval=sample_interval)\n"
                "dyn.run(md_steps)\n"
@@ -1798,6 +1906,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "write(\"md_final.extxyz\", atoms)\n"
                "print(f\"CALANGO_RESULT epot_eV={atoms.get_potential_energy():.6f}\", flush=True)\n";
         break;
+    }
     }
 }
 

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.81
+    VERSION 26.7.82
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -106,6 +106,8 @@ qt_add_executable(calango
     src/core/PeriodicImages.hpp
     src/core/Structure.hpp
     src/core/Structure.cpp
+    src/core/BondRules.hpp
+    src/core/BondRules.cpp
     src/core/StructureTransforms.hpp
     src/core/StructureTransforms.cpp
     src/core/CalculatorConfig.hpp
@@ -202,6 +204,10 @@ qt_add_executable(calango
     src/core/IceBuilder.cpp
     src/core/SolvationBuilder.hpp
     src/core/SolvationBuilder.cpp
+    src/core/DislocationBuilder.hpp
+    src/core/DislocationBuilder.cpp
+    src/core/SolidInterfaceBuilder.hpp
+    src/core/SolidInterfaceBuilder.cpp
     src/core/PolymerBuilder.hpp
     src/core/PolymerBuilder.cpp
     src/core/Vacf.hpp
@@ -337,6 +343,10 @@ qt_add_executable(calango
     src/gui/WaterIceWizard.cpp
     src/gui/LiquidInterfaceWizard.hpp
     src/gui/LiquidInterfaceWizard.cpp
+    src/gui/DislocationWizard.hpp
+    src/gui/DislocationWizard.cpp
+    src/gui/SolidInterfaceWizard.hpp
+    src/gui/SolidInterfaceWizard.cpp
     src/gui/MacromoleculeWizard.hpp
     src/gui/MacromoleculeWizard.cpp
     src/gui/PhononBuilderDialog.hpp
@@ -1021,6 +1031,37 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_solvation_test PRIVATE src)
     add_test(NAME solvation_builder COMMAND calango_solvation_test)
 
+    # Dislocations: closed-form Volterra fields plus the Stroh sextic solution
+    # for an anisotropic medium. A sign error anywhere in the sextic produces a
+    # smooth, plausible, completely wrong displacement field, so the
+    # anisotropic solver is pinned against the isotropic closed form it must
+    # reduce to, and every construction is checked by carrying a Burgers
+    # circuit around the line.
+    add_executable(calango_dislocation_test
+        tests/DislocationBuilderTest.cpp
+        src/core/DislocationBuilder.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_dislocation_test PRIVATE src)
+    add_test(NAME dislocation_builder COMMAND calango_dislocation_test)
+
+    # Solid interfaces: stacking faults, twins, bicrystals and Voronoi
+    # polycrystals. Everything these get wrong looks fine in a viewer — a twin
+    # that lost its boundary layer, a tessellation whose grains stop at the
+    # cell face, a seam with two atoms 0.2 A apart — so the checks are
+    # structural and re-derived from the returned coordinates.
+    add_executable(calango_solid_interface_test
+        tests/SolidInterfaceBuilderTest.cpp
+        src/core/SolidInterfaceBuilder.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_solid_interface_test PRIVATE src)
+    add_test(NAME solid_interface_builder COMMAND calango_solid_interface_test)
+
     # Harmonic phonon thermodynamics: checked against the closed-form Einstein
     # oscillator and the limits that are laws (Third Law, Dulong-Petit).
     add_executable(calango_phonon_thermo_test
@@ -1048,6 +1089,10 @@ if(CALANGO_BUILD_TESTS)
     add_executable(calango_bond_test
         tests/BondPerceptionTest.cpp
         src/core/Structure.cpp
+        # The Bond Editor's rules: an element/distance window is re-matched
+        # against every frame of a trajectory, so a bond that dissociates
+        # stops being drawn instead of being frozen in from frame 0.
+        src/core/BondRules.cpp
         src/core/UnitCell.cpp
         src/core/Element.cpp
     )
@@ -1162,6 +1207,11 @@ if(CALANGO_BUILD_TESTS)
         # where a newly added engine re-arms the construction-order hazard this
         # test exists for.
         src/gui/SinglePointWizard.cpp
+        # And the MD wizard, for its Annealing mode: the schedule rows are
+        # shown/hidden and the ensemble list is edited from a signal handler
+        # the constructor triggers, and the generated script is the only place
+        # a mode that was selected but not applied would ever show up.
+        src/gui/MolecularDynamicsWizard.cpp
         src/gui/TwoDBandsWizard.cpp
         src/core/TwoDBandsScriptGenerator.cpp
         src/gui/RandomNoiseWizard.cpp
@@ -1212,6 +1262,15 @@ if(CALANGO_BUILD_TESTS)
         # for. Qt-only, so it costs one extra core translation unit.
         src/gui/LiquidInterfaceWizard.cpp
         src/core/SolvationBuilder.cpp
+        # The two defect wizards: both hide and show form rows from a signal
+        # their own constructor triggers, and both run the real builder to
+        # produce their live summary — so a page that reads a widget it has not
+        # created yet, or a summary that disagrees with what Finish produces,
+        # fails here rather than on the first click.
+        src/gui/DislocationWizard.cpp
+        src/core/DislocationBuilder.cpp
+        src/gui/SolidInterfaceWizard.cpp
+        src/core/SolidInterfaceBuilder.cpp
         src/python_bridge/AseBridge.cpp
         src/core/PdbxFile.cpp
         # The "Source MLWF process" step and two of the three dialogs that

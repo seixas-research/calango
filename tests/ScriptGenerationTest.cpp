@@ -943,6 +943,138 @@ int main(int argc, char** argv)
               "an unconstrained MD run imports nothing extra");
     }
 
+    // -- Simulated annealing ------------------------------------------------
+    //
+    // Three things can go wrong here and none of them is visible in a running
+    // job: the ramp can end somewhere other than the requested final
+    // temperature, the velocities can be seeded at the wrong end of it, and
+    // the thermostat can be left at its construction setpoint while a schedule
+    // is dutifully computed and thrown away. All three produce a run that
+    // completes, writes a trajectory, and answers a different question.
+    std::printf("Simulated annealing:\n");
+    {
+        // The law itself, evaluated in C++ — the same function the wizard's
+        // preview and the generated script's expression are written from.
+        for (const auto schedule : {AnnealingSchedule::Linear,
+                                    AnnealingSchedule::Exponential,
+                                    AnnealingSchedule::Logarithmic}) {
+            const double at0 =
+                annealingTemperature(schedule, 1000.0, 300.0, 3.0, 0.0);
+            const double at1 =
+                annealingTemperature(schedule, 1000.0, 300.0, 3.0, 1.0);
+            check(std::abs(at0 - 1000.0) < 1e-9 && std::abs(at1 - 300.0) < 1e-9,
+                  "every schedule is endpoint-exact: T(0) = T0, T(1) = T1");
+            // Monotone in between, or the "cooling" run reheats halfway.
+            bool monotone = true;
+            double previous = at0;
+            for (int i = 1; i <= 20; ++i) {
+                const double value = annealingTemperature(
+                    schedule, 1000.0, 300.0, 3.0, i / 20.0);
+                monotone = monotone && value <= previous + 1e-9;
+                previous = value;
+            }
+            check(monotone, "and monotone from the first step to the last");
+        }
+        // A vanishing coefficient is the linear ramp, not a division by zero.
+        check(std::abs(annealingTemperature(AnnealingSchedule::Exponential,
+                                            1000.0, 300.0, 0.0, 0.5)
+                       - 650.0)
+                  < 1e-9,
+              "k -> 0 degenerates to the straight line, not to a NaN");
+        // The two curved laws bend in opposite directions about the midpoint:
+        // exponential front-loads the change, logarithmic back-loads it.
+        const double mid = 650.0;
+        check(annealingTemperature(AnnealingSchedule::Exponential, 1000.0,
+                                   300.0, 3.0, 0.5)
+                  < mid,
+              "exponential is below the straight line at half-way (fast early)");
+        check(annealingTemperature(AnnealingSchedule::Logarithmic, 1000.0,
+                                   300.0, 3.0, 0.5)
+                  < mid,
+              "logarithmic is too — both crawl into the target");
+    }
+    {
+        CalculatorConfig anneal;
+        anneal.task = TaskKind::MolecularDynamics;
+        anneal.ensemble = MdEnsemble::LangevinNVT;
+        anneal.annealing = true;
+        anneal.annealingSchedule = AnnealingSchedule::Exponential;
+        anneal.annealStartK = 1200.0;
+        anneal.annealEndK = 300.0;
+        anneal.annealCoefficient = 4.0;
+        anneal.temperatureK = 77.0; // must be IGNORED while annealing
+        const std::string script =
+            AseScriptGenerator::generate(anneal, "structure.extxyz");
+
+        checkContains(script, "T_initial = 1200", "the ramp start is emitted");
+        checkContains(script, "T_final = 300", "so is the ramp end");
+        checkContains(script, "anneal_k = 4", "and the curvature");
+        checkContains(script, "math.exp(-anneal_k * x)",
+                      "the exponential law is the one written out");
+        checkContains(script, "temperature_K = 1200",
+                      "velocities are drawn at the START of the ramp, not at "
+                      "the unrelated constant-temperature field");
+        check(!contains(script, "temperature_K = 77"),
+              "the constant-temperature setpoint is not emitted at all");
+        checkContains(script, "def _set_target_temperature(value)",
+                      "the thermostat is actually retargeted");
+        checkContains(script, "interval=1)",
+                      "every step, not once per sampling interval");
+        checkContains(script, "thermostat._Q *= thermostat._kT / previous",
+                      "and the Nose-Hoover chain's masses move with kT");
+        checkContains(script, "target_temperature=_anneal_target(dyn.nsteps)",
+                      "the setpoint is logged as its own metric series");
+        check(!contains(script, "CALANGO_TARGET_TEMP"),
+              "no single dashed reference line: the target is not constant");
+        checkContains(script, "CALANGO_INFO annealing",
+                      "the run announces the schedule it is following");
+    }
+    {
+        // Each schedule writes its own expression, and only its own.
+        CalculatorConfig anneal;
+        anneal.task = TaskKind::MolecularDynamics;
+        anneal.annealing = true;
+        anneal.annealingSchedule = AnnealingSchedule::Logarithmic;
+        const std::string script =
+            AseScriptGenerator::generate(anneal, "structure.extxyz");
+        checkContains(script, "math.log1p(anneal_k * x)",
+                      "the logarithmic law is written out");
+        check(!contains(script, "math.exp(-anneal_k"),
+              "and the exponential one is not also present");
+
+        anneal.annealingSchedule = AnnealingSchedule::Linear;
+        const std::string linear =
+            AseScriptGenerator::generate(anneal, "structure.extxyz");
+        checkContains(linear, "T_initial + (T_final - T_initial) * x",
+                      "linear is the plain interpolation");
+    }
+    {
+        // NVE has no thermostat to retarget. The schedule is dropped rather
+        // than emitted against an integrator that would ignore it.
+        CalculatorConfig nve;
+        nve.task = TaskKind::MolecularDynamics;
+        nve.ensemble = MdEnsemble::VelocityVerletNVE;
+        nve.annealing = true;
+        const std::string script =
+            AseScriptGenerator::generate(nve, "structure.extxyz");
+        check(!contains(script, "_anneal_target"),
+              "annealing is not generated for NVE, which has no setpoint");
+        check(!contains(script, "CALANGO_TARGET_TEMP"),
+              "and NVE still reports no thermostat target");
+    }
+    {
+        // The default: nothing about annealing leaks into an ordinary run.
+        CalculatorConfig plain;
+        plain.task = TaskKind::MolecularDynamics;
+        const std::string script =
+            AseScriptGenerator::generate(plain, "structure.extxyz");
+        check(!contains(script, "_anneal_target")
+                  && !contains(script, "import math"),
+              "a constant-temperature run carries no schedule machinery");
+        checkContains(script, "CALANGO_TARGET_TEMP",
+                      "and keeps its single dashed reference line");
+    }
+
     // -- GPAW symmetry tolerance --------------------------------------------
     //
     // Regression for a run that died at the first stress evaluation with

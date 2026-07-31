@@ -68,6 +68,11 @@ private:
 
     std::vector<double> time_;        ///< ps
     std::vector<double> temperature_; ///< K
+    /// Thermostat setpoint at each sample (K). Present only for an ANNEALING
+    /// run, where it is the ramp the measured temperature is supposed to be
+    /// tracking; a constant-temperature run reports its single setpoint
+    /// through the CALANGO_TARGET_TEMP marker instead and leaves this empty.
+    std::vector<double> targetTemperature_;
     std::vector<double> potential_;   ///< eV
     std::vector<double> kinetic_;     ///< eV
     std::vector<double> total_;       ///< eV

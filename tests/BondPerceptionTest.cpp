@@ -17,6 +17,7 @@
 
 #include "core/Structure.hpp"
 
+#include "core/BondRules.hpp"
 #include "core/Element.hpp"
 
 #include <cmath>
@@ -24,6 +25,8 @@
 #include <cstdlib>
 #include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 using namespace calango::core;
 
@@ -224,6 +227,117 @@ void testOverridesStillApply()
           "re-adding it draws the pair once, at the nearest image");
 }
 
+/// A three-frame "trajectory" of one H2 molecule dissociating: 0.74 Å (bound),
+/// 1.60 Å (stretched past the rule's window) and 3.00 Å (apart).
+std::vector<Structure> dissociatingH2()
+{
+    std::vector<Structure> frames;
+    for (const double separation : {0.74, 1.60, 3.00}) {
+        Structure s;
+        for (const double x : {0.0, separation}) {
+            Atom atom;
+            atom.atomicNumber = 1;
+            atom.position = {x, 0.0, 0.0};
+            s.addAtom(atom);
+        }
+        // A third atom that never moves, so index rules have something to
+        // address that is not part of the dissociating pair.
+        Atom spectator;
+        spectator.atomicNumber = 8;
+        spectator.position = {0.0, 6.0, 0.0};
+        s.addAtom(spectator);
+        frames.push_back(std::move(s));
+    }
+    return frames;
+}
+
+std::vector<Structure*> pointersTo(std::vector<Structure>& frames)
+{
+    std::vector<Structure*> pointers;
+    for (Structure& frame : frames)
+        pointers.push_back(&frame);
+    return pointers;
+}
+
+/// The Bond Editor applies its rules to the WHOLE trajectory, and the two rule
+/// kinds propagate differently. This is the difference.
+void testRulesSpanTheTrajectory()
+{
+    std::printf("trajectory-wide bond rules\n");
+
+    // -- Element rule: re-matched per frame --------------------------------
+    {
+        std::vector<Structure> frames = dissociatingH2();
+        ElementBondRule rule;
+        rule.elementA = 1;
+        rule.elementB = 1;
+        rule.minDistance = 0.0;
+        rule.maxDistance = 1.20; // covers 0.74, excludes 1.60 and 3.00
+
+        const int affected = applyElementRule(pointersTo(frames), rule, true);
+        check(affected == 1,
+              "the H-H window matches on the bound frame only");
+        check(frames[0].addedBonds().size() == 1,
+              "frame 0 (0.74 A) gets the bond");
+        check(frames[1].addedBonds().empty(),
+              "frame 1 (1.60 A) does NOT — the rule is re-matched, not copied");
+        check(frames[2].addedBonds().empty(),
+              "frame 2 (3.00 A) does not either");
+    }
+
+    // Widening the window past every separation bonds every frame — the same
+    // rule, the same call, a different answer because the geometry decides.
+    {
+        std::vector<Structure> frames = dissociatingH2();
+        ElementBondRule rule;
+        rule.elementA = 1;
+        rule.elementB = 1;
+        rule.maxDistance = 4.0;
+        const int affected = applyElementRule(pointersTo(frames), rule, true);
+        check(affected == 3, "a window covering all three frames matches all three");
+        bool everyFrame = true;
+        for (const Structure& frame : frames)
+            everyFrame = everyFrame && frame.addedBonds().size() == 1;
+        check(everyFrame, "and every frame carries the override");
+    }
+
+    // -- Index rule: copied verbatim ---------------------------------------
+    {
+        std::vector<Structure> frames = dissociatingH2();
+        applyIndexBond(pointersTo(frames), 0, 1, /*order=*/2);
+        bool everyFrame = true;
+        for (const Structure& frame : frames)
+            everyFrame = everyFrame && frame.addedBonds().size() == 1
+                && frame.bondOrder(0, 1) == 2;
+        check(everyFrame,
+              "an index rule lands on every frame, order and all — atoms keep "
+              "their index for the whole run");
+
+        applyIndexSuppression(pointersTo(frames), 0, 2);
+        bool suppressed = true;
+        for (const Structure& frame : frames)
+            suppressed = suppressed && frame.removedBonds().size() == 1;
+        check(suppressed, "so does a suppression");
+
+        clearAllOnAllFrames(pointersTo(frames));
+        bool cleared = true;
+        for (const Structure& frame : frames)
+            cleared = cleared && frame.addedBonds().empty()
+                && frame.removedBonds().empty();
+        check(cleared, "Clear All empties every frame, not only the displayed one");
+    }
+
+    // -- Frames too small are skipped, not corrupted ------------------------
+    {
+        std::vector<Structure> frames = dissociatingH2();
+        frames[2].removeAtom(2);
+        frames[2].removeAtom(1); // one atom left: index 1 no longer exists
+        applyIndexBond(pointersTo(frames), 0, 1, 1);
+        check(frames[0].addedBonds().size() == 1 && frames[2].addedBonds().empty(),
+              "a frame that cannot address the pair is left alone");
+    }
+}
+
 } // namespace
 
 int main()
@@ -234,6 +348,7 @@ int main()
     testFccCoordination();
     testNonPeriodicUnchanged();
     testOverridesStillApply();
+    testRulesSpanTheTrajectory();
 
     if (failures == 0) {
         std::printf("\nAll bond-perception checks passed.\n");
