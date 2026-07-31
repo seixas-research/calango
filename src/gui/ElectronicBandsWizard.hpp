@@ -10,13 +10,17 @@ class QLabel;
 class QDoubleSpinBox;
 class QGroupBox;
 class QSpinBox;
+class QTableWidget;
 
 #include <QList>
 #include <QPair>
 #include <QString>
 
+#include <vector>
+
 namespace calango::core {
 class Structure;
+struct FatbandProjection;
 }
 
 namespace calango::gui {
@@ -81,6 +85,28 @@ private:
     /// unless the user has already edited them.
     void applyPdosKmeshDefault();
 
+    /// "Band symmetry" — irreducible-representation labels at the
+    /// high-symmetry points of the path.
+    QGroupBox* buildSymmetryGroup();
+    /// "Orbital projections (fatbands)" — the per-channel atom/orbital table.
+    QGroupBox* buildFatbandGroup();
+    /// Append an empty channel row (atoms = all, orbital = the first shell).
+    void addFatbandRow(const QString& atoms, int orbitalIndex,
+                       const QString& label);
+    /// One channel per element in the structure, summed over its p shell (or
+    /// s, for hydrogen) — the selection a first look almost always wants.
+    void seedFatbandRows();
+    /// The table's rows as core projections; an empty result means "let the
+    /// script derive one channel per element and shell".
+    std::vector<core::FatbandProjection> fatbandProjections() const;
+    /// 0-based atom indices from a "0, 2, 5-8" selection string; empty means
+    /// every atom (of the row's element filter, if any). Same spelling as the
+    /// Born-charges wizard's atom field.
+    std::vector<int> parseAtomSelection(const QString& text) const;
+    /// Spin-orbit coupling and the two scalar-state post-processes are
+    /// mutually exclusive; keep the checkboxes honest about it.
+    void updateSpinOrbitExclusions();
+
     std::shared_ptr<const core::Structure> structure_;
 
     class EmbeddedKPathEditor* kpath_ = nullptr;
@@ -97,6 +123,21 @@ private:
     QSpinBox* energyPointsSpin_ = nullptr;
     /// Once the user edits the PDOS k-mesh, stop auto-rescaling it.
     bool pdosKptsUserEdited_ = false;
+
+    // -- Band symmetry ------------------------------------------------------
+    QGroupBox* symmetryGroup_ = nullptr;
+    QCheckBox* symmetryCheck_ = nullptr;
+    QCheckBox* symmetryLinesCheck_ = nullptr;
+    QDoubleSpinBox* symmetryTolSpin_ = nullptr;
+    QDoubleSpinBox* symmetryDegenSpin_ = nullptr;
+    QDoubleSpinBox* symmetryWindowSpin_ = nullptr;
+
+    // -- Orbital projections (fatbands) -------------------------------------
+    QGroupBox* fatbandGroup_ = nullptr;
+    QCheckBox* fatbandCheck_ = nullptr;
+    /// Columns: Atoms | Orbital | Label. An empty table means "one channel
+    /// per element and shell", which the generated script derives itself.
+    QTableWidget* fatbandTable_ = nullptr;
 };
 
 } // namespace calango::gui

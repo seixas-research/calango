@@ -177,6 +177,7 @@ This makes it an effective order parameter for melting, solid-liquid
 interfaces and grain boundaries.
 
 \section{Raman modes}
+\label{sec:raman-modes-ref}
 
 \menu{Analysis}\menusep\menu{Raman Modes} performs a $\Gamma$-point
 factor-group analysis: which optical phonons are Raman-active, IR-active or
@@ -209,6 +210,109 @@ degeneracies are unaffected.
 
 \begin{calwarn}
 Needs \texttt{spglib} and a periodic structure.
+\end{calwarn}
+
+\section{Magnetic space group}
+\label{sec:magnetic-space-group}
+
+\menu{Analysis}\menusep\menu{Magnetic Space Group} determines which of the
+1651 magnetic space groups (MSGs) the structure realizes, from its coordinates
+\emph{together with} its magnetic moments.
+
+An ordinary space group asks only where the atoms are. Once the atoms carry
+moments, an operation that maps a moment onto its own reverse is no longer a
+symmetry --- unless it is combined with \emph{time reversal} $T$. Writing the
+full group as $\mathcal{M} = \mathcal{G} + \mathcal{A}$, with $\mathcal{G}$ the
+unitary operations and $\mathcal{A}$ the antiunitary ones, the
+Belov--Neronova--Smirnova (BNS) classification has four types:
+
+\begin{description}
+  \item[Type I] $\mathcal{A}$ is empty. Every symmetry is unitary; time
+    reversal is broken outright. 230 of them, one per space group.
+  \item[Type II] $\mathcal{A} = T\mathcal{G}$, the ``grey'' groups. $T$ alone
+    is a symmetry, which is only possible when every moment vanishes: these
+    are the \emph{non-magnetic} structures. 230 of them.
+  \item[Type III] $\mathcal{A} = T g_0 \mathcal{G}$ with $g_0$ a spatial
+    operation that is \emph{not} a pure translation. Half the parent group
+    stays unitary; the rest survives only combined with $T$. 674 of them.
+  \item[Type IV] $g_0$ \emph{is} a pure translation --- an
+    \emph{anti-translation}. The magnetic unit cell is a supercell of the
+    crystallographic one: the classic two-sublattice antiferromagnet.
+    517 of them.
+\end{description}
+
+The classification follows Watanabe, Po and Vishwanath, \emph{Sci.\ Adv.}
+\textbf{4}, eaat8685 (2018).
+
+\subsection{Supplying the moments}
+
+\ui{Magnetic moments from} loads whichever moments the structure carries ---
+the converged \texttt{magmoms} of a finished calculation, or the
+\texttt{initial\_magmoms} it was seeded with. Those answer different
+questions: the guess says what was \emph{asked} for, the result says what the
+calculation \emph{found}, and an ordering that collapsed during the SCF is
+exactly the case where they disagree.
+
+Whichever is loaded, the moment table stays editable. Flip a sublattice, cant
+a moment out of the axis, or type in an ordering the file never carried, then
+press \ui{Determine}. Asking ``what would the magnetic space group be if this
+sublattice flipped?'' is the normal way to use this module.
+
+A collinear structure (all moments along $z$) is analysed as collinear; any
+transverse component switches to the non-collinear treatment, in which the
+moments are axial vectors that rotate with the operations.
+
+\subsection{Reading the result}
+
+\begin{description}
+  \item[\ui{BNS number}] The label $S.L$, e.g.\ \texttt{221.97}: $S$ is one
+    of the 230 ordinary space groups and $L$ distinguishes its magnetic
+    descendants. This is the identifier the tables are keyed by.
+  \item[\ui{Type}] I--IV, with a one-line statement of what it means for the
+    crystal, and --- for type IV --- the anti-translation itself.
+  \item[\ui{Parent space group}] The $S$ of the BNS label: the space group of
+    the \emph{unitary} subgroup.
+  \item[\ui{Crystallographic space group}] What the same structure would be
+    with the moments \emph{ignored}. The comparison is the physics: magnetic
+    order can only lower the symmetry, and the difference between these two
+    is exactly what the magnetism broke.
+  \item[\ui{Magnetic ordering}] Non-magnetic, ferromagnetic, ferrimagnetic or
+    antiferromagnetic, read off $|\sum_i \mathbf{m}_i|$ against
+    $\sum_i |\mathbf{m}_i|$, both reported.
+  \item[\ui{Magnetic class}] In the moment table: the symmetry-equivalence
+    class of each atom \emph{under the magnetic group}. Two atoms of the same
+    element in different classes are the two sublattices of an
+    antiferromagnet.
+\end{description}
+
+The \ui{Symmetry operations} tab lists every element of the group. Those
+marked $1'$ are the antiunitary ones --- the spatial operation alone is not a
+symmetry, only its combination with time reversal is.
+
+\subsection{Tolerances}
+
+The positional tolerance is spglib's usual \texttt{symprec}. The moment
+tolerance is separate and in $\mu_\text{B}$, because a moment converged to
+$1.98\,\mu_\text{B}$ against its neighbour's $-2.02\,\mu_\text{B}$ is one
+antiferromagnet, not two inequivalent sublattices, and only a tolerance in
+$\mu_\text{B}$ can say so. Raise it to absorb SCF noise; lower it to resolve a
+genuine ferrimagnetic inequivalence.
+
+\begin{caltip}
+The same cell, three answers. Take Fe at $(0,0,0)$ and
+$(\tfrac12,\tfrac12,\tfrac12)$ in a cube --- geometrically bcc,
+$Im\bar{3}m$ (229). Zero moments give the grey type II group. Parallel
+moments give type I, still with parent 229. Antiparallel moments give
+\texttt{221.97}, type IV: the body-centring translation now maps a moment
+onto its reverse, so it survives only with $T$, and the unitary group drops
+to the simple-cubic $Pm\bar{3}m$ (221). This is the
+\texttt{magnetic\_space\_group} integration test.
+\end{caltip}
+
+\begin{calwarn}
+Needs \texttt{spglib} (with its magnetic tables) and a periodic structure.
+A structure carrying no moments at all is answered as a grey type II group,
+correctly --- the dialog says so rather than leaving the reading unexplained.
 \end{calwarn}
 
 \section{Volumetric data}

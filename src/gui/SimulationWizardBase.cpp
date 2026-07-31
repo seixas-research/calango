@@ -2062,6 +2062,19 @@ void SimulationWizardBase::refreshPreview()
 {
     if (manuallyEdited_)
         return;
+    // The review page — and with it `preview_` — is built LAST, after every
+    // settings page. Any control created before then that refreshes on
+    // construction (a setChecked(), a setValue(), a row appended to a table)
+    // arrives here with `preview_` still null, and every wizard is free to add
+    // one. This crashed the Electronic Structure wizard the moment its fatband
+    // table seeded its default rows.
+    //
+    // Returning early is not merely a null guard: the subclass whose
+    // generateScript() we would call is itself mid-construction, so the script
+    // it produced would be built from half-initialized controls. The page is
+    // regenerated on entry anyway, so nothing is lost by skipping it here.
+    if (!preview_)
+        return;
     updatingPreview_ = true;
     preview_->setPlainText(generateScript());
     updatingPreview_ = false;

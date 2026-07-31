@@ -3,9 +3,13 @@
 #include <QDialog>
 
 class QCheckBox;
+class QComboBox;
+class QGroupBox;
 class QLabel;
 class QDoubleSpinBox;
 class QListWidget;
+
+#include <QString>
 
 namespace calango::gui {
 
@@ -30,6 +34,11 @@ private Q_SLOTS:
 
 private:
     void loadDirectory(const QString& directory);
+    /// fatbands.json — orbital weights per band and k-point. Returns false
+    /// (and leaves the controls hidden) when the run produced none.
+    bool loadFatbands(const QString& directory);
+    /// band_symmetry.json — irrep labels at the high-symmetry points.
+    bool loadSymmetry(const QString& directory);
 
     /// Push the current shift choice into the view: E_F when the toggle is
     /// on, 0 (absolute energies) when it is off.
@@ -51,6 +60,20 @@ private:
     QDoubleSpinBox* maxSpin_;
     QListWidget* projectionList_;
     bool hasData_ = false;
+
+    // -- Orbital projections (fatbands) -------------------------------------
+    /// Hidden entirely when the run wrote no fatbands.json: an empty channel
+    /// list with a dead mode selector reads as a broken feature rather than an
+    /// unused one.
+    QGroupBox* fatbandGroup_ = nullptr;
+    QComboBox* fatbandModeCombo_ = nullptr;
+    QListWidget* fatbandList_ = nullptr;
+
+    // -- Band symmetry ------------------------------------------------------
+    QGroupBox* symmetryGroup_ = nullptr;
+    QCheckBox* symmetryCheck_ = nullptr;
+    QCheckBox* symmetryLineCheck_ = nullptr;
+    QLabel* symmetrySummary_ = nullptr;
 };
 
 } // namespace calango::gui

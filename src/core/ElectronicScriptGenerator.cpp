@@ -1,12 +1,167 @@
 #include "core/ElectronicScriptGenerator.hpp"
 
 #include "core/AseScriptGenerator.hpp"
-
-#include "core/AseScriptGenerator.hpp"
+#include "core/BandSymmetryScriptGenerator.hpp"
 
 #include <sstream>
 
 namespace calango::core {
+
+namespace {
+
+/// A double-quoted Python string literal. The channel label and the element
+/// filter are free text the user typed into the wizard, and a stray quote or
+/// backslash in either would turn a generated script into a SyntaxError that
+/// only surfaces when the job starts.
+std::string pythonString(const std::string& text)
+{
+    std::string out = "\"";
+    for (const char c : text) {
+        switch (c) {
+        case '"':  out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        default:   out += c; break;
+        }
+    }
+    out += '"';
+    return out;
+}
+
+/// Python literal for one fatband channel. Atom indices are baked in rather
+/// than re-derived in the script: the user picked specific atoms in the
+/// wizard, and re-deriving them from the element would silently widen a
+/// "surface Ni" selection into "every Ni in the slab".
+std::string fatbandChannelLiteral(const FatbandProjection& p)
+{
+    std::ostringstream out;
+    out << "{'label': " << pythonString(p.label) << ", 'atoms': [";
+    for (std::size_t i = 0; i < p.atoms.size(); ++i)
+        out << (i ? ", " : "") << p.atoms[i];
+    out << "], 'element': " << pythonString(p.element)
+        << ", 'l': " << p.angularMomentum
+        << ", 'm': " << p.magnetic << "}";
+    return out.str();
+}
+
+/// Per-band, per-k orbital weights from the PAW projector overlaps.
+///
+/// The route is gpaw.dos.IBZWaveFunctions.pdos_weights, the same call the PDOS
+/// above goes through — but taken BEFORE the energy integration, so what comes
+/// back is |⟨p_i | ψ_nk⟩|² resolved by band and k-point instead of smeared into
+/// a density of states. It is the portable entry point across both GPAW
+/// engines, which get_orbital_ldos is not.
+std::string fatbandBlock(const ElectronicConfig& c)
+{
+    std::ostringstream out;
+    out << "\n"
+           "# --- Orbital-projected bands (\"fatbands\") -------------------\n"
+           "# |<phi_lm^a | psi_nk>|^2 per band and per k-point, so each band\n"
+           "# can be drawn with a width or a colour proportional to the\n"
+           "# weight of the orbitals selected in the wizard. A band structure\n"
+           "# says where the states are; this says what they are made of.\n"
+           "fatbands = None\n"
+           "try:\n"
+           "    import numpy as _fat_np\n"
+           "    from gpaw.dos import DOSCalculator as _FatDOS\n"
+           "    from gpaw.dos import get_projector_numbers as _fat_projectors\n"
+           "\n"
+           "    _fat_calc = _FatDOS.from_calculator(band_calc,\n"
+           "                                        shift_fermi_level=False)\n"
+           "    _fat_atoms = band_calc.get_atoms()\n"
+           "    _fat_symbols = list(_fat_atoms.get_chemical_symbols())\n"
+           "    _fat_shells = \"spdf\"\n"
+           "\n";
+    if (c.fatbandProjections.empty()) {
+        out << "    # No explicit selection: one channel per element and per\n"
+               "    # shell the setups actually carry projectors for. Asking\n"
+               "    # for d on carbon would raise, not return zeros.\n"
+               "    _fat_channels = []\n"
+               "    for _fat_sym in sorted(set(_fat_symbols)):\n"
+               "        _fat_idx = [_i for _i, _s in enumerate(_fat_symbols)\n"
+               "                    if _s == _fat_sym]\n"
+               "        for _fat_l in range(4):\n"
+               "            if not _fat_projectors(_fat_calc.setups[_fat_idx[0]],\n"
+               "                                   _fat_l):\n"
+               "                continue\n"
+               "            _fat_channels.append({\n"
+               "                'label': f'{_fat_sym} {_fat_shells[_fat_l]}',\n"
+               "                'atoms': list(_fat_idx), 'element': _fat_sym,\n"
+               "                'l': _fat_l, 'm': -1})\n";
+    } else {
+        out << "    _fat_channels = [\n";
+        for (const auto& p : c.fatbandProjections)
+            out << "        " << fatbandChannelLiteral(p) << ",\n";
+        out << "    ]\n"
+               "    for _fat_ch in _fat_channels:\n"
+               "        if not _fat_ch['atoms']:\n"
+               "            _fat_ch['atoms'] = [\n"
+               "                _i for _i, _s in enumerate(_fat_symbols)\n"
+               "                if not _fat_ch['element']\n"
+               "                or _s == _fat_ch['element']]\n";
+    }
+    out << "\n"
+           "    _fat_out = []\n"
+           "    for _fat_ch in _fat_channels:\n"
+           "        _fat_total = None\n"
+           "        for _fat_a in _fat_ch['atoms']:\n"
+           "            if _fat_a < 0 or _fat_a >= len(_fat_symbols):\n"
+           "                continue\n"
+           "            _fat_ind = list(_fat_projectors(\n"
+           "                _fat_calc.setups[_fat_a], _fat_ch['l']))\n"
+           "            if not _fat_ind:\n"
+           "                continue   # this species has no such shell\n"
+           "            if _fat_ch['m'] >= 0:\n"
+           "                # GPAW orders the 2l+1 partial waves of each\n"
+           "                # projector set contiguously; stride past the\n"
+           "                # radial repetitions to pick one m.\n"
+           "                _fat_ind = _fat_ind[_fat_ch['m']::2 * _fat_ch['l'] + 1]\n"
+           "                if not _fat_ind:\n"
+           "                    continue\n"
+           "            _fat_w = _fat_calc.wfs.pdos_weights(_fat_a, _fat_ind)\n"
+           "            _fat_total = _fat_w if _fat_total is None \\\n"
+           "                else _fat_total + _fat_w\n"
+           "        if _fat_total is None:\n"
+           "            print(f\"CALANGO_WARN no projectors for fatband \"\n"
+           "                  f\"channel {_fat_ch['label']}\", flush=True)\n"
+           "            continue\n"
+           "        # pdos_weights is (nkpt, nband, nspin); the band energies\n"
+           "        # are (nspin, nkpt, nband), so match them.\n"
+           "        _fat_arr = _fat_np.asarray(_fat_total).transpose(2, 0, 1)\n"
+           "        _fat_out.append({\n"
+           "            'label': _fat_ch['label'],\n"
+           "            'atoms': [int(_a) for _a in _fat_ch['atoms']],\n"
+           "            'l': int(_fat_ch['l']),\n"
+           "            'm': int(_fat_ch['m']),\n"
+           "            'weights': [[[float(_v) for _v in _band]\n"
+           "                         for _band in _spin] for _spin in _fat_arr],\n"
+           "        })\n"
+           "\n"
+           "    if _fat_out:\n"
+           "        fatbands = {'projections': _fat_out,\n"
+           "                    'efermi': float(efermi),\n"
+           "                    'max_weight': max(\n"
+           "                        max(max(max(_b) for _b in _s)\n"
+           "                            for _s in _p['weights'])\n"
+           "                        for _p in _fat_out)}\n"
+           "        with open('fatbands.json', 'w') as _handle:\n"
+           "            json.dump(fatbands, _handle)\n"
+           "        print('CALANGO_INFO fatband channels: '\n"
+           "              + ', '.join(_p['label'] for _p in _fat_out),\n"
+           "              flush=True)\n"
+           "    else:\n"
+           "        print('CALANGO_INFO no fatband projections were produced',\n"
+           "              flush=True)\n"
+           "except Exception as _fat_exc:\n"
+           "    # Not fatal: the dispersion itself is complete without the\n"
+           "    # weights, and the projection API is GPAW-specific.\n"
+           "    print(f'CALANGO_WARN fatband projection failed: {_fat_exc}',\n"
+           "          flush=True)\n";
+    return out.str();
+}
+
+} // namespace
 
 std::string generateElectronicScript(const ElectronicConfig& c)
 {
@@ -184,6 +339,26 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    "    # successful run that simply had nothing to show.\n"
                    "    print(\"CALANGO_INFO no PDOS projections were produced\",\n"
                    "          flush=True)\n";
+        // Both post-processes read the SCALAR-relativistic states held by
+        // `band_calc`. With spin-orbit coupling on, `bs` no longer holds those
+        // — it holds the spinor bands, in a different number, so a weight or a
+        // character taken from `band_calc` would be attached to the wrong
+        // band. Classifying spinor states needs the DOUBLE groups, which this
+        // does not implement; saying so is better than labelling them wrongly.
+        if (c.spinOrbit && (c.bandSymmetry || c.fatbands)) {
+            out << "\n"
+                   "print(\"CALANGO_WARN spin-orbit coupling is on, so the \"\n"
+                   "      \"band symmetry / orbital projections were skipped: \"\n"
+                   "      \"the spinor bands are a different set of states from \"\n"
+                   "      \"the scalar-relativistic ones the projections \"\n"
+                   "      \"describe, and their classification needs the double \"\n"
+                   "      \"groups.\", flush=True)\n";
+        } else {
+            if (c.bandSymmetry)
+                out << generateBandSymmetryBlock(c.symmetry);
+            if (c.fatbands)
+                out << fatbandBlock(c);
+        }
         break;
 
     case ElectronicBackend::Espresso:

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.79
+    VERSION 26.7.80
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -149,6 +149,8 @@ qt_add_executable(calango
     src/core/DatasetSplit.cpp
     src/core/ElectronicScriptGenerator.hpp
     src/core/ElectronicScriptGenerator.cpp
+    src/core/BandSymmetryScriptGenerator.hpp
+    src/core/BandSymmetryScriptGenerator.cpp
     src/core/OpticsScriptGenerator.hpp
     src/core/OpticsScriptGenerator.cpp
     src/core/GwScriptGenerator.hpp
@@ -222,6 +224,8 @@ qt_add_executable(calango
     src/python_bridge/SqsBuilder.cpp
     src/python_bridge/RamanAnalysis.hpp
     src/python_bridge/RamanAnalysis.cpp
+    src/python_bridge/MagneticSpaceGroup.hpp
+    src/python_bridge/MagneticSpaceGroup.cpp
     src/python_bridge/SurfaceScience.hpp
     src/python_bridge/SurfaceScience.cpp
     src/python_bridge/NebBuilder.hpp
@@ -413,6 +417,8 @@ qt_add_executable(calango
     src/gui/SupercellDialog.cpp
     src/gui/SymmetryDialog.hpp
     src/gui/SymmetryDialog.cpp
+    src/gui/MagneticSpaceGroupDialog.hpp
+    src/gui/MagneticSpaceGroupDialog.cpp
     src/gui/PartialChargeDialog.hpp
     src/gui/PartialChargeDialog.cpp
     src/gui/WannierDialog.hpp
@@ -895,6 +901,27 @@ if(CALANGO_BUILD_TESTS)
              COMMAND calango_raman_test
                      "${CMAKE_CURRENT_SOURCE_DIR}/examples/Si_diamond.vasp")
 
+    # Magnetic space group: one cell, three magnetic configurations, three
+    # BNS types. The crystallography is identical in all three, so nothing but
+    # the moments can produce the difference — which is exactly the module's
+    # job. Skips (77) when spglib carries no magnetic tables.
+    add_executable(calango_magnetic_test
+        tests/MagneticSpaceGroupTest.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/python_bridge/PythonEngine.cpp
+        src/python_bridge/AseBridge.cpp
+        src/core/PdbxFile.cpp
+        src/python_bridge/MagneticSpaceGroup.cpp
+    )
+    target_include_directories(calango_magnetic_test PRIVATE src)
+    target_compile_definitions(calango_magnetic_test PRIVATE
+        CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}")
+    target_link_libraries(calango_magnetic_test PRIVATE pybind11::embed)
+    add_test(NAME magnetic_space_group COMMAND calango_magnetic_test)
+    set_tests_properties(magnetic_space_group PROPERTIES SKIP_RETURN_CODE 77)
+
     add_executable(calango_stream_test
         tests/StreamingTest.cpp
         src/jobs/JobRunner.cpp
@@ -1153,6 +1180,15 @@ if(CALANGO_BUILD_TESTS)
         # uses, and its launcher has to be valid Python. All three fail at run
         # time on someone else's cluster, hours in, so they are pinned here.
         src/gui/MaceTrainerDialog.cpp
+        # The Magnetic Space Group dialog: it determines the group inside its
+        # own constructor and writes the answer back into widgets that
+        # constructor created, which is precisely the hazard this test exists
+        # for. Brings AseBridge with it (the determination goes through
+        # ase.Atoms).
+        src/gui/MagneticSpaceGroupDialog.cpp
+        src/python_bridge/MagneticSpaceGroup.cpp
+        src/python_bridge/AseBridge.cpp
+        src/core/PdbxFile.cpp
         # The "Source MLWF process" step and two of the three dialogs that
         # carry it. What is pinned is the refusal: a run whose wavefunctions
         # have gone must be caught in the dialog, not after a job is staged
@@ -1165,6 +1201,22 @@ if(CALANGO_BUILD_TESTS)
         # dependency added to a construction smoke test, for a third copy of
         # three lines already covered twice.
         src/gui/MlwfSourceSelector.cpp
+        # The Electronic Structure wizard itself. It is the most control-dense
+        # settings page in the application and the one that seeds rows into a
+        # table during construction, so it is worth the extra translation units
+        # it drags in (the embedded k-path editor and its Brillouin-zone view).
+        src/gui/ElectronicBandsWizard.cpp
+        src/gui/EmbeddedKPathEditor.cpp
+        src/gui/BrillouinZoneWidget.cpp
+        src/gui/BrillouinZoneView.cpp
+        src/gui/BrillouinZoneStyleDialog.cpp
+        src/core/BrillouinZone.cpp
+        src/core/KPath.cpp
+        src/core/ElectronicScriptGenerator.cpp
+        src/core/BandSymmetryScriptGenerator.cpp
+        src/ui/IconManager.cpp
+        src/gui/ThemeManager.cpp
+        src/render/Camera.cpp
         src/gui/FermiSurfaceDialog.cpp
         src/gui/TopologyDialog.cpp
         src/gui/EnginePresets.cpp
@@ -1191,7 +1243,8 @@ if(CALANGO_BUILD_TESTS)
     # Qt6::OpenGL for StructureRenderer.hpp, which OverlayModel.hpp pulls in
     # for the OverlayRange type the geometry builders emit.
     target_link_libraries(calango_dialog_test
-        PRIVATE Qt6::Widgets Qt6::OpenGL pybind11::embed)
+        PRIVATE Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Svg
+                pybind11::embed)
     add_test(NAME dialog_construction COMMAND calango_dialog_test)
 
     # Workflow pipeline validation on silicon: two linked nodes (geometry
@@ -1460,9 +1513,25 @@ if(CALANGO_BUILD_TESTS)
         src/gui/OpticsPlotStyleDialog.cpp
         src/gui/RamanIrViewer.cpp
         src/gui/LinePlotWidget.cpp
+        # The electronic-structure viewer, for the two sidecars the Electronic
+        # Structure run writes beside bands.json: band_symmetry.json and
+        # fatbands.json. Same contract as the rest of this test — keys a Python
+        # generator writes, parsed in C++, with nothing in the build linking
+        # the two.
+        src/gui/BandPdosWindow.cpp
+        src/gui/BandPdosView.cpp
+        src/gui/PlotStyleDialog.cpp
+        src/gui/GuiUtils.cpp
+        src/core/BandGap.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
     )
     target_include_directories(calango_results_viewer_test PRIVATE src)
-    target_link_libraries(calango_results_viewer_test PRIVATE Qt6::Widgets)
+    # Qt6::Svg for the plot's vector export path, which BandPdosView compiles
+    # in regardless of whether this test drives it.
+    target_link_libraries(calango_results_viewer_test
+        PRIVATE Qt6::Widgets Qt6::Svg)
     add_test(NAME results_viewers COMMAND calango_results_viewer_test)
 
     # Graphene oxide: the single-group-per-carbon constraint is chemical, not
@@ -1499,6 +1568,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/AseScriptGenerator.cpp
         src/core/BornChargesScriptGenerator.cpp
         src/core/ElectronicScriptGenerator.cpp
+        src/core/BandSymmetryScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
         src/core/OpticsScriptGenerator.cpp
         src/core/GwScriptGenerator.cpp
@@ -1651,6 +1721,22 @@ if(CALANGO_BUILD_TESTS)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_tetrahedron_benchmark.py
                 $<TARGET_FILE:calango_script_test>)
     set_tests_properties(graphene_tetrahedron PROPERTIES TIMEOUT 1800)
+
+    # Band symmetry classification validated on graphene against Kogan &
+    # Nazarov, PRB 85, 115418 (2012) — a paper whose entire content is the
+    # irrep each graphene band realizes, so it is a table of expected answers
+    # rather than a number to reproduce approximately. Runs the GENERATED
+    # script end to end: little-group selection, character evaluation, the
+    # numerically built character table and the JSON schema.
+    #
+    # The pi manifold is identified by its p_z FATBAND weight rather than by
+    # its energy, so this covers both features and does not depend on the
+    # interlayer states staying out of the way. Self-skips without GPAW.
+    add_test(NAME graphene_band_symmetry
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_band_symmetry_benchmark.py
+                $<TARGET_FILE:calango_script_test>)
+    set_tests_properties(graphene_band_symmetry PROPERTIES TIMEOUT 1800)
 
     # 2D optical observables: unit conventions and vacuum-thickness
     # invariance, checked against graphene's universal absorbance (pi*alpha).

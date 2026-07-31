@@ -106,6 +106,150 @@ columns drop straight into an external plotting script and reproduce the
 figure you see.
 \end{calnote}
 
+\section{Band symmetry (irreducible representations)}
+\label{sec:band-symmetry}
+
+A band structure says where the states are. Their \emph{symmetry} says what
+they are: which crossings are protected, which optical transitions are
+allowed, and what a degeneracy is made of. Tick \ui{Assign irreducible
+representations at high-symmetry $k$-points} in the setup stage and the run
+writes \file{band\_symmetry.json} beside \file{bands.json}; the viewer draws
+the Mulliken symbol of every band beside its high-symmetry tick.
+
+\subsection{What is computed}
+
+At a wave vector $\mathbf{k}$ the operations $\{R\mid\mathbf{t}\}$ of the space
+group that satisfy $R^{-\mathsf{T}}\mathbf{k} = \mathbf{k} + \mathbf{G}$ form
+the \emph{little group}. At a generic $\mathbf{k}$ that is only the identity;
+at the symmetry points of the zone it can be the whole point group, which is
+why the classification is worth making there and nowhere else.
+
+For each degenerate multiplet the character
+\[
+  \chi(R) \;=\; \sum_{n \in \text{multiplet}}
+                \bigl\langle \psi_{n\mathbf{k}} \bigm|
+                \{R\mid\mathbf{t}\} \bigm| \psi_{n\mathbf{k}} \bigr\rangle
+\]
+is evaluated in the plane-wave representation of the Kohn--Sham states.
+Writing $\psi = \sum_\mathbf{G} c_\mathbf{G}
+e^{2\pi i (\mathbf{k}+\mathbf{G})\cdot\mathbf{x}}$, the operation sends the
+coefficient at $\mathbf{G}$ to $\mathbf{G}' = \mathbf{G}_0 +
+R^{-\mathsf{T}}\mathbf{G}$ and multiplies it by
+$e^{-2\pi i (\mathbf{k}+\mathbf{G}')\cdot\mathbf{t}}$ --- one permutation of
+the coefficient array plus a phase, exact on any grid and for any operation.
+The characters are then reduced against the character table of the little
+co-group, computed numerically from its own class-sum algebra, exactly as the
+Raman module does for phonons (\S\ref{sec:raman-modes-ref}).
+
+The origin matters and is found rather than assumed. Moving the origin to
+$\mathbf{x}_0$ replaces every $\mathbf{t}$ by $\mathbf{t} - (1-R)\mathbf{x}_0$,
+and the labels at a zone-boundary point are only convention-free once the
+origin sits at the symmetry centre. spglib reports the operations in whatever
+cell it was handed, which is routinely not that point --- ASE's
+\texttt{graphene()} puts an atom at the origin, where the site symmetry is
+$\bar{6}m2$, while the $6/mmm$ centre is the hexagon at $(1/3,\,2/3)$.
+
+\subsection{Settings}
+
+\begin{description}
+  \item[\ui{Also classify the symmetry lines between them}] Classifies a
+    generic point of each path segment as well as its endpoints. Together
+    these are the \emph{compatibility relations}: the irrep at a point
+    decomposes into the irreps of the lines running out of it, which is how a
+    degenerate level is seen to split and which branch goes where. One extra
+    $k$-point per segment.
+  \item[\ui{Symmetry tolerance}] spglib's \texttt{symprec} for the
+    space-group operations. Too tight and a relaxed structure loses operations
+    it physically has; too loose and it gains ones it does not.
+  \item[\ui{Degeneracy window}] Bands closer than this share one character.
+    It has to be a window rather than an exact test: two states degenerate
+    \emph{by symmetry} still emerge from a diagonalization a few $\mu$eV
+    apart, and splitting them yields two meaningless one-dimensional
+    characters instead of one correct two-dimensional one.
+  \item[\ui{Energy window}] Only bands within this distance of $E_\text{F}$
+    are classified. Each costs a transform per operation, and the states worth
+    naming are the ones near the gap.
+\end{description}
+
+\begin{caltip}
+Graphene along $\Gamma$--K--M--$\Gamma$ reproduces the classification of
+Kogan and Nazarov, \emph{Phys.\ Rev.\ B} \textbf{85}, 115418 (2012): the two
+bands meeting at $E_\text{F}$ at K form the two-dimensional $E''$ --- that
+degeneracy \emph{is} the Dirac point --- with $A_1'$ and $E'$ below it, and
+$A_{1g}$, $A_{2u}$ and $E_{2g}$ among the occupied bands at $\Gamma$. This is
+the \texttt{graphene\_band\_symmetry} integration test.
+\end{caltip}
+
+\begin{calwarn}
+At a zone-boundary point of a \emph{nonsymmorphic} group the little-group
+representations are projective and no ordinary Mulliken symbol applies. The
+run detects this from the factor system, marks the point, and reports the raw
+characters rather than inventing a label. The viewer says so too.
+\end{calwarn}
+
+\begin{calnote}
+Unavailable together with spin-orbit coupling. The spinor bands are a
+different set of states from the scalar-relativistic ones, in a different
+number, and classifying them needs the double groups.
+\end{calnote}
+
+\section{Orbital-projected bands (fatbands)}
+\label{sec:fatbands}
+
+A PDOS says which orbitals contribute at a given \emph{energy}. A fatband says
+which orbitals contribute to a given \emph{band, at a given $k$-point} --- the
+difference between ``there is a band crossing $E_\text{F}$'' and ``the band
+crossing $E_\text{F}$ is Fe $d$, so the magnetism lives there''.
+
+Tick \ui{Compute orbital-projected bands (fatbands)} and the run carries the
+weight $|\langle \phi \mid \psi_{n\mathbf{k}}\rangle|^2$ of the selected
+orbitals alongside every band energy, writing \file{fatbands.json}.
+
+\subsection{Choosing the channels}
+
+Each row of the channel table is one projection:
+
+\begin{description}
+  \item[\ui{Atoms}] An element symbol (\texttt{Fe}), a 0-based index list
+    (\texttt{0, 2, 5-8}), or empty for every atom. Selecting individual
+    indices is what distinguishes a surface layer from the bulk underneath it
+    --- the same element, a different question.
+  \item[\ui{Orbital}] The shell ($s$, $p$, $d$, $f$) or one magnetic
+    sub-level of it ($p_z$, $d_{z^2}$, \ldots). Separating $p_z$ from
+    $(p_x, p_y)$ is what separates the $\pi$ bands of a layered material from
+    its $\sigma$ bands.
+  \item[\ui{Label}] The name shown in the viewer; left blank it is generated
+    from the selection.
+\end{description}
+
+Leave the table empty for one channel per element and per shell present in the
+structure --- the useful default for a first look. \ui{From structure} refills
+it with one channel per element on its valence shell.
+
+\subsection{Reading the plot}
+
+The viewer's \ui{Orbital projections} panel lists the channels with their
+colours and offers three drawing modes:
+
+\begin{description}
+  \item[\ui{Line width}] The classic fatband: the band thickens where the
+    selected orbital contributes.
+  \item[\ui{Colour scale}] Constant width, opacity proportional to the
+    weight. Stays readable where many bands run close together.
+  \item[\ui{Width + colour}] Both.
+\end{description}
+
+Several channels can be shown at once, which is the point: seeing metal $d$
+and ligand $p$ on the same plot is how hybridization becomes visible. All
+channels share one normalization, so a channel contributing 2\% of a state
+does not look as strong as one contributing 90\%.
+
+\begin{calnote}
+GPAW backend only --- the weights are the PAW projector overlaps, read through
+\texttt{gpaw.dos}, which the file-based DFT templates do not expose. Like the
+symmetry labels, unavailable together with spin-orbit coupling.
+\end{calnote}
+
 \section{X-ray absorption spectroscopy (XAS)}
 \label{sec:xas}
 

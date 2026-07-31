@@ -82,6 +82,7 @@
 #include "gui/XasResultsWindow.hpp"
 #include "gui/HubbardUWizard.hpp"
 #include "gui/XasWizard.hpp"
+#include "gui/MagneticSpaceGroupDialog.hpp"
 #include "gui/SymmetryDialog.hpp"
 #include "gui/VacfDialog.hpp"
 #include "gui/DatasetManagerDialog.hpp"
@@ -1254,6 +1255,16 @@ void MainWindow::createMenusAndDocks()
     // own detection.
     analysisMenu->addAction(tr("&Symmetry, Raman && IR Activity…"),
                             this, &MainWindow::showSymmetry);
+    // Directly beneath the crystallographic symmetry it extends. A magnetic
+    // space group is what the ordinary one becomes once the magnetic moments
+    // are allowed to have a say: the operations that move a moment onto its
+    // own reverse survive only in combination with time reversal, and which
+    // ones those are is a different (and strictly lower) group.
+    analysisMenu->addAction(tr("&Magnetic Space Group…"), this,
+                            &MainWindow::showMagneticSpaceGroup)
+        ->setToolTip(tr("Belov-Neronova-Smirnova classification among the "
+                        "1651 magnetic space groups, from the coordinates "
+                        "plus the atomic magnetic moments"));
     analysisMenu->addAction(tr("Structure &Factor S(q)…"),
                             this, &MainWindow::showStructureFactor);
     analysisMenu->addAction(tr("&X-Ray Diffraction (XRD)…"),
@@ -6139,6 +6150,27 @@ void MainWindow::showSymmetry()
     // Inspection only: the cell transforms moved to Edit Structure, so the
     // dialog no longer returns a structure.
     SymmetryDialog dialog(doc->structure, this);
+    dialog.exec();
+}
+
+void MainWindow::showMagneticSpaceGroup()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()
+        || !doc->structure->cell().isDefined()) {
+        QMessageBox::information(
+            this, tr("Magnetic Space Group"),
+            tr("Open a periodic structure with a defined unit cell first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    // The moments are an input the dialog owns rather than something read
+    // once here: it loads whichever the structure carries (converged or
+    // seeded) into an editable table, because "what would the magnetic space
+    // group be if this sublattice flipped?" is the normal way to use it.
+    MagneticSpaceGroupDialog dialog(doc->structure, this);
     dialog.exec();
 }
 

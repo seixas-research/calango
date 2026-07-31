@@ -4,6 +4,7 @@
 #include <QPen>
 #include <QWidget>
 
+#include <functional>
 #include <map>
 #include <vector>
 
@@ -32,6 +33,45 @@ public:
         /// label ("Si p") -> DOS curve, insertion-ordered
         std::vector<std::pair<QString, std::vector<double>>> projections;
         bool valid() const { return !energies.empty() && !projections.empty(); }
+    };
+
+    /// Orbital weights carried alongside the band energies — the "fatband"
+    /// data. One entry per projection channel; `weights[spin][kpoint][band]`
+    /// is index-aligned with BandData::energies, so a band and its weight are
+    /// read from the same three indices.
+    struct FatbandData {
+        std::vector<std::pair<QString,
+                              std::vector<std::vector<std::vector<double>>>>>
+            projections;
+        /// Largest weight anywhere, used to normalize the width/opacity
+        /// mapping. Shared across channels on purpose: normalizing each
+        /// channel to its own maximum would make a channel that contributes
+        /// 2% of the state look exactly as strong as one contributing 90%.
+        double maxWeight = 1.0;
+        bool valid() const { return !projections.empty(); }
+    };
+
+    /// How an orbital weight is turned into ink.
+    enum class FatbandMode {
+        Off,      ///< plain dispersion curves
+        Width,    ///< line thickness ∝ weight (the classic fatband)
+        Color,    ///< channel colour, opacity ∝ weight
+        Both,     ///< thickness AND opacity
+    };
+
+    /// One irreducible-representation label to draw beside a high-symmetry
+    /// tick: which multiplet, where it sits, and what it is called.
+    struct SymmetryLabel {
+        double x = 0.0;         ///< k-path coordinate of the point
+        double energy = 0.0;    ///< absolute eV
+        QString text;           ///< Mulliken symbol, e.g. "E2g", "A1'"
+        int degeneracy = 1;
+        bool onLine = false;    ///< a symmetry LINE rather than a point
+    };
+    struct SymmetryData {
+        std::vector<SymmetryLabel> labels;
+        QString spaceGroup;
+        bool valid() const { return !labels.empty(); }
     };
 
     /// Everything the "Customize Appearance…" dialog exposes. Defaults
@@ -70,6 +110,19 @@ public:
         /// Fill under the DOS curves (phonon PhDOS reads better filled).
         bool fillDos = false;
         int dosFillAlpha = 70;
+
+        // -- Orbital projections (fatbands) --------------------------------
+        /// Extra line width, in pixels, at the maximum orbital weight. The
+        /// base `bandLineWidth` is what a zero-weight band keeps, so a band
+        /// never disappears — it just stops being fat.
+        double fatbandScale = 7.0;
+        /// Opacity floor in Color/Both mode, so a weak-but-nonzero
+        /// contribution is still visible rather than invisible.
+        int fatbandMinAlpha = 25;
+
+        // -- Symmetry labels ------------------------------------------------
+        QColor symmetryLabelColor{235, 220, 150};
+        double symmetryLabelPointSize = 11.0;
     };
 
     explicit BandPdosView(QWidget* parent = nullptr);
@@ -90,6 +143,27 @@ public:
     void setPdosData(PdosData data);
     const BandData& bandData() const { return bands_; }
     const PdosData& pdosData() const { return pdos_; }
+
+    void setFatbandData(FatbandData data);
+    const FatbandData& fatbandData() const { return fatbands_; }
+    void setFatbandMode(FatbandMode mode);
+    FatbandMode fatbandMode() const { return fatbandMode_; }
+    /// Which projection channels are drawn on top of the dispersion. Several
+    /// at once is the point: seeing metal d and ligand p on the same plot is
+    /// how hybridization becomes visible.
+    void setFatbandChannelVisible(const QString& label, bool visible);
+
+    void setSymmetryData(SymmetryData data);
+    const SymmetryData& symmetryData() const { return symmetry_; }
+    void setSymmetryLabelsVisible(bool visible);
+    /// Draw the labels on the symmetry LINES as well as at the points. Off by
+    /// default — the line labels are numerous and the points are what a reader
+    /// looks at first.
+    void setSymmetryLineLabelsVisible(bool visible);
+
+    /// Colour used for fatband channel `index` (the viewer's channel list
+    /// reuses it, so list and plot cannot disagree).
+    static QColor fatbandColor(int index);
 
     /// Reference energy: plots show E − reference (default: file E_F).
     void setReference(double referenceEv);
@@ -116,9 +190,24 @@ protected:
 private:
     void paintBands(QPainter& painter, const QRectF& rect);
     void paintPdos(QPainter& painter, const QRectF& rect);
+    /// Orbital-weight overlay on top of the dispersion already drawn.
+    void paintFatbands(QPainter& painter, const QRectF& rect,
+                       const std::function<double(double)>& mapX,
+                       const std::function<double(double)>& mapY);
+    /// Irrep symbols beside the high-symmetry ticks.
+    void paintSymmetryLabels(QPainter& painter, const QRectF& rect,
+                             const std::function<double(double)>& mapX,
+                             const std::function<double(double)>& mapY);
 
     BandData bands_;
     PdosData pdos_;
+    FatbandData fatbands_;
+    SymmetryData symmetry_;
+    FatbandMode fatbandMode_ = FatbandMode::Width;
+    /// Channel label -> drawn. Absent means visible (matches `visible_`).
+    std::map<QString, bool> fatbandVisible_;
+    bool symmetryVisible_ = true;
+    bool symmetryLineLabels_ = false;
     std::map<QString, bool> visible_;
     double reference_ = 0.0;
     double eMin_ = -10.0;

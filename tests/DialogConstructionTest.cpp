@@ -33,6 +33,8 @@
 #include "gui/MlwfSourceSelector.hpp"
 #include "gui/TopologyDialog.hpp"
 #include "gui/MaceTrainerDialog.hpp"
+#include "gui/ElectronicBandsWizard.hpp"
+#include "gui/MagneticSpaceGroupDialog.hpp"
 #include "gui/RandomNoiseViewer.hpp"
 #include "gui/RandomNoiseWizard.hpp"
 #include "gui/SimulationWizardBase.hpp"
@@ -57,6 +59,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSpinBox>
+#include <QTableWidget>
 
 #include <algorithm>
 #include <cmath>
@@ -80,6 +83,55 @@ void check(bool condition, const char* what)
 /// Toggle every checkbox and nudge every numeric control. Each of these emits
 /// a signal, and it is the SLOTS behind them that touch state which may not
 /// exist yet — so this is what actually exercises the hazard.
+/// A wizard whose settings page refreshes the script preview while it is still
+/// being built.
+///
+/// That is not a contrived shape — it is what any control does that seeds a
+/// default during construction (a setChecked(), a setValue(), a row appended to
+/// a table), and roughly thirty wizards contain one. The trap is that the
+/// review page, and with it the QPlainTextEdit the preview writes into, is
+/// built LAST: every settings page runs before it exists.
+///
+/// This crashed for real. The Electronic Structure wizard seeds one orbital-
+/// projection row per element in the structure, each refreshing the preview,
+/// and the first one dereferenced a null QPlainTextEdit before the window had
+/// finished opening.
+class PreviewDuringConstructionWizard : public SimulationWizardBase {
+public:
+    PreviewDuringConstructionWizard() { buildUi(); }
+
+    /// True if the settings page was built and its refresh survived.
+    bool refreshedWhileBuilding() const { return refreshed_; }
+    /// refreshPreview() is a protected slot; expose it so the test can check
+    /// that the guard skipped the call rather than disabling it for good.
+    void refreshPreviewForTest() { refreshPreview(); }
+
+protected:
+    QString wizardTitle() const override { return QStringLiteral("Probe"); }
+    QString settingsHeader() const override { return QStringLiteral("Probe"); }
+    QWidget* buildSettingsPage() override
+    {
+        auto* page = new QWidget;
+        auto* box = new QCheckBox(QStringLiteral("seeded"), page);
+        connect(box, &QCheckBox::toggled, this, [this] { refreshPreview(); });
+        // The seeding assignment, mid-construction, exactly as a real wizard
+        // does it. It emits toggled() straight back into refreshPreview().
+        box->setChecked(true);
+        refreshed_ = true;
+        return page;
+    }
+    QString generateScript() const override
+    {
+        // Reached only if the guard lets it through. A subclass mid-
+        // construction cannot promise its controls exist, which is the second
+        // reason the base class must not call this yet.
+        return QStringLiteral("# probe");
+    }
+
+private:
+    bool refreshed_ = false;
+};
+
 void exerciseControls(QWidget* dialog)
 {
     for (QCheckBox* box : dialog->findChildren<QCheckBox*>()) {
@@ -1602,6 +1654,166 @@ int main(int argc, char** argv)
               "clears our log handlers so MACE does not double every line");
         check(!runner.contains(QLatin1String("calango_log")),
               "the launcher is self-contained too");
+    }
+
+    // --- Preview refresh during construction ------------------------------
+    //
+    // The invariant, pinned in the base class rather than in one wizard: a
+    // control created on a settings page may refresh the script preview while
+    // that page is still being built, and must not crash doing it. Thirty-odd
+    // wizards rely on this; the one that broke it took the application down on
+    // the menu click that opened it.
+    {
+        std::printf("Preview refresh during construction:\n");
+        // Like every other wizard block here: the shared calculator page
+        // resolves its interpreter through PythonEngine while it is built.
+        calango::pybridge::PythonEngine python;
+        PreviewDuringConstructionWizard wizard;
+        check(wizard.refreshedWhileBuilding(),
+              "a settings page can refresh the preview before the review page "
+              "exists");
+        // And once the whole wizard IS built, the preview works normally.
+        wizard.refreshPreviewForTest();
+        QPlainTextEdit* preview = nullptr;
+        for (QPlainTextEdit* edit : wizard.findChildren<QPlainTextEdit*>())
+            if (edit->toPlainText().contains(QStringLiteral("# probe")))
+                preview = edit;
+        check(preview != nullptr,
+              "and the refresh reaches it once the review page is up");
+        exerciseControls(&wizard);
+        check(true, "survives every control being toggled");
+    }
+
+    // --- Electronic Structure wizard --------------------------------------
+    //
+    // The wizard that actually crashed. Its orbital-projection table seeds one
+    // row per element while the settings page is being built, and each row used
+    // to refresh the script preview — which does not exist yet, because the
+    // review page is built last. The application died on the menu click that
+    // opened it, before a single widget was shown.
+    //
+    // It is the most control-dense settings page in the application: a k-path
+    // editor, spin-orbit coupling, PDOS, band symmetry and fatbands, several of
+    // which enable and disable each other. Constructing it and toggling
+    // everything is the exercise.
+    {
+        std::printf("Electronic Structure wizard:\n");
+        calango::pybridge::PythonEngine python;
+
+        // Graphene: two atoms, a real hexagonal cell (the k-path editor needs
+        // one), and two shells per element for the projection defaults.
+        auto structure = std::make_shared<calango::core::Structure>();
+        calango::core::UnitCell cell;
+        cell.setVectors({calango::core::Vec3{2.46, 0.0, 0.0},
+                         calango::core::Vec3{-1.23, 2.1304, 0.0},
+                         calango::core::Vec3{0.0, 0.0, 15.0}});
+        cell.setPbc({true, true, true});
+        structure->setCell(cell);
+        calango::core::Atom carbon;
+        carbon.atomicNumber = 6;
+        carbon.position = {0.0, 0.0, 7.5};
+        structure->addAtom(carbon);
+        carbon.position = {1.23, 0.7101, 7.5};
+        structure->addAtom(carbon);
+
+        ElectronicBandsWizard wizard(structure);
+        check(true, "constructs without dereferencing the unbuilt preview");
+        wizard.setDensityBaselines(
+            {{QStringLiteral("proc_1"), QStringLiteral("/jobs/1/sp.gpw")}});
+
+        // The projection table must have seeded itself from the structure —
+        // one channel for carbon. An empty table is not a crash but it is the
+        // same bug half-fixed: the rows are what the seeding call produces.
+        QTableWidget* channels = nullptr;
+        for (QTableWidget* table : wizard.findChildren<QTableWidget*>())
+            if (table->columnCount() == 3)
+                channels = table;
+        check(channels != nullptr && channels->rowCount() == 1,
+              "the fatband table seeds one channel per element");
+
+        // The setup page must FIT ON A SCREEN. This is a real regression, not
+        // a hypothetical: stacked in one column the page measured 587x1027
+        // (minimum 940 tall) and ran off the bottom of a laptop display, and
+        // it got there one feature at a time — each addition was individually
+        // reasonable and none of them could see the total.
+        //
+        // Arranged in two columns it is 865x820, minimum 772x748. The bounds
+        // below are checked TOGETHER on purpose: a single-column layout cannot
+        // satisfy both, because narrow is exactly how it got tall.
+        wizard.ensurePolished();
+        const QSize hint = wizard.minimumSizeHint();
+        std::printf("    minimum size %dx%d\n", hint.width(), hint.height());
+        check(hint.height() <= 820,
+              "the setup page fits the height of a laptop screen");
+        check(hint.width() >= 700,
+              "and is wide rather than tall — the two columns are side by "
+              "side, not stacked");
+
+        exerciseControls(&wizard);
+        check(true, "survives every control being toggled");
+
+        // Toggling everything switched spin-orbit coupling on and off again.
+        // The two scalar-state post-processes must be usable afterwards —
+        // SOC clears and disables them, and leaving them disabled once it is
+        // switched back off would be a silent loss of both features.
+        QGroupBox* symmetryGroup = nullptr;
+        for (QGroupBox* group : wizard.findChildren<QGroupBox*>())
+            if (group->title().contains(QStringLiteral("Band symmetry")))
+                symmetryGroup = group;
+        check(symmetryGroup != nullptr && symmetryGroup->isEnabled(),
+              "band symmetry is re-enabled once spin-orbit coupling is off");
+    }
+
+    // --- Magnetic Space Group -------------------------------------------
+    //
+    // Its constructor is the shape this test exists for: it builds the moment
+    // table, then immediately runs a determination whose result it writes BACK
+    // into that table and into labels created earlier in the same constructor.
+    // Every control it owns re-enters that path — the source combo reloads the
+    // moments and re-determines, the tolerance spin boxes re-determine — so
+    // toggling them all is the exercise.
+    {
+        std::printf("Magnetic Space Group dialog:\n");
+        calango::pybridge::PythonEngine python;
+
+        // The CsCl-shaped cube with antiparallel moments: geometrically bcc
+        // (Im-3m), magnetically the type-IV group whose unitary part is the
+        // simple-cubic Pm-3m. A case where the answer is not the geometry's.
+        constexpr double a = 2.87;
+        auto structure = std::make_shared<calango::core::Structure>();
+        calango::core::UnitCell cell;
+        cell.setVectors({calango::core::Vec3{a, 0.0, 0.0},
+                         calango::core::Vec3{0.0, a, 0.0},
+                         calango::core::Vec3{0.0, 0.0, a}});
+        cell.setPbc({true, true, true});
+        structure->setCell(cell);
+        calango::core::Atom atom;
+        atom.atomicNumber = 26;
+        atom.position = {0.0, 0.0, 0.0};
+        structure->addAtom(atom);
+        atom.position = {0.5 * a, 0.5 * a, 0.5 * a};
+        structure->addAtom(atom);
+        structure->setScalarField("magmoms", {2.2, -2.2});
+
+        MagneticSpaceGroupDialog dialog(structure);
+        check(true, "constructs and runs its first determination");
+
+        // The moments must arrive in the table: they are the input, and a
+        // table that silently came up empty would classify a grey group and
+        // look perfectly plausible doing it.
+        QTableWidget* moments = nullptr;
+        for (QTableWidget* table : dialog.findChildren<QTableWidget*>())
+            if (table->columnCount() == 9)
+                moments = table;
+        check(moments != nullptr && moments->rowCount() == 2,
+              "the moment table is filled from the structure");
+        if (moments && moments->rowCount() == 2 && moments->item(0, 7)) {
+            check(std::abs(moments->item(0, 7)->text().toDouble() - 2.2) < 1e-6,
+                  "with the collinear moment promoted onto z");
+        }
+
+        exerciseControls(&dialog);
+        check(true, "survives every control being toggled");
     }
 
     std::printf(failures == 0 ? "\nAll dialog construction checks passed.\n"

@@ -447,6 +447,61 @@ int main(int argc, char** argv)
             ElectronicConfig inlineScf = bands;
             inlineScf.baselineDensityPath.clear();
             dumpBands("bands_soc_inline_scf.py", inlineScf);
+
+            // Band symmetry + fatbands. Both append large blocks of nested
+            // Python — the symmetry one defines two module-level helper
+            // functions with comprehensions and a `for/else` inside them, and
+            // the fatband one nests three loops under a try. That is exactly
+            // the shape where an indentation slip parses as valid Python that
+            // does the wrong thing, so both variants are byte-compiled.
+            ElectronicConfig symmetry = bands;
+            symmetry.spinOrbit = false;
+            symmetry.bandSymmetry = true;
+            symmetry.fatbands = true;
+            dumpBands("bands_symmetry_fatbands.py", symmetry);
+
+            // The explicit-channel branch emits a different literal block from
+            // the derive-them-yourself one.
+            ElectronicConfig channels = symmetry;
+            channels.symmetry.classifyLines = false;
+            FatbandProjection carbonPz;
+            carbonPz.label = "C p_z";
+            carbonPz.atoms = {0, 1};
+            carbonPz.angularMomentum = 1;
+            carbonPz.magnetic = 1;
+            FatbandProjection ironD;
+            ironD.label = "Fe d";
+            ironD.element = "Fe";
+            ironD.angularMomentum = 2;
+            channels.fatbandProjections = {carbonPz, ironD};
+            dumpBands("bands_fatband_channels.py", channels);
+
+            // The configuration the graphene reference benchmark runs end to
+            // end against Kogan & Nazarov, PRB 85, 115418 (2012): the Γ-K-M-Γ
+            // path with both the symmetry classification and a p_z / s
+            // projection, so the π manifold can be identified by its orbital
+            // character rather than guessed at from its energy. Only the
+            // baseline path is substituted there — everything else about the
+            // script is what ships.
+            ElectronicConfig graphene;
+            graphene.backend = ElectronicBackend::Gpaw;
+            graphene.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+            graphene.kpath = "GKMG";
+            graphene.npoints = 31;
+            graphene.pdos = false;
+            graphene.bandSymmetry = true;
+            graphene.fatbands = true;
+            FatbandProjection pz;
+            pz.label = "C p_z";
+            pz.element = "C";
+            pz.angularMomentum = 1;
+            pz.magnetic = 1;
+            FatbandProjection s;
+            s.label = "C s";
+            s.element = "C";
+            s.angularMomentum = 0;
+            graphene.fatbandProjections = {pz, s};
+            dumpBands("bands_graphene_symmetry.py", graphene);
         }
 
         // Born effective charges: a nested-function script with an f-string
@@ -1038,6 +1093,133 @@ int main(int argc, char** argv)
         checkContains(generateUnfoldingScript(tight),
                       "residual / _scale > 0.001",
                       "and the wizard's tolerance reaches the script");
+    }
+
+    // -- Band symmetry classification ---------------------------------------
+    //
+    // The physics that cannot be checked by reading the script: the character
+    // of a symmetry operation on a Bloch state is a permutation of the
+    // plane-wave coefficients TIMES a phase, and getting either wrong yields
+    // characters that still look like plausible small numbers. These pin the
+    // pieces that a later refactor could quietly drop.
+    std::printf("Band symmetry classification:\n");
+    {
+        ElectronicConfig config;
+        config.backend = ElectronicBackend::Gpaw;
+        config.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        check(!contains(generateElectronicScript(config), "band_symmetry.json"),
+              "no classification unless it was asked for");
+
+        config.bandSymmetry = true;
+        const std::string script = generateElectronicScript(config);
+        checkContains(script, "band_symmetry.json", "the result file is written");
+        checkContains(script, "_calango_little_group",
+                      "the little group is selected per k-point");
+        checkContains(script, "_calango_point_group",
+                      "and its character table computed, not looked up");
+        // The origin matters at a zone boundary: spglib reports the operations
+        // in whatever cell it was handed, and ase.build.graphene() puts an atom
+        // at the origin where the site symmetry is -6m2, not the 6/mmm centre.
+        checkContains(script, "_calango_symmetry_origin",
+                      "the symmetry centre is located before classifying");
+        // The character is <psi|{R|t}|psi>, computed as a coefficient
+        // permutation plus a phase. Both halves must survive.
+        checkContains(script, "rinv_t = _np.rint(_np.linalg.inv(rot))",
+                      "the coefficient map uses R^-T");
+        checkContains(script, "_np.exp(-2j * _np.pi * ((gp + kfrac) @ tau))",
+                      "with the exp(-2 pi i (k+G').t) phase");
+        // Projectivity is decided from the FACTOR SYSTEM — a property of the
+        // group and k — not inferred from how nearly integral a reduction came
+        // out, which would conflate it with an unconverged empty band.
+        checkContains(script, "def _calango_projective(",
+                      "a nonsymmorphic zone boundary is reported, not labelled");
+        checkContains(script, "'projective': bool(_sym_point_projective)",
+                      "from the factor system rather than from the residual");
+        checkContains(script, "'resolved': _sym_resolved",
+                      "and an unreducible multiplet withholds its label");
+        checkContains(script, "get_pseudo_wave_function",
+                      "the states themselves are read");
+        // Line classification is what makes the compatibility relations
+        // readable, and it is switchable.
+        checkContains(script, "'line'", "symmetry lines are classified too");
+        ElectronicConfig pointsOnly = config;
+        pointsOnly.symmetry.classifyLines = false;
+        check(!contains(generateElectronicScript(pointsOnly), "    if True:\n"),
+              "and can be turned off");
+
+        // Tolerances reach the script rather than being hardcoded.
+        ElectronicConfig tuned = config;
+        tuned.symmetry.symprec = 0.002;
+        tuned.symmetry.degeneracyEv = 0.005;
+        const std::string tunedScript = generateElectronicScript(tuned);
+        checkContains(tunedScript, "_sym_symprec = 0.002",
+                      "the symmetry tolerance is the wizard's");
+        checkContains(tunedScript, "_sym_degen = 0.005",
+                      "and so is the degeneracy window");
+
+        // Spin-orbit coupling re-diagonalizes into a DIFFERENT set of states
+        // in a different number, so a character taken from the scalar
+        // calculator would be attached to the wrong band. Refusing loudly
+        // beats labelling wrongly.
+        ElectronicConfig soc = config;
+        soc.spinOrbit = true;
+        const std::string socScript = generateElectronicScript(soc);
+        check(!contains(socScript, "band_symmetry.json"),
+              "SOC suppresses the classification");
+        checkContains(socScript, "double \"\n      \"groups",
+                      "and says why rather than failing silently");
+    }
+
+    // -- Orbital-projected bands (fatbands) ---------------------------------
+    std::printf("Orbital-projected bands (fatbands):\n");
+    {
+        ElectronicConfig config;
+        config.backend = ElectronicBackend::Gpaw;
+        config.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        check(!contains(generateElectronicScript(config), "fatbands.json"),
+              "no projections unless they were asked for");
+
+        config.fatbands = true;
+        const std::string derived = generateElectronicScript(config);
+        checkContains(derived, "fatbands.json", "the result file is written");
+        // pdos_weights is the portable entry point across BOTH GPAW engines;
+        // get_orbital_ldos is gone from the new one, which is the drift that
+        // silently emptied the PDOS once already.
+        checkContains(derived, "from gpaw.dos import DOSCalculator as _FatDOS",
+                      "the projections go through gpaw.dos");
+        checkContains(derived, "pdos_weights(",
+                      "band- and k-resolved, not energy-integrated");
+        checkContains(derived, "get_projector_numbers",
+                      "with the shell's projector indices looked up per setup");
+        checkContains(derived, "for _fat_sym in sorted(set(_fat_symbols)):",
+                      "an empty selection derives one channel per element");
+        // (nkpt, nband, nspin) from GPAW against (nspin, nkpt, nband) in the
+        // band energies: a transpose that is invisible until the weights are
+        // drawn on the wrong bands.
+        checkContains(derived, "transpose(2, 0, 1)",
+                      "the weight array is matched to the energy array");
+
+        ElectronicConfig explicitChannels = config;
+        FatbandProjection pz;
+        pz.label = "C p_z";
+        pz.atoms = {0, 1};
+        pz.angularMomentum = 1;
+        pz.magnetic = 1;
+        explicitChannels.fatbandProjections = {pz};
+        const std::string chosen = generateElectronicScript(explicitChannels);
+        checkContains(chosen, "'label': \"C p_z\", 'atoms': [0, 1]",
+                      "an explicit atom selection is baked in");
+        checkContains(chosen, "'l': 1, 'm': 1",
+                      "together with the shell and magnetic sub-level");
+        checkContains(chosen, "_fat_ind[_fat_ch['m']::2 * _fat_ch['l'] + 1]",
+                      "and one m is strided out of the shell");
+        check(!contains(chosen, "for _fat_sym in sorted(set(_fat_symbols)):"),
+              "without also deriving the per-element defaults");
+
+        ElectronicConfig soc = config;
+        soc.spinOrbit = true;
+        check(!contains(generateElectronicScript(soc), "fatbands.json"),
+              "SOC suppresses the projections for the same reason");
     }
 
     std::printf("VASP electronic structure:\n");

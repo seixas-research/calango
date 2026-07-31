@@ -115,6 +115,61 @@ void BandPdosView::setProjectionVisible(const QString& label, bool visible)
     update();
 }
 
+QColor BandPdosView::fatbandColor(int index)
+{
+    // A palette of its own rather than a reuse of projectionColor: the fatband
+    // overlay is drawn ON TOP of the dispersion in the same panel, so its
+    // colours have to stay legible against the band colours instead of merely
+    // being distinct from each other, and the first PDOS colour is the first
+    // band colour.
+    static const QColor kPalette[] = {
+        {255, 128, 96},  {96, 220, 160},  {180, 140, 255}, {255, 205, 100},
+        {120, 200, 255}, {245, 140, 200}, {160, 230, 110}, {255, 170, 130},
+    };
+    return kPalette[static_cast<std::size_t>(std::max(index, 0))
+                    % (sizeof(kPalette) / sizeof(kPalette[0]))];
+}
+
+void BandPdosView::setFatbandData(FatbandData data)
+{
+    fatbands_ = std::move(data);
+    for (const auto& [label, weights] : fatbands_.projections) {
+        (void)weights;
+        fatbandVisible_.emplace(label, true);
+    }
+    update();
+}
+
+void BandPdosView::setFatbandMode(FatbandMode mode)
+{
+    fatbandMode_ = mode;
+    update();
+}
+
+void BandPdosView::setFatbandChannelVisible(const QString& label, bool visible)
+{
+    fatbandVisible_[label] = visible;
+    update();
+}
+
+void BandPdosView::setSymmetryData(SymmetryData data)
+{
+    symmetry_ = std::move(data);
+    update();
+}
+
+void BandPdosView::setSymmetryLabelsVisible(bool visible)
+{
+    symmetryVisible_ = visible;
+    update();
+}
+
+void BandPdosView::setSymmetryLineLabelsVisible(bool visible)
+{
+    symmetryLineLabels_ = visible;
+    update();
+}
+
 void BandPdosView::setPhononMode(bool on)
 {
     phonon_ = on;
@@ -347,10 +402,139 @@ void BandPdosView::paintBands(QPainter& painter, const QRectF& rect)
             painter.drawPath(path);
         }
     }
+    paintFatbands(painter, rect, mapX, mapY);
     painter.setClipping(false);
+
+    paintSymmetryLabels(painter, rect, mapX, mapY);
 
     // The energy-axis title is drawn once, rotated, in paintEvent's left
     // strip — see the note there.
+}
+
+void BandPdosView::paintFatbands(QPainter& painter, const QRectF& rect,
+                                 const std::function<double(double)>& mapX,
+                                 const std::function<double(double)>& mapY)
+{
+    if (fatbandMode_ == FatbandMode::Off || !fatbands_.valid()
+        || !bands_.valid())
+        return;
+    const double norm = std::max(fatbands_.maxWeight, 1e-12);
+    const bool widen = fatbandMode_ == FatbandMode::Width
+        || fatbandMode_ == FatbandMode::Both;
+    const bool fade = fatbandMode_ == FatbandMode::Color
+        || fatbandMode_ == FatbandMode::Both;
+
+    int channel = -1;
+    for (const auto& [label, weights] : fatbands_.projections) {
+        ++channel;
+        const auto shown = fatbandVisible_.find(label);
+        if (shown != fatbandVisible_.end() && !shown->second)
+            continue;
+        const QColor base = fatbandColor(channel);
+
+        for (std::size_t spin = 0;
+             spin < weights.size() && spin < bands_.energies.size(); ++spin) {
+            const auto& kWeights = weights[spin];
+            const auto& kEnergies = bands_.energies[spin];
+            for (std::size_t k = 0; k + 1 < kEnergies.size()
+                 && k + 1 < kWeights.size() && k + 1 < bands_.x.size(); ++k) {
+                const std::size_t bandCount =
+                    std::min(kEnergies[k].size(), kWeights[k].size());
+                for (std::size_t band = 0; band < bandCount; ++band) {
+                    if (band >= kEnergies[k + 1].size()
+                        || band >= kWeights[k + 1].size())
+                        continue;
+                    // One segment at a time, because the width IS the data:
+                    // a single polyline per band could only carry one width
+                    // for the whole path, which is exactly the information a
+                    // fatband plot exists to show.
+                    const double weight =
+                        0.5 * (kWeights[k][band] + kWeights[k + 1][band]);
+                    const double fraction =
+                        std::clamp(weight / norm, 0.0, 1.0);
+                    if (fraction <= 1e-3)
+                        continue;
+                    // Most of the band manifold is off-screen in a typical
+                    // ±10 eV window, and each visible segment costs a pen
+                    // change; skip the ones that cannot land in the frame.
+                    const double y0 = mapY(kEnergies[k][band] - reference_);
+                    const double y1 = mapY(kEnergies[k + 1][band] - reference_);
+                    if ((y0 < rect.top() && y1 < rect.top())
+                        || (y0 > rect.bottom() && y1 > rect.bottom()))
+                        continue;
+                    QColor color = base;
+                    color.setAlpha(fade
+                        ? std::clamp(static_cast<int>(
+                              style_.fatbandMinAlpha
+                              + (255 - style_.fatbandMinAlpha) * fraction),
+                              0, 255)
+                        : 210);
+                    const double width = style_.bandLineWidth
+                        + (widen ? style_.fatbandScale * fraction : 0.0);
+                    painter.setPen(QPen(color, width, Qt::SolidLine,
+                                        Qt::RoundCap));
+                    painter.drawLine(QPointF(mapX(bands_.x[k]), y0),
+                                     QPointF(mapX(bands_.x[k + 1]), y1));
+                }
+            }
+        }
+    }
+}
+
+void BandPdosView::paintSymmetryLabels(
+    QPainter& painter, const QRectF& rect,
+    const std::function<double(double)>& mapX,
+    const std::function<double(double)>& mapY)
+{
+    if (!symmetryVisible_ || !symmetry_.valid())
+        return;
+
+    QFont font = painter.font();
+    font.setPointSizeF(style_.symmetryLabelPointSize);
+    font.setBold(true);
+    painter.setFont(font);
+    const QFontMetricsF metrics(font);
+    const double lineHeight = metrics.height();
+
+    // Labels are placed by energy, so two multiplets a few meV apart would
+    // print on top of each other. Track the last y used at each k-point and
+    // drop a label that cannot clear it — dropping is better than overlapping,
+    // which makes BOTH unreadable.
+    std::map<double, double> lastY;
+    for (const SymmetryLabel& label : symmetry_.labels) {
+        if (label.onLine && !symmetryLineLabels_)
+            continue;
+        const double relative = label.energy - reference_;
+        if (relative < eMin_ || relative > eMax_)
+            continue;
+        const double px = mapX(label.x);
+        const double py = mapY(relative);
+        auto previous = lastY.find(label.x);
+        if (previous != lastY.end()
+            && std::abs(py - previous->second) < lineHeight)
+            continue;
+        lastY[label.x] = py;
+
+        QString text = label.text;
+        if (label.degeneracy > 1)
+            text += QStringLiteral(" (%1)").arg(label.degeneracy);
+        const double textWidth = metrics.horizontalAdvance(text) + 6.0;
+        // Nudge inward at the panel edges so a label at Γ or at the end of
+        // the path is not half outside the frame.
+        double left = px + 4.0;
+        if (left + textWidth > rect.right())
+            left = px - textWidth - 4.0;
+        left = std::max(left, rect.left() + 2.0);
+
+        const QRectF box(left, py - lineHeight * 0.5, textWidth, lineHeight);
+        // A backing plate: these sit directly on top of the dispersion, and
+        // unbacked text over a dense band manifold is unreadable.
+        QColor plate = style_.background;
+        plate.setAlpha(190);
+        painter.fillRect(box, plate);
+        painter.setPen(style_.symmetryLabelColor);
+        painter.drawText(box, Qt::AlignCenter, text);
+    }
 }
 
 void BandPdosView::paintPdos(QPainter& painter, const QRectF& rect)

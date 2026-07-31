@@ -88,6 +88,8 @@ Both are LaTeX sources under `docs/tex/`; rebuild either with
 - **Result Viewers:** Dedicated read-outs on the Results menu for single-point summaries, geometry-optimization convergence, molecular dynamics (T/E/P/V time series, RDF, frame player), MLWF centres and orbitals, and GW quasiparticle energies. Each opens automatically when the matching artifact appears in a finished job directory.
 - **Process Manager:** A compact dock between the branding and Structure panels lists every background task (local jobs, remote submissions, band-structure runs) with live status. Jobs of a saved project stage into a managed `.calango_tmp/` folder next to the `.calproj` — checkpoints, trajectory dumps and logs stay linked in the panel for one-click post-processing without recomputation.
 - **Electronic Bands / PDOS:** Band-structure workflows along the ASE-suggested (or custom) high-symmetry k-path with three backends — free-electron reference (always available), GPAW (DFT bands plus element/orbital-projected DOS), and a Quantum ESPRESSO scaffold. Results open in a hand-painted two-pane viewer: bands (E − E_F vs. k-distance, Gamma/X/... tick labels, adjustable Fermi reference line) beside the PDOS sharing the energy axis, with per-projection visibility toggles and CSV/.dat export.
+- **Band Symmetry (Irreducible Representations):** Optional classification of every band at the high-symmetry points of the k-path by the irrep of its little group. The characters are evaluated from the Kohn-Sham states themselves — the operation is a permutation of the plane-wave coefficients times a phase, exact on any grid and for nonsymmorphic operations — and reduced against a character table computed numerically from the little co-group's own class-sum algebra, not looked up. The symmetry centre is located rather than assumed, so the labels at a zone boundary are convention-free. Symmetry *lines* are classified alongside the points, which is what makes the compatibility relations readable; a projective (nonsymmorphic zone-boundary) representation is detected from its factor system and reported as such instead of being given a label it cannot have. Validated on graphene against Kogan & Nazarov, Phys. Rev. B **85**, 115418 (2012).
+- **Orbital-Projected Bands (Fatbands):** Per-band, per-k orbital weights carried alongside the energies, drawn as line thickness, colour intensity, or both. Channels select any set of atoms — element symbol, index list such as `0, 2, 5-8`, or all — against a shell (s, p, d, f) or a single magnetic sub-level (p_z, d_z2, ...); several channels overlay at once on one shared normalization, which is how hybridization becomes visible. A PDOS says which orbitals contribute at an energy; a fatband says which contribute to a *band*, at a *k-point*.
 - **Optical Properties:** The frequency-dependent dielectric function from GPAW's linear-response module, with eps1/eps2, absorption, reflectivity, refractive index (n, k) and the energy-loss function. Selectable point or **linear tetrahedron** Brillouin-zone integration (the latter resolving van Hove features that a Lorentzian broadening would smear), and an x-axis that switches between photon energy (eV) and wavelength (nm).
 - **2D Optics (Modules, 2D Materials):** Sheet observables for a monolayer — absorbance A(w), 2D conductivity sigma_2D in e^2/h, and sheet polarizability alpha_2D — obtained by dividing the supercell's arbitrary vacuum thickness back out, so the result is a property of the sheet rather than of the padding. Validated against graphene's universal absorbance, A = pi\*alpha = 2.29%.
 - **GW Quasiparticle Corrections:** One-shot G0W0 through two engines — GPAW (`gpaw.response.g0w0`) correcting a `.gpw`, or Yambo (`p2y` + `yambo`) correcting a Quantum ESPRESSO `.save` — with plasmon-pole or real-axis frequency treatment. Both write the same schema, and the viewer reports the DFT gap, the quasiparticle gap and the renormalization between them, flagging the near-zero or negative values that indicate an unconverged run.
@@ -112,6 +114,7 @@ Both are LaTeX sources under `docs/tex/`; rebuild either with
 - **Warren-Cowley Analysis:** Short-range order parameters alpha_ij for every ordered species pair of a multicomponent alloy, evaluated on one or two coordination shells with exact periodic-image enumeration, displayed as a matrix and exportable as CSV.
 - **Local Entropy Analysis:** The per-atom pair-entropy fingerprint of Piaggi and Parrinello (units of k_B), stored as a color-mappable scalar field and plotted as a distribution histogram — crystalline environments sit lowest, disordered ones higher.
 - **Raman Modes:** Gamma-point factor-group analysis of the vibrational modes. The character table of the crystal's point group is computed numerically from the class-sum algebra (no hardcoded tables), the mechanical representation is reduced into Mulliken-labeled irreps, and each optical mode set is classified as Raman-active, IR-active, or silent.
+- **Magnetic Space Group:** Determination of which of the 1651 magnetic space groups a structure realizes, from its coordinates together with its magnetic moments (converged `magmoms`, seeded `initial_magmoms`, or typed straight into the editable moment table). Reports the BNS label `S.L`, the Belov-Neronova-Smirnova type I-IV, the Opechowski-Guccione label, the parent space group, and — beside it — the crystallographic space group the same structure would have with the moments ignored, so what the magnetic order broke is visible rather than inferred. Type IV names its anti-translation, the vector by which the magnetic cell exceeds the crystallographic one. Collinear and non-collinear (axial-vector) moments, with a moment tolerance separate from the positional one. Follows Watanabe, Po & Vishwanath, Sci. Adv. **4**, eaat8685 (2018).
 - **Volumetric Data:** Reads Gaussian .cube, VASP CHGCAR/LOCPOT/PARCHG/ELFCAR and .xsf grids; live-isovalue isosurfaces (marching-cubes family, tetrahedral variant, gradient normals), color-mapped slice planes (axis-aligned or custom normal), and dual-field electrostatic potential maps where Field A shapes the surface and Field B colors it. Exports OBJ meshes and CSV slices.
 - **Crystallographic Info:** The Structure panel reports a, b, c, alpha, beta, gamma, volume, periodicity, and the spglib-detected space group, point group, and crystal system.
 - **Brillouin Zone Viewer:** Wigner-Seitz cells of the reciprocal lattice with high-symmetry labels (Gamma, X, W, K, L, U, ...) from ASE's Bravais-lattice detection, with directional arrows drawn along the k-path and high-resolution PNG/SVG figure export.
@@ -216,20 +219,27 @@ Calango enforces a strict Model-View-Controller (MVC) split to ensure stability,
 
 ### Integration Tests
 
-Configure with `-DCALANGO_BUILD_TESTS=ON` and run `ctest --test-dir build`
-(35 tests). They fall into three groups:
+Configure with `-DCALANGO_BUILD_TESTS=ON` and run `ctest --test-dir build`.
+They fall into three groups:
 
 - **Pure C++ / physics** — SQS generation and its Warren-Cowley order
   parameter, cluster expansion, phonon thermodynamics against the Einstein
-  oscillator, ice-rule satisfaction, polymer geometry, band unfolding.
+  oscillator, ice-rule satisfaction, polymer geometry, band unfolding, and the
+  magnetic space group (one cell, three magnetic configurations, three BNS
+  types — the crystallography is identical in all three, so nothing but the
+  moments can produce the difference).
 - **Generated-script checks** — the emitted Python is asserted on and dumped
   for `python -m py_compile`; the Yambo `.qp` parser and the 2D-optics
   observables are extracted from a freshly generated script *by AST* and
   exercised directly, so the code under test is the code that ships.
 - **Live engine benchmarks** — real GPAW runs that self-skip when the
   response stack is unavailable: silicon and diamond optics, ELF, Wannier
-  interpolation, G0W0 on silicon, and graphene tetrahedron integration
-  checked against the universal absorbance (the slowest test, ~4 min).
+  interpolation, G0W0 on silicon, graphene tetrahedron integration checked
+  against the universal absorbance (the slowest test, ~4 min), and the
+  graphene band-symmetry classification checked against the published irrep
+  table of Kogan & Nazarov, PRB **85**, 115418 (2012) — with the π manifold
+  identified by its p_z fatband weight rather than by its energy, so the
+  symmetry labels and the orbital projections are validated together.
 
 GUI tests run under the offscreen platform and need no display.
 

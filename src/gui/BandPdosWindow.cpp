@@ -8,6 +8,8 @@
 #include <QFrame>
 #include <cmath>
 #include <QCheckBox>
+#include <QComboBox>
+#include <QGroupBox>
 #include <QSignalBlocker>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -121,6 +123,79 @@ BandPdosWindow::BandPdosWindow(const QString& directory, QWidget* parent)
     projectionList_->setMaximumWidth(190);
     side->addWidget(projectionList_, 1);
 
+    // --- Orbital projections (fatbands) -----------------------------------
+    fatbandGroup_ = new QGroupBox(tr("Orbital projections"), this);
+    fatbandGroup_->setMaximumWidth(190);
+    auto* fatbandLayout = new QVBoxLayout(fatbandGroup_);
+    fatbandModeCombo_ = new QComboBox(fatbandGroup_);
+    fatbandModeCombo_->addItem(
+        tr("Off"), static_cast<int>(BandPdosView::FatbandMode::Off));
+    fatbandModeCombo_->addItem(
+        tr("Line width"), static_cast<int>(BandPdosView::FatbandMode::Width));
+    fatbandModeCombo_->addItem(
+        tr("Colour scale"), static_cast<int>(BandPdosView::FatbandMode::Color));
+    fatbandModeCombo_->addItem(
+        tr("Width + colour"), static_cast<int>(BandPdosView::FatbandMode::Both));
+    fatbandModeCombo_->setCurrentIndex(1);
+    fatbandModeCombo_->setToolTip(
+        tr("How the orbital weight of each band is drawn.\n\n"
+           "Line width is the classic fatband: the band thickens where the "
+           "selected orbital contributes. Colour scale keeps the width "
+           "constant and fades the overlay instead, which stays readable where "
+           "many bands run close together. Both applies each."));
+    fatbandLayout->addWidget(fatbandModeCombo_);
+    fatbandList_ = new QListWidget(fatbandGroup_);
+    fatbandList_->setToolTip(
+        tr("Channels drawn over the dispersion. Several at once is the point: "
+           "seeing metal d and ligand p on the same plot is how "
+           "hybridization becomes visible."));
+    fatbandLayout->addWidget(fatbandList_, 1);
+    side->addWidget(fatbandGroup_, 1);
+    fatbandGroup_->setVisible(false);
+    connect(fatbandModeCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        view_->setFatbandMode(static_cast<BandPdosView::FatbandMode>(
+            fatbandModeCombo_->currentData().toInt()));
+    });
+    connect(fatbandList_, &QListWidget::itemChanged, this,
+            [this](QListWidgetItem* item) {
+                view_->setFatbandChannelVisible(
+                    item->text(), item->checkState() == Qt::Checked);
+            });
+
+    // --- Band symmetry ----------------------------------------------------
+    symmetryGroup_ = new QGroupBox(tr("Band symmetry"), this);
+    symmetryGroup_->setMaximumWidth(190);
+    auto* symmetryLayout = new QVBoxLayout(symmetryGroup_);
+    symmetryCheck_ = new QCheckBox(tr("Show irrep labels"), symmetryGroup_);
+    symmetryCheck_->setChecked(true);
+    symmetryCheck_->setToolTip(
+        tr("Draw the irreducible representation each band (or degenerate "
+           "multiplet) realizes beside the high-symmetry ticks.\n\n"
+           "A two-dimensional irrep at the Fermi level is a Dirac point; two "
+           "bands carrying different irreps cross rather than repel."));
+    symmetryLayout->addWidget(symmetryCheck_);
+    symmetryLineCheck_ =
+        new QCheckBox(tr("…on symmetry lines too"), symmetryGroup_);
+    symmetryLineCheck_->setToolTip(
+        tr("Also label the midpoint of each path segment. Together with the "
+           "endpoint labels these are the COMPATIBILITY RELATIONS: the irrep "
+           "at a point decomposes into the irreps of the lines running out of "
+           "it, which is how a degenerate level splits and which branch goes "
+           "where.\n\nOff by default — the line labels are numerous."));
+    symmetryLayout->addWidget(symmetryLineCheck_);
+    symmetrySummary_ = new QLabel(symmetryGroup_);
+    symmetrySummary_->setWordWrap(true);
+    symmetrySummary_->setTextFormat(Qt::RichText);
+    symmetryLayout->addWidget(symmetrySummary_);
+    side->addWidget(symmetryGroup_);
+    symmetryGroup_->setVisible(false);
+    connect(symmetryCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        view_->setSymmetryLabelsVisible(on);
+        symmetryLineCheck_->setEnabled(on);
+    });
+    connect(symmetryLineCheck_, &QCheckBox::toggled, view_,
+            &BandPdosView::setSymmetryLineLabelsVisible);
+
     auto* customizeButton = new QPushButton(tr("Customize Appearance…"), this);
     customizeButton->setToolTip(
         tr("Fonts, curve and reference-line styling, plot background, borders "
@@ -225,6 +300,117 @@ void BandPdosWindow::loadDirectory(const QString& directory)
         projectionList_->addItem(tr("(no PDOS in this run)"));
         projectionList_->setEnabled(false);
     }
+
+    // Both are opt-in extras of the run: absent unless the wizard asked for
+    // them, so their panels appear only when the files are there.
+    fatbandGroup_->setVisible(loadFatbands(directory));
+    symmetryGroup_->setVisible(loadSymmetry(directory));
+}
+
+bool BandPdosWindow::loadFatbands(const QString& directory)
+{
+    const QJsonObject root =
+        readJsonObject(directory + QStringLiteral("/fatbands.json"));
+    if (root.isEmpty())
+        return false;
+
+    BandPdosView::FatbandData data;
+    data.maxWeight = root[QStringLiteral("max_weight")].toDouble(1.0);
+    for (const auto& entry : root[QStringLiteral("projections")].toArray()) {
+        const QJsonObject projection = entry.toObject();
+        std::vector<std::vector<std::vector<double>>> weights;
+        for (const auto& spin : projection[QStringLiteral("weights")].toArray()) {
+            std::vector<std::vector<double>> kpoints;
+            for (const auto& kpt : spin.toArray())
+                kpoints.push_back(toDoubleVector(kpt.toArray()));
+            weights.push_back(std::move(kpoints));
+        }
+        if (weights.empty())
+            continue;
+        data.projections.emplace_back(
+            projection[QStringLiteral("label")].toString(), std::move(weights));
+    }
+    if (data.projections.empty())
+        return false;
+    // A zero or missing maximum would divide the whole overlay away.
+    if (!(data.maxWeight > 0.0))
+        data.maxWeight = 1.0;
+
+    int index = 0;
+    for (const auto& [label, weights] : data.projections) {
+        (void)weights;
+        auto* item = new QListWidgetItem(label, fatbandList_);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Checked);
+        item->setForeground(BandPdosView::fatbandColor(index++));
+    }
+    view_->setFatbandData(std::move(data));
+    view_->setFatbandMode(static_cast<BandPdosView::FatbandMode>(
+        fatbandModeCombo_->currentData().toInt()));
+    return true;
+}
+
+bool BandPdosWindow::loadSymmetry(const QString& directory)
+{
+    const QJsonObject root =
+        readJsonObject(directory + QStringLiteral("/band_symmetry.json"));
+    if (root.isEmpty())
+        return false;
+
+    BandPdosView::SymmetryData data;
+    data.spaceGroup = root[QStringLiteral("space_group")].toString();
+    int projective = 0;
+    int points = 0;
+    for (const auto& entry : root[QStringLiteral("points")].toArray()) {
+        const QJsonObject point = entry.toObject();
+        const bool onLine =
+            point[QStringLiteral("kind")].toString() == QLatin1String("line");
+        if (!onLine)
+            ++points;
+        if (point[QStringLiteral("projective")].toBool())
+            ++projective;
+        const double x = point[QStringLiteral("x")].toDouble();
+        for (const auto& spinEntry : point[QStringLiteral("spins")].toArray()) {
+            const QJsonObject spin = spinEntry.toObject();
+            for (const auto& multipletEntry :
+                 spin[QStringLiteral("multiplets")].toArray()) {
+                const QJsonObject multiplet = multipletEntry.toObject();
+                const QString label = multiplet[QStringLiteral("label")].toString();
+                if (label.isEmpty() || label == QLatin1String("?"))
+                    continue;
+                BandPdosView::SymmetryLabel item;
+                item.x = x;
+                item.energy = multiplet[QStringLiteral("energy_eV")].toDouble();
+                item.text = label;
+                item.degeneracy =
+                    multiplet[QStringLiteral("degeneracy")].toInt(1);
+                item.onLine = onLine;
+                data.labels.push_back(std::move(item));
+            }
+        }
+    }
+    if (data.labels.empty())
+        return false;
+
+    QString summary =
+        tr("<b>%1</b> — %n high-symmetry point(s) classified.", nullptr, points)
+            .arg(data.spaceGroup.isEmpty() ? tr("space group unknown")
+                                           : data.spaceGroup);
+    if (projective > 0) {
+        // Not a footnote: at a zone-boundary point of a nonsymmorphic group
+        // the little-group representations are projective, and no ordinary
+        // Mulliken symbol applies to them. The run says so; so must the
+        // viewer, rather than showing a nearest-fit label as if it were one.
+        summary += tr("<br><span style='color:#d08a4a'>%n point(s) carry "
+                      "PROJECTIVE representations (a zone boundary of a "
+                      "nonsymmorphic group); their labels are approximate.",
+                      nullptr, projective);
+    }
+    symmetrySummary_->setText(summary);
+    view_->setSymmetryData(std::move(data));
+    view_->setSymmetryLabelsVisible(symmetryCheck_->isChecked());
+    view_->setSymmetryLineLabelsVisible(symmetryLineCheck_->isChecked());
+    return true;
 }
 
 void BandPdosWindow::exportBands()

@@ -13,6 +13,8 @@
 // Needs a QApplication (the viewers are QDialogs) but no GL and no display:
 // runs under the offscreen platform.
 
+#include "gui/BandPdosView.hpp"
+#include "gui/BandPdosWindow.hpp"
 #include "gui/GwResultsWindow.hpp"
 #include "gui/OpticsResultsWindow.hpp"
 #include "gui/RamanIrViewer.hpp"
@@ -20,10 +22,13 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
+#include <QGroupBox>
+#include <QListWidget>
 #include <QFile>
 #include <QTableWidget>
 #include <QTemporaryDir>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
@@ -272,6 +277,137 @@ int main(int argc, char** argv)
         check(!viewer.loadResults(
                   tempDir.filePath(QStringLiteral("no_raman.json"))),
               "a missing file is reported, not asserted");
+    }
+
+    // -- Electronic structure viewer: the two optional sidecars ------------
+    //
+    // bands.json has been read for a long time; band_symmetry.json and
+    // fatbands.json are new, and they are the same kind of contract — keys
+    // that core::generateBandSymmetryBlock and the fatband block write in
+    // Python, parsed in C++, with nothing in the build linking the two. The
+    // fixtures below mirror those generators literally.
+    std::printf("Electronic structure viewer reads its sidecars:\n");
+    {
+        const QString dir = tempDir.filePath(QStringLiteral("bands"));
+        QDir().mkpath(dir);
+        // Two k-points, two bands, one spin — the smallest thing that still
+        // exercises the [spin][kpoint][band] nesting all three files share.
+        check(writeFile(dir + QStringLiteral("/bands.json"), R"({
+            "x": [0.0, 1.0],
+            "special_x": [0.0, 1.0],
+            "special_labels": ["G", "K"],
+            "efermi": 0.5,
+            "energies": [[[-1.0, 2.0], [-0.5, 1.5]]]
+        })"), "bands.json fixture written");
+        check(writeFile(dir + QStringLiteral("/band_symmetry.json"), R"({
+            "symprec": 0.0001,
+            "degeneracy_tol_eV": 0.02,
+            "efermi": 0.5,
+            "space_group": "P6/mmm",
+            "space_group_number": 191,
+            "nonsymmorphic_residual": 0.0,
+            "points": [
+              {"label": "G", "kind": "point", "x": 0.0, "kpoint_index": 0,
+               "kpoint": [0.0, 0.0, 0.0], "order": 24,
+               "classes": ["E", "i"], "projective": false,
+               "max_residual": 0.0,
+               "character_table": [{"label": "A1g", "dim": 1, "chi": [1, 1]}],
+               "spins": [{"spin": 0, "multiplets": [
+                   {"bands": [0], "degeneracy": 1, "energy_eV": -1.0,
+                    "irreps": ["A1g"], "resolved": true, "label": "A1g",
+                    "multiplicities": [1.0], "characters": [1.0],
+                    "residual": 0.0}]}]},
+              {"label": "G-K", "kind": "line", "x": 0.5, "kpoint_index": 0,
+               "kpoint": [0.1, 0.1, 0.0], "order": 4,
+               "classes": ["E"], "projective": false, "max_residual": 0.0,
+               "character_table": [{"label": "A1", "dim": 1, "chi": [1]}],
+               "spins": [{"spin": 0, "multiplets": [
+                   {"bands": [0], "degeneracy": 1, "energy_eV": -0.75,
+                    "irreps": ["A1"], "resolved": true, "label": "A1",
+                    "multiplicities": [1.0], "characters": [1.0],
+                    "residual": 0.0}]}]}
+            ]
+        })"), "band_symmetry.json fixture written");
+        check(writeFile(dir + QStringLiteral("/fatbands.json"), R"({
+            "efermi": 0.5,
+            "max_weight": 0.8,
+            "projections": [
+              {"label": "C p_z", "atoms": [0, 1], "l": 1, "m": 1,
+               "weights": [[[0.0, 0.8], [0.1, 0.7]]]},
+              {"label": "C s", "atoms": [0, 1], "l": 0, "m": -1,
+               "weights": [[[0.6, 0.0], [0.5, 0.0]]]}
+            ]
+        })"), "fatbands.json fixture written");
+
+        BandPdosWindow window(dir);
+        check(window.hasData(), "parses the band structure");
+
+        const auto& fatbands = window.findChild<BandPdosView*>()->fatbandData();
+        check(fatbands.projections.size() == 2,
+              "both fatband channels reach the view");
+        check(std::abs(fatbands.maxWeight - 0.8) < 1e-9,
+              "with the shared normalization the generator computed");
+        if (fatbands.projections.size() == 2) {
+            // [spin][kpoint][band]: the one index order that is easy to get
+            // wrong and impossible to see afterwards, since a transposed
+            // weight array still plots.
+            const auto& pz = fatbands.projections[0].second;
+            check(fatbands.projections[0].first == QStringLiteral("C p_z"),
+                  "channels keep the order and labels they were written in");
+            check(pz.size() == 1 && pz[0].size() == 2 && pz[0][0].size() == 2,
+                  "weights are [spin][kpoint][band], like the energies");
+            check(pz.size() == 1 && pz[0].size() == 2
+                      && std::abs(pz[0][0][1] - 0.8) < 1e-9,
+                  "and the p_z weight lands on the second band, not the first");
+        }
+
+        const auto& symmetry =
+            window.findChild<BandPdosView*>()->symmetryData();
+        check(symmetry.spaceGroup == QStringLiteral("P6/mmm"),
+              "the space group reaches the view");
+        check(symmetry.labels.size() == 2,
+              "both the point and the line multiplet are read");
+        if (symmetry.labels.size() == 2) {
+            check(symmetry.labels[0].text == QStringLiteral("A1g")
+                      && !symmetry.labels[0].onLine,
+                  "the high-symmetry point label is marked as a point");
+            // Line labels are drawn only on request, so the distinction has to
+            // survive the parse or the plot fills with them.
+            check(symmetry.labels[1].onLine,
+                  "and the segment-midpoint label as a line");
+        }
+
+        // Both panels are opt-in: they appear only because the files were
+        // there. A run without them must not show empty controls.
+        QListWidget* channels = nullptr;
+        for (QGroupBox* group : window.findChildren<QGroupBox*>())
+            if (group->title().contains(QStringLiteral("Orbital")))
+                channels = group->findChild<QListWidget*>();
+        check(channels != nullptr && channels->count() == 2,
+              "the channel list is populated from the file");
+    }
+    {
+        // The same window with neither sidecar: the dispersion still loads and
+        // the two panels stay hidden.
+        const QString dir = tempDir.filePath(QStringLiteral("bands_plain"));
+        QDir().mkpath(dir);
+        check(writeFile(dir + QStringLiteral("/bands.json"), R"({
+            "x": [0.0, 1.0], "special_x": [0.0], "special_labels": ["G"],
+            "efermi": 0.0, "energies": [[[-1.0], [-0.5]]]
+        })"), "plain bands.json fixture written");
+        BandPdosWindow window(dir);
+        check(window.hasData(), "a run without the sidecars still loads");
+        check(!window.findChild<BandPdosView*>()->fatbandData().valid(),
+              "and carries no fatband data");
+        check(!window.findChild<BandPdosView*>()->symmetryData().valid(),
+              "nor any symmetry labels");
+        bool anyVisible = false;
+        for (QGroupBox* group : window.findChildren<QGroupBox*>())
+            if ((group->title().contains(QStringLiteral("Orbital"))
+                 || group->title().contains(QStringLiteral("symmetry")))
+                && !group->isHidden())
+                anyVisible = true;
+        check(!anyVisible, "with both optional panels hidden rather than empty");
     }
 
     std::printf(failures == 0 ? "\nAll results-viewer checks passed.\n"

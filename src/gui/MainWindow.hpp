@@ -346,6 +346,9 @@ private Q_SLOTS:
     void showDistributions();
     void showStructureFactor();
     void showSymmetry();
+    /// Analysis → "Magnetic Space Group…": the BNS classification of the
+    /// current structure from its coordinates plus its magnetic moments.
+    void showMagneticSpaceGroup();
     void showXrd();
     void openNanoBuilder();
     void openPhononBuilder();
