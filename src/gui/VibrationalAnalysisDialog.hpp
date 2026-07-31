@@ -64,12 +64,19 @@ private:
     /// Parse phonon_modes.json (q-points, frequencies, eigenvectors) and, as a
     /// fallback, the frequencies alone from phonon_band.json.
     void load(const QString& directory);
-    /// The reference structure displaced by the selected mode at `phase`,
-    /// with the harmonic restoring forces of that instant attached as the
-    /// "forces" vector field when `withForces` is set. Null when no mode /
-    /// eigenvector is available.
+    /// The reference structure displaced by the selected mode at `phase`.
+    ///
+    /// With `withDynamics` set it also carries the instantaneous state of the
+    /// motion: the harmonic restoring forces as the "forces" field and the
+    /// atomic velocities as "velocities". Both are exact for the mode rather
+    /// than differenced between frames, and both travel into an exported
+    /// trajectory as their own columns.
+    ///
+    /// Off for the live animation, which needs neither and would pay for
+    /// computing them thirty times a second. Null when no mode / eigenvector
+    /// is available.
     std::shared_ptr<core::Structure> displacedAt(double phase,
-                                                 bool withForces) const;
+                                                 bool withDynamics) const;
     /// Displace the reference structure by the current mode at the current
     /// phase and show it.
     void applyDisplacement();

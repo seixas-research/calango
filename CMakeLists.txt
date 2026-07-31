@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.78
+    VERSION 26.7.79
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -361,12 +361,8 @@ qt_add_executable(calango
     src/gui/WarrenCowleyDialog.cpp
     src/gui/LocalEntropyDialog.hpp
     src/gui/LocalEntropyDialog.cpp
-    src/gui/RamanDialog.hpp
-    src/gui/RamanDialog.cpp
     src/gui/VolumeViewWidget.hpp
     src/gui/VolumeViewWidget.cpp
-    src/gui/VolumetricDialog.hpp
-    src/gui/VolumetricDialog.cpp
     src/gui/VisualEffectsPanel.hpp
     src/gui/VisualEffectsPanel.cpp
     src/gui/DatasetManagerDialog.hpp

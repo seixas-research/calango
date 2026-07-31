@@ -409,8 +409,18 @@ float StructureRenderer::displayRadius(int atomicNumber, const CastStyle& cast)
         break;
     case RepresentationMode::SpaceFilling:
         // vdW radius approximated as r_cov + 0.8 Å (good to ~0.1 Å for
-        // main-group elements; replace with a Bondi/Alvarez table later).
-        radius = covalent + 0.8f;
+        // main-group elements; replace with a Bondi/Alvarez table later),
+        // then halved.
+        //
+        // Half a van der Waals radius is not the van der Waals surface, and is
+        // not meant to be: at full size the spheres of a dense solid overlap so
+        // far that the structure reads as one opaque blob with no visible
+        // packing, which is the opposite of what the representation is for.
+        // Half leaves the spheres touching at roughly the bond length — the
+        // familiar CPK proportions — so coordination and packing stay legible.
+        // Anyone needing the true contact surface wants Molecular Surface,
+        // which computes one rather than approximating it with spheres.
+        radius = (covalent + 0.8f) * 0.5f;
         break;
     case RepresentationMode::Wireframe:
         radius = 0.25f; // used by picking only

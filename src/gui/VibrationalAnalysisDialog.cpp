@@ -36,6 +36,15 @@ constexpr double kCmToHz = 2.99792458e10;
 /// 1 eV = 1.602176634e-19 J, so the factor is m_u·Å²/eV = 1.0360e-28... in
 /// practice: F[eV/Å] = M[u]·ω²[s⁻²]·u[Å] × (1.66053907e-27 × 1e-20 / 1.602176634e-19).
 constexpr double kForceUnit = 1.66053907e-27 * 1e-20 / 1.602176634e-19;
+/// Å/s → ASE's velocity unit, which is Å per ASE time unit.
+///
+/// ASE works in eV, Å and u, which fixes its time unit at Å·sqrt(u/eV) =
+/// 1.0180505671e-14 s (≈ 10.18 fs) — so a velocity in Å/s is multiplied by
+/// that many seconds to express it per ASE time unit. Written out rather than
+/// left in Å/fs because ase.Atoms.set_velocities() is what the export goes
+/// through, and a velocity in the wrong unit is not an error anywhere: it
+/// round-trips, plots, and integrates — as a trajectory ten times too fast.
+constexpr double kVelocityUnit = 1.0180505671156725e-14;
 /// Frames per vibrational period in the exported trajectory. 32 is smooth at
 /// the timeline's playback rate without inflating a project file.
 constexpr int kTrajectoryFrames = 32;
@@ -297,7 +306,7 @@ void VibrationalAnalysisDialog::updateModeLabel()
 }
 
 std::shared_ptr<core::Structure> VibrationalAnalysisDialog::displacedAt(
-    double phase, bool withForces) const
+    double phase, bool withDynamics) const
 {
     if (!reference_ || !hasEigenvectors_)
         return nullptr;
@@ -322,6 +331,7 @@ std::shared_ptr<core::Structure> VibrationalAnalysisDialog::displacedAt(
     const double omega = 2.0 * M_PI * std::abs(frequencyCm) * kCmToHz;
 
     std::vector<core::Vec3> displacements(atoms.size());
+    std::vector<core::Vec3> velocities(atoms.size());
     for (std::size_t i = 0; i < atoms.size() && i < real.size(); ++i) {
         // u_α(t) = Re[ e_α(q) · exp(i(q·R_α − ωt)) ]. The q·R phase is what
         // makes a zone-boundary mode show neighbouring cells in antiphase
@@ -346,9 +356,33 @@ std::shared_ptr<core::Structure> VibrationalAnalysisDialog::displacedAt(
                            (re.z * c - im.z * sn) * amplitude};
         displacements[i] = u;
         atoms[i].position = atoms[i].position + u;
+
+        // v = du/dt, differentiated in closed form rather than by differencing
+        // consecutive frames. With angle = q·R − ωt,
+        //     du/dt = du/dangle · (−ω) = A·ω·(re·sin(angle) + im·cos(angle)),
+        // which is exact at every phase; a finite difference over the 32
+        // sampled frames would be wrong by ~cos(π/32) and would have no value
+        // at all for the last frame.
+        //
+        // Note the quarter-period offset this puts between u and v: the atoms
+        // are fastest as they pass through their equilibrium positions and
+        // momentarily at rest at the turning points. That is the check to make
+        // if these ever look wrong — velocities in phase with the displacement
+        // mean a sign or a sin/cos has been swapped.
+        const double speed = amplitude * omega * kVelocityUnit;
+        velocities[i] = {(re.x * sn + im.x * c) * speed,
+                         (re.y * sn + im.y * c) * speed,
+                         (re.z * sn + im.z * c) * speed};
     }
 
-    if (withForces) {
+    if (withDynamics) {
+        // Velocities travel as their own field. AseBridge routes a field named
+        // "velocities" through ase.Atoms.set_velocities(), which stores it as
+        // momenta — so the extended-XYZ writer emits a momenta column that a
+        // reader converts back to the same velocities, rather than an opaque
+        // extra column nothing interprets.
+        displaced->setVectorField("velocities", velocities);
+
         // Harmonic restoring force F_α = −M_α ω² u_α. Converted from
         // u·amu·rad²/s² to eV/Å so it lands in the same units as every other
         // force in the app — the Vector Overlay scale is calibrated for those,
@@ -374,7 +408,7 @@ void VibrationalAnalysisDialog::applyDisplacement()
     // No forces on the live animation: the arrows would be redrawn 50x a
     // second and the overlay is off by default anyway. The exported trajectory
     // carries them, which is where they are actually inspected.
-    if (auto displaced = displacedAt(phase_, /*withForces=*/false)) {
+    if (auto displaced = displacedAt(phase_, /*withDynamics=*/false)) {
         // frameCamera=false: re-framing every tick would make the structure
         // jitter in place instead of showing the motion.
         viewport_->setStructure(displaced, false);
@@ -406,7 +440,7 @@ void VibrationalAnalysisDialog::createModeTrajectory()
     for (int i = 0; i < kTrajectoryFrames; ++i) {
         const double phase =
             2.0 * M_PI * static_cast<double>(i) / kTrajectoryFrames;
-        if (auto frame = displacedAt(phase, /*withForces=*/true))
+        if (auto frame = displacedAt(phase, /*withDynamics=*/true))
             frames.push_back(std::move(frame));
     }
     if (frames.empty()) {

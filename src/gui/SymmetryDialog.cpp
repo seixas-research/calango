@@ -14,6 +14,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QPushButton>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -25,10 +26,8 @@ SymmetryDialog::SymmetryDialog(std::shared_ptr<const core::Structure> structure,
                                QWidget* parent)
     : QDialog(parent), structure_(std::move(structure))
 {
-    setWindowTitle(tr("Symmetry"));
-    // Taller than the pre-character-table layout: the new group needs room
-    // without squeezing the equivalent-positions table into a two-row slit.
-    resize(560, 720);
+    setWindowTitle(tr("Symmetry & Vibrational Activity"));
+    resize(620, 700);
 
     auto* layout = new QVBoxLayout(this);
 
@@ -63,10 +62,28 @@ SymmetryDialog::SymmetryDialog(std::shared_ptr<const core::Structure> structure,
     infoForm->addRow(tr("Inequivalent sites:"), sitesLabel_);
     layout->addWidget(infoBox);
 
+    // Three tables over one detection, in tabs rather than stacked. Stacking
+    // them would run the dialog past two screenfuls and leave each one a slit
+    // — and they are not read together: a user is asking about sites, or about
+    // the group's representations, or about what a spectrum should show. The
+    // identity of the structure stays above, always visible, because all three
+    // are statements about it.
+    auto* tabs = new QTabWidget(this);
+    layout->addWidget(tabs, 1);
+
+    table_ = new QTableWidget(0, 6, tabs);
+    table_->setHorizontalHeaderLabels(
+        {tr("#"), tr("Element"), QStringLiteral("x"), QStringLiteral("y"),
+         QStringLiteral("z"), tr("Wyckoff")});
+    table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    table_->verticalHeader()->setVisible(false);
+    table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    tabs->addTab(table_, tr("Equivalent positions"));
+
     // The character table of the detected point group, generated numerically
     // from the group's own operations (class-sum algebra) rather than looked
     // up — so it follows the tolerance-dependent detection above.
-    characterGroup_ = new QGroupBox(tr("Character table"), this);
+    characterGroup_ = new QGroupBox(tr("Character table"), tabs);
     auto* characterLayout = new QVBoxLayout(characterGroup_);
     characterTable_ = new QTableWidget(0, 0, characterGroup_);
     characterTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -78,22 +95,39 @@ SymmetryDialog::SymmetryDialog(std::shared_ptr<const core::Structure> structure,
            "conjugacy classes of the point group, identity first. Paired "
            "complex-conjugate irreps are shown as their physically real 2D "
            "sum, the spectroscopic convention."));
-    // Tall enough for the cubic groups' ten rows without starving the
-    // positions table below.
-    characterTable_->setMaximumHeight(190);
     characterLayout->addWidget(characterTable_);
-    layout->addWidget(characterGroup_);
+    tabs->addTab(characterGroup_, tr("Character table"));
 
-    layout->addWidget(new QLabel(tr("Equivalent atomic positions (fractional):"),
-                                 this));
-    table_ = new QTableWidget(0, 6, this);
-    table_->setHorizontalHeaderLabels(
-        {tr("#"), tr("Element"), QStringLiteral("x"), QStringLiteral("y"),
-         QStringLiteral("z"), tr("Wyckoff")});
-    table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    table_->verticalHeader()->setVisible(false);
-    table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    layout->addWidget(table_, 1);
+    // Γ-point mode activity — what was the "Raman Modes" dialog. It is the
+    // same analysis object the character table above is built from, so it
+    // costs nothing extra and cannot describe a different group.
+    auto* activityPage = new QWidget(tabs);
+    auto* activityLayout = new QVBoxLayout(activityPage);
+    activitySummary_ = new QLabel(activityPage);
+    activitySummary_->setWordWrap(true);
+    activitySummary_->setTextFormat(Qt::RichText);
+    activityLayout->addWidget(activitySummary_);
+
+    activityTable_ = new QTableWidget(0, 4, activityPage);
+    activityTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    activityTable_->setHorizontalHeaderLabels(
+        {tr("Irrep"), tr("Degeneracy"), tr("Optical modes"), tr("Activity")});
+    activityTable_->horizontalHeader()->setStretchLastSection(true);
+    activityTable_->verticalHeader()->setVisible(false);
+    activityLayout->addWidget(activityTable_, 1);
+
+    auto* activityNote = new QLabel(
+        tr("Factor-group (nuclear-site) analysis at the Γ point. Raman "
+           "activity from the symmetric polarizability representation, IR "
+           "activity from the dipole (vector) representation; acoustic "
+           "translations are subtracted. Mulliken subscripts in low-symmetry "
+           "orthorhombic groups may be permuted relative to a specific "
+           "textbook axis convention."),
+        activityPage);
+    activityNote->setWordWrap(true);
+    activityNote->setStyleSheet(QStringLiteral("color: gray;"));
+    activityLayout->addWidget(activityNote);
+    tabs->addTab(activityPage, tr("Raman && IR activity"));
 
     statusLabel_ = new QLabel(this);
     statusLabel_->setWordWrap(true);
@@ -125,6 +159,10 @@ void SymmetryDialog::detect()
         characterTable_->setRowCount(0);
         characterTable_->setColumnCount(0);
         characterGroup_->setTitle(tr("Character table"));
+        activityTable_->setRowCount(0);
+        activitySummary_->setText(
+            tr("No point group was detected, so there is no factor-group "
+               "classification to make."));
         statusLabel_->setText(tr("No symmetry: %1").arg(reason));
         return;
     }
@@ -166,25 +204,96 @@ void SymmetryDialog::detect()
         set(5, cls >= 0 ? tr("%1  (class %2)").arg(wyckoff).arg(cls) : wyckoff);
     }
 
-    updateCharacterTable();
+    updateModeAnalysis();
 }
 
-void SymmetryDialog::updateCharacterTable()
+void SymmetryDialog::updateModeAnalysis()
 {
     characterTable_->clear();
     characterTable_->setRowCount(0);
     characterTable_->setColumnCount(0);
+    activityTable_->setRowCount(0);
 
-    // Same tolerance as the detection above, so the table always describes
-    // the point group the labels report.
+    // ONE analysis, at the same tolerance as the detection above, feeding both
+    // tables. The character table and the mode activity are two readings of
+    // the same point group — computing them separately (as the two dialogs
+    // used to) meant they could be taken at different tolerances and disagree
+    // about which group the structure has.
     const auto analysis =
         pybridge::RamanAnalysis::analyze(*structure_, tolSpin_->value());
-    if (!analysis.error.empty() || analysis.characterTable.empty()) {
+
+    if (!analysis.error.empty()) {
+        const QString reason = QString::fromStdString(analysis.error);
         characterGroup_->setTitle(tr("Character table — unavailable"));
-        characterGroup_->setToolTip(
-            analysis.error.empty()
-                ? QString()
-                : QString::fromStdString(analysis.error));
+        characterGroup_->setToolTip(reason);
+        activitySummary_->setText(reason);
+        return;
+    }
+
+    // --- Γ-point mode activity -------------------------------------------
+    // Counted in irrep COPIES, not in irreps: a triply degenerate T2g
+    // appearing twice is six modes and two lines in a spectrum, and a tally by
+    // row would call it one.
+    int ramanSets = 0, irSets = 0, silentSets = 0;
+    for (const auto& mode : analysis.modes) {
+        if (mode.opticalCount <= 0)
+            continue;
+        if (mode.ramanActive)
+            ramanSets += mode.opticalCount;
+        else if (mode.irActive)
+            irSets += mode.opticalCount;
+        else
+            silentSets += mode.opticalCount;
+    }
+    activitySummary_->setText(
+        tr("<b>%1 (#%2)</b>, point group <b>%3</b> — %4 atoms in the "
+           "primitive cell: %5 modes (3 acoustic, %6 optical).<br>"
+           "Optical irrep copies: <b>%7 Raman-active</b>, %8 IR-only, "
+           "%9 silent.")
+            .arg(QString::fromStdString(analysis.spaceGroupSymbol))
+            .arg(analysis.spaceGroupNumber)
+            .arg(pointGroupDisplay(QString::fromStdString(analysis.pointGroup)))
+            .arg(analysis.atomsPrimitive)
+            .arg(3 * analysis.atomsPrimitive)
+            .arg(3 * analysis.atomsPrimitive - 3)
+            .arg(ramanSets)
+            .arg(irSets)
+            .arg(silentSets));
+
+    activityTable_->setRowCount(static_cast<int>(analysis.modes.size()));
+    int activityRow = 0;
+    for (const auto& mode : analysis.modes) {
+        QString activity;
+        if (mode.ramanActive && mode.irActive)
+            activity = tr("Raman + IR");
+        else if (mode.ramanActive)
+            activity = tr("Raman");
+        else if (mode.irActive)
+            activity = mode.opticalCount > 0 ? tr("IR") : tr("acoustic");
+        else
+            activity = tr("silent");
+        if (mode.acousticCount > 0 && mode.opticalCount > 0)
+            activity += tr(" (+acoustic)");
+
+        const auto item = [](const QString& text) {
+            return new QTableWidgetItem(text);
+        };
+        activityTable_->setItem(activityRow, 0,
+                                item(QString::fromStdString(mode.label)));
+        activityTable_->setItem(activityRow, 1,
+                                item(QString::number(mode.degeneracy)));
+        activityTable_->setItem(activityRow, 2,
+                                item(QString::number(mode.opticalCount)));
+        activityTable_->setItem(activityRow, 3, item(activity));
+        ++activityRow;
+    }
+    activityTable_->resizeColumnsToContents();
+    activityTable_->horizontalHeader()->setStretchLastSection(true);
+
+    // --- Character table --------------------------------------------------
+    if (analysis.characterTable.empty()) {
+        characterGroup_->setTitle(tr("Character table — unavailable"));
+        characterGroup_->setToolTip(QString());
         return;
     }
 

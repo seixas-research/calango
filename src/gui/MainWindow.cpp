@@ -93,7 +93,6 @@
 #include "gui/ThemeManager.hpp"
 #include "ui/IconManager.hpp"
 #include "gui/WelcomeDialog.hpp"
-#include "gui/RamanDialog.hpp"
 #include "gui/RamanIrViewer.hpp"
 #include "gui/RamanIrWizard.hpp"
 #include "gui/GeometryOptimizationViewer.hpp"
@@ -103,7 +102,6 @@
 #include "gui/RunCommands.hpp"
 #include "gui/WaterIceWizard.hpp"
 #include "gui/SqsDialog.hpp"
-#include "gui/VolumetricDialog.hpp"
 #include "gui/WarrenCowleyDialog.hpp"
 #include "gui/LocalEntropyDialog.hpp"
 #include "gui/JobLogWidget.hpp"
@@ -1249,7 +1247,12 @@ void MainWindow::createMenusAndDocks()
 
     // ----- Analysis: spec order, reciprocal-space tools at the end ---------
     QMenu* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
-    analysisMenu->addAction(tr("&Symmetry…"),
+    // One entry, not two. "Raman Modes…" used to sit further down this menu
+    // and opened a dialog that answered a question about the point group —
+    // detected by the same call, at a tolerance it gave the user no way to
+    // set. It is a tab of the Symmetry dialog now, computed from that dialog's
+    // own detection.
+    analysisMenu->addAction(tr("&Symmetry, Raman && IR Activity…"),
                             this, &MainWindow::showSymmetry);
     analysisMenu->addAction(tr("Structure &Factor S(q)…"),
                             this, &MainWindow::showStructureFactor);
@@ -1268,13 +1271,14 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showPartialCharge);
     analysisMenu->addAction(tr("&Velocity Autocorrelation Function (VACF)…"),
                             this, &MainWindow::showVacf);
-    analysisMenu->addAction(tr("Ra&man Modes…"),
-                            this, &MainWindow::showRamanModes);
-    analysisMenu->addAction(tr("&Volumetric Data…"),
-                            this, &MainWindow::showVolumetricData);
+    // "Raman Modes…" was here; it is now a tab of the Symmetry dialog at the
+    // top of this menu. "Volumetric Data…" was here too, and is gone: the
+    // Volumetric Data DOCK loads the same grids, renders them in the main
+    // viewport rather than in a window of its own, and is where every other
+    // part of the application already sends its output.
     // Charge density difference sits with the volumetric tools because that is
-    // what it produces: one more grid in the Volumetric Data dock, rendered in
-    // the main viewport like any other.
+    // what it produces: one more grid in that dock, rendered in the main
+    // viewport like any other.
     analysisMenu->addAction(tr("Charge &Density Difference (CDD)…"),
                             this, &MainWindow::showChargeDensityDifference)
         ->setToolTip(tr("Δρ = ρ(A+B) − ρ(A) − ρ(B) from a completed "
@@ -5263,12 +5267,6 @@ void MainWindow::newProject()
     statusBar()->showMessage(tr("New workspace"));
 }
 
-void MainWindow::showVolumetricData()
-{
-    VolumetricDialog dialog(this);
-    dialog.exec();
-}
-
 void MainWindow::showDatasetManager()
 {
     if (!ensureAseAvailable())
@@ -5301,20 +5299,6 @@ void MainWindow::openMaceTrainer()
     }
     runScript(dialog.runnerScript(), dialog.pythonExecutable(), label,
               /*expectFrames=*/false);
-}
-
-void MainWindow::showRamanModes()
-{
-    Document* doc = currentDocument();
-    if (!doc || !doc->structure || doc->structure->empty()) {
-        QMessageBox::information(this, tr("Raman Modes"),
-                                 tr("Open a structure first."));
-        return;
-    }
-    if (!ensureAseAvailable())
-        return;
-    RamanDialog dialog(doc->structure, this);
-    dialog.exec();
 }
 
 void MainWindow::showWarrenCowley()

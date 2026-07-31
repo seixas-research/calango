@@ -150,6 +150,14 @@ has_momenta = "momenta" in first.arrays
 force_max = float(np.abs(results["forces"]).max()) if has_forces else -1.0
 magmom_abs = float(np.abs(results["magmoms"]).max()) if has_magmoms else -1.0
 velocity = float(np.abs(first.get_velocities()).max()) if has_momenta else -1.0
+# A plain `velocities` column beside the momenta one, for the readers that are
+# not ASE. Both are written from the same array, so they must agree.
+has_velocity_column = "velocities" in declared
+velocity_column = (float(np.abs(first.arrays["velocities"]).max())
+                   if "velocities" in first.arrays else -1.0)
+velocities_agree = bool(
+    has_momenta and "velocities" in first.arrays
+    and np.allclose(first.get_velocities(), first.arrays["velocities"]))
 # The derived magnitude fields must NOT leak into the file: "|forces|" is not
 # expressible as an extended-XYZ column name.
 piped = [c for c in declared if "|" in c]
@@ -169,6 +177,15 @@ piped = [c for c in declared if "|" in c]
           "magmom values are numerically intact");
     check(std::abs(locals["velocity"].cast<double>() - 0.0125) < 1e-9,
           "velocity values are numerically intact");
+    // ASE reads velocities out of `momenta` and nothing else, but outside ASE
+    // that is not where anyone looks for them — OVITO, VMD and i-PI all want
+    // the velocity itself. Written as its own column too, from the same array.
+    check(locals["has_velocity_column"].cast<bool>(),
+          "and a plain \"velocities\" column is declared beside the momenta");
+    check(std::abs(locals["velocity_column"].cast<double>() - 0.0125) < 1e-9,
+          "carrying the velocity, not the momentum");
+    check(locals["velocities_agree"].cast<bool>(),
+          "and agreeing with what ASE reads back from the momenta");
     check(locals["piped"].cast<py::list>().empty(),
           "derived |name| magnitude fields are not emitted as columns");
 

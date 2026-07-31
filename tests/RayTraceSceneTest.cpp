@@ -242,6 +242,22 @@ int main(int argc, char** argv)
         const float oxygenR = StructureRenderer::displayRadius(8, casts[1]);
         check(carbonR > oxygenR, "the space-filling cast is drawn larger");
 
+        // Half the approximated van der Waals radius, (r_cov + 0.8)/2 — the
+        // CPK proportions, where spheres of bonded atoms touch rather than
+        // interpenetrate. Pinned because the number is a visual judgement with
+        // nothing else to check it against: at the full vdW radius a dense
+        // solid renders as one opaque blob, and no test would have noticed.
+        //
+        // Carbon's covalent radius is 0.76 Å (Cordero 2008), so the expected
+        // radius is (0.76 + 0.8)/2 = 0.78 Å.
+        check(std::abs(carbonR - 0.78f) < 1e-4f,
+              "space filling draws half the van der Waals radius");
+        // And the ray-traced export uses the same function, so a figure and
+        // the viewport cannot disagree about how big an atom is.
+        check(std::abs(StructureRenderer::displayRadius(6, casts[0])
+                       - carbonR) < 1e-6f,
+              "and the exporter reads that radius from the same place");
+
         // A bond touching a space-filling atom is dropped, so this scene keeps
         // only the 12 cell edges — without that rule a CPK surface grows sticks
         // through its own vdW spheres.

@@ -233,6 +233,13 @@ py::object AseBridge::toAtoms(const core::Structure& structure)
             // setter keeps that relationship intact so a reader recovers the
             // same velocities rather than treating them as a raw column.
             atoms.attr("set_velocities")(array);
+            // ...and a plain `velocities` column beside it. The momenta column
+            // is the one ASE reads back, but it is the only one, and outside
+            // ASE "momenta" is not where anyone looks for velocities — OVITO,
+            // VMD and i-PI all want the velocity itself. Both are written from
+            // this same array in the same call, so they cannot disagree; the
+            // cost is three more columns in the file.
+            atoms.attr("arrays")[py::str("velocities")] = array;
         } else {
             atoms.attr("arrays")[py::str(name)] = std::move(array);
         }

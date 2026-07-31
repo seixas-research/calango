@@ -370,9 +370,7 @@ private Q_SLOTS:
     /// Analysis → "Velocity Autocorrelation Function (VACF)…": VACF, VDOS,
     /// Green-Kubo diffusion and relaxation time from the current trajectory.
     void showVacf();
-    void showRamanModes();
     void newProject();
-    void showVolumetricData();
     /// Viewport toolbar → "Lattice Plane…": interactive Miller-index plane +
     /// volumetric color-slice overlay in the main 3D viewport.
     /// Viewport toolbar → "Custom overlay…": geometric-primitive overlay manager.
