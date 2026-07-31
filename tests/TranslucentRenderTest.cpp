@@ -372,6 +372,73 @@ int main(int argc, char** argv)
         }
     }
 
+    std::printf("The cell reacts to the scene lights:\n");
+    {
+        // Edges and fill are both shaded now: the edges are lit tubes at every
+        // width (they used to drop to unlit GL_LINES below 1.01), and the fill
+        // carries per-face normals through the lit surface program. The test
+        // is to MOVE THE LIGHT and see the picture change — a flat, unlit
+        // surface is invariant under that, which is exactly the old behaviour.
+        const auto renderLit = [&](const QVector3D& lightDir, bool fill,
+                                   float lineWidth) {
+            QOpenGLFramebufferObject fbo(
+                kSize, kSize, QOpenGLFramebufferObject::CombinedDepthStencil);
+            fbo.bind();
+            gl->glViewport(0, 0, kSize, kSize);
+            gl->glEnable(GL_DEPTH_TEST);
+            gl->glClearColor(0.1f, 0.11f, 0.13f, 1.0f);
+            gl->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            render::StructureRenderer renderer;
+            renderer.initialize(gl);
+            renderer.style().showCell = true;
+            renderer.style().fillCell = fill;
+            renderer.style().cellFillAlpha = 0.85f;
+            renderer.style().cellLineWidth = lineWidth;
+            renderer.style().atomScaleFactor = 0.3f;
+            // lights() hands back the live vector, so the direction is set
+            // on it directly.
+            if (!renderer.lights().empty())
+                renderer.lights()[0].direction = lightDir;
+            renderer.setStructure(&structure);
+            render::OrbitCamera camera;
+            camera.frame(QVector3D(4.0f, 4.0f, 4.0f), 9.0f);
+            camera.rotate(25.0f, 15.0f);
+            renderer.render(camera.view(), camera.projection(1.0f));
+            gl->glFinish();
+            QImage image(kSize, kSize, QImage::Format_RGB888);
+            gl->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            gl->glReadPixels(0, 0, kSize, kSize, GL_RGB, GL_UNSIGNED_BYTE,
+                             image.bits());
+            fbo.release();
+            return image;
+        };
+
+        const QVector3D front(-0.4f, -0.5f, -1.0f);
+        const QVector3D side(1.0f, 0.2f, -0.2f);
+
+        // Hairline edges, no fill: the wireframe alone must respond.
+        const QImage edgesA = renderLit(front, false, 1.0f);
+        const QImage edgesB = renderLit(side, false, 1.0f);
+        check(drawnPixels(edgesA) > 200, "thin cell edges are drawn at all");
+        std::printf("       edges, mean |Δ| under a light move = %.2f\n",
+                    meanDifference(edgesA, edgesB));
+        check(meanDifference(edgesA, edgesB) > 0.2,
+              "thin cell edges are lit — moving the light changes them");
+
+        // And the filled faces.
+        const QImage fillA = renderLit(front, true, 1.0f);
+        const QImage fillB = renderLit(side, true, 1.0f);
+        std::printf("       fill, mean |Δ| under a light move  = %.2f\n",
+                    meanDifference(fillA, fillB));
+        check(meanDifference(fillA, fillB) > 0.5,
+              "the filled cell is lit — moving the light changes it");
+        if (qEnvironmentVariableIsSet("CALANGO_DUMP_FRAMES")) {
+            const QString dir = qEnvironmentVariable("CALANGO_DUMP_FRAMES");
+            fillA.flipped(Qt::Vertical).save(dir + "/cell_lit_front.png");
+            fillB.flipped(Qt::Vertical).save(dir + "/cell_lit_side.png");
+        }
+    }
+
     std::printf(failures == 0 ? "\nAll translucent-render checks passed.\n"
                               : "\n%d check(s) FAILED.\n",
                 failures);

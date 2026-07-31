@@ -87,8 +87,6 @@ int main(int argc, char** argv)
     // normal attachment, which is where a layout-qualifier mistake would land.
     checkProgram("mesh", ":/assets/shaders/mesh.vert",
                  ":/assets/shaders/mesh.frag");
-    checkProgram("line", ":/assets/shaders/line.vert",
-                 ":/assets/shaders/line.frag");
     checkProgram("wire", ":/assets/shaders/wire.vert",
                  ":/assets/shaders/wire.frag");
     checkProgram("shadow", ":/assets/shaders/shadow.vert",

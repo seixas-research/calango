@@ -94,14 +94,14 @@ std::string KpointsConvergenceScriptGenerator::generate(
         }
         out << "    atoms.calc.set(kpts=tuple(kpts),\n"
             << "                   gamma="
-            << (calculator.gpawGammaCentered ? "True" : "False")
+            << (calculator.kptsGammaCentered ? "True" : "False")
             << ",  # Γ-centred KPOINTS, held across the sweep\n"
                "                   istart=0,\n"
                "                   directory="
                "f\"kpts_{kpts[0]}x{kpts[1]}x{kpts[2]}\")\n";
     } else {
         out << "    atoms.calc = GPAW(\n";
-        if (calculator.gpawGammaCentered)
+        if (calculator.kptsGammaCentered)
             out << "        # Γ-centred, as configured — held across the "
                    "sweep.\n"
                    "        kpts={\"size\": tuple(kpts), \"gamma\": True},\n";

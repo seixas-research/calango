@@ -20,14 +20,17 @@
 #
 # Overridable via environment:
 #   BUILD_DIR                 build/output directory (default build-macos-bundle)
-#                             Point this OUTSIDE any cloud-synced folder. A
+#                             Must sit OUTSIDE any cloud-synced folder: a
 #                             provider such as Dropbox stamps an xattr on every
-#                             file it syncs and refuses to let it be removed,
-#                             which makes the signed bundle fail
-#                             `codesign --verify --strict`. Absolute paths work;
-#                             prefer a scratch location such as
-#                             /tmp/calango-build over the home directory, which
-#                             this override should never clutter.
+#                             file it syncs and re-applies it faster than it can
+#                             be cleared, which makes the signed bundle fail
+#                             `codesign --verify --strict`.
+#                             You do not have to arrange that yourself — when
+#                             the DEFAULT would be cloud-synced (a checkout
+#                             inside Dropbox/OneDrive/iCloud), the script moves
+#                             it to ~/Library/Caches/calango/ and says so. Only
+#                             a BUILD_DIR you set yourself is refused rather
+#                             than overruled.
 #   DIST_DIR                  where the .dmg lands   (default: repo root)
 #   CMAKE_PREFIX_PATH         Qt prefix          (default /opt/homebrew/opt/qt)
 #   PYTHON_BIN                interpreter the app links libpython against
@@ -56,6 +59,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# Whether the caller chose BUILD_DIR themselves decides what happens if it
+# turns out to be cloud-synced: an explicit choice is reported and refused, the
+# default is relocated automatically. Sampled before the default is applied,
+# which is the only moment the difference is visible.
+BUILD_DIR_EXPLICIT=0
+[[ -n "${BUILD_DIR:-}" ]] && BUILD_DIR_EXPLICIT=1
 BUILD_DIR="${BUILD_DIR:-build-macos-bundle}"
 DIST_DIR="${DIST_DIR:-$REPO_ROOT}"
 QT_PREFIX="${CMAKE_PREFIX_PATH:-/opt/homebrew/opt/qt}"
@@ -67,10 +76,107 @@ EMBED_PY="${CALANGO_EMBEDDED_PYTHON_DIR:-}"
 EMBED_PKGS="${CALANGO_EMBEDDED_PACKAGES:-ase numpy scipy spglib matplotlib imageio imageio-ffmpeg dftd4 torch-dftd phonopy}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 
+# --- Pre-flight: the staging tree must not be cloud-synced ------------------
+#
+# A file provider (Dropbox, OneDrive, iCloud Drive, Google Drive) stamps
+# xattrs — com.apple.FinderInfo among them — on everything it manages, and
+# re-applies them as fast as they are cleared. codesign calls that "resource
+# fork, Finder information, or similar detritus" and fails
+# `codesign --verify --strict`, so the bundle is rejected by Gatekeeper.
+#
+# embed_python_framework.sh already runs `xattr -cr` before signing; against a
+# live provider that is a race it loses. The only fix is to stage elsewhere.
+#
+# Left unhandled the failure arrives LAST: the whole app compiles, macdeployqt
+# runs, the Python payload is embedded, and only then does codesign refuse —
+# ten minutes to learn something knowable at second one. And since the default
+# BUILD_DIR is relative to the repo, a checkout living in a synced folder hits
+# it on every single run. So the default relocates itself instead of asking.
+cloud_synced_path() {
+    local probe="$1"
+    # Resolve to the physical path first: ~/Dropbox is commonly a link to the
+    # File Provider root, and the two spellings must be judged the same.
+    local existing="$probe"
+    while [[ -n "$existing" && ! -e "$existing" ]]; do
+        existing="$(dirname "$existing")"
+    done
+    [[ -e "$existing" ]] || return 1
+    local real
+    real="$(cd "$existing" 2>/dev/null && pwd -P)" || return 1
+
+    # macOS mounts every File Provider under this root — definitive on its own.
+    [[ "$real" == *"/Library/CloudStorage/"* ]] && return 0
+
+    # Otherwise look for a provider's own stamp on the nearest existing
+    # ancestor. Vendor-prefixed names only: com.apple.FinderInfo alone is too
+    # weak, since an ordinary folder carrying a Finder tag or custom icon has
+    # one and is perfectly fine to build in.
+    local dir="$real"
+    while [[ "$dir" != "/" ]]; do
+        if xattr "$dir" 2>/dev/null | grep -qE \
+            '^(com\.apple\.fileprovider\.|com\.dropbox\.|com\.microsoft\.OneDrive|com\.google\.(Drive|GoogleDrive))'; then
+            return 0
+        fi
+        dir="$(dirname "$dir")"
+    done
+    return 1
+}
+
+if cloud_synced_path "$BUILD_DIR"; then
+    if [[ "$BUILD_DIR_EXPLICIT" -eq 1 ]]; then
+        # A deliberate choice is reported, not overruled: silently building
+        # somewhere other than where you asked is worse than stopping.
+        cat >&2 <<EOF
+error: the BUILD_DIR you set is inside a cloud-synced folder, so the signed
+       bundle would fail strict signature validation.
+
+           BUILD_DIR = $BUILD_DIR
+
+       The provider stamps xattrs (com.apple.FinderInfo and friends) on every
+       file it syncs and re-applies them faster than they can be cleared, and
+       codesign rejects those as "resource fork, Finder information, or
+       similar detritus".
+
+       Point BUILD_DIR outside the synced tree, or unset it and let this
+       script pick a scratch location itself. Either way the .dmg still lands
+       wherever DIST_DIR says — that is only a destination, and a finished
+       .dmg is a single signed file that syncing cannot spoil.
+EOF
+        exit 1
+    fi
+
+    # The default landed in a synced folder, so move it. Under
+    # ~/Library/Caches, which is the conventional macOS home for regenerable
+    # build output: no provider syncs it, and unlike /tmp it is not swept
+    # every few days — which matters because $BUILD_DIR/embedded-python caches
+    # a ~500 MB Python payload that is slow to re-download.
+    #
+    # Keyed by the repo's path so two checkouts do not build into each other.
+    _repo_key="$(printf '%s' "$REPO_ROOT" | shasum | cut -c1-8)"
+    BUILD_DIR="$HOME/Library/Caches/calango/macos-bundle-$_repo_key"
+    mkdir -p "$BUILD_DIR"
+    echo "==> BUILD_DIR would be cloud-synced (codesign rejects the xattrs a"
+    echo "    file provider stamps); staging in a scratch location instead:"
+    echo "    $BUILD_DIR"
+fi
+
+# Normalise to an absolute path, once, here.
+#
+# Everything downstream then treats BUILD_DIR as a location rather than as
+# something to be joined onto REPO_ROOT — and exactly one place used to do the
+# joining, which quietly broke every absolute BUILD_DIR the header already
+# advertised as supported: the embedded-Python cache resolved to
+# "$REPO_ROOT/Users/…", so it was never found, the 500 MB payload was
+# re-provisioned on every run, and the stray tree landed back inside the repo.
+mkdir -p "$BUILD_DIR"
+BUILD_DIR="$(cd "$BUILD_DIR" && pwd -P)"
+
 # Whether the build tree already exists must be sampled before anything
 # below creates it, or --skip-build would skip a build that never happened.
+# After the relocation above, so it describes the tree actually being used —
+# and by CONTENTS, since mkdir -p just created the directory itself.
 BUILD_DIR_EXISTED=0
-[[ -d "$BUILD_DIR" ]] && BUILD_DIR_EXISTED=1
+[[ -n "$(ls -A "$BUILD_DIR" 2>/dev/null)" ]] && BUILD_DIR_EXISTED=1
 
 # The interpreter the app links libpython against. A missing project .venv
 # must not break a plain run, so fall back to python3 on PATH.
@@ -117,7 +223,8 @@ provision_embedded_python() {
         *) echo "error: unsupported arch $(uname -m)" >&2; return 1 ;;
     esac
 
-    cache="$REPO_ROOT/$BUILD_DIR/embedded-python"
+    # BUILD_DIR is absolute by now — see the normalisation above.
+    cache="$BUILD_DIR/embedded-python"
     # Reuse only a cache that matches this interpreter's X.Y and still imports
     # ASE — a stale tree from a different Python would fail at runtime.
     if [[ -x "$cache/python/bin/python3" ]] \

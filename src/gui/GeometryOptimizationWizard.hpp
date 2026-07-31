@@ -51,6 +51,9 @@ protected:
     /// The GPAW calculator form is shared verbatim with the Single-Point
     /// wizard through GpawElectronicRows — same groups, same rows, same
     /// toggles — so switching between the two setups is not a change of form.
+    /// The engine drives which smearing methods are offered, so the base
+    /// needs a handle on these rows to refilter them.
+    GpawElectronicRows* electronicRows() override { return &electronic_; }
     void buildConvergenceRows(QFormLayout* form) override
     {
         electronic_.buildConvergenceRows(form, this);

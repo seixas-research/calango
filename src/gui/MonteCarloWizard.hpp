@@ -39,6 +39,9 @@ protected:
     // the Single-Point and Geometry Optimization setups present — an SCF is an
     // SCF whichever task drives it, and a second layout for the same settings
     // is how the two drift apart.
+    /// The engine drives which smearing methods are offered, so the base
+    /// needs a handle on these rows to refilter them.
+    GpawElectronicRows* electronicRows() override { return &electronic_; }
     void buildConvergenceRows(QFormLayout* form) override
     {
         electronic_.buildConvergenceRows(form, this);

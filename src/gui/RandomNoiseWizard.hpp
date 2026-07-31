@@ -80,6 +80,9 @@ protected:
 
     // The same GPAW form every other simulation wizard presents — an SCF is an
     // SCF whether it runs once or a hundred times.
+    /// The engine drives which smearing methods are offered, so the base
+    /// needs a handle on these rows to refilter them.
+    GpawElectronicRows* electronicRows() override { return &electronic_; }
     void buildConvergenceRows(QFormLayout* form) override
     {
         electronic_.buildConvergenceRows(form, this);

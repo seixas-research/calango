@@ -80,6 +80,7 @@
 #include "gui/VolumetricPanel.hpp"
 #include "gui/WannierWizard.hpp"
 #include "gui/XasResultsWindow.hpp"
+#include "gui/HubbardUWizard.hpp"
 #include "gui/XasWizard.hpp"
 #include "gui/SymmetryDialog.hpp"
 #include "gui/VacfDialog.hpp"
@@ -157,13 +158,17 @@
 #include <QPainter>
 #include <QProgressDialog>
 #include <QSaveFile>
+#include <QFontDatabase>
+#include <QPlainTextEdit>
 #include <QSettings>
+#include <QSlider>
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTemporaryDir>
 #include <QToolBar>
+#include <QWidgetAction>
 #include <QToolButton>
 #include <QTabWidget>
 #include <QTextStream>
@@ -519,6 +524,105 @@ MainWindow::MainWindow(QWidget* parent)
     resetAction->setShortcut(QKeySequence(Qt::Key_F));
     connect(resetAction, &QAction::triggered, this, &MainWindow::resetCamera);
     frameToolbar->addAction(orthoAction_);
+    // --- Perspective (field of view) --------------------------------------
+    //
+    // Directly after the projection toggle, because the two are one decision
+    // taken in two steps: that toggle chooses WHETHER the scene has
+    // perspective, and this chooses HOW MUCH. Moving the slider even switches
+    // the toggle off for you, since a dolly zoom has nothing to show under a
+    // parallel projection — and a control that changes another one has no
+    // business sitting at the far end of the toolbar from it.
+    //
+    // A popup rather than a slider sitting in the toolbar: the control is
+    // vertical — wide-angle at one end, long-lens at the other, which is how a
+    // lens is thought about — and a vertical slider inline would set the
+    // height of the entire toolbar for something reached occasionally.
+    auto* perspectiveButton = new QToolButton(frameToolbar);
+    ui::IconManager::bind(perspectiveButton, QStringLiteral("camera-lens-line"));
+    perspectiveButton->setFocusPolicy(Qt::NoFocus);
+    perspectiveButton->setToolTip(
+        tr("Perspective — a dolly zoom over the camera's field of view.\n\n"
+           "The eye moves with the angle, so the structure keeps its size on "
+           "screen and only the depth relationship changes: narrow is a long "
+           "lens from far off, flattening the near and far faces of a cell "
+           "onto each other, while wide is a short lens from close in, "
+           "throwing them apart and driving the eye down a channel or a "
+           "pore.\n\n"
+           "It needs the perspective projection to have anything to show, so "
+           "moving it leaves orthographic. Reset restores both the default "
+           "angle and the projection you started in."));
+    {
+        // A QMenu holding a QWidgetAction, rather than a bare Qt::Popup widget
+        // positioned by hand. Qt then owns the mouse grab, the placement and
+        // the dismissal — including the release that follows the opening
+        // click, which on a hand-rolled popup lands on whatever now sits under
+        // the cursor and had the slider jump to it.
+        auto* menu = new QMenu(perspectiveButton);
+        auto* page = new QWidget(menu);
+        auto* pageLayout = new QVBoxLayout(page);
+        pageLayout->setContentsMargins(10, 8, 10, 8);
+
+        auto* readout = new QLabel(page);
+        readout->setAlignment(Qt::AlignHCenter);
+        auto* slider = new QSlider(Qt::Vertical, page);
+        slider->setRange(static_cast<int>(render::kMinFieldOfViewDeg),
+                         static_cast<int>(render::kMaxFieldOfViewDeg));
+        slider->setMinimumHeight(150);
+        auto* resetButton = new QPushButton(tr("Reset"), page);
+        resetButton->setToolTip(tr("Back to %1°, the default.")
+                                    .arg(static_cast<int>(
+                                        render::kDefaultFieldOfViewDeg)));
+
+        pageLayout->addWidget(readout);
+        pageLayout->addWidget(slider, 1, Qt::AlignHCenter);
+        pageLayout->addWidget(resetButton);
+
+        auto* action = new QWidgetAction(menu);
+        action->setDefaultWidget(page);
+        menu->addAction(action);
+        perspectiveButton->setMenu(menu);
+        perspectiveButton->setPopupMode(QToolButton::InstantPopup);
+
+        const auto syncReadout = [readout](int degrees) {
+            readout->setText(tr("%1°").arg(degrees));
+        };
+        // What was orthographic before the popup opened, so Reset can put it
+        // back rather than leaving the user in a projection they never chose.
+        auto wasOrthographic = std::make_shared<bool>(false);
+
+        connect(slider, &QSlider::valueChanged, this,
+                [this, syncReadout](int degrees) {
+                    syncReadout(degrees);
+                    // A dolly zoom needs somewhere to dolly TO. Under the
+                    // orthographic projection this application defaults to,
+                    // distance·tan(fov/2) IS the frustum height, so the
+                    // compensated move cancels the angle exactly and the
+                    // slider would appear dead. Drive the projection from the
+                    // action, not the viewport, so the View-menu check mark
+                    // and the [O] shortcut stay honest about the state.
+                    if (orthoAction_ && orthoAction_->isChecked())
+                        orthoAction_->setChecked(false);
+                    viewport_->dollyFieldOfView(static_cast<float>(degrees));
+                });
+        connect(resetButton, &QPushButton::clicked, slider,
+                [slider, wasOrthographic, this] {
+                    slider->setValue(
+                        static_cast<int>(render::kDefaultFieldOfViewDeg));
+                    if (*wasOrthographic && orthoAction_)
+                        orthoAction_->setChecked(true);
+                });
+        // Re-read on open: the field of view can also change with a restored
+        // point of view or a switch to a tab that carries its own camera.
+        connect(menu, &QMenu::aboutToShow, this,
+                [this, slider, syncReadout, wasOrthographic] {
+                    *wasOrthographic = orthoAction_ && orthoAction_->isChecked();
+                    const QSignalBlocker blocker(slider);
+                    slider->setValue(
+                        static_cast<int>(std::lround(viewport_->fieldOfView())));
+                    syncReadout(slider->value());
+                });
+    }
+    frameToolbar->addWidget(perspectiveButton);
     // Directly after the projection toggle: both are about how the scene is
     // LOOKED AT rather than what is drawn, and this is the one that makes a
     // framing reproducible instead of hand-dragged.
@@ -565,6 +669,7 @@ MainWindow::MainWindow(QWidget* parent)
     QAction* alignYz = frameToolbar->addAction(
         cameraToolbarIcon(QStringLiteral("yz")), tr("Align view with the YZ plane"));
     connect(alignYz, &QAction::triggered, viewport_, &ViewportWidget::alignWithYZ);
+
 
     // --- Fixed-angle axis rotations ---------------------------------------
     // X+/X− .. Z+/Z− rotate the scene about a world axis by the editable
@@ -1108,6 +1213,18 @@ void MainWindow::createMenusAndDocks()
                         "transition levels and the charged-defect diagram, "
                         "with the Freysoldt-Neugebauer-Van de Walle "
                         "finite-size correction"));
+    // Hubbard U from linear response. It sits with the post-processes because
+    // it is one — the answer is a response function assembled from a queue of
+    // single points — but it is the only entry here that produces a PARAMETER
+    // rather than an observable: what comes out is fed back into the next
+    // calculation's DFT+U, which is why it is worth computing rather than
+    // borrowing from a paper about a different compound.
+    electronicsMenu->addAction(tr("&Hubbard Parameter Calculation…"), this,
+                               &MainWindow::showHubbardParameters)
+        ->setToolTip(tr("U_eff from the linear response of the on-site "
+                        "occupation to a localized perturbation "
+                        "(Cococcioni & de Gironcoli) — VASP or Quantum "
+                        "ESPRESSO"));
     electronicsMenu->addSeparator();
     // Born charges are the electronic response to a DISPLACEMENT rather than to
     // a field, which is why they sit slightly apart from the rest.
@@ -1859,8 +1976,13 @@ void MainWindow::onTabCloseRequested(int index)
 {
     if (index < 0 || index >= static_cast<int>(documents_.size()))
         return;
-    if (documents_[static_cast<std::size_t>(index)].get() == liveDoc_)
+    Document* closing = documents_[static_cast<std::size_t>(index)].get();
+    if (closing == liveDoc_)
         liveDoc_ = nullptr; // stream continues, frames just aren't shown
+    // Same for a workflow node's live tab: the entry must go with the
+    // document, or the next streamed frame appends to freed memory.
+    std::erase_if(workflowLiveDocs_,
+                  [closing](const auto& entry) { return entry.second == closing; });
     documents_.erase(documents_.begin() + index);
     tabBar_->removeTab(index); // currentChanged fires and re-syncs
     refreshTabTitles();        // re-number the remaining tabs (01, 02, …)
@@ -5519,6 +5641,15 @@ void MainWindow::openXasResults(const QString& directory)
     window->show();
 }
 
+void MainWindow::showHubbardParameters()
+{
+    if (!prepareSimulation(tr("Hubbard Parameter Calculation")))
+        return;
+    HubbardUWizard wizard(currentDocument()->structure, this);
+    runSimulationWizard(wizard, tr("Hubbard Parameter Calculation"),
+                        /*expectFrames=*/false);
+}
+
 void MainWindow::showXas()
 {
     if (!prepareSimulation(tr("X-ray Absorption Spectroscopy")))
@@ -6210,8 +6341,40 @@ WorkflowWindow* MainWindow::createWorkflowPanel(QWidget* parent)
                 if (!metricsTimer_->isActive())
                     metricsTimer_->start();
             });
+    // Live geometries from a running node. The trajectory tab is opened HERE,
+    // on the first frame, rather than when the node starts: only relaxations
+    // and MD runs stream anything, and the panel does not have to say in
+    // advance which nodes those are — a node that streams nothing simply never
+    // triggers this.
+    connect(window, &WorkflowWindow::nodeFrameStreamed, this,
+            [this](int id, const std::shared_ptr<core::Structure>& frame) {
+                if (!frame)
+                    return;
+                auto it = workflowLiveDocs_.find(id);
+                if (it == workflowLiveDocs_.end()) {
+                    const auto record = processRecords_.find(id);
+                    const QString label = record != processRecords_.end()
+                        ? record->second.label
+                        : tr("Workflow run");
+                    // Seeded empty: the first streamed frame becomes frame 0,
+                    // matching a standalone run — the input geometry carries no
+                    // evaluated forces, so scrubbing onto it would blank the
+                    // vector overlay every other frame has.
+                    const int tab = addDocument(
+                        std::make_shared<core::Structure>(*frame),
+                        tr("%1 (live)").arg(label), {}, label);
+                    it = workflowLiveDocs_
+                             .emplace(id,
+                                      documents_[static_cast<std::size_t>(tab)]
+                                          .get())
+                             .first;
+                    tabBar_->setCurrentIndex(tab);
+                }
+                appendStreamedFrame(it->second, frame);
+            });
     connect(window, &WorkflowWindow::nodeFinished, this,
-            [this](int id, bool) {
+            [this](int id, bool success) {
+                finalizeWorkflowTrajectory(id, success);
                 workflowRunningIds_.erase(id);
                 if (auto it = processRecords_.find(id);
                     it != processRecords_.end()
@@ -6954,10 +7117,70 @@ int MainWindow::indexOfDocument(const Document* document) const
 
 void MainWindow::onFrameStreamed(const std::shared_ptr<core::Structure>& frame)
 {
-    const int index = liveDoc_ ? indexOfDocument(liveDoc_) : -1;
+    appendStreamedFrame(liveDoc_, frame);
+}
+
+void MainWindow::finalizeWorkflowTrajectory(int processId, bool success)
+{
+    // The streamed case: the node already owns a trajectory tab, so all that
+    // is left is to drop the "(live)" marker and land the playhead on the
+    // answer — the same finish a standalone run gets in onJobFinished().
+    if (const auto it = workflowLiveDocs_.find(processId);
+        it != workflowLiveDocs_.end()) {
+        Document* streamed = it->second;
+        workflowLiveDocs_.erase(it);
+        const int index = indexOfDocument(streamed);
+        if (index >= 0 && streamed->frames.size() > 1) {
+            streamed->fileName.replace(tr(" (live)"), QString());
+            tabBar_->setTabText(index, streamed->fileName);
+            if (tabBar_->currentIndex() == index)
+                syncViewsToCurrent(false);
+            showFinalFrame(streamed);
+            if (success)
+                statusBar()->showMessage(
+                    tr("Workflow node finished — %n streamed frame(s)", nullptr,
+                       static_cast<int>(streamed->frames.size())));
+            return;
+        }
+        // One frame is not a trajectory; drop the placeholder tab rather than
+        // leaving a timeline with a single position on it.
+        if (index >= 0 && streamed->frames.size() <= 1)
+            onTabCloseRequested(index);
+    }
+
+    if (!success)
+        return;
+
+    // Nothing streamed. A relaxation or MD node still WROTE its trajectory, so
+    // load that instead of leaving the timeline empty — this is the half of the
+    // bug that survives even when live streaming is unavailable (a remote run,
+    // or a script whose engine writes frames only at the end).
+    const auto record = processRecords_.find(processId);
+    if (record == processRecords_.end() || record->second.directory.isEmpty())
+        return;
+    // Same precedence as onProcessResultRequested's trajectory fallback:
+    // md.extxyz before md.traj because it carries the per-atom forces and
+    // velocities the vector overlay reads.
+    for (const auto* candidate : {"md.extxyz", "md.traj", "opt.traj",
+                                  "optimized.extxyz", "md_final.extxyz"}) {
+        const QString path =
+            record->second.directory + QLatin1Char('/') + QLatin1String(candidate);
+        if (QFile::exists(path)) {
+            loadFile(path);
+            if (Document* doc = currentDocument(); doc && doc->frames.size() > 1)
+                showFinalFrame(doc);
+            return;
+        }
+    }
+}
+
+void MainWindow::appendStreamedFrame(
+    Document* target, const std::shared_ptr<core::Structure>& frame)
+{
+    const int index = target ? indexOfDocument(target) : -1;
     if (index < 0 || !frame)
         return;
-    Document& doc = *liveDoc_;
+    Document& doc = *target;
     const bool followTail = static_cast<std::size_t>(timeline_->currentFrame())
         + 1 >= doc.frames.size();
     doc.frames.push_back(frame);
@@ -7318,28 +7541,73 @@ void MainWindow::about()
     header->addWidget(heading, 1);
     layout->addLayout(header);
 
-    auto* body = new QLabel(
-        tr("<p><b>Runtime &amp; build diagnostics</b></p>"
-           "%1"
-           "<p><b>Open-source dependencies</b><br>"
-           "Calango is built on the following open-source software; each "
+    // Runtime diagnostics stay with the header: they describe THIS install
+    // (which Python, which Qt, which ASE), which is the same kind of fact as
+    // the version number above them, and putting them in a tab would hide the
+    // first thing anyone opening About is usually looking for.
+    auto* diagnosticsLabel = new QLabel(
+        tr("<p><b>Runtime &amp; build diagnostics</b></p>%1").arg(diagnostics),
+        &dialog);
+    diagnosticsLabel->setTextFormat(Qt::RichText);
+    diagnosticsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(diagnosticsLabel);
+
+    // Two tabs, because they answer two different questions and one of them is
+    // a legal document. "What may I do with Calango itself?" is the licence on
+    // the left; "what is Calango built out of, and under what terms?" is the
+    // inventory on the right. They used to run together in one scrolling
+    // column, where the project's own terms were a heading among a dozen
+    // others — which is precisely the item a reader is most likely to want on
+    // its own.
+    auto* tabs = new QTabWidget(&dialog);
+
+    // --- Tab 1: Calango's own licence, and nothing else -------------------
+    auto* licenseView = new QPlainTextEdit(&dialog);
+    licenseView->setReadOnly(true);
+    // Monospaced and unwrapped: a licence is a legal text whose line breaks
+    // are part of the document, and a proportional font reflowing it makes it
+    // read as prose someone paraphrased.
+    licenseView->setFont(
+        QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    licenseView->setLineWrapMode(QPlainTextEdit::NoWrap);
+    QString licenseText;
+    if (QFile licenseFile(QStringLiteral(":/LICENSE"));
+        licenseFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        licenseText = QString::fromUtf8(licenseFile.readAll());
+    } else {
+        // The resource is compiled in, so this is a build-configuration fault
+        // rather than a missing file — say so instead of showing a blank tab
+        // that reads as "Calango has no licence".
+        licenseText = tr("The bundled LICENSE resource could not be read. "
+                         "The project's licence is the LICENSE file at the "
+                         "root of the source tree.");
+    }
+    licenseView->setPlainText(licenseText);
+    tabs->addTab(licenseView, tr("License"));
+
+    // --- Tab 2: everything Calango is built on ----------------------------
+    auto* dependencyBody = new QLabel(
+        tr("<p>Calango is built on the following open-source software; each "
            "component remains under its own license:</p>"
-           "%2"
+           "%1"
            "<p style='margin-top:8px;'>GPL/LGPL components are dynamically "
            "linked or invoked as separate tools; their source code is "
            "available from the respective upstream projects.</p>")
-            .arg(diagnostics, dependencyTable),
+            .arg(dependencyTable),
         &dialog);
-    body->setTextFormat(Qt::RichText);
-    body->setWordWrap(true);
-    body->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    dependencyBody->setTextFormat(Qt::RichText);
+    dependencyBody->setWordWrap(true);
+    dependencyBody->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    dependencyBody->setAlignment(Qt::AlignTop);
 
-    auto* scroll = new QScrollArea(&dialog);
-    scroll->setWidget(body);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    layout->addWidget(scroll, 1);
+    auto* dependencyScroll = new QScrollArea(&dialog);
+    dependencyScroll->setWidget(dependencyBody);
+    dependencyScroll->setWidgetResizable(true);
+    dependencyScroll->setFrameShape(QFrame::NoFrame);
+    dependencyScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    tabs->addTab(dependencyScroll, tr("Third-Party Licenses"));
+
+    layout->addWidget(tabs, 1);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok, &dialog);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
@@ -7351,8 +7619,12 @@ void MainWindow::about()
     const QScreen* screen =
         dialog.screen() ? dialog.screen() : QGuiApplication::primaryScreen();
     const QSize available = screen->availableGeometry().size();
-    const int width = std::min(620, available.width() * 9 / 10);
-    const int contentHeight = body->heightForWidth(width - 40) + 150;
+    const int width = std::min(680, available.width() * 9 / 10);
+    // Sized on the dependency table, which is the taller of the two tabs; the
+    // licence scrolls inside its own view. +260 covers the header, the
+    // diagnostics block, the tab bar and the button row.
+    const int contentHeight =
+        dependencyBody->heightForWidth(width - 60) + 260;
     dialog.resize(width,
                   std::min(contentHeight, available.height() * 85 / 100));
     dialog.exec();

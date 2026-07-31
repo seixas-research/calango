@@ -254,6 +254,16 @@ Q_SIGNALS:
     /// like a standalone job.
     void nodeStarted(int processId, const QString& label,
                      const QString& directory);
+    /// One live geometry streamed by the running node — the CALANGO_FRAME
+    /// blocks a relaxation or an MD run emits as it goes.
+    ///
+    /// Forwarded rather than left on this panel's private JobRunner so the
+    /// host can drive the viewport and the trajectory timeline from a workflow
+    /// node exactly as it does from a standalone run. `processId` says which
+    /// run the frame belongs to; the host opens the trajectory tab lazily on
+    /// the first one, so a node that streams nothing costs nothing.
+    void nodeFrameStreamed(int processId,
+                           const std::shared_ptr<core::Structure>& frame);
     /// The started node's job ended (successfully or not).
     void nodeFinished(int processId, bool success);
 

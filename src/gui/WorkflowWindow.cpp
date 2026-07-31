@@ -594,6 +594,19 @@ WorkflowWindow::WorkflowWindow(
     jobRunner_ = new jobs::JobRunner(this);
     connect(jobRunner_, &jobs::JobRunner::finished, this,
             &WorkflowWindow::onJobFinished);
+    // Live geometries. A relaxation or an MD node emits CALANGO_FRAME blocks
+    // exactly as the same script does when launched from its own wizard, and
+    // this runner parses them — but nothing was listening, so a workflow run
+    // showed a frozen viewport throughout and left the timeline empty at the
+    // end. The host cannot subscribe to this runner directly (it is private to
+    // the panel), so the frames are forwarded with the process id that
+    // identifies which run they belong to.
+    connect(jobRunner_, &jobs::JobRunner::frameStreamed, this,
+            [this](const std::shared_ptr<core::Structure>& frame) {
+                if (runningNode_ && runningNode_->processTaskId() >= 0)
+                    Q_EMIT nodeFrameStreamed(runningNode_->processTaskId(),
+                                             frame);
+            });
 }
 
 void WorkflowWindow::addNode()

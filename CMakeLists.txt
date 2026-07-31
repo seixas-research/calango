@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.77
+    VERSION 26.7.78
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -190,6 +190,7 @@ qt_add_executable(calango
     src/core/CddScriptGenerator.hpp
     src/core/CddScriptGenerator.cpp
     src/core/XasScriptGenerator.hpp
+    src/core/HubbardScriptGenerator.cpp
     src/core/XasScriptGenerator.cpp
     src/core/MonteCarlo.hpp
     src/core/MonteCarlo.cpp
@@ -469,6 +470,7 @@ qt_add_executable(calango
     src/gui/CddWizard.hpp
     src/gui/CddWizard.cpp
     src/gui/XasWizard.hpp
+    src/gui/HubbardUWizard.cpp
     src/gui/XasWizard.cpp
     src/gui/SpectrumPlotWidget.hpp
     src/gui/SpectrumPlotWidget.cpp
@@ -537,8 +539,6 @@ qt_add_resources(calango "shaders"
         assets/shaders/mesh.frag
         assets/shaders/shadow.vert
         assets/shaders/shadow.frag
-        assets/shaders/line.vert
-        assets/shaders/line.frag
         assets/shaders/wire.vert
         assets/shaders/wire.frag
         assets/shaders/isosurface.vert
@@ -563,6 +563,15 @@ qt_add_resources(calango "shaders"
 # interchangeable: icon_osx.png is a squircle carrying the ~80% macOS icon
 # margin, icon_linux.png is a full-bleed circular badge as freedesktop expects.
 # logo.png is the bare mark with no plate behind it, for in-app use (About).
+# The project's own licence, embedded so the About dialog shows the REAL text
+# rather than a copy that can drift from the file at the repo root.
+qt_add_resources(calango "license"
+    PREFIX "/"
+    BASE "."
+    FILES
+        LICENSE
+)
+
 qt_add_resources(calango "branding"
     PREFIX "/"
     FILES
@@ -590,6 +599,7 @@ qt_add_resources(calango "icons"
         assets/icons/box-1-fill.svg
         assets/icons/box-3-line.svg
         assets/icons/brush-fill.svg
+        assets/icons/camera-lens-line.svg
         assets/icons/checkbox-circle-line.svg
         assets/icons/close-circle-line.svg
         assets/icons/clapperboard-fill.svg
@@ -1028,8 +1038,6 @@ if(CALANGO_BUILD_TESTS)
             assets/shaders/mesh.frag
             assets/shaders/shadow.vert
             assets/shaders/shadow.frag
-            assets/shaders/line.vert
-            assets/shaders/line.frag
             assets/shaders/wire.vert
             assets/shaders/wire.frag
             assets/shaders/volume.vert
@@ -1078,10 +1086,13 @@ if(CALANGO_BUILD_TESTS)
             assets/shaders/mesh.frag
             assets/shaders/shadow.vert
             assets/shaders/shadow.frag
-            assets/shaders/line.vert
-            assets/shaders/line.frag
             assets/shaders/wire.vert
-            assets/shaders/wire.frag)
+            assets/shaders/wire.frag
+            # The filled unit cell is shaded through the lit surface program.
+            # Without these the renderer silently falls back to the unlit path
+            # and the test measures the fallback rather than the feature.
+            assets/shaders/isosurface.vert
+            assets/shaders/isosurface.frag)
     target_include_directories(calango_translucent_render_test PRIVATE src)
     target_link_libraries(calango_translucent_render_test
         PRIVATE Qt6::Gui Qt6::OpenGL)
@@ -1117,9 +1128,11 @@ if(CALANGO_BUILD_TESTS)
         # other, so the first GUI test to touch it pins the keys.
         src/gui/RandomNoiseViewer.cpp
         src/gui/CddWizard.cpp
+        src/gui/HubbardUWizard.cpp
         src/gui/XasWizard.cpp
         src/gui/XasResultsWindow.cpp
         src/gui/SpectrumPlotWidget.cpp
+        src/core/HubbardScriptGenerator.cpp
         src/core/XasScriptGenerator.cpp
         src/gui/EditVolumetricRenderDialog.cpp
         src/gui/VolumetricStyle.cpp
@@ -1380,6 +1393,26 @@ if(CALANGO_BUILD_TESTS)
     target_link_libraries(calango_element_color_test PRIVATE Qt6::Widgets)
     add_test(NAME element_colors COMMAND calango_element_color_test)
 
+    # Linear-response Hubbard U. Every failure mode of this method is silent —
+    # a chi_0 run left to converge measures chi twice and yields U = 0, an
+    # alpha applied per species rather than per atom perturbs a whole
+    # sublattice — so the generated driver is asserted on directly. GUI-free,
+    # GL-free, Python-free.
+    qt_add_executable(calango_hubbard_test
+        tests/HubbardLinearResponseTest.cpp
+        src/core/HubbardScriptGenerator.cpp
+        src/core/AseScriptGenerator.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/core/KPath.cpp
+    )
+    target_include_directories(calango_hubbard_test PRIVATE src)
+    target_compile_definitions(calango_hubbard_test PRIVATE
+        CALANGO_VERSION="${PROJECT_VERSION}")
+    target_link_libraries(calango_hubbard_test PRIVATE Qt6::Core)
+    add_test(NAME hubbard_linear_response COMMAND calango_hubbard_test)
+
     # Orbit camera: the default view, the plane alignments and the roll axis,
     # checked against the matrices the camera actually produces. Every one of
     # these is silently wrong-able — a pitch of the wrong sign still renders,
@@ -1476,6 +1509,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/RamanIrScriptGenerator.cpp
         src/core/RandomNoiseScriptGenerator.cpp
         src/core/CddScriptGenerator.cpp
+        src/core/HubbardScriptGenerator.cpp
         src/core/XasScriptGenerator.cpp
         src/core/UnfoldingScriptGenerator.cpp
         src/core/TwoDBandsScriptGenerator.cpp

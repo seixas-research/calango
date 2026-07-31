@@ -744,6 +744,12 @@ private:
     /// Whether the lit isosurface program should be used: the Preferences
     /// selection says so AND the program linked. Links it on first ask.
     bool useLitIsosurface();
+    /// Link (once) the lit surface program and report whether this driver
+    /// accepted it. Separate from useLitIsosurface(), which additionally
+    /// honours the Preferences isosurface profile: the unit cell is lit
+    /// whatever that profile says, but still has to degrade on a driver that
+    /// rejects the shader.
+    bool ensureLitSurfaceProgram();
     /// Push the scene lights into the bound isosurface program, in the same
     /// view-space convention mesh.frag uses — so an isosurface and the atoms
     /// inside it are lit by one set of lights rather than two.
@@ -795,7 +801,6 @@ private:
 
     QOpenGLShaderProgram meshProgram_;
     QOpenGLShaderProgram shadowProgram_; ///< depth-only, light's-eye pass
-    QOpenGLShaderProgram lineProgram_; ///< uniform-color lines (unit cell)
     QOpenGLShaderProgram wireProgram_;
     /// "Lit surface" isosurface profile. Linked lazily on first use so a
     /// driver that rejects it falls back to the legacy path with a warning
@@ -831,11 +836,15 @@ private:
     InstancedMesh cylinder_;
     InstancedMesh cone_;     ///< arrowheads of force/velocity vectors
     InstancedMesh cellTube_; ///< thick cell wireframe (cellLineWidth > 1)
-    /// The six cell faces as triangles, GL_TRIANGLES with a flat per-vertex
-    /// colour. Blended at Style::cellFillAlpha without writing depth, like the
-    /// polyhedra faces — the box is scene furniture and must never occlude the
+    /// The cell faces as triangles — the parallelepiped's six or the
+    /// Wigner-Seitz cell's however many.
+    ///
+    /// A LIT buffer (position, normal, colour), so the fill is shaded by the
+    /// scene lights like every other surface instead of reading as a flat
+    /// wash. Blended at Style::cellFillAlpha without writing depth, like the
+    /// polyhedra faces: the cell is scene furniture and must never occlude the
     /// atoms it encloses.
-    ColoredVertexBuffer cellFaces_;
+    LitVertexBuffer cellFaces_;
     ColoredVertexBuffer wireBonds_;  ///< GL_LINES
     ColoredVertexBuffer wireAtoms_;  ///< GL_POINTS (isolated atoms visible)
     ColoredVertexBuffer polyhedronFaces_; ///< GL_TRIANGLES (translucent)
@@ -902,9 +911,6 @@ private:
     QVector3D sceneCenter_;
     float sceneRadius_ = 1.0f;
 
-    QOpenGLVertexArrayObject cellVao_;
-    QOpenGLBuffer cellVbo_{QOpenGLBuffer::VertexBuffer};
-    int cellVertexCount_ = 0;
 };
 
 } // namespace calango::render

@@ -254,6 +254,23 @@ public Q_SLOTS:
     std::vector<render::Light>& lights() { return renderer_.lights(); }
     void styleChanged(bool rebuildGeometry);
 
+    /// Camera field of view, in degrees. There is deliberately no plain
+    /// setter to match: setting the angle alone is a zoom, which the scroll
+    /// wheel already does better. Use dollyFieldOfView().
+    float fieldOfView() const { return camera_.fieldOfView(); }
+
+    /// The perspective slider's actual operation: a dolly zoom, not a zoom.
+    /// The eye tracks the angle so the structure keeps its size on screen and
+    /// only the depth relationship moves. Emits cameraChanged() because the
+    /// eye distance really does change, which anything mirroring the camera
+    /// (the point-of-view dialog, a film keyframe) needs to see.
+    void dollyFieldOfView(float degrees)
+    {
+        camera_.setFieldOfViewDolly(degrees);
+        Q_EMIT cameraChanged();
+        update();
+    }
+
     render::OrbitCamera& camera() { return camera_; }
     const render::OrbitCamera& camera() const { return camera_; }
 

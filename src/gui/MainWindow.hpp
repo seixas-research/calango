@@ -274,6 +274,9 @@ private Q_SLOTS:
     /// Electronics → "X-ray Absorption Spectroscopy (XAS)…": core-hole setup
     /// generation, ground state and spectrum, following the GPAW tutorial.
     void showXas();
+    /// Electronics → "Hubbard Parameter Calculation…": U from linear response
+    /// (Cococcioni & de Gironcoli) rather than from a literature table.
+    void showHubbardParameters();
     /// Open the XAS spectrum viewer for a finished job directory.
     void openXasResults(const QString& directory);
     /// Electronics → "Born Effective Charges…": stage and launch the Z* run.
@@ -391,6 +394,7 @@ private Q_SLOTS:
     /// each Wannier post-process offers in its "Source MLWF process" step.
     /// Keyed on wannier.json, which the MLWF script writes only on success.
     QList<QPair<QString, QString>> completedMlwfRuns() const;
+
     /// Interpreter a Wannier post-process must run under: the one the MLWF run
     /// in `mlwfDir` itself used (from its calculator.json), else the GPAW
     /// environment from Preferences. NOT the embedded interpreter — it has ASE
@@ -591,6 +595,15 @@ private:
     /// itself as the current task.
     void startNextQueuedJob();
     int indexOfDocument(const Document* document) const;
+    /// Append one streamed geometry to `target` and keep the timeline and the
+    /// viewport following it. Shared by the main runner's live document and by
+    /// a workflow node's, which differ only in which tab they feed.
+    void appendStreamedFrame(Document* target,
+                             const std::shared_ptr<core::Structure>& frame);
+    /// Turn a finished workflow node's live tab into a plain trajectory tab —
+    /// or, when the node streamed nothing, load whatever trajectory it left in
+    /// its job directory so the timeline is populated either way.
+    void finalizeWorkflowTrajectory(int processId, bool success);
     bool ensureAseAvailable();
     /// Shared preconditions for the dedicated Simulation dialogs: a non-empty
     /// current structure and ASE available. It no longer checks whether a job
@@ -758,6 +771,14 @@ private:
     /// Document receiving live streamed frames (null outside runs;
     /// cleared when its tab is closed mid-run).
     Document* liveDoc_ = nullptr;
+    /// The same thing for workflow nodes, keyed by process id.
+    ///
+    /// Separate from liveDoc_ rather than sharing it: the Workflow panel drives
+    /// its own JobRunner, so a node can be streaming while a queued job runs on
+    /// the main one, and a single pointer would let whichever started last
+    /// steal the other's frames. Entries are created on a node's first frame
+    /// and dropped when it finishes or its tab is closed.
+    std::map<int, Document*> workflowLiveDocs_;
     /// Band of images staged as band.extxyz on the next stageJob (NEB);
     /// consumed and cleared by stageJob.
     std::vector<std::shared_ptr<core::Structure>> stagedBandFrames_;

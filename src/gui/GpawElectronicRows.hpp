@@ -46,6 +46,20 @@ public:
     /// Spin polarization mode and the initial magnetic moments.
     void buildSpinRows(QFormLayout* form, QObject* owner);
 
+    /// Restrict the smearing menu to what the selected engine can actually
+    /// run, and retune the per-method notes for it.
+    ///
+    /// The menu was written for GPAW, which accepts every scheme in it. VASP
+    /// does not: Marzari-Vanderbilt, orbital-free and fixed occupations have
+    /// no ISMEAR, and the generator silently substitutes a narrow Gaussian for
+    /// them. Offering a choice that is then quietly replaced is worse than not
+    /// offering it, so those entries are withdrawn rather than approximated.
+    ///
+    /// Safe to call before the rows are built and safe to call repeatedly; the
+    /// current selection is preserved when the new engine still offers it, and
+    /// otherwise falls back to the first entry that survives.
+    void setCalculatorKind(core::CalculatorKind kind);
+
     /// Show only the parameters the selected smearing method actually takes,
     /// and grey out what the other selections make meaningless (the moments of
     /// an unpolarized run). Safe before the rows are built.
@@ -87,6 +101,16 @@ private:
     /// failure, which validationError() reports.
     std::vector<std::vector<double>> parseFixedOccupations() const;
 
+    /// Whether `method` is one the current engine can run as named. See
+    /// setCalculatorKind().
+    bool methodSupported(core::SmearingMethod method) const;
+    /// (Re)fill the smearing menu with the methods the current engine offers,
+    /// keeping the selection when it survives.
+    void populateSmearingMethods();
+
+    /// The engine the rows are currently dressed for. GPAW by default, which
+    /// is the permissive case — every method is offered until told otherwise.
+    core::CalculatorKind kind_ = core::CalculatorKind::Gpaw;
     QComboBox* smearingCombo_ = nullptr;
     QDoubleSpinBox* smearingWidthSpin_ = nullptr;
     QLabel* smearingWidthLabel_ = nullptr;

@@ -8,6 +8,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QRegularExpression>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QWidget>
@@ -26,6 +27,137 @@ QString tr(const char* source)
 }
 } // namespace
 
+/// Every smearing scheme the application knows, in the order a user chooses
+/// from: the physical default first, then the other broadenings, then the
+/// exact BZ integrators, then the special cases.
+///
+/// A table rather than a run of addItem() calls because the menu is now
+/// rebuilt whenever the engine changes — VASP is offered a strict subset — and
+/// two copies of these strings would be two places for the wording to drift.
+struct SmearingSpec {
+    core::SmearingMethod method;
+    const char* label;
+    const char* tip;
+};
+
+static const SmearingSpec kSmearingMethods[] = {
+    {core::SmearingMethod::FermiDirac, QT_TRANSLATE_NOOP(
+         "calango::gui::SimulationWizardBase", "Fermi-Dirac"),
+     QT_TRANSLATE_NOOP("calango::gui::SimulationWizardBase",
+                       "Occupation at an electronic temperature — the physical "
+                       "choice, and the only one whose free energy the reported "
+                       "total energy is consistent with.")},
+    {core::SmearingMethod::Gaussian, QT_TRANSLATE_NOOP(
+         "calango::gui::SimulationWizardBase", "Gaussian"),
+     QT_TRANSLATE_NOOP("calango::gui::SimulationWizardBase",
+                       "Gaussian broadening — the safe general-purpose choice, "
+                       "and the one to use when you are not sure the system is "
+                       "metallic.")},
+    {core::SmearingMethod::MethfesselPaxton, QT_TRANSLATE_NOOP(
+         "calango::gui::SimulationWizardBase", "Methfessel-Paxton"),
+     QT_TRANSLATE_NOOP("calango::gui::SimulationWizardBase",
+                       "Hermite expansion of order N. Converges the total energy "
+                       "faster than Gaussian for metals, at the cost of occupations "
+                       "that can fall outside [0, 1].")},
+    {core::SmearingMethod::MarzariVanderbilt, QT_TRANSLATE_NOOP(
+         "calango::gui::SimulationWizardBase", "Marzari-Vanderbilt"),
+     QT_TRANSLATE_NOOP("calango::gui::SimulationWizardBase",
+                       "Cold smearing: a nearly entropy-free broadening, so the "
+                       "total energy is close to the σ → 0 limit without "
+                       "extrapolation.")},
+    {core::SmearingMethod::TetrahedronMethod, QT_TRANSLATE_NOOP(
+         "calango::gui::SimulationWizardBase", "Tetrahedron method"),
+     QT_TRANSLATE_NOOP("calango::gui::SimulationWizardBase",
+                       "Linear tetrahedron BZ integration — no broadening at all. "
+                       "Requires a Monkhorst-Pack k-grid; it cannot run on "
+                       "Γ-only sampling.")},
+    {core::SmearingMethod::ImprovedTetrahedronMethod, QT_TRANSLATE_NOOP(
+         "calango::gui::SimulationWizardBase", "Improved tetrahedron (Blöchl)"),
+     QT_TRANSLATE_NOOP("calango::gui::SimulationWizardBase",
+                       "Tetrahedron integration with Blöchl's curvature correction. "
+                       "The accurate choice for a density of states, and equally "
+                       "requires a Monkhorst-Pack grid.")},
+    {core::SmearingMethod::OrbitalFree, QT_TRANSLATE_NOOP(
+         "calango::gui::SimulationWizardBase", "Orbital-free"),
+     QT_TRANSLATE_NOOP("calango::gui::SimulationWizardBase",
+                       "Thomas-Fermi occupations, for orbital-free DFT. Only "
+                       "meaningful with an orbital-free functional.")},
+    {core::SmearingMethod::FixedOccupations, QT_TRANSLATE_NOOP(
+         "calango::gui::SimulationWizardBase", "Fixed"),
+     QT_TRANSLATE_NOOP("calango::gui::SimulationWizardBase",
+                       "Occupation numbers given explicitly instead of derived from "
+                       "a Fermi level — how a core hole or a specific excited "
+                       "configuration is forced.")},
+    {core::SmearingMethod::None, QT_TRANSLATE_NOOP(
+         "calango::gui::SimulationWizardBase", "None (no smearing)"),
+     QT_TRANSLATE_NOOP("calango::gui::SimulationWizardBase",
+                       "Zero-width occupations: integer filling by the aufbau "
+                       "principle. Insulators and isolated molecules.")},
+};
+
+bool GpawElectronicRows::methodSupported(core::SmearingMethod method) const
+{
+    if (kind_ != core::CalculatorKind::Vasp)
+        return true;
+    // VASP encodes the occupation scheme in a single integer, ISMEAR, and has
+    // no value for these three. The script generator substitutes a narrow
+    // Gaussian and prints a note saying so — which is the right thing for a
+    // configuration that already exists, and the wrong thing to let a user
+    // choose fresh. Withdrawn from the menu instead.
+    switch (method) {
+    case core::SmearingMethod::MarzariVanderbilt:
+    case core::SmearingMethod::OrbitalFree:
+    case core::SmearingMethod::FixedOccupations:
+        return false;
+    default:
+        return true;
+    }
+}
+
+void GpawElectronicRows::populateSmearingMethods()
+{
+    if (!smearingCombo_)
+        return;
+    // Survive the rebuild if the engine still offers what was selected. The
+    // signal is blocked because the intermediate states of a clear()+refill
+    // are not selections the user made.
+    const core::SmearingMethod previous =
+        smearingCombo_->count() > 0 ? selectedMethod()
+                                    : core::SmearingMethod::FermiDirac;
+    const QSignalBlocker blocker(smearingCombo_);
+    smearingCombo_->clear();
+    // Per-item tool tips, not one tip on the combo: the difference between
+    // these methods is the whole decision, and a single paragraph covering
+    // nine of them is one nobody reads.
+    for (const SmearingSpec& spec : kSmearingMethods) {
+        if (!methodSupported(spec.method))
+            continue;
+        // The enum travels as item data rather than as the row number. With
+        // the list now varying by engine, the row number means nothing at all.
+        smearingCombo_->addItem(tr(spec.label), static_cast<int>(spec.method));
+        smearingCombo_->setItemData(smearingCombo_->count() - 1, tr(spec.tip),
+                                    Qt::ToolTipRole);
+    }
+    // Fermi-Dirac by default: it is the physical occupation function at an
+    // electronic temperature, it is what GPAW's own default resolves to, and
+    // unlike Gaussian it converges to a free energy that the reported total
+    // energy is actually consistent with. VASP offers it too (ISMEAR = -1).
+    const int wanted = smearingCombo_->findData(static_cast<int>(previous));
+    const int fallback =
+        smearingCombo_->findData(static_cast<int>(core::SmearingMethod::FermiDirac));
+    smearingCombo_->setCurrentIndex(
+        wanted >= 0 ? wanted : (fallback >= 0 ? fallback : 0));
+}
+
+void GpawElectronicRows::setCalculatorKind(core::CalculatorKind kind)
+{
+    if (kind_ == kind)
+        return;
+    kind_ = kind;
+    populateSmearingMethods();
+    updateEnabled();
+}
+
 void GpawElectronicRows::buildConvergenceRows(QFormLayout* form,
                                               QObject* owner)
 {
@@ -35,63 +167,9 @@ void GpawElectronicRows::buildConvergenceRows(QFormLayout* form,
     convForm_ = form;
 
     smearingCombo_ = new QComboBox(parent);
-    // Menu order is the order a user chooses in — the physical default first,
-    // then the other broadenings, then the exact BZ integrators and the two
-    // special cases. The enum travels as item data rather than as the row
-    // number: binding the display order to the declaration order is what would
-    // make reordering this list silently select a different method.
-    // Per-item tool tips, not one tip on the combo: the difference between
-    // these methods is the whole decision, and a single paragraph covering
-    // eight of them is one nobody reads.
-    const auto addMethod = [this](const QString& label,
-                                  core::SmearingMethod method,
-                                  const QString& tip) {
-        smearingCombo_->addItem(label, static_cast<int>(method));
-        smearingCombo_->setItemData(smearingCombo_->count() - 1, tip,
-                                    Qt::ToolTipRole);
-    };
-    addMethod(tr("Fermi-Dirac"), core::SmearingMethod::FermiDirac,
-              tr("Occupation at an electronic temperature — the physical "
-                 "choice, and the only one whose free energy the reported "
-                 "total energy is consistent with."));
-    addMethod(tr("Gaussian"), core::SmearingMethod::Gaussian,
-              tr("Gaussian broadening. Emitted as Methfessel-Paxton at order "
-                 "0, which is what Gaussian smearing is."));
-    addMethod(tr("Methfessel-Paxton"), core::SmearingMethod::MethfesselPaxton,
-              tr("Hermite expansion of order N. Converges the total energy "
-                 "faster than Gaussian for metals, at the cost of occupations "
-                 "that can fall outside [0, 1]."));
-    addMethod(tr("Marzari-Vanderbilt"),
-              core::SmearingMethod::MarzariVanderbilt,
-              tr("Cold smearing: a nearly entropy-free broadening, so the "
-                 "total energy is close to the σ → 0 limit without "
-                 "extrapolation."));
-    addMethod(tr("Tetrahedron method"),
-              core::SmearingMethod::TetrahedronMethod,
-              tr("Linear tetrahedron BZ integration — no broadening at all. "
-                 "Requires a Monkhorst-Pack k-grid; it cannot run on "
-                 "Γ-only sampling."));
-    addMethod(tr("Improved tetrahedron method"),
-              core::SmearingMethod::ImprovedTetrahedronMethod,
-              tr("Tetrahedron integration with Blöchl's curvature correction. "
-                 "The accurate choice for a density of states, and equally "
-                 "requires a Monkhorst-Pack grid."));
-    addMethod(tr("Orbital-free"), core::SmearingMethod::OrbitalFree,
-              tr("Thomas-Fermi occupations, for orbital-free DFT. Only "
-                 "meaningful with an orbital-free functional."));
-    addMethod(tr("Fixed"), core::SmearingMethod::FixedOccupations,
-              tr("Occupation numbers given explicitly instead of derived from "
-                 "a Fermi level — how a core hole or a specific excited "
-                 "configuration is forced."));
-    addMethod(tr("None (no smearing)"), core::SmearingMethod::None,
-              tr("Zero-width occupations: integer filling by the aufbau "
-                 "principle. Insulators and isolated molecules."));
-    // Fermi-Dirac by default: it is the physical occupation function at an
-    // electronic temperature, it is what GPAW's own default resolves to, and
-    // unlike Gaussian it converges to a free energy that the reported total
-    // energy is actually consistent with.
-    smearingCombo_->setCurrentIndex(smearingCombo_->findData(
-        static_cast<int>(core::SmearingMethod::FermiDirac)));
+    // Filled by setCalculatorKind(), which is also what re-fills it when the
+    // engine changes — the list is engine-dependent (see methodSupported()).
+    populateSmearingMethods();
     smearingCombo_->setToolTip(
         tr("Occupation-number broadening. Use smearing for metals; None for "
            "insulators and isolated molecules. The parameters beside this "
@@ -338,9 +416,13 @@ void GpawElectronicRows::updateEnabled()
                   .arg(validationError().toHtmlEscaped());
         break;
     case core::SmearingMethod::Gaussian:
-        note = tr("Generated as <tt>methfessel-paxton</tt> at order 0 — GPAW "
-                  "has no separate name for Gaussian smearing, and order 0 is "
-                  "its definition.");
+        // A note about how GPAW spells this internally, which is of no
+        // interest whatsoever under another engine — VASP has a first-class
+        // ISMEAR = 0 for Gaussian and nothing is being translated.
+        if (kind_ == core::CalculatorKind::Gpaw)
+            note = tr("Generated as <tt>methfessel-paxton</tt> at order 0 — GPAW "
+                      "has no separate name for Gaussian smearing, and order 0 "
+                      "is its definition.");
         break;
     case core::SmearingMethod::None:
         note = tr("Integer filling by the aufbau principle. Correct for an "

@@ -593,6 +593,13 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
         << "    encut=" << c.planeWaveCutoffEv << ",\n"
         << "    kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2]
         << "),\n"
+        // ASE's VASP calculator writes a Gamma-centered KPOINTS block when
+        // `gamma=True` and a Monkhorst-Pack one otherwise. Worth being
+        // explicit about rather than leaving to the default: an even mesh
+        // without this misses Γ entirely, which a hexagonal cell and any
+        // downstream band or Wannier step both care about.
+        << "    gamma=" << pyBool(c.kptsGammaCentered) << ",  # "
+        << (c.kptsGammaCentered ? "Γ-centered" : "Monkhorst-Pack") << "\n"
         << "    # Electronic minimization\n"
         << "    algo=\"" << algo << "\",\n"
         << "    nelm=" << c.vaspNelm << ",\n"
@@ -1845,7 +1852,7 @@ std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,
             << "\", \"backend\": \"libvdwxc\"},  # non-local vdW functional\n";
     else
         out << indent << "xc=\"" << c.gpawXc << "\",\n";
-    if (c.gpawGammaCentered)
+    if (c.kptsGammaCentered)
         // Γ-centered Monkhorst-Pack grid: the {'size', 'gamma'} dict form.
         out << indent << "kpts={\"size\": (" << c.kpts[0] << ", " << c.kpts[1]
             << ", " << c.kpts[2] << "), \"gamma\": True},  # Γ-centered\n";

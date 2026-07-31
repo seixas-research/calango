@@ -542,9 +542,6 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     meshProgram_.addShaderFromSourceFile(QOpenGLShader::Fragment, ":/assets/shaders/mesh.frag");
     meshProgram_.link();
 
-    lineProgram_.addShaderFromSourceFile(QOpenGLShader::Vertex, ":/assets/shaders/line.vert");
-    lineProgram_.addShaderFromSourceFile(QOpenGLShader::Fragment, ":/assets/shaders/line.frag");
-    lineProgram_.link();
 
     shadowProgram_.addShaderFromSourceFile(QOpenGLShader::Vertex,
                                            ":/assets/shaders/shadow.vert");
@@ -592,15 +589,7 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     createColoredBuffer(managedOverlayFaces_);
     createColoredBuffer(managedOverlayEdges_);
     createColoredBuffer(hydrogenBonds_);
-    createColoredBuffer(cellFaces_);
-
-    cellVao_.create();
-    cellVao_.bind();
-    cellVbo_.create();
-    cellVbo_.bind();
-    gl_->glEnableVertexAttribArray(0);
-    gl_->glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
-    cellVao_.release();
+    createLitBuffer(cellFaces_);
 
     // Unit 0 must never be left empty while the mesh program is drawing —
     // see dummyTexture_. Created once, for the life of the context.
@@ -983,8 +972,18 @@ void StructureRenderer::drawVolume(const QMatrix4x4& view,
 
 bool StructureRenderer::useLitIsosurface()
 {
+    // Two separate questions, and they used to be one. "Should an ISOSURFACE
+    // be lit" is a Preferences choice; "can this driver run the lit surface
+    // program at all" is a hardware fact. The unit cell wants the second
+    // without the first — it is lit unconditionally — so the link-and-guard
+    // half lives in ensureLitSurfaceProgram() below.
     if (ShaderRegistry::activeProfile(ShaderSlot::Isosurfaces).isLegacy)
         return false;
+    return ensureLitSurfaceProgram();
+}
+
+bool StructureRenderer::ensureLitSurfaceProgram()
+{
     if (isosurfaceProgramTried_)
         return isosurfaceProgramReady_;
     isosurfaceProgramTried_ = true;
@@ -1580,7 +1579,6 @@ void StructureRenderer::setStructure(const core::Structure* structure,
     std::vector<float> coneInstances;
     std::vector<float> wireBondVertices;
     std::vector<float> wireAtomVertices;
-    std::vector<float> cellVertices;
     std::vector<float> cellTubeInstances;
     std::vector<float> cellFaceVertices;
 
@@ -2063,7 +2061,14 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                                 {0, 1, 3, 2}, {4, 6, 7, 5}}; // c = 0, c = 1
             }
 
-            const bool tubes = style_.cellLineWidth > 1.01f;
+            // Edges are ALWAYS lit tubes now, at every width.
+            //
+            // They used to be plain GL_LINES below width 1.01 and tubes above
+            // it, which meant a thin cell was drawn by an unlit program and sat
+            // in the scene as a flat stroke that ignored every light — while
+            // the same cell one notch thicker was shaded. A line has no surface
+            // to shade, so the way to light an edge is to give it one: the tube
+            // radius simply keeps scaling with the width, down to a hairline.
             const float tubeRadius = 0.015f * style_.cellLineWidth;
             // A broken stroke is cut into the geometry: each edge becomes N
             // marks with gaps between them, and a solid edge is the N = 1
@@ -2097,18 +2102,10 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                     const QVector3D a =
                         from + dir * (static_cast<float>(m) * slot
                                       + 0.5f * (slot - markLength));
-                    const QVector3D b = a + dir * markLength;
-                    if (tubes) {
-                        appendInstance(cellTubeInstances,
-                                       bondTransform(a, dir, markLength,
-                                                     tubeRadius),
-                                       style_.cellColor, style_.surfaceFinish);
-                    } else {
-                        for (const QVector3D& p : {a, b}) {
-                            cellVertices.insert(cellVertices.end(),
-                                                {p.x(), p.y(), p.z()});
-                        }
-                    }
+                    appendInstance(cellTubeInstances,
+                                   bondTransform(a, dir, markLength,
+                                                 tubeRadius),
+                                   style_.cellColor, style_.surfaceFinish);
                 }
             }
 
@@ -2127,13 +2124,32 @@ void StructureRenderer::setStructure(const core::Structure* structure,
             const float fillG = static_cast<float>(style_.cellFillColor.greenF());
             const float fillB = static_cast<float>(style_.cellFillColor.blueF());
             for (const std::vector<int>& face : outlineFaces) {
+                // One normal per face, from its first triangle. Both shapes are
+                // convex polyhedra with planar faces, so a face normal IS the
+                // exact surface normal everywhere on it — no smoothing to do,
+                // and flat shading is what makes a faceted cell read as
+                // faceted.
+                QVector3D normal;
+                if (face.size() >= 3) {
+                    const QVector3D& p0 =
+                        outlinePoints[static_cast<std::size_t>(face[0])];
+                    const QVector3D& p1 =
+                        outlinePoints[static_cast<std::size_t>(face[1])];
+                    const QVector3D& p2 =
+                        outlinePoints[static_cast<std::size_t>(face[2])];
+                    normal = QVector3D::crossProduct(p1 - p0, p2 - p0);
+                    normal = normal.lengthSquared() > 1e-12f
+                        ? normal.normalized()
+                        : QVector3D(0.0f, 0.0f, 1.0f);
+                }
                 for (std::size_t k = 1; k + 1 < face.size(); ++k) {
                     for (const int index : {face[0], face[k], face[k + 1]}) {
                         const QVector3D p =
                             outlinePoints[static_cast<std::size_t>(index)];
                         cellFaceVertices.insert(
                             cellFaceVertices.end(),
-                            {p.x(), p.y(), p.z(), fillR, fillG, fillB});
+                            {p.x(), p.y(), p.z(), normal.x(), normal.y(),
+                             normal.z(), fillR, fillG, fillB});
                     }
                 }
             }
@@ -2190,10 +2206,11 @@ void StructureRenderer::setStructure(const core::Structure* structure,
         if (style_.neighborCells.showEdges) {
             replicateStream(cellTubeInstances, kFloatsPerInstance,
                             /*offset=*/12, cellShifts);
-            replicateStream(cellVertices, /*stride=*/3, /*offset=*/0, cellShifts);
             // The fill is the same box as the edges, so it follows the same
             // rule: boxes around the images means filled boxes around them.
-            replicateStream(cellFaceVertices, /*stride=*/6, /*offset=*/0,
+            // Stride 9 now that the fill carries normals; offset 0 is still
+            // the position, which is the only part a translation moves.
+            replicateStream(cellFaceVertices, /*stride=*/9, /*offset=*/0,
                             cellShifts);
         }
     }
@@ -2243,12 +2260,7 @@ void StructureRenderer::setStructure(const core::Structure* structure,
         cellTubeInstances.data(),
         static_cast<int>(cellTubeInstances.size() * sizeof(float)));
 
-    cellVertexCount_ = static_cast<int>(cellVertices.size()) / 3;
-    cellVbo_.bind();
-    cellVbo_.allocate(cellVertices.data(),
-                      static_cast<int>(cellVertices.size() * sizeof(float)));
-
-    uploadColoredBuffer(cellFaces_, cellFaceVertices);
+    uploadLitBuffer(cellFaces_, cellFaceVertices);
 }
 
 void StructureRenderer::uploadLights()
@@ -2632,10 +2644,38 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
     // independent depictions of one box, and a solid block with no wireframe is
     // as legitimate a figure as the wireframe with no fill.
     if (style_.fillCell && cellFaces_.vertexCount > 0) {
-        wireProgram_.bind();
-        wireProgram_.setUniformValue("uMvp", projection * view);
-        wireProgram_.setUniformValue("uAlpha",
-                                     std::clamp(style_.cellFillAlpha, 0.0f, 1.0f));
+        // Lit, like every other surface in the scene. The buffer's 9-float
+        // layout is a strict superset of the 6-float one, so the unlit program
+        // remains a valid reader of it — which is the fallback when a driver
+        // rejects the lit shader.
+        const bool lit = ensureLitSurfaceProgram();
+        QOpenGLShaderProgram& program =
+            lit ? isosurfaceProgram_ : wireProgram_;
+        program.bind();
+        if (lit) {
+            program.setUniformValue("uView", view);
+            program.setUniformValue("uProj", projection);
+            uploadIsosurfaceLights();
+            // Diffuse, explicitly — NOT style_.isoShadingMode.
+            //
+            // That field is the Edit Volumetric Render dialog's setting and
+            // defaults to Flat, which makes this shader emit the raw colour and
+            // no shading at all. Inheriting it would mean the cell is lit only
+            // when someone happens to have changed an isosurface preference,
+            // which is not a relationship either setting should have with the
+            // other. Diffuse rather than glossy: a specular highlight sliding
+            // across a large flat face reads as a reflective slab, and the cell
+            // is meant to sit behind the structure.
+            constexpr int kShadingDiffuse = 1;
+            program.setUniformValue("uShadingMode", kShadingDiffuse);
+            program.setUniformValue("uAmbient", style_.isoAmbient);
+            program.setUniformValue("uSpecular", 0.0f);
+            program.setUniformValue("uShininess", style_.isoShininess);
+        } else {
+            program.setUniformValue("uMvp", projection * view);
+        }
+        program.setUniformValue("uAlpha",
+                                std::clamp(style_.cellFillAlpha, 0.0f, 1.0f));
         gl_->glEnable(GL_BLEND);
         gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         gl_->glDepthMask(GL_FALSE);
@@ -2644,7 +2684,7 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
         cellFaces_.vao.release();
         gl_->glDepthMask(GL_TRUE);
         gl_->glDisable(GL_BLEND);
-        wireProgram_.release();
+        program.release();
     }
 
     if (style_.showCell && cellTube_.instanceCount > 0) {
@@ -2680,17 +2720,6 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
             gl_->glDisable(GL_BLEND);
         }
         meshProgram_.release();
-    } else if (style_.showCell && cellVertexCount_ > 0) {
-        lineProgram_.bind();
-        lineProgram_.setUniformValue("uMvp", projection * view);
-        lineProgram_.setUniformValue(
-            "uColor", QVector4D(static_cast<float>(style_.cellColor.redF()),
-                                static_cast<float>(style_.cellColor.greenF()),
-                                static_cast<float>(style_.cellColor.blueF()), 1.0f));
-        cellVao_.bind();
-        gl_->glDrawArrays(GL_LINES, 0, cellVertexCount_);
-        cellVao_.release();
-        lineProgram_.release();
     }
 
     // Interactive Lattice Plane overlay: a translucent, per-vertex-colored quad

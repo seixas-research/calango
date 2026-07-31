@@ -117,21 +117,36 @@ void OrbitCamera::zoom(float steps)
 
 void OrbitCamera::frame(const QVector3D& center, float radius)
 {
-    target_ = center;
-    distance_ = std::max(2.0f, radius * 2.8f);
+    // Deliberately not a bare `radius * 2.8`. That constant was the right
+    // distance only for the 40-degree default: it put the bounding sphere at
+    // very nearly the full height of the viewport. With the angle now under
+    // the user's control it has to be re-derived, or framing a newly opened
+    // structure after a turn of the perspective slider would leave it a speck
+    // at a wide angle and overflowing the edges at a narrow one.
+    //
+    // 0.98 is that same framing expressed as a screen fraction, so at the
+    // default field of view this reproduces the old distance to three figures.
+    frameToFraction(center, radius, 0.98f);
+    distance_ = std::max(2.0f, distance_);
 }
 
 void OrbitCamera::frameToFraction(const QVector3D& center, float radius,
                                   float verticalFraction)
 {
     target_ = center;
-    // The perspective FOV is 40° (half-angle 20°): at distance d the viewport
-    // spans a vertical world height of 2·d·tan(20°). To make the sphere's
-    // diameter (2·radius) occupy `verticalFraction` of that height:
-    //   2·radius = fraction · 2·d·tan(20°)  ⇒  d = radius / (fraction·tan20°).
-    constexpr float kHalfFovTan = 0.36397023f; // tan(20°)
+    // At distance d the viewport spans a vertical world height of
+    // 2·d·tan(fov/2). To make the sphere's diameter (2·radius) occupy
+    // `verticalFraction` of that height:
+    //   2·radius = fraction · 2·d·tan(fov/2)  ⇒  d = radius/(fraction·tan(fov/2))
+    //
+    // Derived from the CURRENT field of view rather than a baked tan(20°): with
+    // the FOV adjustable, a constant here would frame a structure to the wrong
+    // size the moment the user moved the slider — auto-zoom would overshoot at
+    // a narrow FOV and undershoot at a wide one.
+    const float halfFovTan =
+        std::tan(qDegreesToRadians(fieldOfViewDeg_ * 0.5f));
     const float fraction = std::max(verticalFraction, 0.05f);
-    const float d = radius / (fraction * kHalfFovTan);
+    const float d = radius / (fraction * std::max(halfFovTan, 1e-4f));
     distance_ = std::clamp(d, 2.0f, 5000.0f);
 }
 
@@ -175,12 +190,14 @@ QMatrix4x4 OrbitCamera::projection(float aspectRatio) const
     const float farPlane = distance_ * 50.0f;
     if (projectionMode_ == CameraProjection::Orthographic) {
         // Half-height matching the perspective frustum at the target
-        // distance keeps apparent size constant across the toggle.
-        const float halfHeight = distance_ * std::tan(qDegreesToRadians(20.0f));
+        // distance keeps apparent size constant across the toggle — so it
+        // tracks the field of view rather than a fixed 20° half-angle.
+        const float halfHeight =
+            distance_ * std::tan(qDegreesToRadians(fieldOfViewDeg_ * 0.5f));
         m.ortho(-halfHeight * aspectRatio, halfHeight * aspectRatio,
                 -halfHeight, halfHeight, nearPlane, farPlane);
     } else {
-        m.perspective(40.0f, aspectRatio, nearPlane, farPlane);
+        m.perspective(fieldOfViewDeg_, aspectRatio, nearPlane, farPlane);
     }
     return m;
 }

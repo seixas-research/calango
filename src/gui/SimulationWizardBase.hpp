@@ -26,6 +26,8 @@ class QVBoxLayout;
 
 namespace calango::gui {
 
+class GpawElectronicRows;
+
 /// Shared multi-stage stepper shell for the simulation wizards (Molecular
 /// Dynamics, Geometry Optimization, Phonon Calculator, …). It owns the
 /// standardized Calculator Settings stage (engine selection + backend knobs)
@@ -79,15 +81,18 @@ public:
     static std::optional<InheritedCalculator> readCalculatorProvenance(
         const QString& jobDir);
 
-    /// The configured VASP POTCAR directory (`VASP_PP_PATH`), persisted
-    /// globally.
+    /// The configured VASP POTCAR directory (`VASP_PP_PATH`).
     ///
-    /// Static and global because it describes the INSTALLATION, not a job:
-    /// every VASP run on this machine wants the same datasets, and a per-dialog
-    /// copy would be one more place to set it and forget. Read by the wizards
-    /// and by the standalone dialogs (NEB) alike.
+    /// Static because it describes the INSTALLATION, not a job: every VASP run
+    /// on this machine wants the same datasets. Read by the wizards and by the
+    /// standalone dialogs (NEB) alike.
+    ///
+    /// There is no setter. The value belongs to Preferences → External Files,
+    /// alongside the Quantum ESPRESSO and SIESTA libraries, and is read from
+    /// there — a wizard that could also write it would be a second source of
+    /// truth for a path whose whole problem is being set in two places and
+    /// silently disagreeing.
     static QString vaspPotcarDirectory();
-    static void setVaspPotcarDirectory(const QString& path);
 
     /// Chemical elements of the structure this wizard will run on, supplied
     /// by the host for wizards that do not hold a structure themselves.
@@ -248,6 +253,16 @@ protected:
     /// Default: no rows.
     virtual void buildConvergenceRows(QFormLayout*) {}
     virtual void buildSpinRows(QFormLayout*) {}
+    /// The GpawElectronicRows instance a DFT wizard holds, so the base can
+    /// tell it which engine is selected — the smearing menu is engine-specific
+    /// (VASP has no ISMEAR for several of the methods) and has to be refiltered
+    /// when the engine combo changes. Null for a wizard that injects no rows.
+    ///
+    /// A hook rather than a member of this class: the rows are built by the
+    /// subclass, into the subclass's own choice of stage, and moving ownership
+    /// here would mean the base constructing widgets a non-DFT wizard never
+    /// shows.
+    virtual GpawElectronicRows* electronicRows() { return nullptr; }
     /// Controls the subclass creates but wants the BASE to position, because
     /// where they belong is decided by the shared GPAW layout rather than by
     /// the subclass: the SCF energy tolerance goes on the "Convergence
@@ -389,6 +404,20 @@ private:
     /// script-template DFT backends; hidden for GPAW, which has its own XC combo.
     QLabel* dftXcNote_ = nullptr;
     QDoubleSpinBox* cutoffSpin_ = nullptr;
+    /// The plane-wave cutoff and, beside it, VASP's XC functional — one row,
+    /// because ENCUT and the functional are chosen together. The container is
+    /// what the form layout can resolve, so visibility toggles address it
+    /// rather than the spin box nested inside.
+    QWidget* cutoffRow_ = nullptr;
+    QLabel* vaspXcLabel_ = nullptr;
+    /// Eigensolver row: GPAW's solver combo or VASP's ALGO combo, plus the
+    /// matching SCF step cap (GPAW's, or VASP's NELM). One row serving both,
+    /// with the other engine's widgets hidden.
+    QWidget* eigensolverRow_ = nullptr;
+    QLabel* scfStepsLabel_ = nullptr;
+    /// VASP's single SCF tolerance (EDIFF), on the row where GPAW shows its
+    /// three.
+    QWidget* vaspTolRow_ = nullptr;
     QSpinBox* kptSpins_[3] = {nullptr, nullptr, nullptr};
     QGroupBox* maceGroup_ = nullptr;
     QComboBox* maceModelCombo_ = nullptr;
@@ -495,7 +524,11 @@ private:
     // it that offers VASP gets the same INCAR controls without a second copy
     // to keep in step.
     QGroupBox* vaspGroup_ = nullptr;
-    QLineEdit* vaspPotcarEdit_ = nullptr;
+    /// Reports the VASP_PP_PATH configured in Preferences → External Files,
+    /// and says so when it is not. There is no editable field here: the
+    /// dataset library is per-installation, and a second place to set it was a
+    /// second place for it to be wrong.
+    QLabel* vaspPotcarNote_ = nullptr;
     QComboBox* vaspXcCombo_ = nullptr;
     QComboBox* vaspPrecCombo_ = nullptr;
     QComboBox* vaspAlgoCombo_ = nullptr;

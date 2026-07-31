@@ -254,7 +254,7 @@ core::KpointsConvergenceRunConfig KpointsConvergenceWizard::runConfig() const
     config.calculator.task = core::TaskKind::SinglePoint;
     // The sweep stage owns the mesh definition, Γ-centering included — the
     // calculator page's own toggle is hidden for this wizard.
-    config.calculator.gpawGammaCentered = gammaCheck_->isChecked();
+    config.calculator.kptsGammaCentered = gammaCheck_->isChecked();
     electronic_.applyTo(config.calculator);
     return config;
 }

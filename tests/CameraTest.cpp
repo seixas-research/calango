@@ -13,6 +13,7 @@
 #include "render/Film.hpp"
 
 #include <QVector3D>
+#include <QVector4D>
 
 #include <cmath>
 #include <cstdio>
@@ -316,6 +317,136 @@ int main()
                                OrbitCamera::fromEuler(15.0f, -70.0f, 20.0f)),
                   "a pre-arcball saved view falls back to its Euler triple");
         }
+    }
+
+    // --- Field of view ------------------------------------------------------
+    // The toolbar's perspective control is a slider over this one number, so
+    // it is worth pinning what the number means. Two things can go quietly
+    // wrong: the slider can be built around a default the camera does not
+    // actually start at (the readout then lies the moment it opens), and the
+    // angle can be wired to the perspective branch alone — leaving it inert in
+    // the orthographic mode this application starts in.
+    std::printf("Field of view:\n");
+    {
+        render::OrbitCamera camera;
+        check(near(camera.fieldOfView(), render::kDefaultFieldOfViewDeg),
+              "a fresh camera opens at the documented default");
+        check(render::kMinFieldOfViewDeg < render::kDefaultFieldOfViewDeg
+                  && render::kDefaultFieldOfViewDeg < render::kMaxFieldOfViewDeg,
+              "which lies inside the slider's range");
+
+        camera.setFieldOfView(1000.0f);
+        check(near(camera.fieldOfView(), render::kMaxFieldOfViewDeg),
+              "a wild value clamps to the maximum");
+        camera.setFieldOfView(-5.0f);
+        check(near(camera.fieldOfView(), render::kMinFieldOfViewDeg),
+              "and a negative one to the minimum");
+
+        // A wider angle must widen the frustum, in both projection modes.
+        const auto horizontalExtentAtUnitDepth = [](const render::OrbitCamera& c) {
+            // Map a point one unit ahead of the eye and read how far off-axis
+            // it has to sit to land on the right edge of the clip cube.
+            const QMatrix4x4 proj = c.projection(1.0f);
+            const QVector4D probe = proj * QVector4D(1.0f, 0.0f, -1.0f, 1.0f);
+            return probe.w() != 0.0f ? probe.x() / probe.w() : probe.x();
+        };
+        for (const auto mode : {render::CameraProjection::Perspective,
+                                render::CameraProjection::Orthographic}) {
+            render::OrbitCamera narrow;
+            narrow.setProjectionMode(mode);
+            narrow.setFieldOfView(20.0f);
+            render::OrbitCamera wide;
+            wide.setProjectionMode(mode);
+            wide.setFieldOfView(80.0f);
+            const bool perspective = mode == render::CameraProjection::Perspective;
+            check(horizontalExtentAtUnitDepth(wide)
+                      < horizontalExtentAtUnitDepth(narrow),
+                  perspective
+                      ? "widening the angle widens the perspective frustum"
+                      : "and the orthographic one, which follows it too");
+        }
+
+        // Framing has to follow the angle as well: a fit computed against a
+        // hard-coded angle parks the structure at the wrong distance the
+        // moment the slider moves.
+        render::OrbitCamera narrow;
+        narrow.setFieldOfView(20.0f);
+        narrow.frame(QVector3D(0, 0, 0), 5.0f);
+        render::OrbitCamera wide;
+        wide.setFieldOfView(80.0f);
+        wide.frame(QVector3D(0, 0, 0), 5.0f);
+        check(wide.distance() < narrow.distance(),
+              "a wider angle fits the same structure from closer in");
+        // ...without disturbing what framing does at the default angle, which
+        // is every existing figure and every freshly opened file.
+        render::OrbitCamera fresh;
+        fresh.frame(QVector3D(0, 0, 0), 5.0f);
+        check(near(fresh.distance(), 5.0f * 2.8f, 0.02f),
+              "and at the default angle it still frames exactly as before");
+    }
+
+    std::printf("Dolly zoom:\n");
+    {
+        // The Vertigo shot: the angle opens while the eye walks in, so the
+        // subject holds its size and only the depth relationship moves. The
+        // failure mode is a slider that merely re-zooms — visually it looks
+        // like something is happening, but every distance in the picture
+        // scales together and no new information appears.
+        render::OrbitCamera camera;
+        camera.setProjectionMode(render::CameraProjection::Perspective);
+        camera.frame(QVector3D(0, 0, 0), 5.0f);
+        const float startDistance = camera.distance();
+        const float startHalfHeight =
+            startDistance
+            * std::tan(qDegreesToRadians(camera.fieldOfView() * 0.5f));
+
+        camera.setFieldOfViewDolly(90.0f);
+        check(near(camera.fieldOfView(), 90.0f), "the angle follows the slider");
+        check(camera.distance() < startDistance,
+              "and a wider angle walks the eye IN, not out");
+        const float halfHeight =
+            camera.distance()
+            * std::tan(qDegreesToRadians(camera.fieldOfView() * 0.5f));
+        check(near(halfHeight, startHalfHeight, 1e-3f),
+              "leaving the subject exactly its original size on screen");
+
+        // Which is the whole point: same size, different depth. A point one
+        // radius BEHIND the target must not project where it did before.
+        const auto depthOfBackPoint = [](const render::OrbitCamera& c) {
+            const QVector4D behind =
+                c.projection(1.0f) * c.view() * QVector4D(0, 5, 0, 1);
+            return behind.w() != 0.0f ? behind.y() / behind.w() : behind.y();
+        };
+        render::OrbitCamera unchanged;
+        unchanged.setProjectionMode(render::CameraProjection::Perspective);
+        unchanged.frame(QVector3D(0, 0, 0), 5.0f);
+        check(std::abs(depthOfBackPoint(camera) - depthOfBackPoint(unchanged))
+                  > 0.02f,
+              "while everything off the target plane moves — the actual effect");
+
+        // Narrowing has to be the exact inverse, or the slider drifts the
+        // structure smaller or larger every time it is swept back and forth.
+        camera.setFieldOfViewDolly(render::kDefaultFieldOfViewDeg);
+        check(near(camera.distance(), startDistance, 1e-2f),
+              "and sweeping back returns the eye where it started");
+
+        // Under a parallel projection there is no depth relationship to alter,
+        // and the compensation cancels the angle exactly. Not a bug — but it
+        // is why the toolbar control leaves orthographic when it is moved.
+        render::OrbitCamera ortho;
+        ortho.frame(QVector3D(0, 0, 0), 5.0f);
+        // Where a fixed world point lands on screen — the frustum's x/y, which
+        // is the whole of what a parallel projection shows. The near and far
+        // planes do move with the eye, but they only decide what is clipped.
+        const auto screenPosition = [](const render::OrbitCamera& c) {
+            const QVector4D p =
+                c.projection(1.5f) * c.view() * QVector4D(2, 1, 0, 1);
+            return QVector3D(p.x() / p.w(), p.y() / p.w(), 0.0f);
+        };
+        const QVector3D before = screenPosition(ortho);
+        ortho.setFieldOfViewDolly(100.0f);
+        check(nearVector(before, screenPosition(ortho), 1e-3f),
+              "an orthographic camera shows the identical picture either way");
     }
 
     std::printf(failures == 0 ? "\nAll camera checks passed.\n"

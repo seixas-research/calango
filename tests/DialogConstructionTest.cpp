@@ -1065,11 +1065,17 @@ int main(int argc, char** argv)
                   std::pair{"Methfessel-Paxton", SmearingMethod::MethfesselPaxton},
                   std::pair{"Marzari-Vanderbilt", SmearingMethod::MarzariVanderbilt},
                   std::pair{"Tetrahedron method", SmearingMethod::TetrahedronMethod},
-                  std::pair{"Improved tetrahedron method",
+                  // Named for Blöchl, whose curvature correction it is —
+                  // which is also how the VASP documentation refers to
+                  // ISMEAR = -5, so the label reads the same for both engines.
+                  std::pair{"Improved tetrahedron (Blöchl)",
                             SmearingMethod::ImprovedTetrahedronMethod},
                   std::pair{"Orbital-free", SmearingMethod::OrbitalFree},
                   std::pair{"Fixed", SmearingMethod::FixedOccupations}}) {
-                const int row = (*smearing)->findText(QLatin1String(label));
+                // fromUtf8, not QLatin1String: "Blöchl" is two bytes in this
+                // source file, and reading it as Latin-1 produces a string
+                // that matches nothing.
+                const int row = (*smearing)->findText(QString::fromUtf8(label));
                 check(row >= 0, "the method is offered");
                 if (row >= 0)
                     check((*smearing)->itemData(row).toInt()
@@ -1140,6 +1146,78 @@ int main(int argc, char** argv)
                 check(!(*numbers)->isVisibleTo(&wizard),
                       "and hidden again for a method that does not take one");
             }
+        }
+
+        // --- The same page, under VASP ------------------------------------
+        // The menu is not a fixed list any more: VASP encodes the occupation
+        // scheme in a single integer, ISMEAR, and has no value for three of
+        // the schemes GPAW runs. The script generator substitutes a narrow
+        // Gaussian for them, which makes offering them a way to ask for one
+        // thing and get another.
+        std::printf("Smearing menu under VASP:\n");
+        const int vasp = engine
+            ? engine->findData(static_cast<int>(calango::core::CalculatorKind::Vasp))
+            : -1;
+        check(vasp >= 0, "VASP is offered as an engine");
+        if (vasp >= 0 && smearing != combos.end()) {
+            engine->setCurrentIndex(vasp);
+            for (const auto& [label, method] :
+                 {std::pair{"Fermi-Dirac", SmearingMethod::FermiDirac},
+                  std::pair{"Gaussian", SmearingMethod::Gaussian},
+                  std::pair{"Methfessel-Paxton", SmearingMethod::MethfesselPaxton},
+                  std::pair{"Tetrahedron method", SmearingMethod::TetrahedronMethod},
+                  std::pair{"Improved tetrahedron (Blöchl)",
+                            SmearingMethod::ImprovedTetrahedronMethod}}) {
+                const int row = (*smearing)->findData(static_cast<int>(method));
+                check(row >= 0, "a scheme with an ISMEAR survives the filter");
+                if (row >= 0)
+                    check((*smearing)->itemText(row) == QString::fromUtf8(label),
+                          "under the same name it has for GPAW");
+            }
+            for (const SmearingMethod method :
+                 {SmearingMethod::MarzariVanderbilt, SmearingMethod::OrbitalFree,
+                  SmearingMethod::FixedOccupations}) {
+                check((*smearing)->findData(static_cast<int>(method)) < 0,
+                      "and one without is withdrawn rather than approximated");
+            }
+            // Whatever was selected must still be a real selection. Landing on
+            // -1 would make the config read SmearingMethod(0) by accident.
+            check((*smearing)->currentIndex() >= 0,
+                  "the selection survives the refilter");
+
+            // The engine's own controls take the place of GPAW's on the shared
+            // rows, rather than sitting in a VASP-shaped form of their own.
+            const auto algo = std::find_if(
+                combos.begin(), combos.end(), [](const QComboBox* combo) {
+                    return combo->count() > 0
+                        && combo->itemText(0).startsWith(
+                               QStringLiteral("Normal — blocked Davidson"));
+                });
+            check(algo != combos.end(), "ALGO stands in as the eigensolver");
+            if (algo != combos.end())
+                check((*algo)->isVisibleTo(&wizard), "and is shown for VASP");
+
+            // The POTCAR path is no longer editable here at all: it belongs to
+            // Preferences → External Files, and a second field for it was a
+            // second place for it to be wrong.
+            const auto vaspEdits = wizard.findChildren<QLineEdit*>();
+            const auto potcarField = std::find_if(
+                vaspEdits.begin(), vaspEdits.end(), [](const QLineEdit* edit) {
+                    return edit->placeholderText().contains(
+                        QStringLiteral("POTCAR"), Qt::CaseInsensitive);
+                });
+            check(potcarField == vaspEdits.end(),
+                  "and no POTCAR directory field is offered");
+
+            // Γ-centering is a plane-wave concern, not a GPAW one — an even
+            // mesh misses Γ whoever computes it.
+            const auto boxes = wizard.findChildren<QCheckBox*>();
+            const auto gamma = std::find_if(
+                boxes.begin(), boxes.end(), [](const QCheckBox* box) {
+                    return box->text() == QStringLiteral("Gamma-centered Grid");
+                });
+            check(gamma != boxes.end() && (*gamma)->isVisibleTo(&wizard),
+                  "Gamma-centered Grid is offered for VASP too");
         }
         wizard.hide();
     }

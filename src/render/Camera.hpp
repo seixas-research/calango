@@ -35,6 +35,17 @@ inline constexpr float kDefaultRollDeg = 20.0f;
 inline constexpr CameraProjection kDefaultProjection =
     CameraProjection::Orthographic;
 
+/// Vertical field of view, in degrees: the default and the range the UI offers.
+///
+/// 40° is what the projection was hard-coded to before it became adjustable, so
+/// the default view is unchanged. The bounds are where the projection stops
+/// being useful rather than where it stops being defined — below ~5° the near
+/// and far planes crowd together, and above ~120° the edges of the frustum
+/// distort past the point of reading a structure.
+inline constexpr float kDefaultFieldOfViewDeg = 40.0f;
+inline constexpr float kMinFieldOfViewDeg = 5.0f;
+inline constexpr float kMaxFieldOfViewDeg = 120.0f;
+
 /// A complete, restorable camera state — "where you were looking from".
 ///
 /// Everything the orbit camera needs and nothing it does not: the target the
@@ -91,6 +102,50 @@ class OrbitCamera {
 public:
     void setProjectionMode(CameraProjection mode) { projectionMode_ = mode; }
     CameraProjection projectionMode() const { return projectionMode_; }
+
+    /// Vertical field of view, in degrees.
+    ///
+    /// Governs BOTH projections, and deliberately so: the orthographic frustum
+    /// height is matched to the perspective one at the target distance, which
+    /// is what keeps the structure the same apparent size across the toggle. A
+    /// FOV that only applied to perspective would make that toggle jump.
+    ///
+    /// Narrow (~10°) is a long lens: near-parallel, almost orthographic, and
+    /// the honest choice for a lattice. Wide (~90°) exaggerates depth, which is
+    /// occasionally what a figure of a pore or a channel wants.
+    void setFieldOfView(float degrees)
+    {
+        fieldOfViewDeg_ = std::clamp(degrees, kMinFieldOfViewDeg,
+                                     kMaxFieldOfViewDeg);
+    }
+    float fieldOfView() const { return fieldOfViewDeg_; }
+
+    /// Change the field of view and walk the camera in or out to compensate —
+    /// the "dolly zoom", or Vertigo shot.
+    ///
+    /// Plain setFieldOfView() is a zoom: everything grows or shrinks together
+    /// and the picture says nothing new. The interesting operation moves the
+    /// eye at the same time, holding whatever sits at the orbit target at a
+    /// fixed size while the perspective around it opens out or flattens. What
+    /// changes is the depth relationship alone — a narrow angle from far away
+    /// compresses the near and far faces of a cell onto each other, a wide
+    /// angle from close in throws them apart and drives the eye down a channel
+    /// or a pore. That is the one thing an orthographic figure cannot show.
+    ///
+    /// The invariant held is distance·tan(fov/2), the world half-height
+    /// spanned at the target. Note that this is exactly the orthographic
+    /// frustum height too, so under an orthographic camera this is a no-op by
+    /// construction — correctly, since a parallel projection has no depth
+    /// relationship to alter. Callers wanting the effect visible must be in
+    /// perspective mode.
+    void setFieldOfViewDolly(float degrees)
+    {
+        const float before = std::tan(qDegreesToRadians(fieldOfViewDeg_ * 0.5f));
+        setFieldOfView(degrees);
+        const float after = std::tan(qDegreesToRadians(fieldOfViewDeg_ * 0.5f));
+        if (after > 1e-4f && before > 1e-4f)
+            distance_ = std::clamp(distance_ * before / after, 0.5f, 5000.0f);
+    }
 
     /// Arcball (trackball) rotation from one cursor position to another.
     ///
@@ -158,7 +213,7 @@ public:
 
     /// Center on a bounding sphere and set the distance so the sphere's
     /// diameter spans `verticalFraction` (0..1) of the viewport's vertical
-    /// extent, given the fixed 40° field of view. Used for intelligent
+    /// extent, at the CURRENT field of view. Used for intelligent
     /// auto-zoom: ~0.9 fits a unit cell, 0.5 sizes a molecule to half-height.
     void frameToFraction(const QVector3D& center, float radius,
                          float verticalFraction);
@@ -258,6 +313,7 @@ private:
         fromEuler(kDefaultYawDeg, kDefaultPitchDeg, kDefaultRollDeg);
     QQuaternion sceneRotation_; ///< extra world-axis rotation (identity default)
     CameraProjection projectionMode_ = kDefaultProjection;
+    float fieldOfViewDeg_ = kDefaultFieldOfViewDeg;
 };
 
 } // namespace calango::render

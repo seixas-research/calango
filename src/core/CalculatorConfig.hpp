@@ -591,9 +591,16 @@ struct CalculatorConfig {
     /// zone is required downstream — e.g. a Single-Point whose .gpw feeds an
     /// MLWF localization (ase.dft.wannier needs the unfolded BZ).
     bool gpawSymmetryOff = false;
-    /// Gamma-centered k-point mesh: emits `kpts={'size': (...), 'gamma': True}`
-    /// so the Monkhorst-Pack grid is shifted to include Γ. Off by default.
-    bool gpawGammaCentered = false;
+    /// Gamma-centered k-point mesh: shift the Monkhorst-Pack grid so it
+    /// includes Γ. Off by default.
+    ///
+    /// Not GPAW-specific, despite living among the GPAW fields for historical
+    /// reasons: an even-numbered MP mesh misses Γ in every plane-wave code,
+    /// and the offset one is what a hexagonal cell or a Wannier interpolation
+    /// wants regardless of who computes it. GPAW emits it as
+    /// `kpts={'size': (...), 'gamma': True}`, VASP as the KPOINTS Gamma
+    /// centering ASE selects with `gamma=True`.
+    bool kptsGammaCentered = false;
     /// Export the charge density to `density.cube` after the SCF (GPAW
     /// single-point only). Off by default; `gpawDensityType` picks pseudo vs
     /// all-electron.
