@@ -3,8 +3,7 @@
 #include "core/Noise.hpp"
 #include "core/RandomNoiseScriptGenerator.hpp"
 #include "core/Structure.hpp"
-#include "gui/GpawElectronicRows.hpp"
-#include "gui/SimulationWizardBase.hpp"
+#include "gui/GpawElectronicWizard.hpp"
 
 #include <memory>
 #include <vector>
@@ -39,7 +38,7 @@ namespace calango::gui {
 ///   2. Calculator & Convergence Settings — the standard engine page
 ///   3. Single-point Adjustments — what each evaluation records
 ///   4. ASE Script Review
-class RandomNoiseWizard : public SimulationWizardBase {
+class RandomNoiseWizard : public GpawElectronicWizard {
     Q_OBJECT
 
 public:
@@ -78,29 +77,6 @@ protected:
     }
     QWidget* buildSecondSettingsPage() override;
 
-    // The same GPAW form every other simulation wizard presents — an SCF is an
-    // SCF whether it runs once or a hundred times.
-    /// The engine drives which smearing methods are offered, so the base
-    /// needs a handle on these rows to refilter them.
-    GpawElectronicRows* electronicRows() override { return &electronic_; }
-    void buildConvergenceRows(QFormLayout* form) override
-    {
-        electronic_.buildConvergenceRows(form, this);
-    }
-    void buildSpinRows(QFormLayout* form) override
-    {
-        electronic_.buildSpinRows(form, this);
-    }
-    QWidget* gpawEnergyToleranceWidget() override
-    {
-        return electronic_.energyToleranceWidget();
-    }
-    QWidget* gpawScfStepsWidget() override
-    {
-        return electronic_.scfStepsWidget();
-    }
-    bool hasConvergenceExtras() const override { return true; }
-    bool hasSpinExtras() const override { return true; }
     QStringList calculatorElements() const override;
 
     QString generateScript() const override;
@@ -144,7 +120,6 @@ private:
     QCheckBox* stressCheck_ = nullptr;
     QCheckBox* continueCheck_ = nullptr;
 
-    GpawElectronicRows electronic_;
 };
 
 } // namespace calango::gui

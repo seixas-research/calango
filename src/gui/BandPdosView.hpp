@@ -150,7 +150,6 @@ public:
     void setFatbandData(FatbandData data);
     const FatbandData& fatbandData() const { return fatbands_; }
     void setFatbandMode(FatbandMode mode);
-    FatbandMode fatbandMode() const { return fatbandMode_; }
     /// Which projection channels are drawn on top of the dispersion. Several
     /// at once is the point: seeing metal d and ligand p on the same plot is
     /// how hybridization becomes visible.

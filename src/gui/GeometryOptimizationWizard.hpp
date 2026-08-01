@@ -1,7 +1,6 @@
 #pragma once
 
-#include "gui/GpawElectronicRows.hpp"
-#include "gui/SimulationWizardBase.hpp"
+#include "gui/GpawElectronicWizard.hpp"
 
 #include <memory>
 #include <vector>
@@ -27,7 +26,7 @@ namespace calango::gui {
 /// settings (optimizer, force convergence, step cap, and optional
 /// variable-cell relaxation with a hydrostatic/anisotropic stress mask);
 /// Stage 3 is the ASE script review.
-class GeometryOptimizationWizard : public SimulationWizardBase {
+class GeometryOptimizationWizard : public GpawElectronicWizard {
     Q_OBJECT
 
 public:
@@ -48,34 +47,7 @@ protected:
     /// Dispersion is offered here: a relaxation path is exactly where the missing long-range attraction changes the geometry it settles into.
     bool showsDispersionToggle() const override { return true; }
     bool settingsStageFirst() const override { return false; }
-    /// The GPAW calculator form is shared verbatim with the Single-Point
-    /// wizard through GpawElectronicRows — same groups, same rows, same
-    /// toggles — so switching between the two setups is not a change of form.
-    /// The engine drives which smearing methods are offered, so the base
-    /// needs a handle on these rows to refilter them.
-    GpawElectronicRows* electronicRows() override { return &electronic_; }
-    void buildConvergenceRows(QFormLayout* form) override
-    {
-        electronic_.buildConvergenceRows(form, this);
-    }
-    void buildSpinRows(QFormLayout* form) override
-    {
-        electronic_.buildSpinRows(form, this);
-    }
-    // Created by `electronic_`, positioned by the base class: the SCF energy
-    // tolerance belongs on the tolerance row and the step cap beside the
-    // eigensolver, and both of those rows are the base class's to lay out.
-    QWidget* gpawEnergyToleranceWidget() override
-    {
-        return electronic_.energyToleranceWidget();
-    }
-    QWidget* gpawScfStepsWidget() override
-    {
-        return electronic_.scfStepsWidget();
-    }
-    bool hasConvergenceExtras() const override { return true; }
     bool taskHasIonicSteps() const override { return true; }
-    bool hasSpinExtras() const override { return true; }
     bool showsGpawSymmetryToggle() const override { return true; }
     bool showsGpawDensityExport() const override { return true; }
     QString generateScript() const override;
@@ -112,8 +84,6 @@ private:
 
     QCheckBox* voigtChecks_[6];    // [xx, yy, zz, yz, xz, xy]
 
-    /// Smearing / SCF / spin rows, shared with the Single-Point wizard.
-    GpawElectronicRows electronic_;
 };
 
 } // namespace calango::gui

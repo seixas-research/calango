@@ -1,5 +1,7 @@
 #include "gui/ConvergenceResultsWindow.hpp"
 
+#include "gui/GuiUtils.hpp"
+
 #include "gui/CalculatorParametersDialog.hpp"
 
 #include <QCheckBox>
@@ -741,33 +743,28 @@ void ConvergenceResultsWindow::exportCsv(Quantity quantity)
     if (path.isEmpty())
         return;
 
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("Export CSV"),
-                             tr("Could not open %1 for writing.").arg(path));
-        return;
-    }
-    QTextStream out(&file);
-    // A CSV starts with its header row — the reference is recoverable from
-    // the data itself (the row whose deltas are zero).
-    out << words.csvXColumn;
-    // A mesh is three numbers, not one — the sweep index alone would hide
-    // the pinned axes of a slab sweep.
-    if (sweep_ == Sweep::KpointGrid)
-        out << ",kpts";
-    out << ',' << quantityWords.csvColumn << '\n';
-    const std::vector<double>& series = values(quantity);
-    for (std::size_t i = 0; i < xValues_.size(); ++i) {
-        out << QString::number(xValues_[i], 'g', 6);
+    writeTextFile(this, path, [&](QTextStream& out) {
+        // A CSV starts with its header row — the reference is recoverable
+        // from the data itself (the row whose deltas are zero).
+        out << words.csvXColumn;
+        // A mesh is three numbers, not one — the sweep index alone would
+        // hide the pinned axes of a slab sweep.
         if (sweep_ == Sweep::KpointGrid)
-            out << ',' << xTexts_[i];
-        // An unavailable metric exports as an empty cell, not a fake zero.
-        out << ',';
-        if (std::isfinite(series[i]))
-            out << QString::number(series[i], 'g', 10);
-        out << '\n';
-    }
-    file.commit();
+            out << ",kpts";
+        out << ',' << quantityWords.csvColumn << '\n';
+        const std::vector<double>& series = values(quantity);
+        for (std::size_t i = 0; i < xValues_.size(); ++i) {
+            out << QString::number(xValues_[i], 'g', 6);
+            if (sweep_ == Sweep::KpointGrid)
+                out << ',' << xTexts_[i];
+            // An unavailable metric exports as an empty cell, not a fake
+            // zero.
+            out << ',';
+            if (std::isfinite(series[i]))
+                out << QString::number(series[i], 'g', 10);
+            out << '\n';
+        }
+    });
 }
 
 void ConvergenceResultsWindow::exportImage(Quantity quantity)

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.83
+    VERSION 26.7.84
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -189,6 +189,8 @@ qt_add_executable(calango
     src/core/ClusterExpansionScriptGenerator.cpp
     src/core/RandomNoiseScriptGenerator.hpp
     src/core/RandomNoiseScriptGenerator.cpp
+    src/core/ConvergenceSweepBlocks.hpp
+    src/core/ConvergenceSweepBlocks.cpp
     src/core/CutoffConvergenceScriptGenerator.hpp
     src/core/CutoffConvergenceScriptGenerator.cpp
     src/core/KpointsConvergenceScriptGenerator.hpp
@@ -290,8 +292,6 @@ qt_add_executable(calango
     src/gui/GuiUtils.cpp
     src/gui/RepresentationPanel.hpp
     src/gui/RepresentationPanel.cpp
-    src/gui/CollapsibleSection.hpp
-    src/gui/CollapsibleSection.cpp
     src/gui/CellAxesTabs.hpp
     src/gui/CellAxesTabs.cpp
     src/gui/NeighborCellsDialog.cpp
@@ -466,6 +466,7 @@ qt_add_executable(calango
     src/gui/VacfDialog.hpp
     src/gui/VacfDialog.cpp
     src/gui/SimulationWizardBase.hpp
+    src/gui/GpawElectronicWizard.hpp
     src/gui/SimulationWizardBase.cpp
     src/gui/GpawElectronicRows.hpp
     src/gui/GpawElectronicRows.cpp
@@ -546,8 +547,6 @@ qt_add_executable(calango
     src/gui/ConvexHullPlotWidget.cpp
     src/gui/SpectralHeatmapWidget.hpp
     src/gui/SpectralHeatmapWidget.cpp
-    src/gui/MonteCarloDialog.hpp
-    src/gui/MonteCarloDialog.cpp
     src/gui/MonteCarloWizard.hpp
     src/gui/MonteCarloWizard.cpp
     src/gui/NebDialog.hpp
@@ -706,7 +705,15 @@ if(APPLE AND CALANGO_MACOS_BUNDLE)
         MACOSX_BUNDLE_BUNDLE_NAME "Calango"
         MACOSX_BUNDLE_GUI_IDENTIFIER "org.seixasresearch.calango"
         MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_INFO_STRING "Calango ${PROJECT_VERSION}"
+        MACOSX_BUNDLE_COPYRIGHT "© 2026 Leandro Seixas Rocha"
+        # Custom template (not CMake's stock one) so the bundle declares
+        # CFBundleDocumentTypes/UTExportedTypeDeclarations for .calproj and
+        # .extxyz — that is what lets Finder open documents with Calango.
+        # The opened path arrives as a QFileOpenEvent, handled in main.cpp.
+        MACOSX_BUNDLE_INFO_PLIST
+            "${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/Info.plist.in")
 
     set(CALANGO_ICNS "")
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/calango/calango.icns")
@@ -1255,6 +1262,7 @@ if(CALANGO_BUILD_TESTS)
         src/render/ShaderProfile.cpp
         src/core/RandomNoiseScriptGenerator.cpp
         src/gui/CutoffConvergenceWizard.cpp
+        src/core/ConvergenceSweepBlocks.cpp
         src/core/CutoffConvergenceScriptGenerator.cpp
         src/gui/KpointsConvergenceWizard.cpp
         src/core/KpointsConvergenceScriptGenerator.cpp
@@ -2034,8 +2042,9 @@ if(APPLE AND CALANGO_MACOS_BUNDLE)
 elseif(UNIX AND NOT APPLE)
     install(TARGETS calango RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-    # Desktop integration: launcher entry, MIME type for .calproj project
-    # files (main.cpp routes them to the workspace loader), and icons.
+    # Desktop integration: launcher entry, MIME types for .calproj project
+    # files and .extxyz structures (both reach MainWindow::loadFile via the
+    # `Exec=calango %F` argv path), and icons.
     install(FILES packaging/linux/calango.desktop
             DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
     install(FILES packaging/linux/calango-mime.xml
@@ -2085,6 +2094,11 @@ elseif(UNIX AND NOT APPLE)
                 DESTINATION ${CMAKE_INSTALL_LIBDIR}/calango/python
                 USE_SOURCE_PERMISSIONS)
     endif()
+elseif(WIN32)
+    # Bare-binary install; Qt runtime deployment (windeployqt) is not wired
+    # up here — the NSIS packaging below exists chiefly to carry the file
+    # associations once a Windows pipeline is stood up.
+    install(TARGETS calango RUNTIME DESTINATION bin)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -2143,6 +2157,41 @@ elseif(UNIX AND NOT APPLE)
     set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
         "${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/postinst;${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/postrm")
     set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION TRUE)
+elseif(WIN32)
+    # NSIS installer carrying the .extxyz / .calproj associations. The keys
+    # follow the documented HKCR ProgID pattern (extension -> ProgID ->
+    # DefaultIcon + shell\open\command); SHChangeNotify(SHCNE_ASSOCCHANGED)
+    # tells Explorer to drop its association cache so the icons and
+    # double-click behavior update without a logoff. Explorer passes the
+    # double-clicked path on argv, which main() already loads. NOTE: there is
+    # no Windows CI exercising this branch yet — validate the first build by
+    # hand (see also the windeployqt caveat at the install() above).
+    set(CPACK_GENERATOR "NSIS")
+    set(CPACK_NSIS_DISPLAY_NAME "Calango")
+    set(CPACK_NSIS_PACKAGE_NAME "Calango")
+    set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+    set(CPACK_NSIS_EXECUTABLES_DIRECTORY "bin")
+    set(CPACK_PACKAGE_EXECUTABLES "calango;Calango")
+    set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS "
+        WriteRegStr HKCR '.calproj' '' 'Calango.calproj'
+        WriteRegStr HKCR '.calproj' 'Content Type' 'application/x-calango-project'
+        WriteRegStr HKCR 'Calango.calproj' '' 'Calango project'
+        WriteRegStr HKCR 'Calango.calproj\\\\DefaultIcon' '' '$INSTDIR\\\\bin\\\\calango.exe,0'
+        WriteRegStr HKCR 'Calango.calproj\\\\shell\\\\open\\\\command' '' '\\\"$INSTDIR\\\\bin\\\\calango.exe\\\" \\\"%1\\\"'
+        WriteRegStr HKCR '.extxyz' '' 'Calango.extxyz'
+        WriteRegStr HKCR '.extxyz' 'Content Type' 'application/x-extxyz'
+        WriteRegStr HKCR 'Calango.extxyz' '' 'Extended XYZ atomic structure'
+        WriteRegStr HKCR 'Calango.extxyz\\\\DefaultIcon' '' '$INSTDIR\\\\bin\\\\calango.exe,0'
+        WriteRegStr HKCR 'Calango.extxyz\\\\shell\\\\open\\\\command' '' '\\\"$INSTDIR\\\\bin\\\\calango.exe\\\" \\\"%1\\\"'
+        System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
+    ")
+    set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "
+        DeleteRegKey HKCR 'Calango.calproj'
+        DeleteRegKey HKCR '.calproj'
+        DeleteRegKey HKCR 'Calango.extxyz'
+        DeleteRegKey HKCR '.extxyz'
+        System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
+    ")
 endif()
 
 include(CPack)

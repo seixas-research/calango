@@ -15,6 +15,7 @@
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QFontMetricsF>
 #include <QLabel>
 #include <QMouseEvent>
@@ -421,7 +422,49 @@ bool mlwfWavefunctionsAvailable(const QString& jobDir, QString* reason)
     return false;
 }
 
-QString schoenfliesPointGroup(const QString& hermannMauguin)
+std::vector<int> parseAtomIndexList(const QString& text, int atomCount)
+{
+    // "0, 2, 5-8" — commas and/or whitespace separate entries, a dash makes a
+    // closed range. Out-of-range entries are dropped rather than clamped: a
+    // typo that silently addressed a different atom would be worse than one
+    // that visibly does nothing. The dash search starts at 1 so a leading
+    // minus sign is not mistaken for a range.
+    std::vector<int> indices;
+    const QString trimmed = text.trimmed();
+    if (trimmed.isEmpty())
+        return indices;
+    std::set<int> unique;
+    const QStringList parts =
+        trimmed.split(QRegularExpression(QStringLiteral("[,\\s]+")),
+                      Qt::SkipEmptyParts);
+    for (const QString& part : parts) {
+        const int dash = part.indexOf(QLatin1Char('-'), 1);
+        if (dash > 0) {
+            bool okLow = false;
+            bool okHigh = false;
+            const int low = part.left(dash).toInt(&okLow);
+            const int high = part.mid(dash + 1).toInt(&okHigh);
+            if (okLow && okHigh)
+                for (int i = low; i <= high; ++i)
+                    if (i >= 0 && (atomCount == 0 || i < atomCount))
+                        unique.insert(i);
+            continue;
+        }
+        bool ok = false;
+        const int value = part.toInt(&ok);
+        if (ok && value >= 0 && (atomCount == 0 || value < atomCount))
+            unique.insert(value);
+    }
+    indices.assign(unique.begin(), unique.end());
+    return indices;
+}
+
+/// Schönflies symbol of a crystallographic point group given its
+/// Hermann-Mauguin (international) symbol as spglib reports it — e.g.
+/// "3m" → "C<sub>3v</sub>", "m-3m" → "O<sub>h</sub>". Rich text (HTML
+/// subscripts). Empty when the symbol is not one of the 32 crystallographic
+/// point groups. Internal: reached through pointGroupDisplay().
+static QString schoenfliesPointGroup(const QString& hermannMauguin)
 {
     // The 32 crystallographic point groups, keyed by the short international
     // symbol exactly as spglib prints it (overbar as a leading '-'). Symbols
@@ -482,12 +525,14 @@ QString pointGroupDisplay(const QString& hermannMauguin)
 // Structure file I/O filters
 // ---------------------------------------------------------------------------
 
-QString defaultStructureFormat()
+/// ASE's format name for Extended XYZ, as passed to write()/read().
+static QString defaultStructureFormat()
 {
     return QStringLiteral("extxyz");
 }
 
-QString defaultStructureSuffix()
+/// ".extxyz" — the suffix a structure is saved with unless told otherwise.
+static QString defaultStructureSuffix()
 {
     return QStringLiteral(".extxyz");
 }

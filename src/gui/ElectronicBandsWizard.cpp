@@ -17,14 +17,12 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
-#include <QRegularExpression>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include <algorithm>
-#include <set>
 
 namespace calango::gui {
 
@@ -512,40 +510,10 @@ void ElectronicBandsWizard::seedFatbandRows()
 std::vector<int>
 ElectronicBandsWizard::parseAtomSelection(const QString& text) const
 {
-    // "0, 2, 5-8" — commas and/or whitespace separate entries, a dash makes a
-    // closed range. The same spelling as the Born-charges wizard's atom field,
-    // so one selection syntax is learned once. Out-of-range entries are
-    // dropped rather than clamped: a typo that silently projected onto a
-    // different atom would be worse than one that visibly does nothing.
-    std::vector<int> indices;
-    const QString trimmed = text.trimmed();
-    if (trimmed.isEmpty())
-        return indices;
-    const int count = structure_ ? static_cast<int>(structure_->size()) : 0;
-    std::set<int> unique;
-    const QStringList parts =
-        trimmed.split(QRegularExpression(QStringLiteral("[,\\s]+")),
-                      Qt::SkipEmptyParts);
-    for (const QString& part : parts) {
-        const int dash = part.indexOf(QLatin1Char('-'), 1);
-        if (dash > 0) {
-            bool okLow = false;
-            bool okHigh = false;
-            const int low = part.left(dash).toInt(&okLow);
-            const int high = part.mid(dash + 1).toInt(&okHigh);
-            if (okLow && okHigh)
-                for (int i = low; i <= high; ++i)
-                    if (i >= 0 && (count == 0 || i < count))
-                        unique.insert(i);
-            continue;
-        }
-        bool ok = false;
-        const int value = part.toInt(&ok);
-        if (ok && value >= 0 && (count == 0 || value < count))
-            unique.insert(value);
-    }
-    indices.assign(unique.begin(), unique.end());
-    return indices;
+    // Shared parser — the same spelling as the Born-charges wizard's atom
+    // field, so one selection syntax is learned once.
+    return parseAtomIndexList(
+        text, structure_ ? static_cast<int>(structure_->size()) : 0);
 }
 
 std::vector<core::FatbandProjection>

@@ -351,9 +351,6 @@ private Q_SLOTS:
     /// anything actually changed, so callers can skip the renderer rebuild.
     bool applyFilmCastOpacities(
         const std::vector<render::FilmCastOpacity>& casts);
-    /// Directory of the process the Results tabs track, else the most recent
-    /// run — the default target for the viewers.
-    QString selectedProcessDirectory() const;
     /// "Load Result" from the Process panel: band data, trajectory or
     /// final structure — whatever the task directory contains.
     void onProcessResultRequested(const QString& directory);
@@ -549,9 +546,6 @@ private:
     /// Push the current document's state into all views.
     void syncViewsToCurrent(bool frameCamera);
     /// Workspace id of the tab on screen, or -1 when no document is open.
-    /// Replace the current document's structure (supercell, slab, undo...).
-    void replaceCurrentStructure(std::shared_ptr<core::Structure> structure,
-                                 const QString& name);
     /// Push undo, swap `edited` in as the current structure (and in the
     /// trajectory frame it stands for), refresh the views and report `message`.
     /// The one path every whole-structure transform goes through.

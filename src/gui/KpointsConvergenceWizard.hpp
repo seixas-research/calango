@@ -1,8 +1,7 @@
 #pragma once
 
 #include "core/KpointsConvergenceScriptGenerator.hpp"
-#include "gui/GpawElectronicRows.hpp"
-#include "gui/SimulationWizardBase.hpp"
+#include "gui/GpawElectronicWizard.hpp"
 
 #include <vector>
 
@@ -31,7 +30,7 @@ namespace calango::gui {
 ///
 /// The run at the DENSEST mesh is the convergence reference — the sweep is
 /// judged against the best member of the set.
-class KpointsConvergenceWizard : public SimulationWizardBase {
+class KpointsConvergenceWizard : public GpawElectronicWizard {
     Q_OBJECT
 
 public:
@@ -55,29 +54,6 @@ protected:
     {
         return tr("Calculator & Convergence Settings");
     }
-    // The same GPAW electronic form the Single-point wizard presents — each
-    // sweep member IS a single point.
-    /// The engine drives which smearing methods are offered, so the base
-    /// needs a handle on these rows to refilter them.
-    GpawElectronicRows* electronicRows() override { return &electronic_; }
-    void buildConvergenceRows(QFormLayout* form) override
-    {
-        electronic_.buildConvergenceRows(form, this);
-    }
-    void buildSpinRows(QFormLayout* form) override
-    {
-        electronic_.buildSpinRows(form, this);
-    }
-    QWidget* gpawEnergyToleranceWidget() override
-    {
-        return electronic_.energyToleranceWidget();
-    }
-    QWidget* gpawScfStepsWidget() override
-    {
-        return electronic_.scfStepsWidget();
-    }
-    bool hasConvergenceExtras() const override { return true; }
-    bool hasSpinExtras() const override { return true; }
     /// The sweep stage defines the meshes (and their Γ-centering); the
     /// calculator page's k-grid row and BZ toggles would be controls the
     /// generated script ignores.
@@ -117,7 +93,6 @@ private:
     QLabel* sweepSummary_ = nullptr;
     QFormLayout* sweepForm_ = nullptr;
 
-    GpawElectronicRows electronic_;
 };
 
 } // namespace calango::gui

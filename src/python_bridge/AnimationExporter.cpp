@@ -186,14 +186,6 @@ finally:
     }
 }
 
-void AnimationExporter::exportMp4(const std::vector<QImage>& frames,
-                                  const QString& path,
-                                  int fps)
-{
-    exportVideo(frames, path, fps, QStringLiteral("libx264"),
-                QStringLiteral("yuv420p"));
-}
-
 namespace {
 
 /// Decode one animation frame from disk, with the frame index in the error

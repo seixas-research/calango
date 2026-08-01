@@ -1,7 +1,6 @@
 #pragma once
 
-#include "gui/GpawElectronicRows.hpp"
-#include "gui/SimulationWizardBase.hpp"
+#include "gui/GpawElectronicWizard.hpp"
 
 #include <QList>
 #include <QPair>
@@ -40,7 +39,7 @@ class EmbeddedKPathEditor;
 /// where the dispersion is read out. `periodic` selects finite-displacement
 /// phonons vs molecular Γ-point normal modes (which collapse stages 2–3 to the
 /// handful of controls that still apply).
-class PhononWizard : public SimulationWizardBase {
+class PhononWizard : public GpawElectronicWizard {
     Q_OBJECT
 
 public:
@@ -71,39 +70,9 @@ protected:
     QString exportFileName() const override { return QStringLiteral("phonon.py"); }
 
 
-    // The shared GPAW electronic-structure form: smearing (method + width),
-    // eigensolver + SCF step cap, the three convergence tolerances and the spin
-    // configuration. Injected here so this wizard's GPAW page is the SAME page
-    // the Single-Point and Geometry Optimization setups present — an SCF is an
-    // SCF whichever task drives it, and a second layout for the same settings
-    // is how the two drift apart.
-    /// The engine drives which smearing methods are offered, so the base
-    /// needs a handle on these rows to refilter them.
-    GpawElectronicRows* electronicRows() override { return &electronic_; }
-    void buildConvergenceRows(QFormLayout* form) override
-    {
-        electronic_.buildConvergenceRows(form, this);
-    }
-    void buildSpinRows(QFormLayout* form) override
-    {
-        electronic_.buildSpinRows(form, this);
-    }
-    QWidget* gpawEnergyToleranceWidget() override
-    {
-        return electronic_.energyToleranceWidget();
-    }
-    QWidget* gpawScfStepsWidget() override
-    {
-        return electronic_.scfStepsWidget();
-    }
-    bool hasConvergenceExtras() const override { return true; }
-    bool hasSpinExtras() const override { return true; }
-
 private:
     bool periodic_;
     std::shared_ptr<const core::Structure> structure_;
-    /// Shared GPAW electronic-structure controls (see the hooks above).
-    GpawElectronicRows electronic_;
 
     QDoubleSpinBox* deltaSpin_ = nullptr;
     QSpinBox* supercellSpins_[3] = {nullptr, nullptr, nullptr};

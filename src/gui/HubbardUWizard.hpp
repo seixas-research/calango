@@ -2,8 +2,7 @@
 
 #include "core/HubbardScriptGenerator.hpp"
 #include "core/Structure.hpp"
-#include "gui/GpawElectronicRows.hpp"
-#include "gui/SimulationWizardBase.hpp"
+#include "gui/GpawElectronicWizard.hpp"
 
 #include <memory>
 
@@ -45,7 +44,7 @@ namespace calango::gui {
 /// VASP and Quantum ESPRESSO only: they are the two engines here that can
 /// apply a potential shift to a named site's Hubbard projectors, which is the
 /// one primitive the method needs.
-class HubbardUWizard : public SimulationWizardBase {
+class HubbardUWizard : public GpawElectronicWizard {
     Q_OBJECT
 
 public:
@@ -69,27 +68,6 @@ protected:
     }
     QStringList calculatorElements() const override;
 
-    /// The same electronic form the Single-point wizard presents: each step of
-    /// the pipeline is a single point, so it is configured like one.
-    GpawElectronicRows* electronicRows() override { return &electronic_; }
-    void buildConvergenceRows(QFormLayout* form) override
-    {
-        electronic_.buildConvergenceRows(form, this);
-    }
-    void buildSpinRows(QFormLayout* form) override
-    {
-        electronic_.buildSpinRows(form, this);
-    }
-    QWidget* gpawEnergyToleranceWidget() override
-    {
-        return electronic_.energyToleranceWidget();
-    }
-    QWidget* gpawScfStepsWidget() override
-    {
-        return electronic_.scfStepsWidget();
-    }
-    bool hasConvergenceExtras() const override { return true; }
-    bool hasSpinExtras() const override { return true; }
 
     QString generateScript() const override;
     QString exportFileName() const override
@@ -120,7 +98,6 @@ private:
     QComboBox* shellCombo_ = nullptr;
     QLabel* summaryLabel_ = nullptr;
 
-    GpawElectronicRows electronic_;
 };
 
 } // namespace calango::gui

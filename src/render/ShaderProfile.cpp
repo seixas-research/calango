@@ -272,11 +272,6 @@ const ShaderCapabilities& ShaderRegistry::capabilities()
     return caps;
 }
 
-void ShaderRegistry::invalidateCapabilities()
-{
-    capabilityCache() = ShaderCapabilities{};
-}
-
 bool ShaderRegistry::isSupported(const ShaderProfile& profile, QString* reason)
 {
     // The legacy profile is supported by definition: it is the fallback, and a
@@ -316,22 +311,6 @@ bool ShaderRegistry::isSupported(const ShaderProfile& profile, QString* reason)
         }
     }
     return true;
-}
-
-QString ShaderRegistry::rendererSummary()
-{
-    const ShaderCapabilities& caps = capabilities();
-    if (!caps.valid)
-        return QCoreApplication::translate(
-            "calango::render", "No OpenGL context yet — open a structure first.");
-    return QCoreApplication::translate("calango::render",
-                                       "%1 · OpenGL %2.%3 core · GLSL %4")
-        .arg(caps.renderer.isEmpty()
-                 ? QCoreApplication::translate("calango::render", "unknown renderer")
-                 : caps.renderer)
-        .arg(caps.glMajor)
-        .arg(caps.glMinor)
-        .arg(caps.glslVersion);
 }
 
 } // namespace calango::render

@@ -189,7 +189,6 @@ public:
     };
     /// Replace the whole set of text overlays.
     void setTextOverlays(std::vector<TextOverlay> overlays);
-    const std::vector<TextOverlay>& textOverlays() const { return textOverlays_; }
 
     // -- Hydrogen bonds -----------------------------------------------------
     /// Geometric hydrogen-bond perception (Bond Editor → "Hydrogen Bonds").

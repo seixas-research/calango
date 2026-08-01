@@ -17,7 +17,7 @@ namespace calango::gui {
 
 RandomNoiseWizard::RandomNoiseWizard(
     std::shared_ptr<const core::Structure> reference, QWidget* parent)
-    : SimulationWizardBase(parent)
+    : GpawElectronicWizard(parent)
     , reference_(std::move(reference))
 {
     buildUi();

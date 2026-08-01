@@ -1,8 +1,9 @@
 #!/bin/sh
-# Refresh desktop databases so the Calango launcher entry, the
-# application/x-calango-project MIME type (*.calproj) and the icon are
-# picked up immediately. Modern dpkg triggers usually do this anyway;
-# the explicit calls make the package robust on minimal systems.
+# Refresh desktop databases so the Calango launcher entry, the MIME types
+# (application/x-calango-project for *.calproj, application/x-extxyz for
+# *.extxyz) and the icon are picked up immediately. Modern dpkg triggers
+# usually do this anyway; the explicit calls make the package robust on
+# minimal systems.
 set -e
 
 if command -v update-mime-database >/dev/null 2>&1; then

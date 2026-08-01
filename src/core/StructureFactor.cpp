@@ -69,13 +69,6 @@ StructureFactorResult transform(const RdfResult& rdf, double density,
 
 } // namespace
 
-StructureFactorResult computeStructureFactor(const Structure& structure,
-                                             const StructureFactorOptions& options)
-{
-    const RdfResult rdf = computeRdf(structure, options.rdf);
-    return transform(rdf, numberDensity(structure, options.rdf.usePbc), options);
-}
-
 StructureFactorResult
 computeStructureFactorAveraged(const std::vector<Structure>& frames,
                                const StructureFactorOptions& options)

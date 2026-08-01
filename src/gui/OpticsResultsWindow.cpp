@@ -1,5 +1,7 @@
 #include "gui/OpticsResultsWindow.hpp"
 
+#include "gui/GuiUtils.hpp"
+
 #include "gui/SpectrumPlotWidget.hpp"
 
 #include "gui/OpticsPlotStyleDialog.hpp"
@@ -393,44 +395,40 @@ void OpticsResultsWindow::exportCsv()
     if (path.isEmpty())
         return;
 
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("Export CSV"),
-                             tr("Could not open %1 for writing.").arg(path));
-        return;
-    }
-    QTextStream out(&file);
-    // A CSV starts with its header row — the direction is in the suggested
-    // file name, not a '#' line a CSV reader trips over.
-    out << "energy_eV,eps1,eps2,absorption_cm-1,reflectivity,n,k,loss";
-    // The 2D columns are appended only for a sheet job, so a bulk export keeps
-    // exactly the column set it always had.
-    if (dir->twoDimensional)
-        out << ",alpha_2D_re_A,alpha_2D_im_A,absorbance,sigma_2D_re,sigma_2D_im";
-    out << '\n';
-
-    const auto at = [](const std::vector<double>& v, std::size_t i) {
-        return i < v.size() ? v[i] : 0.0;
-    };
-    for (std::size_t i = 0; i < energy_.size(); ++i) {
-        out << QString::number(energy_[i], 'f', 6) << ','
-            << QString::number(at(dir->eps1, i), 'g', 8) << ','
-            << QString::number(at(dir->eps2, i), 'g', 8) << ','
-            << QString::number(at(dir->absorption, i), 'g', 8) << ','
-            << QString::number(at(dir->reflectivity, i), 'g', 8) << ','
-            << QString::number(at(dir->n, i), 'g', 8) << ','
-            << QString::number(at(dir->k, i), 'g', 8) << ','
-            << QString::number(at(dir->loss, i), 'g', 8);
-        if (dir->twoDimensional) {
-            out << ',' << QString::number(at(dir->alpha2dRe, i), 'g', 8) << ','
-                << QString::number(at(dir->alpha2dIm, i), 'g', 8) << ','
-                << QString::number(at(dir->absorbance, i), 'g', 8) << ','
-                << QString::number(at(dir->sigma2dRe, i), 'g', 8) << ','
-                << QString::number(at(dir->sigma2dIm, i), 'g', 8);
-        }
+    writeTextFile(this, path, [&](QTextStream& out) {
+        // A CSV starts with its header row — the direction is in the
+        // suggested file name, not a '#' line a CSV reader trips over.
+        out << "energy_eV,eps1,eps2,absorption_cm-1,reflectivity,n,k,loss";
+        // The 2D columns are appended only for a sheet job, so a bulk export
+        // keeps exactly the column set it always had.
+        if (dir->twoDimensional)
+            out << ",alpha_2D_re_A,alpha_2D_im_A,absorbance,sigma_2D_re,"
+                   "sigma_2D_im";
         out << '\n';
-    }
-    file.commit();
+
+        const auto at = [](const std::vector<double>& v, std::size_t i) {
+            return i < v.size() ? v[i] : 0.0;
+        };
+        for (std::size_t i = 0; i < energy_.size(); ++i) {
+            out << QString::number(energy_[i], 'f', 6) << ','
+                << QString::number(at(dir->eps1, i), 'g', 8) << ','
+                << QString::number(at(dir->eps2, i), 'g', 8) << ','
+                << QString::number(at(dir->absorption, i), 'g', 8) << ','
+                << QString::number(at(dir->reflectivity, i), 'g', 8) << ','
+                << QString::number(at(dir->n, i), 'g', 8) << ','
+                << QString::number(at(dir->k, i), 'g', 8) << ','
+                << QString::number(at(dir->loss, i), 'g', 8);
+            if (dir->twoDimensional) {
+                out << ','
+                    << QString::number(at(dir->alpha2dRe, i), 'g', 8) << ','
+                    << QString::number(at(dir->alpha2dIm, i), 'g', 8) << ','
+                    << QString::number(at(dir->absorbance, i), 'g', 8) << ','
+                    << QString::number(at(dir->sigma2dRe, i), 'g', 8) << ','
+                    << QString::number(at(dir->sigma2dIm, i), 'g', 8);
+            }
+            out << '\n';
+        }
+    });
 }
 
 void OpticsResultsWindow::exportImage()

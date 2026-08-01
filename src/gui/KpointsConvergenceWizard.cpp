@@ -15,7 +15,7 @@
 namespace calango::gui {
 
 KpointsConvergenceWizard::KpointsConvergenceWizard(QWidget* parent)
-    : SimulationWizardBase(parent)
+    : GpawElectronicWizard(parent)
 {
     buildUi();
     electronic_.updateEnabled();

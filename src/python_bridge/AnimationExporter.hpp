@@ -60,12 +60,6 @@ public:
                             const QString& codec,
                             const QString& pixelFormat);
 
-    /// H.264 MP4. Odd frame dimensions are cropped by one pixel to satisfy
-    /// yuv420p; alpha is ignored.
-    static void exportMp4(const std::vector<QImage>& frames,
-                          const QString& path,
-                          int fps);
-
     // -- Disk-backed variants (ray-traced trajectory animations) -----------
     //
     // The in-memory overloads above need every frame resident at once, which

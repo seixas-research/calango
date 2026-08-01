@@ -40,7 +40,7 @@ constexpr const char* kStreamHelper =
 
 } // namespace
 
-MonteCarloWizard::MonteCarloWizard(QWidget* parent) : SimulationWizardBase(parent)
+MonteCarloWizard::MonteCarloWizard(QWidget* parent) : GpawElectronicWizard(parent)
 {
     buildUi();
     updateMethodEnabled();

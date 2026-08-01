@@ -17,13 +17,12 @@
 #include <QStringList>
 #include <QWidget>
 
-#include <set>
 
 namespace calango::gui {
 
 MolecularDynamicsWizard::MolecularDynamicsWizard(
     std::shared_ptr<const core::Structure> structure, QWidget* parent)
-    : SimulationWizardBase(parent)
+    : GpawElectronicWizard(parent)
     , structure_(std::move(structure))
 {
     buildUi();
@@ -336,25 +335,8 @@ void MolecularDynamicsWizard::refreshConstraintSummary()
 {
     if (!constraintSummary_)
         return;
-    if (constraints_.empty()) {
-        constraintSummary_->setText(tr("None — every atom moves freely."));
-        return;
-    }
-    int fixedAtoms = 0;
-    int regions = 0;
-    for (const core::GeometryConstraint& rule : constraints_) {
-        if (rule.selection == core::GeometryConstraint::Selection::Region)
-            ++regions;
-        else
-            fixedAtoms += static_cast<int>(rule.indices.size());
-    }
-    QStringList parts;
-    if (fixedAtoms > 0)
-        parts << tr("%n atom(s)", nullptr, fixedAtoms);
-    if (regions > 0)
-        parts << tr("%n region(s)", nullptr, regions);
-    constraintSummary_->setText(
-        tr("Constrained: %1.").arg(parts.join(tr(", "))));
+    constraintSummary_->setText(constraintSummaryText(
+        constraints_, tr("None — every atom moves freely.")));
 }
 
 core::CalculatorConfig MolecularDynamicsWizard::config() const

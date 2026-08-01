@@ -1,5 +1,7 @@
 #include "gui/GwResultsWindow.hpp"
 
+#include "gui/GuiUtils.hpp"
+
 #include <QApplication>
 #include <QClipboard>
 #include <QFile>
@@ -288,30 +290,24 @@ void GwResultsWindow::exportCsv()
     if (path.isEmpty())
         return;
 
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("Export CSV"),
-                             tr("Could not open %1 for writing.").arg(path));
-        return;
-    }
-    QTextStream out(&file);
-    // A CSV starts with its header row — the run summary lives in the
-    // window and in gw.json, not as '#' lines a CSV reader trips over.
-    out << "kpoint,band,eps_dft_eV,e_qp_eV,correction_eV\n";
+    writeTextFile(this, path, [&](QTextStream& out) {
+        // A CSV starts with its header row — the run summary lives in the
+        // window and in gw.json, not as '#' lines a CSV reader trips over.
+        out << "kpoint,band,eps_dft_eV,e_qp_eV,correction_eV\n";
 
-    const auto dft = readMatrix(data_, "dft_eigenvalues_eV");
-    const auto qp = readMatrix(data_, "qp_eigenvalues_eV");
-    const std::size_t rows = std::min(dft.size(), qp.size());
-    for (std::size_t k = 0; k < rows; ++k) {
-        const std::size_t bands = std::min(dft[k].size(), qp[k].size());
-        for (std::size_t b = 0; b < bands; ++b) {
-            out << (k + 1) << ',' << (b + 1) << ','
-                << QString::number(dft[k][b], 'g', 8) << ','
-                << QString::number(qp[k][b], 'g', 8) << ','
-                << QString::number(qp[k][b] - dft[k][b], 'g', 8) << '\n';
+        const auto dft = readMatrix(data_, "dft_eigenvalues_eV");
+        const auto qp = readMatrix(data_, "qp_eigenvalues_eV");
+        const std::size_t rows = std::min(dft.size(), qp.size());
+        for (std::size_t k = 0; k < rows; ++k) {
+            const std::size_t bands = std::min(dft[k].size(), qp[k].size());
+            for (std::size_t b = 0; b < bands; ++b) {
+                out << (k + 1) << ',' << (b + 1) << ','
+                    << QString::number(dft[k][b], 'g', 8) << ','
+                    << QString::number(qp[k][b], 'g', 8) << ','
+                    << QString::number(qp[k][b] - dft[k][b], 'g', 8) << '\n';
+            }
         }
-    }
-    file.commit();
+    });
 }
 
 } // namespace calango::gui

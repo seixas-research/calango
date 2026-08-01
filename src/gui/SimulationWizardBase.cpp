@@ -2606,6 +2606,60 @@ SimulationWizardBase::readCalculatorProvenance(const QString& jobDir)
     return ic;
 }
 
+std::optional<SimulationWizardBase::InheritedCalculator>
+SimulationWizardBase::applyBaselineProvenance(const QComboBox* baselineCombo,
+                                              QLabel* note)
+{
+    const QString gpw =
+        baselineCombo ? baselineCombo->currentData().toString() : QString();
+    // The combo holds the .gpw; the provenance sidecar sits in its job dir.
+    const QString dir =
+        gpw.isEmpty() ? QString() : QFileInfo(gpw).absolutePath();
+    const auto inherited =
+        dir.isEmpty() ? std::nullopt : readCalculatorProvenance(dir);
+
+    if (note) {
+        if (inherited) {
+            QString text = tr("Inherited: %1")
+                               .arg(inherited->summary().toHtmlEscaped());
+            if (!inherited->condaEnv.isEmpty())
+                text += tr(" — env <code>%1</code>")
+                            .arg(inherited->condaEnv.toHtmlEscaped());
+            note->setText(text);
+        } else if (gpw.isEmpty()) {
+            note->clear();
+        } else {
+            note->setText(
+                tr("This baseline carries no <code>calculator.json</code>, so "
+                   "its parameters cannot be shown. GPAW still restores them "
+                   "from the <code>.gpw</code> at run time."));
+        }
+    }
+    return inherited;
+}
+
+QString SimulationWizardBase::constraintSummaryText(
+    const std::vector<core::GeometryConstraint>& constraints,
+    const QString& emptyText)
+{
+    if (constraints.empty())
+        return emptyText;
+    int fixedAtoms = 0;
+    int regions = 0;
+    for (const core::GeometryConstraint& rule : constraints) {
+        if (rule.selection == core::GeometryConstraint::Selection::Region)
+            ++regions;
+        else
+            fixedAtoms += static_cast<int>(rule.indices.size());
+    }
+    QStringList parts;
+    if (fixedAtoms > 0)
+        parts << tr("%n atom(s)", nullptr, fixedAtoms);
+    if (regions > 0)
+        parts << tr("%n region(s)", nullptr, regions);
+    return tr("Constrained: %1.").arg(parts.join(tr(", ")));
+}
+
 QString SimulationWizardBase::InheritedCalculator::summary() const
 {
     QString s = engine.isEmpty() ? QStringLiteral("calculator") : engine;

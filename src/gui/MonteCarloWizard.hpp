@@ -1,7 +1,6 @@
 #pragma once
 
-#include "gui/GpawElectronicRows.hpp"
-#include "gui/SimulationWizardBase.hpp"
+#include "gui/GpawElectronicWizard.hpp"
 
 class QComboBox;
 class QDoubleSpinBox;
@@ -17,7 +16,7 @@ namespace calango::gui {
 /// energy convergence); Stages 2–4 are the shared calculator/environment,
 /// calculator settings and ASE script review. Both methods emit a standalone,
 /// editable ASE Metropolis script run locally or remotely.
-class MonteCarloWizard : public SimulationWizardBase {
+class MonteCarloWizard : public GpawElectronicWizard {
     Q_OBJECT
 
 public:
@@ -32,34 +31,6 @@ protected:
     bool showsDispersionToggle() const override { return true; }
     QString exportFileName() const override { return QStringLiteral("monte_carlo.py"); }
 
-
-    // The shared GPAW electronic-structure form: smearing (method + width),
-    // eigensolver + SCF step cap, the three convergence tolerances and the spin
-    // configuration. Injected here so this wizard's GPAW page is the SAME page
-    // the Single-Point and Geometry Optimization setups present — an SCF is an
-    // SCF whichever task drives it, and a second layout for the same settings
-    // is how the two drift apart.
-    /// The engine drives which smearing methods are offered, so the base
-    /// needs a handle on these rows to refilter them.
-    GpawElectronicRows* electronicRows() override { return &electronic_; }
-    void buildConvergenceRows(QFormLayout* form) override
-    {
-        electronic_.buildConvergenceRows(form, this);
-    }
-    void buildSpinRows(QFormLayout* form) override
-    {
-        electronic_.buildSpinRows(form, this);
-    }
-    QWidget* gpawEnergyToleranceWidget() override
-    {
-        return electronic_.energyToleranceWidget();
-    }
-    QWidget* gpawScfStepsWidget() override
-    {
-        return electronic_.scfStepsWidget();
-    }
-    bool hasConvergenceExtras() const override { return true; }
-    bool hasSpinExtras() const override { return true; }
 
 private Q_SLOTS:
     void updateMethodEnabled();
@@ -80,8 +51,6 @@ private:
     /// into one accessor so the two script paths cannot disagree about them.
     core::CalculatorConfig electronicCalculatorConfig() const;
 
-    /// Shared GPAW electronic-structure controls.
-    GpawElectronicRows electronic_;
 };
 
 } // namespace calango::gui

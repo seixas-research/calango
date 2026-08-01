@@ -43,9 +43,6 @@ public:
     /// break counts each side separately). At least 1.
     int segmentCount() const;
 
-    /// True when the 3D builder is available (periodic structure).
-    bool interactive() const { return zoneWidget_ != nullptr; }
-
 Q_SIGNALS:
     void pathChanged();
 

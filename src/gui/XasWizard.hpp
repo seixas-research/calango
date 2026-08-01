@@ -2,8 +2,7 @@
 
 #include "core/Structure.hpp"
 #include "core/XasScriptGenerator.hpp"
-#include "gui/GpawElectronicRows.hpp"
-#include "gui/SimulationWizardBase.hpp"
+#include "gui/GpawElectronicWizard.hpp"
 
 #include <memory>
 
@@ -33,7 +32,7 @@ namespace calango::gui {
 /// GPAW only: `gpaw.xas` is the implementation, and it additionally requires
 /// GPAW's LEGACY engine — the script clears GPAW_NEW and asks for
 /// `legacy_gpaw=True`, which no other Calango script does.
-class XasWizard : public SimulationWizardBase {
+class XasWizard : public GpawElectronicWizard {
     Q_OBJECT
 
 public:
@@ -59,29 +58,6 @@ protected:
     }
     QStringList calculatorElements() const override;
 
-    // The shared GPAW form, so the ground state this spectrum comes out of is
-    // configured the same way every other GPAW run is.
-    /// The engine drives which smearing methods are offered, so the base
-    /// needs a handle on these rows to refilter them.
-    GpawElectronicRows* electronicRows() override { return &electronic_; }
-    void buildConvergenceRows(QFormLayout* form) override
-    {
-        electronic_.buildConvergenceRows(form, this);
-    }
-    void buildSpinRows(QFormLayout* form) override
-    {
-        electronic_.buildSpinRows(form, this);
-    }
-    QWidget* gpawEnergyToleranceWidget() override
-    {
-        return electronic_.energyToleranceWidget();
-    }
-    QWidget* gpawScfStepsWidget() override
-    {
-        return electronic_.scfStepsWidget();
-    }
-    bool hasConvergenceExtras() const override { return true; }
-    bool hasSpinExtras() const override { return true; }
 
     QString generateScript() const override;
     QString exportFileName() const override { return QStringLiteral("xas.py"); }
@@ -113,7 +89,6 @@ private:
     QDoubleSpinBox* dksSpin_ = nullptr;
     QLabel* note_ = nullptr;
 
-    GpawElectronicRows electronic_;
 };
 
 } // namespace calango::gui

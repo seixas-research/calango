@@ -12,11 +12,9 @@
 #include <QGroupBox>
 #include <QLabel>
 #include <QLineEdit>
-#include <QRegularExpression>
 #include <QVBoxLayout>
 #include <QWidget>
 
-#include <set>
 
 namespace calango::gui {
 
@@ -154,41 +152,13 @@ QWidget* BornChargesWizard::buildSettingsPage()
 
 std::vector<int> BornChargesWizard::selectedAtoms() const
 {
-    std::vector<int> indices;
     if (!atomsEdit_)
-        return indices;
-    const QString text = atomsEdit_->text().trimmed();
-    if (text.isEmpty())
-        return indices; // empty == every atom
-    const int count = structure_ ? static_cast<int>(structure_->size()) : 0;
-    std::set<int> unique;
-    // "0, 2, 5-8" — commas and/or whitespace separate entries, a dash makes a
-    // closed range. Out-of-range entries are dropped rather than clamped: a
-    // typo that silently constrained a different atom would be worse than one
-    // that visibly does nothing.
-    const QStringList parts =
-        text.split(QRegularExpression(QStringLiteral("[,\\s]+")),
-                   Qt::SkipEmptyParts);
-    for (const QString& part : parts) {
-        const int dash = part.indexOf(QLatin1Char('-'), 1);
-        if (dash > 0) {
-            bool okLow = false;
-            bool okHigh = false;
-            const int low = part.left(dash).toInt(&okLow);
-            const int high = part.mid(dash + 1).toInt(&okHigh);
-            if (okLow && okHigh)
-                for (int i = low; i <= high; ++i)
-                    if (i >= 0 && (count == 0 || i < count))
-                        unique.insert(i);
-            continue;
-        }
-        bool ok = false;
-        const int value = part.toInt(&ok);
-        if (ok && value >= 0 && (count == 0 || value < count))
-            unique.insert(value);
-    }
-    indices.assign(unique.begin(), unique.end());
-    return indices;
+        return {};
+    // Empty == every atom; shared parser, same selection syntax as the
+    // fatband atom fields.
+    return parseAtomIndexList(
+        atomsEdit_->text(),
+        structure_ ? static_cast<int>(structure_->size()) : 0);
 }
 
 void BornChargesWizard::updateCostEstimate()
@@ -223,30 +193,7 @@ void BornChargesWizard::setDensityBaselines(
 
 void BornChargesWizard::onBaselineChanged()
 {
-    const QString gpw =
-        baselineCombo_ ? baselineCombo_->currentData().toString() : QString();
-    // The combo holds the .gpw; the provenance sidecar sits in its job dir.
-    const QString dir =
-        gpw.isEmpty() ? QString() : QFileInfo(gpw).absolutePath();
-    inherited_ = dir.isEmpty() ? std::nullopt : readCalculatorProvenance(dir);
-
-    if (inheritanceNote_) {
-        if (inherited_) {
-            QString note = tr("Inherited: %1")
-                               .arg(inherited_->summary().toHtmlEscaped());
-            if (!inherited_->condaEnv.isEmpty())
-                note += tr(" — env <code>%1</code>")
-                            .arg(inherited_->condaEnv.toHtmlEscaped());
-            inheritanceNote_->setText(note);
-        } else if (gpw.isEmpty()) {
-            inheritanceNote_->clear();
-        } else {
-            inheritanceNote_->setText(
-                tr("This baseline carries no <code>calculator.json</code>, so "
-                   "its parameters cannot be shown. GPAW still restores them "
-                   "from the <code>.gpw</code> at run time."));
-        }
-    }
+    inherited_ = applyBaselineProvenance(baselineCombo_, inheritanceNote_);
     updateCostEstimate();
     refreshPreview();
 }

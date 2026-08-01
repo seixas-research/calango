@@ -16,7 +16,7 @@ namespace calango::gui {
 
 XasWizard::XasWizard(std::shared_ptr<const core::Structure> structure,
                      QWidget* parent)
-    : SimulationWizardBase(parent)
+    : GpawElectronicWizard(parent)
     , structure_(std::move(structure))
 {
     buildUi();

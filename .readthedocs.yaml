@@ -5,10 +5,10 @@ build:
   tools:
     python: "3.14"
 
+# Calango is a C++ application — nothing to pip-install from the repo root;
+# only the Sphinx toolchain is needed.
 python:
   install:
-    - method: pip
-      path: .
     - requirements: docs/sphinx/requirements.txt
 
 sphinx:

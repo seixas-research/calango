@@ -237,11 +237,6 @@ public:
     void configureNode(WorkflowNodeItem* node, const QString& script,
                        const QString& python, const QString& runCommand,
                        core::CalculatorKind engine);
-    const std::vector<WorkflowNodeItem*>& processNodes() const
-    {
-        return nodes_;
-    }
-
 public Q_SLOTS:
     /// Queue every node (status → Waiting) and start executing the pipeline
     /// in dependency order.

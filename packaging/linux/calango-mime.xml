@@ -7,4 +7,15 @@
     <glob pattern="*.calproj"/>
     <icon name="calango"/>
   </mime-type>
+  <!-- Extended XYZ — Calango's default structure/trajectory format.
+       Subclassed under chemical/x-xyz (shared-mime-info's plain-XYZ type) so
+       generic XYZ handlers keep matching .extxyz files. XYZ has no reliable
+       magic bytes (the first line is a bare atom count), so the glob is the
+       whole rule. -->
+  <mime-type type="application/x-extxyz">
+    <comment>Extended XYZ atomic structure</comment>
+    <sub-class-of type="chemical/x-xyz"/>
+    <glob pattern="*.extxyz"/>
+    <icon name="calango"/>
+  </mime-type>
 </mime-info>

@@ -3,7 +3,6 @@
 #include "core/AseScriptGenerator.hpp"
 #include "core/BrillouinZone.hpp"
 #include "core/HydrogenCompletion.hpp"
-#include "core/Noise.hpp"
 #include "core/PdbxFile.hpp"
 #include "core/Structure.hpp"
 #include "core/StructureTransforms.hpp"
@@ -14,7 +13,6 @@
 #include "gui/XrdDialog.hpp"
 #include "gui/ExamplesDialog.hpp"
 #include "gui/NanoBuilderDialog.hpp"
-#include "gui/PhononBuilderDialog.hpp"
 #include "gui/PointOfViewDialog.hpp"
 #include "gui/RayTraceDialog.hpp"
 #include "gui/RdfDialog.hpp"
@@ -113,7 +111,6 @@
 #include "gui/JobLogWidget.hpp"
 #include "gui/MetricPlotWidget.hpp"
 #include "gui/ProjectSerializer.hpp"
-#include "gui/ScriptStaging.hpp"
 #include "gui/StructureEditorDialog.hpp"
 #include "gui/StructureInfoWidget.hpp"
 #include "gui/FilmProductionDialog.hpp"
@@ -2134,19 +2131,6 @@ void MainWindow::syncViewsToCurrent(bool frameCamera)
     // dialog, if open) at the incoming tab's film and trajectory.
     refreshFilmTimeline();
     updateUndoActions();
-}
-
-void MainWindow::replaceCurrentStructure(std::shared_ptr<core::Structure> structure,
-                                         const QString& name)
-{
-    Document* doc = currentDocument();
-    if (!doc)
-        return;
-    doc->structure = std::move(structure);
-    doc->fileName = name;
-    doc->frames.clear();
-    refreshTabTitles(); // formula (and thus the title) may have changed
-    syncViewsToCurrent(true);
 }
 
 void MainWindow::notifyStructureChanged(bool frameCamera)
@@ -4604,15 +4588,6 @@ void MainWindow::openMlwfResults(const QString& directory)
     viewer->setAttribute(Qt::WA_DeleteOnClose);
     viewer->show();
     viewer->loadResults(directory + QStringLiteral("/wannier.json"));
-}
-
-QString MainWindow::selectedProcessDirectory() const
-{
-    // The process the Results tabs currently track, else the most recent run.
-    const auto it = processRecords_.find(selectedProcessId_);
-    if (it != processRecords_.end() && !it->second.directory.isEmpty())
-        return it->second.directory;
-    return lastJobDir_;
 }
 
 std::vector<MainWindow::ViewerEntry> MainWindow::viewersFor(

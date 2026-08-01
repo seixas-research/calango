@@ -71,6 +71,14 @@ QStringList structureElements(const core::Structure* structure);
 /// in step with the first.
 int guessVacuumAxis(const core::Structure* structure);
 
+/// Parse a user-typed atom index list — "0, 2, 5-8": commas and/or whitespace
+/// separate entries, a dash makes a closed range. Out-of-range entries are
+/// DROPPED rather than clamped — a typo that silently addressed a different
+/// atom would be worse than one that visibly does nothing. `atomCount == 0`
+/// disables the upper bound. Returns a sorted, deduplicated list; empty text
+/// yields an empty vector (callers treat that as "every atom").
+std::vector<int> parseAtomIndexList(const QString& text, int atomCount);
+
 /// Write `body` to `path` atomically, reporting failure to the user.
 ///
 /// The seven export actions in this layer (JSON, CSV, OBJ, plot data …) each
@@ -170,13 +178,6 @@ std::vector<double> toDoubleVector(const QJsonArray& array);
 /// the user-facing explanation.
 bool mlwfWavefunctionsAvailable(const QString& jobDir, QString* reason);
 
-/// Schönflies symbol of a crystallographic point group given its
-/// Hermann-Mauguin (international) symbol as spglib reports it — e.g.
-/// "3m" → "C<sub>3v</sub>", "m-3m" → "O<sub>h</sub>". Rich text (HTML
-/// subscripts), ready for a QLabel. Empty when the symbol is not one of the
-/// 32 crystallographic point groups.
-QString schoenfliesPointGroup(const QString& hermannMauguin);
-
 // ---------------------------------------------------------------------------
 // Structure file I/O: one set of filters for the whole application
 // ---------------------------------------------------------------------------
@@ -193,11 +194,8 @@ QString schoenfliesPointGroup(const QString& hermannMauguin);
 // QFileDialog pre-selects. The umbrella "all supported structures" filter is
 // one entry down in the open dialogs, so nothing becomes unreachable.
 
-/// ASE's format name for Extended XYZ, as passed to write()/read().
-QString defaultStructureFormat();
-/// ".extxyz" — the suffix a structure is saved with unless told otherwise.
-QString defaultStructureSuffix();
-/// `stem` with the default structure suffix, sanitized for use as a file name.
+/// `stem` with the default structure suffix (".extxyz"), sanitized for use as
+/// a file name.
 /// Empty or extension-only stems fall back to "structure".
 QString defaultStructureFileName(const QString& stem);
 

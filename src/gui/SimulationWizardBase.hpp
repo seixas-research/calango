@@ -81,6 +81,23 @@ public:
     static std::optional<InheritedCalculator> readCalculatorProvenance(
         const QString& jobDir);
 
+    /// Shared body of a baseline picker's change handler: read the provenance
+    /// sidecar next to the selected .gpw (the combo's currentData) and render
+    /// the inheritance note into `note` — "Inherited: …", the no-sidecar
+    /// explanation, or cleared when nothing is selected. Returns the parsed
+    /// provenance for the wizard to keep (pythonExecutable(), script
+    /// generation). The three baseline-inheriting wizards used to carry three
+    /// verbatim copies of this, translated string included.
+    static std::optional<InheritedCalculator>
+    applyBaselineProvenance(const QComboBox* baselineCombo, QLabel* note);
+
+    /// One-line summary of a constraints list for a settings page:
+    /// `emptyText` when nothing is constrained (each wizard words the free
+    /// case for its own task), else "Constrained: N atom(s), M region(s).".
+    static QString constraintSummaryText(
+        const std::vector<core::GeometryConstraint>& constraints,
+        const QString& emptyText);
+
     /// The configured VASP POTCAR directory (`VASP_PP_PATH`).
     ///
     /// Static because it describes the INSTALLATION, not a job: every VASP run

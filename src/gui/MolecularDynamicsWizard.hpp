@@ -1,7 +1,6 @@
 #pragma once
 
-#include "gui/GpawElectronicRows.hpp"
-#include "gui/SimulationWizardBase.hpp"
+#include "gui/GpawElectronicWizard.hpp"
 
 #include <memory>
 #include <vector>
@@ -30,7 +29,7 @@ namespace calango::gui {
 /// integrator, the same constraints, the same sampling, retargeted every step.
 /// Annealing needs a thermostat to retarget, so the NVE entry is withdrawn
 /// while it is selected rather than being offered and silently ignored.
-class MolecularDynamicsWizard : public SimulationWizardBase {
+class MolecularDynamicsWizard : public GpawElectronicWizard {
     Q_OBJECT
 
 public:
@@ -56,35 +55,7 @@ protected:
     QString generateScript() const override;
     QString exportFileName() const override { return QStringLiteral("md.py"); }
 
-
-    // The shared GPAW electronic-structure form: smearing (method + width),
-    // eigensolver + SCF step cap, the three convergence tolerances and the spin
-    // configuration. Injected here so this wizard's GPAW page is the SAME page
-    // the Single-Point and Geometry Optimization setups present — an SCF is an
-    // SCF whichever task drives it, and a second layout for the same settings
-    // is how the two drift apart.
-    /// The engine drives which smearing methods are offered, so the base
-    /// needs a handle on these rows to refilter them.
-    GpawElectronicRows* electronicRows() override { return &electronic_; }
-    void buildConvergenceRows(QFormLayout* form) override
-    {
-        electronic_.buildConvergenceRows(form, this);
-    }
-    void buildSpinRows(QFormLayout* form) override
-    {
-        electronic_.buildSpinRows(form, this);
-    }
-    QWidget* gpawEnergyToleranceWidget() override
-    {
-        return electronic_.energyToleranceWidget();
-    }
-    QWidget* gpawScfStepsWidget() override
-    {
-        return electronic_.scfStepsWidget();
-    }
-    bool hasConvergenceExtras() const override { return true; }
     bool taskHasIonicSteps() const override { return true; }
-    bool hasSpinExtras() const override { return true; }
 
 private Q_SLOTS:
     void updateEnsembleEnabled();
@@ -110,7 +81,6 @@ private:
 
     /// Shared GPAW electronic-structure controls (see the hooks above).
 
-    GpawElectronicRows electronic_;
     /// Frozen degrees of freedom. Owned here rather than in the dialog, which
     /// is constructed on demand and destroyed on close.
     std::vector<core::GeometryConstraint> constraints_;

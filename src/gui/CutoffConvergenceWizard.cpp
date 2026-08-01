@@ -11,7 +11,7 @@
 namespace calango::gui {
 
 CutoffConvergenceWizard::CutoffConvergenceWizard(QWidget* parent)
-    : SimulationWizardBase(parent)
+    : GpawElectronicWizard(parent)
 {
     buildUi();
     electronic_.updateEnabled();

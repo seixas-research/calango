@@ -21,17 +21,15 @@ struct StructureFactorResult {
     std::vector<double> s; ///< S(q), dimensionless
 };
 
-/// Static (isotropic) structure factor from the pair distribution:
+/// Static (isotropic) structure factor from a frame-averaged pair
+/// distribution over a trajectory selection (a single structure is the
+/// one-frame case):
 ///     S(q) = 1 + 4πρ ∫₀^rMax [g(r) − 1] r² sin(qr)/(qr) dr,
 /// evaluated by trapezoidal quadrature on the RDF grid with a Lorch
 /// window damping the truncation ripples at rMax. ρ is the number
 /// density from the cell volume (bounding box for isolated systems, as
 /// in the RDF). Suited to liquids/amorphous systems and powder-like
 /// averages of crystals.
-StructureFactorResult computeStructureFactor(const Structure& structure,
-                                             const StructureFactorOptions& options);
-
-/// Same, from a frame-averaged g(r) over a trajectory selection.
 StructureFactorResult
 computeStructureFactorAveraged(const std::vector<Structure>& frames,
                                const StructureFactorOptions& options);

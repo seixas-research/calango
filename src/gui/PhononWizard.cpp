@@ -27,7 +27,7 @@ namespace calango::gui {
 PhononWizard::PhononWizard(bool periodic,
                            std::shared_ptr<const core::Structure> structure,
                            QWidget* parent)
-    : SimulationWizardBase(parent)
+    : GpawElectronicWizard(parent)
     , periodic_(periodic)
     , structure_(std::move(structure))
 {

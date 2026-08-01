@@ -561,30 +561,7 @@ void RamanIrWizard::setOpticsResults(
 
 void RamanIrWizard::onBaselineChanged()
 {
-    const QString gpw =
-        baselineCombo_ ? baselineCombo_->currentData().toString() : QString();
-    // The combo holds the .gpw; the provenance sidecar sits in its job dir.
-    const QString dir =
-        gpw.isEmpty() ? QString() : QFileInfo(gpw).absolutePath();
-    inherited_ = dir.isEmpty() ? std::nullopt : readCalculatorProvenance(dir);
-
-    if (inheritanceNote_) {
-        if (inherited_) {
-            QString note = tr("Inherited: %1")
-                               .arg(inherited_->summary().toHtmlEscaped());
-            if (!inherited_->condaEnv.isEmpty())
-                note += tr(" — env <code>%1</code>")
-                            .arg(inherited_->condaEnv.toHtmlEscaped());
-            inheritanceNote_->setText(note);
-        } else if (gpw.isEmpty()) {
-            inheritanceNote_->clear();
-        } else {
-            inheritanceNote_->setText(
-                tr("This baseline carries no <code>calculator.json</code>, so "
-                   "its parameters cannot be shown. GPAW still restores them "
-                   "from the <code>.gpw</code> at run time."));
-        }
-    }
+    inherited_ = applyBaselineProvenance(baselineCombo_, inheritanceNote_);
     updateCostEstimate();
     refreshPreview();
 }

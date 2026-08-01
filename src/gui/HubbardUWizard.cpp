@@ -57,7 +57,7 @@ bool likelyNeedsU(int z)
 
 HubbardUWizard::HubbardUWizard(std::shared_ptr<const core::Structure> structure,
                                QWidget* parent)
-    : SimulationWizardBase(parent), structure_(std::move(structure))
+    : GpawElectronicWizard(parent), structure_(std::move(structure))
 {
     buildUi();
     // VASP leads: the linear-response recipe this module automates is the one

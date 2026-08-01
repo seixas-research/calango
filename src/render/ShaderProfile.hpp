@@ -116,21 +116,13 @@ public:
     /// The slot's legacy (always-available) profile.
     static const ShaderProfile& legacyProfile(ShaderSlot slot);
 
-    /// The id selected in settings, already validated against what this
-    /// driver supports: an unsupported or unknown selection resolves to the
-    /// legacy profile rather than failing to draw.
-    static QString activeProfileId(ShaderSlot slot);
+    /// The selection from settings, validated against what this driver
+    /// supports: an unsupported or unknown selection resolves to the legacy
+    /// profile rather than failing to draw.
     static const ShaderProfile& activeProfile(ShaderSlot slot);
     /// Persist a selection. Does not itself trigger a redraw — the caller owns
     /// the viewport and knows whether a geometry rebuild is also needed.
     static void setActiveProfileId(ShaderSlot slot, const QString& id);
-
-    /// Capabilities of the CURRENT GL context. Must be called with one bound;
-    /// returns `valid == false` otherwise. Cached after the first successful
-    /// query, since the context outlives every caller.
-    static const ShaderCapabilities& capabilities();
-    /// Re-query on the next call — for a context that was recreated.
-    static void invalidateCapabilities();
 
     /// Whether `profile` can run here. `reason` receives a human-readable
     /// explanation naming the MISSING REQUIREMENT when it cannot: "not
@@ -138,16 +130,22 @@ public:
     /// their driver, their hardware or a bug.
     static bool isSupported(const ShaderProfile& profile, QString* reason);
 
-    /// Human-readable one-liner about the driver, for the Preferences
-    /// diagnostics block.
-    static QString rendererSummary();
-
     /// Slot ↔ settings-key mapping, exposed so the Preferences tab and the
     /// renderer cannot disagree about where a selection lives.
     static const char* settingsKey(ShaderSlot slot);
     /// Untranslated slot name for logs; the UI supplies its own translated
     /// labels.
     static const char* slotName(ShaderSlot slot);
+
+private:
+    /// The raw id from settings, validated; activeProfile() is the public
+    /// face of this.
+    static QString activeProfileId(ShaderSlot slot);
+
+    /// Capabilities of the CURRENT GL context. Must be called with one bound;
+    /// returns `valid == false` otherwise. Cached after the first successful
+    /// query, since the context outlives every caller.
+    static const ShaderCapabilities& capabilities();
 };
 
 } // namespace calango::render
