@@ -226,6 +226,102 @@ enum class VaspRelaxDriver {
 /// VASP PREC. Enum order is the combo order in the VASP settings group.
 enum class VaspPrecision { Normal, Accurate, Single };
 
+// ---------------------------------------------------------------------------
+// Quantum ESPRESSO
+// ---------------------------------------------------------------------------
+//
+// QE is a plane-wave code with a DUAL grid: the wavefunctions are expanded to
+// `ecutwfc` and the charge density to `ecutrho`. That second cutoff is not a
+// refinement anyone can skip — for ultrasoft pseudopotentials or PAW the
+// density carries augmentation charges that are far harder than the
+// wavefunctions, and the default ratio of 4 (right for norm-conserving) leaves
+// them badly under-converged. It is a QE-specific decision with no GPAW or
+// VASP counterpart, which is why QE gets its own settings group rather than
+// borrowing the shared "plane-wave cutoff" row.
+
+/// QE `occupations`. Enum order is the combo order.
+enum class QeOccupations {
+    Smearing,      ///< metals; needs a smearing function and a width
+    Fixed,         ///< insulators with a known gap
+    Tetrahedra,    ///< Bloechl-corrected tetrahedra (DOS-quality, no width)
+    TetrahedraOpt, ///< the optimized tetrahedron method
+};
+
+/// QE `smearing`. Only read when occupations = Smearing.
+enum class QeSmearing {
+    MarzariVanderbilt, ///< 'cold' smearing — QE's recommended default
+    Gaussian,
+    MethfesselPaxton,
+    FermiDirac,        ///< a physical temperature, not a convergence aid
+};
+
+constexpr const char* toString(QeOccupations occupations)
+{
+    switch (occupations) {
+    case QeOccupations::Fixed:         return "fixed";
+    case QeOccupations::Tetrahedra:    return "tetrahedra";
+    case QeOccupations::TetrahedraOpt: return "tetrahedra_opt";
+    case QeOccupations::Smearing:      break;
+    }
+    return "smearing";
+}
+
+constexpr const char* toString(QeSmearing smearing)
+{
+    switch (smearing) {
+    case QeSmearing::Gaussian:         return "gaussian";
+    case QeSmearing::MethfesselPaxton: return "methfessel-paxton";
+    case QeSmearing::FermiDirac:       return "fermi-dirac";
+    case QeSmearing::MarzariVanderbilt: break;
+    }
+    return "marzari-vanderbilt";
+}
+
+/// True when the run needs a smearing function and a width — the tetrahedron
+/// methods and fixed occupations take neither, and writing `degauss` alongside
+/// them is how a QE input ends up being silently ignored or refused.
+constexpr bool qeUsesSmearing(QeOccupations occupations)
+{
+    return occupations == QeOccupations::Smearing;
+}
+
+// ---------------------------------------------------------------------------
+// SIESTA
+// ---------------------------------------------------------------------------
+//
+// SIESTA has NO plane-wave cutoff. It is a numerical-atomic-orbital code: the
+// basis is a finite set of pseudo-atomic orbitals, and its quality is set by
+// how many orbitals per shell (the basis SIZE), how they are generated (the
+// basis TYPE) and how far they extend (the ENERGY SHIFT — the confinement
+// energy that fixes each orbital's cutoff radius). The only cutoff SIESTA has
+// is the MESH cutoff, which discretizes the real-space grid the Hartree and XC
+// terms are evaluated on and has nothing to do with a basis-set expansion.
+//
+// Offering "plane-wave cutoff" for SIESTA was therefore not merely a mislabel:
+// it silently mapped one number onto `mesh_cutoff`, so raising it to converge
+// "the basis" refined a grid while the basis stayed exactly as small.
+
+/// SIESTA `PAO.BasisType`. Enum order is the combo order.
+enum class SiestaBasisType {
+    Split,       ///< split-valence (the standard, and SIESTA's default)
+    SplitGauss,  ///< split valence with Gaussian tails
+    Nodes,       ///< multiple-zeta from the excited-state orbitals
+    NoNodes,     ///< nodeless, the original Sankey-type scheme
+    Filteret,    ///< filtered basis (needs a filter cutoff)
+};
+
+constexpr const char* toString(SiestaBasisType type)
+{
+    switch (type) {
+    case SiestaBasisType::SplitGauss: return "splitgauss";
+    case SiestaBasisType::Nodes:      return "nodes";
+    case SiestaBasisType::NoNodes:    return "nonodes";
+    case SiestaBasisType::Filteret:   return "filteret";
+    case SiestaBasisType::Split:      break;
+    }
+    return "split";
+}
+
 /// VASP ALGO — the electronic minimization algorithm. Enum order is the combo
 /// order.
 enum class VaspAlgo { Normal, Fast, VeryFast, All, Damped };
@@ -585,9 +681,47 @@ struct CalculatorConfig {
     /// Linear there.
     double annealCoefficient = 3.0;
 
-    // DFT common knobs (used by the QE/VASP templates)
+    // DFT common knobs. `planeWaveCutoffEv` is the plane-wave basis cutoff of
+    // GPAW's PW mode and of VASP's ENCUT — the two engines that share one. QE
+    // has its own dual-cutoff pair below and SIESTA has no plane-wave cutoff
+    // at all, so neither reads this.
     double planeWaveCutoffEv = 500.0;
     int kpts[3] = {7, 7, 7};
+
+    // Quantum ESPRESSO. Cutoffs are in Rydberg, which is what pw.x reads —
+    // converting from eV in the UI and back in the generator is one more place
+    // for a factor of 13.6 to go missing.
+    double qeEcutwfcRy = 60.0;
+    /// ecutrho. Zero means "let QE default it to 4 x ecutwfc", which is right
+    /// for norm-conserving pseudopotentials and badly wrong for ultrasoft/PAW
+    /// (8-12x). Written explicitly whenever non-zero.
+    double qeEcutrhoRy = 0.0;
+    std::string qeInputDft = "pbe"; ///< input_dft; empty uses the pseudo's own
+    /// pseudo_dir. Like VASP's POTCAR root this is a per-INSTALLATION setting
+    /// (Preferences → External Files), injected here by the wizard rather than
+    /// read from the environment, so the generated script names the library it
+    /// was configured against instead of whatever happened to be exported.
+    std::string espressoPseudoDir;
+    QeOccupations qeOccupations = QeOccupations::Smearing;
+    QeSmearing qeSmearing = QeSmearing::MarzariVanderbilt;
+    double qeDegaussRy = 0.01;      ///< smearing width, Ry
+    double qeConvThrRy = 1.0e-8;    ///< conv_thr, Ry
+
+    // SIESTA. No plane-wave cutoff exists for this engine — see the note at
+    // SiestaBasisType.
+    SiestaBasisType siestaBasisType = SiestaBasisType::Split;
+    std::string siestaBasisSize = "DZP"; ///< SZ | SZP | DZ | DZP | TZP
+    /// PAO.EnergyShift (eV): the confinement energy that sets every orbital's
+    /// cutoff radius. Smaller means longer-ranged orbitals and a better —
+    /// and much more expensive — basis. 0.27 eV (0.02 Ry) is SIESTA's default.
+    double siestaEnergyShiftEv = 0.27;
+    /// MeshCutoff (eV): the real-space grid the Hartree and XC terms are
+    /// integrated on. Not a basis-set parameter.
+    double siestaMeshCutoffEv = 300.0;
+    std::string siestaXc = "PBE";
+    /// SIESTA_PP_PATH, from Preferences → External Files. Same rationale as
+    /// the QE and VASP libraries above.
+    std::string siestaPseudoDir;
 
     // MACE machine-learning potential
     MaceModelSource maceSource = MaceModelSource::FoundationMP;
@@ -704,6 +838,32 @@ struct CalculatorConfig {
     /// zone is required downstream — e.g. a Single-Point whose .gpw feeds an
     /// MLWF localization (ase.dft.wannier needs the unfolded BZ).
     bool gpawSymmetryOff = false;
+    /// Drop POINT-GROUP symmetry only, keeping time reversal: emits
+    /// `symmetry={"point_group": False, "time_reversal": True}`. Ignored when
+    /// `gpawSymmetryOff` is set (that is the stronger request).
+    ///
+    /// Not the same thing as `symmetry="off"`, which drops time reversal too
+    /// and so roughly doubles the k-point count for no gain in a nonmagnetic
+    /// system. GPAW's nonlinear-optics module asserts only that the point
+    /// group is off (gpaw.nlopt.matrixel.make_nlodata), because the matrix
+    /// elements it builds are not invariant under the point-group folding —
+    /// so this is the setting that satisfies it at the lowest cost.
+    bool gpawPointGroupOff = false;
+    /// `nbands=` literal, empty for GPAW's own default.
+    ///
+    /// A string rather than a number because GPAW's symbolic forms are part of
+    /// the parameter: "nao" (every atomic orbital), "110%" (10 % more than the
+    /// occupied count). A purely numeric value is emitted unquoted; anything
+    /// else is quoted.
+    std::string gpawNbands;
+    /// `convergence={"bands": N}` — how many bands must be converged, not just
+    /// occupied. 0 leaves the key out.
+    ///
+    /// Negative counts from the top the way GPAW reads them: -10 means "all
+    /// but the highest 10". This matters for any response property that sums
+    /// over EMPTY states, because the SCF converges occupied bands only and
+    /// the unoccupied manifold it leaves behind is unconverged noise.
+    int gpawConvergeBands = 0;
     /// Gamma-centered k-point mesh: shift the Monkhorst-Pack grid so it
     /// includes Γ. Off by default.
     ///

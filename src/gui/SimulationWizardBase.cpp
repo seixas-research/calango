@@ -246,6 +246,8 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     orcaForm->addRow(tr("Multiplicity:"), multiplicitySpin_);
     layout->addWidget(orcaGroup_);
     layout->addWidget(buildVaspGroup(page));
+    layout->addWidget(buildEspressoGroup(page));
+    layout->addWidget(buildSiestaGroup(page));
     layout->addWidget(buildLammpsGroup(page));
 
     // Subclass-supplied extra settings (e.g. Single-point's convergence group,
@@ -255,6 +257,293 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
 
     layout->addStretch(1);
     return page;
+}
+
+QWidget* SimulationWizardBase::buildEspressoGroup(QWidget* parent)
+{
+    qeGroup_ = new QGroupBox(tr("Quantum ESPRESSO settings"), parent);
+    auto* form = new QFormLayout(qeGroup_);
+
+    qePseudoNote_ = new QLabel(qeGroup_);
+    qePseudoNote_->setWordWrap(true);
+    qePseudoNote_->setTextFormat(Qt::RichText);
+    form->addRow(tr("Pseudopotentials:"), qePseudoNote_);
+
+    // The dual cutoff, on one row, because it is ONE decision. Which ratio is
+    // right depends on the pseudopotential family and nothing else in the UI
+    // knows that, so the two live side by side with the note that says so.
+    qeEcutwfcSpin_ = new QDoubleSpinBox(qeGroup_);
+    qeEcutwfcSpin_->setRange(5.0, 400.0);
+    qeEcutwfcSpin_->setDecimals(1);
+    qeEcutwfcSpin_->setSingleStep(5.0);
+    qeEcutwfcSpin_->setValue(60.0);
+    qeEcutwfcSpin_->setSuffix(tr(" Ry"));
+    qeEcutwfcSpin_->setToolTip(
+        tr("ecutwfc — the plane-wave cutoff for the WAVEFUNCTIONS.\n\n"
+           "In Rydberg, which is what pw.x reads. Converge it against total "
+           "energy differences, not against the absolute energy: the absolute "
+           "value keeps falling long after every quantity you care about has "
+           "stopped moving."));
+
+    qeEcutrhoSpin_ = new QDoubleSpinBox(qeGroup_);
+    qeEcutrhoSpin_->setRange(0.0, 3000.0);
+    qeEcutrhoSpin_->setDecimals(1);
+    qeEcutrhoSpin_->setSingleStep(20.0);
+    qeEcutrhoSpin_->setValue(0.0);
+    qeEcutrhoSpin_->setSuffix(tr(" Ry"));
+    qeEcutrhoSpin_->setSpecialValueText(tr("auto (4 × ecutwfc)"));
+    qeEcutrhoSpin_->setToolTip(
+        tr("ecutrho — the cutoff for the CHARGE DENSITY, on QE's second grid.\n\n"
+           "Auto means QE's own default of 4 × ecutwfc. That is correct for "
+           "NORM-CONSERVING pseudopotentials and badly under-converged for "
+           "ultrasoft or PAW, whose augmentation charges are much harder than "
+           "the wavefunctions and want 8–12 × ecutwfc.\n\n"
+           "This is the QE parameter with no GPAW or VASP counterpart, and "
+           "leaving it at the default with a USPP library is the single most "
+           "common way a QE run comes out quietly wrong."));
+
+    auto* cutoffRow = new QWidget(qeGroup_);
+    auto* cutoffLayout = new QHBoxLayout(cutoffRow);
+    cutoffLayout->setContentsMargins(0, 0, 0, 0);
+    cutoffLayout->addWidget(new QLabel(tr("ecutwfc"), cutoffRow));
+    cutoffLayout->addWidget(qeEcutwfcSpin_, 1);
+    cutoffLayout->addWidget(new QLabel(tr("ecutrho"), cutoffRow));
+    cutoffLayout->addWidget(qeEcutrhoSpin_, 1);
+    form->addRow(tr("Cutoffs:"), cutoffRow);
+
+    qeDualNote_ = new QLabel(qeGroup_);
+    qeDualNote_->setWordWrap(true);
+    qeDualNote_->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    form->addRow(qeDualNote_);
+
+    qeInputDftCombo_ = new QComboBox(qeGroup_);
+    qeInputDftCombo_->setEditable(true);
+    qeInputDftCombo_->addItems({QStringLiteral("pbe"), QStringLiteral("pbesol"),
+                                QStringLiteral("pz"), QStringLiteral("blyp"),
+                                QStringLiteral("scan"), QStringLiteral("vdw-df2"),
+                                QStringLiteral("hse")});
+    qeInputDftCombo_->setToolTip(
+        tr("input_dft — overrides the functional the pseudopotentials were "
+           "generated with. Leave it matching the library unless you know why "
+           "you are deviating: a PBE pseudopotential used with an LDA "
+           "input_dft is not an LDA calculation, it is an inconsistent one."));
+    form->addRow(tr("XC functional:"), qeInputDftCombo_);
+
+    qeOccupationsCombo_ = new QComboBox(qeGroup_);
+    // Order mirrors core::QeOccupations.
+    qeOccupationsCombo_->addItems(
+        {tr("smearing — metals"), tr("fixed — insulators"),
+         tr("tetrahedra (Blöchl)"), tr("tetrahedra_opt")});
+    qeOccupationsCombo_->setToolTip(
+        tr("occupations. `fixed` is only legal for a system with a gap and a "
+           "known electron count; the tetrahedron methods need no width and "
+           "are the DOS-quality choice, but cannot be used for a relaxation "
+           "because they give no forces."));
+    form->addRow(tr("Occupations:"), qeOccupationsCombo_);
+
+    qeSmearingCombo_ = new QComboBox(qeGroup_);
+    // Order mirrors core::QeSmearing.
+    qeSmearingCombo_->addItems({tr("Marzari-Vanderbilt (cold)"),
+                                tr("Gaussian"), tr("Methfessel-Paxton"),
+                                tr("Fermi-Dirac")});
+    qeSmearingCombo_->setToolTip(
+        tr("Marzari-Vanderbilt (\"cold\") is QE's recommended default: it "
+           "gives a free energy close to the zero-temperature one over a wide "
+           "range of widths.\n\n"
+           "Fermi-Dirac is the odd one out — it is a physical electronic "
+           "temperature, not a convergence aid, so use it only when you mean "
+           "to model one."));
+    form->addRow(tr("Smearing:"), qeSmearingCombo_);
+
+    qeDegaussSpin_ = new QDoubleSpinBox(qeGroup_);
+    qeDegaussSpin_->setRange(0.0001, 1.0);
+    qeDegaussSpin_->setDecimals(4);
+    qeDegaussSpin_->setSingleStep(0.005);
+    qeDegaussSpin_->setValue(0.01);
+    qeDegaussSpin_->setSuffix(tr(" Ry"));
+    qeDegaussSpin_->setToolTip(
+        tr("degauss — the smearing width, in Rydberg. 0.01–0.02 Ry is typical "
+           "for a metal with cold smearing."));
+    form->addRow(tr("Smearing width:"), qeDegaussSpin_);
+
+    qeConvThrEdit_ = new QLineEdit(QStringLiteral("1e-8"), qeGroup_);
+    qeConvThrEdit_->setToolTip(
+        tr("conv_thr — the SCF convergence threshold in Ry. 1e-8 is a normal "
+           "single-point value; a phonon or Born-charge calculation wants "
+           "1e-10 or tighter, because it differentiates this quantity."));
+    form->addRow(tr("SCF threshold (conv_thr):"), qeConvThrEdit_);
+
+    for (QComboBox* combo :
+         {qeInputDftCombo_, qeOccupationsCombo_, qeSmearingCombo_})
+        connect(combo, &QComboBox::currentIndexChanged, this, [this] {
+            updateEspressoRows();
+            refreshPreview();
+        });
+    for (QDoubleSpinBox* spin : {qeEcutwfcSpin_, qeEcutrhoSpin_, qeDegaussSpin_})
+        connect(spin, &QDoubleSpinBox::valueChanged, this, [this](double) {
+            updateEspressoRows();
+            refreshPreview();
+        });
+    connect(qeConvThrEdit_, &QLineEdit::textChanged, this,
+            [this] { refreshPreview(); });
+    return qeGroup_;
+}
+
+void SimulationWizardBase::updateEspressoRows()
+{
+    if (!qeGroup_)
+        return;
+    auto* form = qobject_cast<QFormLayout*>(qeGroup_->layout());
+    if (!form)
+        return;
+    const auto occupations = static_cast<core::QeOccupations>(
+        qeOccupationsCombo_->currentIndex());
+    const bool smears = core::qeUsesSmearing(occupations);
+    // Hidden rather than disabled: `smearing` and `degauss` alongside
+    // `occupations = fixed` are keys pw.x ignores, and a greyed-out control
+    // reads as broken rather than as inapplicable.
+    setFormRowVisible(qeGroup_, qeSmearingCombo_, smears);
+    setFormRowVisible(qeGroup_, qeDegaussSpin_, smears);
+
+    if (qeDualNote_) {
+        const double wfc = qeEcutwfcSpin_->value();
+        const double rho = qeEcutrhoSpin_->value();
+        qeDualNote_->setText(
+            rho <= 0.0
+                ? tr("ecutrho defaults to %1 Ry (4 × ecutwfc) — right for "
+                     "norm-conserving pseudopotentials, too soft for "
+                     "ultrasoft/PAW.")
+                      .arg(4.0 * wfc, 0, 'f', 1)
+                : tr("Dual = %1 × ecutwfc.").arg(rho / std::max(wfc, 1e-9),
+                                                 0, 'f', 1));
+    }
+    if (qePseudoNote_) {
+        const QString path = espressoPseudoDirectory();
+        qePseudoNote_->setText(
+            path.isEmpty()
+                ? tr("<i>Not configured.</i> Set the library in "
+                     "Preferences → External Files; the generated script "
+                     "writes a placeholder <tt>pseudo_dir</tt> until then.")
+                : QStringLiteral("<tt>%1</tt>").arg(path.toHtmlEscaped()));
+    }
+}
+
+QWidget* SimulationWizardBase::buildSiestaGroup(QWidget* parent)
+{
+    siestaGroup_ = new QGroupBox(tr("SIESTA settings"), parent);
+    auto* form = new QFormLayout(siestaGroup_);
+
+    siestaPseudoNote_ = new QLabel(siestaGroup_);
+    siestaPseudoNote_->setWordWrap(true);
+    siestaPseudoNote_->setTextFormat(Qt::RichText);
+    form->addRow(tr("Pseudopotentials:"), siestaPseudoNote_);
+
+    siestaXcCombo_ = new QComboBox(siestaGroup_);
+    siestaXcCombo_->setEditable(true);
+    // ASE's Siesta.allowed_xc, in the order a user is likely to want them.
+    siestaXcCombo_->addItems({QStringLiteral("PBE"), QStringLiteral("PBEsol"),
+                              QStringLiteral("revPBE"), QStringLiteral("RPBE"),
+                              QStringLiteral("BLYP"), QStringLiteral("PW91"),
+                              QStringLiteral("PZ"), QStringLiteral("CA"),
+                              QStringLiteral("PW92"), QStringLiteral("DRSLL"),
+                              QStringLiteral("VV")});
+    siestaXcCombo_->setToolTip(
+        tr("SIESTA's XC.functional / XC.authors pair, which ASE resolves from "
+           "this one name. PZ, CA and PW92 are the LDA parametrizations; DRSLL "
+           "and VV are van der Waals functionals."));
+    form->addRow(tr("XC functional:"), siestaXcCombo_);
+
+    siestaBasisTypeCombo_ = new QComboBox(siestaGroup_);
+    // Order mirrors core::SiestaBasisType.
+    siestaBasisTypeCombo_->addItems(
+        {tr("split — split valence (default)"), tr("splitgauss"), tr("nodes"),
+         tr("nonodes"), tr("filteret")});
+    siestaBasisTypeCombo_->setToolTip(
+        tr("PAO.BasisType — HOW the multiple-zeta orbitals are generated. "
+           "`split` is the standard scheme and what almost every published "
+           "SIESTA calculation uses; the others exist for specific "
+           "convergence studies."));
+    form->addRow(tr("Basis type:"), siestaBasisTypeCombo_);
+
+    siestaBasisSizeCombo_ = new QComboBox(siestaGroup_);
+    siestaBasisSizeCombo_->addItems({QStringLiteral("SZ"), QStringLiteral("SZP"),
+                                     QStringLiteral("DZ"), QStringLiteral("DZP"),
+                                     QStringLiteral("TZP")});
+    siestaBasisSizeCombo_->setCurrentText(QStringLiteral("DZP"));
+    siestaBasisSizeCombo_->setToolTip(
+        tr("How many orbitals per valence shell, and whether polarization "
+           "orbitals are added:\n\n"
+           "  SZ   single-ζ — qualitative only\n"
+           "  SZP  single-ζ + polarization\n"
+           "  DZ   double-ζ\n"
+           "  DZP  double-ζ + polarization — the standard production basis\n"
+           "  TZP  triple-ζ + polarization\n\n"
+           "This is the parameter that plays the role a plane-wave cutoff "
+           "plays elsewhere: it is what you converge."));
+    form->addRow(tr("Basis size:"), siestaBasisSizeCombo_);
+
+    siestaEnergyShiftSpin_ = new QDoubleSpinBox(siestaGroup_);
+    siestaEnergyShiftSpin_->setRange(0.001, 5.0);
+    siestaEnergyShiftSpin_->setDecimals(3);
+    siestaEnergyShiftSpin_->setSingleStep(0.01);
+    siestaEnergyShiftSpin_->setValue(0.27);
+    siestaEnergyShiftSpin_->setSuffix(tr(" eV"));
+    siestaEnergyShiftSpin_->setToolTip(
+        tr("PAO.EnergyShift — the energy by which confinement raises each "
+           "orbital, which is what fixes its cutoff radius.\n\n"
+           "SMALLER means longer-ranged orbitals, a better basis and a more "
+           "expensive run: it is the second knob to turn after the basis size. "
+           "SIESTA's default is 0.02 Ry ≈ 0.27 eV; 0.001–0.01 Ry is a "
+           "converged-basis regime."));
+    form->addRow(tr("Energy shift:"), siestaEnergyShiftSpin_);
+
+    siestaMeshCutoffSpin_ = new QDoubleSpinBox(siestaGroup_);
+    siestaMeshCutoffSpin_->setRange(10.0, 5000.0);
+    siestaMeshCutoffSpin_->setDecimals(1);
+    siestaMeshCutoffSpin_->setSingleStep(25.0);
+    siestaMeshCutoffSpin_->setValue(300.0);
+    siestaMeshCutoffSpin_->setSuffix(tr(" eV"));
+    siestaMeshCutoffSpin_->setToolTip(
+        tr("MeshCutoff — the fineness of the REAL-SPACE GRID the Hartree and "
+           "exchange-correlation terms are integrated on.\n\n"
+           "This is not a basis-set parameter and raising it does not improve "
+           "the basis. It is the closest thing SIESTA has to a plane-wave "
+           "cutoff only in its units; 200–400 eV is typical, and an "
+           "under-converged mesh shows up as an \"egg-box\" force error as "
+           "atoms move across grid points."));
+    form->addRow(tr("Mesh cutoff:"), siestaMeshCutoffSpin_);
+
+    auto* note = new QLabel(
+        tr("SIESTA has no plane-wave cutoff: its basis is a finite set of "
+           "numerical atomic orbitals, converged through the basis size and "
+           "the energy shift above."),
+        siestaGroup_);
+    note->setWordWrap(true);
+    note->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    form->addRow(note);
+
+    for (QComboBox* combo :
+         {siestaXcCombo_, siestaBasisTypeCombo_, siestaBasisSizeCombo_})
+        connect(combo, &QComboBox::currentIndexChanged, this,
+                [this] { refreshPreview(); });
+    for (QDoubleSpinBox* spin :
+         {siestaEnergyShiftSpin_, siestaMeshCutoffSpin_})
+        connect(spin, &QDoubleSpinBox::valueChanged, this,
+                [this](double) { refreshPreview(); });
+    return siestaGroup_;
+}
+
+void SimulationWizardBase::updateSiestaRows()
+{
+    if (!siestaPseudoNote_)
+        return;
+    const QString path = siestaPseudoDirectory();
+    siestaPseudoNote_->setText(
+        path.isEmpty()
+            ? tr("<i>Not configured.</i> Set the library in "
+                 "Preferences → External Files; the generated script writes a "
+                 "placeholder <tt>SIESTA_PP_PATH</tt> until then.")
+            : QStringLiteral("<tt>%1</tt>").arg(path.toHtmlEscaped()));
 }
 
 QWidget* SimulationWizardBase::buildVaspGroup(QWidget* parent)
@@ -1188,8 +1477,7 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
     gpawSymmetryOffCheck_->setToolTip(
         tr("Disable point-group symmetry reduction of the k-point set "
            "(symmetry=\"off\") — sample the full, unsymmetrized Brillouin zone "
-           "(required when the wavefunctions feed a Maximally Localized "
-           "Wannier Functions run)."));
+           "(required when the wavefunctions feed a Wannier Functions run)."));
     connect(gpawSymmetryOffCheck_, &QCheckBox::toggled, this,
             [this] { refreshPreview(); });
 
@@ -1645,6 +1933,14 @@ void SimulationWizardBase::updateCalculatorEnabled()
         if (mlipGroup_) mlipGroup_->setVisible(false);
         if (orcaGroup_) orcaGroup_->setVisible(false);
         if (vaspGroup_) vaspGroup_->setVisible(false);
+        // The QE and SIESTA groups belong in this list for the same reason as
+        // every other engine group: a wizard that locks its engine
+        // (Electronic Structure) shows none of the standard calculator
+        // chrome, and a group left visible here does not merely look wrong —
+        // it adds its own height to the page's minimum, which is what the
+        // dialog test's laptop-height budget measures.
+        if (qeGroup_) qeGroup_->setVisible(false);
+        if (siestaGroup_) siestaGroup_->setVisible(false);
         if (lammpsGroup_) lammpsGroup_->setVisible(false);
         if (baselineInheritNote_) baselineInheritNote_->setVisible(false);
         updateCalculatorExtras(kind);
@@ -1693,6 +1989,18 @@ void SimulationWizardBase::updateCalculatorEnabled()
     }
 
     const bool isVasp = kind == core::CalculatorKind::Vasp;
+    const bool isEspresso = kind == core::CalculatorKind::QuantumEspresso;
+    const bool isSiesta = kind == core::CalculatorKind::Siesta;
+    if (qeGroup_) {
+        qeGroup_->setVisible(isEspresso);
+        if (isEspresso)
+            updateEspressoRows();
+    }
+    if (siestaGroup_) {
+        siestaGroup_->setVisible(isSiesta);
+        if (isSiesta)
+            updateSiestaRows();
+    }
 
     // The smearing menu is engine-specific — VASP has no ISMEAR for several of
     // the schemes GPAW runs — so the rows are refiltered whenever the engine
@@ -1711,13 +2019,24 @@ void SimulationWizardBase::updateCalculatorEnabled()
     if (gpawSymmetryOffCheck_)
         gpawSymmetryOffCheck_->setVisible(isGpaw && showsGpawSymmetryToggle());
 
-    // The XC note applies only to the script-template DFT backends that have
-    // no functional control of their own — Espresso and SIESTA. GPAW picks XC
-    // in its own combo, and VASP now does too, on the cutoff row: a note
-    // saying the functional "defaults to PBE in the script" while a dropdown
-    // beside it says otherwise is worse than no note at all.
+    // The XC note is gone for every engine now. It said the functional
+    // "defaults to PBE in the script (editable in Stage 4)", which was true
+    // only while Espresso and SIESTA had no functional control of their own.
+    // Both now pick XC in their own group, so the note would contradict a
+    // dropdown three rows away — worse than no note at all.
     if (dftXcNote_)
-        setFormRowVisible(modeBasisGroup_, dftXcNote_, isDft && !isGpaw && !isVasp);
+        setFormRowVisible(modeBasisGroup_, dftXcNote_, false);
+
+    // "Mode & Basis Set" carries GPAW's mode/grid/basis and the shared cutoff
+    // row. With the cutoff row withdrawn there is nothing in it for QE or
+    // SIESTA but an empty titled box, so the group hides with its contents.
+    modeBasisGroup_->setVisible(isDft && !isEspresso && !isSiesta);
+
+    // Smearing lives in QE's own group (its names and its Ry width are QE's,
+    // not GPAW's), so the shared convergence group is withdrawn for it too;
+    // SIESTA's SCF controls are in its group for the same reason.
+    if (convGroup_ && (isEspresso || isSiesta))
+        convGroup_->setVisible(false);
     // VASP's XC functional shares the plane-wave cutoff row; the label and the
     // combo hide together for the other engines, leaving the cutoff alone on
     // the row it started as.
@@ -1771,8 +2090,14 @@ void SimulationWizardBase::updateCalculatorEnabled()
     if (isGpaw)
         updateGpawRows();
     else
+        // QE and SIESTA are withdrawn from the shared cutoff row. QE's cutoff
+        // is a PAIR (ecutwfc + ecutrho) and lives with its partner in the QE
+        // group; SIESTA has no plane-wave cutoff at all, and the row used to
+        // map silently onto its real-space mesh — so raising it to converge
+        // "the basis" refined a grid while the basis stayed exactly as small.
         setFormRowVisible(modeBasisGroup_, cutoffRow_,
-                          isDft && showsPlaneWaveCutoffRow());
+                          isDft && !isEspresso && !isSiesta
+                              && showsPlaneWaveCutoffRow());
     if (inheritGpaw) {
         setFormRowVisible(modeBasisGroup_, gpawXcCombo_, false);
         setFormRowVisible(modeBasisGroup_, gpawModeCombo_, false);
@@ -1871,6 +2196,35 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
     c.planeWaveCutoffEv = cutoffSpin_->value();
     for (int i = 0; i < 3; ++i)
         c.kpts[i] = kptSpins_[i]->value();
+
+    // -- Quantum ESPRESSO ---------------------------------------------------
+    if (qeEcutwfcSpin_) {
+        c.qeEcutwfcRy = qeEcutwfcSpin_->value();
+        c.qeEcutrhoRy = qeEcutrhoSpin_->value();
+        c.qeInputDft = qeInputDftCombo_->currentText().trimmed().toStdString();
+        c.qeOccupations =
+            static_cast<core::QeOccupations>(qeOccupationsCombo_->currentIndex());
+        c.qeSmearing =
+            static_cast<core::QeSmearing>(qeSmearingCombo_->currentIndex());
+        c.qeDegaussRy = qeDegaussSpin_->value();
+        bool parsed = false;
+        const double threshold = qeConvThrEdit_->text().toDouble(&parsed);
+        // A field that will not parse keeps the default rather than writing 0,
+        // which pw.x reads as "converge to machine zero" and never reaches.
+        c.qeConvThrRy = parsed && threshold > 0.0 ? threshold : 1.0e-8;
+        c.espressoPseudoDir = espressoPseudoDirectory().toStdString();
+    }
+
+    // -- SIESTA -------------------------------------------------------------
+    if (siestaBasisSizeCombo_) {
+        c.siestaXc = siestaXcCombo_->currentText().trimmed().toStdString();
+        c.siestaBasisType =
+            static_cast<core::SiestaBasisType>(siestaBasisTypeCombo_->currentIndex());
+        c.siestaBasisSize = siestaBasisSizeCombo_->currentText().toStdString();
+        c.siestaEnergyShiftEv = siestaEnergyShiftSpin_->value();
+        c.siestaMeshCutoffEv = siestaMeshCutoffSpin_->value();
+        c.siestaPseudoDir = siestaPseudoDirectory().toStdString();
+    }
     c.maceSource =
         static_cast<core::MaceModelSource>(maceModelCombo_->currentIndex());
     c.maceSize = maceSizeCombo_->currentText().toStdString();
@@ -2157,6 +2511,22 @@ QString SimulationWizardBase::vaspPotcarDirectory()
     return configured.isEmpty()
         ? QSettings().value(kLegacyVaspPotcarKey).toString().trimmed()
         : configured;
+}
+
+QString SimulationWizardBase::espressoPseudoDirectory()
+{
+    return QSettings()
+        .value(SettingsManager::kPseudopotentialsEspresso)
+        .toString()
+        .trimmed();
+}
+
+QString SimulationWizardBase::siestaPseudoDirectory()
+{
+    return QSettings()
+        .value(SettingsManager::kPseudopotentialsSiesta)
+        .toString()
+        .trimmed();
 }
 
 QString SimulationWizardBase::pythonExecutable() const

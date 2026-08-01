@@ -97,7 +97,7 @@ Use the same calculator settings as Step 2, but raise the k-grid to
 
 \begin{calnote}
 This file is the \emph{baseline} that the later analysis workflows inherit.
-Electronic Structure, Optics, MLWF, GW and the charge density difference all
+Electronic Structure, Optics, Wannier Functions, GW and the charge density difference all
 load a completed ground
 state and evaluate at fixed density rather than re-converging their own. That
 is deliberate: a spectrum computed from a silently different SCF solution than
@@ -222,8 +222,8 @@ the ground state:
   \item \menu{Analysis}\menusep\menu{Charge Density Difference (CDD)\dots} ---
     $\Delta\rho = \rho_{A+B} - \rho_A - \rho_B$ between two fragments of the
     same run, showing where the charge went when they were put together.
-  \item \menu{Simulation}\menusep\menu{Maximally Localized Wannier Functions
-    (MLWF)\dots} --- the four $sp^3$ bond orbitals of the diamond lattice.
+  \item \menu{Simulation}\menusep\menu{Wannier Functions\dots} --- the four
+    $sp^3$ bond orbitals of the diamond lattice.
   \item \menu{Analysis}\menusep\menu{Raman Modes\dots} --- the factor-group
     analysis that labels silicon's $\Gamma$ optical mode $T_{2g}$ and
     Raman-active.

@@ -200,7 +200,7 @@ VolumetricPanel::VolumetricPanel(ViewportWidget* viewport, QWidget* parent)
     registry_->setRootIsDecorated(false);
     registry_->setToolTip(
         tr("3D scalar volumetric grids registered for the active workspace tab "
-           "— loaded from disk or produced by a calculation (e.g. MLWF "
+           "— loaded from disk or produced by a calculation (e.g. Wannier Functions "
            "orbitals). Tick a row to render it on the 3D viewport; select one "
            "to style it, and press Delete to remove it."));
     registry_->installEventFilter(this); // Delete / Backspace removal

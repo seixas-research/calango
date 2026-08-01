@@ -82,7 +82,29 @@ private:
     /// How many moment columns the current spin mode shows: 0, 1 or 3.
     int momentColumnCount() const;
     /// Column index of the first moment column (== AtomColumnCount).
-    static constexpr int kFirstMomentColumn = 7;
+    static constexpr int kFirstMomentColumn = 4;
+
+    /// One read-only table column carrying an extended per-atom property that
+    /// arrived with the structure — a partial-charge array, a velocity or
+    /// force vector, anything an extended-XYZ file put in `atoms.arrays`.
+    ///
+    /// Read-only on purpose. These are RESULTS: a charge that came out of a
+    /// Bader partitioning, a velocity that came out of an integrator. Letting
+    /// them be typed over in a geometry editor would produce a frame whose
+    /// arrays no longer correspond to anything that was computed, and the file
+    /// would carry no sign of it.
+    struct PropertyColumn {
+        QString header;
+        std::string field;  ///< key in scalarFields() / vectorFields()
+        bool vector = false;
+        int component = 0;  ///< 0/1/2 for a vector field, ignored otherwise
+    };
+    /// The property columns to show, in a stable order. Excludes the magnetic
+    /// moments, which the spin-mode columns already own — showing them twice,
+    /// once editable and once not, is worse than not showing them at all.
+    std::vector<PropertyColumn> propertyColumns() const;
+    /// Column index of the first property column.
+    int firstPropertyColumn() const;
     /// Read the moment columns out of the table and store them on the working
     /// structure as `initial_magmoms`.
     void writeMomentsToStructure();
@@ -118,6 +140,11 @@ private:
     QComboBox* sortKeyCombo_ = nullptr;
     QCheckBox* sortDescendingCheck_ = nullptr;
     QComboBox* spinModeCombo_ = nullptr;
+    /// "Fractional coordinates": which of the two representations the three
+    /// coordinate columns show. Unchecked (Cartesian) by default, and disabled
+    /// outright without a cell — fractional coordinates are not merely
+    /// unavailable there, they are undefined.
+    QCheckBox* fractionalCheck_ = nullptr;
     QTableWidget* atomTable_ = nullptr;
     QLabel* summaryLabel_ = nullptr;
 };

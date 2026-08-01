@@ -56,6 +56,21 @@ QString volumetricDisplayName(const QString& fileName);
 /// because several callers hold one optionally.
 QStringList structureElements(const core::Structure* structure);
 
+/// The cell axis that carries the vacuum of a slab (0/1/2), or -1 when nothing
+/// in the geometry looks like one.
+///
+/// A SEED, not an answer. A thick slab in a modest cell and a thin one in a
+/// huge cell are not reliably distinguishable from the coordinates, so every
+/// caller offers this as the initial value of a control the user can correct —
+/// getting it wrong rescales every 2D quantity by the wrong length, silently,
+/// and no wizard should decide that on the user's behalf.
+///
+/// Shared because two response modules (linear Optics and Nonlinear Optics)
+/// divide the same vacuum thickness back out of the same kind of supercell
+/// answer, and a second copy of the heuristic would be a second thing to keep
+/// in step with the first.
+int guessVacuumAxis(const core::Structure* structure);
+
 /// Write `body` to `path` atomically, reporting failure to the user.
 ///
 /// The seven export actions in this layer (JSON, CSV, OBJ, plot data …) each

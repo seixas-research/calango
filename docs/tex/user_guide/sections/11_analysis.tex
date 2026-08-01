@@ -397,6 +397,179 @@ everything else into one end of it.
 for external rendering; \ui{Export Slice (CSV)\ldots} writes the sampled
 plane as $x, y, z$, value.
 
+\section{Born charges and charged defects on VASP and Quantum ESPRESSO}
+\label{sec:dfpt-engines}
+
+Two modules that used to be GPAW-only now run on VASP and Quantum ESPRESSO as
+well, and in the Born case by a better route.
+
+\textbf{Born effective charges} take the DFPT path on both:
+\texttt{LEPSILON = .TRUE.} for VASP, \texttt{ph.x} with
+\texttt{epsil = .true.} for QE. That is one linear-response run instead of
+$6N$ displaced SCFs, and it is an \emph{analytic} derivative --- there is no
+displacement amplitude to trade off against SCF noise and no linearity
+assumption left to check. The macroscopic dielectric tensor comes free with
+the same run. Both write the same \file{born\_charges.json} the GPAW path
+writes, so the viewer and the phonon LO--TO block are unchanged.
+
+\begin{calnote}
+Both routes need an insulator or semiconductor. For a metal the macroscopic
+polarization is not defined: VASP writes no Born block and \texttt{ph.x}
+refuses \texttt{epsil}. The scripts say that rather than failing obscurely.
+\end{calnote}
+
+\textbf{Charged defects} read total energies and band edges from
+\file{vasprun.xml} or the \texttt{pw.x} output, and run one fixed-geometry SCF
+per charge state --- \texttt{NELECT} for VASP (an \emph{absolute} electron
+count, so $q = +1$ is one electron fewer) and \texttt{tot\_charge} for QE
+(which follows the physical sign directly).
+
+\begin{calwarn}
+The FNV correction on these two engines is \emph{delegated to pymatgen}
+(\texttt{pymatgen-analysis-defects}), reading \file{LOCPOT} for the potential
+alignment. Where pymatgen is not installed the run reports \textbf{uncorrected}
+energies and says so loudly. That is deliberate: uncorrected is a legitimate
+mode --- it is exactly what a supercell-convergence study needs --- whereas a
+hand-rolled correction that has never been checked against a reference is a
+plausible number of the right magnitude and the wrong value, applied silently
+to every point of the diagram.
+\end{calwarn}
+
+\section{Raman and infrared spectra}
+\label{sec:raman-ir}
+
+\menu{Electronics}\menusep\menu{Raman and IR Spectroscopy\dots} computes both
+spectra of the $\Gamma$-point phonons. They describe the \emph{same} modes and
+differ only in which electronic response couples to them:
+
+\begin{description}
+  \item[Infrared] intensity is the change in macroscopic \emph{polarization} a
+    mode produces, $\bigl|\sum_\kappa Z^*_\kappa \cdot
+    e_\kappa/\sqrt{M_\kappa}\bigr|^2$. In a periodic crystal there is no
+    molecular dipole to differentiate, so the Born effective charges $Z^*$ are
+    the only route to it.
+  \item[Raman] activity is the Placzek invariant $45a'^2 + 7\gamma'^2$ built
+    from $\partial\chi/\partial Q$, the change in \emph{polarizability} --- the
+    same response the Optics module evaluates, taken in the static limit.
+\end{description}
+
+Three engines are offered, and what one run of each can produce differs by
+orders of magnitude. This is the choice the wizard's cost estimate exists to
+inform, so it is worth stating plainly:
+
+\begin{description}
+  \item[GPAW] Finite displacements throughout: $6N$ force evaluations for the
+    Hessian, and $6N$ further self-consistent runs (each followed by six
+    dielectric evaluations) for $\partial\alpha/\partial u$. $Z^*$ is
+    \emph{inherited} from a completed \menu{Born Effective Charges} run rather
+    than recomputed, because GPAW's own route to it is another $6N$ Berry-phase
+    runs for a quantity the Raman spectrum never uses. Supplying one is
+    therefore what turns the IR column on; without it the phonons and the Raman
+    spectrum are computed as usual and every IR intensity is reported as zero,
+    with \texttt{ir.computed = false} recording which happened.
+  \item[VASP] One DFPT run --- \texttt{IBRION = 8} with
+    \texttt{LEPSILON = .TRUE.} --- returns the force constants, every ion's
+    $Z^*$ and $\varepsilon_\infty$ together, so the \emph{infrared} spectrum
+    costs a single job and nothing has to be selected for it. The Raman half
+    has no such shortcut: VASP computes no Raman tensor, so
+    $\partial\alpha/\partial u$ comes from differencing
+    $\varepsilon_\infty$ over $6N$ displaced \texttt{LEPSILON} runs.
+  \item[Quantum ESPRESSO] One \texttt{ph.x} run at $q = 0$ returns all of it.
+    \texttt{epsil} gives the force constants, $Z^*$ and $\varepsilon_\infty$;
+    \texttt{lraman} adds the Raman tensor as an analytic \emph{third-order}
+    response --- no displacement amplitude to trade off against SCF noise, and
+    no linearity assumption left to check.
+\end{description}
+
+\begin{calwarn}
+\texttt{lraman} is implemented for \textbf{norm-conserving} pseudopotentials
+only. With an ultrasoft or PAW set \texttt{ph.x} declines rather than
+approximating, and the run stops with a message naming that as the cause. The
+infrared half is unaffected --- turn the Raman spectrum off and the same job
+still produces it. Edit the pseudopotential map in the generated script before
+running: the guess is the conventional \texttt{<Symbol>.UPF} naming, which a
+real library rarely matches.
+\end{calwarn}
+
+All three engines share one physics core --- the mass-weighted
+diagonalization, the two contractions, the Stokes prefactor and the broadening
+--- and write the same \file{raman\_ir.json}, so one viewer serves all of them.
+The file records which route produced it: \texttt{engine} and \texttt{method}
+name the workflow, and \texttt{displacement\_A} is $0$ for a DFPT result,
+because there was no displacement to report.
+
+\begin{calnote}
+The laser wavelength, temperature, broadening and frequency window change only
+the \emph{reported} spectrum, not the physics. Mode frequencies and activities
+are computed once and the experiment-specific factors applied afterwards, so
+trying a different laser line does not mean another run --- reopen the viewer
+instead.
+\end{calnote}
+
+\section{Partial charges}
+\label{sec:partial-charges}
+
+\menu{Analysis}\menusep\menu{Partial Charge Analysis\dots} partitions a
+converged electron density among the atoms. Three schemes are offered ---
+\ui{Bader} (topological zero-flux basins), \ui{Voronoi} (nearest-atom cells)
+and \ui{Hirshfeld} (stockholder weights against a promolecule) --- and all
+three are native: they run on a standardized 3D grid and know nothing about
+the code that produced it.
+
+\subsection{Density source and engine}
+
+\ui{Charge-density source} lists the completed processes whose directories
+hold a density; \ui{Density format} decides how it is read. \opt{Auto-detect}
+covers the normal case and the explicit entries exist for a directory holding
+output from more than one engine, where guessing would be a coin toss.
+
+\begin{description}
+  \item[GPAW] \texttt{get\_all\_electron\_density()} from the run's
+    \file{.gpw}.
+  \item[VASP] \file{AECCAR0} + \file{AECCAR2} when the run wrote them
+    (\texttt{LAECHG = .TRUE.}), otherwise \file{CHGCAR}.
+  \item[Quantum ESPRESSO] \texttt{pp.x} (\texttt{plot\_num = 0}) exports the
+    density to a cube first. Set \texttt{CALANGO\_PP\_X} if \texttt{pp.x} is
+    not on \texttt{PATH}.
+\end{description}
+
+\begin{calwarn}
+\textbf{Bader needs the all-electron density.} Partitioned on the
+pseudo-valence density alone, its basins follow the wrong topology and the
+charges come out systematically small. For VASP that means \file{AECCAR0} and
+\file{AECCAR2}; given only a \file{CHGCAR} the run says so in its log rather
+than returning quiet nonsense.
+\end{calwarn}
+
+\subsection{Scope}
+
+\ui{Current structure only} partitions the displayed frame. \ui{All structures
+in the trajectory} partitions every frame --- and it is not a loop over one
+density. A charge is a property of a \emph{converged density}, so each frame
+needs its own; the run looks for one density file per frame and reports what
+it found rather than reusing a single density as though it described every
+geometry.
+
+\subsection{Reading and keeping the results}
+
+\ui{Load Results\dots} fills the per-atom table and a summary line above it:
+the net charge, the range, and the mean per element --- the number people
+actually quote, and the one a 200-row table does not give up easily.
+
+\begin{caltip}
+The net charge is the check to read first. For a neutral cell it must come out
+near zero; anything larger is density the integration lost, and it bounds how
+much any single per-atom value can be trusted. The summary flags a residual
+above 0.05\,e on its own.
+\end{caltip}
+
+\ui{Write into Trajectory} stores the charges on the structure as
+\texttt{initial\_charges} --- the array name ASE reads and writes --- through
+the document's undo stack. Saving as extended XYZ then carries them as a
+column of the file, and they appear in \menu{Edit Structure\dots}
+(\S\ref{sec:extxyz-columns}). The same field tints the viewport, so the
+colours and the file cannot disagree.
+
 \section{Charge density difference}
 \label{sec:cdd}
 
@@ -410,13 +583,39 @@ nothing; the difference shows the bond.
 
 \subsection{Step 1 --- density source}
 
-Pick a completed \menu{Simulation}\menusep\menu{Single-point Calculation} that
-saved its wavefunctions (GPAW \file{.gpw}); that run supplies $\rho_{A+B}$ and,
-more importantly, the calculator both fragments are rebuilt from. Choose
-whether to difference the \ui{All-electron density} or the
-\ui{Pseudodensity}. The pseudodensity is usually the clearer field to read:
-it carries no nuclear cusps, so the isosurface scale is set by the bonding
-features rather than by the cores.
+Pick a completed \menu{Simulation}\menusep\menu{Single-point Calculation};
+that run supplies $\rho_{A+B}$ and, more importantly, the calculator both
+fragments are rebuilt from. Choose whether to difference the
+\ui{All-electron density} or the \ui{Pseudodensity}. The pseudodensity is
+usually the clearer field to read: it carries no nuclear cusps, so the
+isosurface scale is set by the bonding features rather than by the cores.
+
+GPAW, VASP and Quantum ESPRESSO are all supported, and the engine is taken
+from the parent run's provenance rather than asked for again --- $\Delta\rho$
+only means something if all three densities were computed the same way.
+
+\begin{description}
+  \item[GPAW] Restarts from the \file{.gpw} and reads the exact calculator
+    back out of it. This is the strongest of the three guarantees: there is
+    nothing left to re-specify.
+  \item[VASP] Reads \file{CHGCAR}, or \file{AECCAR0} + \file{AECCAR2} for the
+    all-electron form (which needs \texttt{LAECHG = .TRUE.} on the parent
+    run). Each fragment is re-run with the parent's settings.
+  \item[Quantum ESPRESSO] Exports each density through \texttt{pp.x}
+    (\texttt{plot\_num = 0}) as a Gaussian cube, since QE keeps its density in
+    a binary file with no public reader. Set \texttt{CALANGO\_PP\_X} if
+    \texttt{pp.x} is not on \texttt{PATH}.
+\end{description}
+
+\begin{calwarn}
+For VASP and Quantum ESPRESSO the fragment runs pin the FFT grid explicitly to
+the parent's (\texttt{NGXF}/\texttt{NGYF}/\texttt{NGZF},
+\texttt{nr1}/\texttt{nr2}/\texttt{nr3}). Both codes choose that grid from the
+cutoff \emph{and} the cell contents, so a fragment with fewer atoms in it can
+otherwise land on a different one --- and two densities sampled on different
+grids cannot be subtracted at all. GPAW needs none of this because the restart
+already fixes the grid.
+\end{calwarn}
 
 \subsection{Step 2 --- subsystem partition}
 

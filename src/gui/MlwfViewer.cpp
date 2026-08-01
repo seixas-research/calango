@@ -27,13 +27,13 @@ MlwfViewer::MlwfViewer(std::shared_ptr<const core::Structure> structure,
                        ViewportWidget* viewport, QWidget* parent)
     : QDialog(parent), structure_(std::move(structure)), viewport_(viewport)
 {
-    setWindowTitle(tr("MLWF Viewer"));
+    setWindowTitle(tr("Wannier Functions Viewer"));
     resize(620, 560);
 
     auto* layout = new QVBoxLayout(this);
 
     auto* intro = new QLabel(
-        tr("Maximally Localized Wannier Functions. Tick an orbital to overlay "
+        tr("Wannier Functions. Tick an orbital to overlay "
            "its real-space isosurface ψₙ(r) on the 3D viewport."),
         this);
     intro->setWordWrap(true);

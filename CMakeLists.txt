@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.82
+    VERSION 26.7.83
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -155,6 +155,8 @@ qt_add_executable(calango
     src/core/BandSymmetryScriptGenerator.cpp
     src/core/OpticsScriptGenerator.hpp
     src/core/OpticsScriptGenerator.cpp
+    src/core/NonlinearOpticsScriptGenerator.hpp
+    src/core/NonlinearOpticsScriptGenerator.cpp
     src/core/GwScriptGenerator.hpp
     src/core/GwScriptGenerator.cpp
     src/core/GrapheneOxideBuilder.hpp
@@ -496,12 +498,16 @@ qt_add_executable(calango
     src/gui/ElectronicBandsWizard.cpp
     src/gui/OpticsWizard.hpp
     src/gui/OpticsWizard.cpp
+    src/gui/NonlinearOpticsWizard.hpp
+    src/gui/NonlinearOpticsWizard.cpp
     src/gui/GwWizard.hpp
     src/gui/GwWizard.cpp
     src/gui/WannierWizard.hpp
     src/gui/WannierWizard.cpp
     src/gui/OpticsResultsWindow.hpp
     src/gui/OpticsResultsWindow.cpp
+    src/gui/NonlinearOpticsResultsWindow.hpp
+    src/gui/NonlinearOpticsResultsWindow.cpp
     src/gui/GwResultsWindow.hpp
     src/gui/GwResultsWindow.cpp
     src/gui/HubbardParametersDialog.hpp
@@ -739,7 +745,7 @@ qt_add_resources(calango "examples"
     FILES
         examples/diamond.vasp
         examples/mos2_2h_bulk.vasp
-        examples/graphene.vasp
+        examples/graphene_supercell.vasp
         examples/mos2_1h_monolayer.vasp
         examples/benzene.xyz
         examples/naphthalene.xyz
@@ -1214,6 +1220,20 @@ if(CALANGO_BUILD_TESTS)
         src/gui/MolecularDynamicsWizard.cpp
         src/gui/TwoDBandsWizard.cpp
         src/core/TwoDBandsScriptGenerator.cpp
+        # The Nonlinear Optics wizard: it hides a form row and re-validates the
+        # typed component list from a signal its own constructor triggers, and
+        # it is the only wizard whose generated script depends on GPAW ground-
+        # state keywords the generator OVERRIDES rather than reads — so a
+        # construction that skipped the override would show up here as a script
+        # missing its symmetry line.
+        src/gui/NonlinearOpticsWizard.cpp
+        src/core/NonlinearOpticsScriptGenerator.cpp
+        # And the Raman / IR wizard, which now swaps whole group boxes when the
+        # engine changes — GPAW selects three inherited runs, VASP and Quantum
+        # ESPRESSO converge their own ground state — from a signal its
+        # constructor triggers.
+        src/gui/RamanIrWizard.cpp
+        src/core/RamanIrScriptGenerator.cpp
         src/gui/RandomNoiseWizard.cpp
         # Its results window: the JSON schema the generated script writes and
         # the viewer reads is a contract between two files that never see each
@@ -1521,6 +1541,11 @@ if(CALANGO_BUILD_TESTS)
         tests/ElementColorTest.cpp
         src/gui/GuiUtils.cpp
         src/core/Element.cpp
+        # GuiUtils gained guessVacuumAxis(), which asks the cell for its
+        # fractional coordinates. Nothing in this test calls it, but the whole
+        # translation unit is linked, so its out-of-line UnitCell references
+        # have to resolve.
+        src/core/UnitCell.cpp
     )
     target_include_directories(calango_element_color_test PRIVATE src)
     target_link_libraries(calango_element_color_test PRIVATE Qt6::Widgets)
@@ -1593,6 +1618,7 @@ if(CALANGO_BUILD_TESTS)
         tests/ResultsViewerTest.cpp
         src/gui/GwResultsWindow.cpp
         src/gui/OpticsResultsWindow.cpp
+        src/gui/NonlinearOpticsResultsWindow.cpp
         src/gui/SpectrumPlotWidget.cpp
         src/gui/OpticsPlotStyleDialog.cpp
         src/gui/RamanIrViewer.cpp
@@ -1655,6 +1681,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/BandSymmetryScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
         src/core/OpticsScriptGenerator.cpp
+        src/core/NonlinearOpticsScriptGenerator.cpp
         src/core/GwScriptGenerator.cpp
         src/core/RamanIrScriptGenerator.cpp
         src/core/RandomNoiseScriptGenerator.cpp
@@ -1859,6 +1886,29 @@ if(CALANGO_BUILD_TESTS)
     add_test(NAME raman_ir_math
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/raman_ir_math_test.py
+                $<TARGET_FILE:calango_script_test>)
+
+    # Raman / IR on VASP and Quantum ESPRESSO: the two routes that read their
+    # answer out of somebody else's text format. Neither code is available
+    # here, so the parsers are driven against realistic OUTCAR / .dyn
+    # fragments whose right answers are known by construction. Every failure
+    # mode they have is silent — a flipped Hessian sign draws a complete
+    # spectrum at negative wavenumbers, and the wrong one of VASP's three
+    # dielectric blocks is a tens-of-percent error inside a derivative.
+    add_test(NAME raman_ir_parsers
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/raman_ir_parsers_test.py
+                $<TARGET_FILE:calango_script_test>)
+
+    # Nonlinear optics: the gpaw.nlopt call surface (real function names and
+    # keyword arguments in someone else's package, reached only after a ground
+    # state has been converged) and the unit conversions from the SI base
+    # units GPAW returns to the pm/V and nm^2/V the literature quotes. Also
+    # the inversion-symmetry test, which decides whether the run means
+    # anything at all. No GPAW required.
+    add_test(NAME nlopt_parser
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/nlopt_parser_test.py
                 $<TARGET_FILE:calango_script_test>)
 
     # Raman / IR end-to-end validation on MgO (rock-salt). Runs the SHIPPED

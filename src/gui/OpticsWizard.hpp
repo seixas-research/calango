@@ -91,10 +91,6 @@ protected:
     bool showsCalculatorStage() const override { return false; }
 
 private:
-    /// The vacuum axis of a slab, guessed from the cell: the longest axis whose
-    /// atoms occupy only a fraction of it. -1 when nothing looks like a slab.
-    int guessVacuumAxis() const;
-
     /// Re-read the selected baseline's calculator.json, refresh the inheritance
     /// note and the script preview.
     void onBaselineChanged();

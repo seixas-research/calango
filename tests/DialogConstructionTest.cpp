@@ -43,6 +43,8 @@
 #include "gui/SimulationWizardBase.hpp"
 #include "gui/MolecularDynamicsWizard.hpp"
 #include "gui/SinglePointWizard.hpp"
+#include "gui/NonlinearOpticsWizard.hpp"
+#include "gui/RamanIrWizard.hpp"
 #include "gui/TwoDBandsWizard.hpp"
 #include "python_bridge/PythonEngine.hpp"
 #include "render/StructureRenderer.hpp"
@@ -1085,6 +1087,157 @@ int main(int argc, char** argv)
                   "the previewed script restarts from the selected baseline");
             check(script.contains(QStringLiteral("_n = 48")),
                   "and uses the grid the dialog shows");
+        }
+    }
+
+    // The Nonlinear Optics wizard. Two things about it are unusual enough to
+    // pin: it hides a form row from a signal its own constructor triggers, and
+    // it is the only wizard whose generated script depends on GPAW keywords
+    // the GENERATOR overrides rather than reads off the calculator page. A
+    // construction that skipped either would produce a script that runs and
+    // then aborts inside make_nlodata's assert.
+    std::printf("Nonlinear Optics wizard:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        auto structure = std::make_shared<calango::core::Structure>();
+        NonlinearOpticsWizard wizard(structure);
+        wizard.show();  // isVisibleTo() needs the pages realized
+        check(true, "constructs");
+
+        const auto* preview = wizard.findChild<QPlainTextEdit*>();
+        check(preview != nullptr, "has a script preview");
+        if (preview) {
+            const QString script = preview->toPlainText();
+            // The three method requirements, in the script the user reviews.
+            check(script.contains(QStringLiteral("\"point_group\": False")),
+                  "the previewed ground state drops the point group");
+            check(script.contains(QStringLiteral("nbands=\"nao\"")),
+                  "and carries a band set large enough to sum over");
+            check(script.contains(QStringLiteral("make_nlodata")),
+                  "and the script really reaches gpaw.nlopt");
+        }
+
+        // The component list is validated live, and an invalid entry has to be
+        // NAMED: silently dropping "yy" makes it look like a component that
+        // produced nothing rather than one that was never asked for.
+        const auto edits = wizard.findChildren<QLineEdit*>();
+        const auto components = std::find_if(
+            edits.begin(), edits.end(), [](const QLineEdit* edit) {
+                return edit->text() == QStringLiteral("yyy");
+            });
+        check(components != edits.end(), "has the tensor-component field");
+        if (components != edits.end()) {
+            (*components)->setText(QStringLiteral("yyy, xxy"));
+            const auto* liveScript = wizard.findChild<QPlainTextEdit*>();
+            check(liveScript
+                      && liveScript->toPlainText().contains(
+                          QStringLiteral("COMPONENTS = ['yyy', 'xxy']")),
+                  "typing a second component reaches the script");
+            (*components)->setText(QStringLiteral("yyy, qqq"));
+            bool named = false;
+            for (const auto* label : wizard.findChildren<QLabel*>())
+                if (label->text().contains(QStringLiteral("qqq")))
+                    named = true;
+            check(named, "and an invalid one is named rather than dropped");
+        }
+
+        // The gauge belongs to the SHG sum; with SHG off the row describes
+        // nothing, and get_shift would reject the argument outright.
+        const auto boxes = wizard.findChildren<QCheckBox*>();
+        const auto shg = std::find_if(
+            boxes.begin(), boxes.end(), [](const QCheckBox* box) {
+                return box->text().contains(QStringLiteral("Second-harmonic"));
+            });
+        check(shg != boxes.end(), "has the SHG toggle");
+        const auto combos = wizard.findChildren<QComboBox*>();
+        const auto gauge = std::find_if(
+            combos.begin(), combos.end(), [](const QComboBox* combo) {
+                return combo->itemText(0).contains(QStringLiteral("Length"));
+            });
+        check(gauge != combos.end(), "and the gauge selector");
+        // Visibility is measured against the group box, not the wizard: this
+        // wizard puts its settings page AFTER Calculator Settings, so the whole
+        // page is on a non-current stack widget and everything on it reports
+        // hidden relative to the dialog. What is being asserted is the row's
+        // own explicit show/hide, which is exactly what isVisibleTo(group)
+        // reports.
+        const auto groups = wizard.findChildren<QGroupBox*>();
+        const auto responseGroup = std::find_if(
+            groups.begin(), groups.end(), [](const QGroupBox* group) {
+                return group->title() == QStringLiteral("Response");
+            });
+        check(responseGroup != groups.end(), "and the Response group");
+        if (shg != boxes.end() && gauge != combos.end()
+            && responseGroup != groups.end()) {
+            check((*gauge)->isVisibleTo(*responseGroup),
+                  "the gauge is offered while SHG is on");
+            (*shg)->setChecked(false);
+            check(!(*gauge)->isVisibleTo(*responseGroup),
+                  "and withdrawn when it is off");
+            (*shg)->setChecked(true);
+            check((*gauge)->isVisibleTo(*responseGroup), "and comes back");
+        }
+    }
+
+    // The Raman / IR wizard now serves three engines whose stage-1 content has
+    // nothing in common: GPAW selects three inherited runs, VASP and Quantum
+    // ESPRESSO converge their own ground state. Switching between them shows
+    // and hides whole group boxes from a signal the constructor triggers.
+    std::printf("Raman / IR wizard engine switching:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        auto structure = std::make_shared<calango::core::Structure>();
+        RamanIrWizard wizard(structure);
+        wizard.show();
+        check(true, "constructs");
+        wizard.setDensityBaselines(
+            {{QStringLiteral("proc_1 — MgO"), QStringLiteral("/jobs/1/sp.gpw")}});
+
+        const auto groupNamed = [&wizard](const QString& title) {
+            const auto groups = wizard.findChildren<QGroupBox*>();
+            const auto it = std::find_if(
+                groups.begin(), groups.end(), [&title](const QGroupBox* group) {
+                    return group->title() == title;
+                });
+            return it == groups.end() ? nullptr : *it;
+        };
+        auto* inherited = groupNamed(QStringLiteral("Inherited Results"));
+        auto* vaspGroup = groupNamed(QStringLiteral("VASP Ground State"));
+        auto* qeGroup =
+            groupNamed(QStringLiteral("Quantum ESPRESSO Ground State"));
+        check(inherited && vaspGroup && qeGroup,
+              "all three engines' groups exist");
+
+        const auto combos = wizard.findChildren<QComboBox*>();
+        const auto engine = std::find_if(
+            combos.begin(), combos.end(), [](const QComboBox* combo) {
+                return combo->count() == 3
+                    && combo->itemText(0).startsWith(QStringLiteral("GPAW"));
+            });
+        check(engine != combos.end(), "and the engine selector");
+        if (engine != combos.end() && inherited && vaspGroup && qeGroup) {
+            check(inherited->isVisibleTo(&wizard) && !vaspGroup->isVisibleTo(&wizard),
+                  "GPAW shows the inherited runs and nothing else");
+            (*engine)->setCurrentIndex((*engine)->findData(
+                static_cast<int>(calango::core::CalculatorKind::Vasp)));
+            check(vaspGroup->isVisibleTo(&wizard)
+                      && !inherited->isVisibleTo(&wizard)
+                      && !qeGroup->isVisibleTo(&wizard),
+                  "VASP swaps them for its own ground state");
+            const auto* preview = wizard.findChild<QPlainTextEdit*>();
+            check(preview
+                      && preview->toPlainText().contains(
+                          QStringLiteral("ibrion=8")),
+                  "and the previewed script takes the DFPT route");
+            (*engine)->setCurrentIndex((*engine)->findData(static_cast<int>(
+                calango::core::CalculatorKind::QuantumEspresso)));
+            check(qeGroup->isVisibleTo(&wizard)
+                      && !vaspGroup->isVisibleTo(&wizard),
+                  "and Quantum ESPRESSO swaps again");
+            check(preview
+                      && preview->toPlainText().contains(
+                          QStringLiteral("epsil = .true.")),
+                  "with ph.x asked for the dielectric response");
         }
     }
 

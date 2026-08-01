@@ -199,6 +199,17 @@ private Q_SLOTS:
     /// question and the 2D observables derived from it.
     void showOptics();
     void show2DOptics();
+    /// Electronics → "Nonlinear Optics…": second-harmonic generation, the
+    /// shift current and the linear susceptibility tensor through GPAW's
+    /// gpaw.nlopt.
+    ///
+    /// The one response module that converges its OWN ground state rather than
+    /// inheriting a Single-Point baseline — gpaw.nlopt requires point-group
+    /// symmetry off and a converged empty manifold, which an ordinary baseline
+    /// does not have.
+    void showNonlinearOptics();
+    /// Open the nonlinear-response viewer for a finished job (nlopt.json).
+    void openNonlinearOpticsResults(const QString& directory);
     /// Modules → 2D Materials → "2D Bands…": band surfaces E_n(kx, ky) over
     /// the two-dimensional Brillouin zone. Needs a completed single point with
     /// a saved GPAW density, exactly as Electronic Structure does.
@@ -390,7 +401,7 @@ private Q_SLOTS:
     /// Viewport toolbar → "Lattice Plane…": interactive Miller-index plane +
     /// volumetric color-slice overlay in the main 3D viewport.
     /// Viewport toolbar → "Custom overlay…": geometric-primitive overlay manager.
-    /// Simulation → "Maximally Localized Wannier Functions (MLWF)…": set up +
+    /// Simulation → "Wannier Functions…": set up +
     /// launch the localization through the standardized wizard (engine
     /// selection + per-engine Conda env). The viewer opens when the job
     /// finishes.

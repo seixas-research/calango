@@ -33,7 +33,7 @@ FermiSurfaceDialog::FermiSurfaceDialog(
     // Step 1, before anything else: WHICH localization is being interpolated.
     // Every setting below is a detail of how to sample the Hamiltonian this
     // choice supplies, so it comes first and the OK button waits on it.
-    auto* sourceGroup = new QGroupBox(tr("Source MLWF process"), this);
+    auto* sourceGroup = new QGroupBox(tr("Source Wannier Functions process"), this);
     auto* sourceLayout = new QVBoxLayout(sourceGroup);
     source_ = new MlwfSourceSelector(mlwfRuns, sourceGroup);
     sourceLayout->addWidget(source_);

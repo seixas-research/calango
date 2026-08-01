@@ -18,6 +18,7 @@
 #include "core/XasScriptGenerator.hpp"
 #include "core/ElectronicScriptGenerator.hpp"
 #include "core/GwScriptGenerator.hpp"
+#include "core/NonlinearOpticsScriptGenerator.hpp"
 #include "core/OpticsScriptGenerator.hpp"
 #include "core/PhononScriptGenerator.hpp"
 #include "core/RamanIrScriptGenerator.hpp"
@@ -543,6 +544,60 @@ int main(int argc, char** argv)
             RamanIrConfig irOnly = raman;
             irOnly.computeRaman = false;
             dumpRamanIr("raman_ir_ironly.py", irOnly);
+
+            // The two self-contained engines. Each emits a different parser —
+            // an OUTCAR table and a Quantum ESPRESSO .dyn file — full of
+            // regexes with backslash escapes that have to survive the trip
+            // through a C++ string literal, which is exactly what a byte
+            // compile catches and a read-through does not.
+            RamanIrConfig vasp = raman;
+            vasp.calculator.calculator = CalculatorKind::Vasp;
+            vasp.calculator.vaspPotcarPath = "/opt/vasp/potpaw";
+            vasp.baselinePath.clear();
+            vasp.bornChargesPath.clear();
+            dumpRamanIr("raman_ir_vasp.py", vasp);
+            RamanIrConfig vaspIr = vasp;
+            vaspIr.computeRaman = false;
+            dumpRamanIr("raman_ir_vasp_ironly.py", vaspIr);
+
+            RamanIrConfig qe = vasp;
+            qe.calculator.calculator = CalculatorKind::QuantumEspresso;
+            qe.calculator.espressoPseudoDir = "/opt/qe/pseudo";
+            qe.calculator.qeEcutrhoRy = 320.0;
+            dumpRamanIr("raman_ir_espresso.py", qe);
+            RamanIrConfig qeIr = qe;
+            qeIr.computeRaman = false;
+            dumpRamanIr("raman_ir_espresso_ironly.py", qeIr);
+        }
+
+        // Nonlinear optics: each response contributes its own loop, and the
+        // post-processing block is a run of nested f-strings and dict indexing
+        // that only a byte compile settles.
+        {
+            const auto dumpNlopt = [&dir](const std::string& name,
+                                          const NonlinearOpticsConfig& config) {
+                std::ofstream out(dir + "/" + name);
+                out << generateNonlinearOpticsScript(config);
+            };
+            NonlinearOpticsConfig shg;
+            shg.calculator = gpawConfig();
+            dumpNlopt("nlopt_shg.py", shg);
+
+            NonlinearOpticsConfig everything = shg;
+            everything.computeShift = true;
+            everything.computeLinear = true;
+            everything.components = {"yyy", "xxy", "zzz"};
+            everything.gauge = NlOpticsGauge::Velocity;
+            everything.scissorsEv = 0.7;
+            everything.bandsFirst = 4;
+            everything.bandsLast = -8;
+            everything.vacuumAxis = 2;
+            dumpNlopt("nlopt_all.py", everything);
+
+            NonlinearOpticsConfig shiftOnly = shg;
+            shiftOnly.computeShg = false;
+            shiftOnly.computeShift = true;
+            dumpNlopt("nlopt_shift.py", shiftOnly);
         }
 
         // The MLWF scripts, one per fixed-state mode, plus the interpolation
@@ -941,6 +996,293 @@ int main(int argc, char** argv)
             AseScriptGenerator::generate(plain, "structure.extxyz");
         check(!contains(script, "ase.constraints"),
               "an unconstrained MD run imports nothing extra");
+    }
+
+    // -- Charged defects and CDD on VASP and Quantum ESPRESSO ----------------
+    //
+    // Both modules are engine-independent downstream: the defect diagram
+    // consumes E_tot(q), E_VBM and E_corr(q); the CDD consumes three densities
+    // on one grid. Only the acquisition of those changes.
+    std::printf("Charged defects — external engines:\n");
+    {
+        DefectConfig vasp;
+        vasp.calculator.calculator = CalculatorKind::Vasp;
+        vasp.calculator.vaspPotcarPath = "/opt/potcars";
+        vasp.pristinePath = "/runs/host";
+        vasp.neutralDefectPath = "/runs/neutral";
+        const std::string script = generateDefectScript(vasp);
+
+        checkContains(script, "nelect=", "VASP sets the charge through NELECT");
+        checkContains(script, "neutral_electrons - float(q)",
+                      "and q = +1 is one electron FEWER — the sign that "
+                      "inverts the whole diagram if it is wrong");
+        checkContains(script, "lvhar=True",
+                      "the electrostatic potential is written for the FNV "
+                      "alignment");
+        checkContains(script, "nsw=0",
+                      "every charge state runs at the neutral geometry");
+        checkContains(script, "def _nelect_per_atom()",
+                      "ZVAL is read lazily — PRISTINE is defined further down "
+                      "the file, so reading it at import time is a NameError "
+                      "no syntax check catches");
+        checkContains(script, "get_freysoldt_correction",
+                      "the correction is delegated to pymatgen's "
+                      "implementation");
+        checkContains(script, "pymatgen is not available",
+                      "and a missing pymatgen degrades to UNCORRECTED energies "
+                      "rather than to a hand-rolled correction nobody checked");
+        checkContains(script, "Formation energies",
+                      "the shared arithmetic tail is still emitted");
+        checkContains(script, "transition", "transition levels included");
+    }
+    {
+        DefectConfig qe;
+        qe.calculator.calculator = CalculatorKind::QuantumEspresso;
+        qe.pristinePath = "/runs/host";
+        qe.neutralDefectPath = "/runs/neutral";
+        const std::string script = generateDefectScript(qe);
+        checkContains(script, "'tot_charge': float(q)",
+                      "QE's tot_charge follows the physical sign directly");
+        checkContains(script, "read_espresso_out",
+                      "energies come from the parsed pw.x output");
+        checkContains(script, "Formation energies",
+                      "and the same shared tail follows");
+        check(!contains(script, "from gpaw import"),
+              "with no GPAW import anywhere in a QE run");
+    }
+
+    std::printf("Charge density difference — external engines:\n");
+    {
+        CddRunConfig vasp;
+        vasp.calculator.calculator = CalculatorKind::Vasp;
+        vasp.baselineDir = "/runs/parent";
+        vasp.subsystemB = {2, 3};
+        vasp.allElectron = true;
+        const std::string script = CddScriptGenerator::generate(vasp);
+
+        checkContains(script, "AECCAR0",
+                      "all-electron CDD reads the AECCAR pair");
+        checkContains(script, "ngxf=_ngx, ngyf=_ngy, ngzf=_ngz",
+                      "and pins the fragment FFT grid to the parent's — VASP "
+                      "picks it from the cell CONTENTS, so a fragment can "
+                      "silently land on a different one");
+        checkContains(script, "ispin=2",
+                      "fragments are spin-polarized: half a closed shell is "
+                      "open-shell");
+        checkContains(script, "rho_ab - rho_a - rho_b",
+                      "the subtraction itself is unchanged");
+        check(!contains(script, "from gpaw import GPAW"),
+              "and no GPAW restart is attempted");
+    }
+    {
+        CddRunConfig qe;
+        qe.calculator.calculator = CalculatorKind::QuantumEspresso;
+        qe.baselineDir = "/runs/parent";
+        qe.subsystemB = {1};
+        const std::string script = CddScriptGenerator::generate(qe);
+        checkContains(script, "plot_num = 0",
+                      "QE exports its density through pp.x");
+        checkContains(script, "system['nr1'], system['nr2'], system['nr3'] = _grid",
+                      "with the fragment grid pinned to the parent's at run "
+                      "time, not baked in when the script was written");
+        checkContains(script, "CALANGO_PP_X",
+                      "and pp.x is locatable when it is not on PATH");
+    }
+    {
+        // GPAW is untouched: it still restarts from the .gpw, which is a
+        // stronger guarantee than re-specifying settings could ever be.
+        CddRunConfig gpaw;
+        gpaw.calculator.calculator = CalculatorKind::Gpaw;
+        gpaw.baselineDir = "/runs/parent";
+        gpaw.subsystemB = {1};
+        const std::string script = CddScriptGenerator::generate(gpaw);
+        checkContains(script, "parent = GPAW(_gpw[0]",
+                      "GPAW still restarts from the parent .gpw");
+        checkContains(script, "params = dict(_p.todict())",
+                      "and reads its exact parameters back out of it");
+        check(!contains(script, "ngxf"),
+              "with no grid pinning needed — the restart already fixes it");
+    }
+
+    // -- Born effective charges on VASP and Quantum ESPRESSO -----------------
+    //
+    // Both compute Z* by DFPT in ONE run rather than by 6N displaced SCFs.
+    // That is not only cheaper: it is an analytic derivative, so there is no
+    // displacement amplitude to trade off against SCF noise. The output schema
+    // is deliberately identical to the GPAW path's, because the viewer, the
+    // phonon LO-TO block and every test downstream read one file format.
+    std::printf("Born charges — DFPT engines:\n");
+    {
+        BornChargesConfig vasp;
+        vasp.calculator.calculator = CalculatorKind::Vasp;
+        vasp.calculator.vaspPotcarPath = "/opt/potcars";
+        vasp.calculator.vaspXc = "PBEsol";
+        const std::string script = generateBornChargesScript(vasp);
+
+        checkContains(script, "lepsilon=True",
+                      "VASP takes the DFPT linear-response route");
+        check(!contains(script, "displaced") && !contains(script, "delta"),
+              "and displaces nothing — no finite difference anywhere in it, "
+              "header comment included");
+        checkContains(script, "DENSITY-FUNCTIONAL PERTURBATION THEORY",
+                      "the preamble describes the route actually taken");
+        checkContains(script, "ediff=1e-8",
+                      "with a tight ground state, since the response is its "
+                      "derivative");
+        checkContains(script, "lreal=False",
+                      "LREAL=Auto is unsupported with LEPSILON and is pinned off");
+        checkContains(script, "BORN EFFECTIVE CHARGES",
+                      "the OUTCAR block is the one parsed");
+        checkContains(script, "MACROSCOPIC STATIC DIELECTRIC TENSOR",
+                      "and the dielectric tensor comes free with the same run");
+        checkContains(script, "/opt/potcars", "the POTCAR library is exported");
+        checkContains(script, "born_charges.json",
+                      "writing the same result file the GPAW path writes");
+        checkContains(script, "'acoustic_sum_rule'",
+                      "in the same schema, sum rule and all");
+        checkContains(script, "SEMICONDUCTOR",
+                      "and a metal is refused with the reason, not a stack "
+                      "trace");
+    }
+    {
+        BornChargesConfig qe;
+        qe.calculator.calculator = CalculatorKind::QuantumEspresso;
+        qe.calculator.qeEcutwfcRy = 70.0;
+        const std::string script = generateBornChargesScript(qe);
+
+        checkContains(script, "epsil = .true.",
+                      "QE asks ph.x for the electric-field response");
+        checkContains(script, "fildyn = 'calango.dyn'",
+                      "with a named dynamical-matrix file");
+        checkContains(script, "'ecutwfc': 70",
+                      "the ground state uses the configured cutoff");
+        checkContains(script, "'conv_thr': 1e-12",
+                      "converged far tighter than a single point would be");
+        checkContains(script, "CALANGO_PH_X",
+                      "ph.x is locatable when it is not on PATH");
+        // ph.x prints the charges twice, with and without the sum rule. Taking
+        // the first (raw) set is what leaves the ASR residual meaningful as a
+        // convergence diagnostic instead of reporting a corrected zero.
+        checkContains(script, "without the acoustic sum rule",
+                      "the raw set is the one taken, so the ASR residual still "
+                      "measures convergence");
+        checkContains(script, "born_charges.json",
+                      "and the same result file is written");
+    }
+    {
+        // An engine that can do neither is refused up front, with the three
+        // that can named — not after a long run fails at the response step.
+        BornChargesConfig emt;
+        emt.calculator.calculator = CalculatorKind::EMT;
+        const std::string script = generateBornChargesScript(emt);
+        checkContains(script, "raise RuntimeError",
+                      "an engine with no polarization response is refused");
+        checkContains(script, "VASP LEPSILON",
+                      "and the message names what would work");
+    }
+
+    // -- Quantum ESPRESSO and SIESTA calculator blocks -----------------------
+    //
+    // Both used to be stubs driven off `planeWaveCutoffEv`. For QE that meant
+    // one cutoff where the code needs two; for SIESTA it meant a plane-wave
+    // cutoff for a code that HAS none — the number landed on `mesh_cutoff`,
+    // so a user raising it to converge "the basis" refined a real-space grid
+    // while the basis stayed exactly as small.
+    std::printf("Quantum ESPRESSO calculator block:\n");
+    {
+        CalculatorConfig qe;
+        qe.calculator = CalculatorKind::QuantumEspresso;
+        qe.qeEcutwfcRy = 80.0;
+        qe.qeEcutrhoRy = 640.0; // an 8x dual, as ultrasoft wants
+        qe.qeInputDft = "pbesol";
+        qe.qeOccupations = QeOccupations::Smearing;
+        qe.qeSmearing = QeSmearing::MarzariVanderbilt;
+        qe.qeDegaussRy = 0.02;
+        qe.qeConvThrRy = 1e-10;
+        qe.espressoPseudoDir = "/opt/pseudos/sssp";
+        qe.kptsGammaCentered = true;
+        const std::string script = AseScriptGenerator::calculatorSnippet(qe);
+
+        checkContains(script, "\"ecutwfc\": 80", "ecutwfc is written in Ry");
+        checkContains(script, "\"ecutrho\": 640",
+                      "and so is ecutrho — the second grid QE actually has");
+        checkContains(script, "\"input_dft\": \"pbesol\"",
+                      "the functional is the one that was chosen");
+        checkContains(script, "\"smearing\": \"marzari-vanderbilt\"",
+                      "smearing is named in QE's own vocabulary");
+        checkContains(script, "\"degauss\": 0.02", "with its width in Ry");
+        checkContains(script, "\"conv_thr\": 1e-10",
+                      "and conv_thr is the SCF threshold, not a GPAW one");
+        checkContains(script, "/opt/pseudos/sssp",
+                      "the configured pseudopotential library is named");
+        checkContains(script, "koffset=(0, 0, 0)",
+                      "Gamma-centering is QE's koffset, not a VASP tag");
+        check(!contains(script, "planeWaveCutoff")
+                  && !contains(script, "ENCUT") && !contains(script, "gpaw"),
+              "and nothing VASP- or GPAW-shaped leaks into a QE block");
+    }
+    {
+        // `fixed` and the tetrahedron methods take no width. Writing degauss
+        // beside them is how a QE input ends up silently ignored or refused.
+        CalculatorConfig insulator;
+        insulator.calculator = CalculatorKind::QuantumEspresso;
+        insulator.qeOccupations = QeOccupations::Fixed;
+        const std::string script =
+            AseScriptGenerator::calculatorSnippet(insulator);
+        checkContains(script, "\"occupations\": \"fixed\"",
+                      "fixed occupations are emitted");
+        check(!contains(script, "degauss") && !contains(script, "smearing\":"),
+              "and no smearing width is written alongside them");
+
+        insulator.qeOccupations = QeOccupations::Tetrahedra;
+        check(!contains(AseScriptGenerator::calculatorSnippet(insulator),
+                        "degauss"),
+              "nor alongside the tetrahedron method");
+
+        // ecutrho left at zero means "QE's own 4x default" — the key is
+        // omitted rather than written as a literal 0, which pw.x would reject.
+        CalculatorConfig autoDual;
+        autoDual.calculator = CalculatorKind::QuantumEspresso;
+        autoDual.qeEcutrhoRy = 0.0;
+        // Matched on the KEY, not the bare word: the block's comment explains
+        // what ecutrho is and would satisfy a looser search whether or not the
+        // key was emitted.
+        check(!contains(AseScriptGenerator::calculatorSnippet(autoDual),
+                        "\"ecutrho\":"),
+              "an auto dual omits the ecutrho key instead of writing zero");
+    }
+
+    std::printf("SIESTA calculator block:\n");
+    {
+        CalculatorConfig siesta;
+        siesta.calculator = CalculatorKind::Siesta;
+        siesta.siestaXc = "PBEsol";
+        siesta.siestaBasisType = SiestaBasisType::SplitGauss;
+        siesta.siestaBasisSize = "TZP";
+        siesta.siestaEnergyShiftEv = 0.05;
+        siesta.siestaMeshCutoffEv = 450.0;
+        siesta.siestaPseudoDir = "/opt/pseudos/psml";
+        // Deliberately set, and deliberately expected NOT to appear: SIESTA
+        // has no plane-wave cutoff, and this field used to become its mesh.
+        siesta.planeWaveCutoffEv = 999.0;
+        const std::string script = AseScriptGenerator::calculatorSnippet(siesta);
+
+        checkContains(script, "xc=\"PBEsol\"", "the XC functional is written");
+        checkContains(script, "basis_set=\"TZP\"", "so is the basis SIZE");
+        checkContains(script, "\"PAO.BasisType\": \"splitgauss\"",
+                      "and the basis TYPE, as an fdf argument");
+        checkContains(script, "energy_shift=0.05",
+                      "PAO.EnergyShift — the orbital confinement energy");
+        checkContains(script, "mesh_cutoff=450",
+                      "and MeshCutoff, which is the real-space grid");
+        checkContains(script, "/opt/pseudos/psml",
+                      "the configured pseudopotential library is named");
+        check(!contains(script, "999"),
+              "the plane-wave cutoff field does NOT reach SIESTA — that engine "
+              "has no such parameter, and silently mapping it onto the mesh is "
+              "the bug this replaces");
+        check(!contains(script, "ENCUT") && !contains(script, "ecutwfc"),
+              "and no other engine's cutoff appears either");
     }
 
     // -- Simulated annealing ------------------------------------------------
@@ -1987,6 +2329,260 @@ int main(int argc, char** argv)
         // intensities.
         checkContains(with, "CALANGO_ERROR the Born charges run covered only",
                       "a partial Z* set is still refused");
+    }
+
+    // -- Raman / IR on VASP and Quantum ESPRESSO -----------------------------
+    //
+    // Three engines, one physics core. What is pinned here is (a) that each
+    // engine really takes its own route to the Hessian and Z* rather than
+    // falling back to the GPAW displacement loop, and (b) that all three still
+    // feed the SAME shared contractions and the SAME raman_ir.json — the whole
+    // reason the viewer and the phonon LO-TO block have one reader each.
+    std::printf("Raman / IR on VASP and Quantum ESPRESSO:\n");
+    {
+        RamanIrConfig base;
+        base.calculator.planeWaveCutoffEv = 520.0;
+        base.calculator.kpts[0] = 6;
+        base.calculator.kpts[1] = 6;
+        base.calculator.kpts[2] = 6;
+
+        RamanIrConfig vaspCfg = base;
+        vaspCfg.calculator.calculator = CalculatorKind::Vasp;
+        vaspCfg.calculator.vaspXc = "PBEsol";
+        const std::string vasp = generateRamanIrScript(vaspCfg);
+
+        // DFPT, not 6N displaced force runs: one linear-response job returns
+        // the force constants AND every Z*.
+        checkContains(vasp, "ibrion=8", "VASP takes the DFPT route");
+        checkContains(vasp, "lepsilon=True",
+                      "with the same run returning Z* and eps_inf");
+        checkContains(vasp, "nwrite=3",
+                      "NWRITE=3 is what makes VASP print the Hessian at all");
+        checkContains(vasp, "ediff=1e-8",
+                      "linear response needs a far tighter SCF than an energy");
+        checkContains(vasp, "lreal=False",
+                      "LREAL=Auto is not supported alongside LEPSILON");
+        checkContains(vasp, "SECOND DERIVATIVES (NOT SYMMETRIZED)",
+                      "the force constants are read from the OUTCAR table");
+        checkContains(vasp, "return -np.asarray(rows, dtype=float)",
+                      "VASP prints dF/du, so the parsed matrix is negated");
+        checkContains(vasp, "verify_hessian_sign(",
+                      "and that convention is verified, not assumed");
+        checkContains(vasp, "encut=520", "the configured cutoff reaches VASP");
+        checkContains(vasp, "xc='PBEsol'", "as does the functional");
+        // The dielectric block VASP prints FIRST is the one without local
+        // field effects; picking it would land a tens-of-percent error whole
+        // in dalpha/du.
+        checkContains(vasp, "\\(including local field effects",
+                      "eps_inf is read from the local-field-corrected block");
+        check(!contains(vasp, "from ase.vibrations import Vibrations"),
+              "no finite-difference Hessian on the VASP path");
+        check(!contains(vasp, "BORN_CHARGES"),
+              "and no inherited Z* selector — the run computes its own");
+
+        RamanIrConfig vaspIr = vaspCfg;
+        vaspIr.computeRaman = false;
+        const std::string vaspIrOnly = generateRamanIrScript(vaspIr);
+        checkContains(vaspIrOnly, "ibrion=8",
+                      "an IR-only VASP run still does the DFPT step");
+        checkContains(vaspIrOnly, "COMPUTE_RAMAN = False",
+                      "and switches the displaced sweep off");
+        checkContains(vasp, "ibrion=-1",
+                      "the Raman sweep is a separate static LEPSILON run");
+        // Guarded at RUN time, not stripped at generation time. The reviewed
+        // script is editable, and a user who flips COMPUTE_RAMAN in it should
+        // get a working Raman run rather than a flag that controls nothing.
+        checkContains(vaspIrOnly, "if COMPUTE_RAMAN:",
+                      "the sweep stays in the script behind a live switch");
+
+        RamanIrConfig qeCfg = base;
+        qeCfg.calculator.calculator = CalculatorKind::QuantumEspresso;
+        qeCfg.calculator.qeEcutwfcRy = 90.0;
+        qeCfg.calculator.qeEcutrhoRy = 360.0;
+        qeCfg.calculator.espressoPseudoDir = "/opt/qe/pseudo";
+        const std::string qe = generateRamanIrScript(qeCfg);
+
+        checkContains(qe, "epsil = .true.",
+                      "ph.x is asked for the dielectric response");
+        checkContains(qe, "lraman = .true.",
+                      "and, for Raman, the analytic third-order response");
+        checkContains(qe, "'ecutwfc': 90", "the dual cutoff reaches pw.x");
+        checkContains(qe, "'ecutrho': 360", "both halves of it");
+        checkContains(qe, "/opt/qe/pseudo",
+                      "and the configured pseudopotential library");
+        checkContains(qe, "Rydberg / Bohr ** 2",
+                      "the .dyn force constants are converted to eV/A^2");
+        checkContains(qe, "'occupations': 'fixed'",
+                      "epsil is legal only for an insulator");
+        // The one restriction that will actually stop a user, named where they
+        // will read it rather than left to ph.x's own diagnostics.
+        checkContains(qe, "NORM-CONSERVING",
+                      "the lraman pseudopotential restriction is stated");
+        check(!contains(qe, "ibrion"), "no VASP tags on the QE path");
+        check(!contains(qe, "from ase.vibrations import Vibrations"),
+              "and no finite-difference Hessian either");
+
+        RamanIrConfig qeIr = qeCfg;
+        qeIr.computeRaman = false;
+        const std::string qeIrOnly = generateRamanIrScript(qeIr);
+        checkContains(qeIrOnly, "COMPUTE_RAMAN = False",
+                      "an IR-only QE run switches the Raman tensor off");
+        checkContains(qeIrOnly, "epsil = .true.",
+                      "but still asks for Z*");
+        // Same live switch as the other two engines: lraman is written into
+        // ph.in from a run-time branch, not omitted by the generator, so the
+        // flag means one thing across all three scripts.
+        checkContains(qeIrOnly,
+                      "    if COMPUTE_RAMAN:\n"
+                      "        handle.write('  lraman = .true.\\n')",
+                      "and the ph.in flag is behind the same live switch");
+
+        // One physics core, three front ends. If any of these drifts out of a
+        // branch, that engine has quietly grown its own spectroscopy.
+        for (const auto& [script, engine] :
+             {std::pair{vasp, "VASP"}, std::pair{qe, "Quantum ESPRESSO"}}) {
+            checkContains(script, "def mass_weighted_modes(",
+                          std::string(engine) + " shares the diagonalization");
+            checkContains(script, "def ir_intensities(",
+                          std::string(engine) + " shares the Z* contraction");
+            checkContains(script, "def raman_activities(",
+                          std::string(engine) + " shares the Placzek invariants");
+            checkContains(script, "CALANGO_RESULT raman_ir=raman_ir.json",
+                          std::string(engine) + " writes the same result file");
+            checkContains(script, "'engine': ENGINE",
+                          std::string(engine)
+                              + " records which route produced it");
+        }
+        // DFPT is an analytic derivative — reporting a displacement amplitude
+        // for it would describe a step that was never taken.
+        checkContains(qe, "REPORTED_DELTA = 0.0",
+                      "QE reports no displacement, because it took none");
+        checkContains(vasp, "REPORTED_DELTA = DELTA if COMPUTE_RAMAN else 0.0",
+                      "VASP reports one only for the half that used it");
+
+        CalculatorConfig unsupported;
+        unsupported.calculator = CalculatorKind::Mace;
+        RamanIrConfig mace = base;
+        mace.calculator = unsupported;
+        checkContains(generateRamanIrScript(mace),
+                      "raise RuntimeError(",
+                      "an engine with no response function refuses up front");
+    }
+
+    // -- Nonlinear optics (gpaw.nlopt) ---------------------------------------
+    //
+    // The API surface is the part that cannot be checked by reading: these are
+    // real function names and keyword arguments in someone else's package, and
+    // a misspelling surfaces as a TypeError after the ground state has been
+    // paid for.
+    std::printf("Nonlinear optics:\n");
+    {
+        NonlinearOpticsConfig cfg;
+        cfg.calculator.calculator = CalculatorKind::Gpaw;
+        cfg.calculator.planeWaveCutoffEv = 800.0;
+        cfg.components = {"yyy", "xxy"};
+        const std::string script = generateNonlinearOpticsScript(cfg);
+
+        checkContains(script, "from gpaw.nlopt.matrixel import make_nlodata",
+                      "the matrix elements come from gpaw.nlopt");
+        checkContains(script, "from gpaw.nlopt.shg import get_shg",
+                      "and SHG from its own module");
+        checkContains(script, "nlodata = make_nlodata('gs.gpw'",
+                      "make_nlodata is handed the .gpw path, as the tutorial "
+                      "does");
+        checkContains(script, "nlodata.write('mml.npz')",
+                      "the matrix elements are saved for reuse");
+        checkContains(script,
+                      "get_shg(nlodata, freqs=freqs, eta=ETA, pol=_pol",
+                      "get_shg is called with the documented signature");
+        checkContains(script, "gauge=GAUGE", "including the gauge");
+        checkContains(script, "COMPONENTS = ['yyy', 'xxy']",
+                      "every requested component is evaluated");
+        checkContains(script, "mode=PW(800)",
+                      "the ground-state cutoff is the one that was configured");
+
+        // The three ground-state settings the METHOD requires. Each is
+        // imposed by the generator rather than left to the calculator page,
+        // and the first of them fails as a bare AssertionError if it is not.
+        checkContains(script,
+                      "symmetry={\"point_group\": False, \"time_reversal\": "
+                      "True}",
+                      "point-group symmetry is off, time reversal kept");
+        check(!contains(script, "symmetry=\"off\""),
+              "not the stronger symmetry=off, which doubles the k-points");
+        checkContains(script, "nbands=\"nao\"",
+                      "the band set is large enough to sum over");
+        checkContains(script, "\"bands\": -10",
+                      "and those empty bands are actually converged");
+        checkContains(script, "parallel={'domain': 1}",
+                      "make_nlodata needs an undistributed domain");
+        checkContains(script, "except AssertionError as exc:",
+                      "make_nlodata's bare assert is turned into a message");
+
+        // chi^(2) vanishes identically in a centrosymmetric crystal, and what
+        // a finite k-mesh returns there looks exactly like a spectrum.
+        checkContains(script, "def has_inversion_symmetry(",
+                      "the cell is tested for an inversion centre");
+        checkContains(script, "CALANGO_WARN this cell has an inversion centre",
+                      "and the user is told before anything is computed");
+
+        // Units. GPAW returns SI base units; the literature quotes neither.
+        checkContains(script, "chi.real * 1e12",
+                      "m/V -> pm/V for the bulk susceptibility");
+        checkContains(script, "sheet.real * 1e18",
+                      "and chi*L -> nm^2/V for a sheet");
+        checkContains(script, "CALANGO_RESULT nlopt=nlopt.json",
+                      "the result marker the controller watches for");
+
+        // Off by default: each is a separate sum over bands and k-points.
+        check(!contains(script, "from gpaw.nlopt.shift import get_shift"),
+              "the shift current is not computed unless asked for");
+        check(!contains(script, "from gpaw.nlopt.linear import get_chi_tensor"),
+              "nor the linear tensor");
+
+        NonlinearOpticsConfig all = cfg;
+        all.computeShift = true;
+        all.computeLinear = true;
+        all.gauge = NlOpticsGauge::Velocity;
+        all.scissorsEv = 0.7;
+        all.bandsFirst = 4;
+        all.bandsLast = -8;
+        all.vacuumAxis = 2;
+        const std::string full = generateNonlinearOpticsScript(all);
+        checkContains(full, "from gpaw.nlopt.shift import get_shift",
+                      "the shift current is added on request");
+        checkContains(full, "from gpaw.nlopt.linear import get_chi_tensor",
+                      "as is the linear tensor");
+        checkContains(full, "GAUGE = 'vg'", "the velocity gauge is selectable");
+        checkContains(full, "ESHIFT = 0.7",
+                      "the scissors shift reaches every response");
+        checkContains(full, "'eshift_eV': ESHIFT,",
+                      "and is recorded, so a spectrum never hides one");
+        checkContains(full, "_band_kwargs['ni'] = BAND_FIRST",
+                      "the band window is passed to make_nlodata");
+        checkContains(full, "VACUUM_AXIS = 2",
+                      "and the sheet conversion knows which axis is vacuum");
+
+        // A typo must not cost a ground state: get_shg turns each component
+        // into an index with 'xyz'.index() and raises on anything else.
+        NonlinearOpticsConfig typo = cfg;
+        typo.components = {"YYY", "yy", "abc", "yyy", "xyzz"};
+        const std::string filtered = generateNonlinearOpticsScript(typo);
+        checkContains(filtered, "COMPONENTS = ['yyy']",
+                      "invalid components are filtered and case normalized");
+        NonlinearOpticsConfig empty = cfg;
+        empty.components.clear();
+        checkContains(generateNonlinearOpticsScript(empty),
+                      "COMPONENTS = ['yyy']",
+                      "an empty list falls back rather than emitting []");
+
+        NonlinearOpticsConfig wrongEngine = cfg;
+        wrongEngine.calculator.calculator = CalculatorKind::Vasp;
+        const std::string refused = generateNonlinearOpticsScript(wrongEngine);
+        checkContains(refused, "raise RuntimeError(",
+                      "a non-GPAW engine refuses up front");
+        check(!contains(refused, "from gpaw.nlopt"),
+              "and imports nothing from gpaw.nlopt it could not satisfy");
     }
 
     // -- 2D bands: high-symmetry points ---------------------------------------

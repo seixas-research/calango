@@ -55,7 +55,7 @@ WannierDialog::WannierDialog(std::shared_ptr<core::Structure> structure,
                              QWidget* parent)
     : QDialog(parent), structure_(std::move(structure))
 {
-    setWindowTitle(tr("Maximally Localized Wannier Functions (MLWF)"));
+    setWindowTitle(tr("Wannier Functions"));
     resize(1040, 660);
 
     auto* layout = new QHBoxLayout(this);

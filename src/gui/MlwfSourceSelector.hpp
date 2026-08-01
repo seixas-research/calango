@@ -11,7 +11,7 @@ class QLabel;
 namespace calango::gui {
 
 /// "Source MLWF process" — the first step of every module that post-processes
-/// a Maximally Localized Wannier Functions run (Wannier Interpolation, Fermi
+/// a Wannier Functions run (Wannier Interpolation, Fermi
 /// Surface, Topological Invariants).
 ///
 /// All three diagonalize the localized Hamiltonian H(R) an MLWF run produced,

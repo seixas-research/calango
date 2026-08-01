@@ -59,6 +59,8 @@
 #include "gui/PhononPlotWindow.hpp"
 #include "gui/SupercellDialog.hpp"
 #include "gui/PartialChargeDialog.hpp"
+#include "gui/NonlinearOpticsResultsWindow.hpp"
+#include "gui/NonlinearOpticsWizard.hpp"
 #include "gui/OpticsWizard.hpp"
 #include "gui/OverlayPanel.hpp"
 #include "gui/GrapheneOxideWizard.hpp"
@@ -721,9 +723,9 @@ MainWindow::MainWindow(QWidget* parent)
     // Unlike the rest of that dock they are also not per-cast: each one is a
     // single viewport-wide bit, which is exactly what a toolbar toggle models.
     frameToolbar->addSeparator();
-    const auto addToggle = [this, frameToolbar](const QString& iconName,
-                                                const QString& text,
-                                                bool checked) {
+    const auto addToggle = [frameToolbar](const QString& iconName,
+                                          const QString& text,
+                                          bool checked) {
         QAction* action = frameToolbar->addAction(text);
         ui::IconManager::bind(action, iconName);
         action->setCheckable(true);
@@ -1192,6 +1194,16 @@ void MainWindow::createMenusAndDocks()
     // refractive index, energy loss) via GPAW's response module.
     electronicsMenu->addAction(tr("&Optics…"),
                                this, &MainWindow::showOptics);
+    // Directly after the linear response it extends. Second order is where the
+    // symmetry requirement appears — χ⁽²⁾ and the shift current are odd-rank
+    // tensors and vanish identically in a centrosymmetric crystal — so the two
+    // entries sit together and the tooltip says which question each answers.
+    electronicsMenu
+        ->addAction(tr("&Nonlinear Optics…"), this,
+                    &MainWindow::showNonlinearOptics)
+        ->setToolTip(tr("Second-harmonic generation χ⁽²⁾, the shift current "
+                        "and the linear susceptibility tensor, via GPAW's "
+                        "gpaw.nlopt. Needs a non-centrosymmetric crystal"));
     // G₀W₀ sits right after Optics, the other response-function calculation.
     electronicsMenu->addAction(tr("&GW Calculations…"), this,
                                &MainWindow::showGwCalculations)
@@ -1208,25 +1220,25 @@ void MainWindow::createMenusAndDocks()
     // separate isosurface dialog were three copies of machinery that already
     // existed.
     electronicsMenu->addAction(
-        tr("Maximally Localized &Wannier Functions (MLWF)…"),
+        tr("&Wannier Functions…"),
         this, &MainWindow::showWannier);
     // The three Wannier post-processes are standalone modules with a strict
-    // prerequisite: each diagonalizes the localized H(R) a completed MLWF run
+    // prerequisite: each diagonalizes the localized H(R) a completed Wannier Functions run
     // produced, so each begins by selecting one (and refuses without it).
     electronicsMenu
         ->addAction(tr("Wannier &Interpolation…"), this,
                     &MainWindow::showWannierInterpolation)
         ->setToolTip(tr("Interpolated band structure + projected DOS "
-                        "(H(R) → H(k)) from a completed MLWF process"));
+                        "(H(R) → H(k)) from a completed Wannier Functions process"));
     electronicsMenu
         ->addAction(tr("&Fermi Surface…"), this, &MainWindow::showFermiSurface)
         ->setToolTip(tr("E_n(k) = E_F sheets on a dense interpolated k-grid, "
-                        "from a completed MLWF process"));
+                        "from a completed Wannier Functions process"));
     electronicsMenu
         ->addAction(tr("&Topological Invariants…"), this,
                     &MainWindow::showTopologicalInvariants)
         ->setToolTip(tr("Chern number and Z₂ index from the hybrid Wannier "
-                        "centre (Wilson loop) flow, from a completed MLWF "
+                        "centre (Wilson loop) flow, from a completed Wannier Functions "
                         "process"));
     // Charged defects sit with the other post-processes that consume a
     // completed SCF. Its two inputs are both Single-Point runs, which is what
@@ -4140,6 +4152,48 @@ void MainWindow::openOpticsWizard(bool twoDimensional)
     runSimulationWizard(wizard, label, /*expectFrames=*/false);
 }
 
+void MainWindow::showNonlinearOptics()
+{
+    if (!prepareSimulation(tr("Nonlinear Optics")))
+        return;
+    Document* doc = currentDocument();
+    // A periodic cell is a hard requirement, not a preference: χ⁽²⁾ is a bulk
+    // susceptibility obtained from a sum over Brillouin-zone k-points, and
+    // there is no zone without a lattice. Cheaper to say so here than after
+    // the ground state has converged.
+    if (doc && doc->structure && !doc->structure->cell().isDefined()) {
+        QMessageBox::information(
+            this, tr("Nonlinear Optics"),
+            tr("The nonlinear susceptibility is a Brillouin-zone integral over "
+               "the band structure, so it is defined only for a periodic "
+               "crystal — this structure has no unit cell.\n\n"
+               "Build or import a periodic cell first."));
+        return;
+    }
+    // No baseline selector: this module converges its own ground state,
+    // because gpaw.nlopt asserts that point-group symmetry is off and its band
+    // sums need a converged empty manifold — neither of which a Single-Point
+    // baseline generally has.
+    NonlinearOpticsWizard wizard(doc ? doc->structure : nullptr, this);
+    runSimulationWizard(wizard, tr("Nonlinear Optics"),
+                        /*expectFrames=*/false);
+}
+
+void MainWindow::openNonlinearOpticsResults(const QString& directory)
+{
+    auto* window = new NonlinearOpticsResultsWindow(this);
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    if (!window->loadResults(directory)) {
+        delete window;
+        QMessageBox::information(
+            this, tr("Nonlinear Optics"),
+            tr("No nlopt.json with a usable spectrum found in %1.")
+                .arg(directory));
+        return;
+    }
+    window->show();
+}
+
 void MainWindow::openOpticsResults(const QString& directory)
 {
     auto* window = new OpticsResultsWindow(directory, this);
@@ -4582,7 +4636,9 @@ std::vector<MainWindow::ViewerEntry> MainWindow::viewersFor(
          &MainWindow::openBornChargesResults},
         {"raman_ir.json", tr("Raman / IR Spectroscopy Viewer"),
          &MainWindow::openRamanIrResults},
-        {"wannier.json", tr("MLWF Viewer"), &MainWindow::openMlwfResults},
+        {"nlopt.json", tr("Nonlinear Optics Viewer"),
+         &MainWindow::openNonlinearOpticsResults},
+        {"wannier.json", tr("Wannier Functions Viewer"), &MainWindow::openMlwfResults},
         {"bands_2d.json", tr("2D Band Surfaces Viewer"),
          &MainWindow::open2DBandsResults},
         {"charged_defects.json", tr("Charged Defect Diagram"),
@@ -5366,6 +5422,13 @@ void MainWindow::showPartialCharge()
         QString engine;
         if (!dir.entryList({QStringLiteral("*.gpw")}, QDir::Files).isEmpty())
             engine = QStringLiteral("GPAW");
+        // VASP before the generic cube sniff: a VASP directory often also
+        // holds an exported cube, and the CHGCAR/AECCAR pair is the better
+        // source (AECCAR0+AECCAR2 is the all-electron density Bader needs).
+        else if (dir.exists(QStringLiteral("AECCAR2")))
+            engine = QStringLiteral("VASP (all-electron)");
+        else if (dir.exists(QStringLiteral("CHGCAR")))
+            engine = QStringLiteral("VASP");
         else if (!dir.entryList({QStringLiteral("*.cube")}, QDir::Files).isEmpty())
             engine = QStringLiteral("cube");
         else if (!dir.entryList({QStringLiteral("*.save"),
@@ -5379,12 +5442,42 @@ void MainWindow::showPartialCharge()
                               record.directory});
     }
     dialog->setDensityBaselines(baselines);
+    dialog->setTrajectoryFrameCount(static_cast<int>(doc->frames.size()));
     connect(dialog, &PartialChargeDialog::runRequested, this,
             [this](const QString& script, const QString& label) {
                 runScript(script,
                           QString::fromStdString(
                               pybridge::PythonEngine::instance().executable()),
                           label, /*expectFrames=*/false);
+            });
+    // Writing the charges into the document is an EDIT, so it goes through the
+    // undo stack like any other. The dialog holds a structure and no business
+    // saving anything; the window owns both the stack and the file.
+    connect(dialog, &PartialChargeDialog::chargesApplied, this,
+            [this](const QVector<double>& charges, bool wholeTrajectory) {
+                Document* document = currentDocument();
+                if (!document || !document->structure
+                    || charges.size()
+                        != static_cast<int>(document->structure->size()))
+                    return;
+                pushUndo();
+                const std::vector<double> values(charges.begin(), charges.end());
+                document->structure->setScalarField("initial_charges", values);
+                int written = 1;
+                if (wholeTrajectory)
+                    for (auto& frame : document->frames) {
+                        if (!frame || frame == document->structure
+                            || frame->size() != values.size())
+                            continue;
+                        frame->setScalarField("initial_charges", values);
+                        ++written;
+                    }
+                isDirty_ = true;
+                notifyStructureChanged(false);
+                statusBar()->showMessage(
+                    tr("Partial charges stored as `initial_charges` on %n "
+                       "frame(s) — save as .extxyz to write them out",
+                       nullptr, written));
             });
     // Recolouring by charge writes a scalar field on the structure; make sure
     // the property combo / info panel pick it up.
@@ -5506,10 +5599,9 @@ bool MainWindow::requireMlwfPrerequisite(const QString& title)
         return true;
     QMessageBox::information(
         this, title,
-        tr("%1 requires a successfully completed Maximally Localized "
-           "Wannier Functions (MLWF) process — it post-processes the "
-           "localized Hamiltonian that run produces.\n\nRun Electronics → "
-           "Maximally Localized Wannier Functions (MLWF)… first; once it "
+        tr("%1 requires a successfully completed Wannier Functions process — "
+           "it post-processes the localized Hamiltonian that run "
+           "produces.\n\nRun Electronics → Wannier Functions… first; once it "
            "completes, this module will find it. A finished job from an "
            "earlier session can also be picked with the dialog's Browse… "
            "button.")
@@ -5712,18 +5804,13 @@ void MainWindow::showRamanIrSpectroscopy()
         return;
     Document* doc = currentDocument();
 
-    // One hard precondition: the converged ground state the displacements are
-    // taken about. Everything else this module can consume is optional and
-    // selected in the wizard.
+    // No hard precondition any more. A baseline .gpw is what the GPAW route
+    // displaces about, but VASP and Quantum ESPRESSO converge their own ground
+    // state and solve the linear response on top of it — so refusing to open
+    // without one would withhold the module from every user of those two
+    // engines. The wizard disables the GPAW entry (with the reason on it) when
+    // the list is empty and steers to a self-contained engine instead.
     const auto baselines = gpawDensityFiles();
-    if (baselines.isEmpty()) {
-        QMessageBox::critical(
-            this, tr("Raman and IR Spectroscopy"),
-            tr("This post-process starts from a converged ground state, so it "
-               "needs a completed GPAW Single-Point Calculation that saved its "
-               "wavefunctions (.gpw).\n\nRun one on this structure first."));
-        return;
-    }
     // Born charges are OPTIONAL. They are the only route to an infrared
     // intensity in a periodic crystal, but nothing else here needs them: the
     // Γ-point phonons come from finite displacements and the Raman activities
@@ -5762,14 +5849,14 @@ void MainWindow::openRamanIrResults(const QString& directory)
 
 void MainWindow::showWannier()
 {
-    if (!prepareSimulation(tr("Maximally Localized Wannier Functions")))
+    if (!prepareSimulation(tr("Wannier Functions")))
         return;
     // MLWF localization is set up + launched through the standardized wizard
     // (engine selection + per-engine Conda env). It writes wannier.json (+
     // per-orbital cubes); onJobFinished() opens the centres table + viewer.
     WannierWizard wizard(currentDocument()->structure, this);
     wizard.setDensityBaselines(gpawBaselines());
-    runSimulationWizard(wizard, tr("Maximally Localized Wannier Functions"),
+    runSimulationWizard(wizard, tr("Wannier Functions"),
                         /*expectFrames=*/false);
 }
 
@@ -7450,6 +7537,11 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     // Optics runs: open the optical-spectra viewer.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/optics.json"))) {
         openOpticsResults(lastJobDir_);
+        return;
+    }
+    // Nonlinear optics: χ⁽²⁾ / shift current / χ⁽¹⁾ spectra.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/nlopt.json"))) {
+        openNonlinearOpticsResults(lastJobDir_);
         return;
     }
     // XAS runs: open the spectrum viewer.

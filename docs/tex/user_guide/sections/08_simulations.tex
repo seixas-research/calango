@@ -147,12 +147,83 @@ setpoint as a dashed reference line instead.
 
 \subsection{DFT and ORCA parameters}
 
-DFT calculators expose \ui{Plane-wave cutoff} and a \ui{k-point grid}.
+GPAW and VASP share the \ui{Plane-wave cutoff} row and the \ui{k-point grid};
+Quantum ESPRESSO and SIESTA each have a settings group of their own
+(\S\ref{sec:qe-settings}, \S\ref{sec:siesta-settings}), because the parameters
+that decide their basis are not the same parameters.
 
-The cutoff is a parameter of the \emph{plane-wave} basis, so under GPAW it is
+The cutoff is a property of the \emph{plane-wave} basis, so under GPAW it is
 shown only in \ui{PW} mode. In \ui{FD} the basis is the real-space grid
 (controlled by \ui{Grid spacing h}) and in \ui{LCAO} it is the atomic orbital
 set --- a cutoff there converges nothing, which is a trap worth not laying.
+
+\subsection{Quantum ESPRESSO settings}
+\label{sec:qe-settings}
+
+QE is a plane-wave code with a \emph{dual} grid, and that is what its group is
+built around.
+
+\begin{description}
+  \item[\ui{ecutwfc}] The cutoff for the wavefunctions, in Rydberg --- the
+    unit \texttt{pw.x} reads, so nothing is converted behind your back.
+    Converge it against energy \emph{differences}, not the absolute energy,
+    which keeps falling long after everything you care about has stopped
+    moving.
+  \item[\ui{ecutrho}] The cutoff for the charge density, on QE's second grid.
+    \opt{auto} means QE's own default of $4\times$\,ecutwfc.
+  \item[\ui{XC functional}] \texttt{input\_dft}.
+  \item[\ui{Occupations}] \opt{smearing}, \opt{fixed}, or one of the two
+    tetrahedron methods. The smearing function and width appear only for
+    \opt{smearing}: the others take no width, and writing \texttt{degauss}
+    beside them is how a QE input gets silently ignored.
+  \item[\ui{Smearing}] Marzari--Vanderbilt (``cold'') is QE's recommended
+    default. Fermi--Dirac is the odd one out --- it is a physical electronic
+    temperature, not a convergence aid.
+  \item[\ui{conv\_thr}] The SCF threshold in Ry. A phonon or Born-charge run
+    wants $10^{-10}$ or tighter, because it differentiates this quantity.
+\end{description}
+
+\begin{calwarn}
+The $4\times$ default for \ui{ecutrho} is correct for \emph{norm-conserving}
+pseudopotentials and badly under-converged for ultrasoft or PAW, whose
+augmentation charges are much harder than the wavefunctions and want
+8--12$\times$. Leaving it on \opt{auto} with a USPP library is the single most
+common way a QE run comes out quietly wrong. The note under the row restates
+the effective dual so the number is always in front of you.
+\end{calwarn}
+
+\subsection{SIESTA settings}
+\label{sec:siesta-settings}
+
+\textbf{SIESTA has no plane-wave cutoff, and the option is gone.} Its basis is
+a finite set of numerical atomic orbitals; there is no plane-wave expansion to
+truncate. What the removed field used to do was set \texttt{MeshCutoff} ---
+so raising it to ``converge the basis'' refined a real-space grid while the
+basis stayed exactly as small.
+
+\begin{description}
+  \item[\ui{XC functional}] Resolved by ASE into SIESTA's
+    \texttt{XC.functional} / \texttt{XC.authors} pair. \texttt{PZ},
+    \texttt{CA} and \texttt{PW92} are the LDA parametrizations; \texttt{DRSLL}
+    and \texttt{VV} are van der Waals functionals.
+  \item[\ui{Basis type}] \texttt{PAO.BasisType} --- \emph{how} the
+    multiple-$\zeta$ orbitals are generated. \opt{split} is the standard
+    scheme and what almost every published SIESTA calculation uses.
+  \item[\ui{Basis size}] \opt{SZ}, \opt{SZP}, \opt{DZ}, \opt{DZP},
+    \opt{TZP} --- how many orbitals per valence shell, and whether
+    polarization orbitals are added. \opt{DZP} is the standard production
+    basis. \textbf{This is the parameter that plays the role a plane-wave
+    cutoff plays elsewhere: it is what you converge.}
+  \item[\ui{Energy shift}] \texttt{PAO.EnergyShift}: the energy by which
+    confinement raises each orbital, which is what fixes its cutoff radius.
+    \emph{Smaller} means longer-ranged orbitals, a better basis and a more
+    expensive run --- the second knob to turn after the basis size. SIESTA's
+    default is 0.02\,Ry $\approx$ 0.27\,eV.
+  \item[\ui{Mesh cutoff}] \texttt{MeshCutoff}: the fineness of the real-space
+    grid the Hartree and exchange-correlation terms are integrated on. Not a
+    basis-set parameter. An under-converged mesh shows up as an ``egg-box''
+    force error as atoms move across grid points.
+\end{description}
 
 Under \ui{Spin Configurations}, only the polarization \emph{mode} is chosen
 here. The per-atom initial moments are a property of the structure: set them in

@@ -1,15 +1,16 @@
 \chapter{Optical and Quasiparticle Properties}
 \label{ch:optics-gw}
 
-Three workflows sit on top of a converged ground state: the dielectric
-response, the same response reduced to sheet quantities for a 2D material, and
-the $G_0W_0$ quasiparticle correction.
+Four workflows evaluate the response of a converged ground state: the
+dielectric function, the same response reduced to sheet quantities for a 2D
+material, the second-order (nonlinear) response, and the $G_0W_0$ quasiparticle
+correction.
 
 \begin{calwarn}
-All three \textbf{inherit a baseline} rather than converging their own ground
-state --- a completed GPAW \menu{Simulation}\menusep\menu{Single-point
-Calculation\dots}, which writes \file{single\_point.gpw}. They will not open
-without one.
+The first two and $G_0W_0$ \textbf{inherit a baseline} rather than converging
+their own ground state --- a completed GPAW
+\menu{Simulation}\menusep\menu{Single-point Calculation\dots}, which writes
+\file{single\_point.gpw}. They will not open without one.
 
 This is not merely a saving. Re-converging inside the job would give a spectrum
 from a different SCF solution than the one you validated --- different
@@ -18,6 +19,12 @@ nothing in the output to say so. Because the ground state is inherited whole,
 these wizards show no Calculator Settings stage: the cutoff, functional and
 $k$-grid all come back from the baseline, and offering to set them again would
 present knobs that cannot affect the run.
+
+Nonlinear Optics (\S\ref{sec:nlopt}) is the exception, and for a reason worth
+knowing: \texttt{gpaw.nlopt} requires point-group symmetry to be off and its
+band sums need a \emph{converged} empty manifold, neither of which a general
+baseline has. It therefore converges its own ground state and keeps a
+Calculator Settings stage.
 \end{calwarn}
 
 \section{Optical properties}
@@ -137,6 +144,108 @@ graphene run reproduces those, the whole chain --- baseline, response,
 vacuum-axis choice and unit conversion --- is working. Reaching the plateau
 needs a dense mesh: it is the $k$-sampling near the Dirac point that decides
 this, not the cutoff or the band count.
+\end{caltip}
+
+\section{Nonlinear optics}
+\label{sec:nlopt}
+
+\menu{Electronics}\menusep\menu{Nonlinear Optics\dots} evaluates the
+\emph{second-order} response with GPAW's \texttt{gpaw.nlopt} module, within the
+independent-particle approximation. Three quantities are offered:
+
+\begin{description}
+  \item[\ui{Second-harmonic generation}] $\chi^{(2)}(-2\omega; \omega,
+    \omega)$: two photons of energy $\hbar\omega$ in, one of $2\hbar\omega$
+    out. Reported in pm/V, and for a sheet additionally as $\chi^{(2)}L$ in
+    nm\textsuperscript{2}/V.
+  \item[\ui{Shift current}] $\sigma^{(2)}(0; \omega, -\omega)$, in
+    A/V\textsuperscript{2}: the DC photocurrent a homogeneous illuminated
+    crystal carries with no junction and no built-in field --- the bulk
+    photovoltaic effect.
+  \item[\ui{Linear susceptibility tensor}] $\chi^{(1)}(\omega)$, the full
+    $3\times3$ tensor from the same matrix elements, and the
+    $\varepsilon = 1 + \chi^{(1)}$ that follows from it.
+\end{description}
+
+\begin{calwarn}
+$\chi^{(2)}$ and the shift current are \textbf{odd-rank tensors}: in a
+centrosymmetric crystal every component vanishes \emph{identically}, by
+symmetry rather than by smallness. GPAW will still return numbers --- the
+residue of an incomplete cancellation over a finite $k$-mesh --- and they look
+like a spectrum. The generated script therefore tests the cell for an inversion
+centre \emph{before} converging anything and warns, and the viewer repeats the
+warning above the plot. This is the single most common way the module is
+misused.
+\end{calwarn}
+
+\subsection{Why this one converges its own ground state}
+
+Unlike every other workflow in this chapter, Nonlinear Optics does \textbf{not}
+inherit a Single-Point baseline. Three requirements make an ordinary baseline
+unusable:
+
+\begin{itemize}
+  \item \texttt{make\_nlodata} asserts that \emph{point-group symmetry is off}.
+    The matrix elements it builds are not invariant under the point-group
+    folding of the $k$-set, and the assertion arrives with no message --- after
+    the SCF has already been paid for.
+  \item The sums run over \emph{intermediate} states, so the band set has to be
+    large. The wizard's ground state uses \texttt{nbands="nao"}.
+  \item Those empty bands must be \emph{converged}. An SCF converges occupied
+    states; the unoccupied manifold it leaves behind is noise, and here it is
+    summed over. The generated calculator asks for
+    \texttt{convergence=\{"bands": -10\}}.
+\end{itemize}
+
+All three are imposed by the generator rather than left on the Calculator
+Settings stage, because they are requirements of the method and not
+preferences. Time reversal is deliberately \emph{kept}: the weaker
+\texttt{symmetry="off"} would satisfy the assertion too, at roughly double the
+$k$-points, for nothing.
+
+\subsection{Settings}
+
+\begin{description}
+  \item[\ui{Tensor components}] Three letters from \texttt{xyz}, several
+    separated by commas (\texttt{yyy, xxy}). There is deliberately no
+    ``all 27'': most vanish by symmetry, each costs a full sum over bands and
+    $k$-points, and 27 spectra of which 24 are numerical noise is not a better
+    answer. \menu{Analysis}\menusep\menu{Symmetry} will name the point group
+    that decides which are allowed.
+  \item[\ui{SHG gauge}] \ui{Length} (GPAW's default) and \ui{Velocity} are
+    formally equivalent and numerically are not: the velocity gauge carries
+    low-frequency divergences that cancel only for a complete band set, so a
+    truncated sum leaves it visibly wrong as $\omega \to 0$. Running both and
+    overlaying them is the standard convergence test --- their disagreement
+    says more about the band summation than any single number does.
+  \item[\ui{Broadening $\eta$}] A second-order spectrum is far more sensitive
+    to it than a linear one: the resonances are sharper and the divergences at
+    $\omega$ and $2\omega$ are regularized by exactly this number, so a small
+    $\eta$ on a coarse mesh produces spikes rather than structure.
+  \item[\ui{Scissors shift}] A rigid shift of the empty bands, for the
+    semilocal gap error. $\chi^{(2)}$ is more sensitive to the gap than the
+    linear response is, because the two-photon resonance sits at \emph{half} of
+    it. The applied value is recorded in the results and restated by the
+    viewer, so a spectrum never silently carries one.
+  \item[\ui{Vacuum axis}] As in 2D optics: a supercell $\chi^{(2)}$ is diluted
+    by whatever vacuum was used, and multiplying the thickness back in gives
+    the sheet value the 2D literature quotes.
+\end{description}
+
+\begin{calnote}
+The expensive step is \texttt{make\_nlodata} --- the momentum matrix elements
+--- and it runs \emph{once}. Every component and every response reuses the same
+data, which is saved as \file{mml.npz} alongside the run. Asking for a second
+tensor component costs a band sum, not another ground state.
+\end{calnote}
+
+\begin{caltip}
+Remember that SHG probes the band structure at $2\omega$ as well as at
+$\omega$. A window ending at 6\,eV is sampling transitions up to 12\,eV, and
+the band count has to reach them --- which is also why the $\chi^{(1)}$ panel
+is worth computing: the $\chi^{(2)}$ features of a semiconductor sit at the
+absorption edge \emph{and} at half of it, and a resonance assigned to the wrong
+one of those is the standard way to misread an SHG spectrum.
 \end{caltip}
 
 \section{GW calculations}

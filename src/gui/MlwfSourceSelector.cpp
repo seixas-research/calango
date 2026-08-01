@@ -26,7 +26,7 @@ MlwfSourceSelector::MlwfSourceSelector(
     combo_ = new QComboBox(this);
     combo_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     combo_->setToolTip(
-        tr("A completed Maximally Localized Wannier Functions run. This module "
+        tr("A completed Wannier Functions run. This module "
            "diagonalizes the localized Hamiltonian H(R) that run produced, so "
            "the Wannier count, the trial projections and the wavefunctions all "
            "come from it — none of the settings below can stand in for a "
@@ -41,7 +41,7 @@ MlwfSourceSelector::MlwfSourceSelector(
 
     auto* browseButton = new QPushButton(tr("Browse…"), this);
     browseButton->setToolTip(
-        tr("Pick an MLWF job directory that is not in the list — a run from an "
+        tr("Pick a Wannier Functions job directory that is not in the list — a run from an "
            "earlier session, or one copied back from a cluster. The directory "
            "is the one holding wannier.json."));
     row->addWidget(browseButton);
@@ -71,7 +71,7 @@ QString MlwfSourceSelector::directory() const
 void MlwfSourceSelector::browse()
 {
     const QString chosen = QFileDialog::getExistingDirectory(
-        this, tr("Select MLWF Job Directory"), directory());
+        this, tr("Select Wannier Functions Job Directory"), directory());
     if (chosen.isEmpty())
         return;
     // Added rather than swapped in, so a browse that turns out to be the wrong
@@ -97,10 +97,10 @@ void MlwfSourceSelector::revalidate()
     if (dir.isEmpty()) {
         invalidReason_ = tr(
             "No MLWF process is selected. This module post-processes a "
-            "completed Maximally Localized Wannier Functions run — run "
-            "Electronics → Maximally Localized Wannier Functions (MLWF)… "
+            "completed Wannier Functions run — run "
+            "Electronics → Wannier Functions… "
             "first, or use Browse… to point at a finished job directory.");
-        status_->setText(tr("<b>No MLWF process selected.</b>"));
+        status_->setText(tr("<b>No Wannier Functions process selected.</b>"));
         return;
     }
 
@@ -111,12 +111,12 @@ void MlwfSourceSelector::revalidate()
         QDir(dir).filePath(QStringLiteral("wannier.json"));
     if (!QFileInfo::exists(summaryPath)) {
         invalidReason_ =
-            tr("%1 holds no wannier.json, so it is not a completed MLWF run. "
+            tr("%1 holds no wannier.json, so it is not a completed Wannier Functions run. "
                "That file is written last, when the localization has "
                "converged.")
                 .arg(dir);
         status_->setText(
-            tr("<b style=\"color:#e06c5a\">Not a completed MLWF run</b> — no "
+            tr("<b style=\"color:#e06c5a\">Not a completed Wannier Functions run</b> — no "
                "wannier.json in this directory."));
         return;
     }

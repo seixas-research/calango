@@ -31,9 +31,46 @@ overrides, bond orders and per-atom fields all follow correctly.
 \label{sec:editstructure}
 
 \menu{Edit Structure\dots} in the \ui{Structure} panel opens a two-section
-editor over a working copy: the unit cell above, and \ui{Atomic Positions \&
-Elements} below --- a table carrying both Cartesian ($x$, $y$, $z$) and
-fractional ($u$, $v$, $w$) coordinates, where editing either updates the other.
+editor over a working copy: the unit cell above, and \ui{Atomic
+Configurations} below.
+
+\subsection{Coordinates}
+\label{sec:fractional-toggle}
+
+The table shows \emph{one} coordinate triple, and the \ui{Fractional
+coordinates} checkbox decides which. Unchecked --- the default --- gives
+Cartesian $x$, $y$, $z$ in \AA; checked converts the values in place and
+relabels the columns $u$, $v$, $w$. Both are editable: a fractional edit
+recombines all three components of that row and converts back, so changing $u$
+alone does not discard $v$ and $w$.
+
+The checkbox is disabled without a unit cell. Fractional coordinates there are
+not merely unavailable, they are undefined.
+
+\begin{calnote}
+One triple rather than two side by side is what makes room for the extended
+per-atom properties below. It also removes a real hazard of the old layout:
+with $x$\,\ldots\,$w$ all editable at once it was possible to type into a
+Cartesian cell and a fractional cell of the same row before either was
+committed, and only one of the two edits survived.
+\end{calnote}
+
+\subsection{Extended per-atom properties}
+\label{sec:extxyz-columns}
+
+Any per-atom array the structure carries gets its own column, to the right of
+the magnetic moments: partial charges (\texttt{initial\_charges}), velocities,
+forces --- anything an extended-XYZ file put in \texttt{atoms.arrays}. A
+scalar array gives one column; a vector array gives three, suffixed $x$, $y$,
+$z$. Columns appear and disappear with the data, so a plain \file{.xyz} opens
+with none and an MD frame opens with several.
+
+These columns are \textbf{read-only}, and deliberately: they are results. A
+charge came out of a Bader partitioning, a velocity out of an integrator.
+Typing over them in a geometry editor would leave a frame whose arrays no
+longer correspond to anything that was computed, and the file would carry no
+sign of it. The magnetic moments remain editable, through the spin-mode
+columns, because those are an \emph{input}.
 
 \subsection{Sorting}
 

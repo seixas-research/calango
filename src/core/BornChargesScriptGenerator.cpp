@@ -7,6 +7,250 @@
 
 namespace calango::core {
 
+namespace {
+
+/// The shared tail: acoustic sum rule, then `born_charges.json` in exactly the
+/// schema the GPAW path writes.
+///
+/// One schema for three engines is the point. The Born Charges viewer, the
+/// phonon LO-TO block that consumes `born_charges.json`, and every test that
+/// reads it are written against ONE file format; an engine that wrote its own
+/// dialect would mean each of those growing a second reader, and the second
+/// reader is always the one nobody keeps in step.
+///
+/// Consumes a Python `tensors` array of shape (natoms, 3, 3), a `symbols`
+/// list and a float `volume`.
+std::string bornJsonTail(bool acousticSumRule)
+{
+    std::string out =
+        "tensors = np.asarray(tensors, dtype=float)\n"
+        "raw = tensors.copy()\n"
+        "# Sum_k Z*_k = 0 is exact — translating the whole crystal cannot\n"
+        "# polarize it — so a non-zero sum measures the run's own convergence\n"
+        "# error rather than any physics. It is reported either way, and the\n"
+        "# uncorrected tensors are kept alongside so the size of the\n"
+        "# correction stays visible instead of being quietly absorbed.\n"
+        "_residual = tensors.sum(axis=0)\n"
+        "asr_residual = float(np.abs(_residual).max())\n";
+    if (acousticSumRule)
+        out += "tensors -= _residual / len(tensors)\n"
+               "asr_imposed = True\n";
+    else
+        out += "asr_imposed = False\n";
+    out +=
+        "\n"
+        "results = []\n"
+        "for atom_index in range(len(tensors)):\n"
+        "    tensor = tensors[atom_index]\n"
+        "    eigenvalues = np.linalg.eigvals(\n"
+        "        0.5 * (tensor + tensor.T)).real\n"
+        "    results.append({\n"
+        "        'index': int(atom_index),\n"
+        "        'symbol': symbols[atom_index],\n"
+        "        'tensor': [[float(v) for v in row] for row in tensor],\n"
+        "        'raw_tensor': [[float(v) for v in row]\n"
+        "                       for row in raw[atom_index]],\n"
+        "        'isotropic': float(np.trace(tensor) / 3.0),\n"
+        "        'eigenvalues': sorted(float(v) for v in eigenvalues),\n"
+        "    })\n"
+        "\n"
+        "summary = {\n"
+        "    'displacement_A': 0.0,  # DFPT: analytic derivative, no finite step\n"
+        "    'acoustic_sum_rule': asr_imposed,\n"
+        "    'asr_residual_e': asr_residual,\n"
+        "    'volume_A3': float(volume),\n"
+        "    'atoms': results,\n"
+        "}\n"
+        "with open('born_charges.json', 'w') as handle:\n"
+        "    json.dump(summary, handle, indent=2)\n"
+        "\n"
+        "print(f'CALANGO_RESULT born_charges=born_charges.json '\n"
+        "      f'atoms={len(results)} asr_residual_e={asr_residual:.4f}',\n"
+        "      flush=True)\n";
+    return out;
+}
+
+/// VASP and Quantum ESPRESSO both compute Z* by DENSITY-FUNCTIONAL
+/// PERTURBATION THEORY in a single run, not by displacing atoms.
+///
+/// That is not merely cheaper than the 6N self-consistent runs the GPAW path
+/// needs — it is a different and better quantity: an analytic derivative
+/// rather than a central difference, so there is no displacement amplitude to
+/// trade off against SCF noise, and no linearity assumption to check. The
+/// `displacement_A` field in the output is therefore 0 for these engines,
+/// which is what says which route produced the numbers.
+std::string bornDfptScript(const BornChargesConfig& cfg)
+{
+    const bool vasp = cfg.calculator.calculator == CalculatorKind::Vasp;
+    std::string out;
+
+    if (vasp) {
+        out +=
+            "# --- VASP, DFPT (LEPSILON = .TRUE.) ------------------------\n"
+            "# One linear-response run gives the full Z* tensor of every ion\n"
+            "# and the macroscopic dielectric tensor with it. LPEAD is left\n"
+            "# off: it is the finite-field route, and mixing the two is how a\n"
+            "# run ends up reporting one of them while the user reads the\n"
+            "# other.\n"
+            "import re\n"
+            "import subprocess\n"
+            "from ase.calculators.vasp import Vasp\n"
+            "\n";
+        if (!cfg.calculator.vaspPotcarPath.empty())
+            out += "os.environ['VASP_PP_PATH'] = r\""
+                + cfg.calculator.vaspPotcarPath + "\"\n";
+        out +=
+            "calc = Vasp(\n"
+            "    directory='.',\n"
+            "    xc='" + cfg.calculator.vaspXc + "',\n"
+            "    encut=" + std::to_string(cfg.calculator.planeWaveCutoffEv) + ",\n"
+            "    kpts=(" + std::to_string(cfg.calculator.kpts[0]) + ", "
+            + std::to_string(cfg.calculator.kpts[1]) + ", "
+            + std::to_string(cfg.calculator.kpts[2]) + "),\n"
+            "    ismear=0, sigma=0.05,\n"
+            "    # DFPT needs a tightly converged ground state: the response is\n"
+            "    # a derivative of it, and derivative noise is the SCF's noise\n"
+            "    # amplified.\n"
+            "    ediff=1e-8,\n"
+            "    lepsilon=True,\n"
+            "    lreal=False,   # LREAL=Auto is not supported with LEPSILON\n"
+            "    lwave=False, lcharg=False,\n"
+            ")\n"
+            "atoms.calc = calc\n"
+            "atoms.get_potential_energy()\n"
+            "\n"
+            "outcar = 'OUTCAR'\n"
+            "if not os.path.exists(outcar):\n"
+            "    raise RuntimeError('VASP produced no OUTCAR in ' + os.getcwd())\n"
+            "text = open(outcar, errors='ignore').read()\n"
+            "marker = 'BORN EFFECTIVE CHARGES'\n"
+            "if marker not in text:\n"
+            "    raise RuntimeError(\n"
+            "        'No Born charges in OUTCAR. LEPSILON runs need a "
+            "SEMICONDUCTOR\\n'\n"
+            "        'or insulator: for a metal the macroscopic polarization is "
+            "not\\n'\n"
+            "        'defined and VASP writes nothing.')\n"
+            "block = text[text.index(marker):]\n"
+            "tensors = []\n"
+            "# Each ion is `ion <n>` followed by three `<axis> xx xy xz` rows.\n"
+            "for match in re.finditer(r'ion\\s+\\d+\\s*\\n((?:\\s*[1-3]"
+            "(?:\\s+-?\\d+\\.\\d+){3}\\s*\\n){3})', block):\n"
+            "    rows = []\n"
+            "    for line in match.group(1).strip().splitlines():\n"
+            "        rows.append([float(v) for v in line.split()[1:4]])\n"
+            "    tensors.append(rows)\n"
+            "    if len(tensors) == len(atoms):\n"
+            "        break\n"
+            "if len(tensors) != len(atoms):\n"
+            "    raise RuntimeError('Parsed %d Born tensors for %d atoms'\n"
+            "                       % (len(tensors), len(atoms)))\n"
+            "\n"
+            "# The dielectric tensor comes free with the same run, and the\n"
+            "# phonon LO-TO correction needs both.\n"
+            "_eps = re.search(r'MACROSCOPIC STATIC DIELECTRIC TENSOR.*?\\n"
+            "\\s*-+\\s*\\n((?:.*\\n){3})', text)\n"
+            "if _eps:\n"
+            "    dielectric = [[float(v) for v in row.split()]\n"
+            "                  for row in _eps.group(1).strip().splitlines()]\n"
+            "    print('CALANGO_INFO dielectric=' + repr(dielectric), flush=True)\n";
+    } else {
+        out +=
+            "# --- Quantum ESPRESSO, DFPT (ph.x with epsil) --------------\n"
+            "# pw.x converges the ground state, then ph.x solves the linear\n"
+            "# response at q = 0 with epsil = .true., which is what makes it\n"
+            "# report the Born charges and the dielectric tensor rather than\n"
+            "# only the dynamical matrix.\n"
+            "#\n"
+            "# epsil is legal only for an INSULATOR; for a metal the\n"
+            "# macroscopic field is screened out and ph.x refuses.\n"
+            "import re\n"
+            "import subprocess\n"
+            "from ase.calculators.espresso import Espresso, EspressoProfile\n"
+            "\n"
+            "_pseudo_dir = r\"" + cfg.calculator.espressoPseudoDir + "\"\n"
+            "_pw = os.environ.get('CALANGO_PW_X', 'pw.x')\n"
+            "_ph = os.environ.get('CALANGO_PH_X', 'ph.x')\n"
+            "profile = EspressoProfile(command=_pw, pseudo_dir=_pseudo_dir)\n"
+            "pseudopotentials = {}  # EDIT ME: one UPF per element\n"
+            "atoms.calc = Espresso(\n"
+            "    profile=profile,\n"
+            "    pseudopotentials=pseudopotentials,\n"
+            "    input_data={\n"
+            "        'control': {'calculation': 'scf', 'prefix': 'calango',\n"
+            "                    'outdir': './qe', 'tprnfor': True},\n"
+            "        'system': {'ecutwfc': "
+            + std::to_string(cfg.calculator.qeEcutwfcRy) + ",\n"
+            "                   'occupations': 'fixed'},\n"
+            "        'electrons': {'conv_thr': 1e-12},\n"
+            "    },\n"
+            "    kpts=(" + std::to_string(cfg.calculator.kpts[0]) + ", "
+            + std::to_string(cfg.calculator.kpts[1]) + ", "
+            + std::to_string(cfg.calculator.kpts[2]) + "),\n"
+            ")\n"
+            "atoms.get_potential_energy()\n"
+            "\n"
+            "with open('ph.in', 'w') as handle:\n"
+            "    handle.write('Born charges at Gamma\\n')\n"
+            "    handle.write('&INPUTPH\\n')\n"
+            "    handle.write(\"  prefix = 'calango'\\n\")\n"
+            "    handle.write(\"  outdir = './qe'\\n\")\n"
+            "    handle.write(\"  fildyn = 'calango.dyn'\\n\")\n"
+            "    handle.write('  epsil = .true.\\n')\n"
+            "    handle.write('  tr2_ph = 1.0d-14\\n')\n"
+            "    handle.write('/\\n')\n"
+            "    handle.write('0.0 0.0 0.0\\n')\n"
+            "with open('ph.in') as _in, open('ph.out', 'w') as _out:\n"
+            "    _result = subprocess.run([_ph], stdin=_in, stdout=_out,\n"
+            "                             stderr=subprocess.STDOUT)\n"
+            "if _result.returncode != 0:\n"
+            "    raise RuntimeError('ph.x failed (%s); see ph.out. Set "
+            "CALANGO_PH_X\\n'\n"
+            "                       'to its full path if it is not on PATH.'\n"
+            "                       % _ph)\n"
+            "\n"
+            "text = open('ph.out', errors='ignore').read()\n"
+            "marker = 'Effective charges'\n"
+            "if marker not in text:\n"
+            "    raise RuntimeError(\n"
+            "        'ph.x reported no effective charges. epsil = .true. is "
+            "only\\n'\n"
+            "        'legal for an insulator — for a metal the macroscopic "
+            "field is\\n'\n"
+            "        'screened out and the quantity is not defined.')\n"
+            "# The FIRST block is the one without the acoustic sum rule\n"
+            "# applied — ph.x prints both. That is the one wanted here: the\n"
+            "# ASR is imposed downstream, and its residual is a convergence\n"
+            "# diagnostic that a pre-corrected set would have thrown away.\n"
+            "block = text[text.index(marker):]\n"
+            "tensors = []\n"
+            "# `atom <n> <Symbol> Mean Z*: <value>` — the trailing mean is part\n"
+            "# of the line, so the pattern runs to the newline rather than\n"
+            "# stopping after the symbol — then three `Ex ( xx xy xz )` rows.\n"
+            "for match in re.finditer(\n"
+            "        r'atom\\s+\\d+\\s+\\S+[^\\n]*\\n((?:\\s*E[xyz]\\s*\\("
+            "(?:\\s+-?\\d+\\.\\d+){3}\\s*\\)\\s*\\n){3})', block):\n"
+            "    rows = []\n"
+            "    for line in match.group(1).strip().splitlines():\n"
+            "        values = re.findall(r'-?\\d+\\.\\d+', line)\n"
+            "        rows.append([float(v) for v in values[:3]])\n"
+            "    tensors.append(rows)\n"
+            "    if len(tensors) == len(atoms):\n"
+            "        break\n"
+            "if len(tensors) != len(atoms):\n"
+            "    raise RuntimeError('Parsed %d Born tensors for %d atoms'\n"
+            "                       % (len(tensors), len(atoms)))\n";
+    }
+
+    out += "\nsymbols = list(atoms.get_chemical_symbols())\n"
+           "volume = atoms.get_volume()\n"
+           "\n"
+        + bornJsonTail(cfg.acousticSumRule);
+    return out;
+}
+
+} // namespace
+
 std::string generateBornChargesScript(const BornChargesConfig& config)
 {
     // The Berry phase is defined on the UNSYMMETRIZED Brillouin zone, so the
@@ -19,20 +263,37 @@ std::string generateBornChargesScript(const BornChargesConfig& config)
 
     const bool gpaw = cfg.calculator.calculator == CalculatorKind::Gpaw;
 
+    // The header describes the route this script actually takes. The two are
+    // genuinely different calculations — a central difference of Berry phases
+    // versus an analytic linear response — and a preamble that described
+    // finite differences above a DFPT run would misstate both the method and
+    // its cost.
+    const bool dfpt = config.calculator.calculator == CalculatorKind::Vasp
+        || config.calculator.calculator == CalculatorKind::QuantumEspresso;
+
     std::ostringstream out;
     out << "# Born effective charges Z* — generated by Calango\n"
            "#\n"
            "# Z*_{k,ab} = (Omega / e) * dP_a / du_{k,b}\n"
-           "#\n"
-           "# Evaluated by central finite differences of the BERRY-PHASE\n"
-           "# polarization: each atom is displaced by +/- delta along each\n"
-           "# Cartesian axis, the SCF is re-converged, and the macroscopic\n"
-           "# polarization is read off the Berry phase of the occupied\n"
-           "# manifold.\n"
-           "#\n"
-           "# Cost: 6 SCF runs per atom. That is the honest price of a\n"
-           "# finite-difference Z* — there is no cheaper route through ASE.\n"
-           "import json\n"
+           "#\n";
+    if (dfpt)
+        out << "# Evaluated by DENSITY-FUNCTIONAL PERTURBATION THEORY: one\n"
+               "# linear-response run returns the analytic derivative for every\n"
+               "# ion at once, together with the macroscopic dielectric tensor.\n"
+               "#\n"
+               "# Cost: one run. And it is the better quantity — an analytic\n"
+               "# derivative has no displacement amplitude to trade off against\n"
+               "# SCF noise, and no linearity assumption left to check.\n";
+    else
+        out << "# Evaluated by central finite differences of the BERRY-PHASE\n"
+               "# polarization: each atom is displaced by +/- delta along each\n"
+               "# Cartesian axis, the SCF is re-converged, and the macroscopic\n"
+               "# polarization is read off the Berry phase of the occupied\n"
+               "# manifold.\n"
+               "#\n"
+               "# Cost: 6 SCF runs per atom. That is the honest price of a\n"
+               "# finite-difference Z* through GPAW.\n";
+    out << "import json\n"
            "import os\n"
            "from pathlib import Path\n"
            "\n"
@@ -46,15 +307,26 @@ std::string generateBornChargesScript(const BornChargesConfig& config)
     if (cfg.baselinePath.empty())
         out << "atoms = read('structure.extxyz')\n\n";
 
+    const auto engine = cfg.calculator.calculator;
+    const bool vasp = engine == CalculatorKind::Vasp;
+    const bool espresso = engine == CalculatorKind::QuantumEspresso;
+
+    if (vasp || espresso) {
+        out << bornDfptScript(cfg);
+        return out.str();
+    }
+
     if (!gpaw) {
         // Refusing up front beats running 6N SCF cycles and failing at the
         // polarization step; the message names the one thing that has to change.
         out << "raise RuntimeError(\n"
-               "    'Born effective charges need the Berry-phase polarization, "
-               "which \\n'\n"
-               "    'only the GPAW backend provides here. The selected engine "
-               "was \"" << toString(cfg.calculator.calculator) << "\".\\n'\n"
-               "    'Re-open the wizard and choose GPAW.')\n";
+               "    'Born effective charges need either the Berry-phase "
+               "polarization\\n'\n"
+               "    '(GPAW) or a DFPT linear-response run (VASP LEPSILON, "
+               "Quantum\\n'\n"
+               "    'ESPRESSO ph.x). The selected engine was \""
+            << toString(cfg.calculator.calculator) << "\".\\n'\n"
+               "    'Re-open the wizard and choose one of those three.')\n";
         return out.str();
     }
 

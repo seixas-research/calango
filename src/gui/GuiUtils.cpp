@@ -92,6 +92,35 @@ QStringList structureElements(const core::Structure* structure)
     return result;
 }
 
+int guessVacuumAxis(const core::Structure* structure)
+{
+    if (!structure || !structure->cell().isDefined() || structure->empty())
+        return -1;
+    // The vacuum axis is the one whose atoms span far less than the cell.
+    // The threshold is deliberately high: a false positive silently rescales
+    // every sheet quantity, while a false negative only means the user picks
+    // the axis themselves.
+    int best = -1;
+    double bestEmptiness = 0.35;
+    for (int axis = 0; axis < 3; ++axis) {
+        double lo = 1.0;
+        double hi = 0.0;
+        for (const core::Atom& atom : structure->atoms()) {
+            const core::Vec3 f =
+                structure->cell().cartesianToFractional(atom.position);
+            const double v = axis == 0 ? f.x : (axis == 1 ? f.y : f.z);
+            lo = std::min(lo, v);
+            hi = std::max(hi, v);
+        }
+        const double emptiness = 1.0 - (hi - lo);
+        if (emptiness > bestEmptiness) {
+            bestEmptiness = emptiness;
+            best = axis;
+        }
+    }
+    return best;
+}
+
 bool writeTextFile(QWidget* parent, const QString& path,
                    const std::function<void(QTextStream&)>& body)
 {
@@ -378,14 +407,14 @@ bool mlwfWavefunctionsAvailable(const QString& jobDir, QString* reason)
         *reason = recorded.isEmpty()
             ? QCoreApplication::translate(
                   "MlwfPreflight",
-                  "This MLWF run recorded no path to the GPAW wavefunctions "
+                  "This Wannier Functions run recorded no path to the GPAW wavefunctions "
                   "it localized, and left no .gpw in its own directory. "
-                  "Re-run the MLWF calculation — runs from this version "
+                  "Re-run the Wannier Functions calculation — runs from this version "
                   "record the path.")
             : QCoreApplication::translate(
                   "MlwfPreflight",
-                  "The GPAW wavefunctions this MLWF run localized are no "
-                  "longer at\n\n%1\n\nRe-run the MLWF calculation, or restore "
+                  "The GPAW wavefunctions this Wannier Functions run localized are no "
+                  "longer at\n\n%1\n\nRe-run the Wannier Functions calculation, or restore "
                   "that file.")
                   .arg(recorded);
     }

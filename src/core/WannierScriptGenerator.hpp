@@ -6,7 +6,7 @@
 
 namespace calango::core {
 
-/// Parameters for the Maximally Localized Wannier Functions (MLWF) post-process,
+/// Parameters for the Wannier Functions post-process,
 /// filled in by the Wannier wizard and consumed by generateWannierScript().
 /// UI-free so the script can also be generated headlessly.
 struct WannierConfig {

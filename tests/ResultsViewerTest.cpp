@@ -17,12 +17,14 @@
 #include "gui/BandPdosWindow.hpp"
 #include "gui/GwResultsWindow.hpp"
 #include "gui/OpticsResultsWindow.hpp"
+#include "gui/NonlinearOpticsResultsWindow.hpp"
 #include "gui/RamanIrViewer.hpp"
 
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
 #include <QGroupBox>
+#include <QLabel>
 #include <QListWidget>
 #include <QFile>
 #include <QTableWidget>
@@ -277,6 +279,138 @@ int main(int argc, char** argv)
         check(!viewer.loadResults(
                   tempDir.filePath(QStringLiteral("no_raman.json"))),
               "a missing file is reported, not asserted");
+    }
+
+    // -- Nonlinear optics viewer -------------------------------------------
+    //
+    // nlopt.json is the newest of these C++/Python contracts, and the one with
+    // the most structure: two dicts keyed by tensor component, an optional
+    // linear block, and per-spectrum columns that exist only for a sheet run.
+    // The fixture mirrors core::generateNonlinearOpticsScript literally.
+    std::printf("Nonlinear optics viewer reads nlopt.json:\n");
+    {
+        const QString dir = tempDir.filePath(QStringLiteral("nlopt"));
+        QDir().mkpath(dir);
+        check(writeFile(dir + QStringLiteral("/nlopt.json"), R"({
+            "engine": "GPAW",
+            "module": "gpaw.nlopt",
+            "formula": "MoS2",
+            "energy_eV": [0.0, 1.0, 2.0, 3.0],
+            "eta_eV": 0.05,
+            "gauge": "lg",
+            "eshift_eV": 0.7,
+            "components": ["yyy", "xxy"],
+            "centrosymmetric": false,
+            "vacuum_axis": 2,
+            "L_z_A": 30.0,
+            "shg": {
+                "yyy": {
+                    "energy_eV": [0.0, 1.0, 2.0, 3.0],
+                    "chi2_re_pm_V": [0.0, 12.0, 340.0, 55.0],
+                    "chi2_im_pm_V": [0.0, 1.0, 220.0, 90.0],
+                    "chi2_abs_pm_V": [0.0, 12.04, 405.0, 105.5],
+                    "chi2_sheet_re_nm2_V": [0.0, 0.036, 1.02, 0.165],
+                    "chi2_sheet_im_nm2_V": [0.0, 0.003, 0.66, 0.27],
+                    "chi2_sheet_abs_nm2_V": [0.0, 0.036, 1.215, 0.316]
+                },
+                "xxy": {
+                    "energy_eV": [0.0, 1.0, 2.0, 3.0],
+                    "chi2_re_pm_V": [0.0, 2.0, 40.0, 5.0],
+                    "chi2_im_pm_V": [0.0, 0.1, 22.0, 9.0],
+                    "chi2_abs_pm_V": [0.0, 2.0, 45.6, 10.3]
+                }
+            },
+            "shift": {
+                "yyy": {
+                    "energy_eV": [0.0, 1.0, 2.0, 3.0],
+                    "sigma_A_V2": [0.0, 1.2e-8, 4.5e-8, 2.0e-8],
+                    "sigma_sheet_A_nm_V2": [0.0, 0.036, 0.135, 0.06]
+                }
+            },
+            "linear": {
+                "energy_eV": [0.0, 1.0, 2.0, 3.0],
+                "chi1_xx_re": [1.5, 1.9, 3.2, 2.1],
+                "chi1_xx_im": [0.0, 0.1, 2.4, 1.1],
+                "eps_xx_1": [2.5, 2.9, 4.2, 3.1],
+                "eps_xx_2": [0.0, 0.1, 2.4, 1.1],
+                "eps_yy_1": [2.5, 2.9, 4.2, 3.1],
+                "eps_yy_2": [0.0, 0.1, 2.4, 1.1],
+                "eps_zz_1": [1.1, 1.1, 1.2, 1.2],
+                "eps_zz_2": [0.0, 0.0, 0.1, 0.1]
+            }
+        })"),
+              "fixture written");
+
+        NonlinearOpticsResultsWindow window;
+        check(window.loadResults(dir), "parses a well-formed nlopt.json");
+        auto* selector = window.findChild<QComboBox*>();
+        check(selector != nullptr, "has a spectrum selector");
+        if (selector) {
+            // Two SHG components + one shift component + the linear block.
+            // A selector that offered fewer would be hiding a spectrum the
+            // run paid a full band sum for.
+            check(selector->count() == 4,
+                  "one entry per spectrum the run actually produced");
+            // Each entry carries the JSON path it draws from, so the viewer
+            // never has to re-derive one from a translated label. Compared as
+            // a set: QJsonObject iterates its keys in sorted order, which is
+            // the viewer's business and not a contract worth pinning.
+            QStringList paths;
+            for (int i = 0; i < selector->count(); ++i)
+                paths << selector->itemData(i).toString();
+            paths.sort();
+            check(paths
+                      == QStringList({QStringLiteral("linear"),
+                                      QStringLiteral("shg/xxy"),
+                                      QStringLiteral("shg/yyy"),
+                                      QStringLiteral("shift/yyy")}),
+                  "each entry carries the JSON path it draws from");
+        }
+        // The scissors shift has to be visible without opening the file: two
+        // runs of the same material that differ only by one are otherwise
+        // indistinguishable, and that is a common way to lose an afternoon.
+        bool mentionsScissors = false;
+        for (auto* label : window.findChildren<QLabel*>())
+            if (label->text().contains(QLatin1String("scissors")))
+                mentionsScissors = true;
+        check(mentionsScissors, "the applied scissors shift is stated");
+    }
+    {
+        // A centrosymmetric run. The numbers are real output from a real job
+        // and they are meaningless — every component of an odd-rank tensor
+        // vanishes by symmetry — so the viewer has to say so rather than
+        // draw them as a spectrum.
+        const QString dir = tempDir.filePath(QStringLiteral("nlopt_centro"));
+        QDir().mkpath(dir);
+        check(writeFile(dir + QStringLiteral("/nlopt.json"), R"({
+            "formula": "MgO",
+            "energy_eV": [0.0, 1.0],
+            "eta_eV": 0.05,
+            "gauge": "lg",
+            "eshift_eV": 0.0,
+            "centrosymmetric": true,
+            "vacuum_axis": -1,
+            "shg": {"yyy": {"energy_eV": [0.0, 1.0],
+                            "chi2_re_pm_V": [0.0, 1e-9],
+                            "chi2_im_pm_V": [0.0, 0.0],
+                            "chi2_abs_pm_V": [0.0, 1e-9]}},
+            "shift": {}
+        })"),
+              "centrosymmetric fixture written");
+
+        NonlinearOpticsResultsWindow window;
+        check(window.loadResults(dir), "parses it");
+        bool warns = false;
+        for (auto* label : window.findChildren<QLabel*>())
+            if (label->text().contains(QLatin1String("inversion centre")))
+                warns = true;
+        check(warns,
+              "and warns that χ⁽²⁾ vanishes identically for this cell");
+    }
+    {
+        NonlinearOpticsResultsWindow window;
+        check(!window.loadResults(tempDir.filePath(QStringLiteral("nowhere"))),
+              "a missing nlopt.json is reported, not asserted");
     }
 
     // -- Electronic structure viewer: the two optional sidecars ------------

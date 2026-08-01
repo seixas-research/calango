@@ -4,6 +4,7 @@
 #include "gui/PeriodicTableDialog.hpp"
 #include "python_bridge/AseBridge.hpp"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -34,12 +35,22 @@ namespace calango::gui {
 
 namespace {
 
-/// Fixed atom-table columns. The magnetic-moment columns come after these and
-/// are added/removed with the spin mode, so they are not in the enum.
+/// Fixed atom-table columns.
+///
+/// ONE coordinate triple, not two. The table used to carry Cartesian (x, y, z)
+/// and fractional (u, v, w) side by side; the "Fractional coordinates" toggle
+/// now decides which of the two is shown, and the columns are relabelled with
+/// it. That is what makes room for the extended per-atom properties an
+/// extended-XYZ trajectory carries — charges, velocities, forces — which are
+/// appended after the magnetic-moment columns and are what a table of "atomic
+/// configurations" is actually for.
+///
+/// The magnetic-moment columns come after these (added/removed with the spin
+/// mode), and the extended-property columns after those, so neither is in the
+/// enum.
 enum AtomColumn {
     ColElement = 0,
-    ColX, ColY, ColZ,
-    ColU, ColV, ColW,
+    ColC1, ColC2, ColC3, ///< x/y/z or u/v/w, per the fractional toggle
     AtomColumnCount,
 };
 
@@ -524,7 +535,7 @@ void StructureEditorDialog::reduceToPrimitiveCell()
 
 void StructureEditorDialog::buildAtomSection(QVBoxLayout* parent)
 {
-    auto* group = new QGroupBox(tr("2 · Atomic Positions && Elements"), this);
+    auto* group = new QGroupBox(tr("2 · Atomic Configurations"), this);
     auto* layout = new QVBoxLayout(group);
 
     // -- Sorting and spin ----------------------------------------------------
@@ -569,6 +580,26 @@ void StructureEditorDialog::buildAtomSection(QVBoxLayout* parent)
            "can be drawn in the viewport through Representation → Vector "
            "overlay → Initial magnetic moments."));
     optionRow->addWidget(spinModeCombo_);
+    optionRow->addSpacing(18);
+
+    fractionalCheck_ = new QCheckBox(tr("Fractional coordinates"), group);
+    fractionalCheck_->setChecked(false);
+    fractionalCheck_->setToolTip(
+        tr("Show the three coordinate columns as fractional (u, v, w) instead "
+           "of Cartesian (x, y, z) Å.\n\n"
+           "The values convert as you toggle and stay editable either way — "
+           "editing a fractional coordinate recombines all three components "
+           "of that row and converts back, so changing u alone does not "
+           "discard v and w.\n\n"
+           "Needs a unit cell: without one there are no fractional "
+           "coordinates to show."));
+    connect(fractionalCheck_, &QCheckBox::toggled, this, [this](bool) {
+        // Commit whatever is in the moment cells before the columns are
+        // rewritten, exactly as the spin-mode switch does.
+        writeMomentsToStructure();
+        refreshAtomTable();
+    });
+    optionRow->addWidget(fractionalCheck_);
     optionRow->addStretch(1);
     layout->addLayout(optionRow);
 
@@ -578,13 +609,20 @@ void StructureEditorDialog::buildAtomSection(QVBoxLayout* parent)
             &StructureEditorDialog::onSpinModeChanged);
 
     atomTable_ = new QTableWidget(0, AtomColumnCount, group);
-    atomTable_->setHorizontalHeaderLabels({tr("Element"), tr("x (Å)"), tr("y (Å)"),
-                                           tr("z (Å)"), tr("u"), tr("v"), tr("w")});
+    atomTable_->setHorizontalHeaderLabels(
+        {tr("Element"), tr("x (Å)"), tr("y (Å)"), tr("z (Å)")});
     atomTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     atomTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     atomTable_->setToolTip(
-        tr("Edit Cartesian or fractional coordinates — the other set follows. "
-           "Type an element symbol, or use the Periodic Table button."));
+        tr("Element and coordinates are editable; toggle "
+           "\"Fractional coordinates\" to switch the three coordinate columns "
+           "between Å and cell fractions.\n\n"
+           "Columns to the right of the moments are the extended per-atom "
+           "properties the structure arrived with — partial charges, "
+           "velocities, forces. They are shown read-only: they are results of "
+           "a calculation, not geometry, and typing over them here would "
+           "leave a frame whose arrays no longer match anything that was "
+           "computed."));
     layout->addWidget(atomTable_, 1);
     connect(atomTable_, &QTableWidget::cellChanged,
             this, &StructureEditorDialog::onAtomCellChanged);
@@ -858,6 +896,12 @@ void StructureEditorDialog::onAtomCellChanged(int row, int column)
         return;
     const QString text = item->text().trimmed();
 
+    // The extended-property columns are read-only, so a change there can only
+    // be a programmatic one that slipped the `updating_` guard; ignore it
+    // rather than parsing a result column as geometry.
+    if (column >= firstPropertyColumn())
+        return;
+
     if (column >= kFirstMomentColumn) {
         // A moment edit needs no coordinate round trip; commit the whole
         // moment set and leave the rest of the table alone, so the cursor does
@@ -879,35 +923,28 @@ void StructureEditorDialog::onAtomCellChanged(int row, int column)
             summaryLabel_->setStyleSheet(QStringLiteral("color: #d9534f;"));
             summaryLabel_->setText(tr("“%1” is not a known element symbol.").arg(text));
         }
-    } else if (column <= ColZ) {
-        bool ok = false;
-        const double value = text.toDouble(&ok);
-        if (!ok)
-            return;
-        double* target = column == ColX ? &atom.position.x
-                       : column == ColY ? &atom.position.y
-                                        : &atom.position.z;
-        *target = value;
     } else {
-        // Fractional edit: recombine all three components of this row and
-        // convert back, so editing u alone doesn't discard v and w.
-        if (!hasCell())
-            return;
         bool ok = false;
         const double value = text.toDouble(&ok);
         if (!ok)
             return;
-        core::Vec3 fractional =
-            working_->cell().cartesianToFractional(atom.position);
-        double* target = column == ColU ? &fractional.x
-                       : column == ColV ? &fractional.y
-                                        : &fractional.z;
-        *target = value;
-        atom.position = working_->cell().fractionalToCartesian(fractional);
+        const int component = column - ColC1; // 0, 1 or 2
+        const bool fractional = fractionalCheck_ && fractionalCheck_->isChecked()
+            && hasCell();
+        if (fractional) {
+            // Recombine all three components of this row and convert back, so
+            // editing u alone does not discard v and w.
+            core::Vec3 coordinates =
+                working_->cell().cartesianToFractional(atom.position);
+            (&coordinates.x)[component] = value;
+            atom.position = working_->cell().fractionalToCartesian(coordinates);
+        } else {
+            (&atom.position.x)[component] = value;
+        }
     }
 
-    // Rewrite the row so the companion coordinate set (and the element
-    // symbol's canonical capitalization) reflect the edit.
+    // Rewrite the row so the element symbol's canonical capitalization — and,
+    // in fractional mode, the round trip through the cell — are reflected.
     refreshAtomTable();
     refreshSummary();
 }
@@ -977,48 +1014,94 @@ void StructureEditorDialog::refreshCellWidgets()
         pbcChecks_[static_cast<std::size_t>(i)]->setChecked(pbc[static_cast<std::size_t>(i)]);
 }
 
+std::vector<StructureEditorDialog::PropertyColumn>
+StructureEditorDialog::propertyColumns() const
+{
+    std::vector<PropertyColumn> columns;
+    if (!working_)
+        return columns;
+    const auto n = working_->size();
+
+    // Scalars first, then vectors: a charge is one number and a velocity is
+    // three, and interleaving them by name would scatter the components of a
+    // vector across the table.
+    for (const auto& [name, values] : working_->scalarFields()) {
+        if (name == kInitialMagmoms || values.size() != n)
+            continue;
+        columns.push_back({QString::fromStdString(name),
+                           name, /*vector=*/false, 0});
+    }
+    for (const auto& [name, values] : working_->vectorFields()) {
+        // A collinear structure carries initial_magmoms as BOTH a scalar and a
+        // promoted vector; the spin-mode columns own it either way.
+        if (name == kInitialMagmoms || values.size() != n)
+            continue;
+        const QString base = QString::fromStdString(name);
+        for (int component = 0; component < 3; ++component)
+            columns.push_back(
+                {QStringLiteral("%1 %2")
+                     .arg(base, QStringLiteral("xyz").at(component)),
+                 name, /*vector=*/true, component});
+    }
+    return columns;
+}
+
+int StructureEditorDialog::firstPropertyColumn() const
+{
+    return AtomColumnCount + momentColumnCount();
+}
+
 void StructureEditorDialog::refreshAtomTable()
 {
     // cellChanged fires for every setItem; suppress it or each refresh would
     // recurse back through onAtomCellChanged.
     updating_ = true;
+    const bool defined = hasCell();
+    // Fractional coordinates are undefined without a cell, so the toggle is
+    // disabled AND forced off there — a checked-but-inapplicable box would
+    // leave three columns of dashes and no way to read a coordinate at all.
+    if (fractionalCheck_) {
+        fractionalCheck_->setEnabled(defined);
+        if (!defined && fractionalCheck_->isChecked()) {
+            const QSignalBlocker block(fractionalCheck_);
+            fractionalCheck_->setChecked(false);
+        }
+    }
+    const bool fractional =
+        defined && fractionalCheck_ && fractionalCheck_->isChecked();
+
     const int momentColumns = momentColumnCount();
-    atomTable_->setColumnCount(AtomColumnCount + momentColumns);
-    QStringList headers = {tr("Element"), tr("x (Å)"),  tr("y (Å)"), tr("z (Å)"),
-                           tr("u"),       tr("v"),      tr("w")};
+    const std::vector<PropertyColumn> properties = propertyColumns();
+    atomTable_->setColumnCount(AtomColumnCount + momentColumns
+                               + static_cast<int>(properties.size()));
+
+    QStringList headers = {tr("Element")};
+    if (fractional)
+        headers << tr("u") << tr("v") << tr("w");
+    else
+        headers << tr("x (Å)") << tr("y (Å)") << tr("z (Å)");
     if (momentColumns == 1)
         headers << tr("m (μB)");
     else if (momentColumns == 3)
         headers << tr("mx (μB)") << tr("my (μB)") << tr("mz (μB)");
+    for (const PropertyColumn& property : properties)
+        headers << property.header;
     atomTable_->setHorizontalHeaderLabels(headers);
 
     const std::vector<core::Vec3> moments = momentsFromStructure();
     atomTable_->setRowCount(static_cast<int>(working_->size()));
-    const bool defined = hasCell();
+    const int propertyBase = firstPropertyColumn();
     for (int row = 0; row < static_cast<int>(working_->size()); ++row) {
         const auto& atom = working_->atoms()[static_cast<std::size_t>(row)];
         atomTable_->setItem(row, ColElement,
                             new QTableWidgetItem(QLatin1String(atom.symbol())));
-        atomTable_->setItem(row, ColX, numberCell(atom.position.x));
-        atomTable_->setItem(row, ColY, numberCell(atom.position.y));
-        atomTable_->setItem(row, ColZ, numberCell(atom.position.z));
 
-        if (defined) {
-            const core::Vec3 f =
-                working_->cell().cartesianToFractional(atom.position);
-            atomTable_->setItem(row, ColU, numberCell(f.x));
-            atomTable_->setItem(row, ColV, numberCell(f.y));
-            atomTable_->setItem(row, ColW, numberCell(f.z));
-        } else {
-            // Without a cell there are no fractional coordinates; show the
-            // columns as read-only dashes rather than misleading zeros.
-            for (int column : {ColU, ColV, ColW}) {
-                auto* item = new QTableWidgetItem(QStringLiteral("—"));
-                item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-                item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-                atomTable_->setItem(row, column, item);
-            }
-        }
+        const core::Vec3 shown = fractional
+            ? working_->cell().cartesianToFractional(atom.position)
+            : atom.position;
+        atomTable_->setItem(row, ColC1, numberCell(shown.x));
+        atomTable_->setItem(row, ColC2, numberCell(shown.y));
+        atomTable_->setItem(row, ColC3, numberCell(shown.z));
 
         if (momentColumns > 0) {
             const core::Vec3& m = moments[static_cast<std::size_t>(row)];
@@ -1031,6 +1114,27 @@ void StructureEditorDialog::refreshAtomTable()
                 atomTable_->setItem(row, kFirstMomentColumn + 2,
                                     numberCell(m.z, 3));
             }
+        }
+
+        for (std::size_t p = 0; p < properties.size(); ++p) {
+            const PropertyColumn& property = properties[p];
+            double value = 0.0;
+            if (property.vector) {
+                const core::Vec3& v =
+                    working_->vectorFields().at(property.field)
+                        [static_cast<std::size_t>(row)];
+                value = property.component == 0 ? v.x
+                      : property.component == 1 ? v.y
+                                                : v.z;
+            } else {
+                value = working_->scalarFields().at(property.field)
+                    [static_cast<std::size_t>(row)];
+            }
+            auto* item = numberCell(value, 4);
+            item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+            item->setForeground(QApplication::palette().brush(
+                QPalette::Disabled, QPalette::Text));
+            atomTable_->setItem(row, propertyBase + static_cast<int>(p), item);
         }
     }
     updating_ = false;

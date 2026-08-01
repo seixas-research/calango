@@ -93,6 +93,10 @@ public:
     /// truth for a path whose whole problem is being set in two places and
     /// silently disagreeing.
     static QString vaspPotcarDirectory();
+    /// The Quantum ESPRESSO / SIESTA pseudopotential libraries, from the same
+    /// Preferences page and read the same read-only way.
+    static QString espressoPseudoDirectory();
+    static QString siestaPseudoDirectory();
 
     /// Chemical elements of the structure this wizard will run on, supplied
     /// by the host for wizards that do not hold a structure themselves.
@@ -337,6 +341,17 @@ private:
     QWidget* buildVaspGroup(QWidget* parent);
     /// Show the ionic-relaxation row only for the tasks that have ionic steps.
     void updateVaspRows();
+    /// The "Quantum ESPRESSO settings" group — the dual cutoff (ecutwfc /
+    /// ecutrho), input_dft, occupations + smearing, conv_thr.
+    QWidget* buildEspressoGroup(QWidget* parent);
+    /// Enable the smearing rows only for `occupations = smearing`, refresh the
+    /// pseudo-library note and restate the effective ecutrho.
+    void updateEspressoRows();
+    /// The "SIESTA settings" group — XC, basis type and size, energy shift,
+    /// mesh cutoff. There is deliberately no cutoff-like basis control: SIESTA
+    /// has none.
+    QWidget* buildSiestaGroup(QWidget* parent);
+    void updateSiestaRows();
     /// The "LAMMPS settings" group — interface, pair style, coefficients,
     /// potential files and the executable. LAMMPS is the only engine here that
     /// brings no force field of its own, so it needs the most configuration.
@@ -547,6 +562,38 @@ private:
     QSpinBox* vaspNcoreSpin_ = nullptr;
     QSpinBox* vaspKparSpin_ = nullptr;
     QPlainTextEdit* vaspExtraIncarEdit_ = nullptr;
+
+    // -- Quantum ESPRESSO ---------------------------------------------------
+    // QE's decisions have no counterpart in the shared rows, which is why they
+    // are a group of their own rather than being squeezed onto the plane-wave
+    // cutoff row the way VASP's XC functional is. The dual cutoff is the
+    // reason: ecutwfc and ecutrho are ONE decision, made together, and the
+    // right ratio depends on the pseudopotential family — a fact that has no
+    // GPAW or VASP analogue to sit beside.
+    QGroupBox* qeGroup_ = nullptr;
+    QLabel* qePseudoNote_ = nullptr;
+    QDoubleSpinBox* qeEcutwfcSpin_ = nullptr;
+    QDoubleSpinBox* qeEcutrhoSpin_ = nullptr;
+    QLabel* qeDualNote_ = nullptr;
+    QComboBox* qeInputDftCombo_ = nullptr;
+    QComboBox* qeOccupationsCombo_ = nullptr;
+    QComboBox* qeSmearingCombo_ = nullptr;
+    QDoubleSpinBox* qeDegaussSpin_ = nullptr;
+    QLineEdit* qeConvThrEdit_ = nullptr;
+
+    // -- SIESTA -------------------------------------------------------------
+    // SIESTA has no plane-wave cutoff at all (see core::SiestaBasisType). Its
+    // basis quality is three separate numbers, and offering it the shared
+    // "plane-wave cutoff" row silently mapped one of them onto the real-space
+    // mesh — so raising it to converge "the basis" refined a grid while the
+    // basis stayed exactly as small.
+    QGroupBox* siestaGroup_ = nullptr;
+    QLabel* siestaPseudoNote_ = nullptr;
+    QComboBox* siestaXcCombo_ = nullptr;
+    QComboBox* siestaBasisTypeCombo_ = nullptr;
+    QComboBox* siestaBasisSizeCombo_ = nullptr;
+    QDoubleSpinBox* siestaEnergyShiftSpin_ = nullptr;
+    QDoubleSpinBox* siestaMeshCutoffSpin_ = nullptr;
 
     QGroupBox* orcaGroup_ = nullptr;
     QComboBox* orcaMethodCombo_ = nullptr;

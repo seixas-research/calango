@@ -37,7 +37,7 @@ TopologyDialog::TopologyDialog(const QList<QPair<QString, QString>>& mlwfRuns,
     // Step 1: the localization whose occupied manifold is being transported.
     // The invariant is a property of THAT manifold, so the source is chosen
     // before anything that describes how to walk it.
-    auto* sourceGroup = new QGroupBox(tr("Source MLWF process"), this);
+    auto* sourceGroup = new QGroupBox(tr("Source Wannier Functions process"), this);
     auto* sourceLayout = new QVBoxLayout(sourceGroup);
     source_ = new MlwfSourceSelector(mlwfRuns, sourceGroup);
     sourceLayout->addWidget(source_);

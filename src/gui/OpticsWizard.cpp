@@ -1,5 +1,7 @@
 #include "gui/OpticsWizard.hpp"
 
+#include "gui/GuiUtils.hpp"
+
 #include "core/OpticsScriptGenerator.hpp"
 #include "core/Structure.hpp"
 
@@ -15,8 +17,6 @@
 #include <QStandardItemModel>
 #include <QVBoxLayout>
 #include <QWidget>
-
-#include <algorithm>
 
 namespace calango::gui {
 
@@ -162,7 +162,7 @@ QWidget* OpticsWizard::buildSettingsPage()
         vacuumAxisCombo_->addItem(tr("a₁ (x)"), 0);
         vacuumAxisCombo_->addItem(tr("a₂ (y)"), 1);
         vacuumAxisCombo_->addItem(tr("a₃ (z)"), 2);
-        const int guessed = guessVacuumAxis();
+        const int guessed = calango::gui::guessVacuumAxis(structure_.get());
         vacuumAxisCombo_->setCurrentIndex(guessed >= 0 ? guessed : 2);
         vacuumAxisCombo_->setToolTip(
             tr("Which cell axis carries the vacuum. Seeded from the cell (the "
@@ -466,35 +466,6 @@ QString OpticsWizard::pythonExecutable() const
         && !inherited_->pythonExecutable.isEmpty())
         return inherited_->pythonExecutable;
     return SimulationWizardBase::pythonExecutable();
-}
-
-int OpticsWizard::guessVacuumAxis() const
-{
-    if (!structure_ || !structure_->cell().isDefined() || structure_->empty())
-        return -1;
-    // A slab's vacuum axis is the one whose atoms span far less than the cell.
-    // Reported as a seed only — the combo is the authority, because a thick
-    // slab in a modest cell and a thin one in a huge cell are not reliably
-    // distinguishable from the geometry alone.
-    int best = -1;
-    double bestEmptiness = 0.35; // needs to be clearly a vacuum, not a guess
-    for (int axis = 0; axis < 3; ++axis) {
-        double lo = 1.0;
-        double hi = 0.0;
-        for (const core::Atom& atom : structure_->atoms()) {
-            const core::Vec3 f =
-                structure_->cell().cartesianToFractional(atom.position);
-            const double v = axis == 0 ? f.x : (axis == 1 ? f.y : f.z);
-            lo = std::min(lo, v);
-            hi = std::max(hi, v);
-        }
-        const double emptiness = 1.0 - (hi - lo);
-        if (emptiness > bestEmptiness) {
-            bestEmptiness = emptiness;
-            best = axis;
-        }
-    }
-    return best;
 }
 
 QString OpticsWizard::generateScript() const

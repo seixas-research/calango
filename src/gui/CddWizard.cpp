@@ -336,6 +336,36 @@ core::CddRunConfig CddWizard::runConfig() const
     core::CddRunConfig config;
     config.baselineDir = baselineDirectory().toStdString();
     config.allElectron = !pseudoRadio_ || allElectronRadio_->isChecked();
+
+    // The engine and its settings come from the PARENT run's provenance, not
+    // from a control on this page. Δρ is a difference of three densities, and
+    // the only way it means anything is if all three were computed the same
+    // way — so the fragments inherit whatever produced ρ(A+B) rather than
+    // offering the user a second chance to pick something else.
+    //
+    // GPAW additionally restarts from the .gpw and reads the calculator back
+    // out of it, which is stronger still; VASP and Quantum ESPRESSO have no
+    // such restart, so these inherited values ARE the specification.
+    if (inherited_) {
+        if (inherited_->engineKind >= 0)
+            config.calculator.calculator =
+                static_cast<core::CalculatorKind>(inherited_->engineKind);
+        config.calculator.planeWaveCutoffEv = inherited_->cutoffEv > 0.0
+            ? inherited_->cutoffEv
+            : config.calculator.planeWaveCutoffEv;
+        if (!inherited_->xc.isEmpty())
+            config.calculator.vaspXc = inherited_->xc.toStdString();
+        for (int i = 0; i < 3; ++i)
+            if (inherited_->kpts[i] > 0)
+                config.calculator.kpts[i] = inherited_->kpts[i];
+        // QE reports its cutoff in eV through the shared provenance field;
+        // pw.x wants Rydberg.
+        if (inherited_->cutoffEv > 0.0)
+            config.calculator.qeEcutwfcRy = inherited_->cutoffEv / 13.605693;
+    }
+    config.calculator.vaspPotcarPath = vaspPotcarDirectory().toStdString();
+    config.calculator.espressoPseudoDir =
+        espressoPseudoDirectory().toStdString();
     if (listB_) {
         for (int row = 0; row < listB_->count(); ++row)
             config.subsystemB.push_back(

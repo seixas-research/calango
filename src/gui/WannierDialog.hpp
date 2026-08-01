@@ -24,12 +24,12 @@ namespace calango::gui {
 
 class VolumeViewWidget;
 
-/// Result viewer for the Maximally Localized Wannier Functions: tabulates the
+/// Result viewer for the Wannier Functions: tabulates the
 /// Wannier centres and spreads and visualises each real-space orbital ψ_n(r) as
 /// an isosurface (plus an axis-aligned slice).
 ///
 /// MLWF is a DFT post-process set up and launched from the MLWF *wizard*
-/// (Simulation → "Maximally Localized Wannier Functions (MLWF)…"); this dialog
+/// (Simulation → "Wannier Functions…"); this dialog
 /// only *visualises* the results. It is opened automatically when the job's
 /// wannier.json + wannier_<n>.cube files are ready (see
 /// MainWindow::onJobFinished) and can also load a wannier.json on demand

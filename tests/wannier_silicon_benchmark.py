@@ -2,7 +2,7 @@
 """Validation benchmark for the native MLWF (Wannier) pipeline on silicon.
 
 Mirrors the workflow that ``WannierDialog::generateScript`` emits and that the
-"Analysis → Maximally Localized Wannier Functions (MLWF)…" dialog runs:
+"Analysis → Wannier Functions…" dialog runs:
 
   1. Ground-state SCF        — plane-wave GPAW on bulk diamond-Si, with enough
      bands for the four valence Wannier functions.

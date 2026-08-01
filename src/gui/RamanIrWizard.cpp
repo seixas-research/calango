@@ -10,12 +10,12 @@
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QSpinBox>
+#include <QStandardItemModel>
 #include <QVBoxLayout>
 #include <QWidget>
-
-#include <set>
 
 namespace calango::gui {
 
@@ -25,8 +25,10 @@ RamanIrWizard::RamanIrWizard(std::shared_ptr<const core::Structure> structure,
     , structure_(std::move(structure))
 {
     buildUi();
-    selectCalculator(core::CalculatorKind::Gpaw);
-    updateCostEstimate();
+    // Every stage exists now, so the engine-dependent visibility, the cost
+    // estimate and the hidden base engine selection can be brought into their
+    // initial state together.
+    onEngineChanged();
 }
 
 QString RamanIrWizard::wizardTitle() const
@@ -57,10 +59,12 @@ QWidget* RamanIrWizard::buildSettingsPage()
            "|Σ<sub>k</sub> Z*<sub>k</sub>·e<sub>k</sub>/√M<sub>k</sub>|². "
            "In a periodic crystal there is no molecular dipole to "
            "differentiate, so the Born effective charges Z* are the only "
-           "route to it. Supplying a Born Charges run is therefore what turns "
-           "the IR column on — without one the phonons and the Raman spectrum "
-           "are computed as usual and every IR intensity is reported as "
-           "zero.<br><br>"
+           "route to it. Under GPAW they are inherited — supplying a Born "
+           "Charges run is what turns the IR column on, and without one the "
+           "phonons and the Raman spectrum are computed as usual with every IR "
+           "intensity reported as zero. VASP and Quantum ESPRESSO compute Z* "
+           "in the same linear-response run that gives the force constants, so "
+           "there is nothing to select.<br><br>"
            "<b>Raman</b> activity is built from ∂χ/∂Q, the change in "
            "<i>polarizability</i> — the same response the Optics module "
            "evaluates, taken in the static limit and differentiated by finite "
@@ -70,8 +74,44 @@ QWidget* RamanIrWizard::buildSettingsPage()
     intro->setTextFormat(Qt::RichText);
     layout->addWidget(intro);
 
-    // -- Inherited runs -----------------------------------------------------
-    auto* sourcesGroup = new QGroupBox(tr("Inherited Results"), page);
+    // -- Engine ---------------------------------------------------------------
+    // Chosen here rather than on a Calculator Settings stage, for the same
+    // reason as in the Optics wizard: the engines need entirely different
+    // stage-1 content — a set of inherited-run selectors against a compact
+    // self-contained ground-state group — so the choice has to precede the
+    // page rather than follow it.
+    auto* engineRow = new QHBoxLayout;
+    engineRow->addWidget(new QLabel(tr("Engine:"), page));
+    engineCombo_ = new QComboBox(page);
+    engineCombo_->addItem(
+        tr("GPAW — finite displacements about an inherited ground state"),
+        static_cast<int>(core::CalculatorKind::Gpaw));
+    engineCombo_->addItem(
+        tr("VASP — DFPT (IBRION=8 + LEPSILON), self-contained"),
+        static_cast<int>(core::CalculatorKind::Vasp));
+    engineCombo_->addItem(
+        tr("Quantum ESPRESSO — one ph.x run (epsil + lraman)"),
+        static_cast<int>(core::CalculatorKind::QuantumEspresso));
+    engineCombo_->setToolTip(
+        tr("How much of the answer one run can produce differs sharply "
+           "between the three.\n\n"
+           "GPAW displaces the ions: 6N force evaluations for the Hessian and "
+           "6N more self-consistent runs for ∂α/∂u, with Z* inherited from a "
+           "separate Born Effective Charges job.\n\n"
+           "VASP gets the force constants, every Z* and ε∞ from a single "
+           "linear-response run, then needs 6N displaced LEPSILON runs for the "
+           "Raman half (it computes no Raman tensor of its own).\n\n"
+           "Quantum ESPRESSO gets all of it — the Raman tensor included, as an "
+           "analytic third-order response — from one ph.x run, provided the "
+           "pseudopotentials are norm-conserving."));
+    engineRow->addWidget(engineCombo_, 1);
+    layout->addLayout(engineRow);
+    connect(engineCombo_, &QComboBox::currentIndexChanged, this,
+            [this] { onEngineChanged(); });
+
+    // -- Inherited runs (GPAW) ----------------------------------------------
+    sourcesGroup_ = new QGroupBox(tr("Inherited Results"), page);
+    auto* sourcesGroup = sourcesGroup_;
     auto* sourcesForm = new QFormLayout(sourcesGroup);
 
     baselineCombo_ = new QComboBox(sourcesGroup);
@@ -119,9 +159,117 @@ QWidget* RamanIrWizard::buildSettingsPage()
             [this] { refreshPreview(); });
     layout->addWidget(sourcesGroup);
 
+    // -- Self-contained ground state (VASP / QE) -----------------------------
+    // Neither engine inherits anything: both converge their own SCF and then
+    // solve the linear response on top of it, so the handful of knobs that
+    // decide whether the response is trustworthy are asked here.
+    //
+    vaspGroup_ = new QGroupBox(tr("VASP Ground State"), page);
+    auto* vaspForm = new QFormLayout(vaspGroup_);
+    auto* vaspNote = new QLabel(
+        tr("Self-contained. One IBRION=8 run with LEPSILON returns the force "
+           "constants, every ion's Z* and ε∞ together — so the infrared "
+           "spectrum costs a single job, and no Born Charges run has to be "
+           "selected. EDIFF is forced to 1e-8: linear response is a "
+           "derivative of the ground state, so its noise is the SCF's noise "
+           "amplified. POTCARs come from Preferences → External Files."),
+        vaspGroup_);
+    vaspNote->setWordWrap(true);
+    vaspForm->addRow(vaspNote);
+    vaspEncutSpin_ = new QDoubleSpinBox(vaspGroup_);
+    vaspEncutSpin_->setRange(100.0, 2000.0);
+    vaspEncutSpin_->setDecimals(0);
+    vaspEncutSpin_->setValue(500.0);
+    vaspEncutSpin_->setSuffix(tr(" eV"));
+    vaspEncutSpin_->setToolTip(
+        tr("ENCUT for every step of the job — the DFPT run and, when Raman is "
+           "on, each displaced LEPSILON run. A Raman tensor is a DIFFERENCE of "
+           "two ε∞ values, so a cutoff that changed between them would not "
+           "cancel: it would be the answer."));
+    vaspForm->addRow(tr("Plane-wave cutoff (ENCUT):"), vaspEncutSpin_);
+    vaspXcCombo_ = new QComboBox(vaspGroup_);
+    vaspXcCombo_->addItems({QStringLiteral("PBE"), QStringLiteral("PBEsol"),
+                            QStringLiteral("LDA"), QStringLiteral("SCAN")});
+    vaspXcCombo_->setToolTip(
+        tr("Exchange-correlation functional. LEPSILON is a semilocal "
+           "linear-response path; a hybrid functional is not supported by it."));
+    vaspForm->addRow(tr("XC functional:"), vaspXcCombo_);
+    layout->addWidget(vaspGroup_);
+    connect(vaspEncutSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+    connect(vaspXcCombo_, &QComboBox::currentIndexChanged, this,
+            [this] { refreshPreview(); });
+
+    espressoGroup_ = new QGroupBox(tr("Quantum ESPRESSO Ground State"), page);
+    auto* qeForm = new QFormLayout(espressoGroup_);
+    auto* qeNote = new QLabel(
+        tr("Self-contained, and the cheapest of the three: one <code>ph.x</code> "
+           "run at q = 0 returns the force constants, Z*, ε∞ and — with "
+           "<code>lraman</code> — the Raman tensor as an analytic third-order "
+           "response, so there is no displacement amplitude to trade off "
+           "against SCF noise.<br><br>"
+           "<b>The Raman half needs NORM-CONSERVING pseudopotentials.</b> "
+           "<code>lraman</code> is not implemented for ultrasoft or PAW sets; "
+           "<code>ph.x</code> declines rather than approximating, and the run "
+           "stops with that message. The infrared half is unaffected. Edit the "
+           "pseudopotential map in the generated script before running."),
+        espressoGroup_);
+    qeNote->setWordWrap(true);
+    qeNote->setTextFormat(Qt::RichText);
+    qeForm->addRow(qeNote);
+    qeEcutwfcSpin_ = new QDoubleSpinBox(espressoGroup_);
+    qeEcutwfcSpin_->setRange(10.0, 400.0);
+    qeEcutwfcSpin_->setDecimals(0);
+    qeEcutwfcSpin_->setValue(80.0);
+    qeEcutwfcSpin_->setSuffix(tr(" Ry"));
+    qeEcutwfcSpin_->setToolTip(
+        tr("ecutwfc — the wavefunction cutoff, in Rydberg (what pw.x reads). "
+           "DFPT wants it converged more tightly than a total energy does."));
+    qeForm->addRow(tr("Wavefunction cutoff (ecutwfc):"), qeEcutwfcSpin_);
+    qeEcutrhoSpin_ = new QDoubleSpinBox(espressoGroup_);
+    qeEcutrhoSpin_->setRange(0.0, 3200.0);
+    qeEcutrhoSpin_->setDecimals(0);
+    qeEcutrhoSpin_->setValue(0.0);
+    qeEcutrhoSpin_->setSpecialValueText(tr("auto (4 × ecutwfc)"));
+    qeEcutrhoSpin_->setSuffix(tr(" Ry"));
+    qeEcutrhoSpin_->setToolTip(
+        tr("ecutrho — the charge-density cutoff. \"auto\" leaves QE's 4 × "
+           "ecutwfc default, which is right for the norm-conserving sets this "
+           "module's Raman half requires anyway."));
+    qeForm->addRow(tr("Density cutoff (ecutrho):"), qeEcutrhoSpin_);
+    layout->addWidget(espressoGroup_);
+    connect(qeEcutwfcSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+    connect(qeEcutrhoSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+
+    // The k-grid means the same thing to both self-contained engines, so it
+    // lives in one group serving both rather than as a copy inside each.
+    samplingGroup_ = new QGroupBox(tr("Brillouin-Zone Sampling"), page);
+    auto* samplingForm = new QFormLayout(samplingGroup_);
+    auto* kptRow = new QHBoxLayout;
+    for (int axis = 0; axis < 3; ++axis) {
+        kptSpins_[axis] = new QSpinBox(samplingGroup_);
+        kptSpins_[axis]->setRange(1, 64);
+        kptSpins_[axis]->setValue(7);
+        kptSpins_[axis]->setToolTip(
+            tr("Monkhorst-Pack divisions for the ground state the response is "
+               "built on. Z* and ε∞ are Brillouin-zone integrals and converge "
+               "more slowly with k-points than the total energy does — an "
+               "underconverged mesh shows up as an acoustic sum-rule residual "
+               "rather than as an error."));
+        kptRow->addWidget(kptSpins_[axis]);
+        connect(kptSpins_[axis], &QSpinBox::valueChanged, this,
+                [this] { refreshPreview(); });
+    }
+    kptRow->addStretch(1);
+    samplingForm->addRow(tr("k-point grid:"), kptRow);
+    layout->addWidget(samplingGroup_);
+
     // -- What to compute ----------------------------------------------------
     auto* methodGroup = new QGroupBox(tr("Method"), page);
     auto* methodForm = new QFormLayout(methodGroup);
+    methodForm_ = methodForm;
 
     ramanCheck_ = new QCheckBox(tr("Compute the Raman spectrum"), methodGroup);
     ramanCheck_->setChecked(true);
@@ -231,7 +379,54 @@ QWidget* RamanIrWizard::buildSettingsPage()
     layout->addWidget(spectrumGroup);
 
     layout->addStretch(1);
+    // Initial visibility only — the full onEngineChanged() also refreshes the
+    // preview and syncs the base engine combo, neither of which exists yet
+    // while this page is being built (it is constructed first).
+    vaspGroup_->setVisible(false);
+    espressoGroup_->setVisible(false);
+    samplingGroup_->setVisible(false);
     return page;
+}
+
+core::CalculatorKind RamanIrWizard::selectedEngine() const
+{
+    return engineCombo_ ? static_cast<core::CalculatorKind>(
+               engineCombo_->currentData().toInt())
+                        : core::CalculatorKind::Gpaw;
+}
+
+void RamanIrWizard::onEngineChanged()
+{
+    const core::CalculatorKind engine = selectedEngine();
+    const bool gpaw = engine == core::CalculatorKind::Gpaw;
+    const bool espresso = engine == core::CalculatorKind::QuantumEspresso;
+    // Keep the base class's (hidden) engine selection in step, so the launch
+    // command template, the calculator provenance and the interpreter all
+    // resolve for the engine actually chosen here.
+    selectCalculator(engine);
+
+    if (sourcesGroup_)
+        sourcesGroup_->setVisible(gpaw);
+    if (vaspGroup_)
+        vaspGroup_->setVisible(engine == core::CalculatorKind::Vasp);
+    if (espressoGroup_)
+        espressoGroup_->setVisible(espresso);
+    if (samplingGroup_)
+        samplingGroup_->setVisible(!gpaw);
+
+    // Quantum ESPRESSO's answer is an analytic derivative, so there is no
+    // displacement to choose. Leaving the control visible would be offering a
+    // knob the generated script does not read.
+    if (methodForm_ && displacementSpin_) {
+        int row = -1;
+        QFormLayout::ItemRole role{};
+        methodForm_->getWidgetPosition(displacementSpin_, &row, &role);
+        if (row >= 0)
+            methodForm_->setRowVisible(row, !espresso);
+    }
+
+    updateCostEstimate();
+    refreshPreview();
 }
 
 void RamanIrWizard::updateCostEstimate()
@@ -244,9 +439,46 @@ void RamanIrWizard::updateCostEstimate()
         return;
     }
     const int displacements = 6 * atoms;
-    // State the real cost. The Raman toggle changes it by a large factor, and
-    // that is the decision this page exists to inform.
-    if (ramanCheck_ && ramanCheck_->isChecked()) {
+    const bool raman = ramanCheck_ && ramanCheck_->isChecked();
+    // State the real cost. It differs between the engines by orders of
+    // magnitude, not by a little, and that is the decision this page exists to
+    // inform — a user who reads "one run" for QE and "6N runs" for VASP has
+    // learned the thing that actually decides which to use.
+    switch (selectedEngine()) {
+    case core::CalculatorKind::QuantumEspresso:
+        costLabel_->setText(
+            raman
+                ? tr("<b>%1 atoms</b> → <b>one</b> ph.x run. The force "
+                     "constants, Z*, ε∞ and the Raman tensor all come out of "
+                     "the same linear response.<br>"
+                     "<i>Needs norm-conserving pseudopotentials for the Raman "
+                     "half.</i>")
+                      .arg(atoms)
+                : tr("<b>%1 atoms</b> → <b>one</b> ph.x run for the force "
+                     "constants and Z*. Turning Raman off saves nothing here: "
+                     "ph.x returns the Raman tensor from the run it was doing "
+                     "anyway.")
+                      .arg(atoms));
+        return;
+    case core::CalculatorKind::Vasp:
+        costLabel_->setText(
+            raman
+                ? tr("<b>%1 atoms</b> → one DFPT run for the force constants "
+                     "and Z*, plus <b>%2 displaced LEPSILON runs</b> for "
+                     "∂α/∂u.<br>"
+                     "<i>The Raman half is the entire cost of this job — VASP "
+                     "computes no Raman tensor of its own.</i>")
+                      .arg(atoms)
+                      .arg(displacements)
+                : tr("<b>%1 atoms</b> → <b>one</b> DFPT run. IBRION=8 with "
+                     "LEPSILON returns the force constants, every Z* and ε∞ "
+                     "together, so the infrared spectrum needs nothing else.")
+                      .arg(atoms));
+        return;
+    default:
+        break;
+    }
+    if (raman) {
         costLabel_->setText(
             tr("<b>%1 atoms</b> → %2 displaced force evaluations for the "
                "Hessian, plus %2 self-consistent runs each followed by six "
@@ -272,6 +504,28 @@ void RamanIrWizard::setDensityBaselines(
     baselineCombo_->clear();
     for (const auto& [label, path] : baselines)
         baselineCombo_->addItem(label, path);
+    // With no .gpw the GPAW route has nothing to displace about. Steering to a
+    // self-contained engine beats refusing to open the module: VASP and QE do
+    // not need a baseline at all, and a user with neither a .gpw nor those
+    // codes learns that from the disabled entry's tooltip rather than from a
+    // dialog that simply says no.
+    if (baselines.isEmpty() && engineCombo_) {
+        const int gpawIndex = engineCombo_->findData(
+            static_cast<int>(core::CalculatorKind::Gpaw));
+        if (auto* model =
+                qobject_cast<QStandardItemModel*>(engineCombo_->model());
+            model && gpawIndex >= 0) {
+            model->item(gpawIndex)->setEnabled(false);
+            engineCombo_->setItemData(
+                gpawIndex,
+                tr("Needs a completed GPAW Single-Point Calculation that saved "
+                   "its wavefunctions (.gpw) — run one first, or use VASP / "
+                   "Quantum ESPRESSO, which converge their own ground state."),
+                Qt::ToolTipRole);
+        }
+        engineCombo_->setCurrentIndex(engineCombo_->findData(
+            static_cast<int>(core::CalculatorKind::Vasp)));
+    }
     onBaselineChanged();
 }
 
@@ -337,24 +591,55 @@ void RamanIrWizard::onBaselineChanged()
 
 QString RamanIrWizard::pythonExecutable() const
 {
-    if (inherited_ && !inherited_->pythonExecutable.isEmpty())
+    // The baseline's own interpreter binds the GPAW route only — the
+    // self-contained engines have no baseline and resolve through the standard
+    // per-engine mapping.
+    if (selectedEngine() == core::CalculatorKind::Gpaw && inherited_
+        && !inherited_->pythonExecutable.isEmpty())
         return inherited_->pythonExecutable;
     return SimulationWizardBase::pythonExecutable();
 }
 
 core::RamanIrConfig RamanIrWizard::config() const
 {
+    const core::CalculatorKind engine = selectedEngine();
     core::RamanIrConfig cfg;
     cfg.calculator = baseCalculatorConfig();
+    cfg.calculator.calculator = engine;
     cfg.calculator.task = core::TaskKind::SinglePoint;
-    if (baselineCombo_)
-        cfg.baselinePath =
-            baselineCombo_->currentData().toString().toStdString();
-    if (bornCombo_)
-        cfg.bornChargesPath =
-            bornCombo_->currentData().toString().toStdString();
-    if (opticsCombo_)
-        cfg.opticsPath = opticsCombo_->currentData().toString().toStdString();
+    // The inherited-run selections describe the GPAW route only. Carrying them
+    // into a self-contained run would put a path in the script that nothing
+    // there reads — and, in the Born-charges case, would suggest an inherited
+    // Z* where the run computes its own.
+    if (engine == core::CalculatorKind::Gpaw) {
+        if (baselineCombo_)
+            cfg.baselinePath =
+                baselineCombo_->currentData().toString().toStdString();
+        if (bornCombo_)
+            cfg.bornChargesPath =
+                bornCombo_->currentData().toString().toStdString();
+        if (opticsCombo_)
+            cfg.opticsPath =
+                opticsCombo_->currentData().toString().toStdString();
+    } else {
+        for (int axis = 0; axis < 3; ++axis)
+            if (kptSpins_[axis])
+                cfg.calculator.kpts[axis] = kptSpins_[axis]->value();
+    }
+    if (engine == core::CalculatorKind::Vasp) {
+        if (vaspEncutSpin_)
+            cfg.calculator.planeWaveCutoffEv = vaspEncutSpin_->value();
+        if (vaspXcCombo_)
+            cfg.calculator.vaspXc = vaspXcCombo_->currentText().toStdString();
+        cfg.calculator.vaspPotcarPath = vaspPotcarDirectory().toStdString();
+    } else if (engine == core::CalculatorKind::QuantumEspresso) {
+        if (qeEcutwfcSpin_)
+            cfg.calculator.qeEcutwfcRy = qeEcutwfcSpin_->value();
+        if (qeEcutrhoSpin_)
+            cfg.calculator.qeEcutrhoRy = qeEcutrhoSpin_->value();
+        cfg.calculator.espressoPseudoDir =
+            espressoPseudoDirectory().toStdString();
+    }
     cfg.computeRaman = ramanCheck_ && ramanCheck_->isChecked();
     cfg.displacement = displacementSpin_ ? displacementSpin_->value() : 0.01;
     cfg.laserWavelengthNm = laserSpin_ ? laserSpin_->value() : 532.0;

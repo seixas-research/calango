@@ -861,20 +861,52 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
                "\n"
                "profile = EspressoProfile(\n"
                "    command=\"mpirun -np 4 pw.x\",          # EDIT ME\n"
-               "    pseudo_dir=\"/path/to/pseudopotentials\", # EDIT ME\n"
+               "    pseudo_dir=\"" << (c.espressoPseudoDir.empty()
+                                          ? "/path/to/pseudopotentials"
+                                          : c.espressoPseudoDir)
+            << "\",\n"
                ")\n"
                "pseudopotentials = {\n"
                "    # \"Si\": \"Si.pbe-n-rrkjus_psl.1.0.0.UPF\",  # EDIT ME: one entry per element\n"
                "}\n"
+               "\n"
+               "# QE uses a DUAL grid: ecutwfc expands the wavefunctions,\n"
+               "# ecutrho the charge density. Leaving ecutrho at its 4 x ecutwfc\n"
+               "# default is right for norm-conserving pseudopotentials and\n"
+               "# badly under-converged for ultrasoft/PAW, whose augmentation\n"
+               "# charges want 8-12x.\n"
+               "_system = {\n"
+            << "    \"ecutwfc\": " << c.qeEcutwfcRy << ",  # Ry\n";
+        if (c.qeEcutrhoRy > 0.0)
+            out << "    \"ecutrho\": " << c.qeEcutrhoRy << ",  # Ry\n";
+        if (!c.qeInputDft.empty())
+            out << "    \"input_dft\": \"" << c.qeInputDft << "\",\n";
+        out << "    \"occupations\": \"" << toString(c.qeOccupations) << "\",\n";
+        if (qeUsesSmearing(c.qeOccupations))
+            out << "    \"smearing\": \"" << toString(c.qeSmearing) << "\",\n"
+                << "    \"degauss\": " << c.qeDegaussRy << ",  # Ry\n";
+        if (c.spinPolarized)
+            out << "    \"nspin\": 2,\n"
+                   "    \"starting_magnetization\": 0.5,  # EDIT ME per species\n";
+        out << "}\n"
+               "\n"
                "atoms.calc = Espresso(\n"
                "    profile=profile,\n"
                "    pseudopotentials=pseudopotentials,\n"
                "    input_data={\n"
-               "        \"control\": {\"calculation\": \"scf\"},\n"
-            << "        \"system\": {\"ecutwfc\": " << c.planeWaveCutoffEv / 13.605693 << "},  # Ry\n"
+               "        \"control\": {\"calculation\": \"scf\", \"tprnfor\": True,\n"
+               "                    \"tstress\": True},\n"
+               "        \"system\": _system,\n"
+            << "        \"electrons\": {\"conv_thr\": " << c.qeConvThrRy << "},  # Ry\n"
                "    },\n"
-            << "    kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2] << "),\n"
-               ")\n";
+            << "    kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2]
+            << "),\n";
+        if (c.kptsGammaCentered)
+            // QE offsets the automatic mesh by koffset; (0,0,0) IS the
+            // Gamma-centred grid, and the unshifted mesh of an even count
+            // misses Gamma entirely.
+            out << "    koffset=(0, 0, 0),  # Gamma-centered\n";
+        out << ")\n";
         break;
 
     case CalculatorKind::Mace: {
@@ -949,19 +981,36 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
 
     case CalculatorKind::Siesta:
         out << "# SIESTA — requires the siesta binary and pseudopotentials\n"
-               "# (.psf/.psml) in the job environment. EDIT the two settings below.\n"
+               "# (.psf/.psml) in the job environment.\n"
+               "#\n"
+               "# SIESTA has NO plane-wave cutoff. Its basis is a finite set of\n"
+               "# numerical atomic orbitals, and its quality is set by the basis\n"
+               "# SIZE (orbitals per shell), the basis TYPE (how they are\n"
+               "# generated) and PAO.EnergyShift (the confinement energy that\n"
+               "# fixes how far each orbital reaches — smaller means longer\n"
+               "# ranged, better and more expensive). MeshCutoff below is a\n"
+               "# different quantity entirely: the real-space grid the Hartree\n"
+               "# and XC terms are integrated on.\n"
                "import os\n"
                "os.environ.setdefault(\"ASE_SIESTA_COMMAND\",\n"
                "                      \"siesta < PREFIX.fdf > PREFIX.out\")  # EDIT ME\n"
-               "os.environ.setdefault(\"SIESTA_PP_PATH\", \"/path/to/pseudos\")  # EDIT ME\n"
+            << "os.environ.setdefault(\"SIESTA_PP_PATH\", \""
+            << (c.siestaPseudoDir.empty() ? "/path/to/pseudos" : c.siestaPseudoDir)
+            << "\")\n"
                "from ase.calculators.siesta import Siesta\n"
                "\n"
                "atoms.calc = Siesta(\n"
                "    label=\"calango\",\n"
-               "    xc=\"PBE\",\n"
-               "    basis_set=\"DZP\",\n"
-            << "    mesh_cutoff=" << c.planeWaveCutoffEv << ",  # eV\n"
+            << "    xc=\"" << c.siestaXc << "\",\n"
+            << "    basis_set=\"" << c.siestaBasisSize << "\",\n"
+            << "    energy_shift=" << c.siestaEnergyShiftEv << ",  # eV\n"
+            << "    mesh_cutoff=" << c.siestaMeshCutoffEv << ",  # eV\n"
             << "    kpts=[" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2] << "],\n"
+            << "    fdf_arguments={\n"
+            << "        \"PAO.BasisType\": \"" << toString(c.siestaBasisType) << "\",\n"
+            << "        \"SpinPolarized\": " << (c.spinPolarized ? "True" : "False")
+            << ",\n"
+               "    },\n"
                ")\n";
         break;
 
@@ -1987,6 +2036,18 @@ std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,
     if (symmetryOff) {
         out << indent
             << "symmetry=\"off\",  # no point-group reduction of the k-points\n";
+    } else if (c.gpawPointGroupOff) {
+        // Point group off, time reversal KEPT. The weaker of the two requests,
+        // and the right one for the response codes: they need the unfolded
+        // point group, but a nonmagnetic system still satisfies E(k) = E(-k),
+        // so dropping time reversal as well would double the k-points for
+        // nothing.
+        out << indent
+            << "symmetry={\"point_group\": False, \"time_reversal\": True},\n"
+            << indent
+            << "                       # unfolded point group, time reversal\n"
+            << indent
+            << "                       # kept (nonmagnetic)\n";
     } else {
         // Pin the symmetry-detection tolerance to 1e-5 Å.
         //
@@ -2012,6 +2073,15 @@ std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,
             << indent
             << "                               # coordinate noise\n";
     }
+    if (!c.gpawNbands.empty()) {
+        // Quoted unless it is a plain integer: GPAW takes both nbands=200 and
+        // the symbolic nbands="nao" / nbands="110%", and quoting a number
+        // would be a type error rather than a harmless extra.
+        const bool numeric =
+            c.gpawNbands.find_first_not_of("+-0123456789") == std::string::npos;
+        out << indent << "nbands=" << (numeric ? "" : "\"") << c.gpawNbands
+            << (numeric ? "" : "\"") << ",\n";
+    }
     out << indent << "eigensolver=\"" << toString(c.gpawEigensolver) << "\",\n"
         // Mixer(beta, nmaxold, weight) — GPAW's positional signature.
         << indent << "mixer=" << toString(c.gpawMixer) << "(" << c.gpawMixerBeta
@@ -2022,8 +2092,11 @@ std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,
         << indent << "    \"eigenstates\": " << c.gpawConvEigenstates
         << ",  # eV^2/electron\n"
         << indent << "    \"density\": " << c.gpawConvDensity
-        << ",      # electrons/valence electron\n"
-        << indent << "},\n"
+        << ",      # electrons/valence electron\n";
+    if (c.gpawConvergeBands != 0)
+        out << indent << "    \"bands\": " << c.gpawConvergeBands
+            << ",  # converge EMPTY states too (negative counts from the top)\n";
+    out << indent << "},\n"
         << indent << "maxiter=" << c.scfMaxSteps << ",\n";
     // DFT+U as GPAW's `setups` dictionary. The leading colon keeps the default
     // PAW dataset and appends the correction to it — without it GPAW would look

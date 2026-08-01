@@ -22,7 +22,7 @@ class Structure;
 
 namespace calango::gui {
 
-/// Simulation → "Maximally Localized Wannier Functions (MLWF)…": a streamlined
+/// Simulation → "Wannier Functions…": a streamlined
 /// 2-stage wizard.
 ///   Stage 1 — "SCF Process Selection & MLWF Configuration": pick a completed
 ///     Single-Point baseline whose saved wavefunctions/density (`.gpw`) drive

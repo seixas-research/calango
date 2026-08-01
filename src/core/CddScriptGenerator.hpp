@@ -30,7 +30,23 @@ namespace calango::core {
 /// transfer and structural rearrangement, which is not a quantity anyone can
 /// read off an isosurface.
 struct CddRunConfig {
-    /// Directory holding the parent single-point's `.gpw`. Absolute: the CDD
+    /// Engine and its parameters.
+    ///
+    /// GPAW needs almost nothing here: it restarts from the parent's `.gpw`
+    /// and reads the exact calculator back out of it, which is the strongest
+    /// possible guarantee that the three terms were computed the same way.
+    ///
+    /// VASP and Quantum ESPRESSO have no such restart. Their fragment runs
+    /// have to be RE-SPECIFIED, so the settings are carried here and — the
+    /// part that actually matters — the FFT grid is pinned to the parent's
+    /// (NGXF/NGYF/NGZF for VASP, nr1/nr2/nr3 for QE). Two densities sampled on
+    /// different grids cannot be subtracted at all, and both codes will
+    /// happily choose a different grid for a cell with fewer atoms in it.
+    CalculatorConfig calculator;
+
+    /// Directory holding the parent single-point's density. GPAW: its `.gpw`.
+    /// VASP: CHGCAR, or AECCAR0 + AECCAR2 when `allElectron` is set. QE: the
+    /// `.save` directory, from which pp.x exports a cube. Absolute: the CDD
     /// job runs in its own directory and reaches back into the baseline's.
     std::string baselineDir;
 

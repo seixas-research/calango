@@ -39,7 +39,7 @@ WannierInterpolationDialog::WannierInterpolationDialog(
     // trial projections are read back from this run's wannier.json — the
     // interpolation rebuilds the SAME localization, so it is not a setting
     // that could be overridden below.
-    auto* sourceGroup = new QGroupBox(tr("Source MLWF process"), this);
+    auto* sourceGroup = new QGroupBox(tr("Source Wannier Functions process"), this);
     auto* sourceLayout = new QVBoxLayout(sourceGroup);
     source_ = new MlwfSourceSelector(mlwfRuns, sourceGroup);
     sourceLayout->addWidget(source_);

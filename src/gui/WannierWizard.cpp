@@ -45,12 +45,12 @@ void WannierWizard::setDensityBaselines(
 
 QString WannierWizard::wizardTitle() const
 {
-    return tr("Maximally Localized Wannier Functions (MLWF) Setup");
+    return tr("Wannier Functions Setup");
 }
 
 QString WannierWizard::settingsHeader() const
 {
-    return tr("SCF Process Selection & MLWF Configuration");
+    return tr("SCF Process Selection & Wannier Configuration");
 }
 
 QWidget* WannierWizard::buildSettingsPage()

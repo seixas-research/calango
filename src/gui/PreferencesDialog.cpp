@@ -313,7 +313,11 @@ QWidget* PreferencesDialog::buildExternalFilesTab()
             "energy, so one directory per library is worth keeping.")},
         {SettingsManager::kPseudopotentialsSiesta, tr("SIESTA (SIESTA_PP_PATH)"),
          tr("Directory of .psf / .psml files, named by element symbol.")},
-        {SettingsManager::kMlPotentialsDir, tr("ML potentials")},
+        {SettingsManager::kMlPotentialsDir, tr("ML potentials"),
+         tr("Directory of machine-learning potential checkpoints "
+            "(.model / .pt). Used to pre-fill the model-file browser in the "
+            "MACE and MLIP calculator groups; the foundation models download "
+            "and cache their own weights and do not need it.")},
     };
 
     externalFilesTable_ = new QTableWidget(rows.size(), 2, page);

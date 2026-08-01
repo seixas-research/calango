@@ -14,6 +14,8 @@
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
+class QFormLayout;
+class QGroupBox;
 class QLabel;
 class QSpinBox;
 
@@ -26,8 +28,20 @@ namespace calango::gui {
 /// Electronics → "Raman and IR Spectroscopy…": the standardized wizard for the
 /// vibrational-spectroscopy post-process.
 ///
-/// It is the one wizard here that inherits from THREE upstream runs, because
-/// the two spectra it produces are built from three different quantities:
+/// Three engines, chosen on Stage 1, differing in how much of the answer each
+/// can produce from one run:
+///
+///   GPAW — a post-process: finite displacements about an inherited ground
+///          state, with Z* inherited separately (see below).
+///   VASP — self-contained: IBRION=8 + LEPSILON gives the force constants, Z*
+///          and ε∞ in one linear-response run; Raman adds a 6N displaced
+///          LEPSILON sweep on top.
+///   QE   — self-contained: one ph.x run at q = 0 gives all of it, the Raman
+///          tensor included, provided the pseudopotentials are norm-conserving.
+///
+/// Under GPAW it is the one wizard here that inherits from THREE upstream runs,
+/// because the two spectra it produces are built from three different
+/// quantities:
 ///
 ///   • a Single-Point `.gpw`      — the converged geometry and the calculator
 ///                                  every displaced run is rebuilt from;
@@ -85,28 +99,51 @@ protected:
     {
         return QStringLiteral("raman_ir.py");
     }
-    /// Berry-phase Z* and the response function are GPAW capabilities here.
+    /// The three engines that can produce both a Γ-point Hessian and the
+    /// electronic response that couples to it.
     bool calculatorAllowed(core::CalculatorKind kind) const override
     {
-        return kind == core::CalculatorKind::Gpaw;
+        return kind == core::CalculatorKind::Gpaw
+            || kind == core::CalculatorKind::Vasp
+            || kind == core::CalculatorKind::QuantumEspresso;
     }
     QStringList calculatorElements() const override;
-    /// The calculator is restored whole from the baseline; there is nothing
-    /// left for a Calculator Settings stage to ask.
+    /// Under GPAW the calculator is restored whole from the baseline; under
+    /// VASP and QE the few knobs that matter are asked on Stage 1, beside the
+    /// engine that gives them meaning. Either way there is nothing left for a
+    /// Calculator Settings stage to ask.
     bool showsCalculatorStage() const override { return false; }
 
 private Q_SLOTS:
     /// Re-derive the "N atoms × … runs" estimate, which changes by a large
-    /// factor with the Raman toggle.
+    /// factor with the Raman toggle — and by a different factor per engine.
     void updateCostEstimate();
     /// Re-read the selected baseline's calculator.json and refresh the note.
     void onBaselineChanged();
+    /// Show the selected engine's own groups, retitle what the shared controls
+    /// mean for it, and sync the base class's engine selection so the run
+    /// command and interpreter resolve for the engine actually chosen here.
+    void onEngineChanged();
 
 private:
     core::RamanIrConfig config() const;
+    core::CalculatorKind selectedEngine() const;
 
     std::shared_ptr<const core::Structure> structure_;
 
+    QComboBox* engineCombo_ = nullptr;
+    QGroupBox* sourcesGroup_ = nullptr;
+    QGroupBox* vaspGroup_ = nullptr;
+    QGroupBox* espressoGroup_ = nullptr;
+    /// The k-grid, which means the same thing to VASP and to QE — one widget
+    /// set in a group of its own rather than a copy inside each, since two
+    /// spin boxes for one quantity is two places for it to be set differently.
+    QGroupBox* samplingGroup_ = nullptr;
+    QDoubleSpinBox* vaspEncutSpin_ = nullptr;
+    QComboBox* vaspXcCombo_ = nullptr;
+    QDoubleSpinBox* qeEcutwfcSpin_ = nullptr;
+    QDoubleSpinBox* qeEcutrhoSpin_ = nullptr;
+    QSpinBox* kptSpins_[3] = {nullptr, nullptr, nullptr};
     QComboBox* baselineCombo_ = nullptr;
     QComboBox* bornCombo_ = nullptr;
     QComboBox* opticsCombo_ = nullptr;
@@ -114,6 +151,10 @@ private:
     std::optional<InheritedCalculator> inherited_;
 
     QCheckBox* ramanCheck_ = nullptr;
+    /// Owner of the displacement row, so it can be hidden for Quantum
+    /// ESPRESSO — whose answer is an analytic derivative, with no displacement
+    /// amplitude to choose.
+    QFormLayout* methodForm_ = nullptr;
     QDoubleSpinBox* displacementSpin_ = nullptr;
     QDoubleSpinBox* laserSpin_ = nullptr;
     QDoubleSpinBox* temperatureSpin_ = nullptr;
