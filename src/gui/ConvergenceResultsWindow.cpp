@@ -19,7 +19,6 @@
 #include <QPainter>
 #include <QPen>
 #include <QPushButton>
-#include <QSaveFile>
 #include <QTextStream>
 #include <QVBoxLayout>
 

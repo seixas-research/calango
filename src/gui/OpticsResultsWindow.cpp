@@ -23,14 +23,12 @@
 #include <QPen>
 #include <QPolygonF>
 #include <QPushButton>
-#include <QSaveFile>
 #include <QTextStream>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 
 namespace calango::gui {
 

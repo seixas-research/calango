@@ -1,33 +1,33 @@
 # Installation
 
-Calango ships as native installers for macOS and Debian/Ubuntu, as a Conda package, and as source. The prebuilt installers are the fastest route to a working setup; **building from source is a standard CMake flow** and takes a few minutes on a laptop. Every installer artifact is accompanied by a `.sha256` checksum file, and the version in the file name — currently 26.7.83 — comes from a single source of truth, the `project(calango VERSION …)` line in `CMakeLists.txt`.
+Calango ships as native installers for macOS and Debian/Ubuntu, as a Conda package, and as source. The prebuilt installers are the fastest route to a working setup; **building from source is a standard CMake flow** and takes a few minutes on a laptop. Every installer artifact is accompanied by a `.sha256` checksum file, and the version in the file name — currently 26.8.2 — comes from a single source of truth, the `project(calango VERSION …)` line in `CMakeLists.txt`.
 
 ---
 
 ## Prebuilt installers
 
-::::{tab-set}
+:::::{tab-set}
 
-:::{tab-item} macOS
+::::{tab-item} macOS
 A drag-and-drop disk image for Apple Silicon:
 
-1. Download `calango-26.7.83-macos-arm64.dmg` and open it.
+1. Download `calango-26.8.2-macos-arm64.dmg` and open it.
 2. Drag `calango.app` onto the *Applications* shortcut shown next to it.
 
 The image mounts without a license click-through, and the bundle embeds the `Python.framework` it links against, so the app launches on machines without Homebrew. The bundle is signed *ad hoc* — distribution builds are not notarized, so on first launch macOS may require right-click ▸ {guilabel}`Open` to bypass Gatekeeper.
-:::
+::::
 
-:::{tab-item} Debian / Ubuntu
+::::{tab-item} Debian / Ubuntu
 A Debian package. Install it with `apt` — *not* `dpkg -i` — so the dependencies resolve automatically:
 
 ```bash
-sudo apt install ./calango_26.7.83_amd64.deb
+sudo apt install ./calango_26.8.2_amd64.deb
 ```
 
 The package installs `/usr/bin/calango`, a desktop launcher, the application icon, and a MIME type (`application/x-calango-project`) for `.calproj` files — double-clicking a saved project in your file manager opens the whole workspace. It declares `Depends: python3 (>= 3.9)` and `Recommends: python3-ase`; without ASE the GUI starts but structure I/O and job submission are disabled (see {doc}`/python_environment`).
-:::
+::::
 
-:::{tab-item} Conda
+::::{tab-item} Conda
 The Conda recipe lives in `packaging/conda/` and differs from the two installers in kind: **it does not bundle an interpreter** — Conda *is* the environment, so the Python stack (`ase`, `numpy`, `scipy`, `spglib`, `pymatgen`, `paramiko`, plus `pymace` for ML potentials) is declared as ordinary run dependencies and the solver provides them. Build a local package from the repository root:
 
 ```bash
@@ -41,9 +41,9 @@ The script picks whichever build tool is available (`conda-build`, `boa`, or `ra
 :class: caution
 conda-forge does not build `gpaw` for `osx-arm64`, so on Apple Silicon it must be added separately with `pip install gpaw`. The PAW datasets (`gpaw-data`) *are* available on every platform and are always pulled in. Every DFT workflow depends on this — check it before concluding that a wizard is broken.
 :::
-:::
-
 ::::
+
+:::::
 
 ---
 

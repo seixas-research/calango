@@ -9,7 +9,7 @@
 project = 'Calango'
 author = 'Leandro Seixas Rocha'
 copyright = 'Leandro Seixas Rocha, 2026'
-release = '26.7'
+release = '26.8.2'
 
 # -- General configuration ---------------------------------------------------
 

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.7.84
+    VERSION 26.8.2
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -168,9 +168,13 @@ qt_add_executable(calango
     src/core/PdbxFile.hpp
     src/core/PdbxFile.cpp
     src/core/WannierScriptGenerator.hpp
+    src/core/DefectScriptGenerator.hpp
     src/core/DefectScriptGenerator.cpp
+    src/core/FermiSurfaceScriptGenerator.hpp
     src/core/FermiSurfaceScriptGenerator.cpp
+    src/core/TopologyScriptGenerator.hpp
     src/core/TopologyScriptGenerator.cpp
+    src/core/TwoDBandsScriptGenerator.hpp
     src/core/TwoDBandsScriptGenerator.cpp
     src/core/WannierScriptGenerator.cpp
     src/core/AdsorptionSites.hpp
@@ -198,6 +202,7 @@ qt_add_executable(calango
     src/core/CddScriptGenerator.hpp
     src/core/CddScriptGenerator.cpp
     src/core/XasScriptGenerator.hpp
+    src/core/HubbardScriptGenerator.hpp
     src/core/HubbardScriptGenerator.cpp
     src/core/XasScriptGenerator.cpp
     src/core/MonteCarlo.hpp
@@ -252,6 +257,7 @@ qt_add_executable(calango
     src/render/ColorMap.cpp
     src/render/RenderGeometry.hpp
     src/render/StructureRenderer.hpp
+    src/render/ShaderProfile.hpp
     src/render/ShaderProfile.cpp
     src/render/StructureRenderer.cpp
     src/render/RayTraceExporter.hpp
@@ -294,14 +300,23 @@ qt_add_executable(calango
     src/gui/RepresentationPanel.cpp
     src/gui/CellAxesTabs.hpp
     src/gui/CellAxesTabs.cpp
+    src/gui/NeighborCellsDialog.hpp
     src/gui/NeighborCellsDialog.cpp
+    src/gui/TwoDBandsWizard.hpp
     src/gui/TwoDBandsWizard.cpp
+    src/gui/TwoDBandsWindow.hpp
     src/gui/TwoDBandsWindow.cpp
+    src/gui/DefectWizard.hpp
     src/gui/DefectWizard.cpp
+    src/gui/DefectDiagramWindow.hpp
     src/gui/DefectDiagramWindow.cpp
+    src/gui/FermiSurfaceDialog.hpp
     src/gui/FermiSurfaceDialog.cpp
+    src/gui/FermiSurfaceWindow.hpp
     src/gui/FermiSurfaceWindow.cpp
+    src/gui/TopologyDialog.hpp
     src/gui/TopologyDialog.cpp
+    src/gui/TopologyWindow.hpp
     src/gui/TopologyWindow.cpp
     # The "Source MLWF process" step shared by the three Wannier
     # post-processes (interpolation, Fermi surface, topological invariants).
@@ -489,6 +504,7 @@ qt_add_executable(calango
     src/gui/CddWizard.hpp
     src/gui/CddWizard.cpp
     src/gui/XasWizard.hpp
+    src/gui/HubbardUWizard.hpp
     src/gui/HubbardUWizard.cpp
     src/gui/XasWizard.cpp
     src/gui/SpectrumPlotWidget.hpp
@@ -1536,8 +1552,10 @@ if(CALANGO_BUILD_TESTS)
         src/core/VolumetricData.cpp
     )
     target_include_directories(calango_overlay_test PRIVATE src)
-    target_link_libraries(calango_overlay_test
-        PRIVATE Qt6::Widgets Qt6::OpenGL)
+    # Qt6::OpenGL is needed for HEADERS only — OverlayModel.hpp includes
+    # StructureRenderer.hpp, which carries QOpenGLBuffer members. No widget
+    # type is referenced anywhere in the target, so Gui replaces Widgets.
+    target_link_libraries(calango_overlay_test PRIVATE Qt6::Gui Qt6::OpenGL)
     add_test(NAME overlay_model COMMAND calango_overlay_test)
 
     # CPK element colours and the legibility of the symbol written on them.
@@ -1564,7 +1582,9 @@ if(CALANGO_BUILD_TESTS)
     # alpha applied per species rather than per atom perturbs a whole
     # sublattice — so the generated driver is asserted on directly. GUI-free,
     # GL-free, Python-free.
-    qt_add_executable(calango_hubbard_test
+    # Plain add_executable, no Qt link: the sources use no Qt type at all
+    # (the only Q* token in the whole target is the string "QE").
+    add_executable(calango_hubbard_test
         tests/HubbardLinearResponseTest.cpp
         src/core/HubbardScriptGenerator.cpp
         src/core/AseScriptGenerator.cpp
@@ -1576,7 +1596,6 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_hubbard_test PRIVATE src)
     target_compile_definitions(calango_hubbard_test PRIVATE
         CALANGO_VERSION="${PROJECT_VERSION}")
-    target_link_libraries(calango_hubbard_test PRIVATE Qt6::Core)
     add_test(NAME hubbard_linear_response COMMAND calango_hubbard_test)
 
     # Orbit camera: the default view, the plane alignments and the roll axis,

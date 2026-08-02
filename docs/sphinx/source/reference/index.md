@@ -5,7 +5,7 @@ Calango reads and writes, the stdout/JSON protocol that keeps the job panel
 live, the Python packages and external binaries each feature needs, and the
 answers to the questions that come up most.
 
-These pages describe **Calango v26.7 as built from the current sources** —
+These pages describe **Calango v26.8 as built from the current sources** —
 where an older guide and this reference disagree (menu locations moved,
 shortcuts changed), this reference wins.
 

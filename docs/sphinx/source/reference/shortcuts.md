@@ -71,7 +71,7 @@ toolbar is documented in {doc}`/viewport`.
 
 ## Menu map
 
-The nine menus, with every item, as built in v26.7.
+The nine menus, with every item, as built in v26.8.
 
 **{guilabel}`File`** — New Workspace · Open (Structure…, Trajectory…, Open
 Recent) · Save (Structure As…, Trajectory As…) · Import / Export (Export

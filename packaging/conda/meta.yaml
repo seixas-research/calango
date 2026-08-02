@@ -1,5 +1,5 @@
 {% set name = "calango" %}
-{% set version = environ.get("CALANGO_VERSION", "26.7.55") %}
+{% set version = environ.get("CALANGO_VERSION", "26.8.2") %}
 
 package:
   name: {{ name|lower }}
