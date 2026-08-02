@@ -1,5 +1,6 @@
 #include "core/AseScriptGenerator.hpp"
 
+#include "core/EngineCalculatorBlocks.hpp"
 
 #include <algorithm>
 #include <sstream>
@@ -30,6 +31,13 @@ std::string toString(CalculatorKind kind)
     case CalculatorKind::Xtb: return "xTB";
     case CalculatorKind::DftbPlus: return "DFTB+";
     case CalculatorKind::Gromacs: return "GROMACS";
+    case CalculatorKind::Abinit: return "ABINIT";
+    case CalculatorKind::FhiAims: return "FHI-aims";
+    case CalculatorKind::NwChem: return "NWChem";
+    case CalculatorKind::OpenMx: return "OpenMX";
+    case CalculatorKind::Fleur: return "FLEUR";
+    case CalculatorKind::Cp2k: return "CP2K";
+    case CalculatorKind::Amber: return "Amber";
     }
     return "?";
 }
@@ -1415,6 +1423,36 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
 
     case CalculatorKind::Vasp:
         emitVasp(out, c);
+        break;
+
+    // The engines added later live in core/EngineCalculatorBlocks.cpp — one
+    // self-contained block each, kept out of this file's 2600 lines.
+    case CalculatorKind::Abinit:
+        EngineBlocks::emitAbinit(out, c);
+        break;
+
+    case CalculatorKind::FhiAims:
+        EngineBlocks::emitAims(out, c);
+        break;
+
+    case CalculatorKind::NwChem:
+        EngineBlocks::emitNwChem(out, c);
+        break;
+
+    case CalculatorKind::OpenMx:
+        EngineBlocks::emitOpenMx(out, c);
+        break;
+
+    case CalculatorKind::Fleur:
+        EngineBlocks::emitFleur(out, c);
+        break;
+
+    case CalculatorKind::Cp2k:
+        EngineBlocks::emitCp2k(out, c);
+        break;
+
+    case CalculatorKind::Amber:
+        EngineBlocks::emitAmber(out, c);
         break;
     }
 

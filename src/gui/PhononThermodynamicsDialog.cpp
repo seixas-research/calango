@@ -1,5 +1,7 @@
 #include "gui/PhononThermodynamicsDialog.hpp"
 
+#include "gui/PlotPalette.hpp"
+
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -73,7 +75,7 @@ protected:
     {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
-        painter.fillRect(rect(), palette().base());
+        painter.fillRect(rect(), PlotPalette::canvas);
         render(painter, QRectF(rect()));
     }
 
@@ -172,11 +174,8 @@ void ThermoPlotWidget::render(QPainter& painter, const QRectF& target) const
         return plot.bottom() - (v - vMin) / (vMax - vMin) * plot.height();
     };
 
-    const QColor axisColor = painter.pen().color().isValid()
-        ? palette().color(QPalette::Text)
-        : QColor(Qt::black);
-    QColor gridColor = axisColor;
-    gridColor.setAlphaF(0.15);
+    const QColor axisColor = PlotPalette::text;
+    const QColor gridColor = PlotPalette::grid;
     painter.setPen(QPen(gridColor, 1.0));
     constexpr int kTicks = 5;
     for (int i = 0; i <= kTicks; ++i) {
@@ -201,10 +200,10 @@ void ThermoPlotWidget::render(QPainter& painter, const QRectF& target) const
     };
     std::vector<Curve> curves;
     if (entropy_)
-        curves.push_back({QColor(90, 174, 97), QStringLiteral("S_vib"), 2});
+        curves.push_back({QColor(0x2c, 0xa0, 0x2c), QStringLiteral("S_vib"), 2});
     else {
-        curves.push_back({QColor(214, 96, 77), QStringLiteral("U_vib"), 0});
-        curves.push_back({QColor(69, 117, 180), QStringLiteral("F_vib"), 1});
+        curves.push_back({QColor(0xd6, 0x27, 0x28), QStringLiteral("U_vib"), 0});
+        curves.push_back({QColor(0x1f, 0x77, 0xb4), QStringLiteral("F_vib"), 1});
     }
 
     for (const Curve& curve : curves) {

@@ -1,6 +1,7 @@
 #include "gui/DefectDiagramWindow.hpp"
 
 #include "gui/GuiUtils.hpp"
+#include "gui/PlotPalette.hpp"
 #include "render/ColorMap.hpp"
 
 #include <QCheckBox>
@@ -67,14 +68,14 @@ void DefectDiagramWidget::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.fillRect(rect(), palette().base());
+    painter.fillRect(rect(), PlotPalette::canvas);
 
     const QRectF box(kMarginLeft, kMarginTop,
                      std::max(10, width() - kMarginLeft - kMarginRight),
                      std::max(10, height() - kMarginTop - kMarginBottom));
 
     if (fermi_.size() < 2 || lines_.empty()) {
-        painter.setPen(palette().color(QPalette::PlaceholderText));
+        painter.setPen(PlotPalette::placeholder);
         painter.drawText(rect(), Qt::AlignCenter,
                          tr("No formation-energy data"));
         return;
@@ -109,28 +110,28 @@ void DefectDiagramWidget::paintEvent(QPaintEvent*)
     };
 
     // --- Axes and gridlines ------------------------------------------------
-    painter.setPen(QPen(palette().color(QPalette::Mid), 1.0));
+    painter.setPen(QPen(PlotPalette::spine, 1.0));
     painter.drawRect(box);
     const QFontMetricsF metrics(painter.font());
     for (int i = 0; i <= 4; ++i) {
         const double e = lo + range * i / 4.0;
         const double y = toY(e);
-        painter.setPen(QPen(palette().color(QPalette::Mid), 0.5, Qt::DotLine));
+        painter.setPen(QPen(PlotPalette::grid, 0.5, Qt::DotLine));
         painter.drawLine(QPointF(box.left(), y), QPointF(box.right(), y));
-        painter.setPen(palette().color(QPalette::Text));
+        painter.setPen(PlotPalette::text);
         painter.drawText(QPointF(6.0, y + metrics.height() / 3.0),
                          QString::number(e, 'f', 2));
     }
     for (int i = 0; i <= 4; ++i) {
         const double e = xMax * i / 4.0;
         const double x = toX(e);
-        painter.setPen(QPen(palette().color(QPalette::Mid), 0.5, Qt::DotLine));
+        painter.setPen(QPen(PlotPalette::grid, 0.5, Qt::DotLine));
         painter.drawLine(QPointF(x, box.top()), QPointF(x, box.bottom()));
-        painter.setPen(palette().color(QPalette::Text));
+        painter.setPen(PlotPalette::text);
         painter.drawText(QPointF(x - 12.0, box.bottom() + metrics.height() + 3.0),
                          QString::number(e, 'f', 2));
     }
-    painter.setPen(palette().color(QPalette::Text));
+    painter.setPen(PlotPalette::text);
     painter.drawText(QPointF(box.center().x() - 70.0,
                              box.bottom() + 2.2 * metrics.height() + 2.0),
                      tr("E_F − E_VBM  (eV)"));
@@ -142,12 +143,12 @@ void DefectDiagramWidget::paintEvent(QPaintEvent*)
 
     // The band edges ARE the plot's boundaries, and saying so is what makes a
     // transition level "0.7 eV above the VBM" readable as a position.
-    painter.setPen(QPen(QColor(120, 190, 255), 1.2, Qt::DashLine));
+    painter.setPen(QPen(QColor(0x1f, 0x77, 0xb4), 1.2, Qt::DashLine));
     painter.drawLine(QPointF(toX(0.0), box.top()),
                      QPointF(toX(0.0), box.bottom()));
     painter.drawLine(QPointF(toX(xMax), box.top()),
                      QPointF(toX(xMax), box.bottom()));
-    painter.setPen(QColor(120, 190, 255));
+    painter.setPen(QColor(0x1f, 0x77, 0xb4));
     painter.drawText(QPointF(toX(0.0) + 3.0, box.top() + metrics.height()),
                      tr("VBM"));
     painter.drawText(QPointF(toX(xMax) - metrics.horizontalAdvance(tr("CBM"))
@@ -187,7 +188,7 @@ void DefectDiagramWidget::paintEvent(QPaintEvent*)
     }
 
     // The envelope last and heaviest: it is what is actually observed.
-    painter.setPen(QPen(palette().color(QPalette::Text), 2.4));
+    painter.setPen(QPen(PlotPalette::text, 2.4));
     painter.drawPath(polyline(envelope_));
 
     if (showTransitions_) {
@@ -451,7 +452,7 @@ void DefectDiagramWindow::exportImage()
     if (path.isEmpty())
         return;
     QPixmap pixmap(plot_->size());
-    pixmap.fill(palette().color(QPalette::Base));
+    pixmap.fill(PlotPalette::canvas);
     plot_->render(&pixmap);
     if (!pixmap.save(path))
         QMessageBox::warning(this, windowTitle(),

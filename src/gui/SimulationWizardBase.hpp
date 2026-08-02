@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/CalculatorConfig.hpp"
+#include "gui/ExtendedEngineGroups.hpp"
 
 #include <QDialog>
 #include <QString>
@@ -586,6 +587,15 @@ private:
     QLineEdit* dftbSccTolEdit_ = nullptr;     ///< scientific notation (1e-5)
     QSpinBox* dftbMaxSccSpin_ = nullptr;
     QDoubleSpinBox* dftbFillingTempSpin_ = nullptr; ///< K; 0 = no smearing
+
+    // -- ABINIT / FHI-aims / NWChem / OpenMX / FLEUR / CP2K / Amber ---------
+    //
+    // One class holding all seven groups, rather than seven more sets of
+    // widget members here. What they need from this class is only the SHARED
+    // rows above (the plane-wave cutoff and the k-grid), and several of them
+    // take neither — so the code that is specific to one engine lives with
+    // that engine instead of adding another eighty members to this header.
+    ExtendedEngineGroups extendedEngines_{this};
 
     // -- GROMACS ------------------------------------------------------------
     QGroupBox* gromacsGroup_ = nullptr;

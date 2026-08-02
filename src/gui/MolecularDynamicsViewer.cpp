@@ -2,6 +2,7 @@
 
 #include "core/Rdf.hpp"
 #include "gui/GuiUtils.hpp"
+#include "gui/PlotPalette.hpp"
 #include "gui/ViewportWidget.hpp"
 #include "python_bridge/AseBridge.hpp"
 
@@ -66,7 +67,7 @@ protected:
     {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
-        painter.fillRect(rect(), palette().base());
+        painter.fillRect(rect(), PlotPalette::canvas);
         render(painter, QRectF(rect()));
     }
 
@@ -119,9 +120,8 @@ void SeriesPlotWidget::render(QPainter& painter, const QRectF& target) const
         return plot.bottom() - (v - yMin) / (yMax - yMin) * plot.height();
     };
 
-    const QColor axisColor = palette().color(QPalette::Text);
-    QColor gridColor = axisColor;
-    gridColor.setAlphaF(0.15);
+    const QColor axisColor = PlotPalette::text;
+    const QColor gridColor = PlotPalette::grid;
     painter.setPen(QPen(gridColor, 1.0));
     constexpr int kTicks = 5;
     for (int i = 0; i <= kTicks; ++i) {
@@ -308,23 +308,23 @@ bool MolecularDynamicsViewer::loadDirectory(const QString& directory)
         // system whose latent heat stalls it at a plateau, is invisible
         // against the temperature alone.
         std::vector<SeriesPlotWidget::Series> thermal{
-            {tr("T"), QColor(214, 96, 77), temperature_}};
+            {tr("T"), QColor(0xd6, 0x27, 0x28), temperature_}};
         if (targetTemperature_.size() == temperature_.size()
             && !targetTemperature_.empty())
             thermal.push_back(
-                {tr("T target"), QColor(120, 120, 130), targetTemperature_});
+                {tr("T target"), QColor(0x7a, 0x7f, 0x88), targetTemperature_});
         temperaturePlot_->setData(time_, thermal, tr("Time (ps)"),
                                   tr("Temperature (K)"));
         energyPlot_->setData(
             time_,
-            {{tr("E_tot"), QColor(60, 60, 60), total_},
-             {tr("E_pot"), QColor(69, 117, 180), potential_},
-             {tr("E_kin"), QColor(214, 96, 77), kinetic_}},
+            {{tr("E_tot"), QColor(0x1b, 0x1e, 0x23), total_},
+             {tr("E_pot"), QColor(0x1f, 0x77, 0xb4), potential_},
+             {tr("E_kin"), QColor(0xd6, 0x27, 0x28), kinetic_}},
             tr("Time (ps)"), tr("Energy (eV)"));
 
         std::vector<SeriesPlotWidget::Series> pv;
         if (!pressure_.empty())
-            pv.push_back({tr("P (GPa)"), QColor(90, 174, 97), pressure_});
+            pv.push_back({tr("P (GPa)"), QColor(0x2c, 0xa0, 0x2c), pressure_});
         if (!volume_.empty()) {
             // Volume is ~10³ Å³ against a pressure of ~1 GPa; plotting the raw
             // pair would flatten the pressure onto the axis, so volume is shown
@@ -335,7 +335,7 @@ bool MolecularDynamicsViewer::loadDirectory(const QString& directory)
             for (const double v : volume_)
                 relative.push_back(reference > 0.0 ? 100.0 * (v / reference - 1.0)
                                                    : 0.0);
-            pv.push_back({tr("ΔV/V₀ (%)"), QColor(120, 100, 200), relative});
+            pv.push_back({tr("ΔV/V₀ (%)"), QColor(0x94, 0x67, 0xbd), relative});
         }
         if (!pv.empty())
             pressurePlot_->setData(time_, pv, tr("Time (ps)"),
@@ -399,7 +399,7 @@ void MolecularDynamicsViewer::recomputeRdf()
     options.bins = 200;
     options.usePbc = frame->cell().isDefined();
     const core::RdfResult result = core::computeRdf(*frame, options);
-    rdfPlot_->setData(result.r, {{tr("g(r)"), QColor(69, 117, 180), result.g}},
+    rdfPlot_->setData(result.r, {{tr("g(r)"), QColor(0x1f, 0x77, 0xb4), result.g}},
                       tr("r (Å)"), tr("g(r)"));
 }
 

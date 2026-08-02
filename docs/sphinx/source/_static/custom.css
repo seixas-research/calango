@@ -68,53 +68,121 @@ html body .sidebar .sidebar-tree .current > a {
   font-weight: bold;
 }
 
-/* Dark mode */
+/* Dark mode.
 
-html[data-theme="dark"] body .content a.reference.internal,
-html[data-theme="dark"] body .content a.reference.external {
+   The selector matters more than the colours here. Furo puts the theme on the
+   BODY (`document.body.dataset.theme = mode` in furo.js), never on <html> — so
+   the `html[data-theme="dark"] …` rules this block used to carry matched
+   nothing at all, and the navy sidebar links above stayed navy on Furo's
+   near-black background: unreadable, and invisible to anyone testing in light
+   mode.
+
+   Two selectors are needed, because "dark" is reachable two ways. The toggle
+   writes data-theme="dark" explicitly; the default "auto" leaves the attribute
+   at "auto" and lets the OS decide, which is Furo's own
+   `body:not([data-theme="light"])` inside a prefers-color-scheme query. A rule
+   written for only the first is dead for every reader who never touched the
+   toggle — which is most of them.
+
+   Menu text is a light grey rather than the brand gold: the sidebar is a long
+   list of ordinary navigation entries, and a saturated accent on every one of
+   them reads as "everything is emphasised". Gold is kept for the entry you are
+   actually on, where it means something. */
+
+body[data-theme="dark"] .content a.reference.internal,
+body[data-theme="dark"] .content a.reference.external {
   color: #ffcc00;
 }
 
-html[data-theme="dark"] body .sidebar-tree .toctree-l1 > .reference,
-html[data-theme="dark"] body .sidebar-tree .toctree-l2 > .reference,
-html[data-theme="dark"] body .sidebar-tree .toctree-l3 > .reference {
-  color: #ffcc00;
+body[data-theme="dark"] .sidebar-drawer,
+body[data-theme="dark"] .sidebar-tree .toctree-l1 > .reference,
+body[data-theme="dark"] .sidebar-tree .toctree-l2 > .reference,
+body[data-theme="dark"] .sidebar-tree .toctree-l3 > .reference,
+body[data-theme="dark"] .sidebar .sidebar-tree a,
+body[data-theme="dark"] .sidebar-brand-text,
+body[data-theme="dark"] .toc-tree a.reference {
+  color: #dde3ea;
 }
 
-html[data-theme="dark"] body .sidebar-tree .toctree-l1 > .reference:hover,
-html[data-theme="dark"] body .sidebar-tree .toctree-l2 > .reference:hover,
-html[data-theme="dark"] body .sidebar-tree .toctree-l3 > .reference:hover {
+body[data-theme="dark"] .sidebar-tree .toctree-l1 > .reference:hover,
+body[data-theme="dark"] .sidebar-tree .toctree-l2 > .reference:hover,
+body[data-theme="dark"] .sidebar-tree .toctree-l3 > .reference:hover,
+body[data-theme="dark"] .sidebar .sidebar-tree a:hover,
+body[data-theme="dark"] .toc-tree a.reference:hover {
   color: #ffa602;
   font-weight: bold;
 }
 
-html[data-theme="dark"] body .sidebar-tree .toctree-l1.current > .reference,
-html[data-theme="dark"] body .sidebar-tree .toctree-l2.current > .reference,
-html[data-theme="dark"] body .sidebar-tree .toctree-l3.current > .reference {
+body[data-theme="dark"] .sidebar-tree .toctree-l1.current > .reference,
+body[data-theme="dark"] .sidebar-tree .toctree-l2.current > .reference,
+body[data-theme="dark"] .sidebar-tree .toctree-l3.current > .reference,
+body[data-theme="dark"] .sidebar .sidebar-tree .current > a,
+body[data-theme="dark"] .toc-tree li.scroll-current > a.reference {
   color: #ffcc00;
   font-weight: bold;
 }
 
-html[data-theme="dark"] body .sidebar-tree .current {
+body[data-theme="dark"] .sidebar-tree .current {
   background-color: #1e293b;
 }
 
-html[data-theme="dark"] body .sidebar {
+body[data-theme="dark"] .sidebar {
   --color-brand-primary: #ffcc00;
   --color-brand-content: #ffcc00;
+  --color-sidebar-link-text: #dde3ea;
+  --color-sidebar-link-text--top-level: #dde3ea;
+  --color-sidebar-brand-text: #dde3ea;
 }
 
-html[data-theme="dark"] body .sidebar .sidebar-tree a {
-  color: #ffcc00;
-}
+/* The same rules for the default "auto" theme on a dark-scheme OS, where Furo
+   paints its dark palette but leaves data-theme at "auto". Duplicated rather
+   than folded into one selector list on purpose: a media query cannot be
+   merged into a plain rule, and a single stylesheet is easier to keep in step
+   than a preprocessor nobody else in this repo runs. */
+@media (prefers-color-scheme: dark) {
+  body:not([data-theme="light"]) .content a.reference.internal,
+  body:not([data-theme="light"]) .content a.reference.external {
+    color: #ffcc00;
+  }
 
-html[data-theme="dark"] body .sidebar .sidebar-tree a:hover {
-  color: #ffa602;
-}
+  body:not([data-theme="light"]) .sidebar-tree .toctree-l1 > .reference,
+  body:not([data-theme="light"]) .sidebar-tree .toctree-l2 > .reference,
+  body:not([data-theme="light"]) .sidebar-tree .toctree-l3 > .reference,
+  body:not([data-theme="light"]) .sidebar .sidebar-tree a,
+  body:not([data-theme="light"]) .sidebar-brand-text,
+  body:not([data-theme="light"]) .toc-tree a.reference {
+    color: #dde3ea;
+  }
 
-html[data-theme="dark"] body .sidebar .sidebar-tree .current > a {
-  color: #ffcc00;
-  font-weight: bold;
+  body:not([data-theme="light"]) .sidebar-tree .toctree-l1 > .reference:hover,
+  body:not([data-theme="light"]) .sidebar-tree .toctree-l2 > .reference:hover,
+  body:not([data-theme="light"]) .sidebar-tree .toctree-l3 > .reference:hover,
+  body:not([data-theme="light"]) .sidebar .sidebar-tree a:hover,
+  body:not([data-theme="light"]) .toc-tree a.reference:hover {
+    color: #ffa602;
+    font-weight: bold;
+  }
+
+  body:not([data-theme="light"]) .sidebar-tree .toctree-l1.current > .reference,
+  body:not([data-theme="light"]) .sidebar-tree .toctree-l2.current > .reference,
+  body:not([data-theme="light"]) .sidebar-tree .toctree-l3.current > .reference,
+  body:not([data-theme="light"]) .sidebar .sidebar-tree .current > a,
+  body:not([data-theme="light"]) .toc-tree li.scroll-current > a.reference {
+    color: #ffcc00;
+    font-weight: bold;
+  }
+
+  body:not([data-theme="light"]) .sidebar-tree .current {
+    background-color: #1e293b;
+  }
+
+  body:not([data-theme="light"]) .sidebar {
+    --color-brand-primary: #ffcc00;
+    --color-brand-content: #ffcc00;
+    --color-sidebar-link-text: #dde3ea;
+    --color-sidebar-link-text--top-level: #dde3ea;
+    --color-sidebar-brand-text: #dde3ea;
+  }
 }
 
 /* Screenshot figures: a hairline border so UI captures read as figures,

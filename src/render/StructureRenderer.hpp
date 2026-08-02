@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/StructuralPhase.hpp"
 #include "core/UnitCell.hpp"
 
 #include "render/ColorMap.hpp"
@@ -260,6 +261,25 @@ public:
         /// what a structure replacement leaves behind — means every atom is in
         /// cast 0.
         std::vector<int> atomCasts;
+
+        // -- Local structural phase (ColorMode::Phase) ----------------------
+
+        /// Identified local structure per atom, index-aligned with atoms().
+        ///
+        /// Kept beside `atomCasts` rather than in the scalar map because it is
+        /// a NOMINAL label, exactly like a cast: there is no ordering between
+        /// fcc and bcc to map onto a gradient. The viewport fills it from
+        /// core::identifyStructuralPhases() whenever some cast asks for Phase
+        /// colouring; an empty vector (or one whose size disagrees with the
+        /// atom count, which is what a structure replacement leaves behind)
+        /// makes every atom read as "Other".
+        std::vector<core::StructuralPhase> atomPhases;
+
+        /// Colour per StructuralPhase, indexed by the enum value. An invalid
+        /// entry means "no explicit pick" and falls back to the default below,
+        /// so a fresh scene is already readable before anyone opens the Phase
+        /// Colors dialog.
+        std::array<QColor, core::kStructuralPhaseCount> phaseColors{};
         /// Settings of casts 1..N; cast 0's are the members of this struct.
         std::vector<CastStyle> castStyles;
 
@@ -524,6 +544,21 @@ public:
     /// dialog must show in its swatches exactly what the renderer will draw,
     /// defaults included, rather than keep a second copy of the palette.
     static QColor castColor(int cast, const Style& style);
+
+    /// Colour of `phase` under ColorMode::Phase: the explicit pick when the
+    /// style carries one, else the default. Public for the same reason
+    /// castColor() is — the Phase Colors dialog has to show exactly what the
+    /// renderer will draw, defaults included, rather than keep a second copy
+    /// of the palette that can drift.
+    static QColor phaseColor(core::StructuralPhase phase, const Style& style);
+
+    /// The built-in colour of `phase`.
+    ///
+    /// The OVITO/AtomEye convention — green fcc, red hcp, blue bcc, yellow
+    /// icosahedral, cyan diamond, white-grey other — because that is what
+    /// anyone reading a CNA figure already has in their eye. Inventing a new
+    /// palette here would make every published comparison one step harder.
+    static QColor defaultPhaseColor(core::StructuralPhase phase);
 
     /// Settings each atom of `structure` is drawn with, resolved from the
     /// style's cast assignment. Falls back to a uniform cast-0 style when the

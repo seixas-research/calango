@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.2
+    VERSION 26.8.3
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -113,6 +113,8 @@ qt_add_executable(calango
     src/core/CalculatorConfig.hpp
     src/core/AseScriptGenerator.hpp
     src/core/AseScriptGenerator.cpp
+    src/core/EngineCalculatorBlocks.hpp
+    src/core/EngineCalculatorBlocks.cpp
     src/core/BrillouinZone.hpp
     src/core/BrillouinZone.cpp
     src/core/KPath.hpp
@@ -121,6 +123,8 @@ qt_add_executable(calango
     src/core/Rdf.cpp
     src/core/Coordination.hpp
     src/core/Coordination.cpp
+    src/core/StructuralPhase.hpp
+    src/core/StructuralPhase.cpp
     src/core/HydrogenBonds.hpp
     src/core/HydrogenBonds.cpp
     src/core/HydrogenCompletion.hpp
@@ -330,6 +334,8 @@ qt_add_executable(calango
     src/gui/ElementSettingsDialog.cpp
     src/gui/PolyhedralSettingsDialog.hpp
     src/gui/PolyhedralSettingsDialog.cpp
+    src/gui/PhaseColorsDialog.hpp
+    src/gui/PhaseColorsDialog.cpp
     src/gui/CustomGradientColoringDialog.hpp
     src/gui/CustomGradientColoringDialog.cpp
     src/gui/PythonHighlighter.hpp
@@ -344,6 +350,7 @@ qt_add_executable(calango
     src/gui/EmbeddedKPathEditor.cpp
     src/gui/BrillouinZoneStyleDialog.hpp
     src/gui/BrillouinZoneStyleDialog.cpp
+    src/gui/PlotPalette.hpp
     src/gui/LinePlotWidget.hpp
     src/gui/LinePlotWidget.cpp
     src/gui/RdfDialog.hpp
@@ -482,6 +489,8 @@ qt_add_executable(calango
     src/gui/OverlayPanel.cpp
     src/gui/VacfDialog.hpp
     src/gui/VacfDialog.cpp
+    src/gui/ExtendedEngineGroups.hpp
+    src/gui/ExtendedEngineGroups.cpp
     src/gui/SimulationWizardBase.hpp
     src/gui/GpawElectronicWizard.hpp
     src/gui/SimulationWizardBase.cpp
@@ -559,6 +568,8 @@ qt_add_executable(calango
     src/gui/OpticsPlotStyleDialog.cpp
     src/gui/EffectiveBandsWizard.hpp
     src/gui/EffectiveBandsWizard.cpp
+    src/gui/CellRelaxationControls.hpp
+    src/gui/CellRelaxationControls.cpp
     src/gui/GeometryOptimizationWizard.hpp
     src/gui/GeometryOptimizationWizard.cpp
     src/gui/PhononWizard.hpp
@@ -701,6 +712,7 @@ qt_add_resources(calango "icons"
         assets/icons/ruler-2-line.svg
         assets/icons/scissors-cut-line.svg
         assets/icons/shape-line.svg
+        assets/icons/shapes-fill.svg
         assets/icons/share-fill.svg
         assets/icons/slideshow-3-fill.svg
         assets/icons/split-cells-horizontal.svg
@@ -1294,6 +1306,8 @@ if(CALANGO_BUILD_TESTS)
         src/core/CddScriptGenerator.cpp
         src/core/Noise.cpp
         src/gui/SimulationWizardBase.cpp
+        src/gui/ExtendedEngineGroups.cpp
+        src/core/EngineCalculatorBlocks.cpp
         src/gui/GpawElectronicRows.cpp
         src/gui/HubbardParametersDialog.cpp
         src/gui/CondaEnvs.cpp
@@ -1401,8 +1415,11 @@ if(CALANGO_BUILD_TESTS)
         tests/OrchestrationSiTest.cpp
         src/gui/OrchestrationWindow.cpp
         src/gui/SimulationWizardBase.cpp
+        src/gui/ExtendedEngineGroups.cpp
+        src/core/EngineCalculatorBlocks.cpp
         src/gui/SinglePointWizard.cpp
         src/gui/GeometryOptimizationWizard.cpp
+        src/gui/CellRelaxationControls.cpp
         src/gui/MolecularDynamicsWizard.cpp
         src/gui/PhononWizard.cpp
         src/gui/GeometryConstraintsDialog.cpp
@@ -1468,8 +1485,11 @@ if(CALANGO_BUILD_TESTS)
         tests/OrchestrationHandoffTest.cpp
         src/gui/OrchestrationWindow.cpp
         src/gui/SimulationWizardBase.cpp
+        src/gui/ExtendedEngineGroups.cpp
+        src/core/EngineCalculatorBlocks.cpp
         src/gui/SinglePointWizard.cpp
         src/gui/GeometryOptimizationWizard.cpp
+        src/gui/CellRelaxationControls.cpp
         src/gui/MolecularDynamicsWizard.cpp
         src/gui/PhononWizard.cpp
         src/gui/GeometryConstraintsDialog.cpp
@@ -1541,6 +1561,17 @@ if(CALANGO_BUILD_TESTS)
         FILES assets/icons/focus-3-line.svg)
     add_test(NAME icon_theme COMMAND calango_icon_theme_test)
 
+    # Icon registry: every name the UI passes to IconManager must have a file in
+    # assets/icons/, and every file there must be listed for qt_add_resources.
+    # A missing asset is a NULL pixmap — a blank button at run time, with
+    # nothing failing at build time. That is how "Phase colors…" shipped with a
+    # name taken from RemixIcon/ (where the SVG exists) but never copied into
+    # the curated assets/icons/ subset.
+    add_executable(calango_icon_registry_test tests/IconRegistryTest.cpp)
+    target_compile_definitions(calango_icon_registry_test PRIVATE
+        CALANGO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME icon_registry COMMAND calango_icon_registry_test)
+
     # Whole-structure transforms (centre / vacuum / wrap). They moved from the
     # Edit Structure dialog's throwaway working copy onto the Structure panel,
     # where they are committed document edits — a wrong result is no longer
@@ -1605,6 +1636,7 @@ if(CALANGO_BUILD_TESTS)
         tests/HubbardLinearResponseTest.cpp
         src/core/HubbardScriptGenerator.cpp
         src/core/AseScriptGenerator.cpp
+        src/core/EngineCalculatorBlocks.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
         src/core/Element.cpp
@@ -1720,6 +1752,7 @@ if(CALANGO_BUILD_TESTS)
     add_executable(calango_script_test
         tests/ScriptGenerationTest.cpp
         src/core/AseScriptGenerator.cpp
+        src/core/EngineCalculatorBlocks.cpp
         src/core/BornChargesScriptGenerator.cpp
         src/core/ElectronicScriptGenerator.cpp
         src/core/BandSymmetryScriptGenerator.cpp
@@ -1739,6 +1772,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/DefectScriptGenerator.cpp
         src/core/FermiSurfaceScriptGenerator.cpp
         src/core/TopologyScriptGenerator.cpp
+        src/core/ClusterExpansionScriptGenerator.cpp
         src/core/BandUnfolding.cpp
         src/core/UnitCell.cpp
     )
@@ -1770,6 +1804,21 @@ if(CALANGO_BUILD_TESTS)
     )
     target_include_directories(calango_periodic_images_test PRIVATE src)
     add_test(NAME periodic_image_range COMMAND calango_periodic_images_test)
+
+    # Adaptive common-neighbour analysis: the ideal fcc / hcp / bcc / diamond
+    # lattices classify completely, and disordered ones classify as nothing.
+    # Pins the third CNA index in particular (largest connected bond cluster,
+    # not longest simple path) — the two agree for fcc/hcp and disagree for
+    # bcc/icosahedral.
+    add_executable(calango_structural_phase_test
+        tests/StructuralPhaseTest.cpp
+        src/core/StructuralPhase.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_structural_phase_test PRIVATE src)
+    add_test(NAME structural_phase COMMAND calango_structural_phase_test)
 
     # Extended-XYZ per-atom attributes (forces / magmoms / velocities) survive
     # the read -> model -> write round trip, and collinear magmoms surface as

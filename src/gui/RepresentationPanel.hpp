@@ -99,6 +99,12 @@ private:
     /// Cast". Always visible so the mode's editor is discoverable, enabled
     /// only while the selected cast is coloured by Cast.
     QPushButton* castColorsButton_ = nullptr;
+    /// "Phase colors…" — the flat colour each identified local structure
+    /// takes under "Color by: Phase", plus the atom count carrying each.
+    /// Unlike the cast palette this stays enabled in every mode: it is also
+    /// the read-out of the phase populations, which is a measurement worth
+    /// opening on its own.
+    QPushButton* phaseColorsButton_ = nullptr;
 };
 
 } // namespace calango::gui

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gui/CellRelaxationControls.hpp"
 #include "gui/GpawElectronicWizard.hpp"
 
 #include <memory>
@@ -54,7 +55,6 @@ protected:
     QString exportFileName() const override { return QStringLiteral("optimize.py"); }
 
 private Q_SLOTS:
-    void updateCellEnabled();
     /// "Geometry constraints…": open the editor and keep its result.
     void editConstraints();
 
@@ -73,17 +73,10 @@ private:
     QComboBox* optimizerCombo_;
     QDoubleSpinBox* fmaxSpin_;
     QSpinBox* maxStepsSpin_;
-    QCheckBox* relaxCellCheck_;
-    QComboBox* cellFilterCombo_;
-    QComboBox* stressMaskCombo_;   // anisotropic / hydrostatic / custom
-    QWidget* voigtRow_;            // custom Voigt mask checkbox row
-    /// Indices into stressMaskCombo_. Named because three call sites compare
-    /// against them and a bare 2/3 is where an inserted entry breaks the mask.
-    static constexpr int kStressMask2Dxy = 2;
-    static constexpr int kStressMaskCustom = 3;
-
-    QCheckBox* voigtChecks_[6];    // [xx, yy, zz, yz, xz, xy]
-
+    /// Variable-cell relaxation (relax cell, filter, stress mask, Voigt ticks).
+    /// Shared with the Cluster Expansion batch, which relaxes cells with the
+    /// same options — see CellRelaxationControls.
+    CellRelaxationControls cell_{this};
 };
 
 } // namespace calango::gui

@@ -1,5 +1,7 @@
 #include "gui/MetricPlotWidget.hpp"
 
+#include "gui/PlotPalette.hpp"
+
 #include <QFile>
 #include <QFileDialog>
 #include <QFontMetricsF>
@@ -89,10 +91,10 @@ void MetricPlotWidget::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.fillRect(rect(), QColor(28, 30, 34));
+    painter.fillRect(rect(), PlotPalette::canvas);
 
     if (samples_.size() < 2) {
-        painter.setPen(QColor(150, 150, 150));
+        painter.setPen(PlotPalette::placeholder);
         painter.drawText(rect(), Qt::AlignCenter, spec_.placeholder);
         return;
     }
@@ -135,7 +137,7 @@ void MetricPlotWidget::paintEvent(QPaintEvent*)
     };
 
     // Frame.
-    painter.setPen(QColor(90, 95, 105));
+    painter.setPen(PlotPalette::spine);
     painter.drawRect(plot);
 
     // --- Axis ticks --------------------------------------------------------
@@ -144,8 +146,8 @@ void MetricPlotWidget::paintEvent(QPaintEvent*)
     // maximized window. The label width estimate below is what actually
     // guarantees non-overlap.
     const QFontMetricsF metrics(painter.font());
-    const QColor gridColor(52, 56, 63);
-    const QColor tickColor(140, 146, 156);
+    const QColor gridColor = PlotPalette::grid;
+    const QColor tickColor = PlotPalette::tickText;
 
     // X (simulation step): steps are integers, so never emit a fractional
     // tick — a step axis labelled "1250.5" is meaningless.
@@ -203,7 +205,7 @@ void MetricPlotWidget::paintEvent(QPaintEvent*)
         }
     }
 
-    painter.setPen(QColor(170, 175, 185));
+    painter.setPen(PlotPalette::text);
     const QString lastValue =
         QString::number(samples_.back().value, 'f', spec_.decimals);
     painter.drawText(
@@ -227,7 +229,7 @@ void MetricPlotWidget::paintEvent(QPaintEvent*)
     // plus an annotated value, so the setpoint is readable without hunting
     // for it in the axis caption below.
     if (hasTarget_) {
-        const QColor targetColor(255, 158, 26);
+        const QColor targetColor = PlotPalette::reference;
         painter.setPen(QPen(targetColor, 1.6, Qt::DashLine));
         const double y = toY(target_);
         painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
@@ -252,7 +254,7 @@ void MetricPlotWidget::paintEvent(QPaintEvent*)
                          size.width(), size.height());
         // Opaque backing: the label often overlaps the data curve.
         painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(28, 30, 34, 220));
+        painter.setBrush(PlotPalette::readoutFill);
         painter.drawRoundedRect(box, 3.0, 3.0);
         painter.setBrush(Qt::NoBrush);
         painter.setPen(targetColor);
@@ -267,7 +269,7 @@ void MetricPlotWidget::paintEvent(QPaintEvent*)
     painter.setPen(QPen(spec_.lineColor, 2.0));
     painter.drawPath(path);
 
-    painter.setBrush(QColor(255, 158, 26));
+    painter.setBrush(PlotPalette::highlight);
     painter.setPen(Qt::NoPen);
     painter.drawEllipse(QPointF(toX(samples_.back().step), toY(samples_.back().value)),
                         3.5, 3.5);

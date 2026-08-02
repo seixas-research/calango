@@ -199,6 +199,33 @@ Film production — shots drawn from saved points-of-view, each with its own dur
 
 ---
 
+## Plot appearance
+
+**Every 2D data plot draws on a white canvas with dark ink**, whatever theme
+the application is running in: band structures and PDOS, phonon dispersions,
+optical spectra, convergence sweeps, the job metric traces, the convex hull,
+the effective-band heatmap and the Brillouin-zone maps.
+
+That is a deliberate split between the *data* and the *interface*. A figure
+made here is expected to end up in a paper, a slide or a referee reply, all of
+which are white — the convention is old enough that an inverted figure reads as
+an artifact of the tool rather than as a choice — and every print path (PNG
+export, SVG export, the system print dialog) either wastes ink on a dark fill
+or loses thin pale curves on white paper. It also made the on-screen plot and
+its own exported file disagree, since the exporters already wrote white.
+
+The surrounding interface is untouched: docks, toolbars, tabs and the results
+panel still follow {menuselection}`Preferences --> Appearance`
+(Dark / Light / System), and the 3D viewport keeps its own background color
+from the Representation panel.
+
+Only the **defaults** are standardized. The viewers that offer
+{guilabel}`Customize Appearance…` — band/PDOS, optics, the convergence
+sweeps — still write whatever colors, fonts and line styles you pick into
+their own style, and open on this palette rather than being limited to it.
+
+---
+
 ## Data exports at a glance
 
 Nearly every analysis tool exports its numbers, so figures can be

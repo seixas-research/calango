@@ -177,9 +177,51 @@ void ViewportWidget::setCoordinationOptions(const core::CoordinationOptions& opt
     }
 }
 
+void ViewportWidget::setStructuralPhaseOptions(
+    const core::StructuralPhaseOptions& options)
+{
+    phaseOptions_ = options;
+    // Only re-run when something is actually drawn from it: the analysis walks
+    // every atom's neighbourhood, and no cast asking for Phase means the result
+    // would be computed and immediately thrown away.
+    for (int cast = 0; cast < renderer_.style().castCount(); ++cast) {
+        if (renderer_.style().castStyle(cast).colorMode
+            == render::ColorMode::Phase) {
+            updateColorScalars();
+            refreshStructure();
+            return;
+        }
+    }
+}
+
+void ViewportWidget::setPhaseColor(core::StructuralPhase phase,
+                                   const QColor& color)
+{
+    const auto index = static_cast<std::size_t>(phase);
+    if (index >= renderer_.style().phaseColors.size())
+        return;
+    renderer_.style().phaseColors[index] = color;
+    // Colours live in the instance buffer, so this is a rebuild rather than a
+    // redraw — the same treatment cast colours get.
+    refreshStructure();
+}
+
+std::array<int, core::kStructuralPhaseCount> ViewportWidget::phaseCounts() const
+{
+    std::array<int, core::kStructuralPhaseCount> counts{};
+    for (const core::StructuralPhase phase : renderer_.style().atomPhases)
+        ++counts[static_cast<std::size_t>(phase)];
+    return counts;
+}
+
 void ViewportWidget::updateColorScalars()
 {
     renderer_.clearAtomScalars();
+    // A stale phase assignment would colour the NEW structure's atoms by the
+    // OLD one's labels, which is worse than not colouring them: the picture
+    // stays plausible. Cleared here and refilled below only if some cast still
+    // asks for it, exactly like the scalar fields.
+    renderer_.style().atomPhases.clear();
     scalarRange_ = {};
     if (!structure_ || structure_->empty()) {
         Q_EMIT colorMappingChanged();
@@ -218,6 +260,15 @@ void ViewportWidget::updateColorScalars()
             renderer_.setAtomScalars(
                 render::ColorMode::CustomScalar,
                 std::vector<float>(it->second.begin(), it->second.end()));
+    }
+
+    // Local structural phase. Not a scalar field — the labels are nominal — so
+    // it lands in the style's own per-atom vector rather than in the scalar
+    // map, and like the coordination analysis it runs once however many casts
+    // ask for it.
+    if (modes.count(render::ColorMode::Phase) > 0) {
+        renderer_.style().atomPhases =
+            core::identifyStructuralPhases(*structure_, phaseOptions_).phases;
     }
 
     // The legend describes ONE mapping, so it reports cast 0's — the cast that

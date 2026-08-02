@@ -14,6 +14,7 @@
 #include "core/AseScriptGenerator.hpp"
 #include "core/BornChargesScriptGenerator.hpp"
 #include "core/CddScriptGenerator.hpp"
+#include "core/ClusterExpansionScriptGenerator.hpp"
 #include "core/UnfoldingScriptGenerator.hpp"
 #include "core/XasScriptGenerator.hpp"
 #include "core/ElectronicScriptGenerator.hpp"
@@ -3634,6 +3635,234 @@ int main(int argc, char** argv)
         yambo.frequency = GwFrequencyTreatment::RealAxis;
         checkContains(generateGwScript(yambo), "\"-g\", \"n\", \"-p\", \"r\"",
                       "real-axis selects the -p r screening form");
+    }
+
+    // -- The ASE-backed engines added on top of the original set -------------
+    //
+    // Every one of these builds a REAL ase.calculators.* object, which is what
+    // lets the ASE optimizers / MD / vibrations drive them without any of them
+    // being special-cased. The checks below pin the import and the two or three
+    // parameters per engine whose meaning is easy to get wrong — in every case
+    // a mistake that produces a script which RUNS and answers a different
+    // question than the one asked.
+    std::printf("ABINIT:\n");
+    {
+        CalculatorConfig abinit;
+        abinit.calculator = CalculatorKind::Abinit;
+        abinit.planeWaveCutoffEv = 600.0;
+        abinit.abinitPps = "paw";
+        abinit.abinitPseudoDir = "/opt/abinit/jth";
+        const std::string script =
+            AseScriptGenerator::generate(abinit, "structure.extxyz");
+        checkContains(script, "from ase.calculators.abinit import Abinit",
+                      "builds ASE's Abinit calculator");
+        // ecut in eV: ASE converts to Hartree itself, so the shared cutoff
+        // passes through unscaled. Converting here too would divide by 27.2
+        // twice and quietly run a 22 eV calculation.
+        checkContains(script, "ecut=600", "passes the cutoff in eV, unconverted");
+        checkContains(script, "pps=\"paw\"", "names the pseudopotential family");
+        checkContains(script, "/opt/abinit/jth", "points at the table directory");
+    }
+
+    std::printf("FHI-aims:\n");
+    {
+        CalculatorConfig aims;
+        aims.calculator = CalculatorKind::FhiAims;
+        aims.aimsSpeciesDir = "/opt/aims/species_defaults";
+        aims.aimsSpeciesTier = "tight";
+        const std::string script =
+            AseScriptGenerator::generate(aims, "structure.extxyz");
+        checkContains(script, "from ase.calculators.aims import Aims",
+                      "builds ASE's Aims calculator");
+        checkContains(script, "\"tight\"", "joins the species tier onto the dir");
+        checkContains(script, "relativistic=\"atomic_zora scalar\"",
+                      "defaults to the scalar-relativistic treatment");
+        // aims rejects a k_grid outright on a non-periodic system, so it is
+        // written conditionally rather than unconditionally — which means the
+        // constructor call has to be CLOSED before the condition. It was not,
+        // once, and the result was a file that failed to parse on line 92 of a
+        // script nothing else in the suite byte-compiles.
+        checkContains(script, ")\n\nif any(atoms.pbc):",
+                      "closes Aims(...) before the conditional k_grid");
+        checkContains(script, "atoms.calc.set(k_grid=",
+                      "and sets the mesh on the built calculator");
+        // The basis is the species tier; there is no plane-wave cutoff to set,
+        // and emitting one would be a keyword aims does not have.
+        check(!contains(script, "ecut"), "emits no plane-wave cutoff");
+    }
+
+    std::printf("NWChem — the molecular / periodic split:\n");
+    {
+        CalculatorConfig molecular;
+        molecular.calculator = CalculatorKind::NwChem;
+        molecular.nwchemTheory = "dft";
+        molecular.nwchemBasis = "def2-TZVP";
+        const std::string script =
+            AseScriptGenerator::generate(molecular, "structure.extxyz");
+        checkContains(script, "theory=\"dft\"", "selects the molecular module");
+        checkContains(script, "basis=\"def2-TZVP\"",
+                      "and gives it a Gaussian basis");
+        check(!contains(script, "kpts="),
+              "a molecular module gets no k-points (it ignores the cell)");
+    }
+    {
+        CalculatorConfig periodic;
+        periodic.calculator = CalculatorKind::NwChem;
+        periodic.nwchemTheory = "band";
+        periodic.kpts[0] = 4;
+        periodic.kpts[1] = 4;
+        periodic.kpts[2] = 4;
+        const std::string script =
+            AseScriptGenerator::generate(periodic, "structure.extxyz");
+        checkContains(script, "kpts=(4, 4, 4)",
+                      "a plane-wave module gets the k-grid");
+        check(!contains(script, "basis="),
+              "and no Gaussian basis, which it does not read");
+    }
+
+    std::printf("OpenMX:\n");
+    {
+        CalculatorConfig openmx;
+        openmx.calculator = CalculatorKind::OpenMx;
+        openmx.openmxDataPath = "/opt/openmx/DFT_DATA19";
+        openmx.openmxEigenSolver = "Band";
+        const std::string script =
+            AseScriptGenerator::generate(openmx, "structure.extxyz");
+        checkContains(script, "from ase.calculators.openmx import OpenMX",
+                      "builds ASE's OpenMX calculator");
+        checkContains(script, "OPENMX_DFT_DATA_PATH", "exports the data path");
+        checkContains(script, "eigensolver=\"Band\"", "selects the solver");
+        // The grid cutoff must not be presented as a basis cutoff — that
+        // mislabel is what made SIESTA's mesh look like a convergence knob.
+        checkContains(script, "the REAL-SPACE grid",
+                      "says the energy cutoff is a grid, not a basis");
+    }
+
+    std::printf("FLEUR:\n");
+    {
+        CalculatorConfig fleur;
+        fleur.calculator = CalculatorKind::Fleur;
+        fleur.fleurKmax = 4.5;
+        const std::string script =
+            AseScriptGenerator::generate(fleur, "structure.extxyz");
+        checkContains(script, "from ase_fleur import",
+                      "imports the ase-fleur package");
+        checkContains(script, "pip install ase-fleur",
+                      "and says what to install when it is missing");
+        checkContains(script, "kmax=4.5", "passes K_max");
+    }
+
+    std::printf("CP2K — the cutoff that is a grid, not a basis:\n");
+    {
+        CalculatorConfig cp2k;
+        cp2k.calculator = CalculatorKind::Cp2k;
+        cp2k.cp2kBasisSet = "TZVP-MOLOPT-GTH";
+        cp2k.relaxCell = true;
+        cp2k.task = TaskKind::GeometryOptimization;
+        const std::string script =
+            AseScriptGenerator::generate(cp2k, "structure.extxyz");
+        checkContains(script, "from ase.calculators.cp2k import CP2K",
+                      "builds ASE's CP2K calculator");
+        checkContains(script, "basis_set=\"TZVP-MOLOPT-GTH\"",
+                      "the BASIS is the Gaussian set");
+        checkContains(script, "REL_CUTOFF", "emits the multi-grid rel. cutoff");
+        // Without STRESS_TENSOR the cell filter sees zeros and the lattice
+        // never moves, while the run reports a converged variable-cell
+        // relaxation.
+        checkContains(script, "stress_tensor=True",
+                      "a variable-cell run asks CP2K for the stress");
+    }
+    {
+        CalculatorConfig cp2k;
+        cp2k.calculator = CalculatorKind::Cp2k;
+        checkContains(AseScriptGenerator::generate(cp2k, "structure.extxyz"),
+                      "stress_tensor=False",
+                      "a fixed-cell run does not pay for it");
+    }
+
+    std::printf("Amber:\n");
+    {
+        CalculatorConfig amber;
+        amber.calculator = CalculatorKind::Amber;
+        amber.amberTopologyFile = "/data/system.prmtop";
+        const std::string script =
+            AseScriptGenerator::generate(amber, "structure.extxyz");
+        checkContains(script, "from ase.calculators.amber import Amber",
+                      "builds ASE's Amber calculator");
+        checkContains(script, "/data/system.prmtop", "uses the given topology");
+        // sander's own default is a MINIMIZATION: with imin=1 every force
+        // evaluation ASE asks for would be a complete relaxation, and the
+        // reported trajectory would be a sequence of already-relaxed frames.
+        checkContains(script, "imin=0, nstlim=0",
+                      "the generated mdin is a single-point, not a minimization");
+    }
+    {
+        CalculatorConfig amber;
+        amber.calculator = CalculatorKind::Amber;
+        checkContains(AseScriptGenerator::generate(amber, "structure.extxyz"),
+                      "raise RuntimeError(",
+                      "refuses to run without a topology (there is no force "
+                      "field without one)");
+    }
+
+    // -- Cluster expansion: variable-cell relaxation of every configuration --
+    //
+    // A hull built from fixed-cell energies is not comparable to one built
+    // from relaxed-cell energies, so the batch has to offer the same filters
+    // and masks the standalone Geometry Optimization module does — and the
+    // optimizer has to be handed the FILTER, not the bare atoms, or the cell
+    // silently never moves while the wizard claims it did.
+    std::printf("Cluster expansion — variable cell:\n");
+    {
+        ClusterExpansionRunConfig batch;
+        batch.calculator = maceConfig();
+        batch.calculator.optimizer = Optimizer::LBFGS;
+        batch.calculator.relaxCell = true;
+        batch.calculator.cellFilter = CellFilter::FrechetCell;
+        const std::string script =
+            ClusterExpansionScriptGenerator::generate(batch);
+        checkContains(script, "from ase.filters import FrechetCellFilter",
+                      "imports the selected cell filter");
+        checkContains(script, "from ase.constraints import UnitCellFilter",
+                      "falls back for ASE < 3.23");
+        checkContains(script, "_target = _CellFilter(atoms, "
+                              "hydrostatic_strain=False)",
+                      "wraps each configuration in the filter");
+        checkContains(script, "LBFGS(_target,",
+                      "the optimizer drives the FILTER, not the bare atoms");
+        checkContains(script, "\"relax_cell\": relax_cell",
+                      "records in the JSON that cells were relaxed");
+        checkContains(script, "record[\"volume\"]",
+                      "records each relaxed volume");
+    }
+    {
+        // The 2Dxy / custom preset writes an explicit Voigt mask, in the same
+        // [xx, yy, zz, yz, xz, xy] order the relaxation script uses.
+        ClusterExpansionRunConfig batch;
+        batch.calculator = maceConfig();
+        batch.calculator.relaxCell = true;
+        batch.calculator.cellCustomMask = true;
+        batch.calculator.cellMask[2] = false;
+        batch.calculator.cellMask[3] = false;
+        batch.calculator.cellMask[4] = false;
+        checkContains(ClusterExpansionScriptGenerator::generate(batch),
+                      "_CellFilter(atoms, mask=[1, 1, 0, 0, 0, 1])",
+                      "the 2Dxy Voigt mask reaches the generated script");
+    }
+    {
+        // A single-point pass takes no steps, so no filter may be emitted —
+        // an unused import is harmless, but `_CellFilter` referenced where no
+        // optimizer runs is a NameError at line 1 of a 200-configuration job.
+        ClusterExpansionRunConfig batch;
+        batch.calculator = maceConfig();
+        batch.calculator.relaxCell = true;
+        batch.singlePointOnly = true;
+        const std::string script =
+            ClusterExpansionScriptGenerator::generate(batch);
+        check(!contains(script, "_CellFilter"),
+              "a single-point batch emits no cell filter");
+        checkContains(script, "relax_cell = False",
+                      "and says so in the run header");
     }
 
     std::printf(failures == 0 ? "\nAll script checks passed.\n"

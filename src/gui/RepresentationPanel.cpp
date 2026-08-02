@@ -5,6 +5,7 @@
 #include "gui/CastSetupDialog.hpp"
 #include "gui/CustomGradientColoringDialog.hpp"
 #include "gui/ElementSettingsDialog.hpp"
+#include "gui/PhaseColorsDialog.hpp"
 #include "gui/PolyhedralSettingsDialog.hpp"
 #include "ui/IconManager.hpp"
 #include "gui/GuiUtils.hpp"
@@ -283,78 +284,28 @@ QWidget* RepresentationPanel::buildAppearanceTab()
                                tr("Coordination number (CN)"),
                                tr("Generalized CN (GCN)"),
                                tr("Custom property"),
-                               tr("Cast")});
+                               tr("Cast"),
+                               tr("Phase")});
     colorModeCombo_->setToolTip(
         tr("Per cast: a coordination-colored slab and a "
            "custom-property-colored adsorbate can share one scene, each "
            "normalized against its own data range.\n\n"
            "\"Cast\" gives every atom its cast's own flat color — the classic "
            "substrate-vs-adsorbate figure where the groups, not the elements, "
-           "carry the story. Pick the colors with the button beside this "
-           "dropdown."));
-    // The colour-by row carries its own three satellites: the per-cast colour
-    // picker, the editor that defines the scalar mapping, and the toggle that
-    // prints the mapped number on the atoms. All are meaningless without this
-    // dropdown and each answers a question it raises — which colour per cast,
-    // through which ramp, and by how much — so they belong on its row rather
-    // than anonymous in the editor strip below.
-    auto* colorRow = new QHBoxLayout;
-    colorRow->setSpacing(4);
-    colorRow->addWidget(colorModeCombo_, 1);
-    const auto makeColorButton = [page, colorRow](const QString& icon,
-                                                  const QString& tip) {
-        auto* button = new QPushButton(page);
-        ui::IconManager::bind(button, icon);
-        button->setIconSize(QSize(20, 20));
-        button->setToolTip(tip);
-        button->setFocusPolicy(Qt::NoFocus);
-        colorRow->addWidget(button);
-        return button;
-    };
-    // First satellite, directly beside the dropdown: it configures the mode
-    // the dropdown just offered. Always present but only enabled under "Cast"
-    // coloring — a button that appears and vanishes with the mode reads as a
-    // layout glitch, one that greys in and out reads as a dependency.
-    castColorsButton_ = makeColorButton(
-        QStringLiteral("palette-line"),
-        tr("Cast colors… — the flat color each cast takes under \"Cast\" "
-           "coloring. Casts without an explicit pick cycle a default "
-           "palette."));
-    castColorsButton_->setEnabled(false);
-    auto* gradientButton = makeColorButton(
-        QStringLiteral("color-filter-fill"),
-        tr("Edit gradient coloring… — which per-atom property is mapped, "
-           "through which gradient, over which value range."));
-    // The ramp says which atoms differ; this says by how much. A GCN of 6.75
-    // against 7.50 is a distinction no colour scale conveys.
-    scalarLabelsButton_ = makeColorButton(
-        QStringLiteral("hashtag"),
-        tr("Show CN / GCN values — print each atom's value of the property "
-           "selected in \"Color by\" on the 3D viewport."));
-    scalarLabelsButton_->setCheckable(true);
-    scalarLabelsButton_->setChecked(viewport_->showCoordinationLabels());
-    form->addRow(tr("Color by:"), colorRow);
+           "carry the story.\n\n"
+           "\"Phase\" colors each atom by the local crystal structure its "
+           "neighbours form — fcc, hcp, bcc, icosahedral or diamond — so "
+           "stacking faults, twins, grain boundaries and the amorphous "
+           "fraction of a melt become visible without measuring anything.\n\n"
+           "The colors for both are edited from the button row at the bottom "
+           "of this panel."));
+    form->addRow(tr("Color by:"), colorModeCombo_);
 
     // The four display toggles that stood here — element symbols, atomic
     // indices, hydrogens, gradient bonds — moved to the viewport toolbar.
     // Each was a single viewport-wide bit rather than a per-cast setting, and
     // they are the switches flipped most often while reading a structure, so
     // a dock the user may have collapsed was the wrong place for them.
-
-    connect(scalarLabelsButton_, &QPushButton::toggled, viewport_,
-            &ViewportWidget::setShowCoordinationLabels);
-    connect(gradientButton, &QPushButton::clicked, this, [this] {
-        auto* dialog = new CustomGradientColoringDialog(viewport_, this);
-        dialog->setAttribute(Qt::WA_DeleteOnClose);
-        dialog->show();
-    });
-    // Modal for the same reason Cast Setup is: its rows are the cast list,
-    // and letting another editor resize that list underneath it would leave
-    // both showing stale indices.
-    connect(castColorsButton_, &QPushButton::clicked, this, [this] {
-        CastColorsDialog dialog(viewport_, viewport_->structure(), this);
-        dialog.exec();
-    });
 
     connect(colorModeCombo_, &QComboBox::currentIndexChanged,
             this, &RepresentationPanel::applyColorMode);
@@ -483,14 +434,24 @@ QWidget* RepresentationPanel::buildAppearanceTab()
     // one place to assign a pair's chemistry instead of two.
 
     // --- Editors ------------------------------------------------------------
-    // The three that open a window, below Opacity rather than mixed in with
-    // the display toggles above. They are a different kind of act — a click
-    // here costs a dialog, a click up there flips a bit — and mixing the two
-    // on one strip of identical square buttons meant the only way to know
-    // which you were about to get was to have learned the glyph.
+    // Every control that opens a window, gathered here at the BOTTOM of the
+    // panel rather than scattered up beside the dropdowns they configure.
+    //
+    // The colouring satellites — Cast colors, Edit gradient coloring, Show
+    // CN/GCN values — used to ride on the "Color by:" row, on the argument
+    // that a control belongs beside the question it answers. That argument
+    // stopped holding once there were three of them: the row became a
+    // dropdown squeezed against three anonymous square buttons, the dropdown
+    // itself the first thing to lose width, and the buttons were still
+    // identical squares whose meaning had to be learned from the glyph. Down
+    // here they are the same KIND of act as the other editors — a click costs
+    // a dialog — and the row they left behind is a plain, full-width dropdown
+    // again.
     //
     // Order is by what they edit, widening outward: one element, then the
-    // bonds between elements, then the polyhedron a coordination shell forms.
+    // bonds between elements, then the polyhedron a coordination shell forms,
+    // then the phase a whole neighbourhood forms — and finally the two
+    // colour-mapping editors and the value read-out toggle.
     auto* dialogRow = new QHBoxLayout;
     dialogRow->setSpacing(4);
     const auto makeDialogButton = [page, dialogRow](const QString& icon,
@@ -515,6 +476,36 @@ QWidget* RepresentationPanel::buildAppearanceTab()
         QStringLiteral("box-1-fill"),
         tr("Edit Polyhedral… — coordination-polyhedra opacity, edge wireframe "
            "and per-cation coordination cutoffs."));
+    // Directly beside Edit Polyhedral, because the two read the same thing at
+    // two scales: the polyhedron is one atom's coordination shell drawn, the
+    // phase is what that shell's TOPOLOGY identifies the site as.
+    phaseColorsButton_ = makeDialogButton(
+        QStringLiteral("shapes-fill"),
+        tr("Phase colors… — the flat color each identified local structure "
+           "takes under \"Color by: Phase\" (fcc, hcp, bcc, icosahedral, "
+           "cubic / hexagonal diamond, or unidentified), with the atom count "
+           "carrying each one."));
+    castColorsButton_ = makeDialogButton(
+        QStringLiteral("palette-line"),
+        tr("Cast colors… — the flat color each cast takes under \"Cast\" "
+           "coloring. Casts without an explicit pick cycle a default "
+           "palette."));
+    // Enabled only under "Cast" colouring. A button that appears and vanishes
+    // with the mode reads as a layout glitch; one that greys in and out reads
+    // as a dependency.
+    castColorsButton_->setEnabled(false);
+    auto* gradientButton = makeDialogButton(
+        QStringLiteral("color-filter-fill"),
+        tr("Edit gradient coloring… — which per-atom property is mapped, "
+           "through which gradient, over which value range."));
+    // The ramp says which atoms differ; this says by how much. A GCN of 6.75
+    // against 7.50 is a distinction no colour scale conveys.
+    scalarLabelsButton_ = makeDialogButton(
+        QStringLiteral("hashtag"),
+        tr("Show CN / GCN values — print each atom's value of the property "
+           "selected in \"Color by\" on the 3D viewport."));
+    scalarLabelsButton_->setCheckable(true);
+    scalarLabelsButton_->setChecked(viewport_->showCoordinationLabels());
     dialogRow->addStretch(1);
     form->addRow(dialogRow);
 
@@ -530,6 +521,27 @@ QWidget* RepresentationPanel::buildAppearanceTab()
         auto* dialog = new PolyhedralSettingsDialog(viewport_, this);
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->show();
+    });
+    // Modal, like Cast Colors: it also reports live counts, and letting the
+    // structure change underneath it would leave the table describing atoms
+    // that are no longer there.
+    connect(phaseColorsButton_, &QPushButton::clicked, this, [this] {
+        PhaseColorsDialog dialog(viewport_, this);
+        dialog.exec();
+    });
+    connect(scalarLabelsButton_, &QPushButton::toggled, viewport_,
+            &ViewportWidget::setShowCoordinationLabels);
+    connect(gradientButton, &QPushButton::clicked, this, [this] {
+        auto* dialog = new CustomGradientColoringDialog(viewport_, this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->show();
+    });
+    // Modal for the same reason Cast Setup is: its rows are the cast list,
+    // and letting another editor resize that list underneath it would leave
+    // both showing stale indices.
+    connect(castColorsButton_, &QPushButton::clicked, this, [this] {
+        CastColorsDialog dialog(viewport_, viewport_->structure(), this);
+        dialog.exec();
     });
 
     // "Complete with hydrogens" used to sit beside the toggle above. It moved
@@ -632,16 +644,24 @@ void RepresentationPanel::loadSelectedCast()
         opacitySlider_->setValue(
             static_cast<int>(std::lround(cast.opacity * 100.0f)));
     }
-    // Nothing to print when the cast is coloured by element or by cast: CPK
-    // is a lookup and a cast is a label — neither is a measured quantity, so
-    // the toggle would produce empty labels.
+    // Nothing to print when the cast is coloured by element, by cast or by
+    // phase: CPK is a lookup and a cast and a phase are labels — none is a
+    // measured quantity, so the toggle would produce empty labels.
     if (scalarLabelsButton_)
         scalarLabelsButton_->setEnabled(
             cast.colorMode != render::ColorMode::Element
-            && cast.colorMode != render::ColorMode::Cast);
+            && cast.colorMode != render::ColorMode::Cast
+            && cast.colorMode != render::ColorMode::Phase);
     if (castColorsButton_)
         castColorsButton_->setEnabled(cast.colorMode
                                       == render::ColorMode::Cast);
+    // Phase colors stays reachable whatever the mode: unlike the cast palette
+    // it also reports the phase POPULATIONS, which is a measurement worth
+    // opening on its own — "how much of this cell is still fcc" is often the
+    // whole question, and greying the only place that answers it behind a
+    // colour mode would hide it.
+    if (phaseColorsButton_)
+        phaseColorsButton_->setEnabled(true);
 }
 
 void RepresentationPanel::openCastSetup()

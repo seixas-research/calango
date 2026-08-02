@@ -14,6 +14,7 @@
 #include <functional>
 
 class QCheckBox;
+class QGroupBox;
 class QJsonArray;
 class QPainter;
 class QPushButton;
@@ -33,6 +34,17 @@ namespace calango::gui {
 /// Paint a color-swatch button — the "click to pick a color" buttons in the
 /// Representation, Lighting and Unit Cell & Axes panels.
 void setButtonColor(QPushButton* button, const QColor& color);
+
+/// Hide/show the QFormLayout row (label + field) that `field` occupies inside
+/// `group`'s form layout. No-op when the group has no form layout or the field
+/// is not in it.
+///
+/// The reason every engine settings group reaches for this: an inapplicable
+/// control that is merely DISABLED reads as broken, while one that is absent
+/// reads as "this engine does not have that". A basis set greyed out under a
+/// plane-wave module looks like a bug in the dialog; a basis set that is not
+/// there looks like the truth, which it is.
+void setFormRowVisible(QGroupBox* group, QWidget* field, bool visible);
 
 /// The label a volumetric file registered from a finished run should carry in
 /// the Volumetric Data dock — "Hartree potential" rather than

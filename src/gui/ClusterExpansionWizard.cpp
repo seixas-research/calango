@@ -114,6 +114,21 @@ QWidget* ClusterExpansionWizard::buildSettingsPage()
            "backends."));
     relaxForm->addRow(tr("Max steps (each):"), maxStepsSpin_);
 
+    // Variable-cell relaxation, built by the SAME helper the standalone
+    // Geometry Optimization module uses — the identical filters, stress-mask
+    // presets and Voigt ticks.
+    //
+    // It belongs here rather than being someone else's problem because a
+    // cluster-expansion hull is a comparison of energies, and a fixed-cell
+    // energy and a relaxed-cell energy are not the same quantity. Substituting
+    // an alloy into a host almost always changes its lattice parameter, so a
+    // fixed-cell batch charges every off-stoichiometry configuration for a
+    // strain it would not actually carry, and the hull comes out biased toward
+    // the endpoints — the ordered phases in the middle look less stable than
+    // they are. Turning this on costs stress evaluations per step and is the
+    // right default for anything that will be published.
+    cell_.build(relaxGroup, relaxForm, [this] { refreshPreview(); });
+
     continueOnFailureCheck_ =
         new QCheckBox(tr("Continue when a configuration fails"), relaxGroup);
     continueOnFailureCheck_->setChecked(true);
@@ -130,6 +145,10 @@ QWidget* ClusterExpansionWizard::buildSettingsPage()
                            static_cast<QWidget*>(maxStepsSpin_)}) {
             w->setEnabled(!on);
         }
+        // A single-point pass takes no steps, so a cell filter would wrap an
+        // optimizer that never runs. Withdrawn as a unit rather than left
+        // enabled and silently ignored by the generated script.
+        cell_.setAvailable(!on);
         refreshPreview();
     });
 
@@ -215,7 +234,13 @@ core::ClusterExpansionRunConfig ClusterExpansionWizard::runConfig() const
         static_cast<core::Optimizer>(optimizerCombo_->currentIndex());
     config.calculator.fmax = fmaxSpin_->value();
     config.calculator.maxSteps = maxStepsSpin_->value();
+    cell_.applyTo(config.calculator);
     config.singlePointOnly = singlePointCheck_->isChecked();
+    // A single-point pass takes no steps to relax a cell in. setAvailable()
+    // already greys the controls out; clearing the flag here is what keeps a
+    // stale tick from reaching the generator if the two ever get out of step.
+    if (config.singlePointOnly)
+        config.calculator.relaxCell = false;
     config.concentrationElement =
         concentrationCombo_->currentData().toString().toStdString();
     config.useEnsembleEndpoints = endpointReferenceCheck_->isChecked();

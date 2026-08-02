@@ -16,6 +16,15 @@ enum class ColorMode {
     /// StructureRenderer::castColor()). Not a scalar mapping: casts are
     /// nominal groups, so there is no gradient and no legend range.
     Cast,
+    /// One flat colour per identified LOCAL STRUCTURE — fcc, hcp, bcc,
+    /// icosahedral, cubic/hexagonal diamond, or none of them (see
+    /// core::identifyStructuralPhases).
+    ///
+    /// Nominal like Cast rather than scalar like CN: "hcp" is not a larger
+    /// number than "fcc", and putting the seven labels on a gradient would
+    /// invent an ordering that means nothing. Colours come from the phase
+    /// palette in the Style, edited through "Phase colors…".
+    Phase,
 };
 
 /// Gradients for scalar color mapping. Viridis…Cividis are the

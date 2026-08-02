@@ -1,6 +1,7 @@
 #include "gui/SpectralHeatmapWidget.hpp"
 
 #include "gui/GuiUtils.hpp"
+#include "gui/PlotPalette.hpp"
 
 #include <QFile>
 #include <QFileDialog>
@@ -18,9 +19,12 @@ namespace calango::gui {
 
 namespace {
 
-const QColor kBackground(18, 20, 24);
-const QColor kText(210, 213, 220);
-const QColor kFrame(120, 124, 134);
+// Standardized light plot canvas (gui/PlotPalette.hpp). The background is
+// also what every sub-threshold pixel of the heatmap keeps, so an unfolded
+// spectral function now reads as ink on white — the form it is published in.
+const QColor kBackground = PlotPalette::canvas;
+const QColor kText = PlotPalette::text;
+const QColor kFrame = PlotPalette::spine;
 constexpr double kTickPointSize = 15.0; // matches the band/PDOS plots
 
 QString prettyLabel(const QString& raw)
@@ -188,7 +192,7 @@ void SpectralHeatmapWidget::paintEvent(QPaintEvent*)
     painter.fillRect(rect(), kBackground);
 
     if (!spectral_.valid() || heatmap_.isNull()) {
-        painter.setPen(QColor(150, 150, 150));
+        painter.setPen(PlotPalette::placeholder);
         painter.drawText(rect(), Qt::AlignCenter,
                          tr("Run Simulation → Effective Bands…\n"
                             "to compute an unfolded spectral function."));
@@ -238,7 +242,10 @@ void SpectralHeatmapWidget::paintEvent(QPaintEvent*)
             const double x = toX(specialX_[i]);
             if (x < plot.left() - 0.5 || x > plot.right() + 0.5)
                 continue;
-            painter.setPen(QPen(QColor(210, 213, 220, 110), 1.0));
+            painter.setPen(QPen(QColor(PlotPalette::spine.red(),
+                                       PlotPalette::spine.green(),
+                                       PlotPalette::spine.blue(), 90),
+                                1.0));
             painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
             painter.setPen(kText);
             const QString label = prettyLabel(
@@ -252,7 +259,7 @@ void SpectralHeatmapWidget::paintEvent(QPaintEvent*)
 
     // Fermi / zero reference.
     if (eLo < 0.0 && eHi > 0.0 && shiftFermi_) {
-        painter.setPen(QPen(QColor(255, 199, 88), 1.4, Qt::DashLine));
+        painter.setPen(QPen(PlotPalette::reference, 1.4, Qt::DashLine));
         painter.drawLine(QPointF(plot.left(), toY(0.0)),
                          QPointF(plot.right(), toY(0.0)));
     }

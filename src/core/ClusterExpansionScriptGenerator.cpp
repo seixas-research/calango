@@ -25,13 +25,27 @@ std::string ClusterExpansionScriptGenerator::generate(
            "from ase.io import read, write\n"
         << (c.singlePointOnly
                 ? ""
-                : "from ase.optimize import " + toString(c.calculator.optimizer) + "\n")
-        << "\n"
+                : "from ase.optimize import " + toString(c.calculator.optimizer) + "\n");
+    // Variable-cell relaxation: the same ASE filter the standalone Geometry
+    // Optimization run uses, imported the same way (ase.filters moved out of
+    // ase.constraints in 3.23, and a batch script has to run on both).
+    const bool relaxCell = !c.singlePointOnly && c.calculator.relaxCell;
+    if (relaxCell) {
+        const char* filter = c.calculator.cellFilter == CellFilter::UnitCell
+            ? "UnitCellFilter"
+            : "FrechetCellFilter";
+        out << "try:\n"
+            << "    from ase.filters import " << filter << " as _CellFilter\n"
+               "except ImportError:  # ASE < 3.23\n"
+               "    from ase.constraints import UnitCellFilter as _CellFilter\n";
+    }
+    out << "\n"
         << AseScriptGenerator::jsonLoggerPreamble()
         << "input_path = r\"" << c.inputTrajectory << "\"\n"
         << "output_path = r\"" << c.outputTrajectory << "\"\n"
         << "fmax = " << c.calculator.fmax << "\n"
         << "max_steps = " << c.calculator.maxSteps << "\n"
+        << "relax_cell = " << (relaxCell ? "True" : "False") << "\n"
         << "concentration_element = "
         << (c.concentrationElement.empty()
                 ? std::string("None")
@@ -104,13 +118,38 @@ std::string ClusterExpansionScriptGenerator::generate(
                "        energy = atoms.get_potential_energy()\n"
                "        record[\"steps\"] = 0\n";
     } else {
-        out << "        opt = " << toString(c.calculator.optimizer)
-            << "(atoms, logfile=\"-\")\n"
+        if (relaxCell) {
+            out << "        # Variable-cell: relax the atomic positions AND\n"
+                   "        # the lattice of this configuration.\n";
+            if (c.calculator.cellCustomMask) {
+                // Voigt-order mask [xx, yy, zz, yz, xz, xy]: 1 = relax.
+                out << "        _target = _CellFilter(atoms, mask=[";
+                for (int i = 0; i < 6; ++i)
+                    out << (c.calculator.cellMask[i] ? "1" : "0")
+                        << (i < 5 ? ", " : "");
+                out << "])\n";
+            } else {
+                out << "        _target = _CellFilter(atoms, "
+                       "hydrostatic_strain="
+                    << (c.calculator.cellHydrostatic ? "True" : "False")
+                    << ")\n";
+            }
+        }
+        out << "        opt = " << toString(c.calculator.optimizer) << "("
+            << (relaxCell ? "_target" : "atoms")
+            << ", logfile=\"-\")\n"
                "        opt.run(fmax=fmax, steps=max_steps)\n"
                "        energy = atoms.get_potential_energy()\n"
                "        record[\"steps\"] = int(opt.nsteps)\n"
                "        record[\"converged\"] = bool(\n"
                "            abs(atoms.get_forces()).max() <= fmax)\n";
+        if (relaxCell)
+            // The relaxed cell is the reason the run was slower, so it goes in
+            // the record: a hull entry whose volume changed by 8 % is telling
+            // you something the energy alone does not.
+            out << "        record[\"volume\"] = float(atoms.get_volume())\n"
+                   "        record[\"cell\"] = "
+                   "[list(map(float, _v)) for _v in atoms.cell]\n";
     }
     out << "        record[\"energy\"] = float(energy)\n"
            "        record[\"energy_per_atom\"] = float(energy) / max(1, len(atoms))\n"
@@ -187,6 +226,7 @@ std::string ClusterExpansionScriptGenerator::generate(
            "\n"
            "summary = {\n"
            "    \"concentration_element\": concentration_element,\n"
+           "    \"relax_cell\": relax_cell,\n"
            "    \"species\": species,\n"
            "    \"reference_a\": reference_a,\n"
            "    \"reference_b\": reference_b,\n"

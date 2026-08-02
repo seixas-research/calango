@@ -1587,7 +1587,12 @@ void MainWindow::createMenusAndDocks()
     energySpec.marker = QStringLiteral("CALANGO_ENERGY");
     energySpec.csvColumn = QStringLiteral("total_energy_eV");
     energySpec.exportBaseName = QStringLiteral("energy.csv");
-    energySpec.lineColor = QColor(102, 153, 255);
+    // The four metric curves are drawn on the standardized white plot canvas
+    // (gui/PlotPalette.hpp), so they are the saturated matplotlib "tab10"
+    // family rather than the pastels the old dark canvas needed: a tint that
+    // reads as a bright line on near-black washes out to nearly nothing on
+    // white, and these plots are exported and printed.
+    energySpec.lineColor = QColor(0x1f, 0x77, 0xb4); // blue
     energySpec.decimals = 3;
 
     MetricPlotWidget::MetricSpec temperatureSpec;
@@ -1602,7 +1607,7 @@ void MainWindow::createMenusAndDocks()
     temperatureSpec.csvColumn = QStringLiteral("temperature_K");
     temperatureSpec.csvTargetColumn = QStringLiteral("target_K");
     temperatureSpec.exportBaseName = QStringLiteral("temperature.csv");
-    temperatureSpec.lineColor = QColor(235, 110, 80);
+    temperatureSpec.lineColor = QColor(0xd6, 0x27, 0x28); // red
     temperatureSpec.decimals = 1;
     temperatureSpec.exportDecimals = 2;
     temperatureSpec.flatPadding = 5.0;
@@ -1622,7 +1627,7 @@ void MainWindow::createMenusAndDocks()
     forceSpec.marker = QStringLiteral("CALANGO_FMAX");
     forceSpec.csvColumn = QStringLiteral("max_force_eV_per_A");
     forceSpec.exportBaseName = QStringLiteral("max_force.csv");
-    forceSpec.lineColor = QColor(110, 210, 130);
+    forceSpec.lineColor = QColor(0x2c, 0xa0, 0x2c); // green
     forceSpec.decimals = 3;
     forceSpec.flatPadding = 0.05;
     // max|F| is non-negative and converges *to* zero — the distance from the
@@ -1642,7 +1647,7 @@ void MainWindow::createMenusAndDocks()
     pressureSpec.csvColumn = QStringLiteral("pressure_GPa");
     pressureSpec.csvTargetColumn = QStringLiteral("target_GPa");
     pressureSpec.exportBaseName = QStringLiteral("pressure.csv");
-    pressureSpec.lineColor = QColor(188, 140, 255);
+    pressureSpec.lineColor = QColor(0x94, 0x67, 0xbd); // purple
     pressureSpec.decimals = 3;
     pressureSpec.flatPadding = 0.1;
     // Pressure is signed (a cell under tension reports negative P), so its

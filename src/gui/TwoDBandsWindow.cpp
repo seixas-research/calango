@@ -1,6 +1,7 @@
 #include "gui/TwoDBandsWindow.hpp"
 
 #include "gui/GuiUtils.hpp"
+#include "gui/PlotPalette.hpp"
 #include "gui/VolumeViewWidget.hpp"
 #include "gui/VolumetricStyle.hpp"
 #include "render/ColorMap.hpp"
@@ -230,9 +231,12 @@ std::vector<std::array<double, 2>> zonePolygon(
 
 // The map view's palette, shared with the effective-bands heatmap so the two
 // hand-painted plots read as one family.
-const QColor kMapBackground(18, 20, 24);
-const QColor kMapText(210, 213, 220);
-const QColor kMapFrame(120, 124, 134);
+// Standardized light plot canvas (gui/PlotPalette.hpp), shared with the
+// band/PDOS and effective-bands plots so a figure built from several of them
+// reads as one document.
+const QColor kMapBackground = PlotPalette::canvas;
+const QColor kMapText = PlotPalette::text;
+const QColor kMapFrame = PlotPalette::spine;
 // And these two match the 3D view's zone outline and label colours, so the
 // same objects keep the same colour across the selector.
 const QColor kMapZone(120, 190, 255);
@@ -473,7 +477,7 @@ protected:
         painter.fillRect(rect(), kMapBackground);
 
         if (!data_.valid()) {
-            painter.setPen(QColor(150, 150, 150));
+            painter.setPen(PlotPalette::placeholder);
             painter.drawText(
                 rect(), Qt::AlignCenter | Qt::TextWordWrap,
                 TwoDBandsWindow::tr(

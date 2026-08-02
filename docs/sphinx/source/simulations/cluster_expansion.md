@@ -37,7 +37,32 @@ Per-configuration relaxation:
 | {guilabel}`Optimizer` | LBFGS | cheapest per step in batch; also BFGS, FIRE, GPMin, MDMin |
 | {guilabel}`Force convergence` | 0.05 eV/Å | per configuration |
 | {guilabel}`Max steps (each)` | 200 | the worst case is N × this many force evaluations — keep it modest on DFT |
+| {guilabel}`Relax the unit cell (variable-cell)` | off | also optimize each configuration's lattice — see below |
+| {guilabel}`Cell filter` | FrechetCellFilter | or UnitCellFilter |
+| {guilabel}`Stress mask` | Anisotropic | Anisotropic / Hydrostatic / 2Dxy (in-plane only) / Custom Voigt mask |
+| {guilabel}`Voigt components` | all | the six `[xx, yy, zz, yz, xz, xy]` ticks — a read-out under 2Dxy, editable under Custom |
 | {guilabel}`Continue when a configuration fails` | on | a diverging decoration is recorded as failed and the batch moves on |
+
+### Relaxing the cell
+
+The variable-cell controls are **the same ones the standalone
+{doc}`/simulations/tasks` Geometry Optimization module offers** — the identical
+filters, stress-mask presets and Voigt ticks, built from one shared
+implementation so the two cannot drift apart.
+
+They belong here because a cluster-expansion hull is a *comparison of
+energies*, and a fixed-cell energy and a relaxed-cell energy are not the same
+quantity. Substituting an alloying element into a host almost always changes
+its lattice parameter, so a fixed-cell batch charges every off-stoichiometry
+configuration for a strain it would not actually carry — and the hull comes out
+biased toward the endpoints, with the ordered phases in the middle looking less
+stable than they are.
+
+It costs a stress evaluation per step, so it is off by default; turn it on for
+anything that will be published. The relaxed volume and cell of each
+configuration are recorded in `cluster_expansion.json` alongside its energy.
+{guilabel}`Single-point only` withdraws the whole group — a cell filter would
+wrap an optimizer that never runs.
 
 Formation energy and hull:
 

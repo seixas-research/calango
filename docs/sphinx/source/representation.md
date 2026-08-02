@@ -22,9 +22,21 @@ Read top-down, the panel answers *what you are styling* before *how*:
 | {guilabel}`Shading` | Which BRDF shades the scene — {guilabel}`Classic (Blinn-Phong)`, {guilabel}`PBR` or {guilabel}`Toon` |
 | {guilabel}`Style` | Surface finish — {guilabel}`Standard`, {guilabel}`Shiny`, {guilabel}`Matte`, {guilabel}`Glassy` |
 | {guilabel}`Mode` | Representation mode (below) |
-| {guilabel}`Color by` | Atom coloring mode, plus the gradient editor and value-label buttons |
+| {guilabel}`Color by` | Atom coloring mode |
 | {guilabel}`Atom radius`, {guilabel}`Bond width` | Global scale factors, **0.20–3.00×**, default 1.00 — slider for coarse moves, spin box for exact values |
 | {guilabel}`Opacity` | Flat per-cast transparency, **0.00–1.00**, default 1.00 |
+| *(bottom button row)* | Every editor that opens a window — see below |
+
+The **bottom button row** gathers everything that costs a dialog, in order of
+what it edits, widening outward: {guilabel}`Element Settings…` (one element),
+{guilabel}`Bond Editor…` (the bonds between elements),
+{guilabel}`Edit Polyhedral…` (the polyhedron a coordination shell forms),
+{guilabel}`Phase colors…` (the structure a whole neighbourhood forms), then
+{guilabel}`Cast colors…`, {guilabel}`Edit gradient coloring…` and the
+{guilabel}`Show CN / GCN values` toggle. The last three used to ride on the
+{guilabel}`Color by` row; they moved down here so that row is a plain
+full-width dropdown again, and so a click anywhere in the strip means the same
+kind of thing.
 
 **Every styling row is per-cast.** All atoms start in cast 0, so with casts
 unused the panel behaves as a single global style. Split a substrate and an
@@ -76,7 +88,7 @@ The Representation panel — every styling row edits the cast selected at the to
 
 ## Coloring atoms
 
-{guilabel}`Color by` offers four mappings, applied consistently to atoms and
+{guilabel}`Color by` offers six mappings, applied consistently to atoms and
 to their halves of each bond:
 
 | Mode | Maps |
@@ -85,9 +97,16 @@ to their halves of each bond:
 | {guilabel}`Coordination number (CN)` | Discrete coordination numbers on a gradient |
 | {guilabel}`Generalized CN (GCN)` | Continuous generalized coordination numbers — distinguishes terraces, steps, edges and vertices on nanoparticles and slabs |
 | {guilabel}`Custom property` | Any per-atom scalar the structure carries: charges, force magnitudes, extended-XYZ columns, computed fields |
+| {guilabel}`Cast` | One flat color per cast — the substrate-vs-adsorbate figure, where the groups rather than the elements carry the story |
+| {guilabel}`Phase` | The **local crystal structure** each atom's neighbours form (see below) |
 
-The rest of the mapping lives in the {guilabel}`Custom Gradient Coloring`
-dialog (the color-filter button on the {guilabel}`Color by` row):
+The first four are scalar mappings on a gradient; {guilabel}`Cast` and
+{guilabel}`Phase` are **nominal** — their categories have no ordering, so
+they take a flat color each rather than a ramp, edited from the button row at
+the bottom of the panel.
+
+The rest of the scalar mapping lives in the {guilabel}`Custom Gradient Coloring`
+dialog (the color-filter button in that bottom row):
 
 - {guilabel}`Gradient` — **13 color maps**: Viridis, Plasma, Turbo, Inferno,
   Magma, Cividis, Hot, Afmhot, Coolwarm, Rainbow, Greys, Spectral, Gnuplot.
@@ -102,7 +121,7 @@ dialog (the color-filter button on the {guilabel}`Color by` row):
   frame would make the same color mean different values as the animation
   plays.
 
-The `#` button beside the dropdown prints each atom's mapped value directly
+The `#` button in the bottom row prints each atom's mapped value directly
 on the viewport — the ramp says *which* atoms differ; the labels say *by how
 much* (a GCN of 6.75 against 7.50 is a distinction no color scale conveys).
 It is disabled in Element mode, which has no scalar to print. Color mapping
@@ -118,6 +137,57 @@ and Spectral are diverging maps — right for signed quantities such as charges
 or potentials, where zero should read as neutral. Rainbow is included because
 reviewers sometimes ask for it, not because it is a good default.
 :::
+
+### Local structural phase
+
+{guilabel}`Color by: Phase` labels every atom with the **crystal structure its
+neighbours form**, using adaptive common-neighbour analysis (a-CNA, Stukowski
+2012). Seven labels:
+
+| Label | Signature | Default color |
+|---|---|---|
+| FCC | 12 neighbours, all (4,2,1) | green |
+| HCP | 12 neighbours, 6 × (4,2,1) + 6 × (4,2,2) | red |
+| BCC | 14 neighbours, 6 × (4,4,4) + 8 × (6,6,6) | blue |
+| Icosahedral | 12 neighbours, all (5,5,5) | yellow |
+| Cubic diamond | 4 neighbours whose 12 *second* neighbours form an fcc shell | light blue |
+| Hexagonal diamond | as above, with an hcp second shell | cyan |
+| Other / unidentified | nothing matched | grey |
+
+**The label is per atom, not per cell**, and that is the point: in a
+nanoparticle the core reads fcc while the {111} facets read hcp, and inside a
+deformed metal the hcp-labelled planes *are* the stacking faults — a coherent
+twin boundary shows as two adjacent hcp planes in an otherwise fcc grain. The
+interesting objects are the places where the label changes.
+
+{guilabel}`Other` is a real answer rather than a failure: every surface atom,
+every defect core and all of a liquid land there, and in a melt it is correct
+for nearly every atom. It is drawn a quiet grey for that reason — it is
+usually most of a real structure, and a loud color for "unidentified" would
+swamp the phases the figure is about.
+
+The cutoffs are **adaptive**: each atom's bond cutoff is derived from its own
+neighbour distances, placed midway between the shell that must be included and
+the one that must be excluded. A single global cutoff cannot do this — the
+value that resolves fcc's first shell from its second falls in the middle of
+bcc's first-plus-second shell, so a cell containing both phases (which is what
+a martensitic transformation *is*) would have no correct choice. There is
+therefore no cutoff to set, and the analysis survives the thermal disorder of
+an MD snapshot without tuning.
+
+{guilabel}`Phase colors…` (beside {guilabel}`Edit Polyhedral…` in the bottom
+button row) edits the seven colors and reports **how many atoms carry each
+label**, with percentages — "how much of this cell is still fcc" is often the
+whole question, so the dialog stays reachable in every color mode rather than
+only under Phase coloring. {guilabel}`Reset` returns a structure to the
+standard CNA palette, which follows the OVITO / AtomEye convention so a
+Calango figure and one from any other structure-identification tool can be read
+side by side.
+
+Diamond has no CNA signature of its own — a four-fold-coordinated atom shares
+almost no neighbours with anyone — so it is identified indirectly, from its
+second shell. {guilabel}`Detect diamond structures` switches that extra pass
+off for pure-metal trajectories where no diamond phase can appear.
 
 ### Per-element styling
 

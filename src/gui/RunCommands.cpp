@@ -66,6 +66,34 @@ QString defaultTemplate(core::CalculatorKind kind)
         // mpirun for a parallel build); without {script} it is exported as
         // the solver command rather than run as the job line.
         return QStringLiteral("dftb+");
+    case core::CalculatorKind::Abinit:
+        // ABINIT reads its input from stdin in the ASE-driven form.
+        return QStringLiteral("mpirun -np {cores} abinit < {input} > {output}");
+    case core::CalculatorKind::FhiAims:
+        // aims writes to stdout and takes no input argument at all: it reads
+        // control.in / geometry.in from the working directory.
+        return QStringLiteral("mpirun -np {cores} aims.x > {output}");
+    case core::CalculatorKind::NwChem:
+        return QStringLiteral("mpirun -np {cores} nwchem {input} > {output}");
+    case core::CalculatorKind::OpenMx:
+        // OpenMX takes the .dat path as an argument and OpenMP threads with
+        // -nt; the MPI ranks and the threads multiply, so the thread count is
+        // left at 1 here rather than silently oversubscribing.
+        return QStringLiteral("mpirun -np {cores} openmx {input} -nt 1 > {output}");
+    case core::CalculatorKind::Fleur:
+        // The SCF binary. inpgen (the input generator ASE calls first) is
+        // resolved separately, through $ASE_FLEUR_INPGEN.
+        return QStringLiteral("mpirun -np {cores} fleur_MPI");
+    case core::CalculatorKind::Cp2k:
+        // NOT an input/output pair: ASE speaks to a PERSISTENT cp2k_shell
+        // process over a pipe, so this is the shell command itself, and the
+        // '-s' that puts it in that mode is part of it.
+        return QStringLiteral("mpirun -np {cores} cp2k_shell.psmp -s");
+    case core::CalculatorKind::Amber:
+        // sander's own flags carry the file names (ASE fills -i/-o/-p/-c), so
+        // the template is the launcher plus the binary. -O overwrites, which
+        // is what makes a re-run of the same job directory work.
+        return QStringLiteral("sander -O ");
     default:
         break;
     }
@@ -141,6 +169,28 @@ QString solverCommandVariable(core::CalculatorKind kind)
         // normally bakes the gmx path into the calculator, and this is the
         // fallback ASE's FileIOCalculator machinery checks.
         return QStringLiteral("ASE_GROMACS_COMMAND");
+    case core::CalculatorKind::Abinit:
+        return QStringLiteral("ASE_ABINIT_COMMAND");
+    case core::CalculatorKind::FhiAims:
+        return QStringLiteral("ASE_AIMS_COMMAND");
+    case core::CalculatorKind::NwChem:
+        return QStringLiteral("ASE_NWCHEM_COMMAND");
+    case core::CalculatorKind::OpenMx:
+        return QStringLiteral("ASE_OPENMX_COMMAND");
+    case core::CalculatorKind::Fleur:
+        // The SCF binary. ase-fleur resolves the input generator separately
+        // through ASE_FLEUR_INPGEN, which the generated script sets up.
+        return QStringLiteral("ASE_FLEUR_COMMAND");
+    case core::CalculatorKind::Cp2k:
+        // Not a solver command in the usual sense — it is the persistent
+        // cp2k_shell ASE keeps a pipe open to — but it travels the same way,
+        // and the generated script reads exactly this variable.
+        return QStringLiteral("ASE_CP2K_COMMAND");
+    case core::CalculatorKind::Amber:
+        // ASE's Amber calculator takes `amber_exe` as a constructor argument
+        // rather than from the environment, and the wizard bakes it in; this
+        // is the fallback for a hand-edited script that drops it.
+        return QStringLiteral("ASE_AMBER_COMMAND");
     default:
         break;
     }

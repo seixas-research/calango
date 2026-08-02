@@ -1,5 +1,7 @@
 #include "gui/LinePlotWidget.hpp"
 
+#include "gui/PlotPalette.hpp"
+
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -56,11 +58,11 @@ void LinePlotWidget::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.fillRect(rect(), QColor(28, 30, 34));
+    painter.fillRect(rect(), PlotPalette::canvas);
 
     const QRectF plot = plotRect();
     if (x_.size() < 2) {
-        painter.setPen(QColor(150, 150, 150));
+        painter.setPen(PlotPalette::placeholder);
         painter.drawText(rect(), Qt::AlignCenter, tr("No data — press Compute"));
         return;
     }
@@ -73,22 +75,22 @@ void LinePlotWidget::paintEvent(QPaintEvent*)
     };
 
     // Grid + ticks (5 divisions per axis).
-    painter.setPen(QColor(60, 64, 72));
     painter.setFont(QFont(font().family(), font().pointSize() - 1));
     for (int t = 0; t <= 5; ++t) {
         const double fx = xMin_ + (xMax_ - xMin_) * t / 5.0;
         const double fy = yMin_ + (yMax_ - yMin_) * t / 5.0;
-        painter.setPen(QColor(52, 56, 63));
+        painter.setPen(PlotPalette::grid);
         painter.drawLine(QPointF(toX(fx), plot.top()), QPointF(toX(fx), plot.bottom()));
         painter.drawLine(QPointF(plot.left(), toY(fy)), QPointF(plot.right(), toY(fy)));
-        painter.setPen(QColor(165, 170, 180));
+        painter.setPen(PlotPalette::tickText);
         painter.drawText(QRectF(toX(fx) - 30, plot.bottom() + 4, 60, 14),
                          Qt::AlignHCenter, QString::number(fx, 'g', 3));
         painter.drawText(QRectF(0, toY(fy) - 7, 58, 14), Qt::AlignRight,
                          QString::number(fy, 'g', 3));
     }
-    painter.setPen(QColor(120, 125, 135));
+    painter.setPen(PlotPalette::spine);
     painter.drawRect(plot);
+    painter.setPen(PlotPalette::text);
     painter.drawText(QRectF(plot.left(), height() - 20.0, plot.width(), 16),
                      Qt::AlignHCenter, xLabel_);
     painter.save();
@@ -102,7 +104,7 @@ void LinePlotWidget::paintEvent(QPaintEvent*)
     path.moveTo(toX(x_.front()), toY(y_.front()));
     for (std::size_t i = 1; i < x_.size(); ++i)
         path.lineTo(toX(x_[i]), toY(y_[i]));
-    painter.setPen(QPen(QColor(102, 153, 255), 2.0));
+    painter.setPen(QPen(PlotPalette::series, 2.0));
     painter.setBrush(Qt::NoBrush);
     painter.drawPath(path);
 
@@ -110,19 +112,25 @@ void LinePlotWidget::paintEvent(QPaintEvent*)
     if (hoverIndex_ >= 0 && hoverIndex_ < static_cast<int>(x_.size())) {
         const auto i = static_cast<std::size_t>(hoverIndex_);
         const QPointF p(toX(x_[i]), toY(y_[i]));
-        painter.setPen(QPen(QColor(255, 158, 26), 1.0, Qt::DashLine));
+        painter.setPen(QPen(PlotPalette::highlight, 1.0, Qt::DashLine));
         painter.drawLine(QPointF(p.x(), plot.top()), QPointF(p.x(), plot.bottom()));
         painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(255, 158, 26));
+        painter.setBrush(PlotPalette::highlight);
         painter.drawEllipse(p, 3.5, 3.5);
-        painter.setPen(QColor(235, 238, 245));
         const QString readout = QStringLiteral("%1 = %2   %3 = %4")
                                     .arg(xLabel_)
                                     .arg(x_[i], 0, 'f', 3)
                                     .arg(yLabel_)
                                     .arg(y_[i], 0, 'f', 3);
-        painter.drawText(QRectF(plot.left() + 6, plot.top() + 4, plot.width() - 12, 16),
-                         Qt::AlignLeft, readout);
+        // On a white canvas the read-out sits directly on top of the curve it
+        // is describing, so it gets a plate of its own rather than relying on
+        // the (now absent) dark fill for contrast.
+        const QRectF textBox(plot.left() + 6, plot.top() + 4, plot.width() - 12,
+                             16);
+        painter.setBrush(PlotPalette::readoutFill);
+        painter.drawRect(textBox.adjusted(-3, -1, 3, 1));
+        painter.setPen(PlotPalette::text);
+        painter.drawText(textBox, Qt::AlignLeft, readout);
     }
 }
 

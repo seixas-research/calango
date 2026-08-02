@@ -2,6 +2,7 @@
 
 #include "gui/CalculatorParameters.hpp"
 #include "gui/GpawElectronicRows.hpp"
+#include "gui/GuiUtils.hpp"
 #include "gui/SettingsManager.hpp"
 #include "gui/HubbardParametersDialog.hpp"
 
@@ -59,22 +60,10 @@ const auto kLegacyVaspPotcarKey = QStringLiteral("jobs/vaspPotcarPath");
 /// Preferences → External Files has no DFTB entry to defer to.
 const auto kDftbSlakoKey = QStringLiteral("jobs/dftbSlakoDir");
 
-/// Hide/show the QFormLayout row (label + field) that `field` occupies inside
-/// `group`'s form layout. No-op if the group has no form layout or the field
-/// isn't in it.
-void setFormRowVisible(QGroupBox* group, QWidget* field, bool visible)
-{
-    if (!group || !field)
-        return;
-    auto* form = qobject_cast<QFormLayout*>(group->layout());
-    if (!form)
-        return;
-    int row = -1;
-    QFormLayout::ItemRole role{};
-    form->getWidgetPosition(field, &row, &role);
-    if (row >= 0)
-        form->setRowVisible(row, visible);
-}
+// setFormRowVisible() used to live here as a file-local helper. It moved to
+// GuiUtils when the second set of engine groups needed it — the same rule the
+// rest of that file follows: an identical private copy in two places is a fix
+// that only lands in one of them.
 } // namespace
 
 SimulationWizardBase::SimulationWizardBase(QWidget* parent) : QDialog(parent) {}
@@ -179,33 +168,84 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     auto* engineForm = new QFormLayout(engineWidget_);
     engineForm->setContentsMargins(0, 0, 0, 0);
     calcCombo_ = new QComboBox(engineWidget_);
-    // A subclass may restrict the engine list (e.g. the Electronic Bands
-    // wizard offers only DFT-capable calculators). Only allowed kinds appear.
-    const auto addCalc = [this](const QString& label, core::CalculatorKind kind) {
-        if (calculatorAllowed(kind))
-            calcCombo_->addItem(label, static_cast<int>(kind));
+    // The engine list, GROUPED BY FAMILY: the ab-initio codes first, then the
+    // semi-empirical ones, then the machine-learning potentials, then the
+    // classical force fields and the engines that run them.
+    //
+    // The order is defined here and not by core::CalculatorKind, whose values
+    // are serialized into saved projects and are therefore append-only — a menu
+    // that followed the enum would put every engine added after 2025 at the
+    // bottom forever, and it already had ML potentials, DFT codes and test
+    // potentials interleaved in the order somebody happened to write them.
+    //
+    // Within each family the entries are ordered by how commonly they are the
+    // answer rather than alphabetically: someone opening this dropdown is
+    // usually looking for GPAW, Quantum ESPRESSO or VASP, and making them read
+    // past ABINIT and CP2K to find one is a cost paid on every single run.
+    //
+    // A subclass may restrict the list (the Electronic Bands wizard offers only
+    // DFT-capable calculators), so only allowed kinds appear.
+    //
+    // Separators are therefore PENDING rather than inserted: separate() only
+    // records that the next entry starts a new family, and the divider is
+    // written when — and if — that entry actually arrives. Inserting eagerly
+    // leaves a divider at the end of a list whose remaining families were all
+    // filtered out, which is both an empty section header and an extra row in
+    // count() that every caller counting engines has to know to subtract.
+    bool separatorPending = false;
+    const auto addCalc = [this, &separatorPending](
+                             const QString& label, core::CalculatorKind kind) {
+        if (!calculatorAllowed(kind))
+            return;
+        if (separatorPending && calcCombo_->count() > 0)
+            calcCombo_->insertSeparator(calcCombo_->count());
+        separatorPending = false;
+        calcCombo_->addItem(label, static_cast<int>(kind));
     };
-    addCalc(tr("MACE (ML potential)"), core::CalculatorKind::Mace);
-    addCalc(tr("Quantum ESPRESSO (DFT)"), core::CalculatorKind::QuantumEspresso);
-    addCalc(tr("SIESTA (DFT)"), core::CalculatorKind::Siesta);
-    addCalc(tr("ORCA (quantum chemistry)"), core::CalculatorKind::Orca);
+    const auto separate = [&separatorPending] { separatorPending = true; };
+
+    // -- Ab initio / DFT ----------------------------------------------------
     addCalc(tr("GPAW (DFT)"), core::CalculatorKind::Gpaw);
+    addCalc(tr("Quantum ESPRESSO (DFT)"), core::CalculatorKind::QuantumEspresso);
     addCalc(tr("VASP (DFT)"), core::CalculatorKind::Vasp);
-    addCalc(tr("EMT (fast test potential)"), core::CalculatorKind::EMT);
-    addCalc(tr("ASAP (fast EMT / OpenKIM)"), core::CalculatorKind::Asap);
-    addCalc(tr("Lennard-Jones"), core::CalculatorKind::LennardJones);
-    // Machine-learning interatomic potentials.
-    addCalc(tr("DeepMD-kit (ML potential)"), core::CalculatorKind::DeepMd);
-    addCalc(tr("NequIP (ML potential)"), core::CalculatorKind::NequIp);
-    addCalc(tr("Allegro (ML potential)"), core::CalculatorKind::Allegro);
+    addCalc(tr("ABINIT (plane-wave / PAW DFT)"), core::CalculatorKind::Abinit);
+    addCalc(tr("CP2K (Gaussian and plane waves)"), core::CalculatorKind::Cp2k);
+    addCalc(tr("FHI-aims (all-electron DFT)"), core::CalculatorKind::FhiAims);
+    addCalc(tr("SIESTA (numerical-orbital DFT)"), core::CalculatorKind::Siesta);
+    addCalc(tr("OpenMX (pseudo-atomic-orbital DFT)"),
+            core::CalculatorKind::OpenMx);
+    addCalc(tr("FLEUR (full-potential LAPW)"), core::CalculatorKind::Fleur);
+    addCalc(tr("NWChem (quantum chemistry / plane-wave DFT)"),
+            core::CalculatorKind::NwChem);
+    addCalc(tr("ORCA (quantum chemistry)"), core::CalculatorKind::Orca);
+    separate();
+
+    // -- Semi-empirical / tight binding -------------------------------------
+    // An electronic structure, but from a fitted parameterization rather than
+    // from a basis and a functional — between the ab-initio codes above and the
+    // potentials below, and priced accordingly.
+    addCalc(tr("xTB (semi-empirical tight binding)"), core::CalculatorKind::Xtb);
+    addCalc(tr("DFTB+ (tight binding DFT)"), core::CalculatorKind::DftbPlus);
+    separate();
+
+    // -- Machine-learning interatomic potentials ----------------------------
+    addCalc(tr("MACE (ML potential)"), core::CalculatorKind::Mace);
     addCalc(tr("CHGNet (universal ML potential)"), core::CalculatorKind::ChgNet);
     addCalc(tr("MatterSim (universal ML potential)"),
             core::CalculatorKind::MatterSim);
     addCalc(tr("FAIRChem / OCP (ML potential)"), core::CalculatorKind::FairChem);
+    addCalc(tr("NequIP (ML potential)"), core::CalculatorKind::NequIp);
+    addCalc(tr("Allegro (ML potential)"), core::CalculatorKind::Allegro);
+    addCalc(tr("DeepMD-kit (ML potential)"), core::CalculatorKind::DeepMd);
+    separate();
+
+    // -- Classical force fields and the engines that run them ---------------
     addCalc(tr("LAMMPS (classical MD)"), core::CalculatorKind::Lammps);
-    addCalc(tr("xTB (semi-empirical tight binding)"), core::CalculatorKind::Xtb);
-    addCalc(tr("DFTB+ (tight binding DFT)"), core::CalculatorKind::DftbPlus);
     addCalc(tr("GROMACS (biomolecular MM)"), core::CalculatorKind::Gromacs);
+    addCalc(tr("Amber (biomolecular MM)"), core::CalculatorKind::Amber);
+    addCalc(tr("EMT (fast test potential)"), core::CalculatorKind::EMT);
+    addCalc(tr("ASAP (fast EMT / OpenKIM)"), core::CalculatorKind::Asap);
+    addCalc(tr("Lennard-Jones"), core::CalculatorKind::LennardJones);
     engineForm->addRow(tr("Calculation engine:"), calcCombo_);
     layout->addWidget(engineWidget_);
     connect(calcCombo_, &QComboBox::currentIndexChanged, this,
@@ -260,6 +300,11 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     layout->addWidget(buildXtbGroup(page));
     layout->addWidget(buildDftbGroup(page));
     layout->addWidget(buildGromacsGroup(page));
+    // ABINIT, FHI-aims, NWChem, OpenMX, FLEUR, CP2K and Amber. Held in their
+    // own class rather than as seven more group builders here: this file
+    // already carries eight of them, and what those seven need from it is only
+    // the shared cutoff / k-grid rows above.
+    extendedEngines_.build(page, layout, [this] { refreshPreview(); });
 
     // Subclass-supplied extra settings (e.g. Single-point's convergence group,
     // folded in here when it has no separate Stage 1).
@@ -2226,11 +2271,20 @@ void SimulationWizardBase::updateCalculatorEnabled()
         if (xtbGroup_) xtbGroup_->setVisible(false);
         if (dftbGroup_) dftbGroup_->setVisible(false);
         if (gromacsGroup_) gromacsGroup_->setVisible(false);
+        extendedEngines_.hideAll();
         if (baselineInheritNote_) baselineInheritNote_->setVisible(false);
         updateCalculatorExtras(kind);
         return;
     }
 
+    // The engines that share the standard DFT chrome (the "Mode & Basis Set"
+    // and "Electronic Convergence" groups built around GPAW's controls). NOT
+    // the same as "is this an ab-initio code": ABINIT, FHI-aims, OpenMX, FLEUR
+    // and NWChem each keep their convergence and basis settings in their own
+    // group, because what those settings ARE differs — a species-defaults tier
+    // and a plane-wave cutoff are not the same kind of knob, and offering one
+    // in the other's row is how SIESTA once ended up with its real-space mesh
+    // labelled "plane-wave cutoff".
     const bool isDft = kind == core::CalculatorKind::QuantumEspresso
         || kind == core::CalculatorKind::Vasp || kind == core::CalculatorKind::Gpaw
         || kind == core::CalculatorKind::Siesta;
@@ -2250,11 +2304,13 @@ void SimulationWizardBase::updateCalculatorEnabled()
     // owned by the sweep stage in a wizard that hides the k-grid row
     // (K-points Convergence), which would leave an empty titled box here —
     // so the group hides as a whole with them.
-    // DFTB+ samples the Brillouin zone too (its settings group defers to
-    // these controls for the k-grid), so it joins the DFT engines here even
-    // though it shares none of the other DFT chrome.
-    const bool isDftbPlus = kind == core::CalculatorKind::DftbPlus;
-    bzGroup_->setVisible((isDft || isDftbPlus) && showsKpointGridRow());
+    // Every engine that samples the Brillouin zone with the shared
+    // Monkhorst-Pack row defers to these controls for its k-grid, whether or
+    // not it shares any of the other DFT chrome — DFTB+ does not, and neither
+    // do ABINIT, FHI-aims, OpenMX or FLEUR, but all five need a mesh. The list
+    // lives in core::usesKpointGrid() so this and the generated scripts cannot
+    // disagree about who gets one.
+    bzGroup_->setVisible(core::usesKpointGrid(kind) && showsKpointGridRow());
     convGroup_->setVisible(isGpaw || (isDft && hasConvergenceExtras()));
     spinGroup_->setVisible(isDft && hasSpinExtras());
     outputGroup_->setVisible(isGpaw && showsGpawDensityExport());
@@ -2289,6 +2345,9 @@ void SimulationWizardBase::updateCalculatorEnabled()
     }
     if (gromacsGroup_)
         gromacsGroup_->setVisible(kind == core::CalculatorKind::Gromacs);
+    // ABINIT / FHI-aims / NWChem / OpenMX / FLEUR / CP2K / Amber — one group
+    // each, shown for its own engine and hidden otherwise.
+    extendedEngines_.updateVisibility(kind);
 
     const bool isVasp = kind == core::CalculatorKind::Vasp;
     const bool isEspresso = kind == core::CalculatorKind::QuantumEspresso;
@@ -2316,7 +2375,8 @@ void SimulationWizardBase::updateCalculatorEnabled()
     // neither applies — and for a wizard whose sweep stage owns the mesh
     // (K-points Convergence), where Γ-centering is defined with the rest of
     // the sweep and a second toggle here would be a control the script ignores.
-    const bool showsGamma = (isGpaw || isVasp) && showsKpointGridRow();
+    const bool showsGamma =
+        core::usesPlaneWaveCutoff(kind) && showsKpointGridRow();
     setFormRowVisible(bzGroup_, gpawBzTogglesRow_, showsGamma);
     if (gpawSymmetryOffCheck_)
         gpawSymmetryOffCheck_->setVisible(isGpaw && showsGpawSymmetryToggle());
@@ -2329,10 +2389,13 @@ void SimulationWizardBase::updateCalculatorEnabled()
     if (dftXcNote_)
         setFormRowVisible(modeBasisGroup_, dftXcNote_, false);
 
-    // "Mode & Basis Set" carries GPAW's mode/grid/basis and the shared cutoff
-    // row. With the cutoff row withdrawn there is nothing in it for QE or
-    // SIESTA but an empty titled box, so the group hides with its contents.
-    modeBasisGroup_->setVisible(isDft && !isEspresso && !isSiesta);
+    // "Mode & Basis Set" carries GPAW's mode/grid/basis and the shared
+    // plane-wave cutoff row. With the cutoff row withdrawn there is nothing in
+    // it but an empty titled box, so the group appears for exactly the engines
+    // that take that cutoff — GPAW, VASP and ABINIT. QE's cutoff is a PAIR and
+    // lives in its own group; SIESTA, FHI-aims, OpenMX and FLEUR have no
+    // plane-wave basis at all.
+    modeBasisGroup_->setVisible(core::usesPlaneWaveCutoff(kind));
 
     // Smearing lives in QE's own group (its names and its Ry width are QE's,
     // not GPAW's), so the shared convergence group is withdrawn for it too;
@@ -2392,13 +2455,19 @@ void SimulationWizardBase::updateCalculatorEnabled()
     if (isGpaw)
         updateGpawRows();
     else
-        // QE and SIESTA are withdrawn from the shared cutoff row. QE's cutoff
-        // is a PAIR (ecutwfc + ecutrho) and lives with its partner in the QE
-        // group; SIESTA has no plane-wave cutoff at all, and the row used to
-        // map silently onto its real-space mesh — so raising it to converge
-        // "the basis" refined a grid while the basis stayed exactly as small.
+        // Only the engines that genuinely expand in plane waves get this
+        // row (core::usesPlaneWaveCutoff): VASP's ENCUT and ABINIT's ecut mean
+        // exactly what GPAW's PW(ecut) does.
+        //
+        // Everyone else is withdrawn from it, and not as a cosmetic choice.
+        // QE's cutoff is a PAIR (ecutwfc + ecutrho) and lives with its partner
+        // in the QE group. SIESTA, FHI-aims, OpenMX and FLEUR have no
+        // plane-wave basis at all, and the row used to map silently onto
+        // whatever their nearest parameter was — for SIESTA, its real-space
+        // mesh — so raising it to converge "the basis" refined a grid while
+        // the basis stayed exactly as small.
         setFormRowVisible(modeBasisGroup_, cutoffRow_,
-                          isDft && !isEspresso && !isSiesta
+                          core::usesPlaneWaveCutoff(kind)
                               && showsPlaneWaveCutoffRow());
     if (inheritGpaw) {
         setFormRowVisible(modeBasisGroup_, gpawXcCombo_, false);
@@ -2408,12 +2477,22 @@ void SimulationWizardBase::updateCalculatorEnabled()
         baselineInheritNote_->setVisible(inheritGpaw);
 
     refreshRunCommand();
-    if (calcSettingsHint_)
+    if (calcSettingsHint_) {
+        // "No additional settings" is now true only of the parameter-free
+        // potentials (EMT, Lennard-Jones, ASAP): every other engine has a
+        // group of its own on this page, and telling the user there is nothing
+        // to configure while a group box sits directly below saying otherwise
+        // is worse than saying nothing.
+        const bool configurable =
+            kind != core::CalculatorKind::EMT
+            && kind != core::CalculatorKind::LennardJones
+            && kind != core::CalculatorKind::Asap;
         calcSettingsHint_->setText(
-            (isDft || isMace || isOrca)
+            configurable
                 ? tr("Settings for %1:").arg(calcCombo_->currentText())
                 : tr("%1 has no additional settings — continue to the script "
                      "review.").arg(calcCombo_->currentText()));
+    }
     // Engine decided (whether by construction or by the combo): pull any
     // per-element suggested cutoff / k-grid for it. After the row updates,
     // so a suggestion lands in controls already shaped for this engine.
@@ -2719,6 +2798,9 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
         c.gromacsExtraMdp =
             gromacsMdpEdit_->toPlainText().trimmed().toStdString();
     }
+
+    // -- ABINIT / FHI-aims / NWChem / OpenMX / FLEUR / CP2K / Amber ---------
+    extendedEngines_.applyTo(c);
     return c;
 }
 

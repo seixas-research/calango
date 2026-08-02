@@ -2,6 +2,7 @@
 
 #include "core/Coordination.hpp"
 #include "core/HydrogenBonds.hpp"
+#include "core/StructuralPhase.hpp"
 #include "core/Vec3.hpp"
 #include "render/Camera.hpp"
 #include "render/StructureRenderer.hpp"
@@ -79,6 +80,26 @@ public:
     QString customScalarField() const { return customField_; }
 
     void setCoordinationOptions(const core::CoordinationOptions& options);
+
+    /// Tuning for the local structural-phase analysis behind
+    /// render::ColorMode::Phase. Re-runs the analysis (and rebuilds) only when
+    /// some cast is actually coloured by phase.
+    void setStructuralPhaseOptions(const core::StructuralPhaseOptions& options);
+    core::StructuralPhaseOptions structuralPhaseOptions() const
+    {
+        return phaseOptions_;
+    }
+    /// Colour used for `phase` under ColorMode::Phase, defaults included.
+    QColor phaseColor(core::StructuralPhase phase) const
+    {
+        return render::StructureRenderer::phaseColor(phase, renderer_.style());
+    }
+    /// Set (or clear, with an invalid colour) the explicit pick for `phase`.
+    void setPhaseColor(core::StructuralPhase phase, const QColor& color);
+    /// How many atoms currently carry each label — the counts the Phase Colors
+    /// dialog shows beside its swatches. Empty until the analysis has run,
+    /// i.e. until some cast asks for Phase colouring.
+    std::array<int, core::kStructuralPhaseCount> phaseCounts() const;
 
     /// Min/max of the active scalar mapping (legend range); `valid` is
     /// false in Element mode or when no scalars are available.
@@ -509,6 +530,7 @@ private:
     std::set<int> selection_;
     QString customField_;
     core::CoordinationOptions coordinationOptions_;
+    core::StructuralPhaseOptions phaseOptions_;
     ScalarRange scalarRange_;
     QColor backgroundColor_{26, 28, 33};
     bool structureDirty_ = false;

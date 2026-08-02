@@ -61,6 +61,59 @@ enum class CalculatorKind {
     /// recognition), so it targets proteins / water / known ligands — a bare
     /// inorganic crystal will not run.
     Gromacs,
+
+    // -- Appended (same append-only rule as everything above) ---------------
+    //
+    // Every entry below is reached through an ASE CALCULATOR, like every
+    // engine above it. That is the bar for appearing in this list at all: the
+    // generated script builds a real `atoms.calc`, so the ASE optimizers,
+    // molecular dynamics, vibrational and phonon machinery drive these codes
+    // exactly as they drive GPAW or VASP, and nothing in the application has
+    // to special-case them.
+    //
+    // Codes with no ASE calculator are deliberately NOT here. Reaching them
+    // would mean generating a bespoke adapter — a script-local Calculator
+    // subclass shelling out to a binary and parsing its output — and an engine
+    // whose ASE integration is written fresh in every generated file is not
+    // the same product as one the ASE project maintains.
+
+    /// ABINIT — plane-wave / PAW DFT, through `ase.calculators.abinit`.
+    /// Needs the `abinit` binary and a pseudopotential set; which set is
+    /// spelled by `pps` (fhi, paw, jth, pot, hgh…), and the tables it names
+    /// are what the run actually uses.
+    Abinit,
+    /// FHI-aims — all-electron, numeric atom-centred orbitals, through
+    /// `ase.calculators.aims`. Its basis is a SPECIES DEFAULTS directory
+    /// (light / tight / really_tight), not a cutoff: the tier IS the accuracy
+    /// setting, and there is no plane-wave cutoff to converge.
+    FhiAims,
+    /// NWChem — Gaussian-basis quantum chemistry and plane-wave DFT in one
+    /// package, through `ase.calculators.nwchem`. Which of the two runs is
+    /// decided by `theory` (dft/scf/mp2/ccsd/tce for molecules; pspw/band/paw
+    /// for periodic systems), and picking a molecular theory for a periodic
+    /// cell is the standard way an NWChem input is quietly wrong.
+    NwChem,
+    /// OpenMX — pseudo-atomic-orbital DFT, through `ase.calculators.openmx`.
+    /// Like SIESTA it has no plane-wave basis cutoff; its "energy cutoff" is
+    /// the real-space grid the Hartree/XC terms are integrated on.
+    OpenMx,
+    /// FLEUR — full-potential linearized augmented plane wave, through the
+    /// `ase-fleur` package. ASE's own `ase.calculators.fleur` is a stub that
+    /// raises and points there, so `pip install ase-fleur` IS the ASE
+    /// integration for modern FLEUR — an ASE calculator like every other entry
+    /// here, just distributed separately.
+    Fleur,
+    /// CP2K — Gaussian-and-plane-waves DFT / QM-MM, through
+    /// `ase.calculators.cp2k`, which talks to a persistent `cp2k_shell`
+    /// process. Its cutoff is the PLANE-WAVE GRID cutoff of the GPW auxiliary
+    /// basis, not a wavefunction cutoff: the wavefunctions are the Gaussian
+    /// basis set, which is chosen separately.
+    Cp2k,
+    /// Amber — classical biomolecular MM, through `ase.calculators.amber`,
+    /// which drives `sander`. An ENGINE, like LAMMPS and GROMACS: the physics
+    /// is entirely in the prmtop topology file, which must be built beforehand
+    /// (tleap / antechamber) — nothing here can type a structure.
+    Amber,
 };
 
 /// How the LAMMPS calculator talks to LAMMPS. ASE ships two interfaces, and
@@ -88,6 +141,118 @@ constexpr bool isMlipCalculator(CalculatorKind kind)
         || kind == CalculatorKind::NequIp || kind == CalculatorKind::Allegro
         || kind == CalculatorKind::ChgNet || kind == CalculatorKind::MatterSim
         || kind == CalculatorKind::FairChem;
+}
+
+/// Which family an engine belongs to.
+///
+/// This exists to give the engine dropdown ONE ordering, defined here rather
+/// than in the order somebody happened to append entries to CalculatorKind.
+/// The enum's order is frozen — its values are serialized into saved projects —
+/// so a menu that followed it would put a 2026 addition of a DFT code below the
+/// machine-learning potentials forever.
+enum class CalculatorFamily {
+    /// Solves an electronic structure from first principles: DFT, and the
+    /// Gaussian-basis quantum-chemistry methods. What they share, and what
+    /// puts them at the top of the menu, is that the accuracy knobs are basis
+    /// sets, functionals and Brillouin-zone sampling.
+    AbInitio,
+    /// Semi-empirical / tight-binding: an electronic structure, but from a
+    /// fitted parameterization rather than from the Schrödinger equation and a
+    /// basis. Between the two — orders of magnitude faster than DFT, and still
+    /// carrying electrons, which the potentials below do not.
+    SemiEmpirical,
+    /// Machine-learning interatomic potentials: a trained model in place of a
+    /// Hamiltonian.
+    MachineLearning,
+    /// Classical force fields and the engines that run them (EMT, Lennard-Jones,
+    /// LAMMPS, GROMACS, Amber, CHARMM). No electrons at all.
+    Classical,
+};
+
+constexpr CalculatorFamily calculatorFamily(CalculatorKind kind)
+{
+    switch (kind) {
+    case CalculatorKind::Gpaw:
+    case CalculatorKind::QuantumEspresso:
+    case CalculatorKind::Vasp:
+    case CalculatorKind::Abinit:
+    case CalculatorKind::Cp2k:
+    case CalculatorKind::FhiAims:
+    case CalculatorKind::Siesta:
+    case CalculatorKind::OpenMx:
+    case CalculatorKind::Fleur:
+    case CalculatorKind::NwChem:
+    case CalculatorKind::Orca:
+        return CalculatorFamily::AbInitio;
+    case CalculatorKind::Xtb:
+    case CalculatorKind::DftbPlus:
+        return CalculatorFamily::SemiEmpirical;
+    case CalculatorKind::Mace:
+    case CalculatorKind::DeepMd:
+    case CalculatorKind::NequIp:
+    case CalculatorKind::Allegro:
+    case CalculatorKind::ChgNet:
+    case CalculatorKind::MatterSim:
+    case CalculatorKind::FairChem:
+        return CalculatorFamily::MachineLearning;
+    case CalculatorKind::EMT:
+    case CalculatorKind::LennardJones:
+    case CalculatorKind::Asap:
+    case CalculatorKind::Lammps:
+    case CalculatorKind::Gromacs:
+    case CalculatorKind::Amber:
+        break;
+    }
+    return CalculatorFamily::Classical;
+}
+
+/// True for every engine that solves a self-consistent electronic structure
+/// from first principles — i.e. everything in CalculatorFamily::AbInitio.
+///
+/// The DFT-specific wizard chrome (plane-wave cutoff, Brillouin-zone sampling,
+/// smearing, spin) is NOT gated on this: several of these codes take none of
+/// those in the form the shared rows offer. SIESTA, OpenMX and FHI-aims have no
+/// plane-wave cutoff at all; ORCA, NWChem and PySCF are molecular by default
+/// and sample no Brillouin zone. Each one's own settings group says which of
+/// the shared rows apply — see SimulationWizardBase::updateCalculatorEnabled().
+constexpr bool isAbInitioCalculator(CalculatorKind kind)
+{
+    return calculatorFamily(kind) == CalculatorFamily::AbInitio;
+}
+
+/// True for the periodic codes that expand in plane waves and therefore take
+/// the shared "plane-wave cutoff" row and a Monkhorst-Pack k-grid.
+///
+/// Deliberately NOT "is it a DFT code". Handing a numeric-orbital or an
+/// all-electron APW code a plane-wave cutoff is not a cosmetic mislabel: the
+/// number gets mapped onto whatever that code's nearest parameter is (SIESTA's
+/// real-space mesh, historically) and raising it to "converge the basis"
+/// refines something else entirely while the basis stays exactly as small.
+constexpr bool usesPlaneWaveCutoff(CalculatorKind kind)
+{
+    return kind == CalculatorKind::Gpaw || kind == CalculatorKind::Vasp
+        || kind == CalculatorKind::Abinit;
+}
+
+/// True for the engines that sample the Brillouin zone with the shared
+/// Monkhorst-Pack k-grid row.
+constexpr bool usesKpointGrid(CalculatorKind kind)
+{
+    switch (kind) {
+    case CalculatorKind::Gpaw:
+    case CalculatorKind::QuantumEspresso:
+    case CalculatorKind::Vasp:
+    case CalculatorKind::Siesta:
+    case CalculatorKind::Abinit:
+    case CalculatorKind::FhiAims:
+    case CalculatorKind::OpenMx:
+    case CalculatorKind::Fleur:
+    case CalculatorKind::DftbPlus:
+        return true;
+    default:
+        break;
+    }
+    return false;
 }
 
 /// Compute device shared by every MLIP backend. Enum order is the combo order.
@@ -1035,6 +1200,145 @@ struct CalculatorConfig {
     /// solvent (water, acetonitrile, ...).
     std::string orcaSolvationModel;
     std::string orcaSolvent = "water";
+
+    // -- ABINIT (plane-wave / PAW DFT) --------------------------------------
+    //
+    // ASE's Abinit calculator takes `ecut` in eV and converts; the shared
+    // `planeWaveCutoffEv` above is therefore the cutoff, exactly as for GPAW's
+    // PW mode and VASP's ENCUT, and ABINIT gets no second cutoff field.
+    std::string abinitXc = "PBE";
+    /// `pps` — WHICH pseudopotential family the run uses, and so which tables
+    /// it reads: "fhi" (norm-conserving Fritz-Haber), "paw" (the ATOMPAW /
+    /// JTH-style sets), "jth", "pot" (Teter), "hgh", "hgh.k", "tm".
+    ///
+    /// Not a quality knob with a safe default: the table set installed on a
+    /// given machine determines which values work at all, and a `pps` naming
+    /// files that are not there fails at the first element ABINIT looks up.
+    std::string abinitPps = "fhi";
+    /// Directory holding the pseudopotential tables (ASE's `pp_paths`). Like
+    /// VASP's POTCAR root this is per-INSTALLATION state; empty leaves ASE to
+    /// consult its own configuration file.
+    std::string abinitPseudoDir;
+    double abinitToldfe = 1.0e-6; ///< SCF total-energy tolerance, Hartree
+    int abinitNstep = 100;        ///< SCF iteration cap
+    /// Free-form ABINIT input variables appended verbatim, one `key value` per
+    /// line ("nbdbuf 4", "diemac 12.0"). ABINIT has several hundred; this is
+    /// the escape hatch that stops the wizard from being a ceiling.
+    std::string abinitExtra;
+
+    // -- FHI-aims (all-electron, numeric atom-centred orbitals) -------------
+    //
+    // No plane-wave cutoff exists here. The basis IS the species-defaults
+    // TIER: light / tight / really_tight are pre-tabulated, hierarchical basis
+    // + grid + accuracy sets, and moving between them is how an aims
+    // calculation is converged.
+    std::string aimsXc = "pbe";
+    /// The species_defaults directory (AIMS_SPECIES_DIR). Per-installation.
+    std::string aimsSpeciesDir;
+    /// "light" | "intermediate" | "tight" | "really_tight". Joined onto
+    /// `aimsSpeciesDir` — the directory holds one subfolder per tier.
+    std::string aimsSpeciesTier = "light";
+    /// sc_accuracy_etot (eV) — the SCF total-energy convergence criterion.
+    double aimsScfAccuracyEv = 1.0e-6;
+    /// `relativistic`. "atomic_zora scalar" is the standard choice and is
+    /// REQUIRED for anything past the first rows: a non-relativistic aims run
+    /// on a 5d element is not merely less accurate, it is wrong. "none" exists
+    /// for light-element benchmarks.
+    std::string aimsRelativistic = "atomic_zora scalar";
+    /// Extra control.in keywords, one per line, appended verbatim.
+    std::string aimsExtra;
+
+    // -- NWChem -------------------------------------------------------------
+    //
+    // NWChem is two codes in one binary, and `theory` picks which. The
+    // molecular modules (dft/scf/mp2/ccsd/tce) work in a Gaussian basis and
+    // ignore periodicity; the plane-wave ones (pspw/band/paw) are the periodic
+    // DFT. Running "dft" on a crystal silently treats it as an isolated
+    // cluster, which is the standard way an NWChem input comes out wrong.
+    std::string nwchemTheory = "dft";
+    std::string nwchemXc = "b3lyp";  ///< only read by theory = dft
+    std::string nwchemBasis = "6-31G*"; ///< only read by the molecular modules
+    /// Per-process memory, as NWChem's `memory` directive spells it
+    /// ("2000 mb", "4 gb"). Empty leaves NWChem's own default.
+    std::string nwchemMemory = "2000 mb";
+    /// Extra directives, one per line, merged into the generated input.
+    std::string nwchemExtra;
+
+    // -- OpenMX (pseudo-atomic-orbital DFT) ---------------------------------
+    //
+    // Like SIESTA: NO plane-wave basis cutoff. Its "energy cutoff" is the
+    // real-space integration grid for the Hartree and XC terms.
+    std::string openmxXc = "GGA-PBE"; ///< LDA | LSDA-CA | LSDA-PW | GGA-PBE
+    /// DFT_DATA_PATH — the directory holding OpenMX's pseudopotential (VPS)
+    /// and pseudo-atomic-orbital (PAO) databases. Per-installation.
+    std::string openmxDataPath;
+    /// scf.energycutoff (eV in the UI; the script converts to the Ry OpenMX
+    /// reads). The REAL-SPACE grid, not a basis cutoff.
+    double openmxEnergyCutoffEv = 2721.0; ///< ~200 Ry, OpenMX's usual default
+    double openmxScfCriterionEv = 1.0e-4; ///< scf.criterion
+    int openmxScfMaxIter = 100;           ///< scf.maxIter
+    /// scf.EigenvalueSolver: "Band" for a periodic crystal, "Cluster" for a
+    /// molecule, "DC" for the O(N) divide-conquer solver on large cells.
+    std::string openmxEigenSolver = "Band";
+
+    // -- FLEUR (full-potential LAPW) ----------------------------------------
+    //
+    // Through the `ase-fleur` package; ASE's own ase.calculators.fleur is a
+    // stub that raises and points at it, so that package IS the ASE
+    // integration for modern FLEUR.
+    /// K_max (bohr^-1) — FLEUR's interstitial plane-wave cutoff. Its own
+    /// convergence parameter, in reciprocal length rather than the
+    /// dimensionless RKmax WIEN2k uses.
+    double fleurKmax = 4.0;
+    std::string fleurXc = "pbe";
+    /// The `inpgen` / `fleur` executables' directory. Empty relies on PATH.
+    std::string fleurRoot;
+    double fleurEnergyConvHtr = 1.0e-5; ///< itmax convergence (Hartree)
+    int fleurMaxIterations = 60;
+
+    // -- CP2K (Gaussian and plane waves) ------------------------------------
+    //
+    // CP2K's cutoff is the PLANE-WAVE GRID cutoff of the GPW auxiliary basis —
+    // the grid the density is represented on — NOT a wavefunction cutoff. The
+    // wavefunctions are the Gaussian basis set, chosen separately, which is
+    // why this engine has both a `cutoff` and a `basis_set`. Treating the
+    // cutoff as the basis-set knob is the classic CP2K mistake: it converges
+    // the grid while the basis stays exactly as small.
+    double cp2kCutoffEv = 5442.0;   ///< ~400 Ry, ASE's own default
+    /// REL_CUTOFF — the grid a Gaussian of unit exponent is mapped onto, which
+    /// is what actually decides how the multi-grid assigns functions. 60 Ry.
+    double cp2kRelCutoffEv = 816.0;
+    std::string cp2kBasisSet = "DZVP-MOLOPT-SR-GTH";
+    std::string cp2kBasisSetFile = "BASIS_MOLOPT";
+    /// GTH pseudopotential. "auto" lets CP2K pick the one matching the
+    /// functional, which is right whenever the functional is a standard one.
+    std::string cp2kPseudoPotential = "auto";
+    std::string cp2kPotentialFile = "POTENTIAL";
+    std::string cp2kXc = "PBE";
+    int cp2kMaxScf = 50;
+    /// The cp2k_shell command ASE talks to. CP2K is driven through a PERSISTENT
+    /// process rather than one run per evaluation, which is what makes it fast
+    /// for MD — and what makes this a required setting rather than a launch
+    /// command like the other file-IO codes.
+    std::string cp2kCommand = "cp2k_shell";
+    /// Free-form CP2K input sections appended verbatim (`inp`), for the parts
+    /// of a 1000-keyword input no dialog can cover.
+    std::string cp2kExtraInput;
+
+    // -- Amber (classical biomolecular MM) ----------------------------------
+    //
+    // An ENGINE with no force field of its own in the UI sense: the physics is
+    // entirely inside the prmtop topology, which tleap/antechamber build.
+    // Nothing here can type a structure, which is the same constraint GROMACS
+    // has and the reason both refuse an untyped inorganic cell.
+    /// The sander invocation, ASE's `amber_exe`. The trailing "-O " (overwrite)
+    /// is part of ASE's own default and is kept.
+    std::string amberExecutable = "sander -O ";
+    /// The prmtop topology. REQUIRED — without it there is no force field.
+    std::string amberTopologyFile;
+    /// The mdin control file. Generated with a single-point / minimization
+    /// stanza when left empty, so a first run works without one.
+    std::string amberInputFile;
 };
 
 std::string toString(CalculatorKind kind);

@@ -169,7 +169,7 @@ is exact rather than clipped from a parallelogram. Controls:
 band, an insulator's gap edge), {guilabel}`E − E_F` (labels only; the ramp
 always spans the band's full range), and a five-entry colormap shortlist
 (Viridis default) mirroring the unfolding heatmap. The zone outline, Γ
-marker, axis captions and a colorbar are drawn on the dark canvas;
+marker, axis captions and a colorbar are drawn on the plot canvas;
 {guilabel}`Export Image…` renders at 3× for print, and
 {guilabel}`Export CSV…` writes the *computed mesh*, not the folded pixels
 (`kx_frac,ky_frac,kx_1_per_A,ky_1_per_A,energy_eV`).

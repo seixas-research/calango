@@ -2,6 +2,7 @@
 
 #include "core/ClusterExpansionScriptGenerator.hpp"
 #include "core/Structure.hpp"
+#include "gui/CellRelaxationControls.hpp"
 #include "gui/SimulationWizardBase.hpp"
 
 #include <memory>
@@ -65,6 +66,13 @@ private:
     QDoubleSpinBox* referenceASpin_ = nullptr;
     QDoubleSpinBox* referenceBSpin_ = nullptr;
     QCheckBox* continueOnFailureCheck_ = nullptr;
+    /// Variable-cell relaxation for the batch. The SAME control the standalone
+    /// Geometry Optimization module uses — same filters, same stress-mask
+    /// presets, same Voigt ticks — because a hull whose configurations relaxed
+    /// their cells and one whose configurations did not are not comparable,
+    /// and a "simplified" version here would be a second answer to the same
+    /// question that quietly drifts from the first.
+    CellRelaxationControls cell_{this};
 };
 
 } // namespace calango::gui

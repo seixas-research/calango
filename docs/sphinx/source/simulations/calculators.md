@@ -1,27 +1,60 @@
 # Calculation engines
 
-The {guilabel}`Calculation engine` dropdown at the top of every wizard's Calculator Settings stage selects which of ASE's calculators the generated script builds. Nineteen engines are offered; each brings its own settings group, and the page shows only the groups that apply to the current selection.
+The {guilabel}`Calculation engine` dropdown at the top of every wizard's Calculator Settings stage selects which of ASE's calculators the generated script builds. Each engine brings its own settings group, and the page shows only the groups that apply to the current selection.
+
+The list is **grouped by family, separated by dividers**: the *ab initio* codes first, then the semi-empirical ones, then the machine-learning potentials, and finally the classical force fields and the engines that run them. Within a family the order is by how often each one is the answer, not alphabetical.
+
+**Ab initio and quantum chemistry**
+
+| Engine | Kind | Needs in the job environment |
+|---|---|---|
+| GPAW | DFT (Python package) | `gpaw` |
+| Quantum ESPRESSO | Plane-wave DFT | `pw.x` + pseudopotential library |
+| VASP | Plane-wave DFT | licensed binary + POTCAR datasets |
+| ABINIT | Plane-wave / PAW DFT | `abinit` + a pseudopotential table set |
+| CP2K | Gaussian and plane waves | `cp2k_shell` |
+| FHI-aims | All-electron, numeric orbitals | `aims.x` + species defaults |
+| SIESTA | Numerical-orbital DFT | `siesta` binary + pseudopotentials |
+| OpenMX | Pseudo-atomic-orbital DFT | `openmx` + its `DFT_DATA` databases |
+| FLEUR | Full-potential LAPW | `fleur` / `inpgen` + `pip install ase-fleur` |
+| NWChem | Quantum chemistry + plane-wave DFT | `nwchem` |
+| ORCA | Quantum chemistry | the ORCA binaries |
+
+**Semi-empirical**
+
+| Engine | Kind | Needs in the job environment |
+|---|---|---|
+| xTB | Semi-empirical tight binding | `xtb` |
+| DFTB+ | Tight-binding DFT | `dftb+` + a Slater–Koster set |
+
+**Machine-learning interatomic potentials**
 
 | Engine | Kind | Needs in the job environment |
 |---|---|---|
 | MACE | ML potential | `mace-torch` |
-| Quantum ESPRESSO | DFT | `pw.x` + pseudopotential library |
-| SIESTA | DFT | `siesta` binary + pseudopotentials |
-| ORCA | Quantum chemistry | the ORCA binaries |
-| GPAW | DFT (Python package) | `gpaw` |
-| VASP | DFT | licensed binary + POTCAR datasets |
-| EMT | Classical (test) | nothing — ships with ASE |
-| ASAP | Classical | `asap3` (fast C++ EMT / OpenKIM) |
-| Lennard-Jones | Classical | nothing — ships with ASE |
-| DeepMD-kit | ML potential | `deepmd-kit` |
-| NequIP | ML potential | `nequip` |
-| Allegro | ML potential | `nequip` + `allegro` |
 | CHGNet | Universal ML potential | `chgnet` |
 | MatterSim | Universal ML potential | `mattersim` |
 | FAIRChem / OCP | ML potential | `fairchem` |
-| LAMMPS | Classical MD engine | LAMMPS (library or binary) |
+| NequIP | ML potential | `nequip` |
+| Allegro | ML potential | `nequip` + `allegro` |
+| DeepMD-kit | ML potential | `deepmd-kit` |
 
-**EMT and Lennard-Jones run out of the box** and are the right way to test a workflow before committing compute. ASAP is the same physics as EMT in fast C++. The DFT engines other than GPAW generate script skeletons with clearly marked `EDIT ME` lines where a binary path or launch command must be supplied.
+**Classical force fields and engines**
+
+| Engine | Kind | Needs in the job environment |
+|---|---|---|
+| LAMMPS | Classical MD engine | LAMMPS (library or binary) |
+| GROMACS | Biomolecular MM engine | the `gmx` binary |
+| Amber | Biomolecular MM engine | `sander` + a prmtop topology |
+| EMT | Classical (test) | nothing — ships with ASE |
+| ASAP | Classical | `asap3` (fast C++ EMT / OpenKIM) |
+| Lennard-Jones | Classical | nothing — ships with ASE |
+
+**EMT and Lennard-Jones run out of the box** and are the right way to test a workflow before committing compute. ASAP is the same physics as EMT in fast C++. The engines that shell out to a binary generate script skeletons with clearly marked `EDIT ME` lines where a path or launch command must be supplied.
+
+:::{note}
+Every engine here is reached through an **ASE calculator** — the generated script builds a real `atoms.calc`, which is what lets ASE's optimizers, molecular dynamics, vibrational and phonon machinery drive all of them without special-casing any. FLEUR's calculator comes from the separately-installed `ase-fleur` package, which is where ASE's own `ase.calculators.fleur` stub redirects.
+:::
 
 The Python environment each engine runs in is resolved per engine from {menuselection}`Preferences --> Python & Environments` — see {doc}`/simulations/wizards`.
 
@@ -29,7 +62,7 @@ The Python environment each engine runs in is resolved per engine from {menusele
 
 ## The shared DFT layout
 
-The four DFT engines share one set of thematic group boxes, so each decision lives in the same place whichever engine is selected:
+GPAW, VASP, Quantum ESPRESSO and SIESTA share one set of thematic group boxes, so each decision lives in the same place whichever of them is selected. The engines added later keep their convergence and basis settings in their own groups instead, because *what those settings are* differs — a species-defaults tier and a plane-wave cutoff are not the same kind of knob, and offering one in the other's row is exactly how SIESTA once ended up with its real-space mesh labelled "plane-wave cutoff".
 
 - {guilabel}`Mode & Basis Set` — GPAW's mode, the shared plane-wave cutoff row (with VASP's XC beside it), GPAW's XC and the corrections to it (Hubbard U, DFTD4).
 - {guilabel}`Brillouin Zone & k-Points` — the Monkhorst–Pack grid (default **7×7×7**), {guilabel}`Gamma-centered Grid`, and (Single-point only) {guilabel}`Symmetry: off`.
@@ -37,7 +70,9 @@ The four DFT engines share one set of thematic group boxes, so each decision liv
 - {guilabel}`Spin Configurations` — the polarization mode and initial moments.
 - {guilabel}`Density Exports` — GPAW only, on the Single-point wizard only.
 
-The plane-wave cutoff row (default **500 eV**, range 100–2000 eV) serves exactly the two engines that share the concept: GPAW's `PW(ecut)` and VASP's `ENCUT`. **Quantum ESPRESSO and SIESTA never read it** — QE's cutoff is a *pair* and lives in its own group; SIESTA has no plane-wave cutoff at all.
+The plane-wave cutoff row (default **500 eV**, range 100–2000 eV) serves exactly the three engines that share the concept: GPAW's `PW(ecut)`, VASP's `ENCUT` and ABINIT's `ecut`. **No other engine reads it, and the row is hidden for them** — QE's cutoff is a *pair* and lives in its own group; SIESTA, FHI-aims, OpenMX and FLEUR have no plane-wave basis at all. That is not a cosmetic choice: a cutoff offered to a code that has none gets mapped onto whatever its nearest parameter is, and raising it to "converge the basis" then refines something else while the basis stays exactly as small.
+
+The Monkhorst–Pack k-grid row is shown for every engine that samples the Brillouin zone — the four above plus ABINIT, FHI-aims, OpenMX, FLEUR, DFTB+ and NWChem's plane-wave modules.
 
 {guilabel}`Gamma-centered Grid` shifts the mesh so it includes Γ (`kpts={'size': …, 'gamma': True}` for GPAW, Gamma-centered `KPOINTS` for VASP). An even-numbered Monkhorst–Pack mesh misses Γ in every plane-wave code; a hexagonal cell, a Wannier interpolation or any downstream step that needs Γ in the set wants this on.
 
@@ -269,3 +304,137 @@ Driven through `ase.calculators.gromacs.Gromacs`, which orchestrates the `gmx` b
 | {guilabel}`Extra .mdp parameters` | — | free-form `key = value` lines merged into the run parameters |
 
 GROMACS is offered for **single-point evaluation only** — dynamics belong to GROMACS's own tooling, and pretending ASE drives them well would produce runs that look configured and are not; other tasks refuse with an explanation rather than generating a broken script.
+
+---
+
+## ABINIT — plane-wave / PAW DFT
+
+Driven through `ase.calculators.abinit.Abinit`, which writes `abinit.abi`, runs the `abinit` binary and reads the results back. ABINIT is a plane-wave code, so it reads the **shared** plane-wave cutoff and k-grid rows; what its own group adds is the part that has no counterpart elsewhere.
+
+| Control | Default | Meaning |
+|---|---|---|
+| {guilabel}`XC functional` | PBE | also LDA, PBEsol, PW91, HSE03 |
+| {guilabel}`Pseudopotential family` | fhi | `pps`: fhi, paw, jth, pot, hgh, hgh.k, tm |
+| {guilabel}`Pseudopotential directory` | — | ASE's `pp_paths`; remembered across sessions |
+| {guilabel}`SCF tolerance (toldfe)` | 1e-6 | in **Hartree**, ABINIT's own unit |
+| {guilabel}`Max SCF steps (nstep)` | 100 | runaway guard |
+| {guilabel}`Extra input variables` | — | one `name value` per line, passed through verbatim |
+
+**The pseudopotential family is not a quality dial with a safe default.** Which values work at all is decided by what is installed in the directory below it, and a `pps` naming files that are not there fails at the first element ABINIT looks up rather than at the end of the SCF.
+
+The shared cutoff passes through in **eV**: ASE's `Abinit` converts to Hartree itself, so nothing is scaled twice.
+
+---
+
+## FHI-aims — all-electron, numeric atom-centred orbitals
+
+Driven through `ase.calculators.aims.Aims`. **There is no plane-wave cutoff here and none is offered** — the basis is the *species-defaults tier*, and moving up a tier is how an aims calculation is converged.
+
+| Control | Default | Meaning |
+|---|---|---|
+| {guilabel}`XC functional` | pbe | also pbe0, pbesol, hse06, pw-lda, scan |
+| {guilabel}`Species defaults` | — | the `species_defaults` directory shipped with FHI-aims |
+| {guilabel}`Species tier` | light | light / intermediate / tight / really_tight |
+| {guilabel}`Relativistic` | atomic_zora scalar | or none |
+| {guilabel}`SCF energy accuracy` | 1e-6 eV | `sc_accuracy_etot` |
+| {guilabel}`Extra control.in keywords` | — | one `keyword value` per line |
+
+The tier is a **subfolder** of the species-defaults directory; point the path at the parent and the script joins the two. `light` is the production default for geometries and is already better than a typical plane-wave setup; `tight` is what a published energy or barrier wants; `really_tight` is a convergence check rather than a production setting.
+
+:::{warning}
+`atomic_zora scalar` is **required** past the first rows of the periodic table. A non-relativistic all-electron run on a 5d element is not merely less accurate — it is wrong.
+:::
+
+The k-grid is written conditionally (`if any(atoms.pbc):`), because aims rejects a `k_grid` outright on a non-periodic system.
+
+---
+
+## NWChem — quantum chemistry and plane-wave DFT
+
+Driven through `ase.calculators.nwchem.NWChem`. **NWChem is two codes in one binary**, and {guilabel}`Theory` picks which — the single most important control on the page.
+
+| Theory | Kind | Reads |
+|---|---|---|
+| `dft`, `scf`, `mp2`, `ccsd`, `tce` | Gaussian-basis **molecular** | the basis set; **ignores the unit cell** |
+| `pspw`, `band`, `paw` | Plane-wave **periodic** DFT | the k-grid; ignores the basis set |
+
+The group hides whichever of {guilabel}`XC functional` / {guilabel}`Basis set` the selected theory does not read, and the note under the dropdown restates which mode is active.
+
+:::{warning}
+Running a molecular theory on a crystal is the standard way an NWChem input comes out quietly wrong: it completes, and reports the energy of an isolated cluster. Pick `pspw`, `band` or `paw` for a periodic system.
+:::
+
+{guilabel}`Memory` (default `2000 mb`) is NWChem's per-process `memory` directive. A correlated method that runs out of it fails partway through rather than degrading, so it is worth setting deliberately.
+
+---
+
+## OpenMX — pseudo-atomic-orbital DFT
+
+Driven through `ase.calculators.openmx.OpenMX`. Like SIESTA, OpenMX has **no plane-wave basis cutoff**.
+
+| Control | Default | Meaning |
+|---|---|---|
+| {guilabel}`XC functional` | GGA-PBE | also LDA, LSDA-CA, LSDA-PW |
+| {guilabel}`DFT data path` | — | the `DFT_DATA` directory — **this is where the basis comes from** |
+| {guilabel}`Grid energy cutoff` | 2721 eV (≈200 Ry) | `scf.energycutoff` — the **real-space grid**, not a basis cutoff |
+| {guilabel}`SCF criterion` | 1e-4 eV | `scf.criterion` |
+| {guilabel}`Max SCF iterations` | 100 | `scf.maxIter` |
+| {guilabel}`Eigenvalue solver` | Band | Band (crystal) / Cluster (molecule) / DC (O(N), approximate) |
+
+The energy cutoff discretizes the grid the Hartree and exchange-correlation terms are integrated on. **Raising it refines that grid and does not enlarge the basis** — the basis is the PAO set OpenMX picks per element out of the data path, and its quality is chosen there.
+
+---
+
+## FLEUR — full-potential LAPW
+
+Driven through the separately-installed **`ase-fleur`** package (`pip install ase-fleur`); ASE's own `ase.calculators.fleur` is a stub that raises and points there. Install it into the environment mapped to FLEUR under {menuselection}`Preferences --> Python & Environments`.
+
+| Control | Default | Meaning |
+|---|---|---|
+| {guilabel}`XC functional` | pbe | also vwn, pw91, pbe0 |
+| {guilabel}`K_max` | 4.0 bohr⁻¹ | the interstitial plane-wave cutoff — LAPW's convergence parameter |
+| {guilabel}`FLEUR binaries` | — | directory holding `inpgen` and `fleur` / `fleur_MPI` |
+| {guilabel}`SCF convergence` | 1e-5 | `minDistance` — the charge-density distance |
+| {guilabel}`Max iterations` | 60 | `itmax` |
+
+`K_max` is a reciprocal **length**, not the dimensionless R·K_max other LAPW codes quote, and it has to be converged against the muffin-tin radii — which shrink as the atoms get closer.
+
+---
+
+## CP2K — Gaussian and plane waves
+
+Driven through `ase.calculators.cp2k.CP2K`, which talks to a **persistent `cp2k_shell` process** rather than running a binary per evaluation. That is what makes CP2K fast inside an MD or relaxation loop: the wavefunction is reused between steps instead of being rebuilt.
+
+| Control | Default | Meaning |
+|---|---|---|
+| {guilabel}`XC functional` | PBE | also BLYP, B3LYP, PBE0, LDA |
+| {guilabel}`Grid cutoffs` | 5442 eV / 816 eV | `CUTOFF` (400 Ry) and `REL_CUTOFF` (60 Ry) |
+| {guilabel}`Basis set` | DZVP-MOLOPT-SR-GTH | **this** is the basis-set quality knob |
+| {guilabel}`Basis set file` | BASIS_MOLOPT | the file the name is looked up in |
+| {guilabel}`Pseudopotential` | auto | `auto` matches the functional; or GTH-PBE, GTH-BLYP, GTH-PADE |
+| {guilabel}`Potential file` | POTENTIAL | |
+| {guilabel}`Max SCF steps` | 50 | |
+| {guilabel}`cp2k_shell command` | `cp2k_shell` | the persistent process ASE pipes to |
+| {guilabel}`Extra input sections` | — | appended verbatim to CP2K's `inp` |
+
+:::{warning}
+**The two cutoffs are not basis-set parameters.** The wavefunctions are the Gaussian basis set; `CUTOFF` is the plane-wave grid the *density* is mapped onto, and `REL_CUTOFF` decides how the multi-grid assigns each Gaussian to a grid level. Converge them **together** — raising `CUTOFF` alone refines a grid while the basis stays exactly as small, so the energy keeps moving and never converges to anything the basis can represent.
+:::
+
+A variable-cell relaxation emits `stress_tensor=True`; without it the cell filter would see zeros and the lattice would never move while the run reported a converged relaxation.
+
+---
+
+## Amber — classical biomolecular MM
+
+Driven through `ase.calculators.amber.Amber`, which runs `sander`. Like LAMMPS and GROMACS, **Amber is an engine, not a force field** — and unlike GROMACS it cannot even type a structure.
+
+| Control | Default | Meaning |
+|---|---|---|
+| {guilabel}`Amber executable` | `sander -O ` | the trailing `-O` is what lets a job directory be re-run; `pmemd` is the faster drop-in |
+| {guilabel}`Topology (prmtop)` | — | **required** — the force field lives here |
+| {guilabel}`Control file (mdin)` | generated | left empty, the script writes a single-point `mm.in` |
+
+The physics is entirely in the **prmtop**, which carries the atom types, the charges and every bonded term, and which `tleap` / `antechamber` build beforehand. The topology and the structure must describe the same atoms in the same order. Without one the generated script refuses outright rather than running a system with no parameters.
+
+The generated `mdin` uses `imin=0, nstlim=0`. That matters: **sander's own default is a minimization**, so with `imin=1` every force evaluation ASE asked for would be a complete relaxation, and the reported trajectory would be a sequence of already-relaxed structures.

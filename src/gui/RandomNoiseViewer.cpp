@@ -1,5 +1,7 @@
 #include "gui/RandomNoiseViewer.hpp"
 
+#include "gui/PlotPalette.hpp"
+
 #include <QDialogButtonBox>
 #include <QFile>
 #include <QFileDialog>
@@ -156,11 +158,11 @@ void HistogramPlotWidget::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.fillRect(rect(), QColor(28, 30, 34));
+    painter.fillRect(rect(), PlotPalette::canvas);
 
     const QRectF plot(64, 14, width() - 80.0, height() - 52.0);
     if (samples_.size() < 2 || plot.width() <= 0 || plot.height() <= 0) {
-        painter.setPen(QColor(150, 150, 150));
+        painter.setPen(PlotPalette::placeholder);
         painter.drawText(rect(), Qt::AlignCenter,
                          placeholder_.isEmpty() ? tr("No data") : placeholder_);
         return;
@@ -178,18 +180,18 @@ void HistogramPlotWidget::paintEvent(QPaintEvent*)
     painter.setFont(QFont(font().family(), font().pointSize() - 1));
     for (int t = 0; t <= 5; ++t) {
         const double fx = xMin_ + (xMax_ - xMin_) * t / 5.0;
-        painter.setPen(QColor(52, 56, 63));
+        painter.setPen(PlotPalette::grid);
         painter.drawLine(QPointF(toX(fx), plot.top()),
                          QPointF(toX(fx), plot.bottom()));
-        painter.setPen(QColor(165, 170, 180));
+        painter.setPen(PlotPalette::tickText);
         painter.drawText(QRectF(toX(fx) - 34, plot.bottom() + 4, 68, 14),
                          Qt::AlignHCenter, QString::number(fx, 'g', 4));
     }
     for (double fy = 0.0; fy <= yTop_ + 0.5 * yStep_; fy += yStep_) {
-        painter.setPen(QColor(52, 56, 63));
+        painter.setPen(PlotPalette::grid);
         painter.drawLine(QPointF(plot.left(), toY(fy)),
                          QPointF(plot.right(), toY(fy)));
-        painter.setPen(QColor(165, 170, 180));
+        painter.setPen(PlotPalette::tickText);
         painter.drawText(QRectF(0, toY(fy) - 7, 58, 14), Qt::AlignRight,
                          QString::number(fy, 'f', 0));
     }
@@ -200,7 +202,10 @@ void HistogramPlotWidget::paintEvent(QPaintEvent*)
         const double low = std::max(xMin_, mean_ - sigma_);
         const double high = std::min(xMax_, mean_ + sigma_);
         painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(255, 255, 255, 16));
+        // A light grey wash on the white canvas — the old near-transparent
+        // white was a highlight against the dark fill and is simply
+        // invisible now.
+        painter.setBrush(QColor(0, 0, 0, 18));
         painter.drawRect(QRectF(QPointF(toX(low), plot.top()),
                                 QPointF(toX(high), plot.bottom())));
     }
@@ -221,14 +226,15 @@ void HistogramPlotWidget::paintEvent(QPaintEvent*)
     }
 
     if (samples_.size() > 1) {
-        painter.setPen(QPen(QColor(255, 158, 26), 1.5, Qt::DashLine));
+        painter.setPen(QPen(PlotPalette::reference, 1.5, Qt::DashLine));
         painter.drawLine(QPointF(toX(mean_), plot.top()),
                          QPointF(toX(mean_), plot.bottom()));
     }
 
     painter.setBrush(Qt::NoBrush);
-    painter.setPen(QColor(120, 125, 135));
+    painter.setPen(PlotPalette::spine);
     painter.drawRect(plot);
+    painter.setPen(PlotPalette::text);
     painter.drawText(QRectF(plot.left(), height() - 20.0, plot.width(), 16),
                      Qt::AlignHCenter, xLabel_);
     painter.save();
@@ -237,7 +243,7 @@ void HistogramPlotWidget::paintEvent(QPaintEvent*)
     painter.drawText(QRectF(-70, 0, 140, 14), Qt::AlignHCenter, yLabel_);
     painter.restore();
 
-    painter.setPen(QColor(235, 238, 245));
+    painter.setPen(PlotPalette::text);
     painter.drawText(
         QRectF(plot.left() + 6, plot.top() + 4, plot.width() - 12, 16),
         Qt::AlignLeft,
@@ -285,7 +291,7 @@ RandomNoiseViewer::RandomNoiseViewer(const QString& directory, QWidget* parent)
     auto* energyLayout = new QVBoxLayout(energyGroup);
     energyPlot_ = new HistogramPlotWidget(energyGroup);
     energyPlot_->setLabels(tr("Total energy (eV)"), tr("Members"));
-    energyPlot_->setBarColor(QColor(102, 153, 255));
+    energyPlot_->setBarColor(QColor(0x1f, 0x77, 0xb4));
     energyPlot_->setPlaceholder(tr("No member of this ensemble was evaluated "
                                    "successfully."));
     energyLayout->addWidget(energyPlot_);
@@ -295,7 +301,7 @@ RandomNoiseViewer::RandomNoiseViewer(const QString& directory, QWidget* parent)
     auto* forceLayout = new QVBoxLayout(forceGroup);
     forcePlot_ = new HistogramPlotWidget(forceGroup);
     forcePlot_->setLabels(tr("Per-atom |F| (eV/Å)"), tr("Atoms"));
-    forcePlot_->setBarColor(QColor(110, 210, 130));
+    forcePlot_->setBarColor(QColor(0x2c, 0xa0, 0x2c));
     forcePlot_->setPlaceholder(
         tr("This run did not record forces — re-run with \"Record forces\" "
            "enabled to get the force distribution."));

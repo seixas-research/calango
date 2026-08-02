@@ -497,10 +497,43 @@ QColor StructureRenderer::castColor(int cast, const Style& style)
     return kQualitativePalette[std::max(cast, 0) % kQualitativeCount];
 }
 
+QColor StructureRenderer::defaultPhaseColor(core::StructuralPhase phase)
+{
+    // The AtomEye / OVITO CNA convention, so a Calango figure and a figure from
+    // any other structure-identification tool can be read side by side without
+    // relearning the key. Slightly desaturated from the pure primaries those
+    // tools use: full-saturation green and red on a lit sphere lose all their
+    // shading, and a phase map is mostly spheres.
+    switch (phase) {
+    case core::StructuralPhase::Fcc:              return {0x38, 0xC0, 0x53};
+    case core::StructuralPhase::Hcp:              return {0xE2, 0x4A, 0x33};
+    case core::StructuralPhase::Bcc:              return {0x40, 0x74, 0xE8};
+    case core::StructuralPhase::Icosahedral:      return {0xE6, 0xC2, 0x29};
+    case core::StructuralPhase::CubicDiamond:     return {0x19, 0xA0, 0xFE};
+    case core::StructuralPhase::HexagonalDiamond: return {0x00, 0xC8, 0xC0};
+    case core::StructuralPhase::Other:            break;
+    }
+    // "Other" is usually most of a real structure (every surface atom, every
+    // defect core, all of a liquid), so it is a quiet grey: the phases are what
+    // the figure is about, and a loud "unidentified" colour would swamp them.
+    return {0xB4, 0xB8, 0xBE};
+}
+
+QColor StructureRenderer::phaseColor(core::StructuralPhase phase,
+                                     const Style& style)
+{
+    const auto index = static_cast<std::size_t>(phase);
+    if (index < style.phaseColors.size()
+        && style.phaseColors[index].isValid())
+        return style.phaseColors[index];
+    return defaultPhaseColor(phase);
+}
+
 void StructureRenderer::setAtomScalars(ColorMode mode, std::vector<float> values)
 {
-    if (mode == ColorMode::Element || mode == ColorMode::Cast)
-        return; // neither maps a field: CPK is a lookup, casts a flat pick
+    if (mode == ColorMode::Element || mode == ColorMode::Cast
+        || mode == ColorMode::Phase)
+        return; // none maps a field: these are lookups and flat picks
     ScalarField field;
     field.values = std::move(values);
     if (!field.values.empty()) {
@@ -552,6 +585,15 @@ QColor StructureRenderer::resolvedAtomColor(std::size_t index, int atomicNumber,
         const int cast =
             index < assignment.size() ? assignment[index] : 0;
         return castColor(cast, style_);
+    }
+    if (colorMode == ColorMode::Phase) {
+        // Same contract as the cast assignment above: a missing or stale
+        // vector means the analysis has not run for this structure yet, and
+        // every atom reads as "Other" rather than as a wrong phase.
+        const std::vector<core::StructuralPhase>& phases = style_.atomPhases;
+        return phaseColor(index < phases.size() ? phases[index]
+                                                : core::StructuralPhase::Other,
+                          style_);
     }
     const auto it = scalars_.find(colorMode);
     if (it == scalars_.end() || index >= it->second.values.size())

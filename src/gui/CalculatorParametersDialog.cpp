@@ -25,12 +25,18 @@ namespace {
 
 enum Column { ElementColumn, CutoffColumn, K1Column, K2Column, K3Column };
 
-/// The engines for which pw/kpts suggestions mean anything — the same DFT
-/// set that shows the shared cutoff / k-grid rows in the wizards.
-const std::array<core::CalculatorKind, 4> kEngines = {
+/// The engines for which pw/kpts suggestions mean anything — the ones that
+/// read the shared cutoff / k-grid rows in the wizards.
+///
+/// SIESTA is in the list for its k-grid alone: it has no plane-wave cutoff, so
+/// only the mesh columns of its rows are meaningful. The engines with neither
+/// (FHI-aims, OpenMX, FLEUR, NWChem's molecular modules, every potential) are
+/// absent because a suggested cutoff for them would be a number nothing reads.
+const std::array<core::CalculatorKind, 5> kEngines = {
     core::CalculatorKind::Gpaw,
     core::CalculatorKind::Vasp,
     core::CalculatorKind::QuantumEspresso,
+    core::CalculatorKind::Abinit,
     core::CalculatorKind::Siesta,
 };
 

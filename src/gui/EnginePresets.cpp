@@ -38,6 +38,16 @@ QString presetName(core::CalculatorKind kind)
     // stays friendlier to hand-editing without punctuation.
     case core::CalculatorKind::DftbPlus: return QStringLiteral("DFTBPlus");
     case core::CalculatorKind::Gromacs: return QStringLiteral("GROMACS");
+    case core::CalculatorKind::Abinit: return QStringLiteral("ABINIT");
+    // No hyphen in the stored key, for the same reason DFTB+ drops its '+':
+    // these are JSON object keys in settings.json and stay friendlier to
+    // hand-editing without punctuation.
+    case core::CalculatorKind::FhiAims: return QStringLiteral("FHIaims");
+    case core::CalculatorKind::NwChem: return QStringLiteral("NWChem");
+    case core::CalculatorKind::OpenMx: return QStringLiteral("OpenMX");
+    case core::CalculatorKind::Fleur: return QStringLiteral("FLEUR");
+    case core::CalculatorKind::Cp2k: return QStringLiteral("CP2K");
+    case core::CalculatorKind::Amber: return QStringLiteral("Amber");
     }
     return QStringLiteral("default");
 }
@@ -67,6 +77,13 @@ QString displayName(core::CalculatorKind kind)
     case core::CalculatorKind::Xtb: return QStringLiteral("xTB");
     case core::CalculatorKind::DftbPlus: return QStringLiteral("DFTB+");
     case core::CalculatorKind::Gromacs: return QStringLiteral("GROMACS");
+    case core::CalculatorKind::Abinit: return QStringLiteral("ABINIT");
+    case core::CalculatorKind::FhiAims: return QStringLiteral("FHI-aims");
+    case core::CalculatorKind::NwChem: return QStringLiteral("NWChem");
+    case core::CalculatorKind::OpenMx: return QStringLiteral("OpenMX");
+    case core::CalculatorKind::Fleur: return QStringLiteral("FLEUR");
+    case core::CalculatorKind::Cp2k: return QStringLiteral("CP2K");
+    case core::CalculatorKind::Amber: return QStringLiteral("Amber");
     }
     return QStringLiteral("Default");
 }
@@ -103,6 +120,24 @@ const QVector<core::CalculatorKind>& configurableEngines()
         core::CalculatorKind::Xtb,
         core::CalculatorKind::DftbPlus,
         core::CalculatorKind::Gromacs,
+        // Every one of these needs its own binary (or, for FLEUR, its own pip
+        // package) that the embedded interpreter does not ship, and
+        // conda-forge is how most of them get installed — so each gets an
+        // environment slot for the same reason GPAW and Quantum ESPRESSO do.
+        core::CalculatorKind::Abinit,
+        core::CalculatorKind::FhiAims,
+        core::CalculatorKind::NwChem,
+        core::CalculatorKind::OpenMx,
+        // FLEUR is the one whose PYTHON side is the missing piece rather than
+        // the binary: ASE's ase.calculators.fleur is a stub, and the real
+        // calculator comes from `pip install ase-fleur` — which has to be in
+        // the interpreter the job runs under, i.e. exactly what this slot picks.
+        core::CalculatorKind::Fleur,
+        // CP2K talks to a persistent cp2k_shell process rather than a binary
+        // per evaluation, so the shell and the interpreter driving it must
+        // come from the same environment or the protocol version can differ.
+        core::CalculatorKind::Cp2k,
+        core::CalculatorKind::Amber,
     };
     return kEngines;
 }

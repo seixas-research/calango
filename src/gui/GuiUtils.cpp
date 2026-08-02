@@ -10,6 +10,8 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QFormLayout>
+#include <QGroupBox>
 #include <QHash>
 #include <QFile>
 #include <QHBoxLayout>
@@ -163,6 +165,20 @@ void setButtonColor(QPushButton* button, const QColor& color)
     button->setStyleSheet(
         QStringLiteral("background-color: %1; border: 1px solid #666;")
             .arg(color.name()));
+}
+
+void setFormRowVisible(QGroupBox* group, QWidget* field, bool visible)
+{
+    if (!group || !field)
+        return;
+    auto* form = qobject_cast<QFormLayout*>(group->layout());
+    if (!form)
+        return;
+    int row = -1;
+    QFormLayout::ItemRole role{};
+    form->getWidgetPosition(field, &row, &role);
+    if (row >= 0)
+        form->setRowVisible(row, visible);
 }
 
 /// Draw `text` centered in `box`, rendering "_x" as a typographic subscript

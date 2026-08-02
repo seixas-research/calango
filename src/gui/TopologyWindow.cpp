@@ -1,6 +1,7 @@
 #include "gui/TopologyWindow.hpp"
 
 #include "gui/GuiUtils.hpp"
+#include "gui/PlotPalette.hpp"
 
 #include <QCheckBox>
 #include <QFileDialog>
@@ -46,9 +47,9 @@ void WccFlowWidget::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.fillRect(rect(), palette().base());
+    painter.fillRect(rect(), PlotPalette::canvas);
     if (wcc_.size() < 2) {
-        painter.setPen(palette().color(QPalette::PlaceholderText));
+        painter.setPen(PlotPalette::placeholder);
         painter.drawText(rect(), Qt::AlignCenter, tr("No Wilson-loop flow"));
         return;
     }
@@ -60,19 +61,19 @@ void WccFlowWidget::paintEvent(QPaintEvent*)
     };
     const auto toY = [&](double v) { return box.bottom() - box.height() * v; };
 
-    painter.setPen(QPen(palette().color(QPalette::Mid), 1.0));
+    painter.setPen(QPen(PlotPalette::spine, 1.0));
     painter.drawRect(box);
     const QFontMetricsF metrics(painter.font());
     for (int i = 0; i <= 4; ++i) {
         const double v = i / 4.0;
-        painter.setPen(QPen(palette().color(QPalette::Mid), 0.5, Qt::DotLine));
+        painter.setPen(QPen(PlotPalette::grid, 0.5, Qt::DotLine));
         painter.drawLine(QPointF(box.left(), toY(v)),
                          QPointF(box.right(), toY(v)));
-        painter.setPen(palette().color(QPalette::Text));
+        painter.setPen(PlotPalette::text);
         painter.drawText(QPointF(8.0, toY(v) + metrics.height() / 3.0),
                          QString::number(v, 'f', 2));
     }
-    painter.setPen(palette().color(QPalette::Text));
+    painter.setPen(PlotPalette::text);
     painter.save();
     painter.translate(14.0, box.center().y() + 60.0);
     painter.rotate(-90.0);
@@ -96,7 +97,7 @@ void WccFlowWidget::paintEvent(QPaintEvent*)
     }
 
     painter.setPen(Qt::NoPen);
-    painter.setBrush(palette().color(QPalette::Text));
+    painter.setBrush(PlotPalette::text);
     for (std::size_t k = 0; k < wcc_.size(); ++k)
         for (const double v : wcc_[k])
             painter.drawEllipse(QPointF(toX(k), toY(v)), 1.8, 1.8);
@@ -230,7 +231,7 @@ void TopologyWindow::exportImage()
     if (path.isEmpty())
         return;
     QPixmap pixmap(flow_->size());
-    pixmap.fill(palette().color(QPalette::Base));
+    pixmap.fill(PlotPalette::canvas);
     flow_->render(&pixmap);
     if (!pixmap.save(path))
         QMessageBox::warning(this, windowTitle(),

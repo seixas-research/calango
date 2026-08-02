@@ -146,30 +146,34 @@ NebDialog::NebDialog(std::vector<NamedStructure> openDocs, QWidget* parent)
     auto* calcBox = new QGroupBox(tr("Calculator"), this);
     auto* calcForm = new QFormLayout(calcBox);
     calcCombo_ = new QComboBox(calcBox);
-    calcCombo_->addItem(tr("EMT (fast test potential)"),
-                        static_cast<int>(core::CalculatorKind::EMT));
-    calcCombo_->addItem(tr("Lennard-Jones"),
-                        static_cast<int>(core::CalculatorKind::LennardJones));
-    calcCombo_->addItem(tr("MACE (ML potential)"),
-                        static_cast<int>(core::CalculatorKind::Mace));
-    calcCombo_->addItem(tr("GPAW (DFT)"),
-                        static_cast<int>(core::CalculatorKind::Gpaw));
-    calcCombo_->addItem(tr("Quantum ESPRESSO (DFT)"),
-                        static_cast<int>(core::CalculatorKind::QuantumEspresso));
+    // Grouped the same way the shared wizard combo is (see
+    // SimulationWizardBase::buildCalculatorPage): ab-initio first, then the
+    // machine-learning potentials, then the classical ones. The list itself is
+    // shorter — this dialog only builds the engines whose settings it has rows
+    // for — but the ORDER has to match, or the same engines appear in two
+    // different places in two dropdowns that look alike.
+    const auto addCalc = [this](const QString& label, core::CalculatorKind kind) {
+        calcCombo_->addItem(label, static_cast<int>(kind));
+    };
+    addCalc(tr("GPAW (DFT)"), core::CalculatorKind::Gpaw);
+    addCalc(tr("Quantum ESPRESSO (DFT)"),
+            core::CalculatorKind::QuantumEspresso);
+    calcCombo_->insertSeparator(calcCombo_->count());
     // Machine-learning potentials: the natural fit for NEB, where a band of
     // images needs many force evaluations at near-DFT accuracy.
-    calcCombo_->addItem(tr("DeepMD-kit (ML potential)"),
-                        static_cast<int>(core::CalculatorKind::DeepMd));
-    calcCombo_->addItem(tr("NequIP (ML potential)"),
-                        static_cast<int>(core::CalculatorKind::NequIp));
-    calcCombo_->addItem(tr("Allegro (ML potential)"),
-                        static_cast<int>(core::CalculatorKind::Allegro));
-    calcCombo_->addItem(tr("CHGNet (universal ML potential)"),
-                        static_cast<int>(core::CalculatorKind::ChgNet));
-    calcCombo_->addItem(tr("MatterSim (universal ML potential)"),
-                        static_cast<int>(core::CalculatorKind::MatterSim));
-    calcCombo_->addItem(tr("FAIRChem / OCP (ML potential)"),
-                        static_cast<int>(core::CalculatorKind::FairChem));
+    addCalc(tr("MACE (ML potential)"), core::CalculatorKind::Mace);
+    addCalc(tr("CHGNet (universal ML potential)"),
+            core::CalculatorKind::ChgNet);
+    addCalc(tr("MatterSim (universal ML potential)"),
+            core::CalculatorKind::MatterSim);
+    addCalc(tr("FAIRChem / OCP (ML potential)"),
+            core::CalculatorKind::FairChem);
+    addCalc(tr("NequIP (ML potential)"), core::CalculatorKind::NequIp);
+    addCalc(tr("Allegro (ML potential)"), core::CalculatorKind::Allegro);
+    addCalc(tr("DeepMD-kit (ML potential)"), core::CalculatorKind::DeepMd);
+    calcCombo_->insertSeparator(calcCombo_->count());
+    addCalc(tr("EMT (fast test potential)"), core::CalculatorKind::EMT);
+    addCalc(tr("Lennard-Jones"), core::CalculatorKind::LennardJones);
     calcForm->addRow(tr("Calculator:"), calcCombo_);
 
     // One model-file row shared by the file-backed ML potentials (DeepMD,

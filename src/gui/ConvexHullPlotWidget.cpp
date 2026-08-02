@@ -1,6 +1,7 @@
 #include "gui/ConvexHullPlotWidget.hpp"
 
 #include "gui/GuiUtils.hpp"
+#include "gui/PlotPalette.hpp"
 
 #include <QFile>
 #include <QFileDialog>
@@ -108,11 +109,11 @@ void ConvexHullPlotWidget::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.fillRect(rect(), QColor(28, 30, 34));
+    painter.fillRect(rect(), PlotPalette::canvas);
     screenPositions_.assign(result_.points.size(), QPointF());
 
     if (result_.points.empty()) {
-        painter.setPen(QColor(150, 150, 150));
+        painter.setPen(PlotPalette::placeholder);
         painter.drawText(rect(), Qt::AlignCenter,
                          tr("Run Simulation → Cluster Expansion Calculation…\n"
                             "to build a formation-energy hull."));
@@ -150,13 +151,13 @@ void ConvexHullPlotWidget::paintEvent(QPaintEvent*)
         return plot.bottom() - plot.height() * (y - yLo) / (yHi - yLo);
     };
 
-    painter.setPen(QColor(90, 95, 105));
+    painter.setPen(PlotPalette::spine);
     painter.drawRect(plot);
 
     // --- Ticks ---------------------------------------------------------------
     const QFontMetricsF metrics(painter.font());
-    const QColor gridColor(52, 56, 63);
-    const QColor tickColor(140, 146, 156);
+    const QColor gridColor = PlotPalette::grid;
+    const QColor tickColor = PlotPalette::tickText;
     {
         const double step = niceTickStep(xHi - xLo, 8);
         for (double t = std::ceil(xLo / step) * step; step > 0.0 && t <= xHi;
@@ -184,13 +185,15 @@ void ConvexHullPlotWidget::paintEvent(QPaintEvent*)
     // E_form = 0 is the two-phase mixture line: everything below it is stable
     // against decomposition into the endpoints.
     if (yLo < 0.0 && yHi > 0.0) {
-        painter.setPen(QPen(QColor(120, 126, 138), 1.0, Qt::DashLine));
+        painter.setPen(QPen(PlotPalette::spine, 1.0, Qt::DashLine));
         painter.drawLine(QPointF(plot.left(), toY(0.0)),
                          QPointF(plot.right(), toY(0.0)));
     }
 
     // --- Tie-lines -----------------------------------------------------------
-    const QColor hullColor(90, 200, 140);
+    // Saturated enough to read as a filled marker on the white canvas; the
+    // old pastel green was chosen against a near-black fill.
+    const QColor hullColor(0x2c, 0xa0, 0x2c);
     if (result_.hullIndices.size() >= 2) {
         painter.setPen(QPen(hullColor, 2.0));
         for (std::size_t i = 0; i + 1 < result_.hullIndices.size(); ++i) {
@@ -204,7 +207,7 @@ void ConvexHullPlotWidget::paintEvent(QPaintEvent*)
 
     // --- Points --------------------------------------------------------------
     // Metastable first so stable vertices always draw on top of them.
-    const QColor unstableColor(150, 156, 168);
+    const QColor unstableColor(0x6b, 0x71, 0x7b);
     for (int pass = 0; pass < 2; ++pass) {
         for (std::size_t i = 0; i < result_.points.size(); ++i) {
             const auto& p = result_.points[i];
@@ -227,7 +230,7 @@ void ConvexHullPlotWidget::paintEvent(QPaintEvent*)
     }
 
     // --- Labels --------------------------------------------------------------
-    painter.setPen(QColor(170, 175, 185));
+    painter.setPen(PlotPalette::text);
     const int stable = static_cast<int>(result_.hullIndices.size());
     painter.drawText(
         QRectF(plot.left(), plot.bottom() + 20, plot.width(), 16), Qt::AlignHCenter,

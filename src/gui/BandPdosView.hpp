@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gui/PlotPalette.hpp"
+
 #include <QColor>
 #include <QPen>
 #include <QWidget>
@@ -77,6 +79,13 @@ public:
     /// Everything the "Customize Appearance…" dialog exposes. Defaults
     /// reproduce the plot's previous hardcoded look, so an untouched viewer
     /// is unchanged.
+    /// Everything the "Customize Appearance…" dialog exposes.
+    ///
+    /// The defaults are the standardized light plot look (gui/PlotPalette.hpp):
+    /// a white canvas with dark ink, which is the form a band structure or a
+    /// PDOS is read and published in. Only the DEFAULTS are fixed — every field
+    /// here is still editable per viewer, and the window around the plot keeps
+    /// following the application theme.
     struct Style {
         // -- Typography (points) -------------------------------------------
         /// Axis titles match the tick labels by default: a title set larger
@@ -89,23 +98,23 @@ public:
         // -- Dispersion curves ---------------------------------------------
         /// One color per spin channel (electronic) or a two-tone palette for
         /// phonon branches.
-        QColor bandColors[2] = {QColor(102, 163, 255), QColor(235, 110, 96)};
+        QColor bandColors[2] = {PlotPalette::series, PlotPalette::seriesAlt};
         Qt::PenStyle bandPenStyle = Qt::SolidLine;
         double bandLineWidth = 1.4;
 
         // -- Reference line (E_F for electrons, omega = 0 for phonons) ------
         bool showFermi = true;
-        QColor fermiColor{255, 199, 88};
+        QColor fermiColor = PlotPalette::reference;
         Qt::PenStyle fermiPenStyle = Qt::DashLine;
         double fermiLineWidth = 1.4;
 
         // -- Plot chrome ----------------------------------------------------
-        QColor background{24, 26, 30};
-        QColor spineColor{120, 124, 134};
+        QColor background = PlotPalette::canvas;
+        QColor spineColor = PlotPalette::spine;
         double spineWidth = 1.2;
         double tickWidth = 1.0;
-        QColor gridColor{70, 74, 84};
-        QColor textColor{210, 213, 220};
+        QColor gridColor = PlotPalette::grid;
+        QColor textColor = PlotPalette::text;
 
         /// Fill under the DOS curves (phonon PhDOS reads better filled).
         bool fillDos = false;
@@ -124,7 +133,10 @@ public:
         int fatbandMinAlpha = 0;
 
         // -- Symmetry labels ------------------------------------------------
-        QColor symmetryLabelColor{235, 220, 150};
+        /// A dark olive rather than the old pale straw: the Mulliken symbols
+        /// are set small, and small text is the first thing to disappear when
+        /// a light-on-dark palette is moved onto white.
+        QColor symmetryLabelColor{0x6b, 0x53, 0x00};
         double symmetryLabelPointSize = 11.0;
     };
 
