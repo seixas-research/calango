@@ -90,7 +90,7 @@ A baseline produced by an older Calango release may have no `calculator.json`. T
 
 - **Suggested parameters.** When `~/.calango/calculator_parameters.json` contains an entry for the selected engine and the structure's elements, the wizard pre-fills the plane-wave cutoff and k-grid from it. No file, no engine entry, no element match — the hardcoded defaults stand. Suggestions are skipped entirely for inherited calculators.
 - **Engine restriction.** A wizard may offer only the engines that can do its job — the convergence sweeps list GPAW and VASP only, the Electronic Structure wizard lists only DFT-capable engines.
-- **Workflow mode.** When a wizard is opened from the {doc}`/simulations/workflows` canvas it configures a node instead of launching: {guilabel}`Run (Local)` becomes {guilabel}`Save process node`, and {guilabel}`Run (Remote)` is withdrawn — queueing is the canvas's concern.
+- **Orchestration mode.** When a wizard is opened from the {doc}`/simulations/orchestration` canvas it configures a node instead of launching: {guilabel}`Run (Local)` becomes {guilabel}`Save process node`, and {guilabel}`Run (Remote)` is withdrawn — queueing is the canvas's concern.
 
 % TODO screenshot: Script Review stage with the editable "Running:" command line, the Regenerate button and the Run (Local)/Run (Remote)/Export Script buttons
 ```{figure} /_static/img/sim_wizard_review.png

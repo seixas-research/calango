@@ -52,6 +52,22 @@ struct TwoDBandsConfig {
     /// spin-orbit-induced gaps at band touchings are invisible in a scalar
     /// relativistic calculation.
     bool spinOrbit = false;
+
+    /// Also evaluate every band on a Monkhorst-Pack mesh spanning the
+    /// primitive 2D reciprocal cell and export it as the JSON's "bz_map"
+    /// object — the input of the results window's flat first-Brillouin-zone
+    /// map view. Off by default, and off is a compatibility contract: without
+    /// it the generated script is byte-identical to what this generator has
+    /// always produced, so old runs and new ones stay interchangeable.
+    bool bzMap = false;
+
+    /// Samples per direction of that map mesh (N×N). Quadratic cost, same as
+    /// gridSamples, and evaluated at fixed density like everything else in
+    /// this run. Deliberately a Monkhorst-Pack mesh rather than the inclusive
+    /// grid above: it tiles the cell with no duplicated seam, which is what
+    /// the viewer's periodic fold into the first Brillouin zone (the
+    /// Wigner-Seitz cell, constructed at render time) wants.
+    int bzMapSamples = 24;
 };
 
 /// Turns a TwoDBandsConfig into a standalone ASE/GPAW script that writes
@@ -62,6 +78,12 @@ struct TwoDBandsConfig {
 /// fractional coordinates, because the Brillouin zone of anything but a square
 /// lattice is not a square: plotting a hexagonal cell's bands over fractional
 /// k shears the Dirac cones into the corners of a rhombus.
+///
+/// With `bzMap` set the JSON additionally carries a "bz_map" object — the
+/// fractional Monkhorst-Pack mesh, every band at every mesh point, the Fermi
+/// level and the in-plane reciprocal rows — everything the viewer needs to
+/// fold the sampled cell into the first Brillouin zone without re-deriving
+/// the cell.
 std::string generateTwoDBandsScript(const TwoDBandsConfig& cfg);
 
 } // namespace calango::core

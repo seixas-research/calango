@@ -30,7 +30,9 @@ namespace calango::gui {
 ///     either; the other follows. Rows can be sorted by element or by any
 ///     coordinate, which RENUMBERS the atoms, and a spin-polarization mode
 ///     adds editable magnetic-moment columns that become the structure's
-///     initial moments.
+///     initial moments. Extended per-atom arrays appear as trailing columns:
+///     velocities and forces editable (they are inputs as much as results),
+///     everything else read-only (see PropertyColumn).
 ///
 /// Plus two whole-structure transformations: centering the atoms in the
 /// cell, and padding the cell with vacuum along chosen directions.
@@ -84,20 +86,32 @@ private:
     /// Column index of the first moment column (== AtomColumnCount).
     static constexpr int kFirstMomentColumn = 4;
 
-    /// One read-only table column carrying an extended per-atom property that
-    /// arrived with the structure — a partial-charge array, a velocity or
-    /// force vector, anything an extended-XYZ file put in `atoms.arrays`.
+    /// One table column carrying an extended per-atom property that arrived
+    /// with the structure — a partial-charge array, a velocity or force
+    /// vector, anything an extended-XYZ file put in `atoms.arrays`.
     ///
-    /// Read-only on purpose. These are RESULTS: a charge that came out of a
-    /// Bader partitioning, a velocity that came out of an integrator. Letting
-    /// them be typed over in a geometry editor would produce a frame whose
-    /// arrays no longer correspond to anything that was computed, and the file
-    /// would carry no sign of it.
+    /// Read-only by default, on purpose: most of these are RESULTS — a charge
+    /// that came out of a Bader partitioning, a magnitude the import bridge
+    /// derived. Letting them be typed over in a geometry editor would produce
+    /// a frame whose arrays no longer correspond to anything that was
+    /// computed, and the file would carry no sign of it.
+    ///
+    /// Velocities and forces are the two deliberate exceptions, editable like
+    /// the coordinates, because both are legitimately INPUT as well as output:
+    /// hand-set velocities are the initial conditions of an MD run, and
+    /// hand-set forces are how force-field training frames are assembled and
+    /// how force-arrow viewers are exercised. Edits write straight into the
+    /// structure's "velocities" / "forces" vector fields — the same storage
+    /// the ASE bridge exports (velocities through set_velocities(), so the
+    /// momenta column follows) and that reorder() permutes, so an edited value
+    /// survives both a sort and the round trip to extxyz. Columns exist only
+    /// for arrays the structure already carries; editing never invents one.
     struct PropertyColumn {
         QString header;
         std::string field;  ///< key in scalarFields() / vectorFields()
         bool vector = false;
         int component = 0;  ///< 0/1/2 for a vector field, ignored otherwise
+        bool editable = false; ///< true only for velocities/forces components
     };
     /// The property columns to show, in a stable order. Excludes the magnetic
     /// moments, which the spin-mode columns already own — showing them twice,

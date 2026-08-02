@@ -198,7 +198,11 @@ void CustomGradientColoringDialog::syncFromViewport()
             propertyCombo_->setCurrentIndex(index);
     }
 
-    const bool scalarMode = mode != render::ColorMode::Element;
+    // Cast colouring is a flat per-cast pick, not a mapped scalar: the ramp,
+    // its inversion and the bounds have nothing to act on there, exactly as
+    // in Element mode.
+    const bool scalarMode = mode != render::ColorMode::Element
+        && mode != render::ColorMode::Cast;
     gradientCombo_->setEnabled(scalarMode);
     invertGradientCheck_->setEnabled(scalarMode);
     propertyCombo_->setEnabled(mode == render::ColorMode::CustomScalar);

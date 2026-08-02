@@ -33,6 +33,11 @@ QString presetName(core::CalculatorKind kind)
     case core::CalculatorKind::MatterSim: return QStringLiteral("MatterSim");
     case core::CalculatorKind::FairChem: return QStringLiteral("FAIRChem");
     case core::CalculatorKind::Lammps: return QStringLiteral("LAMMPS");
+    case core::CalculatorKind::Xtb: return QStringLiteral("xTB");
+    // No '+' in the stored key: it is a JSON object key in settings.json and
+    // stays friendlier to hand-editing without punctuation.
+    case core::CalculatorKind::DftbPlus: return QStringLiteral("DFTBPlus");
+    case core::CalculatorKind::Gromacs: return QStringLiteral("GROMACS");
     }
     return QStringLiteral("default");
 }
@@ -59,6 +64,9 @@ QString displayName(core::CalculatorKind kind)
     case core::CalculatorKind::FairChem:
         return QStringLiteral("FAIRChem / OCP");
     case core::CalculatorKind::Lammps: return QStringLiteral("LAMMPS");
+    case core::CalculatorKind::Xtb: return QStringLiteral("xTB");
+    case core::CalculatorKind::DftbPlus: return QStringLiteral("DFTB+");
+    case core::CalculatorKind::Gromacs: return QStringLiteral("GROMACS");
     }
     return QStringLiteral("Default");
 }
@@ -87,6 +95,14 @@ const QVector<core::CalculatorKind>& configurableEngines()
         // conda-forge's `lammps` pulls a complete MPI stack, and sharing an
         // environment with GPAW (which pulls its own) is how both stop working.
         core::CalculatorKind::Lammps,
+        // xTB runs in-process through xtb-python, so the env IS the engine;
+        // DFTB+ and GROMACS need only ASE in the interpreter, but conda-forge
+        // is also how their binaries (dftbplus, gromacs) are usually
+        // installed, and pointing the engine at that env keeps interpreter
+        // and binary from drifting apart.
+        core::CalculatorKind::Xtb,
+        core::CalculatorKind::DftbPlus,
+        core::CalculatorKind::Gromacs,
     };
     return kEngines;
 }

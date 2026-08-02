@@ -85,7 +85,7 @@ Editor… · Preferences…
 
 **{guilabel}`View`** — one toggle per dock, in layout order: Calango
 (branding) · Structure · Volumetric Data · Additional Overlays · Processes
-· Representation · Visual Effects · Spatial References · Workflow · Remote
+· Representation · Visual Effects · Spatial References · Orchestration · Remote
 Access · Results — then Status Bar and Reset Layout. Camera alignment and
 projection live on the viewport toolbar, not here.
 

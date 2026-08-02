@@ -1,6 +1,7 @@
 #include "gui/RepresentationPanel.hpp"
 #include "gui/GuiUtils.hpp"
 
+#include "gui/CastColorsDialog.hpp"
 #include "gui/CastSetupDialog.hpp"
 #include "gui/CustomGradientColoringDialog.hpp"
 #include "gui/ElementSettingsDialog.hpp"
@@ -277,19 +278,26 @@ QWidget* RepresentationPanel::buildAppearanceTab()
 
     // --- Atom coloring -----------------------------------------------------
     colorModeCombo_ = new QComboBox(page);
+    // Order matches render::ColorMode.
     colorModeCombo_->addItems({tr("Element (CPK)"),
                                tr("Coordination number (CN)"),
                                tr("Generalized CN (GCN)"),
-                               tr("Custom property")});
+                               tr("Custom property"),
+                               tr("Cast")});
     colorModeCombo_->setToolTip(
         tr("Per cast: a coordination-colored slab and a "
            "custom-property-colored adsorbate can share one scene, each "
-           "normalized against its own data range."));
-    // The colour-by row carries its own two satellites: the editor that
-    // defines the mapping, and the toggle that prints the mapped number on the
-    // atoms. Both are meaningless without this dropdown and both answer a
-    // question it raises — through which ramp, and by how much — so they
-    // belong on its row rather than anonymous in the editor strip below.
+           "normalized against its own data range.\n\n"
+           "\"Cast\" gives every atom its cast's own flat color — the classic "
+           "substrate-vs-adsorbate figure where the groups, not the elements, "
+           "carry the story. Pick the colors with the button beside this "
+           "dropdown."));
+    // The colour-by row carries its own three satellites: the per-cast colour
+    // picker, the editor that defines the scalar mapping, and the toggle that
+    // prints the mapped number on the atoms. All are meaningless without this
+    // dropdown and each answers a question it raises — which colour per cast,
+    // through which ramp, and by how much — so they belong on its row rather
+    // than anonymous in the editor strip below.
     auto* colorRow = new QHBoxLayout;
     colorRow->setSpacing(4);
     colorRow->addWidget(colorModeCombo_, 1);
@@ -303,6 +311,16 @@ QWidget* RepresentationPanel::buildAppearanceTab()
         colorRow->addWidget(button);
         return button;
     };
+    // First satellite, directly beside the dropdown: it configures the mode
+    // the dropdown just offered. Always present but only enabled under "Cast"
+    // coloring — a button that appears and vanishes with the mode reads as a
+    // layout glitch, one that greys in and out reads as a dependency.
+    castColorsButton_ = makeColorButton(
+        QStringLiteral("palette-line"),
+        tr("Cast colors… — the flat color each cast takes under \"Cast\" "
+           "coloring. Casts without an explicit pick cycle a default "
+           "palette."));
+    castColorsButton_->setEnabled(false);
     auto* gradientButton = makeColorButton(
         QStringLiteral("color-filter-fill"),
         tr("Edit gradient coloring… — which per-atom property is mapped, "
@@ -329,6 +347,13 @@ QWidget* RepresentationPanel::buildAppearanceTab()
         auto* dialog = new CustomGradientColoringDialog(viewport_, this);
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->show();
+    });
+    // Modal for the same reason Cast Setup is: its rows are the cast list,
+    // and letting another editor resize that list underneath it would leave
+    // both showing stale indices.
+    connect(castColorsButton_, &QPushButton::clicked, this, [this] {
+        CastColorsDialog dialog(viewport_, viewport_->structure(), this);
+        dialog.exec();
     });
 
     connect(colorModeCombo_, &QComboBox::currentIndexChanged,
@@ -607,10 +632,16 @@ void RepresentationPanel::loadSelectedCast()
         opacitySlider_->setValue(
             static_cast<int>(std::lround(cast.opacity * 100.0f)));
     }
-    // Nothing to print when the cast is coloured by element: CPK is a lookup,
-    // not a measured quantity, so the toggle would produce empty labels.
+    // Nothing to print when the cast is coloured by element or by cast: CPK
+    // is a lookup and a cast is a label — neither is a measured quantity, so
+    // the toggle would produce empty labels.
     if (scalarLabelsButton_)
-        scalarLabelsButton_->setEnabled(cast.colorMode != render::ColorMode::Element);
+        scalarLabelsButton_->setEnabled(
+            cast.colorMode != render::ColorMode::Element
+            && cast.colorMode != render::ColorMode::Cast);
+    if (castColorsButton_)
+        castColorsButton_->setEnabled(cast.colorMode
+                                      == render::ColorMode::Cast);
 }
 
 void RepresentationPanel::openCastSetup()

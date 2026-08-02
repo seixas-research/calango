@@ -45,8 +45,10 @@ state. {doc}`/electronic/nonlinear_optics` explains why.
 | Page | Menu entry | Needs |
 |---|---|---|
 | {doc}`/electronic/bands` | {menuselection}`Electronics --> Electronic Structure…` | GPAW baseline (DFT route) |
+| {doc}`/electronic/twod_bands` | {menuselection}`Modules --> 2D Materials --> 2D Bands…` | GPAW baseline `.gpw` |
 | {doc}`/electronic/unfolding` | {menuselection}`Electronics --> Effective Bands (Unfolding)…` | supercell + primitive cell |
 | {doc}`/electronic/optics` | {menuselection}`Electronics --> Optics…` | GPAW baseline `.gpw` |
+| {doc}`/electronic/workfunction` | {menuselection}`Modules --> 2D Materials --> 2D Workfunction…` | GPAW baseline `.gpw` |
 | {doc}`/electronic/nonlinear_optics` | {menuselection}`Electronics --> Nonlinear Optics…` | converges its own ground state |
 | {doc}`/electronic/gw` | {menuselection}`Electronics --> GW Calculations…` | GPAW `.gpw` or QE `.save` |
 | {doc}`/electronic/wannier` | {menuselection}`Electronics --> Wannier Functions…` / {menuselection}`Wannier Interpolation…` | GPAW baseline `.gpw` |
@@ -69,8 +71,10 @@ process manager.
 :maxdepth: 1
 
 bands
+twod_bands
 unfolding
 optics
+workfunction
 nonlinear_optics
 gw
 wannier

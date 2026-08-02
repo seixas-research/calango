@@ -7,7 +7,9 @@
 #include <memory>
 #include <vector>
 
+class QCheckBox;
 class QComboBox;
+class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -28,8 +30,9 @@ namespace calango::gui {
 ///
 /// The dialog lists the atoms with their current cast, lets casts be added and
 /// removed, and reassigns atoms one at a time or in bulk (filter the table,
-/// select rows, assign). Removing a cast folds its atoms back into cast 0
-/// rather than leaving them pointing at an index that no longer exists.
+/// select rows, assign — or select everything inside a spatial region and
+/// assign that). Removing a cast folds its atoms back into cast 0 rather than
+/// leaving them pointing at an index that no longer exists.
 ///
 /// It edits the assignment LIVE: the viewport is a dock the user is looking at
 /// while choosing, and a preview that only appears on OK would make the choice
@@ -56,10 +59,22 @@ private Q_SLOTS:
     void removeLastCast();
     /// Put every selected atom row into the cast chosen in the assign row.
     void assignSelected();
+    /// Replace the table selection with every atom inside the spatial region
+    /// (the conjunction of the enabled axis ranges; a disabled axis is
+    /// unconstrained).
+    void selectAtomsInRegion();
 
 private:
     /// Rebuild the atom table from the current assignment.
     void refreshTable();
+    /// Seed the three axis ranges from the structure's bounding box in the
+    /// ACTIVE frame — Cartesian Å, or fractional along the lattice vectors —
+    /// and configure the spins (suffix, step, limits) for that frame. Called
+    /// on open and again when the frame is switched: an axis-aligned box in
+    /// one frame is generally not axis-aligned in the other, so "the same
+    /// box, converted" does not exist for a non-orthogonal cell and the
+    /// bounding box in the new frame is the honest seed.
+    void seedRegionRanges();
     /// Re-fill every cast combo (per row and in the assign row) after the cast
     /// count changed.
     void refreshCastChoices();
@@ -82,6 +97,18 @@ private:
     QComboBox* assignCastCombo_ = nullptr;
     QPushButton* removeCastButton_ = nullptr;
     QLabel* summaryLabel_ = nullptr;
+    /// One spatial-region axis: an enable switch and a min/max window. The
+    /// three windows AND together; a disabled axis constrains nothing.
+    struct RegionAxis {
+        QCheckBox* enabled = nullptr;
+        QDoubleSpinBox* min = nullptr;
+        QDoubleSpinBox* max = nullptr;
+    };
+    RegionAxis regionAxes_[3];
+    /// Ranges in fractional (0–1 along the lattice vectors) instead of
+    /// Cartesian Å. Disabled, with a tooltip saying why, when the structure
+    /// has no periodic cell to be fractional in.
+    QCheckBox* fractionalCheck_ = nullptr;
     /// Guards the per-row combo handler while refreshTable() fills the table.
     bool populating_ = false;
 };

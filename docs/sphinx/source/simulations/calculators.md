@@ -1,6 +1,6 @@
 # Calculation engines
 
-The {guilabel}`Calculation engine` dropdown at the top of every wizard's Calculator Settings stage selects which of ASE's calculators the generated script builds. Sixteen engines are offered; each brings its own settings group, and the page shows only the groups that apply to the current selection.
+The {guilabel}`Calculation engine` dropdown at the top of every wizard's Calculator Settings stage selects which of ASE's calculators the generated script builds. Nineteen engines are offered; each brings its own settings group, and the page shows only the groups that apply to the current selection.
 
 | Engine | Kind | Needs in the job environment |
 |---|---|---|
@@ -227,3 +227,45 @@ GPAW's calculator page. Switching the engine swaps only the groups that differ; 
 
 VASP's settings group: primary INCAR tags, the relaxation-driver choice, and the free-form extra-tags escape hatch.
 ```
+
+---
+
+## xTB — semi-empirical tight binding
+
+Driven through the `xtb` Python package (`from xtb.ase.calculator import XTB`). xTB is a semi-empirical method — fast enough for conformer sweeps and large molecular systems, **not a DFT replacement** — and the settings group says so.
+
+| Control | Default | Meaning |
+|---|---|---|
+| {guilabel}`Method` | GFN2-xTB | also GFN1-xTB and GFN-FF |
+| {guilabel}`Accuracy` | 1.0 | xTB's global accuracy dial — lower is tighter |
+| {guilabel}`Electronic temperature` | 300 K | Fermi smearing of the tight-binding occupations |
+| {guilabel}`Max SCC iterations` | 250 | self-consistent charge cycle cap |
+
+Selecting **GFN-FF** — a force field, not a tight-binding Hamiltonian — withholds the SCC controls entirely: there is no self-consistent cycle to tune, and showing dead knobs would imply otherwise.
+
+## DFTB+ — density-functional tight binding
+
+Driven through `ase.calculators.dftb.Dftb`, which runs the `dftb+` binary (resolved via the launch-command template; ASE appends its own `> PREFIX.out` redirection, so the template carries none).
+
+| Control | Default | Meaning |
+|---|---|---|
+| {guilabel}`Slater–Koster directory` | — | the parameter set (`.skf` files); exported as `DFTB_PREFIX` |
+| {guilabel}`Self-consistent charges (SCC)` | on | DFTB2 self-consistency |
+| {guilabel}`SCC tolerance` | 1e-5 | charge-convergence threshold |
+| {guilabel}`Max SCC iterations` | 100 | cycle cap |
+| {guilabel}`Fermi temperature` | 0 K | electronic filling; emitted to DFTB+ in its native Hartree units |
+
+The Slater–Koster directory is persisted across sessions like the VASP POTCAR path — **the parametrization is the physics** in DFTB, so the wizard treats it as installation state, not per-job state. A script generated without one carries a clearly marked `EDIT ME` block instead of a silently wrong path. The shared Brillouin-zone group supplies the k-grid.
+
+## GROMACS — classical biomolecular MD
+
+Driven through `ase.calculators.gromacs.Gromacs`, which orchestrates the `gmx` binary (`pdb2gmx` → `grompp` → a zero-step `mdrun` for the single-point energy/forces). Like LAMMPS, **GROMACS is an engine, not a force field** — and stricter: the force field must be able to *type* the structure, which means (bio)molecular systems with recognizable residues. A bare inorganic crystal will not pass `pdb2gmx`, and the wizard's note says so up front.
+
+| Control | Default | Meaning |
+|---|---|---|
+| {guilabel}`Force field` | oplsaa | also amber03, amber96, charmm27, gromos54a7, or hand-typed |
+| {guilabel}`Water model` | spc | spc/spce/tip3p/tip4p/none |
+| {guilabel}`gmx executable` | `gmx` | overridable per install; `ASE_GROMACS_COMMAND` is honored |
+| {guilabel}`Extra .mdp parameters` | — | free-form `key = value` lines merged into the run parameters |
+
+GROMACS is offered for **single-point evaluation only** — dynamics belong to GROMACS's own tooling, and pretending ASE drives them well would produce runs that look configured and are not; other tasks refuse with an explanation rather than generating a broken script.

@@ -47,9 +47,12 @@ private:
 
     const core::Structure* structure_ = nullptr; ///< observed, not owned
 
-    // One icon-only action row. Labels were dropped because the row is five
-    // buttons wide in a narrow dock; spelled out, it wrapped to three lines and
-    // pushed the property summary out of view.
+    // "Edit Structure…" sits alone on a full-width row between the summary
+    // and the transforms, icon plus text: it opens the whole editing dialog,
+    // and shown as one glyph among the transforms it read as their peer. The
+    // four one-click transforms stay one icon-only row — spelled out, that
+    // row wrapped to three lines in a narrow dock and pushed the property
+    // summary out of view.
     QPushButton* editButton_;
     QPushButton* centerButton_;
     QPushButton* vacuumButton_;

@@ -28,6 +28,7 @@
 #include "core/TopologyScriptGenerator.hpp"
 #include "core/TwoDBandsScriptGenerator.hpp"
 #include "core/WannierScriptGenerator.hpp"
+#include "core/WorkfunctionScriptGenerator.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -341,6 +342,41 @@ int main(int argc, char** argv)
             CalculatorConfig realUnits = lammps;
             realUnits.lammpsUnits = "real";
             dump("lammps_bad_units.py", realUnits);
+        }
+
+        // xTB / DFTB+ / GROMACS: one dump per structurally distinct branch.
+        // GFN-FF drops the SCC kwargs; non-SCC DFTB and the Fermi filling
+        // change which HSD keywords are emitted; GROMACS has a single-point
+        // pipeline plus an outright refusal that must still parse.
+        {
+            CalculatorConfig xtb;
+            xtb.calculator = CalculatorKind::Xtb;
+            xtb.task = TaskKind::GeometryOptimization;
+            dump("xtb_gfn2.py", xtb);
+            CalculatorConfig gfnff = xtb;
+            gfnff.xtbMethod = "GFN-FF";
+            dump("xtb_gfnff.py", gfnff);
+
+            CalculatorConfig dftb;
+            dftb.calculator = CalculatorKind::DftbPlus;
+            dftb.task = TaskKind::SinglePoint;
+            dftb.dftbSlakoDir = "/opt/slako/mio-1-1";
+            dftb.dftbFillingTemperatureK = 300.0;
+            dump("dftb_scc_fermi.py", dftb);
+            CalculatorConfig nonScc = dftb;
+            nonScc.dftbScc = false;
+            nonScc.dftbFillingTemperatureK = 0.0;
+            nonScc.dftbSlakoDir.clear(); // the EDIT-ME branch
+            dump("dftb_nonscc.py", nonScc);
+
+            CalculatorConfig gromacs;
+            gromacs.calculator = CalculatorKind::Gromacs;
+            gromacs.task = TaskKind::SinglePoint;
+            gromacs.gromacsExtraMdp = "rvdw = 1.0\ncoulombtype = PME";
+            dump("gromacs_single_point.py", gromacs);
+            CalculatorConfig refused = gromacs;
+            refused.task = TaskKind::GeometryOptimization;
+            dump("gromacs_refused.py", refused);
         }
 
         // Phonon drivers: the plain 6N path and the symmetry-reduced one, each
@@ -2106,6 +2142,52 @@ int main(int argc, char** argv)
         tiny.gridSamples = 1;
         checkContains(generateTwoDBandsScript(tiny), "_n = 3",
                       "a degenerate grid request is clamped");
+
+        // The Brillouin-zone map is strictly opt-in. "No bz_map key at all"
+        // is the compatibility contract: the results viewer greys its map
+        // entry on the key's absence, and an old run must stay byte-identical
+        // to what this generator has always produced.
+        check(!contains(script, "bz_map"),
+              "a run without the option carries no bz_map at all");
+
+        TwoDBandsConfig mapped = cfg;
+        mapped.bzMap = true;
+        mapped.bzMapSamples = 18;
+        const std::string mapScript = generateTwoDBandsScript(mapped);
+        checkContains(mapScript, "_bzn = 18",
+                      "the map honors its own mesh size");
+        checkContains(
+            mapScript,
+            "(2.0 * np.arange(1, _bzn + 1) - _bzn - 1) / (2.0 * _bzn)",
+            "a Monkhorst-Pack line, tiling the cell with no duplicated seam");
+        checkContains(mapScript, "_bz_calc = calc.fixed_density(kpts=_bz_kpts",
+                      "diagonalized at fixed density like the surfaces");
+        check(!contains(mapScript, "_bz_kpts[:, 2] ="),
+              "with kz left at zero — the vacuum axis stays excluded");
+        checkContains(mapScript, "result['bz_map'] = {",
+                      "appended to the same bands_2d.json, not a second file");
+        checkContains(mapScript, "'kpts_frac':", "carrying the fractional mesh");
+        checkContains(mapScript, "'efermi_eV': float(efermi)",
+                      "the Fermi level");
+        checkContains(mapScript, "'reciprocal_A_inv':",
+                      "and the in-plane reciprocal rows the fold is built from");
+        // The map view picks a band by INDEX, so "band n" must mean exactly
+        // one thing at every k — the two spin channels are merged and sorted.
+        checkContains(mapScript, "np.sort(np.concatenate(",
+                      "spin channels are merged and sorted per k-point");
+
+        TwoDBandsConfig mappedSoc = mapped;
+        mappedSoc.spinOrbit = true;
+        checkContains(generateTwoDBandsScript(mappedSoc),
+                      "soc_eigenstates(_bz_calc)",
+                      "a spin-orbit run maps the same spinor bands it plots");
+
+        // The map mesh has its own clamp (6..96): its cost is N² extra
+        // fixed-density diagonalizations on top of the surface grid.
+        TwoDBandsConfig hugeMap = mapped;
+        hugeMap.bzMapSamples = 4096;
+        checkContains(generateTwoDBandsScript(hugeMap), "_bzn = 96",
+                      "a runaway map mesh is clamped");
     }
 
     // -- MLWF -> Wannier interpolation handoff --------------------------------
@@ -2771,6 +2853,143 @@ int main(int argc, char** argv)
               "and no calculator is constructed after the refusal");
     }
 
+    // -- xTB ------------------------------------------------------------------
+    std::printf("xTB calculator:\n");
+    {
+        CalculatorConfig xtb;
+        xtb.calculator = CalculatorKind::Xtb;
+        const std::string script = AseScriptGenerator::calculatorSnippet(xtb);
+        checkContains(script, "from xtb.ase.calculator import XTB",
+                      "in-process through xtb-python's ASE calculator");
+        // The kwarg names ARE xtb-python's documented API — pinned so a
+        // mapping table can never drift in between.
+        checkContains(script, "method=\"GFN2-xTB\"", "GFN2-xTB is the default");
+        checkContains(script, "accuracy=1", "accuracy reaches the constructor");
+        checkContains(script, "electronic_temperature=300",
+                      "electronic temperature reaches the constructor");
+        checkContains(script, "max_iterations=250",
+                      "and so does the SCC iteration cap");
+
+        // GFN-FF is a force field: no electrons, so the two SCC knobs must
+        // be withheld rather than emitted as settings that change nothing.
+        CalculatorConfig ff = xtb;
+        ff.xtbMethod = "GFN-FF";
+        const std::string forceField = AseScriptGenerator::calculatorSnippet(ff);
+        checkContains(forceField, "method=\"GFN-FF\"", "GFN-FF is honored");
+        check(!contains(forceField, "electronic_temperature="),
+              "no electronic temperature for a method with no electrons");
+        check(!contains(forceField, "max_iterations="),
+              "and no SCC iteration cap either");
+    }
+
+    // -- DFTB+ ----------------------------------------------------------------
+    std::printf("DFTB+ calculator:\n");
+    {
+        CalculatorConfig dftb;
+        dftb.calculator = CalculatorKind::DftbPlus;
+        dftb.dftbSlakoDir = "/opt/slako/mio-1-1"; // no trailing slash on purpose
+        dftb.kpts[0] = 6;
+        dftb.kpts[1] = 6;
+        dftb.kpts[2] = 4;
+        const std::string script = AseScriptGenerator::calculatorSnippet(dftb);
+        checkContains(script, "from ase.calculators.dftb import Dftb",
+                      "DFTB+ goes through ASE's file-IO calculator");
+        // ASE joins '<El>-<El>.skf' onto DFTB_PREFIX verbatim, so the
+        // generator must supply the trailing slash the user left off.
+        checkContains(script,
+                      "os.environ.setdefault(\"DFTB_PREFIX\", "
+                      "r\"/opt/slako/mio-1-1/\")",
+                      "the Slater-Koster dir is exported with a trailing slash");
+        checkContains(script, "kpts=(6, 6, 4)",
+                      "the shared k-grid reaches the calculator");
+        checkContains(script, "Hamiltonian_SCC=\"Yes\"", "SCC is on by default");
+        checkContains(script, "Hamiltonian_SCCTolerance=1e-05",
+                      "the charge tolerance is emitted");
+        checkContains(script, "Hamiltonian_MaxSCCIterations=100",
+                      "and the iteration cap");
+        check(!contains(script, "Hamiltonian_Filling"),
+              "no Fermi filling block at the 0 K default");
+
+        // DFTB+ reads Temperature in Hartree when no HSD modifier is given,
+        // and ASE's keyword scheme cannot write the modifier — the K -> Ha
+        // conversion must happen in the open, in the generated script.
+        CalculatorConfig fermi = dftb;
+        fermi.dftbFillingTemperatureK = 300.0;
+        const std::string smeared = AseScriptGenerator::calculatorSnippet(fermi);
+        checkContains(smeared, "Hamiltonian_Filling_=\"Fermi\"",
+                      "a positive temperature opens the Fermi filling block");
+        checkContains(smeared, "Hamiltonian_Filling_Temperature=300 * kB / Hartree",
+                      "with the K -> Hartree conversion visible and auditable");
+        checkContains(smeared, "from ase.units import Hartree, kB",
+                      "and the units it needs imported");
+
+        // Tolerance and iteration cap describe a cycle that does not run, so
+        // they must be withheld with SCC rather than written as inert keys.
+        CalculatorConfig nonScc = dftb;
+        nonScc.dftbScc = false;
+        const std::string oneShot = AseScriptGenerator::calculatorSnippet(nonScc);
+        checkContains(oneShot, "Hamiltonian_SCC=\"No\"", "non-SCC is honored");
+        check(!contains(oneShot, "SCCTolerance"),
+              "no tolerance for a cycle that does not run");
+
+        CalculatorConfig blank = dftb;
+        blank.dftbSlakoDir.clear();
+        const std::string unset = AseScriptGenerator::calculatorSnippet(blank);
+        checkContains(unset, "EDIT ME",
+                      "a missing Slater-Koster dir is flagged, not defaulted");
+    }
+
+    // -- GROMACS --------------------------------------------------------------
+    std::printf("GROMACS calculator:\n");
+    {
+        CalculatorConfig gromacs;
+        gromacs.calculator = CalculatorKind::Gromacs;
+        gromacs.task = TaskKind::SinglePoint;
+        gromacs.gromacsExtraMdp = "rvdw = 1.0\n# a comment\ncoulombtype = PME";
+        const std::string script =
+            AseScriptGenerator::calculatorSnippet(gromacs);
+        checkContains(script, "from ase.calculators.gromacs import Gromacs",
+                      "GROMACS goes through ASE's gmx-driving calculator");
+        checkContains(script, "force_field=\"oplsaa\"",
+                      "the force field reaches pdb2gmx");
+        checkContains(script, "water_model=\"spc\"", "and the water model");
+        checkContains(script, "command=r\"gmx\"",
+                      "the configured gmx binary reaches the calculator");
+        // The calculator's own default is a 10000-step cg minimization, which
+        // would silently relax before reporting a \"single point\".
+        checkContains(script, "\"integrator\": \"md\"",
+                      "the .mdp integrator is overridden");
+        checkContains(script, "\"nsteps\": \"0\"",
+                      "to make mdrun a true single point");
+        // The free-form extras are parsed into the dict, comments dropped.
+        checkContains(script, "\"rvdw\": \"1.0\"",
+                      "extra .mdp lines reach the parameter dict");
+        checkContains(script, "\"coulombtype\": \"PME\"",
+                      "including ones after a dropped comment line");
+        // clean=True sweeps gromacs.??? on construction — a pdb exported
+        // first would be deleted, so the order is load-bearing.
+        check(script.find("calc = Gromacs(")
+                  < script.find("write(\"gromacs.pdb\", atoms)"),
+              "the pdb is written AFTER the constructor's clean sweep");
+        // The input pipeline is explicit; the calculator does not run it.
+        checkContains(script, "calc.generate_topology_and_g96file()",
+                      "pdb2gmx builds the topology");
+        checkContains(script, "calc.generate_gromacs_run_file()",
+                      "and grompp assembles the .tpr");
+
+        // Gromacs.calculate() reruns mdrun on the files already on disk and
+        // never rewrites them with the positions ASE moved — an optimizer
+        // would evaluate the starting geometry forever. Refuse, not degrade.
+        CalculatorConfig moving = gromacs;
+        moving.task = TaskKind::GeometryOptimization;
+        const std::string refused =
+            AseScriptGenerator::calculatorSnippet(moving);
+        checkContains(refused, "raise RuntimeError(",
+                      "anything but a single point is refused outright");
+        check(!contains(refused, "Gromacs("),
+              "and no calculator is constructed after the refusal");
+    }
+
     // -- Born effective charges ---------------------------------------------
     std::printf("Born effective charges:\n");
     {
@@ -2908,10 +3127,20 @@ int main(int argc, char** argv)
         c.nequipModelPath = "/models/deployed.pth";
         c.mlipDevice = MlipDevice::Cuda;
         const std::string script = AseScriptGenerator::calculatorSnippet(c);
+        // Both nequip generations are bound: >= 0.7 moved the calculator to
+        // nequip.integrations.ase and loads nequip-compile artifacts, <= 0.6
+        // deployed TorchScript. The script must run on either instead of
+        // dying at load on one of them.
+        checkContains(script, "from nequip.integrations.ase import NequIPCalculator",
+                      "the modern import is tried first");
+        checkContains(script, "from nequip.ase import NequIPCalculator",
+                      "with the legacy import as the fallback");
+        checkContains(script, "NequIPCalculator.from_compiled_model",
+                      "nequip >= 0.7 loads the compiled artifact");
         checkContains(script, "NequIPCalculator.from_deployed_model",
-                      "Allegro loads through the NequIP deployed-model API");
+                      "nequip <= 0.6 loads the deployed TorchScript");
         checkContains(script, "device=\"cuda\"", "device is honored");
-        checkContains(script, "mir-allegro", "names the Allegro package");
+        checkContains(script, "nequip-allegro", "names the Allegro package");
     }
     {
         // A model trained in non-ASE units must not silently claim a factor of
@@ -2926,13 +3155,29 @@ int main(int argc, char** argv)
         checkContains(script, "EDIT ME", "and the script says so");
     }
     {
+        // CHGNet.load() knows only version strings — model_name="latest"
+        // raises ValueError, so "track the installed release" must be spelled
+        // by omitting the argument entirely.
         CalculatorConfig c;
         c.calculator = CalculatorKind::ChgNet;
         c.chgnetWeights = ChgNetWeights::Latest;
-        c.chgnetStress = false;
         const std::string script = AseScriptGenerator::calculatorSnippet(c);
-        checkContains(script, "model_name=\"latest\"", "weight set is honored");
-        checkContains(script, "stress_weight=0.0", "stress toggle is honored");
+        checkContains(script, "model = CHGNet.load()",
+                      "\"latest\" loads the package's own default checkpoint");
+        check(!contains(script, "model_name="),
+              "and never as a model_name CHGNet.load would reject");
+        // stress_weight is the GPa -> eV/Å³ conversion factor, not an on/off
+        // switch: 1.0 reported stresses ~160x too large, 0.0 zeroed them
+        // silently. The kwarg must be left at CHGNet's own default.
+        check(!contains(script, "stress_weight"),
+              "the stress conversion factor is never overridden");
+
+        CalculatorConfig pinned = c;
+        pinned.chgnetWeights = ChgNetWeights::V0_3_0;
+        const std::string reproducible =
+            AseScriptGenerator::calculatorSnippet(pinned);
+        checkContains(reproducible, "model_name=\"0.3.0\"",
+                      "a pinned weight set is named explicitly");
     }
     {
         CalculatorConfig c;
@@ -3137,6 +3382,80 @@ int main(int argc, char** argv)
                       "with the unset axis carried through");
         checkContains(script, "_baseline_kpts[_i]",
                       "and filled in from the baseline at run time");
+    }
+
+    // -- 2D work function: Φ = E_vac − E_F off an inherited ground state ------
+    std::printf("2D work function:\n");
+    {
+        WorkfunctionConfig wf;
+        wf.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        wf.vacuumAxis = 2;
+        const std::string script = generateWorkfunctionScript(wf);
+        checkContains(script, "GPAW(r\"/jobs/proc_1/single_point.gpw\", txt=None)",
+                      "loads the baseline ground state");
+        checkContains(script, "calc.get_electrostatic_potential()",
+                      "reads the potential back rather than recomputing it");
+        // The planar average and the subtraction ARE the physics: V(z) from
+        // the mean over the two non-vacuum axes, Φ from E_vac − E_F.
+        checkContains(script,
+                      "in_plane = tuple(i for i in range(3) if i != vacuum_axis)",
+                      "averages over exactly the two non-vacuum axes");
+        checkContains(script, "v_planar = pot.mean(axis=in_plane)",
+                      "planar-averages the potential");
+        checkContains(script, "vacuum_axis = 2",
+                      "the chosen vacuum axis is baked into the script");
+        checkContains(script, "efermi = float(calc.get_fermi_level())",
+                      "the Fermi level comes from the baseline");
+        checkContains(script, "phi_low = v_vac_low - efermi",
+                      "Φ is the vacuum level minus E_F (low face)");
+        checkContains(script, "phi_high = v_vac_high - efermi",
+                      "and the high face is reported separately");
+        // A geometry post-process must not re-run the SCF, and it must read
+        // the geometry off the .gpw — a workspace structure edited since the
+        // baseline would put the vacuum bookkeeping on the wrong cell.
+        check(!contains(script, "get_potential_energy"),
+              "no self-consistent cycle is run");
+        check(!contains(script, "structure.extxyz"),
+              "the geometry comes from the .gpw, not the staged structure");
+        // The workfunction.json schema the viewer parses, key by key: the
+        // generator and WorkfunctionWindow never see each other in the build.
+        for (const char* key :
+             {"\"vacuum_axis\"", "\"z_A\"", "\"v_planar_eV\"", "\"efermi_eV\"",
+              "\"vacuum_level_low_eV\"", "\"vacuum_level_high_eV\"",
+              "\"workfunction_low_eV\"", "\"workfunction_high_eV\"",
+              "\"plateau_flatness_eV_per_A\""})
+            checkContains(script, key,
+                          std::string("workfunction.json carries ") + key);
+        checkContains(script, "plateau_fraction = 0.15",
+                      "the default plateau window is 15% of the vacuum gap");
+        checkContains(script, "if plateau_flatness > 0.005:",
+                      "warns when the edge plateau is not flat");
+        checkContains(script, "CALANGO_RESULT workfunction=workfunction.json",
+                      "announces the result file");
+    }
+    {
+        // The clamps: a stray axis or fraction must degrade to the documented
+        // defaults, not to Python that averages over a non-existent axis.
+        WorkfunctionConfig wf;
+        wf.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        wf.vacuumAxis = 7;
+        wf.plateauFraction = 3.0;
+        const std::string script = generateWorkfunctionScript(wf);
+        checkContains(script, "vacuum_axis = 2",
+                      "an out-of-range axis falls back to z");
+        checkContains(script, "plateau_fraction = 0.15",
+                      "an out-of-range fraction falls back to the default");
+    }
+    {
+        WorkfunctionConfig wf;
+        wf.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        wf.vacuumAxis = 0;
+        wf.plateauFraction = 0.25;
+        const std::string script = generateWorkfunctionScript(wf);
+        checkContains(script, "vacuum_axis = 0",
+                      "a non-default vacuum axis is honored");
+        checkContains(script, "plateau_fraction = 0.25",
+                      "so is a non-default plateau fraction");
     }
 
     // -- VASP optics: the standard two-step LOPTICS protocol ------------------

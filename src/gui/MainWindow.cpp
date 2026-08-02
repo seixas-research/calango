@@ -46,7 +46,7 @@
 #include "gui/ConvergenceResultsWindow.hpp"
 #include "gui/CutoffConvergenceWizard.hpp"
 #include "gui/KpointsConvergenceWizard.hpp"
-#include "gui/WorkflowWindow.hpp"
+#include "gui/OrchestrationWindow.hpp"
 #include "gui/EnginePresets.hpp"
 #include "gui/SinglePointWizard.hpp"
 #include "gui/MonteCarloWizard.hpp"
@@ -79,6 +79,8 @@
 #include "gui/TwoDBandsWizard.hpp"
 #include "gui/VolumetricPanel.hpp"
 #include "gui/WannierWizard.hpp"
+#include "gui/WorkfunctionWindow.hpp"
+#include "gui/WorkfunctionWizard.hpp"
 #include "gui/XasResultsWindow.hpp"
 #include "gui/HubbardUWizard.hpp"
 #include "gui/XasWizard.hpp"
@@ -220,7 +222,11 @@ constexpr double kTrajectoryPlaybackFps = 15.0;
 //      | Results — a new dock, so a layout saved under 14 has no slot for it
 //      and would strand the canvas with no way back. Remote Access and
 //      Additional Overlays also became hidden-by-default in the same change.
-constexpr int kLayoutVersion = 15;
+//  16: the Workflow dock was renamed Orchestration, objectName included
+//      ("workflowDock" → "orchestrationDock"). restoreState() matches docks
+//      by objectName, so a layout saved under 15 holds state for a dock that
+//      no longer exists — the renamed dock would come up stranded.
+constexpr int kLayoutVersion = 16;
 
 /// Painted icons for the frame-panel camera toolbar (icon-only buttons).
 /// Plane icons use the axes-triad colors: x red, y green, z blue.
@@ -1375,6 +1381,13 @@ void MainWindow::createMenusAndDocks()
         ->setToolTip(tr("Band structure of a sheet as surfaces "
                         "E_n(kx, ky) over the 2D Brillouin zone, rather than "
                         "along a k-path"));
+    // Third of the baseline-inheriting trio, before the builder: like the two
+    // above it, this reads a completed ground state rather than computing one.
+    twoDimensionalMenu->addAction(tr("2D &Workfunction…"), this,
+                                  &MainWindow::show2DWorkfunction)
+        ->setToolTip(tr("Work function Φ = E_vac − E_F of both slab faces, "
+                        "from the planar-averaged electrostatic potential of "
+                        "an inherited ground state"));
     twoDimensionalMenu->addAction(tr("&Graphene Oxide…"), this,
                                   &MainWindow::openGrapheneOxideBuilder)
         ->setToolTip(tr("Functionalized graphene: epoxides, hydroxyls, "
@@ -1415,7 +1428,7 @@ void MainWindow::createMenusAndDocks()
     // for one action that opened one window was the most prominent thing in
     // the menu bar and the least used; as a dock the canvas is simply THERE,
     // beside the Results panel that reports on the jobs it dispatches, and
-    // View → Workflow toggles it like every other panel.
+    // View → Orchestration toggles it like every other panel.
 
     // Help trails the menu bar: online resources first, About last (as is
     // conventional). New documentation/support links belong in kHelpLinks.
@@ -1554,7 +1567,7 @@ void MainWindow::createMenusAndDocks()
     visualEffectsDock_->setObjectName(QStringLiteral("visualEffectsDock"));
     visualEffectsDock_->setWidget(new VisualEffectsPanel(viewport_, visualEffectsDock_));
 
-    // Results now TRAILS the bottom row (Workflow | Remote Access | Results),
+    // Results now TRAILS the bottom row (Orchestration | Remote Access | Results),
     // so it is built here but placed further down, once the dock that leads
     // the row exists — see the splitDockWidget chain after Remote Access.
     jobDock_ = new QDockWidget(tr("Results"), this); // zone 10
@@ -1698,23 +1711,23 @@ void MainWindow::createMenusAndDocks()
         remoteDock_);
     remoteDock_->setWidget(remotePanel_);
 
-    // Zone 14 — "Workflow": the node canvas, formerly a modeless window behind
+    // Zone 14 — "Orchestration": the node canvas, formerly a modeless window behind
     // a top-level menu. It leads the bottom row, so it is the dock that
     // establishes the row and the two job panels split off it.
     //
     // The row reads left to right in the order the work happens: you build a
-    // pipeline (Workflow), choose where it runs (Remote Access), and read what
+    // pipeline (Orchestration), choose where it runs (Remote Access), and read what
     // came back (Results).
-    workflowDock_ = new QDockWidget(tr("Workflow"), this);
-    workflowDock_->setObjectName(QStringLiteral("workflowDock"));
-    workflowPanel_ = createWorkflowPanel(workflowDock_);
-    workflowDock_->setWidget(workflowPanel_);
-    addDockWidget(Qt::BottomDockWidgetArea, workflowDock_);
-    splitDockWidget(workflowDock_, remoteDock_, Qt::Horizontal);
+    orchestrationDock_ = new QDockWidget(tr("Orchestration"), this);
+    orchestrationDock_->setObjectName(QStringLiteral("orchestrationDock"));
+    orchestrationPanel_ = createOrchestrationPanel(orchestrationDock_);
+    orchestrationDock_->setWidget(orchestrationPanel_);
+    addDockWidget(Qt::BottomDockWidgetArea, orchestrationDock_);
+    splitDockWidget(orchestrationDock_, remoteDock_, Qt::Horizontal);
     splitDockWidget(remoteDock_, jobDock_, Qt::Horizontal);
     // Remote Access is hidden by default: submitting to a cluster is a
     // deliberate act a minority of sessions perform, and the panel is a login
-    // form that says nothing until it is used — unlike Workflow and Results,
+    // form that says nothing until it is used — unlike Orchestration and Results,
     // which are useful on sight. View → Remote Access brings it back, and
     // restoreState() below still reinstates whatever the user left visible.
     remoteDock_->setVisible(false);
@@ -1807,21 +1820,21 @@ void MainWindow::createMenusAndDocks()
     // Processes panels below it.
     resizeDocks({brandingDock, infoDock, volumetricDock, processDock},
                 {kBrandingHeight, 220, 300, 300}, Qt::Vertical);
-    resizeDocks({workflowDock_, jobDock_, remoteDock_}, {250, 250, 250},
+    resizeDocks({orchestrationDock_, jobDock_, remoteDock_}, {250, 250, 250},
                 Qt::Vertical);
-    // The bottom row is Workflow | Remote Access | Results. Remote Access is
+    // The bottom row is Orchestration | Remote Access | Results. Remote Access is
     // held to the narrowest width that still shows its whole form — its own
     // minimum size hint, asked of the panel rather than guessed at — and the
     // other two split what is left.
     const int remoteWidth = remotePanel_->minimumSizeHint().width();
     remoteDock_->setMinimumWidth(remoteWidth);
-    // Workflow and Results are given plain preferred widths rather than
+    // Orchestration and Results are given plain preferred widths rather than
     // enormous ones: resizeDocks normalizes the numbers it is handed, and an
     // extreme ratio makes the solver claw the difference out of the LEFT
-    // column, which is not part of this call at all. Workflow gets the wider
+    // column, which is not part of this call at all. Orchestration gets the wider
     // share of the two — it is a canvas, and a canvas narrower than a couple
     // of nodes cannot show a pipeline.
-    resizeDocks({workflowDock_, remoteDock_, jobDock_},
+    resizeDocks({orchestrationDock_, remoteDock_, jobDock_},
                 {560, remoteWidth, 460}, Qt::Horizontal);
 
     // Dock titles at 1.2× the theme default across all zones (the earlier
@@ -1850,7 +1863,7 @@ void MainWindow::createMenusAndDocks()
     viewMenu->addAction(reprDock->toggleViewAction());
     viewMenu->addAction(visualEffectsDock_->toggleViewAction());
     viewMenu->addAction(overlaysDock->toggleViewAction());
-    viewMenu->addAction(workflowDock_->toggleViewAction());
+    viewMenu->addAction(orchestrationDock_->toggleViewAction());
     viewMenu->addAction(remoteDock_->toggleViewAction());
     viewMenu->addAction(jobDock_->toggleViewAction());
 
@@ -2029,9 +2042,9 @@ void MainWindow::onTabCloseRequested(int index)
     Document* closing = documents_[static_cast<std::size_t>(index)].get();
     if (closing == liveDoc_)
         liveDoc_ = nullptr; // stream continues, frames just aren't shown
-    // Same for a workflow node's live tab: the entry must go with the
+    // Same for an orchestration node's live tab: the entry must go with the
     // document, or the next streamed frame appends to freed memory.
-    std::erase_if(workflowLiveDocs_,
+    std::erase_if(orchestrationLiveDocs_,
                   [closing](const auto& entry) { return entry.second == closing; });
     documents_.erase(documents_.begin() + index);
     tabBar_->removeTab(index); // currentChanged fires and re-syncs
@@ -2659,8 +2672,11 @@ bool MainWindow::readProject(const QString& path)
         if (gradient >= 0 && gradient <= static_cast<int>(render::ColorGradient::Afmhot))
             viewport_->setColorGradient(static_cast<render::ColorGradient>(gradient));
         const int colorMode = viewportJson[QStringLiteral("colorMode")].toInt(0);
+        // Bound by the LAST enumerator (Cast), not a hand-picked one: the
+        // mode is saved by numeric value, and a guard frozen at an older tail
+        // would silently drop every mode appended after it.
         if (colorMode >= 0
-            && colorMode <= static_cast<int>(render::ColorMode::CustomScalar))
+            && colorMode <= static_cast<int>(render::ColorMode::Cast))
             viewport_->setColorMode(
                 static_cast<render::ColorMode>(colorMode),
                 viewportJson[QStringLiteral("customField")].toString());
@@ -4325,6 +4341,53 @@ void MainWindow::open2DBandsResults(const QString& directory)
     viewer->show();
 }
 
+void MainWindow::show2DWorkfunction()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()
+        || !doc->structure->cell().isDefined()) {
+        QMessageBox::information(this, tr("2D Workfunction"),
+                                 tr("Open a periodic structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    // GPAW only, and a saved .gpw specifically: the method is reading
+    // calc.get_electrostatic_potential() and the Fermi level back off the
+    // stored ground state — there is nothing to compute without one.
+    const QList<QPair<QString, QString>> baselines = gpawDensityFiles();
+    if (baselines.isEmpty()) {
+        QMessageBox::critical(
+            this, tr("2D Workfunction"),
+            tr("The work function Φ = E_vac − E_F is read off a completed "
+               "ground state — its electrostatic potential and Fermi level — "
+               "so a completed GPAW Single-Point Calculation is required "
+               "first.\n\n"
+               "Run one with wavefunction export enabled — it writes "
+               "single_point.gpw, which is what this reads."));
+        return;
+    }
+
+    WorkfunctionWizard wizard(doc->structure, this);
+    wizard.setDensityBaselines(baselines);
+    runSimulationWizard(wizard, tr("2D Workfunction"), /*expectFrames=*/false);
+}
+
+void MainWindow::openWorkfunctionResults(const QString& directory)
+{
+    auto* viewer = new WorkfunctionWindow(this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    if (!viewer->loadResults(directory + QStringLiteral("/workfunction.json"))) {
+        delete viewer;
+        QMessageBox::warning(
+            this, tr("2D Workfunction"),
+            tr("Could not read workfunction.json in %1.").arg(directory));
+        return;
+    }
+    viewer->show();
+}
+
 void MainWindow::adoptSinglePointResults(const QString& directory)
 {
     Document* doc = currentDocument();
@@ -4616,6 +4679,8 @@ std::vector<MainWindow::ViewerEntry> MainWindow::viewersFor(
         {"wannier.json", tr("Wannier Functions Viewer"), &MainWindow::openMlwfResults},
         {"bands_2d.json", tr("2D Band Surfaces Viewer"),
          &MainWindow::open2DBandsResults},
+        {"workfunction.json", tr("2D Workfunction Viewer"),
+         &MainWindow::openWorkfunctionResults},
         {"charged_defects.json", tr("Charged Defect Diagram"),
          &MainWindow::openChargedDefectResults},
         {"fermi_surface.json", tr("Fermi Surface Viewer"),
@@ -5147,6 +5212,10 @@ void MainWindow::onProcessResultRequested(const QString& directory)
     }
     if (QFile::exists(directory + QStringLiteral("/bands_2d.json"))) {
         open2DBandsResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/workfunction.json"))) {
+        openWorkfunctionResults(directory);
         return;
     }
     if (QFile::exists(directory + QStringLiteral("/charged_defects.json"))) {
@@ -6533,14 +6602,14 @@ bool MainWindow::prepareSimulation(const QString& title)
     return true;
 }
 
-WorkflowWindow* MainWindow::createWorkflowPanel(QWidget* parent)
+OrchestrationWindow* MainWindow::createOrchestrationPanel(QWidget* parent)
 {
     // The panel is built once and lives in the dock, so the material list is
     // supplied by a callback rather than snapshotted: it must reflect the tabs
     // open at the moment "Add Process…" is pressed, not the (empty) set that
     // existed while the window was being constructed.
     const auto materialsNow = [this] {
-        WorkflowWindow::MaterialList materials;
+        OrchestrationWindow::MaterialList materials;
         for (const auto& doc : documents_)
             if (doc && doc->structure && !doc->structure->empty())
                 materials.append({doc->fileName, doc->structure});
@@ -6548,25 +6617,25 @@ WorkflowWindow* MainWindow::createWorkflowPanel(QWidget* parent)
     };
     // The global Processes panel rides along: every dispatched node shows
     // up there (Queued → Running → Completed/Failed) with its directory, so
-    // "Load Result" works on workflow jobs like on any wizard run.
-    auto* window = new WorkflowWindow(
+    // "Load Result" works on orchestration jobs like on any wizard run.
+    auto* window = new OrchestrationWindow(
         materialsNow(),
         [this](core::CalculatorKind kind) { return pythonForEngine(kind); },
         processPanel_, parent);
     window->setMaterialsProvider(materialsNow);
 
-    // Results-panel integration: a workflow node's job is a process like any
+    // Results-panel integration: an orchestration node's job is a process like any
     // other. Register its record and selector entry when it starts, poll its
     // metrics.json while it runs, finalize and persist when it ends — the
     // same lifecycle runScript()/onJobFinished() give a standalone job.
-    connect(window, &WorkflowWindow::nodeStarted, this,
+    connect(window, &OrchestrationWindow::nodeStarted, this,
             [this](int id, const QString& label, const QString& directory) {
                 ProcessRecord record;
                 record.label = label;
                 record.directory = directory;
                 processRecords_[id] = std::move(record);
                 addProcessToSelector(id, label);
-                workflowRunningIds_.insert(id);
+                orchestrationRunningIds_.insert(id);
                 if (!metricsTimer_->isActive())
                     metricsTimer_->start();
             });
@@ -6575,16 +6644,16 @@ WorkflowWindow* MainWindow::createWorkflowPanel(QWidget* parent)
     // and MD runs stream anything, and the panel does not have to say in
     // advance which nodes those are — a node that streams nothing simply never
     // triggers this.
-    connect(window, &WorkflowWindow::nodeFrameStreamed, this,
+    connect(window, &OrchestrationWindow::nodeFrameStreamed, this,
             [this](int id, const std::shared_ptr<core::Structure>& frame) {
                 if (!frame)
                     return;
-                auto it = workflowLiveDocs_.find(id);
-                if (it == workflowLiveDocs_.end()) {
+                auto it = orchestrationLiveDocs_.find(id);
+                if (it == orchestrationLiveDocs_.end()) {
                     const auto record = processRecords_.find(id);
                     const QString label = record != processRecords_.end()
                         ? record->second.label
-                        : tr("Workflow run");
+                        : tr("Orchestration run");
                     // Seeded empty: the first streamed frame becomes frame 0,
                     // matching a standalone run — the input geometry carries no
                     // evaluated forces, so scrubbing onto it would blank the
@@ -6592,7 +6661,7 @@ WorkflowWindow* MainWindow::createWorkflowPanel(QWidget* parent)
                     const int tab = addDocument(
                         std::make_shared<core::Structure>(*frame),
                         tr("%1 (live)").arg(label), {}, label);
-                    it = workflowLiveDocs_
+                    it = orchestrationLiveDocs_
                              .emplace(id,
                                       documents_[static_cast<std::size_t>(tab)]
                                           .get())
@@ -6601,10 +6670,10 @@ WorkflowWindow* MainWindow::createWorkflowPanel(QWidget* parent)
                 }
                 appendStreamedFrame(it->second, frame);
             });
-    connect(window, &WorkflowWindow::nodeFinished, this,
+    connect(window, &OrchestrationWindow::nodeFinished, this,
             [this](int id, bool success) {
-                finalizeWorkflowTrajectory(id, success);
-                workflowRunningIds_.erase(id);
+                finalizeOrchestrationTrajectory(id, success);
+                orchestrationRunningIds_.erase(id);
                 if (auto it = processRecords_.find(id);
                     it != processRecords_.end()
                     && !it->second.directory.isEmpty()) {
@@ -6616,7 +6685,7 @@ WorkflowWindow* MainWindow::createWorkflowPanel(QWidget* parent)
                     if (id == selectedProcessId_)
                         syncResultsToProcess(id);
                 }
-                if (workflowRunningIds_.empty() && currentTaskId_ < 0)
+                if (orchestrationRunningIds_.empty() && currentTaskId_ < 0)
                     metricsTimer_->stop();
             });
 
@@ -7004,14 +7073,14 @@ bool MainWindow::readMetricsJson(const QString& directory,
 void MainWindow::pollLiveMetrics()
 {
     // Every live job feeds its record: the main window's own run plus any
-    // workflow-driven node jobs. Only the SELECTED process repaints the
+    // orchestration-driven node jobs. Only the SELECTED process repaints the
     // plots, but the others' records still accumulate, so switching the
-    // Results selector to a workflow process mid-run shows its history.
+    // Results selector to an orchestration process mid-run shows its history.
     std::vector<int> liveIds;
     if (currentTaskId_ >= 0)
         liveIds.push_back(currentTaskId_);
-    liveIds.insert(liveIds.end(), workflowRunningIds_.begin(),
-                   workflowRunningIds_.end());
+    liveIds.insert(liveIds.end(), orchestrationRunningIds_.begin(),
+                   orchestrationRunningIds_.end());
 
     auto it = processRecords_.end();
     for (int id : liveIds) {
@@ -7349,15 +7418,15 @@ void MainWindow::onFrameStreamed(const std::shared_ptr<core::Structure>& frame)
     appendStreamedFrame(liveDoc_, frame);
 }
 
-void MainWindow::finalizeWorkflowTrajectory(int processId, bool success)
+void MainWindow::finalizeOrchestrationTrajectory(int processId, bool success)
 {
     // The streamed case: the node already owns a trajectory tab, so all that
     // is left is to drop the "(live)" marker and land the playhead on the
     // answer — the same finish a standalone run gets in onJobFinished().
-    if (const auto it = workflowLiveDocs_.find(processId);
-        it != workflowLiveDocs_.end()) {
+    if (const auto it = orchestrationLiveDocs_.find(processId);
+        it != orchestrationLiveDocs_.end()) {
         Document* streamed = it->second;
-        workflowLiveDocs_.erase(it);
+        orchestrationLiveDocs_.erase(it);
         const int index = indexOfDocument(streamed);
         if (index >= 0 && streamed->frames.size() > 1) {
             streamed->fileName.replace(tr(" (live)"), QString());
@@ -7367,7 +7436,7 @@ void MainWindow::finalizeWorkflowTrajectory(int processId, bool success)
             showFinalFrame(streamed);
             if (success)
                 statusBar()->showMessage(
-                    tr("Workflow node finished — %n streamed frame(s)", nullptr,
+                    tr("Orchestration node finished — %n streamed frame(s)", nullptr,
                        static_cast<int>(streamed->frames.size())));
             return;
         }
@@ -7454,9 +7523,9 @@ void MainWindow::onRemoteResultsReady(const QString& localDir)
 
 void MainWindow::onJobFinished(int exitCode, bool crashed)
 {
-    // The timer also serves any workflow node still executing — it only
+    // The timer also serves any orchestration node still executing — it only
     // rests when nothing at all is live.
-    if (workflowRunningIds_.empty())
+    if (orchestrationRunningIds_.empty())
         metricsTimer_->stop();
     const bool failed = crashed || exitCode != 0;
     if (currentTaskId_ >= 0) {
@@ -7533,6 +7602,11 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     // 2D Bands: open the surface viewer.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/bands_2d.json"))) {
         open2DBandsResults(lastJobDir_);
+        return;
+    }
+    // 2D Workfunction: open the V̄(z) viewer with the Φ headline.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/workfunction.json"))) {
+        openWorkfunctionResults(lastJobDir_);
         return;
     }
     // Charged defects: open the formation-energy diagram.
@@ -7840,6 +7914,34 @@ void MainWindow::about()
     dependencyScroll->setFrameShape(QFrame::NoFrame);
     dependencyScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     tabs->addTab(dependencyScroll, tr("Third-Party Licenses"));
+
+    // --- Tab 3: funding acknowledgements ----------------------------------
+    // A tab of its own rather than a line in the header: a funding agency's
+    // acknowledgement has to be discoverable by name, and the header is
+    // already the densest block of the dialog.
+    auto* acknowledgements = new QWidget(&dialog);
+    auto* acknowledgementsLayout = new QVBoxLayout(acknowledgements);
+    auto* inctLogo = new QLabel(acknowledgements);
+    const QPixmap inctPixmap(QStringLiteral(
+        ":/assets/acknowledgements/inct_materials_informatics.png"));
+    if (!inctPixmap.isNull()) {
+        // Scale by width only: the source art's aspect ratio is preserved and
+        // 420 px sits comfortably inside the dialog's clamped width.
+        inctLogo->setPixmap(inctPixmap.scaledToWidth(
+            420, Qt::SmoothTransformation));
+    }
+    inctLogo->setAlignment(Qt::AlignHCenter);
+    acknowledgementsLayout->addWidget(inctLogo);
+    auto* acknowledgementsText = new QLabel(
+        tr("We thank financial support from INCT Materials Informatics "
+           "(Grant No. 406447/2022-5)."),
+        acknowledgements);
+    acknowledgementsText->setWordWrap(true);
+    acknowledgementsText->setAlignment(Qt::AlignHCenter);
+    acknowledgementsText->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    acknowledgementsLayout->addWidget(acknowledgementsText);
+    acknowledgementsLayout->addStretch(1);
+    tabs->addTab(acknowledgements, tr("Acknowledgements"));
 
     layout->addWidget(tabs, 1);
 

@@ -11,7 +11,7 @@ Calango opens into two full-height side columns flanking the 3D viewport, with a
 | Left column | Calango (branding) · Structure · Volumetric Data · *Additional Overlays* · Processes |
 | Center | Document tab bar · 3D viewport · playback timeline |
 | Right column | Representation · Spatial References · Visual Effects |
-| Bottom row | Workflow · *Remote Access* · Results |
+| Bottom row | Orchestration · *Remote Access* · Results |
 
 Two panels — italicized above — exist in the layout but start **hidden**: *Additional Overlays* (lattice planes, text annotations, geometric primitives — a finishing step, not an every-session panel) and *Remote Access* (a login form that says nothing until used). Both are one {menuselection}`View` click away.
 
@@ -23,7 +23,7 @@ Two panels — italicized above — exist in the layout but start **hidden**: *A
 - **Representation** — appearance controls: style, mode, color mapping, radii and bond widths.
 - **Spatial References** — three tabs, {guilabel}`Unit cell`, {guilabel}`Axes triad` and {guilabel}`Vectors`: everything that answers "where/which way is this?" about the scene without being the atoms. Under {guilabel}`Unit cell`, *Show atoms of the neighboring unit cell* draws exactly the periodic images that terminate a bond leaving the cell — only those, so no bond ends in mid-air.
 - **Visual Effects** — lighting, shadow, fog, blur and ambient occlusion, all off by default.
-- **Workflow** — the node canvas: build a pipeline of connected calculation nodes and dispatch it as a DAG. It leads the bottom row, which reads left to right in the order the work happens — build the pipeline (Workflow), choose where it runs (Remote Access), read what came back (Results).
+- **Orchestration** — the node canvas: build a pipeline of connected calculation nodes and dispatch it as a DAG. It leads the bottom row, which reads left to right in the order the work happens — build the pipeline (Orchestration), choose where it runs (Remote Access), read what came back (Results).
 - **Results** — the job console: a {guilabel}`Log` tab plus live {guilabel}`Energy`, {guilabel}`Temperature`, {guilabel}`Force` and {guilabel}`Pressure` metric plots, with a {guilabel}`Process:` selector that switches every tab between runs (each run keeps its own metric history), and an {guilabel}`Export Data…` button per plot.
 - **Remote Access** — SSH connection, cluster job submission and queue monitoring. It is held to the narrowest width that still shows its whole form.
 

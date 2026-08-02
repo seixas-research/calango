@@ -59,12 +59,21 @@ QString defaultTemplate(core::CalculatorKind kind)
         // ORCA reads its own %pal block for parallelism and must be invoked
         // with a full path, so the rank count does not belong on this line.
         return QStringLiteral("orca {input} > {output}");
+    case core::CalculatorKind::DftbPlus:
+        // No {input}/{output}: ASE appends its own '> PREFIX.out' to
+        // $DFTB_COMMAND, so a redirection here would nest two of them. The
+        // template is just the binary (prefix it with OMP_NUM_THREADS=n or
+        // mpirun for a parallel build); without {script} it is exported as
+        // the solver command rather than run as the job line.
+        return QStringLiteral("dftb+");
     default:
         break;
     }
-    // Everything else — the ML potentials, EMT/LJ, ASAP — is a single Python
-    // process; threading is controlled by OMP_NUM_THREADS (Preferences →
-    // General) and by the model's own device selection.
+    // Everything else — the ML potentials, xTB (in-process through its
+    // Python API), GROMACS (whose gmx binary is a calculator setting, not a
+    // launch command), EMT/LJ, ASAP — is a single Python process; threading
+    // is controlled by OMP_NUM_THREADS (Preferences → General) and by the
+    // model's own device selection.
     return QStringLiteral("{python} {script}");
 }
 
@@ -121,6 +130,17 @@ QString solverCommandVariable(core::CalculatorKind kind)
         // the variable here is still right — the resolver only exports it when
         // the user has actually configured a command.
         return QStringLiteral("ASE_LAMMPSRUN_COMMAND");
+    case core::CalculatorKind::DftbPlus:
+        // DFTB_COMMAND, not ASE_DFTB_COMMAND: the Dftb constructor resolves
+        // its command itself (DFTB_COMMAND + ' > PREFIX.out', then the [dftb]
+        // config section, then literally 'dftb+ > PREFIX.out'), so the
+        // generic ASE_*_COMMAND fallback is never consulted.
+        return QStringLiteral("DFTB_COMMAND");
+    case core::CalculatorKind::Gromacs:
+        // Read only when the generated script passes no command= — the wizard
+        // normally bakes the gmx path into the calculator, and this is the
+        // fallback ASE's FileIOCalculator machinery checks.
+        return QStringLiteral("ASE_GROMACS_COMMAND");
     default:
         break;
     }

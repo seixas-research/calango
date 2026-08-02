@@ -1,6 +1,6 @@
-# Workflows
+# Orchestration
 
-The {guilabel}`Workflow` dock is a node-based editor for automated
+The {guilabel}`Orchestration` dock is a node-based editor for automated
 simulation pipelines. Each node is one simulation process on a pannable,
 zoomable canvas; drawing a link from one node's output port onto another
 node makes the second run after the first, **consuming its outputs** — a
@@ -30,7 +30,7 @@ a calculator engine.
   and release on another node to connect them. Duplicate links are ignored
   and **cycles are refused**: a child can never be its own ancestor.
 - **Double-click a node** to configure it: its standard setup wizard opens
-  in workflow mode, with the Run button relabelled {guilabel}`Save process
+  in orchestration mode, with the Run button relabelled {guilabel}`Save process
   node`. Accepting commits the generated script (plus interpreter and launch
   command) to the node instead of executing anything. An unconfigured node
   runs with the task's defaults, seeded from the per-element suggested
@@ -38,9 +38,9 @@ a calculator engine.
 - {guilabel}`Remove Selected` deletes the selected nodes and every link that
   touched them. The mouse wheel zooms; middle-drag pans.
 
-% TODO screenshot: Workflow dock with a three-node chain relax -> single point -> phonon, one node Done, one Running, status strips visible
+% TODO screenshot: Orchestration dock with a three-node chain relax -> single point -> phonon, one node Done, one Running, status strips visible
 ```{figure} /_static/img/workflow_canvas.png
-:alt: The Workflow canvas with a three-node pipeline mid-execution
+:alt: The Orchestration canvas with a three-node pipeline mid-execution
 :width: 92%
 :figclass: screenshot
 
@@ -94,17 +94,17 @@ Failure propagates by `skipDescendants`: when a node fails, every child
 still waiting is marked Skipped, recursively — the canvas says why the
 pipeline stopped instead of stalling silently.
 
-Each run creates a timestamped `workflow_YYYYMMDD_HHmmss/` folder under the
+Each run creates a timestamped `orchestration_YYYYMMDD_HHmmss/` folder under the
 simulations directory, and every node stages its own `node_<n>_<task>/` job
 directory inside it, using the same script generators and launch-command
-machinery as the wizards ({doc}`/simulations/scripts`). **The Workflow panel
+machinery as the wizards ({doc}`/simulations/scripts`). **The Orchestration panel
 owns its own JobRunner**, separate from the queue that standalone wizard
 runs share — a pipeline therefore executes concurrently with your other
 jobs, while remaining strictly sequential within the canvas.
 
 ### Process Manager integration
 
-Every dispatched node registers a row in the Processes panel — *Workflow:
+Every dispatched node registers a row in the Processes panel — *Orchestration:
 Geometry Optimization (Si)* — and mirrors its state there (Queued → Running
 → Completed/Failed; a Skipped node reports as Failed, which is what it is
 from the queue's point of view). The row carries the node's job directory,
@@ -145,9 +145,9 @@ node (double-click) to regenerate its script against current settings.
 Stated plainly, so a pipeline is designed around them rather than into
 them:
 
-- **The canvas is not saved in the project file.** A workflow lives for
+- **The canvas is not saved in the project file.** A pipeline lives for
   the session; the node *jobs* it produced persist on disk under their
-  `workflow_*` folder and stay reloadable from the Processes panel, but the
+  `orchestration_*` folder and stay reloadable from the Processes panel, but the
   graph itself must be rebuilt after a restart.
 - Four node types — Geometry Optimization, Single Point, Molecular
   Dynamics, Phonon. Response calculations (bands, optics, GW) are run from

@@ -42,6 +42,25 @@ enum class CalculatorKind {
     /// and coefficients, which is why it needs its own settings group instead
     /// of a single constructor line.
     Lammps,
+    // -- Appended after Lammps (same append-only rule as above) -------------
+    /// xTB — the GFNn-xTB semi-empirical tight-binding family (and the GFN-FF
+    /// force field), through the `xtb` Python package's in-process ASE
+    /// calculator. Fast and parameterized across most of the periodic table;
+    /// a screening / pre-relaxation method for molecules and molecular
+    /// crystals, not a DFT replacement.
+    Xtb,
+    /// DFTB+ — density-functional tight binding via `ase.calculators.dftb`.
+    /// Needs the `dftb+` binary and a Slater-Koster parameter set: the
+    /// pairwise .skf tables ARE the parameterization, so element coverage is
+    /// decided by the chosen set, not by the code.
+    DftbPlus,
+    /// GROMACS — classical (bio)molecular mechanics through
+    /// `ase.calculators.gromacs`, which drives the `gmx` binary and writes
+    /// topology/parameter files per evaluation. Like LAMMPS it is an ENGINE:
+    /// the force field must be able to type the structure (pdb2gmx residue
+    /// recognition), so it targets proteins / water / known ligands — a bare
+    /// inorganic crystal will not run.
+    Gromacs,
 };
 
 /// How the LAMMPS calculator talks to LAMMPS. ASE ships two interfaces, and
@@ -745,8 +764,11 @@ struct CalculatorConfig {
 
     /// DeepMD-kit: frozen graph (`.pb`, or a `.pth` for the PyTorch backend).
     std::string deepmdModelPath;
-    /// NequIP / Allegro: *deployed* TorchScript model (`.pth`), i.e. the
-    /// output of `nequip-deploy build`, not a training checkpoint.
+    /// NequIP / Allegro: a packaged inference model, never a raw training
+    /// checkpoint. Which artifact depends on the nequip generation: >= 0.7
+    /// compiles one with `nequip-compile` (.nequip.pt2 / .nequip.pth), the
+    /// older line deployed TorchScript with `nequip-deploy build` (.pth). The
+    /// generated script loads whichever API the installed package exposes.
     std::string nequipModelPath;
     /// Unit names the deployed NequIP/Allegro model was trained in. ASE works
     /// in eV and Å, so the calculator rescales by these — a model trained in
@@ -755,8 +777,11 @@ struct CalculatorConfig {
     std::string nequipLengthUnits = "Angstrom";
 
     ChgNetWeights chgnetWeights = ChgNetWeights::V0_3_0;
-    /// Ask CHGNet for the stress tensor as well as energy/forces (needed for
-    /// variable-cell relaxation; costs an extra head evaluation).
+    /// Retired knob, kept only so saved projects keep deserializing. It used
+    /// to drive CHGNetCalculator's `stress_weight`, which is NOT an on/off
+    /// switch: it is the GPa -> eV/Å³ conversion factor for the stress CHGNet
+    /// always computes. Writing 1.0 reported stresses ~160x too large and
+    /// 0.0 zeroed them silently, so the generator no longer emits the kwarg.
     bool chgnetStress = true;
 
     MatterSimModel matterSimModel = MatterSimModel::M3;
@@ -947,6 +972,59 @@ struct CalculatorConfig {
     /// default: when a pair style rejects its coefficients, that log is the
     /// only place the reason appears.
     bool lammpsKeepLog = true;
+
+    // -- xTB (semi-empirical tight binding) ---------------------------------
+    //
+    // Keyword names match xtb-python's XTB.default_parameters exactly
+    // (method / accuracy / electronic_temperature / max_iterations), verified
+    // against the installed xtb 22.x ASE calculator.
+    /// "GFN2-xTB" (default) | "GFN1-xTB" | "GFN-FF". GFN-FF is a force field:
+    /// it has no electronic structure, so the two SCC knobs below are not
+    /// emitted for it.
+    std::string xtbMethod = "GFN2-xTB";
+    /// xTB's global accuracy multiplier — LOWER is tighter (it scales the SCC
+    /// convergence thresholds and integral cutoffs together). 1.0 is the
+    /// method's calibrated default; the useful range is ~1e-4..1e3.
+    double xtbAccuracy = 1.0;
+    /// Electronic temperature (K) of the tight-binding Fermi smearing. Part
+    /// of the GFN parameterization at 300 K rather than a convergence aid, so
+    /// the default matches the published methods.
+    double xtbElectronicTemperatureK = 300.0;
+    int xtbMaxIterations = 250; ///< SCC iteration cap
+
+    // -- DFTB+ (density-functional tight binding) ---------------------------
+    /// Directory holding the Slater-Koster .skf tables (mio, 3ob, ...).
+    /// Exported as DFTB_PREFIX with a trailing slash — ASE joins file names
+    /// onto it verbatim. Like VASP's POTCAR root this is per-installation
+    /// state the wizard persists in QSettings, not a per-run choice.
+    std::string dftbSlakoDir;
+    /// Self-consistent charges. Off is the original non-SCC DFTB — much
+    /// faster, but wrong for anything with charge transfer.
+    bool dftbScc = true;
+    double dftbSccTolerance = 1e-5; ///< SCCTolerance (charge convergence)
+    int dftbMaxSccIterations = 100; ///< MaxSCCIterations
+    /// Fermi filling temperature (K). 0 keeps DFTB+'s zero-temperature
+    /// occupations; emitted as a Filling = Fermi block only when positive,
+    /// converted to Hartree in the script because that is the unit DFTB+
+    /// reads when no HSD modifier is given.
+    double dftbFillingTemperatureK = 0.0;
+
+    // -- GROMACS (classical biomolecular MM) --------------------------------
+    //
+    // Like LAMMPS, an engine rather than a potential — but with the further
+    // constraint that pdb2gmx must be able to TYPE the structure against the
+    // chosen force field's residue database. These fields feed the pdb2gmx
+    // command line and the generated .mdp parameter file.
+    std::string gromacsForceField = "oplsaa"; ///< pdb2gmx -ff
+    /// pdb2gmx -water. "none" is legal (no solvent topology).
+    std::string gromacsWaterModel = "spc";
+    /// The gmx wrapper binary. Every GROMACS tool (pdb2gmx, grompp, mdrun,
+    /// energy, traj) is a subcommand of it, so one path configures them all.
+    std::string gromacsExecutable = "gmx";
+    /// Extra .mdp parameters, one `key = value` per line, applied on top of
+    /// the generated defaults. The same escape-hatch rationale as VASP's
+    /// extra INCAR tags: no UI covers the full .mdp vocabulary.
+    std::string gromacsExtraMdp;
 
     // -- ORCA (quantum chemistry) ------------------------------------------
     std::string orcaMethod = "B3LYP";   ///< functional / method keyword

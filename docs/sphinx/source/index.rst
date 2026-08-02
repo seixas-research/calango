@@ -29,7 +29,7 @@
 
    </div>
 
-**Calango** is a desktop application for computational materials science built on two pillars: a **simulation engine** that configures, executes, orchestrates, and analyzes atomistic calculations across sixteen backends — from empirical potentials to DFT, GW, and machine-learning force fields — and a **3D visualization studio** that renders, edits, and publishes atomic structures in real time on an instanced OpenGL canvas. A C++20 core provides the speed; an embedded Python interpreter running the Atomic Simulation Environment (ASE) provides the science.
+**Calango** is a desktop application for computational materials science built on two pillars: a **simulation engine** that configures, executes, orchestrates, and analyzes atomistic calculations across nineteen backends — from empirical potentials to DFT, GW, and machine-learning force fields — and a **3D visualization studio** that renders, edits, and publishes atomic structures in real time on an instanced OpenGL canvas. A C++20 core provides the speed; an embedded Python interpreter running the Atomic Simulation Environment (ASE) provides the science.
 
 .. figure:: _static/main_screenshot.png
    :alt: The Calango main window — 3D viewport flanked by the Structure, Representation, and Results panels
@@ -141,7 +141,7 @@ Feature areas
      - Slabs, interfaces, dislocations, polycrystals, nanomaterials, nanoparticles, SQS, polymers, ice, adsorbates
      - :doc:`builders/index`
    * - Simulation
-     - Sixteen calculators; optimization, MD, phonons, Monte Carlo, NEB, cluster expansion, convergence sweeps, MLIP training
+     - Nineteen calculators; optimization, MD, phonons, Monte Carlo, NEB, cluster expansion, convergence sweeps, MLIP training
      - :doc:`simulations/index`
    * - Electronic structure
      - Bands with irreps and fatbands, unfolding, optics (linear, 2D, nonlinear), GW, Wannier, XAS, Hubbard U, Raman/IR, defects
@@ -150,7 +150,7 @@ Feature areas
      - RDF, S(q), XRD, coordination, short-range order, entropy, magnetic space groups, volumetric fields, Brillouin zones
      - :doc:`analysis/index`
    * - Execution
-     - Local job queue, live monitoring, node-graph workflows, remote HPC over SSH
+     - Local job queue, live monitoring, the Orchestration canvas, remote HPC over SSH
      - :doc:`simulations/jobs`
    * - Publishing
      - High-resolution stills, animations, POV-Ray/Tachyon ray tracing, Alembic export

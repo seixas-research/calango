@@ -95,6 +95,10 @@ private:
     /// "Show CN / GCN values" — overlays the active "Color by" scalar on the
     /// atoms. Disabled in Element mode, which has no scalar to print.
     QPushButton* scalarLabelsButton_ = nullptr;
+    /// "Cast colors…" — the flat colour each cast takes under "Color by:
+    /// Cast". Always visible so the mode's editor is discoverable, enabled
+    /// only while the selected cast is coloured by Cast.
+    QPushButton* castColorsButton_ = nullptr;
 };
 
 } // namespace calango::gui

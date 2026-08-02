@@ -53,6 +53,11 @@ const auto kEnvSettingsKey = QStringLiteral("jobs/environmentPath");
 /// moved to Preferences → External Files. Read as a fallback so an existing
 /// configuration keeps working; never written.
 const auto kLegacyVaspPotcarKey = QStringLiteral("jobs/vaspPotcarPath");
+/// Where the DFTB+ Slater-Koster directory persists. Per-installation state
+/// like the VASP POTCAR root — the parameter set is downloaded once and every
+/// DFTB+ run wants the same one — but edited here in the wizard, because
+/// Preferences → External Files has no DFTB entry to defer to.
+const auto kDftbSlakoKey = QStringLiteral("jobs/dftbSlakoDir");
 
 /// Hide/show the QFormLayout row (label + field) that `field` occupies inside
 /// `group`'s form layout. No-op if the group has no form layout or the field
@@ -198,6 +203,9 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
             core::CalculatorKind::MatterSim);
     addCalc(tr("FAIRChem / OCP (ML potential)"), core::CalculatorKind::FairChem);
     addCalc(tr("LAMMPS (classical MD)"), core::CalculatorKind::Lammps);
+    addCalc(tr("xTB (semi-empirical tight binding)"), core::CalculatorKind::Xtb);
+    addCalc(tr("DFTB+ (tight binding DFT)"), core::CalculatorKind::DftbPlus);
+    addCalc(tr("GROMACS (biomolecular MM)"), core::CalculatorKind::Gromacs);
     engineForm->addRow(tr("Calculation engine:"), calcCombo_);
     layout->addWidget(engineWidget_);
     connect(calcCombo_, &QComboBox::currentIndexChanged, this,
@@ -249,6 +257,9 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     layout->addWidget(buildEspressoGroup(page));
     layout->addWidget(buildSiestaGroup(page));
     layout->addWidget(buildLammpsGroup(page));
+    layout->addWidget(buildXtbGroup(page));
+    layout->addWidget(buildDftbGroup(page));
+    layout->addWidget(buildGromacsGroup(page));
 
     // Subclass-supplied extra settings (e.g. Single-point's convergence group,
     // folded in here when it has no separate Stage 1).
@@ -929,6 +940,278 @@ void SimulationWizardBase::updateLammpsRows()
     setFormRowVisible(lammpsGroup_, lammpsCommandEdit_, runInterface);
 }
 
+QWidget* SimulationWizardBase::buildXtbGroup(QWidget* parent)
+{
+    xtbGroup_ = new QGroupBox(tr("xTB settings"), parent);
+    auto* form = new QFormLayout(xtbGroup_);
+
+    auto* note = new QLabel(
+        tr("xTB is a <b>semi-empirical tight-binding</b> method: fast, "
+           "parameterized across most of the periodic table, and right for "
+           "screening and pre-relaxing molecules and molecular crystals — "
+           "not a DFT replacement. Expect qualitative energetics, not "
+           "benchmark accuracy."),
+        xtbGroup_);
+    note->setWordWrap(true);
+    note->setTextFormat(Qt::RichText);
+    form->addRow(note);
+
+    xtbMethodCombo_ = new QComboBox(xtbGroup_);
+    // Item text is the exact `method=` string the xtb ASE calculator takes,
+    // so no mapping table can drift from the label.
+    xtbMethodCombo_->addItems({QStringLiteral("GFN2-xTB"),
+                               QStringLiteral("GFN1-xTB"),
+                               QStringLiteral("GFN-FF")});
+    xtbMethodCombo_->setToolTip(
+        tr("GFN2-xTB: the current tight-binding method — multipole "
+           "electrostatics and D4 dispersion built in. The default.\n"
+           "GFN1-xTB: the earlier parameterization; kept for comparability "
+           "with published GFN1 results.\n"
+           "GFN-FF: a generic force field, not tight binding — fastest by "
+           "far, no electronic structure at all."));
+    form->addRow(tr("Method:"), xtbMethodCombo_);
+
+    xtbAccuracySpin_ = new QDoubleSpinBox(xtbGroup_);
+    xtbAccuracySpin_->setRange(0.0001, 1000.0);
+    xtbAccuracySpin_->setDecimals(4);
+    xtbAccuracySpin_->setValue(1.0);
+    xtbAccuracySpin_->setToolTip(
+        tr("xTB's single accuracy multiplier — LOWER is tighter. It scales "
+           "the SCC convergence thresholds and integral cutoffs together; "
+           "1.0 is the calibrated default, 0.01 a tight setting for "
+           "frequencies."));
+    form->addRow(tr("Accuracy:"), xtbAccuracySpin_);
+
+    xtbTempSpin_ = new QDoubleSpinBox(xtbGroup_);
+    xtbTempSpin_->setRange(0.0, 10000.0);
+    xtbTempSpin_->setDecimals(1);
+    xtbTempSpin_->setValue(300.0);
+    xtbTempSpin_->setSuffix(tr(" K"));
+    xtbTempSpin_->setToolTip(
+        tr("Electronic temperature of the tight-binding Fermi smearing. "
+           "300 K is part of the GFN parameterization, not a convergence "
+           "knob — raise it only to push a stubborn SCC through a "
+           "near-degenerate gap."));
+    form->addRow(tr("Electronic temperature:"), xtbTempSpin_);
+
+    xtbMaxIterSpin_ = new QSpinBox(xtbGroup_);
+    xtbMaxIterSpin_->setRange(1, 10000);
+    xtbMaxIterSpin_->setValue(250);
+    xtbMaxIterSpin_->setToolTip(
+        tr("SCC iteration cap — a runaway guard, not a target; the accuracy "
+           "setting is what normally ends the cycle."));
+    form->addRow(tr("Max SCC iterations:"), xtbMaxIterSpin_);
+
+    connect(xtbMethodCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        updateXtbRows();
+        refreshPreview();
+    });
+    for (QDoubleSpinBox* spin : {xtbAccuracySpin_, xtbTempSpin_})
+        connect(spin, &QDoubleSpinBox::valueChanged, this,
+                [this] { refreshPreview(); });
+    connect(xtbMaxIterSpin_, &QSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+
+    updateXtbRows();
+    return xtbGroup_;
+}
+
+void SimulationWizardBase::updateXtbRows()
+{
+    if (!xtbGroup_ || !xtbMethodCombo_)
+        return;
+    // GFN-FF is a force field: no electrons, so an electronic temperature and
+    // an SCC cap would be knobs that change nothing.
+    const bool electronic =
+        xtbMethodCombo_->currentText() != QLatin1String("GFN-FF");
+    setFormRowVisible(xtbGroup_, xtbTempSpin_, electronic);
+    setFormRowVisible(xtbGroup_, xtbMaxIterSpin_, electronic);
+}
+
+QWidget* SimulationWizardBase::buildDftbGroup(QWidget* parent)
+{
+    dftbGroup_ = new QGroupBox(tr("DFTB+ settings"), parent);
+    auto* form = new QFormLayout(dftbGroup_);
+
+    auto* note = new QLabel(
+        tr("DFTB+ needs a <b>Slater-Koster parameter set</b> (mio, 3ob, … "
+           "from dftb.org): the pairwise .skf tables are the "
+           "parameterization, so element coverage is decided by the set, "
+           "not by the code. The k-point grid comes from the shared "
+           "Brillouin-zone controls above."),
+        dftbGroup_);
+    note->setWordWrap(true);
+    note->setTextFormat(Qt::RichText);
+    form->addRow(note);
+
+    dftbSlakoEdit_ = new QLineEdit(dftbGroup_);
+    dftbSlakoEdit_->setText(QSettings().value(kDftbSlakoKey).toString());
+    dftbSlakoEdit_->setPlaceholderText(tr("/path/to/slako/mio-1-1"));
+    dftbSlakoEdit_->setToolTip(
+        tr("Directory holding the .skf tables. Exported as DFTB_PREFIX with "
+           "a trailing slash — ASE joins '<El>-<El>.skf' onto it verbatim. "
+           "Remembered across sessions: the set is installed once, like a "
+           "pseudopotential library."));
+    auto* browse = new QPushButton(tr("Browse…"), dftbGroup_);
+    dftbSlakoRow_ = new QWidget(dftbGroup_);
+    auto* slakoLayout = new QHBoxLayout(dftbSlakoRow_);
+    slakoLayout->setContentsMargins(0, 0, 0, 0);
+    slakoLayout->addWidget(dftbSlakoEdit_, 1);
+    slakoLayout->addWidget(browse);
+    form->addRow(tr("Slater-Koster directory:"), dftbSlakoRow_);
+    connect(browse, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getExistingDirectory(
+            this, tr("Select Slater-Koster Directory"), dftbSlakoEdit_->text());
+        if (!path.isEmpty())
+            dftbSlakoEdit_->setText(path); // textChanged persists + refreshes
+    });
+    connect(dftbSlakoEdit_, &QLineEdit::textChanged, this,
+            [this](const QString& path) {
+                QSettings().setValue(kDftbSlakoKey, path.trimmed());
+                refreshPreview();
+            });
+
+    dftbSccCheck_ = new QCheckBox(tr("Self-consistent charges (SCC)"),
+                                  dftbGroup_);
+    dftbSccCheck_->setChecked(true);
+    dftbSccCheck_->setToolTip(
+        tr("Iterate the Mulliken charges to self-consistency (SCC-DFTB, also "
+           "called DFTB2). Off is the original non-SCC method: one shot, "
+           "much faster, and wrong wherever charge transfer matters."));
+    form->addRow(dftbSccCheck_);
+
+    dftbSccTolEdit_ = new QLineEdit(QStringLiteral("1e-5"), dftbGroup_);
+    auto* tolValidator = new QDoubleValidator(1e-12, 1e-1, 12, dftbSccTolEdit_);
+    tolValidator->setNotation(QDoubleValidator::ScientificNotation);
+    tolValidator->setLocale(QLocale::c());
+    dftbSccTolEdit_->setValidator(tolValidator);
+    dftbSccTolEdit_->setToolTip(
+        tr("SCCTolerance — the charge convergence threshold (in electrons). "
+           "1e-5 is DFTB+'s own default; forces for a relaxation want the "
+           "charges tight, so loosen it only for rough single points."));
+    form->addRow(tr("SCC tolerance:"), dftbSccTolEdit_);
+
+    dftbMaxSccSpin_ = new QSpinBox(dftbGroup_);
+    dftbMaxSccSpin_->setRange(1, 10000);
+    dftbMaxSccSpin_->setValue(100);
+    dftbMaxSccSpin_->setToolTip(
+        tr("MaxSCCIterations — a runaway guard; the tolerance is what "
+           "normally ends the cycle."));
+    form->addRow(tr("Max SCC iterations:"), dftbMaxSccSpin_);
+
+    dftbFillingTempSpin_ = new QDoubleSpinBox(dftbGroup_);
+    dftbFillingTempSpin_->setRange(0.0, 10000.0);
+    dftbFillingTempSpin_->setDecimals(1);
+    dftbFillingTempSpin_->setValue(0.0);
+    dftbFillingTempSpin_->setSuffix(tr(" K"));
+    dftbFillingTempSpin_->setSpecialValueText(tr("0 (no smearing)"));
+    dftbFillingTempSpin_->setToolTip(
+        tr("Fermi filling temperature. 0 keeps DFTB+'s zero-temperature "
+           "occupations; a few hundred K helps a metallic or small-gap SCC "
+           "converge. The script converts K to Hartree, the unit DFTB+ "
+           "actually reads."));
+    form->addRow(tr("Filling temperature:"), dftbFillingTempSpin_);
+
+    connect(dftbSccCheck_, &QCheckBox::toggled, this, [this] {
+        updateDftbRows();
+        refreshPreview();
+    });
+    connect(dftbSccTolEdit_, &QLineEdit::textChanged, this,
+            [this] { refreshPreview(); });
+    connect(dftbMaxSccSpin_, &QSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+    connect(dftbFillingTempSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+
+    updateDftbRows();
+    return dftbGroup_;
+}
+
+void SimulationWizardBase::updateDftbRows()
+{
+    if (!dftbGroup_ || !dftbSccCheck_)
+        return;
+    // Hidden rather than disabled, matching the QE smearing rows: a tolerance
+    // for a cycle that does not run reads as broken, not as inapplicable.
+    const bool scc = dftbSccCheck_->isChecked();
+    setFormRowVisible(dftbGroup_, dftbSccTolEdit_, scc);
+    setFormRowVisible(dftbGroup_, dftbMaxSccSpin_, scc);
+}
+
+QWidget* SimulationWizardBase::buildGromacsGroup(QWidget* parent)
+{
+    gromacsGroup_ = new QGroupBox(tr("GROMACS settings"), parent);
+    auto* form = new QFormLayout(gromacsGroup_);
+
+    auto* note = new QLabel(
+        tr("GROMACS is an <b>engine</b>, not a force field — and the force "
+           "field must be able to <i>type</i> this structure: pdb2gmx builds "
+           "the topology from its residue database, so proteins, water and "
+           "known ligands work, while a bare inorganic crystal has no "
+           "residue entry and will not run. This targets (bio)molecular "
+           "systems."),
+        gromacsGroup_);
+    note->setWordWrap(true);
+    note->setTextFormat(Qt::RichText);
+    form->addRow(note);
+
+    gromacsForceFieldCombo_ = new QComboBox(gromacsGroup_);
+    gromacsForceFieldCombo_->setEditable(true);
+    // The names pdb2gmx -ff accepts for its bundled force fields; editable
+    // because a local .ff directory is addressed the same way.
+    gromacsForceFieldCombo_->addItems({QStringLiteral("oplsaa"),
+                                       QStringLiteral("amber03"),
+                                       QStringLiteral("amber96"),
+                                       QStringLiteral("charmm27"),
+                                       QStringLiteral("gromos54a7")});
+    gromacsForceFieldCombo_->setToolTip(
+        tr("pdb2gmx -ff. Which residues can be typed — and how well — is a "
+           "property of this choice, not of GROMACS."));
+    form->addRow(tr("Force field:"), gromacsForceFieldCombo_);
+
+    gromacsWaterCombo_ = new QComboBox(gromacsGroup_);
+    // The pdb2gmx -water vocabulary; "none" is legal and means no solvent
+    // topology is generated.
+    gromacsWaterCombo_->addItems({QStringLiteral("spc"), QStringLiteral("spce"),
+                                  QStringLiteral("tip3p"),
+                                  QStringLiteral("tip4p"),
+                                  QStringLiteral("none")});
+    gromacsWaterCombo_->setToolTip(
+        tr("pdb2gmx -water — the water model the topology is built with. "
+           "Match it to the force field's own validation (CHARMM was "
+           "parameterized against TIP3P, GROMOS against SPC)."));
+    form->addRow(tr("Water model:"), gromacsWaterCombo_);
+
+    gromacsGmxEdit_ = new QLineEdit(QStringLiteral("gmx"), gromacsGroup_);
+    gromacsGmxEdit_->setToolTip(
+        tr("The gmx wrapper binary. Every GROMACS tool (pdb2gmx, grompp, "
+           "mdrun, energy, traj) is a subcommand of it, so one path "
+           "configures them all. Blank falls back to $ASE_GROMACS_COMMAND."));
+    form->addRow(tr("gmx executable:"), gromacsGmxEdit_);
+
+    gromacsMdpEdit_ = new QPlainTextEdit(gromacsGroup_);
+    gromacsMdpEdit_->setMaximumHeight(70);
+    gromacsMdpEdit_->setPlaceholderText(
+        QStringLiteral("rvdw = 1.0\ncoulombtype = PME"));
+    gromacsMdpEdit_->setToolTip(
+        tr("Extra .mdp parameters, one `key = value` per line, applied on "
+           "top of the generated defaults.\n\n"
+           "The same escape hatch as VASP's extra INCAR tags: no dialog "
+           "covers the full .mdp vocabulary, and anything typed here is "
+           "passed through unvalidated."));
+    form->addRow(tr("Extra .mdp parameters:"), gromacsMdpEdit_);
+
+    for (QComboBox* combo : {gromacsForceFieldCombo_, gromacsWaterCombo_})
+        connect(combo, &QComboBox::currentTextChanged, this,
+                [this] { refreshPreview(); });
+    connect(gromacsGmxEdit_, &QLineEdit::textChanged, this,
+            [this] { refreshPreview(); });
+    connect(gromacsMdpEdit_, &QPlainTextEdit::textChanged, this,
+            [this] { refreshPreview(); });
+
+    return gromacsGroup_;
+}
+
 QWidget* SimulationWizardBase::buildMaceGroup(QWidget* parent)
 {
     maceGroup_ = new QGroupBox(tr("MACE settings"), parent);
@@ -1118,12 +1401,10 @@ QWidget* SimulationWizardBase::buildMlipGroup(QWidget* parent)
            "across chgnet upgrades; \"latest\" tracks the installed package."));
     form->addRow(tr("Pretrained weights:"), chgnetWeightsCombo_);
 
-    chgnetStressCheck_ = new QCheckBox(tr("Evaluate stress tensor"), mlipGroup_);
-    chgnetStressCheck_->setChecked(true);
-    chgnetStressCheck_->setToolTip(
-        tr("Required for variable-cell relaxation and any stress analysis. "
-           "Turning it off is slightly cheaper per step."));
-    form->addRow(chgnetStressCheck_);
+    // No stress toggle: the old "Evaluate stress tensor" checkbox drove
+    // CHGNetCalculator's stress_weight, which is the GPa -> eV/Å³ conversion
+    // factor rather than an on/off switch — see chgnetStress in
+    // CalculatorConfig for the full story. CHGNet always computes stress.
 
     // -- MatterSim ----------------------------------------------------------
     matterSimModelCombo_ = new QComboBox(mlipGroup_);
@@ -1181,8 +1462,6 @@ QWidget* SimulationWizardBase::buildMlipGroup(QWidget* parent)
         connect(combo, &QComboBox::currentTextChanged, this,
                 [this] { refreshPreview(); });
     }
-    connect(chgnetStressCheck_, &QCheckBox::toggled, this,
-            [this] { refreshPreview(); });
     for (QDoubleSpinBox* spin : {matterSimTempSpin_, matterSimPressureSpin_})
         connect(spin, &QDoubleSpinBox::valueChanged, this,
                 [this] { refreshPreview(); });
@@ -1208,9 +1487,12 @@ void SimulationWizardBase::updateMlipRows()
         mlipModelEdit_->setPlaceholderText(
             tr("path/to/frozen_model.pb  (or .pth for the PyTorch backend)"));
     } else if (nequip) {
-        mlipModelLabel_->setText(tr("Deployed model (.pth):"));
+        // Either generation's inference artifact: nequip >= 0.7 compiles one
+        // with `nequip-compile`, the older line deployed TorchScript with
+        // `nequip-deploy build`. The generated script binds both loaders.
+        mlipModelLabel_->setText(tr("Packaged model:"));
         mlipModelEdit_->setPlaceholderText(
-            tr("path/to/deployed.pth  (output of `nequip-deploy build`)"));
+            tr("path/to/model.nequip.pt2  (nequip-compile) or deployed .pth"));
     } else if (fairChem) {
         mlipModelLabel_->setText(tr("Checkpoint (.pt):"));
         mlipModelEdit_->setPlaceholderText(
@@ -1218,7 +1500,6 @@ void SimulationWizardBase::updateMlipRows()
     }
     setFormRowVisible(mlipGroup_, nequipUnitsRow_, nequip);
     setFormRowVisible(mlipGroup_, chgnetWeightsCombo_, chgnet);
-    setFormRowVisible(mlipGroup_, chgnetStressCheck_, chgnet);
     setFormRowVisible(mlipGroup_, matterSimModelCombo_, matterSim);
     setFormRowVisible(mlipGroup_, matterSimThermalCheck_, matterSim);
     setFormRowVisible(mlipGroup_, matterSimStateRow_, matterSim);
@@ -1942,6 +2223,9 @@ void SimulationWizardBase::updateCalculatorEnabled()
         if (qeGroup_) qeGroup_->setVisible(false);
         if (siestaGroup_) siestaGroup_->setVisible(false);
         if (lammpsGroup_) lammpsGroup_->setVisible(false);
+        if (xtbGroup_) xtbGroup_->setVisible(false);
+        if (dftbGroup_) dftbGroup_->setVisible(false);
+        if (gromacsGroup_) gromacsGroup_->setVisible(false);
         if (baselineInheritNote_) baselineInheritNote_->setVisible(false);
         updateCalculatorExtras(kind);
         return;
@@ -1966,7 +2250,11 @@ void SimulationWizardBase::updateCalculatorEnabled()
     // owned by the sweep stage in a wizard that hides the k-grid row
     // (K-points Convergence), which would leave an empty titled box here —
     // so the group hides as a whole with them.
-    bzGroup_->setVisible(isDft && showsKpointGridRow());
+    // DFTB+ samples the Brillouin zone too (its settings group defers to
+    // these controls for the k-grid), so it joins the DFT engines here even
+    // though it shares none of the other DFT chrome.
+    const bool isDftbPlus = kind == core::CalculatorKind::DftbPlus;
+    bzGroup_->setVisible((isDft || isDftbPlus) && showsKpointGridRow());
     convGroup_->setVisible(isGpaw || (isDft && hasConvergenceExtras()));
     spinGroup_->setVisible(isDft && hasSpinExtras());
     outputGroup_->setVisible(isGpaw && showsGpawDensityExport());
@@ -1987,6 +2275,20 @@ void SimulationWizardBase::updateCalculatorEnabled()
         if (isLammps)
             updateLammpsRows();
     }
+    if (xtbGroup_) {
+        const bool isXtb = kind == core::CalculatorKind::Xtb;
+        xtbGroup_->setVisible(isXtb);
+        if (isXtb)
+            updateXtbRows();
+    }
+    if (dftbGroup_) {
+        const bool isDftb = kind == core::CalculatorKind::DftbPlus;
+        dftbGroup_->setVisible(isDftb);
+        if (isDftb)
+            updateDftbRows();
+    }
+    if (gromacsGroup_)
+        gromacsGroup_->setVisible(kind == core::CalculatorKind::Gromacs);
 
     const bool isVasp = kind == core::CalculatorKind::Vasp;
     const bool isEspresso = kind == core::CalculatorKind::QuantumEspresso;
@@ -2125,13 +2427,13 @@ void SimulationWizardBase::updateCalculatorEnabled()
         refreshPreview();
 }
 
-void SimulationWizardBase::enterWorkflowMode()
+void SimulationWizardBase::enterOrchestrationMode()
 {
     if (runLocalButton_) {
         runLocalButton_->setText(tr("Save process node"));
         runLocalButton_->setToolTip(
-            tr("Commit this configuration to the workflow node. Nothing "
-               "runs now — execution happens when the workflow is sent to "
+            tr("Commit this configuration to the orchestration node. Nothing "
+               "runs now — execution happens when the pipeline is sent to "
                "processes."));
     }
     if (runRemoteButton_)
@@ -2267,7 +2569,6 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
         nequipLengthUnitsCombo_->currentText().trimmed().toStdString();
     c.chgnetWeights =
         static_cast<core::ChgNetWeights>(chgnetWeightsCombo_->currentIndex());
-    c.chgnetStress = chgnetStressCheck_->isChecked();
     c.matterSimModel =
         static_cast<core::MatterSimModel>(matterSimModelCombo_->currentIndex());
     c.matterSimThermal = matterSimThermalCheck_->isChecked();
@@ -2380,6 +2681,43 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
         c.lammpsExtraCommands = lines(lammpsExtraEdit_);
         c.lammpsCommand = lammpsCommandEdit_->text().trimmed().toStdString();
         c.lammpsKeepLog = lammpsLogCheck_->isChecked();
+    }
+
+    // -- xTB ----------------------------------------------------------------
+    if (xtbMethodCombo_) {
+        // The combo's item text IS the method string the calculator takes
+        // (see buildXtbGroup), so it passes through unmapped.
+        c.xtbMethod = xtbMethodCombo_->currentText().toStdString();
+        c.xtbAccuracy = xtbAccuracySpin_->value();
+        c.xtbElectronicTemperatureK = xtbTempSpin_->value();
+        c.xtbMaxIterations = xtbMaxIterSpin_->value();
+    }
+
+    // -- DFTB+ --------------------------------------------------------------
+    if (dftbSccCheck_) {
+        c.dftbSlakoDir = dftbSlakoEdit_->text().trimmed().toStdString();
+        c.dftbScc = dftbSccCheck_->isChecked();
+        // An in-progress edit ("1e-") is not a number yet; keep the default
+        // rather than writing 0, which DFTB+ reads as "converge the charges
+        // to machine zero" and never reaches.
+        bool sccOk = false;
+        const double sccTol =
+            QLocale::c().toDouble(dftbSccTolEdit_->text(), &sccOk);
+        if (sccOk && sccTol > 0.0)
+            c.dftbSccTolerance = sccTol;
+        c.dftbMaxSccIterations = dftbMaxSccSpin_->value();
+        c.dftbFillingTemperatureK = dftbFillingTempSpin_->value();
+    }
+
+    // -- GROMACS ------------------------------------------------------------
+    if (gromacsForceFieldCombo_) {
+        c.gromacsForceField =
+            gromacsForceFieldCombo_->currentText().trimmed().toStdString();
+        c.gromacsWaterModel =
+            gromacsWaterCombo_->currentText().trimmed().toStdString();
+        c.gromacsExecutable = gromacsGmxEdit_->text().trimmed().toStdString();
+        c.gromacsExtraMdp =
+            gromacsMdpEdit_->toPlainText().trimmed().toStdString();
     }
     return c;
 }

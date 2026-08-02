@@ -155,15 +155,15 @@ Analysis
    Magnetic space group determination — BNS label, type, and the parent
    crystallographic group side by side.
 
-Workflows and monitoring
-------------------------
+Orchestration and monitoring
+----------------------------
 
 .. figure:: _static/img/gallery_workflow_canvas.png
-   :alt: A node-graph workflow chaining relaxation into band structure
+   :alt: A node-graph pipeline chaining relaxation into band structure
    :width: 95%
    :figclass: screenshot
 
-   The workflow canvas — a DAG of calculations passing geometries and ground
+   The Orchestration canvas — a DAG of calculations passing geometries and ground
    states between nodes.
 
 .. figure:: _static/img/gallery_jobs_live.png

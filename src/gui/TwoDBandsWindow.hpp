@@ -16,9 +16,11 @@ class QListWidget;
 class QPushButton;
 class QSlider;
 class QSpinBox;
+class QStackedWidget;
 
 namespace calango::gui {
 
+class BzMapView;
 class VolumeViewWidget;
 
 /// Results viewer for a 2D Bands run: each selected band drawn as a surface
@@ -33,6 +35,13 @@ class VolumeViewWidget;
 /// over a few Å⁻¹ while energies span tens of eV, so plotted 1:1 the surfaces
 /// are a vertical wall. "Energy scale" sets that exaggeration and is reported
 /// in the axis label, so nothing about the picture is silently distorted.
+///
+/// A second, flat view sits behind a selector: ONE band's E(k_x, k_y) painted
+/// as colour over the exact first Brillouin zone, folded periodically from the
+/// run's optional Monkhorst-Pack "bz_map" sampling. Runs that predate the
+/// option keep the 3D view; the map entry stays visible but disabled, with a
+/// tooltip saying how to compute one — a vanished option looks like a
+/// regression, a greyed one is an instruction.
 class TwoDBandsWindow : public QDialog {
     Q_OBJECT
 
@@ -79,6 +88,8 @@ private:
     void populateBandList();
     /// Build the settings panel that sits to the right of the canvas.
     QWidget* buildSettingsPanel();
+    /// Build the page holding the flat first-Brillouin-zone map view.
+    QWidget* buildMapPage();
     /// Refresh the orientation read-out from the canvas after any view change.
     void syncOrientationReadout();
     void exportImage();
@@ -86,6 +97,16 @@ private:
 
     VolumeViewWidget* canvas_ = nullptr;
     QListWidget* bandList_ = nullptr;
+    // View selector and the two stacked pages. A selector rather than a split
+    // view: each projection wants the whole canvas, and they answer different
+    // questions — the surfaces show dispersion as shape, the map shows one
+    // band's energy over the zone's true geometry.
+    QComboBox* viewCombo_ = nullptr;
+    QStackedWidget* viewStack_ = nullptr;
+    BzMapView* mapView_ = nullptr;
+    QSpinBox* mapBandSpin_ = nullptr;
+    QCheckBox* mapShiftFermiCheck_ = nullptr;
+    QComboBox* mapGradientCombo_ = nullptr;
     QComboBox* gradientCombo_ = nullptr;
     /// Colormap vs. one solid colour. A colormap encodes energy as hue, which
     /// is what a single surface wants; several surfaces at once are better

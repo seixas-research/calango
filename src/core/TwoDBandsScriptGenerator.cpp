@@ -193,8 +193,71 @@ std::string generateTwoDBandsScript(const TwoDBandsConfig& cfg)
            "                             for _row in _recip],\n"
            "    'special_points': _special,\n"
            "    'bands': _bands,\n"
-           "}\n"
-           "with open('bands_2d.json', 'w') as _fh:\n"
+           "}\n";
+
+    if (cfg.bzMap) {
+        // Clamped to the wizard's own 6..96 rather than the surface grid's
+        // 3..512: this generator is reachable headlessly too, and the map
+        // exists to be folded — below 6 samples the folded picture is nearly
+        // all interpolation, while past 96 the N² extra fixed-density
+        // diagonalizations dwarf the run the map was meant to accompany.
+        const int bzn = std::clamp(cfg.bzMapSamples, 6, 96);
+        out << "\n"
+               "# --- Brillouin-zone map -------------------------------------------\n"
+               "# A second, independent sampling for the results window's flat\n"
+               "# E_n(kx, ky) map view: an N x N Monkhorst-Pack mesh spanning the\n"
+               "# primitive 2D reciprocal cell. Deliberately NOT the inclusive grid\n"
+               "# above: Monkhorst-Pack tiles the cell with no duplicated seam,\n"
+               "# which is what a periodic fold wants. The viewer reduces the tiled\n"
+               "# cell to the first Brillouin zone (the Wigner-Seitz cell of the\n"
+               "# reciprocal lattice) at render time, so no zone geometry is baked\n"
+               "# into the run -- and kz stays 0 for the same reason as above: the\n"
+               "# vacuum axis is z.\n"
+            << "_bzn = " << bzn << "\n"
+            << "_bz_line = (2.0 * np.arange(1, _bzn + 1) - _bzn - 1) / (2.0 * _bzn)\n"
+               "_bz_fx, _bz_fy = np.meshgrid(_bz_line, _bz_line, indexing='ij')\n"
+               "_bz_kpts = np.zeros((_bzn * _bzn, 3))\n"
+               "_bz_kpts[:, 0] = _bz_fx.ravel()\n"
+               "_bz_kpts[:, 1] = _bz_fy.ravel()\n"
+               "print(f'CALANGO_INFO Brillouin-zone map {_bzn}x{_bzn} '\n"
+               "      f'({_bzn * _bzn} k-points) at fixed density', flush=True)\n";
+        out << "_bz_calc = calc.fixed_density(kpts=_bz_kpts, symmetry='off',\n";
+        if (cfg.totalBands > 0)
+            out << "                              nbands=" << cfg.totalBands
+                << ",\n";
+        out << "                              txt='gpaw_2d_bands.txt')\n";
+        if (cfg.spinOrbit) {
+            out << "# Same spinor treatment as the surfaces: a map without the\n"
+                   "# splitting the surfaces show would contradict them.\n"
+                   "_bz_soc = soc_eigenstates(_bz_calc)\n"
+                   "_bz_energies = np.asarray(_bz_soc.eigenvalues())  # (nk, nband)\n";
+        } else {
+            out << "# Spin channels merged and sorted per k-point: the map view\n"
+                   "# picks a band by INDEX, so 'band n' must mean exactly one\n"
+                   "# thing -- the n-th eigenvalue at that k -- rather than the\n"
+                   "# n-th band of whichever spin channel a reader had in mind.\n"
+                   "_bz_energies = np.asarray(\n"
+                   "    [np.sort(np.concatenate(\n"
+                   "        [_bz_calc.get_eigenvalues(kpt=_k, spin=_s)\n"
+                   "         for _s in range(_bz_calc.get_number_of_spins())]))\n"
+                   "     for _k in range(_bzn * _bzn)])  # (nk, nband)\n";
+        }
+        out << "# Self-contained for the viewer: the fractional mesh, every band\n"
+               "# at every mesh point, and the in-plane reciprocal rows b1, b2\n"
+               "# (2pi included, 1/Angstrom) the Wigner-Seitz construction and\n"
+               "# the Cartesian placement are built from.\n"
+               "result['bz_map'] = {\n"
+               "    'n': int(_bzn),\n"
+               "    'kpts_frac': [[float(_k[0]), float(_k[1])] for _k in _bz_kpts],\n"
+               "    'energies_eV': [[float(_e) for _e in _row]\n"
+               "                    for _row in _bz_energies],\n"
+               "    'efermi_eV': float(efermi),\n"
+               "    'reciprocal_A_inv': [[float(_recip[0][0]), float(_recip[0][1])],\n"
+               "                         [float(_recip[1][0]), float(_recip[1][1])]],\n"
+               "}\n";
+    }
+
+    out << "with open('bands_2d.json', 'w') as _fh:\n"
            "    json.dump(result, _fh)\n"
            "_calango_progress(4, 4)\n"
            "print('CALANGO_RESULT bands_2d=bands_2d.json', flush=True)\n"

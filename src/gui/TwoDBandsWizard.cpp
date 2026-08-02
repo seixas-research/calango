@@ -128,6 +128,52 @@ QWidget* TwoDBandsWizard::buildCalculatorExtras()
             [this] { refreshPreview(); });
 
     layout->addWidget(group);
+
+    // ------------------------------------------------------ Brillouin-zone map
+    auto* mapGroup = new QGroupBox(tr("Brillouin-zone map"), page);
+    auto* mapForm = new QFormLayout(mapGroup);
+
+    bzMapCheck_ =
+        new QCheckBox(tr("Also sample the full first Brillouin zone"), mapGroup);
+    bzMapCheck_->setToolTip(
+        tr("Adds a second, independent sampling for the flat E(k_x, k_y) map "
+           "view in the results window: every band evaluated on an N×N "
+           "Monkhorst-Pack mesh spanning the primitive 2D reciprocal cell.\n\n"
+           "Off by default because it is pure extra cost when only the 3D "
+           "surfaces are wanted — and a run without it keeps exactly the "
+           "output it always had."));
+    mapForm->addRow(bzMapCheck_);
+
+    bzMapSamplesSpin_ = new QSpinBox(mapGroup);
+    bzMapSamplesSpin_->setRange(6, 96);
+    bzMapSamplesSpin_->setValue(24);
+    // Disabled until the option is on: a live spin next to an unchecked box
+    // reads as a setting that does something.
+    bzMapSamplesSpin_->setEnabled(false);
+    bzMapSamplesSpin_->setToolTip(
+        tr("Samples along each reciprocal-lattice direction for the map; the "
+           "cost scales as N².\n\n"
+           "Like the band surfaces above, the map is computed at fixed "
+           "density, so each of the N×N k-points is one more "
+           "diagonalization on top of the surface grid."));
+    mapForm->addRow(tr("Map k-mesh (N × N):"), bzMapSamplesSpin_);
+
+    auto* mapNote = new QLabel(
+        tr("The mesh covers the primitive 2D reciprocal cell; it is reduced "
+           "to the first Brillouin zone by Wigner–Seitz folding at render "
+           "time, so no zone geometry is baked into the run."),
+        mapGroup);
+    mapNote->setWordWrap(true);
+    mapForm->addRow(mapNote);
+
+    connect(bzMapCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        bzMapSamplesSpin_->setEnabled(on);
+        refreshPreview();
+    });
+    connect(bzMapSamplesSpin_, &QSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+
+    layout->addWidget(mapGroup);
     layout->addStretch(1);
 
     refreshDimensionalityNote();
@@ -204,6 +250,8 @@ QString TwoDBandsWizard::generateScript() const
     cfg.bandsAbove = aboveSpin_ ? aboveSpin_->value() : 4;
     cfg.totalBands = totalBandsSpin_ ? totalBandsSpin_->value() : 0;
     cfg.spinOrbit = spinOrbitCheck_ && spinOrbitCheck_->isChecked();
+    cfg.bzMap = bzMapCheck_ && bzMapCheck_->isChecked();
+    cfg.bzMapSamples = bzMapSamplesSpin_ ? bzMapSamplesSpin_->value() : 24;
     return QString::fromStdString(core::generateTwoDBandsScript(cfg));
 }
 

@@ -1,4 +1,4 @@
-// Workflow data-handoff validation: what a LINK between two nodes means,
+// Orchestration data-handoff validation: what a LINK between two nodes means,
 // pinned by running the same two Geometry Optimization processes twice.
 //
 //   * UNLINKED: two independent nodes on the same rattled structure. Each
@@ -19,7 +19,7 @@
 #include "core/Structure.hpp"
 #include "core/UnitCell.hpp"
 #include "gui/SettingsManager.hpp"
-#include "gui/WorkflowWindow.hpp"
+#include "gui/OrchestrationWindow.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
 #include <QApplication>
@@ -93,7 +93,7 @@ int main(int argc, char** argv)
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QCoreApplication::setOrganizationName(QStringLiteral("CalangoTest"));
     QCoreApplication::setApplicationName(
-        QStringLiteral("WorkflowHandoffTest"));
+        QStringLiteral("OrchestrationHandoffTest"));
 
     // Sandbox every config file AND the simulations directory: this test
     // actually runs jobs, and none of that may land in the developer's home.
@@ -133,9 +133,9 @@ int main(int argc, char** argv)
     using calango::core::Atom;
     using calango::core::Structure;
     using calango::core::UnitCell;
-    using calango::gui::WorkflowNodeItem;
-    using calango::gui::WorkflowTask;
-    using calango::gui::WorkflowWindow;
+    using calango::gui::OrchestrationNodeItem;
+    using calango::gui::OrchestrationTask;
+    using calango::gui::OrchestrationWindow;
 
     // Copper fcc conventional cell with atom 0 rattled well off its site —
     // a relaxation with real work to do, not a fixture that converges on
@@ -159,13 +159,13 @@ int main(int argc, char** argv)
                                                     "structure.extxyz"));
     const auto pythonResolver =
         [&pythonExe](calango::core::CalculatorKind) { return pythonExe; };
-    const auto terminal = [](const WorkflowNodeItem* node) {
-        return node->status() == WorkflowNodeItem::Status::Done
-            || node->status() == WorkflowNodeItem::Status::Failed
-            || node->status() == WorkflowNodeItem::Status::Skipped;
+    const auto terminal = [](const OrchestrationNodeItem* node) {
+        return node->status() == OrchestrationNodeItem::Status::Done
+            || node->status() == OrchestrationNodeItem::Status::Failed
+            || node->status() == OrchestrationNodeItem::Status::Skipped;
     };
-    const auto settle = [&terminal](WorkflowNodeItem* first,
-                                    WorkflowNodeItem* second) {
+    const auto settle = [&terminal](OrchestrationNodeItem* first,
+                                    OrchestrationNodeItem* second) {
         QElapsedTimer timer;
         timer.start();
         while ((!terminal(first) || !terminal(second))
@@ -180,13 +180,13 @@ int main(int argc, char** argv)
         sandbox.path() + QStringLiteral("/simulations_unlinked"));
     RelaxSummary unlinkedFirst;
     {
-        WorkflowWindow window({{QStringLiteral("Cu (rattled)"), copper}},
+        OrchestrationWindow window({{QStringLiteral("Cu (rattled)"), copper}},
                               pythonResolver);
-        WorkflowNodeItem* first = window.addProcessNode(
-            WorkflowTask::GeometryOptimization, 0,
+        OrchestrationNodeItem* first = window.addProcessNode(
+            OrchestrationTask::GeometryOptimization, 0,
             calango::core::CalculatorKind::EMT);
-        WorkflowNodeItem* second = window.addProcessNode(
-            WorkflowTask::GeometryOptimization, 0,
+        OrchestrationNodeItem* second = window.addProcessNode(
+            OrchestrationTask::GeometryOptimization, 0,
             calango::core::CalculatorKind::EMT);
         check(first && second, "two process nodes on the canvas");
         window.configureNode(first, script, pythonExe, QString(),
@@ -196,8 +196,8 @@ int main(int argc, char** argv)
 
         window.sendToProcesses();
         settle(first, second);
-        check(first->status() == WorkflowNodeItem::Status::Done
-                  && second->status() == WorkflowNodeItem::Status::Done,
+        check(first->status() == OrchestrationNodeItem::Status::Done
+                  && second->status() == OrchestrationNodeItem::Status::Done,
               "both unlinked relaxations finished");
 
         // Independence, part 1: both nodes started from the SAME staged
@@ -233,13 +233,13 @@ int main(int argc, char** argv)
         QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
         sandbox.path() + QStringLiteral("/simulations_linked"));
     {
-        WorkflowWindow window({{QStringLiteral("Cu (rattled)"), copper}},
+        OrchestrationWindow window({{QStringLiteral("Cu (rattled)"), copper}},
                               pythonResolver);
-        WorkflowNodeItem* parent = window.addProcessNode(
-            WorkflowTask::GeometryOptimization, 0,
+        OrchestrationNodeItem* parent = window.addProcessNode(
+            OrchestrationTask::GeometryOptimization, 0,
             calango::core::CalculatorKind::EMT);
-        WorkflowNodeItem* child = window.addProcessNode(
-            WorkflowTask::GeometryOptimization, 0,
+        OrchestrationNodeItem* child = window.addProcessNode(
+            OrchestrationTask::GeometryOptimization, 0,
             calango::core::CalculatorKind::EMT);
         window.linkNodes(parent, child);
         window.configureNode(parent, script, pythonExe, QString(),
@@ -248,13 +248,13 @@ int main(int argc, char** argv)
                              calango::core::CalculatorKind::EMT);
 
         window.sendToProcesses();
-        check(parent->status() == WorkflowNodeItem::Status::Running,
+        check(parent->status() == OrchestrationNodeItem::Status::Running,
               "parent starts running on send");
-        check(child->status() == WorkflowNodeItem::Status::Waiting,
+        check(child->status() == OrchestrationNodeItem::Status::Waiting,
               "child queues as waiting");
         settle(parent, child);
-        check(parent->status() == WorkflowNodeItem::Status::Done
-                  && child->status() == WorkflowNodeItem::Status::Done,
+        check(parent->status() == OrchestrationNodeItem::Status::Done
+                  && child->status() == OrchestrationNodeItem::Status::Done,
               "both linked relaxations finished");
 
         // The heart of the handoff: the child's input IS the parent's relaxed

@@ -27,6 +27,9 @@ std::string toString(CalculatorKind kind)
     case CalculatorKind::MatterSim: return "MatterSim";
     case CalculatorKind::FairChem: return "FAIRChem";
     case CalculatorKind::Lammps: return "LAMMPS";
+    case CalculatorKind::Xtb: return "xTB";
+    case CalculatorKind::DftbPlus: return "DFTB+";
+    case CalculatorKind::Gromacs: return "GROMACS";
     }
     return "?";
 }
@@ -832,6 +835,220 @@ void emitLammps(std::ostringstream& out, const CalculatorConfig& c)
            ")\n";
 }
 
+/// xTB through the `xtb` Python package's in-process ASE calculator.
+///
+/// Keyword names verified against xtb-python's own XTB.default_parameters
+/// (method / accuracy / electronic_temperature / max_iterations) — they are
+/// spelled exactly as the documented API, no aliases.
+void emitXtb(std::ostringstream& out, const CalculatorConfig& c)
+{
+    // GFN-FF is the force-field member of the family: no electrons, so the
+    // two SCC knobs would be inert kwargs and are withheld rather than
+    // emitted as settings that change nothing.
+    const bool gfnff = c.xtbMethod == "GFN-FF";
+    out << "# xTB — semi-empirical tight binding (" << c.xtbMethod
+        << ").\n"
+           "# Fast and parameterized across most of the periodic table: a\n"
+           "# screening / pre-relaxation method for molecules and molecular\n"
+           "# crystals, not a DFT replacement.\n"
+           "# Requires:  pip install xtb   (conda: xtb-python from conda-forge)\n"
+           "from xtb.ase.calculator import XTB\n"
+           "\n"
+           "atoms.calc = XTB(\n"
+        << "    method=\"" << c.xtbMethod << "\",\n"
+        << "    accuracy=" << c.xtbAccuracy
+        << ",  # LOWER is tighter — one multiplier over the SCC thresholds\n";
+    if (gfnff) {
+        out << "    # GFN-FF is a force field: there is no self-consistent\n"
+               "    # charge cycle, so an electronic temperature and an SCC\n"
+               "    # iteration cap describe nothing and are left off.\n";
+    } else {
+        out << "    electronic_temperature=" << c.xtbElectronicTemperatureK
+            << ",  # K — part of the GFN parameterization (300 K), not a\n"
+               "    # convergence aid\n"
+            << "    max_iterations=" << c.xtbMaxIterations << ",\n";
+    }
+    out << ")\n";
+}
+
+/// DFTB+ through ASE's file-IO calculator.
+///
+/// Two contracts here come from reading ase/calculators/dftb.py rather than
+/// the docs. The binary: ASE takes $DFTB_COMMAND and appends its own
+/// " > PREFIX.out" (then falls back to the [dftb] config section, then to
+/// literally "dftb+ > PREFIX.out"), so the launch command must not carry a
+/// redirection of its own. The tables: `slako_dir` falls back to
+/// $DFTB_PREFIX, onto which ASE joins "<El>-<El>.skf" verbatim — the trailing
+/// slash is part of the value.
+void emitDftb(std::ostringstream& out, const CalculatorConfig& c)
+{
+    const bool fermi = c.dftbFillingTemperatureK > 0.0;
+    out << "# DFTB+ through ASE — needs the dftb+ binary and a Slater-Koster\n"
+           "# parameter set (e.g. mio-1-1, 3ob-3-1 from https://dftb.org).\n"
+           "# The pairwise .skf tables ARE the parameterization: element\n"
+           "# coverage is decided by the chosen set, and a missing pair fails\n"
+           "# at run time with DFTB+'s own message.\n"
+           "# ASE renders the Hamiltonian_* keywords below into dftb_in.hsd\n"
+           "# and launches $DFTB_COMMAND, appending '> PREFIX.out' itself.\n"
+           "import os\n"
+           "from ase.calculators.dftb import Dftb\n";
+    if (fermi)
+        out << "from ase.units import Hartree, kB\n";
+    out << "\n";
+    if (!c.dftbSlakoDir.empty()) {
+        std::string slako = c.dftbSlakoDir;
+        if (slako.back() != '/')
+            slako += '/';
+        out << "# Slater-Koster tables. ASE joins '<El>-<El>.skf' onto this\n"
+               "# verbatim, so the trailing slash is part of the value.\n"
+               "os.environ.setdefault(\"DFTB_PREFIX\", r\""
+            << slako << "\")\n\n";
+    } else {
+        out << "# EDIT ME: no Slater-Koster directory is configured. Point\n"
+               "# DFTB_PREFIX at the .skf set (keep the trailing slash) or the\n"
+               "# run stops at the first table it cannot open.\n"
+               "os.environ.setdefault(\"DFTB_PREFIX\", r\"/path/to/slako/\")\n\n";
+    }
+    out << "atoms.calc = Dftb(\n"
+        << "    kpts=(" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2]
+        << "),\n";
+    if (c.dftbScc) {
+        out << "    Hamiltonian_SCC=\"Yes\",\n"
+            << "    Hamiltonian_SCCTolerance=" << c.dftbSccTolerance << ",\n"
+            << "    Hamiltonian_MaxSCCIterations=" << c.dftbMaxSccIterations
+            << ",\n";
+    } else {
+        // Tolerance and iteration cap describe a cycle that does not run, so
+        // they are withheld with SCC rather than written as inert keys.
+        out << "    # Non-SCC DFTB: one shot, no charge self-consistency —\n"
+               "    # fast, and wrong wherever charge transfer matters.\n"
+               "    Hamiltonian_SCC=\"No\",\n";
+    }
+    if (fermi) {
+        // DFTB+ reads Temperature in its default energy unit (Hartree) when
+        // no HSD [K] modifier is present, and ASE's keyword scheme cannot
+        // write the modifier — so the K -> Hartree conversion happens here,
+        // in the open, instead of a bare number nobody can audit.
+        out << "    Hamiltonian_Filling_=\"Fermi\",\n"
+            << "    Hamiltonian_Filling_Temperature="
+            << c.dftbFillingTemperatureK
+            << " * kB / Hartree,  # K -> Hartree (DFTB+'s default unit)\n";
+    }
+    out << ")\n";
+    if (c.spinPolarized)
+        out << "# NOTE: a spin-polarized DFTB+ run needs the\n"
+               "# Hamiltonian_SpinPolarisation_* block plus per-element spin\n"
+               "# constants, which depend on the parameter set — add them here\n"
+               "# by hand (see the DFTB+ manual).\n";
+}
+
+/// GROMACS through ASE, which is unlike every other calculator here: ASE
+/// shells out to the `gmx` binary per evaluation (pdb2gmx / grompp / mdrun /
+/// energy / traj) and parses the numbers back out of .xvg text files.
+///
+/// Two hard constraints, both read out of ase/calculators/gromacs.py:
+///
+/// Topology. Nothing is typed automatically — pdb2gmx must recognize every
+/// residue against the chosen force field's database. That is what makes
+/// this a (bio)molecular engine, and why a bare inorganic crystal cannot run.
+///
+/// Tasks. Gromacs.calculate() ignores the Atoms object ASE hands it: it
+/// reruns mdrun on the .g96/.tpr already on disk, and only its own update()
+/// method ever rewrites those files. An ASE optimizer or MD loop would
+/// therefore evaluate the starting geometry forever while appearing to run —
+/// so anything but a single point is refused outright rather than generated
+/// subtly wrong. Relaxation belongs to GROMACS itself (mdp integrator).
+void emitGromacs(std::ostringstream& out, const CalculatorConfig& c)
+{
+    out << "# --- GROMACS ------------------------------------------------------\n"
+           "#\n"
+           "# GROMACS is an ENGINE for (bio)molecular force fields, driven\n"
+           "# through the `gmx` binary: ASE writes the .mdp parameter file,\n"
+           "# shells out to pdb2gmx/grompp/mdrun per evaluation and parses\n"
+           "# energies and forces back from text output.\n"
+           "#\n"
+           "# The force field must be able to TYPE this structure: pdb2gmx\n"
+           "# builds the topology from its residue database, so proteins,\n"
+           "# water and known ligands work — a bare inorganic crystal has no\n"
+           "# residue entry and will not run.\n";
+    if (c.task != TaskKind::SinglePoint) {
+        out << "raise RuntimeError(\n"
+               "    \"GROMACS through ASE supports single-point evaluation "
+               "only.\\n\"\n"
+               "    \"ASE's Gromacs calculator reruns mdrun on the files "
+               "already on\\n\"\n"
+               "    \"disk and never rewrites them with the positions ASE "
+               "moved, so an\\n\"\n"
+               "    \"optimizer or MD loop would evaluate the starting "
+               "geometry forever.\\n\"\n"
+               "    \"Relax or run dynamics inside GROMACS itself (.mdp "
+               "integrator /\\n\"\n"
+               "    \"nsteps), or pick another engine for ASE-driven "
+               "tasks.\")\n";
+        return;
+    }
+    out << "from ase.calculators.gromacs import Gromacs\n"
+           "\n"
+           "# .mdp parameters. integrator=md with nsteps=0 makes mdrun a true\n"
+           "# single point — the calculator's own default (a 10000-step cg\n"
+           "# minimization) would silently relax before reporting.\n"
+           "_mdp = {\n"
+           "    \"integrator\": \"md\",\n"
+           "    \"nsteps\": \"0\",\n";
+    // Free-form `key = value` lines, one .mdp entry each — the same escape
+    // hatch as VASP's extra INCAR tags, parsed here so the dict stays valid
+    // Python whatever the user typed around the '='.
+    {
+        std::istringstream extra(c.gromacsExtraMdp);
+        std::string line;
+        const auto trim = [](std::string text) {
+            const auto begin = text.find_first_not_of(" \t\r");
+            const auto end = text.find_last_not_of(" \t\r");
+            return begin == std::string::npos
+                ? std::string()
+                : text.substr(begin, end - begin + 1);
+        };
+        while (std::getline(extra, line)) {
+            const std::string entry = trim(line.substr(0, line.find('#')));
+            const auto equals = entry.find('=');
+            if (entry.empty() || equals == std::string::npos)
+                continue;
+            const std::string key = trim(entry.substr(0, equals));
+            const std::string value = trim(entry.substr(equals + 1));
+            if (!key.empty())
+                out << "    \"" << key << "\": \"" << value << "\",\n";
+        }
+    }
+    out << "}\n"
+           "\n"
+           "calc = Gromacs(\n"
+           "    label=\"gromacs\",\n"
+        << "    force_field=\"" << c.gromacsForceField << "\",\n"
+        << "    water_model=\"" << c.gromacsWaterModel << "\",\n";
+    if (!c.gromacsExecutable.empty())
+        out << "    command=r\"" << c.gromacsExecutable << "\",\n";
+    else
+        out << "    # No gmx path configured: ASE falls back to\n"
+               "    # $ASE_GROMACS_COMMAND.\n";
+    out << "    clean=True,\n"
+           "    **_mdp,\n"
+           ")\n"
+           "\n"
+           "# Written AFTER the constructor: clean=True sweeps gromacs.??? on\n"
+           "# construction, which would delete a pdb exported first.\n"
+           "write(\"gromacs.pdb\", atoms)\n"
+           "\n"
+           "# The input pipeline is explicit — the calculator does not run it\n"
+           "# for you. Each tool logs to gromacs.<tool>.log, which is where a\n"
+           "# 'residue not found in residue topology database' lands when the\n"
+           "# force field cannot type this structure.\n"
+           "calc.atoms = atoms\n"
+           "calc.generate_topology_and_g96file()  # pdb2gmx -> gromacs.top / .g96\n"
+           "calc.write_input()                    # -> gromacs.mdp\n"
+           "calc.generate_gromacs_run_file()      # grompp  -> gromacs.tpr\n"
+           "atoms.calc = calc\n";
+}
+
 void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
 {
     switch (c.calculator) {
@@ -1062,31 +1279,51 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
         const bool allegro = c.calculator == CalculatorKind::Allegro;
         out << (allegro
                     ? "# Allegro — strictly-local equivariant potential (NequIP\n"
-                      "# framework), loaded from a deployed TorchScript model.\n"
+                      "# framework), loaded from a packaged inference model.\n"
                     : "# NequIP — E(3)-equivariant message-passing potential,\n"
-                      "# loaded from a deployed TorchScript model.\n")
+                      "# loaded from a packaged inference model.\n")
             << "# Requires:  pip install nequip"
-            << (allegro ? " mir-allegro\n" : "\n")
-            << "# The model must be DEPLOYED (`nequip-deploy build ...`), not a\n"
-               "# raw training checkpoint.\n"
-               "from nequip.ase import NequIPCalculator\n"
+            << (allegro ? " nequip-allegro   (formerly mir-allegro)\n" : "\n")
+            << "# The model must be packaged for inference, never a raw training\n"
+               "# checkpoint — but WHICH package depends on the nequip\n"
+               "# generation: >= 0.7 compiles one with `nequip-compile`\n"
+               "# (.nequip.pt2 / .nequip.pth) and dropped the old loader, while\n"
+               "# <= 0.6 deployed TorchScript with `nequip-deploy build` (.pth).\n"
+               "# Both entry points are bound below so the script runs on\n"
+               "# either generation instead of dying at load on one of them.\n"
+               "try:  # nequip >= 0.7 moved the calculator out of nequip.ase\n"
+               "    from nequip.integrations.ase import NequIPCalculator\n"
+               "except ImportError:\n"
+               "    from nequip.ase import NequIPCalculator\n"
                "\n"
-               "atoms.calc = NequIPCalculator.from_deployed_model(\n"
-            << "    model_path=r\"" << c.nequipModelPath << "\",\n"
-            << "    device=\"" << toString(c.mlipDevice) << "\",\n"
-               "    # The deployed model carries its own training units; these\n"
-               "    # rescale them to ASE's eV / Angstrom.\n"
-            << "    energy_units_to_eV=" << (c.nequipEnergyUnits == "eV" ? "1.0" : "None")
-            << ",  # " << c.nequipEnergyUnits << "\n"
-            << "    length_units_to_A=" << (c.nequipLengthUnits == "Angstrom" ? "1.0" : "None")
-            << ",  # " << c.nequipLengthUnits << "\n"
-               ")\n";
+               "# The model carries its own training units; these rescale them\n"
+               "# to ASE's eV / Angstrom.\n"
+               "_nequip_units = dict(\n"
+            << "    energy_units_to_eV="
+            << (c.nequipEnergyUnits == "eV" ? "1.0" : "None") << ",  # "
+            << c.nequipEnergyUnits << "\n"
+            << "    length_units_to_A="
+            << (c.nequipLengthUnits == "Angstrom" ? "1.0" : "None") << ",  # "
+            << c.nequipLengthUnits << "\n"
+               ")\n"
+               "if hasattr(NequIPCalculator, \"from_compiled_model\"):\n"
+               "    atoms.calc = NequIPCalculator.from_compiled_model(\n"
+            << "        r\"" << c.nequipModelPath << "\",\n"
+            << "        device=\"" << toString(c.mlipDevice) << "\",\n"
+               "        **_nequip_units,\n"
+               "    )\n"
+               "else:  # the deployed-TorchScript loader of nequip <= 0.6\n"
+               "    atoms.calc = NequIPCalculator.from_deployed_model(\n"
+            << "        model_path=r\"" << c.nequipModelPath << "\",\n"
+            << "        device=\"" << toString(c.mlipDevice) << "\",\n"
+               "        **_nequip_units,\n"
+               "    )\n";
         if (c.nequipEnergyUnits != "eV" || c.nequipLengthUnits != "Angstrom")
             out << "# EDIT ME: this model was trained in " << c.nequipEnergyUnits
                 << " / " << c.nequipLengthUnits << ". Replace the None values\n"
                    "# above with the numeric conversion factors to eV / Angstrom\n"
-                   "# (e.g. 0.0433641 for kcal/mol -> eV); leaving them None makes\n"
-                   "# NequIP fall back to the units recorded in the deployed model.\n";
+                   "# (e.g. 0.0433641 for kcal/mol -> eV) — the run fails until\n"
+                   "# they are numbers, which beats a silent factor of 1.0.\n";
         break;
     }
 
@@ -1096,16 +1333,23 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
                "# Requires:  pip install chgnet\n"
                "from chgnet.model.dynamics import CHGNetCalculator\n"
                "from chgnet.model.model import CHGNet\n"
-               "\n"
-            << "model = CHGNet.load(model_name=\"" << toString(c.chgnetWeights)
-            << "\")\n"
-            << "atoms.calc = CHGNetCalculator(model=model, use_device=\""
-            << toString(c.mlipDevice) << "\",\n"
-            << "                              stress_weight="
-            << (c.chgnetStress ? "1.0" : "0.0") << ")\n";
-        if (!c.chgnetStress)
-            out << "# Stress evaluation disabled: cheaper, but variable-cell\n"
-                   "# relaxation and any stress-based analysis will not work.\n";
+               "\n";
+        if (c.chgnetWeights == ChgNetWeights::Latest)
+            // CHGNet.load() knows only version strings ("0.3.0", "0.2.0",
+            // "r2scan") — model_name="latest" raises ValueError. "Track the
+            // installed release" is spelled by omitting the argument.
+            out << "# No model_name: the installed chgnet release's own default\n"
+                   "# checkpoint.\n"
+                   "model = CHGNet.load()\n";
+        else
+            out << "model = CHGNet.load(model_name=\""
+                << toString(c.chgnetWeights) << "\")\n";
+        // stress_weight is NOT an on/off switch: it is the GPa -> eV/Å³
+        // conversion for the stress CHGNet always computes. Overriding it to
+        // 1.0 reported stresses ~160x too large (in GPa), and 0.0 zeroed
+        // them silently — so the kwarg is left at CHGNet's own default.
+        out << "atoms.calc = CHGNetCalculator(model=model, use_device=\""
+            << toString(c.mlipDevice) << "\")\n";
         break;
 
     case CalculatorKind::MatterSim:
@@ -1119,11 +1363,17 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
             << "    device=\"" << toString(c.mlipDevice) << "\",\n"
                ")\n";
         if (c.matterSimThermal)
-            out << "# Thermodynamic state this potential is evaluated at:\n"
+            // Metadata only: MatterSim's v1 checkpoints were TRAINED across
+            // T/P but take no thermodynamic-state input at inference —
+            // neither the calculator nor Potential.from_checkpoint reads
+            // these keys. Recording them documents the intended state for
+            // downstream tooling without implying the model consumed it.
+            out << "# Requested thermodynamic state, recorded as metadata:\n"
                 << "#   T = " << c.matterSimTemperatureK << " K, P = "
                 << c.matterSimPressureGPa << " GPa\n"
-                   "# MatterSim's released checkpoints are trained across T/P, so\n"
-                   "# the state is carried on the Atoms rather than the calculator.\n"
+                   "# MatterSim v1 takes no T/P input at inference (it was\n"
+                   "# trained across that range); these keys only annotate the\n"
+                   "# run for downstream tooling.\n"
                 << "atoms.info[\"temperature_K\"] = " << c.matterSimTemperatureK
                 << "\n"
                 << "atoms.info[\"pressure_GPa\"] = " << c.matterSimPressureGPa
@@ -1149,6 +1399,18 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
 
     case CalculatorKind::Lammps:
         emitLammps(out, c);
+        break;
+
+    case CalculatorKind::Xtb:
+        emitXtb(out, c);
+        break;
+
+    case CalculatorKind::DftbPlus:
+        emitDftb(out, c);
+        break;
+
+    case CalculatorKind::Gromacs:
+        emitGromacs(out, c);
         break;
 
     case CalculatorKind::Vasp:

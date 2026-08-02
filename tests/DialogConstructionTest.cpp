@@ -37,6 +37,7 @@
 #include "gui/DislocationWizard.hpp"
 #include "gui/LiquidInterfaceWizard.hpp"
 #include "gui/SolidInterfaceWizard.hpp"
+#include "gui/StructureEditorDialog.hpp"
 #include "gui/MagneticSpaceGroupDialog.hpp"
 #include "gui/RandomNoiseViewer.hpp"
 #include "gui/RandomNoiseWizard.hpp"
@@ -271,6 +272,115 @@ int main(int argc, char** argv)
 
         exerciseControls(&dialog);
         check(true, "survives control exercise when pre-populated");
+    }
+
+    // The Edit Structure dialog's atom table mixes editable geometry with the
+    // extended per-atom arrays the structure arrived with. The contract pinned
+    // here: velocities and forces are EDITABLE and write through to the
+    // structure's vector fields (they are MD initial conditions and training-
+    // data forces as much as results), every other array stays read-only, and
+    // an edited cell follows its atom through a sort — the sort permutes the
+    // structure, not the view.
+    std::printf("Structure editor dialog:\n");
+    {
+        // Three atoms along z with one computed scalar (charges), a derived
+        // magnitude (|forces|), and the two editable vector arrays.
+        calango::core::Structure crystal;
+        for (int i = 0; i < 3; ++i)
+            crystal.addAtom({14, {0.0, 0.0, 2.0 * i}});
+        crystal.setCell(calango::core::UnitCell({6, 0, 0}, {0, 6, 0},
+                                                {0, 0, 6}, {true, true, true}));
+        crystal.setScalarField("charges", {0.1, 0.2, 0.3});
+        crystal.setVectorField("forces", {{1, 0, 0}, {2, 0, 0}, {3, 0, 0}});
+        crystal.setScalarField("|forces|", {1.0, 2.0, 3.0});
+        crystal.setVectorField("velocities",
+                               {{0.001, 0, 0}, {0.002, 0, 0}, {0.003, 0, 0}});
+
+        StructureEditorDialog dialog(crystal);
+        auto* table = dialog.findChild<QTableWidget*>();
+        check(table != nullptr, "exposes the atom table");
+        // 4 fixed columns + charges + |forces| + forces xyz + velocities xyz.
+        // (Scalars precede vectors, each map-ordered: "charges" < "|forces|",
+        // "forces" < "velocities".)
+        check(table && table->columnCount() == 12,
+              "every extended array appears as a property column");
+        if (table) {
+            const auto header = [table](int column) {
+                const QTableWidgetItem* item =
+                    table->horizontalHeaderItem(column);
+                return item ? item->text() : QString();
+            };
+            const auto editable = [table](int column) {
+                const QTableWidgetItem* item = table->item(0, column);
+                return item != nullptr
+                    && item->flags().testFlag(Qt::ItemIsEditable);
+            };
+            check(header(4) == QStringLiteral("charges")
+                      && header(5) == QStringLiteral("|forces|")
+                      && header(6) == QStringLiteral("forces x")
+                      && header(9) == QStringLiteral("velocities x"),
+                  "property columns arrive in field order");
+            check(!editable(4) && !editable(5),
+                  "computed arrays (charges, |forces|) stay read-only");
+            check(editable(6) && editable(9),
+                  "forces and velocities are editable");
+
+            // An edit commits to the vector field at once — the same
+            // write-through a coordinate edit gets — and the derived |forces|
+            // magnitude follows rather than going stale.
+            if (QTableWidgetItem* cell = table->item(0, 6))
+                cell->setText(QStringLiteral("4.0"));
+            check(std::abs(dialog.result()->vectorFields().at("forces")[0].x
+                           - 4.0) < 1e-9,
+                  "a force edit lands in vectorFields()[\"forces\"]");
+            check(std::abs(dialog.result()->scalarFields().at("|forces|")[0]
+                           - 4.0) < 1e-9,
+                  "the derived |forces| magnitude follows the edit");
+
+            // Sort by z descending: the edited atom (z = 0) moves to the last
+            // row, and the edited force has to move with it.
+            QComboBox* sortKey = nullptr;
+            for (QComboBox* combo : dialog.findChildren<QComboBox*>())
+                if (combo->itemText(0) == QStringLiteral("Element"))
+                    sortKey = combo;
+            QCheckBox* descending = nullptr;
+            for (QCheckBox* box : dialog.findChildren<QCheckBox*>())
+                if (box->text() == QStringLiteral("descending"))
+                    descending = box;
+            QPushButton* sortButton = nullptr;
+            for (QPushButton* button : dialog.findChildren<QPushButton*>())
+                if (button->text() == QStringLiteral("Sort"))
+                    sortButton = button;
+            check(sortKey && descending && sortButton,
+                  "sort controls are present");
+            if (sortKey && descending && sortButton) {
+                sortKey->setCurrentIndex(3); // z
+                descending->setChecked(true);
+                sortButton->click();
+                const auto sorted = dialog.result();
+                check(std::abs(sorted->atoms()[2].position.z) < 1e-9,
+                      "descending z sort reversed the rows");
+                check(std::abs(sorted->vectorFields().at("forces")[2].x - 4.0)
+                          < 1e-9,
+                      "the edited force followed its atom through the sort");
+                check(table->item(2, 6)
+                          && std::abs(table->item(2, 6)->text().toDouble()
+                                      - 4.0) < 1e-6,
+                      "and the table shows it on the atom's new row");
+            }
+        }
+    }
+    {
+        // A structure with no extended arrays: the columns are simply absent —
+        // editing never invents a velocities or forces array.
+        calango::core::Structure bare;
+        bare.addAtom({6, {0.0, 0.0, 0.0}});
+        StructureEditorDialog dialog(bare);
+        auto* table = dialog.findChild<QTableWidget*>();
+        check(table && table->columnCount() == 4,
+              "no extended arrays means no property columns");
+        exerciseControls(&dialog);
+        check(true, "survives every control being toggled");
     }
 
     // The simulation wizards build a dozen per-engine group boxes and connect

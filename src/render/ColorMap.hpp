@@ -4,12 +4,18 @@
 
 namespace calango::render {
 
-/// What drives per-atom colors in the viewport.
+/// What drives per-atom colors in the viewport. Saved by numeric value in
+/// .calproj project files — append only, like ColorGradient below.
 enum class ColorMode {
     Element,                  ///< CPK palette (+ user overrides) — the default
     CoordinationNumber,       ///< discrete CN mapped onto a gradient
     GeneralizedCoordination,  ///< continuous GCN mapped onto a gradient
     CustomScalar,             ///< any per-atom scalar field (charges, |forces|, ...)
+    /// One flat colour per CAST: every atom takes the colour of the cast it
+    /// belongs to (explicit pick, or a default qualitative cycle — see
+    /// StructureRenderer::castColor()). Not a scalar mapping: casts are
+    /// nominal groups, so there is no gradient and no legend range.
+    Cast,
 };
 
 /// Gradients for scalar color mapping. Viridis…Cividis are the

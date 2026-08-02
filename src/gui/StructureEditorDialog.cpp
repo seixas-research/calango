@@ -69,6 +69,15 @@ enum class SortKey { Element, X, Y, Z, U, V, W };
 /// through the staged extxyz without any translation step.
 constexpr const char* kInitialMagmoms = "initial_magmoms";
 
+/// The two extended arrays the table lets the user EDIT (see PropertyColumn in
+/// the header for why exactly these). Named as ASE names them: "velocities" is
+/// what AseBridge derives from momenta/masses on import and feeds back through
+/// atoms.set_velocities() on export, and "forces" is the array/
+/// SinglePointCalculator column — so an edit written under these keys is
+/// exactly what a save to extxyz carries.
+constexpr const char* kVelocities = "velocities";
+constexpr const char* kForces = "forces";
+
 double degrees(double radians) { return radians * 180.0 / M_PI; }
 double radians(double deg) { return deg * M_PI / 180.0; }
 
@@ -618,11 +627,13 @@ void StructureEditorDialog::buildAtomSection(QVBoxLayout* parent)
            "\"Fractional coordinates\" to switch the three coordinate columns "
            "between Å and cell fractions.\n\n"
            "Columns to the right of the moments are the extended per-atom "
-           "properties the structure arrived with — partial charges, "
-           "velocities, forces. They are shown read-only: they are results of "
-           "a calculation, not geometry, and typing over them here would "
-           "leave a frame whose arrays no longer match anything that was "
-           "computed."));
+           "properties the structure arrived with. Velocities and forces are "
+           "editable — hand-set velocities are the initial conditions of a "
+           "molecular-dynamics run, and hand-set forces are how force-field "
+           "training frames and force-arrow viewers are fed. Computed arrays "
+           "such as charges stay read-only: they are results of a "
+           "calculation, and typing over them would leave a frame whose "
+           "arrays no longer match anything that was computed."));
     layout->addWidget(atomTable_, 1);
     connect(atomTable_, &QTableWidget::cellChanged,
             this, &StructureEditorDialog::onAtomCellChanged);
@@ -896,11 +907,50 @@ void StructureEditorDialog::onAtomCellChanged(int row, int column)
         return;
     const QString text = item->text().trimmed();
 
-    // The extended-property columns are read-only, so a change there can only
-    // be a programmatic one that slipped the `updating_` guard; ignore it
-    // rather than parsing a result column as geometry.
-    if (column >= firstPropertyColumn())
+    // Property columns. Velocities and forces write through to the working
+    // structure's vector fields immediately, exactly as a coordinate edit
+    // writes through to the position — which is what lets a later sort carry
+    // the edited value with its atom, and what the caller's undo-aware install
+    // of result() snapshots on accept. The remaining columns are read-only, so
+    // a change there can only be a programmatic one that slipped the
+    // `updating_` guard; ignore it rather than parsing a result column as
+    // geometry.
+    if (column >= firstPropertyColumn()) {
+        const std::vector<PropertyColumn> properties = propertyColumns();
+        const auto index =
+            static_cast<std::size_t>(column - firstPropertyColumn());
+        if (index >= properties.size() || !properties[index].editable)
+            return;
+        const PropertyColumn& property = properties[index];
+        bool ok = false;
+        const double value = text.toDouble(&ok);
+        if (!ok) {
+            refreshAtomTable(); // restore the stored value over the typo
+            return;
+        }
+        // Copy-modify-set rather than mutating in place: setVectorField() is
+        // the one write path, and the field is guaranteed present — a column
+        // only exists for an array the structure already carries.
+        auto vectors = working_->vectorFields().at(property.field);
+        core::Vec3& edited = vectors[static_cast<std::size_t>(row)];
+        (&edited.x)[property.component] = value;
+        const double magnitude = edited.norm();
+        working_->setVectorField(property.field, std::move(vectors));
+        // The import bridge derives a "|name|" magnitude scalar for color
+        // mapping; left stale, it would color the atom by the force it no
+        // longer has. (Never created here — only refreshed where it exists.)
+        const std::string magnitudeField = "|" + property.field + "|";
+        if (const auto it = working_->scalarFields().find(magnitudeField);
+            it != working_->scalarFields().end()
+            && it->second.size() == working_->size()) {
+            auto magnitudes = it->second;
+            magnitudes[static_cast<std::size_t>(row)] = magnitude;
+            working_->setScalarField(magnitudeField, std::move(magnitudes));
+        }
+        refreshAtomTable(); // the |name| column has to follow the edit
+        refreshSummary();
         return;
+    }
 
     if (column >= kFirstMomentColumn) {
         // A moment edit needs no coordinate round trip; commit the whole
@@ -1036,12 +1086,15 @@ StructureEditorDialog::propertyColumns() const
         // promoted vector; the spin-mode columns own it either way.
         if (name == kInitialMagmoms || values.size() != n)
             continue;
+        // Velocities and forces are input as much as output (MD initial
+        // conditions; hand-built training forces) — the only editable arrays.
+        const bool editable = name == kVelocities || name == kForces;
         const QString base = QString::fromStdString(name);
         for (int component = 0; component < 3; ++component)
             columns.push_back(
                 {QStringLiteral("%1 %2")
                      .arg(base, QStringLiteral("xyz").at(component)),
-                 name, /*vector=*/true, component});
+                 name, /*vector=*/true, component, editable});
     }
     return columns;
 }
@@ -1130,10 +1183,17 @@ void StructureEditorDialog::refreshAtomTable()
                 value = working_->scalarFields().at(property.field)
                     [static_cast<std::size_t>(row)];
             }
-            auto* item = numberCell(value, 4);
-            item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-            item->setForeground(QApplication::palette().brush(
-                QPalette::Disabled, QPalette::Text));
+            // Editable columns are formatted like the coordinates (6
+            // decimals): a thermal velocity is ~1e-3 in ASE units, and four
+            // decimals would round a typed value visibly on the rewrite.
+            auto* item = numberCell(value, property.editable ? 6 : 4);
+            if (!property.editable) {
+                // Greyed as well as flagged, so "cannot be typed over" is
+                // visible before the first rejected double-click.
+                item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+                item->setForeground(QApplication::palette().brush(
+                    QPalette::Disabled, QPalette::Text));
+            }
             atomTable_->setItem(row, propertyBase + static_cast<int>(p), item);
         }
     }

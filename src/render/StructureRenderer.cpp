@@ -112,26 +112,28 @@ void appendInstance(std::vector<float>& data, const QMatrix4x4& model,
     appendInstance(data, model, color, color, finish, opacity);
 }
 
+/// Qualitative palette for NOMINAL groups — ribbon chains and casts. Not a
+/// gradient: these labels have no order, so neighbouring indices must not get
+/// neighbouring hues — the whole point is telling the groups apart at a
+/// glance. Eight entries is as many flat colours as stay distinguishable on
+/// lit spheres; a ninth group wraps, which beats inventing a muddier hue.
+const QColor kQualitativePalette[] = {
+    QColor(102, 170, 255), QColor(255, 153, 102), QColor(120, 210, 140),
+    QColor(220, 130, 220), QColor(240, 210, 100), QColor(120, 220, 220),
+    QColor(230, 120, 150), QColor(170, 170, 190),
+};
+constexpr int kQualitativeCount = static_cast<int>(std::size(kQualitativePalette));
+
 /// Distinct colour per chain identifier, for the ribbon representation.
-///
-/// A qualitative palette, not a gradient: chains are nominal labels with no
-/// order, so neighbouring letters must not get neighbouring hues — the whole
-/// point is telling four chains of one complex apart at a glance.
 QColor chainColor(const std::string& chain)
 {
-    static const QColor kPalette[] = {
-        QColor(102, 170, 255), QColor(255, 153, 102), QColor(120, 210, 140),
-        QColor(220, 130, 220), QColor(240, 210, 100), QColor(120, 220, 220),
-        QColor(230, 120, 150), QColor(170, 170, 190),
-    };
-    constexpr int kCount = static_cast<int>(std::size(kPalette));
     if (chain.empty())
-        return kPalette[0];
+        return kQualitativePalette[0];
     // Sum the characters so multi-letter chain ids ("AA", "BB") also spread.
     int hash = 0;
     for (const char c : chain)
         hash += static_cast<unsigned char>(c);
-    return kPalette[hash % kCount];
+    return kQualitativePalette[hash % kQualitativeCount];
 }
 
 QColor midpointColor(const QColor& a, const QColor& b)
@@ -483,10 +485,22 @@ QColor StructureRenderer::atomColor(int atomicNumber, const Style& style)
     return QColor(element.rgb[0], element.rgb[1], element.rgb[2]);
 }
 
+QColor StructureRenderer::castColor(int cast, const Style& style)
+{
+    // castStyle() already resolves an out-of-range index to cast 0, so a
+    // stale assignment degrades to cast 0's colour rather than reading past
+    // the palette.
+    if (const QColor chosen = style.castStyle(cast).castColor; chosen.isValid())
+        return chosen;
+    // No explicit pick: cycle the qualitative palette BY CAST INDEX, so cast
+    // numbers keep their colours as casts are added and removed at the end.
+    return kQualitativePalette[std::max(cast, 0) % kQualitativeCount];
+}
+
 void StructureRenderer::setAtomScalars(ColorMode mode, std::vector<float> values)
 {
-    if (mode == ColorMode::Element)
-        return; // element colours need no field
+    if (mode == ColorMode::Element || mode == ColorMode::Cast)
+        return; // neither maps a field: CPK is a lookup, casts a flat pick
     ScalarField field;
     field.values = std::move(values);
     if (!field.values.empty()) {
@@ -527,6 +541,18 @@ QColor StructureRenderer::resolvedAtomColor(std::size_t index, int atomicNumber,
 {
     if (colorMode == ColorMode::Element)
         return atomColor(atomicNumber, style_);
+    if (colorMode == ColorMode::Cast) {
+        // The atom's cast: an absent assignment means every atom is in cast 0,
+        // and the viewport clears a stale one before any rebuild reaches here,
+        // so an in-range index is index-aligned with the structure. Every
+        // caller passes the structure's own atom index (bond halves pass each
+        // endpoint's), which is what keeps a bond meeting its sphere in the
+        // same colour; castColor() resolves an out-of-range cast to cast 0's.
+        const std::vector<int>& assignment = style_.atomCasts;
+        const int cast =
+            index < assignment.size() ? assignment[index] : 0;
+        return castColor(cast, style_);
+    }
     const auto it = scalars_.find(colorMode);
     if (it == scalars_.end() || index >= it->second.values.size())
         return atomColor(atomicNumber, style_); // no data for this mode

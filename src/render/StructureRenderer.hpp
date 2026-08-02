@@ -230,6 +230,12 @@ public:
         /// behind a solid adsorbate, and that wants a plain, predictable alpha
         /// rather than a glass look.
         float opacity = 1.0f;
+        /// Flat colour this cast's atoms (and their bond halves) take under
+        /// ColorMode::Cast. Invalid — the default — means "no explicit pick":
+        /// the cast falls back to its slot in the default qualitative cycle,
+        /// so a fresh cast is already distinguishable before anyone opens the
+        /// Cast Colors dialog. See StructureRenderer::castColor().
+        QColor castColor;
     };
 
     struct Style {
@@ -243,6 +249,9 @@ public:
         RepresentationMode mode = RepresentationMode::BallAndStick;
         /// Cast 0's opacity; see CastStyle::opacity.
         float opacity = 1.0f;
+        /// Cast 0's flat colour under ColorMode::Cast; see
+        /// CastStyle::castColor.
+        QColor castColor;
 
         // -- Casts (per-atom representation groups) ------------------------
 
@@ -266,7 +275,7 @@ public:
             if (cast > 0 && cast <= static_cast<int>(castStyles.size()))
                 return castStyles[static_cast<std::size_t>(cast - 1)];
             return {mode, surfaceFinish, colorMode, atomScaleFactor,
-                    bondWidthFactor, opacity};
+                    bondWidthFactor, opacity, castColor};
         }
         /// Write `value` back into `cast`. Cast 0 writes through to the
         /// members above, which is what keeps the two representations of it in
@@ -283,6 +292,7 @@ public:
             atomScaleFactor = value.atomScaleFactor;
             bondWidthFactor = value.bondWidthFactor;
             opacity = value.opacity;
+            castColor = value.castColor;
         }
         /// Representation of `cast` — the most-asked-for field of castStyle().
         RepresentationMode castMode(int cast) const
@@ -507,6 +517,13 @@ public:
 
     /// Element color after applying user overrides (default: Jmol CPK).
     static QColor atomColor(int atomicNumber, const Style& style);
+
+    /// Colour of `cast` under ColorMode::Cast: the cast's explicit pick when
+    /// one is set, otherwise the default qualitative palette cycled by cast
+    /// index. Public for the same reason atomColor() is — the Cast Colors
+    /// dialog must show in its swatches exactly what the renderer will draw,
+    /// defaults included, rather than keep a second copy of the palette.
+    static QColor castColor(int cast, const Style& style);
 
     /// Settings each atom of `structure` is drawn with, resolved from the
     /// style's cast assignment. Falls back to a uniform cast-0 style when the

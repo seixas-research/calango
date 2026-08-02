@@ -56,10 +56,26 @@ StructureInfoWidget::StructureInfoWidget(QWidget* parent)
     // Inset the property block (Formula … Periodic) from the dock edge. With
     // zero margins the label column sits flush against the window frame, which
     // reads as clipped text rather than as a deliberate flush-left layout.
-    // Applied to the form alone so the action row below spans the panel's
-    // full width.
+    // Applied to the form alone so the Edit button and the action row below
+    // span the panel's full width.
     form->setContentsMargins(kFormSideMargin, 0, kFormSideMargin, 0);
     outer->addLayout(form);
+
+    // "Edit Structure…" gets a row of its own, directly under the summary it
+    // acts on, spelled out (icon AND text) and full width like the panel's
+    // other spanning controls. It opens the whole editing dialog — cell,
+    // coordinates, moments — while the row below is one-click transforms;
+    // rendered as one more glyph among them, the panel's primary action read
+    // as a peer of "wrap" and was its least discoverable button.
+    ui::IconManager::bind(editButton_, QStringLiteral("edit-box-fill"));
+    editButton_->setIconSize(QSize(20, 20));
+    editButton_->setText(tr("Edit Structure…"));
+    editButton_->setToolTip(
+        tr("Edit Structure… — lattice parameters, lattice vectors and "
+           "atomic positions."));
+    editButton_->setFocusPolicy(Qt::NoFocus);
+    editButton_->setEnabled(false);
+    outer->addWidget(editButton_);
 
     // The structure-modification row. Centring, vacuum padding and wrapping
     // used to be buttons INSIDE the Edit Structure dialog, acting on its
@@ -78,9 +94,6 @@ StructureInfoWidget::StructureInfoWidget(QWidget* parent)
         button->setEnabled(false);
         actionRow->addWidget(button);
     };
-    makeAction(editButton_, QStringLiteral("edit-box-fill"),
-               tr("Edit Structure… — lattice parameters, lattice vectors and "
-                  "atomic positions."));
     makeAction(centerButton_, QStringLiteral("align-item-vertical-center-line"),
                tr("Center Structure — translate every atom so the centroid "
                   "sits at the center of the cell."));

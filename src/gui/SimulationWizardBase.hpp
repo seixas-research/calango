@@ -123,17 +123,17 @@ public:
     /// structure keep their calculatorElements() override as the authority.
     void setStructureElements(const QStringList& symbols);
 
-    /// Workflow-canvas mode: the wizard CONFIGURES a process node rather
+    /// Orchestration-canvas mode: the wizard CONFIGURES a process node rather
     /// than launching a job. The review stage's "Run (Local)" button reads
     /// "Save process node" — accepting hands the generated script back to
     /// the canvas, nothing executes — and "Run (Remote)" is withdrawn,
     /// because queueing is the canvas's concern, not the wizard's. Call
     /// after construction, before exec().
-    void enterWorkflowMode();
+    void enterOrchestrationMode();
 
     /// Preselect the engine combo (no-op if the kind isn't offered). Public
     /// because hosts other than the wizard's own pages legitimately choose
-    /// the engine — the workflow canvas opens a node's wizard on the engine
+    /// the engine — the Orchestration canvas opens a node's wizard on the engine
     /// the node already shows.
     void selectCalculator(core::CalculatorKind kind);
 
@@ -376,6 +376,23 @@ private:
     /// Show only the LAMMPS rows that apply to the selected interface (the
     /// binary is meaningless for the in-process library).
     void updateLammpsRows();
+    /// The "xTB settings" group — method, accuracy, electronic temperature,
+    /// SCC iteration cap. Small on purpose: xTB's parameterization IS the
+    /// method, so there is no basis or functional to configure.
+    QWidget* buildXtbGroup(QWidget* parent);
+    /// Hide the electronic rows for GFN-FF, which has no electrons.
+    void updateXtbRows();
+    /// The "DFTB+ settings" group — Slater-Koster directory, SCC controls and
+    /// the Fermi filling temperature. The k-grid stays on the shared
+    /// Brillouin-zone controls.
+    QWidget* buildDftbGroup(QWidget* parent);
+    /// Hide the SCC tolerance / iteration rows when SCC is off (they describe
+    /// a cycle that does not run).
+    void updateDftbRows();
+    /// The "GROMACS settings" group — force field, water model, gmx binary,
+    /// extra .mdp parameters. Led by the engine-not-a-force-field note: the
+    /// topology must be typeable by the chosen force field.
+    QWidget* buildGromacsGroup(QWidget* parent);
     /// The shared "Machine-Learning Potential" group serving DeepMD, NequIP /
     /// Allegro, CHGNet, MatterSim and FAIRChem (MACE keeps its own group).
     QWidget* buildMlipGroup(QWidget* parent);
@@ -480,7 +497,6 @@ private:
     QComboBox* nequipEnergyUnitsCombo_ = nullptr;
     QComboBox* nequipLengthUnitsCombo_ = nullptr;
     QComboBox* chgnetWeightsCombo_ = nullptr;
-    QCheckBox* chgnetStressCheck_ = nullptr;
     QComboBox* matterSimModelCombo_ = nullptr;
     QCheckBox* matterSimThermalCheck_ = nullptr;
     QWidget* matterSimStateRow_ = nullptr; ///< T / P spin boxes
@@ -550,6 +566,33 @@ private:
     QPlainTextEdit* lammpsExtraEdit_ = nullptr;      ///< one command per line
     QLineEdit* lammpsCommandEdit_ = nullptr;         ///< `lmp` (Run only)
     QCheckBox* lammpsLogCheck_ = nullptr;
+
+    // -- xTB ----------------------------------------------------------------
+    QGroupBox* xtbGroup_ = nullptr;
+    QComboBox* xtbMethodCombo_ = nullptr;
+    QDoubleSpinBox* xtbAccuracySpin_ = nullptr;
+    QDoubleSpinBox* xtbTempSpin_ = nullptr;   ///< electronic temperature (K)
+    QSpinBox* xtbMaxIterSpin_ = nullptr;      ///< SCC iteration cap
+
+    // -- DFTB+ --------------------------------------------------------------
+    QGroupBox* dftbGroup_ = nullptr;
+    /// Slater-Koster directory (line edit + Browse on one row). Editable and
+    /// persisted in QSettings, unlike the VASP POTCAR note: there is no
+    /// Preferences → External Files entry for it (yet), so this field is the
+    /// single home of the value rather than a second one.
+    QWidget* dftbSlakoRow_ = nullptr;
+    QLineEdit* dftbSlakoEdit_ = nullptr;
+    QCheckBox* dftbSccCheck_ = nullptr;
+    QLineEdit* dftbSccTolEdit_ = nullptr;     ///< scientific notation (1e-5)
+    QSpinBox* dftbMaxSccSpin_ = nullptr;
+    QDoubleSpinBox* dftbFillingTempSpin_ = nullptr; ///< K; 0 = no smearing
+
+    // -- GROMACS ------------------------------------------------------------
+    QGroupBox* gromacsGroup_ = nullptr;
+    QComboBox* gromacsForceFieldCombo_ = nullptr;   ///< editable (pdb2gmx -ff)
+    QComboBox* gromacsWaterCombo_ = nullptr;        ///< pdb2gmx -water
+    QLineEdit* gromacsGmxEdit_ = nullptr;           ///< the gmx wrapper binary
+    QPlainTextEdit* gromacsMdpEdit_ = nullptr;      ///< key = value per line
 
     // -- VASP ---------------------------------------------------------------
     // In the shared base rather than in one wizard, so every wizard built on

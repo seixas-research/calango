@@ -15,20 +15,26 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPolygonF>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSlider>
 #include <QSpinBox>
+#include <QStackedWidget>
+#include <QStandardItemModel>
 #include <QTextStream>
 #include <QVBoxLayout>
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace calango::gui {
 
@@ -128,7 +134,561 @@ std::vector<QVector3D> clipHalfPlane(const std::vector<QVector3D>& polygon,
     return out;
 }
 
+// The Wigner-Seitz construction of the first Brillouin zone, shared by the 3D
+// surface clipper and the flat map view. Free functions taking the reciprocal
+// rows explicitly: the surfaces build the zone from the file's
+// reciprocal_2pi_per_A, the map from its own bz_map.reciprocal_A_inv, and two
+// copies of a geometric derivation is how the two views drift apart.
+
+/// The half-planes bounding the first Brillouin zone: k is inside when it is
+/// no further from Γ than from any other reciprocal-lattice point G, i.e.
+/// |k| <= |k - G|, which reduces to k·Ĝ <= |G|/2. Neighbours out to two cells
+/// in each direction are more than enough — in 2D the cell is bounded by the
+/// first or second shell for every Bravais lattice.
+std::vector<std::array<double, 3>> zoneHalfPlanes(double b1x, double b1y,
+                                                  double b2x, double b2y)
+{
+    std::vector<std::array<double, 3>> planes;
+    if (std::hypot(b1x, b1y) < 1e-9 || std::hypot(b2x, b2y) < 1e-9)
+        return planes;
+    for (int i = -2; i <= 2; ++i) {
+        for (int j = -2; j <= 2; ++j) {
+            if (i == 0 && j == 0)
+                continue;
+            const double gx = i * b1x + j * b2x;
+            const double gy = i * b1y + j * b2y;
+            const double length = std::hypot(gx, gy);
+            if (length < 1e-9)
+                continue;
+            planes.push_back({gx / length, gy / length, 0.5 * length});
+        }
+    }
+    return planes;
+}
+
+/// Vertices of the first-BZ polygon, counter-clockwise.
+std::vector<std::array<double, 2>> zonePolygon(
+    const std::vector<std::array<double, 3>>& planes)
+{
+    if (planes.size() < 3)
+        return {};
+    // Intersect a generous starting square with every half-plane; what
+    // survives IS the zone. Cheaper and far less error-prone than enumerating
+    // vertex candidates from plane pairs and filtering them.
+    double reach = 0.0;
+    for (const auto& p : planes)
+        reach = std::max(reach, p[2]);
+    reach *= 2.5;
+    std::vector<QVector3D> polygon = {
+        {static_cast<float>(-reach), static_cast<float>(-reach), 0.0f},
+        {static_cast<float>(reach), static_cast<float>(-reach), 0.0f},
+        {static_cast<float>(reach), static_cast<float>(reach), 0.0f},
+        {static_cast<float>(-reach), static_cast<float>(reach), 0.0f}};
+    for (const auto& plane : planes) {
+        polygon = clipHalfPlane(polygon, plane[0], plane[1], plane[2]);
+        if (polygon.size() < 3)
+            return {};
+    }
+    // Drop duplicate and collinear vertices. For a square lattice the four
+    // diagonal half-planes pass exactly through the corners, so the clipper
+    // emits each corner twice with a zero-length edge between — which would
+    // draw as a degenerate segment and makes the vertex count lie about the
+    // shape (an 8-gon that is really a square).
+    std::vector<std::array<double, 2>> out;
+    out.reserve(polygon.size());
+    for (const QVector3D& v : polygon) {
+        const std::array<double, 2> point{v.x(), v.y()};
+        if (!out.empty()
+            && std::hypot(point[0] - out.back()[0], point[1] - out.back()[1])
+                < 1e-9)
+            continue;
+        out.push_back(point);
+    }
+    while (out.size() > 1
+           && std::hypot(out.front()[0] - out.back()[0],
+                         out.front()[1] - out.back()[1])
+               < 1e-9)
+        out.pop_back();
+    if (out.size() < 3)
+        return {};
+    std::vector<std::array<double, 2>> simplified;
+    simplified.reserve(out.size());
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const auto& prev = out[(i + out.size() - 1) % out.size()];
+        const auto& here = out[i];
+        const auto& next = out[(i + 1) % out.size()];
+        const double cross = (here[0] - prev[0]) * (next[1] - prev[1])
+            - (here[1] - prev[1]) * (next[0] - prev[0]);
+        // Scaled tolerance: the zone's own size sets what "collinear" means,
+        // and these coordinates are inverse ångström of order 1.
+        const double span = std::hypot(next[0] - prev[0], next[1] - prev[1]);
+        if (std::abs(cross) > 1e-9 * std::max(span, 1e-9))
+            simplified.push_back(here);
+    }
+    return simplified.size() >= 3 ? simplified : out;
+}
+
+// The map view's palette, shared with the effective-bands heatmap so the two
+// hand-painted plots read as one family.
+const QColor kMapBackground(18, 20, 24);
+const QColor kMapText(210, 213, 220);
+const QColor kMapFrame(120, 124, 134);
+// And these two match the 3D view's zone outline and label colours, so the
+// same objects keep the same colour across the selector.
+const QColor kMapZone(120, 190, 255);
+const QColor kMapGamma(255, 214, 120);
+
 } // namespace
+
+/// The flat map view: ONE band's E(k_x, k_y) painted as colour over the exact
+/// first Brillouin zone.
+///
+/// The zone is produced by folding, not by clipping a sampled patch: every
+/// pixel maps its Cartesian k to fractional coordinates along b1/b2, wraps
+/// them periodically into the sampled cell, and interpolates bilinearly
+/// between the four surrounding Monkhorst-Pack samples. The wrap IS the
+/// periodic tiling — the zone's corners, which lie outside the sampled
+/// parallelogram, take their values from the equivalent points inside it, and
+/// because the mesh never duplicates the cell edge the interpolation is
+/// seamless across it.
+///
+/// Deliberately not a Q_OBJECT: it declares no signals or slots of its own,
+/// and staying moc-free is what lets it live inside this .cpp next to the
+/// window that owns it. User-visible strings borrow TwoDBandsWindow's
+/// translation context for the same reason.
+class BzMapView : public QWidget {
+public:
+    /// The parsed "bz_map" object, exactly as the generator writes it.
+    struct Data {
+        int n = 0;
+        std::vector<std::array<double, 2>> kptsFrac; ///< nk × (f1, f2)
+        std::vector<std::vector<double>> energies;   ///< [k][band], eV
+        double efermi = 0.0;
+        /// In-plane reciprocal rows b1, b2 (Å⁻¹, 2π included).
+        double b1x = 0.0, b1y = 0.0, b2x = 0.0, b2y = 0.0;
+
+        /// Bands present at EVERY mesh point — the minimum row length, so a
+        /// truncated row cannot push an index out of range mid-image.
+        int bandCount() const
+        {
+            if (energies.empty())
+                return 0;
+            std::size_t count = energies.front().size();
+            for (const auto& row : energies)
+                count = std::min(count, row.size());
+            return static_cast<int>(count);
+        }
+
+        bool valid() const
+        {
+            const std::size_t nk =
+                static_cast<std::size_t>(n) * static_cast<std::size_t>(n);
+            return n >= 2 && nk > 0 && kptsFrac.size() == nk
+                && energies.size() == nk && bandCount() > 0
+                && std::abs(b1x * b2y - b1y * b2x) > 1e-12;
+        }
+    };
+
+    explicit BzMapView(QWidget* parent = nullptr) : QWidget(parent)
+    {
+        setMinimumSize(320, 280);
+    }
+
+    void setData(Data data)
+    {
+        data_ = std::move(data);
+        planes_.clear();
+        polygon_.clear();
+        if (data_.valid()) {
+            planes_ = zoneHalfPlanes(data_.b1x, data_.b1y, data_.b2x, data_.b2y);
+            polygon_ = zonePolygon(planes_);
+            // Mesh origin and spacing are read off the samples themselves
+            // rather than re-derived from n, so a changed mesh convention in
+            // the generator cannot silently shear the fold. Ordering matches
+            // the generator's ravel: index = i1 * n + i2, f1 slowest.
+            const auto n = static_cast<std::size_t>(data_.n);
+            f0a_ = data_.kptsFrac[0][0];
+            f0b_ = data_.kptsFrac[0][1];
+            stepA_ = data_.kptsFrac[n][0] - data_.kptsFrac[0][0];
+            stepB_ = data_.kptsFrac[1][1] - data_.kptsFrac[0][1];
+        }
+        if (polygon_.size() < 3 || std::abs(stepA_) < 1e-12
+            || std::abs(stepB_) < 1e-12) {
+            // Unusable geometry is indistinguishable from no data: better an
+            // honest empty view than a map folded through a degenerate cell.
+            data_ = {};
+            planes_.clear();
+            polygon_.clear();
+        }
+        if (!polygon_.empty()) {
+            boundsMinX_ = boundsMaxX_ = polygon_.front()[0];
+            boundsMinY_ = boundsMaxY_ = polygon_.front()[1];
+            for (const auto& vertex : polygon_) {
+                boundsMinX_ = std::min(boundsMinX_, vertex[0]);
+                boundsMaxX_ = std::max(boundsMaxX_, vertex[0]);
+                boundsMinY_ = std::min(boundsMinY_, vertex[1]);
+                boundsMaxY_ = std::max(boundsMaxY_, vertex[1]);
+            }
+            const double margin = 0.04
+                * std::max(boundsMaxX_ - boundsMinX_, boundsMaxY_ - boundsMinY_);
+            boundsMinX_ -= margin;
+            boundsMaxX_ += margin;
+            boundsMinY_ -= margin;
+            boundsMaxY_ += margin;
+        }
+        band_ = defaultBand();
+        dirty_ = true;
+        update();
+    }
+
+    bool hasData() const { return data_.valid(); }
+    int bandCount() const { return data_.bandCount(); }
+    int band() const { return band_; }
+    int meshSamples() const { return data_.n; }
+
+    /// The band whose energies come closest to E_F anywhere in the zone: a
+    /// metal's crossing band gives distance zero, an insulator's frontier
+    /// band the gap edge — either way, the band the map is opened for.
+    int defaultBand() const
+    {
+        const int bands = data_.bandCount();
+        int best = 0;
+        double bestDistance = std::numeric_limits<double>::max();
+        for (int b = 0; b < bands; ++b) {
+            double distance = std::numeric_limits<double>::max();
+            for (const auto& row : data_.energies)
+                distance = std::min(
+                    distance,
+                    std::abs(row[static_cast<std::size_t>(b)] - data_.efermi));
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = b;
+            }
+        }
+        return best;
+    }
+
+    void setBand(int band)
+    {
+        const int clamped =
+            std::clamp(band, 0, std::max(0, data_.bandCount() - 1));
+        if (clamped == band_)
+            return;
+        band_ = clamped;
+        dirty_ = true;
+        update();
+    }
+
+    void setShiftFermi(bool shift)
+    {
+        if (shift_ == shift)
+            return;
+        // Labels only: the colour ramp always spans the selected band's own
+        // range, so shifting the reference changes what the numbers SAY, not
+        // what the picture shows — no image rebuild needed.
+        shift_ = shift;
+        update();
+    }
+
+    void setGradient(render::ColorGradient gradient)
+    {
+        if (gradient_ == gradient)
+            return;
+        gradient_ = gradient;
+        dirty_ = true;
+        update();
+    }
+
+    void exportImage(QWidget* dialogParent)
+    {
+        if (!data_.valid()) {
+            QMessageBox::information(dialogParent,
+                                     TwoDBandsWindow::tr("Export Image"),
+                                     TwoDBandsWindow::tr("No map loaded."));
+            return;
+        }
+        const QString path = QFileDialog::getSaveFileName(
+            dialogParent, TwoDBandsWindow::tr("Export Brillouin-zone map"),
+            QStringLiteral("bands_2d_bz_map.png"),
+            TwoDBandsWindow::tr("PNG image (*.png)"));
+        if (path.isEmpty())
+            return;
+        // 3x for print, matching the effective-bands heatmap exporter.
+        QImage image(width() * 3, height() * 3, QImage::Format_ARGB32);
+        image.fill(kMapBackground);
+        QPainter painter(&image);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.scale(3.0, 3.0);
+        render(&painter, QPoint(), QRegion(), QWidget::DrawChildren);
+        painter.end();
+        if (!image.save(path)) {
+            QMessageBox::critical(
+                dialogParent, TwoDBandsWindow::tr("Export Image"),
+                TwoDBandsWindow::tr("Could not write %1").arg(path));
+        }
+    }
+
+    void exportCsv(QWidget* dialogParent)
+    {
+        if (!data_.valid()) {
+            QMessageBox::information(dialogParent,
+                                     TwoDBandsWindow::tr("Export CSV"),
+                                     TwoDBandsWindow::tr("No map loaded."));
+            return;
+        }
+        const QString path = QFileDialog::getSaveFileName(
+            dialogParent, TwoDBandsWindow::tr("Export Brillouin-zone map data"),
+            QStringLiteral("bands_2d_bz_map.csv"),
+            TwoDBandsWindow::tr("CSV (*.csv)"));
+        if (path.isEmpty())
+            return;
+        // The SAMPLED mesh, not the folded pixels: these are the computed
+        // eigenvalues at the computed k-points, which is what a re-plot or a
+        // fit wants — the fold is presentation, and anyone can repeat it from
+        // these rows.
+        writeTextFile(dialogParent, path, [this](QTextStream& out) {
+            out << "kx_frac,ky_frac,kx_1_per_A,ky_1_per_A,energy_eV\n";
+            for (std::size_t k = 0; k < data_.kptsFrac.size(); ++k) {
+                const double fa = data_.kptsFrac[k][0];
+                const double fb = data_.kptsFrac[k][1];
+                out << QString::number(fa, 'g', 8) << ','
+                    << QString::number(fb, 'g', 8) << ','
+                    << QString::number(fa * data_.b1x + fb * data_.b2x, 'g', 8)
+                    << ','
+                    << QString::number(fa * data_.b1y + fb * data_.b2y, 'g', 8)
+                    << ','
+                    << QString::number(
+                           data_.energies[k][static_cast<std::size_t>(band_)],
+                           'g', 8)
+                    << '\n';
+            }
+        });
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.fillRect(rect(), kMapBackground);
+
+        if (!data_.valid()) {
+            painter.setPen(QColor(150, 150, 150));
+            painter.drawText(
+                rect(), Qt::AlignCenter | Qt::TextWordWrap,
+                TwoDBandsWindow::tr(
+                    "This run carries no Brillouin-zone map.\n"
+                    "Re-run 2D Bands with \"Also sample the full first "
+                    "Brillouin zone\" enabled."));
+            return;
+        }
+        if (dirty_) {
+            rebuildImage();
+            dirty_ = false;
+        }
+
+        QFont font = painter.font();
+        font.setPointSizeF(15.0); // matches the band/PDOS and heatmap plots
+        painter.setFont(font);
+
+        // Margins: caption row below, rotated caption left, colourbar with
+        // its labels and rotated title on the right.
+        const QRectF plot = rect().adjusted(52, 14, -118, -46);
+        if (plot.width() < 40 || plot.height() < 40 || image_.isNull())
+            return;
+
+        // Fit the zone's bounding box into the plot rect PRESERVING aspect:
+        // the whole point of the map is that the zone's geometry is exact,
+        // and an anisotropic stretch would turn a hexagon into "roughly a
+        // hexagon".
+        const double spanX = std::max(boundsMaxX_ - boundsMinX_, 1e-12);
+        const double spanY = std::max(boundsMaxY_ - boundsMinY_, 1e-12);
+        const double scale =
+            std::min(plot.width() / spanX, plot.height() / spanY);
+        const QRectF target(plot.center().x() - 0.5 * spanX * scale,
+                            plot.center().y() - 0.5 * spanY * scale,
+                            spanX * scale, spanY * scale);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        painter.drawImage(target, image_);
+
+        const auto toScreen = [&](double kx, double ky) {
+            return QPointF(target.left() + (kx - boundsMinX_) * scale,
+                           target.top() + (boundsMaxY_ - ky) * scale);
+        };
+
+        // The zone boundary — here it is the frame: the coloured region is
+        // polygon-shaped, so a rectangular frame would outline nothing real.
+        QPolygonF outline;
+        for (const auto& vertex : polygon_)
+            outline << toScreen(vertex[0], vertex[1]);
+        painter.setPen(QPen(kMapZone, 1.6));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPolygon(outline);
+
+        // Γ, the one point every reader orients by.
+        const QPointF gamma = toScreen(0.0, 0.0);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(kMapGamma);
+        painter.drawEllipse(gamma, 3.0, 3.0);
+        painter.setPen(kMapGamma);
+        painter.drawText(QPointF(gamma.x() + 6.0, gamma.y() - 6.0),
+                         QStringLiteral("Γ"));
+
+        // Axis captions, same spelling as the 3D view's axis labels.
+        painter.setPen(kMapText);
+        drawWithSubscripts(
+            painter,
+            QRectF(target.left(), plot.bottom() + 14, target.width(), 24),
+            QStringLiteral("k_x (Å⁻¹)"));
+        painter.save();
+        painter.translate(18.0, target.center().y());
+        painter.rotate(-90.0);
+        drawWithSubscripts(painter,
+                           QRectF(-target.height() / 2.0, -12,
+                                  target.height(), 24),
+                           QStringLiteral("k_y (Å⁻¹)"));
+        painter.restore();
+
+        // Colourbar: the ramp with its endpoints named, which is what turns
+        // a pretty picture back into numbers.
+        const QRectF bar(plot.right() + 22.0, target.top(), 16.0,
+                         target.height());
+        const int steps = std::max(2, static_cast<int>(bar.height()));
+        for (int i = 0; i < steps; ++i) {
+            const double t = 1.0 - static_cast<double>(i) / (steps - 1);
+            painter.fillRect(
+                QRectF(bar.left(), bar.top() + i, bar.width(), 1.5),
+                render::ColorMap::sample(gradient_, static_cast<float>(t)));
+        }
+        painter.setPen(QPen(kMapFrame, 1.0));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(bar);
+        const double shownLo = shift_ ? lo_ - data_.efermi : lo_;
+        const double shownHi = shift_ ? hi_ - data_.efermi : hi_;
+        painter.setPen(kMapText);
+        painter.drawText(QRectF(bar.right() + 5, bar.top() - 11, 72, 22),
+                         Qt::AlignLeft | Qt::AlignVCenter,
+                         QString::number(shownHi, 'f', 2));
+        painter.drawText(QRectF(bar.right() + 5, bar.bottom() - 11, 72, 22),
+                         Qt::AlignLeft | Qt::AlignVCenter,
+                         QString::number(shownLo, 'f', 2));
+        painter.save();
+        painter.translate(width() - 10.0, bar.center().y());
+        painter.rotate(-90.0);
+        drawWithSubscripts(painter,
+                           QRectF(-bar.height() / 2.0, -12, bar.height(), 24),
+                           shift_ ? TwoDBandsWindow::tr("E − E_F (eV)")
+                                  : TwoDBandsWindow::tr("E (eV)"));
+        painter.restore();
+    }
+
+private:
+    void rebuildImage()
+    {
+        image_ = QImage();
+        const int bands = data_.bandCount();
+        if (!data_.valid() || band_ < 0 || band_ >= bands
+            || polygon_.size() < 3)
+            return;
+
+        // Colour range over the selected band's own extremes, so the full
+        // ramp is always in use whatever the band's bandwidth is.
+        lo_ = hi_ = data_.energies.front()[static_cast<std::size_t>(band_)];
+        for (const auto& row : data_.energies) {
+            const double e = row[static_cast<std::size_t>(band_)];
+            lo_ = std::min(lo_, e);
+            hi_ = std::max(hi_, e);
+        }
+        const double range = std::max(hi_ - lo_, 1e-12);
+
+        // Fixed resolution rather than the widget's: enough that the zone
+        // boundary stays crisp at typical window sizes and acceptable in the
+        // 3x export, cheap enough (~1 M pixels) to rebuild on a band switch.
+        const double spanX = std::max(boundsMaxX_ - boundsMinX_, 1e-12);
+        const double spanY = std::max(boundsMaxY_ - boundsMinY_, 1e-12);
+        const int imageW = 960;
+        const int imageH = std::clamp(
+            static_cast<int>(std::lround(imageW * spanY / spanX)), 64, 2048);
+        image_ = QImage(imageW, imageH, QImage::Format_ARGB32);
+        image_.fill(Qt::transparent);
+
+        const int n = data_.n;
+        const double det =
+            data_.b1x * data_.b2y - data_.b1y * data_.b2x; // nonzero: valid()
+        const auto energyAt = [&](int i, int j) {
+            const std::size_t k = static_cast<std::size_t>(i)
+                    * static_cast<std::size_t>(n)
+                + static_cast<std::size_t>(j);
+            return data_.energies[k][static_cast<std::size_t>(band_)];
+        };
+
+        for (int py = 0; py < imageH; ++py) {
+            // Direct scanline writes: setPixelColor would construct a QColor
+            // per pixel, and a million of those is the difference between an
+            // instant band switch and a sluggish one.
+            auto* row = reinterpret_cast<QRgb*>(image_.scanLine(py));
+            const double ky =
+                boundsMaxY_ - (py + 0.5) * spanY / imageH;
+            for (int px = 0; px < imageW; ++px) {
+                const double kx =
+                    boundsMinX_ + (px + 0.5) * spanX / imageW;
+                // First-zone test against the Wigner-Seitz half-planes, with
+                // a whisker of tolerance so the boundary itself is painted
+                // rather than left as a one-pixel seam.
+                bool inside = true;
+                for (const auto& plane : planes_) {
+                    if (kx * plane[0] + ky * plane[1]
+                        > plane[2] + 1e-7 * plane[2]) {
+                        inside = false;
+                        break;
+                    }
+                }
+                if (!inside)
+                    continue;
+                // Fold: Cartesian -> fractional along b1/b2, then wrap into
+                // the sampled cell. The wrap is the periodic tiling, and
+                // bilinear interpolation ACROSS the wrap is exact because the
+                // Monkhorst-Pack mesh never duplicates the cell edge.
+                const double fa = (kx * data_.b2y - ky * data_.b2x) / det;
+                const double fb = (data_.b1x * ky - data_.b1y * kx) / det;
+                const double u = (fa - f0a_) / stepA_;
+                const double v = (fb - f0b_) / stepB_;
+                int i0 = static_cast<int>(std::floor(u));
+                int j0 = static_cast<int>(std::floor(v));
+                const double tu = u - i0;
+                const double tv = v - j0;
+                i0 = ((i0 % n) + n) % n;
+                j0 = ((j0 % n) + n) % n;
+                const int i1 = (i0 + 1) % n;
+                const int j1 = (j0 + 1) % n;
+                const double e = (1.0 - tu)
+                        * ((1.0 - tv) * energyAt(i0, j0)
+                           + tv * energyAt(i0, j1))
+                    + tu
+                        * ((1.0 - tv) * energyAt(i1, j0)
+                           + tv * energyAt(i1, j1));
+                row[px] = render::ColorMap::sample(
+                              gradient_,
+                              static_cast<float>((e - lo_) / range))
+                              .rgba();
+            }
+        }
+    }
+
+    Data data_;
+    std::vector<std::array<double, 3>> planes_;
+    std::vector<std::array<double, 2>> polygon_;
+    double boundsMinX_ = 0.0, boundsMaxX_ = 0.0;
+    double boundsMinY_ = 0.0, boundsMaxY_ = 0.0;
+    /// Mesh origin and spacing in fractional coordinates, per axis.
+    double f0a_ = 0.0, f0b_ = 0.0, stepA_ = 0.0, stepB_ = 0.0;
+    int band_ = 0;
+    bool shift_ = true;
+    render::ColorGradient gradient_ = render::ColorGradient::Viridis;
+    double lo_ = 0.0, hi_ = 0.0;
+    QImage image_;
+    bool dirty_ = true;
+};
 
 TwoDBandsWindow::TwoDBandsWindow(QWidget* parent) : QDialog(parent)
 {
@@ -142,7 +702,31 @@ TwoDBandsWindow::TwoDBandsWindow(QWidget* parent) : QDialog(parent)
     summary_->setTextFormat(Qt::RichText);
     layout->addWidget(summary_);
 
-    auto* body = new QHBoxLayout;
+    // Two projections of the same run behind one selector: the orbitable
+    // surfaces (every selected band, dispersion as shape) and the flat map
+    // (one band's energy as colour over the zone's exact geometry). A
+    // selector rather than a split view because each projection wants the
+    // whole canvas.
+    auto* viewRow = new QHBoxLayout;
+    viewRow->addWidget(new QLabel(tr("View:"), this));
+    viewCombo_ = new QComboBox(this);
+    viewCombo_->addItem(tr("Band surfaces (3D)"));
+    viewCombo_->addItem(tr("Brillouin-zone map"));
+    viewCombo_->setToolTip(
+        tr("Band surfaces show every selected band's dispersion as shape; "
+           "the Brillouin-zone map paints one band's energy over the first "
+           "Brillouin zone, folded from the run's sampled reciprocal cell."));
+    connect(viewCombo_, &QComboBox::currentIndexChanged, this,
+            [this](int index) { viewStack_->setCurrentIndex(index); });
+    viewRow->addWidget(viewCombo_);
+    viewRow->addStretch(1);
+    layout->addLayout(viewRow);
+
+    viewStack_ = new QStackedWidget(this);
+
+    auto* surfacePage = new QWidget(viewStack_);
+    auto* body = new QHBoxLayout(surfacePage);
+    body->setContentsMargins(0, 0, 0, 0);
 
     // The band list is a side panel rather than a combo: several surfaces at
     // once IS the plot for a band touching or a Fermi surface, so selecting
@@ -171,7 +755,85 @@ TwoDBandsWindow::TwoDBandsWindow(QWidget* parent) : QDialog(parent)
     // controls (the colour ramp and the solid-colour swatch) on different
     // lines with unrelated ones between them.
     body->addWidget(buildSettingsPanel());
-    layout->addLayout(body, 1);
+    viewStack_->addWidget(surfacePage);
+    viewStack_->addWidget(buildMapPage());
+    layout->addWidget(viewStack_, 1);
+}
+
+QWidget* TwoDBandsWindow::buildMapPage()
+{
+    auto* page = new QWidget(this);
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+
+    mapView_ = new BzMapView(page);
+
+    // One row of controls rather than a side panel: the map has exactly three
+    // knobs, and the zone wants the full width for its geometry to read true.
+    auto* controls = new QHBoxLayout;
+
+    controls->addWidget(new QLabel(tr("Band:"), page));
+    mapBandSpin_ = new QSpinBox(page);
+    mapBandSpin_->setRange(0, 0);
+    mapBandSpin_->setToolTip(
+        tr("Which band the map colours, by index into the run's own energy "
+           "ordering at each k-point (a spin-polarized run's two channels "
+           "are merged and sorted).\n\n"
+           "Opens on the band nearest the Fermi level — a metal's crossing "
+           "band, an insulator's gap edge."));
+    connect(mapBandSpin_, &QSpinBox::valueChanged, this,
+            [this](int band) { mapView_->setBand(band); });
+    controls->addWidget(mapBandSpin_);
+
+    QCheckBox* shift = nullptr;
+    QWidget* shiftRow = richTextCheckBox(tr("E − E<sub>F</sub>"), shift, page);
+    mapShiftFermiCheck_ = shift;
+    mapShiftFermiCheck_->setChecked(true);
+    shiftRow->setToolTip(
+        tr("Label the colour scale relative to the Fermi level. The picture "
+           "is unchanged — the ramp always spans the selected band's full "
+           "range."));
+    connect(mapShiftFermiCheck_, &QCheckBox::toggled, this,
+            [this](bool on) { mapView_->setShiftFermi(on); });
+    controls->addWidget(shiftRow);
+
+    controls->addWidget(new QLabel(tr("Colormap:"), page));
+    mapGradientCombo_ = new QComboBox(page);
+    // The effective-bands heatmap's shortlist, for the same reason it is
+    // short there: these five cover the sequential, diverging and
+    // colour-blind-safe cases without burying the choice in near-duplicates.
+    mapGradientCombo_->addItem(
+        tr("Viridis"), static_cast<int>(render::ColorGradient::Viridis));
+    mapGradientCombo_->addItem(
+        tr("Plasma"), static_cast<int>(render::ColorGradient::Plasma));
+    mapGradientCombo_->addItem(
+        tr("Coolwarm"), static_cast<int>(render::ColorGradient::Coolwarm));
+    mapGradientCombo_->addItem(
+        tr("Inferno"), static_cast<int>(render::ColorGradient::Inferno));
+    mapGradientCombo_->addItem(
+        tr("Cividis"), static_cast<int>(render::ColorGradient::Cividis));
+    connect(mapGradientCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        mapView_->setGradient(static_cast<render::ColorGradient>(
+            mapGradientCombo_->currentData().toInt()));
+    });
+    controls->addWidget(mapGradientCombo_);
+    controls->addStretch(1);
+
+    auto* exportImageButton = new QPushButton(tr("Export Image…"), page);
+    connect(exportImageButton, &QPushButton::clicked, this,
+            [this] { mapView_->exportImage(this); });
+    controls->addWidget(exportImageButton);
+    auto* exportCsvButton = new QPushButton(tr("Export CSV…"), page);
+    exportCsvButton->setToolTip(
+        tr("The sampled mesh, one row per k-point of the selected band — the "
+           "computed numbers, not the folded pixels."));
+    connect(exportCsvButton, &QPushButton::clicked, this,
+            [this] { mapView_->exportCsv(this); });
+    controls->addWidget(exportCsvButton);
+    layout->addLayout(controls);
+
+    layout->addWidget(mapView_, 1);
+    return page;
 }
 
 QWidget* TwoDBandsWindow::buildSettingsPanel()
@@ -552,14 +1214,71 @@ bool TwoDBandsWindow::loadResults(const QString& jsonPath)
             std::clamp(kExtent_ / span, 0.01, 100.0));
     }
 
+    // --- Optional Brillouin-zone map ---------------------------------------
+    // Only runs whose wizard asked for it carry a "bz_map"; an older
+    // bands_2d.json simply parses to an invalid Data here, which is the one
+    // signal everything below keys off — no schema version, no second flag.
+    BzMapView::Data map;
+    const QJsonObject mapObject =
+        root.value(QStringLiteral("bz_map")).toObject();
+    if (!mapObject.isEmpty()) {
+        map.n = mapObject.value(QStringLiteral("n")).toInt();
+        for (const QJsonValue& value :
+             mapObject.value(QStringLiteral("kpts_frac")).toArray()) {
+            const QJsonArray pair = value.toArray();
+            map.kptsFrac.push_back(
+                {pair.at(0).toDouble(), pair.at(1).toDouble()});
+        }
+        map.energies =
+            readGrid(mapObject.value(QStringLiteral("energies_eV")).toArray());
+        map.efermi = mapObject.value(QStringLiteral("efermi_eV")).toDouble();
+        const auto rows = readGrid(
+            mapObject.value(QStringLiteral("reciprocal_A_inv")).toArray());
+        if (rows.size() >= 2 && rows[0].size() >= 2 && rows[1].size() >= 2) {
+            map.b1x = rows[0][0];
+            map.b1y = rows[0][1];
+            map.b2x = rows[1][0];
+            map.b2y = rows[1][1];
+        }
+    }
+    mapView_->setData(std::move(map));
+    const bool hasMap = mapView_->hasData();
+
+    // Without a map the selector's entry is greyed rather than removed: a
+    // vanished option looks like a regression, a greyed one is an instruction
+    // — and the instruction is its tooltip.
+    if (auto* model = qobject_cast<QStandardItemModel*>(viewCombo_->model())) {
+        if (QStandardItem* item = model->item(1)) {
+            item->setEnabled(hasMap);
+            item->setToolTip(
+                hasMap ? QString()
+                       : tr("This run carries no Brillouin-zone map. Re-run "
+                            "2D Bands with \"Also sample the full first "
+                            "Brillouin zone\" enabled."));
+        }
+    }
+    if (!hasMap && viewCombo_->currentIndex() != 0)
+        viewCombo_->setCurrentIndex(0);
+    {
+        // Blocked: setRange/setValue would otherwise push setBand at the view
+        // that just chose this exact default for itself.
+        const QSignalBlocker blocker(mapBandSpin_);
+        mapBandSpin_->setRange(0, std::max(0, mapView_->bandCount() - 1));
+        mapBandSpin_->setValue(mapView_->band());
+    }
+    mapBandSpin_->setEnabled(hasMap);
+
     summary_->setText(
         tr("<b>%1</b> band surface(s) on a %2 × %2 grid over the 2D Brillouin "
-           "zone · E<sub>F</sub> = %3 eV%4")
+           "zone · E<sub>F</sub> = %3 eV%4%5")
             .arg(surfaces_.size())
             .arg(samples_)
             .arg(fermiEv_, 0, 'f', 4)
             .arg(spinOrbit_ ? tr(" · spin-orbit coupling included")
-                            : QString()));
+                            : QString())
+            .arg(hasMap ? tr(" · Brillouin-zone map (%1 × %1 mesh)")
+                              .arg(mapView_->meshSamples())
+                        : QString()));
 
     populateBandList();
     rebuild();
@@ -623,90 +1342,17 @@ void TwoDBandsWindow::populateBandList()
 
 std::vector<std::array<double, 3>> TwoDBandsWindow::brillouinHalfPlanes() const
 {
-    // The Wigner-Seitz cell of the reciprocal lattice: k is inside when it is
-    // no further from Γ than from any other reciprocal-lattice point G, i.e.
-    // |k| <= |k - G|, which reduces to k·Ĝ <= |G|/2. Neighbours out to two
-    // cells in each direction are more than enough — in 2D the cell is bounded
-    // by the first or second shell for every Bravais lattice.
-    std::vector<std::array<double, 3>> planes;
-    const double b1x = reciprocal_[0][0], b1y = reciprocal_[0][1];
-    const double b2x = reciprocal_[1][0], b2y = reciprocal_[1][1];
-    if (std::hypot(b1x, b1y) < 1e-9 || std::hypot(b2x, b2y) < 1e-9)
-        return planes;
-    for (int i = -2; i <= 2; ++i) {
-        for (int j = -2; j <= 2; ++j) {
-            if (i == 0 && j == 0)
-                continue;
-            const double gx = i * b1x + j * b2x;
-            const double gy = i * b1y + j * b2y;
-            const double length = std::hypot(gx, gy);
-            if (length < 1e-9)
-                continue;
-            planes.push_back({gx / length, gy / length, 0.5 * length});
-        }
-    }
-    return planes;
+    // Delegates to the construction shared with the map view (the free
+    // functions above): the surfaces build the zone from the file's
+    // reciprocal_2pi_per_A rows, the map from its own bz_map copy, and one
+    // derivation serving both is what keeps the two outlines congruent.
+    return zoneHalfPlanes(reciprocal_[0][0], reciprocal_[0][1],
+                          reciprocal_[1][0], reciprocal_[1][1]);
 }
 
 std::vector<std::array<double, 2>> TwoDBandsWindow::brillouinPolygon() const
 {
-    const auto planes = brillouinHalfPlanes();
-    if (planes.size() < 3)
-        return {};
-    // Intersect a generous starting square with every half-plane; what
-    // survives IS the zone. Cheaper and far less error-prone than enumerating
-    // vertex candidates from plane pairs and filtering them.
-    double reach = 0.0;
-    for (const auto& p : planes)
-        reach = std::max(reach, p[2]);
-    reach *= 2.5;
-    std::vector<QVector3D> polygon = {
-        {static_cast<float>(-reach), static_cast<float>(-reach), 0.0f},
-        {static_cast<float>(reach), static_cast<float>(-reach), 0.0f},
-        {static_cast<float>(reach), static_cast<float>(reach), 0.0f},
-        {static_cast<float>(-reach), static_cast<float>(reach), 0.0f}};
-    for (const auto& plane : planes) {
-        polygon = clipHalfPlane(polygon, plane[0], plane[1], plane[2]);
-        if (polygon.size() < 3)
-            return {};
-    }
-    // Drop duplicate and collinear vertices. For a square lattice the four
-    // diagonal half-planes pass exactly through the corners, so the clipper
-    // emits each corner twice with a zero-length edge between — which would
-    // draw as a degenerate segment and makes the vertex count lie about the
-    // shape (an 8-gon that is really a square).
-    std::vector<std::array<double, 2>> out;
-    out.reserve(polygon.size());
-    for (const QVector3D& v : polygon) {
-        const std::array<double, 2> point{v.x(), v.y()};
-        if (!out.empty()
-            && std::hypot(point[0] - out.back()[0], point[1] - out.back()[1])
-                < 1e-9)
-            continue;
-        out.push_back(point);
-    }
-    while (out.size() > 1
-           && std::hypot(out.front()[0] - out.back()[0],
-                         out.front()[1] - out.back()[1])
-               < 1e-9)
-        out.pop_back();
-    if (out.size() < 3)
-        return {};
-    std::vector<std::array<double, 2>> simplified;
-    simplified.reserve(out.size());
-    for (std::size_t i = 0; i < out.size(); ++i) {
-        const auto& prev = out[(i + out.size() - 1) % out.size()];
-        const auto& here = out[i];
-        const auto& next = out[(i + 1) % out.size()];
-        const double cross = (here[0] - prev[0]) * (next[1] - prev[1])
-            - (here[1] - prev[1]) * (next[0] - prev[0]);
-        // Scaled tolerance: the zone's own size sets what "collinear" means,
-        // and these coordinates are inverse ångström of order 1.
-        const double span = std::hypot(next[0] - prev[0], next[1] - prev[1]);
-        if (std::abs(cross) > 1e-9 * std::max(span, 1e-9))
-            simplified.push_back(here);
-    }
-    return simplified.size() >= 3 ? simplified : out;
+    return zonePolygon(brillouinHalfPlanes());
 }
 
 bool TwoDBandsWindow::refine(const std::vector<std::vector<double>>& energies,

@@ -89,6 +89,11 @@ private:
     QSpinBox* aboveSpin_ = nullptr;
     QSpinBox* totalBandsSpin_ = nullptr;
     QCheckBox* spinOrbitCheck_ = nullptr;
+    /// Opt-in second sampling: the flat first-Brillouin-zone map. The N spin
+    /// is only meaningful while the check box is on, and is disabled
+    /// otherwise so the dependency is visible rather than remembered.
+    QCheckBox* bzMapCheck_ = nullptr;
+    QSpinBox* bzMapSamplesSpin_ = nullptr;
     QLabel* dimensionalityNote_ = nullptr;
     QLabel* costNote_ = nullptr;
 };

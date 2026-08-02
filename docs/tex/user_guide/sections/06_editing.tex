@@ -65,12 +65,20 @@ scalar array gives one column; a vector array gives three, suffixed $x$, $y$,
 $z$. Columns appear and disappear with the data, so a plain \file{.xyz} opens
 with none and an MD frame opens with several.
 
-These columns are \textbf{read-only}, and deliberately: they are results. A
-charge came out of a Bader partitioning, a velocity out of an integrator.
-Typing over them in a geometry editor would leave a frame whose arrays no
-longer correspond to anything that was computed, and the file would carry no
-sign of it. The magnetic moments remain editable, through the spin-mode
-columns, because those are an \emph{input}.
+Most of these columns are \textbf{read-only}, and deliberately: they are
+results. A charge came out of a Bader partitioning; typing over it in a
+geometry editor would leave a frame whose arrays no longer correspond to
+anything that was computed, and the file would carry no sign of it.
+
+Velocities and forces are the two exceptions, editable like the coordinates,
+because both are legitimately an \emph{input} as well as a result: hand-set
+velocities are the initial conditions of a molecular-dynamics run, and
+hand-set forces are a way to assemble force-field training frames or to
+exercise a force-arrow viewer. Edits write into the structure's own arrays,
+so a save to extended XYZ carries them (velocities through ASE's momenta),
+and a derived $|\mathrm{forces}|$ magnitude column follows the edit rather
+than going stale. The magnetic moments likewise remain editable, through the
+spin-mode columns.
 
 \subsection{Sorting}
 

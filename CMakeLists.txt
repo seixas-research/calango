@@ -176,6 +176,8 @@ qt_add_executable(calango
     src/core/TopologyScriptGenerator.cpp
     src/core/TwoDBandsScriptGenerator.hpp
     src/core/TwoDBandsScriptGenerator.cpp
+    src/core/WorkfunctionScriptGenerator.hpp
+    src/core/WorkfunctionScriptGenerator.cpp
     src/core/WannierScriptGenerator.cpp
     src/core/AdsorptionSites.hpp
     src/core/AdsorptionSites.cpp
@@ -495,8 +497,8 @@ qt_add_executable(calango
     src/gui/KpointsConvergenceWizard.cpp
     src/gui/ConvergenceResultsWindow.hpp
     src/gui/ConvergenceResultsWindow.cpp
-    src/gui/WorkflowWindow.hpp
-    src/gui/WorkflowWindow.cpp
+    src/gui/OrchestrationWindow.hpp
+    src/gui/OrchestrationWindow.cpp
     src/gui/RandomNoiseWizard.hpp
     src/gui/RandomNoiseWizard.cpp
     src/gui/RandomNoiseViewer.hpp
@@ -527,6 +529,10 @@ qt_add_executable(calango
     src/gui/NonlinearOpticsResultsWindow.cpp
     src/gui/GwResultsWindow.hpp
     src/gui/GwResultsWindow.cpp
+    src/gui/WorkfunctionWizard.hpp
+    src/gui/WorkfunctionWizard.cpp
+    src/gui/WorkfunctionWindow.hpp
+    src/gui/WorkfunctionWindow.cpp
     src/gui/HubbardParametersDialog.hpp
     src/gui/HubbardParametersDialog.cpp
     src/gui/GeometryConstraintsDialog.hpp
@@ -543,6 +549,8 @@ qt_add_executable(calango
     src/gui/PointOfViewDialog.cpp
     src/gui/CastSetupDialog.hpp
     src/gui/CastSetupDialog.cpp
+    src/gui/CastColorsDialog.hpp
+    src/gui/CastColorsDialog.cpp
     src/gui/AddAdsorbateDialog.hpp
     src/gui/AddAdsorbateDialog.cpp
     src/gui/GrapheneOxideWizard.hpp
@@ -617,6 +625,7 @@ qt_add_resources(calango "branding"
         assets/calango/logo.png
         assets/calango/logo_dark.png
         assets/calango/logo_light.png
+        assets/acknowledgements/inct_materials_informatics.png
 )
 
 # RemixIcon UI icons (monochrome SVG, runtime-tinted by calango::ui::IconManager
@@ -1315,6 +1324,14 @@ if(CALANGO_BUILD_TESTS)
         src/core/DislocationBuilder.cpp
         src/gui/SolidInterfaceWizard.cpp
         src/core/SolidInterfaceBuilder.cpp
+        # The Structure editor dialog: its atom table mixes editable geometry
+        # with the structure's extended arrays, and the contract — velocities
+        # and forces editable and writing through to the vector fields,
+        # everything else read-only, edits surviving a sort — is pinned by the
+        # dialog test. Brings the periodic-table picker it opens; AseBridge is
+        # already here for the magnetic-space-group dialog.
+        src/gui/StructureEditorDialog.cpp
+        src/gui/PeriodicTableDialog.cpp
         src/python_bridge/AseBridge.cpp
         src/core/PdbxFile.cpp
         # The "Source MLWF process" step and two of the three dialogs that
@@ -1380,9 +1397,9 @@ if(CALANGO_BUILD_TESTS)
     # real, with Lennard-Jones so the ASE runs finish in seconds. Pins the
     # Waiting/Running/Done lifecycle and that the relaxed structure flows
     # along the link into the phonon node. Self-skips without ASE.
-    qt_add_executable(calango_workflow_si_test
-        tests/WorkflowSiTest.cpp
-        src/gui/WorkflowWindow.cpp
+    qt_add_executable(calango_orchestration_si_test
+        tests/OrchestrationSiTest.cpp
+        src/gui/OrchestrationWindow.cpp
         src/gui/SimulationWizardBase.cpp
         src/gui/SinglePointWizard.cpp
         src/gui/GeometryOptimizationWizard.cpp
@@ -1423,33 +1440,33 @@ if(CALANGO_BUILD_TESTS)
         src/python_bridge/PythonEngine.cpp
         src/jobs/JobRunner.cpp
     )
-    target_include_directories(calango_workflow_si_test PRIVATE src
+    target_include_directories(calango_orchestration_si_test PRIVATE src
         "${CMAKE_CURRENT_BINARY_DIR}/generated")
-    target_compile_definitions(calango_workflow_si_test PRIVATE
+    target_compile_definitions(calango_orchestration_si_test PRIVATE
         CALANGO_VERSION="${PROJECT_VERSION}"
         # Without this the embedded engine cannot name its interpreter and
         # the test's job-launching python resolves to nonsense.
         CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}"
         QT_NO_KEYWORDS)
-    target_link_libraries(calango_workflow_si_test
+    target_link_libraries(calango_orchestration_si_test
         PRIVATE Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg pybind11::embed)
     if(APPLE)
-        target_link_libraries(calango_workflow_si_test
+        target_link_libraries(calango_orchestration_si_test
             PRIVATE "-framework OpenGL")
     else()
-        target_link_libraries(calango_workflow_si_test PRIVATE OpenGL::GL)
+        target_link_libraries(calango_orchestration_si_test PRIVATE OpenGL::GL)
     endif()
-    add_test(NAME workflow_si_pipeline COMMAND calango_workflow_si_test)
-    set_tests_properties(workflow_si_pipeline PROPERTIES TIMEOUT 900)
+    add_test(NAME orchestration_si_pipeline COMMAND calango_orchestration_si_test)
+    set_tests_properties(orchestration_si_pipeline PROPERTIES TIMEOUT 900)
 
     # Workflow data handoff: the same two Geometry Optimization nodes run
     # unlinked (both relax the rattled structure independently, full step
     # count each) and linked (the child inherits the parent's relaxed
     # geometry and converges in <= 1 step). EMT copper for speed; self-skips
     # without ASE.
-    qt_add_executable(calango_workflow_handoff_test
-        tests/WorkflowHandoffTest.cpp
-        src/gui/WorkflowWindow.cpp
+    qt_add_executable(calango_orchestration_handoff_test
+        tests/OrchestrationHandoffTest.cpp
+        src/gui/OrchestrationWindow.cpp
         src/gui/SimulationWizardBase.cpp
         src/gui/SinglePointWizard.cpp
         src/gui/GeometryOptimizationWizard.cpp
@@ -1490,22 +1507,22 @@ if(CALANGO_BUILD_TESTS)
         src/python_bridge/PythonEngine.cpp
         src/jobs/JobRunner.cpp
     )
-    target_include_directories(calango_workflow_handoff_test PRIVATE src
+    target_include_directories(calango_orchestration_handoff_test PRIVATE src
         "${CMAKE_CURRENT_BINARY_DIR}/generated")
-    target_compile_definitions(calango_workflow_handoff_test PRIVATE
+    target_compile_definitions(calango_orchestration_handoff_test PRIVATE
         CALANGO_VERSION="${PROJECT_VERSION}"
         CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}"
         QT_NO_KEYWORDS)
-    target_link_libraries(calango_workflow_handoff_test
+    target_link_libraries(calango_orchestration_handoff_test
         PRIVATE Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg pybind11::embed)
     if(APPLE)
-        target_link_libraries(calango_workflow_handoff_test
+        target_link_libraries(calango_orchestration_handoff_test
             PRIVATE "-framework OpenGL")
     else()
-        target_link_libraries(calango_workflow_handoff_test PRIVATE OpenGL::GL)
+        target_link_libraries(calango_orchestration_handoff_test PRIVATE OpenGL::GL)
     endif()
-    add_test(NAME workflow_handoff COMMAND calango_workflow_handoff_test)
-    set_tests_properties(workflow_handoff PROPERTIES TIMEOUT 900)
+    add_test(NAME orchestration_handoff COMMAND calango_orchestration_handoff_test)
+    set_tests_properties(orchestration_handoff PROPERTIES TIMEOUT 900)
 
     # Theme-adaptive icons: that a Light-mode glyph is dark (the white-on-white
     # bug) and that a bound icon is re-tinted when the theme changes. Checks
@@ -1717,6 +1734,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/XasScriptGenerator.cpp
         src/core/UnfoldingScriptGenerator.cpp
         src/core/TwoDBandsScriptGenerator.cpp
+        src/core/WorkfunctionScriptGenerator.cpp
         src/core/WannierScriptGenerator.cpp
         src/core/DefectScriptGenerator.cpp
         src/core/FermiSurfaceScriptGenerator.cpp

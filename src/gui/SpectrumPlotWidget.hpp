@@ -57,6 +57,18 @@ public:
         update();
     }
 
+    /// Dashed horizontal reference lines — (label, y) pairs such as a Fermi
+    /// level or a vacuum level. Annotations of the y axis rather than curves
+    /// over x, so they are drawn dashed and labelled on the line itself, not
+    /// in the legend. Included in the vertical autoscale, or a level just
+    /// outside the curves' own range would silently be invisible. Empty by
+    /// default: existing callers draw exactly what they always did.
+    void setReferenceLines(const std::vector<QPair<QString, double>>& lines)
+    {
+        referenceLines_ = lines;
+        update();
+    }
+
     /// Draw the chart into `painter` filling a logical area of `size`. Returns
     /// false (after drawing a placeholder) when there is nothing to plot.
     bool renderTo(QPainter& painter, QSize size) const;
@@ -82,6 +94,7 @@ private:
 
     std::vector<double> x_;
     std::vector<QPair<QString, std::vector<double>>> series_;
+    std::vector<QPair<QString, double>> referenceLines_;
     QString xLabel_;
     QString yLabel_;
     OpticsPlotStyle style_;

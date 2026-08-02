@@ -1,4 +1,4 @@
-#include "gui/WorkflowWindow.hpp"
+#include "gui/OrchestrationWindow.hpp"
 
 #include "core/AseScriptGenerator.hpp"
 #include "core/PhononScriptGenerator.hpp"
@@ -50,7 +50,7 @@ constexpr double kPortRadius = 7.0;
 //
 // The canvas is dark REGARDLESS of the application theme, like every other
 // data canvas in Calango (the metric plots, the convergence curves, the Random
-// Noise histograms all fill this same 28/30/34). The Workflow dock sits
+// Noise histograms all fill this same 28/30/34). The Orchestration dock sits
 // immediately beside Results in the bottom row, so anything else would put two
 // differently-lit canvases side by side; and a diagram of light nodes on a
 // dark field is the convention every node editor uses, because it is the node
@@ -70,70 +70,70 @@ const QColor kEdgeColor(150, 156, 166);
 /// canvas while the gesture is live — it is a preview the user is steering.
 const QColor kPendingLinkColor(0x66, 0x99, 0xff);
 
-QString taskDisplayName(WorkflowTask task)
+QString taskDisplayName(OrchestrationTask task)
 {
     switch (task) {
-    case WorkflowTask::GeometryOptimization:
+    case OrchestrationTask::GeometryOptimization:
         return QObject::tr("Geometry Optimization");
-    case WorkflowTask::MolecularDynamics:
+    case OrchestrationTask::MolecularDynamics:
         return QObject::tr("Molecular Dynamics");
-    case WorkflowTask::Phonon:
+    case OrchestrationTask::Phonon:
         return QObject::tr("Phonon");
-    case WorkflowTask::SinglePoint:
+    case OrchestrationTask::SinglePoint:
         break;
     }
     return QObject::tr("Single-Point Calculation");
 }
 
 /// Directory-name slug for a task ("node_2_phonon").
-QString taskSlug(WorkflowTask task)
+QString taskSlug(OrchestrationTask task)
 {
     switch (task) {
-    case WorkflowTask::GeometryOptimization:
+    case OrchestrationTask::GeometryOptimization:
         return QStringLiteral("geometry_optimization");
-    case WorkflowTask::MolecularDynamics:
+    case OrchestrationTask::MolecularDynamics:
         return QStringLiteral("molecular_dynamics");
-    case WorkflowTask::Phonon:
+    case OrchestrationTask::Phonon:
         return QStringLiteral("phonon");
-    case WorkflowTask::SinglePoint:
+    case OrchestrationTask::SinglePoint:
         break;
     }
     return QStringLiteral("single_point");
 }
 
-QColor statusColor(WorkflowNodeItem::Status status)
+QColor statusColor(OrchestrationNodeItem::Status status)
 {
     switch (status) {
-    case WorkflowNodeItem::Status::Waiting:
+    case OrchestrationNodeItem::Status::Waiting:
         return QColor(0x8e, 0x6f, 0xc9); // queued: distinct from idle blue
-    case WorkflowNodeItem::Status::Running:
+    case OrchestrationNodeItem::Status::Running:
         return QColor(0xff, 0x9e, 0x1a);
-    case WorkflowNodeItem::Status::Done:
+    case OrchestrationNodeItem::Status::Done:
         return QColor(0x2c, 0xa0, 0x2c);
-    case WorkflowNodeItem::Status::Failed:
+    case OrchestrationNodeItem::Status::Failed:
         return QColor(0xd6, 0x27, 0x28);
-    case WorkflowNodeItem::Status::Skipped:
+    case OrchestrationNodeItem::Status::Skipped:
         return QColor(0x8a, 0x8a, 0x8a);
-    case WorkflowNodeItem::Status::Pending:
+    case OrchestrationNodeItem::Status::Pending:
         break;
     }
     return QColor(0x66, 0x99, 0xff);
 }
 
-QString statusText(WorkflowNodeItem::Status status)
+QString statusText(OrchestrationNodeItem::Status status)
 {
     switch (status) {
-    case WorkflowNodeItem::Status::Waiting:
+    case OrchestrationNodeItem::Status::Waiting:
         return QObject::tr("waiting");
-    case WorkflowNodeItem::Status::Running:
+    case OrchestrationNodeItem::Status::Running:
         return QObject::tr("running");
-    case WorkflowNodeItem::Status::Done:
+    case OrchestrationNodeItem::Status::Done:
         return QObject::tr("done");
-    case WorkflowNodeItem::Status::Failed:
+    case OrchestrationNodeItem::Status::Failed:
         return QObject::tr("failed");
-    case WorkflowNodeItem::Status::Skipped:
+    case OrchestrationNodeItem::Status::Skipped:
         return QObject::tr("skipped");
-    case WorkflowNodeItem::Status::Pending:
+    case OrchestrationNodeItem::Status::Pending:
         break;
     }
     return QObject::tr("pending");
@@ -141,9 +141,9 @@ QString statusText(WorkflowNodeItem::Status status)
 
 /// The canvas: wheel zooms about the cursor, middle-drag pans, left-drag
 /// moves nodes (or rubber-band selects on empty space).
-class WorkflowView : public QGraphicsView {
+class OrchestrationView : public QGraphicsView {
 public:
-    explicit WorkflowView(QGraphicsScene* scene, QWidget* parent = nullptr)
+    explicit OrchestrationView(QGraphicsScene* scene, QWidget* parent = nullptr)
         : QGraphicsView(scene, parent)
     {
         setRenderHint(QPainter::Antialiasing, true);
@@ -229,11 +229,11 @@ private:
 } // namespace
 
 // ---------------------------------------------------------------------------
-// WorkflowNodeItem
+// OrchestrationNodeItem
 // ---------------------------------------------------------------------------
 
-WorkflowNodeItem::WorkflowNodeItem(
-    int id, const QString& title, WorkflowTask task,
+OrchestrationNodeItem::OrchestrationNodeItem(
+    int id, const QString& title, OrchestrationTask task,
     const QString& materialName,
     std::shared_ptr<const core::Structure> structure,
     core::CalculatorKind engine)
@@ -257,7 +257,7 @@ WorkflowNodeItem::WorkflowNodeItem(
                         EnginePresets::displayName(engine_)));
 }
 
-void WorkflowNodeItem::setConfiguration(const QString& script,
+void OrchestrationNodeItem::setConfiguration(const QString& script,
                                         const QString& python,
                                         const QString& runCommand,
                                         core::CalculatorKind engine)
@@ -269,23 +269,23 @@ void WorkflowNodeItem::setConfiguration(const QString& script,
     update(); // the calculator line may have changed
 }
 
-void WorkflowNodeItem::setStatus(Status status)
+void OrchestrationNodeItem::setStatus(Status status)
 {
     status_ = status;
     update();
 }
 
-QPointF WorkflowNodeItem::inputPortScenePos() const
+QPointF OrchestrationNodeItem::inputPortScenePos() const
 {
     return mapToScene(QPointF(0.0, kNodeHeight / 2.0));
 }
 
-QPointF WorkflowNodeItem::outputPortScenePos() const
+QPointF OrchestrationNodeItem::outputPortScenePos() const
 {
     return mapToScene(QPointF(kNodeWidth, kNodeHeight / 2.0));
 }
 
-bool WorkflowNodeItem::hitsOutputPort(const QPointF& scenePos) const
+bool OrchestrationNodeItem::hitsOutputPort(const QPointF& scenePos) const
 {
     // A generous grab zone: the port is 7 px on screen and a link gesture
     // that misses by two pixels should still start.
@@ -293,13 +293,13 @@ bool WorkflowNodeItem::hitsOutputPort(const QPointF& scenePos) const
         <= kPortRadius * 2.0;
 }
 
-void WorkflowNodeItem::unregisterEdge(WorkflowEdgeItem* edge)
+void OrchestrationNodeItem::unregisterEdge(OrchestrationEdgeItem* edge)
 {
     edges_.erase(std::remove(edges_.begin(), edges_.end(), edge),
                  edges_.end());
 }
 
-QRectF WorkflowNodeItem::boundingRect() const
+QRectF OrchestrationNodeItem::boundingRect() const
 {
     // The ports stick kPortRadius past the rect's left/right edges (plus
     // their outline), and the selection pen is 2 px. QGraphicsRectItem's own
@@ -310,16 +310,16 @@ QRectF WorkflowNodeItem::boundingRect() const
     return rect().adjusted(-margin, -margin, margin, margin);
 }
 
-QVariant WorkflowNodeItem::itemChange(GraphicsItemChange change,
+QVariant OrchestrationNodeItem::itemChange(GraphicsItemChange change,
                                       const QVariant& value)
 {
     if (change == ItemScenePositionHasChanged)
-        for (WorkflowEdgeItem* edge : edges_)
+        for (OrchestrationEdgeItem* edge : edges_)
             edge->updatePath();
     return QGraphicsRectItem::itemChange(change, value);
 }
 
-void WorkflowNodeItem::paint(QPainter* painter,
+void OrchestrationNodeItem::paint(QPainter* painter,
                              const QStyleOptionGraphicsItem*, QWidget*)
 {
     const QRectF box = rect();
@@ -375,11 +375,11 @@ void WorkflowNodeItem::paint(QPainter* painter,
 }
 
 // ---------------------------------------------------------------------------
-// WorkflowEdgeItem
+// OrchestrationEdgeItem
 // ---------------------------------------------------------------------------
 
-WorkflowEdgeItem::WorkflowEdgeItem(WorkflowNodeItem* from,
-                                   WorkflowNodeItem* to)
+OrchestrationEdgeItem::OrchestrationEdgeItem(OrchestrationNodeItem* from,
+                                   OrchestrationNodeItem* to)
     : from_(from)
     , to_(to)
 {
@@ -390,7 +390,7 @@ WorkflowEdgeItem::WorkflowEdgeItem(WorkflowNodeItem* from,
     updatePath();
 }
 
-void WorkflowEdgeItem::updatePath()
+void OrchestrationEdgeItem::updatePath()
 {
     const QPointF a = from_->outputPortScenePos();
     const QPointF b = to_->inputPortScenePos();
@@ -403,20 +403,20 @@ void WorkflowEdgeItem::updatePath()
 }
 
 // ---------------------------------------------------------------------------
-// WorkflowScene — the link-drawing gesture
+// OrchestrationScene — the link-drawing gesture
 // ---------------------------------------------------------------------------
 
-WorkflowNodeItem* WorkflowScene::nodeAt(const QPointF& scenePos) const
+OrchestrationNodeItem* OrchestrationScene::nodeAt(const QPointF& scenePos) const
 {
     // dynamic_cast, not qgraphicsitem_cast: the nodes define no custom
     // type() id, and the item-cast would happily match ANY rect item.
     for (QGraphicsItem* item : items(scenePos))
-        if (auto* node = dynamic_cast<WorkflowNodeItem*>(item))
+        if (auto* node = dynamic_cast<OrchestrationNodeItem*>(item))
             return node;
     return nullptr;
 }
 
-void WorkflowScene::mousePressEvent(QGraphicsSceneMouseEvent* event)
+void OrchestrationScene::mousePressEvent(QGraphicsSceneMouseEvent* event)
 {
     if (event->button() == Qt::LeftButton) {
         // Search a little around the cursor: the port sticks out of the
@@ -424,7 +424,7 @@ void WorkflowScene::mousePressEvent(QGraphicsSceneMouseEvent* event)
         for (QGraphicsItem* item : items(
                  QRectF(event->scenePos() - QPointF(10, 10), QSizeF(20, 20)),
                  Qt::IntersectsItemBoundingRect)) {
-            auto* node = dynamic_cast<WorkflowNodeItem*>(item);
+            auto* node = dynamic_cast<OrchestrationNodeItem*>(item);
             if (node && node->hitsOutputPort(event->scenePos())) {
                 pendingFrom_ = node;
                 pendingPreview_ = addPath(
@@ -438,7 +438,7 @@ void WorkflowScene::mousePressEvent(QGraphicsSceneMouseEvent* event)
     QGraphicsScene::mousePressEvent(event);
 }
 
-void WorkflowScene::mouseMoveEvent(QGraphicsSceneMouseEvent* event)
+void OrchestrationScene::mouseMoveEvent(QGraphicsSceneMouseEvent* event)
 {
     if (pendingFrom_ && pendingPreview_) {
         const QPointF a = pendingFrom_->outputPortScenePos();
@@ -453,9 +453,9 @@ void WorkflowScene::mouseMoveEvent(QGraphicsSceneMouseEvent* event)
     QGraphicsScene::mouseMoveEvent(event);
 }
 
-void WorkflowScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent* event)
+void OrchestrationScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent* event)
 {
-    if (WorkflowNodeItem* node = nodeAt(event->scenePos())) {
+    if (OrchestrationNodeItem* node = nodeAt(event->scenePos())) {
         Q_EMIT nodeActivated(node);
         event->accept();
         return;
@@ -470,11 +470,11 @@ void WorkflowScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent* event)
     QGraphicsScene::mouseDoubleClickEvent(event);
 }
 
-void WorkflowScene::mouseReleaseEvent(QGraphicsSceneMouseEvent* event)
+void OrchestrationScene::mouseReleaseEvent(QGraphicsSceneMouseEvent* event)
 {
     if (pendingFrom_) {
-        WorkflowNodeItem* target = nodeAt(event->scenePos());
-        WorkflowNodeItem* from = pendingFrom_;
+        OrchestrationNodeItem* target = nodeAt(event->scenePos());
+        OrchestrationNodeItem* from = pendingFrom_;
         removeItem(pendingPreview_);
         delete pendingPreview_;
         pendingPreview_ = nullptr;
@@ -488,10 +488,10 @@ void WorkflowScene::mouseReleaseEvent(QGraphicsSceneMouseEvent* event)
 }
 
 // ---------------------------------------------------------------------------
-// WorkflowWindow
+// OrchestrationWindow
 // ---------------------------------------------------------------------------
 
-WorkflowWindow::WorkflowWindow(
+OrchestrationWindow::OrchestrationWindow(
     const QList<QPair<QString, std::shared_ptr<const core::Structure>>>&
         materials,
     std::function<QString(core::CalculatorKind)> pythonResolver,
@@ -501,7 +501,7 @@ WorkflowWindow::WorkflowWindow(
     , pythonResolver_(std::move(pythonResolver))
     , processPanel_(processPanel)
 {
-    setWindowTitle(tr("Workflow"));
+    setWindowTitle(tr("Orchestration"));
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(4, 4, 4, 4);
@@ -512,15 +512,15 @@ WorkflowWindow::WorkflowWindow(
     // that is ~250 px tall — and every pixel it took came out of the canvas,
     // which is the panel. The same text is the canvas's tool tip, so it is
     // still one hover away on the day it is wanted.
-    scene_ = new WorkflowScene(this);
+    scene_ = new OrchestrationScene(this);
     scene_->setSceneRect(-2000, -2000, 4000, 4000);
-    connect(scene_, &WorkflowScene::connectionRequested, this,
-            &WorkflowWindow::connectNodes);
-    connect(scene_, &WorkflowScene::nodeActivated, this,
-            &WorkflowWindow::openNodeWizard);
-    connect(scene_, &WorkflowScene::addNodeRequested, this,
-            &WorkflowWindow::addNodeAt);
-    view_ = new WorkflowView(scene_, this);
+    connect(scene_, &OrchestrationScene::connectionRequested, this,
+            &OrchestrationWindow::connectNodes);
+    connect(scene_, &OrchestrationScene::nodeActivated, this,
+            &OrchestrationWindow::openNodeWizard);
+    connect(scene_, &OrchestrationScene::addNodeRequested, this,
+            &OrchestrationWindow::addNodeAt);
+    view_ = new OrchestrationView(scene_, this);
     view_->setToolTip(
         tr("Each node is one simulation process; a link drawn from a node's "
            "right-hand port onto another node runs the second after the "
@@ -569,11 +569,11 @@ WorkflowWindow::WorkflowWindow(
            "Each node appears in the Processes panel as it is dispatched, and "
            "its metrics stream into Results."));
     // No Close button: as a dock the panel's visibility belongs to its own
-    // title bar and to View → Workflow. A button calling close() here would
+    // title bar and to View → Orchestration. A button calling close() here would
     // hide the widget INSIDE the dock and leave an empty frame behind.
     //
     // No status label either. It reported the node/link count, the running
-    // node and the "Workflow finished: …" summary — of which the count is
+    // node and the "Orchestration finished: …" summary — of which the count is
     // decoration, and the other two are already told properly by the
     // Processes panel (per-node Queued → Running → Completed/Failed) and by
     // Results. What it alone used to carry was the two REFUSAL messages, and
@@ -581,11 +581,11 @@ WorkflowWindow::WorkflowWindow(
     // something to whisper in a corner of the toolbar.
     layout->addLayout(controls);
 
-    connect(addButton, &QPushButton::clicked, this, &WorkflowWindow::addNode);
+    connect(addButton, &QPushButton::clicked, this, &OrchestrationWindow::addNode);
     connect(removeButton, &QPushButton::clicked, this,
-            &WorkflowWindow::removeSelected);
+            &OrchestrationWindow::removeSelected);
     connect(runButton_, &QPushButton::clicked, this,
-            &WorkflowWindow::sendToProcesses);
+            &OrchestrationWindow::sendToProcesses);
     for (QPushButton* button : findChildren<QPushButton*>()) {
         button->setAutoDefault(false);
         button->setDefault(false);
@@ -593,10 +593,10 @@ WorkflowWindow::WorkflowWindow(
 
     jobRunner_ = new jobs::JobRunner(this);
     connect(jobRunner_, &jobs::JobRunner::finished, this,
-            &WorkflowWindow::onJobFinished);
+            &OrchestrationWindow::onJobFinished);
     // Live geometries. A relaxation or an MD node emits CALANGO_FRAME blocks
     // exactly as the same script does when launched from its own wizard, and
-    // this runner parses them — but nothing was listening, so a workflow run
+    // this runner parses them — but nothing was listening, so a orchestration run
     // showed a frozen viewport throughout and left the timeline empty at the
     // end. The host cannot subscribe to this runner directly (it is private to
     // the panel), so the frames are forwarded with the process id that
@@ -609,22 +609,22 @@ WorkflowWindow::WorkflowWindow(
             });
 }
 
-void WorkflowWindow::addNode()
+void OrchestrationWindow::addNode()
 {
     promptAddNode(nullptr);
 }
 
-void WorkflowWindow::addNodeAt(const QPointF& scenePos)
+void OrchestrationWindow::addNodeAt(const QPointF& scenePos)
 {
     promptAddNode(&scenePos);
 }
 
-void WorkflowWindow::setMaterialsProvider(std::function<MaterialList()> provider)
+void OrchestrationWindow::setMaterialsProvider(std::function<MaterialList()> provider)
 {
     materialsProvider_ = std::move(provider);
 }
 
-void WorkflowWindow::promptAddNode(const QPointF* scenePos)
+void OrchestrationWindow::promptAddNode(const QPointF* scenePos)
 {
     // Re-read the open documents before offering them: the panel is docked and
     // long-lived, so the list it was constructed with is stale by now.
@@ -643,9 +643,9 @@ void WorkflowWindow::promptAddNode(const QPointF* scenePos)
     dialog.setWindowTitle(tr("Add Process"));
     auto* form = new QFormLayout(&dialog);
     auto* taskCombo = new QComboBox(&dialog);
-    for (WorkflowTask task :
-         {WorkflowTask::GeometryOptimization, WorkflowTask::SinglePoint,
-          WorkflowTask::MolecularDynamics, WorkflowTask::Phonon})
+    for (OrchestrationTask task :
+         {OrchestrationTask::GeometryOptimization, OrchestrationTask::SinglePoint,
+          OrchestrationTask::MolecularDynamics, OrchestrationTask::Phonon})
         taskCombo->addItem(taskDisplayName(task), static_cast<int>(task));
     form->addRow(tr("Process:"), taskCombo);
     auto* materialCombo = new QComboBox(&dialog);
@@ -667,8 +667,8 @@ void WorkflowWindow::promptAddNode(const QPointF* scenePos)
     if (dialog.exec() != QDialog::Accepted)
         return;
 
-    WorkflowNodeItem* node = addProcessNode(
-        static_cast<WorkflowTask>(taskCombo->currentData().toInt()),
+    OrchestrationNodeItem* node = addProcessNode(
+        static_cast<OrchestrationTask>(taskCombo->currentData().toInt()),
         materialCombo->currentIndex(),
         static_cast<core::CalculatorKind>(engineCombo->currentData().toInt()));
     if (node && scenePos)
@@ -676,13 +676,13 @@ void WorkflowWindow::promptAddNode(const QPointF* scenePos)
                      - QPointF(kNodeWidth / 2.0, kNodeHeight / 2.0));
 }
 
-WorkflowNodeItem* WorkflowWindow::addProcessNode(WorkflowTask task,
+OrchestrationNodeItem* OrchestrationWindow::addProcessNode(OrchestrationTask task,
                                                  int materialIndex,
                                                  core::CalculatorKind engine)
 {
     if (materialIndex < 0 || materialIndex >= materials_.size())
         return nullptr;
-    auto* node = new WorkflowNodeItem(
+    auto* node = new OrchestrationNodeItem(
         nextNodeId_++, taskDisplayName(task), task,
         materials_[materialIndex].first, materials_[materialIndex].second,
         engine);
@@ -695,12 +695,12 @@ WorkflowNodeItem* WorkflowWindow::addProcessNode(WorkflowTask task,
     return node;
 }
 
-void WorkflowWindow::linkNodes(WorkflowNodeItem* from, WorkflowNodeItem* to)
+void OrchestrationWindow::linkNodes(OrchestrationNodeItem* from, OrchestrationNodeItem* to)
 {
     connectNodes(from, to);
 }
 
-void WorkflowWindow::configureNode(WorkflowNodeItem* node,
+void OrchestrationWindow::configureNode(OrchestrationNodeItem* node,
                                    const QString& script,
                                    const QString& python,
                                    const QString& runCommand,
@@ -710,32 +710,32 @@ void WorkflowWindow::configureNode(WorkflowNodeItem* node,
         node->setConfiguration(script, python, runCommand, engine);
 }
 
-void WorkflowWindow::openNodeWizard(WorkflowNodeItem* node)
+void OrchestrationWindow::openNodeWizard(OrchestrationNodeItem* node)
 {
     if (!node)
         return;
-    // The node's standard setup wizard, in workflow mode: the review stage's
+    // The node's standard setup wizard, in orchestration mode: the review stage's
     // Run button reads "Save process node" and accepting commits the
     // generated script here instead of launching anything.
     std::unique_ptr<SimulationWizardBase> wizard;
     switch (node->task()) {
-    case WorkflowTask::GeometryOptimization:
+    case OrchestrationTask::GeometryOptimization:
         wizard = std::make_unique<GeometryOptimizationWizard>(
             node->structure(), this);
         break;
-    case WorkflowTask::MolecularDynamics:
+    case OrchestrationTask::MolecularDynamics:
         wizard = std::make_unique<MolecularDynamicsWizard>(node->structure(),
                                                            this);
         break;
-    case WorkflowTask::Phonon:
+    case OrchestrationTask::Phonon:
         wizard = std::make_unique<PhononWizard>(/*periodic=*/true,
                                                 node->structure(), this);
         break;
-    case WorkflowTask::SinglePoint:
+    case OrchestrationTask::SinglePoint:
         wizard = std::make_unique<SinglePointWizard>(this);
         break;
     }
-    wizard->enterWorkflowMode();
+    wizard->enterOrchestrationMode();
     if (node->structure())
         wizard->setStructureElements(
             structureElements(node->structure().get()));
@@ -746,12 +746,12 @@ void WorkflowWindow::openNodeWizard(WorkflowNodeItem* node)
                            wizard->runCommand(), wizard->calculatorKind());
 }
 
-void WorkflowWindow::removeSelected()
+void OrchestrationWindow::removeSelected()
 {
     // Edges first (they reference nodes), then nodes; unregister so a
     // surviving node never repaints a deleted edge.
     for (auto it = edges_.begin(); it != edges_.end();) {
-        WorkflowEdgeItem* edge = *it;
+        OrchestrationEdgeItem* edge = *it;
         if (edge->isSelected() || edge->from()->isSelected()
             || edge->to()->isSelected()) {
             edge->from()->unregisterEdge(edge);
@@ -764,7 +764,7 @@ void WorkflowWindow::removeSelected()
         }
     }
     for (auto it = nodes_.begin(); it != nodes_.end();) {
-        WorkflowNodeItem* node = *it;
+        OrchestrationNodeItem* node = *it;
         if (node->isSelected()) {
             scene_->removeItem(node);
             delete node;
@@ -775,75 +775,75 @@ void WorkflowWindow::removeSelected()
     }
 }
 
-void WorkflowWindow::connectNodes(WorkflowNodeItem* from,
-                                  WorkflowNodeItem* to)
+void OrchestrationWindow::connectNodes(OrchestrationNodeItem* from,
+                                  OrchestrationNodeItem* to)
 {
-    for (const WorkflowEdgeItem* edge : edges_)
+    for (const OrchestrationEdgeItem* edge : edges_)
         if (edge->from() == from && edge->to() == to)
             return; // already linked
     if (wouldCreateCycle(from, to)) {
         QMessageBox::information(
-            this, tr("Workflow"),
+            this, tr("Orchestration"),
             tr("That link would close a cycle — a process cannot run before "
                "its own results exist."));
         return;
     }
-    auto* edge = new WorkflowEdgeItem(from, to);
+    auto* edge = new OrchestrationEdgeItem(from, to);
     scene_->addItem(edge);
     edges_.push_back(edge);
 }
 
-bool WorkflowWindow::wouldCreateCycle(WorkflowNodeItem* from,
-                                      WorkflowNodeItem* to) const
+bool OrchestrationWindow::wouldCreateCycle(OrchestrationNodeItem* from,
+                                      OrchestrationNodeItem* to) const
 {
     // Walk downstream from `to`; reaching `from` means the new edge closes
     // a loop.
-    std::vector<WorkflowNodeItem*> stack{to};
-    std::vector<WorkflowNodeItem*> seen;
+    std::vector<OrchestrationNodeItem*> stack{to};
+    std::vector<OrchestrationNodeItem*> seen;
     while (!stack.empty()) {
-        WorkflowNodeItem* node = stack.back();
+        OrchestrationNodeItem* node = stack.back();
         stack.pop_back();
         if (node == from)
             return true;
         if (std::find(seen.begin(), seen.end(), node) != seen.end())
             continue;
         seen.push_back(node);
-        for (const WorkflowEdgeItem* edge : edges_)
+        for (const OrchestrationEdgeItem* edge : edges_)
             if (edge->from() == node)
                 stack.push_back(edge->to());
     }
     return false;
 }
 
-QList<WorkflowNodeItem*>
-WorkflowWindow::parentsOf(WorkflowNodeItem* node) const
+QList<OrchestrationNodeItem*>
+OrchestrationWindow::parentsOf(OrchestrationNodeItem* node) const
 {
-    QList<WorkflowNodeItem*> parents;
-    for (const WorkflowEdgeItem* edge : edges_)
+    QList<OrchestrationNodeItem*> parents;
+    for (const OrchestrationEdgeItem* edge : edges_)
         if (edge->to() == node)
             parents.append(edge->from());
     return parents;
 }
 
-WorkflowNodeItem* WorkflowWindow::nextRunnable() const
+OrchestrationNodeItem* OrchestrationWindow::nextRunnable() const
 {
-    for (WorkflowNodeItem* node : nodes_) {
-        if (node->status() != WorkflowNodeItem::Status::Waiting)
+    for (OrchestrationNodeItem* node : nodes_) {
+        if (node->status() != OrchestrationNodeItem::Status::Waiting)
             continue;
         bool ready = true;
-        for (const WorkflowNodeItem* parent : parentsOf(node))
+        for (const OrchestrationNodeItem* parent : parentsOf(node))
             ready = ready
-                && parent->status() == WorkflowNodeItem::Status::Done;
+                && parent->status() == OrchestrationNodeItem::Status::Done;
         if (ready)
             return node;
     }
     return nullptr;
 }
 
-void WorkflowWindow::sendToProcesses()
+void OrchestrationWindow::sendToProcesses()
 {
     if (nodes_.empty()) {
-        QMessageBox::information(this, tr("Workflow"),
+        QMessageBox::information(this, tr("Orchestration"),
                                  tr("Add at least one process node first."));
         return;
     }
@@ -856,12 +856,12 @@ void WorkflowWindow::sendToProcesses()
     // silently reused. Each node also registers as a row in the global
     // Processes panel (Queued), so the dispatch is visible and reloadable
     // where every other run lives, not only on this canvas.
-    for (WorkflowNodeItem* node : nodes_) {
-        node->setStatus(WorkflowNodeItem::Status::Waiting);
+    for (OrchestrationNodeItem* node : nodes_) {
+        node->setStatus(OrchestrationNodeItem::Status::Waiting);
         node->setJobDirectory(QString());
         node->setProcessTaskId(
             processPanel_ ? processPanel_->registerTask(
-                tr("Workflow: %1 (%2)")
+                tr("Orchestration: %1 (%2)")
                     .arg(node->title(), node->materialName()),
                 QString())
                           : -1);
@@ -875,20 +875,20 @@ void WorkflowWindow::sendToProcesses()
                        .trimmed();
     if (root.isEmpty())
         root = SettingsManager::defaultSimulationsDirectory();
-    workflowRoot_ = root + QStringLiteral("/workflow_")
+    orchestrationRoot_ = root + QStringLiteral("/orchestration_")
         + QDateTime::currentDateTime().toString(
             QStringLiteral("yyyyMMdd_HHmmss"));
-    QDir().mkpath(workflowRoot_);
+    QDir().mkpath(orchestrationRoot_);
 
     runButton_->setEnabled(false);
-    WorkflowNodeItem* first = nextRunnable();
+    OrchestrationNodeItem* first = nextRunnable();
     if (!first || !startNode(first)) {
         runButton_->setEnabled(true);
         // A box, not a toolbar caption. The user just pressed Run and NOTHING
         // happened; a line of grey text beside the button is exactly the way
         // to have that read as the button being broken.
         QMessageBox::warning(
-            this, tr("Workflow"),
+            this, tr("Orchestration"),
             tr("Nothing could start — check the first node.\n\n"
                "Every node either has no parent (and runs on its assigned "
                "material) or inherits its parent's results. A node whose "
@@ -897,9 +897,9 @@ void WorkflowWindow::sendToProcesses()
     }
 }
 
-bool WorkflowWindow::startNode(WorkflowNodeItem* node)
+bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
 {
-    const QString dir = workflowRoot_
+    const QString dir = orchestrationRoot_
         + QStringLiteral("/node_%1_%2")
               .arg(++launchedCount_)
               .arg(taskSlug(node->task()));
@@ -918,7 +918,7 @@ bool WorkflowWindow::startNode(WorkflowNodeItem* node)
     // back to the node's original material here would silently execute the
     // child on the UN-relaxed structure — a run that "succeeds" while
     // computing the wrong thing, which is strictly worse than failing.
-    const QList<WorkflowNodeItem*> parents = parentsOf(node);
+    const QList<OrchestrationNodeItem*> parents = parentsOf(node);
     if (!parents.isEmpty()) {
         const QString parentDir = parents.front()->jobDirectory();
         QString source;
@@ -941,7 +941,7 @@ bool WorkflowWindow::startNode(WorkflowNodeItem* node)
             // miss — it was the one thing the removed status label carried
             // that nothing else reports.
             QMessageBox::warning(
-                this, tr("Workflow"),
+                this, tr("Orchestration"),
                 tr("%1 was not started: no usable geometry in its parent's "
                    "results (%2).\n\n"
                    "A node with a parent inherits that parent's output "
@@ -984,16 +984,16 @@ bool WorkflowWindow::startNode(WorkflowNodeItem* node)
         if (suggestion.kpts)
             for (int axis = 0; axis < 3; ++axis)
                 config.kpts[axis] = (*suggestion.kpts)[axis];
-        if (node->task() == WorkflowTask::Phonon) {
+        if (node->task() == OrchestrationTask::Phonon) {
             core::PhononConfig phonon;
             phonon.calculator = config;
             script = QString::fromStdString(core::PhononScriptGenerator::
                                                 generate(phonon,
                                                          "structure.extxyz"));
         } else {
-            config.task = node->task() == WorkflowTask::GeometryOptimization
+            config.task = node->task() == OrchestrationTask::GeometryOptimization
                 ? core::TaskKind::GeometryOptimization
-                : (node->task() == WorkflowTask::MolecularDynamics
+                : (node->task() == OrchestrationTask::MolecularDynamics
                        ? core::TaskKind::MolecularDynamics
                        : core::TaskKind::SinglePoint);
             script = QString::fromStdString(
@@ -1015,7 +1015,7 @@ bool WorkflowWindow::startNode(WorkflowNodeItem* node)
     const RunCommands::Resolved resolved = RunCommands::resolve(
         node->engine(), context, node->configuredRunCommand());
 
-    node->setStatus(WorkflowNodeItem::Status::Running);
+    node->setStatus(OrchestrationNodeItem::Status::Running);
     node->setJobDirectory(dir);
     updateProcessPanel(node);
     runningNode_ = node;
@@ -1023,35 +1023,35 @@ bool WorkflowWindow::startNode(WorkflowNodeItem* node)
                       resolved.environment);
     if (node->processTaskId() >= 0)
         Q_EMIT nodeStarted(node->processTaskId(),
-                           tr("Workflow: %1 (%2)")
+                           tr("Orchestration: %1 (%2)")
                                .arg(node->title(), node->materialName()),
                            dir);
     return true;
 }
 
-void WorkflowWindow::skipDescendants(WorkflowNodeItem* node)
+void OrchestrationWindow::skipDescendants(OrchestrationNodeItem* node)
 {
-    for (WorkflowEdgeItem* edge : edges_) {
+    for (OrchestrationEdgeItem* edge : edges_) {
         if (edge->from() == node
-            && edge->to()->status() == WorkflowNodeItem::Status::Waiting) {
-            edge->to()->setStatus(WorkflowNodeItem::Status::Skipped);
+            && edge->to()->status() == OrchestrationNodeItem::Status::Waiting) {
+            edge->to()->setStatus(OrchestrationNodeItem::Status::Skipped);
             updateProcessPanel(edge->to());
             skipDescendants(edge->to());
         }
     }
 }
 
-void WorkflowWindow::onJobFinished(int exitCode, bool crashed)
+void OrchestrationWindow::onJobFinished(int exitCode, bool crashed)
 {
     if (!runningNode_)
         return;
-    WorkflowNodeItem* finished = runningNode_;
+    OrchestrationNodeItem* finished = runningNode_;
     runningNode_ = nullptr;
 
     if (exitCode == 0 && !crashed) {
-        finished->setStatus(WorkflowNodeItem::Status::Done);
+        finished->setStatus(OrchestrationNodeItem::Status::Done);
     } else {
-        finished->setStatus(WorkflowNodeItem::Status::Failed);
+        finished->setStatus(OrchestrationNodeItem::Status::Failed);
         // Children cannot run on inputs that never materialized — say so on
         // the canvas instead of leaving them "pending" forever.
         skipDescendants(finished);
@@ -1061,10 +1061,10 @@ void WorkflowWindow::onJobFinished(int exitCode, bool crashed)
         Q_EMIT nodeFinished(finished->processTaskId(),
                             exitCode == 0 && !crashed);
 
-    if (WorkflowNodeItem* next = nextRunnable()) {
+    if (OrchestrationNodeItem* next = nextRunnable()) {
         if (startNode(next))
             return;
-        next->setStatus(WorkflowNodeItem::Status::Failed);
+        next->setStatus(OrchestrationNodeItem::Status::Failed);
         updateProcessPanel(next);
         skipDescendants(next);
     }
@@ -1075,7 +1075,7 @@ void WorkflowWindow::onJobFinished(int exitCode, bool crashed)
     runButton_->setEnabled(true);
 }
 
-void WorkflowWindow::updateProcessPanel(WorkflowNodeItem* node)
+void OrchestrationWindow::updateProcessPanel(OrchestrationNodeItem* node)
 {
     if (!processPanel_ || node->processTaskId() < 0)
         return;
@@ -1083,27 +1083,27 @@ void WorkflowWindow::updateProcessPanel(WorkflowNodeItem* node)
         processPanel_->setTaskDirectory(node->processTaskId(),
                                         node->jobDirectory());
     switch (node->status()) {
-    case WorkflowNodeItem::Status::Waiting:
+    case OrchestrationNodeItem::Status::Waiting:
         processPanel_->setTaskStatus(node->processTaskId(),
                                      ProcessManagerPanel::Status::Queued);
         break;
-    case WorkflowNodeItem::Status::Running:
+    case OrchestrationNodeItem::Status::Running:
         processPanel_->setTaskStatus(node->processTaskId(),
                                      ProcessManagerPanel::Status::Running);
         break;
-    case WorkflowNodeItem::Status::Done:
+    case OrchestrationNodeItem::Status::Done:
         processPanel_->setTaskStatus(node->processTaskId(),
                                      ProcessManagerPanel::Status::Completed);
         break;
-    case WorkflowNodeItem::Status::Failed:
-    case WorkflowNodeItem::Status::Skipped:
+    case OrchestrationNodeItem::Status::Failed:
+    case OrchestrationNodeItem::Status::Skipped:
         // The panel has no "skipped": a node whose inputs never existed is
         // reported as failed there, which is what it is from the queue's
         // point of view.
         processPanel_->setTaskStatus(node->processTaskId(),
                                      ProcessManagerPanel::Status::Failed);
         break;
-    case WorkflowNodeItem::Status::Pending:
+    case OrchestrationNodeItem::Status::Pending:
         break; // never mirrored: pending nodes were not dispatched
     }
 }

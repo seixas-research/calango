@@ -57,6 +57,14 @@ bool SpectrumPlotWidget::renderTo(QPainter& p, QSize size) const
                 yMax = std::max(yMax, v);
             }
         }
+    // Reference lines take part in the vertical autoscale: a vacuum level a
+    // little above the curve's own maximum must widen the range, not vanish.
+    for (const auto& line : referenceLines_) {
+        if (std::isfinite(line.second)) {
+            yMin = std::min(yMin, line.second);
+            yMax = std::max(yMax, line.second);
+        }
+    }
     if (!(xMax > xMin))
         xMax = xMin + 1.0;
     if (!std::isfinite(yMin) || !std::isfinite(yMax)) {
@@ -134,6 +142,20 @@ bool SpectrumPlotWidget::renderTo(QPainter& p, QSize size) const
             poly << QPointF(mapX(x_[i]), mapY(y[i]));
         }
         p.drawPolyline(poly);
+    }
+
+    // Dashed horizontal reference lines, labelled on the line itself: they
+    // annotate the y axis (a Fermi level, a vacuum level), so putting them in
+    // the legend would present them as one more curve, which they are not.
+    for (const auto& line : referenceLines_) {
+        if (!std::isfinite(line.second))
+            continue;
+        const double py = mapY(line.second);
+        p.setPen(QPen(QColor(90, 90, 90), 1.2, Qt::DashLine));
+        p.drawLine(QPointF(plot.left(), py), QPointF(plot.right(), py));
+        p.setFont(style_.axisFont());
+        p.drawText(QRectF(plot.left() + 6.0, py - 16.0, 200.0, 14.0),
+                   Qt::AlignLeft | Qt::AlignVCenter, line.first);
     }
     p.restore();
 

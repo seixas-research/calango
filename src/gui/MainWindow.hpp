@@ -52,7 +52,7 @@ class TimelineWidget;
 class FilmTimelineWidget;
 class FilmProductionDialog;
 class ViewportWidget;
-class WorkflowWindow;
+class OrchestrationWindow;
 
 /// Application shell and MVC "Controller" with a tabbed multi-document
 /// workspace: each tab is a Document (structure + optional trajectory +
@@ -217,6 +217,14 @@ private Q_SLOTS:
     /// Open the 2D band-surface viewer for a finished job directory
     /// (reads its bands_2d.json).
     void open2DBandsResults(const QString& directory);
+    /// Modules → 2D Materials → "2D Workfunction…": Φ = E_vac − E_F from the
+    /// planar-averaged electrostatic potential of an inherited ground state.
+    /// Needs a completed single point with a saved GPAW density, exactly as
+    /// 2D Bands does.
+    void show2DWorkfunction();
+    /// Open the work-function viewer for a finished job directory
+    /// (reads its workfunction.json).
+    void openWorkfunctionResults(const QString& directory);
     /// Electronics → "Charged defects…": formation energies and transition
     /// levels from a pristine host + neutral defect pair of single points.
     void showChargedDefects();
@@ -528,11 +536,11 @@ private:
 
     void createMenusAndDocks();
 
-    /// Build the Workflow canvas for the bottom-row dock: seeds it with the
+    /// Build the Orchestration canvas for the bottom-row dock: seeds it with the
     /// open documents, installs the provider that keeps that list current, and
     /// wires each dispatched node's job into the Results panel (process
     /// selector, live metric plots, persistence) exactly as a wizard run is.
-    WorkflowWindow* createWorkflowPanel(QWidget* parent);
+    OrchestrationWindow* createOrchestrationPanel(QWidget* parent);
     Document* currentDocument();
     /// Creates an empty "Untitled" tab when none exists (for Add Atom).
     Document& ensureDocument();
@@ -616,13 +624,13 @@ private:
     int indexOfDocument(const Document* document) const;
     /// Append one streamed geometry to `target` and keep the timeline and the
     /// viewport following it. Shared by the main runner's live document and by
-    /// a workflow node's, which differ only in which tab they feed.
+    /// an orchestration node's, which differ only in which tab they feed.
     void appendStreamedFrame(Document* target,
                              const std::shared_ptr<core::Structure>& frame);
-    /// Turn a finished workflow node's live tab into a plain trajectory tab —
+    /// Turn a finished orchestration node's live tab into a plain trajectory tab —
     /// or, when the node streamed nothing, load whatever trajectory it left in
     /// its job directory so the timeline is populated either way.
-    void finalizeWorkflowTrajectory(int processId, bool success);
+    void finalizeOrchestrationTrajectory(int processId, bool success);
     bool ensureAseAvailable();
     /// Shared preconditions for the dedicated Simulation dialogs: a non-empty
     /// current structure and ASE available. It no longer checks whether a job
@@ -713,11 +721,11 @@ private:
     };
     std::map<int, ProcessRecord> processRecords_;
     int selectedProcessId_ = -1; ///< process whose data the Results tabs show
-    /// Workflow node jobs currently executing (each WorkflowWindow drives
+    /// Orchestration node jobs currently executing (each OrchestrationWindow drives
     /// one at a time, but several windows may run concurrently). Their
     /// metrics.json is polled alongside the main window's own job, so the
-    /// Results tabs treat workflow-driven processes like standalone ones.
-    std::set<int> workflowRunningIds_;
+    /// Results tabs treat orchestration-driven processes like standalone ones.
+    std::set<int> orchestrationRunningIds_;
 
     QTabBar* tabBar_ = nullptr;
     ViewportWidget* viewport_ = nullptr;
@@ -754,8 +762,8 @@ private:
     /// Zone 14 — the node canvas, leading the bottom row. It replaced the
     /// former "Workflow → Add Workflow…" window, so there is exactly one of
     /// them and it outlives the tabs it draws its materials from.
-    QDockWidget* workflowDock_ = nullptr;
-    WorkflowWindow* workflowPanel_ = nullptr;
+    QDockWidget* orchestrationDock_ = nullptr;
+    OrchestrationWindow* orchestrationPanel_ = nullptr;
     RemoteAccessPanel* remotePanel_ = nullptr;
     ProcessManagerPanel* processPanel_ = nullptr;
     /// "Additional overlays" dock — lattice planes, text and primitives.
@@ -790,14 +798,14 @@ private:
     /// Document receiving live streamed frames (null outside runs;
     /// cleared when its tab is closed mid-run).
     Document* liveDoc_ = nullptr;
-    /// The same thing for workflow nodes, keyed by process id.
+    /// The same thing for orchestration nodes, keyed by process id.
     ///
-    /// Separate from liveDoc_ rather than sharing it: the Workflow panel drives
+    /// Separate from liveDoc_ rather than sharing it: the Orchestration panel drives
     /// its own JobRunner, so a node can be streaming while a queued job runs on
     /// the main one, and a single pointer would let whichever started last
     /// steal the other's frames. Entries are created on a node's first frame
     /// and dropped when it finishes or its tab is closed.
-    std::map<int, Document*> workflowLiveDocs_;
+    std::map<int, Document*> orchestrationLiveDocs_;
     /// Band of images staged as band.extxyz on the next stageJob (NEB);
     /// consumed and cleared by stageJob.
     std::vector<std::shared_ptr<core::Structure>> stagedBandFrames_;

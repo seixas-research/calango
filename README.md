@@ -9,7 +9,7 @@
 </a>
 </h1>
 
-**Calango** is a desktop application for computational materials science that does two things exceptionally well: it **runs, orchestrates, and analyzes atomistic simulations** across sixteen calculation engines, and it **renders and edits atomic structures in real time** on a GPU-accelerated 3D canvas. A C++20/OpenGL core provides the speed; an embedded Python interpreter running the Atomic Simulation Environment (ASE) provides the science — so every structure on screen is one click away from a real calculation.
+**Calango** is a desktop application for computational materials science that does two things exceptionally well: it **runs, orchestrates, and analyzes atomistic simulations** across nineteen calculation engines, and it **renders and edits atomic structures in real time** on a GPU-accelerated 3D canvas. A C++20/OpenGL core provides the speed; an embedded Python interpreter running the Atomic Simulation Environment (ASE) provides the science — so every structure on screen is one click away from a real calculation.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-red?style=for-the-badge)](LICENSE)
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?style=for-the-badge&logo=cplusplus&logoColor=white)](https://isocpp.org/)
@@ -28,10 +28,10 @@
 
 Calango turns a GUI configuration into a **standalone, editable Python/ASE script**, then runs it — locally as an isolated subprocess, queued behind other jobs, or submitted to an HPC cluster over SSH. The script is always visible and always yours: edit it in the built-in editor, or export it and run it unmodified on any machine with ASE.
 
-- **Sixteen calculators, one workflow.** DFT (GPAW, Quantum ESPRESSO, VASP, SIESTA), quantum chemistry (ORCA), classical potentials (LAMMPS, EMT, Lennard-Jones, ASAP), and machine-learning potentials (MACE, DeepMD-kit, NequIP, Allegro, CHGNet, MatterSim, FAIRChem). Every wizard shares the same staged flow — calculator, settings, task, script review — and each engine exposes the parameters it actually has, not a lowest-common-denominator form.
+- **Nineteen calculators, one workflow.** DFT (GPAW, Quantum ESPRESSO, VASP, SIESTA), quantum chemistry (ORCA), semi-empirical tight binding (xTB/GFN2, DFTB+), classical potentials (LAMMPS, GROMACS, EMT, Lennard-Jones, ASAP), and machine-learning potentials (MACE, DeepMD-kit, NequIP, Allegro, CHGNet, MatterSim, FAIRChem). Every wizard shares the same staged flow — calculator, settings, task, script review — and each engine exposes the parameters it actually has, not a lowest-common-denominator form.
 - **The full task matrix.** Single-point, geometry optimization, molecular dynamics (NVE/NVT/NPT with the complete ASE thermostat set, plus endpoint-exact simulated-annealing schedules), phonons with spglib symmetry reduction, Monte Carlo, NEB, and cluster expansion.
 - **Advanced electronic structure.** Band structures with PDOS, fatbands, and first-principles irreducible-representation labels; band unfolding for supercells; linear, 2D, and nonlinear optics (SHG, shift current); G₀W₀ quasiparticle corrections (GPAW or Yambo); Wannier functions and interpolation; Fermi surfaces; topological invariants; XAS; Hubbard U by linear response; Born effective charges; Raman/IR spectra on three engines.
-- **Workflow orchestration.** A node-graph canvas chains calculations into a DAG — relax, then converge, then compute a spectrum — passing geometries and ground states between nodes, with per-node status and failure propagation.
+- **Orchestration.** The Orchestration dock chains calculations into a DAG on a node-graph canvas — relax, then converge, then compute a spectrum — passing geometries and ground states between nodes, with per-node status and failure propagation.
 - **Live monitoring.** Energy, temperature, force, and pressure stream into plots as the job runs; MD trajectories stream frame-by-frame into the viewport while they are being computed. Jobs queue instead of refusing; a process manager keeps every run's logs, metrics, and artifacts one click away.
 - **Remote HPC execution.** Connect over SSH, and Calango stages the same script and structure, generates a SLURM/PBS/SGE wrapper, uploads, submits, polls the queue, streams remote logs, and downloads results automatically when the job finishes.
 - **A deep analysis toolbox.** RDF, structure factor, XRD, bond statistics, coordination (CN/GCN), Warren–Cowley short-range order, local entropy, VACF, Bader/Voronoi/Hirshfeld partial charges, charge-density differences, charged-defect formation energies, magnetic space groups (all 1651, BNS), Γ-point Raman/IR activity, convex hulls, and adsorption-site detection.
@@ -89,7 +89,7 @@ Configure with `-DCALANGO_BUILD_TESTS=ON`, then `ctest --test-dir build`. The su
 
 | Resource | Covers |
 |---|---|
-| [Sphinx manual](docs/sphinx/) *(ReadTheDocs)* | The full manual: builders, wizards, calculators, analysis, workflows, remote HPC, gallery |
+| [Sphinx manual](docs/sphinx/) *(ReadTheDocs)* | The full manual: builders, wizards, calculators, analysis, orchestration, remote HPC, gallery |
 | [User Guide (PDF)](docs/tex/user_guide/calango_user_guide.pdf) | The LaTeX user guide, including a start-to-finish silicon tutorial |
 | [Packaging Guide (PDF)](docs/tex/packaging/packaging.pdf) | Installers, the embedded Python environment, dependency management |
 
@@ -127,3 +127,7 @@ Simulations never run inside the GUI process: local jobs are isolated `QProcess`
 ## License
 
 Calango is released under the [MIT License](LICENSE). Copyright © 2026 Leandro Seixas Rocha, Seixas Research.
+
+## Acknowledgements
+
+We thank financial support from INCT Materials Informatics (Grant No. 406447/2022-5).

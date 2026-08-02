@@ -1,4 +1,4 @@
-// Workflow pipeline validation on silicon: Geometry Optimization (with unit
+// Orchestration pipeline validation on silicon: Geometry Optimization (with unit
 // cell relaxation) linked to a Phonon calculation.
 //
 // What this pins is the ORCHESTRATION, end to end and for real: two nodes on
@@ -18,7 +18,7 @@
 #include "core/UnitCell.hpp"
 #include "gui/ProcessManagerPanel.hpp"
 #include "gui/SettingsManager.hpp"
-#include "gui/WorkflowWindow.hpp"
+#include "gui/OrchestrationWindow.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
 #include <QApplication>
@@ -58,7 +58,7 @@ int main(int argc, char** argv)
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QCoreApplication::setOrganizationName(QStringLiteral("CalangoTest"));
-    QCoreApplication::setApplicationName(QStringLiteral("WorkflowSiTest"));
+    QCoreApplication::setApplicationName(QStringLiteral("OrchestrationSiTest"));
 
     // Sandbox every config file AND the simulations directory: this test
     // actually runs jobs, and none of that may land in the developer's home.
@@ -104,9 +104,9 @@ int main(int argc, char** argv)
     using calango::core::Atom;
     using calango::core::Structure;
     using calango::core::UnitCell;
-    using calango::gui::WorkflowNodeItem;
-    using calango::gui::WorkflowTask;
-    using calango::gui::WorkflowWindow;
+    using calango::gui::OrchestrationNodeItem;
+    using calango::gui::OrchestrationTask;
+    using calango::gui::OrchestrationWindow;
 
     // Diamond silicon: fcc cell, two-atom basis.
     auto silicon = std::make_shared<Structure>();
@@ -123,17 +123,17 @@ int main(int argc, char** argv)
         silicon->addAtom(atom);
     }
 
-    WorkflowWindow window({{QStringLiteral("Si"), silicon}},
+    OrchestrationWindow window({{QStringLiteral("Si"), silicon}},
                           [&pythonExe](calango::core::CalculatorKind) {
                               return pythonExe;
                           });
 
     std::printf("Pipeline construction:\n");
-    WorkflowNodeItem* relax = window.addProcessNode(
-        WorkflowTask::GeometryOptimization, 0,
+    OrchestrationNodeItem* relax = window.addProcessNode(
+        OrchestrationTask::GeometryOptimization, 0,
         calango::core::CalculatorKind::LennardJones);
-    WorkflowNodeItem* phonon =
-        window.addProcessNode(WorkflowTask::Phonon, 0,
+    OrchestrationNodeItem* phonon =
+        window.addProcessNode(OrchestrationTask::Phonon, 0,
                               calango::core::CalculatorKind::LennardJones);
     check(relax && phonon, "two process nodes on the canvas");
     window.linkNodes(relax, phonon);
@@ -180,16 +180,16 @@ int main(int argc, char** argv)
 
     std::printf("Execution:\n");
     window.sendToProcesses();
-    check(relax->status() == WorkflowNodeItem::Status::Running,
+    check(relax->status() == OrchestrationNodeItem::Status::Running,
           "node 1 starts running on send");
-    check(phonon->status() == WorkflowNodeItem::Status::Waiting,
+    check(phonon->status() == OrchestrationNodeItem::Status::Waiting,
           "node 2 queues as waiting");
 
     // Drive the event loop until the pipeline settles (all nodes terminal).
-    const auto terminal = [](const WorkflowNodeItem* node) {
-        return node->status() == WorkflowNodeItem::Status::Done
-            || node->status() == WorkflowNodeItem::Status::Failed
-            || node->status() == WorkflowNodeItem::Status::Skipped;
+    const auto terminal = [](const OrchestrationNodeItem* node) {
+        return node->status() == OrchestrationNodeItem::Status::Done
+            || node->status() == OrchestrationNodeItem::Status::Failed
+            || node->status() == OrchestrationNodeItem::Status::Skipped;
     };
     QElapsedTimer timer;
     timer.start();
@@ -197,13 +197,13 @@ int main(int argc, char** argv)
            && timer.elapsed() < 600000)
         QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
 
-    check(relax->status() == WorkflowNodeItem::Status::Done,
+    check(relax->status() == OrchestrationNodeItem::Status::Done,
           "geometry optimization finished");
     const QString relaxed =
         relax->jobDirectory() + QStringLiteral("/optimized.extxyz");
     check(QFile::exists(relaxed), "and wrote optimized.extxyz");
 
-    check(phonon->status() == WorkflowNodeItem::Status::Done,
+    check(phonon->status() == OrchestrationNodeItem::Status::Done,
           "phonon calculation finished");
     const QString injected =
         phonon->jobDirectory() + QStringLiteral("/structure.extxyz");
@@ -224,15 +224,15 @@ int main(int argc, char** argv)
     std::printf("Default-configuration pipeline + Processes panel:\n");
     {
         calango::gui::ProcessManagerPanel panel;
-        WorkflowWindow window2(
+        OrchestrationWindow window2(
             {{QStringLiteral("Si"), silicon}},
             [&pythonExe](calango::core::CalculatorKind) { return pythonExe; },
             &panel);
-        WorkflowNodeItem* relax2 = window2.addProcessNode(
-            WorkflowTask::GeometryOptimization, 0,
+        OrchestrationNodeItem* relax2 = window2.addProcessNode(
+            OrchestrationTask::GeometryOptimization, 0,
             calango::core::CalculatorKind::LennardJones);
-        WorkflowNodeItem* phonon2 = window2.addProcessNode(
-            WorkflowTask::Phonon, 0,
+        OrchestrationNodeItem* phonon2 = window2.addProcessNode(
+            OrchestrationTask::Phonon, 0,
             calango::core::CalculatorKind::LennardJones);
         window2.linkNodes(relax2, phonon2);
 
@@ -241,12 +241,12 @@ int main(int argc, char** argv)
         int startedCount = 0;
         int finishedOk = 0;
         QObject::connect(
-            &window2, &WorkflowWindow::nodeStarted,
+            &window2, &OrchestrationWindow::nodeStarted,
             [&startedCount](int id, const QString&, const QString& dir) {
                 if (id >= 0 && !dir.isEmpty())
                     ++startedCount;
             });
-        QObject::connect(&window2, &WorkflowWindow::nodeFinished,
+        QObject::connect(&window2, &OrchestrationWindow::nodeFinished,
                          [&finishedOk](int, bool ok) { finishedOk += ok; });
 
         window2.sendToProcesses();
@@ -270,8 +270,8 @@ int main(int argc, char** argv)
                && timer2.elapsed() < 600000)
             QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
 
-        check(relax2->status() == WorkflowNodeItem::Status::Done
-                  && phonon2->status() == WorkflowNodeItem::Status::Done,
+        check(relax2->status() == OrchestrationNodeItem::Status::Done
+                  && phonon2->status() == OrchestrationNodeItem::Status::Done,
               "default-configured pipeline runs to completion");
         const QString relaxed2 =
             relax2->jobDirectory() + QStringLiteral("/optimized.extxyz");
