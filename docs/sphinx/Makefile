@@ -3,8 +3,14 @@
 
 # You can set these variables from the command line, and also
 # from the environment for the first two.
+#
+# SPHINXBUILD prefers the docs' own virtualenv when it exists (create it with
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+# from this directory). A bare `sphinx-build` on PATH is often Homebrew's
+# sphinx-doc, whose sealed keg environment cannot see pip-installed
+# extensions (myst_parser, furo, …) — the venv sidesteps that entirely.
 SPHINXOPTS    ?=
-SPHINXBUILD   ?= sphinx-build
+SPHINXBUILD   ?= $(shell [ -x .venv/bin/sphinx-build ] && echo .venv/bin/sphinx-build || echo sphinx-build)
 SOURCEDIR     = source
 BUILDDIR      = build
 
