@@ -489,10 +489,20 @@ QWidget* SimulationWizardBase::buildSiestaGroup(QWidget* parent)
     siestaGroup_ = new QGroupBox(tr("SIESTA settings"), parent);
     auto* form = new QFormLayout(siestaGroup_);
 
+    // Both rows are read-only reports, not inputs. The pseudopotential library
+    // and the solver binary describe the MACHINE, not this calculation, so they
+    // are configured once in Preferences and every wizard reads the answer —
+    // asking again per module is how two runs end up pointing at two different
+    // libraries without anyone noticing.
     siestaPseudoNote_ = new QLabel(siestaGroup_);
     siestaPseudoNote_->setWordWrap(true);
     siestaPseudoNote_->setTextFormat(Qt::RichText);
     form->addRow(tr("Pseudopotentials:"), siestaPseudoNote_);
+
+    siestaBinaryNote_ = new QLabel(siestaGroup_);
+    siestaBinaryNote_->setWordWrap(true);
+    siestaBinaryNote_->setTextFormat(Qt::RichText);
+    form->addRow(tr("Solver binary:"), siestaBinaryNote_);
 
     siestaXcCombo_ = new QComboBox(siestaGroup_);
     siestaXcCombo_->setEditable(true);
@@ -597,9 +607,41 @@ void SimulationWizardBase::updateSiestaRows()
     siestaPseudoNote_->setText(
         path.isEmpty()
             ? tr("<i>Not configured.</i> Set the library in "
-                 "Preferences → External Files; the generated script writes a "
-                 "placeholder <tt>SIESTA_PP_PATH</tt> until then.")
+                 "Preferences → External Files. SIESTA cannot start without "
+                 "one, so the generated script says so rather than guessing a "
+                 "path.")
             : QStringLiteral("<tt>%1</tt>").arg(path.toHtmlEscaped()));
+
+    if (!siestaBinaryNote_)
+        return;
+    const QString binary = CondaEnvs::findExecutable(
+        QStringLiteral("siesta"),
+        EnginePresets::envFor(core::CalculatorKind::Siesta));
+    if (binary.isEmpty()) {
+        siestaBinaryNote_->setText(
+            tr("<i>No Conda environment provides one.</i> The run command falls "
+               "back to <tt>siesta</tt> on <tt>$PATH</tt> — correct for a "
+               "module-loaded or system build. Otherwise "
+               "<tt>conda install -c conda-forge siesta</tt>, or set the "
+               "command in Preferences → Run Commands."));
+        return;
+    }
+    const QString env = CondaEnvs::environmentProviding(
+        QStringLiteral("siesta"),
+        EnginePresets::envFor(core::CalculatorKind::Siesta));
+    const bool parallel =
+        !CondaEnvs::executableIn(env, QStringLiteral("mpirun")).isEmpty()
+        || !CondaEnvs::executableIn(env, QStringLiteral("mpiexec")).isEmpty();
+    siestaBinaryNote_->setText(
+        parallel
+            ? tr("<tt>%1</tt><br>Launched with that environment's own MPI.")
+                  .arg(binary.toHtmlEscaped())
+            : tr("<tt>%1</tt><br>That environment ships no MPI launcher, so "
+                 "this build is treated as <b>serial</b> and run on one core. "
+                 "A <tt>nompi</tt> build started under <tt>mpirun</tt> would "
+                 "run N identical copies over each other's files rather than "
+                 "one parallel calculation.")
+                  .arg(binary.toHtmlEscaped()));
 }
 
 QWidget* SimulationWizardBase::buildVaspGroup(QWidget* parent)

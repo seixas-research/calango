@@ -149,7 +149,75 @@ void BandPdosView::setPdosData(PdosData data)
         (void)curve;
         visible_.emplace(label, true);
     }
+    // Open on what the run suggested rather than on this widget's default: the
+    // wizard's σ is the one the user picked for this material, and it is now
+    // an opening position instead of a commitment.
+    if (pdos_.suggestedWidth > 0.0)
+        pdosSigma_ = pdos_.suggestedWidth;
+    rebuildPdosCurves();
     update();
+}
+
+void BandPdosView::setPdosSmearing(double sigmaEv)
+{
+    if (std::abs(sigmaEv - pdosSigma_) < 1e-9)
+        return;
+    pdosSigma_ = sigmaEv;
+    rebuildPdosCurves();
+    update();
+}
+
+void BandPdosView::rebuildPdosCurves()
+{
+    pdosCurves_.clear();
+    if (!pdos_.valid())
+        return;
+    // Already-broadened data (a run from before the smearing moved here) is
+    // drawn exactly as stored. Convolving it again would apply a second
+    // Gaussian and silently widen every peak by sqrt(sigma1^2 + sigma2^2).
+    if (pdos_.broadened || pdos_.binWidth <= 0.0 || pdosSigma_ <= 0.0) {
+        pdosCurves_ = pdos_.projections;
+        return;
+    }
+
+    // A σ below about half a bin cannot be represented on this grid: the
+    // kernel collapses onto one sample and the "curve" becomes the raw comb of
+    // bins. Clamping is honest — the histogram's bin width IS the resolution
+    // limit of everything the viewer can show.
+    const double sigma = std::max(pdosSigma_, pdos_.binWidth * 0.5);
+    // ±4σ carries 99.994 % of the weight; the tail beyond it is far below the
+    // line width it would be drawn with.
+    const int half = std::max(
+        1, static_cast<int>(std::ceil(4.0 * sigma / pdos_.binWidth)));
+    std::vector<double> kernel(static_cast<std::size_t>(2 * half + 1));
+    const double norm = 1.0 / (sigma * std::sqrt(2.0 * M_PI));
+    for (int k = -half; k <= half; ++k) {
+        const double x = k * pdos_.binWidth;
+        kernel[static_cast<std::size_t>(k + half)] =
+            norm * std::exp(-0.5 * x * x / (sigma * sigma));
+    }
+
+    pdosCurves_.reserve(pdos_.projections.size());
+    for (const auto& [label, histogram] : pdos_.projections) {
+        const int n = static_cast<int>(histogram.size());
+        std::vector<double> curve(static_cast<std::size_t>(n), 0.0);
+        for (int i = 0; i < n; ++i) {
+            // Scattering from the occupied bins rather than gathering into
+            // every output bin: a PDOS histogram is mostly empty, and this
+            // turns the cost into (states × kernel) instead of
+            // (bins × kernel).
+            const double weight = histogram[static_cast<std::size_t>(i)];
+            if (weight == 0.0)
+                continue;
+            const int lo = std::max(0, i - half);
+            const int hi = std::min(n - 1, i + half);
+            for (int j = lo; j <= hi; ++j) {
+                curve[static_cast<std::size_t>(j)] +=
+                    weight * kernel[static_cast<std::size_t>(j - i + half)];
+            }
+        }
+        pdosCurves_.emplace_back(label, std::move(curve));
+    }
 }
 
 void BandPdosView::setReference(double referenceEv)
@@ -652,7 +720,7 @@ void BandPdosView::paintPdos(QPainter& painter, const QRectF& rect)
 
     // Maximum of the visible curves inside the energy window.
     double dosMax = 1e-12;
-    for (const auto& [label, curve] : pdos_.projections) {
+    for (const auto& [label, curve] : pdosCurves_) {
         const auto it = visible_.find(label);
         if (it != visible_.end() && !it->second)
             continue;
@@ -678,7 +746,7 @@ void BandPdosView::paintPdos(QPainter& painter, const QRectF& rect)
 
     painter.setClipRect(rect);
     int colorIndex = 0;
-    for (const auto& [label, curve] : pdos_.projections) {
+    for (const auto& [label, curve] : pdosCurves_) {
         const int index = colorIndex++;
         const auto it = visible_.find(label);
         if (it != visible_.end() && !it->second)

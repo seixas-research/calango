@@ -64,6 +64,20 @@ struct BandSymmetryConfig {
     /// bands that touch but carry different line irreps cannot hybridize, and
     /// only the line labels say so. One extra k-point per segment.
     bool classifyLines = true;
+
+    /// The states being classified are two-component SPINORS — a run with
+    /// spin-orbit coupling on.
+    ///
+    /// This changes the group, not just the wave functions. A spinor picks up
+    /// a minus sign under a 2π rotation, so the ordinary point group cannot
+    /// represent the symmetry acting on it; the DOUBLE group can, and its
+    /// extra double-valued irreps are the ones a SOC band realizes. A Kramers
+    /// pair is one two-dimensional spinor irrep, and whether two SOC bands may
+    /// hybridize where they touch is a statement about these labels.
+    ///
+    /// With this off, a SOC band structure could only be given single-group
+    /// labels, which is not a coarser answer but a wrong one.
+    bool spinorStates = false;
 };
 
 /// Python block appended to the Electronic Structure script (GPAW backend).

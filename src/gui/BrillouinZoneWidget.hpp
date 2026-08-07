@@ -9,8 +9,9 @@
 
 #include <vector>
 
-class QListWidget;
+class QLabel;
 class QSpinBox;
+class QTreeWidget;
 
 namespace calango::gui {
 
@@ -66,6 +67,15 @@ public:
     /// widget with a previously chosen path (project reload, Back navigation).
     void setPathString(const QString& path);
 
+    /// Label the panel for a phonon q-path ("q") rather than an electronic
+    /// k-path ("k", the default).
+    ///
+    /// The construction is identical — the same Brillouin zone, the same
+    /// high-symmetry points, the same path string — but the quantity is not,
+    /// and a phonon wizard whose panel is headed "k-path sequence" is telling
+    /// the user they are choosing something they are not.
+    void setPathSymbol(const QString& symbol);
+
     /// The embedded 3D view, for callers that need to restyle or capture it
     /// (the dialog's appearance and figure-export actions).
     BrillouinZoneView* view() const { return view_; }
@@ -92,7 +102,26 @@ private:
     std::vector<int> path_; ///< indices into specialPoints_; -1 = break
 
     BrillouinZoneView* view_;
-    QListWidget* pathList_;
+    /// Heading above the table, retitled by setPathSymbol().
+    QLabel* pathHeading_;
+    /// The ordered path, as a real TABLE rather than a list of preformatted
+    /// strings.
+    ///
+    /// It used to be a QListWidget whose rows were built with "%1.  %2   (%3,
+    /// %4, %5)". In a proportional font that lines nothing up: the label column
+    /// jumps right the moment the running number reaches two digits, Γ and W
+    /// and X1 are three different widths, and a negative coordinate is a
+    /// character wider than a positive one — so no two rows put their
+    /// coordinates in the same place, and reading down a column, which is the
+    /// only reason to show the coordinates at all, is impossible. Real columns
+    /// align by construction, right-align the numbers, and let a long label or
+    /// a negative coordinate widen its own column instead of pushing the row
+    /// off the edge of a fixed-width panel.
+    QTreeWidget* pathList_;
+    /// The path as it will be written into the script, spelled out with arrows.
+    /// The table answers "what are the coordinates of step 7"; this answers
+    /// "what is the path", which is the question actually being asked.
+    QLabel* pathSummary_;
     QSpinBox* divisionsSpin_;
 };
 

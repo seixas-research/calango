@@ -90,8 +90,28 @@ struct ElectronicConfig {
     bool spinOrbit = false;
     // -- PDOS (GPAW) --
     bool pdos = true;
-    double pdosWidthEv = 0.1;   ///< Gaussian smearing σ (eV)
-    int pdosPoints = 401;       ///< number of energy sampling points
+    /// Gaussian smearing σ (eV) the VIEWER opens on.
+    ///
+    /// No longer baked into the result. The run writes the unbroadened
+    /// histogram (see `pdosPoints`) and the viewer convolves it live, so this
+    /// is an initial value for a slider rather than a decision the calculation
+    /// commits to — σ is a presentation choice, and discovering that a peak was
+    /// an artifact of the broadening used to mean re-running the whole SCF.
+    double pdosWidthEv = 0.1;
+    /// Number of bins in the RAW histogram written to pdos.json.
+    ///
+    /// Bins, not "sampling points of a smooth curve": the run stores the
+    /// projected weight falling in each narrow energy bin, with no Gaussian
+    /// applied. Convolving that histogram with a Gaussian of σ several bins
+    /// wide is numerically the same as broadening the individual eigenvalues,
+    /// and it is what makes the viewer's slider real time — a redraw costs
+    /// O(bins) instead of O(k-points × bands), which for a converged PDOS mesh
+    /// is four orders of magnitude apart.
+    ///
+    /// So this wants to be LARGE (a fine grid), unlike the old curve-sampling
+    /// count: the bin width it implies is the resolution limit of every σ the
+    /// viewer can later offer.
+    int pdosPoints = 3001;
     /// Fixed-density k-mesh for the projected DOS, typically denser than the
     /// baseline SCF grid (the wizard defaults it to 2× along non-vacuum axes).
     /// The PDOS is re-evaluated at this mesh via calc.fixed_density.

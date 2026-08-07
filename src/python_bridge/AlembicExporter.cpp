@@ -235,10 +235,19 @@ namespace {
 /// the collision is detected up front and named.
 void requireAlembic()
 {
+    // The package name and the import name differ, and the name that is free
+    // on PyPI belongs to something else entirely — so the install line has to
+    // say both what to run and what not to.
     const char* kInstallHint =
         "Alembic export needs PyAlembic (the geometry library) in the embedded\n"
         "Python environment. Install it with:\n"
-        "    conda install -c conda-forge pyalembic imath\n";
+        "    conda install -c conda-forge pyalembic imath\n"
+        "\n"
+        "Note it is conda-forge only, and that the package is named pyalembic\n"
+        "while it imports as `alembic`. Neither pip name works: there is no\n"
+        "`pyalembic` on PyPI, and `pip install alembic` installs SQLAlchemy's\n"
+        "database-migration tool, which shares the import name and nothing\n"
+        "else.\n";
     py::module_ module;
     try {
         module = py::module_::import("alembic");

@@ -9,6 +9,7 @@ class QLabel;
 class QDoubleSpinBox;
 class QListWidget;
 class QPushButton;
+class QSlider;
 
 #include <QString>
 
@@ -58,6 +59,10 @@ private:
     bool loadFatbands(const QString& directory);
     /// band_symmetry.json — irrep labels at the high-symmetry points.
     bool loadSymmetry(const QString& directory);
+    /// Enable or explain the σ control, depending on whether the loaded run
+    /// stored a re-broadenable histogram or a curve with the width already in
+    /// it. Called after every load.
+    void updateSmearingControl();
 
     /// Push the current shift choice into the view: E_F when the toggle is
     /// on, 0 (absolute energies) when it is off.
@@ -79,6 +84,15 @@ private:
     QDoubleSpinBox* maxSpin_;
     QListWidget* projectionList_;
     bool hasData_ = false;
+
+    // -- Live DOS smearing --------------------------------------------------
+    /// σ is a drawing parameter now, not a property of the run, so it gets a
+    /// control that can be swept while watching the curve rather than a number
+    /// buried in a wizard the user would have to re-run.
+    QGroupBox* smearingBox_ = nullptr;
+    QSlider* smearingSlider_ = nullptr;
+    QDoubleSpinBox* smearingSpin_ = nullptr;
+    QLabel* smearingNote_ = nullptr;
 
     // -- Orbital projections (fatbands) -------------------------------------
     /// Hidden entirely when the run wrote no fatbands.json: an empty channel

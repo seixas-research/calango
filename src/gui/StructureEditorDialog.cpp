@@ -510,6 +510,9 @@ void StructureEditorDialog::standardizeCell()
             pybridge::AseBridge::standardizeCell(*working_, /*symprec=*/1e-3,
                                                  /*toPrimitive=*/false,
                                                  /*idealize=*/true));
+        // Recorded so the caller can put the rest of a trajectory into the same
+        // lattice; only set once the call SUCCEEDED.
+        cellTransform_ = core::CellTransform::Standardize;
         refreshAll();
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Standardize Cell"),
@@ -531,6 +534,7 @@ void StructureEditorDialog::reduceToPrimitiveCell()
             pybridge::AseBridge::standardizeCell(*working_, /*symprec=*/1e-3,
                                                  /*toPrimitive=*/true,
                                                  /*idealize=*/false));
+        cellTransform_ = core::CellTransform::Primitive;
         refreshAll();
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Reduce to Primitive Cell"),

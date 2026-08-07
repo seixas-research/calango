@@ -1,8 +1,10 @@
 #include "gui/RunCommands.hpp"
 
+#include "gui/CondaEnvs.hpp"
 #include "gui/EnginePresets.hpp"
 #include "gui/SettingsManager.hpp"
 
+#include <QDir>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSettings>
@@ -31,6 +33,60 @@ void writeMap(const QJsonObject& map)
     SettingsManager::save(); // mirror to ~/.calango/settings.json immediately
 }
 
+/// Quote a path for the /bin/sh (or cmd.exe) line the job is launched with.
+/// Conda environments live under the user's home directory, and "Application
+/// Support" or a space in a username is enough to split the command in two.
+QString shellQuoted(const QString& path)
+{
+    if (path.isEmpty() || !path.contains(QLatin1Char(' ')))
+        return path;
+    return QLatin1Char('"') + path + QLatin1Char('"');
+}
+
+/// The launch line for a SIESTA that Conda installed, or "" when no
+/// environment provides one.
+///
+/// Two things have to be resolved here rather than left to $PATH:
+///
+///   • WHICH siesta. `conda create -n siesta -c conda-forge siesta` produces an
+///     environment with a solver and no Python in it, so it is not the
+///     environment the engine's interpreter comes from and its bin/ is not on
+///     the job's PATH. Naming the binary absolutely is what makes that layout
+///     work at all.
+///
+///   • WHETHER to launch it under MPI. conda-forge ships `nompi`, `openmpi`
+///     and `mpich` builds of SIESTA under the same package name. Running a
+///     serial build under `mpirun -np 8` does not fail: it starts eight
+///     independent copies of the same calculation in one directory, all
+///     writing the same files, and the result looks like a corrupted run
+///     rather than a misconfiguration. The MPI builds pull their launcher into
+///     the same environment, so an environment with no mpirun beside its
+///     siesta is taken as serial and launched directly. When there IS one, it
+///     is named absolutely too — a conda-built solver started by the system's
+///     mpirun is the other classic way this fails.
+QString condaSiestaCommand()
+{
+    const QString env = CondaEnvs::environmentProviding(
+        QStringLiteral("siesta"),
+        EnginePresets::envFor(core::CalculatorKind::Siesta));
+    if (env.isEmpty())
+        return {};
+    const QString siesta =
+        shellQuoted(CondaEnvs::executableIn(env, QStringLiteral("siesta")));
+    if (siesta.isEmpty())
+        return {};
+
+    for (const auto* launcher : {"mpirun", "mpiexec"}) {
+        const QString mpi =
+            CondaEnvs::executableIn(env, QLatin1String(launcher));
+        if (!mpi.isEmpty()) {
+            return QStringLiteral("%1 -np {cores} %2 < {input} > {output}")
+                .arg(shellQuoted(mpi), siesta);
+        }
+    }
+    return QStringLiteral("%1 < {input} > {output}").arg(siesta);
+}
+
 } // namespace
 
 QString defaultTemplate(core::CalculatorKind kind)
@@ -51,8 +107,16 @@ QString defaultTemplate(core::CalculatorKind kind)
             "OMP_NUM_THREADS=1 mpirun -n {cores} gpaw python {script}");
     case core::CalculatorKind::QuantumEspresso:
         return QStringLiteral("mpirun -np {cores} pw.x -in {input} > {output}");
-    case core::CalculatorKind::Siesta:
-        return QStringLiteral("mpirun -np {cores} siesta < {input} > {output}");
+    case core::CalculatorKind::Siesta: {
+        // A Conda-installed solver is named absolutely and launched by its own
+        // environment's MPI, or serially when that environment has none — see
+        // condaSiestaCommand(). Falls back to the bare name, which is right for
+        // a module-loaded or system-packaged SIESTA already on $PATH.
+        const QString detected = condaSiestaCommand();
+        return detected.isEmpty()
+            ? QStringLiteral("mpirun -np {cores} siesta < {input} > {output}")
+            : detected;
+    }
     case core::CalculatorKind::Vasp:
         return QStringLiteral("mpirun -np {cores} vasp_std");
     case core::CalculatorKind::Orca:

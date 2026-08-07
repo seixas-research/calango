@@ -104,7 +104,9 @@ void CastColorsDialog::populate()
         };
         // A cast is referred to by its number alone, matching Cast Setup and
         // the Representation panel's dropdown.
-        table_->setItem(cast, ColCast, readOnly(QString::number(cast)));
+        table_->setItem(
+            cast, ColCast,
+            readOnly(render::StructureRenderer::castLabel(cast, style)));
         table_->setItem(
             cast, ColAtoms,
             readOnly(QString::number(populations[static_cast<std::size_t>(cast)])));

@@ -331,6 +331,28 @@ def _calango_character_operator(shape, rot, shift, tau, kfrac, origin):
     return index, phase
 
 
+def _calango_spinor_coefficients(u_msR, band, kfrac, origin):
+    """Plane-wave coefficients of one SOC spinor state, as (2, nx, ny, nz).
+
+    `u_msR` is what gpaw.spinorbit's WaveFunction.wavefunctions() returns for
+    one k-point: the periodic part of every spinor band, with a spin axis. Each
+    component is transformed exactly as the scalar case — the operation's
+    orbital action is the same permutation and phase for both — and it is the
+    SU(2) matrix contracted over the spin axis afterwards that makes the trace
+    a DOUBLE-group character rather than an ordinary one.
+    """
+    u = _np.asarray(u_msR[band])
+    c = _np.stack([_np.fft.fftn(u[s]) / u[s].size for s in range(2)])
+    if _np.max(_np.abs(origin)) > 1e-12:
+        n = _np.asarray(c.shape[1:], dtype=_np.int64)
+        freqs = [_np.fft.fftfreq(int(ni), d=1.0 / int(ni)).astype(_np.int64)
+                 for ni in n]
+        grid = _np.stack(_np.meshgrid(*freqs, indexing="ij"), axis=-1)
+        phase = _np.exp(2j * _np.pi * ((grid + kfrac) @ origin))
+        c = c * phase[_np.newaxis]
+    return c
+
+
 def _calango_coefficients(calc, band, kpt, spin, kfrac, origin):
     """Plane-wave coefficients c_G of one pseudo Kohn-Sham state.
 
@@ -348,6 +370,280 @@ def _calango_coefficients(calc, band, kpt, spin, kfrac, origin):
         grid = _np.stack(_np.meshgrid(*freqs, indexing="ij"), axis=-1)
         c = c * _np.exp(2j * _np.pi * ((grid + kfrac) @ origin))
     return c
+)PY";
+
+/// Double-group construction for spin-orbit-coupled (spinor) bands.
+///
+/// With SOC the Kohn-Sham states are two-component spinors, and a spinor does
+/// not come back to itself under a 2π rotation — it comes back to MINUS itself.
+/// The ordinary point group therefore cannot represent the symmetry acting on
+/// them: what does is the DOUBLE group, in which every rotation R has two
+/// distinct elements R and R̄ = R·(2π), of order 2h rather than h.
+///
+/// Its extra ("double-valued", "spinor") irreps are exactly those with
+/// χ(R̄) = −χ(R), and they are the ones a SOC band structure needs — a Kramers
+/// pair is a two-dimensional spinor irrep, and whether two SOC bands may
+/// hybridize at a crossing is a statement about these labels and not about the
+/// single-group ones.
+///
+/// The construction is closed and needs no tabulated data:
+///
+///   * each proper rotation lifts to SU(2) as u(n, θ) = cos(θ/2)·1 −
+///     i·sin(θ/2)(n·σ), the two lifts being ±u. Improper operations are
+///     handled through their proper part: spin is a pseudo-vector, so
+///     inversion acts trivially on it, and proper(A·B) = proper(A)·proper(B)
+///     always — which is what makes the factor system below consistent.
+///
+///   * multiplying two elements gives a rotation product whose own lift is
+///     ±(u_a u_b); comparing the two fixes the sign, and that sign IS the
+///     double group's multiplication table.
+///
+///   * the class-sum (Burnside) machinery then applies unchanged, because at
+///     that point this is just a group of order 2h given by its table.
+constexpr const char* kDoubleGroupHelpers = R"PY(
+def _calango_su2(rot_cart):
+    """SU(2) lift of a Cartesian orthogonal matrix, via its PROPER part.
+
+    Returns the 2x2 matrix for one of the two lifts; the other is its
+    negative, and the double group contains both. Which one is called "+" is
+    arbitrary and cancels: the set is closed under the sign either way.
+    """
+    m = _np.asarray(rot_cart, dtype=float)
+    if _np.linalg.det(m) < 0.0:
+        m = -m          # spin does not see inversion
+    cos = _np.clip((_np.trace(m) - 1.0) / 2.0, -1.0, 1.0)
+    theta = float(_np.arccos(cos))
+    if theta < 1e-8:
+        return _np.eye(2, dtype=complex)
+    if abs(theta - _np.pi) < 1e-8:
+        # A twofold axis: (R + 1)/2 is the projector onto it, so its largest
+        # column is along the axis. The antisymmetric part vanishes here, which
+        # is why the general branch below cannot be used.
+        proj = (m + _np.eye(3)) / 2.0
+        axis = proj[:, int(_np.argmax(_np.linalg.norm(proj, axis=0)))]
+    else:
+        axis = _np.array([m[2, 1] - m[1, 2],
+                          m[0, 2] - m[2, 0],
+                          m[1, 0] - m[0, 1]]) / (2.0 * _np.sin(theta))
+    axis = axis / _np.linalg.norm(axis)
+    sx = _np.array([[0, 1], [1, 0]], dtype=complex)
+    sy = _np.array([[0, -1j], [1j, 0]], dtype=complex)
+    sz = _np.array([[1, 0], [0, -1]], dtype=complex)
+    n_dot_sigma = axis[0] * sx + axis[1] * sy + axis[2] * sz
+    return (_np.cos(theta / 2.0) * _np.eye(2, dtype=complex)
+            - 1j * _np.sin(theta / 2.0) * n_dot_sigma)
+
+
+def _calango_double_group(rots, lattice):
+    """(class_labels, class_of, classes, irreps, col_order, su2, sign) .
+
+    `irreps` entries are [chi, dim, paired, label, spinor]; `spinor` marks the
+    double-valued representations, the ones spinor bands actually realize.
+    Element i of the double group is (rots[i % h], +1 if i < h else -1), so the
+    caller can map a little-group operation onto it directly.
+    """
+    h = len(rots)
+    rots = [_np.rint(_np.asarray(r)).astype(int) for r in rots]
+    basis = _np.asarray(lattice, dtype=float).T
+    to_cart = _np.linalg.inv(basis)
+    cart = [basis @ r.astype(float) @ to_cart for r in rots]
+    su2 = [_calango_su2(m) for m in cart]
+
+    def _key(m):
+        return tuple(int(x) for x in _np.rint(m).flatten())
+
+    index = {_key(r): i for i, r in enumerate(rots)}
+    if len(index) != h:
+        raise RuntimeError("duplicate rotation parts — the cell is not "
+                           "primitive")
+
+    # sign[a][b] = the lift correction of R_a R_b: u_a u_b = sign * u_{ab}.
+    sign = _np.zeros((h, h), dtype=int)
+    for a in range(h):
+        for b in range(h):
+            ab = index[_key(rots[a] @ rots[b])]
+            product = su2[a] @ su2[b]
+            if _np.max(_np.abs(product - su2[ab])) < 1e-6:
+                sign[a, b] = 1
+            elif _np.max(_np.abs(product + su2[ab])) < 1e-6:
+                sign[a, b] = -1
+            else:
+                raise RuntimeError("SU(2) lift is not closed — the rotation "
+                                   "set is not a group")
+
+    order = 2 * h
+    mult = [[0] * order for _ in range(order)]
+    for a in range(order):
+        ra, sa = a % h, 1 if a < h else -1
+        for b in range(order):
+            rb, sb = b % h, 1 if b < h else -1
+            rc = index[_key(rots[ra] @ rots[rb])]
+            sc = sa * sb * sign[ra, rb]
+            mult[a][b] = rc if sc > 0 else rc + h
+    identity = index[_key(_np.eye(3))]
+    bar_identity = identity + h        # the 2 pi rotation, E-bar
+
+    inv = [mult[i].index(identity) for i in range(order)]
+    class_of = [-1] * order
+    classes = []
+    for i in range(order):
+        if class_of[i] >= 0:
+            continue
+        members = sorted({mult[mult[g][i]][inv[g]] for g in range(order)})
+        for m in members:
+            class_of[m] = len(classes)
+        classes.append(members)
+    nclasses = len(classes)
+
+    # Class-sum algebra, exactly as for the single group: C_i C_j =
+    # sum_l a_ijl C_l, and the lambda vectors are the common eigenvectors.
+    a = _np.zeros((nclasses, nclasses, nclasses))
+    for i, ci in enumerate(classes):
+        for j, cj in enumerate(classes):
+            for x in ci:
+                for y in cj:
+                    a[i, j, class_of[mult[x][y]]] += 1.0
+    for l, cl in enumerate(classes):
+        a[:, :, l] /= len(cl)
+
+    rng = _np.random.default_rng(12345)
+    combo = _np.tensordot(rng.random(nclasses), a, axes=(0, 0))
+    _, vectors = _np.linalg.eig(combo)
+
+    characters = []
+    for col in vectors.T:
+        lam = col / col[class_of[identity]]
+        dim = _np.sqrt(order / _np.sum(_np.abs(lam) ** 2
+                                       / [len(c) for c in classes]))
+        characters.append(dim * lam / [len(c) for c in classes])
+    characters = _np.array(characters)
+
+    used = [False] * len(characters)
+    irreps = []
+    for i, chi in enumerate(characters):
+        if used[i]:
+            continue
+        if _np.max(_np.abs(chi.imag)) < 1e-6:
+            irreps.append([chi.real,
+                           int(round(chi[class_of[identity]].real)), False])
+            used[i] = True
+            continue
+        for j in range(i + 1, len(characters)):
+            if not used[j] \
+                    and _np.max(_np.abs(characters[j] - chi.conj())) < 1e-6:
+                summed = (chi + characters[j]).real
+                irreps.append([summed,
+                               int(round(summed[class_of[identity]])), True])
+                used[i] = used[j] = True
+                break
+        else:
+            raise RuntimeError("unpaired complex irreducible representation")
+
+    # --- which irreps are the DOUBLE-VALUED ones ---------------------------
+    # The defining property, and the only one needed: a single-valued irrep
+    # cannot tell E from E-bar, a double-valued one sees a sign.
+    bar_class = class_of[bar_identity]
+    for entry in irreps:
+        chi, dim = entry[0], entry[1]
+        entry.append(bool(chi[bar_class] < -0.5 * dim))
+
+    # --- labels ------------------------------------------------------------
+    # Single-valued irreps of the double group ARE the ordinary point-group
+    # irreps, so they keep the Mulliken symbols the single-group analysis
+    # already gives them and are matched by their characters on the unbarred
+    # classes. The spinor ones have no name derivable from the characters
+    # alone, so they are named by dimension and rank in the Herzberg/Mulliken
+    # form (E for 2, G for 4, H for 6) with a half-integer subscript — and the
+    # full table is written out beside them, which is what actually pins them
+    # down whatever convention the reader uses.
+    dets = [int(round(_np.linalg.det(cart[classes[c][0] % h])))
+            for c in range(nclasses)]
+    traces = [float(_np.trace(cart[classes[c][0] % h])) for c in range(nclasses)]
+    inversion = next((c for c in range(nclasses)
+                      if _np.allclose(cart[classes[c][0] % h], -_np.eye(3),
+                                      atol=1e-6)
+                      and classes[c][0] < h), None)
+
+    # Single-valued irreps: matched to the ORDINARY point group by their
+    # characters on the unbarred classes — they are the same representations,
+    # so they must carry the same Mulliken symbols. Inventing a second naming
+    # scheme for them would mean a band labelled A1g without SOC and "A(2)"
+    # with it, which reads as two different states rather than one.
+    single_labels = {}
+    try:
+        _s_labels, _s_class_of, _s_classes, _s_irreps, _s_col = \
+            _calango_point_group(rots, lattice)
+        for s_entry in _s_irreps:
+            key = tuple(round(float(s_entry[0][_s_class_of[r]]), 5)
+                        for r in range(h))
+            single_labels[key] = s_entry[3]
+    except Exception:
+        single_labels = {}
+
+    spinor_rank = {}
+    for entry in irreps:
+        chi, dim, _paired, spinor = entry[0], entry[1], entry[2], entry[3]
+        parity = ""
+        if inversion is not None:
+            parity = "g" if chi[inversion] > 0 else "u"
+        if not spinor:
+            key = tuple(round(float(chi[class_of[r]]), 5) for r in range(h))
+            name = single_labels.get(key)
+            if name is None:
+                letter = {1: "A", 2: "E", 3: "T", 4: "G", 6: "H"}.get(
+                    dim, "X%d" % dim)
+                name = letter + parity
+            entry.append(name)
+            continue
+        # Spinor irreps have no name derivable from characters alone. Named in
+        # the Herzberg/Mulliken form — E for 2, G for 4, H for 6 — with a
+        # half-integer subscript assigned by rank WITHIN a parity, so the g and
+        # u sets each run 1/2, 3/2, … rather than interleaving. This reproduces
+        # the familiar names for the common cases; the character table is
+        # emitted beside them, and that is what pins them down under any
+        # convention.
+        letter = {2: "E", 4: "G", 6: "H"}.get(dim, "X%d" % dim)
+        rank = spinor_rank.get((dim, parity), 0)
+        spinor_rank[(dim, parity)] = rank + 1
+        half = {2: [1, 3, 5, 7], 4: [3, 5], 6: [5, 7]}.get(dim, [1])
+        sub = half[rank] if rank < len(half) else 2 * rank + 1
+        entry.append("%s%d/2%s" % (letter, sub, parity))
+
+    # Disambiguate any collision by rank, so no two irreps share a name.
+    seen = {}
+    for entry in irreps:
+        name = entry[4]
+        if name in seen:
+            seen[name] += 1
+            entry[4] = "%s(%d)" % (name, seen[name])
+        else:
+            seen[name] = 1
+
+    col_order = [class_of[identity], bar_class] + [
+        c for c in range(nclasses)
+        if c not in (class_of[identity], bar_class)]
+    class_labels = []
+    for c in col_order:
+        rep = classes[c][0]
+        barred = rep >= h
+        base = rep % h
+        if dets[c] > 0:
+            cos = _np.clip((traces[c] - 1.0) / 2.0, -1.0, 1.0)
+            theta = float(_np.arccos(cos))
+            symbol = "E" if theta < 1e-6 else "C%d" % int(round(2 * _np.pi / theta))
+        elif _np.allclose(cart[base], -_np.eye(3), atol=1e-6):
+            symbol = "i"
+        elif abs(traces[c] - 1.0) < 1e-6:
+            symbol = "s"
+        else:
+            cos = _np.clip((traces[c] + 1.0) / 2.0, -1.0, 1.0)
+            symbol = "S%d" % int(round(2.0 * _np.pi / _np.arccos(cos)))
+        if barred:
+            symbol = "bar" + symbol
+        n = len(classes[c])
+        class_labels.append(symbol if n == 1 else "%d%s" % (n, symbol))
+
+    return class_labels, class_of, classes, irreps, col_order, su2, sign
 )PY";
 
 } // namespace
@@ -374,6 +670,7 @@ std::string generateBandSymmetryBlock(const BandSymmetryConfig& c)
            "\n"
         << kPointGroupHelpers << "\n"
         << kLittleGroupHelpers << "\n"
+        << kDoubleGroupHelpers << "\n"
            "band_symmetry = None\n"
            "try:\n"
            "    import spglib as _spglib\n"
@@ -381,6 +678,7 @@ std::string generateBandSymmetryBlock(const BandSymmetryConfig& c)
         << "    _sym_symprec = " << c.symprec << "\n"
         << "    _sym_degen = " << c.degeneracyEv << "\n"
         << "    _sym_window = " << c.windowEv << "\n"
+        << "    _sym_spinor = " << (c.spinorStates ? "True" : "False") << "\n"
            "\n"
            "    _sym_atoms = band_calc.get_atoms()\n"
            "    _sym_cell = (_sym_atoms.cell[:],\n"
@@ -458,23 +756,67 @@ std::string generateBandSymmetryBlock(const BandSymmetryConfig& c)
            "                           _sym_special_labels[_sym_i + 1]),\n"
            "                float(_sym_x[_sym_ik]), _sym_ik, 'line'))\n"
            "\n"
+           "    # The SOC eigenstates. `_soc` was built earlier in the script;\n"
+           "    # rebuilt here only if it is not in scope, because\n"
+           "    # soc_eigenstates() is the expensive part of a SOC run and\n"
+           "    # doing it twice would double it.\n"
+           "    _sym_soc = None\n"
+           "    if _sym_spinor:\n"
+           "        try:\n"
+           "            _sym_soc = _soc\n"
+           "        except NameError:\n"
+           "            from gpaw.spinorbit import soc_eigenstates as _sym_soc_fn\n"
+           "            _sym_soc = _sym_soc_fn(band_calc)\n"
+           "\n"
            "    _sym_points = []\n"
            "    for _sym_label, _sym_kx, _sym_ik, _sym_kind in _sym_targets:\n"
            "        _sym_k = _sym_kpts[_sym_ik]\n"
+           "\n"
+           "        # Spinor wave functions for this k-point: (nband, 2, nx,\n"
+           "        # ny, nz). GPAW builds them from the scalar-relativistic\n"
+           "        # states and the SOC eigenvectors, which is why this needs\n"
+           "        # the same calculator the SOC diagonalization ran on.\n"
+           "        _sym_spinor_u = None\n"
+           "        if _sym_spinor:\n"
+           "            try:\n"
+           "                _sym_spinor_u = _sym_soc[_sym_ik].wavefunctions(\n"
+           "                    band_calc, periodic=True)\n"
+           "            except Exception as _sym_err:\n"
+           "                print(f'CALANGO_WARN no spinor wave functions at '\n"
+           "                      f'{_sym_label}: {_sym_err}', flush=True)\n"
+           "                continue\n"
            "\n"
            "        _sym_members, _sym_shifts = _calango_little_group(\n"
            "            _sym_rots, _sym_k)\n"
            "        _sym_little = [_sym_rots[m] for m in _sym_members]\n"
            "        try:\n"
-           "            _sym_classes = _calango_point_group(_sym_little,\n"
-           "                                                _sym_lattice)\n"
+           "            if _sym_spinor:\n"
+           "                # The DOUBLE group: 2h elements, and its extra\n"
+           "                # double-valued irreps are the ones spinor bands\n"
+           "                # realize. `_sym_su2` and `_sym_sign` come back\n"
+           "                # because the characters below need the SU(2)\n"
+           "                # matrices, not only the table.\n"
+           "                _sym_classes = _calango_double_group(_sym_little,\n"
+           "                                                     _sym_lattice)\n"
+           "                _sym_class_labels, _sym_class_of, \\\n"
+           "                    _sym_class_members, _sym_irreps, \\\n"
+           "                    _sym_col_order, _sym_su2, _sym_sign = _sym_classes\n"
+           "            else:\n"
+           "                _sym_classes = _calango_point_group(_sym_little,\n"
+           "                                                    _sym_lattice)\n"
+           "                _sym_class_labels, _sym_class_of, \\\n"
+           "                    _sym_class_members, _sym_irreps, \\\n"
+           "                    _sym_col_order = _sym_classes\n"
+           "                _sym_su2 = None\n"
            "        except Exception as _sym_err:\n"
            "            print(f'CALANGO_WARN no character table at '\n"
            "                  f'{_sym_label}: {_sym_err}', flush=True)\n"
            "            continue\n"
-           "        _sym_class_labels, _sym_class_of, _sym_class_members, \\\n"
-           "            _sym_irreps, _sym_col_order = _sym_classes\n"
            "        _sym_order = len(_sym_little)\n"
+           "        # The reduction runs over the WHOLE group, which for the\n"
+           "        # double group is 2h elements.\n"
+           "        _sym_group_order = 2 * _sym_order if _sym_spinor \\\n"
+           "            else _sym_order\n"
            "        _sym_point_projective = _calango_projective(\n"
            "            _sym_shifts, [_sym_taus0[_m] for _m in _sym_members])\n"
            "\n"
@@ -505,11 +847,20 @@ std::string generateBandSymmetryBlock(const BandSymmetryConfig& c)
            "            for _sym_bands in _sym_groups:\n"
            "                _sym_chi = _np.zeros(_sym_order, dtype=complex)\n"
            "                for _sym_n in _sym_bands:\n"
-           "                    _sym_c = _calango_coefficients(\n"
-           "                        band_calc, _sym_n, _sym_ik, _sym_s,\n"
-           "                        _sym_k, _sym_origin)\n"
+           "                    if _sym_spinor:\n"
+           "                        # Two components, so the coefficients come\n"
+           "                        # as (2, nx, ny, nz).\n"
+           "                        _sym_c = _calango_spinor_coefficients(\n"
+           "                            _sym_spinor_u, _sym_n, _sym_k,\n"
+           "                            _sym_origin)\n"
+           "                        _sym_shape0 = _sym_c.shape[1:]\n"
+           "                    else:\n"
+           "                        _sym_c = _calango_coefficients(\n"
+           "                            band_calc, _sym_n, _sym_ik, _sym_s,\n"
+           "                            _sym_k, _sym_origin)\n"
+           "                        _sym_shape0 = _sym_c.shape\n"
            "                    if _sym_operators is None:\n"
-           "                        _sym_shape = _sym_c.shape\n"
+           "                        _sym_shape = _sym_shape0\n"
            "                        _sym_operators = [\n"
            "                            _calango_character_operator(\n"
            "                                _sym_shape, _sym_rots[_sym_m],\n"
@@ -523,9 +874,30 @@ std::string generateBandSymmetryBlock(const BandSymmetryConfig& c)
            "                        continue\n"
            "                    for _sym_j, (_sym_idx, _sym_ph) \\\n"
            "                            in enumerate(_sym_operators):\n"
-           "                        _sym_chi[_sym_j] += _np.sum(\n"
-           "                            _np.conj(_sym_c[_sym_idx]) * _sym_c\n"
-           "                            * _sym_ph) / _sym_norm\n"
+           "                        if not _sym_spinor:\n"
+           "                            _sym_chi[_sym_j] += _np.sum(\n"
+           "                                _np.conj(_sym_c[_sym_idx])\n"
+           "                                * _sym_c * _sym_ph) / _sym_norm\n"
+           "                            continue\n"
+           "                        # The operation acts on BOTH the orbital\n"
+           "                        # part and the spin: (O psi)_s = sum_s'\n"
+           "                        # D^{1/2}_{ss'} psi_s'(R^-1(x - t)). The\n"
+           "                        # orbital half is the same permutation and\n"
+           "                        # phase as above, applied per component;\n"
+           "                        # the spin half is the SU(2) matrix, and\n"
+           "                        # the trace contracts the two.\n"
+           "                        _sym_d = _sym_su2[_sym_j]\n"
+           "                        for _sym_a in range(2):\n"
+           "                            for _sym_b in range(2):\n"
+           "                                if abs(_sym_d[_sym_a, _sym_b]) < 1e-12:\n"
+           "                                    continue\n"
+           "                                _sym_chi[_sym_j] += (\n"
+           "                                    _sym_d[_sym_a, _sym_b]\n"
+           "                                    * _np.sum(\n"
+           "                                        _np.conj(\n"
+           "                                            _sym_c[_sym_a][_sym_idx])\n"
+           "                                        * _sym_c[_sym_b]\n"
+           "                                        * _sym_ph)) / _sym_norm\n"
            "\n"
            "                # Reduced character: the pure-translation phase of\n"
            "                # a nonsymmorphic operation divided out, so what\n"
@@ -539,14 +911,24 @@ std::string generateBandSymmetryBlock(const BandSymmetryConfig& c)
            "                     for _sym_j, _sym_m\n"
            "                     in enumerate(_sym_members)])\n"
            "\n"
+           "                # For the double group the sum runs over all 2h\n"
+           "                # elements. A spinor state's character on the\n"
+           "                # barred element is exactly MINUS the unbarred one\n"
+           "                # — that is what makes it a spinor — so the second\n"
+           "                # half is known without computing it.\n"
+           "                if _sym_spinor:\n"
+           "                    _sym_chit = _np.concatenate([_sym_chit,\n"
+           "                                                 -_sym_chit])\n"
+           "\n"
            "                _sym_mult = []\n"
-           "                for _sym_chi_i, _sym_dim, _sym_paired, _sym_lab \\\n"
-           "                        in _sym_irreps:\n"
+           "                for _sym_irrep in _sym_irreps:\n"
+           "                    _sym_chi_i = _sym_irrep[0]\n"
+           "                    _sym_paired = _sym_irrep[2]\n"
            "                    _sym_per_op = _np.array(\n"
            "                        [_sym_chi_i[_sym_class_of[_sym_j]]\n"
-           "                         for _sym_j in range(_sym_order)])\n"
+           "                         for _sym_j in range(_sym_group_order)])\n"
            "                    _sym_n_a = _np.sum(_np.conj(_sym_per_op)\n"
-           "                                       * _sym_chit) / _sym_order\n"
+           "                                       * _sym_chit) / _sym_group_order\n"
            "                    # A paired character is chi + conj(chi), so a\n"
            "                    # projector built from it counts both members.\n"
            "                    _sym_mult.append(\n"
@@ -560,7 +942,10 @@ std::string generateBandSymmetryBlock(const BandSymmetryConfig& c)
            "                _sym_names = []\n"
            "                for _sym_r, _sym_irrep in zip(_sym_round,\n"
            "                                              _sym_irreps):\n"
-           "                    _sym_names += [_sym_irrep[3]] * max(_sym_r, 0)\n"
+           "                    # The label is the LAST field either way: the\n"
+           "                    # double group's entries carry an extra\n"
+           "                    # `spinor` flag before it.\n"
+           "                    _sym_names += [_sym_irrep[-1]] * max(_sym_r, 0)\n"
            "                # A reduction that will not come out in whole\n"
            "                # numbers means this multiplet is not a\n"
            "                # representation of the group as computed — an\n"

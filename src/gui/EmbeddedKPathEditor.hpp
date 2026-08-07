@@ -29,8 +29,17 @@ class EmbeddedKPathEditor : public QWidget {
     Q_OBJECT
 
 public:
+    /// Which quantity the path is through: electronic k (the default) or
+    /// phonon q. Only the wording changes — the zone, the high-symmetry points
+    /// and the path string are the same construction — but a phonon wizard
+    /// labelled "k-path" is naming something the user is not choosing.
+    enum class Variable { K, Q };
+
+    /// `variable` follows `parent` so the existing two-argument calls keep
+    /// compiling and meaning what they did.
     explicit EmbeddedKPathEditor(std::shared_ptr<const core::Structure> structure,
-                                 QWidget* parent = nullptr);
+                                 QWidget* parent = nullptr,
+                                 Variable variable = Variable::K);
 
     /// Current ASE path string ("GXWK,UX"). Empty means "use ASE's
     /// suggestion", which every generator already handles.

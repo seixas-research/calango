@@ -859,8 +859,19 @@ void emitXtb(std::ostringstream& out, const CalculatorConfig& c)
            "# Fast and parameterized across most of the periodic table: a\n"
            "# screening / pre-relaxation method for molecules and molecular\n"
            "# crystals, not a DFT replacement.\n"
-           "# Requires:  pip install xtb   (conda: xtb-python from conda-forge)\n"
-           "from xtb.ase.calculator import XTB\n"
+           "# xTB runs IN-PROCESS: there is no binary to launch and no\n"
+           "# $PATH lookup, so it has to be installed in the interpreter this\n"
+           "# script runs under. The package is `xtb` on PyPI and\n"
+           "# `xtb-python` on conda-forge, and both import as `xtb`.\n"
+           "try:\n"
+           "    from xtb.ase.calculator import XTB\n"
+           "except ImportError as exc:\n"
+           "    raise SystemExit(\n"
+           "        \"xTB is not installed in this Python environment, so the \"\n"
+           "        \"GFN calculator cannot be created.\\n\"\n"
+           "        \"    pip install xtb\\n\"\n"
+           "        \"    conda install -c conda-forge xtb-python\\n\"\n"
+           "        f\"(import error: {exc})\")\n"
            "\n"
            "atoms.calc = XTB(\n"
         << "    method=\"" << c.xtbMethod << "\",\n"
@@ -1217,11 +1228,33 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
                "# different quantity entirely: the real-space grid the Hartree\n"
                "# and XC terms are integrated on.\n"
                "import os\n"
+               "\n"
+               "# Both of these are normally already in the environment: the\n"
+               "# application exports the run command it resolved (the Conda\n"
+               "# environment's own siesta, launched by that environment's MPI)\n"
+               "# and the pseudopotential library from Preferences before the\n"
+               "# job starts. setdefault is what lets that win, and what makes\n"
+               "# this script still runnable on its own from a shell that\n"
+               "# exports them itself.\n"
                "os.environ.setdefault(\"ASE_SIESTA_COMMAND\",\n"
-               "                      \"siesta < PREFIX.fdf > PREFIX.out\")  # EDIT ME\n"
-            << "os.environ.setdefault(\"SIESTA_PP_PATH\", \""
-            << (c.siestaPseudoDir.empty() ? "/path/to/pseudos" : c.siestaPseudoDir)
-            << "\")\n"
+               "                      \"siesta < PREFIX.fdf > PREFIX.out\")\n";
+        if (c.siestaPseudoDir.empty()) {
+            // No path is invented here. A fabricated SIESTA_PP_PATH does not
+            // fail as a missing setting — it fails much later as "cannot find
+            // the pseudopotential for element X", which reads like a broken
+            // library rather than one that was never configured.
+            out << "if not os.environ.get(\"SIESTA_PP_PATH\"):\n"
+                   "    raise SystemExit(\n"
+                   "        \"SIESTA_PP_PATH is not set: no pseudopotential \"\n"
+                   "        \"library is configured. Set one in Preferences -> \"\n"
+                   "        \"External Files, or export SIESTA_PP_PATH before \"\n"
+                   "        \"running this script. SIESTA reads its .psf/.psml \"\n"
+                   "        \"files from there and cannot start without it.\")\n";
+        } else {
+            out << "os.environ.setdefault(\"SIESTA_PP_PATH\", r\""
+                << c.siestaPseudoDir << "\")\n";
+        }
+        out << "\n"
                "from ase.calculators.siesta import Siesta\n"
                "\n"
                "atoms.calc = Siesta(\n"

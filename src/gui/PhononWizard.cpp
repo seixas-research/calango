@@ -417,7 +417,10 @@ QWidget* PhononWizard::buildSettingsPage()
     // along exactly the same high-symmetry lines as an electronic band
     // structure.
     if (periodic_) {
-        kpath_ = new EmbeddedKPathEditor(structure_, page);
+        // Same builder, labelled for q: the construction is identical but the
+        // quantity is not, and this page is choosing q-points.
+        kpath_ = new EmbeddedKPathEditor(structure_, page,
+                                         EmbeddedKPathEditor::Variable::Q);
         layout->addWidget(kpath_, 1);
         connect(kpath_, &EmbeddedKPathEditor::pathChanged, this,
                 [this] { refreshPreview(); });

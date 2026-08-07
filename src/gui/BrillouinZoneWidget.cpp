@@ -6,10 +6,11 @@
 
 #include <QCheckBox>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QLabel>
-#include <QListWidget>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -22,6 +23,16 @@ QString displayLabel(const std::string& label)
 {
     return label == "G" ? QStringLiteral("Γ") : QString::fromStdString(label);
 }
+
+/// Columns of the path table.
+enum PathColumn {
+    ColOrder = 0, ///< running number along the path
+    ColLabel,     ///< high-symmetry point name (Γ, X, W, K1 …)
+    ColU,         ///< fractional coordinates in the reciprocal basis
+    ColV,
+    ColW,
+    PathColumnCount,
+};
 
 /// Parse an ASE path string ("GXWKGLUWLK,UX") into labels; a "," marks a
 /// section break and is kept as an empty entry. Labels are one letter
@@ -53,7 +64,9 @@ BrillouinZoneWidget::BrillouinZoneWidget(
     , specialPoints_(bandPath.specialPoints)
     , suggestedPath_(QString::fromStdString(bandPath.suggestedPath))
     , view_(new BrillouinZoneView(this))
-    , pathList_(new QListWidget(this))
+    , pathHeading_(new QLabel(this))
+    , pathList_(new QTreeWidget(this))
+    , pathSummary_(new QLabel(this))
     , divisionsSpin_(new QSpinBox(this))
 {
     // Cartesian positions of the special points: frac · (b1, b2, b3).
@@ -115,10 +128,49 @@ BrillouinZoneWidget::BrillouinZoneWidget(
         });
     }
 
-    side->addWidget(new QLabel(tr("k-path sequence:"), this));
-    if (compact)
-        pathList_->setMaximumHeight(150);
+    setPathSymbol(QStringLiteral("k"));
+    side->addWidget(pathHeading_);
+
+    // A table with real columns. Widths are driven by content for the two
+    // narrow columns and shared equally by the three coordinates, so a "10."
+    // or a "-0.500" widens its own column instead of shoving the rest of the
+    // row out of view.
+    pathList_->setColumnCount(PathColumnCount);
+    pathList_->setHeaderLabels({tr("#"), tr("Point"), tr("u"), tr("v"), tr("w")});
+    // Headers follow their cells: a left-aligned "u" over a column of
+    // right-aligned numbers sits at the far end of its own column.
+    for (int column : {ColOrder, ColU, ColV, ColW}) {
+        pathList_->headerItem()->setTextAlignment(
+            column, Qt::AlignRight | Qt::AlignVCenter);
+    }
+    pathList_->setRootIsDecorated(false);
+    pathList_->setUniformRowHeights(true);
+    pathList_->setAlternatingRowColors(true);
+    pathList_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    pathList_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    pathList_->setToolTip(
+        tr("The path in order. Fractional coordinates are in the reciprocal "
+           "basis (b₁, b₂, b₃). Select a row and use Remove to delete that "
+           "step."));
+    if (auto* header = pathList_->header()) {
+        header->setSectionResizeMode(ColOrder, QHeaderView::ResizeToContents);
+        header->setSectionResizeMode(ColLabel, QHeaderView::ResizeToContents);
+        for (int column : {ColU, ColV, ColW})
+            header->setSectionResizeMode(column, QHeaderView::Stretch);
+        header->setStretchLastSection(false);
+    }
+    // No maximum height even when compact: the old cap fought the stretch
+    // factor below, which left a tall empty gap above a short list rather than
+    // a list that filled the panel.
+    pathList_->setMinimumHeight(compact ? 140 : 200);
     side->addWidget(pathList_, 1);
+
+    pathSummary_->setWordWrap(true);
+    pathSummary_->setTextFormat(Qt::RichText);
+    pathSummary_->setToolTip(
+        tr("The path as the generated script will request it. '|' marks a "
+           "discontinuous jump between sections."));
+    side->addWidget(pathSummary_);
 
     // Icon-only action bar (Suggested · Break · Undo · Remove · Clear) with
     // hover tooltips — modern RemixIcon glyphs (theme-tinted via IconManager),
@@ -159,22 +211,41 @@ BrillouinZoneWidget::BrillouinZoneWidget(
             this, &BrillouinZoneWidget::removeSelectedPoint);
     connect(clearButton, &QPushButton::clicked, this, &BrillouinZoneWidget::clearPath);
 
+    // A form row, so the label and the field align with the rest of the panel
+    // rather than the spin box stretching to swallow the leftover width.
     auto* divisionsRow = new QHBoxLayout;
     divisionsRow->addWidget(new QLabel(tr("Points per segment:"), this));
     divisionsSpin_->setRange(5, 500);
     divisionsSpin_->setValue(40);
-    divisionsRow->addWidget(divisionsSpin_, 1);
+    divisionsSpin_->setToolTip(
+        tr("How densely each straight section of the path is sampled. The cost "
+           "of a band-structure run is very nearly this number times the "
+           "number of segments."));
+    divisionsRow->addWidget(divisionsSpin_);
+    divisionsRow->addStretch(1);
     side->addLayout(divisionsRow);
     connect(divisionsSpin_, &QSpinBox::valueChanged, this,
             [this] { Q_EMIT pathChanged(); });
 
     auto* layout = new QHBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(view_, 1);
     auto* sideWidget = new QWidget(this);
     sideWidget->setLayout(side);
-    sideWidget->setFixedWidth(280);
-    layout->addWidget(sideWidget);
+    // A MINIMUM, not a fixed width. 280 px hard-coded had to hold five columns
+    // of numbers, five icon buttons and a labelled spin box, and the table was
+    // the thing that gave: rows were clipped at the right edge, with no
+    // horizontal scrollbar to reveal them and no way to widen the panel however
+    // large the window got. Now it starts wide enough for the content and takes
+    // its share of any extra room, with the 3D zone still getting the larger
+    // half.
+    sideWidget->setMinimumWidth(320);
+    layout->addWidget(view_, 3);
+    layout->addWidget(sideWidget, 2);
+}
+
+void BrillouinZoneWidget::setPathSymbol(const QString& symbol)
+{
+    pathHeading_->setText(tr("%1-path sequence:").arg(symbol));
 }
 
 int BrillouinZoneWidget::pointsPerSegment() const
@@ -211,9 +282,10 @@ void BrillouinZoneWidget::undoLastPoint()
 
 void BrillouinZoneWidget::removeSelectedPoint()
 {
-    // List rows are 1:1 with path_ (breaks included), so currentRow() indexes
-    // path_ directly.
-    const int row = pathList_->currentRow();
+    // Table rows are 1:1 with path_ (breaks included), so the row index
+    // indexes path_ directly.
+    const int row =
+        pathList_->indexOfTopLevelItem(pathList_->currentItem());
     if (row < 0 || row >= static_cast<int>(path_.size()))
         return;
     path_.erase(path_.begin() + row);
@@ -228,9 +300,10 @@ void BrillouinZoneWidget::removeSelectedPoint()
             path_.erase(path_.begin() + static_cast<std::ptrdiff_t>(i));
     }
     syncPathViews();
-    if (!path_.empty())
-        pathList_->setCurrentRow(
-            std::min(row, static_cast<int>(path_.size()) - 1));
+    if (!path_.empty()) {
+        pathList_->setCurrentItem(pathList_->topLevelItem(
+            std::min(row, static_cast<int>(path_.size()) - 1)));
+    }
 }
 
 void BrillouinZoneWidget::clearPath()
@@ -268,19 +341,56 @@ void BrillouinZoneWidget::syncPathViews()
 {
     pathList_->clear();
     int order = 0;
+    QStringList summary;
+    QString section;
     for (const int entry : path_) {
+        auto* row = new QTreeWidgetItem(pathList_);
         if (entry < 0) {
-            pathList_->addItem(QStringLiteral("      — break —"));
+            // A break is not a step, so it gets no number and no coordinates —
+            // it is a rule drawn across the table. Spanning the columns is what
+            // stops it from looking like a row whose cells failed to fill in.
+            row->setFirstColumnSpanned(true);
+            row->setText(ColOrder, tr("— break —"));
+            row->setTextAlignment(ColOrder, Qt::AlignCenter);
+            QFont font = row->font(ColOrder);
+            font.setItalic(true);
+            row->setFont(ColOrder, font);
+            row->setForeground(ColOrder, palette().color(QPalette::Disabled,
+                                                         QPalette::WindowText));
+            if (!section.isEmpty()) {
+                summary << section;
+                section.clear();
+            }
             continue;
         }
+
         const auto& point = specialPoints_[static_cast<std::size_t>(entry)];
-        pathList_->addItem(QStringLiteral("%1.  %2   (%3, %4, %5)")
-                               .arg(++order)
-                               .arg(displayLabel(point.label))
-                               .arg(point.fractional.x, 0, 'f', 3)
-                               .arg(point.fractional.y, 0, 'f', 3)
-                               .arg(point.fractional.z, 0, 'f', 3));
+        const QString label = displayLabel(point.label);
+        row->setText(ColOrder, QString::number(++order));
+        row->setText(ColLabel, label);
+        row->setTextAlignment(ColOrder, Qt::AlignRight | Qt::AlignVCenter);
+        const double frac[3] = {point.fractional.x, point.fractional.y,
+                                point.fractional.z};
+        for (int i = 0; i < 3; ++i) {
+            const int column = ColU + i;
+            row->setText(column, QString::number(frac[i], 'f', 3));
+            // Right-aligned so the decimal points line up down the column,
+            // which is the whole reason to show three of them side by side.
+            row->setTextAlignment(column, Qt::AlignRight | Qt::AlignVCenter);
+        }
+        section += section.isEmpty() ? label
+                                     : QStringLiteral(" → ") + label;
     }
+    if (!section.isEmpty())
+        summary << section;
+
+    pathSummary_->setText(
+        summary.isEmpty()
+            ? tr("<i>No path yet — click points in the zone, or press the "
+                 "suggested-path button below.</i>")
+            : QStringLiteral("<b>%1</b>")
+                  .arg(summary.join(QStringLiteral("&nbsp; | &nbsp;"))));
+
     view_->setPath(path_);
     // Every mutation funnels through here, so this is the single place the
     // embedding wizard needs to observe.

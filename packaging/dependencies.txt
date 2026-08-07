@@ -69,6 +69,21 @@ VIRTUAL_ENV env -> build-time CALANGO_DEFAULT_PYTHON. Verify with:
                                              writers encode through. Installed with imageio
                                              because every video format in the animation
                                              export dialog fails at import without it.
+[runtime][optional] PyAlembic .............. Alembic (.abc) geometry-cache export.
+                                             conda-forge ONLY: `conda install -c conda-forge
+                                             pyalembic imath`. THE PACKAGE NAME AND THE IMPORT
+                                             NAME DIFFER — it installs as `pyalembic` and
+                                             imports as `alembic`, and the PyPI project named
+                                             `alembic` is SQLAlchemy's database-migration tool,
+                                             which shares the import name and nothing else.
+                                             `pip install alembic` therefore appears to succeed
+                                             and then fails inside the writer; `pip install
+                                             pyalembic` fails outright, because no such PyPI
+                                             project exists. AlembicExporter detects the
+                                             collision at import and says so.
+[runtime][optional] imath .................. Imath array types the PyAlembic API is written in
+                                             terms of. Installed alongside pyalembic; the
+                                             writer imports it directly.
 
   Core DFT / MLIP stack (required for the electronic-structure and MLIP
   workflows). The conda package pulls these in as run deps: MACE via the
@@ -88,6 +103,12 @@ VIRTUAL_ENV env -> build-time CALANGO_DEFAULT_PYTHON. Verify with:
                                               (pip: dftd4; conda-forge: dftd4-python)
 [runtime][required] torch-dftd ............. >= 0.4   PyTorch DFT-D implementation backing
                                               mace_mp(dispersion=True)
+[runtime][required] xtb (conda: xtb-python)  >= 22.0  GFN1-xTB / GFN2-xTB / GFN-FF
+                                              semi-empirical calculator. Runs IN-PROCESS via
+                                              xtb.ase.calculator.XTB — no binary is launched —
+                                              so it belongs to the interpreter's environment
+                                              rather than to $PATH. pip name `xtb`, conda-forge
+                                              name `xtb-python`; both import as `xtb`.
 [runtime][required] phonopy ................ >= 2.20  symmetry-reduced phonon displacements,
                                               LO-TO splitting (NAC) and Γ-mode irrep labels
 
@@ -121,9 +142,12 @@ matplotlib       >= 3.6   (optional)
 paramiko         >= 3.0   (optional, remote)
 imageio          >= 2.28  (required, animation export)
 imageio-ffmpeg   >= 0.4   (required, video encoding)
+pyalembic                 (optional, .abc export; conda-forge only, imports as `alembic`)
+imath                     (optional, .abc export; installed with pyalembic)
 GPAW             >= 24.1  (required, DFT; tested 25.7.0)
 dftd4            >= 3.6   (required, D4 dispersion; conda-forge: dftd4-python)
 torch-dftd       >= 0.4   (required, MACE-MP dispersion head)
+xtb              >= 22.0  (required, GFN semi-empirical; conda-forge: xtb-python)
 phonopy          >= 2.20  (required, phonon symmetry / NAC / irreps)
 mace-torch       >= 0.3   (required, MLIP)
 torch            >= 2.0   (required, MLIP)

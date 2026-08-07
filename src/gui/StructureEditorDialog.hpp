@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Structure.hpp"
+#include "core/StructureTransforms.hpp"
 
 #include <QDialog>
 
@@ -48,6 +49,18 @@ public:
 
     /// The edited structure (valid after exec() returns Accepted).
     std::shared_ptr<core::Structure> result() const { return working_; }
+
+    /// The LAST cell transform applied in this session, or None.
+    ///
+    /// A crystallographic cell transform is not an edit of one structure the
+    /// way moving an atom is — it redefines the lattice the coordinates are
+    /// expressed in. On a trajectory that has to reach every frame, or the
+    /// frames end up in different cells and nothing computed across them means
+    /// anything. The caller reads this to know it has to propagate.
+    ///
+    /// Last rather than a list: each one replaces the working structure
+    /// outright, so only the final one describes the lattice the result is in.
+    core::CellTransform cellTransform() const { return cellTransform_; }
 
 private Q_SLOTS:
     /// Lattice parameters edited -> rebuild vectors -> refresh vector spins.
@@ -139,6 +152,7 @@ private:
     std::array<core::Vec3, 3> vectorsFromParameters() const;
 
     std::shared_ptr<core::Structure> working_;
+    core::CellTransform cellTransform_ = core::CellTransform::None;
     bool updating_ = false; ///< guards the two-way widget<->model sync
 
     std::array<QDoubleSpinBox*, 3> lengthSpins_{};

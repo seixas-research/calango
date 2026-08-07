@@ -21,6 +21,19 @@ namespace calango::core {
 /// atoms.
 void centerInCell(Structure& structure);
 
+/// Which crystallographic cell conversion to perform (spglib, through
+/// AseBridge::standardizeCell).
+///
+/// Namespace-scope rather than a member of the dialog that offers the buttons,
+/// because it also has to travel: a cell conversion applied to a trajectory has
+/// to reach every frame, so the window doing the propagating names the same
+/// operation the dialog performed.
+enum class CellTransform {
+    None,
+    Standardize, ///< conventional standard cell, lattice idealized
+    Primitive,   ///< reduced to the primitive cell, lattice left as found
+};
+
 /// How much vacuum to add, and along which lattice directions.
 struct VacuumOptions {
     double thickness = 10.0; ///< Å added along each selected direction

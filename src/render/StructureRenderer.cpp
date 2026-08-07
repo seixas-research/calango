@@ -497,6 +497,14 @@ QColor StructureRenderer::castColor(int cast, const Style& style)
     return kQualitativePalette[std::max(cast, 0) % kQualitativeCount];
 }
 
+QString StructureRenderer::castLabel(int cast, const Style& style)
+{
+    const QString name = style.castStyle(cast).name;
+    if (!name.isEmpty())
+        return name;
+    return QStringLiteral("Cast %1").arg(std::max(cast, 0));
+}
+
 QColor StructureRenderer::defaultPhaseColor(core::StructuralPhase phase)
 {
     // The AtomEye / OVITO CNA convention, so a Calango figure and a figure from

@@ -51,6 +51,15 @@ requirements:
     # them every video format in the export dialog fails at import time.
     - imageio >=2.28
     - imageio-ffmpeg >=0.4
+    # Alembic (.abc) geometry-cache export for the DCC tools. The package is
+    # `pyalembic` and it IMPORTS as `alembic`; the PyPI project called
+    # `alembic` is SQLAlchemy's database-migration tool and is a different
+    # thing entirely, so this must come from conda-forge and must never be
+    # "fixed" by adding `alembic` to a pip requirements file. `imath` carries
+    # the Imath array types PyAlembic's API is written in terms of; it is a
+    # hard dependency of the writer, not an extra.
+    - pyalembic
+    - imath
     # MLIP: MACE is packaged on conda-forge as `pymace`, which pulls its full
     # backend (pytorch, e3nn, cuequivariance-torch, torch-ema, torchmetrics).
     - pymace >=0.3
@@ -66,6 +75,14 @@ requirements:
     - dftd4-python
     - torch-dftd
     - phonopy >=2.20
+    # xTB (GFN1/GFN2/GFN-FF), the semi-empirical screening and
+    # pre-relaxation calculator. It runs IN-PROCESS through
+    # xtb.ase.calculator.XTB — there is no binary to launch — so it must be a
+    # run dependency of the environment the embedded interpreter uses, not
+    # something resolved on $PATH. conda-forge names it `xtb-python` (the
+    # bindings, which pull the `xtb` C library); on PyPI the same thing is
+    # named `xtb`. Both import as `xtb`.
+    - xtb-python
 
 test:
   commands:

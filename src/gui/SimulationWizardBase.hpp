@@ -659,6 +659,10 @@ private:
     // basis stayed exactly as small.
     QGroupBox* siestaGroup_ = nullptr;
     QLabel* siestaPseudoNote_ = nullptr;
+    /// Which `siesta` binary a run would actually start, and whether it will be
+    /// launched under MPI — both resolved from the Conda environments rather
+    /// than assumed to be on $PATH. See RunCommands::condaSiestaCommand().
+    QLabel* siestaBinaryNote_ = nullptr;
     QComboBox* siestaXcCombo_ = nullptr;
     QComboBox* siestaBasisTypeCombo_ = nullptr;
     QComboBox* siestaBasisSizeCombo_ = nullptr;

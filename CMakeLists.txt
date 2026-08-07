@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.3
+    VERSION 26.8.4
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -1406,6 +1406,58 @@ if(CALANGO_BUILD_TESTS)
                 pybind11::embed)
     add_test(NAME dialog_construction COMMAND calango_dialog_test)
 
+    # Live DOS smearing. The run now stores an unbroadened eigenvalue
+    # histogram and the viewer convolves it, which moves a piece of physics
+    # into a paint path — so the convolution is pinned against the analytic
+    # Gaussian it is supposed to be: peak height 1/(sigma*sqrt(2pi)), conserved
+    # weight, FWHM 2.355*sigma. Also that a legacy already-broadened file is
+    # passed through untouched, because broadening one twice widens every peak
+    # silently and looks like a physical result.
+    qt_add_executable(calango_dos_smearing_test
+        tests/DosSmearingTest.cpp
+        src/gui/BandPdosView.cpp
+        src/gui/GuiUtils.cpp
+        src/gui/ThemeManager.cpp
+        src/core/Element.cpp
+        src/core/UnitCell.cpp
+    )
+    target_include_directories(calango_dos_smearing_test PRIVATE src
+        "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_compile_definitions(calango_dos_smearing_test PRIVATE QT_NO_KEYWORDS)
+    # QPdfWriter (the view's vector export) lives in QtGui in Qt6, so
+    # PrintSupport is not a dependency here.
+    target_link_libraries(calango_dos_smearing_test
+        PRIVATE Qt6::Widgets Qt6::Svg)
+    add_test(NAME dos_smearing COMMAND calango_dos_smearing_test)
+
+    # The k-path / q-path table behind both the Electronic Structure and the
+    # Phonon wizards. The sequence used to be a QListWidget of preformatted
+    # strings and is now a real column table, which moved what the Remove action
+    # indexes: from a list row to a top-level tree index. That mapping (rows
+    # 1:1 with path entries, breaks included) is the thing that silently
+    # deletes the wrong k-point if it ever drifts, and nothing about it shows up
+    # at compile time.
+    qt_add_executable(calango_kpath_table_test
+        tests/KPathTableTest.cpp
+        src/gui/BrillouinZoneWidget.cpp
+        src/gui/BrillouinZoneView.cpp
+        src/gui/BrillouinZoneStyleDialog.cpp
+        src/gui/ThemeManager.cpp
+        src/ui/IconManager.cpp
+        src/render/Camera.cpp
+        src/core/BrillouinZone.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_kpath_table_test PRIVATE src
+        "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_compile_definitions(calango_kpath_table_test PRIVATE QT_NO_KEYWORDS)
+    target_link_libraries(calango_kpath_table_test
+        PRIVATE Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Svg
+                pybind11::embed)
+    add_test(NAME kpath_table COMMAND calango_kpath_table_test)
+
     # Workflow pipeline validation on silicon: two linked nodes (geometry
     # optimization with cell relaxation → phonon) sent to processes for
     # real, with Lennard-Jones so the ASE runs finish in seconds. Pins the
@@ -1943,6 +1995,17 @@ if(CALANGO_BUILD_TESTS)
                 $<TARGET_FILE:calango_script_test>)
     set_tests_properties(graphene_band_symmetry PROPERTIES TIMEOUT 1800)
 
+    # Double groups for spin-orbit-coupled bands. Everything downstream of the
+    # wave functions is pure group theory with exact expected answers — the Oh
+    # double group is order 96 with spinor irreps of dimension 2, 2, 4 per
+    # parity — so it is checked against the textbook tables rather than left to
+    # a GPAW run nobody will do on every commit. The Python under test is
+    # extracted from the C++ that emits it, so the test cannot drift away from
+    # what a job actually executes. Self-skips without numpy.
+    add_test(NAME double_group
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/double_group_test.py)
+
     # 2D optical observables: unit conventions and vacuum-thickness
     # invariance, checked against graphene's universal absorbance (pi*alpha).
     # A stray 4*pi or hbar*c factor is invisible to review and to py_compile,
@@ -2235,8 +2298,22 @@ elseif(UNIX AND NOT APPLE)
         # and python3-phonopy back the dispersion coupling and the phonon
         # symmetry features; torch-dftd has no Debian package — its pip name
         # is documented in packaging/dependencies.txt.
+        # python3-xtb is Debian's binding for the xtb library and is what the
+        # in-process GFN calculator imports; on a distribution without it the
+        # pip name is `xtb` (see packaging/dependencies.txt). Recommended
+        # rather than depended on: xTB is one engine among many, and the app is
+        # perfectly usable without it.
+        # One string, not two: set(VAR "a" "b") builds the LIST "a;b", which
+        # would reach the control file with a semicolon in the middle of the
+        # Recommends field.
         set(CPACK_DEBIAN_PACKAGE_RECOMMENDS
-            "python3-ase, python3-imageio, python3-dftd4, python3-phonopy")
+            "python3-ase, python3-imageio, python3-dftd4, python3-phonopy, python3-xtb")
+        # ffmpeg: the system encoder the video writers fall back to when
+        # imageio-ffmpeg's bundled binary is absent (see AnimationExporter).
+        # python3-alembic is NOT listed and must not be: on Debian that name is
+        # SQLAlchemy's database-migration tool, which shares an import name with
+        # PyAlembic and nothing else. The .abc export needs conda-forge's
+        # `pyalembic`; see packaging/dependencies.txt.
         set(CPACK_DEBIAN_PACKAGE_SUGGESTS "ffmpeg")
     endif()
     # Refresh MIME/desktop/icon caches on install and removal.

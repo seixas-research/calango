@@ -237,6 +237,14 @@ public:
         /// so a fresh cast is already distinguishable before anyone opens the
         /// Cast Colors dialog. See StructureRenderer::castColor().
         QColor castColor;
+        /// What this cast is, when something knows. Casts made by hand in the
+        /// Cast Setup dialog have no name and read as "Cast 3"; casts a module
+        /// created because it understood the structure — "Epoxide", "Carboxyl"
+        /// — say so, which is the difference between a list of groups the user
+        /// can act on and five numbered buckets they have to identify by
+        /// clicking each one. Empty means "no name": see
+        /// StructureRenderer::castLabel().
+        QString name;
     };
 
     struct Style {
@@ -253,6 +261,9 @@ public:
         /// Cast 0's flat colour under ColorMode::Cast; see
         /// CastStyle::castColor.
         QColor castColor;
+        /// Cast 0's name; see CastStyle::name. Held here for the same reason
+        /// its colour is — cast 0 has exactly one copy of its state.
+        QString castName;
 
         // -- Casts (per-atom representation groups) ------------------------
 
@@ -295,7 +306,7 @@ public:
             if (cast > 0 && cast <= static_cast<int>(castStyles.size()))
                 return castStyles[static_cast<std::size_t>(cast - 1)];
             return {mode, surfaceFinish, colorMode, atomScaleFactor,
-                    bondWidthFactor, opacity, castColor};
+                    bondWidthFactor, opacity, castColor, castName};
         }
         /// Write `value` back into `cast`. Cast 0 writes through to the
         /// members above, which is what keeps the two representations of it in
@@ -313,6 +324,7 @@ public:
             bondWidthFactor = value.bondWidthFactor;
             opacity = value.opacity;
             castColor = value.castColor;
+            castName = value.name;
         }
         /// Representation of `cast` — the most-asked-for field of castStyle().
         RepresentationMode castMode(int cast) const
@@ -544,6 +556,11 @@ public:
     /// dialog must show in its swatches exactly what the renderer will draw,
     /// defaults included, rather than keep a second copy of the palette.
     static QColor castColor(int cast, const Style& style);
+
+    /// How to refer to `cast` in the UI: its name when it has one, else
+    /// "Cast N". One implementation, so the Cast Setup table, the Cast Colors
+    /// dialog and any future list all call the same cast the same thing.
+    static QString castLabel(int cast, const Style& style);
 
     /// Colour of `phase` under ColorMode::Phase: the explicit pick when the
     /// style carries one, else the default. Public for the same reason

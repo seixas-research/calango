@@ -297,43 +297,96 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    "    print(f\"CALANGO_INFO DOSCalculator unavailable ({_e!r}); \"\n"
                    "          \"falling back to get_orbital_ldos\", flush=True)\n"
                    "\n"
+                   "# --- RAW, unbroadened histogram --------------------------\n"
+                   "# No Gaussian is applied here. What is written out is the\n"
+                   "# projected weight falling in each narrow energy bin, and\n"
+                   "# the viewer convolves that with whatever sigma the user\n"
+                   "# dials. Two reasons, and neither is cosmetic:\n"
+                   "#\n"
+                   "#   * sigma is a PRESENTATION choice. Baking it in means a\n"
+                   "#     peak that turns out to be a broadening artifact costs\n"
+                   "#     another full SCF to re-examine.\n"
+                   "#   * convolving a fine histogram with a Gaussian several\n"
+                   "#     bins wide is numerically identical to broadening the\n"
+                   "#     individual eigenvalues, and costs O(bins) instead of\n"
+                   "#     O(kpoints x bands) — which is what makes the viewer's\n"
+                   "#     slider redraw instantly rather than in seconds.\n"
+                   "import numpy as _pdos_np\n"
+                   "\n"
+                   "_nspins = dos_calc.get_number_of_spins()\n"
+                   "_nkpts = len(dos_calc.get_ibz_k_points())\n"
+                   "_kweights = _pdos_np.asarray(dos_calc.get_k_point_weights())\n"
+                   "_eig = [[_pdos_np.asarray(\n"
+                   "             dos_calc.get_eigenvalues(kpt=_k, spin=_s))\n"
+                   "         for _k in range(_nkpts)] for _s in range(_nspins)]\n"
+                   "_all = _pdos_np.concatenate([_e for _s in _eig for _e in _s])\n"
+                   "# Pad the window so the outermost states still have room for\n"
+                   "# their tails once the viewer broadens them.\n"
+                   "_lo = float(_all.min()) - 1.0\n"
+                   "_hi = float(_all.max()) + 1.0\n"
+                   "_nbins = max(2, int(pdos_npts))\n"
+                   "_bin = (_hi - _lo) / (_nbins - 1)\n"
+                   "pdos_energies = [_lo + _i * _bin for _i in range(_nbins)]\n"
+                   "\n"
                    "projections = {}\n"
-                   "pdos_energies = None\n"
-                   "if _dos is not None:\n"
-                   "    # The calculator's own energy window spans the computed\n"
-                   "    # eigenvalues, so the grid always covers the bands.\n"
-                   "    pdos_energies = _dos.get_energies(npoints=pdos_npts)\n"
                    "for index, symbol in enumerate(atoms.get_chemical_symbols()):\n"
                    "    for angular_index, angular in enumerate(\"spdf\"):\n"
-                   "        if _dos is not None:\n"
-                   "            try:\n"
-                   "                d = _dos.raw_pdos(pdos_energies, a=index,\n"
-                   "                                  l=angular_index,\n"
-                   "                                  width=pdos_width)\n"
-                   "            except Exception:\n"
-                   "                continue  # shell absent from this species\n"
-                   "        else:\n"
-                   "            try:\n"
-                   "                e, d = dos_calc.get_orbital_ldos(\n"
-                   "                    a=index, angular=angular, npts=pdos_npts,\n"
-                   "                    width=pdos_width)\n"
-                   "            except Exception:\n"
+                   "        try:\n"
+                   "            if _dos is not None:\n"
+                   "                from gpaw.dos import get_projector_numbers\n"
+                   "                _ind = list(get_projector_numbers(\n"
+                   "                    _dos.setups[index], angular_index))\n"
+                   "                if not _ind:\n"
+                   "                    continue  # shell absent from this species\n"
+                   "                # (nkpt, nband, nspin)\n"
+                   "                _w = _pdos_np.asarray(\n"
+                   "                    _dos.wfs.pdos_weights(index, _ind))\n"
+                   "            else:\n"
+                   "                # Pre-DOSCalculator GPAW: the legacy call can\n"
+                   "                # only return a broadened curve, so ask it for\n"
+                   "                # the narrowest one it will give and treat the\n"
+                   "                # bins as already carrying that much width.\n"
+                   "                _e, _d = dos_calc.get_orbital_ldos(\n"
+                   "                    a=index, angular=angular, npts=_nbins,\n"
+                   "                    width=max(_bin, 1e-3))\n"
+                   "                _hist = _pdos_np.asarray(_d, dtype=float) * _bin\n"
+                   "                _key = f\"{symbol} {angular}\"\n"
+                   "                if _hist.max() > 1e-10:\n"
+                   "                    projections[_key] = (\n"
+                   "                        projections.get(_key, 0.0) + _hist)\n"
                    "                continue\n"
-                   "            pdos_energies = e\n"
-                   "        d = [float(v) for v in d]\n"
-                   "        if max(d) <= 1e-10:\n"
+                   "        except Exception:\n"
+                   "            continue\n"
+                   "\n"
+                   "        _hist = _pdos_np.zeros(_nbins)\n"
+                   "        for _s in range(_nspins):\n"
+                   "            for _k in range(_nkpts):\n"
+                   "                _e = _eig[_s][_k]\n"
+                   "                _idx = _pdos_np.clip(\n"
+                   "                    ((_e - _lo) / _bin).astype(int), 0,\n"
+                   "                    _nbins - 1)\n"
+                   "                _hist += _pdos_np.bincount(\n"
+                   "                    _idx, weights=_kweights[_k] * _w[_k, :, _s],\n"
+                   "                    minlength=_nbins)\n"
+                   "        if _hist.max() <= 1e-10:\n"
                    "            continue  # orbital not present on this species\n"
-                   "        key = f\"{symbol} {angular}\"\n"
-                   "        if key in projections:\n"
-                   "            projections[key] = [a + b for a, b in\n"
-                   "                                zip(projections[key], d)]\n"
-                   "        else:\n"
-                   "            projections[key] = d\n"
-                   "if projections:\n"
+                   "        _key = f\"{symbol} {angular}\"\n"
+                   "        projections[_key] = projections.get(_key, 0.0) + _hist\n"
+                   "\n"
+                   "if len(projections):\n"
                    "    pdos = {\"energies\": [float(v) for v in pdos_energies],\n"
-                   "            \"efermi\": efermi, \"projections\": projections}\n"
+                   "            \"efermi\": efermi,\n"
+                   "            # The flag the viewer keys off. Its absence means\n"
+                   "            # an older run whose curves are ALREADY broadened,\n"
+                   "            # which must not be broadened a second time.\n"
+                   "            \"broadened\": False,\n"
+                   "            \"bin_width\": float(_bin),\n"
+                   "            \"suggested_width\": float(pdos_width),\n"
+                   "            \"projections\": {_k: [float(v) for v in _v]\n"
+                   "                            for _k, _v in projections.items()}}\n"
                    "    print(f\"CALANGO_INFO pdos channels: \"\n"
-                   "          f\"{sorted(projections)}\", flush=True)\n"
+                   "          f\"{sorted(projections)} \"\n"
+                   "          f\"(raw, {_nbins} bins of {_bin:.4f} eV)\", flush=True)\n"
                    "else:\n"
                    "    # Loud, not silent: a missing PDOS used to look like a\n"
                    "    # successful run that simply had nothing to show.\n"
@@ -345,20 +398,29 @@ std::string generateElectronicScript(const ElectronicConfig& c)
         // character taken from `band_calc` would be attached to the wrong
         // band. Classifying spinor states needs the DOUBLE groups, which this
         // does not implement; saying so is better than labelling them wrongly.
-        if (c.spinOrbit && (c.bandSymmetry || c.fatbands)) {
+        // Fatbands still cannot follow SOC: the orbital weights come from
+        // `band_calc`'s SCALAR-relativistic states, and with SOC on `bs` holds
+        // the spinor bands instead — a different set, in a different number, so
+        // a weight would be attached to the wrong band. Band SYMMETRY can now:
+        // it classifies the spinor states themselves, against the DOUBLE group.
+        if (c.spinOrbit && c.fatbands) {
             out << "\n"
                    "print(\"CALANGO_WARN spin-orbit coupling is on, so the \"\n"
-                   "      \"band symmetry / orbital projections were skipped: \"\n"
-                   "      \"the spinor bands are a different set of states from \"\n"
-                   "      \"the scalar-relativistic ones the projections \"\n"
-                   "      \"describe, and their classification needs the double \"\n"
-                   "      \"groups.\", flush=True)\n";
-        } else {
-            if (c.bandSymmetry)
-                out << generateBandSymmetryBlock(c.symmetry);
-            if (c.fatbands)
-                out << fatbandBlock(c);
+                   "      \"orbital projections were skipped: the spinor bands \"\n"
+                   "      \"are a different set of states from the \"\n"
+                   "      \"scalar-relativistic ones the projections \"\n"
+                   "      \"describe.\", flush=True)\n";
         }
+        if (c.bandSymmetry) {
+            BandSymmetryConfig _symmetry = c.symmetry;
+            // Which states are being classified decides the GROUP, so this is
+            // not a preference: with SOC on, the single group cannot represent
+            // them at all.
+            _symmetry.spinorStates = c.spinOrbit;
+            out << generateBandSymmetryBlock(_symmetry);
+        }
+        if (!c.spinOrbit && c.fatbands)
+            out << fatbandBlock(c);
         break;
 
     case ElectronicBackend::Espresso:

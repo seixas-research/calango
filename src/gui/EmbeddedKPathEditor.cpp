@@ -14,11 +14,14 @@
 namespace calango::gui {
 
 EmbeddedKPathEditor::EmbeddedKPathEditor(
-    std::shared_ptr<const core::Structure> structure, QWidget* parent)
+    std::shared_ptr<const core::Structure> structure, QWidget* parent,
+    Variable variable)
     : QWidget(parent)
 {
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
+    const QString symbol = variable == Variable::Q ? QStringLiteral("q")
+                                                   : QStringLiteral("k");
 
     QString suggested;
     if (structure && structure->cell().isDefined()) {
@@ -28,6 +31,7 @@ EmbeddedKPathEditor::EmbeddedKPathEditor(
             suggested = QString::fromStdString(bandPath.suggestedPath);
             zoneWidget_ =
                 new BrillouinZoneWidget(zone, bandPath, /*compact=*/true, this);
+            zoneWidget_->setPathSymbol(symbol);
             zoneWidget_->setMinimumHeight(320);
             layout->addWidget(zoneWidget_, 1);
         } catch (const std::exception&) {
@@ -62,7 +66,7 @@ EmbeddedKPathEditor::EmbeddedKPathEditor(
             tr("High-symmetry path as concatenated labels; ',' separates "
                "discontinuous sections (GXWK,UX)."));
         auto* row = new QVBoxLayout;
-        row->addWidget(new QLabel(tr("k-path:"), this));
+        row->addWidget(new QLabel(tr("%1-path:").arg(symbol), this));
         row->addWidget(pathEdit_);
         layout->addLayout(row);
         connect(pathEdit_, &QLineEdit::textEdited, this,

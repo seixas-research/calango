@@ -30,10 +30,28 @@ public:
         double efermi = 0.0;
         bool valid() const { return !x.empty() && !energies.empty(); }
     };
+    /// The projected density of states as the RUN wrote it — which, since the
+    /// smearing moved here, is an unbroadened histogram rather than a curve.
+    ///
+    /// `projections` holds the summed projection weight falling in each energy
+    /// bin, with no Gaussian applied; the view convolves it on demand (see
+    /// setPdosSmearing). That is what lets σ be a slider instead of a decision
+    /// the SCF was committed to hours earlier.
     struct PdosData {
-        std::vector<double> energies; ///< eV, absolute
-        /// label ("Si p") -> DOS curve, insertion-ordered
+        std::vector<double> energies; ///< eV, absolute — uniform bin centres
+        /// label ("Si p") -> weight per bin, insertion-ordered
         std::vector<std::pair<QString, std::vector<double>>> projections;
+        /// Spacing of `energies` (eV); 0 when unknown, which disables
+        /// broadening rather than guessing it.
+        double binWidth = 0.0;
+        /// True when `projections` are ALREADY broadened curves: a run from
+        /// before this change, whose σ is baked in. Such a file must NOT be
+        /// convolved again — that would apply a second Gaussian and quietly
+        /// widen every peak — so the view draws it as stored and the control
+        /// is disabled with a reason.
+        bool broadened = true;
+        /// σ the run suggests opening on (eV).
+        double suggestedWidth = 0.1;
         bool valid() const { return !energies.empty() && !projections.empty(); }
     };
 
@@ -156,6 +174,30 @@ public:
 
     void setBandData(BandData data);
     void setPdosData(PdosData data);
+
+    /// Gaussian σ (eV) the raw PDOS histogram is convolved with before it is
+    /// drawn. Cheap enough to drive from a slider: the cost is O(bins × kernel)
+    /// and independent of how many k-points and bands produced the histogram.
+    /// A no-op on an already-broadened data set.
+    void setPdosSmearing(double sigmaEv);
+    double pdosSmearing() const { return pdosSigma_; }
+    /// Whether σ can be changed at all — false for a legacy run whose curves
+    /// arrived pre-broadened, so the UI can say why rather than offer a
+    /// control that does nothing.
+    bool pdosSmearingAvailable() const
+    {
+        return pdos_.valid() && !pdos_.broadened && pdos_.binWidth > 0.0;
+    }
+    /// The density AS DRAWN — the stored histogram after broadening at the
+    /// current σ. This, not pdosData().projections, is what an export must
+    /// write: the raw histogram is a comb of bin weights that looks nothing
+    /// like the plot it came from, and a user exporting "the DOS" means the
+    /// curve in front of them.
+    const std::vector<std::pair<QString, std::vector<double>>>&
+    pdosCurves() const
+    {
+        return pdosCurves_;
+    }
     const BandData& bandData() const { return bands_; }
     const PdosData& pdosData() const { return pdos_; }
 
@@ -238,8 +280,18 @@ private:
                              const std::function<double(double)>& mapX,
                              const std::function<double(double)>& mapY);
 
+    /// Convolve the raw histogram in pdos_ with the current σ into
+    /// pdosCurves_. Called whenever either changes; everything that DRAWS the
+    /// density reads pdosCurves_, never pdos_.projections, so there is exactly
+    /// one place the broadening happens.
+    void rebuildPdosCurves();
+
     BandData bands_;
     PdosData pdos_;
+    /// What paintPdos() actually plots: pdos_.projections after broadening, or
+    /// a copy of them when the data set is already broadened.
+    std::vector<std::pair<QString, std::vector<double>>> pdosCurves_;
+    double pdosSigma_ = 0.1;
     FatbandData fatbands_;
     SymmetryData symmetry_;
     /// Width AND colour by default: the width is the classic fatband, and the

@@ -11,6 +11,7 @@
 #include <QComboBox>
 #include <QGroupBox>
 #include <QSignalBlocker>
+#include <QSlider>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -233,6 +234,53 @@ BandPdosWindow::BandPdosWindow(const QString& directory, QWidget* parent)
     connect(exportImageButton, &QPushButton::clicked, this,
             [this] { view_->exportImage(this); });
 
+    // -- Live PDOS smearing -------------------------------------------------
+    //
+    // The run stores the unbroadened histogram, so σ is a drawing parameter
+    // here rather than something the SCF was committed to. That is the whole
+    // point of the change: deciding whether a shoulder is a real feature or an
+    // artifact of the broadening used to cost another full calculation.
+    smearingBox_ = new QGroupBox(tr("DOS smearing"), this);
+    auto* smearingLayout = new QVBoxLayout(smearingBox_);
+    auto* smearingRow = new QHBoxLayout;
+    smearingSpin_ = new QDoubleSpinBox(smearingBox_);
+    smearingSpin_->setRange(0.001, 2.0);
+    smearingSpin_->setDecimals(3);
+    smearingSpin_->setSingleStep(0.01);
+    smearingSpin_->setValue(0.1);
+    smearingSpin_->setSuffix(tr(" eV"));
+    smearingSpin_->setToolTip(
+        tr("Gaussian σ each eigenvalue is broadened by. Applied when the curve "
+           "is drawn, not when it was computed, so it costs a redraw rather "
+           "than a re-run."));
+    // A slider as well as the spin box: σ is explored by sweeping it — watching
+    // which peaks survive — far more often than it is typed in.
+    smearingSlider_ = new QSlider(Qt::Horizontal, smearingBox_);
+    smearingSlider_->setRange(1, 2000); // milli-eV
+    smearingSlider_->setValue(100);
+    smearingRow->addWidget(smearingSlider_, 1);
+    smearingRow->addWidget(smearingSpin_);
+    smearingLayout->addLayout(smearingRow);
+    smearingNote_ = new QLabel(smearingBox_);
+    smearingNote_->setWordWrap(true);
+    smearingLayout->addWidget(smearingNote_);
+    side->addWidget(smearingBox_);
+
+    // The two controls drive one value; each blocks the other while writing so
+    // the round trip through σ does not fight the user's drag.
+    connect(smearingSlider_, &QSlider::valueChanged, this, [this](int milli) {
+        const QSignalBlocker blocker(smearingSpin_);
+        smearingSpin_->setValue(milli / 1000.0);
+        view_->setPdosSmearing(milli / 1000.0);
+    });
+    connect(smearingSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double sigma) {
+                const QSignalBlocker blocker(smearingSlider_);
+                smearingSlider_->setValue(
+                    static_cast<int>(std::lround(sigma * 1000.0)));
+                view_->setPdosSmearing(sigma);
+            });
+
     auto* exportBandsButton = new QPushButton(tr("Export Bands…"), this);
     auto* exportPdosButton = new QPushButton(tr("Export PDOS…"), this);
     exportFatbandsButton_ = new QPushButton(tr("Export Fatbands…"), this);
@@ -274,6 +322,36 @@ BandPdosWindow::BandPdosWindow(const QString& directory, QWidget* parent)
     loadDirectory(directory);
 }
 
+void BandPdosWindow::updateSmearingControl()
+{
+    if (!smearingBox_)
+        return;
+    const bool live = view_->pdosSmearingAvailable();
+    smearingSlider_->setEnabled(live);
+    smearingSpin_->setEnabled(live);
+    if (live) {
+        // Follow the value the view adopted from the run rather than leaving
+        // the controls on their construction default.
+        const QSignalBlocker spinBlocker(smearingSpin_);
+        const QSignalBlocker sliderBlocker(smearingSlider_);
+        smearingSpin_->setValue(view_->pdosSmearing());
+        smearingSlider_->setValue(
+            static_cast<int>(std::lround(view_->pdosSmearing() * 1000.0)));
+        const double bin = view_->pdosData().binWidth;
+        smearingNote_->setText(
+            tr("<i>Applied to the stored eigenvalue histogram as the curve is "
+               "drawn — no re-run. The %1 eV bin width is the resolution "
+               "floor: a smaller σ than that cannot be shown.</i>")
+                .arg(bin, 0, 'g', 3));
+        return;
+    }
+    smearingBox_->setVisible(view_->pdosData().valid());
+    smearingNote_->setText(
+        tr("<i>This run stored curves that were already broadened, so σ is "
+           "fixed at whatever it was calculated with. Re-run to get a "
+           "histogram that can be re-broadened here.</i>"));
+}
+
 void BandPdosWindow::loadDirectory(const QString& directory)
 {
     const QJsonObject bands = readJsonObject(directory + QStringLiteral("/bands.json"));
@@ -304,6 +382,22 @@ void BandPdosWindow::loadDirectory(const QString& directory)
     if (!pdos.isEmpty()) {
         BandPdosView::PdosData pdosData;
         pdosData.energies = toDoubleVector(pdos[QStringLiteral("energies")].toArray());
+        // "broadened" is written (as false) only by runs that store the RAW
+        // histogram. Its ABSENCE identifies an older run whose curves already
+        // carry a Gaussian, and those must be drawn as they are — hence the
+        // default of true rather than false.
+        pdosData.broadened =
+            pdos.value(QStringLiteral("broadened")).toBool(true);
+        pdosData.binWidth =
+            pdos.value(QStringLiteral("bin_width")).toDouble(0.0);
+        pdosData.suggestedWidth =
+            pdos.value(QStringLiteral("suggested_width")).toDouble(0.1);
+        // Derive the bin width when the run did not state it but the grid is
+        // uniform, which is what makes broadening possible at all.
+        if (pdosData.binWidth <= 0.0 && pdosData.energies.size() > 1) {
+            pdosData.binWidth =
+                pdosData.energies[1] - pdosData.energies[0];
+        }
         const QJsonObject projections =
             pdos[QStringLiteral("projections")].toObject();
         for (auto it = projections.begin(); it != projections.end(); ++it)
@@ -318,9 +412,11 @@ void BandPdosWindow::loadDirectory(const QString& directory)
             item->setForeground(BandPdosView::projectionColor(index++));
         }
         view_->setPdosData(std::move(pdosData));
+        updateSmearingControl();
     } else {
         projectionList_->addItem(tr("(no PDOS in this run)"));
         projectionList_->setEnabled(false);
+        updateSmearingControl();
     }
 
     // Both are opt-in extras of the run: absent unless the wizard asked for
@@ -492,16 +588,25 @@ void BandPdosWindow::exportPdos()
         return;
     const QChar sep = path.endsWith(QLatin1String(".dat")) ? QChar(' ')
                                                            : QChar(',');
+    // The BROADENED curves, not the stored histogram: what is exported has to
+    // be what is on screen. The histogram is a comb of per-bin weights and
+    // would plot as noise next to the figure it was exported from.
+    const auto& curves = view_->pdosCurves();
+    const double sigma = view_->pdosSmearing();
     writeTextFile(this, path, [&](QTextStream& out) {
+        // The σ is part of the data, so it travels with it — a DOS curve
+        // without its broadening is not reproducible.
+        if (view_->pdosSmearingAvailable())
+            out << "# gaussian_sigma_eV" << sep << sigma << "\n";
         out << "energy_eV";
-        for (const auto& [label, curve] : data.projections) {
+        for (const auto& [label, curve] : curves) {
             (void)curve;
             out << sep << QString(label).replace(QLatin1Char(' '), QLatin1Char('_'));
         }
         out << "\n";
         for (std::size_t i = 0; i < data.energies.size(); ++i) {
             out << data.energies[i];
-            for (const auto& [label, curve] : data.projections)
+            for (const auto& [label, curve] : curves)
                 out << sep << (i < curve.size() ? curve[i] : 0.0);
             out << "\n";
         }

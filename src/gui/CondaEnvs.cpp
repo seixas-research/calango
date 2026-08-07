@@ -92,6 +92,96 @@ QList<CondaEnv> CondaEnvs::discover()
     return envs;
 }
 
+QString CondaEnvs::executableIn(const QString& envDir, const QString& executable)
+{
+    if (envDir.isEmpty() || executable.isEmpty())
+        return {};
+    const QDir dir(envDir);
+    const QStringList candidates = {
+#ifdef Q_OS_WIN
+        // Conda on Windows scatters binaries across three places: the prefix
+        // root, Scripts/ (entry points) and Library/bin/ (anything built
+        // against the C toolchain, which is where a compiled solver lands).
+        executable + QStringLiteral(".exe"),
+        QStringLiteral("Scripts/") + executable + QStringLiteral(".exe"),
+        QStringLiteral("Library/bin/") + executable + QStringLiteral(".exe"),
+        QStringLiteral("Library/bin/") + executable,
+#endif
+        QStringLiteral("bin/") + executable,
+    };
+    for (const QString& candidate : candidates) {
+        const QFileInfo info(dir.filePath(candidate));
+        if (info.isFile() && info.isExecutable())
+            return info.absoluteFilePath();
+    }
+    return {};
+}
+
+namespace {
+
+/// Every environment root worth searching for a solver binary, in the order
+/// findExecutable() tries them.
+QStringList solverSearchRoots(const QString& preferredEnv)
+{
+    QStringList roots;
+    const auto append = [&roots](const QString& path) {
+        if (!path.isEmpty() && !roots.contains(path))
+            roots.append(path);
+    };
+
+    // The engine's own configured environment, in whatever form it was stored:
+    // an env root, its bin/, or the interpreter inside it.
+    const QString configured = preferredEnv.trimmed();
+    if (!configured.isEmpty()) {
+        QFileInfo info(configured);
+        QDir dir(info.isFile() ? info.absolutePath() : info.absoluteFilePath());
+        if (dir.dirName() == QLatin1String("bin")
+            || dir.dirName() == QLatin1String("Scripts"))
+            dir.cdUp();
+        append(dir.absolutePath());
+    }
+
+    append(QProcessEnvironment::systemEnvironment().value(
+        QStringLiteral("CONDA_PREFIX")));
+
+    const QString envsDir = CondaEnvs::envsDirectory();
+    if (!envsDir.isEmpty()) {
+        const QDir dir(envsDir);
+        for (const QString& name :
+             dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
+            append(dir.absoluteFilePath(name));
+        // The base environment sits beside `envs/`, not inside it, and is
+        // where a `conda install -n base` lands.
+        QDir base(dir);
+        if (base.cdUp())
+            append(base.absolutePath());
+    }
+    return roots;
+}
+
+} // namespace
+
+QString CondaEnvs::findExecutable(const QString& executable,
+                                  const QString& preferredEnv)
+{
+    for (const QString& root : solverSearchRoots(preferredEnv)) {
+        const QString found = executableIn(root, executable);
+        if (!found.isEmpty())
+            return found;
+    }
+    return {};
+}
+
+QString CondaEnvs::environmentProviding(const QString& executable,
+                                        const QString& preferredEnv)
+{
+    for (const QString& root : solverSearchRoots(preferredEnv)) {
+        if (!executableIn(root, executable).isEmpty())
+            return root;
+    }
+    return {};
+}
+
 QString CondaEnvs::resolvePython(const QString& input)
 {
     const QString trimmed = input.trimmed();

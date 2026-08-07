@@ -9,6 +9,9 @@
 #include <vector>
 
 class QDoubleSpinBox;
+class QGroupBox;
+class QLabel;
+class QSlider;
 
 namespace calango::gui {
 
@@ -64,7 +67,16 @@ private:
     void writeCsv(const QString& caption, const QString& defaultName,
                   bool bands, bool dos);
 
+    /// Enable or explain the σ control after a load; see the identically
+    /// named member of BandPdosWindow.
+    void updateSmearingControl();
+
     BandPdosView* view_;
+    // -- Live PhDOS smearing ------------------------------------------------
+    QGroupBox* smearingBox_ = nullptr;
+    QSlider* smearingSlider_ = nullptr;
+    QDoubleSpinBox* smearingSpin_ = nullptr;
+    QLabel* smearingNote_ = nullptr;
     QDoubleSpinBox* minSpin_;
     QDoubleSpinBox* maxSpin_;
     bool hasData_ = false;

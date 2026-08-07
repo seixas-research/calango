@@ -927,10 +927,22 @@ int main(int argc, char** argv)
         const std::string script = generateElectronicScript(bands);
         // get_orbital_ldos is gone from the new engine; every projection was
         // swallowed by `except Exception: continue`, so the run "succeeded"
-        // with no PDOS at all. DOSCalculator.raw_pdos is identical in both.
+        // with no PDOS at all. DOSCalculator is present in both engines.
         checkContains(script, "from gpaw.dos import DOSCalculator",
                       "PDOS goes through the portable DOSCalculator");
-        checkContains(script, "raw_pdos(", "and its raw_pdos entry point");
+        // Its raw_pdos() returns a BROADENED curve, so it cannot be the entry
+        // point any more: the smearing moved to the viewer and the run has to
+        // write the unbroadened weights. pdos_weights + get_projector_numbers
+        // are the same pair the fatband block already relies on, and are
+        // present in both engines.
+        checkContains(script, "pdos_weights(",
+                      "raw projection weights, not a pre-broadened curve");
+        checkContains(script, "get_projector_numbers",
+                      "shells resolved per species rather than assumed");
+        checkContains(script, "bincount(",
+                      "the weights are binned into a histogram in the run");
+        checkContains(script, "\"broadened\": False",
+                      "and flagged as unbroadened for the viewer");
         checkContains(script, "shift_fermi_level=False",
                       "keeping energies on the same scale as efermi");
         checkContains(script, "no PDOS projections were produced",
@@ -1668,17 +1680,40 @@ int main(int argc, char** argv)
         checkContains(tunedScript, "_sym_degen = 0.005",
                       "and so is the degeneracy window");
 
-        // Spin-orbit coupling re-diagonalizes into a DIFFERENT set of states
-        // in a different number, so a character taken from the scalar
-        // calculator would be attached to the wrong band. Refusing loudly
-        // beats labelling wrongly.
+        // Spin-orbit coupling makes the states two-component SPINORS, which a
+        // point group cannot represent at all: a spinor changes sign under a
+        // 2 pi rotation. The classification is not suppressed, it switches to
+        // the DOUBLE group — and picking the wrong one of the two is not a
+        // coarser answer but a wrong one, so which group is used has to follow
+        // the states rather than a preference.
         ElectronicConfig soc = config;
         soc.spinOrbit = true;
         const std::string socScript = generateElectronicScript(soc);
-        check(!contains(socScript, "band_symmetry.json"),
-              "SOC suppresses the classification");
-        checkContains(socScript, "double \"\n      \"groups",
-                      "and says why rather than failing silently");
+        checkContains(socScript, "band_symmetry.json",
+                      "SOC still writes a classification");
+        checkContains(socScript, "_sym_spinor = True",
+                      "and marks the states as spinors");
+        checkContains(socScript, "_calango_double_group(",
+                      "which routes it through the double group");
+        checkContains(socScript, "_calango_su2(",
+                      "with the SU(2) lift the spinor characters need");
+        checkContains(socScript, "wavefunctions(",
+                      "reading the spinor wave functions, not the scalar ones");
+        // The scalar path must be untouched: without SOC the single group is
+        // still the right one, and paying for the double group there would
+        // relabel every existing result.
+        check(contains(script, "_sym_spinor = False"),
+              "a scalar run still uses the ordinary point group");
+
+        // Fatbands genuinely cannot follow SOC — the weights belong to the
+        // scalar states — so that one IS still refused, and says so.
+        ElectronicConfig socFat = soc;
+        socFat.fatbands = true;
+        const std::string socFatScript = generateElectronicScript(socFat);
+        checkContains(socFatScript, "orbital projections were skipped",
+                      "SOC still refuses fatbands, loudly");
+        check(!contains(socFatScript, "fatbands.json"),
+              "and writes no fatband file for them");
     }
 
     // -- Orbital-projected bands (fatbands) ---------------------------------

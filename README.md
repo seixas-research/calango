@@ -126,7 +126,7 @@ Simulations never run inside the GUI process: local jobs are isolated `QProcess`
 
 ## License
 
-Calango is released under the [MIT License](LICENSE). Copyright © 2026 Leandro Seixas Rocha, Seixas Research.
+Calango is released under the [MIT License](LICENSE). Copyright © 2026 Leandro Seixas Rocha.
 
 ## Acknowledgements
 

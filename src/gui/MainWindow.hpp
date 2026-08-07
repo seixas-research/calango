@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/CalculatorConfig.hpp"
+#include "core/StructureTransforms.hpp"
 #include "render/Camera.hpp"
 #include "render/Film.hpp"
 
@@ -13,6 +14,7 @@
 #include <QString>
 
 #include <deque>
+#include <functional>
 #include <map>
 #include <set>
 #include <memory>
@@ -504,6 +506,20 @@ private:
     /// The viewers `directory` can offer, in menu order.
     std::vector<ViewerEntry> viewersFor(const QString& directory) const;
 
+    /// One undo step: the displayed structure AND the trajectory it belongs to.
+    ///
+    /// The frames have to be in here. Several transforms — centring, wrapping,
+    /// cell standardization — act on every frame of a trajectory at once, and
+    /// an undo stack that remembered only the displayed structure would restore
+    /// that one frame and leave the other several hundred transformed, with no
+    /// way back. Storing them is nearly free: the frames are shared pointers to
+    /// structures that are replaced rather than mutated, so a snapshot is a
+    /// pointer copy per frame plus one deep copy of the frame on screen.
+    struct Snapshot {
+        std::shared_ptr<core::Structure> structure;
+        std::vector<std::shared_ptr<core::Structure>> frames;
+    };
+
     struct Document {
         /// Stable identity of this workspace, independent of the tab's
         /// position (tabs are movable and closable, so an index is not an
@@ -512,8 +528,8 @@ private:
         int id = -1;
         std::shared_ptr<core::Structure> structure;
         std::vector<std::shared_ptr<core::Structure>> frames; ///< trajectory
-        std::deque<std::shared_ptr<core::Structure>> undoStack;
-        std::deque<std::shared_ptr<core::Structure>> redoStack;
+        std::deque<Snapshot> undoStack;
+        std::deque<Snapshot> redoStack;
         QString fileName;
         /// This tab's camera state. Kept current by the viewport's
         /// cameraChanged signal and re-applied when the tab is shown again, so
@@ -547,6 +563,63 @@ private:
     int addDocument(std::shared_ptr<core::Structure> structure, const QString& name,
                     std::vector<std::shared_ptr<core::Structure>> frames = {},
                     const QString& task = {});
+    /// Put the whole trajectory into the lattice the Edit Structure dialog just
+    /// produced, `edited` being the already-converted displayed frame. Refuses
+    /// (changing nothing) when the frames do not all convert to the same atom
+    /// count and ordering — see the implementation for why that is the only
+    /// safe answer.
+    void propagateCellTransform(std::shared_ptr<core::Structure> edited,
+                                core::CellTransform transform);
+
+    /// Take the current structure apart into its oxygen functional groups and
+    /// put each KIND into its own render cast, named and coloured. Returns how
+    /// many casts were created (0 when nothing was recognized, leaving the
+    /// scene untouched).
+    ///
+    /// Derived from connectivity rather than from what a builder remembers
+    /// placing, so a graphene oxide loaded from a file is taken apart exactly
+    /// like one just generated — see
+    /// GrapheneOxideBuilder::findFunctionalGroups().
+    int applyFunctionalGroupCasts();
+
+    /// Capture `doc`'s current state as one undo step (see Snapshot).
+    static Snapshot snapshotOf(const Document& doc);
+    /// Restore a snapshot into `doc`, replacing both the displayed structure
+    /// and the trajectory.
+    static void restore(Document& doc, Snapshot snapshot);
+
+    /// Apply `transform` to EVERY frame of the active trajectory — or to the
+    /// lone structure when the document has no trajectory — as a single undo
+    /// step. Returns the number of frames the transform reported changed, 0 if
+    /// it changed nothing (in which case the document is left untouched and no
+    /// undo step is pushed), or -1 when there is nothing to act on.
+    ///
+    /// This is what "Center", "Wrap", "Standardize Cell" and "Reduce to
+    /// Primitive Cell" go through. Acting on the displayed frame alone is not a
+    /// smaller version of these operations, it is a wrong one: a trajectory
+    /// whose frames sit in different lattice images or different cells makes
+    /// atoms jump as the timeline is scrubbed, and every quantity computed
+    /// across frames — an MSD, an RDF, a diffusion coefficient — is then
+    /// measuring the transform instead of the physics.
+    ///
+    /// `transform` returns true when it changed the structure it was handed. It
+    /// may throw: nothing is committed until every frame has been transformed,
+    /// so a failure part-way leaves the document exactly as it was.
+    int applyToAllFrames(const std::function<bool(core::Structure&)>& transform);
+
+    /// Open a trajectory, displaying its first frame. Returns -1 for an empty
+    /// list, which is not a document.
+    ///
+    /// This exists so that no caller writes
+    /// `addDocument(frames.front(), name, std::move(frames))`. That is
+    /// undefined behaviour, not a style problem: the order in which a call's
+    /// arguments are evaluated is unspecified, and GCC picks right-to-left, so
+    /// the vector is moved away before `front()` reads it and the new tab opens
+    /// on a dangling element. Clang picks left-to-right, which is exactly why
+    /// it segfaulted only on Linux. Taking the frames alone and deriving the
+    /// displayed structure inside removes the shape of the mistake.
+    int addTrajectoryDocument(std::vector<std::shared_ptr<core::Structure>> frames,
+                              const QString& name, const QString& task = {});
     /// Re-derive every tab's title as "NN - Formula - Task" with a zero-padded
     /// two-digit sequence number, kept in sync as tabs are added, closed or
     /// reordered. Formula is read live from each document's structure.

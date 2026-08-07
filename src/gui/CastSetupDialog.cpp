@@ -473,11 +473,16 @@ void CastSetupDialog::updateSummary()
             ++populations[static_cast<std::size_t>(cast)];
 
     QStringList parts;
-    for (int cast = 0; cast < count; ++cast)
-        parts << tr("Cast %1: %2 atom(s) as %3")
-                     .arg(castLabel(cast))
+    for (int cast = 0; cast < count; ++cast) {
+        // The renderer's label rather than the bare number: a cast a module
+        // created knows what it is ("Epoxide"), and the summary is where that
+        // is worth reading.
+        parts << tr("%1: %2 atom(s) as %3")
+                     .arg(render::StructureRenderer::castLabel(
+                         cast, viewport_->style()))
                      .arg(populations[static_cast<std::size_t>(cast)])
                      .arg(modeName(viewport_->style().castMode(cast)));
+    }
     summaryLabel_->setText(parts.join(QStringLiteral("<br>")));
 }
 

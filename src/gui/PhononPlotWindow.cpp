@@ -18,7 +18,9 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QMessageBox>
+#include <QGroupBox>
 #include <QSignalBlocker>
+#include <QSlider>
 #include <QPushButton>
 #include <QTextStream>
 #include <QVBoxLayout>
@@ -72,6 +74,49 @@ PhononPlotWindow::PhononPlotWindow(const QString& directory, QWidget* parent,
     side->addWidget(new QLabel(tr("3 acoustic branches vanish at Γ;\n"
                                   "the dashed line marks ω = 0."),
                                this));
+
+    // -- Live PhDOS smearing ------------------------------------------------
+    //
+    // The run stores the unbroadened histogram of the mesh frequencies, so σ is
+    // a drawing choice here. That matters more for phonons than for electrons:
+    // a phonon calculation is expensive enough that nobody re-runs one to find
+    // out whether a shoulder was a real van Hove feature or the broadening.
+    smearingBox_ = new QGroupBox(tr("PhDOS smearing"), this);
+    auto* smearingLayout = new QVBoxLayout(smearingBox_);
+    auto* smearingRow = new QHBoxLayout;
+    smearingSpin_ = new QDoubleSpinBox(smearingBox_);
+    smearingSpin_->setRange(0.1, 100.0);
+    smearingSpin_->setDecimals(1);
+    smearingSpin_->setSingleStep(0.5);
+    smearingSpin_->setValue(2.0);
+    smearingSpin_->setSuffix(QStringLiteral(" cm⁻¹"));
+    smearingSpin_->setToolTip(
+        tr("Gaussian σ each mode is broadened by, applied as the curve is "
+           "drawn. Sweep it: features that survive a range of σ are real, and "
+           "ones that vanish were the q-mesh showing through."));
+    smearingSlider_ = new QSlider(Qt::Horizontal, smearingBox_);
+    smearingSlider_->setRange(1, 1000); // tenths of a cm⁻¹
+    smearingSlider_->setValue(20);
+    smearingRow->addWidget(smearingSlider_, 1);
+    smearingRow->addWidget(smearingSpin_);
+    smearingLayout->addLayout(smearingRow);
+    smearingNote_ = new QLabel(smearingBox_);
+    smearingNote_->setWordWrap(true);
+    smearingLayout->addWidget(smearingNote_);
+    side->addWidget(smearingBox_);
+    connect(smearingSlider_, &QSlider::valueChanged, this, [this](int tenths) {
+        const QSignalBlocker blocker(smearingSpin_);
+        smearingSpin_->setValue(tenths / 10.0);
+        view_->setPdosSmearing(tenths / 10.0);
+    });
+    connect(smearingSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double sigma) {
+                const QSignalBlocker blocker(smearingSlider_);
+                smearingSlider_->setValue(
+                    static_cast<int>(std::lround(sigma * 10.0)));
+                view_->setPdosSmearing(sigma);
+            });
+
     side->addStretch(1);
 
     auto* customizeButton = new QPushButton(tr("Customize Appearance…"), this);
@@ -193,15 +238,63 @@ void PhononPlotWindow::loadDirectory(const QString& directory)
     if (!dos.isEmpty()) {
         BandPdosView::PdosData pdosData;
         pdosData.energies = toDoubleVector(dos[QStringLiteral("frequencies")].toArray());
-        // Keep a copy for the thermodynamics integrator.
+        // As for the electronic PDOS: absent "broadened" means a run from
+        // before the smearing moved into the viewer, whose curve already
+        // carries a width and must not be convolved again.
+        pdosData.broadened = dos.value(QStringLiteral("broadened")).toBool(true);
+        pdosData.binWidth = dos.value(QStringLiteral("bin_width")).toDouble(0.0);
+        pdosData.suggestedWidth =
+            dos.value(QStringLiteral("suggested_width")).toDouble(2.0);
+        if (pdosData.binWidth <= 0.0 && pdosData.energies.size() > 1)
+            pdosData.binWidth = pdosData.energies[1] - pdosData.energies[0];
+
+        const std::vector<double> stored =
+            toDoubleVector(dos[QStringLiteral("dos")].toArray());
+        // The thermodynamics integrates g(omega) by the trapezoidal rule, so it
+        // needs a DENSITY. A raw histogram holds the weight IN each bin, which
+        // is that density times the bin width — divide it back out.
+        //
+        // Feeding it the histogram rather than the broadened curve is also the
+        // more correct choice: the harmonic free energy is a property of the
+        // mode spectrum, and it should not shift when someone drags a
+        // presentation slider.
         dosFrequenciesCm_ = pdosData.energies;
-        dosValues_ = toDoubleVector(dos[QStringLiteral("dos")].toArray());
-        pdosData.projections.emplace_back(
-            tr("PhDOS"), toDoubleVector(dos[QStringLiteral("dos")].toArray()));
+        dosValues_ = stored;
+        if (!pdosData.broadened && pdosData.binWidth > 0.0) {
+            for (double& value : dosValues_)
+                value /= pdosData.binWidth;
+        }
+        pdosData.projections.emplace_back(tr("PhDOS"), stored);
         view_->setPdosData(std::move(pdosData));
+        updateSmearingControl();
     }
 }
 
+
+void PhononPlotWindow::updateSmearingControl()
+{
+    if (!smearingBox_)
+        return;
+    const bool live = view_->pdosSmearingAvailable();
+    smearingSlider_->setEnabled(live);
+    smearingSpin_->setEnabled(live);
+    if (live) {
+        const QSignalBlocker spinBlocker(smearingSpin_);
+        const QSignalBlocker sliderBlocker(smearingSlider_);
+        smearingSpin_->setValue(view_->pdosSmearing());
+        smearingSlider_->setValue(
+            static_cast<int>(std::lround(view_->pdosSmearing() * 10.0)));
+        smearingNote_->setText(
+            tr("<i>Applied to the stored mode histogram as the curve is drawn "
+               "— no re-run. The harmonic thermodynamics integrates the "
+               "histogram itself and does not move with this.</i>"));
+        return;
+    }
+    smearingBox_->setVisible(view_->pdosData().valid());
+    smearingNote_->setText(
+        tr("<i>This run stored an already-broadened curve, so σ is fixed at "
+           "whatever it was calculated with.</i>"));
+}
 
 void PhononPlotWindow::showThermodynamics()
 {

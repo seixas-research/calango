@@ -1987,6 +1987,18 @@ int MainWindow::addDocument(std::shared_ptr<core::Structure> structure,
     return index;
 }
 
+int MainWindow::addTrajectoryDocument(
+    std::vector<std::shared_ptr<core::Structure>> frames, const QString& name,
+    const QString& task)
+{
+    if (frames.empty())
+        return -1;
+    // The one place `front()` and the move of the vector meet, and they are
+    // sequenced here rather than left to a call's unspecified argument order.
+    auto first = frames.front();
+    return addDocument(std::move(first), name, std::move(frames), task);
+}
+
 void MainWindow::refreshTabTitles()
 {
     for (std::size_t i = 0; i < documents_.size(); ++i) {
@@ -2173,6 +2185,32 @@ void MainWindow::notifyStructureChanged(bool frameCamera)
     infoWidget_->updateFromStructure(doc->structure.get());
 }
 
+MainWindow::Snapshot MainWindow::snapshotOf(const Document& doc)
+{
+    Snapshot snapshot;
+    // The displayed structure is deep-copied because some edits mutate it in
+    // place; the other frames are only ever replaced, so a pointer suffices.
+    snapshot.structure = doc.structure
+        ? std::make_shared<core::Structure>(*doc.structure)
+        : nullptr;
+    snapshot.frames.reserve(doc.frames.size());
+    for (const auto& frame : doc.frames) {
+        // The entry standing for the frame on screen has to point at the deep
+        // copy, or restoring would put the trajectory back while leaving that
+        // one frame aliased to the live (already edited) object.
+        snapshot.frames.push_back(frame && frame == doc.structure
+                                      ? snapshot.structure
+                                      : frame);
+    }
+    return snapshot;
+}
+
+void MainWindow::restore(Document& doc, Snapshot snapshot)
+{
+    doc.structure = std::move(snapshot.structure);
+    doc.frames = std::move(snapshot.frames);
+}
+
 void MainWindow::pushUndo()
 {
     Document* doc = currentDocument();
@@ -2181,8 +2219,7 @@ void MainWindow::pushUndo()
     // Every undoable mutation funnels through here — the natural single
     // point to flag the workspace as having unsaved changes.
     isDirty_ = true;
-    doc->undoStack.push_back(
-        doc->structure ? std::make_shared<core::Structure>(*doc->structure) : nullptr);
+    doc->undoStack.push_back(snapshotOf(*doc));
     if (doc->undoStack.size() > kMaxUndoDepth)
         doc->undoStack.pop_front();
     doc->redoStack.clear();
@@ -2201,9 +2238,8 @@ void MainWindow::undo()
     Document* doc = currentDocument();
     if (!doc || doc->undoStack.empty())
         return;
-    doc->redoStack.push_back(
-        doc->structure ? std::make_shared<core::Structure>(*doc->structure) : nullptr);
-    doc->structure = doc->undoStack.back();
+    doc->redoStack.push_back(snapshotOf(*doc));
+    restore(*doc, std::move(doc->undoStack.back()));
     doc->undoStack.pop_back();
     updateUndoActions();
     notifyStructureChanged(false);
@@ -2215,9 +2251,8 @@ void MainWindow::redo()
     Document* doc = currentDocument();
     if (!doc || doc->redoStack.empty())
         return;
-    doc->undoStack.push_back(
-        doc->structure ? std::make_shared<core::Structure>(*doc->structure) : nullptr);
-    doc->structure = doc->redoStack.back();
+    doc->undoStack.push_back(snapshotOf(*doc));
+    restore(*doc, std::move(doc->redoStack.back()));
     doc->redoStack.pop_back();
     updateUndoActions();
     notifyStructureChanged(false);
@@ -2344,7 +2379,7 @@ void MainWindow::loadFile(const QString& path)
             for (const auto& frame : rawFrames)
                 frames.push_back(std::make_shared<core::Structure>(frame));
             const auto frameCount = frames.size();
-            addDocument(frames.front(), QFileInfo(path).fileName(), std::move(frames));
+            addTrajectoryDocument(std::move(frames), QFileInfo(path).fileName());
             statusBar()->showMessage(
                 tr("Loaded %1 (%2 frames)").arg(path).arg(frameCount));
             addRecentFile(path);
@@ -3395,14 +3430,73 @@ bool askVacuumOptions(QWidget* parent, core::VacuumOptions& options)
 
 } // namespace
 
-void MainWindow::centerStructure()
+int MainWindow::applyToAllFrames(
+    const std::function<bool(core::Structure&)>& transform)
 {
     Document* doc = currentDocument();
     if (!doc || !doc->structure || doc->structure->empty())
+        return -1;
+
+    // No trajectory: the displayed structure IS the whole document.
+    if (doc->frames.size() < 2) {
+        auto edited = std::make_shared<core::Structure>(*doc->structure);
+        if (!transform(*edited))
+            return 0;
+        installEditedStructure(std::move(edited), QString());
+        return 1;
+    }
+
+    // Every frame is transformed into a fresh copy first and only committed
+    // once they all succeeded, so a transform that throws part-way (spglib
+    // failing on one frame, say) leaves the document exactly as it was rather
+    // than half-converted.
+    std::vector<std::shared_ptr<core::Structure>> updated;
+    updated.reserve(doc->frames.size());
+    std::shared_ptr<core::Structure> displayed;
+    int changed = 0;
+    for (const auto& frame : doc->frames) {
+        if (!frame) {
+            updated.push_back(frame);
+            continue;
+        }
+        auto copy = std::make_shared<core::Structure>(*frame);
+        if (transform(*copy))
+            ++changed;
+        // The frame the viewport is on has to become the same object the
+        // trajectory now holds, or scrubbing away and back would revert it.
+        if (frame == doc->structure)
+            displayed = copy;
+        updated.push_back(std::move(copy));
+    }
+    if (changed == 0)
+        return 0;
+
+    pushUndo();
+    doc->frames = std::move(updated);
+    // `displayed` is null only if the shown structure was not one of the frames
+    // (an edited structure never re-inserted); leave it alone then.
+    if (displayed)
+        doc->structure = std::move(displayed);
+    notifyStructureChanged(/*frameCamera=*/false);
+    return changed;
+}
+
+void MainWindow::centerStructure()
+{
+    // Centred frame by frame, which is the point of centring a trajectory: it
+    // removes the centre-of-mass drift that otherwise walks the whole system
+    // across the viewport during an MD run.
+    const int frames = applyToAllFrames([](core::Structure& structure) {
+        core::centerInCell(structure);
+        return true;
+    });
+    if (frames <= 0)
         return;
-    auto edited = std::make_shared<core::Structure>(*doc->structure);
-    core::centerInCell(*edited);
-    installEditedStructure(std::move(edited), tr("Structure centered in the cell"));
+    statusBar()->showMessage(
+        frames > 1
+            ? tr("Centered every atom in the cell across %n trajectory frame(s)",
+                 nullptr, frames)
+            : tr("Structure centered in the cell"));
 }
 
 void MainWindow::addVacuumLayer()
@@ -3460,65 +3554,44 @@ void MainWindow::wrapStructureIntoCell()
     // make the atoms jump between lattice images as the timeline is scrubbed —
     // the very artifact the button exists to remove — and an MD run is
     // precisely where atoms diffuse out of the box in the first place.
-    if (doc->frames.size() > 1) {
-        std::vector<std::shared_ptr<core::Structure>> wrapped;
-        wrapped.reserve(doc->frames.size());
-        int movedTotal = 0;
-        int framesChanged = 0;
-        std::shared_ptr<core::Structure> displayed;
-        for (const auto& frame : doc->frames) {
-            if (!frame) {
-                wrapped.push_back(frame);
-                continue;
-            }
-            auto copy = std::make_shared<core::Structure>(*frame);
-            const int moved = core::wrapIntoCell(*copy, indices);
+    const int frameCount = static_cast<int>(doc->frames.size());
+    int movedTotal = 0;
+    const int framesChanged =
+        applyToAllFrames([&indices, &movedTotal](core::Structure& structure) {
+            const int moved = core::wrapIntoCell(structure, indices);
             movedTotal += moved;
-            if (moved > 0)
-                ++framesChanged;
-            // The frame the viewport is on has to become the same object the
-            // trajectory now holds, or scrubbing away and back would revert it.
-            if (frame == doc->structure)
-                displayed = copy;
-            wrapped.push_back(std::move(copy));
-        }
-        if (movedTotal == 0) {
+            return moved > 0;
+        });
+    if (framesChanged < 0)
+        return;
+    if (framesChanged == 0) {
+        // Nothing moved and nothing moved look identical on screen, so say so
+        // rather than pushing an undo step that changes nothing.
+        if (frameCount > 1) {
             statusBar()->showMessage(
                 indices.empty()
                     ? tr("Every atom of every frame already lies inside the "
                          "unit cell.")
                     : tr("Every selected atom already lies inside the unit "
                          "cell, in every frame."));
-            return;
+        } else {
+            statusBar()->showMessage(
+                indices.empty()
+                    ? tr("Every atom already lies inside the unit cell.")
+                    : tr("Every selected atom already lies inside the unit cell."));
         }
-        pushUndo();
-        doc->frames = std::move(wrapped);
-        // `displayed` is null only if the shown structure was not one of the
-        // frames (an edited structure never re-inserted); leave it alone then.
-        if (displayed)
-            doc->structure = std::move(displayed);
-        notifyStructureChanged(/*frameCamera=*/false);
+        return;
+    }
+    if (frameCount > 1) {
         statusBar()->showMessage(
             tr("Wrapped %n atom(s) into the cell across %1 of %2 trajectory "
                "frames", nullptr, movedTotal)
                 .arg(framesChanged)
-                .arg(doc->frames.size()));
+                .arg(frameCount));
         return;
     }
-
-    auto edited = std::make_shared<core::Structure>(*doc->structure);
-    const int moved = core::wrapIntoCell(*edited, indices);
-    if (moved == 0) {
-        // Nothing moved and nothing moved look identical on screen, so say so
-        // rather than pushing an undo step that changes nothing.
-        statusBar()->showMessage(
-            indices.empty()
-                ? tr("Every atom already lies inside the unit cell.")
-                : tr("Every selected atom already lies inside the unit cell."));
-        return;
-    }
-    installEditedStructure(std::move(edited),
-                           tr("Wrapped %n atom(s) into the cell", nullptr, moved));
+    statusBar()->showMessage(
+        tr("Wrapped %n atom(s) into the cell", nullptr, movedTotal));
 }
 
 void MainWindow::openSupercellBuilder()
@@ -3821,9 +3894,109 @@ void MainWindow::editStructure()
     if (!edited)
         return;
 
+    const auto transform = dialog.cellTransform();
+    if (transform != core::CellTransform::None
+        && doc->frames.size() > 1) {
+        propagateCellTransform(std::move(edited), transform);
+        return;
+    }
+
+    const auto atomCount = edited->size();
     installEditedStructure(std::move(edited),
-                           tr("Structure updated (%1 atoms)")
-                               .arg(dialog.result()->size()));
+                           tr("Structure updated (%1 atoms)").arg(atomCount));
+}
+
+void MainWindow::propagateCellTransform(
+    std::shared_ptr<core::Structure> edited,
+    core::CellTransform transform)
+{
+    Document* doc = currentDocument();
+    if (!doc || !edited)
+        return;
+    const bool toPrimitive =
+        transform == core::CellTransform::Primitive;
+    const QString title = toPrimitive ? tr("Reduce to Primitive Cell")
+                                      : tr("Standardize Cell");
+
+    // Every frame is standardized independently, then the whole set is checked
+    // for the one property that makes it a trajectory: frame k's atom i has to
+    // be the same atom in every frame. spglib does not promise that across
+    // frames — a thermally displaced MD frame usually resolves to a LOWER
+    // symmetry than the ideal one, so it can come back with a different atom
+    // count or a different ordering, and the "trajectory" would silently stop
+    // corresponding to itself. Better to convert nothing and say so.
+    std::vector<std::shared_ptr<core::Structure>> converted;
+    converted.reserve(doc->frames.size());
+    const auto signatureOf = [](const core::Structure& structure) {
+        std::vector<int> signature;
+        signature.reserve(structure.size());
+        for (const core::Atom& atom : structure.atoms())
+            signature.push_back(atom.atomicNumber);
+        return signature;
+    };
+    const std::vector<int> reference = signatureOf(*edited);
+
+    int diverged = 0;
+    try {
+        for (const auto& frame : doc->frames) {
+            if (!frame) {
+                converted.push_back(frame);
+                continue;
+            }
+            // The displayed frame is already done — and carries whatever else
+            // the dialog edited, which must not be thrown away.
+            if (frame == doc->structure) {
+                converted.push_back(edited);
+                continue;
+            }
+            auto result = std::make_shared<core::Structure>(
+                pybridge::AseBridge::standardizeCell(*frame, /*symprec=*/1e-3,
+                                                     toPrimitive,
+                                                     /*idealize=*/!toPrimitive));
+            if (signatureOf(*result) != reference)
+                ++diverged;
+            converted.push_back(std::move(result));
+        }
+    } catch (const std::exception& e) {
+        QMessageBox::critical(
+            this, title,
+            tr("%1\n\nNo frame was changed — the trajectory is unchanged.")
+                .arg(QString::fromUtf8(e.what())));
+        return;
+    }
+
+    if (diverged > 0) {
+        QMessageBox::warning(
+            this, title,
+            tr("%1 of %2 frames came back with a different atom count or "
+               "ordering than the frame on screen, so the frames would no "
+               "longer correspond to each other and nothing measured across "
+               "them (an MSD, an RDF, a diffusion coefficient) would mean "
+               "anything.\n\n"
+               "This is the normal outcome for a finite-temperature "
+               "trajectory: displaced frames resolve to lower symmetry than "
+               "the ideal one, and spglib answers each frame on its own "
+               "merits.\n\n"
+               "Nothing was changed. Standardize the reference structure in "
+               "its own tab instead, or loosen the symmetry tolerance so every "
+               "frame resolves the same way.")
+                .arg(diverged)
+                .arg(doc->frames.size() - 1));
+        return;
+    }
+
+    pushUndo();
+    doc->frames = std::move(converted);
+    doc->structure = std::move(edited);
+    notifyStructureChanged(/*frameCamera=*/false);
+    statusBar()->showMessage(
+        toPrimitive
+            ? tr("Reduced every one of %n trajectory frame(s) to the primitive "
+                 "cell (%1 atoms)", nullptr, static_cast<int>(doc->frames.size()))
+                  .arg(doc->structure->size())
+            : tr("Standardized the cell of every one of %n trajectory frame(s) "
+                 "(%1 atoms)", nullptr, static_cast<int>(doc->frames.size()))
+                  .arg(doc->structure->size()));
 }
 
 void MainWindow::installEditedStructure(
@@ -6216,6 +6389,78 @@ void MainWindow::openWaterIceBuilder()
             .arg(generated.densityGCm3, 0, 'f', 3));
 }
 
+int MainWindow::applyFunctionalGroupCasts()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty() || !viewport_)
+        return 0;
+
+    const std::vector<int> labels =
+        core::GrapheneOxideBuilder::functionalGroupLabels(*doc->structure);
+    if (labels.size() != doc->structure->size())
+        return 0;
+
+    // One cast per group KIND, not per group instance. A flake carries dozens
+    // of epoxides; giving each its own cast would produce a list nobody can
+    // work with, whereas "all the epoxides" is a thing a reader of the figure
+    // actually wants to pick out, hide or colour.
+    //
+    // Only the kinds that are present get a cast — an empty "Carbonyl" cast on
+    // a structure with no carbonyls is a control that does nothing.
+    using Builder = core::GrapheneOxideBuilder;
+    std::array<int, Builder::kGroupCount> castOfGroup{};
+    castOfGroup.fill(0);
+    // Distinct hues, in the order the groups are declared. Chosen against the
+    // element colours the sheet is drawn in (grey C, red O, white H) so a
+    // group reads as a group rather than blending into the substrate.
+    static const QColor kGroupColors[Builder::kGroupCount] = {
+        QColor(0xE6, 0x55, 0x0D), // epoxide      — orange
+        QColor(0x1F, 0x77, 0xB4), // hydroxyl     — blue
+        QColor(0x9E, 0x4C, 0xC4), // carboxyl     — purple
+        QColor(0x2C, 0xA0, 0x2C), // carbonyl     — green
+        QColor(0x17, 0xBE, 0xCF), // edge hydroxyl— cyan
+    };
+
+    auto& style = viewport_->style();
+    style.castStyles.clear();
+    style.castName = tr("Pristine framework");
+    for (std::size_t group = 0; group < Builder::kGroupCount; ++group) {
+        const int slot = static_cast<int>(group);
+        if (std::find(labels.begin(), labels.end(), slot) == labels.end())
+            continue;
+        render::StructureRenderer::CastStyle cast = style.castStyle(0);
+        cast.castColor = kGroupColors[group];
+        // Capitalized: it is a name in a list, not a word in a sentence.
+        QString name = QString::fromLatin1(
+            Builder::name(static_cast<Builder::Group>(group)));
+        name[0] = name[0].toUpper();
+        cast.name = name;
+        style.castStyles.push_back(cast);
+        castOfGroup[group] = static_cast<int>(style.castStyles.size());
+    }
+    if (style.castStyles.empty()) {
+        // Nothing was found: leave the scene in the single-cast state rather
+        // than renaming cast 0 after an analysis that came back empty.
+        style.castName.clear();
+        return 0;
+    }
+
+    style.atomCasts.assign(labels.size(), 0);
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+        if (labels[i] >= 0 && labels[i] < static_cast<int>(Builder::kGroupCount))
+            style.atomCasts[i] =
+                castOfGroup[static_cast<std::size_t>(labels[i])];
+    }
+    // Cast colouring is the whole point of having made the casts; leaving the
+    // scene on Element colouring would produce the groups and show none of
+    // them.
+    style.colorMode = render::ColorMode::Cast;
+    for (auto& cast : style.castStyles)
+        cast.colorMode = render::ColorMode::Cast;
+    viewport_->styleChanged(/*rebuildGeometry=*/true);
+    return static_cast<int>(style.castStyles.size());
+}
+
 void MainWindow::openGrapheneOxideBuilder()
 {
     GrapheneOxideWizard wizard(this);
@@ -6227,14 +6472,25 @@ void MainWindow::openGrapheneOxideBuilder()
         tr("Graphene oxide"));
     tabBar_->setCurrentIndex(tab);
     isDirty_ = true;
+    const int castCount = applyFunctionalGroupCasts();
 
     // Report what was actually placed, not what was asked for. The two differ
-    // whenever the lattice ran out of free carbons, and a silent shortfall
+    // whenever the substrate ran out of free carbons, and a silent shortfall
     // leaves the user believing they have a composition they do not have.
     QString message =
-        tr("Graphene oxide — %1 C, C/O = %2")
-            .arg(report.carbonCount)
-            .arg(report.carbonToOxygenRatio(), 0, 'f', 2);
+        tr("Graphene oxide — %1, %2 basal / %3 edge carbons, ")
+            .arg(QString::fromStdString(wizard.result()->chemicalFormula()))
+            .arg(report.basalCarbonCount)
+            .arg(report.edgeCarbonCount);
+    // C/O is meaningless without oxygen, and printing "0.00" for a pristine
+    // substrate reads as an infinitely oxidized one.
+    message += report.oxygenAtoms > 0
+        ? tr("C/O = %1").arg(report.carbonToOxygenRatio(), 0, 'f', 2)
+        : tr("no oxygen placed");
+    if (castCount > 0) {
+        message += tr(" — %n functional-group cast(s) ready to colour",
+                      nullptr, castCount);
+    }
     if (!report.note.empty()) {
         message += tr("  ⚠ %1").arg(QString::fromStdString(report.note));
         QMessageBox::information(this, tr("Graphene Oxide"),
@@ -6387,10 +6643,9 @@ void MainWindow::openClusterExpansion()
     for (const auto& cfg : res.configs)
         frames.push_back(std::make_shared<core::Structure>(cfg.structure));
 
-    const int tab = addDocument(frames.front(),
-                                tr("Cluster Expansion (%1 configs)")
-                                    .arg(res.configs.size()),
-                                frames);
+    const int tab = addTrajectoryDocument(std::move(frames),
+                                          tr("Cluster Expansion (%1 configs)")
+                                              .arg(res.configs.size()));
     tabBar_->setCurrentIndex(tab);
 
     int pairO = 0, tripO = 0, quadO = 0;
@@ -6522,12 +6777,10 @@ void MainWindow::addRandomNoise()
                     return;
                 // Open it as a scrubbable trajectory, so the displacement can
                 // be judged by eye before any compute time is spent on it.
-                auto copy = frames;
-                addDocument(copy.front(),
-                            tr("%1 (noise ×%2)")
-                                .arg(baseName)
-                                .arg(frames.size() - 1),
-                            std::move(copy));
+                addTrajectoryDocument(frames,
+                                      tr("%1 (noise ×%2)")
+                                          .arg(baseName)
+                                          .arg(frames.size() - 1));
                 statusBar()->showMessage(
                     tr("Generated %1 perturbed structures — scrub the new tab.")
                         .arg(frames.size() - 1));
@@ -6560,11 +6813,9 @@ void MainWindow::openExamplesBrowser()
     connect(&dialog, &ExamplesDialog::trajectoryFetched, this,
             [this](std::vector<std::shared_ptr<core::Structure>> frames,
                    const QString& name) {
-                if (frames.empty())
-                    return;
                 const auto frameCount = frames.size();
-                auto first = frames.front();
-                addDocument(std::move(first), name, std::move(frames));
+                if (addTrajectoryDocument(std::move(frames), name) < 0)
+                    return;
                 statusBar()->showMessage(
                     tr("Grouped %1 structures into one trajectory").arg(frameCount));
             });

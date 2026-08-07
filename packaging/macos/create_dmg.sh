@@ -39,7 +39,8 @@
 #                             the script downloads and builds one automatically
 #   CALANGO_EMBEDDED_PACKAGES pip packages for that payload
 #                             (default: ase numpy scipy spglib matplotlib
-#                              imageio imageio-ffmpeg)
+#                              imageio imageio-ffmpeg dftd4 torch-dftd
+#                              phonopy xtb)
 #   JOBS                      parallel build jobs (default: CPU count)
 #
 # NOTE on the Python version: PythonEngine runs an *in-process* interpreter
@@ -69,11 +70,17 @@ BUILD_DIR="${BUILD_DIR:-build-macos-bundle}"
 DIST_DIR="${DIST_DIR:-$REPO_ROOT}"
 QT_PREFIX="${CMAKE_PREFIX_PATH:-/opt/homebrew/opt/qt}"
 EMBED_PY="${CALANGO_EMBEDDED_PYTHON_DIR:-}"
-# dftd4 / torch-dftd / phonopy ride along as dynamically linked Python
+# dftd4 / torch-dftd / phonopy / xtb ride along as dynamically linked Python
 # dependencies: dftd4 ships its shared library inside the wheel, torch-dftd
-# backs mace_mp(dispersion=True), and phonopy drives the symmetry-reduced
-# phonon path, LO-TO splitting and Γ-mode irrep labels.
-EMBED_PKGS="${CALANGO_EMBEDDED_PACKAGES:-ase numpy scipy spglib matplotlib imageio imageio-ffmpeg dftd4 torch-dftd phonopy}"
+# backs mace_mp(dispersion=True), phonopy drives the symmetry-reduced phonon
+# path, LO-TO splitting and Γ-mode irrep labels, and xtb is the GFN
+# semi-empirical calculator — which runs IN-PROCESS through
+# xtb.ase.calculator.XTB, so it has to be inside this payload rather than
+# resolved as a solver binary at run time like SIESTA or VASP.
+#
+# The wheel is named `xtb` on PyPI and `xtb-python` on conda-forge; both import
+# as `xtb`. See packaging/dependencies.txt.
+EMBED_PKGS="${CALANGO_EMBEDDED_PACKAGES:-ase numpy scipy spglib matplotlib imageio imageio-ffmpeg dftd4 torch-dftd phonopy xtb}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 
 # --- Pre-flight: the staging tree must not be cloud-synced ------------------
