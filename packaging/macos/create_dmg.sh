@@ -40,7 +40,7 @@
 #   CALANGO_EMBEDDED_PACKAGES pip packages for that payload
 #                             (default: ase numpy scipy spglib matplotlib
 #                              imageio imageio-ffmpeg dftd4 torch-dftd
-#                              phonopy xtb)
+#                              phonopy — NOT xtb, which has no wheel)
 #   JOBS                      parallel build jobs (default: CPU count)
 #
 # NOTE on the Python version: PythonEngine runs an *in-process* interpreter
@@ -70,17 +70,22 @@ BUILD_DIR="${BUILD_DIR:-build-macos-bundle}"
 DIST_DIR="${DIST_DIR:-$REPO_ROOT}"
 QT_PREFIX="${CMAKE_PREFIX_PATH:-/opt/homebrew/opt/qt}"
 EMBED_PY="${CALANGO_EMBEDDED_PYTHON_DIR:-}"
-# dftd4 / torch-dftd / phonopy / xtb ride along as dynamically linked Python
+# dftd4 / torch-dftd / phonopy ride along as dynamically linked Python
 # dependencies: dftd4 ships its shared library inside the wheel, torch-dftd
-# backs mace_mp(dispersion=True), phonopy drives the symmetry-reduced phonon
-# path, LO-TO splitting and Γ-mode irrep labels, and xtb is the GFN
-# semi-empirical calculator — which runs IN-PROCESS through
-# xtb.ase.calculator.XTB, so it has to be inside this payload rather than
-# resolved as a solver binary at run time like SIESTA or VASP.
+# backs mace_mp(dispersion=True), and phonopy drives the symmetry-reduced
+# phonon path, LO-TO splitting and Γ-mode irrep labels.
 #
-# The wheel is named `xtb` on PyPI and `xtb-python` on conda-forge; both import
-# as `xtb`. See packaging/dependencies.txt.
-EMBED_PKGS="${CALANGO_EMBEDDED_PACKAGES:-ase numpy scipy spglib matplotlib imageio imageio-ffmpeg dftd4 torch-dftd phonopy xtb}"
+# xtb is deliberately NOT in this list, though the GFN calculator needs it.
+# There is no PyPI wheel: `pip install xtb` fetches a source distribution that
+# compiles xtb 6.5.1 with meson, which needs a Fortran compiler and MKL and
+# fails on macOS arm64 — so putting it here does not add the calculator, it
+# breaks the build of the whole payload. conda-forge's `xtb-python` is the
+# only working route and it is a run dependency of the conda package
+# (packaging/conda/meta.yaml). A DMG user who wants xTB points the engine at a
+# Conda environment that has it, through Preferences -> Python & Environments;
+# the wizard reports whether the selected one does. See
+# packaging/dependencies.txt.
+EMBED_PKGS="${CALANGO_EMBEDDED_PACKAGES:-ase numpy scipy spglib matplotlib imageio imageio-ffmpeg dftd4 torch-dftd phonopy}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 
 # --- Pre-flight: the staging tree must not be cloud-synced ------------------

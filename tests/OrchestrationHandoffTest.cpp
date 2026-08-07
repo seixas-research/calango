@@ -279,6 +279,193 @@ int main(int argc, char** argv)
               "child converges almost immediately (<= 1 step)");
     }
 
+    // ---- Scenario 3: the input-slot contract ------------------------------
+    //
+    // The analysis modules do not read a structure, they read a COMPLETED RUN,
+    // and the canvas has to promise each one a file at a name its wizard was
+    // configured against long before any parent executed. Everything below is
+    // about that promise: who fills which slot, what happens when nobody does,
+    // and that the files land under the agreed names.
+    std::printf("Input slots:\n");
+    {
+        // The slot tables themselves. These are the contract the wizard
+        // factory codes against, so a rename on either side has to fail here
+        // rather than at run time in Python.
+        check(orchestrationInputSlots(OrchestrationTask::GeometryOptimization)
+                  .isEmpty(),
+              "a relaxation inherits nothing");
+        check(orchestrationRequiredInputs(OrchestrationTask::ElectronicBands) == 1,
+              "Electronic Bands inherits one run");
+        check(orchestrationRequiredInputs(OrchestrationTask::ChargedDefects2d) == 2,
+              "2D Charged Defects inherits two");
+        // Raman has three slots but only one is required: without Born charges
+        // the module reports IR as zero rather than refusing to run.
+        check(orchestrationInputSlots(OrchestrationTask::RamanIr).size() == 3
+                  && orchestrationRequiredInputs(OrchestrationTask::RamanIr) == 1,
+              "Raman/IR has three slots, two of them optional");
+        check(orchestrationTaskHasDefaults(OrchestrationTask::SinglePoint)
+                  && !orchestrationTaskHasDefaults(OrchestrationTask::Optics),
+              "only the self-contained tasks can run unconfigured");
+    }
+
+    QSettings().setValue(
+        QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+        sandbox.path() + QStringLiteral("/simulations_slots"));
+    {
+        OrchestrationWindow window({{QStringLiteral("Cu (rattled)"), copper}},
+                                   pythonResolver);
+        // Refusals go here instead of into a modal box nobody is present to
+        // dismiss — which is the only reason they can be asserted at all.
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        OrchestrationNodeItem* orphan = window.addProcessNode(
+            OrchestrationTask::ElectronicBands, 0,
+            calango::core::CalculatorKind::Gpaw);
+        window.configureNode(orphan, QStringLiteral("print('never runs')\n"),
+                             pythonExe, QString(),
+                             calango::core::CalculatorKind::Gpaw);
+        window.sendToProcesses();
+        check(orphan->status() != OrchestrationNodeItem::Status::Running,
+              "a bands node with no parent never starts");
+        check(refusals.size() >= 1
+                  && refusals.front().contains(QStringLiteral("inherits")),
+              "and the refusal says it inherits a run it has not been given");
+    }
+
+    {
+        OrchestrationWindow window({{QStringLiteral("Cu (rattled)"), copper}},
+                                   pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        // An analysis node with its parent, but never configured. This is the
+        // one an unconditional "fall back to defaults" would happily run —
+        // against no baseline at all.
+        OrchestrationNodeItem* host = window.addProcessNode(
+            OrchestrationTask::GeometryOptimization, 0,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* bands = window.addProcessNode(
+            OrchestrationTask::ElectronicBands, 0,
+            calango::core::CalculatorKind::Gpaw);
+        window.linkNodes(host, bands);
+        window.configureNode(host, script, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+        window.sendToProcesses();
+        settle(host, bands);
+        check(bands->status() != OrchestrationNodeItem::Status::Done,
+              "an unconfigured analysis node does not run on defaults");
+        check(std::any_of(refusals.cbegin(), refusals.cend(),
+                          [](const QString& m) {
+                              return m.contains(QStringLiteral("not been configured"));
+                          }),
+              "and says so rather than failing inside Python");
+    }
+
+    // The two-parent case, end to end: link order decides which run is the
+    // host and which the defect, and each lands under the name its wizard was
+    // told about. Nothing in a .gpw distinguishes them, so if this is wrong
+    // the defect diagram is computed with the two cells swapped — and every
+    // formation energy comes out negated with no error anywhere.
+    std::printf("Two-parent staging (link order):\n");
+    QSettings().setValue(
+        QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+        sandbox.path() + QStringLiteral("/simulations_two_parent"));
+    {
+        OrchestrationWindow window({{QStringLiteral("Cu (rattled)"), copper}},
+                                   pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        // Two parents that each write a DISTINCT single_point.gpw, so which
+        // file reached which slot is decidable from its contents.
+        const auto writer = [](const QString& marker) {
+            return QStringLiteral(
+                       "with open('single_point.gpw', 'w') as h:\n"
+                       "    h.write('%1')\n"
+                       "with open('single_point.extxyz', 'w') as h:\n"
+                       "    h.write('0\\nmarker=%1\\n')\n"
+                       "print('CALANGO_DONE', flush=True)\n")
+                .arg(marker);
+        };
+        OrchestrationNodeItem* pristine = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* defective = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        // EMT, not GPAW, purely because of how the job is LAUNCHED: a GPAW
+        // node resolves to "mpirun -n N gpaw python", which no sandbox has.
+        // Nothing here is about the calculator — it is about which parent's
+        // file lands in which slot — and the canvas does not tie a task to an
+        // engine in any case.
+        OrchestrationNodeItem* defects = window.addProcessNode(
+            OrchestrationTask::ChargedDefects2d, 0,
+            calango::core::CalculatorKind::EMT);
+
+        // One parent only, first: the node must refuse rather than run with
+        // half its inputs.
+        window.linkNodes(pristine, defects);
+        window.configureNode(pristine, writer(QStringLiteral("HOST")),
+                             pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+        window.configureNode(defective, writer(QStringLiteral("DEFECT")),
+                             pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+        window.configureNode(
+            defects,
+            QStringLiteral("import pathlib\n"
+                           "print('host=' + pathlib.Path('baseline_1.gpw')"
+                           ".read_text(), flush=True)\n"
+                           "print('defect=' + pathlib.Path('baseline_2.gpw')"
+                           ".read_text(), flush=True)\n"
+                           "print('CALANGO_DONE', flush=True)\n"),
+            pythonExe, QString(), calango::core::CalculatorKind::EMT);
+
+        window.sendToProcesses();
+        settle(pristine, defective);
+        QElapsedTimer timer;
+        timer.start();
+        while (!terminal(defects) && timer.elapsed() < 60000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+        check(defects->status() != OrchestrationNodeItem::Status::Done,
+              "a two-input node wired to one parent is refused");
+        check(std::any_of(refusals.cbegin(), refusals.cend(),
+                          [](const QString& m) {
+                              return m.contains(QStringLiteral("pristine host"))
+                                  && m.contains(QStringLiteral("neutral defect"));
+                          }),
+              "and the refusal names both inputs it wanted");
+
+        // Now the second link. Same graph otherwise.
+        refusals.clear();
+        window.linkNodes(defective, defects);
+        window.sendToProcesses();
+        settle(pristine, defective);
+        timer.restart();
+        while (!terminal(defects) && timer.elapsed() < 120000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+        check(defects->status() == OrchestrationNodeItem::Status::Done,
+              "with both parents linked it runs");
+        check(refusals.isEmpty(), "and nothing is refused");
+
+        // The payoff: slot 1 holds the FIRST-linked parent's output and slot 2
+        // the second's, under exactly the names the wizard was configured
+        // against.
+        const QString first = readAll(defects->jobDirectory()
+                                      + QStringLiteral("/baseline_1.gpw"));
+        const QString second = readAll(defects->jobDirectory()
+                                       + QStringLiteral("/baseline_2.gpw"));
+        check(first == QStringLiteral("HOST"),
+              "baseline_1.gpw is the first-linked parent (the host)");
+        check(second == QStringLiteral("DEFECT"),
+              "baseline_2.gpw is the second-linked parent (the defect)");
+        check(first != second, "the two slots are genuinely different files");
+    }
+
     if (failures)
         std::printf("\n%d check(s) FAILED.\n", failures);
     else

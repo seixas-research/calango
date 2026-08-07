@@ -31,17 +31,6 @@ struct PhononConfig {
     /// Monkhorst-Pack q-grid for the DOS (mesh), one entry per reciprocal
     /// axis — anisotropic cells (slabs, chains) want anisotropic meshes.
     int dosKptGrid[3] = {20, 20, 20};
-    /// Gaussian sigma (cm⁻¹) the VIEWER opens on.
-    ///
-    /// Too small and the DOS is a comb of delta spikes from the finite q-mesh;
-    /// too large and real van Hove features wash out. A denser mesh supports a
-    /// sharper sigma — which is exactly the judgement that used to be
-    /// impossible to make, because the width was baked into the result and a
-    /// phonon calculation is expensive enough that nobody re-runs one to try
-    /// another. The run now writes the unbroadened histogram of the mesh
-    /// frequencies and the viewer convolves it live, so this is an opening
-    /// position for a slider.
-    double dosWidthCm = 2.0;
     /// Number of bins in that raw histogram. Fine, not "smooth curve
     /// sampling": the bin width is the resolution floor of every sigma the
     /// viewer can later offer.

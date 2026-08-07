@@ -80,7 +80,6 @@ private:
     QCheckBox* symmetryCheck_ = nullptr;  ///< symmetry-reduced displacements
     QCheckBox* residualCheck_ = nullptr;  ///< remove residual forces
     QSpinBox* meshSpins_[3] = {nullptr, nullptr, nullptr}; ///< qx, qy, qz
-    QDoubleSpinBox* dosWidthSpin_ = nullptr;
     EmbeddedKPathEditor* kpath_ = nullptr;
 
     // -- LO-TO splitting ---------------------------------------------------

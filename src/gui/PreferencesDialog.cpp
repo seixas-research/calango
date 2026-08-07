@@ -313,6 +313,17 @@ QWidget* PreferencesDialog::buildExternalFilesTab()
             "energy, so one directory per library is worth keeping.")},
         {SettingsManager::kPseudopotentialsSiesta, tr("SIESTA (SIESTA_PP_PATH)"),
          tr("Directory of .psf / .psml files, named by element symbol.")},
+        {SettingsManager::kGpawLcaoBasisDir,
+         tr("GPAW custom LCAO basis sets (GPAW_SETUP_PATH)"),
+         tr("Directory of custom GPAW LCAO basis files, named "
+            "<symbol>.<name>.basis — the form GPAW looks for when a "
+            "calculation asks for basis=\"<name>\".\n\n"
+            "Only needed for basis sets that did not ship with GPAW: the "
+            "built-in sz / dz / dzp / szp come with the datasets and need "
+            "nothing here.\n\n"
+            "This is PREPENDED to any GPAW_SETUP_PATH already set rather than "
+            "replacing it — the same search list carries the PAW datasets, so "
+            "overwriting it would find the basis and lose the setups.")},
         {SettingsManager::kMlPotentialsDir, tr("ML potentials"),
          tr("Directory of machine-learning potential checkpoints "
             "(.model / .pt). Used to pre-fill the model-file browser in the "

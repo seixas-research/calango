@@ -351,25 +351,38 @@ bool DefectDiagramWindow::loadResults(const QString& jsonPath)
                    std::move(transitions), gap);
 
     const QJsonObject defect = data_.value(QStringLiteral("defect")).toObject();
-    const QJsonObject fnv = data_.value(QStringLiteral("fnv")).toObject();
+    // The 2D module writes the same diagram under the neutral key `correction`,
+    // because what it applies is not FNV — see Defect2dScriptGenerator. The
+    // block has the same shape, so one viewer serves both; only the name of the
+    // scheme differs, and it is shown rather than assumed.
+    const QJsonObject correction =
+        data_.contains(QStringLiteral("correction"))
+            ? data_.value(QStringLiteral("correction")).toObject()
+            : data_.value(QStringLiteral("fnv")).toObject();
+    const QString scheme =
+        correction.value(QStringLiteral("scheme"))
+            .toString(tr("Freysoldt-Neugebauer-Van de Walle"));
     summary_->setText(
         tr("<b>%1</b> (%2 atoms) in a %3-atom host · E<sub>gap</sub> = "
-           "%4 eV · %5 charge state(s) · %6 transition level(s)")
+           "%4 eV · %5 charge state(s) · %6 transition level(s) · %7")
             .arg(defect.value(QStringLiteral("formula")).toString())
             .arg(defect.value(QStringLiteral("natoms")).toInt())
             .arg(host.value(QStringLiteral("natoms")).toInt())
             .arg(gap, 0, 'f', 3)
             .arg(charges.size())
-            .arg(data_.value(QStringLiteral("transitions")).toArray().size()));
+            .arg(data_.value(QStringLiteral("transitions")).toArray().size())
+            .arg(scheme));
 
     // The two failure modes that produce a plausible-looking diagram made of
     // wrong numbers, called out where they cannot be missed.
     QStringList warnings;
-    if (!fnv.value(QStringLiteral("applied")).toBool())
-        warnings << tr("The FNV correction was <b>not applied</b> — these "
+    if (!correction.value(QStringLiteral("applied")).toBool())
+        warnings << tr("The %1 correction was <b>not applied</b> — these "
                        "formation energies still carry the spurious "
-                       "periodic-image interaction.");
-    else if (std::abs(fnv.value(QStringLiteral("epsilon")).toDouble() - 1.0)
+                       "periodic-image interaction.")
+                        .arg(scheme);
+    else if (std::abs(correction.value(QStringLiteral("epsilon")).toDouble()
+                      - 1.0)
              < 1e-9)
         warnings << tr("The dielectric constant is <b>ε = 1</b>, which treats "
                        "the host as vacuum and overcorrects badly for any real "

@@ -74,6 +74,7 @@
 #include "gui/TopologyDialog.hpp"
 #include "gui/TopologyWindow.hpp"
 #include "gui/WannierInterpolationDialog.hpp"
+#include "gui/Defect2dWizard.hpp"
 #include "gui/DefectWizard.hpp"
 #include "gui/TwoDBandsWindow.hpp"
 #include "gui/TwoDBandsWizard.hpp"
@@ -1388,6 +1389,15 @@ void MainWindow::createMenusAndDocks()
         ->setToolTip(tr("Work function Φ = E_vac − E_F of both slab faces, "
                         "from the planar-averaged electrostatic potential of "
                         "an inherited ground state"));
+    // Fourth baseline-inheriting entry, and the reason it is here rather than
+    // beside the bulk Charged Defects: what differs is not a parameter but the
+    // correction's functional form, because a charged sheet has no scalar
+    // epsilon and its energy diverges with vacuum instead of converging.
+    twoDimensionalMenu->addAction(tr("&Charged Defects in 2D Materials…"), this,
+                                  &MainWindow::show2DChargedDefects)
+        ->setToolTip(tr("Formation energies E_f(q, E_F) and transition levels "
+                        "for a monolayer, with the Komsa-Pasquarello 2D "
+                        "image-charge correction in place of bulk FNV"));
     twoDimensionalMenu->addAction(tr("&Graphene Oxide…"), this,
                                   &MainWindow::openGrapheneOxideBuilder)
         ->setToolTip(tr("Functionalized graphene: epoxides, hydroxyls, "
@@ -4462,6 +4472,56 @@ void MainWindow::showChargedDefects()
     runSimulationWizard(wizard, tr("Charged Defects"), /*expectFrames=*/false);
 }
 
+void MainWindow::show2DChargedDefects()
+{
+    if (!prepareSimulation(tr("Charged Defects in 2D Materials")))
+        return;
+    Document* doc = currentDocument();
+
+    // Same two inherited runs as the bulk module, for the same reason: a
+    // formation energy is a difference between two supercells, and nothing in
+    // a .gpw says which one has the vacancy.
+    const auto baselines = gpawDensityFiles();
+    if (baselines.size() < 2) {
+        QMessageBox::critical(
+            this, tr("Charged Defects in 2D Materials"),
+            tr("A defect formation energy is a difference between two "
+               "supercells, so this needs <b>two</b> completed GPAW "
+               "Single-Point Calculations that saved their wavefunctions:\n\n"
+               "  • the pristine monolayer supercell;\n"
+               "  • the same supercell containing the neutral defect.\n\n"
+               "%1 found. Run the missing one first — same cell, same vacuum, "
+               "same settings, so that everything except the defect is "
+               "identical.")
+                .arg(baselines.isEmpty() ? tr("None was")
+                                         : tr("Only one was")));
+        return;
+    }
+
+    Defect2dWizard wizard(doc ? doc->structure : nullptr, this);
+    wizard.setDensityBaselines(baselines);
+    runSimulationWizard(wizard, tr("Charged Defects in 2D Materials"),
+                        /*expectFrames=*/false);
+}
+
+void MainWindow::open2DChargedDefectResults(const QString& directory)
+{
+    // The 2D run writes the bulk module's schema under its own file name, so
+    // the same diagram window renders it; only the correction block differs,
+    // and it names its own scheme.
+    auto* viewer = new DefectDiagramWindow(this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    if (!viewer->loadResults(directory
+                             + QStringLiteral("/charged_defects_2d.json"))) {
+        delete viewer;
+        QMessageBox::warning(
+            this, tr("Charged Defects in 2D Materials"),
+            tr("Could not read charged_defects_2d.json in %1.").arg(directory));
+        return;
+    }
+    viewer->show();
+}
+
 void MainWindow::openChargedDefectResults(const QString& directory)
 {
     auto* viewer = new DefectDiagramWindow(this);
@@ -4861,6 +4921,8 @@ std::vector<MainWindow::ViewerEntry> MainWindow::viewersFor(
          &MainWindow::openWorkfunctionResults},
         {"charged_defects.json", tr("Charged Defect Diagram"),
          &MainWindow::openChargedDefectResults},
+        {"charged_defects_2d.json", tr("2D Charged Defect Diagram"),
+         &MainWindow::open2DChargedDefectResults},
         {"fermi_surface.json", tr("Fermi Surface Viewer"),
          &MainWindow::openFermiSurfaceResults},
         {"topology.json", tr("Topological Invariants Viewer"),
@@ -5398,6 +5460,11 @@ void MainWindow::onProcessResultRequested(const QString& directory)
     }
     if (QFile::exists(directory + QStringLiteral("/charged_defects.json"))) {
         openChargedDefectResults(directory);
+        return;
+    }
+    if (QFile::exists(directory
+                      + QStringLiteral("/charged_defects_2d.json"))) {
+        open2DChargedDefectResults(directory);
         return;
     }
     if (QFile::exists(directory + QStringLiteral("/topology.json"))) {
@@ -6858,6 +6925,129 @@ bool MainWindow::prepareSimulation(const QString& title)
     return true;
 }
 
+namespace {
+
+/// Build the setup wizard for one orchestration node.
+///
+/// This is the catalogue the canvas deliberately does not own: OrchestrationWindow
+/// schedules runs and stages their inputs, and knows nothing about which
+/// modules exist. Keeping the switch here is what lets that panel be linked
+/// into a headless test without dragging in fifteen wizards and their
+/// generators.
+///
+/// The one rule every branch obeys: the baselines handed in are RELATIVE paths
+/// that do not exist yet. They are the names the canvas guarantees to stage
+/// before the node runs, so a wizard configured now against a parent that has
+/// never executed still generates a script that will find its inputs. Nothing
+/// here may test them for existence.
+std::unique_ptr<SimulationWizardBase> makeOrchestrationWizard(
+    const OrchestrationWindow::WizardRequest& request)
+{
+    // Several wizards take a mutable structure. The node holds a const
+    // snapshot, so they get a copy rather than a const_cast: a wizard that
+    // edited the node's structure in place would silently change what every
+    // other node built from the same document computes.
+    const auto mutableStructure = [&request] {
+        return request.structure
+            ? std::make_shared<core::Structure>(*request.structure)
+            : nullptr;
+    };
+    const auto path = [&request](int slot) {
+        return slot < request.baselines.size() ? request.baselines[slot].second
+                                               : QString();
+    };
+    // One slot as the (label, path) list a setDensityBaselines() expects.
+    const auto slotList = [&request](int slot) {
+        QList<QPair<QString, QString>> list;
+        if (slot < request.baselines.size())
+            list.append(request.baselines[slot]);
+        return list;
+    };
+
+    switch (request.task) {
+    case OrchestrationTask::GeometryOptimization:
+        return std::make_unique<GeometryOptimizationWizard>(request.structure);
+    case OrchestrationTask::MolecularDynamics:
+        return std::make_unique<MolecularDynamicsWizard>(request.structure);
+    case OrchestrationTask::Phonon:
+        return std::make_unique<PhononWizard>(/*periodic=*/true,
+                                              request.structure);
+    case OrchestrationTask::SinglePoint:
+        return std::make_unique<SinglePointWizard>();
+
+    case OrchestrationTask::ElectronicBands: {
+        auto wizard = std::make_unique<ElectronicBandsWizard>(request.structure);
+        wizard->setDensityBaselines(slotList(0));
+        return wizard;
+    }
+    case OrchestrationTask::Optics: {
+        auto wizard = std::make_unique<OpticsWizard>(mutableStructure());
+        wizard->setDensityBaselines(slotList(0));
+        return wizard;
+    }
+    case OrchestrationTask::Workfunction: {
+        auto wizard = std::make_unique<WorkfunctionWizard>(mutableStructure());
+        wizard->setDensityBaselines(slotList(0));
+        return wizard;
+    }
+    case OrchestrationTask::TwoDBands: {
+        auto wizard = std::make_unique<TwoDBandsWizard>(request.structure);
+        wizard->setDensityBaselines(slotList(0));
+        return wizard;
+    }
+    case OrchestrationTask::Wannier: {
+        auto wizard = std::make_unique<WannierWizard>(mutableStructure());
+        wizard->setDensityBaselines(slotList(0));
+        return wizard;
+    }
+    case OrchestrationTask::BornCharges: {
+        auto wizard = std::make_unique<BornChargesWizard>(request.structure);
+        wizard->setDensityBaselines(slotList(0));
+        return wizard;
+    }
+    case OrchestrationTask::Gw: {
+        auto wizard = std::make_unique<GwWizard>();
+        // GPAW list only, Yambo's empty: its baseline is a Quantum ESPRESSO
+        // `.save` directory, and no node on this canvas produces one.
+        wizard->setBaselines(slotList(0), {});
+        return wizard;
+    }
+    case OrchestrationTask::ChargeDensityDifference: {
+        auto wizard = std::make_unique<CddWizard>();
+        QList<CddWizard::Baseline> baselines;
+        if (!request.baselines.isEmpty())
+            baselines.append({request.baselines.front().first, path(0),
+                              request.structure});
+        wizard->setDensityBaselines(std::move(baselines));
+        return wizard;
+    }
+    case OrchestrationTask::RamanIr: {
+        auto wizard = std::make_unique<RamanIrWizard>(request.structure);
+        wizard->setDensityBaselines(slotList(0));
+        // Both optional, and offered only when a parent is linked for them:
+        // the wizard's own "(none)" entry is what an absent Born run means,
+        // and the generated script then reports every IR intensity as zero
+        // with ir.computed = false rather than as a plausible number.
+        wizard->setBornChargesResults(slotList(1));
+        wizard->setOpticsResults(slotList(2));
+        return wizard;
+    }
+    case OrchestrationTask::ChargedDefects: {
+        auto wizard = std::make_unique<DefectWizard>(request.structure);
+        wizard->setDensityBaselines(request.baselines);
+        return wizard;
+    }
+    case OrchestrationTask::ChargedDefects2d: {
+        auto wizard = std::make_unique<Defect2dWizard>(request.structure);
+        wizard->setDensityBaselines(request.baselines);
+        return wizard;
+    }
+    }
+    return nullptr;
+}
+
+} // namespace
+
 OrchestrationWindow* MainWindow::createOrchestrationPanel(QWidget* parent)
 {
     // The panel is built once and lives in the dock, so the material list is
@@ -6879,6 +7069,7 @@ OrchestrationWindow* MainWindow::createOrchestrationPanel(QWidget* parent)
         [this](core::CalculatorKind kind) { return pythonForEngine(kind); },
         processPanel_, parent);
     window->setMaterialsProvider(materialsNow);
+    window->setWizardFactory(&makeOrchestrationWizard);
 
     // Results-panel integration: an orchestration node's job is a process like any
     // other. Register its record and selector entry when it starts, poll its
@@ -6983,8 +7174,14 @@ void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
     // Hand the wizard the active structure's chemistry before it opens, so
     // the per-element suggested defaults (~/.calango/calculator_parameters
     // .json) resolve for wizards that do not hold a structure themselves.
-    if (const Document* doc = currentDocument(); doc && doc->structure)
+    if (const Document* doc = currentDocument(); doc && doc->structure) {
         wizard.setStructureElements(structureElements(doc->structure.get()));
+        // xTB is the one engine for which this is not a hint but a hard
+        // constraint — see SimulationWizardBase::setStructurePeriodic().
+        const auto pbc = doc->structure->cell().pbc();
+        wizard.setStructurePeriodic(doc->structure->cell().isDefined()
+                                    && (pbc[0] || pbc[1] || pbc[2]));
+    }
 
     if (wizard.exec() != QDialog::Accepted)
         return;
@@ -7868,6 +8065,11 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     // Charged defects: open the formation-energy diagram.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/charged_defects.json"))) {
         openChargedDefectResults(lastJobDir_);
+        return;
+    }
+    if (QFile::exists(lastJobDir_
+                      + QStringLiteral("/charged_defects_2d.json"))) {
+        open2DChargedDefectResults(lastJobDir_);
         return;
     }
     if (QFile::exists(lastJobDir_ + QStringLiteral("/topology.json"))) {

@@ -195,9 +195,17 @@ QWidget* OpticsWizard::buildSettingsPage()
     broadeningSpin_->setValue(0.1);
     broadeningSpin_->setSuffix(tr(" eV"));
     broadeningSpin_->setToolTip(
-        tr("Lorentzian broadening η applied to the dielectric function. "
-           "Smaller values resolve sharp features but need a denser k-mesh."));
-    form->addRow(tr("Broadening η:"), broadeningSpin_);
+        tr("Lorentzian broadening η the dielectric function is COMPUTED at — "
+           "and the floor the viewer can later raise, but never lower.\n\n"
+           "Unlike a DOS smearing this cannot be left out of the calculation: "
+           "η is a lifetime and sits inside the response function GPAW "
+           "inverts. What it can do afterwards is grow, because Lorentzian "
+           "widths add under convolution — so the results window offers a "
+           "slider from this value upwards, and every curve there follows it.\n\n"
+           "Set it as SMALL as the k-mesh supports. A sharp η on a coarse mesh "
+           "produces sampling spikes, not resolution; a broad one throws away "
+           "structure that no amount of post-processing brings back."));
+    form->addRow(tr("Broadening η (minimum):"), broadeningSpin_);
 
     omegaMinSpin_ = new QDoubleSpinBox(page);
     omegaMinSpin_->setDecimals(2);

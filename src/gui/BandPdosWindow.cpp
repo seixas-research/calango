@@ -390,8 +390,10 @@ void BandPdosWindow::loadDirectory(const QString& directory)
             pdos.value(QStringLiteral("broadened")).toBool(true);
         pdosData.binWidth =
             pdos.value(QStringLiteral("bin_width")).toDouble(0.0);
+        // 0 = not stated, which the view reads as "derive one from the bin
+        // width". Older runs that DID state one keep it.
         pdosData.suggestedWidth =
-            pdos.value(QStringLiteral("suggested_width")).toDouble(0.1);
+            pdos.value(QStringLiteral("suggested_width")).toDouble(0.0);
         // Derive the bin width when the run did not state it but the grid is
         // uniform, which is what makes broadening possible at all.
         if (pdosData.binWidth <= 0.0 && pdosData.energies.size() > 1) {

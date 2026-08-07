@@ -5,15 +5,11 @@
 #include "core/Structure.hpp"
 #include "gui/CalculatorParameters.hpp"
 #include "gui/EnginePresets.hpp"
-#include "gui/GeometryOptimizationWizard.hpp"
 #include "gui/GuiUtils.hpp"
-#include "gui/MolecularDynamicsWizard.hpp"
-#include "gui/PhononWizard.hpp"
 #include "gui/ProcessManagerPanel.hpp"
 #include "gui/RunCommands.hpp"
 #include "gui/ScriptStaging.hpp"
 #include "gui/SettingsManager.hpp"
-#include "gui/SinglePointWizard.hpp"
 #include "jobs/JobRunner.hpp"
 #include "python_bridge/AseBridge.hpp"
 #include "ui/IconManager.hpp"
@@ -45,6 +41,8 @@ namespace {
 constexpr double kNodeWidth = 200.0;
 constexpr double kNodeHeight = 88.0;
 constexpr double kPortRadius = 7.0;
+/// Height of one inherited-run line. The node grows by this per input slot.
+constexpr double kInputLineHeight = 15.0;
 
 // -- Canvas palette ---------------------------------------------------------
 //
@@ -70,19 +68,25 @@ const QColor kEdgeColor(150, 156, 166);
 /// canvas while the gesture is live — it is a preview the user is steering.
 const QColor kPendingLinkColor(0x66, 0x99, 0xff);
 
-QString taskDisplayName(OrchestrationTask task)
+/// Copy a finished run's directory into `target`, one level deep.
+///
+/// One level on purpose: a job directory holds result files beside whatever
+/// scratch the engine left, and a recursive copy of a GPAW run can be
+/// gigabytes of nothing anyone reads. The modules that inherit a directory
+/// (Charge Density Difference) read files at its top level.
+bool copyDirectory(const QString& source, const QString& target)
 {
-    switch (task) {
-    case OrchestrationTask::GeometryOptimization:
-        return QObject::tr("Geometry Optimization");
-    case OrchestrationTask::MolecularDynamics:
-        return QObject::tr("Molecular Dynamics");
-    case OrchestrationTask::Phonon:
-        return QObject::tr("Phonon");
-    case OrchestrationTask::SinglePoint:
-        break;
+    QDir from(source);
+    if (!from.exists() || !QDir().mkpath(target))
+        return false;
+    bool copiedAnything = false;
+    for (const QFileInfo& entry :
+         from.entryInfoList(QDir::Files | QDir::NoDotAndDotDot)) {
+        if (QFile::copy(entry.absoluteFilePath(),
+                        target + QLatin1Char('/') + entry.fileName()))
+            copiedAnything = true;
     }
-    return QObject::tr("Single-Point Calculation");
+    return copiedAnything;
 }
 
 /// Directory-name slug for a task ("node_2_phonon").
@@ -95,6 +99,28 @@ QString taskSlug(OrchestrationTask task)
         return QStringLiteral("molecular_dynamics");
     case OrchestrationTask::Phonon:
         return QStringLiteral("phonon");
+    case OrchestrationTask::ElectronicBands:
+        return QStringLiteral("electronic_bands");
+    case OrchestrationTask::Optics:
+        return QStringLiteral("optics");
+    case OrchestrationTask::Workfunction:
+        return QStringLiteral("workfunction");
+    case OrchestrationTask::TwoDBands:
+        return QStringLiteral("bands_2d");
+    case OrchestrationTask::Wannier:
+        return QStringLiteral("wannier");
+    case OrchestrationTask::BornCharges:
+        return QStringLiteral("born_charges");
+    case OrchestrationTask::Gw:
+        return QStringLiteral("gw");
+    case OrchestrationTask::ChargeDensityDifference:
+        return QStringLiteral("charge_density_difference");
+    case OrchestrationTask::RamanIr:
+        return QStringLiteral("raman_ir");
+    case OrchestrationTask::ChargedDefects:
+        return QStringLiteral("charged_defects");
+    case OrchestrationTask::ChargedDefects2d:
+        return QStringLiteral("charged_defects_2d");
     case OrchestrationTask::SinglePoint:
         break;
     }
@@ -232,6 +258,150 @@ private:
 // OrchestrationNodeItem
 // ---------------------------------------------------------------------------
 
+QString orchestrationTaskDisplayName(OrchestrationTask task)
+{
+    switch (task) {
+    case OrchestrationTask::GeometryOptimization:
+        return QObject::tr("Geometry Optimization");
+    case OrchestrationTask::MolecularDynamics:
+        return QObject::tr("Molecular Dynamics");
+    case OrchestrationTask::Phonon:
+        return QObject::tr("Phonon");
+    case OrchestrationTask::ElectronicBands:
+        return QObject::tr("Electronic Bands and DOS");
+    case OrchestrationTask::Optics:
+        return QObject::tr("Optical Properties");
+    case OrchestrationTask::Workfunction:
+        return QObject::tr("2D Workfunction");
+    case OrchestrationTask::TwoDBands:
+        return QObject::tr("2D Bands");
+    case OrchestrationTask::Wannier:
+        return QObject::tr("Wannier Functions");
+    case OrchestrationTask::BornCharges:
+        return QObject::tr("Born Effective Charges");
+    case OrchestrationTask::Gw:
+        return QObject::tr("GW Quasiparticles");
+    case OrchestrationTask::ChargeDensityDifference:
+        return QObject::tr("Charge Density Difference");
+    case OrchestrationTask::RamanIr:
+        return QObject::tr("Raman and IR Spectroscopy");
+    case OrchestrationTask::ChargedDefects:
+        return QObject::tr("Charged Defects");
+    case OrchestrationTask::ChargedDefects2d:
+        return QObject::tr("Charged Defects in 2D Materials");
+    case OrchestrationTask::SinglePoint:
+        break;
+    }
+    return QObject::tr("Single-Point Calculation");
+}
+
+QList<OrchestrationTask> orchestrationTasks()
+{
+    return {OrchestrationTask::GeometryOptimization,
+            OrchestrationTask::SinglePoint,
+            OrchestrationTask::MolecularDynamics,
+            OrchestrationTask::Phonon,
+            OrchestrationTask::ElectronicBands,
+            OrchestrationTask::Optics,
+            OrchestrationTask::Workfunction,
+            OrchestrationTask::TwoDBands,
+            OrchestrationTask::Wannier,
+            OrchestrationTask::BornCharges,
+            OrchestrationTask::Gw,
+            OrchestrationTask::ChargeDensityDifference,
+            OrchestrationTask::RamanIr,
+            OrchestrationTask::ChargedDefects,
+            OrchestrationTask::ChargedDefects2d};
+}
+
+bool orchestrationTaskHasDefaults(OrchestrationTask task)
+{
+    // Exactly the four self-contained tasks. Everything else reads a baseline
+    // whose path only a wizard can supply, so "run it with defaults" would
+    // mean running it against nothing.
+    switch (task) {
+    case OrchestrationTask::GeometryOptimization:
+    case OrchestrationTask::SinglePoint:
+    case OrchestrationTask::MolecularDynamics:
+    case OrchestrationTask::Phonon:
+        return true;
+    default:
+        return false;
+    }
+}
+
+QList<OrchestrationInputSlot> orchestrationInputSlots(OrchestrationTask task)
+{
+    // The staged names are a CONTRACT with the wizard factory: whatever a slot
+    // is called here is the relative path the generated script will name, and
+    // the path this panel guarantees exists by the time the node runs. The
+    // wizard is configured long before the parent has produced anything, so
+    // the two ends can only meet on a name agreed in advance.
+    const QString groundState = QObject::tr("ground state");
+    const QString gpw = QStringLiteral("single_point.gpw");
+    switch (task) {
+    case OrchestrationTask::GeometryOptimization:
+    case OrchestrationTask::SinglePoint:
+    case OrchestrationTask::MolecularDynamics:
+    case OrchestrationTask::Phonon:
+        return {};
+
+    case OrchestrationTask::ElectronicBands:
+    case OrchestrationTask::Optics:
+    case OrchestrationTask::Workfunction:
+    case OrchestrationTask::TwoDBands:
+    case OrchestrationTask::Wannier:
+    case OrchestrationTask::BornCharges:
+        return {{groundState, gpw, QStringLiteral("baseline_1.gpw"), false}};
+
+    case OrchestrationTask::Gw:
+        // GPAW route only. Yambo's baseline is a Quantum ESPRESSO `.save`
+        // directory and no node on this canvas produces one, so offering it
+        // would be offering a link that can never be satisfied.
+        return {{groundState, gpw, QStringLiteral("baseline_1.gpw"), false}};
+
+    case OrchestrationTask::ChargeDensityDifference:
+        // A directory rather than a file: the CDD run reads the parent's
+        // geometry and its calculator provenance alongside the density, and
+        // rebuilds both fragment calculations from that run's own settings.
+        return {{QObject::tr("combined system"), QString(),
+                 QStringLiteral("baseline_1"), false}};
+
+    case OrchestrationTask::RamanIr:
+        // Born charges and optics are OPTIONAL here for the same reason they
+        // are optional in the wizard: without Z* the IR column is reported as
+        // zero rather than guessed, and an optics run only contributes the
+        // broadening its dielectric response was validated with.
+        return {{groundState, gpw, QStringLiteral("baseline_1.gpw"), false},
+                {QObject::tr("Born charges"),
+                 QStringLiteral("born_charges.json"),
+                 QStringLiteral("baseline_2.json"), true},
+                {QObject::tr("optics"), QStringLiteral("optics.json"),
+                 QStringLiteral("baseline_3.json"), true}};
+
+    case OrchestrationTask::ChargedDefects:
+    case OrchestrationTask::ChargedDefects2d:
+        // Two parents, and which is which is LINK ORDER. Nothing inside a .gpw
+        // says "this one has the vacancy", so the graph has to say it — which
+        // is why the node paints the assignment rather than leaving two
+        // identical-looking links to be remembered.
+        return {{QObject::tr("pristine host"), gpw,
+                 QStringLiteral("baseline_1.gpw"), false},
+                {QObject::tr("neutral defect"), gpw,
+                 QStringLiteral("baseline_2.gpw"), false}};
+    }
+    return {};
+}
+
+int orchestrationRequiredInputs(OrchestrationTask task)
+{
+    int required = 0;
+    for (const OrchestrationInputSlot& slot : orchestrationInputSlots(task))
+        if (!slot.optional)
+            ++required;
+    return required;
+}
+
 OrchestrationNodeItem::OrchestrationNodeItem(
     int id, const QString& title, OrchestrationTask task,
     const QString& materialName,
@@ -248,13 +418,30 @@ OrchestrationNodeItem::OrchestrationNodeItem(
     setFlag(QGraphicsItem::ItemIsMovable, true);
     setFlag(QGraphicsItem::ItemIsSelectable, true);
     setFlag(QGraphicsItem::ItemSendsScenePositionChanges, true);
-    setToolTip(QObject::tr(
+QString tip = QObject::tr(
         "%1 on %2 with %3.\nDouble-click to open its setup wizard "
         "(\"Save process node\" commits the configuration here). Drag from "
         "the right-hand port onto another node to run that node after this "
         "one, feeding it these results.")
-                   .arg(title_, materialName_,
-                        EnginePresets::displayName(engine_)));
+                      .arg(title_, materialName_,
+                           EnginePresets::displayName(engine_));
+    // A node that inherits completed runs says which, and in what order. Two
+    // links into the same node look identical on the canvas, so the order they
+    // were drawn in is the only thing that distinguishes them -- and it is the
+    // difference between a defect diagram and its negative.
+    const QList<OrchestrationInputSlot> slots = orchestrationInputSlots(task_);
+    if (!slots.isEmpty()) {
+        QStringList lines;
+        for (int i = 0; i < slots.size(); ++i)
+            lines << QObject::tr("  %1. %2%3")
+                         .arg(i + 1)
+                         .arg(slots[i].label,
+                              slots[i].optional ? QObject::tr("  (optional)")
+                                                : QString());
+        tip += QObject::tr("\n\nInherits, in the order parents are linked:\n%1")
+                   .arg(lines.join(QLatin1Char('\n')));
+    }
+    setToolTip(tip);
 }
 
 void OrchestrationNodeItem::setConfiguration(const QString& script,
@@ -277,12 +464,28 @@ void OrchestrationNodeItem::setStatus(Status status)
 
 QPointF OrchestrationNodeItem::inputPortScenePos() const
 {
-    return mapToScene(QPointF(0.0, kNodeHeight / 2.0));
+    // rect(), not kNodeHeight: a node with input slots is taller, and a port
+    // anchored to the constant would sit above the middle of its own box --
+    // and, worse, the edges would join it there.
+    return mapToScene(QPointF(0.0, rect().height() / 2.0));
 }
 
 QPointF OrchestrationNodeItem::outputPortScenePos() const
 {
-    return mapToScene(QPointF(kNodeWidth, kNodeHeight / 2.0));
+    return mapToScene(QPointF(rect().width(), rect().height() / 2.0));
+}
+
+void OrchestrationNodeItem::setInputSummary(const std::vector<InputLine>& lines)
+{
+    if (lines == inputLines_)
+        return;
+    inputLines_ = lines;
+    prepareGeometryChange();
+    setRect(0.0, 0.0, kNodeWidth,
+            kNodeHeight + kInputLineHeight * static_cast<double>(lines.size()));
+    for (OrchestrationEdgeItem* edge : edges_)
+        edge->updatePath();
+    update();
 }
 
 bool OrchestrationNodeItem::hitsOutputPort(const QPointF& scenePos) const
@@ -368,10 +571,23 @@ void OrchestrationNodeItem::paint(QPainter* painter,
         Qt::AlignLeft | Qt::AlignVCenter,
         QObject::tr("Calculator: %1")
             .arg(EnginePresets::displayName(engine_)));
+    // Inherited runs, one line per slot. An unsatisfied slot is drawn in the
+    // failure colour rather than merely left blank: a two-input node wired to
+    // one parent looks entirely normal on the canvas, and the run will refuse
+    // -- the node should say so before the pipeline is sent, not after.
+    double y = box.top() + 64;
+    for (const InputLine& line : inputLines_) {
+        painter->setPen(line.satisfied ? QColor(0x45, 0x45, 0x45)
+                                       : QColor(0xd6, 0x27, 0x28));
+        painter->drawText(
+            QRectF(box.left() + 12, y, box.width() - 24, kInputLineHeight),
+            Qt::AlignLeft | Qt::AlignVCenter, line.text);
+        y += kInputLineHeight;
+    }
+
     painter->setPen(statusColor(status_).darker(120));
-    painter->drawText(
-        QRectF(box.left() + 12, box.top() + 64, box.width() - 24, 16),
-        Qt::AlignLeft | Qt::AlignVCenter, statusText(status_));
+    painter->drawText(QRectF(box.left() + 12, y, box.width() - 24, 16),
+                      Qt::AlignLeft | Qt::AlignVCenter, statusText(status_));
 }
 
 // ---------------------------------------------------------------------------
@@ -643,10 +859,27 @@ void OrchestrationWindow::promptAddNode(const QPointF* scenePos)
     dialog.setWindowTitle(tr("Add Process"));
     auto* form = new QFormLayout(&dialog);
     auto* taskCombo = new QComboBox(&dialog);
-    for (OrchestrationTask task :
-         {OrchestrationTask::GeometryOptimization, OrchestrationTask::SinglePoint,
-          OrchestrationTask::MolecularDynamics, OrchestrationTask::Phonon})
-        taskCombo->addItem(taskDisplayName(task), static_cast<int>(task));
+    // Two families, separated: the self-contained processes that read a
+    // structure, then the analysis modules that read a completed run. The
+    // difference decides whether a node can be dropped on the canvas and run
+    // as-is or needs a parent linked to it first, so it is worth seeing.
+    bool separatorPlaced = false;
+    for (OrchestrationTask task : orchestrationTasks()) {
+        if (!separatorPlaced && !orchestrationInputSlots(task).isEmpty()) {
+            taskCombo->insertSeparator(taskCombo->count());
+            separatorPlaced = true;
+        }
+        taskCombo->addItem(orchestrationTaskDisplayName(task),
+                           static_cast<int>(task));
+        const int required = orchestrationRequiredInputs(task);
+        if (required > 0)
+            taskCombo->setItemData(
+                taskCombo->count() - 1,
+                tr("Inherits %n completed run(s). Link that many parent nodes "
+                   "to it — the first link fills the first input.",
+                   nullptr, required),
+                Qt::ToolTipRole);
+    }
     form->addRow(tr("Process:"), taskCombo);
     auto* materialCombo = new QComboBox(&dialog);
     for (const auto& [name, structure] : materials_)
@@ -683,7 +916,7 @@ OrchestrationNodeItem* OrchestrationWindow::addProcessNode(OrchestrationTask tas
     if (materialIndex < 0 || materialIndex >= materials_.size())
         return nullptr;
     auto* node = new OrchestrationNodeItem(
-        nextNodeId_++, taskDisplayName(task), task,
+        nextNodeId_++, orchestrationTaskDisplayName(task), task,
         materials_[materialIndex].first, materials_[materialIndex].second,
         engine);
     // Stagger new nodes left-to-right so a freshly built pipeline reads in
@@ -692,6 +925,7 @@ OrchestrationNodeItem* OrchestrationWindow::addProcessNode(OrchestrationTask tas
                  0.0);
     scene_->addItem(node);
     nodes_.push_back(node);
+    refreshInputSummaries();
     return node;
 }
 
@@ -710,35 +944,105 @@ void OrchestrationWindow::configureNode(OrchestrationNodeItem* node,
         node->setConfiguration(script, python, runCommand, engine);
 }
 
+void OrchestrationWindow::setWizardFactory(WizardFactory factory)
+{
+    wizardFactory_ = std::move(factory);
+}
+
+void OrchestrationWindow::setRefusalHandler(RefusalHandler handler)
+{
+    refusalHandler_ = std::move(handler);
+}
+
+void OrchestrationWindow::refuse(const QString& message)
+{
+    if (refusalHandler_)
+        refusalHandler_(message);
+    else
+        QMessageBox::warning(this, tr("Orchestration"), message);
+}
+
+QList<QPair<OrchestrationInputSlot, OrchestrationNodeItem*>>
+OrchestrationWindow::resolveInputs(OrchestrationNodeItem* node) const
+{
+    // Slot i is filled by the i-th parent IN LINK ORDER. parentsOf() walks
+    // edges_ in insertion order, so "the first link you drew" and "the first
+    // slot" are the same thing -- which is the rule the node paints and the
+    // documentation states.
+    QList<QPair<OrchestrationInputSlot, OrchestrationNodeItem*>> resolved;
+    const QList<OrchestrationNodeItem*> parents = parentsOf(node);
+    int index = 0;
+    for (const OrchestrationInputSlot& slot : orchestrationInputSlots(node->task())) {
+        resolved.append({slot, index < parents.size() ? parents[index] : nullptr});
+        ++index;
+    }
+    return resolved;
+}
+
+void OrchestrationWindow::refreshInputSummaries()
+{
+    for (OrchestrationNodeItem* node : nodes_) {
+        std::vector<OrchestrationNodeItem::InputLine> lines;
+        for (const auto& [slot, parent] : resolveInputs(node)) {
+            if (!parent && slot.optional)
+                continue; // an unfilled optional slot is not worth a line
+            lines.push_back(
+                {parent ? tr("%1 ← %2").arg(slot.label, parent->title())
+                        : tr("%1 ← not connected").arg(slot.label),
+                 parent != nullptr});
+        }
+        node->setInputSummary(lines);
+    }
+}
+
 void OrchestrationWindow::openNodeWizard(OrchestrationNodeItem* node)
 {
     if (!node)
         return;
-    // The node's standard setup wizard, in orchestration mode: the review stage's
-    // Run button reads "Save process node" and accepting commits the
+    if (!wizardFactory_) {
+        // Only reachable with no catalogue installed -- the headless tests,
+        // which drive configureNode() directly. Saying so beats a double-click
+        // that appears to do nothing.
+        QMessageBox::information(
+            this, tr("Orchestration"),
+            tr("No setup wizards are available in this context. Configure the "
+               "node programmatically instead."));
+        return;
+    }
+
+    WizardRequest request;
+    request.task = node->task();
+    request.structure = node->structure();
+    request.engine = node->engine();
+    // The baseline paths are what the RUNNER will stage, not what exists now:
+    // a node is normally configured before its parents have ever run. Labels
+    // name the connected parent so the wizard's combo reads like the canvas.
+    for (const auto& [slot, parent] : resolveInputs(node)) {
+        request.baselines.append(
+            {parent ? tr("%1 — %2").arg(slot.label, parent->title())
+                    : tr("%1 — link a parent node").arg(slot.label),
+             slot.stagedName});
+    }
+
+    // The node's standard setup wizard, in orchestration mode: the review
+    // stage's Run button reads "Save process node" and accepting commits the
     // generated script here instead of launching anything.
-    std::unique_ptr<SimulationWizardBase> wizard;
-    switch (node->task()) {
-    case OrchestrationTask::GeometryOptimization:
-        wizard = std::make_unique<GeometryOptimizationWizard>(
-            node->structure(), this);
-        break;
-    case OrchestrationTask::MolecularDynamics:
-        wizard = std::make_unique<MolecularDynamicsWizard>(node->structure(),
-                                                           this);
-        break;
-    case OrchestrationTask::Phonon:
-        wizard = std::make_unique<PhononWizard>(/*periodic=*/true,
-                                                node->structure(), this);
-        break;
-    case OrchestrationTask::SinglePoint:
-        wizard = std::make_unique<SinglePointWizard>(this);
-        break;
+    std::unique_ptr<SimulationWizardBase> wizard = wizardFactory_(request);
+    if (!wizard) {
+        QMessageBox::information(
+            this, tr("Orchestration"),
+            tr("%1 has no setup wizard on this canvas.")
+                .arg(orchestrationTaskDisplayName(node->task())));
+        return;
     }
     wizard->enterOrchestrationMode();
-    if (node->structure())
+    if (node->structure()) {
         wizard->setStructureElements(
             structureElements(node->structure().get()));
+        const auto pbc = node->structure()->cell().pbc();
+        wizard->setStructurePeriodic(node->structure()->cell().isDefined()
+                                     && (pbc[0] || pbc[1] || pbc[2]));
+    }
     wizard->selectCalculator(node->engine());
     if (wizard->exec() != QDialog::Accepted)
         return;
@@ -773,6 +1077,7 @@ void OrchestrationWindow::removeSelected()
             ++it;
         }
     }
+    refreshInputSummaries();
 }
 
 void OrchestrationWindow::connectNodes(OrchestrationNodeItem* from,
@@ -791,6 +1096,9 @@ void OrchestrationWindow::connectNodes(OrchestrationNodeItem* from,
     auto* edge = new OrchestrationEdgeItem(from, to);
     scene_->addItem(edge);
     edges_.push_back(edge);
+    // A new link may fill a slot on `to` -- and unlinking elsewhere may have
+    // emptied one, so every node is re-read rather than just this pair.
+    refreshInputSummaries();
 }
 
 bool OrchestrationWindow::wouldCreateCycle(OrchestrationNodeItem* from,
@@ -887,8 +1195,7 @@ void OrchestrationWindow::sendToProcesses()
         // A box, not a toolbar caption. The user just pressed Run and NOTHING
         // happened; a line of grey text beside the button is exactly the way
         // to have that read as the button being broken.
-        QMessageBox::warning(
-            this, tr("Orchestration"),
+        refuse(
             tr("Nothing could start — check the first node.\n\n"
                "Every node either has no parent (and runs on its assigned "
                "material) or inherits its parent's results. A node whose "
@@ -899,6 +1206,41 @@ void OrchestrationWindow::sendToProcesses()
 
 bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
 {
+    // --- Refusals that must happen BEFORE a directory is made --------------
+    // An analysis module has no defaults to fall back on: its script names a
+    // baseline, and no baseline path can be guessed. Running one unconfigured
+    // would not produce an approximate answer, it would produce a crash at
+    // best and a run against the wrong file at worst.
+    if (!node->isConfigured() && !orchestrationTaskHasDefaults(node->task())) {
+        refuse(
+            tr("%1 was not started: it has not been configured.\n\n"
+               "Unlike a relaxation or a single point, this process has no "
+               "defaults to fall back on — it reads a completed run, and which "
+               "run that is can only come from its setup wizard. Double-click "
+               "the node and save it first.")
+                .arg(node->title()));
+        return false;
+    }
+
+    const QList<OrchestrationNodeItem*> parents = parentsOf(node);
+    const auto inputs = resolveInputs(node);
+    const int required = orchestrationRequiredInputs(node->task());
+    if (parents.size() < required) {
+        QStringList wanted;
+        for (const auto& [slot, parent] : inputs)
+            if (!slot.optional)
+                wanted << slot.label;
+        refuse(
+            tr("%1 was not started: it inherits %n completed run(s) (%2) but "
+               "only %3 parent node(s) are linked to it.\n\n"
+               "Link one parent per input, in that order — the first link "
+               "fills the first input.",
+               nullptr, required)
+                .arg(node->title(), wanted.join(tr(", ")))
+                .arg(parents.size()));
+        return false;
+    }
+
     const QString dir = orchestrationRoot_
         + QStringLiteral("/node_%1_%2")
               .arg(++launchedCount_)
@@ -918,7 +1260,6 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
     // back to the node's original material here would silently execute the
     // child on the UN-relaxed structure — a run that "succeeds" while
     // computing the wrong thing, which is strictly worse than failing.
-    const QList<OrchestrationNodeItem*> parents = parentsOf(node);
     if (!parents.isEmpty()) {
         const QString parentDir = parents.front()->jobDirectory();
         QString source;
@@ -932,16 +1273,21 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
                 break;
             }
         }
-        if (source.isEmpty()
-            || !QFile::copy(source,
-                            dir + QStringLiteral("/structure.extxyz"))) {
+        // A baseline-inheriting module restarts from the .gpw, which carries
+        // its own atoms — so the geometry is staged when there is one but not
+        // insisted on. For the self-contained tasks it IS the input, and its
+        // absence is the strict-handoff refusal below.
+        const bool needsGeometry = inputs.isEmpty();
+        if (!source.isEmpty())
+            QFile::copy(source, dir + QStringLiteral("/structure.extxyz"));
+        if (needsGeometry
+            && !QFile::exists(dir + QStringLiteral("/structure.extxyz"))) {
             // The strict-handoff refusal. This is the message that explains
             // why a pipeline stopped rather than silently computing the wrong
             // thing on an un-relaxed structure, so it must be impossible to
             // miss — it was the one thing the removed status label carried
             // that nothing else reports.
-            QMessageBox::warning(
-                this, tr("Orchestration"),
+            refuse(
                 tr("%1 was not started: no usable geometry in its parent's "
                    "results (%2).\n\n"
                    "A node with a parent inherits that parent's output "
@@ -951,10 +1297,53 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
                     .arg(node->title(), parentDir));
             return false;
         }
-        const QString gpw =
-            parentDir + QStringLiteral("/single_point.gpw");
-        if (QFile::exists(gpw))
-            QFile::copy(gpw, dir + QStringLiteral("/single_point.gpw"));
+        // Only for the self-contained tasks: a baseline-inheriting node names
+        // its own staged slot below, and a .gpw is far too large to copy twice
+        // so that one of the copies can go unread.
+        if (inputs.isEmpty()) {
+            const QString gpw =
+                parentDir + QStringLiteral("/single_point.gpw");
+            if (QFile::exists(gpw))
+                QFile::copy(gpw, dir + QStringLiteral("/single_point.gpw"));
+        }
+
+        // --- Inherited runs, one staged file per input slot ----------------
+        // Each slot lands under the name its wizard was configured against.
+        // A missing artifact is refused rather than skipped: the script names
+        // that path unconditionally, so letting it through only moves the
+        // failure into Python, where it reads as a bug in the module.
+        for (const auto& [slot, parent] : inputs) {
+            if (!parent) {
+                if (slot.optional)
+                    continue;
+                return false; // already refused above; belt and braces
+            }
+            const QString target = dir + QLatin1Char('/') + slot.stagedName;
+            const bool ok = slot.sourceName.isEmpty()
+                ? copyDirectory(parent->jobDirectory(), target)
+                : QFile::copy(parent->jobDirectory() + QLatin1Char('/')
+                                  + slot.sourceName,
+                              target);
+            if (ok)
+                continue;
+            // Note this refuses even for an OPTIONAL slot. Optional governs
+            // whether an UNLINKED slot blocks the run; a link the user drew on
+            // purpose, to a parent that turns out to hold nothing, is a
+            // mis-wired graph either way -- and the wizard has already been
+            // configured against the file that is missing.
+            refuse(
+                tr("%1 was not started: its \"%2\" input expects %3 in the "
+                   "results of %4, and there is none.\n\n"
+                   "That process did not save what this one reads — a "
+                   "Single-Point Calculation has to save its wavefunctions "
+                   "(.gpw) for anything downstream to restart from it.")
+                    .arg(node->title(), slot.label,
+                         slot.sourceName.isEmpty()
+                             ? tr("its results directory")
+                             : slot.sourceName,
+                         parent->title()));
+            return false;
+        }
     } else {
         if (!node->structure())
             return false;

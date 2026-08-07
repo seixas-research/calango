@@ -1010,7 +1010,17 @@ struct CalculatorConfig {
     // of the three, selected by gpawMode.
     GpawMode gpawMode = GpawMode::PlaneWave;
     double gpawGridSpacing = 0.20;   ///< Å, FD mode
-    std::string gpawBasis = "dzp";   ///< LCAO mode
+    /// LCAO basis-set name. The built-in sz / szp / dz / dzp ship with the
+    /// GPAW datasets; any other name is looked up as `<symbol>.<name>.basis`
+    /// along GPAW's setup search path, which is what `gpawBasisDir` extends.
+    std::string gpawBasis = "dzp";
+    /// Directory of CUSTOM LCAO basis files, from Preferences → External
+    /// Files. Empty means "only the basis sets that shipped with GPAW".
+    ///
+    /// Prepended to `gpaw.setup_paths` by the generated script rather than
+    /// assigned to it: that list also carries the PAW datasets, and replacing
+    /// it would find the basis and lose the setups.
+    std::string gpawBasisDir;
     std::string gpawXc = "PBE";
     GpawEigensolver gpawEigensolver = GpawEigensolver::Davidson;
     GpawMixerKind gpawMixer = GpawMixerKind::Mixer;

@@ -873,6 +873,39 @@ void emitXtb(std::ostringstream& out, const CalculatorConfig& c)
            "        \"    conda install -c conda-forge xtb-python\\n\"\n"
            "        f\"(import error: {exc})\")\n"
            "\n"
+           "# --- Isolated systems only -------------------------------------\n"
+           "# Checked BEFORE the calculator is built, because the failure it\n"
+           "# prevents is not an exception. xtb-python's in-process API\n"
+           "# handles a periodic cell as follows, all three verified against\n"
+           "# xtb-python 22.1:\n"
+           "#\n"
+           "#   GFN2-xTB / GFN1-xTB, any pbc -> CalculationFailed, \"xtb could\n"
+           "#       not evaluate input\". These parameterizations are molecular;\n"
+           "#       the API has no lattice summation to give them.\n"
+           "#   GFN-FF, 2D-periodic          -> SIGSEGV or SIGABRT inside the\n"
+           "#       force-field setup. The process dies with no traceback and\n"
+           "#       no result file, which from the job console is\n"
+           "#       indistinguishable from a machine problem.\n"
+           "#   GFN-FF, 3D-periodic          -> XTBException, the virial is\n"
+           "#       missing from the results ASE asks for.\n"
+           "#\n"
+           "# So the cell is refused here, with the reason, rather than passed\n"
+           "# to a library that will crash on it. xTB is a molecular method in\n"
+           "# this binding; a periodic system wants a different engine.\n"
+           "if any(atoms.pbc):\n"
+           "    raise SystemExit(\n"
+           "        \"xTB cannot evaluate this structure: it is periodic \"\n"
+           "        f\"(pbc={tuple(bool(p) for p in atoms.pbc)}), and the \"\n"
+           "        \"in-process xtb-python API supports isolated systems \"\n"
+           "        \"only.\\n\\n\"\n"
+           "        \"  * Molecule or cluster: clear the periodic boundary \"\n"
+           "        \"conditions on the structure and re-run.\\n\"\n"
+           "        \"  * Genuinely periodic solid: use GPAW, Quantum \"\n"
+           "        \"ESPRESSO, SIESTA or a machine-learned potential — all \"\n"
+           "        \"of which take a cell.\\n\\n\"\n"
+           "        \"This is refused rather than attempted because GFN-FF \"\n"
+           "        \"does not raise on a 2D cell, it segfaults.\")\n"
+           "\n"
            "atoms.calc = XTB(\n"
         << "    method=\"" << c.xtbMethod << "\",\n"
         << "    accuracy=" << c.xtbAccuracy
@@ -2302,7 +2335,41 @@ std::string AseScriptGenerator::gpawImports(const CalculatorConfig& c)
     if (c.gpawMode == GpawMode::PlaneWave)
         line += ", PW";
     line += ", " + toString(c.gpawMixer);
-    return line + "\n";
+    line += "\n";
+
+    // Custom LCAO basis sets (Preferences -> External Files). Emitted here
+    // because this is the one place every GPAW-using generator goes through,
+    // and because the search path has to be extended BEFORE any calculator is
+    // constructed — GPAW resolves the basis when it builds its setups.
+    //
+    // INSERTED at the front of setup_paths, never assigned over it: the same
+    // list is how GPAW finds its PAW datasets, so replacing it would resolve
+    // basis="my-tz2p" and then fail to find the setup for hydrogen. The
+    // application also exports GPAW_SETUP_PATH for the job, which GPAW itself
+    // prepends; doing it again here is what keeps an exported script working
+    // when it is run by hand.
+    if (c.gpawMode == GpawMode::Lcao && !c.gpawBasisDir.empty()) {
+        std::ostringstream out;
+        out << line
+            << "\n"
+               "# Custom LCAO basis sets: GPAW looks for files named\n"
+               "# <symbol>.<name>.basis along gpaw.setup_paths, so a basis it\n"
+               "# did not ship with is only findable once its directory is on\n"
+               "# that list.\n"
+               "import os as _basis_os\n"
+               "import gpaw as _gpaw\n"
+               "\n"
+            << "_basis_dir = r\"" << c.gpawBasisDir << "\"\n"
+               "if _basis_dir and _basis_dir not in "
+               "[str(_p) for _p in _gpaw.setup_paths]:\n"
+               "    _gpaw.setup_paths.insert(0, _basis_dir)\n"
+               "if not _basis_os.path.isdir(_basis_dir):\n"
+               "    print(f\"CALANGO_WARN the custom LCAO basis directory \"\n"
+               "          f\"{_basis_dir!r} does not exist; only the basis \"\n"
+               "          f\"sets shipped with GPAW are available\", flush=True)\n";
+        return out.str();
+    }
+    return line;
 }
 
 std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,

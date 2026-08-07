@@ -24,6 +24,7 @@
 #include "core/PhononScriptGenerator.hpp"
 #include "core/RamanIrScriptGenerator.hpp"
 #include "core/RandomNoiseScriptGenerator.hpp"
+#include "core/Defect2dScriptGenerator.hpp"
 #include "core/DefectScriptGenerator.hpp"
 #include "core/FermiSurfaceScriptGenerator.hpp"
 #include "core/TopologyScriptGenerator.hpp"
@@ -33,6 +34,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 #include <fstream>
 #include <string>
 
@@ -58,6 +60,12 @@ void checkContains(const std::string& script, const std::string& needle,
                    const std::string& what)
 {
     check(contains(script, needle), what + "  [" + needle + "]");
+}
+
+void checkNotContains(const std::string& script, const std::string& needle,
+                      const std::string& what)
+{
+    check(!contains(script, needle), what + "  [no " + needle + "]");
 }
 
 CalculatorConfig maceConfig()
@@ -133,6 +141,22 @@ int main(int argc, char** argv)
             gpaw.gpawMode = mode;
             gpaw.task = TaskKind::GeometryOptimization;
             dump(name, gpaw);
+        }
+
+        // xTB, one script per method. Dumped so the integration test can RUN
+        // them: xTB is fast enough (a water molecule is milliseconds) that the
+        // generated script can be executed for real rather than only compiled,
+        // which is the only way to catch a parameter the ASE calculator
+        // silently ignores or rejects.
+        for (const auto* method : {"GFN2-xTB", "GFN1-xTB", "GFN-FF"}) {
+            CalculatorConfig xtb;
+            xtb.calculator = CalculatorKind::Xtb;
+            xtb.task = TaskKind::SinglePoint;
+            xtb.xtbMethod = method;
+            std::string name(method);
+            for (char& ch : name)
+                ch = ch == '-' ? '_' : static_cast<char>(std::tolower(ch));
+            dump("xtb_" + name + ".py", xtb);
         }
 
         // DFT+U and dispersion ride on top of a normal GPAW block, so they
@@ -466,6 +490,26 @@ int main(int argc, char** argv)
             dumpGw("gw_yambo_ppa.py", yambo);
             yambo.frequency = GwFrequencyTreatment::RealAxis;
             dumpGw("gw_yambo_realaxis.py", yambo);
+        }
+
+        // Charged defects in 2D: dumped so the benchmark runs the script the
+        // generator actually emits, rather than a paraphrase of it.
+        {
+            Defect2dConfig defect2d;
+            defect2d.calculator.calculator = CalculatorKind::Gpaw;
+            defect2d.pristinePath = "/jobs/host/single_point.gpw";
+            defect2d.neutralDefectPath = "/jobs/defect/single_point.gpw";
+            // +-2 as well as +-1, so the benchmark's q^2 check on the run's
+            // own numbers has something to fail on: with +-1 alone the ratio
+            // is 1 whatever the generator did.
+            defect2d.charges = {-2, -1, 0, 1, 2};
+            defect2d.epsilonInPlane = 6.9;
+            defect2d.epsilonOutOfPlane = 2.8;
+            defect2d.layerThickness = 6.15;
+            defect2d.zComponents = 32;
+            defect2d.inPlaneCutoff = 6;
+            std::ofstream out(dir + "/charged_defects_2d.py");
+            out << generateDefect2dScript(defect2d);
         }
 
         // Electronic structure with spin-orbit coupling: the SOC block rebuilds
@@ -919,6 +963,50 @@ int main(int argc, char** argv)
     // generated scripts called. Each failure was silent or fatal in a
     // different way, and all three were found by running the full mode matrix
     // against both installed GPAWs.
+    std::printf("Custom LCAO basis sets:\n");
+    {
+        CalculatorConfig lcao;
+        lcao.calculator = CalculatorKind::Gpaw;
+        lcao.gpawMode = GpawMode::Lcao;
+        lcao.gpawBasis = "my-tz2p";
+        lcao.gpawBasisDir = "/opt/basis";
+        const std::string imports = AseScriptGenerator::gpawImports(lcao);
+        checkContains(imports, "setup_paths.insert(0, _basis_dir)",
+                      "the custom directory is PREPENDED to the search path");
+        // Assignment instead of insertion would find the basis and lose the
+        // PAW datasets, which is a much worse failure than not finding it.
+        check(!contains(imports, "setup_paths ="),
+              "and never assigned over — that would drop the PAW datasets");
+        checkContains(imports, "/opt/basis",
+                      "the configured directory reaches the script");
+        checkContains(imports, "CALANGO_WARN",
+                      "a missing directory is reported rather than silent");
+
+        // Nothing configured, or a mode with no basis at all: no block.
+        CalculatorConfig plain = lcao;
+        plain.gpawBasisDir.clear();
+        check(!contains(AseScriptGenerator::gpawImports(plain), "setup_paths"),
+              "no directory configured emits no setup-path block");
+        CalculatorConfig pw = lcao;
+        pw.gpawMode = GpawMode::PlaneWave;
+        check(!contains(AseScriptGenerator::gpawImports(pw), "setup_paths"),
+              "and neither does a plane-wave run, which has no LCAO basis");
+    }
+
+    std::printf("PDOS / PhDOS smearing is no longer a run parameter:\n");
+    {
+        ElectronicConfig bands;
+        bands.backend = ElectronicBackend::Gpaw;
+        bands.pdos = true;
+        const std::string script = generateElectronicScript(bands);
+        // Sigma moved to the viewer. A width still written here would be the
+        // one baked into the stored curve, which is exactly what was removed.
+        check(!contains(script, "pdos_width"),
+              "the electronic script sets no Gaussian width");
+        checkContains(script, "\"broadened\": False",
+                      "and says the histogram it wrote is unbroadened");
+    }
+
     std::printf("GPAW 25.7 / 26.7 compatibility:\n");
     {
         ElectronicConfig bands;
@@ -2754,6 +2842,53 @@ int main(int argc, char** argv)
         const std::string uncorrected = generateDefectScript(raw);
         checkContains(uncorrected, "APPLY_FNV = False", "FNV can be disabled");
         checkContains(uncorrected, "CALANGO_WARN FNV correction disabled",
+                      "and the omission is reported");
+    }
+
+    // -- Charged defects in 2D materials --------------------------------------
+    std::printf("Charged defects (2D):\n");
+    {
+        Defect2dConfig cfg;
+        cfg.calculator.calculator = CalculatorKind::Gpaw;
+        cfg.pristinePath = "/jobs/host/single_point.gpw";
+        cfg.neutralDefectPath = "/jobs/defect/single_point.gpw";
+        cfg.charges = {-1, 1};   // note: no 0
+        cfg.species = {{"S", -1, -4.13}};
+        cfg.epsilonInPlane = 6.9;
+        cfg.epsilonOutOfPlane = 2.8;
+        cfg.layerThickness = 6.15;
+        const std::string script = generateDefect2dScript(cfg);
+
+        checkContains(script, "CHARGES = [-1, 0, 1]",
+                      "q = 0 is inserted and the list sorted");
+        checkContains(script, "'symbol': 'S', 'count': -1, 'mu_eV': -4.13",
+                      "the exchanged species reach the script");
+        // The two constants must arrive DISTINCT. A generator that collapsed
+        // the profile to a scalar would still produce a plausible number, and
+        // the anisotropy is the whole difference between a sheet and a thin
+        // piece of bulk.
+        checkContains(script, "EPS_PAR = 6.9", "eps_parallel reaches the script");
+        checkContains(script, "EPS_PERP = 2.8", "and eps_perp, separately");
+        checkContains(script, "THICKNESS = 6.15", "and the layer thickness");
+        checkContains(script, "two_d_image_correction",
+                      "the 2D correction is the one applied");
+        checkNotContains(script, "charged_defect_corrections",
+                         "GPAW's BULK FNV helper is NOT used — it assumes a "
+                         "scalar epsilon a sheet does not have");
+        checkContains(script, "q * E_VBM", "E_F is referenced to the host VBM");
+        checkContains(script, "'scheme': '2D image charge",
+                      "the output names the scheme rather than leaving the "
+                      "viewer to assume FNV");
+        checkContains(script, "CALANGO_RESULT charged_defects_2d=",
+                      "emits the marker the controller watches for");
+
+        Defect2dConfig raw = cfg;
+        raw.applyCorrection = false;
+        const std::string uncorrected = generateDefect2dScript(raw);
+        checkContains(uncorrected, "APPLY_CORRECTION = False",
+                      "the correction can be disabled");
+        checkContains(uncorrected, "the formation energies below are "
+                                   "UNCORRECTED",
                       "and the omission is reported");
     }
 

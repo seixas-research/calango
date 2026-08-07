@@ -269,7 +269,6 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    "# at a dedicated (typically denser) fixed-density k-mesh so\n"
                    "# the DOS is smooth independently of the SCF/band sampling.\n"
                 << "pdos_npts = " << c.pdosPoints << "\n"
-                << "pdos_width = " << c.pdosWidthEv << "\n"
                 << "pdos_kpts = (" << c.pdosKpts[0] << ", " << c.pdosKpts[1]
                 << ", " << c.pdosKpts[2] << ")\n"
                 << "dos_calc = calc.fixed_density(kpts=pdos_kpts, symmetry=\"off\",\n"
@@ -381,8 +380,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    "            # which must not be broadened a second time.\n"
                    "            \"broadened\": False,\n"
                    "            \"bin_width\": float(_bin),\n"
-                   "            \"suggested_width\": float(pdos_width),\n"
-                   "            \"projections\": {_k: [float(v) for v in _v]\n"
+                           "            \"projections\": {_k: [float(v) for v in _v]\n"
                    "                            for _k, _v in projections.items()}}\n"
                    "    print(f\"CALANGO_INFO pdos channels: \"\n"
                    "          f\"{sorted(projections)} \"\n"

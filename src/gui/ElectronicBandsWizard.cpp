@@ -152,31 +152,20 @@ QWidget* ElectronicBandsWizard::buildCalculatorExtras()
     connect(energyPointsSpin_, &QSpinBox::valueChanged, this,
             [this] { refreshPreview(); });
 
-    pdosWidthSpin_ = new QDoubleSpinBox(pdosGroup_);
-    pdosWidthSpin_->setRange(0.001, 5.0);
-    pdosWidthSpin_->setDecimals(3);
-    pdosWidthSpin_->setSingleStep(0.01);
-    pdosWidthSpin_->setValue(0.1);
-    pdosWidthSpin_->setSuffix(tr(" eV"));
-    pdosWidthSpin_->setToolTip(
-        tr("Gaussian broadening σ applied to the projected DOS.\n"
-           "The raw PDOS is a sum of delta functions at the eigenvalues; σ "
-           "turns it into a smooth curve. ~0.05–0.2 eV is typical — smaller "
-           "resolves sharp d-band features but needs a denser k-mesh."));
-    form->addRow(tr("Gaussian smearing σ:"), pdosWidthSpin_);
+    // No Gaussian-smearing control here any more. The run writes the
+    // unbroadened eigenvalue histogram and the viewer convolves it with a
+    // slider, so asking for sigma before the calculation would be asking for a
+    // decision that no longer has to be made — and one the user is in a far
+    // better position to make afterwards, looking at the curve.
     // The PDOS controls only make sense when PDOS is requested.
     for (QWidget* w : {static_cast<QWidget*>(pdosKptsSpin_[0]),
                        static_cast<QWidget*>(pdosKptsSpin_[1]),
                        static_cast<QWidget*>(pdosKptsSpin_[2]),
-                       static_cast<QWidget*>(energyPointsSpin_),
-                       static_cast<QWidget*>(pdosWidthSpin_)}) {
+                       static_cast<QWidget*>(energyPointsSpin_)}) {
         connect(pdosCheck_, &QCheckBox::toggled, w, &QWidget::setEnabled);
     }
     connect(pdosCheck_, &QCheckBox::toggled, this,
             [this] { refreshPreview(); });
-    connect(pdosWidthSpin_, &QDoubleSpinBox::valueChanged, this,
-            [this] { refreshPreview(); });
-
     // Seed the PDOS k-mesh from the (default) SCF k-grid now that the base DFT
     // controls exist.
     applyPdosKmeshDefault();
@@ -689,7 +678,6 @@ QString ElectronicBandsWizard::generateScript() const
         config.fatbandProjections = fatbandProjections();
 
     config.pdos = pdosCheck_->isChecked();
-    config.pdosWidthEv = pdosWidthSpin_->value();
     config.pdosPoints = energyPointsSpin_->value();
     for (int axis = 0; axis < 3; ++axis)
         config.pdosKpts[axis] = pdosKptsSpin_[axis]->value();

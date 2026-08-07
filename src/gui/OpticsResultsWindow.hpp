@@ -11,6 +11,8 @@
 
 class QComboBox;
 class QDoubleSpinBox;
+class QLabel;
+class QSlider;
 
 namespace calango::gui {
 
@@ -35,6 +37,21 @@ public:
                                  QWidget* parent = nullptr);
 
     bool hasData() const { return hasData_; }
+
+    /// The spectra currently DERIVED for one direction, at the broadening the
+    /// viewer is showing.
+    ///
+    /// Public because the Lorentzian re-derivation is the only physics in this
+    /// window, and physics that can only be checked by looking at a plot is not
+    /// checked. Index into directions() order; empty for an out-of-range one.
+    struct DerivedSpectra {
+        std::vector<double> energy, eps1, eps2, absorption, reflectivity;
+        std::vector<double> n, k, loss, absorbance;
+    };
+    DerivedSpectra derivedSpectra(int direction = 0) const;
+    /// The broadening currently applied (eV), and the floor it cannot go below.
+    double broadening() const { return broadening_; }
+    double storedBroadening() const { return etaStored_; }
 
 private Q_SLOTS:
     /// Rebuild the plotted series from the Quantity + Direction combos.
@@ -92,12 +109,33 @@ private:
     /// present only when the job ran as a sheet (the generator emits `twod_*`
     /// alongside each direction); those vectors stay empty otherwise.
     struct DirectionData {
+        /// The dielectric function AS STORED, at the run's own η. Everything
+        /// below is derived from these two and the current broadening; these
+        /// are never overwritten.
+        std::vector<double> rawEps1, rawEps2;
         std::vector<double> eps1, eps2, absorption, reflectivity, n, k, loss;
         std::vector<double> alpha2dRe, alpha2dIm, absorbance, sigma2dRe,
             sigma2dIm;
         bool twoDimensional = false;
     };
     const DirectionData* currentDirection() const;
+
+    /// Re-derive every displayed spectrum from the stored ε at the current
+    /// broadening.
+    ///
+    /// Optical broadening is LORENTZIAN, not Gaussian — η enters the response
+    /// function as 1/(E − ω − iη), so it is a lifetime, not a resolution
+    /// blur. That is what makes this possible at all: Lorentzian widths ADD
+    /// under convolution, L(η₁) ∗ L(η₂) = L(η₁+η₂), so convolving a spectrum
+    /// stored at η_stored with a Lorentzian of width (η − η_stored) gives
+    /// exactly the spectrum GPAW would have produced at η. Verified against
+    /// the analytic two-level resolvent to ~0.1 % on a realistic 0–20 eV grid
+    /// (tests/OpticsBroadeningTest.cpp).
+    ///
+    /// It is one-way: η can only be INCREASED. Narrowing would be a
+    /// deconvolution, which is not a filter but an inverse problem, and on a
+    /// spectrum with any noise in it an unstable one.
+    void rebuildSpectra();
 
     std::vector<double> energy_;                       ///< ħω grid, eV
     QList<QPair<QString, DirectionData>> directions_;  ///< in xx, yy, zz order
@@ -112,6 +150,18 @@ private:
     QDoubleSpinBox* xMaxSpin_ = nullptr;
     OpticsPlotStyle style_;
     bool hasData_ = false;
+
+    // -- Live broadening ----------------------------------------------------
+    /// η the run computed at — the floor this viewer can only add to.
+    double etaStored_ = 0.0;
+    /// η currently displayed (eV); never below etaStored_.
+    double broadening_ = 0.0;
+    /// Vacuum-direction cell length (Å), needed to re-derive the sheet
+    /// observables. Zero when the run was not a 2D one.
+    double vacuumLengthA_ = 0.0;
+    QSlider* broadeningSlider_ = nullptr;
+    QDoubleSpinBox* broadeningSpin_ = nullptr;
+    QLabel* broadeningNote_ = nullptr;
 };
 
 } // namespace calango::gui

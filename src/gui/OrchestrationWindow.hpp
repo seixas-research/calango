@@ -2,6 +2,8 @@
 
 #include "core/CalculatorConfig.hpp"
 
+#include "gui/SimulationWizardBase.hpp"
+
 #include <QDialog>
 #include <QGraphicsPathItem>
 #include <QGraphicsRectItem>
@@ -35,12 +37,74 @@ class OrchestrationScene;
 /// The processes a orchestration node can represent. A superset of
 /// core::TaskKind: the phonon orchestration is its own script generator rather
 /// than a TaskKind, but on the canvas it is a process like any other.
+///
+/// APPEND-ONLY. The values are not persisted, but they order the Add Process
+/// list and are compared numerically to split the self-contained tasks from
+/// the analysis modules; renumbering silently reorders the menu.
+///
+/// The first four are self-contained: they read a structure and can run on
+/// task defaults. Everything after ElectronicBands INHERITS one or more
+/// completed runs — see orchestrationInputSlots() — and cannot run unconfigured
+/// because there is nothing sensible to default a baseline path to.
 enum class OrchestrationTask {
     GeometryOptimization,
     SinglePoint,
     MolecularDynamics,
     Phonon,
+    // -- Baseline-inheriting analysis modules, one slot ---------------------
+    ElectronicBands,
+    Optics,
+    Workfunction,
+    TwoDBands,
+    Wannier,
+    BornCharges,
+    Gw,
+    ChargeDensityDifference,
+    RamanIr,
+    // -- Two slots ----------------------------------------------------------
+    ChargedDefects,
+    ChargedDefects2d,
 };
+
+/// One completed run a node consumes from a connected parent.
+///
+/// The canvas stages each slot into the child's own job directory under a
+/// FIXED name, and hands that same name to the setup wizard as the baseline
+/// path. That is what makes a wizard configured before its parent has ever run
+/// still correct: the script it generates names a relative path, and the
+/// runner guarantees a file is there under that name by the time it executes.
+struct OrchestrationInputSlot {
+    /// Shown on the node and in the wizard's baseline list ("pristine host").
+    QString label;
+    /// What to take from the parent's job directory. Empty means the WHOLE
+    /// directory — Charge Density Difference reads several files out of one
+    /// run, so it inherits the folder rather than a file.
+    QString sourceName;
+    /// Where it lands in the child's job directory, and therefore the path
+    /// the generated script must name.
+    QString stagedName;
+    /// An optional slot may be left UNCONNECTED; leaving a required one
+    /// unconnected refuses the run. It does not make the slot's ARTIFACT
+    /// optional: a parent linked to an optional slot but holding nothing to
+    /// inherit is still a refusal, because the wizard has by then been
+    /// configured against a file that will not be there.
+    bool optional = false;
+};
+
+/// The runs `task` inherits, in the order parents are linked. Empty for the
+/// four self-contained tasks.
+QList<OrchestrationInputSlot> orchestrationInputSlots(OrchestrationTask task);
+/// How many parents a node of this task must have before it can run.
+int orchestrationRequiredInputs(OrchestrationTask task);
+/// True when an UNCONFIGURED node of this task can still run, from the task's
+/// defaults seeded with the per-element suggested cutoff and k-grid. False for
+/// every analysis module: a default baseline path does not exist, and running
+/// one on a guess would mean computing something nobody asked for.
+bool orchestrationTaskHasDefaults(OrchestrationTask task);
+/// Menu/label text ("Charged Defects in 2D Materials").
+QString orchestrationTaskDisplayName(OrchestrationTask task);
+/// Every task, in Add Process list order.
+QList<OrchestrationTask> orchestrationTasks();
 
 /// One simulation process on the orchestration canvas: a draggable rounded
 /// rectangle showing the process name, the material it runs on and the
@@ -83,6 +147,20 @@ public:
         return structure_;
     }
     QString title() const { return title_; }
+
+    /// One inherited-run slot as the node paints it.
+    struct InputLine {
+        QString text;    ///< "pristine host <- Single Point (1)"
+        bool satisfied;  ///< false when no parent is linked for this slot
+        bool operator==(const InputLine& other) const
+        {
+            return text == other.text && satisfied == other.satisfied;
+        }
+    };
+    /// Show which parent fills each input slot. The node GROWS to fit them:
+    /// which run feeds which slot is the one thing about a multi-input node a
+    /// reader cannot recover from the canvas, because both links look alike.
+    void setInputSummary(const std::vector<InputLine>& lines);
 
     Status status() const { return status_; }
     void setStatus(Status status);
@@ -130,6 +208,7 @@ private:
     QString configuredScript_;
     QString configuredPython_;
     QString configuredRunCommand_;
+    std::vector<InputLine> inputLines_;
     std::vector<OrchestrationEdgeItem*> edges_;
 };
 
@@ -213,6 +292,48 @@ public:
         ProcessManagerPanel* processPanel = nullptr,
         QWidget* parent = nullptr);
 
+    /// Everything a factory needs to build one node's setup wizard.
+    struct WizardRequest {
+        OrchestrationTask task;
+        std::shared_ptr<const core::Structure> structure;
+        core::CalculatorKind engine;
+        /// The node's input slots as (label, staged path) pairs, in link
+        /// order, ready to hand straight to the wizard's setDensityBaselines()
+        /// or equivalent. The label names the parent that will fill the slot
+        /// when one is linked, so the wizard's combo reads like the canvas.
+        ///
+        /// The paths are RELATIVE and the files do not exist yet — they are
+        /// what the runner stages before the node executes. A factory must not
+        /// check them for existence.
+        QList<QPair<QString, QString>> baselines;
+    };
+    /// Builds the setup wizard for a node.
+    ///
+    /// The canvas does not construct wizards itself. It owns scheduling and
+    /// the handoff between runs; the catalogue of modules belongs to the host,
+    /// which already includes every one of them. Keeping it that way is what
+    /// lets this panel be linked into a headless test without dragging in
+    /// fifteen wizards, their generators and their Brillouin-zone editors.
+    ///
+    /// Returning null means "no wizard for this task" and is reported as such.
+    using WizardFactory =
+        std::function<std::unique_ptr<SimulationWizardBase>(const WizardRequest&)>;
+    /// Where a refusal goes.
+    ///
+    /// Defaults to a modal warning box, which is right for a user who just
+    /// pressed Run and needs to know why nothing happened. The headless tests
+    /// install a collector instead: a refusal is a normal, expected outcome of
+    /// a mis-wired graph and is exactly what has to be asserted, but a modal
+    /// box in a test with nobody to dismiss it is a hang rather than a
+    /// failure.
+    using RefusalHandler = std::function<void(const QString& message)>;
+    void setRefusalHandler(RefusalHandler handler);
+
+    /// Install the wizard catalogue. Without one, double-clicking a node says
+    /// so instead of silently doing nothing; the programmatic API
+    /// (configureNode) is unaffected, which is how the headless tests drive it.
+    void setWizardFactory(WizardFactory factory);
+
     /// Install a callback asked for the open documents each time the Add
     /// Process dialog is raised.
     ///
@@ -289,12 +410,25 @@ private:
     /// Mark every descendant of a failed node Skipped — their inputs will
     /// never exist.
     void skipDescendants(OrchestrationNodeItem* node);
+    /// Report why a node was refused, through refusalHandler_ if one is
+    /// installed and a modal warning otherwise.
+    void refuse(const QString& message);
+    /// Repaint every node's "which parent fills which slot" summary. Called
+    /// after anything that changes the graph, since a link drawn to one node
+    /// changes what a DIFFERENT node reads.
+    void refreshInputSummaries();
+    /// The slot list for `node`, each paired with the parent that fills it
+    /// (null when nothing is linked for it).
+    QList<QPair<OrchestrationInputSlot, OrchestrationNodeItem*>>
+    resolveInputs(OrchestrationNodeItem* node) const;
 
     /// Mirror one node's state onto its Processes-panel row, if any.
     void updateProcessPanel(OrchestrationNodeItem* node);
 
     MaterialList materials_;
     std::function<MaterialList()> materialsProvider_;
+    WizardFactory wizardFactory_;
+    RefusalHandler refusalHandler_;
     std::function<QString(core::CalculatorKind)> pythonResolver_;
     ProcessManagerPanel* processPanel_ = nullptr;
 

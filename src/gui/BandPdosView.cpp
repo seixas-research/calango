@@ -149,11 +149,15 @@ void BandPdosView::setPdosData(PdosData data)
         (void)curve;
         visible_.emplace(label, true);
     }
-    // Open on what the run suggested rather than on this widget's default: the
-    // wizard's σ is the one the user picked for this material, and it is now
-    // an opening position instead of a commitment.
+    // Opening σ. Derived from the data's own resolution rather than fixed:
+    // four bins is wide enough to look like a curve rather than a comb, and it
+    // scales correctly across an electronic PDOS in eV and a phonon DOS in
+    // cm⁻¹ without either needing to be told which it is. A run that states a
+    // width still wins.
     if (pdos_.suggestedWidth > 0.0)
         pdosSigma_ = pdos_.suggestedWidth;
+    else if (pdos_.binWidth > 0.0)
+        pdosSigma_ = 4.0 * pdos_.binWidth;
     rebuildPdosCurves();
     update();
 }

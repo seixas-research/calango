@@ -135,28 +135,18 @@ QWidget* PhononWizard::buildSecondSettingsPage()
                "evaluations (the force constants are already computed, the "
                "mesh only interpolates them). Use 1 along a non-periodic "
                "axis.\n"
-               "Raise the mesh before lowering the Gaussian σ below — a "
-               "sharp σ on a coarse mesh produces spikes, not resolution."));
+               "This is the setting that adds resolution. The viewer's σ only "
+               "smooths what the mesh sampled — a sharp σ on a coarse mesh "
+               "produces spikes, not detail."));
         spin->setEnabled(periodic_);
         meshRow->addWidget(spin);
     }
     form->addRow(tr("q-mesh (DOS) (qx·qy·qz):"), meshRow);
 
-    dosWidthSpin_ = new QDoubleSpinBox(group);
-    dosWidthSpin_->setRange(0.1, 200.0);
-    dosWidthSpin_->setDecimals(2);
-    dosWidthSpin_->setSingleStep(0.5);
-    dosWidthSpin_->setValue(2.0);
-    dosWidthSpin_->setSuffix(tr(" cm⁻¹"));
-    dosWidthSpin_->setEnabled(periodic_);
-    dosWidthSpin_->setToolTip(
-        tr("Gaussian broadening σ used when sampling the PhDOS.\n"
-           "A finite k-mesh gives a comb of delta peaks; σ smooths it into a "
-           "continuous DOS. Too small leaves spikes, too large erases van "
-           "Hove features — raise the mesh density before lowering σ."));
-    form->addRow(tr("Gaussian smearing σ:"), dosWidthSpin_);
-
-    for (QDoubleSpinBox* spin : {deltaSpin_, dosWidthSpin_})
+    // No smearing control: the run stores the raw mode histogram and the
+    // viewer applies sigma live. Raising the q-mesh is the setting that
+    // actually improves a PhDOS, and it is the one left here.
+    for (QDoubleSpinBox* spin : {deltaSpin_})
         connect(spin, &QDoubleSpinBox::valueChanged, this,
                 [this] { refreshPreview(); });
     for (QSpinBox* spin : {meshSpins_[0], meshSpins_[1], meshSpins_[2],
@@ -456,7 +446,6 @@ QString PhononWizard::generateScript() const
         pc.kpath = kpath_->path().toStdString();
     for (int i = 0; i < 3; ++i)
         pc.dosKptGrid[i] = meshSpins_[i]->value();
-    pc.dosWidthCm = dosWidthSpin_->value();
     pc.acousticSumRule = acousticCheck_->isChecked();
     pc.symmetryReducedDisplacements = symmetryCheck_->isChecked();
     pc.removeResidualForces = residualCheck_->isChecked();

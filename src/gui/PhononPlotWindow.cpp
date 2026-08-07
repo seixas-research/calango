@@ -244,7 +244,7 @@ void PhononPlotWindow::loadDirectory(const QString& directory)
         pdosData.broadened = dos.value(QStringLiteral("broadened")).toBool(true);
         pdosData.binWidth = dos.value(QStringLiteral("bin_width")).toDouble(0.0);
         pdosData.suggestedWidth =
-            dos.value(QStringLiteral("suggested_width")).toDouble(2.0);
+            dos.value(QStringLiteral("suggested_width")).toDouble(0.0);
         if (pdosData.binWidth <= 0.0 && pdosData.energies.size() > 1)
             pdosData.binWidth = pdosData.energies[1] - pdosData.energies[0];
 

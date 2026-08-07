@@ -102,6 +102,24 @@ void JobRunner::start(const QString& commandLine, const QString& pythonExe,
             if (!value.isEmpty())
                 env.insert(QLatin1String(variable), value);
         }
+
+        // GPAW_SETUP_PATH is PREPENDED, not replaced. Unlike the variables
+        // above it is a search LIST, and it already carries the PAW datasets —
+        // the setups a calculation cannot run without. Overwriting it with a
+        // directory of custom LCAO basis files would resolve basis="my-tz2p"
+        // and then fail to find the setup for hydrogen.
+        const QString basisDir =
+            settings.value(QLatin1String("gpaw/lcaoBasisDir"))
+                .toString()
+                .trimmed();
+        if (!basisDir.isEmpty()) {
+            const QString existing =
+                env.value(QStringLiteral("GPAW_SETUP_PATH"));
+            env.insert(QStringLiteral("GPAW_SETUP_PATH"),
+                       existing.isEmpty()
+                           ? basisDir
+                           : basisDir + QDir::listSeparator() + existing);
+        }
     }
 
     // Make the selected environment self-contained: its bin directory wins

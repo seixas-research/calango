@@ -46,6 +46,7 @@
 #include "gui/SinglePointWizard.hpp"
 #include "gui/NonlinearOpticsWizard.hpp"
 #include "gui/RamanIrWizard.hpp"
+#include "gui/Defect2dWizard.hpp"
 #include "gui/TwoDBandsWizard.hpp"
 #include "python_bridge/PythonEngine.hpp"
 #include "render/StructureRenderer.hpp"
@@ -1197,6 +1198,48 @@ int main(int argc, char** argv)
                   "the previewed script restarts from the selected baseline");
             check(script.contains(QStringLiteral("_n = 48")),
                   "and uses the grid the dialog shows");
+        }
+    }
+
+    // The 2D Charged Defects wizard. Same construction-order shape as 2D Bands
+    // — no engine chrome, an extras page built on top — plus TWO baseline
+    // selectors that must reach the script separately. A wizard that wired both
+    // combos to the same field would pass every substring test on the generator
+    // and still emit a script comparing a cell with itself.
+    std::printf("2D Charged Defects wizard:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        auto structure = std::make_shared<calango::core::Structure>();
+        Defect2dWizard wizard(structure);
+        check(true, "constructs");
+        wizard.setDensityBaselines(
+            {{QStringLiteral("proc_1 — host"), QStringLiteral("/jobs/1/host.gpw")},
+             {QStringLiteral("proc_2 — vacancy"), QStringLiteral("/jobs/2/def.gpw")}});
+        check(true, "accepts a baseline list");
+
+        // The two dielectric constants are the module's whole reason to exist,
+        // so they are driven to DIFFERENT values: a wizard that collapsed the
+        // profile to a scalar would still produce a plausible script.
+        const auto spins = wizard.findChildren<QDoubleSpinBox*>();
+        int epsilonBoxes = 0;
+        for (QDoubleSpinBox* spin : spins)
+            if (spin->maximum() >= 1000.0 && spin->minimum() == 1.0)
+                spin->setValue(++epsilonBoxes == 1 ? 6.9 : 2.8);
+        check(epsilonBoxes == 2, "has separate in-plane and out-of-plane boxes");
+
+        const auto* preview = wizard.findChild<QPlainTextEdit*>();
+        check(preview != nullptr, "has a script preview");
+        if (preview) {
+            const QString script = preview->toPlainText();
+            // Two DIFFERENT baselines: the defaulting is what makes the wizard
+            // usable, and picking the same run twice is never what is wanted.
+            check(script.contains(QStringLiteral("/jobs/1/host.gpw")),
+                  "the previewed script names the host baseline");
+            check(script.contains(QStringLiteral("/jobs/2/def.gpw")),
+                  "and a DIFFERENT one as the neutral defect");
+            check(script.contains(QStringLiteral("EPS_PAR = 6.9"))
+                      && script.contains(QStringLiteral("EPS_PERP = 2.8")),
+                  "and carries both dielectric constants, separately");
         }
     }
 

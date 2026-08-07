@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.4
+    VERSION 26.8.5
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -174,6 +174,8 @@ qt_add_executable(calango
     src/core/WannierScriptGenerator.hpp
     src/core/DefectScriptGenerator.hpp
     src/core/DefectScriptGenerator.cpp
+    src/core/Defect2dScriptGenerator.hpp
+    src/core/Defect2dScriptGenerator.cpp
     src/core/FermiSurfaceScriptGenerator.hpp
     src/core/FermiSurfaceScriptGenerator.cpp
     src/core/TopologyScriptGenerator.hpp
@@ -314,6 +316,8 @@ qt_add_executable(calango
     src/gui/TwoDBandsWindow.cpp
     src/gui/DefectWizard.hpp
     src/gui/DefectWizard.cpp
+    src/gui/Defect2dWizard.hpp
+    src/gui/Defect2dWizard.cpp
     src/gui/DefectDiagramWindow.hpp
     src/gui/DefectDiagramWindow.cpp
     src/gui/FermiSurfaceDialog.hpp
@@ -1264,6 +1268,14 @@ if(CALANGO_BUILD_TESTS)
         src/gui/MolecularDynamicsWizard.cpp
         src/gui/TwoDBandsWizard.cpp
         src/core/TwoDBandsScriptGenerator.cpp
+        # The 2D Charged Defects wizard: two baseline selectors that have to
+        # reach the script SEPARATELY, and an anisotropic dielectric profile
+        # that has to survive as two numbers rather than collapsing to one.
+        # Both failures produce a plausible script the generator's own
+        # substring tests would pass.
+        src/gui/Defect2dWizard.cpp
+        src/core/Defect2dScriptGenerator.cpp
+        src/core/DefectScriptGenerator.cpp
         # The Nonlinear Optics wizard: it hides a form row and re-validates the
         # typed component list from a signal its own constructor triggers, and
         # it is the only wizard whose generated script depends on GPAW ground-
@@ -1467,26 +1479,13 @@ if(CALANGO_BUILD_TESTS)
         tests/OrchestrationSiTest.cpp
         src/gui/OrchestrationWindow.cpp
         src/gui/SimulationWizardBase.cpp
+        src/gui/GpawElectronicRows.cpp
+        src/gui/HubbardParametersDialog.cpp
         src/gui/ExtendedEngineGroups.cpp
         src/core/EngineCalculatorBlocks.cpp
-        src/gui/SinglePointWizard.cpp
-        src/gui/GeometryOptimizationWizard.cpp
-        src/gui/CellRelaxationControls.cpp
-        src/gui/MolecularDynamicsWizard.cpp
-        src/gui/PhononWizard.cpp
-        src/gui/GeometryConstraintsDialog.cpp
-        src/gui/EmbeddedKPathEditor.cpp
-        src/gui/BrillouinZoneWidget.cpp
-        src/gui/BrillouinZoneView.cpp
-        src/gui/BrillouinZoneStyleDialog.cpp
         src/ui/IconManager.cpp
         src/gui/ThemeManager.cpp
         src/gui/ProcessManagerPanel.cpp
-        src/render/Camera.cpp
-        src/core/BrillouinZone.cpp
-        src/core/KPath.cpp
-        src/gui/GpawElectronicRows.cpp
-        src/gui/HubbardParametersDialog.cpp
         src/gui/CondaEnvs.cpp
         src/gui/EnginePresets.cpp
         src/gui/PythonHighlighter.cpp
@@ -1537,26 +1536,13 @@ if(CALANGO_BUILD_TESTS)
         tests/OrchestrationHandoffTest.cpp
         src/gui/OrchestrationWindow.cpp
         src/gui/SimulationWizardBase.cpp
+        src/gui/GpawElectronicRows.cpp
+        src/gui/HubbardParametersDialog.cpp
         src/gui/ExtendedEngineGroups.cpp
         src/core/EngineCalculatorBlocks.cpp
-        src/gui/SinglePointWizard.cpp
-        src/gui/GeometryOptimizationWizard.cpp
-        src/gui/CellRelaxationControls.cpp
-        src/gui/MolecularDynamicsWizard.cpp
-        src/gui/PhononWizard.cpp
-        src/gui/GeometryConstraintsDialog.cpp
-        src/gui/EmbeddedKPathEditor.cpp
-        src/gui/BrillouinZoneWidget.cpp
-        src/gui/BrillouinZoneView.cpp
-        src/gui/BrillouinZoneStyleDialog.cpp
         src/ui/IconManager.cpp
         src/gui/ThemeManager.cpp
         src/gui/ProcessManagerPanel.cpp
-        src/render/Camera.cpp
-        src/core/BrillouinZone.cpp
-        src/core/KPath.cpp
-        src/gui/GpawElectronicRows.cpp
-        src/gui/HubbardParametersDialog.cpp
         src/gui/CondaEnvs.cpp
         src/gui/EnginePresets.cpp
         src/gui/PythonHighlighter.cpp
@@ -1822,6 +1808,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/WorkfunctionScriptGenerator.cpp
         src/core/WannierScriptGenerator.cpp
         src/core/DefectScriptGenerator.cpp
+        src/core/Defect2dScriptGenerator.cpp
         src/core/FermiSurfaceScriptGenerator.cpp
         src/core/TopologyScriptGenerator.cpp
         src/core/ClusterExpansionScriptGenerator.cpp
@@ -1995,6 +1982,51 @@ if(CALANGO_BUILD_TESTS)
                 $<TARGET_FILE:calango_script_test>)
     set_tests_properties(graphene_band_symmetry PROPERTIES TIMEOUT 1800)
 
+    # xTB, RUN rather than compiled. A water molecule is milliseconds, so the
+    # generated script can be executed for real — which is the only way to see
+    # a parameter the ASE calculator quietly ignores, or the failure this test
+    # was written for: xtb-python evaluates isolated systems only, and GFN-FF
+    # answers a 2D-periodic cell with SIGSEGV rather than an exception. Also
+    # pins that GFN2/GFN1/GFN-FF give three DIFFERENT energies, since equal
+    # ones would mean `method=` never reached the calculator.
+    #
+    # Self-skips without an interpreter that has xtb — which is the normal case
+    # here: xtb-python is conda-forge only and builds no wheel for the newest
+    # CPython, so the embedded interpreter usually cannot host it. Point
+    # CALANGO_XTB_PYTHON at one that can.
+    add_test(NAME xtb_integration
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/xtb_integration_test.py
+                $<TARGET_FILE:calango_script_test>)
+    set_tests_properties(xtb_integration PROPERTIES TIMEOUT 1800)
+
+    # Live optical broadening. eta is a LIFETIME inside the response function,
+    # not a resolution blur, so it cannot be left out of the calculation the way
+    # a DOS smearing can — but Lorentzian widths ADD under convolution, so the
+    # viewer can raise it afterwards and that is exact. Checked against the
+    # analytic two-level resolvent, because a broadening that is merely
+    # plausible produces a smooth, convincing, wrong spectrum. Also pins that
+    # every derived curve (n/k, absorption, the sheet observables) follows the
+    # broadened epsilon instead of going stale.
+    qt_add_executable(calango_optics_broadening_test
+        tests/OpticsBroadeningTest.cpp
+        src/gui/OpticsResultsWindow.cpp
+        src/gui/OpticsPlotStyleDialog.cpp
+        src/gui/SpectrumPlotWidget.cpp
+        src/gui/GuiUtils.cpp
+        src/gui/ThemeManager.cpp
+        src/core/Element.cpp
+        src/core/UnitCell.cpp
+    )
+    target_include_directories(calango_optics_broadening_test PRIVATE src
+        "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_compile_definitions(calango_optics_broadening_test PRIVATE
+        QT_NO_KEYWORDS)
+    target_link_libraries(calango_optics_broadening_test
+        PRIVATE Qt6::Widgets Qt6::Svg)
+    add_test(NAME optics_broadening
+        COMMAND calango_optics_broadening_test)
+
     # Double groups for spin-orbit-coupled bands. Everything downstream of the
     # wave functions is pure group theory with exact expected answers — the Oh
     # double group is order 96 with spinor irreps of dimension 2, 2, 4 per
@@ -2005,6 +2037,28 @@ if(CALANGO_BUILD_TESTS)
     add_test(NAME double_group
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/double_group_test.py)
+
+    # The 2D image-charge correction, checked against limits with closed
+    # forms: the isolated Gaussian self-energy, the 1/L and 1/eps scalings,
+    # and — the one neither half passes alone — the simple-cubic Madelung
+    # constant, which is what shows the periodic and isolated solves share a
+    # normalization and so can be subtracted. There is no pymatgen equivalent
+    # for the 2D case to delegate to, so this is the only thing standing
+    # between a wrong prefactor and a plausible-looking defect diagram.
+    add_test(NAME defect_2d_correction
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/defect_2d_correction_test.py)
+
+    # The same module end to end: the GENERATED script against two real .gpw
+    # baselines (pristine h-BN monolayer + N vacancy), checking that GPAW
+    # accepts a charged slab on restart and that the diagram it writes is one
+    # DefectDiagramWindow can read. Complements defect_2d_correction above --
+    # that one checks the physics without GPAW, this one the plumbing with it.
+    # Self-skips (exit 0) without GPAW.
+    add_test(NAME defect_2d_monolayer
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/defect_2d_monolayer_benchmark.py
+                $<TARGET_FILE:calango_script_test>)
 
     # 2D optical observables: unit conventions and vacuum-thickness
     # invariance, checked against graphene's universal absorbance (pi*alpha).

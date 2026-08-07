@@ -123,6 +123,13 @@ public:
     /// cutoff and k-grid for the selected engine. Wizards that DO hold a
     /// structure keep their calculatorElements() override as the authority.
     void setStructureElements(const QStringList& symbols);
+    /// Tell the wizard whether the structure it will run on is periodic.
+    ///
+    /// Only xTB cares, and it cares absolutely: xtb-python evaluates isolated
+    /// systems only, so a periodic cell is not a degraded run but no run at
+    /// all. Supplied by the host rather than derived here because the base
+    /// wizard is given the structure's ELEMENTS, not the structure.
+    void setStructurePeriodic(bool periodic);
 
     /// Orchestration-canvas mode: the wizard CONFIGURES a process node rather
     /// than launching a job. The review stage's "Run (Local)" button reads
@@ -381,7 +388,8 @@ private:
     /// SCC iteration cap. Small on purpose: xTB's parameterization IS the
     /// method, so there is no basis or functional to configure.
     QWidget* buildXtbGroup(QWidget* parent);
-    /// Hide the electronic rows for GFN-FF, which has no electrons.
+    /// Hide the electronic rows for GFN-FF (which has no electrons), and
+    /// show the periodicity refusal when the structure has a cell.
     void updateXtbRows();
     /// The "DFTB+ settings" group — Slater-Koster directory, SCC controls and
     /// the Fermi filling temperature. The k-grid stays on the shared
@@ -659,6 +667,9 @@ private:
     // basis stayed exactly as small.
     QGroupBox* siestaGroup_ = nullptr;
     QLabel* siestaPseudoNote_ = nullptr;
+    /// Shown only when the structure is periodic — see setStructurePeriodic().
+    QLabel* xtbPeriodicNote_ = nullptr;
+    bool structurePeriodic_ = false;
     /// Which `siesta` binary a run would actually start, and whether it will be
     /// launched under MPI — both resolved from the Conda environments rather
     /// than assumed to be on $PATH. See RunCommands::condaSiestaCommand().

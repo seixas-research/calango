@@ -9,11 +9,24 @@ relaxed geometry becomes the next input structure, and a saved ground state
 and Remote panels ({doc}`/viewport`), as a persistent workspace panel rather
 than a window opened, used and dismissed.
 
-Four node types are offered: {guilabel}`Geometry Optimization`,
-{guilabel}`Single Point`, {guilabel}`Molecular Dynamics` and
-{guilabel}`Phonon`. Each node is assigned a *material* (one of the open
-documents — the list refreshes every time the Add Process dialog opens) and
-a calculator engine.
+Node types come in two families, separated in the {guilabel}`Add Process`
+list. Each node is assigned a *material* (one of the open documents — the
+list refreshes every time the Add Process dialog opens) and a calculator
+engine.
+
+**Self-contained** — reads a structure, and runs on task defaults if you
+never open its wizard: {guilabel}`Geometry Optimization`,
+{guilabel}`Single Point`, {guilabel}`Molecular Dynamics`,
+{guilabel}`Phonon`.
+
+**Baseline-inheriting** — reads one or more *completed runs* rather than a
+structure, so each needs that many parent nodes linked to it:
+{guilabel}`Electronic Bands and DOS`, {guilabel}`Optical Properties`,
+{guilabel}`2D Workfunction`, {guilabel}`2D Bands`,
+{guilabel}`Wannier Functions`, {guilabel}`Born Effective Charges`,
+{guilabel}`GW Quasiparticles`, {guilabel}`Charge Density Difference`,
+{guilabel}`Raman and IR Spectroscopy`, {guilabel}`Charged Defects` and
+{guilabel}`Charged Defects in 2D Materials`.
 
 ---
 
@@ -61,8 +74,36 @@ connected parent's results:
 
 The geometry hand-off carries **coordinates and cell** — extended XYZ
 stores both, which is what lets a variable-cell relaxation hand over its
-lattice, not just its positions. When a node has several parents, the first
-connected one wins — the common pipelines are chains anyway.
+lattice, not just its positions. For a self-contained node with several
+parents, the first connected one supplies the geometry — the common
+pipelines are chains anyway.
+
+### Inherited runs
+
+A baseline-inheriting node consumes **one parent per input slot, in the
+order the links were drawn**. Each slot is staged into the child's own job
+directory under a fixed name, and that same name is what the node's wizard
+was configured against — which is why a node can be set up before any of its
+parents has ever executed:
+
+| Node type | Slots, in link order | Staged as |
+|---|---|---|
+| Electronic Bands, Optics, 2D Workfunction, 2D Bands, Wannier, Born charges, GW | ground state | `baseline_1.gpw` |
+| Charge Density Difference | combined system (the parent's whole results folder) | `baseline_1/` |
+| Raman and IR | ground state; Born charges *(optional)*; optics *(optional)* | `baseline_1.gpw`, `baseline_2.json`, `baseline_3.json` |
+| Charged Defects, Charged Defects in 2D Materials | pristine host; neutral defect | `baseline_1.gpw`, `baseline_2.gpw` |
+
+Each node **paints its slot assignment** — `pristine host ← Single Point
+(1)` — and an unconnected required slot is shown in red. Two links into the
+same node look identical on the canvas, so the order they were drawn in is
+the only thing distinguishing them, and for a defect diagram it is the
+difference between a formation energy and its negative.
+
+:::{note}
+The GW node offers the **GPAW route only**. Yambo's baseline is a Quantum
+ESPRESSO `.save` directory, and no node on this canvas produces one — an
+input that can never be satisfied is not worth offering.
+:::
 
 :::{important}
 **A node with a parent must inherit from it or not run at all.** If the
@@ -71,6 +112,19 @@ explicit message rather than falling back to its originally assigned
 material — that fallback would silently execute the child on the
 *un-relaxed* structure: a run that "succeeds" while computing the wrong
 thing, which is strictly worse than failing.
+
+Three refusals follow from the same principle, and all of them happen
+*before* anything is launched:
+
+- **An unconfigured baseline-inheriting node.** Unlike a relaxation, it has
+  no defaults to fall back on: its script names a baseline, and no baseline
+  path can be guessed. Open its wizard and save it first.
+- **Too few parents.** A node with two input slots wired to one parent is
+  refused, naming both slots it wanted.
+- **A parent that saved nothing to inherit.** A Single-Point Calculation has
+  to save its wavefunctions (`.gpw`) for anything downstream to restart from
+  it; if it did not, the child says so rather than letting the failure
+  surface inside Python as an apparent bug in the module.
 :::
 
 ---

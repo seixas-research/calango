@@ -103,12 +103,22 @@ VIRTUAL_ENV env -> build-time CALANGO_DEFAULT_PYTHON. Verify with:
                                               (pip: dftd4; conda-forge: dftd4-python)
 [runtime][required] torch-dftd ............. >= 0.4   PyTorch DFT-D implementation backing
                                               mace_mp(dispersion=True)
-[runtime][required] xtb (conda: xtb-python)  >= 22.0  GFN1-xTB / GFN2-xTB / GFN-FF
+[runtime][optional] xtb-python ............. >= 22.1  GFN1-xTB / GFN2-xTB / GFN-FF
                                               semi-empirical calculator. Runs IN-PROCESS via
                                               xtb.ase.calculator.XTB — no binary is launched —
-                                              so it belongs to the interpreter's environment
-                                              rather than to $PATH. pip name `xtb`, conda-forge
-                                              name `xtb-python`; both import as `xtb`.
+                                              so it belongs to the INTERPRETER'S environment,
+                                              not to $PATH.
+                                              CONDA-FORGE ONLY, and this one really is:
+                                              `pip install xtb` fetches a source distribution
+                                              that builds xtb 6.5.1 with meson and needs a
+                                              Fortran compiler plus MKL; it fails outright on
+                                              macOS arm64. It also lags the newest CPython —
+                                              conda-forge builds reach py313, so an embedded
+                                              py314 interpreter cannot host it at all.
+                                              Consequence: xTB is reached by pointing the
+                                              engine at a Conda environment that has it
+                                              (Preferences -> Python & Environments), which is
+                                              what the calculator page reports on.
 [runtime][required] phonopy ................ >= 2.20  symmetry-reduced phonon displacements,
                                               LO-TO splitting (NAC) and Γ-mode irrep labels
 
@@ -147,7 +157,7 @@ imath                     (optional, .abc export; installed with pyalembic)
 GPAW             >= 24.1  (required, DFT; tested 25.7.0)
 dftd4            >= 3.6   (required, D4 dispersion; conda-forge: dftd4-python)
 torch-dftd       >= 0.4   (required, MACE-MP dispersion head)
-xtb              >= 22.0  (required, GFN semi-empirical; conda-forge: xtb-python)
+xtb-python       >= 22.1  (optional, GFN semi-empirical; conda-forge only, py<=3.13)
 phonopy          >= 2.20  (required, phonon symmetry / NAC / irreps)
 mace-torch       >= 0.3   (required, MLIP)
 torch            >= 2.0   (required, MLIP)

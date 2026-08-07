@@ -68,6 +68,19 @@ public:
     static constexpr auto kPseudopotentialsEspresso =
         "pseudopotentials/quantumEspresso";
     static constexpr auto kPseudopotentialsSiesta = "pseudopotentials/siesta";
+    /// Directory of CUSTOM GPAW LCAO basis-set files.
+    ///
+    /// Not a pseudopotential path, though it travels the same way. GPAW reads
+    /// LCAO basis functions from files named `<symbol>.<name>.basis` found by
+    /// traversing `gpaw.setup_paths`, which is seeded from GPAW_SETUP_PATH —
+    /// so pointing at a directory of hand-generated or published basis files
+    /// is what makes `basis="my-tz2p"` resolvable at all.
+    ///
+    /// It is PREPENDED to any GPAW_SETUP_PATH already in the environment
+    /// rather than replacing it: the same list carries the PAW datasets, and
+    /// overwriting it would trade a working basis for a calculation that
+    /// cannot find its setups.
+    static constexpr auto kGpawLcaoBasisDir = "gpaw/lcaoBasisDir";
     /// Where trained machine-learning potentials are read from and written to
     /// (MACE, NequIP, a fine-tuned checkpoint). One directory rather than one
     /// per architecture: a model file is identified by its own name, and the

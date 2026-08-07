@@ -90,14 +90,6 @@ struct ElectronicConfig {
     bool spinOrbit = false;
     // -- PDOS (GPAW) --
     bool pdos = true;
-    /// Gaussian smearing σ (eV) the VIEWER opens on.
-    ///
-    /// No longer baked into the result. The run writes the unbroadened
-    /// histogram (see `pdosPoints`) and the viewer convolves it live, so this
-    /// is an initial value for a slider rather than a decision the calculation
-    /// commits to — σ is a presentation choice, and discovering that a peak was
-    /// an artifact of the broadening used to mean re-running the whole SCF.
-    double pdosWidthEv = 0.1;
     /// Number of bins in the RAW histogram written to pdos.json.
     ///
     /// Bins, not "sampling points of a smooth curve": the run stores the

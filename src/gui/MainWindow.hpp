@@ -230,8 +230,10 @@ private Q_SLOTS:
     /// Electronics → "Charged defects…": formation energies and transition
     /// levels from a pristine host + neutral defect pair of single points.
     void showChargedDefects();
+    void show2DChargedDefects();
     /// Open the charged-defect formation-energy diagram for a finished job.
     void openChargedDefectResults(const QString& directory);
+    void open2DChargedDefectResults(const QString& directory);
     /// Open the Wannier-interpolated Fermi-surface viewer for a finished job.
     void openFermiSurfaceResults(const QString& directory);
     /// Open the topological-invariants viewer for a finished job.

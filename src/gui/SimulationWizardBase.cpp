@@ -599,6 +599,12 @@ QWidget* SimulationWizardBase::buildSiestaGroup(QWidget* parent)
     return siestaGroup_;
 }
 
+void SimulationWizardBase::setStructurePeriodic(bool periodic)
+{
+    structurePeriodic_ = periodic;
+    updateXtbRows();
+}
+
 void SimulationWizardBase::updateSiestaRows()
 {
     if (!siestaPseudoNote_)
@@ -1043,6 +1049,16 @@ QWidget* SimulationWizardBase::buildXtbGroup(QWidget* parent)
     note->setTextFormat(Qt::RichText);
     form->addRow(note);
 
+    // Whether THIS structure can be run at all. xtb-python evaluates isolated
+    // systems only, and the way it declines a periodic one depends on the
+    // method: GFN1/GFN2 raise, GFN-FF segfaults on a 2D cell. The generated
+    // script refuses either way — this is so the refusal is not a surprise
+    // after the job has been submitted.
+    xtbPeriodicNote_ = new QLabel(xtbGroup_);
+    xtbPeriodicNote_->setWordWrap(true);
+    xtbPeriodicNote_->setTextFormat(Qt::RichText);
+    form->addRow(xtbPeriodicNote_);
+
     xtbMethodCombo_ = new QComboBox(xtbGroup_);
     // Item text is the exact `method=` string the xtb ASE calculator takes,
     // so no mapping table can drift from the label.
@@ -1107,6 +1123,24 @@ void SimulationWizardBase::updateXtbRows()
 {
     if (!xtbGroup_ || !xtbMethodCombo_)
         return;
+
+    // Whether this structure can be run at all, before any question of which
+    // knobs apply. xtb-python evaluates isolated systems only.
+    if (xtbPeriodicNote_) {
+        xtbPeriodicNote_->setVisible(structurePeriodic_);
+        xtbPeriodicNote_->setText(
+            structurePeriodic_
+                ? tr("<b style=\"color:#e06c5a\">This structure is periodic, "
+                     "and xTB cannot evaluate it.</b> The in-process "
+                     "xtb-python API supports isolated systems only: GFN1 and "
+                     "GFN2 refuse a cell outright, and GFN-FF crashes on a 2D "
+                     "one rather than refusing. The generated script stops "
+                     "with that message instead of starting the "
+                     "calculation.<br>Clear the periodic boundary conditions "
+                     "for a molecule or cluster, or use GPAW / Quantum "
+                     "ESPRESSO / SIESTA / an MLIP for a solid.")
+                : QString());
+    }
     // GFN-FF is a force field: no electrons, so an electronic temperature and
     // an SCC cap would be knobs that change nothing.
     const bool electronic =
@@ -2701,6 +2735,13 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
     c.gpawMode = static_cast<core::GpawMode>(gpawModeCombo_->currentIndex());
     c.gpawGridSpacing = gpawGridSpacingSpin_->value();
     c.gpawBasis = gpawBasisCombo_->currentText().trimmed().toStdString();
+    // Machine-level, so it comes from Preferences rather than from this
+    // wizard — the same reasoning as the pseudopotential libraries.
+    c.gpawBasisDir = QSettings()
+                         .value(SettingsManager::kGpawLcaoBasisDir)
+                         .toString()
+                         .trimmed()
+                         .toStdString();
     c.gpawXc = gpawXcCombo_->currentText().trimmed().toStdString();
     c.gpawEigensolver =
         static_cast<core::GpawEigensolver>(
