@@ -27,6 +27,8 @@ RadialGrid::RadialGrid(std::size_t points, double outerRadiusBohr,
 
     const double n = static_cast<double>(points - 1);
     const double b = std::log(1.0 + outerRadiusBohr / innerScaleBohr) / n;
+    innerScale_ = innerScaleBohr;
+    step_ = b;
 
     r_.resize(points);
     drdi_.resize(points);
@@ -79,6 +81,50 @@ double RadialGrid::integrateSpherical(const std::vector<double>& values) const
     return integrate(scaled);
 }
 
+double RadialGrid::radiusAt(double index) const
+{
+    if (r_.empty())
+        return 0.0;
+    return innerScale_ * std::expm1(step_ * index);
+}
+
+double RadialGrid::jacobianAt(double index) const
+{
+    if (r_.empty())
+        return 0.0;
+    return innerScale_ * step_ * std::exp(step_ * index);
+}
+
+double RadialGrid::interpolateIndex(const std::vector<double>& values,
+                                    double index) const
+{
+    const std::size_t n = r_.size();
+    if (values.size() != n || n < 4)
+        return 0.0;
+    if (index <= 0.0)
+        return values.front();
+    if (index >= static_cast<double>(n - 1))
+        return values.back();
+
+    // Cubic through four consecutive points, interpolating in the INDEX where
+    // the mesh is uniform. In `i` the Lagrange denominators are the integers
+    // −6, 2, −2, 6, so the weights are written out rather than looped: this
+    // runs inside the innermost ODE step of every eigenvalue search.
+    auto base = static_cast<std::ptrdiff_t>(std::floor(index)) - 1;
+    if (base < 0)
+        base = 0;
+    if (base > static_cast<std::ptrdiff_t>(n) - 4)
+        base = static_cast<std::ptrdiff_t>(n) - 4;
+    const double t = index - static_cast<double>(base);
+    const double w0 = -(t - 1.0) * (t - 2.0) * (t - 3.0) / 6.0;
+    const double w1 = t * (t - 2.0) * (t - 3.0) / 2.0;
+    const double w2 = -t * (t - 1.0) * (t - 3.0) / 2.0;
+    const double w3 = t * (t - 1.0) * (t - 2.0) / 6.0;
+    const auto i0 = static_cast<std::size_t>(base);
+    return w0 * values[i0] + w1 * values[i0 + 1] + w2 * values[i0 + 2]
+        + w3 * values[i0 + 3];
+}
+
 double RadialGrid::interpolate(const std::vector<double>& values,
                                double radius) const
 {
@@ -89,33 +135,20 @@ double RadialGrid::interpolate(const std::vector<double>& values,
     if (radius >= r_.back())
         return 0.0; // outside the mesh a confined function is exactly zero
 
-    // Invert r(i) = a(e^{bi} − 1) analytically instead of searching: the mesh
-    // is known in closed form, so the bracketing index is arithmetic rather
-    // than a binary search, and it cannot disagree with the mesh it came from.
-    const auto upper = std::upper_bound(r_.begin(), r_.end(), radius);
-    auto index = static_cast<std::size_t>(upper - r_.begin());
-    // Four-point stencil, kept inside the array at both ends.
-    if (index < 2)
-        index = 2;
-    if (index > r_.size() - 2)
-        index = r_.size() - 2;
-    const std::size_t i0 = index - 2;
-
-    // Lagrange cubic through (r[i0..i0+3], values[i0..i0+3]).
-    double result = 0.0;
-    for (std::size_t j = 0; j < 4; ++j) {
-        double term = values[i0 + j];
-        for (std::size_t k = 0; k < 4; ++k) {
-            if (k == j)
-                continue;
-            const double denominator = r_[i0 + j] - r_[i0 + k];
-            if (denominator == 0.0)
-                return values[i0 + j];
-            term *= (radius - r_[i0 + k]) / denominator;
-        }
-        result += term;
-    }
-    return result;
+    // Invert r(i) = a(e^{bi} − 1) analytically rather than searching for the
+    // bracketing point. Two reasons, and the second is the one that shows up
+    // in a profile: the mesh is known in closed form so the index cannot
+    // disagree with the mesh it came from, and this runs tens of millions of
+    // times per self-consistency cycle — once per atom per image per grid
+    // point — where a binary search is the difference between seconds and
+    // minutes.
+    //
+    // Interpolating in the INDEX, not in r, is also what keeps it accurate:
+    // the mesh is uniform in i, so a cubic there is well conditioned
+    // everywhere, while in r the same cubic would be fitted across points a
+    // thousandfold apart in spacing.
+    const double index = std::log1p(radius / innerScale_) / step_;
+    return interpolateIndex(values, index);
 }
 
 std::vector<double> RadialGrid::cumulative(

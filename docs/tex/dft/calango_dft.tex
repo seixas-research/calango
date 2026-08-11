@@ -1,0 +1,1190 @@
+% =========================================================================
+% Calango Native DFT Engine -- Scientific and Technical Reference
+% Build:  latexmk -pdf calango_dft.tex
+%    or:  pdflatex calango_dft.tex   (run twice for the ToC)
+% Palette and cover shared with docs/tex/user_guide/calango_user_guide.tex.
+%
+% EVERY SECTION CARRIES AN IMPLEMENTATION-STATUS BADGE. The engine is under
+% construction and this document is both a reference for what it does and a
+% specification for what it does not do yet; a reader must be able to tell
+% which paragraph is which without cross-checking the source.
+% =========================================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.5cm,headheight=24pt,headsep=16pt]{geometry}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}   % \psmallmatrix
+\usepackage{bm}          % \bm for bold Greek
+\usepackage{physics}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{parskip}
+\usepackage{eso-pic}
+\usepackage[colorlinks=true,linkcolor=calangored,urlcolor=calangored,
+            citecolor=calangored]{hyperref}
+
+% --- Brand palette ---------------------------------------------------------
+% The same four colours, with the same jobs, as the user guide. Yellow and
+% coral are accents only, calangored is the anchor that carries anything
+% readable, and calangocover is permitted on the cover page and nowhere else.
+\definecolor{calangoyellow}{HTML}{FEEC41}
+\definecolor{calangocoral}{HTML}{FF6060}
+\definecolor{calangored}{HTML}{D51C39}
+\definecolor{calangocover}{HTML}{760031}
+\definecolor{calangodark}{RGB}{26,26,26}
+\definecolor{codebg}{RGB}{250,246,247}
+\definecolor{shadegray}{RGB}{96,92,94}
+\definecolor{okgreen}{RGB}{22,101,52}
+
+% --- Section typography ----------------------------------------------------
+\titleformat{\section}
+  {\Large\bfseries\color{calangodark}}
+  {\textcolor{calangored}{\thesection}}{0.8em}{}
+  [\vspace{-6pt}{\color{calangocoral}\rule{\textwidth}{1.2pt}}]
+\titleformat{\subsection}
+  {\large\bfseries\color{calangodark}}
+  {\textcolor{calangored}{\thesubsection}}{0.8em}{}
+\titlespacing*{\section}{0pt}{18pt}{10pt}
+\titlespacing*{\subsection}{0pt}{12pt}{6pt}
+
+% --- Running header/footer -------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\raisebox{-4pt}{%
+  \includegraphics[height=18pt]{../../../assets/calango/logo_light.png}}}
+\fancyhead[R]{\small\color{shadegray}Calango Native DFT Engine}
+\fancyfoot[L]{\small\color{shadegray}Leandro Seixas}
+\fancyfoot[R]{\small\color{shadegray}\thepage}
+\renewcommand{\headrulewidth}{0.8pt}
+\renewcommand{\headrule}{{\color{calangocoral}%
+  \hrule width\headwidth height\headrulewidth}}
+\renewcommand{\footrulewidth}{0pt}
+
+\lstdefinestyle{shell}{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=leftline, framerule=2.4pt, rulecolor=\color{calangored},
+  framesep=8pt, xleftmargin=12pt, xrightmargin=6pt,
+  aboveskip=10pt, belowskip=10pt,
+  breaklines=true, breakatwhitespace=true,
+  columns=fullflexible, keepspaces=true, showstringspaces=false, upquote=true,
+}
+\lstset{style=shell}
+
+\newcommand{\file}[1]{\texttt{#1}}
+\newcommand{\opt}[1]{\texttt{#1}}
+
+% --- Implementation-status badges ------------------------------------------
+% The single most important typographic device in this document. A reader
+% must never have to guess whether a formula describes running code.
+\newcommand{\badge}[2]{%
+  \par\vspace{2pt}\noindent
+  \colorbox{#1}{\textcolor{white}{\small\bfseries\,#2\,}}\par\vspace{4pt}}
+\newcommand{\implemented}{\badge{okgreen}{IMPLEMENTED \& VALIDATED}}
+\newcommand{\partialimpl}[1]{\badge{calangored}{PARTIAL --- #1}}
+\newcommand{\specified}{\badge{shadegray}{SPECIFICATION --- NOT YET IMPLEMENTED}}
+
+\IfFileExists{calango_version.tex}{\input{calango_version}}{}
+\providecommand{\calangoversion}{26.8.5}
+
+\begin{document}
+
+% =========================== TITLE PAGE ===================================
+\begin{titlepage}
+\AddToShipoutPictureBG*{%
+  \AtPageLowerLeft{\color{calangocover}\rule{\paperwidth}{\paperheight}}%
+  \AtPageLowerLeft{\color{calangocoral}\rule{\paperwidth}{14mm}}%
+  \AtPageLowerLeft{\raisebox{14mm}{\color{calangoyellow}%
+    \rule{\paperwidth}{2mm}}}%
+}
+\centering
+\sffamily\color{white}
+\vspace*{3.6cm}
+\includegraphics[width=0.66\textwidth]{../../../assets/calango/logo_dark.png}\par
+\vspace{1.5cm}
+{\color{calangocoral}\rule{0.42\textwidth}{2.4pt}}\par
+\vspace{1.1cm}
+{\fontsize{32}{38}\selectfont\bfseries Native DFT Engine\par}
+\vspace{0.7cm}
+{\large\color{calangoyellow} All-electron density-functional theory\\[2pt]
+ on numerical atomic orbitals\par}
+\vfill
+{\large\bfseries Leandro Seixas\par}
+\vspace{0.35cm}
+{\small\color{calangoyellow} Calango \calangoversion\par}
+\vspace*{2.5cm}
+\end{titlepage}
+
+\begin{abstract}
+\noindent
+The Calango Native DFT Engine (\file{src/dft}) is an all-electron Kohn--Sham
+solver written directly in C++, using numerical atomic orbitals as its basis.
+It treats every electron explicitly --- no pseudopotential and no frozen core
+--- and runs inside the application rather than by generating a script for an
+external program.
+
+This document gives the mathematical formulation of the engine: the basis and
+its generation, the multicentre integration grids, the construction of the
+overlap and Hamiltonian matrices, the exchange--correlation functionals,
+Brillouin-zone sampling, the self-consistency loop, and the energy
+derivatives.
+
+\textbf{Every section is badged with its implementation status.} The ground
+state is complete and validated; gradient functionals, symmetry reduction of
+the $k$-point set, forces and stress are formulated here as
+\emph{specification} for work not yet done. Section~\ref{sec:validation}
+gives the numbers the implemented parts are checked against, and states
+plainly which quantities have no external reference.
+\end{abstract}
+
+\tableofcontents
+\bigskip
+\hrule
+
+% ==========================================================================
+\section{Introduction}
+\implemented
+
+\subsection{What the engine is}
+
+Two choices define it, and nearly every design decision follows from one of
+them.
+
+\textbf{All-electron.} Every electron is carried explicitly. This removes the
+pseudopotential from the list of things a result depends on: a number is wrong
+only because the functional or the basis is, not because of a transferability
+assumption made by whoever generated the potential. It is also what makes
+core-level properties computable at all.
+
+\textbf{Numerical atomic orbitals (NAO).} Basis functions are tabulated on a
+radial mesh rather than expanded in analytic primitives, so a basis function
+can be the \emph{exact numerical solution} of the atomic problem. The free
+atom is therefore essentially exact at the smallest possible basis size, and
+each further level has a physical meaning. Confinement makes each function
+\emph{exactly} zero beyond a finite radius, which is what turns the overlap
+and Hamiltonian matrices sparse.
+
+The price is paid in the integrals: nothing is analytic. Every matrix element
+is a numerical quadrature over a real-space grid, so \emph{the grid is the
+accuracy}, and most of the engineering lives in building grids that are dense
+where the wavefunction has structure and sparse where it does not.
+
+\subsection{Units and conventions}
+
+Hartree atomic units throughout ($\hbar = m_e = e = 4\pi\varepsilon_0 = 1$);
+lengths in bohr, energies in hartree. The application boundary converts to
+{\AA}ngstr\"om and electronvolt, once. Spherical harmonics are the
+\emph{real} $Y_{\ell m}$, normalised so $\int |Y_{\ell m}|^2 \dd\Omega = 1$,
+without the Condon--Shortley phase.
+
+\subsection{Implementation status}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llc@{}}
+\toprule
+Capability & Section & Status \\
+\midrule
+Radial atomic solver, basis generation & \ref{sec:basis} & implemented \\
+Multicentre integration grids & \ref{sec:grids} & implemented \\
+Overlap, kinetic and potential matrices & \ref{sec:hamiltonian} & implemented \\
+Electrostatics (neutral-atom + multipole) & \ref{sec:electrostatics} & implemented \\
+LDA exchange--correlation & \ref{sec:lda} & implemented \\
+GGA (PBE) & \ref{sec:pbe} & implemented \\
+Density gradients $\grad\rho$ on the grid & \ref{sec:pbe} & implemented \\
+Monkhorst--Pack mesh, Bloch sums, $H(\vb{k})C = S(\vb{k})CE$ & \ref{sec:bz} & implemented \\
+Irreducible-zone symmetry reduction & \ref{sec:ibz} & implemented \\
+\quad --- exact folding (time reversal) & \ref{sec:ibz} & implemented \\
+\quad --- density symmetrisation & \ref{sec:ibz} & \textbf{not implemented} \\
+SCF loop, linear and Pulay mixing & \ref{sec:scf} & implemented \\
+Forces (finite difference) and relaxation & \ref{sec:forces} & implemented \\
+\quad --- analytic Pulay, full & \ref{sec:forces} & \textbf{not implemented} \\
+Stress tensor & \ref{sec:stress} & implemented \\
+Spin polarisation & --- & \textbf{not implemented} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+The engine reports the same list at run time from
+\opt{CalangoDFTEngine::unimplementedSteps()}, so a user interface cannot drift
+from it. Nothing in the engine returns a number it did not compute: a step
+that cannot run reports \opt{NotImplemented} and leaves its output untouched.
+
+% ==========================================================================
+\section{Basis sets}
+\label{sec:basis}
+\implemented
+
+\subsection{Form of a numerical atomic orbital}
+
+A basis function centred on nucleus $A$ is a tabulated radial function times a
+real spherical harmonic,
+\begin{equation}
+  \phi_{A i}(\vb{r}) \;=\; \frac{u_{n\ell}(r_A)}{r_A}\,
+                            Y_{\ell m}(\hat{\vb{r}}_A),
+  \qquad \vb{r}_A = \vb{r} - \vb{R}_A .
+  \label{eq:nao}
+\end{equation}
+The radial part is stored as $u = rR$ rather than $R$. That is not a
+bookkeeping detail: $u$ is what the radial Schr\"odinger equation is written
+in,
+\begin{equation}
+  u'' \;=\; \left[ \frac{\ell(\ell+1)}{r^2} + 2\bigl(v(r) - \varepsilon\bigr)
+            \right] u ,
+  \label{eq:radial}
+\end{equation}
+with no first-derivative term; $u$ vanishes at the origin for every $\ell$, so
+the nuclear cusp is not a numerical problem; and $\int_0^\infty |u|^2 \dd r =
+1$ is the normalisation, with no $r^2$ weight to lose precision on.
+
+\subsection{The logarithmic radial mesh}
+
+Every all-electron quantity is dominated by a region a fraction of a bohr
+across. The $1s$ density of a third-row element lives inside $0.1\,a_0$ while
+the valence tail runs to ten. The mesh is therefore
+\begin{equation}
+  r(i) \;=\; a\left(e^{b i} - 1\right), \qquad i = 0,\dots,N-1 ,
+  \label{eq:mesh}
+\end{equation}
+which starts \emph{exactly} at $r=0$ --- so the cusp sits on a grid point
+rather than between two --- and turns every radial integral into a uniformly
+spaced one in $i$:
+\begin{equation}
+  \int f(r)\dd r \;=\; \int f\bigl(r(i)\bigr)\,\dv{r}{i}\dd i ,
+  \qquad \dv{r}{i} = b\,(r + a).
+\end{equation}
+Simpson's rule applies directly in $i$. Two consequences are used
+throughout: interpolation is done in the \emph{index}, where the mesh is
+uniform and a cubic is well conditioned everywhere, and the index for a given
+radius is obtained by inverting~\eqref{eq:mesh} in closed form,
+$i = \ln(1 + r/a)/b$, rather than by searching.
+
+Running integrals use \emph{cumulative} Simpson, not partial sums of the
+composite weights: the $(1,4,2,\dots,4,1)/3$ pattern is a valid quadrature
+only for the whole interval, and truncating it leaves a $4$ or a $2$ where an
+endpoint $1$ belongs --- an $\order{h}$ error at every point instead of
+$\order{h^4}$.
+
+\subsection{The free atom}
+
+Basis generation starts by solving the spherical, non-spin-polarised free atom
+self-consistently. Equation~\eqref{eq:radial} is integrated as a first-order
+pair $(u, \dv*{u}{r})$ in the mesh index by classical Runge--Kutta.
+
+The eigenvalue is found by \textbf{bisection on the node count}. The number of
+nodes of the outward solution is a non-decreasing step function of
+$\varepsilon$ that jumps by one at each eigenvalue, so bracketing the jump
+brackets the eigenvalue --- with no derivative, no matching condition, and no
+way to converge to a neighbouring state however close it lies. The
+wavefunction is then rebuilt by joining an outward solution to an inward one
+at the classical turning point, because beyond that point the outward solution
+is the \emph{growing} one and what it actually carries is rounding error
+amplified exponentially.
+
+\subsection{Confinement}
+\label{sec:confinement}
+
+Strict locality requires each function to vanish identically beyond a cutoff.
+This is imposed as a \emph{finite potential barrier added to the potential the
+orbital is solved in}, of the form of Junquera \emph{et al.}~\cite{junquera}:
+\begin{equation}
+  v_{\text{conf}}(r) \;=\;
+  \begin{cases}
+    0, & r \le r_i ,\\[4pt]
+    \displaystyle
+    V_0\,\frac{\exp\!\left[-\,(r_c - r_i)/(r - r_i)\right]}{r_c - r},
+      & r_i < r < r_c ,\\[10pt]
+    \infty, & r \ge r_c ,
+  \end{cases}
+  \label{eq:confine}
+\end{equation}
+with onset $r_i = r_c - w$. It is zero inside the onset, and every derivative
+is continuous where it switches on. In practice the barrier is capped at a
+finite height, because the radial integrator takes a fixed step in the mesh
+index and an uncapped barrier drives $\sqrt{2v}\,\Delta r$ outside the
+stability region of the integrator.
+
+\paragraph{Why a barrier and not a wall.}
+This is worth stating precisely, because the obvious alternative --- solving
+the atom in a box, $u(r_c) = 0$ --- is wrong in a way that is almost
+invisible. A hard wall gives $u(r_c) = 0$ with $u'(r_c) \neq 0$. The orbital
+is then continuous at the cutoff sphere while its gradient jumps, so
+$\laplacian\phi$ contains a \emph{surface delta function} on that sphere. The
+engine stores the kinetic operator per function as
+$(\varepsilon - v)u$ (Section~\ref{sec:kinetic}), which is built from the
+smooth part of $u''$ alone and cannot represent that delta.
+
+What that costs is hidden everywhere except one place. Diagonal elements are
+untouched, because the delta is weighted by $u(r_c) = 0$ --- so
+self-consistency, electron counts and kinetic-energy identities all still
+pass. Every \emph{inter-atomic} element is short by a surface term, because a
+neighbour's orbital is not zero on this atom's cutoff sphere. The observable
+signature is exactly that: isolated atoms exact, two atoms far apart exact,
+and an error that grows with coordination and with the number of cutoff
+spheres in the basis. Table~\ref{tab:wall} in Section~\ref{sec:validation}
+gives the measured size.
+
+A finite barrier removes the delta instead of approximating it: $v$ stays
+finite everywhere, so $-\tfrac12\laplacian\phi = (\varepsilon - v)\phi$ holds
+at \emph{every} radius, and $u$ reaches the cutoff with both it and its
+derivative already damped away.
+
+\subsection{Basis tiers}
+\label{sec:tiers}
+
+The basis is built in nested levels, each strictly containing the last.
+
+\paragraph{Tier 1 (minimal).} The confined atom's own occupied orbitals ---
+all of them, core included, because this is an all-electron method and no
+pseudopotential stands in for the core.
+
+\paragraph{Tier 2 (double zeta plus polarisation).} A second radial function
+for each \emph{valence} angular momentum, plus one shell at the first $\ell$
+the free atom does not occupy ($d$ for silicon). The polarisation function is
+a genuine solution of~\eqref{eq:radial} in the confined atom's potential:
+unbound in the free atom, bound in the barrier.
+
+The second zeta is the \emph{split-valence} construction, which needs no
+bonded reference calculation and no fitting. A radius $r_s$ is chosen so that
+a fixed fraction of the orbital's norm lies beyond it; inside $r_s$ the
+orbital is replaced by a smooth polynomial, and the new basis function is the
+difference:
+\begin{equation}
+  u^{(2\zeta)}(r) \;=\;
+  \begin{cases}
+    u(r) - r^{\ell+1}\bigl(a - b r^2 + c r^4\bigr), & r < r_s,\\[4pt]
+    0, & r \ge r_s .
+  \end{cases}
+  \label{eq:split}
+\end{equation}
+The three coefficients match the orbital in \textbf{value, slope and
+curvature} at $r_s$. Two parameters --- matching value and slope only --- is
+the form usually quoted, and it is not sufficient here for the same reason a
+hard wall is not: $-\tfrac12\laplacian\phi$ then jumps at $r_s$, and a
+multicentre grid with a few tens of radial shells cannot integrate a
+discontinuity. Matching the curvature makes $u$, $u'$ and $u''$ all vanish at
+$r_s$, so the kinetic operator goes smoothly to zero.
+
+The kinetic energy of the added function stays analytic. For
+$F = r^\ell(a - br^2 + cr^4)$ the $r^{\ell-2}$ terms of the Laplacian cancel
+against the centrifugal term exactly, leaving
+\begin{equation}
+  -\tfrac12 \laplacian \bigl[F(r) Y_{\ell m}\bigr]
+  \;=\; \Bigl[ b(2\ell+3) - 2c(2\ell+5)r^2 \Bigr] r^{\ell}\, Y_{\ell m}.
+  \label{eq:splitkinetic}
+\end{equation}
+
+\paragraph{Tier 3.} A third zeta for the valence channels and a second zeta on
+the polarisation channel.
+
+% ==========================================================================
+\section{Integration grids}
+\label{sec:grids}
+\implemented
+
+There is no analytic integral anywhere in the engine, so the grid \emph{is}
+the accuracy of every number it produces. Its construction answers one
+question: how do you integrate a function with a cusp at every nucleus and
+smooth behaviour in between, without a mesh fine enough for the cusps
+everywhere?
+
+\subsection{Multicentre partition}
+
+Becke's answer~\cite{becke}, which the engine implements: give every atom its
+own spherical grid, dense at its own nucleus, and multiply each by a smooth
+weight $w_A(\vb{r})$ with
+\begin{equation}
+  \sum_A w_A(\vb{r}) = 1 \ \ \text{everywhere}, \qquad
+  w_A \approx 1 \ \text{near } \vb{R}_A , \quad
+  w_A \approx 0 \ \text{near any other nucleus}.
+\end{equation}
+Then $\int f = \sum_A \int w_A f$, and each term integrates a function that is
+smooth except at \emph{its own} centre --- exactly what a spherical grid is
+good at. The weight is built from the elliptical coordinate between each pair
+of centres,
+\begin{equation}
+  \mu_{AB} = \frac{r_A - r_B}{R_{AB}},
+\end{equation}
+smoothed by $p(x) = \tfrac12(3x - x^3)$ iterated three times,
+\begin{equation}
+  s(\mu) = \tfrac12\Bigl[1 - p\bigl(p(p(\mu))\bigr)\Bigr],
+  \qquad
+  w_A = \frac{\prod_{B \neq A} s(\nu_{AB})}
+             {\sum_C \prod_{B \neq C} s(\nu_{CB})} ,
+\end{equation}
+where $\nu$ is $\mu$ shifted by the atoms' Bragg--Slater radii so the boundary
+between a large atom and a small one sits where the density says it should.
+
+For a periodic system the partition must see the atoms' \emph{periodic
+images}, or the weights stop summing to one at the cell boundary and the
+integrated electron count comes out short by whatever charge lives there.
+
+\subsection{Radial and angular rules}
+
+Radial shells use Gauss--Chebyshev quadrature of the second kind under the
+map $r = R(1+x)/(1-x)$, which sends a finite interval to the half line, so a
+fixed number of nodes covers the cusp and the tail at once.
+
+Angular points use Lebedev rules~\cite{lebedev} --- the octahedrally symmetric
+optimum, exact for all spherical harmonics up to a given degree with roughly
+half the points a product rule needs --- with a generated
+Gauss--Legendre $\times$ uniform-$\varphi$ product rule above the tabulated
+orders. Both are verified rather than trusted: the test suite integrates
+$\int Y_{\ell m} Y_{\ell' m'} \dd\Omega$ on each rule and requires
+$\delta_{\ell\ell'}\delta_{mm'}$ to machine precision. A mistyped Lebedev
+weight is otherwise completely silent.
+
+\paragraph{Angular resolution is set by the partition, not the density.}
+The Becke weight has a sharp boundary between atoms, and it is harder to
+integrate than anything else on the grid. Integrating unity over a silicon
+primitive cell --- which must return the cell volume --- is in error by
+$10\%$ at degree 11 and reaches $5\times10^{-5}$ only at degree 29.
+
+% ==========================================================================
+\section{Hamiltonian and matrix assembly}
+\label{sec:hamiltonian}
+\implemented
+
+With Bloch sums $\chi_i^{\vb{k}}$ defined in Section~\ref{sec:bz}, every
+matrix element is a quadrature over the multicentre grid:
+\begin{align}
+  S_{ij}(\vb{k}) &= \sum_g w_g\, \chi_i^{\vb{k}*}(\vb{r}_g)\,
+                                  \chi_j^{\vb{k}}(\vb{r}_g), \\
+  H_{ij}(\vb{k}) &= \sum_g w_g\, \chi_i^{\vb{k}*}(\vb{r}_g)
+                    \Bigl[ \hat{T} + v_{\text{eff}}(\vb{r}_g) \Bigr]
+                    \chi_j^{\vb{k}}(\vb{r}_g).
+\end{align}
+
+\subsection{Kinetic energy}
+\label{sec:kinetic}
+
+The kinetic term is \textbf{never differenced}. Each basis function solves the
+radial equation of the confined atom it came from, so
+\begin{equation}
+  -\tfrac12 \laplacian \phi_i \;=\; \bigl(\varepsilon_i - v_{\text{at}}(r)\bigr)\phi_i
+  \label{eq:kinid}
+\end{equation}
+holds identically, and $\hat{T}$ acting on a basis function is a
+\emph{multiplication} by a tabulated function. Written the obvious way --- a
+numerical Laplacian, or the symmetric $\grad\phi_i \cdot \grad\phi_j$ form ---
+the largest single term in the total energy would carry the noise of one or
+two numerical derivatives of an interpolated table.
+
+Equation~\eqref{eq:kinid} requires $v_{\text{at}}$ to be the \emph{full}
+potential the orbital solves, confining barrier included
+(Section~\ref{sec:confinement}). Each function therefore carries its own
+tabulated array
+\begin{equation}
+  t_i(r) \;\equiv\; r \cdot \bigl(-\tfrac12\laplacian\phi_i\bigr)\big/ Y_{\ell m}
+         \;=\; \bigl(\varepsilon_i - v_{\text{at}}(r)\bigr) u_i(r),
+\end{equation}
+which is smooth through the origin (it behaves as $Z r^\ell$, the $1/r$ of the
+nucleus being cancelled by the $r^{\ell+1}$ of $u$). Carrying the array rather
+than the eigenvalue is what allows basis functions that are \emph{not}
+eigenstates of anything --- a split-valence zeta is an orbital minus a
+polynomial, and its kinetic array comes from~\eqref{eq:splitkinetic}. The
+identity also inverts,
+\begin{equation}
+  u'' = \frac{\ell(\ell+1)}{r^2}u - 2 t ,
+\end{equation}
+so a function's curvature is available without any numerical second
+derivative.
+
+The matrix is symmetrised,
+$\tfrac12\bigl[\langle\phi_i|\hat{T}\phi_j\rangle +
+\langle\hat{T}\phi_i|\phi_j\rangle\bigr]$, because the identity holds with
+each function's own $\varepsilon$ and $v_{\text{at}}$.
+
+\subsection{Electrostatics}
+\label{sec:electrostatics}
+
+The total charge of the system --- electrons plus nuclei --- is written as a
+sum of \emph{neutral} free atoms plus a difference density:
+\begin{equation}
+  n(\vb{r}) \;=\; \sum_{A,\vb{T}}
+     \Bigl[\rho_A^{\text{free}}(\vb{r}-\vb{R}_A-\vb{T})
+           - Z_A\,\delta(\vb{r}-\vb{R}_A-\vb{T})\Bigr]
+     \;+\; \delta\rho(\vb{r}) .
+  \label{eq:na}
+\end{equation}
+Each bracket is neutral, so its potential decays \emph{exponentially} instead
+of as $1/r$ and the lattice sum converges absolutely --- no Ewald summation,
+no conditional convergence, no compensating background. The neutral-atom
+potential is
+\begin{equation}
+  v_A^{\text{NA}}(r) \;=\; -\frac{Z_A}{r} + v_H\bigl[\rho_A^{\text{free}}\bigr](r).
+\end{equation}
+In the engine the nuclear $1/r$ is subtracted analytically at each point and
+only the screened remainder is interpolated, because interpolating
+$v^{\text{NA}}$ itself means fitting a cubic across a pole at the one place
+the density is largest.
+
+What is left, $\delta\rho$, is the small bonding rearrangement, and it
+integrates to zero over the cell. Its potential is solved centre by centre.
+The grid points of atom $A$ already carry the Becke weight, so they \emph{are}
+$w_A \delta\rho$ sampled on a spherical grid; expanding in real spherical
+harmonics,
+\begin{equation}
+  c_{\ell m}^A(r) = \int \delta\rho_A(r,\Omega)\, Y_{\ell m}(\Omega)\dd\Omega ,
+\end{equation}
+the radial Poisson equation has the closed solution
+\begin{equation}
+  V_{\ell m}^A(r) \;=\; \frac{4\pi}{2\ell+1}
+    \left[ \frac{1}{r^{\ell+1}}\int_0^r c_{\ell m}^A(r')\, r'^{\,\ell+2}\dd r'
+         + r^{\ell}\int_r^{\infty} c_{\ell m}^A(r')\, r'^{\,1-\ell}\dd r'
+    \right],
+  \label{eq:poisson}
+\end{equation}
+continued outside the sphere by its exact multipole tail. The total
+electrostatic potential and energy are then
+\begin{align}
+  v_{\text{es}}(\vb{r}) &= \sum_{A,\vb{T}} v_A^{\text{NA}}
+        \bigl(\abs{\vb{r}-\vb{R}_A-\vb{T}}\bigr) + v_H[\delta\rho](\vb{r}),\\
+  E_{\text{es}} &= E_{\text{ref}}
+        + \int \delta\rho\, \sum_{A,\vb{T}} v_A^{\text{NA}}
+        + \tfrac12 \int \delta\rho\; v_H[\delta\rho] ,
+\end{align}
+where $E_{\text{ref}}$ --- each free atom's own electrostatic self-energy plus
+every neutral-atom pair interaction --- depends only on the geometry and is
+computed once. Note that $v_{\text{es}} = \delta E_{\text{es}}/\delta\rho$
+exactly, which is what keeps the energy and the Hamiltonian consistent.
+
+\paragraph{Known limitation.} The monopole tail of $\delta\rho$ is truncated.
+That is exact when each atom's difference density is neutral, which symmetry
+guarantees for a crystal whose atoms are all equivalent, and an approximation
+otherwise. The engine computes the per-atom monopole regardless and reports it
+when it is not negligible, rather than absorbing it silently.
+
+% ==========================================================================
+\section{Exchange--correlation functionals}
+\label{sec:xc}
+
+\subsection{Local density approximation}
+\label{sec:lda}
+\implemented
+
+Exchange is Dirac--Slater, which is not a parameterisation of anything --- it
+is the exact exchange energy density of the uniform electron gas:
+\begin{equation}
+  \varepsilon_x(\rho) = -\frac{3}{4}\left(\frac{3\rho}{\pi}\right)^{1/3},
+  \qquad
+  v_x = \pdv{(\rho\varepsilon_x)}{\rho} = \frac{4}{3}\varepsilon_x .
+\end{equation}
+That factor of $4/3$ is exact --- $\rho\varepsilon_x$ scales as $\rho^{4/3}$
+--- and is the cheapest available check that an exchange implementation is
+right.
+
+Three correlation parameterisations of the same Ceperley--Alder quantum Monte
+Carlo electron gas are available, written in
+$r_s = (3/4\pi\rho)^{1/3}$: Perdew--Zunger~\cite{pz}, Vosko--Wilk--Nusair
+(formula V)~\cite{vwn}, and Perdew--Wang 1992~\cite{pw92}, which is the
+default. PW92 is the default for a practical reason: it is what most
+plane-wave codes mean by ``LDA'' without qualification, so a number computed
+with it can be compared against theirs to every digit the grids support,
+rather than to the few meV per electron by which the fits differ. Its form is
+a single analytic expression over the whole density range,
+\begin{equation}
+  \varepsilon_c(r_s) = -2A(1+\alpha_1 r_s)\,
+    \ln\!\left[1 + \frac{1}{2A\bigl(\beta_1 r_s^{1/2} + \beta_2 r_s
+      + \beta_3 r_s^{3/2} + \beta_4 r_s^{2}\bigr)}\right],
+\end{equation}
+with the potential following from
+$v_c = \varepsilon_c - \tfrac{r_s}{3}\,\dv*{\varepsilon_c}{r_s}$, taken
+analytically and verified against a finite difference of $\rho\varepsilon_c$
+in the test suite.
+
+Energy and potential are computed and returned \emph{separately}. Computing
+the energy as $\int\rho\,v_{xc}$ --- a mistake that survives an SCF, because
+the density still converges --- overestimates the exchange energy by exactly
+one third.
+
+\subsection{Generalised gradient approximation (PBE)}
+\label{sec:pbe}
+\implemented
+
+A GGA is written in the density and the square of its gradient,
+$\sigma = \abs{\grad\rho}^2$, as an energy per unit \emph{volume}
+$f(\rho,\sigma)$ --- there is no natural per-electron split once a gradient
+term is present. The engine returns $f$, $\partial f/\partial\rho$ and
+$\partial f/\partial\sigma$ from one interface for both families; an LDA
+simply has $\partial f/\partial\sigma \equiv 0$, so the assembler needs one
+code path.
+
+PBE exchange multiplies the uniform-gas energy density by
+\begin{equation}
+  F_x(s) = 1 + \kappa - \frac{\kappa}{1 + \mu s^2/\kappa},
+  \qquad
+  s = \frac{\abs{\grad\rho}}{2 k_F \rho},
+  \quad k_F = (3\pi^2\rho)^{1/3},
+\end{equation}
+with $\kappa = 0.804$ fixed by the Lieb--Oxford bound and $\mu = \beta\pi^2/3$
+chosen to recover the gradient expansion of the linear \emph{response}.
+Everything is implemented in $t = s^2$ rather than $s$, so no square root of
+$\sigma$ appears: the derivatives stay rational and $\sigma = 0$ is an
+ordinary point rather than one where $\partial s/\partial\sigma$ diverges.
+
+Correlation adds to the PW92 local part the gradient term
+\begin{equation}
+  H = \gamma \ln\!\left[ 1 + \frac{\beta}{\gamma}\,
+      \frac{T(1 + AT)}{1 + AT + A^2T^2} \right],
+  \qquad
+  A = \frac{\beta/\gamma}{e^{-\varepsilon_c^{\text{unif}}/\gamma} - 1},
+\end{equation}
+with $T = t^2$, $t = \abs{\grad\rho}/(2k_s\rho)$ and $k_s = \sqrt{4k_F/\pi}$.
+Note that $A$ depends on the density \emph{through} $\varepsilon_c$, so
+$\partial f/\partial\rho$ carries a term through $A$ that is easy to omit; it
+is included, and the derivative is confirmed against a finite difference of
+the energy rather than trusted. As $\varepsilon_c \to 0^-$ in the low-density
+tail $A$ diverges while $H \to 0$; the limit is taken explicitly instead of
+passing through an intermediate infinity.
+
+\subsubsection{Density gradients}
+
+$\grad\rho$ is analytic, not differenced. With the density matrix $D_{ij}$,
+\begin{equation}
+  \rho = \sum_{ij} D_{ij}\phi_i\phi_j,
+  \qquad
+  \grad\rho = 2\sum_{ij} D_{ij}\,\phi_i\,\grad\phi_j,
+\end{equation}
+and the gradient of a single orbital follows from writing it as
+$\phi = g(r)\,S_{\ell m}$ with $S_{\ell m} = r^{\ell}Y_{\ell m}$ the real
+\emph{solid} harmonic --- a homogeneous polynomial:
+\begin{equation}
+  \grad\phi = \left( R' - \frac{\ell R}{r} \right) \hat{\vb{r}}\, Y_{\ell m}
+            + \frac{R}{r^{\ell}}\,\grad S_{\ell m}.
+  \label{eq:gradphi}
+\end{equation}
+Both terms are finite everywhere. The obvious alternative --- differentiating
+$Y_{\ell m}$ in spherical angles --- carries a $1/\sin\theta$ and is singular
+at the poles.
+
+The radial derivative $\dv*{u}{r}$ is tabulated once per basis function with a
+\emph{five}-point stencil in the mesh index. The three-point form is not
+enough: a split-valence function is already the difference of two similar
+quantities and loses digits to cancellation before any stencil error is added,
+which left $\grad\phi$ about a percent off for exactly those functions while
+the ordinary orbitals were correct to a few parts in ten thousand.
+
+\subsubsection{The matrix element}
+
+The GGA potential contains $\div(\partial f/\partial\grad\rho)$, and taking a
+divergence numerically on an unstructured multicentre grid is both awkward and
+noisy. The matrix element is therefore integrated by parts:
+\begin{equation}
+  \mel{\phi_i}{v_{xc}}{\phi_j} =
+    \int \pdv{f}{\rho}\,\phi_i^{*}\phi_j \dd\vb{r}
+    + \int \vb{V}\cdot\left( \phi_i^{*}\grad\phi_j
+                           + \phi_j\grad\phi_i^{*} \right) \dd\vb{r},
+  \qquad
+  \vb{V} = 2\pdv{f}{\sigma}\grad\rho .
+  \label{eq:ggamatrix}
+\end{equation}
+This needs only $\grad\phi$ --- no second derivatives, no divergence of a
+sampled vector field --- and is manifestly Hermitian.
+
+One consequence propagates into the energy. The kinetic energy can no longer
+be obtained as the band energy minus a potential trace, because that form
+assumes $v_{\text{eff}}$ is a local multiplier and the second term
+of~\eqref{eq:ggamatrix} is not. $T_s$ is instead taken directly as the
+expectation value of $\hat{T}$ over the occupied orbitals, which is exact for
+both families and reproduces the local result unchanged.
+
+\subsubsection{Validation}
+
+Checked in three independent ways.
+
+\emph{Against arithmetic}: $\partial f/\partial\rho$ and
+$\partial f/\partial\sigma$ agree with finite differences of $f$ to
+$2\times10^{-10}$ across five decades of density and gradient, and at
+$\sigma = 0$ PBE reduces to LDA-PW92 to $10^{-16}$ --- exactly, as its
+construction requires. Equation~\eqref{eq:gradphi} agrees with a finite
+difference of $\phi$ to $4\times10^{-4}$ for every function of a
+double-zeta-plus-polarisation basis.
+
+\emph{Against another implementation}: $f$ and $\partial f/\partial\rho$ agree
+with an independent PBE kernel to $10^{-6}$ relative.
+
+\emph{Against physics}: the whole pipeline shifts the silicon atom's total
+energy by $-27.37$~eV on going from LDA to PBE, against $-27.46$~eV from an
+independent all-electron atomic solver --- the $0.09$~eV residue being the
+confinement, not the functional. The cohesive energy of bulk silicon moves
+from $5.68$ to $5.21$~eV/atom, which is the direction and roughly the size of
+the known reduction of LDA's overbinding (published values are near $5.3$ and
+$4.6$, with experiment at $4.63$).
+
+\paragraph{Limitation.} The radial atomic solver is LDA-only, so the basis
+functions and the free-atom reference density of a PBE run are generated from
+an LDA-PW92 atom. That is ordinary practice --- the basis is a variational
+space, and the crystal is solved self-consistently in the functional actually
+requested --- and the engine states it in the run log rather than leaving it
+to be discovered.
+
+% ==========================================================================
+\section{Brillouin-zone integration}
+\label{sec:bz}
+
+\subsection{Bloch sums and the generalised eigenproblem}
+\implemented
+
+For a periodic system the basis functions are Bloch-summed over lattice
+translations,
+\begin{equation}
+  \chi_i^{\vb{k}}(\vb{r}) \;=\; \sum_{\vb{T}}
+     e^{i\vb{k}\cdot\vb{T}}\; \phi_i(\vb{r} - \bm{\tau}_i - \vb{T}).
+  \label{eq:bloch}
+\end{equation}
+The sum over $\vb{T}$ is \emph{finite}, not truncated: $\phi$ is exactly zero
+beyond its confinement radius. With $\vb{k}$ in fractional coordinates and
+$\vb{T}$ in integer lattice multiples the phase is simply
+$e^{2\pi i\,(\vb{k}\cdot\vb{n})}$, which removes the commonest sign-and-factor
+error in a $k$-point loop.
+
+The resulting problem is the complex Hermitian generalised eigenproblem
+\begin{equation}
+  H(\vb{k})\,C(\vb{k}) \;=\; S(\vb{k})\,C(\vb{k})\,E(\vb{k}).
+\end{equation}
+It is solved by \textbf{canonical orthogonalisation}, not by the Cholesky
+reduction that a standard routine would use, and the difference matters for
+this basis. Atomic orbitals on nearby atoms are not linearly independent:
+squeeze two atoms together, or add diffuse functions, and $S$ acquires
+eigenvalues at the $10^{-6}$ level and below. Cholesky of such an $S$
+factorises a numerically singular matrix and the resulting orbitals are noise
+amplified by $1/\sqrt{s}$. Canonical orthogonalisation instead diagonalises
+$S = U s U^{\dagger}$, \emph{discards} the directions with
+$s < \eta\, s_{\max}$, and works in the surviving subspace:
+\begin{equation}
+  X = U s^{-1/2}\big|_{\text{kept}},
+  \qquad
+  H' = X^{\dagger} H X,
+  \qquad
+  C = X C' .
+\end{equation}
+The number of discarded directions is reported, because a nonzero count is a
+basis problem rather than an eigensolver problem and this is the only place
+that can say so.
+
+A Hermitian $A + iB$ with $A$ symmetric and $B$ antisymmetric is solved
+through the real embedding
+$\begin{psmallmatrix} A & -B \\ B & A \end{psmallmatrix}$,
+whose spectrum is that of the Hermitian matrix with each eigenvalue twice.
+This costs a factor of eight in a step that is not the bottleneck and avoids a
+separate complex eigensolver to write, test, and get wrong.
+
+\subsection{Monkhorst--Pack meshes}
+\implemented
+
+The sampling is a $\Gamma$-centred Monkhorst--Pack mesh~\cite{mp},
+\begin{equation}
+  \vb{k}_{pqr} = \frac{p}{N_1}\vb{b}_1 + \frac{q}{N_2}\vb{b}_2
+               + \frac{r}{N_3}\vb{b}_3,
+\end{equation}
+with uniform weights $1/(N_1N_2N_3)$ summing to one. For a finite system the
+only $k$-point is $\Gamma$, and that is not a choice.
+
+Occupations come from a Fermi--Dirac distribution with the chemical potential
+found by bisection on the electron count. This is not a convenience for
+metals: it is required for convergence at all. An open shell --- silicon's
+$3p^2$ is two electrons in a threefold degenerate level --- has arbitrary
+eigenvectors within the degenerate subspace, and filling states one at a time
+hands both electrons to whichever vector the eigensolver returned first. That
+choice rotates every iteration: the energy stands still to eight digits while
+the density swings by more than an electron, indefinitely. A Fermi
+distribution gives equal occupation to equal eigenvalues by construction.
+
+\subsection{Irreducible-zone reduction}
+\label{sec:ibz}
+\implemented
+
+Symmetry-equivalent $k$-points are found and computed once. The algorithm is
+exact integer arithmetic throughout, which means orbit membership is decided
+by comparison and not by a tolerance:
+
+\begin{enumerate}[itemsep=2pt]
+  \item The \textbf{lattice} point group: every integer matrix $W$ with
+        $W^{\!\top} G W = G$, $G_{ij} = \vb{a}_i\cdot\vb{a}_j$ the metric.
+        That condition says precisely that the corresponding Cartesian map is
+        orthogonal \emph{and} takes the lattice to itself. Candidates are
+        generated from the observation that a symmetry sends each lattice
+        vector to a lattice vector of the same length, so the search is a
+        product of three short lists rather than a sweep over integer
+        matrices. The images are the \textbf{columns} of $W$: with
+        $\vb{p}' = W\vb{p}$ on fractional coordinates, $\vb{a}_j$ has
+        coordinates $\vb{e}_j$ and its image is $W\vb{e}_j$.
+  \item The \textbf{crystal} point group: those $W$ for which some translation
+        $\vb{t}$ makes $\vb{p} \to W\vb{p} + \vb{t}$ map the atoms onto
+        themselves, species by species. Candidate translations are complete
+        and few, since any valid one must carry the first atom onto some atom
+        of its own species.
+  \item In reciprocal space $\vb{k} \to W^{-\top}\vb{k}$, which follows from
+        requiring $\vb{k}\cdot\vb{p}$ invariant, and is again an integer
+        matrix because $\det W = \pm 1$.
+  \item Time reversal adds $\vb{k}\to-\vb{k}$, valid for a real Hamiltonian.
+  \item Operations that do not map the \emph{mesh} onto itself are discarded.
+        A $4\times4\times2$ mesh does not have the symmetry of its own
+        crystal, and folding with an operation that carries a mesh point off
+        the mesh would silently mis-weight the sum.
+\end{enumerate}
+
+\noindent
+Each irreducible point carries $w_{\vb{k}} = n_{\vb{k}}/(N_1N_2N_3)$ with
+$n_{\vb{k}}$ its orbit size, and $\sum w = 1$ exactly.
+
+\paragraph{Two reductions, and only one of them is exact.}
+Folding the $k$-set changes the \emph{density}, not only the band energy.
+Summing $w_{\vb{k}}\abs{\psi_{\vb{k}}}^2$ over a wedge does not reproduce the
+full-zone sum, because the orbit members contribute
+$\abs{\psi_{\vb{k}}(\mathcal{R}^{-1}\vb{r})}^2$ and not
+$\abs{\psi_{\vb{k}}(\vb{r})}^2$; point-group folding is exact only if the
+density is symmetrised afterwards, which is not yet implemented.
+
+Time reversal is the exception, and it is exact as it stands:
+$\abs{\psi_{-\vb{k}}}^2 = \abs{\psi_{\vb{k}}^{*}}^2 =
+\abs{\psi_{\vb{k}}}^2$ \emph{pointwise} for a real Hamiltonian, so no
+symmetrisation is needed. It is therefore the default. Measured on silicon,
+everything else held fixed:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Folding & Points ($4\times4\times4$) & $\Delta E$ vs.\ full mesh \\
+\midrule
+none                      & 64 & --- \\
+time reversal             & 36 & $-1.1\times10^{-5}$~eV \\
+crystal point group       &  8 & $+8.7\times10^{-2}$~eV \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+The point-group column is left available rather than removed, because it is
+exact for \emph{eigenvalues} --- it is the right setting for a band structure
+evaluated on an already-converged density --- and the engine says so at run
+time rather than leaving the distinction to this document.
+
+\paragraph{Verification.} Group orders and irreducible-wedge sizes are
+published, checkable numbers, and they are checked: 48 operations for the
+face-centred cubic lattice and for diamond on it, falling to 8 when one atom
+is displaced; $4\times4\times4$ meshes reducing to 8, 8, 10 and 18 points for
+diamond, face-centred cubic, simple cubic and the displaced case. These agreed
+with an independent symmetry analyser, and they caught a real defect: building
+the lattice-vector images as \emph{rows} instead of columns yields the
+transposed group --- the same size, still a group, and completely invisible
+for a crystal with one atom at the origin, where every operation maps the
+single position onto itself regardless. Both single-atom test cases passed
+while diamond was wrong.
+
+% ==========================================================================
+\section{Self-consistency}
+\label{sec:scf}
+\implemented
+
+The Kohn--Sham problem is a fixed point: a density gives a potential, the
+potential gives orbitals, the orbitals give a density. One cycle is
+\begin{equation}
+  \rho \;\to\; v_{\text{es}}[\rho] + v_{xc}[\rho]
+     \;\to\; H(\vb{k}), S(\vb{k})
+     \;\to\; \{\varepsilon_{n\vb{k}}, C_{n\vb{k}}\}
+     \;\to\; f_{n\vb{k}}
+     \;\to\; \rho^{\text{out}} .
+\end{equation}
+The starting density is the superposition of free-atom densities, which is a
+good guess: most of the density of a solid \emph{is} its atoms, and the
+difference is what the SCF has to find.
+
+\subsection{Mixing}
+
+Feeding the output straight back diverges for anything metallic --- long
+wavelength charge sloshes between regions with a gain above one --- so each
+iteration is fed a mixture. Linear mixing is
+$\rho^{k+1}_{\text{in}} = \rho^k_{\text{in}}
+ + \alpha(\rho^k_{\text{out}} - \rho^k_{\text{in}})$.
+Pulay/DIIS~\cite{pulay} treats the residual
+$R^k = \rho^k_{\text{out}} - \rho^k_{\text{in}}$ as an error vector and
+chooses the combination of the last $m$ inputs whose residuals cancel best,
+\begin{equation}
+  \min_{\{c_i\}} \norm{\sum_i c_i R^i}^2
+  \quad\text{subject to}\quad \sum_i c_i = 1,
+\end{equation}
+solved as the bordered linear system
+$\begin{psmallmatrix} B & \mathbf{1} \\ \mathbf{1}^{\!\top} & 0
+\end{psmallmatrix}
+\begin{psmallmatrix} c \\ \lambda \end{psmallmatrix} =
+\begin{psmallmatrix} 0 \\ 1 \end{psmallmatrix}$
+with $B_{ij} = R^i\cdot R^j$. The $B$ matrix becomes singular \emph{exactly}
+at convergence, when the residuals are all nearly zero and therefore nearly
+parallel; the implementation detects that and falls back to a linear step
+rather than throwing away a converged answer on the last iteration.
+
+\subsection{Convergence criteria and the total energy}
+
+Both the energy change and the integrated density residual
+$\int\abs{\rho^{\text{out}} - \rho^{\text{in}}}\dd\vb{r}$ must fall below
+their thresholds. Requiring both is deliberate: the energy is variational and
+therefore second order in the density error, so it settles while the density
+is still moving. A loop that stops on energy alone stops early and reports a
+density nobody converged.
+
+The total energy is assembled as
+\begin{equation}
+  E \;=\; \underbrace{\sum_{n\vb{k}} f_{n\vb{k}}\varepsilon_{n\vb{k}}
+          - \int \rho\, v_{\text{eff}}}_{T_s}
+       \;+\; E_{\text{es}} \;+\; E_{xc}.
+\end{equation}
+During the loop the electrostatic and exchange--correlation terms are
+evaluated on the \emph{input} density (the Harris--Foulkes form), because
+building $v_{\text{es}}$ is the most expensive step in an iteration; the exact
+Kohn--Sham functional is evaluated once on the converged density at the end.
+
+% ==========================================================================
+\section{Energy derivatives}
+\label{sec:derivatives}
+
+\subsection{Forces}
+\label{sec:forces}
+\implemented
+
+Because NAOs are \emph{atom-centred and move with the nuclei}, the force has
+two parts and omitting the second produces forces inconsistent with the energy
+surface. The \textbf{Hellmann--Feynman} term is the electrostatic force on the
+bare nucleus,
+\begin{equation}
+  \vb{F}_A^{\text{HF}} = Z_A \int \rho(\vb{r})
+      \frac{\vb{r}-\vb{R}_A}{\abs{\vb{r}-\vb{R}_A}^3}\dd\vb{r}
+      - Z_A \sum_{B \neq A} Z_B
+        \frac{\vb{R}_A-\vb{R}_B}{\abs{\vb{R}_A-\vb{R}_B}^3},
+\end{equation}
+and the \textbf{Pulay} term arises because
+$\partial\phi_i/\partial\vb{R}_A \neq 0$:
+\begin{equation}
+  \vb{F}_A^{\text{Pulay}} = -\sum_{ij}
+    \left[ D_{ij}\pdv{H_{ij}}{\vb{R}_A}
+         - W_{ij}\pdv{S_{ij}}{\vb{R}_A} \right],
+\end{equation}
+with $W_{ij} = \sum f\varepsilon\,C^{*}_{i}C_{j}$ the energy-weighted density
+matrix.
+
+\paragraph{What is implemented, and what actually drives a relaxation.}
+The production force is the \textbf{finite difference} $-\dd E/\dd\vb{R}_A$,
+which is exact for any functional and either boundary condition because it
+differences the same total energy the SCF minimises. It costs $6N$
+self-consistency cycles and it is what the optimiser uses. Of the analytic
+decomposition, the Hellmann--Feynman term and the \emph{overlap} part of Pulay
+are implemented; $\sum_{ij}D_{ij}\partial H_{ij}/\partial\vb{R}_A$ and the
+derivatives of the Becke weights are not, and on a stretched H\textsubscript{2}
+bond the implemented terms give $5.2$~eV/\AA{} where the true force is $0.79$
+--- the missing terms dominate. Both are reported so the gap is visible rather
+than assumed away.
+
+\paragraph{A finite-difference force is only as smooth as the energy.}
+This nearly sank the whole section, and the diagnosis is worth recording. The
+force initially carried between $1$ and $100$~eV/\AA{} of noise, with no
+plateau in the displacement and no improvement on grid refinement. It was not
+the force: the \emph{energy surface} was not converged. The neutral-atom pair
+energy $\int\rho_A v_B^{\text{NA}}$ was being evaluated on atom $A$'s spherical
+grid, and $v_B^{\text{NA}}$ carries the nuclear pole of $B$ --- a singularity
+sitting off-centre, exactly what the multicentre partition exists to prevent.
+It is invisible for a single atom, which has no pairs at all and reproduced the
+radial solver to $0.001$~eV, and fatal for two.
+
+The cure is to do that integral exactly. Both factors are spherical about
+their own centres, so the angular average of $v_B$ over a sphere of radius $r$
+about $A$, the centres $d$ apart, has a closed form and the pole cancels
+analytically:
+\begin{equation}
+  \langle v_B\rangle(r) = \frac{1}{2rd}\int_{\abs{r-d}}^{r+d} v_B(t)\,t\dd t,
+  \qquad
+  \int\!\rho_A v_B = \frac{2\pi}{d}\int \rho_A(r)\,r
+     \bigl[C(r{+}d) - C(\abs{r{-}d})\bigr]\dd r ,
+\end{equation}
+with $C(t) = \int_0^t v_B t'\dd t'$ and
+$v_B(t)\,t = \text{screened}(t)\,t - Z_B$ smooth through the origin. This is a
+one-dimensional integral on the radial mesh with no three-dimensional grid
+involved. The angular drift of E(H\textsubscript{2}) fell from $0.105$~eV to
+$0.0007$~eV, and the force went from noise to a clean plateau.
+
+\paragraph{Guard.} `finiteDifference` evaluates at $h$ and $2h$ and returns a
+numerical failure when they disagree. An exact derivative barely moves; grid
+noise halves. That guard is what caught the pole, and it stays.
+
+\subsection{Stress tensor}
+\label{sec:stress}
+\implemented
+
+From the response of the total energy to a uniform strain, $\vb{x} \to
+(\mathbb{1}+\bm{\varepsilon})\vb{x}$ applied to the lattice vectors
+\emph{and} the atomic positions:
+\begin{equation}
+  \sigma_{\alpha\beta} = \frac{1}{\Omega}\pdv{E}{\varepsilon_{\alpha\beta}} .
+\end{equation}
+Six independent components by central differences. Every term of the energy
+contributes automatically --- the matrices through the strained inter-atomic
+vectors, the electrostatics through the lattice sum and the multipole
+expansion, the exchange--correlation through the volume element, and the basis
+through the same mechanism that produces the Pulay force --- because all of
+them sit inside the energy being differenced. An off-diagonal component
+perturbs $\varepsilon_{\alpha\beta}$ and $\varepsilon_{\beta\alpha}$ together,
+so its derivative carries a factor of two that is divided back out.
+
+\paragraph{Verification.} Cubic symmetry is the sharpest available check and
+needs no reference number, because nothing in the calculation is told the
+crystal is cubic: for silicon the off-diagonal components come out at
+$5\times10^{-10}$~eV/\AA$^3$ and the three diagonal components agree to
+$1.6\times10^{-9}$. The magnitude is checked independently against a volume
+scan --- the trace gives $55.9$~GPa against $52.5$~GPa from $-\dd E/\dd V$,
+agreeing inside the stress's own noise estimate.
+
+\paragraph{A strained cell is harder to converge than the one it came from.}
+Coarse stress settings failed on self-consistency iterations rather than on
+grid quality; gentler mixing and a higher ceiling fixed it outright. Worth
+knowing before blaming the strain derivative.
+
+\subsection{Geometry optimisation}
+\implemented
+
+Relaxation uses FIRE --- damped dynamics that removes the damping while the
+system descends and freezes the velocity the moment it starts to climb. It is
+chosen over a quasi-Newton method because it needs no line search: a single
+force evaluation costs $6N$ self-consistency cycles, and a rejected
+line-search trial would throw all of them away.
+
+H\textsubscript{2} started at $0.95$~\AA{} relaxes monotonically to
+$0.87$~\AA{} with the largest force falling from $1.76$ to $0.043$~eV/\AA{} in
+twenty steps. The residual difference from the LDA reference bond length of
+$0.77$~\AA{} is the confined minimal basis, not the force.
+
+% ==========================================================================
+\section{Validation}
+\label{sec:validation}
+\implemented
+
+An all-electron total energy that has not been checked against something is a
+number with no standing. Each layer of the engine is therefore checked against
+something that is \emph{not} another layer.
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{0.36\textwidth}p{0.36\textwidth}r@{}}
+\toprule
+Quantity & Checked against & Agreement \\
+\midrule
+Radial solver, $v_{\text{el}} = 0$ &
+  analytic $-Z^2/2n^2$ & $10^{-10}$ rel. \\
+Angular rules &
+  $\int Y_{\ell m}Y_{\ell'm'}\dd\Omega = \delta$ & machine prec. \\
+Eigensolver &
+  constructed $QDQ^{\!\top}$ spectrum; LAPACK & $10^{-12}$ \\
+Si atom, $E_{\text{tot}}$ &
+  grid-converged, $4\times$ mesh refinement & $10^{-8}$ Ha \\
+Si atom eigenvalues &
+  independent all-electron atomic solver & see below \\
+3D pipeline &
+  the engine's own 1D radial solver & $0.08$ eV \\
+Cell electron count &
+  exact integer & $< 10^{-7}$ \\
+Translational invariance &
+  same energy for a shifted cell & $0.003$ meV \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{The silicon atom.} LDA-PW92 gives $E_{\text{tot}} =
+-288.19374$~Ha with $\varepsilon_{1s} = -65.18430$ and $\varepsilon_{3p} =
+-0.15331$~Ha, grid-converged to $10^{-8}$ across a fourfold mesh refinement.
+An independent all-electron atomic solver converges \emph{onto} these values
+as its own radial grid is refined ($\varepsilon_{1s}$: $-65.18170$ at its
+default mesh, $-65.18429$ at $7500$ points).
+
+\paragraph{The three-dimensional pipeline against the one-dimensional one.}
+Running the free silicon atom through the full multicentre machinery
+reproduces the radial answer to $0.08$~eV, and does so \emph{from above} ---
+the confined basis is a restriction of the variational space, so its minimum
+cannot lie below the exact one. A 3D energy underneath the 1D answer would
+mean the quadrature is manufacturing binding.
+
+\paragraph{Measured effect of the confinement barrier.}
+Section~\ref{sec:confinement} argued that a hard wall leaves an unrepresented
+surface term in every inter-atomic kinetic matrix element. The cohesive energy
+of silicon, everything else held fixed, shows it:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Basis & Hard wall & Smooth barrier \\
+\midrule
+Tier 1 (minimal)      & 7.11 & \textbf{5.68} \\
+Tier 2 (DZ + polarisation) & 10.77 & \textbf{6.26} \\
+Tier 3                & 66.56 & \textbf{6.41} \\
+\bottomrule
+\end{tabular}
+\par\smallskip
+{\footnotesize eV/atom, $2\times2\times2$ mesh. Converged LDA is
+$\approx 5.3$~eV/atom; experiment is $4.63$.}
+\label{tab:wall}
+\end{center}
+
+\noindent
+The wall column diverges as the basis grows --- each added function brings its
+own cutoff sphere and its own missing surface term. The barrier column is a
+proper convergence sequence, with increments of $+0.57$ then $+0.15$~eV. What
+remains above the reference is accounted for by the spherical,
+non-spin-polarised atomic reference (worth roughly $0.6$~eV for silicon),
+residual confinement, and a $k$-mesh that is not yet converged
+(Section~\ref{sec:ibz}).
+
+\paragraph{What is not validated.} The absolute total energy of a
+\emph{periodic} system has no external reference available: a pseudopotential
+code's total energy is not comparable with an all-electron one. The periodic
+path is therefore checked on what can be checked --- electron count,
+self-consistency, degeneracies required by symmetry, translational invariance
+--- and the absolute energy is reported without being asserted.
+
+% ==========================================================================
+\begin{thebibliography}{9}
+\small
+\bibitem{becke} A.~D. Becke,
+  \emph{A multicenter numerical integration scheme for polyatomic molecules},
+  J. Chem. Phys. \textbf{88}, 2547 (1988).
+\bibitem{lebedev} V.~I. Lebedev,
+  \emph{Values of the nodes and weights of quadrature formulas of
+  Gauss--Markov type for a sphere},
+  USSR Comput. Math. Math. Phys. \textbf{15}, 44 (1975).
+\bibitem{junquera} J.~Junquera, \'O.~Paz, D.~S\'anchez-Portal and E.~Artacho,
+  \emph{Numerical atomic orbitals for linear-scaling calculations},
+  Phys. Rev. B \textbf{64}, 235111 (2001).
+\bibitem{pz} J.~P. Perdew and A.~Zunger,
+  \emph{Self-interaction correction to density-functional approximations
+  for many-electron systems},
+  Phys. Rev. B \textbf{23}, 5048 (1981).
+\bibitem{vwn} S.~H. Vosko, L.~Wilk and M.~Nusair,
+  \emph{Accurate spin-dependent electron liquid correlation energies},
+  Can. J. Phys. \textbf{58}, 1200 (1980).
+\bibitem{pw92} J.~P. Perdew and Y.~Wang,
+  \emph{Accurate and simple analytic representation of the electron-gas
+  correlation energy},
+  Phys. Rev. B \textbf{45}, 13244 (1992).
+\bibitem{pbe} J.~P. Perdew, K.~Burke and M.~Ernzerhof,
+  \emph{Generalized gradient approximation made simple},
+  Phys. Rev. Lett. \textbf{77}, 3865 (1996).
+\bibitem{mp} H.~J. Monkhorst and J.~D. Pack,
+  \emph{Special points for Brillouin-zone integrations},
+  Phys. Rev. B \textbf{13}, 5188 (1976).
+\bibitem{pulay} P.~Pulay,
+  \emph{Convergence acceleration of iterative sequences. The case of SCF
+  iteration},
+  Chem. Phys. Lett. \textbf{73}, 393 (1980).
+\end{thebibliography}
+
+\end{document}

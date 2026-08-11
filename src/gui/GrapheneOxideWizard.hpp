@@ -9,6 +9,7 @@
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
+class QFormLayout;
 class QGroupBox;
 class QLabel;
 class QPushButton;
@@ -24,10 +25,20 @@ namespace calango::gui {
 ///   Stage 1 — Base Structure: an infinite periodic sheet, or a finite
 ///     nanoflake C(6m²)H(6m) of index m — the difference that decides whether
 ///     there is any edge chemistry to do at all.
-///   Stage 2 — Functionalization & Oxidation Level: which oxygen-bearing groups
-///     to attach, split into the basal-plane (sp3) and edge (sp2) families, and
-///     how much oxygen to put on — either as explicit per-group coverages or by
-///     driving the structure to a target C/O ratio.
+///   Stage 2 — Functionalization & Oxidation Level: how much oxygen to put on,
+///     and what it becomes. Three questions, one ratio slider each: the total
+///     oxidation as O/C, the basal chemistry as H/O, and — on a flake only —
+///     how much of the oxygen goes to the rim and what it turns into there.
+///
+/// Stage 2 drives Dosing::TargetRatio and nothing else. The builder also
+/// supports Dosing::ExplicitCoverage, a per-group coverage table, and this
+/// dialog used to offer it as a second mode; it no longer does. A composition
+/// is what graphene oxide is characterized by and what a paper quotes, whereas
+/// a per-group coverage is an implementation detail of how the sites got
+/// filled — and offering both meant a panel of controls where half were inert
+/// depending on a combo box most people never touched. The library path stays
+/// (the builder's tests drive the placement engine through it); the dialog
+/// asks one question, in the units the answer is reported in.
 ///
 /// Graphene oxide is non-stoichiometric and disordered, so what this produces
 /// is a representative sample at a requested composition rather than "the"
@@ -76,35 +87,55 @@ private:
     QCheckBox* hydrogenCheck_ = nullptr;
     QLabel* baseSummary_ = nullptr;
 
-    /// Read a ratio slider as its physical value. Every slider here is an
-    /// integer 0..1000 standing for a ratio, so one conversion serves them all
-    /// and no call site has to remember the scale.
-    static double sliderValue(const QSlider* slider, double maximum);
+    /// One ratio: a slider to sweep it, a spin box to type it exactly, and a
+    /// read-out that says what the number MEANS.
+    ///
+    /// The slider and the box are two views of one value, so they have to agree
+    /// bit for bit — a slider that cannot reach the number in the box next to
+    /// it is worse than either control alone. Both are therefore quantized to
+    /// the SAME grid: every slider here counts in thousandths, so its integer
+    /// position divided by 1000 IS the physical value, and the box shows three
+    /// decimals. No rounding happens in either direction, which is what lets
+    /// the two be synchronized without drift.
+    struct RatioControl {
+        QSlider* slider = nullptr;
+        QDoubleSpinBox* box = nullptr;
+        QLabel* readout = nullptr;
 
-    // Stage 2 — functionalization
-    QComboBox* dosingCombo_ = nullptr;
+        /// The physical value. Reads the SLIDER, which is the single source of
+        /// truth; the box is kept equal to it.
+        double value() const;
+    };
+
+    /// Slider units per 1.0 of ratio. Fixed for every control so one
+    /// conversion serves them all and no call site invents a scale.
+    static constexpr int kRatioScale = 1000;
+
+    /// Build a caption / slider / spin box / read-out row and wire the two
+    /// controls to each other.
+    void addRatioRow(QFormLayout* form, RatioControl& control,
+                     const QString& name, const QString& caption,
+                     const QString& tooltip, double initial, double maximum);
+
+    // Stage 2 — functionalization. One slider per question, and no mode
+    // selector: there is only one way to state an oxidation level here.
+    //
     /// Total oxidation as O/C, 0.00 (pristine) to 0.50 (the stoichiometric
     /// ceiling, C2O). The builder works in C/O, so this is inverted on the way
     /// in; O/C is what the UI shows because it is linear in oxygen content and
     /// has a meaningful zero, neither of which C/O has.
-    QSlider* oxygenToCarbonSlider_ = nullptr;
-    QLabel* oxygenToCarbonLabel_ = nullptr;
+    RatioControl oxidation_;
     /// Basal chemistry as H/O: 0 = epoxide only, 1 = hydroxyl only.
-    QSlider* basalHydrogenSlider_ = nullptr;
-    QLabel* basalHydrogenLabel_ = nullptr;
+    RatioControl basalHydrogen_;
     /// Share of the oxygen budget delivered at the EDGES rather than on the
-    /// basal plane — the edge oxidation density.
-    QSlider* edgeShareSlider_ = nullptr;
-    QLabel* edgeShareLabel_ = nullptr;
-    /// Edge composition: 0 = carbonyl only, 1 = carboxyl only.
-    QSlider* edgeCarboxylSlider_ = nullptr;
-    QLabel* edgeCarboxylLabel_ = nullptr;
-    QGroupBox* ratioBox_ = nullptr;
+    /// basal plane — the edge oxidation density. Flake only.
+    RatioControl edgeShare_;
+    /// Edge composition: 0 = carbonyl only, 1 = carboxyl only. Flake only.
+    RatioControl edgeCarboxyl_;
+    /// Holds the two edge controls, so both vanish together on a periodic
+    /// sheet — which has no rim for either of them to describe.
     QGroupBox* edgeChemistryBox_ = nullptr;
-    QLabel* amountHint_ = nullptr;
     QLabel* edgeNote_ = nullptr;
-    QCheckBox* groupCheck_[kGroups] = {};
-    QDoubleSpinBox* groupAmount_[kGroups] = {};
     QCheckBox* bothFacesCheck_ = nullptr;
     QSpinBox* seedSpin_ = nullptr;
     QLabel* coverageSummary_ = nullptr;

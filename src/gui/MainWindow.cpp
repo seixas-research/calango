@@ -7251,13 +7251,16 @@ void MainWindow::runNativeDftSinglePoint(const core::Structure& structure)
     const dft::CalangoDFTEngine::Result result = engine.run(structure);
 
     if (result.outcome.ok()) {
-        // Unreachable today — the engine reports NotImplemented — and written
-        // anyway so the success path exists and is obvious when it starts
-        // being taken. Nothing here invents a number: everything shown comes
-        // from the engine's own breakdown.
+        // Everything shown comes from the engine's own breakdown; nothing here
+        // is derived or rounded into looking better than it is. The integrated
+        // electron count is on the status line beside the energy on purpose —
+        // it is the one number that says whether the grid resolved what it was
+        // asked to integrate, and it costs nothing to show.
         statusBar()->showMessage(
-            tr("Calango DFT — total %1 eV (%2 SCF iterations)")
+            tr("Calango DFT — total %1 eV, %2 electrons on the grid, "
+               "%3 SCF iterations")
                 .arg(result.energy.total, 0, 'f', 6)
+                .arg(result.integratedElectrons, 0, 'f', 6)
                 .arg(result.scfIterations));
         return;
     }

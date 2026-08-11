@@ -1070,9 +1070,9 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
         }
         if (wantedEdge)
             notes.emplace_back(
-                "Carboxyl, carbonyl and edge hydroxyl are EDGE chemistry, and a "
-                "periodic sheet has no edges — none were placed. Choose the "
-                "nanoflake base to use them.");
+                "Carboxyl and carbonyl are EDGE chemistry, and a periodic "
+                "sheet has no edges — none were placed. Choose the nanoflake "
+                "base to use them.");
     }
 
     for (const std::string& fragment : notes)

@@ -57,6 +57,20 @@ public:
 
     double outerRadius() const { return r_.empty() ? 0.0 : r_.back(); }
 
+    /// r at a FRACTIONAL mesh index, from the closed form rather than by
+    /// interpolation. An ODE integrator stepping in `i` needs the radius and
+    /// the Jacobian at half-steps, and taking them from the analytic mesh
+    /// keeps the integrator's O(h⁴) rather than capping it at the accuracy of
+    /// an interpolation of the mesh itself.
+    double radiusAt(double index) const;
+    /// dr/di at a fractional index, likewise analytic: b(r + a).
+    double jacobianAt(double index) const;
+    /// f at a fractional mesh index by cubic interpolation. Distinct from
+    /// `interpolate(values, radius)`, which has to find the index first —
+    /// this is the form an integrator already has.
+    double interpolateIndex(const std::vector<double>& values,
+                            double index) const;
+
     /// ∫ f(r) dr over the mesh. `values` must be f sampled at r().
     ///
     /// Returns 0 for a size mismatch rather than reading out of bounds: this
@@ -108,6 +122,10 @@ private:
     std::vector<double> r_;
     std::vector<double> drdi_;
     std::vector<double> weights_;
+    /// The `a` and `b` of r(i) = a(e^{bi} − 1), kept so the mesh can be
+    /// evaluated between its own points.
+    double innerScale_ = 0.0;
+    double step_ = 0.0;
 };
 
 } // namespace calango::dft

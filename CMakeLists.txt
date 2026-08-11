@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.8
+    VERSION 26.8.9
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -36,6 +36,48 @@ set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
 
 find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets OpenGLWidgets Concurrent Svg)
 qt_standard_project_setup()   # enables AUTOMOC / AUTORCC / AUTOUIC
+
+# --- Native DFT engine ------------------------------------------------------
+# The all-electron numerical-atomic-orbital solver in src/dft. Listed once and
+# reused by the application and by both of its test binaries, so a new source
+# file cannot land in one and be missing from the other.
+set(CALANGO_DFT_SOURCES
+    src/dft/AtomicSolver.cpp
+    src/dft/CalangoDFTEngine.cpp
+    src/dft/ForceCalculator.cpp
+    src/dft/HamiltonianAssembler.cpp
+    src/dft/IntegrationGrid.cpp
+    src/dft/KPointGrid.cpp
+    src/dft/LinearAlgebra.cpp
+    src/dft/NAOBasisSet.cpp
+    src/dft/RadialGrid.cpp
+    src/dft/SCFSolver.cpp
+    src/dft/XcFunctional.cpp
+)
+
+# LAPACK for the generalised eigenproblem: Accelerate on macOS, the system
+# reference or OpenBLAS elsewhere. OPTIONAL by design. The module carries its
+# own Jacobi eigensolver, which is always compiled and is what runs when this
+# is not found, so a missing LAPACK costs speed on large matrices and nothing
+# else — no build failure, no new package in the .deb, no macdeployqt work.
+# `dft_linalg` runs the same problems through both paths and requires them to
+# agree, which is what keeps the fallback honest.
+find_package(LAPACK QUIET)
+if(LAPACK_FOUND)
+    message(STATUS "Native DFT: using LAPACK for the generalised eigenproblem")
+else()
+    message(STATUS "Native DFT: LAPACK not found, using the built-in Jacobi "
+                   "eigensolver")
+endif()
+
+function(calango_dft_link target)
+    if(LAPACK_FOUND)
+        target_link_libraries(${target} PRIVATE LAPACK::LAPACK)
+        target_compile_definitions(${target} PRIVATE CALANGO_DFT_HAVE_LAPACK)
+    endif()
+endfunction()
+
+
 
 # Recent macOS SDKs removed the ancient AGL framework, but Qt's WrapOpenGL
 # helper can still pick up the /System/Library stub and break the link.
@@ -512,11 +554,7 @@ qt_add_executable(calango
     src/gui/ConvergenceResultsWindow.cpp
     src/gui/OrchestrationWindow.hpp
     src/gui/OrchestrationWindow.cpp
-    src/dft/CalangoDFTEngine.cpp
-    src/dft/HamiltonianAssembler.cpp
-    src/dft/NAOBasisSet.cpp
-    src/dft/RadialGrid.cpp
-    src/dft/SCFSolver.cpp
+    ${CALANGO_DFT_SOURCES}
     src/gui/DatabaseImportDialog.cpp
     src/gui/OrchestrationDocument.cpp
     src/gui/OrchestrationTransforms.cpp
@@ -828,6 +866,7 @@ target_compile_definitions(calango PRIVATE
     CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}"
 )
 
+calango_dft_link(calango)
 target_link_libraries(calango PRIVATE
     Qt6::Widgets
     Qt6::OpenGLWidgets
@@ -1932,11 +1971,7 @@ if(CALANGO_BUILD_TESTS)
         tests/DftEngineTest.cpp
         src/core/AseScriptGenerator.cpp
         src/core/EngineCalculatorBlocks.cpp
-        src/dft/CalangoDFTEngine.cpp
-        src/dft/HamiltonianAssembler.cpp
-        src/dft/NAOBasisSet.cpp
-        src/dft/RadialGrid.cpp
-        src/dft/SCFSolver.cpp
+        ${CALANGO_DFT_SOURCES}
         src/core/Structure.cpp
         src/core/UnitCell.cpp
         src/core/Element.cpp
@@ -1945,7 +1980,35 @@ if(CALANGO_BUILD_TESTS)
     # AseScriptGenerator stamps the version into every script it writes.
     target_compile_definitions(calango_dft_engine_test PRIVATE
         CALANGO_VERSION="${PROJECT_VERSION}")
+    calango_dft_link(calango_dft_engine_test)
     add_test(NAME dft_engine COMMAND calango_dft_engine_test)
+
+    # The native DFT engine, end to end, on the system it was built for.
+    #
+    # Bulk silicon in the diamond structure: two atoms, all 28 electrons
+    # explicit, a minimal numerical-orbital basis generated on the spot from
+    # the confined free atom. The assertions are the ones that can be CHECKED
+    # rather than the ones that would be nice to see — the integrated electron
+    # count, self-consistency, the degeneracies symmetry demands, the absence
+    # of a spurious net charge on any atom, and the free atom's own energy
+    # reproduced by the three-dimensional machinery to the accuracy of the
+    # one-dimensional solver it is validated against.
+    add_executable(calango_native_dft_si_mvp_test
+        tests/test_native_dft_si_mvp.cpp
+        ${CALANGO_DFT_SOURCES}
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_native_dft_si_mvp_test PRIVATE src)
+    calango_dft_link(calango_native_dft_si_mvp_test)
+    add_test(NAME native_dft_si_mvp COMMAND calango_native_dft_si_mvp_test)
+    # THE SLOWEST TEST IN THE SUITE, by a wide margin: an all-electron SCF on
+    # a periodic cell, twice over, plus two more for the translation check.
+    # Around eight minutes on an M-series laptop. `ctest -E native_dft_si_mvp`
+    # skips it when a quick pass is what is wanted; it is not skipped by
+    # default because it is the only test that runs the engine end to end.
+    set_tests_properties(native_dft_si_mvp PROPERTIES TIMEOUT 1800)
 
     # Volumetric grid parsing: the value block is read with a bulk read plus
     # std::from_chars rather than through istream >> double (5x faster on a
@@ -2287,6 +2350,34 @@ if(CALANGO_BUILD_TESTS)
         set_property(TEST ${_calango_all_tests} APPEND PROPERTY ENVIRONMENT
             "CALANGO_CONFIG_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-config")
     endif()
+
+    # --- Test labels: "core" and "dft" -------------------------------------
+    #
+    #   ctest -L core     everything except the native DFT engine  (~2 min)
+    #   ctest -L dft      the native DFT engine only               (~7 min)
+    #   ctest             both
+    #
+    # The split exists because the two have completely different costs and
+    # completely different reasons to run. A `core` test is a parser, a
+    # generator, a dialog, a geometry routine — milliseconds each, and they are
+    # what almost every change to the application can break. The `dft` tests
+    # run REAL self-consistent all-electron calculations: atoms, a silicon
+    # crystal, finite-difference forces, a stress tensor and a geometry
+    # relaxation. Minutes each, unavoidably, because that is what the thing
+    # being tested does.
+    #
+    # Charging every unrelated change the price of a DFT run is what makes a
+    # suite stop being run at all, so the default for application work is
+    # `ctest -L core`. Anything touching src/dft must run `ctest -L dft`, and
+    # CI should run both.
+    set(CALANGO_DFT_TEST_NAMES dft_engine native_dft_si_mvp)
+    foreach(_test IN LISTS _calango_all_tests)
+        if(_test IN_LIST CALANGO_DFT_TEST_NAMES)
+            set_property(TEST ${_test} APPEND PROPERTY LABELS "dft")
+        else()
+            set_property(TEST ${_test} APPEND PROPERTY LABELS "core")
+        endif()
+    endforeach()
 endif()
 
 # ---------------------------------------------------------------------------

@@ -68,6 +68,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QSlider>
 #include <QSpinBox>
 #include <QTableWidget>
 
@@ -210,15 +211,45 @@ int main(int argc, char** argv)
         GrapheneOxideWizard wizard;
         check(true, "constructs without dereferencing a half-built widget");
 
-        // The two groups the constructor enables by default must be on, and
-        // enabling them must have driven the summary rather than crashing.
-        const auto boxes = wizard.findChildren<QCheckBox*>();
-        int checked = 0;
-        for (QCheckBox* box : boxes)
-            if (box->isChecked())
-                ++checked;
-        // Epoxide + hydroxyl + "decorate both faces".
-        check(checked >= 3, "the default group selection was applied");
+        // Stage 2 is driven entirely by ratio sliders, each paired with a spin
+        // box that types the same number. The pair must AGREE — a slider that
+        // cannot reach the value shown beside it is the bug this checks for,
+        // and it is exactly what a naive two-way connection produces once the
+        // two controls quantize differently.
+        const QStringList ratios{QStringLiteral("oxidation"),
+                                 QStringLiteral("basalHydrogen"),
+                                 QStringLiteral("edgeShare"),
+                                 QStringLiteral("edgeCarboxyl")};
+        bool found = true;
+        bool paired = true;
+        for (const QString& name : ratios) {
+            auto* slider = wizard.findChild<QSlider*>(name + "Slider");
+            auto* box = wizard.findChild<QDoubleSpinBox*>(name + "Box");
+            if (!slider || !box) {
+                found = false;
+                continue;
+            }
+            // Drive from each side and require the other to follow EXACTLY.
+            // Both are quantized to thousandths precisely so this can be an
+            // equality rather than a tolerance.
+            for (int position : {0, slider->maximum() / 3, slider->maximum()}) {
+                slider->setValue(position);
+                paired = paired
+                    && std::abs(box->value() * 1000.0 - position) < 1e-6;
+            }
+            for (double typed : {0.0, box->maximum() / 4.0, box->maximum()}) {
+                box->setValue(typed);
+                paired = paired
+                    && std::abs(slider->value() / 1000.0 - typed) < 1e-9;
+            }
+        }
+        check(found, "the four ratio controls are present and named");
+        check(paired, "every slider and its spin box track each other exactly");
+        // The legacy per-group coverage table is gone, not merely hidden: it
+        // and the sliders answered the same question two different ways, and
+        // only the sliders are read by the build.
+        check(wizard.findChildren<QSlider*>().size() == 4,
+              "stage 2 has exactly the four ratio sliders");
 
         exerciseControls(&wizard);
         check(true, "survives every control being toggled");
@@ -231,6 +262,50 @@ int main(int argc, char** argv)
         GrapheneOxideWizard second;
         exerciseControls(&second);
         check(true, "two instances coexist");
+    }
+    {
+        // What the sliders say must be what the BUILD gets. Driving the wizard
+        // through its own navigation is the only way to check that: config()
+        // is where the binding lives, and a test that reassembles the Config
+        // itself would pass no matter what the dialog sends.
+        //
+        // The periodic case is the one that regressed. A sheet has no rim, so
+        // the edge controls are hidden — but the config still carried nonzero
+        // carboxyl and carbonyl WEIGHTS from those hidden sliders, and the
+        // builder reads exactly that to decide whether edge chemistry was
+        // asked for. Every periodic build came back complaining that the edge
+        // groups the user never requested could not be placed.
+        using Group = calango::core::GrapheneOxideBuilder::Group;
+        const auto buildWith = [](int baseIndex) {
+            GrapheneOxideWizard wizard;
+            auto* base = wizard.findChild<QComboBox*>(QStringLiteral("baseCombo"));
+            if (base)
+                base->setCurrentIndex(baseIndex);
+            // Stage 1 -> stage 2 -> Build. goNext() is a private slot, which
+            // the meta-object still exposes; the alternative is duplicating
+            // the very code under test.
+            QMetaObject::invokeMethod(&wizard, "goNext");
+            QMetaObject::invokeMethod(&wizard, "goNext");
+            return wizard.report();
+        };
+
+        const auto sheet = buildWith(0);
+        check(sheet.oxygenAtoms > 0, "periodic sheet: the O/C slider placed oxygen");
+        check(QString::fromStdString(sheet.note)
+                  .contains(QStringLiteral("EDGE chemistry")) == false,
+              "periodic sheet: no complaint about edge groups never requested");
+        check(sheet.placedFor(Group::Carboxyl) == 0
+                  && sheet.placedFor(Group::Carbonyl) == 0,
+              "periodic sheet: no edge groups placed");
+        check(sheet.placedFor(Group::Epoxide) > 0
+                  && sheet.placedFor(Group::Hydroxyl) > 0,
+              "periodic sheet: the H/O slider's 50/50 default gave both basal groups");
+
+        const auto flake = buildWith(1);
+        check(flake.edgeCarbonCount > 0, "nanoflake: the substrate has a rim");
+        check(flake.placedFor(Group::Carboxyl) + flake.placedFor(Group::Carbonyl)
+                  > 0,
+              "nanoflake: the edge-share slider put oxygen on the rim");
     }
 
     std::printf("Hubbard parameters dialog:\n");
