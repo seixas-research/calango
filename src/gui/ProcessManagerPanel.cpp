@@ -18,6 +18,9 @@ namespace calango::gui {
 namespace {
 constexpr int kIdRole = Qt::UserRole;
 constexpr int kDirRole = Qt::UserRole + 1;
+/// The row's Status, so a control can ask what a task is DOING rather than
+/// parsing the translated word in its status column.
+constexpr int kStatusRole = Qt::UserRole + 2;
 
 // RemixIcon stems + per-status tint for the Status column. Colors match the
 // status text so the glyph and label read as one.
@@ -93,6 +96,15 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
         QStringLiteral("code-box-fill"),
         tr("View ASE Script — show the exact Python/ASE run.py that was "
            "executed."));
+    abortButton_ = makeButton(
+        QStringLiteral("stop-circle-fill"),
+        tr("Abort Process — stop the selected run, keeping everything it has "
+           "written so far.\n\n"
+           "A queued process is dropped from the queue; a running one is "
+           "stopped and marked failed. Its folder, its log and any frames it "
+           "already produced are left in place — use Delete Process to remove "
+           "those as well."));
+    abortButton_->setObjectName(QStringLiteral("abortProcessButton"));
     auto* deleteButton = makeButton(
         QStringLiteral("delete-bin-line"),
         tr("Delete Process — stop it if running, delete its temporary data "
@@ -120,6 +132,13 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
         if (const auto* item = tree_->currentItem())
             Q_EMIT deleteRequested(item->data(0, kIdRole).toInt());
     });
+    connect(abortButton_, &QPushButton::clicked, this, [this] {
+        if (const auto* item = tree_->currentItem())
+            Q_EMIT abortRequested(item->data(0, kIdRole).toInt());
+    });
+    connect(tree_, &QTreeWidget::currentItemChanged, this,
+            [this] { updateAbortButton(); });
+    updateAbortButton();
     connect(tree_, &QTreeWidget::itemDoubleClicked, this,
             [this](QTreeWidgetItem* item, int) {
                 const QString dir = item->data(0, kDirRole).toString();
@@ -175,6 +194,7 @@ int ProcessManagerPanel::registerTask(const QString& name,
     item->setForeground(1, QBrush(queued.color));
     item->setData(0, kIdRole, nextId_);
     item->setData(0, kDirRole, directory);
+    item->setData(0, kStatusRole, static_cast<int>(Status::Queued));
     item->setToolTip(0, directory.isEmpty() ? name : directory);
     tree_->addTopLevelItem(item);
     tree_->scrollToItem(item);
@@ -218,10 +238,25 @@ void ProcessManagerPanel::setTaskStatus(int id, Status status)
     case Status::Failed:    label = tr("failed");    break;
     }
     const auto visual = statusVisual(status);
+    item->setData(0, kStatusRole, static_cast<int>(status));
     item->setText(1, label);
     item->setForeground(1, QBrush(visual.color));
     item->setIcon(1, ui::IconManager::icon(QLatin1String(visual.iconName),
                                            visual.color, 17));
+    updateAbortButton();
+}
+
+void ProcessManagerPanel::updateAbortButton()
+{
+    if (!abortButton_)
+        return;
+    const QTreeWidgetItem* item = tree_->currentItem();
+    const auto status = item
+        ? static_cast<Status>(item->data(0, kStatusRole).toInt())
+        : Status::Completed;
+    abortButton_->setEnabled(item != nullptr
+                             && (status == Status::Running
+                                 || status == Status::Queued));
 }
 
 } // namespace calango::gui

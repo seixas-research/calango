@@ -2600,6 +2600,11 @@ std::string AseScriptGenerator::calculatorSnippet(const CalculatorConfig& config
     return out.str();
 }
 
+std::string AseScriptGenerator::streamFrameHelper()
+{
+    return kStreamFrameHelper;
+}
+
 std::string AseScriptGenerator::jsonLoggerPreamble()
 {
     return kJsonLoggerHelper;

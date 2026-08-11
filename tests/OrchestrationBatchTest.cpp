@@ -33,6 +33,7 @@
 #include "core/Structure.hpp"
 #include "core/UnitCell.hpp"
 #include "gui/OrchestrationDocument.hpp"
+#include "core/WorkflowReport.hpp"
 #include "gui/OrchestrationWindow.hpp"
 #include "gui/SettingsManager.hpp"
 #include "python_bridge/PythonEngine.hpp"
@@ -135,6 +136,25 @@ QString probeScript()
         "symbols = sorted({l.split()[0] for l in lines[2:] if l.strip()})\n"
         "json.dump({'natoms': int(lines[0]), 'symbols': symbols},\n"
         "          open('probe.json', 'w'))\n"
+        "print('CALANGO_DONE', flush=True)\n");
+}
+
+/// The probe, plus the metrics.json every real generated script writes.
+///
+/// Used by the report test so the chain it exercises is the real one — script
+/// writes an artifact, the report extracts from that artifact — rather than a
+/// report handed its numbers by the test.
+QString probeScriptWithMetrics()
+{
+    return QStringLiteral(
+        "import pathlib, json\n"
+        "lines = pathlib.Path('structure.extxyz').read_text().splitlines()\n"
+        "symbols = sorted({l.split()[0] for l in lines[2:] if l.strip()})\n"
+        "json.dump({'natoms': int(lines[0]), 'symbols': symbols},\n"
+        "          open('probe.json', 'w'))\n"
+        "json.dump({'metrics': [{'step': 1, 'energy': -4.5, 'max_force': 0.31},\n"
+        "                       {'step': 2, 'energy': -4.75, 'max_force': 0.02}]},\n"
+        "          open('metrics.json', 'w'))\n"
         "print('CALANGO_DONE', flush=True)\n");
 }
 
@@ -940,6 +960,213 @@ int main(int argc, char** argv)
         check(window.nodes().empty() && window.links().isEmpty(),
               "confirming removes every node and link");
         check(window.nodesBoundingRect().isNull(), "the canvas is empty");
+    }
+
+    // ---- Defect Generator: a SET of singly-defective materials -------------
+    //
+    // The two modes answer different questions and must not be confusable. One
+    // material with three vacancies is a tri-vacancy complex; three materials
+    // with one vacancy each is a formation-energy series. Getting them
+    // backwards produces a study whose every number is about the wrong system,
+    // with nothing anywhere to say so.
+    std::printf("Defect Generator, one material per defect:\n");
+    QSettings().setValue(
+        QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+        sandbox.path() + QStringLiteral("/simulations_defectset"));
+    {
+        QStringList refusals;
+        OrchestrationWindow window(materials, pythonResolver);
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        OrchestrationNodeItem* container = window.addProcessNode(
+            OrchestrationTask::Container, 0,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* defect = window.addProcessNode(
+            OrchestrationTask::DefectGenerator,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* probe = window.addProcessNode(
+            OrchestrationTask::SinglePoint, calango::core::CalculatorKind::EMT);
+        window.linkNodes(container, defect);
+        window.linkNodes(defect, probe);
+
+        // Three DIFFERENT single defects on a 4-atom cell.
+        DefectSpec spec;
+        spec.mode = DefectSpec::Mode::Separate;
+        for (const char* index : {"0", "1", "2"}) {
+            DefectOperation remove;
+            remove.kind = DefectOperation::Kind::Remove;
+            remove.indices = QLatin1String(index);
+            spec.operations.append(remove);
+        }
+        window.setNodeDefectSpec(defect, spec);
+        window.configureNode(probe, probeScript(), pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+
+        // Each produced material must be its own tab in the workspace, not
+        // successive contents of one — showing a set one at a time is not
+        // showing the set.
+        QList<QPair<int, int>> produced; // (nodeId, variant)
+        QObject::connect(
+            &window, &OrchestrationWindow::nodeStructureProduced,
+            [&produced](int nodeId, int variant, const QString&,
+                        const std::shared_ptr<const calango::core::Structure>&) {
+                produced.append({nodeId, variant});
+            });
+
+        window.sendToProcesses();
+        settle(probe, 180000);
+        check(refusals.isEmpty(), "nothing was refused");
+        check(window.batchLength() == 3,
+              "three defects make the pipeline take three passes");
+
+        int defectVariants = 0;
+        for (const auto& entry : produced)
+            if (entry.first == defect->id())
+                ++defectVariants;
+        check(defectVariants == 3,
+              "the defect node published three materials");
+        QList<int> distinct;
+        for (const auto& entry : produced)
+            if (entry.first == defect->id() && !distinct.contains(entry.second))
+                distinct.append(entry.second);
+        check(distinct.size() == 3,
+              "each under its own variant key, so each gets its own tab");
+
+        // Every pass removed exactly ONE atom from the pristine 4-atom cell.
+        // The failure this catches is defects accumulating: 3, then 2, then 1.
+        check(extxyzCount(defect->jobDirectory()
+                          + QStringLiteral("/transformed.extxyz")) == 3,
+              "the last pass is a 3-atom cell — one vacancy, not three");
+        const QJsonObject result = readJson(probe->jobDirectory()
+                                            + QStringLiteral("/probe.json"));
+        check(result.value(QStringLiteral("natoms")).toInt() == 3,
+              "and the downstream job computed a singly-defective cell");
+    }
+
+    // The combined mode must keep meaning what it always did.
+    std::printf("Defect Generator, one material with every defect:\n");
+    QSettings().setValue(
+        QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+        sandbox.path() + QStringLiteral("/simulations_defectcombined"));
+    {
+        QStringList refusals;
+        OrchestrationWindow window(materials, pythonResolver);
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+        OrchestrationNodeItem* container = window.addProcessNode(
+            OrchestrationTask::Container, 0,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* defect = window.addProcessNode(
+            OrchestrationTask::DefectGenerator,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(container, defect);
+
+        DefectSpec spec; // Mode::Combined by default
+        for (const char* index : {"0", "1"}) {
+            DefectOperation remove;
+            remove.kind = DefectOperation::Kind::Remove;
+            remove.indices = QLatin1String(index);
+            spec.operations.append(remove);
+        }
+        window.setNodeDefectSpec(defect, spec);
+
+        window.sendToProcesses();
+        settle(defect, 120000);
+        check(refusals.isEmpty(), "nothing was refused");
+        check(window.batchLength() == 1,
+              "a combined recipe takes one pass however many operations it has");
+        check(extxyzCount(defect->jobDirectory()
+                          + QStringLiteral("/transformed.extxyz")) == 2,
+              "and produces ONE cell carrying both vacancies (4 - 2 = 2 atoms)");
+    }
+
+    // ---- The run's own report ----------------------------------------------
+    //
+    // The aggregation has to happen AS THE RUN GOES. A batch re-queues its
+    // nodes for every container item, so the canvas ends holding only the last
+    // pass's statuses — a report assembled at the end from the graph would say
+    // nothing about the first eleven structures, and would say it confidently.
+    std::printf("Workflow report:\n");
+    QSettings().setValue(
+        QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+        sandbox.path() + QStringLiteral("/simulations_report"));
+    {
+        OrchestrationWindow window(materials, pythonResolver);
+        OrchestrationNodeItem* container = window.addProcessNode(
+            OrchestrationTask::Container, 0,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* probe = window.addProcessNode(
+            OrchestrationTask::SinglePoint, calango::core::CalculatorKind::EMT);
+        window.linkNodes(container, probe);
+        window.configureNode(probe, probeScriptWithMetrics(), pythonExe,
+                             QString(), calango::core::CalculatorKind::EMT);
+
+        // Two structures, so the per-structure aggregation has something to
+        // keep apart.
+        QList<OrchestrationNodeItem::BatchItem> items;
+        items.append({QStringLiteral("first"), materials[0].second});
+        items.append({QStringLiteral("second"), materials[0].second});
+        window.setNodeBatchItems(container, items);
+
+        calango::core::WorkflowReport delivered;
+        int finishedSignals = 0;
+        QObject::connect(&window, &OrchestrationWindow::runFinished,
+                         [&](const calango::core::WorkflowReport& report) {
+                             delivered = report;
+                             ++finishedSignals;
+                         });
+
+        window.sendToProcesses();
+        settle(probe, 180000);
+        // The last pass's job completes after the node reaches Done; give the
+        // run its moment to emit.
+        QElapsedTimer timer;
+        timer.start();
+        while (finishedSignals == 0 && timer.elapsed() < 30000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+
+        check(finishedSignals == 1, "the run reports itself exactly once");
+        check(delivered.batchTotal == 2, "the report knows it was a 2-pass run");
+        // Container + probe, twice.
+        check(delivered.outcomes.size() == 4,
+              "one outcome per node per pass, not per node");
+        check(delivered.tallyFor(0).succeeded == 2
+                  && delivered.tallyFor(1).succeeded == 2,
+              "each structure's path is tallied on its own");
+        check(delivered.batchLabels()
+                  == QStringList({QStringLiteral("first"),
+                                  QStringLiteral("second")}),
+              "and each pass carries the label of its structure");
+        check(delivered.allSucceeded(), "the run succeeded as a whole");
+
+        // Physics extracted from what the node actually wrote.
+        bool sawEnergy = false;
+        for (const auto& outcome : delivered.outcomes)
+            for (const auto& metric : outcome.metrics)
+                sawEnergy = sawEnergy
+                    || metric.key == QLatin1String("final_energy_ev");
+        check(sawEnergy,
+              "a completed calculation contributed its final energy, read from "
+              "the metrics.json its script wrote");
+        for (const auto& outcome : delivered.outcomes) {
+            for (const auto& metric : outcome.metrics) {
+                if (metric.key != QLatin1String("final_energy_ev"))
+                    continue;
+                check(std::abs(metric.number + 4.75) < 1e-9,
+                      "and it is the LAST sample of that history");
+            }
+        }
+
+        // And the same report is on disk, which is what the CLI reads.
+        const calango::core::WorkflowReport onDisk =
+            calango::core::WorkflowReport::read(window.orchestrationRoot());
+        check(onDisk.outcomes.size() == delivered.outcomes.size()
+                  && onDisk.batchTotal == delivered.batchTotal,
+              "the identical report is written beside the run");
+        check(QFile::exists(window.orchestrationRoot()
+                            + QStringLiteral("/workflow_report.txt")),
+              "with a plain-text twin for a terminal");
     }
 
     if (failures)

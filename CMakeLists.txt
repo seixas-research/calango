@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.9
+    VERSION 26.8.10
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -207,6 +207,9 @@ qt_add_executable(calango
     src/core/GwScriptGenerator.cpp
     src/core/GrapheneOxideBuilder.hpp
     src/core/GrapheneOxideBuilder.cpp
+    src/core/GrapheneOxideSites.cpp
+    src/core/WorkflowReport.cpp
+    src/core/GrapheneOxideMdmcScriptGenerator.cpp
     src/core/BornChargesScriptGenerator.hpp
     src/core/BornChargesScriptGenerator.cpp
     src/core/RamanIrScriptGenerator.hpp
@@ -615,6 +618,10 @@ qt_add_executable(calango
     src/gui/AddAdsorbateDialog.cpp
     src/gui/GrapheneOxideWizard.hpp
     src/gui/GrapheneOxideWizard.cpp
+    src/gui/GrapheneOxideMdmcWizard.hpp
+    src/gui/GrapheneOxideMdmcWizard.cpp
+    src/gui/WorkflowReportDialog.hpp
+    src/gui/WorkflowReportDialog.cpp
     src/gui/OpticsPlotStyleDialog.hpp
     src/gui/OpticsPlotStyleDialog.cpp
     src/gui/EffectiveBandsWizard.hpp
@@ -710,6 +717,7 @@ qt_add_resources(calango "icons"
         assets/icons/camera-lens-line.svg
         assets/icons/checkbox-circle-line.svg
         assets/icons/close-circle-line.svg
+        assets/icons/stop-circle-fill.svg
         assets/icons/clapperboard-fill.svg
         assets/icons/close-line.svg
         assets/icons/code-box-fill.svg
@@ -1302,6 +1310,11 @@ if(CALANGO_BUILD_TESTS)
         src/python_bridge/MaterialsProject.cpp
         src/gui/FilmTimelineWidget.cpp
         src/gui/GrapheneOxideWizard.cpp
+        src/gui/GrapheneOxideMdmcWizard.cpp
+        src/core/GrapheneOxideMdmcScriptGenerator.cpp
+        src/gui/WorkflowReportDialog.cpp
+        src/core/WorkflowReport.cpp
+        src/core/BandGap.cpp
         src/gui/HubbardParametersDialog.cpp
         src/gui/GeometryConstraintsDialog.cpp
         src/gui/OpticsPlotStyleDialog.cpp
@@ -1452,6 +1465,7 @@ if(CALANGO_BUILD_TESTS)
         src/gui/CalculatorParameters.cpp
         src/core/AseScriptGenerator.cpp
         src/core/GrapheneOxideBuilder.cpp
+        src/core/GrapheneOxideSites.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
         src/core/Element.cpp
@@ -1536,6 +1550,8 @@ if(CALANGO_BUILD_TESTS)
         src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
         src/gui/OrchestrationProvenance.cpp
+        src/core/WorkflowReport.cpp
+        src/core/BandGap.cpp
         src/gui/SimulationWizardBase.cpp
         src/gui/GpawElectronicRows.cpp
         src/gui/HubbardParametersDialog.cpp
@@ -1597,6 +1613,8 @@ if(CALANGO_BUILD_TESTS)
         src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
         src/gui/OrchestrationProvenance.cpp
+        src/core/WorkflowReport.cpp
+        src/core/BandGap.cpp
         src/gui/SimulationWizardBase.cpp
         src/gui/GpawElectronicRows.cpp
         src/gui/HubbardParametersDialog.cpp
@@ -1657,6 +1675,8 @@ if(CALANGO_BUILD_TESTS)
         src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
         src/gui/OrchestrationProvenance.cpp
+        src/core/WorkflowReport.cpp
+        src/core/BandGap.cpp
         src/gui/SimulationWizardBase.cpp
         src/gui/GpawElectronicRows.cpp
         src/gui/HubbardParametersDialog.cpp
@@ -1886,12 +1906,39 @@ if(CALANGO_BUILD_TESTS)
     add_executable(calango_graphene_oxide_test
         tests/GrapheneOxideTest.cpp
         src/core/GrapheneOxideBuilder.cpp
+        src/core/GrapheneOxideSites.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
         src/core/Element.cpp
     )
     target_include_directories(calango_graphene_oxide_test PRIVATE src)
     add_test(NAME graphene_oxide COMMAND calango_graphene_oxide_test)
+
+    # Workflow report. Linked against Qt::Core ONLY — no Widgets, no Gui — so
+    # the "decoupled from the GUI" claim is enforced by the build rather than
+    # asserted in a comment. If someone reaches for a QWidget in here, this
+    # target stops linking.
+    add_executable(calango_workflow_report_test
+        tests/WorkflowReportTest.cpp
+        src/core/WorkflowReport.cpp
+        src/core/BandGap.cpp
+    )
+    target_include_directories(calango_workflow_report_test PRIVATE src)
+    target_link_libraries(calango_workflow_report_test PRIVATE Qt6::Core)
+    add_test(NAME workflow_report COMMAND calango_workflow_report_test)
+
+    # Reactive-site graph: the pool bookkeeping under the Monte Carlo sampler.
+    # Single sites and pair sites are COUPLED — occupying one carbon invalidates
+    # every pair containing it — and getting that coupling wrong puts two groups
+    # on one carbon rather than crashing. Driven by long random walks with the
+    # invariant asserted throughout, because the reachable states after a few
+    # hundred mixed moves are not the ones anyone writes a targeted case for.
+    add_executable(calango_graphene_oxide_sites_test
+        tests/GrapheneOxideSitesTest.cpp
+        src/core/GrapheneOxideSites.cpp
+    )
+    target_include_directories(calango_graphene_oxide_sites_test PRIVATE src)
+    add_test(NAME graphene_oxide_sites COMMAND calango_graphene_oxide_sites_test)
 
     # Native SQS generator: composition exactness across binary/ternary/
     # quaternary alloys and, above all, that the generated decoration really is
@@ -1934,6 +1981,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/FermiSurfaceScriptGenerator.cpp
         src/core/TopologyScriptGenerator.cpp
         src/core/ClusterExpansionScriptGenerator.cpp
+        src/core/GrapheneOxideMdmcScriptGenerator.cpp
         src/core/BandUnfolding.cpp
         src/core/UnitCell.cpp
     )

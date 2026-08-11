@@ -99,6 +99,22 @@ public:
         /// Groups are drawn and placed until the whole structure reaches a
         /// requested C/O ratio — the quantity an experiment actually measures.
         TargetRatio,
+        /// The basal plane and the rim are dosed INDEPENDENTLY: an oxygen
+        /// budget per basal carbon, and separately a fraction of the rim that
+        /// carries a group at all.
+        ///
+        /// Why this exists next to TargetRatio rather than replacing it. A
+        /// single O/C with a basal/edge split ties the two together: asking for
+        /// a more oxidized basal plane silently moves oxygen off the rim, and
+        /// asking for a bare rim silently makes the basal plane more oxidized,
+        /// because the split is a partition of one budget. That is the wrong
+        /// model for graphene oxide, where the two are set by different
+        /// chemistry — basal epoxide/hydroxyl coverage tracks the oxidant
+        /// exposure, while rim carboxyl/carbonyl content tracks the exfoliation
+        /// and the workup, and a flake can be heavily oxidized on one and clean
+        /// on the other. TargetRatio remains the right mode when what you have
+        /// is an XPS composition for the whole structure.
+        DecoupledRegions,
     };
 
     struct Config {
@@ -160,6 +176,44 @@ public:
         /// alone once the other runs out of sites.
         double basalOxygenShare = 0.7;
 
+        // -- Dosing::DecoupledRegions -------------------------------------
+        //
+        // Two independent dials, each defined against ITS OWN carbon pool, so
+        // moving one cannot move the other.
+
+        /// Oxygen atoms per BASAL carbon delivered by basal groups, in
+        /// [0, 0.5]. Not the structure's O/C: the rim's oxygen and the carbons
+        /// carboxyls bring are excluded, precisely so that this number does not
+        /// change when the rim setting does. 0.5 is the C2O ceiling — every
+        /// oxygen needs two carbons to sit on.
+        double basalOxygenToCarbon = 0.25;
+
+        /// Fraction of the EDGE carbons carrying a functional group rather than
+        /// a hydrogen, in [0, 1].
+        ///
+        /// Exactly 0 means the rim is strictly hydrogen-terminated: not "very
+        /// little edge chemistry" but none, which is the state a
+        /// hydrogen-passivated flake is actually in and the correct starting
+        /// point for studying basal chemistry alone. As it rises, edge
+        /// hydrogens are replaced by carboxyls and carbonyls in the proportion
+        /// `carboxylShare` sets.
+        double edgeOxidation = 0.0;
+
+        /// Share of the EDGE oxygen delivered as carboxyl rather than carbonyl,
+        /// in [0, 1]. 0 is all quinone-like =O; 1 is all -COOH.
+        ///
+        /// Stated in OXYGEN because that is what the composition is quoted in,
+        /// and converted to a per-group propensity internally: a carboxyl
+        /// carries two oxygens and a carbonyl one, so an even split of the
+        /// oxygen is not an even split of the groups.
+        double carboxylShare = 0.5;
+
+        /// Hydrogen per oxygen on the basal plane — equivalently the hydroxyl
+        /// share of the basal groups, since an epoxide brings one oxygen and no
+        /// hydrogen while a hydroxyl brings one of each. 0 is all epoxide,
+        /// 1 all hydroxyl.
+        double basalHydroxylShare = 0.5;
+
         /// Deterministic seed. The same seed and configuration reproduce the
         /// same structure exactly — a generated structure nobody can regenerate
         /// is not a result.
@@ -212,6 +266,15 @@ public:
         /// substrate had enough reactive sites to get there.
         double targetRatio = 0.0;
         bool targetReached = true;
+
+        /// Dosing::DecoupledRegions only — each dial's request and what it
+        /// actually achieved, reported SEPARATELY because the whole point of
+        /// the mode is that the two are independent. A rim that ran out of
+        /// room must not show up as a basal shortfall, and vice versa.
+        int edgeGroupsRequested = 0;
+        int edgeGroupsPlaced = 0;
+        int basalOxygenRequested = 0;
+        int basalOxygenPlaced = 0;
         /// Human-readable account of any shortfall, empty when every request
         /// was met. Never silently discarded — an unreported shortfall means
         /// the user believes they have a composition they do not have.

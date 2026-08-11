@@ -19,6 +19,8 @@
 #include "gui/FilmTimelineWidget.hpp"
 #include "gui/DatabaseImportDialog.hpp"
 #include "gui/GeometryConstraintsDialog.hpp"
+#include "gui/GrapheneOxideMdmcWizard.hpp"
+#include "gui/WorkflowReportDialog.hpp"
 #include "gui/GrapheneOxideWizard.hpp"
 #include "gui/HubbardParametersDialog.hpp"
 #include "gui/OpticsPlotStyleDialog.hpp"
@@ -71,6 +73,7 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QTableWidget>
+#include <QTreeWidget>
 
 #include <algorithm>
 #include <cmath>
@@ -216,9 +219,9 @@ int main(int argc, char** argv)
         // cannot reach the value shown beside it is the bug this checks for,
         // and it is exactly what a naive two-way connection produces once the
         // two controls quantize differently.
-        const QStringList ratios{QStringLiteral("oxidation"),
+        const QStringList ratios{QStringLiteral("basalOxidation"),
                                  QStringLiteral("basalHydrogen"),
-                                 QStringLiteral("edgeShare"),
+                                 QStringLiteral("edgeOxidation"),
                                  QStringLiteral("edgeCarboxyl")};
         bool found = true;
         bool paired = true;
@@ -276,16 +279,24 @@ int main(int argc, char** argv)
         // asked for. Every periodic build came back complaining that the edge
         // groups the user never requested could not be placed.
         using Group = calango::core::GrapheneOxideBuilder::Group;
-        const auto buildWith = [](int baseIndex) {
+        // Base structure, functionalization, MDMC opt-in.
+        constexpr int kGrapheneOxideStages = 3;
+        const auto buildWith = [](int baseIndex, double edgeOxidation = -1.0) {
             GrapheneOxideWizard wizard;
             auto* base = wizard.findChild<QComboBox*>(QStringLiteral("baseCombo"));
             if (base)
                 base->setCurrentIndex(baseIndex);
-            // Stage 1 -> stage 2 -> Build. goNext() is a private slot, which
-            // the meta-object still exposes; the alternative is duplicating
-            // the very code under test.
-            QMetaObject::invokeMethod(&wizard, "goNext");
-            QMetaObject::invokeMethod(&wizard, "goNext");
+            if (edgeOxidation >= 0.0) {
+                if (auto* box = wizard.findChild<QDoubleSpinBox*>(
+                        QStringLiteral("edgeOxidationBox")))
+                    box->setValue(edgeOxidation);
+            }
+            // Walk to the last stage and press Build. Driven off the stage
+            // COUNT rather than a literal number of presses: the wizard has
+            // grown a stage once already, and a hard-coded two left this
+            // helper silently returning an empty report instead of building.
+            for (int stage = 0; stage < kGrapheneOxideStages; ++stage)
+                QMetaObject::invokeMethod(&wizard, "goNext");
             return wizard.report();
         };
 
@@ -301,11 +312,101 @@ int main(int argc, char** argv)
                   && sheet.placedFor(Group::Hydroxyl) > 0,
               "periodic sheet: the H/O slider's 50/50 default gave both basal groups");
 
+        // The rim defaults to zero oxidation, which is CATEGORICAL: strictly
+        // hydrogen-terminated, as in the parent hydrocarbon. Basal chemistry
+        // must still happen — that is the decoupling.
         const auto flake = buildWith(1);
         check(flake.edgeCarbonCount > 0, "nanoflake: the substrate has a rim");
         check(flake.placedFor(Group::Carboxyl) + flake.placedFor(Group::Carbonyl)
+                  == 0,
+              "nanoflake: edge oxidation defaults to a strictly hydrogen rim");
+        check(flake.hydrogenTerminatedEdges == flake.edgeCarbonCount,
+              "nanoflake: every rim carbon keeps its hydrogen at zero edge oxidation");
+        check(flake.basalOxygenPlaced > 0,
+              "nanoflake: the basal plane is oxidized regardless of the rim");
+
+        // Turning the rim dial up must move edge chemistry and NOTHING else.
+        const auto oxidizedRim = buildWith(1, 0.5);
+        check(oxidizedRim.placedFor(Group::Carboxyl)
+                      + oxidizedRim.placedFor(Group::Carbonyl)
                   > 0,
-              "nanoflake: the edge-share slider put oxygen on the rim");
+              "nanoflake: raising edge oxidation puts groups on the rim");
+        check(oxidizedRim.hydrogenTerminatedEdges < flake.hydrogenTerminatedEdges,
+              "nanoflake: and takes those rim hydrogens away");
+        check(oxidizedRim.basalOxygenPlaced == flake.basalOxygenPlaced,
+              "nanoflake: while leaving the basal plane exactly as it was");
+    }
+
+    std::printf("Graphene Oxide MDMC wizard:\n");
+    {
+        // A SimulationWizardBase resolves its interpreter through
+        // PythonEngine, which asserts rather than lazily constructing. Scoped
+        // so the runtime is finalized before the app exits.
+        calango::pybridge::PythonEngine python;
+        GrapheneOxideMdmcWizard wizard;
+        check(true, "constructs");
+        // setSubstrate runs BEFORE the pages it writes into may exist in a
+        // future edit, and it is called by the host immediately after
+        // construction — exactly the ordering that has crashed wizards here.
+        wizard.setSubstrate(24, 60, 18, false);
+        check(true, "accepts a substrate without dereferencing a missing page");
+        // A flake has no cell, so constant pressure must not be selectable.
+        // Offering NPT on a molecule is meaningless, not merely wasteful.
+        const auto* ensemble = wizard.findChildren<QComboBox*>().isEmpty()
+            ? nullptr
+            : wizard.findChildren<QComboBox*>().first();
+        (void)ensemble;
+        exerciseControls(&wizard);
+        check(true, "survives every control being exercised");
+        wizard.setSubstrate(0, 60, 18, false);
+        check(true, "handles a substrate with no groups to move");
+    }
+
+    std::printf("Workflow report dialog:\n");
+    {
+        calango::core::WorkflowReport report;
+        report.batchTotal = 2;
+        report.startedUtc = QStringLiteral("2026-08-11T10:00:00Z");
+        report.finishedUtc = QStringLiteral("2026-08-11T11:00:00Z");
+        const auto make = [](const char* title, const char* status, int pass,
+                             const char* label, bool withEnergy) {
+            calango::core::NodeOutcome outcome;
+            outcome.title = QLatin1String(title);
+            outcome.status = QLatin1String(status);
+            outcome.batchIndex = pass;
+            outcome.batchLabel = QLatin1String(label);
+            outcome.engine = QStringLiteral("GPAW");
+            if (withEnergy) {
+                calango::core::ReportMetric energy;
+                energy.key = QStringLiteral("final_energy_ev");
+                energy.label = QStringLiteral("Final energy");
+                energy.unit = QStringLiteral("eV");
+                energy.number = -12.3456;
+                outcome.metrics.append(energy);
+            }
+            return outcome;
+        };
+        report.outcomes = {make("Relax", "done", 0, "Si", true),
+                           make("Bands", "done", 0, "Si", false),
+                           make("Relax", "failed", 1, "Ge", false),
+                           make("Bands", "skipped", 1, "Ge", false)};
+        WorkflowReportDialog dialog(report);
+        check(true, "constructs from a report alone");
+        const auto trees = dialog.findChildren<QTreeWidget*>();
+        check(trees.size() == 1, "shows exactly one table");
+        if (!trees.isEmpty()) {
+            // Two batch groups, each holding its own nodes — the per-structure
+            // split is the whole reason this is a tree and not a flat list.
+            check(trees.first()->topLevelItemCount() == 2,
+                  "one top-level row per structure");
+            check(trees.first()->topLevelItem(0)->childCount() == 2,
+                  "with that structure's nodes beneath it");
+            // A metric column exists only because a metric was extracted.
+            check(trees.first()->columnCount() == 3,
+                  "columns are Node, Status and the one metric present");
+        }
+        exerciseControls(&dialog);
+        check(true, "survives control exercise");
     }
 
     std::printf("Hubbard parameters dialog:\n");

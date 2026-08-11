@@ -12,6 +12,7 @@
 // against a real ASE install (see the accompanying check in the repo docs).
 
 #include "core/AseScriptGenerator.hpp"
+#include "core/GrapheneOxideMdmcScriptGenerator.hpp"
 #include "core/BornChargesScriptGenerator.hpp"
 #include "core/CddScriptGenerator.hpp"
 #include "core/ClusterExpansionScriptGenerator.hpp"
@@ -122,9 +123,32 @@ int main(int argc, char** argv)
             std::ofstream out(dir + "/" + name);
             out << AseScriptGenerator::generate(config, "structure.extxyz");
         };
+        // Generators that emit a whole script of their own rather than an
+        // AseScriptGenerator task go through this instead.
+        const auto dumpText = [&dir](const std::string& name,
+                                     const std::string& script) {
+            std::ofstream out(dir + "/" + name);
+            out << script;
+        };
         CalculatorConfig mace = maceConfig();
         mace.macePrecision = MacePrecision::Float32;
         mace.maceDevice = "mps";
+        // Graphene oxide MDMC: the longest generated script in the project
+        // and the one with the most Python of its own, so the lint matters
+        // most here. Emitted for both ensembles - the NPT branch adds an
+        // import and a different integrator, so one dump would leave half of
+        // it unchecked.
+        {
+            GrapheneOxideMdmcConfig mdmc;
+            mdmc.calculator.calculator = CalculatorKind::Mace;
+            dumpText("graphene_oxide_mdmc_nvt.py",
+                 GrapheneOxideMdmcScriptGenerator::generate(mdmc));
+            mdmc.constantPressure = true;
+            mdmc.pressureGpa = 0.1;
+            dumpText("graphene_oxide_mdmc_npt.py",
+                 GrapheneOxideMdmcScriptGenerator::generate(mdmc));
+        }
+
         dump("mace_single_point.py", mace);
 
         CalculatorConfig maceCustom = maceConfig();

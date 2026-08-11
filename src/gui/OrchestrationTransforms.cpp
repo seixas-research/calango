@@ -207,12 +207,26 @@ QString DefectSpec::describe() const
     return joinShort(parts);
 }
 
+QString DefectSpec::modeName(Mode mode)
+{
+    return mode == Mode::Separate
+        ? QObject::tr("one material per defect")
+        : QObject::tr("one material with every defect");
+}
+
 QJsonObject DefectSpec::toJson() const
 {
     QJsonArray array;
     for (const DefectOperation& operation : operations)
         array.append(operation.toJson());
-    return QJsonObject{{QStringLiteral("operations"), array}};
+    return QJsonObject{
+        {QStringLiteral("operations"), array},
+        // Written as a word rather than an enum index: a document is read by
+        // calango-cli and by people, and "separate" survives a reordering of
+        // the enum that "1" does not.
+        {QStringLiteral("mode"),
+         mode == Mode::Separate ? QStringLiteral("separate")
+                                : QStringLiteral("combined")}};
 }
 
 DefectSpec DefectSpec::fromJson(const QJsonObject& object)
@@ -221,7 +235,57 @@ DefectSpec DefectSpec::fromJson(const QJsonObject& object)
     for (const QJsonValue& value :
          object.value(QStringLiteral("operations")).toArray())
         spec.operations.append(DefectOperation::fromJson(value.toObject()));
+    // Absent in documents written before the mode existed, and those all meant
+    // the combined recipe — which is the default, so they load unchanged.
+    spec.mode = object.value(QStringLiteral("mode")).toString()
+            == QLatin1String("separate")
+        ? Mode::Separate
+        : Mode::Combined;
     return spec;
+}
+
+QList<DefectVariant> applyDefectSet(const core::Structure& structure,
+                                    const DefectSpec& spec, QString* error)
+{
+    if (spec.isEmpty()) {
+        if (error)
+            *error = QObject::tr("No defect operations are configured.");
+        return {};
+    }
+
+    if (spec.mode == DefectSpec::Mode::Combined) {
+        QString problem;
+        core::Structure result = applyDefects(structure, spec, &problem);
+        if (!problem.isEmpty()) {
+            if (error)
+                *error = problem;
+            return {};
+        }
+        return {DefectVariant{spec.describe(), std::move(result)}};
+    }
+
+    // One material per operation, each applied to the PRISTINE input. Built by
+    // handing applyDefects a one-operation recipe rather than by reimplementing
+    // the edits: index resolution, the empty-match refusal and the ordering
+    // rules are subtle enough that a second copy of them would drift.
+    QList<DefectVariant> variants;
+    variants.reserve(spec.operations.size());
+    for (const DefectOperation& operation : spec.operations) {
+        DefectSpec single;
+        single.operations.append(operation);
+        QString problem;
+        core::Structure result = applyDefects(structure, single, &problem);
+        if (!problem.isEmpty()) {
+            // All or nothing: a screening set missing the one dopant that could
+            // not be placed draws its conclusion from the wrong set, and does
+            // it silently.
+            if (error)
+                *error = problem;
+            return {};
+        }
+        variants.append(DefectVariant{operation.describe(), std::move(result)});
+    }
+    return variants;
 }
 
 // ---------------------------------------------------------------------------

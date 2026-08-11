@@ -42,7 +42,9 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPen>
+#include <QGroupBox>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QRegularExpression>
 #include <QScrollBar>
 #include <QSettings>
@@ -378,6 +380,31 @@ QString orchestrationTaskDisplayName(OrchestrationTask task)
         break;
     }
     return QObject::tr("Single-Point Calculation");
+}
+
+QString orchestrationTaskShortName(OrchestrationTask task)
+{
+    switch (task) {
+    case OrchestrationTask::GeometryOptimization: return QObject::tr("Relax");
+    case OrchestrationTask::SinglePoint:          return QObject::tr("Energy");
+    case OrchestrationTask::MolecularDynamics:    return QObject::tr("MD");
+    case OrchestrationTask::Phonon:               return QObject::tr("Phonon");
+    case OrchestrationTask::ElectronicBands:      return QObject::tr("Bands");
+    case OrchestrationTask::Optics:               return QObject::tr("Optics");
+    case OrchestrationTask::Workfunction:         return QObject::tr("Work fn");
+    case OrchestrationTask::TwoDBands:            return QObject::tr("2D bands");
+    case OrchestrationTask::Wannier:              return QObject::tr("Wannier");
+    case OrchestrationTask::BornCharges:          return QObject::tr("Born Z*");
+    case OrchestrationTask::Gw:                   return QObject::tr("GW");
+    case OrchestrationTask::ChargeDensityDifference: return QObject::tr("CDD");
+    case OrchestrationTask::RamanIr:              return QObject::tr("Raman/IR");
+    case OrchestrationTask::ChargedDefects:       return QObject::tr("Charged");
+    case OrchestrationTask::ChargedDefects2d:     return QObject::tr("Charged 2D");
+    case OrchestrationTask::Container:            return QObject::tr("Container");
+    case OrchestrationTask::Supercell:            return QObject::tr("Supercell");
+    case OrchestrationTask::DefectGenerator:      return QObject::tr("Defect");
+    }
+    return QObject::tr("Node");
 }
 
 QList<OrchestrationTask> orchestrationTasks()
@@ -776,8 +803,18 @@ void OrchestrationNodeItem::paint(QPainter* painter,
     case OrchestrationTask::DefectGenerator:
         primary = defects_.isEmpty() ? QObject::tr("No operations")
                                      : defects_.describe();
-        secondary = QObject::tr("%n operation(s), in process", nullptr,
-                                static_cast<int>(defects_.operations.size()));
+        // How many MATERIALS, not how many operations. The two are the same
+        // number in one mode and unrelated in the other, and the count that
+        // decides how long the pipeline runs is the materials one — a node
+        // reading "4 operations" that is about to make the whole downstream
+        // graph run four times should say so on its face.
+        secondary = defects_.isEmpty()
+            ? QObject::tr("in process, no calculator")
+            : (defects_.mode == DefectSpec::Mode::Separate
+                   ? QObject::tr("%n material(s), one per defect", nullptr,
+                                 defects_.variantCount())
+                   : QObject::tr("1 material, %n defect(s)", nullptr,
+                                 static_cast<int>(defects_.operations.size())));
         break;
     default:
         break;
@@ -1474,6 +1511,38 @@ bool editDefects(QWidget* parent, DefectSpec* spec)
     }
     layout->addWidget(table, 1);
 
+    // The mode: what the rows above MEAN together. Placed under the table
+    // because it is a statement about the whole recipe, and worded as an
+    // outcome ("one material with...") rather than as a term of art — the
+    // difference between a di-vacancy and a set of two vacancies is the entire
+    // question, and nobody should have to infer it from the word "combined".
+    auto* modeBox = new QGroupBox(QObject::tr("These operations produce"),
+                                  &dialog);
+    auto* modeLayout = new QVBoxLayout(modeBox);
+    auto* combinedRadio = new QRadioButton(
+        QObject::tr("One material carrying every operation at once"), modeBox);
+    combinedRadio->setToolTip(QObject::tr(
+        "Every row is applied to the same cell — a di-vacancy, a substitution "
+        "beside an interstitial, a defect complex.\n\n"
+        "The node produces ONE structure, and the pipeline downstream runs "
+        "once."));
+    auto* separateRadio = new QRadioButton(
+        QObject::tr("One material per operation, each on the pristine cell"),
+        modeBox);
+    separateRadio->setToolTip(QObject::tr(
+        "Each row is applied on its own to the structure that reaches this "
+        "node, giving a SET of singly-defective cells — which is what a "
+        "formation-energy or dopant-screening study needs, because the whole "
+        "point is that the defects do not see each other.\n\n"
+        "The node produces one structure per row, each opens in its own tab, "
+        "and the pipeline downstream runs once per defect — exactly as a "
+        "Structure Container makes it run once per structure."));
+    modeLayout->addWidget(combinedRadio);
+    modeLayout->addWidget(separateRadio);
+    (spec->mode == DefectSpec::Mode::Separate ? separateRadio : combinedRadio)
+        ->setChecked(true);
+    layout->addWidget(modeBox);
+
     auto* rowButtons = new QHBoxLayout;
     auto* addRow = new QPushButton(QObject::tr("Add operation"), &dialog);
     auto* removeRow = new QPushButton(QObject::tr("Remove operation"), &dialog);
@@ -1502,6 +1571,8 @@ bool editDefects(QWidget* parent, DefectSpec* spec)
         return false;
 
     DefectSpec edited;
+    edited.mode = separateRadio->isChecked() ? DefectSpec::Mode::Separate
+                                             : DefectSpec::Mode::Combined;
     for (int row = 0; row < table->rowCount(); ++row) {
         DefectOperation operation;
         if (auto* kind =
@@ -1663,6 +1734,17 @@ OrchestrationWindow::OrchestrationWindow(
            "Each node appears in the Processes panel as it is dispatched, and "
            "its metrics stream into Results. This RESTARTS everything — use "
            "Resume to continue an interrupted run."));
+    abortButton_ = makeButton(
+        QStringLiteral("stop-circle-fill"),
+        tr("Abort — stop the running orchestration.\n\n"
+           "The node in flight is killed and marked failed; the nodes still "
+           "queued are left unrun. Everything that already finished KEEPS its "
+           "status, its directory and its results, so Resume picks up from "
+           "exactly there.\n\n"
+           "This is the counterpart of Resume, not an undo: nothing already "
+           "computed is discarded, and the run folder is left readable rather "
+           "than half-written."));
+
     // No Close button: as a dock the panel's visibility belongs to its own
     // title bar and to View → Orchestration. A button calling close() here would
     // hide the widget INSIDE the dock and leave an empty frame behind.
@@ -1695,6 +1777,8 @@ OrchestrationWindow::OrchestrationWindow(
             &OrchestrationWindow::resumeFromFailure);
     connect(runButton_, &QPushButton::clicked, this,
             &OrchestrationWindow::sendToProcesses);
+    connect(abortButton_, &QPushButton::clicked, this,
+            &OrchestrationWindow::abortOrchestration);
     updateRunControls();
     for (QPushButton* button : findChildren<QPushButton*>()) {
         button->setAutoDefault(false);
@@ -2470,7 +2554,32 @@ void OrchestrationWindow::updateRunControls()
         runButton_->setEnabled(runningNode_ == nullptr);
     if (resumeButton_)
         resumeButton_->setEnabled(canResume());
+    if (abortButton_)
+        abortButton_->setEnabled(runningNode_ != nullptr);
 }
+
+namespace {
+
+/// How many passes this node makes the pipeline take, or 0 if it makes none.
+///
+/// A Structure Container is the obvious batch source: one pass per structure.
+/// A Defect Generator in "one material per defect" mode is the other one, and
+/// for the same reason — it produces N materials, and the pipeline computes
+/// each of them. Naming the concept once is what keeps the batch plan, the
+/// per-pass re-queue and the labelling from disagreeing about which nodes
+/// vary.
+int batchDimensionOf(const OrchestrationNodeItem* node)
+{
+    if (node->task() == OrchestrationTask::Container)
+        return static_cast<int>(node->batchItems().size());
+    if (node->task() == OrchestrationTask::DefectGenerator)
+        return node->defectSpec().mode == DefectSpec::Mode::Separate
+            ? node->defectSpec().variantCount()
+            : 0;
+    return 0;
+}
+
+} // namespace
 
 bool OrchestrationWindow::dependsOnContainer(OrchestrationNodeItem* node) const
 {
@@ -2486,7 +2595,7 @@ bool OrchestrationWindow::dependsOnContainer(OrchestrationNodeItem* node) const
         if (std::find(seen.begin(), seen.end(), current) != seen.end())
             continue;
         seen.push_back(current);
-        if (current->task() == OrchestrationTask::Container)
+        if (batchDimensionOf(current) > 0)
             return true;
         for (OrchestrationEdgeItem* edge : edges_)
             if (edge->to() == current)
@@ -2495,17 +2604,62 @@ bool OrchestrationWindow::dependsOnContainer(OrchestrationNodeItem* node) const
     return false;
 }
 
+int OrchestrationWindow::containerBatchIndex() const
+{
+    // The slow digit of the odometer: the container advances once the defect
+    // set has been walked through.
+    return batchDefectSpan_ > 0 ? batchIndex_ / batchDefectSpan_ : batchIndex_;
+}
+
+int OrchestrationWindow::defectBatchIndex() const
+{
+    return batchDefectSpan_ > 0 ? batchIndex_ % batchDefectSpan_ : 0;
+}
+
+QString OrchestrationWindow::tabTitleFor(const OrchestrationNodeItem* node) const
+{
+    // "Si · Relax", "Si / remove 0 · Defect" — the material first because that
+    // is what distinguishes one tab from its neighbours in a batch, then the
+    // short task name. Capped so a long container label cannot push the task
+    // out of the visible part of the tab.
+    constexpr int kMaxLabel = 22;
+    QString label = batchLabel();
+    if (label.isEmpty())
+        label = node->materialName();
+    if (label.size() > kMaxLabel)
+        label = label.left(kMaxLabel - 1) + QChar(0x2026);
+    const QString task = orchestrationTaskShortName(node->task());
+    return label.isEmpty() ? task
+                           : QStringLiteral("%1 · %2").arg(label, task);
+}
+
 QString OrchestrationWindow::batchLabel() const
 {
+    QStringList parts;
     for (const OrchestrationNodeItem* node : nodes_) {
         if (node->task() != OrchestrationTask::Container
             || node->batchItems().isEmpty())
             continue;
-        const int index =
-            std::min(batchIndex_, static_cast<int>(node->batchItems().size()) - 1);
-        return node->batchItems()[index].first;
+        const int index = std::min(containerBatchIndex(),
+                                   static_cast<int>(node->batchItems().size()) - 1);
+        parts << node->batchItems()[index].first;
+        break;
     }
-    return QString();
+    // Both dimensions name the pass when both are present: a run folder saying
+    // only "Si" for three different defects is three folders you cannot tell
+    // apart.
+    for (const OrchestrationNodeItem* node : nodes_) {
+        if (node->task() != OrchestrationTask::DefectGenerator
+            || batchDimensionOf(node) <= 0)
+            continue;
+        const auto& operations = node->defectSpec().operations;
+        const int index =
+            std::min(defectBatchIndex(), static_cast<int>(operations.size()) - 1);
+        if (index >= 0)
+            parts << operations[index].describe();
+        break;
+    }
+    return parts.join(QStringLiteral(" / "));
 }
 
 void OrchestrationWindow::enqueue(OrchestrationNodeItem* node)
@@ -2676,30 +2830,63 @@ void OrchestrationWindow::sendToProcesses()
     // structure of the shorter list, which is a study nobody asked for.
     batchIndex_ = 0;
     batchLength_ = 1;
-    const OrchestrationNodeItem* reference = nullptr;
+    // Two INDEPENDENT dimensions, and they multiply.
+    //
+    // Containers are one dimension: several of them supply one structure each
+    // per pass, so they have to agree on how many passes there are — a pass
+    // that could give one container an item and not another is not a pass.
+    //
+    // Separate-mode Defect Generators are the other, and they are not the same
+    // kind of thing. A Defect Generator is downstream of the geometry, not a
+    // source of it: it MULTIPLIES whatever reaches it. One container holding a
+    // single structure feeding a generator that makes three defective versions
+    // of it is the ordinary case, and requiring the two to agree would refuse
+    // exactly the pipeline the feature exists for.
+    batchDefectSpan_ = 1;
+    int containerSpan = 1;
+    const OrchestrationNodeItem* containerRef = nullptr;
+    const OrchestrationNodeItem* defectRef = nullptr;
     for (OrchestrationNodeItem* node : nodes_) {
-        if (node->task() != OrchestrationTask::Container)
-            continue;
-        const int count = static_cast<int>(node->batchItems().size());
-        if (count == 0) {
+        if (node->task() == OrchestrationTask::Container
+            && node->batchItems().isEmpty()) {
             refuse(node->configurationProblem());
             return;
         }
+        const int count = batchDimensionOf(node);
+        if (count == 0)
+            continue;
+        const bool isContainer = node->task() == OrchestrationTask::Container;
+        const OrchestrationNodeItem*& reference =
+            isContainer ? containerRef : defectRef;
+        int& span = isContainer ? containerSpan : batchDefectSpan_;
         if (!reference) {
             reference = node;
-            batchLength_ = count;
-        } else if (count != batchLength_) {
-            refuse(tr("%1 holds %2 structures but %3 holds %4.\n\n"
-                      "The pipeline makes one pass per structure, so every "
-                      "container has to supply one per pass. Give them the "
-                      "same length, or put them in separate pipelines.")
-                       .arg(reference->title())
-                       .arg(batchLength_)
-                       .arg(node->title())
-                       .arg(count));
+            span = count;
+        } else if (count != span) {
+            refuse(isContainer
+                       ? tr("%1 holds %2 structures but %3 holds %4.\n\n"
+                            "The pipeline makes one pass per structure, so "
+                            "every container has to supply one per pass. Give "
+                            "them the same length, or put them in separate "
+                            "pipelines.")
+                             .arg(reference->title())
+                             .arg(span)
+                             .arg(node->title())
+                             .arg(count)
+                       : tr("%1 makes %2 materials but %3 makes %4.\n\n"
+                            "Two defect generators in one pipeline step "
+                            "through their defects together, so they have to "
+                            "make the same number. Give them the same number "
+                            "of operations, or chain them instead of running "
+                            "them side by side.")
+                             .arg(reference->title())
+                             .arg(span)
+                             .arg(node->title())
+                             .arg(count));
             return;
         }
     }
+    batchLength_ = containerSpan * batchDefectSpan_;
 
     // Sending queues EVERY node: each shows as "waiting" until its turn, so
     // the canvas reads as a process queue from the moment of submission. A
@@ -2724,6 +2911,12 @@ void OrchestrationWindow::sendToProcesses()
             QStringLiteral("yyyyMMdd_HHmmss"));
     QDir().mkpath(orchestrationRoot_);
     runStartedUtc_ = utcNow();
+    // A fresh send is a fresh report. Resume deliberately does NOT reset it:
+    // the point of resuming is that the earlier passes still happened, and a
+    // report that forgot them would describe a run nobody made.
+    report_ = core::WorkflowReport();
+    report_.startedUtc = runStartedUtc_;
+    report_.root = orchestrationRoot_;
     // The pipeline itself, beside its results. Written on every send so the
     // folder is enough to reproduce the run — including on a cluster, where
     // `calango-cli run workflow.json` reads exactly this file. Failures here
@@ -2789,6 +2982,33 @@ void OrchestrationWindow::resumeFromFailure()
     pump();
 }
 
+void OrchestrationWindow::abortOrchestration()
+{
+    if (!runningNode_)
+        return; // the button is disabled, but the slot is public API too
+    if (!confirm(tr("Abort the running orchestration?\n\n"
+                    "\"%1\" is stopped and marked failed, and the nodes still "
+                    "queued are left unrun. Everything that already finished "
+                    "keeps its results — Resume continues from there.")
+                     .arg(runningNode_->title())))
+        return;
+
+    aborting_ = true;
+    if (jobRunner_->isRunning()) {
+        // The kill is asynchronous: terminate() sends SIGTERM and escalates to
+        // SIGKILL after three seconds. The pipeline is unwound in
+        // onJobFinished, when the process is actually gone — tearing the state
+        // down here would race the job runner still writing into the
+        // directory it is being evicted from.
+        jobRunner_->terminate();
+        return;
+    }
+    // No live process to kill: the job ended between the last event and the
+    // click. Unwind directly, or runningNode_ stays set forever and the panel
+    // is stuck showing a run that is not happening.
+    onJobFinished(-1, true);
+}
+
 void OrchestrationWindow::pump()
 {
     // One loop rather than one call per completion: the transform nodes finish
@@ -2801,6 +3021,10 @@ void OrchestrationWindow::pump()
             if (advanceBatch())
                 continue;
             writeManifest();
+            // Every pass made and nothing left runnable: this is the end of
+            // the run, and the only moment at which the whole of what happened
+            // is known.
+            finishRun(/*completed=*/true);
             break;
         }
         if (startNode(next))
@@ -2810,6 +3034,11 @@ void OrchestrationWindow::pump()
         // whatever branch does not depend on this node.
         next->setStatus(OrchestrationNodeItem::Status::Failed);
         updateProcessPanel(next);
+        // startNode() records the transforms it refuses itself, with the
+        // reason; anything reaching here failed to stage or was refused before
+        // a directory existed.
+        if (orchestrationTaskFamily(next->task()) != OrchestrationFamily::Transform)
+            recordOutcome(next, tr("could not be started"));
         skipDescendants(next);
         writeManifest();
     }
@@ -2834,7 +3063,8 @@ bool OrchestrationWindow::advanceBatch()
 bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
                                        const QString& dir,
                                        ProvenanceRecord& record,
-                                       QString* error)
+                                       QString* error,
+                                       std::shared_ptr<const core::Structure>* produced)
 {
     const QString input = dir + QStringLiteral("/structure.extxyz");
     const QString output = dir + QStringLiteral("/transformed.extxyz");
@@ -2845,7 +3075,7 @@ bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
         // batch item for this pass.
         const auto& items = node->batchItems();
         const int index =
-            std::min(batchIndex_, static_cast<int>(items.size()) - 1);
+            std::min(containerBatchIndex(), static_cast<int>(items.size()) - 1);
         if (index < 0 || !items[index].second) {
             *error = tr("its structure list is empty");
             return false;
@@ -2869,9 +3099,28 @@ bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
             return false;
         }
         QString problem;
-        result = node->task() == OrchestrationTask::Supercell
-            ? applySupercell(incoming, node->supercell(), &problem)
-            : applyDefects(incoming, node->defectSpec(), &problem);
+        if (node->task() == OrchestrationTask::Supercell) {
+            result = applySupercell(incoming, node->supercell(), &problem);
+        } else {
+            // Every variant is built, even in separate mode where only one of
+            // them is this pass's output: building the whole set is what
+            // catches a recipe whose FOURTH operation is impossible on pass
+            // one, instead of three passes into a study.
+            const QList<DefectVariant> variants =
+                applyDefectSet(incoming, node->defectSpec(), &problem);
+            if (problem.isEmpty()) {
+                const int index =
+                    node->defectSpec().mode == DefectSpec::Mode::Separate
+                    ? std::min(defectBatchIndex(),
+                               static_cast<int>(variants.size()) - 1)
+                    : 0;
+                result = variants[static_cast<qsizetype>(std::max(0, index))]
+                             .structure;
+                record.parameters = variants[static_cast<qsizetype>(
+                                                 std::max(0, index))]
+                                        .label;
+            }
+        }
         if (!problem.isEmpty()) {
             *error = problem;
             return false;
@@ -2885,6 +3134,8 @@ bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
                      .arg(QString::fromUtf8(e.what()));
         return false;
     }
+    if (produced)
+        *produced = std::make_shared<const core::Structure>(std::move(result));
     return true;
 }
 
@@ -3086,16 +3337,34 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
     // it has no use for.
     if (orchestrationTaskFamily(node->task()) == OrchestrationFamily::Transform) {
         QString problem;
-        if (!runTransform(node, dir, record, &problem)) {
+        std::shared_ptr<const core::Structure> produced;
+        if (!runTransform(node, dir, record, &problem, &produced)) {
             node->setStatus(OrchestrationNodeItem::Status::Failed);
             finishProvenance(node, record, -1, staged);
+            recordOutcome(node, problem);
             refuse(tr("%1 was not run: %2.").arg(node->title(), problem));
             return false;
         }
         node->setStatus(OrchestrationNodeItem::Status::Done);
         updateProcessPanel(node);
+        recordOutcome(node);
         finishProvenance(node, record, 0, staged);
         writeManifest();
+        // Publish the structure so the host can show it. A transform runs to
+        // completion inside this call and emits none of the job signals, so
+        // without this its result exists only as a file nobody was told about.
+        if (produced) {
+            const QString label = tabTitleFor(node);
+            // A separate-mode Defect Generator makes a different material each
+            // pass, so each gets its own tab; everything else is one material
+            // and reuses tab 0.
+            const bool perPassMaterial =
+                node->task() == OrchestrationTask::DefectGenerator
+                && node->defectSpec().mode == DefectSpec::Mode::Separate;
+            Q_EMIT nodeStructureProduced(node->id(),
+                                         perPassMaterial ? defectBatchIndex() : 0,
+                                         label, produced);
+        }
         return true;
     }
 
@@ -3181,9 +3450,44 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
                                .arg(node->title(),
                                     label.isEmpty() ? node->materialName()
                                                     : label),
-                           dir);
+                           tabTitleFor(node), dir);
     }
     return true;
+}
+
+void OrchestrationWindow::recordOutcome(OrchestrationNodeItem* node,
+                                       const QString& note)
+{
+    core::NodeOutcome outcome;
+    outcome.nodeId = node->id();
+    outcome.task = orchestrationTaskSlug(node->task());
+    outcome.title = node->title();
+    outcome.engine = orchestrationTaskFamily(node->task())
+            == OrchestrationFamily::Transform
+        ? QString()
+        : EnginePresets::displayName(node->engine());
+    outcome.directory = node->jobDirectory();
+    outcome.status = statusSlug(node->status());
+    outcome.batchIndex = batchIndex_;
+    outcome.batchLabel = batchLabel();
+    outcome.attempt = node->attempts();
+    outcome.note = note;
+    // Only a node that actually produced artifacts has physics to extract.
+    if (node->status() == OrchestrationNodeItem::Status::Done)
+        outcome.metrics = core::extractReportMetrics(outcome.directory,
+                                                     outcome.task);
+    report_.outcomes.append(outcome);
+}
+
+void OrchestrationWindow::finishRun(bool completed)
+{
+    report_.finishedUtc =
+        QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    report_.completed = completed;
+    report_.root = orchestrationRoot_;
+    report_.batchTotal = batchLength_;
+    report_.write();
+    Q_EMIT runFinished(report_);
 }
 
 void OrchestrationWindow::skipDescendants(OrchestrationNodeItem* node)
@@ -3193,6 +3497,8 @@ void OrchestrationWindow::skipDescendants(OrchestrationNodeItem* node)
             && edge->to()->status() == OrchestrationNodeItem::Status::Waiting) {
             edge->to()->setStatus(OrchestrationNodeItem::Status::Skipped);
             updateProcessPanel(edge->to());
+            recordOutcome(edge->to(),
+                          tr("an upstream node did not produce its input"));
             skipDescendants(edge->to());
         }
     }
@@ -3204,8 +3510,13 @@ void OrchestrationWindow::onJobFinished(int exitCode, bool crashed)
         return;
     OrchestrationNodeItem* finished = runningNode_;
     runningNode_ = nullptr;
+    // A killed job reports a nonzero exit like any other failure, so the flag
+    // is the only thing that distinguishes "this node failed" from "the user
+    // stopped the run" — and the two unwind differently.
+    const bool aborted = aborting_;
+    aborting_ = false;
 
-    const bool succeeded = exitCode == 0 && !crashed;
+    const bool succeeded = exitCode == 0 && !crashed && !aborted;
     if (succeeded) {
         finished->setStatus(OrchestrationNodeItem::Status::Done);
     } else {
@@ -3214,9 +3525,31 @@ void OrchestrationWindow::onJobFinished(int exitCode, bool crashed)
         // the canvas instead of leaving them "pending" forever. Their
         // ancestors keep their Done status and their directories: that is
         // what Resume picks up from.
-        skipDescendants(finished);
+        //
+        // Not on an abort: there the whole queue stops, not just this node's
+        // branch, and the sweep below covers its descendants along with
+        // everything else.
+        if (!aborted)
+            skipDescendants(finished);
+    }
+    if (aborted) {
+        // Every node still queued — the aborted node's descendants and the
+        // unrelated branches alike. Skipped rather than left Waiting so their
+        // Processes rows resolve: a row left saying "queued" after the run has
+        // stopped reads as a pipeline still going.
+        for (OrchestrationNodeItem* node : nodes_) {
+            if (node->status() != OrchestrationNodeItem::Status::Waiting)
+                continue;
+            node->setStatus(OrchestrationNodeItem::Status::Skipped);
+            updateProcessPanel(node);
+            recordOutcome(node, tr("the run was stopped before it started"));
+        }
     }
     updateProcessPanel(finished);
+    recordOutcome(finished,
+                  succeeded ? QString()
+                            : (aborted ? tr("stopped by the user")
+                                       : tr("exit code %1").arg(exitCode)));
     finishProvenance(finished, runningRecord_, crashed ? -1 : exitCode,
                      runningStagedFiles_);
     runningRecord_ = ProvenanceRecord();
@@ -3227,6 +3560,15 @@ void OrchestrationWindow::onJobFinished(int exitCode, bool crashed)
     // No summary line when the run ends: each node's own status strip says
     // done/failed on the canvas, and the Processes panel holds the same
     // per-node verdict with its directory.
+    if (aborted) {
+        // Emphatically NOT pump(): the ordinary response to a failed node is
+        // to start the next runnable one, which here would launch a fresh job
+        // seconds after the user asked the pipeline to stop.
+        writeManifest();
+        finishRun(/*completed=*/false);
+        updateRunControls();
+        return;
+    }
     pump();
 }
 

@@ -20,10 +20,12 @@
 #include "core/UnitCell.hpp"
 #include "gui/SettingsManager.hpp"
 #include "gui/OrchestrationWindow.hpp"
+#include "gui/ProcessManagerPanel.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
 #include <QApplication>
 #include <QElapsedTimer>
+#include <QPushButton>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -464,6 +466,138 @@ int main(int argc, char** argv)
         check(second == QStringLiteral("DEFECT"),
               "baseline_2.gpw is the second-linked parent (the defect)");
         check(first != second, "the two slots are genuinely different files");
+    }
+
+    // ---- Abort: stopping a run in flight, and resuming it ------------------
+    //
+    // The interesting failure is not "the process kept running" — killing a
+    // QProcess is the easy half. It is that a killed job reports the same
+    // nonzero exit as a genuinely failed one, and the ordinary response to a
+    // failed node is to START THE NEXT ONE. An abort that does not say so
+    // stops one job and launches its successor a moment later, which from the
+    // user's side is a Stop button that does not stop anything.
+    std::printf("Abort a running orchestration:\n");
+    QSettings().setValue(
+        QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+        sandbox.path() + QStringLiteral("/simulations_abort"));
+    {
+        OrchestrationWindow window({{QStringLiteral("Cu (rattled)"), copper}},
+                              pythonResolver);
+        // Nobody is there to dismiss a modal box in a test, and the abort
+        // asks for confirmation.
+        window.setConfirmHandler([](const QString&) { return true; });
+        OrchestrationNodeItem* parent = window.addProcessNode(
+            OrchestrationTask::GeometryOptimization, 0,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* child = window.addProcessNode(
+            OrchestrationTask::GeometryOptimization, 0,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(parent, child);
+        window.configureNode(parent, script, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+        window.configureNode(child, script, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+
+        window.sendToProcesses();
+        check(parent->status() == OrchestrationNodeItem::Status::Running,
+              "the pipeline is running before the abort");
+
+        window.abortOrchestration();
+        // The kill is asynchronous — SIGTERM, then SIGKILL after three
+        // seconds — so the unwind lands in onJobFinished, not in the call.
+        QElapsedTimer timer;
+        timer.start();
+        while (parent->status() == OrchestrationNodeItem::Status::Running
+               && timer.elapsed() < 60000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+
+        check(parent->status() == OrchestrationNodeItem::Status::Failed,
+              "the node in flight is marked failed, not done");
+        check(child->status() == OrchestrationNodeItem::Status::Skipped,
+              "the node still queued is marked skipped, not left waiting");
+
+        // The real assertion: nothing starts up again. Give the event loop a
+        // generous window to launch a successor if it were going to.
+        timer.restart();
+        bool restarted = false;
+        while (timer.elapsed() < 3000) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            restarted = restarted
+                || parent->status() == OrchestrationNodeItem::Status::Running
+                || child->status() == OrchestrationNodeItem::Status::Running;
+        }
+        check(!restarted, "no node is started after the abort");
+        check(window.canResume(), "an aborted run can be resumed");
+
+        // And resuming it actually finishes the pipeline — an abort that left
+        // the canvas in a state Resume could not recover would be a trap.
+        window.resumeFromFailure();
+        settle(parent, child);
+        check(parent->status() == OrchestrationNodeItem::Status::Done
+                  && child->status() == OrchestrationNodeItem::Status::Done,
+              "resuming after an abort completes the pipeline");
+    }
+
+    // Declining the confirmation must leave the run alone — a Stop button that
+    // stops the pipeline whatever you answer is worse than no dialog at all.
+    std::printf("Abort, declined:\n");
+    QSettings().setValue(
+        QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+        sandbox.path() + QStringLiteral("/simulations_abort_declined"));
+    {
+        OrchestrationWindow window({{QStringLiteral("Cu (rattled)"), copper}},
+                              pythonResolver);
+        window.setConfirmHandler([](const QString&) { return false; });
+        OrchestrationNodeItem* only = window.addProcessNode(
+            OrchestrationTask::GeometryOptimization, 0,
+            calango::core::CalculatorKind::EMT);
+        window.configureNode(only, script, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+        window.sendToProcesses();
+        check(only->status() == OrchestrationNodeItem::Status::Running,
+              "running before the declined abort");
+        window.abortOrchestration();
+        check(only->status() == OrchestrationNodeItem::Status::Running,
+              "declining the confirmation leaves the run untouched");
+        settle(only, only);
+        check(only->status() == OrchestrationNodeItem::Status::Done,
+              "and it goes on to finish normally");
+    }
+
+    // ---- Processes panel: abort one process --------------------------------
+    //
+    // The button is only as good as its enablement: an Abort offered on a run
+    // that finished ten minutes ago is a control that does nothing, and one
+    // NOT offered on a queued job leaves the only way to cancel it being
+    // Delete, which destroys the folder as well.
+    std::printf("Processes panel abort button:\n");
+    {
+        calango::gui::ProcessManagerPanel panel;
+        auto* abort = panel.findChild<QPushButton*>(
+            QStringLiteral("abortProcessButton"));
+        check(abort != nullptr, "the panel has an abort button");
+
+        int aborted = -1;
+        QObject::connect(&panel, &calango::gui::ProcessManagerPanel::abortRequested,
+                         [&aborted](int id) { aborted = id; });
+
+        const int id = panel.registerTask(QStringLiteral("job"), QString());
+        check(abort && abort->isEnabled(),
+              "a freshly queued process can be aborted");
+        panel.setTaskStatus(id, calango::gui::ProcessManagerPanel::Status::Running);
+        check(abort && abort->isEnabled(), "a running process can be aborted");
+
+        if (abort)
+            abort->click();
+        check(aborted == id, "clicking it names the selected process");
+
+        panel.setTaskStatus(id,
+                            calango::gui::ProcessManagerPanel::Status::Completed);
+        check(abort && !abort->isEnabled(),
+              "a completed process offers nothing to abort");
+        panel.setTaskStatus(id, calango::gui::ProcessManagerPanel::Status::Failed);
+        check(abort && !abort->isEnabled(),
+              "nor does a failed one");
     }
 
     if (failures)

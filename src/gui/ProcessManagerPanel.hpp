@@ -2,6 +2,7 @@
 
 #include <QWidget>
 
+class QPushButton;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -50,11 +51,24 @@ Q_SIGNALS:
     /// "Delete Process" on a task — MainWindow confirms, stops it if running,
     /// purges its proc_<id> directory, then calls removeTask(id).
     void deleteRequested(int id);
+    /// "Abort Process" on a task that is running or queued.
+    ///
+    /// Distinct from deleteRequested, and the difference is the whole point:
+    /// Delete stops the run AND destroys its directory, so it is unusable for
+    /// the ordinary case of a job that is clearly heading nowhere but whose
+    /// partial output — the frames so far, the log, the input that provoked
+    /// it — is exactly what you want to look at next. Abort stops it and
+    /// leaves every byte on disk.
+    void abortRequested(int id);
 
 private:
     QTreeWidgetItem* itemForId(int id) const;
+    /// Enable Abort for exactly the selections it applies to: a task that is
+    /// running or still queued. A finished one has nothing to stop.
+    void updateAbortButton();
 
     QTreeWidget* tree_;
+    QPushButton* abortButton_ = nullptr;
     int nextId_ = 0;
 };
 

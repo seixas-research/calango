@@ -315,3 +315,6 @@ packaging/macos/dmg
 # Sphinx documentation
 docs/sphinx/build
 docs/sphinx/_build
+
+# Testing
+Testing/

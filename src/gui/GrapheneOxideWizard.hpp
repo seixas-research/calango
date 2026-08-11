@@ -55,6 +55,12 @@ public:
     /// What the builder actually placed, for the caller's status line.
     const core::GrapheneOxideBuilder::Report& report() const { return report_; }
 
+public:
+    /// True when the user asked for the MDMC refinement on stage 3. The host
+    /// builds and opens the structure either way, then offers the follow-on
+    /// wizard where a calculator is chosen.
+    bool mdmcRequested() const;
+
 private Q_SLOTS:
     void goNext();
     void goBack();
@@ -69,6 +75,10 @@ private:
     /// two pools the chemistry draws from.
     void substrateCounts(int& total, int& basal, int& edge) const;
     bool flakeSelected() const;
+    /// Show stage `index`, with the header and button states that go with it.
+    /// One place, so the three stages cannot disagree about which is last.
+    void showStage(int index);
+    static constexpr int kLastStage = 2;
 
     static constexpr std::size_t kGroups = core::GrapheneOxideBuilder::kGroupCount;
 
@@ -124,12 +134,12 @@ private:
     /// ceiling, C2O). The builder works in C/O, so this is inverted on the way
     /// in; O/C is what the UI shows because it is linear in oxygen content and
     /// has a meaningful zero, neither of which C/O has.
-    RatioControl oxidation_;
+    RatioControl basalOxidation_;
     /// Basal chemistry as H/O: 0 = epoxide only, 1 = hydroxyl only.
     RatioControl basalHydrogen_;
     /// Share of the oxygen budget delivered at the EDGES rather than on the
     /// basal plane — the edge oxidation density. Flake only.
-    RatioControl edgeShare_;
+    RatioControl edgeOxidation_;
     /// Edge composition: 0 = carbonyl only, 1 = carboxyl only. Flake only.
     RatioControl edgeCarboxyl_;
     /// Holds the two edge controls, so both vanish together on a periodic
@@ -137,6 +147,9 @@ private:
     QGroupBox* edgeChemistryBox_ = nullptr;
     QLabel* edgeNote_ = nullptr;
     QCheckBox* bothFacesCheck_ = nullptr;
+    /// Stage 3 — opt in to the MDMC refinement.
+    QCheckBox* mdmcCheck_ = nullptr;
+    QLabel* mdmcCostNote_ = nullptr;
     QSpinBox* seedSpin_ = nullptr;
     QLabel* coverageSummary_ = nullptr;
 

@@ -1,12 +1,10 @@
 #pragma once
 
+#include "core/Structure.hpp"
+
 #include <QJsonObject>
 #include <QList>
 #include <QString>
-
-namespace calango::core {
-class Structure;
-}
 
 namespace calango::gui {
 
@@ -99,14 +97,45 @@ struct DefectOperation {
 /// forwards the pristine cell would make every downstream formation energy
 /// come out as zero with no error anywhere.
 struct DefectSpec {
+    /// What the recipe's operations MEAN together.
+    enum class Mode {
+        /// One material carrying every operation at once — a di-vacancy, a
+        /// substitution next to an interstitial, a complex.
+        Combined,
+        /// One material PER operation, each applied on its own to the pristine
+        /// incoming structure. A set of singly-defective cells, which is what a
+        /// formation-energy or dopant-screening study needs: the whole point is
+        /// that the defects do not see each other.
+        Separate,
+    };
+
     QList<DefectOperation> operations;
+    Mode mode = Mode::Combined;
 
     bool isEmpty() const { return operations.isEmpty(); }
+    /// How many materials this recipe produces: 1 combined, one per operation
+    /// separate.
+    int variantCount() const
+    {
+        if (operations.isEmpty())
+            return 0;
+        return mode == Mode::Separate ? static_cast<int>(operations.size()) : 1;
+    }
     /// "remove 12; substitute 3 with B"
     QString describe() const;
 
     QJsonObject toJson() const;
     static DefectSpec fromJson(const QJsonObject& object);
+    static QString modeName(Mode mode);
+};
+
+/// One defective material produced by a Defect Generator.
+struct DefectVariant {
+    /// What was done to it — "substitute 0, 4 with N". Names its tab in the
+    /// workspace and its directory in the run folder, so a set of twelve
+    /// dopants is readable rather than twelve numbered folders.
+    QString label;
+    core::Structure structure;
 };
 
 /// Repeat `structure` per `spec`.
@@ -132,5 +161,18 @@ core::Structure applySupercell(const core::Structure& structure,
 /// while its author believes it computed a defect.
 core::Structure applyDefects(const core::Structure& structure,
                              const DefectSpec& spec, QString* error);
+
+/// Every material `spec` describes.
+///
+/// One entry in Combined mode, one per operation in Separate mode — where each
+/// operation is applied to the PRISTINE incoming structure rather than to the
+/// output of the previous one, which is the entire difference between "a set of
+/// singly-defective cells" and "a cell with N defects in it".
+///
+/// Empty (with `error` set) if any operation fails; a partial set is never
+/// returned, because a screening study missing the one dopant that could not be
+/// placed is a study whose conclusion is about the wrong set.
+QList<DefectVariant> applyDefectSet(const core::Structure& structure,
+                                    const DefectSpec& spec, QString* error);
 
 } // namespace calango::gui

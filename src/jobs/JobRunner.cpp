@@ -51,6 +51,10 @@ void JobRunner::start(const QString& commandLine, const QString& pythonExe,
     if (isRunning())
         return;
 
+    // Past this point a process WILL be started, so any SIGKILL escalation
+    // still pending from a previous terminate() no longer applies to it.
+    ++startGeneration_;
+
     stdoutBuffer_.clear();
     stderrBuffer_.clear();
     pendingFrame_.reset();
@@ -170,8 +174,15 @@ void JobRunner::terminate()
     if (!isRunning())
         return;
     process_.terminate();
-    QTimer::singleShot(3000, &process_, [this] {
-        if (isRunning())
+    // Escalate to SIGKILL if the process ignores SIGTERM — but only if it is
+    // still the SAME process. Checking isRunning() alone was a live hazard:
+    // start a new job inside these three seconds and the old job's timer kills
+    // the new one, which presents as a run that dies instantly for no reason
+    // and only sometimes. The generation makes the timer specific to the
+    // process it was armed for.
+    const int generation = startGeneration_;
+    QTimer::singleShot(3000, &process_, [this, generation] {
+        if (generation == startGeneration_ && isRunning())
             process_.kill();
     });
 }

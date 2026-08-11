@@ -112,15 +112,44 @@ void appendInstance(std::vector<float>& data, const QMatrix4x4& model,
     appendInstance(data, model, color, color, finish, opacity);
 }
 
-/// Qualitative palette for NOMINAL groups — ribbon chains and casts. Not a
-/// gradient: these labels have no order, so neighbouring indices must not get
-/// neighbouring hues — the whole point is telling the groups apart at a
-/// glance. Eight entries is as many flat colours as stay distinguishable on
-/// lit spheres; a ninth group wraps, which beats inventing a muddier hue.
+/// Qualitative palette for NOMINAL groups — ribbon chains and casts.
+///
+/// Not a gradient: these labels have no order, so neighbouring indices must not
+/// get neighbouring hues. The whole job is telling the groups apart at a glance.
+///
+/// SEPARATED IN LIGHTNESS AS WELL AS HUE, which is the part the previous
+/// version got wrong. Those eight were all pastels of much the same value
+/// (~75-85 % lightness, ~40 % saturation), and on a LIT SPHERE that is fatal:
+/// shading already sweeps each sphere across a wide range of brightness, so two
+/// colours that differ only in hue at the same lightness end up overlapping —
+/// the dark side of the blue group and the bright side of the green group meet
+/// in the middle, and a figure with four casts reads as one mottled blob.
+/// Spreading the values (from ~45 % to ~85 %) means a group stays identifiable
+/// from its brightness even where the hue is washed out by a highlight or lost
+/// in shadow.
+///
+/// Adjacent entries are also deliberately far apart in BOTH axes, because casts
+/// are handed out in order: cast 0 next to cast 1 is the comparison that
+/// actually happens, and the palette is ordered so that pair is the easiest one
+/// in it.
+///
+/// The entries were chosen by maximising the WORST pair over the whole set,
+/// scoring each pair on whichever axis separates it better — hue or luminance.
+/// Picking eight colours that each look distinct on their own is easy and is
+/// how the previous set went wrong; what matters is that no two of the
+/// twenty-eight pairs are close on both axes at once.
+///
+/// Eight entries is as many flat colours as stay distinguishable on lit
+/// spheres; a ninth group wraps, which beats inventing a muddier hue.
 const QColor kQualitativePalette[] = {
-    QColor(102, 170, 255), QColor(255, 153, 102), QColor(120, 210, 140),
-    QColor(220, 130, 220), QColor(240, 210, 100), QColor(120, 220, 220),
-    QColor(230, 120, 150), QColor(170, 170, 190),
+    QColor(0x3D, 0x7B, 0xE0), // blue      hue 220, mid-dark
+    QColor(0xF5, 0xA6, 0x23), // amber     hue  38, bright
+    QColor(0x1F, 0x9E, 0x5A), // green     hue 148, dark
+    QColor(0xF2, 0x6D, 0x9E), // pink      hue 335, bright
+    QColor(0xA6, 0x4B, 0xD6), // violet    hue 279, mid-dark
+    QColor(0xD9, 0xE0, 0x4A), // yellow    hue  63, very bright
+    QColor(0x37, 0xC8, 0xE8), // cyan      hue 191, bright
+    QColor(0xA0, 0x52, 0x2D), // sienna    hue  22, dark
 };
 constexpr int kQualitativeCount = static_cast<int>(std::size(kQualitativePalette));
 

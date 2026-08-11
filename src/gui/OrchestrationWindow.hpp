@@ -3,6 +3,7 @@
 #include "core/CalculatorConfig.hpp"
 
 #include "gui/OrchestrationProvenance.hpp"
+#include "core/WorkflowReport.hpp"
 #include "gui/OrchestrationTransforms.hpp"
 #include "gui/SimulationWizardBase.hpp"
 
@@ -135,6 +136,13 @@ QString orchestrationTaskSlug(OrchestrationTask task);
 std::optional<OrchestrationTask> orchestrationTaskFromSlug(const QString& slug);
 /// Menu/label text ("Charged Defects in 2D Materials").
 QString orchestrationTaskDisplayName(OrchestrationTask task);
+/// A short name for the same task, for places where the full one does not fit.
+///
+/// Workspace tabs above all: a tab is a few centimetres wide and there may be a
+/// dozen of them, so "Orchestration: Charge Density Difference (Si bulk)" is a
+/// tab whose visible portion is "Orchestrat…" — every tab identical, none
+/// legible. The Processes panel is a wide list and keeps the full name.
+QString orchestrationTaskShortName(OrchestrationTask task);
 /// Every task, in Add Process list order.
 QList<OrchestrationTask> orchestrationTasks();
 
@@ -489,6 +497,8 @@ public:
     /// How many passes the pipeline makes, one per Container item (1 with no
     /// Container node). Valid after a send.
     int batchLength() const { return batchLength_; }
+    /// The summary of the current (or last) run.
+    const core::WorkflowReport& report() const { return report_; }
     /// True when a Resume would do something: a previous run exists and left
     /// at least one node not Done.
     bool canResume() const;
@@ -526,6 +536,22 @@ public Q_SLOTS:
     /// hours in on a bad parameter should cost the bad node and its
     /// descendants, not the six hours.
     void resumeFromFailure();
+    /// Stop the running orchestration: kill the job in flight and leave the
+    /// queue unrun.
+    ///
+    /// Everything already finished KEEPS its status, its directory and its
+    /// artifacts, so this is not an undo — it is the counterpart of Resume.
+    /// A pipeline that is visibly heading somewhere wrong (a mis-set cutoff, a
+    /// structure that should have been relaxed first) otherwise has to be
+    /// waited out or the application killed, and killing the application
+    /// abandons the run directory mid-write.
+    ///
+    /// The node in flight is marked Failed rather than Done — it produced no
+    /// complete result, and its directory holds a partial one. Nodes still
+    /// queued are marked Skipped, which is what they are: not run. Neither is
+    /// Done, so canResume() is true afterwards and Resume re-queues exactly
+    /// them.
+    void abortOrchestration();
     /// Zoom and pan so every node is visible, with a margin.
     void fitToScreen();
     /// Rearrange every node into layered columns in execution order.
@@ -552,8 +578,10 @@ Q_SIGNALS:
     /// `directory` its job directory. The host uses this to register the
     /// run with the Results panel (metric plots, process selector) exactly
     /// like a standalone job.
+    /// `label` is the full name, for the Processes panel's wide list;
+    /// `tabTitle` is the short one a workspace tab can actually show.
     void nodeStarted(int processId, const QString& label,
-                     const QString& directory);
+                     const QString& tabTitle, const QString& directory);
     /// One live geometry streamed by the running node — the CALANGO_FRAME
     /// blocks a relaxation or an MD run emits as it goes.
     ///
@@ -566,6 +594,33 @@ Q_SIGNALS:
                            const std::shared_ptr<core::Structure>& frame);
     /// The started node's job ended (successfully or not).
     void nodeFinished(int processId, bool success);
+    /// The whole pipeline reached its end — every node terminal, every batch
+    /// pass made — or was stopped. Carries the summary of what happened.
+    void runFinished(const core::WorkflowReport& report);
+    /// A TRANSFORM node produced a structure — a Container emitting its batch
+    /// item, a Supercell Builder its expansion, a Defect Generator its
+    /// decorated cell.
+    ///
+    /// Transforms have no job and no trajectory, so they emit none of the
+    /// signals above: they finish inside startNode() in a few hundred
+    /// microseconds, and until this existed their output reached the disk and
+    /// nothing else. That is the wrong default for the one family of nodes
+    /// whose entire result IS a structure — a Supercell Builder you cannot
+    /// look at is a node you have to take on faith.
+    ///
+    /// `nodeId` is the CANVAS node's stable id, not the process id, and that
+    /// is what the host should key a tab on: a batch run re-runs the same node
+    /// once per container item with a fresh process id each time, and keying
+    /// on the process would open one tab per item.
+    /// `variant` separates outputs of the same node that are DIFFERENT
+    /// materials rather than successive versions of one. A Supercell node
+    /// re-run for each container item is the same material each pass and
+    /// reuses its tab (variant 0); a Defect Generator in "one material per
+    /// defect" mode emits a genuinely different material each pass, and they
+    /// have to accumulate side by side — showing a set of dopants one at a
+    /// time in a single tab is not showing the set.
+    void nodeStructureProduced(int nodeId, int variant, const QString& label,
+                               const std::shared_ptr<const core::Structure>& structure);
 
 private Q_SLOTS:
     void addNode();
@@ -602,9 +657,12 @@ private:
     /// running and when a transform already completed.
     bool startNode(OrchestrationNodeItem* node);
     /// Do a transform node's work in process. Fills `record`'s data
-    /// provenance. False (with `error` set) on a bad recipe.
+    /// provenance and, when `produced` is given, the structure it made — the
+    /// host shows that in the viewport, and re-reading it from disk to do so
+    /// would be a second answer to a question already answered here.
     bool runTransform(OrchestrationNodeItem* node, const QString& dir,
-                      ProvenanceRecord& record, QString* error);
+                      ProvenanceRecord& record, QString* error,
+                      std::shared_ptr<const core::Structure>* produced = nullptr);
     /// Delete every node and link and reset the run state, unconditionally.
     /// The shared half of Clear Orchestration and of opening a workflow over
     /// the top of one.
@@ -629,6 +687,15 @@ private:
     /// Label of the Container item currently being processed, for job
     /// directories and process rows. Empty when the graph has no Container.
     QString batchLabel() const;
+    /// What a workspace tab showing this node's output is called — short, and
+    /// decided in one place so a live trajectory tab and a transform tab from
+    /// the same pipeline are named the same way.
+    QString tabTitleFor(const OrchestrationNodeItem* node) const;
+    /// The batch counter decomposed into its two dimensions: which container
+    /// item this pass uses, and which defect of a separate-mode generator.
+    /// batchIndex_ runs over their product, defects varying fastest.
+    int containerBatchIndex() const;
+    int defectBatchIndex() const;
     /// Seed a record with everything known before the node runs.
     ProvenanceRecord beginProvenance(OrchestrationNodeItem* node,
                                      const QString& dir) const;
@@ -671,6 +738,17 @@ private:
     /// Mirror one node's state onto its Processes-panel row, if any.
     void updateProcessPanel(OrchestrationNodeItem* node);
 
+    /// Record what became of `node` on THIS pass into the run report.
+    ///
+    /// Called at every terminal transition rather than swept up at the end,
+    /// and that is not a style choice: a batch re-queues its nodes for each
+    /// container item, so by the time the run finishes the canvas holds only
+    /// the LAST pass's statuses. What happened to structure 3 of 12 exists
+    /// only if it was written down when it happened.
+    void recordOutcome(OrchestrationNodeItem* node, const QString& note = {});
+    /// Close the report, write it beside the run, and announce it.
+    void finishRun(bool completed);
+
     MaterialList materials_;
     std::function<MaterialList()> materialsProvider_;
     WizardFactory wizardFactory_;
@@ -682,11 +760,24 @@ private:
 
     OrchestrationScene* scene_ = nullptr;
     QGraphicsView* view_ = nullptr;
-    /// The two controls the panel keeps a handle on: both are disabled for the
-    /// duration of a run, and Resume is disabled whenever there is nothing to
-    /// resume. The rest are icon buttons wired and forgotten.
+    /// The three controls the panel keeps a handle on. Run and Resume are
+    /// disabled for the duration of a run (and Resume also whenever there is
+    /// nothing to resume); Abort is enabled for exactly that duration and
+    /// disabled otherwise — between them they are never both live, which is
+    /// the whole of the run-state UI. The rest are icon buttons wired and
+    /// forgotten.
     QPushButton* runButton_ = nullptr;
     QPushButton* resumeButton_ = nullptr;
+    QPushButton* abortButton_ = nullptr;
+
+    /// Set between pressing Abort and the job runner reporting the kill.
+    ///
+    /// Needed because a terminated job arrives at onJobFinished as an ordinary
+    /// nonzero exit, and the ordinary response to that is to fail the node and
+    /// PUMP THE NEXT ONE — which would start a fresh job moments after the
+    /// user asked for the pipeline to stop. This flag is what distinguishes
+    /// "this node failed" from "the user stopped the run".
+    bool aborting_ = false;
 
     std::vector<OrchestrationNodeItem*> nodes_;
     std::vector<OrchestrationEdgeItem*> edges_;
@@ -704,7 +795,13 @@ private:
     /// on `batchIndex_`. Both are 0/1 for a graph with no Container node.
     int batchIndex_ = 0;
     int batchLength_ = 1;
+    /// Materials a separate-mode Defect Generator contributes per container
+    /// item — the fast digit's radix. 1 when there is no such node.
+    int batchDefectSpan_ = 1;
     QString runStartedUtc_;
+    /// Accumulated as the run goes; written to the orchestration folder and
+    /// handed to the host when it ends.
+    core::WorkflowReport report_;
 };
 
 } // namespace calango::gui

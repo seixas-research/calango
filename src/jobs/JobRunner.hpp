@@ -104,6 +104,15 @@ private:
     std::vector<core::Vec3> pendingForces_;
     std::vector<core::Vec3> pendingVelocities_; ///< atom lines still expected for the frame
     bool pendingCellValid_ = false;
+    /// Incremented every time a process actually starts.
+    ///
+    /// terminate() escalates to SIGKILL on a timer, and the timer has to know
+    /// WHICH process it was armed for: a runner that starts a new job inside
+    /// the escalation window would otherwise have the previous job's timer
+    /// kill it. That is not hypothetical — both the Orchestration canvas
+    /// (abort, then Resume) and the Processes panel (delete a running job
+    /// while others are queued) restart this runner within seconds.
+    int startGeneration_ = 0;
     double pendingCell_[9] = {};
 };
 

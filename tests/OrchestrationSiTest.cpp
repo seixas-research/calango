@@ -242,8 +242,13 @@ int main(int argc, char** argv)
         int finishedOk = 0;
         QObject::connect(
             &window2, &OrchestrationWindow::nodeStarted,
-            [&startedCount](int id, const QString&, const QString& dir) {
-                if (id >= 0 && !dir.isEmpty())
+            [&startedCount](int id, const QString&, const QString& tabTitle,
+                            const QString& dir) {
+                // The tab title must be short enough to read in a tab: this is
+                // the assertion that stops it drifting back to the full
+                // "Orchestration: <task> (<material>)" label.
+                if (id >= 0 && !dir.isEmpty() && !tabTitle.isEmpty()
+                    && tabTitle.size() <= 40)
                     ++startedCount;
             });
         QObject::connect(&window2, &OrchestrationWindow::nodeFinished,

@@ -34,6 +34,9 @@ using Base = GrapheneOxideBuilder::Base;
 using Dosing = GrapheneOxideBuilder::Dosing;
 using Group = GrapheneOxideBuilder::Group;
 using Region = GrapheneOxideBuilder::Region;
+using Builder = GrapheneOxideBuilder;
+using Config = GrapheneOxideBuilder::Config;
+using Report = GrapheneOxideBuilder::Report;
 
 namespace {
 
@@ -958,6 +961,107 @@ int main()
         check(hydroxylsOnEdgeCarbons == 0,
               "and not one -OH bonded directly to a rim carbon — phenolic edge "
               "hydroxyls are gone from the generator");
+    }
+
+    // ===== Decoupled basal / edge dosing ==================================
+    //
+    // The mode exists to make two dials INDEPENDENT. So the tests are about
+    // independence, not about hitting a number: moving one dial must leave the
+    // other region's chemistry alone. Under the shared-budget TargetRatio mode
+    // every one of these would fail by construction, which is the point.
+    std::printf("Decoupled basal / edge oxidation:\n");
+    {
+        const auto flakeWith = [](double basalOc, double edgeOx,
+                                  double carboxylShare) {
+            Config config;
+            config.base = Base::Nanoflake;
+            config.flakeIndex = 4; // 96 carbons, 24 of them rim
+            config.dosing = Dosing::DecoupledRegions;
+            config.basalOxygenToCarbon = basalOc;
+            config.edgeOxidation = edgeOx;
+            config.carboxylShare = carboxylShare;
+            config.basalHydroxylShare = 0.5;
+            config.seed = 7;
+            Report report;
+            Builder::build(config, &report);
+            return report;
+        };
+
+        // 1. Edge oxidation at exactly zero is CATEGORICAL: a strictly
+        //    hydrogen-terminated rim, whatever the basal plane is doing.
+        const auto bare = flakeWith(0.30, 0.0, 0.5);
+        check(bare.placedFor(Group::Carboxyl) == 0
+                  && bare.placedFor(Group::Carbonyl) == 0,
+              "edge oxidation 0 places no edge group at all");
+        check(bare.hydrogenTerminatedEdges == bare.edgeCarbonCount,
+              "and every rim carbon is hydrogen-terminated");
+        check(bare.placedFor(Group::Epoxide) + bare.placedFor(Group::Hydroxyl)
+                  > 0,
+              "while the basal plane is oxidized independently");
+
+        // 2. Sweeping the rim must not move the basal plane. This is the
+        //    property a shared oxygen budget cannot have.
+        const auto lowEdge = flakeWith(0.30, 0.1, 0.5);
+        const auto highEdge = flakeWith(0.30, 0.9, 0.5);
+        const int basalLow =
+            lowEdge.placedFor(Group::Epoxide) + lowEdge.placedFor(Group::Hydroxyl);
+        const int basalHigh = highEdge.placedFor(Group::Epoxide)
+            + highEdge.placedFor(Group::Hydroxyl);
+        check(lowEdge.basalOxygenPlaced == highEdge.basalOxygenPlaced,
+              "the basal oxygen count is untouched by the edge dial");
+        check(basalLow == basalHigh,
+              "and so is the basal group count");
+        const int edgeLow = lowEdge.placedFor(Group::Carboxyl)
+            + lowEdge.placedFor(Group::Carbonyl);
+        const int edgeHigh = highEdge.placedFor(Group::Carboxyl)
+            + highEdge.placedFor(Group::Carbonyl);
+        check(edgeHigh > edgeLow, "while the rim itself responds to it");
+
+        // 3. And the converse: sweeping the basal plane must not move the rim.
+        const auto lightBasal = flakeWith(0.05, 0.5, 0.5);
+        const auto heavyBasal = flakeWith(0.45, 0.5, 0.5);
+        check(lightBasal.edgeGroupsPlaced == heavyBasal.edgeGroupsPlaced,
+              "the rim is untouched by the basal dial");
+
+        // 4. Rising edge oxidation replaces edge HYDROGENS with groups: the
+        //    two must move in opposite directions, one for one.
+        check(highEdge.hydrogenTerminatedEdges < lowEdge.hydrogenTerminatedEdges,
+              "more edge oxidation means fewer edge hydrogens");
+        check(lowEdge.hydrogenTerminatedEdges + edgeLow
+                  == lowEdge.edgeCarbonCount,
+              "every rim carbon is either functionalized or hydrogen-capped");
+        check(highEdge.hydrogenTerminatedEdges + edgeHigh
+                  == highEdge.edgeCarbonCount,
+              "with no rim carbon left as a bare radical");
+
+        // 5. The carboxyl share steers the edge composition. Stated in OXYGEN,
+        //    so an all-carboxyl rim delivers two oxygens per group.
+        const auto allCarbonyl = flakeWith(0.0, 0.8, 0.0);
+        const auto allCarboxyl = flakeWith(0.0, 0.8, 1.0);
+        check(allCarbonyl.placedFor(Group::Carboxyl) == 0
+                  && allCarbonyl.placedFor(Group::Carbonyl) > 0,
+              "carboxyl share 0 gives quinone-like carbonyls only");
+        check(allCarboxyl.placedFor(Group::Carbonyl) == 0
+                  && allCarboxyl.placedFor(Group::Carboxyl) > 0,
+              "carboxyl share 1 gives carboxyls only");
+        check(allCarboxyl.oxygenAtoms > allCarbonyl.oxygenAtoms,
+              "and a carboxyl rim carries more oxygen, bringing two each");
+
+        // 6. A periodic sheet has no rim: the edge dial must be inert rather
+        //    than an error, and the basal dial must still work.
+        Config sheet;
+        sheet.base = Base::PeriodicSheet;
+        sheet.supercell[0] = sheet.supercell[1] = 5;
+        sheet.dosing = Dosing::DecoupledRegions;
+        sheet.basalOxygenToCarbon = 0.25;
+        sheet.edgeOxidation = 1.0; // asking for a rim that does not exist
+        Report sheetReport;
+        Builder::build(sheet, &sheetReport);
+        check(sheetReport.placedFor(Group::Carboxyl) == 0
+                  && sheetReport.placedFor(Group::Carbonyl) == 0,
+              "an edgeless sheet places no edge chemistry");
+        check(sheetReport.basalOxygenPlaced > 0,
+              "and its basal plane is oxidized as asked");
     }
 
     std::printf(failures == 0 ? "\nAll graphene oxide checks passed.\n"

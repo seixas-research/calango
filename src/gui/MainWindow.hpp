@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/CalculatorConfig.hpp"
+#include "core/GrapheneOxideBuilder.hpp"
 #include "core/StructureTransforms.hpp"
 #include "render/Camera.hpp"
 #include "render/Film.hpp"
@@ -129,6 +130,9 @@ private Q_SLOTS:
     /// Modules → 2D Materials → "Graphene Oxide…": functionalized
     /// graphene at target coverages, opened as a new workspace tab.
     void openGrapheneOxideBuilder();
+    /// The builder's optional MDMC refinement, on the structure just built.
+    void openGrapheneOxideMdmc(
+        const core::GrapheneOxideBuilder::Report& report);
     void cleaveSurface();
     void addAtom();
     void changeElementOfSelection();
@@ -372,6 +376,9 @@ private Q_SLOTS:
     /// "Delete Process": confirm, stop it if running, purge proc_<id>/, drop
     /// its record + selector entry + panel row.
     void onDeleteProcessRequested(int id);
+    /// Stop a running or queued process, KEEPING its directory and output —
+    /// the difference from onDeleteProcessRequested, which destroys both.
+    void onAbortProcessRequested(int id);
     void showFrame(int index);
     void showBrillouinZone();
     void showRdf();
@@ -900,6 +907,12 @@ private:
     /// steal the other's frames. Entries are created on a node's first frame
     /// and dropped when it finishes or its tab is closed.
     std::map<int, Document*> orchestrationLiveDocs_;
+    /// One tab per TRANSFORM node (Container / Supercell / Defect),
+    /// keyed by canvas node id so a batch reuses it per item.
+    std::map<int, Document*> orchestrationTransformDocs_;
+    /// Short tab title per orchestration process id — the full label lives in
+    /// processRecords_ and is what the Processes panel shows.
+    std::map<int, QString> orchestrationTabTitles_;
     /// Band of images staged as band.extxyz on the next stageJob (NEB);
     /// consumed and cleared by stageJob.
     std::vector<std::shared_ptr<core::Structure>> stagedBandFrames_;

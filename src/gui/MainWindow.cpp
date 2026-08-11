@@ -48,6 +48,7 @@
 #include "gui/CutoffConvergenceWizard.hpp"
 #include "gui/KpointsConvergenceWizard.hpp"
 #include "gui/OrchestrationWindow.hpp"
+#include "gui/WorkflowReportDialog.hpp"
 #include "gui/EnginePresets.hpp"
 #include "dft/CalangoDFTEngine.hpp"
 #include "gui/SinglePointWizard.hpp"
@@ -63,6 +64,7 @@
 #include "gui/NonlinearOpticsWizard.hpp"
 #include "gui/OpticsWizard.hpp"
 #include "gui/OverlayPanel.hpp"
+#include "gui/GrapheneOxideMdmcWizard.hpp"
 #include "gui/GrapheneOxideWizard.hpp"
 #include "gui/GuiUtils.hpp"
 #include "gui/GwResultsWindow.hpp"
@@ -1562,6 +1564,8 @@ void MainWindow::createMenusAndDocks()
             this, &MainWindow::onViewScriptRequested);
     connect(processPanel_, &ProcessManagerPanel::deleteRequested,
             this, &MainWindow::onDeleteProcessRequested);
+    connect(processPanel_, &ProcessManagerPanel::abortRequested,
+            this, &MainWindow::onAbortProcessRequested);
     connect(processPanel_, &ProcessManagerPanel::contextMenuRequested,
             this, &MainWindow::onProcessContextMenu);
 
@@ -5391,6 +5395,59 @@ void MainWindow::onDeleteProcessRequested(int id)
     statusBar()->showMessage(tr("Deleted process #%1").arg(id));
 }
 
+void MainWindow::onAbortProcessRequested(int id)
+{
+    const auto it = processRecords_.find(id);
+    const QString label = it != processRecords_.end() ? it->second.label
+                                                      : tr("this process");
+    const bool running = id == currentTaskId_;
+    const auto queuedIt =
+        std::find_if(jobQueue_.begin(), jobQueue_.end(),
+                     [id](const QueuedJob& job) { return job.processId == id; });
+    const bool queued = queuedIt != jobQueue_.end();
+    if (!running && !queued) {
+        statusBar()->showMessage(
+            tr("Process #%1 is not running — there is nothing to abort.")
+                .arg(id));
+        return;
+    }
+
+    if (QMessageBox::question(
+            this, tr("Abort Process"),
+            running
+                ? tr("Stop process #%1 (%2)?\n\nEverything it has written so "
+                     "far is kept — use Delete Process to remove its folder "
+                     "as well.")
+                      .arg(id)
+                      .arg(label)
+                : tr("Remove queued process #%1 (%2) from the queue?\n\nIt has "
+                     "not started, so nothing it produced is lost.")
+                      .arg(id)
+                      .arg(label),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+        != QMessageBox::Yes)
+        return;
+
+    if (queued) {
+        // Never started, so there is no process to signal and no output to
+        // keep — just take it out before startNextQueuedJob() reaches it.
+        jobQueue_.erase(queuedIt);
+        processPanel_->setTaskStatus(id, ProcessManagerPanel::Status::Failed);
+        statusBar()->showMessage(
+            tr("Removed queued process #%1 from the queue").arg(id));
+        return;
+    }
+
+    // Running. terminate() is asynchronous, and the ordinary finish path takes
+    // it from here: the job runner reports a nonzero exit, the row goes to
+    // "failed", and the next queued job starts — which is what aborting ONE
+    // process should do. Unlike the delete path, currentTaskId_ is left alone
+    // so the metrics already streamed stay attached to the row, and the
+    // directory is not purged.
+    jobRunner_->terminate();
+    statusBar()->showMessage(tr("Stopping process #%1 (%2)…").arg(id).arg(label));
+}
+
 void MainWindow::onProcessResultRequested(const QString& directory)
 {
     // A cluster-expansion run produces both a hull and a trajectory: open the
@@ -6487,14 +6544,28 @@ int MainWindow::applyFunctionalGroupCasts()
     using Builder = core::GrapheneOxideBuilder;
     std::array<int, Builder::kGroupCount> castOfGroup{};
     castOfGroup.fill(0);
-    // Distinct hues, in the order the groups are declared. Chosen against the
-    // element colours the sheet is drawn in (grey C, red O, white H) so a
-    // group reads as a group rather than blending into the substrate.
+    // In the order the groups are declared, chosen against the element colours
+    // the sheet is drawn in (grey C, red O, white H) so a group reads as a
+    // group rather than blending into the substrate.
+    //
+    // SEPARATED IN LIGHTNESS AS WELL AS HUE. The previous four were distinct
+    // hues at almost exactly the same brightness (relative luminance 0.16-0.26,
+    // a worst-pair ratio of 1.02), and on a LIT SPHERE that is not enough:
+    // shading sweeps each sphere across a far wider range than 1.02, so the
+    // shadowed side of one group and the lit side of another land on the same
+    // grey and a decorated sheet reads as mottled rather than as four
+    // chemistries. These span 0.13 to 0.54 — a ratio of 4.1 — while keeping
+    // every pair at least 58 degrees apart in hue.
+    //
+    // Deliberately not the shared kQualitativePalette in StructureRenderer:
+    // these four are a FIXED key (epoxide is always amber), so a figure in a
+    // paper and a figure on screen agree, and a structure carrying only
+    // carbonyls does not colour them with cast 0's blue.
     static const QColor kGroupColors[Builder::kGroupCount] = {
-        QColor(0xE6, 0x55, 0x0D), // epoxide      — orange
-        QColor(0x1F, 0x77, 0xB4), // hydroxyl     — blue
-        QColor(0x9E, 0x4C, 0xC4), // carboxyl     — purple
-        QColor(0x2C, 0xA0, 0x2C), // carbonyl     — green
+        QColor(0xFF, 0xB3, 0x2E), // epoxide   amber   — brightest
+        QColor(0x25, 0x5F, 0xD0), // hydroxyl  blue    — darkest
+        QColor(0xE8, 0x5C, 0xC8), // carboxyl  magenta — bright
+        QColor(0x18, 0x8F, 0x6B), // carbonyl  teal    — dark
     };
 
     auto& style = viewport_->style();
@@ -6634,6 +6705,51 @@ void MainWindow::openGrapheneOxideBuilder()
                                  QString::fromStdString(report.note));
     }
     statusBar()->showMessage(message);
+
+    if (wizard.mdmcRequested())
+        openGrapheneOxideMdmc(report);
+}
+
+void MainWindow::openGrapheneOxideMdmc(
+    const core::GrapheneOxideBuilder::Report& report)
+{
+    // Reached only from the builder, on the structure it just opened as the
+    // current document — which is what makes this short: stageJob() already
+    // writes the current document to structure.extxyz, the name the generated
+    // script reads. Nothing here has to stage anything of its own.
+    using Group = core::GrapheneOxideBuilder::Group;
+    const int groups = report.placedFor(Group::Epoxide)
+        + report.placedFor(Group::Hydroxyl) + report.placedFor(Group::Carboxyl)
+        + report.placedFor(Group::Carbonyl);
+
+    GrapheneOxideMdmcWizard wizard(this);
+    wizard.setSubstrate(groups, report.basalCarbonCount,
+                        report.edgeCarbonCount, report.edgeCarbonCount == 0);
+    if (wizard.exec() != QDialog::Accepted)
+        return;
+
+    if (wizard.action() == SimulationWizardBase::Action::RunRemote) {
+        const QString jobDir = stageJob(wizard.script());
+        if (jobDir.isEmpty())
+            return;
+        remoteDock_->show();
+        remoteDock_->raise();
+        const int taskId =
+            processPanel_->registerTask(tr("Remote graphene oxide MDMC"), jobDir);
+        processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
+        remotePanel_->submitStagedJob(jobDir,
+                                      QStringLiteral("graphene_oxide_mdmc"));
+        statusBar()->showMessage(tr("Submitting MDMC run to the cluster…"));
+        return;
+    }
+    if (wizard.action() != SimulationWizardBase::Action::RunLocal)
+        return;
+
+    // expectFrames: the run writes a trajectory of accepted configurations, so
+    // the live tab follows the annealing rather than waiting for the end.
+    runScript(wizard.script(), wizard.pythonExecutable(),
+              tr("Graphene oxide MDMC"), true, wizard.calculatorKind(),
+              wizard.runCommand());
 }
 
 void MainWindow::openSqsBuilder()
@@ -7161,7 +7277,9 @@ OrchestrationWindow* MainWindow::createOrchestrationPanel(QWidget* parent)
     // metrics.json while it runs, finalize and persist when it ends — the
     // same lifecycle runScript()/onJobFinished() give a standalone job.
     connect(window, &OrchestrationWindow::nodeStarted, this,
-            [this](int id, const QString& label, const QString& directory) {
+            [this](int id, const QString& label, const QString& tabTitle,
+                   const QString& directory) {
+                orchestrationTabTitles_[id] = tabTitle;
                 ProcessRecord record;
                 record.label = label;
                 record.directory = directory;
@@ -7182,17 +7300,19 @@ OrchestrationWindow* MainWindow::createOrchestrationPanel(QWidget* parent)
                     return;
                 auto it = orchestrationLiveDocs_.find(id);
                 if (it == orchestrationLiveDocs_.end()) {
-                    const auto record = processRecords_.find(id);
-                    const QString label = record != processRecords_.end()
-                        ? record->second.label
-                        : tr("Orchestration run");
+                    // The SHORT title for the tab; the record's full label
+                    // still names the process everywhere a wide list shows it.
+                    const auto shortIt = orchestrationTabTitles_.find(id);
+                    const QString label = shortIt != orchestrationTabTitles_.end()
+                        ? shortIt->second
+                        : tr("Orchestration");
                     // Seeded empty: the first streamed frame becomes frame 0,
                     // matching a standalone run — the input geometry carries no
                     // evaluated forces, so scrubbing onto it would blank the
                     // vector overlay every other frame has.
                     const int tab = addDocument(
                         std::make_shared<core::Structure>(*frame),
-                        tr("%1 (live)").arg(label), {}, label);
+                        tr("%1 •").arg(label), {}, label);
                     it = orchestrationLiveDocs_
                              .emplace(id,
                                       documents_[static_cast<std::size_t>(tab)]
@@ -7201,6 +7321,57 @@ OrchestrationWindow* MainWindow::createOrchestrationPanel(QWidget* parent)
                     tabBar_->setCurrentIndex(tab);
                 }
                 appendStreamedFrame(it->second, frame);
+            });
+    // A transform node's whole result is a structure, and it has no job to
+    // stream it. Show it: one tab per CANVAS node, reused as a batch re-runs
+    // that node for each container item — keying on the process id instead
+    // would open a tab per item and bury the workspace.
+    connect(window, &OrchestrationWindow::nodeStructureProduced, this,
+            [this](int nodeId, int variant, const QString& label,
+                   const std::shared_ptr<const core::Structure>& structure) {
+                if (!structure)
+                    return;
+                auto copy = std::make_shared<core::Structure>(*structure);
+                // Node and variant together: a node re-run per container item
+                // replaces its tab, while a defect set accumulates one tab per
+                // defect.
+                const int key = nodeId * 1000 + variant;
+                const auto it = orchestrationTransformDocs_.find(key);
+                if (it != orchestrationTransformDocs_.end()) {
+                    // Same node, next batch item: replace what the tab holds
+                    // rather than opening another one.
+                    for (std::size_t i = 0; i < documents_.size(); ++i) {
+                        if (documents_[i].get() != it->second)
+                            continue;
+                        Document* doc = it->second;
+                        doc->structure = copy;
+                        doc->frames.clear();
+                        tabBar_->setTabText(static_cast<int>(i), label);
+                        if (static_cast<int>(i) == tabBar_->currentIndex())
+                            notifyStructureChanged(/*frameCamera=*/true);
+                        return;
+                    }
+                    // Its tab was closed; fall through and open a fresh one.
+                    orchestrationTransformDocs_.erase(key);
+                }
+                const int tab = addDocument(copy, label);
+                orchestrationTransformDocs_[key] =
+                    documents_[static_cast<std::size_t>(tab)].get();
+                tabBar_->setCurrentIndex(tab);
+            });
+    // The run's own account of itself, shown when it ends. Not a message box:
+    // a pipeline of a dozen structures has a dozen answers, and "Finished" with
+    // an OK button is exactly the summary that made this necessary.
+    connect(window, &OrchestrationWindow::runFinished, this,
+            [this](const core::WorkflowReport& report) {
+                if (report.outcomes.isEmpty())
+                    return; // nothing ran; nothing to report
+                auto* dialog = new WorkflowReportDialog(report, this);
+                dialog->setAttribute(Qt::WA_DeleteOnClose);
+                connect(dialog,
+                        &WorkflowReportDialog::openDirectoryRequested, this,
+                        [](const QString&) {});
+                dialog->show();
             });
     connect(window, &OrchestrationWindow::nodeFinished, this,
             [this](int id, bool success) {

@@ -850,7 +850,127 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
     };
 
     // --- Dosing --------------------------------------------------------------
-    if (config.dosing == Dosing::ExplicitCoverage) {
+    if (config.dosing == Dosing::DecoupledRegions) {
+        // The rim and the basal plane are dosed against their OWN pools, in
+        // that order. Edges first because the rim is the smaller and more
+        // constrained pool: a flake has 6m edge carbons against 6m(m-1) basal
+        // ones, so letting basal chemistry run first would never starve, while
+        // the reverse can. They do not compete for sites in any case — the two
+        // regions are disjoint — so the order only affects the random stream.
+
+        // -- Rim ------------------------------------------------------------
+        // Exactly zero is categorical: a strictly hydrogen-terminated edge, not
+        // a rounding of "very little". Everything else is a count of edge
+        // carbons to functionalize, and the carbons that miss out keep their
+        // hydrogen (see hydrogenTerminateEdges below).
+        const double edgeFraction = std::clamp(config.edgeOxidation, 0.0, 1.0);
+        int edgeTarget = 0;
+        if (edgeFraction > 0.0 && fw.edgeCount > 0) {
+            edgeTarget = static_cast<int>(
+                std::llround(edgeFraction * fw.edgeCount));
+            // A nonzero request on a substrate with a rim must place at least
+            // one group: rounding a deliberate 2 % down to zero would report a
+            // hydrogen-terminated flake as though the user had asked for one.
+            edgeTarget = std::max(1, std::min(edgeTarget, fw.edgeCount));
+        }
+        if (edgeTarget > 0) {
+            // Oxygen share -> per-group propensity. f of the edge OXYGEN coming
+            // from carboxyls means f/2 carboxyl GROUPS against (1-f) carbonyls,
+            // because a carboxyl delivers two oxygens and a carbonyl one.
+            const double share = std::clamp(config.carboxylShare, 0.0, 1.0);
+            std::vector<double> edgeWeights{share / 2.0, 1.0 - share};
+            if (edgeWeights[0] <= 0.0 && edgeWeights[1] <= 0.0)
+                edgeWeights = {1.0, 1.0};
+            std::discrete_distribution<int> pickEdge(edgeWeights.begin(),
+                                                     edgeWeights.end());
+            const Group edgeGroups[] = {Group::Carboxyl, Group::Carbonyl};
+            int placedEdge = 0;
+            int stalled = 0;
+            // Terminates: every iteration either places a group (consuming an
+            // edge carbon from a finite pool) or increments `stalled`, and two
+            // consecutive failures with both groups tried means the rim is out
+            // of usable sites.
+            while (placedEdge < edgeTarget && stalled < 2) {
+                const Group group = edgeGroups[pickEdge(rng)];
+                if (place(group)) {
+                    ++local.placed[static_cast<std::size_t>(group)];
+                    ++placedEdge;
+                    stalled = 0;
+                    continue;
+                }
+                // The drawn group did not fit; try the other before giving up,
+                // since a carboxyl is far bulkier than a carbonyl and a rim too
+                // crowded for one may still take the other.
+                //
+                // Only if the other group was ASKED FOR. A share of exactly 0
+                // or 1 excludes one of them, and a fallback that ignores that
+                // answers "carboxyls only" with a rim carrying carbonyls —
+                // the request quietly overruled by a packing failure.
+                const Group other = group == Group::Carboxyl ? Group::Carbonyl
+                                                             : Group::Carboxyl;
+                const double otherWeight =
+                    other == Group::Carboxyl ? edgeWeights[0] : edgeWeights[1];
+                if (otherWeight > 0.0 && place(other)) {
+                    ++local.placed[static_cast<std::size_t>(other)];
+                    ++placedEdge;
+                    stalled = 0;
+                    continue;
+                }
+                ++stalled;
+            }
+            local.edgeGroupsRequested = edgeTarget;
+            local.edgeGroupsPlaced = placedEdge;
+        }
+
+        // -- Basal plane -----------------------------------------------------
+        // A count of OXYGENS, not of groups: both basal groups carry exactly
+        // one oxygen, so the two coincide here, but stating it in oxygen is
+        // what keeps the dial meaning the same thing if a two-oxygen basal
+        // group is ever added.
+        const double basalOc =
+            std::clamp(config.basalOxygenToCarbon, 0.0, 0.5);
+        const int basalTarget =
+            static_cast<int>(std::llround(basalOc * fw.basalCount));
+        if (basalTarget > 0) {
+            const double hydroxyl =
+                std::clamp(config.basalHydroxylShare, 0.0, 1.0);
+            std::vector<double> basalWeights{1.0 - hydroxyl, hydroxyl};
+            if (basalWeights[0] <= 0.0 && basalWeights[1] <= 0.0)
+                basalWeights = {1.0, 1.0};
+            std::discrete_distribution<int> pickBasal(basalWeights.begin(),
+                                                      basalWeights.end());
+            const Group basalGroups[] = {Group::Epoxide, Group::Hydroxyl};
+            int placedOxygen = 0;
+            int stalled = 0;
+            while (placedOxygen < basalTarget && stalled < 2) {
+                const Group group = basalGroups[pickBasal(rng)];
+                if (place(group)) {
+                    ++local.placed[static_cast<std::size_t>(group)];
+                    ++placedOxygen;
+                    stalled = 0;
+                    continue;
+                }
+                // Epoxides need a bonded PAIR of free carbons and run out long
+                // before single sites do, so falling back to the hydroxyl is
+                // what lets a heavily oxidized basal plane reach its target —
+                // but only when the hydroxyl was asked for at all, for the same
+                // reason as at the rim.
+                const Group other = group == Group::Epoxide ? Group::Hydroxyl
+                                                            : Group::Epoxide;
+                const double otherWeight =
+                    other == Group::Epoxide ? basalWeights[0] : basalWeights[1];
+                if (otherWeight > 0.0 && place(other)) {
+                    ++local.placed[static_cast<std::size_t>(other)];
+                    ++placedOxygen;
+                    stalled = 0;
+                    continue;
+                }
+                ++stalled;
+            }
+            local.basalOxygenRequested = basalTarget;
+            local.basalOxygenPlaced = placedOxygen;
+        }
+    } else if (config.dosing == Dosing::ExplicitCoverage) {
         const auto targetCount = [&](Group group) {
             const double fraction = std::clamp(config.coverageFor(group), 0.0, 1.0);
             const int pool = region(group) == Region::Basal ? fw.basalCount
@@ -1017,7 +1137,30 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
     // --- Shortfalls, reported rather than absorbed --------------------------
     std::vector<std::string> notes;
 
-    if (config.dosing == Dosing::ExplicitCoverage) {
+    if (config.dosing == Dosing::DecoupledRegions) {
+        // One line per dial that fell short, naming which one — the mode exists
+        // to keep the two independent, so a shared "did not reach the target"
+        // would undo exactly the distinction the user came here for.
+        std::ostringstream missed;
+        if (local.basalOxygenPlaced < local.basalOxygenRequested) {
+            missed << "The basal plane took " << local.basalOxygenPlaced
+                   << " of the " << local.basalOxygenRequested
+                   << " oxygens requested: the sheet ran out of room. Epoxides "
+                      "need a bonded pair of free basal carbons, and every "
+                      "group permanently consumes the carbons it occupies.";
+        }
+        if (local.edgeGroupsPlaced < local.edgeGroupsRequested) {
+            if (missed.tellp() > 0)
+                missed << ' ';
+            missed << "The rim took " << local.edgeGroupsPlaced << " of the "
+                   << local.edgeGroupsRequested
+                   << " groups requested — a flake has only 6m edge carbons, "
+                      "and carboxyls are bulky enough to block their "
+                      "neighbours.";
+        }
+        if (missed.tellp() > 0)
+            notes.push_back(missed.str());
+    } else if (config.dosing == Dosing::ExplicitCoverage) {
         std::ostringstream shortfall;
         for (std::size_t g = 0; g < kGroupCount; ++g) {
             if (local.placed[g] < local.requested[g])
@@ -1063,10 +1206,20 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
             const auto group = static_cast<Group>(g);
             if (region(group) != Region::Edge)
                 continue;
-            wantedEdge = wantedEdge
-                || (config.dosing == Dosing::ExplicitCoverage
-                        ? config.coverageFor(group) > 0.0
-                        : config.weightFor(group) > 0.0);
+            switch (config.dosing) {
+            case Dosing::ExplicitCoverage:
+                wantedEdge = wantedEdge || config.coverageFor(group) > 0.0;
+                break;
+            case Dosing::TargetRatio:
+                wantedEdge = wantedEdge || config.weightFor(group) > 0.0;
+                break;
+            case Dosing::DecoupledRegions:
+                // One dial governs the whole rim here, so the per-group weights
+                // say nothing about intent — only whether the rim was asked for
+                // at all does.
+                wantedEdge = wantedEdge || config.edgeOxidation > 0.0;
+                break;
+            }
         }
         if (wantedEdge)
             notes.emplace_back(

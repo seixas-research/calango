@@ -41,6 +41,19 @@ public:
     /// module had not been copied along with it.
     static std::string jsonLoggerPreamble();
 
+    /// The live-geometry streaming helper: defines `_stream_frame()`, which
+    /// writes one CALANGO_CELL / CALANGO_FRAME block that JobRunner parses into
+    /// a trajectory frame for the viewport.
+    ///
+    /// Exposed so a generator that drives its own loop (the graphene oxide
+    /// MDMC sampler) streams through the SAME code path as a relaxation or an
+    /// MD run. A second implementation of the block format would be a second
+    /// thing to keep in step with the parser, and the parser is one regex.
+    ///
+    /// It reads a global named `atoms`, which is the convention every
+    /// generated script already follows.
+    static std::string streamFrameHelper();
+
     /// GPAW import line for the configured mode/mixer, and the keyword
     /// arguments of a GPAW(...) call (mode, xc, k-points, eigensolver, mixer,
     /// convergence, smearing), each line prefixed with `indent`.
