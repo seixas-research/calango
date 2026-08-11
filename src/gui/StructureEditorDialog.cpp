@@ -1,4 +1,5 @@
 #include "gui/StructureEditorDialog.hpp"
+#include "gui/GuiUtils.hpp"
 
 #include "core/Element.hpp"
 #include "gui/PeriodicTableDialog.hpp"
@@ -626,6 +627,7 @@ void StructureEditorDialog::buildAtomSection(QVBoxLayout* parent)
         {tr("Element"), tr("x (Å)"), tr("y (Å)"), tr("z (Å)")});
     atomTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     atomTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    disableTypeToEdit(atomTable_);
     atomTable_->setToolTip(
         tr("Element and coordinates are editable; toggle "
            "\"Fractional coordinates\" to switch the three coordinate columns "

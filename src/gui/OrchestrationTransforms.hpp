@@ -25,18 +25,41 @@ namespace calango::gui {
 /// up than working. It also means a transform node has no calculator, no
 /// launch command and nothing to fail in Python.
 
-/// (na, nb, nc) repetition along the three lattice vectors.
+/// An integer 3x3 transformation matrix P: the supercell's lattice vectors are
+/// P · (old cell), row by row.
+///
+/// The same mathematics as Build → "Supercell (Transformation Matrix)", and
+/// deliberately so — a canvas that could only repeat along the axes would be
+/// unable to express the cells that matter most in practice. A rotated
+/// orthorhombic cell of a hexagonal lattice, a sqrt(3)×sqrt(3) R30 surface
+/// reconstruction and a conventional cell built from a primitive one are all
+/// non-diagonal, and none of them is reachable with three multipliers.
+///
+/// |det P| is the number of primitive cells in the supercell, so det P = 0 is
+/// not a degenerate case to tolerate but three coplanar vectors: not a cell.
 struct SupercellSpec {
-    int na = 2;
-    int nb = 2;
-    int nc = 2;
+    /// Row-major, so p[i] is the i-th new lattice vector in units of the old
+    /// ones. Identity by default.
+    int p[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
 
-    /// A repetition that changes nothing. Allowed (it is the identity), but
-    /// worth naming so the node can say so.
-    bool isIdentity() const { return na == 1 && nb == 1 && nc == 1; }
-    bool isValid() const { return na >= 1 && nb >= 1 && nc >= 1; }
-    /// "2 x 2 x 1"
+    /// Determinant, exactly, in long arithmetic. Also the cell-count multiplier.
+    long determinant() const;
+    /// A transformation that changes nothing. Allowed, but worth naming so the
+    /// node can say so rather than looking configured.
+    bool isIdentity() const;
+    /// True when P is P = diag(na, nb, nc) with every entry >= 1 — the case
+    /// that reads as "2 x 2 x 1" and that older documents can express.
+    bool isDiagonal() const;
+    bool isValid() const { return determinant() != 0; }
+    /// "2 x 2 x 1" when diagonal, otherwise "[[1,1,0],[-1,1,0],[0,0,1]] (x2)".
     QString describe() const;
+
+    /// Equivalent diagonal repetitions, valid only when isDiagonal().
+    int na() const { return p[0][0]; }
+    int nb() const { return p[1][1]; }
+    int nc() const { return p[2][2]; }
+    /// P = diag(na, nb, nc).
+    static SupercellSpec diagonal(int na, int nb, int nc);
 
     QJsonObject toJson() const;
     static SupercellSpec fromJson(const QJsonObject& object);

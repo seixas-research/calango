@@ -52,6 +52,17 @@ public:
         bool broadened = true;
         /// σ the run suggests opening on (eV).
         double suggestedWidth = 0.1;
+        /// Which Brillouin-zone integration produced the curves —
+        /// core::toString(core::DosIntegration). Empty for a run from before
+        /// the field existed, which is a sampled histogram by definition.
+        ///
+        /// `broadened` already says "do not convolve this again", but not WHY,
+        /// and the two reasons need different words: a pre-broadened run has a
+        /// σ that is simply fixed, while a tetrahedron run has no σ at all.
+        /// Telling a user their width is "fixed at whatever it was calculated
+        /// with" when nothing was ever calculated with a width is a small lie
+        /// that costs them a re-run to disbelieve.
+        QString integration;
         bool valid() const { return !energies.empty() && !projections.empty(); }
     };
 

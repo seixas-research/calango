@@ -1,5 +1,7 @@
 #include "gui/GuiUtils.hpp"
 
+#include <QAbstractItemView>
+
 #include "core/CalculatorConfig.hpp"
 #include "core/Element.hpp"
 #include "core/Structure.hpp"
@@ -34,6 +36,18 @@
 #include <vector>
 
 namespace calango::gui {
+
+void disableTypeToEdit(QAbstractItemView* view)
+{
+    if (!view)
+        return;
+    // Everything except AnyKeyPressed. See the header for why: AnyKeyPressed
+    // is the one trigger that turns a dead key into an unbounded recursion
+    // through the Cocoa input context.
+    view->setEditTriggers(QAbstractItemView::DoubleClicked
+                          | QAbstractItemView::SelectedClicked
+                          | QAbstractItemView::EditKeyPressed);
+}
 
 QString volumetricDisplayName(const QString& fileName)
 {

@@ -12,6 +12,7 @@ class QDoubleSpinBox;
 class QGroupBox;
 class QLabel;
 class QPushButton;
+class QSlider;
 class QSpinBox;
 class QStackedWidget;
 
@@ -75,10 +76,31 @@ private:
     QCheckBox* hydrogenCheck_ = nullptr;
     QLabel* baseSummary_ = nullptr;
 
+    /// Read a ratio slider as its physical value. Every slider here is an
+    /// integer 0..1000 standing for a ratio, so one conversion serves them all
+    /// and no call site has to remember the scale.
+    static double sliderValue(const QSlider* slider, double maximum);
+
     // Stage 2 — functionalization
     QComboBox* dosingCombo_ = nullptr;
-    QDoubleSpinBox* targetRatioSpin_ = nullptr;
-    QSpinBox* basalShareSpin_ = nullptr;
+    /// Total oxidation as O/C, 0.00 (pristine) to 0.50 (the stoichiometric
+    /// ceiling, C2O). The builder works in C/O, so this is inverted on the way
+    /// in; O/C is what the UI shows because it is linear in oxygen content and
+    /// has a meaningful zero, neither of which C/O has.
+    QSlider* oxygenToCarbonSlider_ = nullptr;
+    QLabel* oxygenToCarbonLabel_ = nullptr;
+    /// Basal chemistry as H/O: 0 = epoxide only, 1 = hydroxyl only.
+    QSlider* basalHydrogenSlider_ = nullptr;
+    QLabel* basalHydrogenLabel_ = nullptr;
+    /// Share of the oxygen budget delivered at the EDGES rather than on the
+    /// basal plane — the edge oxidation density.
+    QSlider* edgeShareSlider_ = nullptr;
+    QLabel* edgeShareLabel_ = nullptr;
+    /// Edge composition: 0 = carbonyl only, 1 = carboxyl only.
+    QSlider* edgeCarboxylSlider_ = nullptr;
+    QLabel* edgeCarboxylLabel_ = nullptr;
+    QGroupBox* ratioBox_ = nullptr;
+    QGroupBox* edgeChemistryBox_ = nullptr;
     QLabel* amountHint_ = nullptr;
     QLabel* edgeNote_ = nullptr;
     QCheckBox* groupCheck_[kGroups] = {};

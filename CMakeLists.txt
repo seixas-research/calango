@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.6
+    VERSION 26.8.7
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -701,6 +701,7 @@ qt_add_resources(calango "icons"
         assets/icons/information-line.svg
         assets/icons/loader-4-line.svg
         assets/icons/magic-line.svg
+        assets/icons/node-tree.svg
         assets/icons/map-2-fill.svg
         assets/icons/paint-fill.svg
         assets/icons/palette-line.svg
@@ -1488,6 +1489,7 @@ if(CALANGO_BUILD_TESTS)
         tests/OrchestrationSiTest.cpp
         src/gui/OrchestrationWindow.cpp
         src/gui/OrchestrationDocument.cpp
+        src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
         src/gui/OrchestrationProvenance.cpp
         src/gui/SimulationWizardBase.cpp
@@ -1548,6 +1550,7 @@ if(CALANGO_BUILD_TESTS)
         tests/OrchestrationHandoffTest.cpp
         src/gui/OrchestrationWindow.cpp
         src/gui/OrchestrationDocument.cpp
+        src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
         src/gui/OrchestrationProvenance.cpp
         src/gui/SimulationWizardBase.cpp
@@ -1607,6 +1610,7 @@ if(CALANGO_BUILD_TESTS)
         tests/OrchestrationBatchTest.cpp
         src/gui/OrchestrationWindow.cpp
         src/gui/OrchestrationDocument.cpp
+        src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
         src/gui/OrchestrationProvenance.cpp
         src/gui/SimulationWizardBase.cpp

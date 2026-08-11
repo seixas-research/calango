@@ -50,6 +50,41 @@ enum class ElectronicBackend {
     Vasp,
 };
 
+/// How the Brillouin-zone integral behind a density of states is evaluated.
+///
+/// The two are not variations on one method; they put the approximation in
+/// different places, and which is right depends on what the DOS is for.
+enum class DosIntegration {
+    /// Bin the eigenvalues by k-point weight and broaden afterwards.
+    ///
+    /// The run stores the RAW histogram and the viewer convolves it with a
+    /// Gaussian on a slider, so σ stays a presentation choice rather than a
+    /// property of the data. Robust on any mesh, including Γ-only — the
+    /// broadening is what hides an under-converged k-sampling, which is also
+    /// the honest criticism of it: a peak may be a broadening artifact.
+    Sampling,
+    /// Linear tetrahedron interpolation (Blöchl) over the k-mesh.
+    ///
+    /// The bands are interpolated linearly inside tetrahedra filling the
+    /// Brillouin zone and the DOS integrated analytically, so no width enters
+    /// at all: band edges come out sharp instead of smeared, and the states
+    /// under a peak are the states that are there. Needs a genuine
+    /// Monkhorst-Pack grid — with too few k-points the interpolation is
+    /// meaningless, and it cannot be rescued by broadening afterwards, which
+    /// is the trade this option makes.
+    ///
+    /// The resulting curve is ALREADY a density of states in states/eV, not a
+    /// histogram, so the viewer must draw it as it stands. Broadening it a
+    /// second time would be applying a σ to data that has none.
+    Tetrahedron,
+};
+
+constexpr const char* toString(DosIntegration integration)
+{
+    return integration == DosIntegration::Tetrahedron ? "tetrahedron"
+                                                      : "sampling";
+}
+
 struct ElectronicConfig {
     ElectronicBackend backend = ElectronicBackend::FreeElectrons;
     /// High-symmetry path string ("GXWKG", "GMKG", ...); empty lets ASE
@@ -90,6 +125,14 @@ struct ElectronicConfig {
     bool spinOrbit = false;
     // -- PDOS (GPAW) --
     bool pdos = true;
+    /// How the Brillouin-zone integral behind the DOS is evaluated.
+    ///
+    /// This is a different question from the SCF's occupation smearing
+    /// (CalculatorConfig::smearing), even though both are sometimes called
+    /// "smearing". That one decides how the occupations are filled while the
+    /// density converges; this one decides how the finished eigenvalues are
+    /// turned into a curve, and the two are chosen for different reasons.
+    DosIntegration dosIntegration = DosIntegration::Sampling;
     /// Number of bins in the RAW histogram written to pdos.json.
     ///
     /// Bins, not "sampling points of a smooth curve": the run stores the

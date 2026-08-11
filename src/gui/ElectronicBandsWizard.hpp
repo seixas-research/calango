@@ -119,6 +119,7 @@ private:
     QGroupBox* pdosGroup_ = nullptr;
     QCheckBox* pdosCheck_ = nullptr;
     QSpinBox* pdosKptsSpin_[3] = {nullptr, nullptr, nullptr};
+    QComboBox* dosIntegrationCombo_ = nullptr;
     QSpinBox* energyPointsSpin_ = nullptr;
     /// Once the user edits the PDOS k-mesh, stop auto-rescaling it.
     bool pdosKptsUserEdited_ = false;

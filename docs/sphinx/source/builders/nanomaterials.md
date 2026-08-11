@@ -94,7 +94,7 @@ It runs natively in C++.
 
 Graphene oxide has no single structure — it is a non-stoichiometric, disordered
 material, and the accepted picture (Lerf–Klinowski) is a basal plane carrying epoxides
-and hydroxyls, with carboxyls, carbonyls and phenolic hydroxyls at edges and defects.
+and hydroxyls, with carboxyls and carbonyls at edges and defects.
 What the builder honestly produces is a **representative random sample from that family
 at a requested composition**, not "the" structure; it reports exactly what it placed and
 the seed reproduces it.
@@ -158,7 +158,7 @@ from the Representation panel.
 
 ### Stage 2 — functionalization and oxidation level
 
-Five groups in two boxes, each with a checkbox and a spin:
+Four groups, in two families that are kept strictly apart:
 
 | Group | Region | Consumes | Delivers | Notes |
 |---|---|---|---|---|
@@ -166,38 +166,84 @@ Five groups in two boxes, each with a checkbox and a spin:
 | Hydroxyl (−OH, sp³) | basal | one carbon | 1 O | above or below the plane, C–O 1.48 Å |
 | Carboxyl (−COOH) | edge | one carbon | **2 O** | brings a carbon of its own; aryl C–C 1.48 Å |
 | Carbonyl (=O) | edge | one carbon | 1 O | quinone-like, collinear with the C–H it replaces |
-| Edge hydroxyl (−OH, sp²) | edge | one carbon | 1 O | phenolic: C–O 1.36 Å, in the plane |
 
-The two families are kept strictly apart. On a periodic sheet the edge box is greyed out
-and says why — earlier versions placed carboxyls and carbonyls on the basal plane as a
-stated modeling compromise, and no longer do.
+:::{note}
+**Edge chemistry is carboxyl and carbonyl only.** A phenolic edge −OH used to be offered
+as a third edge group and has been removed: the two that remain are what oxidative
+exfoliation produces at a rim in quantity, and a third edge group with its own weight
+made the edge composition under-determined without adding chemistry anyone was asking
+the generator for.
 
-{guilabel}`Set by` chooses how much oxygen goes on:
+This is a statement about what is *built*. A structure loaded from a file may well carry
+phenolic hydroxyls, and the group finder still finds them — reported as *hydroxyl*, which
+is what they are; the host carbon's coordination and the `edge` field say where it sits.
+:::
 
-**Explicit coverages per group** — each spin is the fraction of the carbons *in that
-group's region* which the group consumes, not the fraction of groups. An epoxide costs
-two carbons and the others one, so the values are additive within a region: 10 % epoxide
-plus 10 % hydroxyl functionalizes 20 % of the basal plane, while 50 % carboxyl
-carboxylates half the rim. The default selection is epoxide + hydroxyl, the basal-plane
-pair of the Lerf–Klinowski picture.
+On a periodic sheet the edge controls are hidden and the panel says why — earlier
+versions placed carboxyls and carbonyls on the basal plane as a stated modeling
+compromise, and no longer do.
 
-**Target C/O ratio** — the spins become *relative propensities* (only their ratios
-matter) and the builder places groups until the finished structure reaches
-{guilabel}`Target C/O`: every carbon, **including the ones carboxyls bring with them**,
-over every oxygen. That is what XPS reports. Heavily oxidized graphene oxide sits near 2,
-mildly oxidized near 4–10, reduced graphene oxide at 10 and beyond.
+#### Composition — the O/C and H/O sliders
 
-The loop is iterative rather than a closed-form count precisely because a carboxyl moves
-*both* sides of the ratio, and it stops at the **closest reachable** composition rather
-than the first one past the target — with a carboxyl worth two oxygens, placing blindly
-until the ratio drops below the target can overshoot by more than stopping short would
-have missed.
+{guilabel}`Set by` defaults to **Target O/C ratio**, and the composition is set with
+sliders rather than typed numbers:
 
-{guilabel}`Basal : edge split` sets the fraction of the oxygen budget delivered by basal
-groups (default 70 %); whichever region is furthest behind its share gets the next group.
-The endpoints are categorical: 100 % places no edge chemistry at all and 0 % no basal
-chemistry, even if that means missing the target. Anything in between is a soft split,
-and one region carries on alone once the other runs out of sites.
+{guilabel}`Oxidation (O/C)` — oxygen per carbon in the finished structure: every oxygen
+over every carbon, **including the ones carboxyls bring with them**. That is what XPS
+reports, and unlike C/O it is linear in oxygen content and has a meaningful zero. The
+slider runs **0.0 to 0.5**:
+
+- **0.0** — pristine graphene, no oxygen at all.
+- **0.5** — the stoichiometric ceiling, C₂O. Every oxygen needs two carbons to sit on
+  (an epoxide bridges a C–C bond; a hydroxyl rehybridizes one carbon while the sheet
+  still has to hold together), so no carbon framework holds more. Letting the slider
+  past it would be offering compositions that do not exist.
+- Heavily oxidized graphene oxide reaches 0.4–0.5, typical material 0.1–0.25, reduced
+  graphene oxide below 0.1. The readout shows the equivalent C/O beside it.
+
+{guilabel}`Basal chemistry (H/O)` — hydrogen per oxygen on the basal plane, which is the
+same thing as the hydroxyl share of the basal groups: an epoxide brings one oxygen and no
+hydrogen, a hydroxyl one of each. Because both deliver exactly one oxygen, weighting by
+group and weighting by oxygen are identical, so the label is exact rather than
+approximate:
+
+- **0.0** — only epoxides.
+- **1.0** — only hydroxyls.
+- The Lerf–Klinowski picture has both in comparable amounts, so the middle is ordinary.
+
+#### Edge oxidation
+
+A separate box, shown for a nanoflake only, with two sliders — because they answer two
+different questions, and folding them into one would make "more edge oxidation" silently
+also mean "more carboxyl", which is not a relationship the chemistry has.
+
+{guilabel}`Oxygen at the edges` — the share of the oxygen budget delivered at the rim
+rather than on the basal plane: the edge oxidation **density**. 0.0 puts every oxygen on
+the basal plane and leaves the rim fully hydrogen-terminated; 1.0 oxidizes only the rim.
+Both endpoints are categorical and are honoured even if that means missing the target;
+anything between is a soft split where whichever region is furthest behind gets the next
+group, and one carries on alone once the other runs out of sites. A large flake has far
+more basal than edge carbons, so a small edge share is the ordinary case.
+
+{guilabel}`Edge chemistry (COOH/O)` — what that oxygen becomes: the carboxyl share of the
+edge groups. 0.0 gives quinone-like carbonyls only; 1.0 gives carboxyls only. Because a
+carboxyl delivers **two** oxygens and a carbonyl one, a share stated in oxygen is
+converted to a propensity per group — $f$ oxygens from carboxyls means $f/2$ carboxyl
+groups against $1-f$ carbonyls.
+
+The placement loop is iterative rather than a closed-form count precisely because a
+carboxyl moves *both* sides of the ratio, and it stops at the **closest reachable**
+composition rather than the first one past the target — with a carboxyl worth two
+oxygens, placing blindly until the ratio drops below the target can overshoot by more
+than stopping short would have missed.
+
+#### Explicit coverages
+
+The alternative {guilabel}`Set by` mode replaces the sliders with one spin per group.
+Each is the fraction of the carbons *in that group's region* which the group consumes,
+not the fraction of groups. An epoxide costs two carbons and the others one, so the
+values are additive within a region: 10 % epoxide plus 10 % hydroxyl functionalizes 20 %
+of the basal plane, while 50 % carboxyl carboxylates half the rim.
 
 {guilabel}`Decorate both faces` (on by default) alternates *basal* groups between the two
 sides; restricting to one face puts an artificial dipole across the sheet. Edge groups
@@ -207,7 +253,7 @@ reproducible — record it with any result.
 ### Placement rules and shortfalls
 
 Under explicit coverages, groups are placed in the order epoxide → carboxyl → carbonyl →
-edge hydroxyl → hydroxyl on shuffled sites; epoxides go first because they need a bonded
+hydroxyl on shuffled sites; epoxides go first because they need a bonded
 *pair* of free basal carbons, the most constrained requirement. Two hard constraints hold
 in every mode, and both are chemical rather than statistical:
 
@@ -230,11 +276,12 @@ epoxides begin to struggle to find bonded free pairs, and the summary warns in a
 
 % TODO screenshot: Graphene oxide wizard stage 2 on a nanoflake, target C/O mode, with the basal and edge boxes both populated
 ```{figure} /_static/img/builders_nanomaterials_go.png
-:alt: Functionalization stage of the Graphene Oxide builder with separate basal and edge group boxes and the target C/O controls
+:alt: Functionalization stage of the Graphene Oxide builder with the O/C and H/O sliders and the edge oxidation box
 :width: 92%
 :figclass: screenshot
 
-Stage 2 of the Graphene Oxide builder. Basal and edge chemistry are separate boxes, the
-oxidation level is set either per group or by target C/O, and the seed reproduces the
-exact decoration.
+Stage 2 of the Graphene Oxide builder. Total oxidation is an O/C slider capped at the
+C₂O limit, basal chemistry an H/O slider running from all-epoxide to all-hydroxyl, and
+edge oxidation has its own density and carboxyl:carbonyl controls. The seed reproduces
+the exact decoration.
 ```

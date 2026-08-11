@@ -63,14 +63,27 @@ public:
     /// number of oxygens, which is what makes both "coverage" and "C/O ratio"
     /// ambiguous unless defined carefully — see `Config::coverage` and
     /// `Config::targetCarbonToOxygen`.
+    ///
+    /// Edge chemistry is carboxyl and carbonyl ONLY.
+    ///
+    /// A phenolic edge -OH used to be offered as a third edge group and has
+    /// been removed. The two that remain are the ones oxidative exfoliation
+    /// actually produces at a flake rim in quantity, and they are the pair a
+    /// C/O or O/C target is meaningfully split between; a third edge group with
+    /// its own weight made the edge composition under-determined without adding
+    /// chemistry anyone was asking the generator for.
+    ///
+    /// Note this is a statement about what is BUILT. A structure loaded from a
+    /// file may well carry phenolic hydroxyls, and findFunctionalGroups() still
+    /// finds them — reported as Hydroxyl, which is what they are; the host
+    /// carbon's coordination (and the "edge" scalar field) says where it sits.
     enum class Group : std::uint8_t {
         Epoxide,       ///< BASAL: bridging -O- across a C-C bond; TWO carbons, both sp3
         Hydroxyl,      ///< BASAL: -OH standing off the plane on one sp3 carbon
         Carboxyl,      ///< EDGE: -COOH replacing an edge H; brings a carbon of its own
         Carbonyl,      ///< EDGE: =O replacing an edge H, in the plane (quinone-like)
-        EdgeHydroxyl,  ///< EDGE: phenolic -OH replacing an edge H, in the plane
     };
-    static constexpr std::size_t kGroupCount = 5;
+    static constexpr std::size_t kGroupCount = 4;
 
     /// Where a carbon sits chemically — and therefore which groups it can host.
     enum class Region : std::uint8_t {
@@ -123,12 +136,12 @@ public:
         /// means half the rim. Requests that together exceed the available
         /// carbons are honored in the order listed and then truncated, with
         /// the shortfall reported.
-        double coverage[kGroupCount] = {0.0, 0.0, 0.0, 0.0, 0.0};
+        double coverage[kGroupCount] = {0.0, 0.0, 0.0, 0.0};
 
         /// Dosing::TargetRatio — relative propensity of each group within its
         /// region. Only the ratios matter; the absolute amount is set by
         /// `targetCarbonToOxygen`. A weight of 0 excludes the group.
-        double weight[kGroupCount] = {1.0, 1.0, 1.0, 1.0, 1.0};
+        double weight[kGroupCount] = {1.0, 1.0, 1.0, 1.0};
 
         /// Dosing::TargetRatio — target C/O of the FINISHED structure: every
         /// carbon (framework plus the carboxyl carbons the groups bring with
@@ -184,10 +197,10 @@ public:
         int carbonCount = 0;
         int basalCarbonCount = 0; ///< of those, three-coordinate carbons
         int edgeCarbonCount = 0;  ///< of those, under-coordinated carbons
-        int placed[kGroupCount] = {0, 0, 0, 0, 0};
+        int placed[kGroupCount] = {0, 0, 0, 0};
         /// Dosing::ExplicitCoverage only — under Dosing::TargetRatio nothing
         /// was requested per group, and these stay zero.
-        int requested[kGroupCount] = {0, 0, 0, 0, 0};
+        int requested[kGroupCount] = {0, 0, 0, 0};
         int functionalizedCarbons = 0;
         /// Every carbon in the finished structure: framework + carboxyl.
         int totalCarbonAtoms = 0;

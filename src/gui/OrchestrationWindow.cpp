@@ -13,10 +13,14 @@
 #include "gui/SettingsManager.hpp"
 #include "jobs/JobRunner.hpp"
 #include "python_bridge/AseBridge.hpp"
+#include "python_bridge/BulkBuilder.hpp"
 #include "ui/IconManager.hpp"
 
 #include <QAbstractItemView>
+#include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QGridLayout>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDialogButtonBox>
@@ -962,6 +966,130 @@ QList<OrchestrationNodeItem::BatchItem> readStructuresFrom(const QString& path,
     return items;
 }
 
+/// Bulk crystals straight from `ase.build.bulk`, one container entry per
+/// element or formula typed.
+///
+/// The fastest way there is to build a sweep: "Cu, Au, Pt" and a structure of
+/// "ground state" gives three correctly-parameterised fcc cells without
+/// opening a file or a browser. The lattice constants come from ASE's own
+/// `reference_states` table when left blank, which is both more accurate and
+/// less error-prone than typing three numbers from memory.
+bool addBulkCrystals(QWidget* parent,
+                     QList<OrchestrationNodeItem::BatchItem>* items)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("Add Bulk Crystals"));
+    auto* form = new QFormLayout(&dialog);
+
+    auto* formulaEdit = new QLineEdit(&dialog);
+    formulaEdit->setPlaceholderText(QStringLiteral("Cu, Au, Pt"));
+    formulaEdit->setToolTip(QObject::tr(
+        "One element or formula per entry, separated by commas or spaces. "
+        "Each becomes its own structure in the container, so the pipeline "
+        "runs once per material."));
+    form->addRow(QObject::tr("Elements / formulas:"), formulaEdit);
+
+    auto* structureCombo = new QComboBox(&dialog);
+    // "Ground state" first and default: for a list of elements it is both the
+    // right answer and the only one that can differ per entry.
+    structureCombo->addItem(QObject::tr("Ground state (ASE reference)"),
+                            QString());
+    for (const std::string& name : pybridge::BulkBuilder::prototypes())
+        structureCombo->addItem(QString::fromStdString(name),
+                                QString::fromStdString(name));
+    form->addRow(QObject::tr("Crystal structure:"), structureCombo);
+
+    auto* latticeSpin = new QDoubleSpinBox(&dialog);
+    latticeSpin->setRange(0.0, 100.0);
+    latticeSpin->setDecimals(4);
+    latticeSpin->setSingleStep(0.05);
+    latticeSpin->setSpecialValueText(QObject::tr("automatic"));
+    latticeSpin->setSuffix(QStringLiteral(" Å"));
+    latticeSpin->setToolTip(QObject::tr(
+        "Lattice constant a. Left at \"automatic\" every entry gets its own "
+        "tabulated value, which is what you want for a list of different "
+        "elements; a fixed number applies to all of them."));
+    form->addRow(QObject::tr("Lattice constant:"), latticeSpin);
+
+    auto* cubicCheck = new QCheckBox(
+        QObject::tr("Conventional cubic cell"), &dialog);
+    cubicCheck->setToolTip(QObject::tr(
+        "Build the conventional cell (4 atoms for fcc) rather than the "
+        "primitive one (1 atom). Only meaningful for cubic structures."));
+    form->addRow(cubicCheck);
+
+    auto* status = new QLabel(&dialog);
+    status->setWordWrap(true);
+    form->addRow(status);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(QObject::tr("Add"));
+    form->addRow(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
+                     &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                     &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+
+    const QStringList names = formulaEdit->text().split(
+        QRegularExpression(QStringLiteral("[,\\s]+")), Qt::SkipEmptyParts);
+    if (names.isEmpty())
+        return false;
+
+    QStringList problems;
+    int added = 0;
+    for (const QString& name : names) {
+        pybridge::BulkBuilder::PrototypeSpec spec;
+        spec.name = name.toStdString();
+        spec.cubic = cubicCheck->isChecked();
+        QString chosen = structureCombo->currentData().toString();
+        if (chosen.isEmpty()) {
+            // Per entry, not once for the list: Cu is fcc and Fe is bcc, and a
+            // single structure applied to both would silently build one of
+            // them wrong.
+            const auto reference =
+                pybridge::BulkBuilder::referenceState(spec.name);
+            if (!reference.found || reference.crystalStructure.empty()) {
+                problems << QObject::tr(
+                                "%1: ASE has no ground-state reference — pick "
+                                "a crystal structure explicitly.")
+                                .arg(name);
+                continue;
+            }
+            chosen = QString::fromStdString(reference.crystalStructure);
+            spec.crystalStructure = reference.crystalStructure;
+            if (latticeSpin->value() <= 0.0 && reference.a > 0.0)
+                spec.a = reference.a;
+            if (reference.hasCovera) {
+                spec.covera = reference.covera;
+                spec.hasCovera = true;
+            }
+        } else {
+            spec.crystalStructure = chosen.toStdString();
+        }
+        if (latticeSpin->value() > 0.0)
+            spec.a = latticeSpin->value();
+
+        try {
+            auto structure = std::make_shared<const core::Structure>(
+                pybridge::BulkBuilder::buildPrototype(spec));
+            items->append({QStringLiteral("%1 (%2)").arg(name, chosen),
+                           structure});
+            ++added;
+        } catch (const std::exception& e) {
+            problems << QStringLiteral("%1: %2").arg(
+                name,
+                QString::fromUtf8(e.what()).section(QLatin1Char('\n'), 0, 0));
+        }
+    }
+    if (!problems.isEmpty())
+        QMessageBox::warning(parent, QObject::tr("Add Bulk Crystals"),
+                             problems.join(QLatin1Char('\n')));
+    return added > 0;
+}
+
 /// Container contents: the structures the pipeline runs over, and in what
 /// order.
 ///
@@ -1007,10 +1135,11 @@ bool editContainer(QWidget* parent, const OrchestrationWindow::MaterialList& ope
 
     auto* row = new QHBoxLayout;
     auto* fromOpen = new QPushButton(QObject::tr("Add Open Document…"), &dialog);
+    auto* fromBulk = new QPushButton(QObject::tr("Add Bulk Crystal…"), &dialog);
     auto* fromFile = new QPushButton(QObject::tr("Import from File…"), &dialog);
     auto* fromDb = new QPushButton(QObject::tr("Import from Database…"), &dialog);
     auto* remove = new QPushButton(QObject::tr("Remove"), &dialog);
-    for (QPushButton* button : {fromOpen, fromFile, fromDb, remove})
+    for (QPushButton* button : {fromOpen, fromBulk, fromFile, fromDb, remove})
         row->addWidget(button);
     row->addStretch(1);
     layout->addLayout(row);
@@ -1034,6 +1163,10 @@ bool editContainer(QWidget* parent, const OrchestrationWindow::MaterialList& ope
             addItem(open[index]);
             refill();
         }
+    });
+    QObject::connect(fromBulk, &QPushButton::clicked, &dialog, [&] {
+        if (addBulkCrystals(&dialog, &working))
+            refill();
     });
     QObject::connect(fromFile, &QPushButton::clicked, &dialog, [&] {
         const QStringList paths = QFileDialog::getOpenFileNames(
@@ -1093,47 +1226,174 @@ bool editContainer(QWidget* parent, const OrchestrationWindow::MaterialList& ope
     return true;
 }
 
+/// Supercell Builder: the same integer 3x3 transformation matrix as
+/// Build → "Supercell (Transformation Matrix)".
+///
+/// Three multipliers cannot express the cells that matter most — a rotated
+/// orthorhombic cell of a hexagonal lattice, a sqrt(3)xsqrt(3) R30
+/// reconstruction, a conventional cell built from a primitive one are all
+/// non-diagonal — so the node takes the matrix, and offers the diagonal case
+/// as a shortcut rather than as the only option.
 bool editSupercell(QWidget* parent, SupercellSpec* spec)
 {
     QDialog dialog(parent);
     dialog.setWindowTitle(QObject::tr("Supercell Builder"));
-    auto* form = new QFormLayout(&dialog);
-    const auto makeSpin = [&dialog](int value) {
-        auto* spin = new QSpinBox(&dialog);
-        spin->setRange(1, 64);
-        spin->setValue(value);
-        return spin;
-    };
-    auto* na = makeSpin(spec->na);
-    auto* nb = makeSpin(spec->nb);
-    auto* nc = makeSpin(spec->nc);
-    form->addRow(QObject::tr("Repeat along a:"), na);
-    form->addRow(QObject::tr("Repeat along b:"), nb);
-    form->addRow(QObject::tr("Repeat along c:"), nc);
-    auto* note = new QLabel(
-        QObject::tr("Applied to the structure that reaches this node, so a "
-                    "relaxation upstream is expanded after it converges — not "
-                    "before."),
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* intro = new QLabel(
+        QObject::tr("The supercell's lattice vectors are <b>P · (old cell)</b>, "
+                    "row by row. Applied to the structure that reaches this "
+                    "node, so a relaxation upstream is expanded after it "
+                    "converges — not before."),
         &dialog);
-    note->setWordWrap(true);
-    form->addRow(note);
+    intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
+    layout->addWidget(intro);
+
+    auto* grid = new QGridLayout;
+    QSpinBox* cells[3][3];
+    const auto bracket = [&dialog](const QString& glyph) {
+        auto* label = new QLabel(glyph, &dialog);
+        QFont font = label->font();
+        font.setPointSizeF(font.pointSizeF() * 2.4);
+        label->setFont(font);
+        return label;
+    };
+    grid->addWidget(bracket(QStringLiteral("[")), 0, 0, 3, 1);
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            auto* spin = new QSpinBox(&dialog);
+            spin->setRange(-64, 64);
+            spin->setValue(spec->p[i][j]);
+            spin->setAlignment(Qt::AlignCenter);
+            cells[i][j] = spin;
+            grid->addWidget(spin, i, j + 1);
+        }
+    }
+    grid->addWidget(bracket(QStringLiteral("]")), 0, 4, 3, 1);
+    layout->addLayout(grid);
+
+    auto* status = new QLabel(&dialog);
+    status->setWordWrap(true);
+    layout->addWidget(status);
+
+    auto* shortcuts = new QHBoxLayout;
+    auto* identity = new QPushButton(QObject::tr("Identity"), &dialog);
+    auto* diagonal = new QPushButton(QObject::tr("2 × 2 × 2"), &dialog);
+    shortcuts->addWidget(identity);
+    shortcuts->addWidget(diagonal);
+    shortcuts->addStretch(1);
+    layout->addLayout(shortcuts);
+
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    form->addRow(buttons);
+    layout->addWidget(buttons);
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
                      &QDialog::accept);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
                      &QDialog::reject);
+
+    const auto currentSpec = [&cells] {
+        SupercellSpec current;
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                current.p[i][j] = cells[i][j]->value();
+        return current;
+    };
+    const auto load = [&cells](const SupercellSpec& value) {
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                cells[i][j]->setValue(value.p[i][j]);
+    };
+    const auto refresh = [&currentSpec, status, buttons] {
+        const SupercellSpec current = currentSpec();
+        const long det = current.determinant();
+        // det P = 0 is not a degenerate case to tolerate: the three vectors are
+        // coplanar, so there is no cell. OK is disabled rather than the error
+        // being deferred to the run, hours later.
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(det != 0);
+        if (det == 0) {
+            status->setStyleSheet(QStringLiteral("color:#c0392b;"));
+            status->setText(QObject::tr(
+                "det P = 0 — the three transformed vectors are coplanar; not a "
+                "valid supercell."));
+            return;
+        }
+        status->setStyleSheet(QString());
+        status->setText(
+            current.isIdentity()
+                ? QObject::tr("det P = 1, the identity — this node would pass "
+                              "the structure through unchanged.")
+                : QObject::tr("det P = %1 — the supercell holds %1 times as "
+                              "many atoms as the cell that reaches this node.")
+                      .arg(std::labs(det)));
+    };
+    for (auto& row : cells)
+        for (QSpinBox* spin : row)
+            QObject::connect(spin, &QSpinBox::valueChanged, &dialog,
+                             [&refresh] { refresh(); });
+    QObject::connect(identity, &QPushButton::clicked, &dialog,
+                     [&load] { load(SupercellSpec{}); });
+    QObject::connect(diagonal, &QPushButton::clicked, &dialog, [&load] {
+        load(SupercellSpec::diagonal(2, 2, 2));
+    });
+    refresh();
+
     if (dialog.exec() != QDialog::Accepted)
         return false;
-    spec->na = na->value();
-    spec->nb = nb->value();
-    spec->nc = nc->value();
+    *spec = currentSpec();
     return true;
 }
 
 enum DefectColumn { kKindColumn, kIndexColumn, kElementColumn,
                     kPositionColumn, kFrameColumn, kDefectColumns };
+
+/// Show only the fields the chosen action actually uses.
+///
+/// Substitute and Remove address EXISTING atoms, so they want atom indices and
+/// a position means nothing to them. Add creates an atom that is not there yet,
+/// so it wants coordinates and there is no index to give. Leaving both sets
+/// editable invites a recipe that carries a position nothing will read — and,
+/// worse, one where a stale index looks like it is still doing something.
+///
+/// The unused cells are cleared as well as locked: a greyed-out "0, 0, 0" left
+/// beside a Remove row is a value the reader has to work out is ignored.
+void syncDefectRow(QTableWidget* table, int row)
+{
+    const auto* kind =
+        qobject_cast<QComboBox*>(table->cellWidget(row, kKindColumn));
+    if (!kind)
+        return;
+    const auto action =
+        static_cast<DefectOperation::Kind>(kind->currentData().toInt());
+    const bool adding = action == DefectOperation::Kind::Add;
+    const bool needsElement = action != DefectOperation::Kind::Remove;
+
+    const auto setUsable = [table, row](int column, bool usable,
+                                        const QString& placeholder) {
+        QTableWidgetItem* item = table->item(row, column);
+        if (!item) {
+            item = new QTableWidgetItem;
+            table->setItem(row, column, item);
+        }
+        if (usable) {
+            item->setFlags(item->flags() | Qt::ItemIsEditable
+                           | Qt::ItemIsEnabled);
+            item->setForeground(QBrush());
+            if (item->text() == placeholder)
+                item->setText(QString());
+        } else {
+            item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+            item->setText(placeholder);
+            item->setForeground(QColor(0x8a, 0x8a, 0x8a));
+        }
+    };
+    const QString unused = QObject::tr("—");
+    setUsable(kIndexColumn, !adding, unused);
+    setUsable(kElementColumn, needsElement, unused);
+    setUsable(kPositionColumn, adding, unused);
+    if (QWidget* frame = table->cellWidget(row, kFrameColumn))
+        frame->setEnabled(adding);
+}
 
 /// Put the widgets for one recipe row in place and load `operation` into them.
 void fillDefectRow(QTableWidget* table, int row, const DefectOperation& operation)
@@ -1149,7 +1409,7 @@ void fillDefectRow(QTableWidget* table, int row, const DefectOperation& operatio
     table->setCellWidget(row, kKindColumn, kind);
 
     auto* frame = new QComboBox(table);
-    frame->addItem(QObject::tr("Cartesian A"), false);
+    frame->addItem(QObject::tr("Cartesian Å"), false);
     frame->addItem(QObject::tr("Fractional"), true);
     frame->setCurrentIndex(operation.fractional ? 1 : 0);
     table->setCellWidget(row, kFrameColumn, frame);
@@ -1157,10 +1417,24 @@ void fillDefectRow(QTableWidget* table, int row, const DefectOperation& operatio
     table->setItem(row, kIndexColumn, new QTableWidgetItem(operation.indices));
     table->setItem(row, kElementColumn, new QTableWidgetItem(operation.element));
     table->setItem(row, kPositionColumn,
-                   new QTableWidgetItem(QStringLiteral("%1, %2, %3")
-                                            .arg(operation.x, 0, 'g', 6)
-                                            .arg(operation.y, 0, 'g', 6)
-                                            .arg(operation.z, 0, 'g', 6)));
+                   new QTableWidgetItem(
+                       operation.kind == DefectOperation::Kind::Add
+                           ? QStringLiteral("%1, %2, %3")
+                                 .arg(operation.x, 0, 'g', 6)
+                                 .arg(operation.y, 0, 'g', 6)
+                                 .arg(operation.z, 0, 'g', 6)
+                           : QString()));
+    // The row is looked up from the combo rather than captured: removing a row
+    // shifts every row below it, and a captured index would then sync somebody
+    // else's fields — or one past the end.
+    QObject::connect(kind, &QComboBox::currentIndexChanged, table, [table, kind] {
+        for (int r = 0; r < table->rowCount(); ++r)
+            if (table->cellWidget(r, kKindColumn) == kind) {
+                syncDefectRow(table, r);
+                return;
+            }
+    });
+    syncDefectRow(table, row);
 }
 
 bool editDefects(QWidget* parent, DefectSpec* spec)
@@ -1171,10 +1445,14 @@ bool editDefects(QWidget* parent, DefectSpec* spec)
     auto* layout = new QVBoxLayout(&dialog);
     auto* caption = new QLabel(
         QObject::tr(
+            "<b>Substitute</b> and <b>Remove</b> address existing atoms by "
+            "index; <b>Add</b> places a new atom at a position. Only the "
+            "fields an action uses are editable.<br>"
             "Every index refers to the structure that REACHES this node, "
             "numbered from 0 — removals do not renumber the atoms the other "
             "rows address. Ranges are written \"4-8\"."),
         &dialog);
+    caption->setTextFormat(Qt::RichText);
     caption->setWordWrap(true);
     layout->addWidget(caption);
 
@@ -1185,6 +1463,10 @@ bool editDefects(QWidget* parent, DefectSpec* spec)
          QObject::tr("Coordinates")});
     table->horizontalHeader()->setStretchLastSection(true);
     table->verticalHeader()->setVisible(false);
+    // Not a preference: without this, a dead key (´ ` ~ ^) typed at this table
+    // recurses through the Cocoa input context until the stack is gone. See
+    // disableTypeToEdit().
+    disableTypeToEdit(table);
     for (const DefectOperation& operation : spec->operations) {
         const int row = table->rowCount();
         table->insertRow(row);
@@ -1226,14 +1508,21 @@ bool editDefects(QWidget* parent, DefectSpec* spec)
                 qobject_cast<QComboBox*>(table->cellWidget(row, kKindColumn)))
             operation.kind = static_cast<DefectOperation::Kind>(
                 kind->currentData().toInt());
+        const bool adding = operation.kind == DefectOperation::Kind::Add;
+        // Only the fields the action uses are read back. The others hold the
+        // "not used here" placeholder, and reading that as an index list or a
+        // position would put nonsense into the recipe.
         if (auto* frame =
                 qobject_cast<QComboBox*>(table->cellWidget(row, kFrameColumn)))
-            operation.fractional = frame->currentData().toBool();
-        if (const QTableWidgetItem* cell = table->item(row, kIndexColumn))
+            operation.fractional = adding && frame->currentData().toBool();
+        if (const QTableWidgetItem* cell = table->item(row, kIndexColumn);
+            cell && !adding)
             operation.indices = cell->text().trimmed();
-        if (const QTableWidgetItem* cell = table->item(row, kElementColumn))
+        if (const QTableWidgetItem* cell = table->item(row, kElementColumn);
+            cell && operation.kind != DefectOperation::Kind::Remove)
             operation.element = cell->text().trimmed();
-        if (const QTableWidgetItem* cell = table->item(row, kPositionColumn)) {
+        if (const QTableWidgetItem* cell = table->item(row, kPositionColumn);
+            cell && adding) {
             const QStringList parts = cell->text().split(
                 QRegularExpression(QStringLiteral("[,\\s]+")),
                 Qt::SkipEmptyParts);
@@ -1339,6 +1628,13 @@ OrchestrationWindow::OrchestrationWindow(
         tr("Export Workflow… — write the whole pipeline to a JSON file.\n\n"
            "Structures travel inside the file, so it is self-contained: copy "
            "it to a cluster and run it there with calango-cli, headlessly."));
+    auto* layoutButton = makeButton(
+        QStringLiteral("node-tree"),
+        tr("Auto-Layout — rearrange every node into columns in execution "
+           "order, untangling the links.\n\n"
+           "Each node lands one column right of its last-finishing parent, and "
+           "the rows within a column are ordered to keep links from crossing. "
+           "Moves nodes only; the pipeline itself is untouched."));
     auto* fitButton = makeButton(
         QStringLiteral("fullscreen-line"),
         tr("Fit to Screen — zoom and pan so the whole pipeline is visible, "
@@ -1391,6 +1687,8 @@ OrchestrationWindow::OrchestrationWindow(
             qOverload<>(&OrchestrationWindow::openWorkflow));
     connect(exportButton, &QPushButton::clicked, this,
             &OrchestrationWindow::exportWorkflow);
+    connect(layoutButton, &QPushButton::clicked, this,
+            &OrchestrationWindow::autoLayout);
     connect(fitButton, &QPushButton::clicked, this,
             &OrchestrationWindow::fitToScreen);
     connect(resumeButton_, &QPushButton::clicked, this,
@@ -1529,9 +1827,20 @@ void OrchestrationWindow::promptAddNode(const QPointF* scenePos)
 
     auto* engineRow = new QFormLayout;
     auto* engineCombo = new QComboBox(&dialog);
+    // MACE first, and therefore pre-selected. A machine-learned potential is
+    // the calculator a pipeline should reach for by default: it runs at a cost
+    // that makes a batch over a dozen structures finish, which is the shape of
+    // work this canvas exists for, while EMT is a toy and GPAW/VASP are a
+    // deliberate decision about machine time rather than a default.
+    //
+    // xTB sits second for the same reason MACE sits first: a semi-empirical
+    // tight-binding run is seconds per structure, which is what makes a sweep
+    // over a container finish, and unlike MACE it needs no trained model for
+    // the elements involved.
     for (core::CalculatorKind kind :
-         {core::CalculatorKind::EMT, core::CalculatorKind::Gpaw,
-          core::CalculatorKind::Vasp, core::CalculatorKind::Mace})
+         {core::CalculatorKind::Mace, core::CalculatorKind::Xtb,
+          core::CalculatorKind::Gpaw, core::CalculatorKind::Vasp,
+          core::CalculatorKind::EMT})
         engineCombo->addItem(EnginePresets::displayName(kind),
                              static_cast<int>(kind));
     engineRow->addRow(tr("Calculator:"), engineCombo);
@@ -2937,6 +3246,134 @@ QRectF OrchestrationWindow::visibleSceneRect() const
 {
     return view_ ? view_->mapToScene(view_->viewport()->rect()).boundingRect()
                  : QRectF();
+}
+
+void OrchestrationWindow::autoLayout()
+{
+    if (nodes_.empty())
+        return;
+
+    // --- Layering: longest path from a source -------------------------------
+    // Longest path rather than shortest, so a node sits one column to the right
+    // of its LAST-finishing parent. With the shortest path a node whose two
+    // parents are three columns apart would be drawn beside the near one, with
+    // a link running backwards past it — and the canvas reads left to right as
+    // execution order, which is the one thing its layout has to be true about.
+    std::map<OrchestrationNodeItem*, int> layer;
+    for (OrchestrationNodeItem* node : nodes_)
+        layer[node] = 0;
+    // The graph is acyclic (connectNodes refuses cycles), so relaxing |V| times
+    // is enough; the loop stops as soon as nothing moves.
+    for (std::size_t pass = 0; pass < nodes_.size(); ++pass) {
+        bool changed = false;
+        for (OrchestrationEdgeItem* edge : edges_) {
+            const int wanted = layer[edge->from()] + 1;
+            if (layer[edge->to()] < wanted) {
+                layer[edge->to()] = wanted;
+                changed = true;
+            }
+        }
+        if (!changed)
+            break;
+    }
+
+    int columns = 0;
+    for (const auto& [node, index] : layer)
+        columns = std::max(columns, index + 1);
+    std::vector<std::vector<OrchestrationNodeItem*>> byColumn(
+        static_cast<std::size_t>(columns));
+    // Seeded in creation order, which is the order a pipeline was built in and
+    // therefore a sensible tie-break before the crossing pass runs.
+    for (OrchestrationNodeItem* node : nodes_)
+        byColumn[static_cast<std::size_t>(layer[node])].push_back(node);
+
+    // --- Ordering within a column: barycentre sweeps ------------------------
+    // Each node is pulled towards the mean row of its parents, then of its
+    // children. Two passes of each direction is the standard cheap
+    // approximation to crossing minimisation (which is NP-hard) and is more
+    // than enough for the tens of nodes a canvas holds.
+    const auto meanRow = [](const QList<OrchestrationNodeItem*>& others,
+                            const std::map<OrchestrationNodeItem*, int>& rows,
+                            double fallback) {
+        double sum = 0.0;
+        int count = 0;
+        for (OrchestrationNodeItem* other : others) {
+            const auto it = rows.find(other);
+            if (it == rows.end())
+                continue;
+            sum += it->second;
+            ++count;
+        }
+        return count > 0 ? sum / count : fallback;
+    };
+    std::map<OrchestrationNodeItem*, int> row;
+    const auto reindex = [&row, &byColumn] {
+        for (auto& column : byColumn)
+            for (std::size_t i = 0; i < column.size(); ++i)
+                row[column[i]] = static_cast<int>(i);
+    };
+    reindex();
+    for (int sweep = 0; sweep < 4; ++sweep) {
+        const bool downward = (sweep % 2) == 0;
+        for (std::size_t c = 0; c < byColumn.size(); ++c) {
+            // Downward sweeps order a column by its parents (already placed),
+            // upward sweeps by its children.
+            const std::size_t index =
+                downward ? c : byColumn.size() - 1 - c;
+            std::vector<OrchestrationNodeItem*>& column = byColumn[index];
+            std::map<OrchestrationNodeItem*, double> key;
+            for (OrchestrationNodeItem* node : column) {
+                QList<OrchestrationNodeItem*> neighbours;
+                if (downward) {
+                    neighbours = parentsOf(node);
+                } else {
+                    for (OrchestrationEdgeItem* edge : edges_)
+                        if (edge->from() == node)
+                            neighbours.append(edge->to());
+                }
+                key[node] = meanRow(neighbours, row, row[node]);
+            }
+            std::stable_sort(column.begin(), column.end(),
+                             [&key](OrchestrationNodeItem* a,
+                                    OrchestrationNodeItem* b) {
+                                 return key[a] < key[b];
+                             });
+        }
+        reindex();
+    }
+
+    // --- Placement -----------------------------------------------------------
+    constexpr double kColumnGap = 90.0;
+    constexpr double kRowGap = 34.0;
+    // Columns are as wide as the widest node in them plus the gap, and rows use
+    // each node's OWN height: an input-slot summary makes a node taller, and a
+    // fixed pitch would either overlap those or leave the rest adrift.
+    double x = 0.0;
+    std::vector<double> columnHeights(byColumn.size(), 0.0);
+    double tallest = 0.0;
+    for (std::size_t c = 0; c < byColumn.size(); ++c) {
+        for (OrchestrationNodeItem* node : byColumn[c])
+            columnHeights[c] += node->rect().height() + kRowGap;
+        if (!byColumn[c].empty())
+            columnHeights[c] -= kRowGap;
+        tallest = std::max(tallest, columnHeights[c]);
+    }
+    for (std::size_t c = 0; c < byColumn.size(); ++c) {
+        // Each column centred against the tallest, so a pipeline that branches
+        // and rejoins reads as symmetric rather than top-aligned and lopsided.
+        double y = (tallest - columnHeights[c]) / 2.0;
+        double width = kNodeWidth;
+        for (OrchestrationNodeItem* node : byColumn[c]) {
+            node->setPos(x, y);
+            y += node->rect().height() + kRowGap;
+            width = std::max(width, node->rect().width());
+        }
+        x += width + kColumnGap;
+    }
+
+    for (OrchestrationEdgeItem* edge : edges_)
+        edge->updatePath();
+    fitToScreen();
 }
 
 void OrchestrationWindow::fitToScreen()

@@ -129,6 +129,27 @@ at an arbitrary angle always overlap somewhere — without the merge the boundar
 pile-up. Too large a tolerance starts eating the grains themselves; watch the reported
 atom count.
 
+### Grains as casts
+
+Every atom is tagged with the grain it was carved from as the tessellation is
+filled, and that tag travels with the structure (`grain` and `phase` per-atom
+fields). When a polycrystal or bicrystal opens, **one {doc}`cast </representation>` is
+created per grain and each is given its own colour**, so the tessellation is
+visible immediately rather than after a manual selection: a polycrystal drawn
+in element colours is a uniform block of atoms, and the grains are the one
+thing element colouring cannot show.
+
+The colours come from a golden-angle hue rotation, so any *prefix* of the
+sequence is well separated — the grain count is whatever you ask for, from 2
+to dozens, and a fixed palette would either run out or spend its best colours
+first. Saturation and value alternate as well, because past roughly a dozen
+grains hue alone starts to repeat perceptually and two touching grains of the
+same apparent colour is exactly what this is for.
+
+The tag is read back rather than re-derived. A second nearest-seed pass would
+disagree with the geometry precisely at the seams — where atoms were merged and
+where the grains actually are.
+
 ### Stage 2 — grains
 
 {guilabel}`Box repeats` sets the constructed cell in multiples of the parent, default 4

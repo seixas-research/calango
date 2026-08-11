@@ -346,6 +346,21 @@ void BandPdosWindow::updateSmearingControl()
         return;
     }
     smearingBox_->setVisible(view_->pdosData().valid());
+    // Two different reasons to have no slider, and they need different words.
+    // A tetrahedron DOS is not "broadened with a σ we have lost" — it has no σ
+    // at all, and offering to re-broaden it would be offering to smear an
+    // exact integral. Telling the user their width is merely fixed would send
+    // them off to re-run for a slider they do not want.
+    if (view_->pdosData().integration == QLatin1String("tetrahedron")) {
+        smearingNote_->setText(
+            tr("<i>Integrated with the linear tetrahedron method (Blöchl): the "
+               "bands were interpolated inside tetrahedra filling the "
+               "Brillouin zone and the DOS integrated analytically, so there "
+               "is no broadening width to vary. The band edges are as sharp as "
+               "the k-mesh supports — re-run with <b>Sampling</b> if you want "
+               "a σ slider.</i>"));
+        return;
+    }
     smearingNote_->setText(
         tr("<i>This run stored curves that were already broadened, so σ is "
            "fixed at whatever it was calculated with. Re-run to get a "
@@ -394,6 +409,8 @@ void BandPdosWindow::loadDirectory(const QString& directory)
         // width". Older runs that DID state one keep it.
         pdosData.suggestedWidth =
             pdos.value(QStringLiteral("suggested_width")).toDouble(0.0);
+        pdosData.integration =
+            pdos.value(QStringLiteral("integration")).toString();
         // Derive the bin width when the run did not state it but the grid is
         // uniform, which is what makes broadening possible at all.
         if (pdosData.binWidth <= 0.0 && pdosData.energies.size() > 1) {

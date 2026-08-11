@@ -13,6 +13,7 @@
 
 #include <functional>
 
+class QAbstractItemView;
 class QCheckBox;
 class QGroupBox;
 class QJsonArray;
@@ -58,6 +59,34 @@ void setFormRowVisible(QGroupBox* group, QWidget* field, bool visible);
 /// A free function rather than a table inside MainWindow so the mapping can be
 /// pinned by a test — it drifted out of sync with the generator once already.
 QString volumetricDisplayName(const QString& fileName);
+
+/// Stop an editable table from opening its editor on a bare keystroke.
+///
+/// This is a CRASH FIX, not a preference. On macOS a dead key (´ ` ~ ^ — the
+/// first stroke of an accented character, and unavoidable on a Portuguese or
+/// Spanish layout) reaches an item view as a QInputMethodEvent. Qt's
+/// QAbstractItemView::inputMethodEvent responds with
+///
+///     edit(currentIndex(), AnyKeyPressed, event)
+///
+/// which opens the cell editor and calls setFocus() on it. On the Cocoa
+/// platform that makes QCocoaInputContext commit the pending dead key, which
+/// sends the input-method event again — and because the editor has not become
+/// the focus object yet, it arrives back at the VIEW. inputMethodEvent calls
+/// edit() again, and the cycle repeats until the 8 MB stack is gone:
+///
+///     inputMethodEvent -> edit -> setFocus -> commit -> unmarkText
+///                      -> inputMethodEvent -> ...
+///
+/// Removing AnyKeyPressed from the edit triggers breaks it at the first link:
+/// edit() refuses the trigger and returns false, so nothing is focused and
+/// nothing is committed. Double-click, Return and F2 still start an edit, and
+/// typing INTO an open editor is unaffected — the editor is the focus object
+/// by then, so the event never reaches the view.
+///
+/// Apply this to every item view whose items carry Qt::ItemIsEditable. A view
+/// that is already NoEditTriggers cannot reach the loop and does not need it.
+void disableTypeToEdit(QAbstractItemView* view);
 
 /// The chemical species present in `structure`, sorted and unique.
 ///

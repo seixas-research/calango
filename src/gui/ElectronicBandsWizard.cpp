@@ -141,6 +141,33 @@ QWidget* ElectronicBandsWizard::buildCalculatorExtras()
     }
     form->addRow(tr("PDOS k-mesh:"), pdosKptRow);
 
+    dosIntegrationCombo_ = new QComboBox(pdosGroup_);
+    dosIntegrationCombo_->addItem(
+        tr("Sampling — broaden afterwards in the viewer"),
+        static_cast<int>(core::DosIntegration::Sampling));
+    dosIntegrationCombo_->addItem(
+        tr("Tetrahedron (Blöchl) — no broadening"),
+        static_cast<int>(core::DosIntegration::Tetrahedron));
+    dosIntegrationCombo_->setToolTip(
+        tr("How the Brillouin-zone integral behind the DOS is evaluated. Not "
+           "the same question as the SCF's occupation smearing: that one fills "
+           "the occupations while the density converges, this one turns the "
+           "finished eigenvalues into a curve.\n\n"
+           "Sampling bins the eigenvalues by k-point weight and stores the raw "
+           "histogram, so σ stays a slider in the viewer and costs no re-run. "
+           "It works on any mesh — but broadening is also what hides an "
+           "under-converged k-sampling, so a peak can be an artifact of σ.\n\n"
+           "The tetrahedron method interpolates the bands inside tetrahedra "
+           "filling the zone and integrates analytically. No width enters at "
+           "all: band edges come out sharp and the states under a peak are the "
+           "states that are there. It needs a genuine Monkhorst-Pack mesh — "
+           "with too few k-points the interpolation is meaningless, and unlike "
+           "sampling that cannot be rescued afterwards. The viewer's σ slider "
+           "is switched off for such a run, because there is no σ."));
+    form->addRow(tr("DOS integration:"), dosIntegrationCombo_);
+    connect(dosIntegrationCombo_, &QComboBox::currentIndexChanged, this,
+            [this] { refreshPreview(); });
+
     energyPointsSpin_ = new QSpinBox(pdosGroup_);
     energyPointsSpin_->setRange(50, 20000);
     energyPointsSpin_->setValue(401);
@@ -161,6 +188,7 @@ QWidget* ElectronicBandsWizard::buildCalculatorExtras()
     for (QWidget* w : {static_cast<QWidget*>(pdosKptsSpin_[0]),
                        static_cast<QWidget*>(pdosKptsSpin_[1]),
                        static_cast<QWidget*>(pdosKptsSpin_[2]),
+                       static_cast<QWidget*>(dosIntegrationCombo_),
                        static_cast<QWidget*>(energyPointsSpin_)}) {
         connect(pdosCheck_, &QCheckBox::toggled, w, &QWidget::setEnabled);
     }
@@ -384,6 +412,7 @@ QGroupBox* ElectronicBandsWizard::buildFatbandGroup()
     fatbandTable_->horizontalHeader()->setSectionResizeMode(
         QHeaderView::Stretch);
     fatbandTable_->verticalHeader()->setVisible(false);
+    disableTypeToEdit(fatbandTable_);
     fatbandTable_->setMinimumHeight(120);
     fatbandTable_->setToolTip(
         tr("One row per projection channel.\n\n"
@@ -679,6 +708,8 @@ QString ElectronicBandsWizard::generateScript() const
 
     config.pdos = pdosCheck_->isChecked();
     config.pdosPoints = energyPointsSpin_->value();
+    config.dosIntegration = static_cast<core::DosIntegration>(
+        dosIntegrationCombo_->currentData().toInt());
     for (int axis = 0; axis < 3; ++axis)
         config.pdosKpts[axis] = pdosKptsSpin_[axis]->value();
     // Full GPAW parameter set from Stage 2 (mode, xc, eigensolver, mixer,

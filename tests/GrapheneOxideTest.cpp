@@ -10,10 +10,9 @@
 //      improbable structure, it is an impossible one — a pentavalent carbon.
 //
 //   2. Basal chemistry (epoxide, sp3 hydroxyl) belongs on three-coordinate
-//      interior carbons; edge chemistry (carboxyl, carbonyl, phenolic
-//      hydroxyl) belongs on under-coordinated rim carbons. The classification
-//      is recomputed here from coordination numbers, independently of the
-//      builder.
+//      interior carbons; edge chemistry (carboxyl, carbonyl) belongs on
+//      under-coordinated rim carbons. The classification is recomputed here
+//      from coordination numbers, independently of the builder.
 //
 //   3. The nanoflake family is exact: index m gives C(6m²)H(6m). A
 //      flake that comes out with a different formula is not a member of the
@@ -352,7 +351,6 @@ int main()
             config.setCoverage(Group::Hydroxyl, 0.4);
             config.setCoverage(Group::Carboxyl, 0.5);
             config.setCoverage(Group::Carbonyl, 0.5);
-            config.setCoverage(Group::EdgeHydroxyl, 0.5);
             GrapheneOxideBuilder::Report report;
             const Structure s = GrapheneOxideBuilder::build(config, &report);
             for (const auto& [carbon, n] :
@@ -362,8 +360,7 @@ int main()
             // An edge carbon that reacted has had its hydrogen SUBSTITUTED, not
             // added to — the terminating count is what is left over.
             const int reacted = report.placedFor(Group::Carboxyl)
-                + report.placedFor(Group::Carbonyl)
-                + report.placedFor(Group::EdgeHydroxyl);
+                + report.placedFor(Group::Carbonyl);
             terminationConsistent = terminationConsistent
                 && report.hydrogenTerminatedEdges
                     == report.edgeCarbonCount - reacted;
@@ -395,7 +392,6 @@ int main()
             flake.setCoverage(Group::Hydroxyl, 0.35);
             flake.setCoverage(Group::Carboxyl, 0.4);
             flake.setCoverage(Group::Carbonyl, 0.3);
-            flake.setCoverage(Group::EdgeHydroxyl, 0.3);
             cases.push_back(flake);
 
             GrapheneOxideBuilder::Config heavy = flakeConfig(4);
@@ -439,7 +435,6 @@ int main()
         config.setCoverage(Group::Hydroxyl, 0.35);
         config.setCoverage(Group::Carboxyl, 0.4);
         config.setCoverage(Group::Carbonyl, 0.3);
-        config.setCoverage(Group::EdgeHydroxyl, 0.3);
         GrapheneOxideBuilder::Report report;
         const Structure s = GrapheneOxideBuilder::build(config, &report);
 
@@ -460,8 +455,7 @@ int main()
         const int basalGroups = 2 * report.placedFor(Group::Epoxide)
             + report.placedFor(Group::Hydroxyl);
         const int edgeGroups = report.placedFor(Group::Carboxyl)
-            + report.placedFor(Group::Carbonyl)
-            + report.placedFor(Group::EdgeHydroxyl);
+            + report.placedFor(Group::Carbonyl);
         check(decoratedBasal == basalGroups && decoratedEdge == edgeGroups,
               "every group landed on a carbon of its own region");
         check(edgeGroups > 0 && basalGroups > 0,
@@ -505,14 +499,12 @@ int main()
         config.supercell[0] = config.supercell[1] = 5;
         config.setCoverage(Group::Carboxyl, 0.2);
         config.setCoverage(Group::Carbonyl, 0.2);
-        config.setCoverage(Group::EdgeHydroxyl, 0.2);
         GrapheneOxideBuilder::Report report;
         const Structure s = GrapheneOxideBuilder::build(config, &report);
         check(report.edgeCarbonCount == 0,
               "a periodic sheet reports no edge carbons");
         check(report.placedFor(Group::Carboxyl) == 0
-                  && report.placedFor(Group::Carbonyl) == 0
-                  && report.placedFor(Group::EdgeHydroxyl) == 0,
+                  && report.placedFor(Group::Carbonyl) == 0,
               "no edge group is placed on an edgeless sheet");
         check(!report.note.empty(),
               "and the reason is reported rather than left as a silent no-op");
@@ -555,7 +547,6 @@ int main()
         config.setCoverage(Group::Hydroxyl, 0.2);
         config.setCoverage(Group::Carboxyl, 0.3);
         config.setCoverage(Group::Carbonyl, 0.2);
-        config.setCoverage(Group::EdgeHydroxyl, 0.2);
         GrapheneOxideBuilder::Report report;
         const Structure s = GrapheneOxideBuilder::build(config, &report);
         const auto counts = elementCounts(s);
@@ -563,12 +554,10 @@ int main()
         const int expectedO = report.placedFor(Group::Epoxide)
             + report.placedFor(Group::Hydroxyl)
             + 2 * report.placedFor(Group::Carboxyl)
-            + report.placedFor(Group::Carbonyl)
-            + report.placedFor(Group::EdgeHydroxyl);
+            + report.placedFor(Group::Carbonyl);
         const int expectedH = report.hydrogenTerminatedEdges
             + report.placedFor(Group::Hydroxyl)
-            + report.placedFor(Group::Carboxyl)
-            + report.placedFor(Group::EdgeHydroxyl);
+            + report.placedFor(Group::Carboxyl);
         check(counts.at(8) == expectedO && report.oxygenAtoms == expectedO,
               "the oxygen count matches the groups placed");
         check(counts.at(1) == expectedH && report.hydrogenAtoms == expectedH,
@@ -627,7 +616,6 @@ int main()
         config.setCoverage(Group::Hydroxyl, 0.15);
         config.setCoverage(Group::Carboxyl, 0.3);
         config.setCoverage(Group::Carbonyl, 0.25);
-        config.setCoverage(Group::EdgeHydroxyl, 0.25);
         GrapheneOxideBuilder::Report report;
         const Structure s = GrapheneOxideBuilder::build(config, &report);
 
@@ -658,8 +646,7 @@ int main()
         check(sizes[static_cast<int>(Group::Epoxide)] == 3
                   && sizes[static_cast<int>(Group::Hydroxyl)] == 3
                   && sizes[static_cast<int>(Group::Carboxyl)] == 5
-                  && sizes[static_cast<int>(Group::Carbonyl)] == 2
-                  && sizes[static_cast<int>(Group::EdgeHydroxyl)] == 3,
+                  && sizes[static_cast<int>(Group::Carbonyl)] == 2,
               "each cluster carries its group AND its host carbon(s)");
 
         // A carboxyl contains a C=O and a C-OH. If it were not matched first,
@@ -743,8 +730,7 @@ int main()
         config.dosing = Dosing::TargetRatio;
         config.targetCarbonToOxygen = 12.0;
         config.basalOxygenShare = 0.0; // categorical: edge chemistry only
-        for (Group group : {Group::Epoxide, Group::Hydroxyl, Group::Carbonyl,
-                            Group::EdgeHydroxyl})
+        for (Group group : {Group::Epoxide, Group::Hydroxyl, Group::Carbonyl})
             config.setWeight(group, 0.0);
         GrapheneOxideBuilder::Report report;
         GrapheneOxideBuilder::build(config, &report);
@@ -785,8 +771,7 @@ int main()
         GrapheneOxideBuilder::Report basalOnly;
         GrapheneOxideBuilder::build(config, &basalOnly);
         check(basalOnly.placedFor(Group::Carboxyl) == 0
-                  && basalOnly.placedFor(Group::Carbonyl) == 0
-                  && basalOnly.placedFor(Group::EdgeHydroxyl) == 0,
+                  && basalOnly.placedFor(Group::Carbonyl) == 0,
               "a 100 % basal split places no edge chemistry at all");
 
         config.basalOxygenShare = 0.0;
@@ -828,6 +813,151 @@ int main()
         }
         check(worstOverload <= 1,
               "heavy ratio-driven oxidation still puts one group per carbon");
+    }
+
+    // The wizard's sliders are ratios; each has to mean exactly what its label
+    // says at BOTH endpoints, because those are the settings people reach for
+    // ("only epoxides", "no edge oxidation") and the ones a soft interpretation
+    // would quietly betray.
+    std::printf("Slider semantics — O/C, H/O and the edge controls:\n");
+    {
+        // O/C is what the UI shows; the builder works in C/O. The inversion has
+        // to land the composition where the slider says.
+        bool allClose = true;
+        for (double oxygenToCarbon : {0.10, 0.20, 0.30, 0.40}) {
+            GrapheneOxideBuilder::Config config = flakeConfig(6);
+            config.dosing = Dosing::TargetRatio;
+            config.targetCarbonToOxygen = 1.0 / oxygenToCarbon;
+            config.basalOxygenShare = 0.7;
+            GrapheneOxideBuilder::Report report;
+            GrapheneOxideBuilder::build(config, &report);
+            const double achieved =
+                static_cast<double>(report.oxygenAtoms) / report.totalCarbonAtoms;
+            allClose = allClose
+                && std::abs(achieved - oxygenToCarbon) / oxygenToCarbon < 0.08;
+        }
+        check(allClose, "O/C from 0.10 to 0.40 lands within 8 % of the target");
+    }
+    {
+        // H/O on the basal plane IS the hydroxyl share of the basal groups:
+        // both groups deliver exactly one oxygen, so weighting by group and
+        // weighting by oxygen are the same thing. That identity is what makes
+        // the slider's label true rather than approximate.
+        const auto basal = [](double hydrogenPerOxygen) {
+            GrapheneOxideBuilder::Config config;
+            config.supercell[0] = config.supercell[1] = 6;
+            config.dosing = Dosing::TargetRatio;
+            config.targetCarbonToOxygen = 1.0 / 0.25;
+            config.basalOxygenShare = 1.0;
+            config.setWeight(Group::Epoxide, 1.0 - hydrogenPerOxygen);
+            config.setWeight(Group::Hydroxyl, hydrogenPerOxygen);
+            config.setWeight(Group::Carboxyl, 0.0);
+            config.setWeight(Group::Carbonyl, 0.0);
+            GrapheneOxideBuilder::Report report;
+            GrapheneOxideBuilder::build(config, &report);
+            return report;
+        };
+
+        const GrapheneOxideBuilder::Report epoxideOnly = basal(0.0);
+        check(epoxideOnly.placedFor(Group::Epoxide) > 0
+                  && epoxideOnly.placedFor(Group::Hydroxyl) == 0,
+              "H/O = 0 gives epoxides and nothing else");
+        check(epoxideOnly.hydrogenAtoms == 0,
+              "and therefore no hydrogen at all — H/O is literally zero");
+
+        const GrapheneOxideBuilder::Report hydroxylOnly = basal(1.0);
+        check(hydroxylOnly.placedFor(Group::Hydroxyl) > 0
+                  && hydroxylOnly.placedFor(Group::Epoxide) == 0,
+              "H/O = 1 gives hydroxyls and nothing else");
+        check(hydroxylOnly.hydrogenAtoms == hydroxylOnly.oxygenAtoms,
+              "and one hydrogen per oxygen — H/O is literally one");
+
+        const GrapheneOxideBuilder::Report half = basal(0.5);
+        const double achieved = static_cast<double>(half.hydrogenAtoms)
+            / half.oxygenAtoms;
+        check(std::abs(achieved - 0.5) < 0.12,
+              "and H/O = 0.5 delivers about one hydrogen per two oxygens");
+    }
+    {
+        // Edge oxidation: the density control and the composition control are
+        // independent, which is the reason they are two sliders.
+        const auto edge = [](double edgeShare, double carboxylOxygenShare) {
+            GrapheneOxideBuilder::Config config = flakeConfig(5);
+            config.dosing = Dosing::TargetRatio;
+            config.targetCarbonToOxygen = 1.0 / 0.2;
+            config.basalOxygenShare = 1.0 - edgeShare;
+            config.setWeight(Group::Epoxide, 0.5);
+            config.setWeight(Group::Hydroxyl, 0.5);
+            // A carboxyl brings TWO oxygens, so an oxygen share of f is f/2 of
+            // the groups — the conversion the wizard does.
+            config.setWeight(Group::Carboxyl, carboxylOxygenShare / 2.0);
+            config.setWeight(Group::Carbonyl, 1.0 - carboxylOxygenShare);
+            GrapheneOxideBuilder::Report report;
+            GrapheneOxideBuilder::build(config, &report);
+            return report;
+        };
+
+        const GrapheneOxideBuilder::Report noEdge = edge(0.0, 0.5);
+        check(noEdge.placedFor(Group::Carboxyl) == 0
+                  && noEdge.placedFor(Group::Carbonyl) == 0,
+              "edge share 0 leaves the rim untouched");
+
+        const GrapheneOxideBuilder::Report carbonylOnly = edge(1.0, 0.0);
+        check(carbonylOnly.placedFor(Group::Carbonyl) > 0
+                  && carbonylOnly.placedFor(Group::Carboxyl) == 0,
+              "COOH/O = 0 gives carbonyls and nothing else");
+        const GrapheneOxideBuilder::Report carboxylOnly = edge(1.0, 1.0);
+        check(carboxylOnly.placedFor(Group::Carboxyl) > 0
+                  && carboxylOnly.placedFor(Group::Carbonyl) == 0,
+              "COOH/O = 1 gives carboxyls and nothing else");
+
+        // More edge share means more edge oxygen, holding everything else.
+        const int lightEdge = edge(0.2, 0.5).placedFor(Group::Carboxyl)
+            + edge(0.2, 0.5).placedFor(Group::Carbonyl);
+        const int heavyEdge = edge(0.8, 0.5).placedFor(Group::Carboxyl)
+            + edge(0.8, 0.5).placedFor(Group::Carbonyl);
+        check(heavyEdge > lightEdge,
+              "and the edge share slider really is a density control");
+    }
+    {
+        // The generator must never place a phenolic edge -OH again. Checked
+        // from the geometry, not from the report: an -OH on an sp2 rim carbon
+        // is the thing that was removed, and no configuration may bring it
+        // back.
+        GrapheneOxideBuilder::Config config = flakeConfig(5);
+        config.dosing = Dosing::TargetRatio;
+        config.targetCarbonToOxygen = 2.5;
+        config.basalOxygenShare = 0.0; // everything at the edge
+        GrapheneOxideBuilder::Report report;
+        const Structure s = GrapheneOxideBuilder::build(config, &report);
+        const auto coordination = carbonCoordination(s, report.carbonCount);
+
+        int hydroxylsOnEdgeCarbons = 0;
+        for (std::size_t i = static_cast<std::size_t>(report.carbonCount);
+             i < s.size(); ++i) {
+            if (s.atoms()[i].atomicNumber != 8)
+                continue;
+            // An -OH: this oxygen carries a hydrogen.
+            bool hasHydrogen = false;
+            for (std::size_t j = static_cast<std::size_t>(report.carbonCount);
+                 j < s.size(); ++j)
+                if (s.atoms()[j].atomicNumber == 1
+                    && distance(s.atoms()[i].position, s.atoms()[j].position)
+                        < 1.1)
+                    hasHydrogen = true;
+            if (!hasHydrogen)
+                continue;
+            for (int c = 0; c < report.carbonCount; ++c)
+                if (coordination[static_cast<std::size_t>(c)] < 3
+                    && distance(s.atoms()[i].position,
+                                s.atoms()[static_cast<std::size_t>(c)].position)
+                        < 1.62)
+                    ++hydroxylsOnEdgeCarbons;
+        }
+        check(report.oxygenAtoms > 0, "the edge-only run placed oxygen");
+        check(hydroxylsOnEdgeCarbons == 0,
+              "and not one -OH bonded directly to a rim carbon — phenolic edge "
+              "hydroxyls are gone from the generator");
     }
 
     std::printf(failures == 0 ? "\nAll graphene oxide checks passed.\n"

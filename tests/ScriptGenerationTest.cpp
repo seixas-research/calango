@@ -542,6 +542,17 @@ int main(int argc, char** argv)
             symmetry.fatbands = true;
             dumpBands("bands_symmetry_fatbands.py", symmetry);
 
+            // Tetrahedron DOS. The branch it adds is a try nested inside a
+            // double loop inside an else inside an if — the exact shape where
+            // a stray indent parses as valid Python that silently does the
+            // wrong thing, so it is byte-compiled like the rest. (What the
+            // script SAYS is asserted in the normal pass; this dump is about
+            // whether Python will accept it at all.)
+            ElectronicConfig tetra = bands;
+            tetra.spinOrbit = false;
+            tetra.dosIntegration = DosIntegration::Tetrahedron;
+            dumpBands("bands_tetrahedron.py", tetra);
+
             // The explicit-channel branch emits a different literal block from
             // the derive-them-yourself one.
             ElectronicConfig channels = symmetry;
@@ -1003,8 +1014,13 @@ int main(int argc, char** argv)
         // one baked into the stored curve, which is exactly what was removed.
         check(!contains(script, "pdos_width"),
               "the electronic script sets no Gaussian width");
-        checkContains(script, "\"broadened\": False",
-                      "and says the histogram it wrote is unbroadened");
+        // The flag became an expression when the tetrahedron option landed:
+        // a sampled run still writes False, a tetrahedron run True, and the
+        // script decides which at run time.
+        checkContains(script,
+                      "\"broadened\": pdos_integration == \"tetrahedron\"",
+                      "and marks the histogram it wrote as unbroadened unless "
+                      "it was integrated with tetrahedra");
     }
 
     std::printf("GPAW 25.7 / 26.7 compatibility:\n");
@@ -1029,8 +1045,40 @@ int main(int argc, char** argv)
                       "shells resolved per species rather than assumed");
         checkContains(script, "bincount(",
                       "the weights are binned into a histogram in the run");
-        checkContains(script, "\"broadened\": False",
-                      "and flagged as unbroadened for the viewer");
+        checkContains(script,
+                      "\"broadened\": pdos_integration == \"tetrahedron\"",
+                      "and flagged for the viewer as something it may broaden "
+                      "(a sampled histogram) rather than something it may not");
+
+        // Tetrahedron integration: a different Brillouin-zone integral, and
+        // the viewer has to be told which one it is holding.
+        {
+            ElectronicConfig tetra = bands;
+            tetra.dosIntegration = DosIntegration::Tetrahedron;
+            const std::string tetraScript = generateElectronicScript(tetra);
+            checkContains(tetraScript, "pdos_tetrahedron = True",
+                          "the tetrahedron request reaches the script");
+            checkContains(tetraScript, "width=0.0",
+                          "as width=0.0, which is what selects linear "
+                          "tetrahedron interpolation in gpaw.dos");
+            checkContains(tetraScript, "raw_pdos(pdos_energies",
+                          "through DOSCalculator.raw_pdos");
+            checkContains(tetraScript, "\"integration\": pdos_integration",
+                          "and the run records which integration it used");
+            checkContains(tetraScript, "CALANGO_WARN tetrahedron integration",
+                          "with a loud fallback when the mesh cannot support "
+                          "the interpolation");
+            // The branch is chosen at RUN time, not generation time: the block
+            // is always emitted and `pdos_tetrahedron` decides. So the claim
+            // about a sampled run is about the flag, not about the absence of
+            // the code — which is also what makes the fallback possible when
+            // the mesh turns out to be unusable.
+            checkContains(script, "pdos_tetrahedron = False",
+                          "while sampling stays the default");
+            checkContains(script, "if pdos_tetrahedron:",
+                          "and the tetrahedron block is entered only when the "
+                          "flag says so");
+        }
         checkContains(script, "shift_fermi_level=False",
                       "keeping energies on the same scale as efermi");
         checkContains(script, "no PDOS projections were produced",

@@ -1,4 +1,5 @@
 #include "gui/LiquidInterfaceWizard.hpp"
+#include "gui/GuiUtils.hpp"
 
 #include "core/Structure.hpp"
 
@@ -303,6 +304,7 @@ SolvationPage::SolvationPage(LiquidInterfaceWizard* wizard)
         {tr("Species"), tr("Mole fraction")});
     componentTable_->horizontalHeader()->setSectionResizeMode(
         0, QHeaderView::Stretch);
+    disableTypeToEdit(componentTable_);
     componentTable_->verticalHeader()->setVisible(false);
     componentTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     componentTable_->setMaximumHeight(150);
@@ -360,6 +362,7 @@ SolvationPage::SolvationPage(LiquidInterfaceWizard* wizard)
     ionTable_->horizontalHeader()->setSectionResizeMode(0,
                                                         QHeaderView::Stretch);
     ionTable_->verticalHeader()->setVisible(false);
+    disableTypeToEdit(ionTable_);
     ionTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     ionTable_->setMaximumHeight(130);
     ionTable_->setToolTip(

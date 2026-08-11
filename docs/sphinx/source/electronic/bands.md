@@ -29,8 +29,45 @@ open and says so.
 | {guilabel}`SCF k-grid` | Monkhorst–Pack $n^3$ grid for the self-consistent step | 4 |
 | {guilabel}`Compute element/orbital PDOS (GPAW backend)` | Adds the projected DOS on its own denser mesh | on |
 | {guilabel}`PDOS k-mesh` | Fixed-density mesh for the DOS integral, auto-seeded at 2× the SCF grid per non-vacuum axis | 14 per axis |
-| {guilabel}`Gaussian smearing σ` | Broadening of the PDOS curves | 0.1 eV |
+| {guilabel}`DOS integration` | How the Brillouin-zone integral is evaluated — see below | Sampling |
 | {guilabel}`Energy points (N)` | Energy grid for the PDOS | 401 |
+
+### DOS integration — sampling or tetrahedra
+
+Not the same question as the SCF's occupation smearing. That one fills the
+occupations while the density converges; this one turns the finished
+eigenvalues into a curve, and the two are chosen for different reasons.
+
+**Sampling** (default) bins the eigenvalues by k-point weight and stores the
+**raw histogram**. σ therefore stays a slider in the results viewer and costs
+no re-run — convolving a fine histogram is numerically identical to broadening
+the individual eigenvalues and takes microseconds instead of seconds. It works
+on any mesh, including Γ-only. The honest criticism: broadening is also what
+hides an under-converged k-sampling, so a peak can be an artifact of σ.
+
+**Tetrahedron (Blöchl)** interpolates the bands linearly inside tetrahedra
+filling the Brillouin zone and integrates analytically — GPAW's
+`DOSCalculator.raw_pdos(..., width=0.0)`. No width enters at all: band edges
+come out sharp instead of smeared, and the states under a peak are the states
+that are there. It needs a genuine Monkhorst-Pack mesh; with too few k-points
+the interpolation is meaningless, and unlike sampling that **cannot be rescued
+afterwards**. If the mesh turns out to be unusable the run says so
+(`CALANGO_WARN tetrahedron integration …`) and falls back to the histogram
+rather than silently changing method.
+
+The run records which one it used in `pdos.json` (`"integration"`), and the
+viewer reads it: **for a tetrahedron run the σ slider is switched off**, with a
+note saying why. There is no width to vary, and offering one would be offering
+to smear an exact integral.
+
+:::{note}
+For the **SCF** occupations the tetrahedron schemes appear in the ordinary
+smearing menu, and the generators map them per engine: VASP `ISMEAR = -4`
+(linear) and `-5` (Blöchl-corrected), Quantum ESPRESSO
+`occupations = 'tetrahedra'` / `'tetrahedra_opt'`, GPAW
+`{'name': 'tetrahedron-method'}` / `'improved-tetrahedron-method'`. They take
+no width in any of them, and none will accept a Γ-only sampling.
+:::
 
 The PDOS is a Brillouin-zone integral and converges far more slowly with
 k-points than the total energy does — the grid that converged the SCF is

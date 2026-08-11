@@ -48,7 +48,12 @@ so each needs that many parent nodes linked to it:
   new node where you clicked. The dialog is a categorised list of the three
   families, showing what each process takes as input and explaining the
   selected one; a transform has no calculator, so the engine row greys out
-  for it. Adding a container opens its contents dialog straight away, which
+  for it. **MACE is the default calculator**, with **xTB** second — a machine-learned
+  potential or a semi-empirical tight-binding run is what makes a batch over a
+  dozen structures finish, which is the shape of work this canvas is for;
+  GPAW and VASP are a deliberate decision about machine time rather than a
+  default. xTB needs no trained model for the elements involved, which makes
+  it the fallback when MACE has no coverage. Adding a container opens its contents dialog straight away, which
   is where you were going next anyway.
 - Each node is a draggable rounded rectangle showing the process name, the
   material it runs on and the calculator, with an **input port on the left
@@ -70,6 +75,12 @@ so each needs that many parent nodes linked to it:
   to No. Guarded rather than undoable: the canvas is not in the undo stack,
   and a pipeline is several minutes of wiring that one mis-click would
   otherwise cost in full.
+- {guilabel}`Auto-Layout` rearranges every node into columns in execution
+  order. Each node lands one column to the right of its **last-finishing**
+  parent (longest path, so no link ever runs backwards past a node), and the
+  rows within a column are ordered by barycentre sweeps to keep links from
+  crossing. It moves nodes only — the pipeline itself is untouched — and
+  finishes by fitting the result on screen.
 - {guilabel}`Fit to Screen` frames the whole pipeline: it takes the bounding
   box of every node, adds a margin so nothing sits against the border, and
   sets the zoom and pan to match (clamped to the same 0.2×–3× range as the
@@ -184,6 +195,11 @@ Double-click it to edit its contents. Three ways to fill it, and none of them
 requires the structure to be open in a tab:
 
 - {guilabel}`Add Open Document…` — one of the structures you already have open.
+- {guilabel}`Add Bulk Crystal…` — build standard crystals straight from
+  `ase.build.bulk`. Type `Cu, Au, Pt`, leave the structure on *Ground state*
+  and each element gets its own correctly-parameterised cell from ASE's
+  `reference_states` table — Cu fcc, Fe bcc, Si diamond — rather than one
+  structure applied to all of them. The fastest way to build a sweep.
 - {guilabel}`Import from File…` — `.extxyz`, `.cif`, `.traj`, POSCAR and
   everything else ASE reads. A **multi-frame file contributes one entry per
   frame**, named `stem #n`: importing a 20-frame trajectory is one of the
@@ -213,18 +229,47 @@ Entries can be removed and the list order is the pass order.
 
 ### Supercell Builder
 
-Repeats the incoming cell $n_a \times n_b \times n_c$ along the three
-lattice vectors (via `ase.Atoms.repeat`). Applied to the structure that
-*reaches* the node, so a relaxation upstream is expanded after it converges,
-not before. Defaults to 2 × 2 × 2; 1 × 1 × 1 is the identity and passes
-through. A structure with no periodic cell is refused — repeating a molecule
-in vacuum is meaningless.
+Takes an integer **3 × 3 transformation matrix P**: the supercell's lattice
+vectors are $\mathbf{P}\cdot(\text{old cell})$, row by row. Same mathematics
+as Build → *Supercell (Transformation Matrix)*.
+
+Three multipliers would not be enough. A rotated orthorhombic cell of a
+hexagonal lattice, a $\sqrt{3}\times\sqrt{3}\,R30^\circ$ surface
+reconstruction and a conventional cell built from a primitive one are all
+non-diagonal, and none is reachable with `(na, nb, nc)`. A diagonal matrix is
+still the common case and the dialog offers it as a shortcut.
+
+$|\det \mathbf{P}|$ is the number of primitive cells in the supercell, and it
+is shown live. **det P = 0 disables OK**: the three transformed vectors are
+coplanar, so there is no cell — not a degenerate case to tolerate.
+
+Applied to the structure that *reaches* the node, so a relaxation upstream is
+expanded after it converges, not before. The identity passes through. A
+structure with no periodic cell is refused — repeating a molecule in vacuum is
+meaningless.
+
+:::{note}
+A diagonal matrix goes through `ase.Atoms.repeat` rather than
+`make_supercell`. Same cell either way, but `repeat` preserves the atom
+**order** of the original — which is what lets an index list written against
+the input still address the same atoms in a downstream Defect Generator.
+:::
 
 ### Defect Generator
 
-An ordered recipe of edits: **substitute** the listed atoms with an element,
-**remove** them (a vacancy), or **add** one atom of an element at a given
-position (Cartesian Å or fractional).
+An ordered recipe of edits. The fields follow the action, and only the ones
+it uses are editable:
+
+| Action | Asks for |
+|---|---|
+| Substitute | atom indices + the element to put there |
+| Remove | atom indices |
+| Add | element + the position (X, Y, Z), Cartesian Å or fractional |
+
+Substitute and Remove address atoms that already exist, so a position means
+nothing to them; Add creates one that does not, so there is no index to give.
+The unused cells are cleared as well as locked — a greyed-out `0, 0, 0` beside
+a Remove row is a value the reader would have to work out is ignored.
 
 Every index refers to the structure that *reaches* the node, numbered from
 zero. Removals are collected and applied in one pass, so `remove 3`,

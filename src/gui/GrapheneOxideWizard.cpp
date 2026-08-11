@@ -8,6 +8,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QSlider>
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QStringList>
@@ -46,8 +47,9 @@ const std::array<GroupSpec, 2> kBasalGroups{{
 }};
 
 // Edge chemistry: the carbon stays sp2 and the group replaces its hydrogen,
-// lying in the plane of the flake.
-const std::array<GroupSpec, 3> kEdgeGroups{{
+// lying in the plane of the flake. Carboxyl and carbonyl only — see
+// GrapheneOxideBuilder::Group.
+const std::array<GroupSpec, 2> kEdgeGroups{{
     {Group::Carboxyl, "Carboxyl  (−COOH)",
      "A −COOH group replacing an edge hydrogen, in the plane. It brings a "
      "carbon of its own and delivers TWO oxygens, so it moves both sides of "
@@ -56,15 +58,52 @@ const std::array<GroupSpec, 3> kEdgeGroups{{
     {Group::Carbonyl, "Carbonyl  (=O)",
      "A doubly-bonded oxygen replacing an edge hydrogen, collinear with the "
      "bond it replaces — the quinone-like edge carbonyl."},
-    {Group::EdgeHydroxyl, "Edge hydroxyl  (−OH, sp2)",
-     "A phenolic −OH replacing an edge hydrogen. Chemically distinct from the "
-     "basal hydroxyl: the carbon stays sp2 and the C–O bond is 1.36 Å rather "
-     "than 1.48 Å, in the plane rather than out of it."},
 }};
 
 std::size_t slot(Group group)
 {
     return static_cast<std::size_t>(group);
+}
+
+/// Every ratio slider is an integer 0..kSliderSteps. A QSlider is integer-only
+/// and these are all continuous ratios, so one scale is fixed here rather than
+/// each control inventing its own.
+constexpr int kSliderSteps = 1000;
+
+/// The stoichiometric ceiling on O/C.
+///
+/// Each oxygen needs at least two carbons to sit on: an epoxide bridges a C–C
+/// bond, and a hydroxyl rehybridizes one carbon while the sheet still has to
+/// hold together. C2O is the fully-oxidized limit, so O/C = 0.5. Real graphene
+/// oxide reaches ~0.5 at its most oxidized and 0.1–0.25 typically; letting the
+/// slider past 0.5 would be offering compositions no carbon framework supports.
+constexpr double kMaxOxygenToCarbon = 0.5;
+
+/// A labelled ratio slider: the row every stage-2 control is built from.
+QSlider* makeRatioSlider(QWidget* parent, QFormLayout* form,
+                         const QString& caption, const QString& tooltip,
+                         double initial, double maximum, QLabel** readout)
+{
+    auto* slider = new QSlider(Qt::Horizontal, parent);
+    slider->setRange(0, kSliderSteps);
+    slider->setValue(static_cast<int>(
+        std::lround(initial / maximum * kSliderSteps)));
+    slider->setToolTip(tooltip);
+    // Ticks at tenths: a bare groove gives no sense of where 0.25 is, and this
+    // is a control people set to a number they read in a paper.
+    slider->setTickPosition(QSlider::TicksBelow);
+    slider->setTickInterval(kSliderSteps / 10);
+
+    *readout = new QLabel(parent);
+    (*readout)->setMinimumWidth(210);
+    (*readout)->setTextFormat(Qt::RichText);
+    (*readout)->setToolTip(tooltip);
+
+    auto* row = new QHBoxLayout;
+    row->addWidget(slider, 1);
+    row->addWidget(*readout);
+    form->addRow(caption, row);
+    return slider;
 }
 
 } // namespace
@@ -100,8 +139,8 @@ GrapheneOxideWizard::GrapheneOxideWizard(QWidget* parent)
         tr("A periodic sheet models the interior of a graphene oxide flake and "
            "has no edges at all, so only basal-plane chemistry applies to it. "
            "A finite nanoflake carries both: basal carbons in its "
-           "interior and a hydrogen-terminated rim that carboxyls, carbonyls "
-           "and phenolic hydroxyls can substitute into."));
+           "interior and a hydrogen-terminated rim that carboxyls and "
+           "carbonyls can substitute into."));
     baseForm->addRow(tr("Base:"), baseCombo_);
     stage1Layout->addWidget(baseBox);
 
@@ -187,43 +226,50 @@ GrapheneOxideWizard::GrapheneOxideWizard(QWidget* parent)
     auto* amountBox = new QGroupBox(tr("Oxidation Level"), stage2);
     auto* amountForm = new QFormLayout(amountBox);
     dosingCombo_ = new QComboBox(amountBox);
+    // O/C first, and therefore the default. It is the metric the composition
+    // of graphene oxide is quoted in, it is linear in oxygen content, and — the
+    // reason the explicit-coverage mode cannot be the default — it has a
+    // meaningful zero and a meaningful ceiling, so a slider over it means
+    // something end to end.
+    dosingCombo_->addItem(tr("Target O/C ratio"),
+                          static_cast<int>(Dosing::TargetRatio));
     dosingCombo_->addItem(tr("Explicit coverages per group"),
                           static_cast<int>(Dosing::ExplicitCoverage));
-    dosingCombo_->addItem(tr("Target C/O ratio"),
-                          static_cast<int>(Dosing::TargetRatio));
     dosingCombo_->setToolTip(
-        tr("Explicit coverages say how much of each group to attach. A target "
-           "C/O ratio instead says how oxidized the finished structure should "
-           "be, and the builder places groups — in the proportions below — "
-           "until it gets there."));
+        tr("A target O/C ratio says how oxidized the finished structure should "
+           "be, and the builder places groups — in the proportions set by the "
+           "sliders — until it gets there. Explicit coverages instead say how "
+           "much of each individual group to attach."));
     amountForm->addRow(tr("Set by:"), dosingCombo_);
-
-    targetRatioSpin_ = new QDoubleSpinBox(amountBox);
-    targetRatioSpin_->setRange(1.2, 100.0);
-    targetRatioSpin_->setDecimals(2);
-    targetRatioSpin_->setSingleStep(0.25);
-    targetRatioSpin_->setValue(4.0);
-    targetRatioSpin_->setToolTip(
-        tr("C/O of the FINISHED structure: every carbon, including the ones "
-           "carboxyls bring with them, over every oxygen. That is the quantity "
-           "XPS reports. Heavily oxidized graphene oxide sits near 2, mildly "
-           "oxidized near 4–10; reduced graphene oxide runs to 10 and beyond. "
-           "Lower means more oxygen."));
-    amountForm->addRow(tr("Target C/O:"), targetRatioSpin_);
-
-    basalShareSpin_ = new QSpinBox(amountBox);
-    basalShareSpin_->setRange(0, 100);
-    basalShareSpin_->setSuffix(tr(" % basal"));
-    basalShareSpin_->setValue(70);
-    basalShareSpin_->setToolTip(
-        tr("How the oxygen budget is split between the two regions: the "
-           "fraction of oxygen atoms delivered by basal-plane groups, with the "
-           "rest going to the edges. A large flake has far more basal than "
-           "edge carbons, so a high basal share is the physically ordinary "
-           "case; small flakes are edge-dominated."));
-    amountForm->addRow(tr("Basal : edge split:"), basalShareSpin_);
-
     stage2Layout->addWidget(amountBox);
+
+    // -- The ratio sliders -------------------------------------------------
+    ratioBox_ = new QGroupBox(tr("Composition"), stage2);
+    auto* ratioForm = new QFormLayout(ratioBox_);
+
+    oxygenToCarbonSlider_ = makeRatioSlider(
+        ratioBox_, ratioForm, tr("Oxidation  (O/C):"),
+        tr("Oxygen per carbon in the FINISHED structure — every oxygen over "
+           "every carbon, including the ones carboxyls bring with them. That "
+           "is the composition XPS reports.\n\n"
+           "0.00 is pristine graphene. 0.5 is the stoichiometric ceiling "
+           "(C2O): every oxygen needs two carbons to sit on, so no carbon "
+           "framework holds more. Heavily oxidized graphene oxide reaches "
+           "0.4–0.5; typical material is 0.1–0.25; reduced graphene oxide "
+           "sits below 0.1."),
+        0.25, kMaxOxygenToCarbon, &oxygenToCarbonLabel_);
+
+    basalHydrogenSlider_ = makeRatioSlider(
+        ratioBox_, ratioForm, tr("Basal chemistry  (H/O):"),
+        tr("Hydrogen per oxygen on the BASAL PLANE, which is the same thing as "
+           "the hydroxyl share of the basal groups: an epoxide brings one "
+           "oxygen and no hydrogen, a hydroxyl brings one of each.\n\n"
+           "0.0 gives a sheet with only epoxides. 1.0 gives one with only "
+           "hydroxyls. The Lerf–Klinowski picture has both in comparable "
+           "amounts, so the middle of the range is the ordinary case."),
+        0.5, 1.0, &basalHydrogenLabel_);
+    stage2Layout->addWidget(ratioBox_);
+
     // Outside the form layout on purpose: a word-wrapped label only gets the
     // height its text actually needs when its parent layout honours
     // heightForWidth, and a spanning QFormLayout row does not — the last line
@@ -232,6 +278,35 @@ GrapheneOxideWizard::GrapheneOxideWizard(QWidget* parent)
     amountHint_->setWordWrap(true);
     amountHint_->setTextFormat(Qt::RichText);
     stage2Layout->addWidget(amountHint_);
+
+    // -- Edge oxidation, its own control ------------------------------------
+    // Two knobs because they are two different questions: HOW MUCH oxygen ends
+    // up at the rim rather than on the basal plane, and WHAT it is once it is
+    // there. Folding them into one slider would make "more edge oxidation"
+    // silently also mean "more carboxyl", which is not a relationship the
+    // chemistry has.
+    edgeChemistryBox_ = new QGroupBox(tr("Edge Oxidation"), stage2);
+    auto* edgeChemistryForm = new QFormLayout(edgeChemistryBox_);
+    edgeShareSlider_ = makeRatioSlider(
+        edgeChemistryBox_, edgeChemistryForm, tr("Oxygen at the edges:"),
+        tr("The share of the oxygen budget delivered at the rim rather than on "
+           "the basal plane — the edge oxidation density.\n\n"
+           "0.0 puts every oxygen on the basal plane and leaves the rim fully "
+           "hydrogen-terminated; 1.0 oxidizes only the rim. A large flake has "
+           "far more basal than edge carbons, so a small edge share is the "
+           "physically ordinary case; small flakes are edge-dominated."),
+        0.3, 1.0, &edgeShareLabel_);
+    edgeCarboxylSlider_ = makeRatioSlider(
+        edgeChemistryBox_, edgeChemistryForm, tr("Edge chemistry  (COOH/O):"),
+        tr("What the edge oxygen becomes: the carboxyl share of the edge "
+           "groups.\n\n"
+           "0.0 gives quinone-like carbonyls only (=O, one oxygen each). 1.0 "
+           "gives carboxyls only (−COOH, which bring a carbon of their own and "
+           "TWO oxygens, so they move both sides of the O/C ratio). Oxidative "
+           "exfoliation produces both, carboxyls dominating at the most "
+           "reactive sites."),
+        0.5, 1.0, &edgeCarboxylLabel_);
+    stage2Layout->addWidget(edgeChemistryBox_);
 
     // -- The two chemistries, kept apart -----------------------------------
     const auto addGroupRow = [this](QGroupBox* box, QFormLayout* form,
@@ -329,10 +404,10 @@ GrapheneOxideWizard::GrapheneOxideWizard(QWidget* parent)
             &GrapheneOxideWizard::refreshSummary);
     connect(dosingCombo_, &QComboBox::currentIndexChanged, this,
             &GrapheneOxideWizard::refreshSummary);
-    connect(targetRatioSpin_, &QDoubleSpinBox::valueChanged, this,
-            &GrapheneOxideWizard::refreshSummary);
-    connect(basalShareSpin_, &QSpinBox::valueChanged, this,
-            &GrapheneOxideWizard::refreshSummary);
+    for (QSlider* slider : {oxygenToCarbonSlider_, basalHydrogenSlider_,
+                            edgeShareSlider_, edgeCarboxylSlider_})
+        connect(slider, &QSlider::valueChanged, this,
+                &GrapheneOxideWizard::refreshSummary);
 
     goBack(); // start on stage 1 with the right button states
 
@@ -347,6 +422,9 @@ GrapheneOxideWizard::GrapheneOxideWizard(QWidget* parent)
     built_ = true;
     groupCheck_[slot(Group::Epoxide)]->setChecked(true);
     groupCheck_[slot(Group::Hydroxyl)]->setChecked(true);
+    // Stage 2 opens on the O/C sliders: the composition metric graphene oxide
+    // is quoted in, rather than a per-group coverage table.
+    dosingCombo_->setCurrentIndex(0);
     refreshSummary();
 }
 
@@ -373,6 +451,11 @@ void GrapheneOxideWizard::substrateCounts(int& total, int& basal,
     edge = 0; // a periodic sheet is edgeless by construction
 }
 
+double GrapheneOxideWizard::sliderValue(const QSlider* slider, double maximum)
+{
+    return slider->value() * maximum / kSliderSteps;
+}
+
 core::GrapheneOxideBuilder::Config GrapheneOxideWizard::config() const
 {
     Builder::Config config;
@@ -385,22 +468,59 @@ core::GrapheneOxideBuilder::Config GrapheneOxideWizard::config() const
     config.dosing = static_cast<Dosing>(dosingCombo_->currentData().toInt());
 
     const bool hasEdges = flakeSelected();
+    const bool targeting = config.dosing == Dosing::TargetRatio;
+
+    if (targeting) {
+        // --- The sliders drive the weights ---------------------------------
+        // Both basal groups deliver exactly one oxygen, so weighting them by
+        // GROUP count and weighting them by OXYGEN count are the same thing —
+        // which is what makes the hydroxyl share of the basal groups equal to
+        // H/O on the basal plane exactly, rather than approximately.
+        const double basalH = sliderValue(basalHydrogenSlider_, 1.0);
+        config.setWeight(Group::Epoxide, 1.0 - basalH);
+        config.setWeight(Group::Hydroxyl, basalH);
+
+        // The edges are not so tidy: a carboxyl brings TWO oxygens and a
+        // carbonyl one, so a carboxyl share stated in oxygen has to be
+        // converted to the propensity-per-GROUP the builder draws with.
+        // f oxygens from carboxyls means f/2 carboxyl groups against (1-f)
+        // carbonyl groups.
+        const double carboxylOxygenShare =
+            sliderValue(edgeCarboxylSlider_, 1.0);
+        config.setWeight(Group::Carboxyl, carboxylOxygenShare / 2.0);
+        config.setWeight(Group::Carbonyl, 1.0 - carboxylOxygenShare);
+
+        // Edge chemistry on an edgeless substrate is not "requested and then
+        // unmet": a periodic sheet has no rim, so the whole budget is basal.
+        const double edgeShare =
+            hasEdges ? sliderValue(edgeShareSlider_, 1.0) : 0.0;
+        config.basalOxygenShare = 1.0 - edgeShare;
+
+        // O/C -> C/O, which is what the builder works in. Zero oxidation has
+        // no C/O to express at all, so it is handled where it belongs: every
+        // weight goes to zero and the builder returns the pristine substrate.
+        const double oxygenToCarbon =
+            sliderValue(oxygenToCarbonSlider_, kMaxOxygenToCarbon);
+        if (oxygenToCarbon <= 0.0) {
+            for (std::size_t index = 0; index < kGroups; ++index)
+                config.weight[index] = 0.0;
+            config.targetCarbonToOxygen = 1e9;
+        } else {
+            config.targetCarbonToOxygen = 1.0 / oxygenToCarbon;
+        }
+        config.bothFaces = bothFacesCheck_->isChecked();
+        config.seed = static_cast<std::uint32_t>(seedSpin_->value());
+        return config;
+    }
+
     for (std::size_t index = 0; index < kGroups; ++index) {
         const auto group = static_cast<Group>(index);
-        // Edge chemistry on an edgeless substrate is not "requested and then
-        // unmet" — the control is greyed out and there is nothing to ask for.
         const bool usable =
             groupCheck_[index]->isChecked()
             && (hasEdges || Builder::region(group) == Region::Basal);
-        const double amount = usable ? groupAmount_[index]->value() : 0.0;
-        config.setCoverage(group, amount / 100.0);
-        // The same number reads as a percentage in one mode and as a relative
-        // propensity in the other; only the ratios matter to the latter.
-        config.setWeight(group, amount);
+        config.setCoverage(group, usable ? groupAmount_[index]->value() / 100.0
+                                         : 0.0);
     }
-
-    config.targetCarbonToOxygen = targetRatioSpin_->value();
-    config.basalOxygenShare = basalShareSpin_->value() / 100.0;
     config.bothFaces = bothFacesCheck_->isChecked();
     config.seed = static_cast<std::uint32_t>(seedSpin_->value());
     return config;
@@ -421,8 +541,40 @@ void GrapheneOxideWizard::refreshSummary()
 
     sheetBox_->setVisible(!flake);
     flakeBox_->setVisible(flake);
-    targetRatioSpin_->setEnabled(targeting);
-    basalShareSpin_->setEnabled(targeting && flake);
+    // One mode's controls at a time: the sliders and the per-group coverages
+    // answer the same question two ways, and showing both greyed halves makes
+    // a busy panel out of a simple choice.
+    ratioBox_->setVisible(targeting);
+    // Edge oxidation exists only where there is an edge. A periodic sheet is
+    // edgeless by construction, so this is not "unavailable", it is not a
+    // question.
+    edgeChemistryBox_->setVisible(targeting && flake);
+
+    const double oxygenToCarbon =
+        sliderValue(oxygenToCarbonSlider_, kMaxOxygenToCarbon);
+    oxygenToCarbonLabel_->setText(
+        oxygenToCarbon <= 0.0
+            ? tr("<b>0.000</b> — pristine")
+            : tr("<b>%1</b> &nbsp; (C/O = %2)")
+                  .arg(oxygenToCarbon, 0, 'f', 3)
+                  .arg(1.0 / oxygenToCarbon, 0, 'f', 2));
+    const double basalH = sliderValue(basalHydrogenSlider_, 1.0);
+    basalHydrogenLabel_->setText(tr("<b>%1</b> &nbsp; %2 % epoxide, %3 % hydroxyl")
+                                     .arg(basalH, 0, 'f', 2)
+                                     .arg((1.0 - basalH) * 100.0, 0, 'f', 0)
+                                     .arg(basalH * 100.0, 0, 'f', 0));
+    const double edgeShare = sliderValue(edgeShareSlider_, 1.0);
+    edgeShareLabel_->setText(tr("<b>%1</b> &nbsp; %2 % basal, %3 % edge")
+                                 .arg(edgeShare, 0, 'f', 2)
+                                 .arg((1.0 - edgeShare) * 100.0, 0, 'f', 0)
+                                 .arg(edgeShare * 100.0, 0, 'f', 0));
+    const double carboxylShare = sliderValue(edgeCarboxylSlider_, 1.0);
+    edgeCarboxylLabel_->setText(
+        tr("<b>%1</b> &nbsp; %2 % carbonyl, %3 % carboxyl")
+            .arg(carboxylShare, 0, 'f', 2)
+            .arg((1.0 - carboxylShare) * 100.0, 0, 'f', 0)
+            .arg(carboxylShare * 100.0, 0, 'f', 0));
+
     // Every edge group is unavailable on a sheet, and saying why beats an
     // unexplained grey box.
     for (const GroupSpec& spec : kEdgeGroups) {
@@ -433,7 +585,7 @@ void GrapheneOxideWizard::refreshSummary()
     edgeNote_->setVisible(!flake);
     edgeNote_->setText(
         tr("<i>A periodic sheet has no edges. Choose the nanoflake base in "
-           "stage 1 to place edge chemistry.</i>"));
+           "stage 1 to place edge chemistry — carboxyls and carbonyls.</i>"));
 
     int carbons = 0;
     int basal = 0;
@@ -471,36 +623,42 @@ void GrapheneOxideWizard::refreshSummary()
 
     if (targeting) {
         amountHint_->setText(
-            tr("<i>The numbers beside each group are relative propensities, "
-               "not coverages: only their ratios matter. The builder draws "
-               "groups in those proportions until the structure reaches the "
-               "target.</i>"));
-        for (std::size_t index = 0; index < kGroups; ++index)
-            groupAmount_[index]->setSuffix(QString());
+            tr("<i>The sliders set the composition; the builder places groups "
+               "in those proportions until the structure reaches the requested "
+               "O/C. Because a carboxyl brings a carbon of its own, the ratio "
+               "is recomputed after every placement rather than worked to a "
+               "fixed count.</i>"));
 
-        const double target = targetRatioSpin_->value();
-        const int oxygens = static_cast<int>(std::llround(carbons / target));
+        if (oxygenToCarbon <= 0.0) {
+            coverageSummary_->setText(
+                tr("<i>O/C = 0 — this builds the pristine substrate, with no "
+                   "oxygen at all.</i>"));
+            return;
+        }
+        const int oxygens =
+            static_cast<int>(std::llround(carbons * oxygenToCarbon));
         // Upper bound on what the substrate can carry: one oxygen per basal
         // carbon, and up to two per edge carbon (a carboxyl).
         const int capacity = basal + 2 * edge;
-        QString text = tr("Target C/O = %1 → roughly <b>%2 oxygen atoms</b> on "
-                          "this substrate. Carboxyls bring a carbon of their "
-                          "own, so the builder recomputes the ratio after every "
-                          "placement rather than working to a fixed count.")
-                           .arg(target, 0, 'f', 2)
-                           .arg(oxygens);
+        QString text =
+            tr("O/C = %1 (C/O = %2) → roughly <b>%3 oxygen atoms</b> on this "
+               "substrate.")
+                .arg(oxygenToCarbon, 0, 'f', 3)
+                .arg(1.0 / oxygenToCarbon, 0, 'f', 2)
+                .arg(oxygens);
+        text += tr("<br>Basal plane: %1 % epoxide, %2 % hydroxyl (H/O = %3).")
+                    .arg((1.0 - basalH) * 100.0, 0, 'f', 0)
+                    .arg(basalH * 100.0, 0, 'f', 0)
+                    .arg(basalH, 0, 'f', 2);
         if (flake) {
-            text += tr("<br>Oxygen split: %1 % basal, %2 % edge.")
-                        .arg(basalShareSpin_->value())
-                        .arg(100 - basalShareSpin_->value());
+            text += tr("<br>Oxygen split: %1 % basal, %2 % edge; the edge "
+                       "oxygen is %3 % carbonyl, %4 % carboxyl.")
+                        .arg((1.0 - edgeShare) * 100.0, 0, 'f', 0)
+                        .arg(edgeShare * 100.0, 0, 'f', 0)
+                        .arg((1.0 - carboxylShare) * 100.0, 0, 'f', 0)
+                        .arg(carboxylShare * 100.0, 0, 'f', 0);
         }
-        bool anyGroup = false;
-        for (std::size_t index = 0; index < kGroups; ++index)
-            anyGroup = anyGroup || cfg.weight[index] > 0.0;
-        if (!anyGroup) {
-            text = tr("<i>No groups selected — this builds the pristine "
-                      "substrate.</i>");
-        } else if (oxygens > capacity) {
+        if (oxygens > capacity) {
             text += tr("<br><b>This substrate cannot hold that much oxygen.</b> "
                        "At most %1 oxygens fit (one per basal carbon, two per "
                        "edge carbon), so the build will stop short and report "
@@ -565,7 +723,7 @@ void GrapheneOxideWizard::refreshSummary()
         // truncates and reports, so the user can still proceed knowingly.
         text += tr("<br><b>More than 100 % of a region's carbons are "
                    "requested.</b> Groups are placed in order — epoxide, "
-                   "carboxyl, carbonyl, edge hydroxyl, hydroxyl — until the "
+                   "carboxyl, carbonyl, hydroxyl — until the "
                    "sites run out, and the shortfall is reported after "
                    "building.");
     } else if (basalFraction > 0.6) {

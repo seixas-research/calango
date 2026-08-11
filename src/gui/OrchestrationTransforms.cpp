@@ -26,25 +26,94 @@ QString joinShort(const QStringList& parts)
 // SupercellSpec
 // ---------------------------------------------------------------------------
 
+long SupercellSpec::determinant() const
+{
+    const auto l = [this](int i, int j) { return static_cast<long>(p[i][j]); };
+    return l(0, 0) * (l(1, 1) * l(2, 2) - l(1, 2) * l(2, 1))
+        - l(0, 1) * (l(1, 0) * l(2, 2) - l(1, 2) * l(2, 0))
+        + l(0, 2) * (l(1, 0) * l(2, 1) - l(1, 1) * l(2, 0));
+}
+
+bool SupercellSpec::isIdentity() const
+{
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            if (p[i][j] != (i == j ? 1 : 0))
+                return false;
+    return true;
+}
+
+bool SupercellSpec::isDiagonal() const
+{
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            if (i != j && p[i][j] != 0)
+                return false;
+    return p[0][0] >= 1 && p[1][1] >= 1 && p[2][2] >= 1;
+}
+
+SupercellSpec SupercellSpec::diagonal(int na, int nb, int nc)
+{
+    SupercellSpec spec;
+    spec.p[0][0] = na;
+    spec.p[1][1] = nb;
+    spec.p[2][2] = nc;
+    return spec;
+}
+
 QString SupercellSpec::describe() const
 {
-    return QStringLiteral("%1 x %2 x %3").arg(na).arg(nb).arg(nc);
+    if (isDiagonal())
+        return QStringLiteral("%1 x %2 x %3").arg(na()).arg(nb()).arg(nc());
+    QStringList rows;
+    for (const auto& row : p)
+        rows << QStringLiteral("[%1,%2,%3]")
+                    .arg(row[0])
+                    .arg(row[1])
+                    .arg(row[2]);
+    // The determinant is the cell-count multiplier, and it is the number a
+    // reader of a non-diagonal matrix actually wants: nine integers do not say
+    // "eight times bigger" at a glance.
+    return QObject::tr("[%1] (x%2)")
+        .arg(rows.join(QStringLiteral(",")))
+        .arg(std::labs(determinant()));
 }
 
 QJsonObject SupercellSpec::toJson() const
 {
-    return QJsonObject{{QStringLiteral("na"), na},
-                       {QStringLiteral("nb"), nb},
-                       {QStringLiteral("nc"), nc}};
+    QJsonArray matrix;
+    for (const auto& row : p)
+        matrix.append(QJsonArray{row[0], row[1], row[2]});
+    QJsonObject object{{QStringLiteral("matrix"), matrix}};
+    // The diagonal form is written alongside, for readers that understand only
+    // repetitions. It is emitted ONLY when the matrix really is diagonal — a
+    // reader that fell back to na/nb/nc on a non-diagonal cell would build a
+    // different structure and report success, which is the one outcome this
+    // format exists to prevent.
+    if (isDiagonal()) {
+        object.insert(QStringLiteral("na"), na());
+        object.insert(QStringLiteral("nb"), nb());
+        object.insert(QStringLiteral("nc"), nc());
+    }
+    return object;
 }
 
 SupercellSpec SupercellSpec::fromJson(const QJsonObject& object)
 {
-    SupercellSpec spec;
-    spec.na = object.value(QStringLiteral("na")).toInt(spec.na);
-    spec.nb = object.value(QStringLiteral("nb")).toInt(spec.nb);
-    spec.nc = object.value(QStringLiteral("nc")).toInt(spec.nc);
-    return spec;
+    const QJsonArray matrix = object.value(QStringLiteral("matrix")).toArray();
+    if (matrix.size() == 3) {
+        SupercellSpec spec;
+        for (int i = 0; i < 3; ++i) {
+            const QJsonArray row = matrix[i].toArray();
+            for (int j = 0; j < 3 && j < row.size(); ++j)
+                spec.p[i][j] = row[j].toInt();
+        }
+        return spec;
+    }
+    // A document written before the matrix existed.
+    return diagonal(object.value(QStringLiteral("na")).toInt(2),
+                    object.value(QStringLiteral("nb")).toInt(2),
+                    object.value(QStringLiteral("nc")).toInt(2));
 }
 
 // ---------------------------------------------------------------------------
@@ -167,8 +236,10 @@ core::Structure applySupercell(const core::Structure& structure,
             *error = message;
     };
     if (!spec.isValid()) {
-        fail(QObject::tr("Supercell repetitions must be 1 or more (got %1).")
-                 .arg(spec.describe()));
+        fail(QObject::tr(
+            "The supercell matrix is singular (det P = 0): the three "
+            "transformed lattice vectors are coplanar or collinear, which is "
+            "not a cell."));
         return structure;
     }
     if (spec.isIdentity())
@@ -180,8 +251,15 @@ core::Structure applySupercell(const core::Structure& structure,
         return structure;
     }
     try {
-        return pybridge::AseBridge::makeSupercell(structure, spec.na, spec.nb,
-                                                  spec.nc);
+        // The diagonal case goes through Atoms.repeat rather than
+        // make_supercell: same result, but repeat preserves the atom ORDER of
+        // the original cell, which is what makes an index list written against
+        // the input still address the same atoms in a downstream Defect
+        // Generator.
+        if (spec.isDiagonal())
+            return pybridge::AseBridge::makeSupercell(structure, spec.na(),
+                                                      spec.nb(), spec.nc());
+        return pybridge::AseBridge::makeSupercellMatrix(structure, spec.p);
     } catch (const std::exception& e) {
         fail(QObject::tr("Supercell %1 failed: %2")
                  .arg(spec.describe(), QString::fromUtf8(e.what())));

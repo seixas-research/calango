@@ -1,4 +1,5 @@
 #include "gui/GeometryConstraintsDialog.hpp"
+#include "gui/GuiUtils.hpp"
 
 #include "core/Structure.hpp"
 
@@ -123,6 +124,7 @@ QWidget* GeometryConstraintsDialog::buildAtomsTab()
 
     atomTable_ = new QTableWidget(page);
     atomTable_->setColumnCount(AtomColumnCount);
+    disableTypeToEdit(atomTable_);
     atomTable_->setHorizontalHeaderLabels({tr("Index"), tr("Element"),
                                            tr("x (Å)"), tr("y (Å)"), tr("z (Å)"),
                                            tr("Fix x"), tr("Fix y"), tr("Fix z")});
@@ -234,6 +236,7 @@ QWidget* GeometryConstraintsDialog::buildRegionsTab()
 
     regionTable_ = new QTableWidget(page);
     regionTable_->setColumnCount(RegionColumnCount);
+    disableTypeToEdit(regionTable_);
     regionTable_->setHorizontalHeaderLabels(
         {tr("Axis"), tr("Min"), tr("Value (Å)"), tr("Max"), tr("Value (Å)"),
          tr("Fix x"), tr("Fix y"), tr("Fix z")});

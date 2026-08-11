@@ -1,4 +1,5 @@
 #include "gui/HubbardParametersDialog.hpp"
+#include "gui/GuiUtils.hpp"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -68,6 +69,7 @@ HubbardParametersDialog::HubbardParametersDialog(
                                                      QHeaderView::Stretch);
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     table_->verticalHeader()->setVisible(false);
+    disableTypeToEdit(table_);
     layout->addWidget(table_, 1);
 
     auto* buttonRow = new QHBoxLayout;

@@ -55,6 +55,7 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QCheckBox>
+#include <QAbstractItemView>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
@@ -158,6 +159,31 @@ void exerciseControls(QWidget* dialog)
     for (QComboBox* combo : dialog->findChildren<QComboBox*>())
         for (int i = 0; i < combo->count(); ++i)
             combo->setCurrentIndex(i);
+
+    // No editable item view may keep the AnyKeyPressed edit trigger.
+    //
+    // A crash, not a style rule. On macOS a dead key (´ ` ~ ^ — unavoidable on
+    // a Portuguese or Spanish layout) reaches an item view as a
+    // QInputMethodEvent, and QAbstractItemView::inputMethodEvent answers it
+    // with edit(currentIndex(), AnyKeyPressed, event). The setFocus() on the
+    // new editor makes the Cocoa input context commit the pending dead key,
+    // which re-delivers the event to the VIEW — which edits again. It recursed
+    // 5215 times and exhausted the stack before the key could be released.
+    // gui::disableTypeToEdit() breaks it; this makes sure nobody forgets.
+    //
+    // Checked here rather than once at the end so it covers every dialog the
+    // test exercises, including the ones added later.
+    for (QAbstractItemView* view : dialog->findChildren<QAbstractItemView*>()) {
+        if (view->editTriggers() == QAbstractItemView::NoEditTriggers)
+            continue;
+        if (!view->editTriggers().testFlag(QAbstractItemView::AnyKeyPressed))
+            continue;
+        std::printf("  FAIL %s in %s still has AnyKeyPressed — a dead key "
+                    "will recurse until the stack is gone\n",
+                    view->metaObject()->className(),
+                    dialog->metaObject()->className());
+        ++failures;
+    }
 }
 
 } // namespace

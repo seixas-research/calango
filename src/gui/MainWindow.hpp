@@ -584,6 +584,17 @@ private:
     /// GrapheneOxideBuilder::findFunctionalGroups().
     int applyFunctionalGroupCasts();
 
+    /// One cast per GRAIN of a polycrystal (or per crystal of a bicrystal),
+    /// each in its own colour. Returns how many were made; 0 leaves the scene
+    /// untouched, which is what a single-grain structure gets.
+    ///
+    /// Reads the per-atom "grain" field SolidInterfaceBuilder writes as it
+    /// fills the Voronoi regions, rather than re-deriving the tessellation
+    /// here. The assignment the geometry was built from is the only one
+    /// guaranteed to agree with it — a second nearest-seed pass would disagree
+    /// exactly at the seams, which is where the grains are.
+    int applyGrainCasts();
+
     /// Capture `doc`'s current state as one undo step (see Snapshot).
     static Snapshot snapshotOf(const Document& doc);
     /// Restore a snapshot into `doc`, replacing both the displayed structure

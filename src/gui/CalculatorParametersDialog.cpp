@@ -1,4 +1,5 @@
 #include "gui/CalculatorParametersDialog.hpp"
+#include "gui/GuiUtils.hpp"
 
 #include "gui/CalculatorParameters.hpp"
 #include "gui/EnginePresets.hpp"
@@ -112,6 +113,7 @@ CalculatorParametersDialog::CalculatorParametersDialog(QWidget* parent)
         table_->horizontalHeader()->setSectionResizeMode(
             column, QHeaderView::ResizeToContents);
     table_->verticalHeader()->setVisible(false);
+    disableTypeToEdit(table_);
     layout->addWidget(table_, 1);
 
     auto* rowButtons = new QHBoxLayout;

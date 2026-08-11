@@ -244,11 +244,14 @@ bool OrchestrationDocument::load(OrchestrationWindow& window,
                                  const QJsonObject& document, QString* error)
 {
     const QString schema = document.value(QStringLiteral("schema")).toString();
-    if (schema != QLatin1String(kSchema)) {
+    bool readable = false;
+    for (const char* known : kReadableSchemas)
+        readable = readable || schema == QLatin1String(known);
+    if (!readable) {
         if (error)
             *error = QObject::tr(
-                         "This is not a Calango workflow file (schema \"%1\", "
-                         "expected \"%2\").")
+                         "This is not a Calango workflow file this version can "
+                         "read (schema \"%1\", expected \"%2\").")
                          .arg(schema, QString::fromLatin1(kSchema));
         return false;
     }

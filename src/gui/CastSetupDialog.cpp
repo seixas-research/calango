@@ -1,4 +1,5 @@
 #include "gui/CastSetupDialog.hpp"
+#include "gui/GuiUtils.hpp"
 
 #include "core/Structure.hpp"
 #include "gui/ViewportWidget.hpp"
@@ -132,6 +133,7 @@ CastSetupDialog::CastSetupDialog(ViewportWidget* viewport,
                                        tr("y (Å)"), tr("z (Å)"), tr("Cast")});
     table_->horizontalHeader()->setStretchLastSection(true);
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    disableTypeToEdit(table_);
     table_->verticalHeader()->setVisible(false);
     layout->addWidget(table_, 1);
 

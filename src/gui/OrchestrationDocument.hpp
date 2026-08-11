@@ -33,8 +33,17 @@ namespace calango::gui {
 /// latter and live beside the results.
 namespace OrchestrationDocument {
 
-/// Schema identifier written into every document and required by readers.
-inline constexpr auto kSchema = "calango.workflow/1";
+/// Schema identifier written into every document.
+///
+/// Bumped to /2 when the Supercell node gained a full 3x3 transformation
+/// matrix. That is not a compatible addition: a /1 reader knows only na/nb/nc,
+/// and on a non-diagonal matrix it would fall back to those, build a different
+/// cell and report success. The version is what makes it refuse instead.
+inline constexpr auto kSchema = "calango.workflow/2";
+/// Versions this reader accepts. Older documents load — a /1 file has only
+/// diagonal supercells, which /2 expresses exactly.
+inline constexpr const char* kReadableSchemas[] = {"calango.workflow/2",
+                                                   "calango.workflow/1"};
 
 /// Build the document for the pipeline `window` currently holds.
 ///

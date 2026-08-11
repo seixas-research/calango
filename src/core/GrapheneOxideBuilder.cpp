@@ -45,7 +45,6 @@ constexpr double kOH = 0.98;
 // counterparts because the carbon stays sp2: a phenolic C-O is 1.36 Å, not the
 // 1.48 Å of an sp3 alcohol, and an aryl-COOH C-C is 1.48 Å, not 1.52 Å.
 constexpr double kCH_edge = 1.09;
-constexpr double kCO_phenol = 1.36;
 constexpr double kCO_carbonyl = 1.23;
 constexpr double kCC_carboxyl = 1.48;
 constexpr double kCO_double = 1.21;
@@ -443,12 +442,15 @@ GrapheneOxideBuilder::findFunctionalGroups(const Structure& structure)
             if (z(other) == kZ_C)
                 host = other;
         }
-        // sp3 basal hydroxyl or sp2 phenol, told apart the same way the builder
-        // decides where it may place them: by the host carbon's coordination.
-        // The two are different chemistry — 1.48 Å out of plane against 1.36 Å
-        // in it — and lumping them into one selection hides that.
-        const bool phenolic = host >= 0 && countOf(host, kZ_C) < 3;
-        emit(phenolic ? Group::EdgeHydroxyl : Group::Hydroxyl, std::move(cluster));
+        // Reported as a hydroxyl wherever it sits. The generator no longer
+        // places phenolic edge -OH, but a structure from a file may carry it
+        // and it is still a hydroxyl group; which carbon hosts it — and
+        // therefore whether it is the 1.48 Å sp3 basal kind or the 1.36 Å sp2
+        // phenol — is readable from that carbon's coordination and from the
+        // "edge" scalar field, without a second Group value that nothing can
+        // build.
+        (void)host;
+        emit(Group::Hydroxyl, std::move(cluster));
     }
 
     // --- Carbonyl: one oxygen with a single carbon and nothing else ---------
@@ -489,7 +491,6 @@ const char* GrapheneOxideBuilder::name(Group group)
     case Group::Hydroxyl:     return "hydroxyl";
     case Group::Carboxyl:     return "carboxyl";
     case Group::Carbonyl:     return "carbonyl";
-    case Group::EdgeHydroxyl: return "edge hydroxyl";
     }
     return "?";
 }
@@ -502,7 +503,6 @@ GrapheneOxideBuilder::Region GrapheneOxideBuilder::region(Group group)
         return Region::Basal;
     case Group::Carboxyl:
     case Group::Carbonyl:
-    case Group::EdgeHydroxyl:
         return Region::Edge;
     }
     return Region::Basal;
@@ -750,15 +750,6 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
             // Quinone-like C=O, collinear with the missing C-H.
             pending.push_back(makeAtom(kZ_O, c + u * kCO_carbonyl));
             break;
-        case Group::EdgeHydroxyl: {
-            // Phenol: shorter C-O than the sp3 basal hydroxyl, H in the plane
-            // at a C-O-H angle of 109°.
-            const Vec3 o = c + u * kCO_phenol;
-            pending.push_back(makeAtom(kZ_O, o));
-            pending.push_back(
-                makeAtom(kZ_H, o + rotateInPlane(u, side * 71.0 * kDeg) * kOH));
-            break;
-        }
         case Group::Carboxyl: {
             // -COOH: it brings its own sp2 carbon, with the two oxygens at the
             // trigonal ±60° off the outward direction and the acidic H in the
@@ -872,7 +863,7 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
         // groups eat the lattice gives the requested composition the best
         // chance. The edge groups then compete only with each other.
         const Group order[] = {Group::Epoxide, Group::Carboxyl, Group::Carbonyl,
-                               Group::EdgeHydroxyl, Group::Hydroxyl};
+                               Group::Hydroxyl};
         for (Group group : order) {
             const auto slot = static_cast<std::size_t>(group);
             local.requested[slot] = targetCount(group);

@@ -217,6 +217,7 @@ MagneticSpaceGroupDialog::MagneticSpaceGroupDialog(
     momentTable_->horizontalHeader()->setSectionResizeMode(
         QHeaderView::Stretch);
     momentTable_->verticalHeader()->setVisible(false);
+    disableTypeToEdit(momentTable_);
     momentTable_->setToolTip(
         tr("The moments the determination runs on, in μB and in Cartesian "
            "components. The mx / my / mz cells are EDITABLE — flip a "

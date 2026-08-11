@@ -6423,12 +6423,20 @@ void MainWindow::openSolidInterfaceBuilder()
         QString::fromStdString(generated.description));
     tabBar_->setCurrentIndex(tab);
     isDirty_ = true;
-    statusBar()->showMessage(
+    // One cast per grain, each its own colour, so the tessellation is visible
+    // the moment the structure opens. A polycrystal drawn in element colours
+    // is a uniform block of atoms: the grains are the whole point of the
+    // structure and are the one thing element colouring cannot show.
+    const int grainCasts = applyGrainCasts();
+    QString status =
         tr("%1 — %2 atoms, %3 g/cm³, %4 merged at the seams")
             .arg(QString::fromStdString(generated.description))
             .arg(static_cast<int>(generated.structure.size()))
             .arg(generated.density, 0, 'f', 3)
-            .arg(generated.mergedAtoms));
+            .arg(generated.mergedAtoms);
+    if (grainCasts > 0)
+        status += tr(" — %n grain(s) coloured as casts", nullptr, grainCasts);
+    statusBar()->showMessage(status);
 
     if (!generated.warnings.empty()) {
         QStringList lines;
@@ -6486,7 +6494,6 @@ int MainWindow::applyFunctionalGroupCasts()
         QColor(0x1F, 0x77, 0xB4), // hydroxyl     — blue
         QColor(0x9E, 0x4C, 0xC4), // carboxyl     — purple
         QColor(0x2C, 0xA0, 0x2C), // carbonyl     — green
-        QColor(0x17, 0xBE, 0xCF), // edge hydroxyl— cyan
     };
 
     auto& style = viewport_->style();
@@ -6527,6 +6534,67 @@ int MainWindow::applyFunctionalGroupCasts()
         cast.colorMode = render::ColorMode::Cast;
     viewport_->styleChanged(/*rebuildGeometry=*/true);
     return static_cast<int>(style.castStyles.size());
+}
+
+int MainWindow::applyGrainCasts()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty() || !viewport_)
+        return 0;
+
+    // The builder tags every atom with the grain it was carved from — see
+    // SolidInterfaceBuilder, which writes the field as it fills the Voronoi
+    // regions. Reading it back here rather than re-deriving the tessellation
+    // is the whole point: the assignment the geometry was BUILT from is the
+    // only one guaranteed to agree with it, and a second nearest-seed pass
+    // would disagree exactly at the seams, which is where it matters.
+    const auto& fields = doc->structure->scalarFields();
+    const auto it = fields.find("grain");
+    if (it == fields.end() || it->second.size() != doc->structure->size())
+        return 0;
+    const std::vector<double>* field = &it->second;
+
+    int grainCount = 0;
+    for (const double value : *field)
+        grainCount = std::max(grainCount, static_cast<int>(value) + 1);
+    // One grain is not a polycrystal, and a single "Grain 1" cast covering
+    // every atom is a control that does nothing.
+    if (grainCount < 2)
+        return 0;
+
+    auto& style = viewport_->style();
+    style.castStyles.clear();
+    // Cast 0 is what an atom falls back to; nothing should, since every atom
+    // carries a grain, but naming it honestly beats leaving the previous
+    // structure's label in place.
+    style.castName = tr("Ungrouped");
+    for (int grain = 0; grain < grainCount; ++grain) {
+        render::StructureRenderer::CastStyle cast = style.castStyle(0);
+        // Golden-angle hue rotation. Consecutive grains land ~137.5° apart, so
+        // any PREFIX of the sequence is well separated — which matters because
+        // the grain count is whatever the user asked for, from 2 to dozens,
+        // and a fixed palette would either run out or waste its best colours.
+        // Saturation and value alternate slightly as well: past roughly a
+        // dozen grains hue alone starts to repeat perceptually, and two
+        // touching grains of the same apparent colour is exactly the thing
+        // this feature exists to prevent.
+        const double hue = std::fmod(grain * 137.508, 360.0);
+        const int saturation = (grain % 3 == 1) ? 165 : 220;
+        const int value = (grain % 3 == 2) ? 195 : 245;
+        cast.castColor = QColor::fromHsv(static_cast<int>(hue), saturation,
+                                         value);
+        cast.name = tr("Grain %1").arg(grain + 1);
+        style.castStyles.push_back(cast);
+    }
+
+    style.atomCasts.assign(doc->structure->size(), 0);
+    for (std::size_t i = 0; i < field->size(); ++i) {
+        const int grain = static_cast<int>((*field)[i]);
+        if (grain >= 0 && grain < grainCount)
+            style.atomCasts[i] = grain + 1; // cast 0 is the fallback
+    }
+    viewport_->update();
+    return grainCount;
 }
 
 void MainWindow::openGrapheneOxideBuilder()

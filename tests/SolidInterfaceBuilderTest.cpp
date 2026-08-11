@@ -341,6 +341,46 @@ void testPolycrystal()
           "each atom carries its grain and phase id, so the tessellation can "
           "be seen rather than trusted");
 
+    // The contract the viewport's grain casts are built on: every atom's id is
+    // a valid grain index, the ids are CONTIGUOUS from 0, and re-counting them
+    // reproduces grains[].atomCount. One cast is created per index and each
+    // atom is assigned to cast (id + 1), so a gap or an out-of-range id would
+    // put atoms in a cast that does not exist — or silently drop them into the
+    // fallback, which reads as an unassigned region of the polycrystal.
+    {
+        const std::vector<double>& ids =
+            poly.structure.scalarFields().at("grain");
+        check(ids.size() == poly.structure.size(),
+              "the grain field covers every atom");
+        std::vector<int> recounted(poly.grains.size(), 0);
+        bool inRange = true;
+        bool integral = true;
+        for (const double raw : ids) {
+            const int id = static_cast<int>(raw);
+            // Stored as a double because the scalar-field map is one type for
+            // charges, forces and this; it still has to be an exact integer.
+            integral = integral && std::abs(raw - id) < 1e-9;
+            if (id < 0 || id >= static_cast<int>(poly.grains.size())) {
+                inRange = false;
+                continue;
+            }
+            ++recounted[static_cast<std::size_t>(id)];
+        }
+        check(inRange, "every id names one of the grains that exist");
+        check(integral, "and is an exact integer, not a rounded one");
+        bool matches = true;
+        bool contiguous = true;
+        for (std::size_t g = 0; g < poly.grains.size(); ++g) {
+            matches = matches && recounted[g] == poly.grains[g].atomCount;
+            contiguous = contiguous && recounted[g] > 0;
+        }
+        check(matches,
+              "and re-counting the field reproduces every grain's atom count");
+        check(contiguous,
+              "with no empty index in between — the ids run 0..N-1 without a "
+              "gap, which is what one-cast-per-grain assumes");
+    }
+
     check(closestPair(poly.structure) >= 1.5 - 1e-6,
           "no seam pile-up anywhere in the cell");
     check(poly.mergedAtoms > 0,

@@ -242,7 +242,7 @@ int main(int argc, char** argv)
         window.linkNodes(container, cell);
         window.linkNodes(cell, defect);
         window.linkNodes(defect, probe);
-        window.setNodeSupercell(cell, SupercellSpec{2, 1, 1});
+        window.setNodeSupercell(cell, SupercellSpec::diagonal(2, 1, 1));
         DefectSpec spec;
         DefectOperation remove;
         remove.kind = DefectOperation::Kind::Remove;
@@ -594,7 +594,7 @@ int main(int argc, char** argv)
         window.linkNodes(container, cell);
         window.linkNodes(cell, relax);
         window.setNodeBatchItems(container, materials);
-        window.setNodeSupercell(cell, SupercellSpec{2, 1, 1});
+        window.setNodeSupercell(cell, SupercellSpec::diagonal(2, 1, 1));
         window.configureNode(relax, probeScript(), pythonExe,
                              QStringLiteral("gpaw -P {cores} python {script}"),
                              calango::core::CalculatorKind::Gpaw);
@@ -604,7 +604,7 @@ int main(int argc, char** argv)
             calango::gui::OrchestrationDocument::build(window, &warnings);
         check(warnings.isEmpty(), "the document builds with no structure lost");
         check(document.value(QStringLiteral("schema")).toString()
-                  == QStringLiteral("calango.workflow/1"),
+                  == QStringLiteral("calango.workflow/2"),
               "and carries its schema version");
 
         const QJsonArray nodes =
@@ -676,7 +676,7 @@ int main(int argc, char** argv)
                      QStringLiteral("calango.workflow/99"));
         OrchestrationWindow refused(materials, pythonResolver);
         check(!calango::gui::OrchestrationDocument::load(refused, wrong, &error)
-                  && error.contains(QStringLiteral("calango.workflow/1")),
+                  && error.contains(QStringLiteral("calango.workflow/2")),
               "a document from a future schema is refused, not half-loaded");
 
         // Open Workflow: the same document, through the panel's own file path.
@@ -729,7 +729,7 @@ int main(int argc, char** argv)
               "and the canvas still holds the pipeline it had");
         check(refusalsOnOpen.size() == 1
                   && refusalsOnOpen.front().contains(
-                      QStringLiteral("calango.workflow/1")),
+                      QStringLiteral("calango.workflow/2")),
               "with the reason reported");
 
         QFile garbage(sandbox.path() + QStringLiteral("/garbage.json"));
@@ -745,6 +745,171 @@ int main(int argc, char** argv)
                                    + QStringLiteral("/nothing-here.json"))
                   && refusalsOnOpen.size() == 1,
               "and a file that does not exist");
+    }
+
+    // ---- Scenario 5b: xTB as an orchestration engine -----------------------
+    //
+    // The node carries no script of its own, so the runner falls back to the
+    // task defaults — and those have to produce an xTB calculator, with the
+    // xTB parameters, rather than silently emitting something else. That is
+    // the whole "the engine reaches the generator" claim.
+    std::printf("xTB engine:\n");
+    QSettings().setValue(
+        QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+        sandbox.path() + QStringLiteral("/simulations_xtb"));
+    {
+        OrchestrationWindow window(materials, pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        OrchestrationNodeItem* container = window.addProcessNode(
+            OrchestrationTask::Container, calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* relax = window.addProcessNode(
+            OrchestrationTask::GeometryOptimization,
+            calango::core::CalculatorKind::Xtb);
+        window.linkNodes(container, relax);
+        window.setNodeBatchItems(container, {materials[0]});
+        check(relax && relax->engine() == calango::core::CalculatorKind::Xtb,
+              "a node can be created on the xTB engine");
+
+        // Deliberately NOT configured: this exercises the default-script path.
+        window.sendToProcesses();
+        settle(relax, 60000);
+        const QString script =
+            readAll(relax->jobDirectory() + QStringLiteral("/run.py"));
+        check(!script.isEmpty(), "the runner generated a script for it");
+        check(script.contains(QStringLiteral("xtb")),
+              "and the script imports the xTB calculator");
+        check(script.contains(QStringLiteral("GFN2-xTB")),
+              "carrying the xTB method parameter down to the backend");
+        // The node runs only where xtb-python is installed; the script is what
+        // this scenario is about, so a failure to execute is not a failure
+        // here — but a REFUSAL would mean the canvas rejected the engine.
+        check(std::none_of(refusals.cbegin(), refusals.cend(),
+                           [](const QString& m) {
+                               return m.contains(QStringLiteral("xTB"))
+                                   || m.contains(QStringLiteral("not been "
+                                                                "configured"));
+                           }),
+              "and the canvas does not refuse an unconfigured xTB node");
+
+        QStringList warnings;
+        const QJsonObject document =
+            calango::gui::OrchestrationDocument::build(window, &warnings);
+        const QJsonObject relaxJson =
+            document.value(QStringLiteral("nodes")).toArray()[1].toObject();
+        check(relaxJson.value(QStringLiteral("engine")).toString()
+                  == QStringLiteral("xTB"),
+              "and the exported workflow names xTB as its engine");
+        check(relaxJson.value(QStringLiteral("engine_id")).toInt()
+                  == static_cast<int>(calango::core::CalculatorKind::Xtb),
+              "with the engine id a reader can act on");
+    }
+
+    // ---- Scenario 6b: the supercell transformation matrix ------------------
+    //
+    // Three multipliers cannot express a rotated cell. The check that matters
+    // is that a NON-DIAGONAL matrix survives the round trip intact: a reader
+    // that fell back to na/nb/nc would build a different cell and report
+    // success, which is the failure the schema version exists to prevent.
+    std::printf("Supercell matrix:\n");
+    {
+        SupercellSpec rotated;                     // sqrt(3) x sqrt(3) R30
+        rotated.p[0][0] = 2;  rotated.p[0][1] = 1;  rotated.p[0][2] = 0;
+        rotated.p[1][0] = -1; rotated.p[1][1] = 1;  rotated.p[1][2] = 0;
+        rotated.p[2][0] = 0;  rotated.p[2][1] = 0;  rotated.p[2][2] = 1;
+        check(rotated.determinant() == 3 && !rotated.isDiagonal()
+                  && rotated.isValid(),
+              "a non-diagonal matrix has |P| = 3 and is not diagonal");
+        check(SupercellSpec::diagonal(2, 1, 1).isDiagonal()
+                  && SupercellSpec{}.isIdentity(),
+              "the diagonal and identity cases are recognised");
+
+        SupercellSpec singular;
+        singular.p[1][1] = 0;
+        check(!singular.isValid(),
+              "a matrix with a zero row is refused as singular");
+
+        const QJsonObject json = rotated.toJson();
+        check(!json.contains(QStringLiteral("na")),
+              "a non-diagonal matrix writes NO na/nb/nc — an old reader must "
+              "not be able to misread it as repetitions");
+        check(SupercellSpec::diagonal(2, 3, 1)
+                  .toJson()
+                  .value(QStringLiteral("nb"))
+                  .toInt() == 3,
+              "a diagonal one does, so an old reader gets it right");
+        const SupercellSpec back = SupercellSpec::fromJson(json);
+        bool same = true;
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                same = same && back.p[i][j] == rotated.p[i][j];
+        check(same, "and the matrix round-trips exactly");
+        check(SupercellSpec::fromJson(
+                  QJsonObject{{QStringLiteral("na"), 2},
+                              {QStringLiteral("nb"), 2},
+                              {QStringLiteral("nc"), 1}})
+                  .describe() == QStringLiteral("2 x 2 x 1"),
+              "a pre-matrix document still reads as diagonal repetitions");
+
+        // Applied for real: |P| = 3 on a 4-atom cell gives 12 atoms.
+        QString problem;
+        const calango::core::Structure expanded = calango::gui::applySupercell(
+            *materials[0].second, rotated, &problem);
+        check(problem.isEmpty() && expanded.size() == 12,
+              "and applying it gives |P| times as many atoms");
+    }
+
+    // ---- Scenario 6c: Auto-Layout ------------------------------------------
+    std::printf("Auto-Layout:\n");
+    {
+        OrchestrationWindow window(materials, pythonResolver);
+        // autoLayout() finishes with Fit to Screen, which needs a viewport
+        // that has a size.
+        window.resize(640, 400);
+        window.show();
+        QCoreApplication::processEvents();
+        // A deliberately tangled diamond: container -> two branches -> join.
+        OrchestrationNodeItem* source = window.addProcessNode(
+            OrchestrationTask::Container, calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* left = window.addProcessNode(
+            OrchestrationTask::SinglePoint, calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* right = window.addProcessNode(
+            OrchestrationTask::SinglePoint, calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* join = window.addProcessNode(
+            OrchestrationTask::ChargedDefects2d,
+            calango::core::CalculatorKind::Gpaw);
+        window.linkNodes(source, left);
+        window.linkNodes(source, right);
+        window.linkNodes(left, join);
+        window.linkNodes(right, join);
+        // Scatter them so the layout has something to undo.
+        source->setPos(900.0, 400.0);
+        left->setPos(120.0, -260.0);
+        right->setPos(640.0, 700.0);
+        join->setPos(-300.0, 90.0);
+
+        window.autoLayout();
+
+        // Execution order reads left to right: every node strictly right of
+        // every parent. That is the one property the layout has to be true
+        // about — a link running backwards would misdescribe the pipeline.
+        bool ordered = true;
+        for (const auto& [from, to] : window.links())
+            ordered = ordered && from->pos().x() < to->pos().x();
+        check(ordered, "every node is placed to the right of its parents");
+        // The diamond's two middle nodes share a column and must not overlap.
+        check(std::abs(left->pos().x() - right->pos().x()) < 1e-6,
+              "siblings share a column");
+        check(!left->sceneBoundingRect().intersects(right->sceneBoundingRect()),
+              "and do not overlap");
+        // Longest path, not shortest: the join is two columns along, not one.
+        check(join->pos().x() > left->pos().x()
+                  && left->pos().x() > source->pos().x(),
+              "the join sits beyond both branches");
+        check(window.visibleSceneRect().contains(window.nodesBoundingRect()),
+              "and the result is framed on screen");
     }
 
     // ---- Scenario 7: Clear Orchestration asks first ------------------------

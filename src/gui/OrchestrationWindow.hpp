@@ -528,6 +528,12 @@ public Q_SLOTS:
     void resumeFromFailure();
     /// Zoom and pan so every node is visible, with a margin.
     void fitToScreen();
+    /// Rearrange every node into layered columns in execution order.
+    ///
+    /// Longest-path layering (a node sits one column right of its
+    /// last-finishing parent) with barycentre sweeps to reduce link crossings,
+    /// then Fit to Screen. Purely cosmetic — it moves nodes, never the graph.
+    void autoLayout();
     /// Delete every node and link, after an explicit confirmation.
     ///
     /// Guarded rather than undoable: the canvas is not in the undo stack, and
