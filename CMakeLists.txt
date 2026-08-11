@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.5
+    VERSION 26.8.6
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -512,6 +512,10 @@ qt_add_executable(calango
     src/gui/ConvergenceResultsWindow.cpp
     src/gui/OrchestrationWindow.hpp
     src/gui/OrchestrationWindow.cpp
+    src/gui/DatabaseImportDialog.cpp
+    src/gui/OrchestrationDocument.cpp
+    src/gui/OrchestrationTransforms.cpp
+    src/gui/OrchestrationProvenance.cpp
     src/gui/RandomNoiseWizard.hpp
     src/gui/RandomNoiseWizard.cpp
     src/gui/RandomNoiseViewer.hpp
@@ -677,6 +681,7 @@ qt_add_resources(calango "icons"
         assets/icons/drag-move-2-line.svg
         assets/icons/edit-box-fill.svg
         assets/icons/edit-fill.svg
+        assets/icons/eraser-line.svg
         assets/icons/expand-height-line.svg
         assets/icons/eye-fill.svg
         assets/icons/file-code-line.svg
@@ -686,6 +691,7 @@ qt_add_resources(calango "icons"
         assets/icons/folder-open-line.svg
         assets/icons/folder-received-line.svg
         assets/icons/font-size-2.svg
+        assets/icons/fullscreen-line.svg
         assets/icons/grid-line.svg
         assets/icons/group-fill.svg
         assets/icons/hard-drive-2-line.svg
@@ -713,6 +719,7 @@ qt_add_resources(calango "icons"
         assets/icons/home-office-fill.svg
         assets/icons/community-fill.svg
         assets/icons/ram-line.svg
+        assets/icons/restart-line.svg
         assets/icons/ruler-2-line.svg
         assets/icons/scissors-cut-line.svg
         assets/icons/shape-line.svg
@@ -1246,6 +1253,8 @@ if(CALANGO_BUILD_TESTS)
     # driven here. Offscreen, no display.
     qt_add_executable(calango_dialog_test
         tests/DialogConstructionTest.cpp
+        src/gui/DatabaseImportDialog.cpp
+        src/python_bridge/MaterialsProject.cpp
         src/gui/FilmTimelineWidget.cpp
         src/gui/GrapheneOxideWizard.cpp
         src/gui/HubbardParametersDialog.cpp
@@ -1478,6 +1487,9 @@ if(CALANGO_BUILD_TESTS)
     qt_add_executable(calango_orchestration_si_test
         tests/OrchestrationSiTest.cpp
         src/gui/OrchestrationWindow.cpp
+        src/gui/OrchestrationDocument.cpp
+        src/gui/OrchestrationTransforms.cpp
+        src/gui/OrchestrationProvenance.cpp
         src/gui/SimulationWizardBase.cpp
         src/gui/GpawElectronicRows.cpp
         src/gui/HubbardParametersDialog.cpp
@@ -1535,6 +1547,9 @@ if(CALANGO_BUILD_TESTS)
     qt_add_executable(calango_orchestration_handoff_test
         tests/OrchestrationHandoffTest.cpp
         src/gui/OrchestrationWindow.cpp
+        src/gui/OrchestrationDocument.cpp
+        src/gui/OrchestrationTransforms.cpp
+        src/gui/OrchestrationProvenance.cpp
         src/gui/SimulationWizardBase.cpp
         src/gui/GpawElectronicRows.cpp
         src/gui/HubbardParametersDialog.cpp
@@ -1581,6 +1596,65 @@ if(CALANGO_BUILD_TESTS)
     endif()
     add_test(NAME orchestration_handoff COMMAND calango_orchestration_handoff_test)
     set_tests_properties(orchestration_handoff PROPERTIES TIMEOUT 900)
+
+    # Workflow batching, transforms, provenance and resume: a Structure
+    # Container fans the pipeline out over Cu/Au/Pt (one pass each, each pass
+    # on its own element), a Supercell and a Defect Generator edit the
+    # structure mid-pipeline, every node leaves a provenance record whose
+    # checksums match the files its parent wrote, and a failed node is fixed
+    # and resumed without re-running anything upstream. Self-skips without ASE.
+    qt_add_executable(calango_orchestration_batch_test
+        tests/OrchestrationBatchTest.cpp
+        src/gui/OrchestrationWindow.cpp
+        src/gui/OrchestrationDocument.cpp
+        src/gui/OrchestrationTransforms.cpp
+        src/gui/OrchestrationProvenance.cpp
+        src/gui/SimulationWizardBase.cpp
+        src/gui/GpawElectronicRows.cpp
+        src/gui/HubbardParametersDialog.cpp
+        src/gui/ExtendedEngineGroups.cpp
+        src/core/EngineCalculatorBlocks.cpp
+        src/ui/IconManager.cpp
+        src/gui/ThemeManager.cpp
+        src/gui/ProcessManagerPanel.cpp
+        src/gui/CondaEnvs.cpp
+        src/gui/EnginePresets.cpp
+        src/gui/PythonHighlighter.cpp
+        src/gui/RunCommands.cpp
+        src/gui/ScriptStaging.cpp
+        src/gui/SettingsManager.cpp
+        src/gui/CalculatorParameters.cpp
+        src/gui/GuiUtils.cpp
+        src/gui/OverlayModel.cpp
+        src/render/ColorMap.cpp
+        src/render/ShaderProfile.cpp
+        src/core/VolumetricData.cpp
+        src/core/AseScriptGenerator.cpp
+        src/core/PhononScriptGenerator.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/core/PdbxFile.cpp
+        src/python_bridge/AseBridge.cpp
+        src/python_bridge/PythonEngine.cpp
+        src/jobs/JobRunner.cpp
+    )
+    target_include_directories(calango_orchestration_batch_test PRIVATE src
+        "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_compile_definitions(calango_orchestration_batch_test PRIVATE
+        CALANGO_VERSION="${PROJECT_VERSION}"
+        CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}"
+        QT_NO_KEYWORDS)
+    target_link_libraries(calango_orchestration_batch_test
+        PRIVATE Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg pybind11::embed)
+    if(APPLE)
+        target_link_libraries(calango_orchestration_batch_test
+            PRIVATE "-framework OpenGL")
+    else()
+        target_link_libraries(calango_orchestration_batch_test PRIVATE OpenGL::GL)
+    endif()
+    add_test(NAME orchestration_batch COMMAND calango_orchestration_batch_test)
+    set_tests_properties(orchestration_batch PROPERTIES TIMEOUT 900)
 
     # Theme-adaptive icons: that a Light-mode glyph is dark (the white-on-white
     # bug) and that a bound icon is re-tinted when the theme changes. Checks

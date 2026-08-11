@@ -300,6 +300,8 @@ capture.png
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+# Version stamp written by docs/tex/Makefile from CMakeLists.txt.
+docs/tex/*/calango_version.tex
 
 # Symbolic link (./calango -> build/calango).
 calango

@@ -17,6 +17,7 @@
 #include "core/CalculatorConfig.hpp"
 #include "core/Structure.hpp"
 #include "gui/FilmTimelineWidget.hpp"
+#include "gui/DatabaseImportDialog.hpp"
 #include "gui/GeometryConstraintsDialog.hpp"
 #include "gui/GrapheneOxideWizard.hpp"
 #include "gui/HubbardParametersDialog.hpp"
@@ -2373,6 +2374,23 @@ int main(int argc, char** argv)
             check(buildable == kind->count(),
                   "and every one of them produces a structure");
         }
+    }
+
+    // The database importer for Structure Containers. Constructing it must not
+    // touch the network — it is opened long before anyone types a query, and
+    // an importer that blocked on construction would be indistinguishable from
+    // the freeze it was written to fix.
+    {
+        std::printf("DatabaseImportDialog:\n");
+        DatabaseImportDialog dialog;
+        check(dialog.entries().isEmpty(), "starts with nothing collected");
+        // Searching with no query is a no-op rather than a request: the
+        // Return key in an empty box must not become an API call.
+        QMetaObject::invokeMethod(&dialog, "search");
+        check(dialog.entries().isEmpty(), "an empty query searches nothing");
+        exerciseControls(&dialog);
+        check(dialog.entries().isEmpty(),
+              "and survives every control being toggled without a key");
     }
 
     std::printf(failures == 0 ? "\nAll dialog construction checks passed.\n"

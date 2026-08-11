@@ -11,6 +11,7 @@
 #include "gui/DistributionDialog.hpp"
 #include "gui/StructureFactorDialog.hpp"
 #include "gui/XrdDialog.hpp"
+#include "gui/DatabaseImportDialog.hpp"
 #include "gui/ExamplesDialog.hpp"
 #include "gui/NanoBuilderDialog.hpp"
 #include "gui/PointOfViewDialog.hpp"
@@ -7042,6 +7043,15 @@ std::unique_ptr<SimulationWizardBase> makeOrchestrationWizard(
         wizard->setDensityBaselines(request.baselines);
         return wizard;
     }
+
+    case OrchestrationTask::Container:
+    case OrchestrationTask::Supercell:
+    case OrchestrationTask::DefectGenerator:
+        // The transforms configure themselves on the canvas — a structure
+        // list, three spin boxes, a table of edits. There is no engine to
+        // pick and no script to generate, so there is no wizard to build and
+        // OrchestrationWindow never asks for one.
+        break;
     }
     return nullptr;
 }
@@ -7070,6 +7080,12 @@ OrchestrationWindow* MainWindow::createOrchestrationPanel(QWidget* parent)
         processPanel_, parent);
     window->setMaterialsProvider(materialsNow);
     window->setWizardFactory(&makeOrchestrationWizard);
+    // Filling a Structure Container from the database. A dedicated picker,
+    // not ExamplesDialog: that one exists to open documents in TABS, so its
+    // actions are worded for that, and stacking its window-modal progress
+    // dialog on top of the container editor left the window unresponsive.
+    // The canvas asks through a callback so it never has to include any of it.
+    window->setDatabaseImporter(&DatabaseImportDialog::pick);
 
     // Results-panel integration: an orchestration node's job is a process like any
     // other. Register its record and selector entry when it starts, poll its

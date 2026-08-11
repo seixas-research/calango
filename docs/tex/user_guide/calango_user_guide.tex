@@ -1,7 +1,8 @@
 % =========================================================================
 % Calango User Guide
-% Build:  pdflatex calango_user_guide.tex   (run twice for the ToC)
-% Style follows docs/packaging.tex, extended with callouts and diagrams.
+% Build:  latexmk -pdf calango_user_guide.tex
+%    or:  pdflatex calango_user_guide.tex   (run twice for the ToC)
+% Style shared with docs/tex/packaging/packaging.tex.
 % =========================================================================
 \documentclass[11pt,a4paper]{report}
 
@@ -24,21 +25,48 @@
 \usepackage{tikz}
 \usepackage{needspace}
 \usepackage{parskip}
-\usepackage[colorlinks=true,linkcolor=calangocoral,urlcolor=calangocoral,
-            citecolor=calangocoral]{hyperref}
+\usepackage[colorlinks=true,linkcolor=calangored,urlcolor=calangored,
+            citecolor=calangored]{hyperref}
 
+\usepackage{eso-pic}
 \tcbuselibrary{skins,breakable}
 \usetikzlibrary{positioning,fit,backgrounds}
 
-% --- Brand palette ------------------------
-\definecolor{calangocoral}{RGB}{205,91,69} % 	205,91,69 | 255, 127, 80
-\definecolor{calangoteal}{RGB}{0,110,110}
-\definecolor{calangodark}{RGB}{30,34,40}
-\definecolor{codebg}{RGB}{245,246,248}
-\definecolor{shadegray}{RGB}{90,96,104}
-\definecolor{tipgreen}{RGB}{22,120,80}
-\definecolor{warnamber}{RGB}{176,125,42}
-\definecolor{panelgray}{RGB}{232,235,239}
+% --- Brand palette ---------------------------------------------------------
+% Four colours, and each has one job. The hues run 54 -> 0 -> 351 -> 335
+% degrees and the lightness falls 63 -> 69 -> 47 -> 23: one sweep from yellow
+% through coral into red, then into the cover's deep maroon.
+%
+%   calangoyellow  ACCENT ONLY -- 1.2:1 on white, so it is used for rules,
+%                  bands and marks on dark grounds, never for text on paper.
+%   calangocoral   the mid tone. 3.0:1 on white: still an accent, not a text
+%                  colour, but strong enough for a heavy rule or a callout's
+%                  left bar to read at a glance.
+%   calangored     the anchor: 5.2:1 on white. Headings' numbers, links,
+%                  callout titles -- anything that has to be read.
+%   calangocover   COVER GROUND ONLY. Named for the restriction: it is the one
+%                  colour with a single permitted use, and a name that says so
+%                  is harder to misuse than a comment. 24 points of lightness
+%                  below calangored -- a visible step rather than a shade of
+%                  the same thing -- and still red at hue 335 rather than
+%                  collapsing to black. White sits on it at 11.6:1 and the
+%                  yellow at 9.5:1, which is what the cover is set in.
+\definecolor{calangoyellow}{HTML}{FEEC41}
+\definecolor{calangocoral}{HTML}{FF6060}
+\definecolor{calangored}{HTML}{D51C39}
+\definecolor{calangocover}{HTML}{760031}
+% Neutrals. Not part of the four: paper, ink and the greys between them.
+% calangodark is the logo mark's own near-black, so body headings and the
+% logo sit on the same value.
+\definecolor{calangodark}{RGB}{26,26,26}
+\definecolor{codebg}{RGB}{250,246,247}
+\definecolor{shadegray}{RGB}{96,92,94}
+\definecolor{panelgray}{RGB}{240,233,235}
+% Retained so the section sources keep compiling; every one of them now
+% points into the four above.
+\colorlet{calangoteal}{calangored}
+\colorlet{tipgreen}{calangocoral}
+\colorlet{warnamber}{calangoyellow}
 
 % --- Chapter / section typography -----------------------------------------
 \titleformat{\chapter}[display]
@@ -46,19 +74,19 @@
   {\raggedright\large\color{shadegray}\MakeUppercase{\chaptertitlename}\ \Huge\color{calangocoral}\thechapter}
   {6pt}
   {\Huge\raggedright}
-  [\vspace{4pt}{\color{calangocoral}\rule{\textwidth}{1.6pt}}]
+  [\vspace{4pt}{\color{calangocoral}\rule{\textwidth}{2.2pt}}]
 \titlespacing*{\chapter}{0pt}{-18pt}{22pt}
 
 \titleformat{\section}
   {\Large\bfseries\color{calangodark}}
-  {\textcolor{calangocoral}{\thesection}}{0.8em}{}
-  [\vspace{-6pt}{\color{calangocoral!35}\rule{\textwidth}{0.8pt}}]
+  {\textcolor{calangored}{\thesection}}{0.8em}{}
+  [\vspace{-6pt}{\color{calangoyellow}\rule{\textwidth}{0.8pt}}]
 \titleformat{\subsection}
   {\large\bfseries\color{calangodark}}
-  {\textcolor{calangocoral}{\thesubsection}}{0.8em}{}
+  {\textcolor{calangored}{\thesubsection}}{0.8em}{}
 \titleformat{\subsubsection}
   {\normalsize\bfseries\color{calangodark}}
-  {\textcolor{calangocoral}{\thesubsubsection}}{0.7em}{}
+  {\textcolor{calangored}{\thesubsubsection}}{0.7em}{}
 \titlespacing*{\section}{0pt}{18pt}{10pt}
 \titlespacing*{\subsection}{0pt}{12pt}{6pt}
 
@@ -82,13 +110,13 @@
   \fancyfoot[R]{\small\color{shadegray}\thepage}%
   \renewcommand{\headrulewidth}{0pt}}
 
-% --- Code listings: teal accent bar ---------------------------------------
+% --- Code listings: red accent bar -----------------------------------------
 \lstdefinestyle{shell}{
   basicstyle=\ttfamily\small,
   backgroundcolor=\color{codebg},
   frame=leftline,
   framerule=2.4pt,
-  rulecolor=\color{calangocoral},
+  rulecolor=\color{calangored},
   framesep=8pt,
   xleftmargin=12pt,
   xrightmargin=6pt,
@@ -110,7 +138,7 @@
 % A UI control (button, field, checkbox label).
 \newcommand{\ui}[1]{\textcolor{calangodark}{\textsf{\textbf{#1}}}}
 % A menu path: \menu{Analysis}{Raman Modes}
-\newcommand{\menusep}{\,\textcolor{calangocoral}{$\rangle$}\,}
+\newcommand{\menusep}{\,\textcolor{calangored}{$\rangle$}\,}
 \newcommand{\menu}[1]{\textsf{\textbf{\textcolor{calangodark}{#1}}}}
 % A keyboard key.
 \newcommand{\kbd}[1]{%
@@ -118,20 +146,23 @@
     inner xsep=4pt,inner ysep=1.5pt,line width=0.4pt](k){\small\textsf{#1}};}}
 
 % --- Callout boxes ---------------------------------------------------------
+% The three kinds are told apart by the colour of the left rule -- red,
+% coral, yellow -- and never by the title, which stays calangored in all
+% three because it is the only one of the four legible as small bold text.
 \newtcolorbox{calnote}[1][]{%
-  breakable, enhanced, colback=calangocoral!5, colframe=calangocoral,
+  breakable, enhanced, colback=calangored!5, colframe=calangored,
   boxrule=0pt, leftrule=3pt, arc=1pt, left=8pt, right=8pt, top=6pt, bottom=6pt,
-  fonttitle=\bfseries\small, title={Note}, coltitle=calangocoral,
+  fonttitle=\bfseries\small, title={Note}, coltitle=calangored,
   attach title to upper=\par\vspace{2pt}, #1}
 \newtcolorbox{caltip}[1][]{%
-  breakable, enhanced, colback=tipgreen!5, colframe=tipgreen,
+  breakable, enhanced, colback=calangocoral!8, colframe=calangocoral,
   boxrule=0pt, leftrule=3pt, arc=1pt, left=8pt, right=8pt, top=6pt, bottom=6pt,
-  fonttitle=\bfseries\small, title={Tip}, coltitle=tipgreen,
+  fonttitle=\bfseries\small, title={Tip}, coltitle=calangored,
   attach title to upper=\par\vspace{2pt}, #1}
 \newtcolorbox{calwarn}[1][]{%
-  breakable, enhanced, colback=warnamber!7, colframe=warnamber,
+  breakable, enhanced, colback=calangoyellow!14, colframe=calangoyellow,
   boxrule=0pt, leftrule=3pt, arc=1pt, left=8pt, right=8pt, top=6pt, bottom=6pt,
-  fonttitle=\bfseries\small, title={Requires}, coltitle=warnamber,
+  fonttitle=\bfseries\small, title={Requires}, coltitle=calangored,
   attach title to upper=\par\vspace{2pt}, #1}
 
 % Compact description lists used throughout the reference sections.
@@ -139,27 +170,46 @@
 \setlist[itemize]{itemsep=2pt,topsep=4pt}
 \setlist[enumerate]{itemsep=3pt,topsep=4pt}
 
+% Version stamp. \calangoversion is written by docs/tex/Makefile from
+% project(calango VERSION ...) in CMakeLists.txt, so the cover cannot drift
+% from the binary. Falls back to the value below when compiled directly,
+% without make.
+\IfFileExists{calango_version.tex}{\input{calango_version}}{}
+\providecommand{\calangoversion}{26.8.5}
+
 \begin{document}
 
 % =========================== TITLE PAGE ===================================
 \begin{titlepage}
+% A full-bleed deep-maroon cover. `\AddToShipoutPictureBG*` paints the whole
+% sheet including the margins, which a coloured \rule cannot reach, and the
+% starred form applies to this page only. calangocover appears here and
+% nowhere else in the document.
+\AddToShipoutPictureBG*{%
+  \AtPageLowerLeft{\color{calangocover}\rule{\paperwidth}{\paperheight}}%
+  % The brand mark along the foot: a coral band with a yellow hairline
+  % above it, so the accent pair appears together once, at full strength.
+  \AtPageLowerLeft{\color{calangocoral}\rule{\paperwidth}{14mm}}%
+  \AtPageLowerLeft{\raisebox{14mm}{\color{calangoyellow}%
+    \rule{\paperwidth}{2mm}}}%
+}
 \centering
-\vspace*{2.0cm}
-\includegraphics[width=0.55\textwidth]{../../../assets/calango/logo_light.png}\par
-\vspace{1.3cm}
-{\color{calangocoral}\rule{0.74\textwidth}{1.6pt}}\par
-\vspace{0.9cm}
-{\Huge\bfseries User Guide\par}
-\vspace{0.5cm}
-{\Large Visual atomistic modeling, simulation and analysis\par}
-\vspace{0.9cm}
-{\color{calangocoral}\rule{0.74\textwidth}{1.6pt}}\par
+\sffamily\color{white}
+\vspace*{3.6cm}
+% logo_dark is the version drawn for dark grounds.
+\includegraphics[width=0.66\textwidth]{../../../assets/calango/logo_dark.png}\par
 \vspace{1.5cm}
-{\large\bfseries Leandro Seixas\par}
-
+{\color{calangocoral}\rule{0.42\textwidth}{2.4pt}}\par
+\vspace{1.1cm}
+{\fontsize{32}{38}\selectfont\bfseries User Guide\par}
+\vspace{0.7cm}
+{\large\color{calangoyellow} Visual atomistic modeling,\\[2pt]
+ simulation and analysis\par}
 \vfill
-{\large Version 26.8.2\par}
-\vspace*{1.2cm}
+{\large\bfseries Leandro Seixas\par}
+\vspace{0.35cm}
+{\small\color{calangoyellow} Version \calangoversion\par}
+\vspace*{2.5cm}
 \end{titlepage}
 
 \input{sections/00_preface}

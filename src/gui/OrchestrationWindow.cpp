@@ -4,6 +4,7 @@
 #include "core/PhononScriptGenerator.hpp"
 #include "core/Structure.hpp"
 #include "gui/CalculatorParameters.hpp"
+#include "gui/OrchestrationDocument.hpp"
 #include "gui/EnginePresets.hpp"
 #include "gui/GuiUtils.hpp"
 #include "gui/ProcessManagerPanel.hpp"
@@ -14,25 +15,41 @@
 #include "python_bridge/AseBridge.hpp"
 #include "ui/IconManager.hpp"
 
+#include <QAbstractItemView>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QGraphicsSceneMouseEvent>
 #include <QHBoxLayout>
+#include <QHeaderView>
+#include <QInputDialog>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPen>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScrollBar>
 #include <QSettings>
+#include <QSpinBox>
+#include <QTableWidget>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <optional>
 
 namespace calango::gui {
 
@@ -89,44 +106,6 @@ bool copyDirectory(const QString& source, const QString& target)
     return copiedAnything;
 }
 
-/// Directory-name slug for a task ("node_2_phonon").
-QString taskSlug(OrchestrationTask task)
-{
-    switch (task) {
-    case OrchestrationTask::GeometryOptimization:
-        return QStringLiteral("geometry_optimization");
-    case OrchestrationTask::MolecularDynamics:
-        return QStringLiteral("molecular_dynamics");
-    case OrchestrationTask::Phonon:
-        return QStringLiteral("phonon");
-    case OrchestrationTask::ElectronicBands:
-        return QStringLiteral("electronic_bands");
-    case OrchestrationTask::Optics:
-        return QStringLiteral("optics");
-    case OrchestrationTask::Workfunction:
-        return QStringLiteral("workfunction");
-    case OrchestrationTask::TwoDBands:
-        return QStringLiteral("bands_2d");
-    case OrchestrationTask::Wannier:
-        return QStringLiteral("wannier");
-    case OrchestrationTask::BornCharges:
-        return QStringLiteral("born_charges");
-    case OrchestrationTask::Gw:
-        return QStringLiteral("gw");
-    case OrchestrationTask::ChargeDensityDifference:
-        return QStringLiteral("charge_density_difference");
-    case OrchestrationTask::RamanIr:
-        return QStringLiteral("raman_ir");
-    case OrchestrationTask::ChargedDefects:
-        return QStringLiteral("charged_defects");
-    case OrchestrationTask::ChargedDefects2d:
-        return QStringLiteral("charged_defects_2d");
-    case OrchestrationTask::SinglePoint:
-        break;
-    }
-    return QStringLiteral("single_point");
-}
-
 QColor statusColor(OrchestrationNodeItem::Status status)
 {
     switch (status) {
@@ -144,6 +123,33 @@ QColor statusColor(OrchestrationNodeItem::Status status)
         break;
     }
     return QColor(0x66, 0x99, 0xff);
+}
+
+/// Untranslated status name for the on-disk manifest. Deliberately separate
+/// from statusText(): a provenance file read six months later by a script
+/// must not depend on the locale the run happened to execute under.
+QString statusSlug(OrchestrationNodeItem::Status status)
+{
+    switch (status) {
+    case OrchestrationNodeItem::Status::Waiting:
+        return QStringLiteral("waiting");
+    case OrchestrationNodeItem::Status::Running:
+        return QStringLiteral("running");
+    case OrchestrationNodeItem::Status::Done:
+        return QStringLiteral("done");
+    case OrchestrationNodeItem::Status::Failed:
+        return QStringLiteral("failed");
+    case OrchestrationNodeItem::Status::Skipped:
+        return QStringLiteral("skipped");
+    case OrchestrationNodeItem::Status::Pending:
+        break;
+    }
+    return QStringLiteral("pending");
+}
+
+QString utcNow()
+{
+    return QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
 }
 
 QString statusText(OrchestrationNodeItem::Status status)
@@ -258,6 +264,75 @@ private:
 // OrchestrationNodeItem
 // ---------------------------------------------------------------------------
 
+QString orchestrationTaskSlug(OrchestrationTask task)
+{
+    switch (task) {
+    case OrchestrationTask::GeometryOptimization:
+        return QStringLiteral("geometry_optimization");
+    case OrchestrationTask::MolecularDynamics:
+        return QStringLiteral("molecular_dynamics");
+    case OrchestrationTask::Phonon:
+        return QStringLiteral("phonon");
+    case OrchestrationTask::ElectronicBands:
+        return QStringLiteral("electronic_bands");
+    case OrchestrationTask::Optics:
+        return QStringLiteral("optics");
+    case OrchestrationTask::Workfunction:
+        return QStringLiteral("workfunction");
+    case OrchestrationTask::TwoDBands:
+        return QStringLiteral("bands_2d");
+    case OrchestrationTask::Wannier:
+        return QStringLiteral("wannier");
+    case OrchestrationTask::BornCharges:
+        return QStringLiteral("born_charges");
+    case OrchestrationTask::Gw:
+        return QStringLiteral("gw");
+    case OrchestrationTask::ChargeDensityDifference:
+        return QStringLiteral("charge_density_difference");
+    case OrchestrationTask::RamanIr:
+        return QStringLiteral("raman_ir");
+    case OrchestrationTask::ChargedDefects:
+        return QStringLiteral("charged_defects");
+    case OrchestrationTask::ChargedDefects2d:
+        return QStringLiteral("charged_defects_2d");
+    case OrchestrationTask::Container:
+        return QStringLiteral("container");
+    case OrchestrationTask::Supercell:
+        return QStringLiteral("supercell");
+    case OrchestrationTask::DefectGenerator:
+        return QStringLiteral("defect_generator");
+    case OrchestrationTask::SinglePoint:
+        break;
+    }
+    return QStringLiteral("single_point");
+}
+
+std::optional<OrchestrationTask> orchestrationTaskFromSlug(const QString& slug)
+{
+    for (OrchestrationTask task : orchestrationTasks())
+        if (orchestrationTaskSlug(task) == slug)
+            return task;
+    return std::nullopt;
+}
+
+OrchestrationFamily orchestrationTaskFamily(OrchestrationTask task)
+{
+    switch (task) {
+    case OrchestrationTask::GeometryOptimization:
+    case OrchestrationTask::SinglePoint:
+    case OrchestrationTask::MolecularDynamics:
+    case OrchestrationTask::Phonon:
+        return OrchestrationFamily::Simulation;
+    case OrchestrationTask::Container:
+    case OrchestrationTask::Supercell:
+    case OrchestrationTask::DefectGenerator:
+        return OrchestrationFamily::Transform;
+    default:
+        break;
+    }
+    return OrchestrationFamily::Analysis;
+}
+
 QString orchestrationTaskDisplayName(OrchestrationTask task)
 {
     switch (task) {
@@ -289,6 +364,12 @@ QString orchestrationTaskDisplayName(OrchestrationTask task)
         return QObject::tr("Charged Defects");
     case OrchestrationTask::ChargedDefects2d:
         return QObject::tr("Charged Defects in 2D Materials");
+    case OrchestrationTask::Container:
+        return QObject::tr("Structure Container");
+    case OrchestrationTask::Supercell:
+        return QObject::tr("Supercell Builder");
+    case OrchestrationTask::DefectGenerator:
+        return QObject::tr("Defect Generator");
     case OrchestrationTask::SinglePoint:
         break;
     }
@@ -297,10 +378,18 @@ QString orchestrationTaskDisplayName(OrchestrationTask task)
 
 QList<OrchestrationTask> orchestrationTasks()
 {
-    return {OrchestrationTask::GeometryOptimization,
+    // Add Process order, grouped by family — the dialog draws a separator
+    // wherever the family changes, so this list IS the menu layout.
+    return {// Simulation
+            OrchestrationTask::GeometryOptimization,
             OrchestrationTask::SinglePoint,
             OrchestrationTask::MolecularDynamics,
             OrchestrationTask::Phonon,
+            // Transform
+            OrchestrationTask::Container,
+            OrchestrationTask::Supercell,
+            OrchestrationTask::DefectGenerator,
+            // Analysis
             OrchestrationTask::ElectronicBands,
             OrchestrationTask::Optics,
             OrchestrationTask::Workfunction,
@@ -316,14 +405,21 @@ QList<OrchestrationTask> orchestrationTasks()
 
 bool orchestrationTaskHasDefaults(OrchestrationTask task)
 {
-    // Exactly the four self-contained tasks. Everything else reads a baseline
-    // whose path only a wizard can supply, so "run it with defaults" would
-    // mean running it against nothing.
+    // The four self-contained simulations, plus the one transform whose
+    // default is meaningful: a Supercell node starts at 2x2x2, which is a
+    // real operation the node paints on its face.
+    //
+    // A Container with no structures and a Defect Generator with no operations
+    // are excluded for the same reason the analysis modules are: their
+    // "default" would be to pass the input through untouched, and a pipeline
+    // that computes the pristine cell while its author believes it computed a
+    // defect is the failure mode this whole panel exists to prevent.
     switch (task) {
     case OrchestrationTask::GeometryOptimization:
     case OrchestrationTask::SinglePoint:
     case OrchestrationTask::MolecularDynamics:
     case OrchestrationTask::Phonon:
+    case OrchestrationTask::Supercell:
         return true;
     default:
         return false;
@@ -344,6 +440,13 @@ QList<OrchestrationInputSlot> orchestrationInputSlots(OrchestrationTask task)
     case OrchestrationTask::SinglePoint:
     case OrchestrationTask::MolecularDynamics:
     case OrchestrationTask::Phonon:
+    // The transforms consume a STRUCTURE, not a completed run, and a
+    // structure arrives through the ordinary geometry handoff (or, with no
+    // parent, from the node's own material). There is nothing to stage under
+    // an agreed name, so there are no slots.
+    case OrchestrationTask::Container:
+    case OrchestrationTask::Supercell:
+    case OrchestrationTask::DefectGenerator:
         return {};
 
     case OrchestrationTask::ElectronicBands:
@@ -418,13 +521,23 @@ OrchestrationNodeItem::OrchestrationNodeItem(
     setFlag(QGraphicsItem::ItemIsMovable, true);
     setFlag(QGraphicsItem::ItemIsSelectable, true);
     setFlag(QGraphicsItem::ItemSendsScenePositionChanges, true);
-QString tip = QObject::tr(
-        "%1 on %2 with %3.\nDouble-click to open its setup wizard "
-        "(\"Save process node\" commits the configuration here). Drag from "
-        "the right-hand port onto another node to run that node after this "
-        "one, feeding it these results.")
-                      .arg(title_, materialName_,
-                           EnginePresets::displayName(engine_));
+    const bool transform =
+        orchestrationTaskFamily(task_) == OrchestrationFamily::Transform;
+    QString tip = transform
+        ? QObject::tr(
+              "%1.\nA structure-to-structure step: it runs on this canvas "
+              "rather than as a job, so it has no calculator and no launch "
+              "command. Double-click to configure it. Drag from the "
+              "right-hand port onto another node to feed that node the "
+              "structure this one produces.")
+              .arg(title_)
+        : QObject::tr(
+              "%1 on %2 with %3.\nDouble-click to open its setup wizard "
+              "(\"Save process node\" commits the configuration here). Drag "
+              "from the right-hand port onto another node to run that node "
+              "after this one, feeding it these results.")
+              .arg(title_, materialName_,
+                   EnginePresets::displayName(engine_));
     // A node that inherits completed runs says which, and in what order. Two
     // links into the same node look identical on the canvas, so the order they
     // were drawn in is the only thing that distinguishes them -- and it is the
@@ -454,6 +567,70 @@ void OrchestrationNodeItem::setConfiguration(const QString& script,
     configuredRunCommand_ = runCommand;
     engine_ = engine;
     update(); // the calculator line may have changed
+}
+
+void OrchestrationNodeItem::setBatchItems(const QList<BatchItem>& items)
+{
+    batchItems_ = items;
+    update();
+}
+
+void OrchestrationNodeItem::setSupercell(const SupercellSpec& spec)
+{
+    supercell_ = spec;
+    update();
+}
+
+void OrchestrationNodeItem::setDefectSpec(const DefectSpec& spec)
+{
+    defects_ = spec;
+    update();
+}
+
+QString OrchestrationNodeItem::configurationProblem() const
+{
+    switch (task_) {
+    case OrchestrationTask::Container:
+        if (batchItems_.isEmpty())
+            return QObject::tr(
+                "%1 holds no structures.\n\nDouble-click it and choose the "
+                "materials the pipeline should be run over — one pass per "
+                "structure, in the order they are listed.")
+                .arg(title_);
+        return QString();
+    case OrchestrationTask::Supercell:
+        if (!supercell_.isValid())
+            return QObject::tr("%1 has an invalid repetition (%2).")
+                .arg(title_, supercell_.describe());
+        return QString();
+    case OrchestrationTask::DefectGenerator:
+        if (defects_.isEmpty())
+            return QObject::tr(
+                "%1 has no operations.\n\nDouble-click it and add at least "
+                "one substitution, addition or removal. A defect node that "
+                "forwards the pristine cell untouched would make every "
+                "formation energy downstream come out as zero.")
+                .arg(title_);
+        return QString();
+    default:
+        break;
+    }
+    if (!isConfigured() && !orchestrationTaskHasDefaults(task_))
+        return QObject::tr(
+            "%1 was not started: it has not been configured.\n\n"
+            "Unlike a relaxation or a single point, this process has no "
+            "defaults to fall back on — it reads a completed run, and which "
+            "run that is can only come from its setup wizard. Double-click "
+            "the node and save it first.")
+            .arg(title_);
+    return QString();
+}
+
+void OrchestrationNodeItem::recordJobDirectory(const QString& directory)
+{
+    jobDirectory_ = directory;
+    if (!directory.isEmpty())
+        jobHistory_ << directory;
 }
 
 void OrchestrationNodeItem::setStatus(Status status)
@@ -562,15 +739,55 @@ void OrchestrationNodeItem::paint(QPainter* painter,
     normal.setBold(false);
     painter->setFont(normal);
     painter->setPen(QColor(0x45, 0x45, 0x45));
+    // What the two metadata lines say depends on the family. A transform has
+    // no calculator to report and its PARAMETERS are the thing a reader needs
+    // — a Supercell node that does not say 2x2x2 on its face is a node you
+    // have to open to understand.
+    // A node with no structure of its own is the normal shape now: it says
+    // where its geometry comes from rather than naming a document, because
+    // naming one would be a claim about what it computes that is not true.
+    QString primary = structure_
+        ? QObject::tr("Material: %1").arg(materialName_)
+        : QObject::tr("Structure: from input port");
+    QString secondary =
+        QObject::tr("Calculator: %1").arg(EnginePresets::displayName(engine_));
+    switch (task_) {
+    case OrchestrationTask::Container: {
+        QStringList names;
+        for (const BatchItem& item : batchItems_)
+            names << item.first;
+        primary = names.isEmpty()
+            ? QObject::tr("Structures: none yet")
+            : QObject::tr("Structures: %1").arg(names.join(QStringLiteral(", ")));
+        secondary = QObject::tr("%n pipeline pass(es)", nullptr,
+                                static_cast<int>(batchItems_.size()));
+        break;
+    }
+    case OrchestrationTask::Supercell:
+        primary = QObject::tr("Repeat: %1").arg(supercell_.describe());
+        secondary = supercell_.isIdentity()
+            ? QObject::tr("(identity — passes through)")
+            : QObject::tr("in process, no calculator");
+        break;
+    case OrchestrationTask::DefectGenerator:
+        primary = defects_.isEmpty() ? QObject::tr("No operations")
+                                     : defects_.describe();
+        secondary = QObject::tr("%n operation(s), in process", nullptr,
+                                static_cast<int>(defects_.operations.size()));
+        break;
+    default:
+        break;
+    }
+    const QFontMetricsF metrics(painter->font());
+    const double textWidth = box.width() - 24;
     painter->drawText(
-        QRectF(box.left() + 12, box.top() + 30, box.width() - 24, 16),
+        QRectF(box.left() + 12, box.top() + 30, textWidth, 16),
         Qt::AlignLeft | Qt::AlignVCenter,
-        QObject::tr("Material: %1").arg(materialName_));
+        metrics.elidedText(primary, Qt::ElideRight, textWidth));
     painter->drawText(
-        QRectF(box.left() + 12, box.top() + 47, box.width() - 24, 16),
+        QRectF(box.left() + 12, box.top() + 47, textWidth, 16),
         Qt::AlignLeft | Qt::AlignVCenter,
-        QObject::tr("Calculator: %1")
-            .arg(EnginePresets::displayName(engine_)));
+        metrics.elidedText(secondary, Qt::ElideRight, textWidth));
     // Inherited runs, one line per slot. An unsatisfied slot is drawn in the
     // failure colour rather than merely left blank: a two-input node wired to
     // one parent looks entirely normal on the canvas, and the run will refuse
@@ -704,6 +921,337 @@ void OrchestrationScene::mouseReleaseEvent(QGraphicsSceneMouseEvent* event)
 }
 
 // ---------------------------------------------------------------------------
+// Transform configuration dialogs
+// ---------------------------------------------------------------------------
+//
+// A transform node has no wizard: there is no engine to pick, no convergence
+// to set and nothing to preview, so the whole configuration is three spin
+// boxes or a table. These are deliberately local to this file — routing them
+// through the host's wizard factory would mean the factory has to exist for a
+// Supercell node to be editable, and the headless tests install none.
+
+namespace {
+
+/// Read every structure out of `path`. A multi-frame file (a trajectory, a
+/// multi-image extxyz) contributes one container entry per frame, named
+/// `stem #n` — importing a 20-frame trajectory into a container is one of the
+/// obvious ways to build a sweep, and taking only its first frame would be a
+/// silent loss.
+QList<OrchestrationNodeItem::BatchItem> readStructuresFrom(const QString& path,
+                                                           QString* error)
+{
+    QList<OrchestrationNodeItem::BatchItem> items;
+    const QString stem = QFileInfo(path).completeBaseName();
+    try {
+        std::vector<core::Structure> frames =
+            pybridge::AseBridge::readTrajectory(path.toStdString());
+        if (frames.empty()) {
+            *error = QObject::tr("%1 holds no structures.").arg(stem);
+            return items;
+        }
+        const bool many = frames.size() > 1;
+        for (std::size_t i = 0; i < frames.size(); ++i)
+            items.append({many ? QStringLiteral("%1 #%2").arg(stem).arg(i + 1)
+                               : stem,
+                          std::make_shared<const core::Structure>(
+                              std::move(frames[i]))});
+    } catch (const std::exception& e) {
+        *error = QObject::tr("%1 could not be read: %2")
+                     .arg(stem, QString::fromUtf8(e.what()));
+    }
+    return items;
+}
+
+/// Container contents: the structures the pipeline runs over, and in what
+/// order.
+///
+/// Deliberately NOT a checklist of the open documents any more. A container
+/// is the one place a pipeline's inputs are named, and requiring every one of
+/// them to be open in a tab first made a twenty-structure sweep into twenty
+/// tabs — so the list is now owned by the node, and filled from open
+/// documents, from files on disk, or from the database browser.
+bool editContainer(QWidget* parent, const OrchestrationWindow::MaterialList& open,
+                   const OrchestrationWindow::StructureImporter& fromDatabase,
+                   QList<OrchestrationNodeItem::BatchItem>* items)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("Container Contents"));
+    dialog.resize(520, 380);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* caption = new QLabel(
+        QObject::tr("Everything downstream of this node runs once per "
+                    "structure listed here, top to bottom."),
+        &dialog);
+    caption->setWordWrap(true);
+    layout->addWidget(caption);
+
+    // The structures live in `working`, not on the list items: a container
+    // holds things that are not open anywhere — a file, a database hit, one
+    // frame of a trajectory — so there is no document to look them up in, and
+    // the widget is only ever a view of this list.
+    QList<OrchestrationNodeItem::BatchItem> working = *items;
+    auto* list = new QListWidget(&dialog);
+    list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    const auto refill = [list, &working] {
+        list->clear();
+        for (int index = 0; index < working.size(); ++index)
+            list->addItem(QStringLiteral("%1. %2")
+                              .arg(index + 1)
+                              .arg(working[index].first));
+    };
+    const auto addItem = [&working](const OrchestrationNodeItem::BatchItem& item) {
+        working.append(item);
+    };
+    refill();
+    layout->addWidget(list, 1);
+
+    auto* row = new QHBoxLayout;
+    auto* fromOpen = new QPushButton(QObject::tr("Add Open Document…"), &dialog);
+    auto* fromFile = new QPushButton(QObject::tr("Import from File…"), &dialog);
+    auto* fromDb = new QPushButton(QObject::tr("Import from Database…"), &dialog);
+    auto* remove = new QPushButton(QObject::tr("Remove"), &dialog);
+    for (QPushButton* button : {fromOpen, fromFile, fromDb, remove})
+        row->addWidget(button);
+    row->addStretch(1);
+    layout->addLayout(row);
+    fromOpen->setEnabled(!open.isEmpty());
+    fromOpen->setToolTip(open.isEmpty()
+                             ? QObject::tr("No structure documents are open.")
+                             : QString());
+
+    QObject::connect(fromOpen, &QPushButton::clicked, &dialog, [&] {
+        QStringList names;
+        for (const auto& [name, structure] : open)
+            names << name;
+        bool ok = false;
+        const QString chosen = QInputDialog::getItem(
+            &dialog, QObject::tr("Add Open Document"),
+            QObject::tr("Structure:"), names, 0, false, &ok);
+        if (!ok)
+            return;
+        const int index = names.indexOf(chosen);
+        if (index >= 0) {
+            addItem(open[index]);
+            refill();
+        }
+    });
+    QObject::connect(fromFile, &QPushButton::clicked, &dialog, [&] {
+        const QStringList paths = QFileDialog::getOpenFileNames(
+            &dialog, QObject::tr("Import Structures"), QString(),
+            QObject::tr("Structure files (*.extxyz *.xyz *.cif *.traj *.json "
+                        "*.pdb *.poscar POSCAR CONTCAR *.vasp *.gen *.cube);;"
+                        "All files (*)"));
+        QStringList problems;
+        for (const QString& path : paths) {
+            QString error;
+            const auto imported = readStructuresFrom(path, &error);
+            if (!error.isEmpty())
+                problems << error;
+            for (const auto& item : imported)
+                addItem(item);
+        }
+        refill();
+        if (!problems.isEmpty())
+            QMessageBox::warning(&dialog, QObject::tr("Import from File"),
+                                 problems.join(QLatin1Char('\n')));
+    });
+    QObject::connect(fromDb, &QPushButton::clicked, &dialog, [&] {
+        if (!fromDatabase) {
+            QMessageBox::information(
+                &dialog, QObject::tr("Import from Database"),
+                QObject::tr("The database browser is not available in this "
+                            "context."));
+            return;
+        }
+        for (const auto& item : fromDatabase(&dialog))
+            addItem(item);
+        refill();
+    });
+    QObject::connect(remove, &QPushButton::clicked, list, [list, &working, &refill] {
+        // Highest row first, so each erase leaves the rows still to go at the
+        // indices they were found at.
+        QList<int> rows;
+        for (const QListWidgetItem* entry : list->selectedItems())
+            rows << list->row(entry);
+        std::sort(rows.begin(), rows.end(), std::greater<int>());
+        for (int row : rows)
+            if (row >= 0 && row < working.size())
+                working.removeAt(row);
+        refill();
+    });
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
+                     &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                     &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    *items = working;
+    return true;
+}
+
+bool editSupercell(QWidget* parent, SupercellSpec* spec)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("Supercell Builder"));
+    auto* form = new QFormLayout(&dialog);
+    const auto makeSpin = [&dialog](int value) {
+        auto* spin = new QSpinBox(&dialog);
+        spin->setRange(1, 64);
+        spin->setValue(value);
+        return spin;
+    };
+    auto* na = makeSpin(spec->na);
+    auto* nb = makeSpin(spec->nb);
+    auto* nc = makeSpin(spec->nc);
+    form->addRow(QObject::tr("Repeat along a:"), na);
+    form->addRow(QObject::tr("Repeat along b:"), nb);
+    form->addRow(QObject::tr("Repeat along c:"), nc);
+    auto* note = new QLabel(
+        QObject::tr("Applied to the structure that reaches this node, so a "
+                    "relaxation upstream is expanded after it converges — not "
+                    "before."),
+        &dialog);
+    note->setWordWrap(true);
+    form->addRow(note);
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    form->addRow(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
+                     &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                     &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    spec->na = na->value();
+    spec->nb = nb->value();
+    spec->nc = nc->value();
+    return true;
+}
+
+enum DefectColumn { kKindColumn, kIndexColumn, kElementColumn,
+                    kPositionColumn, kFrameColumn, kDefectColumns };
+
+/// Put the widgets for one recipe row in place and load `operation` into them.
+void fillDefectRow(QTableWidget* table, int row, const DefectOperation& operation)
+{
+    auto* kind = new QComboBox(table);
+    kind->addItem(QObject::tr("Substitute"),
+                  static_cast<int>(DefectOperation::Kind::Substitute));
+    kind->addItem(QObject::tr("Remove"),
+                  static_cast<int>(DefectOperation::Kind::Remove));
+    kind->addItem(QObject::tr("Add"),
+                  static_cast<int>(DefectOperation::Kind::Add));
+    kind->setCurrentIndex(kind->findData(static_cast<int>(operation.kind)));
+    table->setCellWidget(row, kKindColumn, kind);
+
+    auto* frame = new QComboBox(table);
+    frame->addItem(QObject::tr("Cartesian A"), false);
+    frame->addItem(QObject::tr("Fractional"), true);
+    frame->setCurrentIndex(operation.fractional ? 1 : 0);
+    table->setCellWidget(row, kFrameColumn, frame);
+
+    table->setItem(row, kIndexColumn, new QTableWidgetItem(operation.indices));
+    table->setItem(row, kElementColumn, new QTableWidgetItem(operation.element));
+    table->setItem(row, kPositionColumn,
+                   new QTableWidgetItem(QStringLiteral("%1, %2, %3")
+                                            .arg(operation.x, 0, 'g', 6)
+                                            .arg(operation.y, 0, 'g', 6)
+                                            .arg(operation.z, 0, 'g', 6)));
+}
+
+bool editDefects(QWidget* parent, DefectSpec* spec)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("Defect Generator"));
+    dialog.resize(560, 320);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* caption = new QLabel(
+        QObject::tr(
+            "Every index refers to the structure that REACHES this node, "
+            "numbered from 0 — removals do not renumber the atoms the other "
+            "rows address. Ranges are written \"4-8\"."),
+        &dialog);
+    caption->setWordWrap(true);
+    layout->addWidget(caption);
+
+    auto* table = new QTableWidget(0, kDefectColumns, &dialog);
+    table->setHorizontalHeaderLabels(
+        {QObject::tr("Operation"), QObject::tr("Atoms"),
+         QObject::tr("Element"), QObject::tr("Position"),
+         QObject::tr("Coordinates")});
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->verticalHeader()->setVisible(false);
+    for (const DefectOperation& operation : spec->operations) {
+        const int row = table->rowCount();
+        table->insertRow(row);
+        fillDefectRow(table, row, operation);
+    }
+    layout->addWidget(table, 1);
+
+    auto* rowButtons = new QHBoxLayout;
+    auto* addRow = new QPushButton(QObject::tr("Add operation"), &dialog);
+    auto* removeRow = new QPushButton(QObject::tr("Remove operation"), &dialog);
+    rowButtons->addWidget(addRow);
+    rowButtons->addWidget(removeRow);
+    rowButtons->addStretch(1);
+    layout->addLayout(rowButtons);
+    QObject::connect(addRow, &QPushButton::clicked, table, [table] {
+        const int row = table->rowCount();
+        table->insertRow(row);
+        fillDefectRow(table, row, DefectOperation{});
+    });
+    QObject::connect(removeRow, &QPushButton::clicked, table, [table] {
+        if (table->currentRow() >= 0)
+            table->removeRow(table->currentRow());
+    });
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
+                     &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                     &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+
+    DefectSpec edited;
+    for (int row = 0; row < table->rowCount(); ++row) {
+        DefectOperation operation;
+        if (auto* kind =
+                qobject_cast<QComboBox*>(table->cellWidget(row, kKindColumn)))
+            operation.kind = static_cast<DefectOperation::Kind>(
+                kind->currentData().toInt());
+        if (auto* frame =
+                qobject_cast<QComboBox*>(table->cellWidget(row, kFrameColumn)))
+            operation.fractional = frame->currentData().toBool();
+        if (const QTableWidgetItem* cell = table->item(row, kIndexColumn))
+            operation.indices = cell->text().trimmed();
+        if (const QTableWidgetItem* cell = table->item(row, kElementColumn))
+            operation.element = cell->text().trimmed();
+        if (const QTableWidgetItem* cell = table->item(row, kPositionColumn)) {
+            const QStringList parts = cell->text().split(
+                QRegularExpression(QStringLiteral("[,\\s]+")),
+                Qt::SkipEmptyParts);
+            if (parts.size() == 3) {
+                operation.x = parts[0].toDouble();
+                operation.y = parts[1].toDouble();
+                operation.z = parts[2].toDouble();
+            }
+        }
+        edited.operations.append(operation);
+    }
+    *spec = edited;
+    return true;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
 // OrchestrationWindow
 // ---------------------------------------------------------------------------
 
@@ -774,16 +1322,51 @@ OrchestrationWindow::OrchestrationWindow(
         QStringLiteral("delete-bin-line"),
         tr("Remove Selected — delete the selected nodes and every link "
            "that touched them."));
+    auto* clearButton = makeButton(
+        QStringLiteral("eraser-line"),
+        tr("Clear Orchestration — delete every node and link on the "
+           "canvas.\n\nAsks for confirmation first: the canvas is not in the "
+           "undo stack."));
+    auto* openButton = makeButton(
+        QStringLiteral("folder-open-line"),
+        tr("Open Workflow… — load a pipeline from a JSON file, replacing "
+           "what is on the canvas.\n\n"
+           "Asks first when there is something to replace. Reads what Export "
+           "Workflow writes, including the workflow.json saved beside every "
+           "run's results."));
+    auto* exportButton = makeButton(
+        QStringLiteral("share-fill"),
+        tr("Export Workflow… — write the whole pipeline to a JSON file.\n\n"
+           "Structures travel inside the file, so it is self-contained: copy "
+           "it to a cluster and run it there with calango-cli, headlessly."));
+    auto* fitButton = makeButton(
+        QStringLiteral("fullscreen-line"),
+        tr("Fit to Screen — zoom and pan so the whole pipeline is visible, "
+           "with a margin around it.\n\n"
+           "The canvas is 4000 units across and a pipeline built by "
+           "double-clicking wanders; this is how you find it again."));
     controls->addStretch(1);
-    // Trailing and set apart by the stretch: it is the one button that
-    // COMMITS — everything to its left edits the pipeline, this one runs it.
+    // Trailing and set apart by the stretch: these are the buttons that
+    // COMMIT — everything to their left edits the pipeline, these two run it.
+    resumeButton_ = makeButton(
+        QStringLiteral("restart-line"),
+        tr("Resume — re-run only what has not succeeded, in the same "
+           "orchestration folder.\n\n"
+           "Every node that finished keeps its status, its directory and its "
+           "results; the failed node and everything downstream of it are "
+           "queued again. Fix the failed node's parameters first "
+           "(double-click it) and this picks up from exactly there instead of "
+           "recomputing the pipeline from the start."));
     runButton_ = makeButton(
         QStringLiteral("play-circle-fill"),
         tr("Send to Processes — queue every node (they show as \"waiting\") "
            "and execute the pipeline in dependency order, one process at a "
            "time.\n\n"
+           "A Structure Container makes the whole downstream pipeline run "
+           "once per structure it holds, in order.\n\n"
            "Each node appears in the Processes panel as it is dispatched, and "
-           "its metrics stream into Results."));
+           "its metrics stream into Results. This RESTARTS everything — use "
+           "Resume to continue an interrupted run."));
     // No Close button: as a dock the panel's visibility belongs to its own
     // title bar and to View → Orchestration. A button calling close() here would
     // hide the widget INSIDE the dock and leave an empty frame behind.
@@ -800,8 +1383,21 @@ OrchestrationWindow::OrchestrationWindow(
     connect(addButton, &QPushButton::clicked, this, &OrchestrationWindow::addNode);
     connect(removeButton, &QPushButton::clicked, this,
             &OrchestrationWindow::removeSelected);
+    connect(clearButton, &QPushButton::clicked, this,
+            &OrchestrationWindow::clearOrchestration);
+    // qOverload<>: openWorkflow(QString) is the programmatic form, and the
+    // overload set is ambiguous without it.
+    connect(openButton, &QPushButton::clicked, this,
+            qOverload<>(&OrchestrationWindow::openWorkflow));
+    connect(exportButton, &QPushButton::clicked, this,
+            &OrchestrationWindow::exportWorkflow);
+    connect(fitButton, &QPushButton::clicked, this,
+            &OrchestrationWindow::fitToScreen);
+    connect(resumeButton_, &QPushButton::clicked, this,
+            &OrchestrationWindow::resumeFromFailure);
     connect(runButton_, &QPushButton::clicked, this,
             &OrchestrationWindow::sendToProcesses);
+    updateRunControls();
     for (QPushButton* button : findChildren<QPushButton*>()) {
         button->setAutoDefault(false);
         button->setDefault(false);
@@ -842,71 +1438,177 @@ void OrchestrationWindow::setMaterialsProvider(std::function<MaterialList()> pro
 
 void OrchestrationWindow::promptAddNode(const QPointF* scenePos)
 {
-    // Re-read the open documents before offering them: the panel is docked and
-    // long-lived, so the list it was constructed with is stale by now.
-    if (materialsProvider_)
-        materials_ = materialsProvider_();
-
-    if (materials_.isEmpty()) {
-        QMessageBox::information(
-            this, tr("Add Process"),
-            tr("Open at least one structure first — a process node needs a "
-               "material."));
-        return;
-    }
-
+    // No material row, and no "open a structure first" gate. Structures enter
+    // a pipeline through a Structure Container and travel down the links; a
+    // process node is a process, not a process-plus-a-molecule, and asking
+    // for a document at creation time forced every sweep member to be open in
+    // a tab before it could be studied.
     QDialog dialog(this);
     dialog.setWindowTitle(tr("Add Process"));
-    auto* form = new QFormLayout(&dialog);
-    auto* taskCombo = new QComboBox(&dialog);
-    // Two families, separated: the self-contained processes that read a
-    // structure, then the analysis modules that read a completed run. The
-    // difference decides whether a node can be dropped on the canvas and run
-    // as-is or needs a parent linked to it first, so it is worth seeing.
-    bool separatorPlaced = false;
-    for (OrchestrationTask task : orchestrationTasks()) {
-        if (!separatorPlaced && !orchestrationInputSlots(task).isEmpty()) {
-            taskCombo->insertSeparator(taskCombo->count());
-            separatorPlaced = true;
+    dialog.resize(620, 460);
+    auto* layout = new QVBoxLayout(&dialog);
+
+    // A categorised tree rather than a flat combo: eighteen processes in one
+    // drop-down is a list you scroll rather than read, and the family a
+    // process belongs to is the single most useful thing to know before
+    // picking one — it says whether the node needs a parent at all.
+    auto* tree = new QTreeWidget(&dialog);
+    tree->setHeaderLabels({tr("Process"), tr("Inputs")});
+    tree->setRootIsDecorated(false);
+    tree->setIndentation(14);
+    tree->setColumnWidth(0, 300);
+    tree->setSelectionMode(QAbstractItemView::SingleSelection);
+
+    struct FamilyGroup {
+        OrchestrationFamily family;
+        QString title;
+        QString blurb;
+    };
+    const QList<FamilyGroup> groups = {
+        {OrchestrationFamily::Transform, tr("Structures"),
+         tr("Where geometry comes from, and how it is edited on the way "
+            "through. These run on the canvas — no calculator, no job.")},
+        {OrchestrationFamily::Simulation, tr("Simulations"),
+         tr("Read a structure from their input port and compute with it.")},
+        {OrchestrationFamily::Analysis, tr("Analysis of a completed run"),
+         tr("Read one or more finished runs rather than a structure, so each "
+            "needs that many parent nodes linked to it.")},
+    };
+    QTreeWidgetItem* firstLeaf = nullptr;
+    for (const FamilyGroup& group : groups) {
+        auto* header = new QTreeWidgetItem(tree, {group.title});
+        QFont bold = header->font(0);
+        bold.setBold(true);
+        header->setFont(0, bold);
+        header->setFirstColumnSpanned(true);
+        header->setFlags(Qt::ItemIsEnabled); // a heading, not a choice
+        header->setToolTip(0, group.blurb);
+        for (OrchestrationTask task : orchestrationTasks()) {
+            if (orchestrationTaskFamily(task) != group.family)
+                continue;
+            const int required = orchestrationRequiredInputs(task);
+            QString inputs = required > 0
+                ? tr("%n run(s)", nullptr, required)
+                : (task == OrchestrationTask::Container ? tr("—")
+                                                        : tr("structure"));
+            auto* leaf = new QTreeWidgetItem(
+                header, {orchestrationTaskDisplayName(task), inputs});
+            leaf->setData(0, Qt::UserRole, static_cast<int>(task));
+            QString hint;
+            if (required > 0)
+                hint = tr("Inherits %n completed run(s). Link that many "
+                          "parent nodes to it — the first link fills the "
+                          "first input.",
+                          nullptr, required);
+            else if (task == OrchestrationTask::Container)
+                hint = tr("Holds structures — from open documents, files or "
+                          "the database. Everything downstream of it runs "
+                          "once per structure, in order.");
+            else if (group.family == OrchestrationFamily::Transform)
+                hint = tr("Edits the structure that reaches it and passes the "
+                          "result on. Runs on this canvas, not as a job.");
+            else
+                hint = tr("Runs on the structure that reaches its input port. "
+                          "Link a Structure Container upstream of it.");
+            leaf->setToolTip(0, hint);
+            leaf->setToolTip(1, hint);
+            if (!firstLeaf)
+                firstLeaf = leaf;
         }
-        taskCombo->addItem(orchestrationTaskDisplayName(task),
-                           static_cast<int>(task));
-        const int required = orchestrationRequiredInputs(task);
-        if (required > 0)
-            taskCombo->setItemData(
-                taskCombo->count() - 1,
-                tr("Inherits %n completed run(s). Link that many parent nodes "
-                   "to it — the first link fills the first input.",
-                   nullptr, required),
-                Qt::ToolTipRole);
+        header->setExpanded(true);
     }
-    form->addRow(tr("Process:"), taskCombo);
-    auto* materialCombo = new QComboBox(&dialog);
-    for (const auto& [name, structure] : materials_)
-        materialCombo->addItem(name);
-    form->addRow(tr("Material:"), materialCombo);
+    layout->addWidget(tree, 1);
+
+    // The blurb for whatever is selected, so the tool tip is not the only
+    // place the distinction between the families is explained.
+    auto* description = new QLabel(&dialog);
+    description->setWordWrap(true);
+    description->setMinimumHeight(44);
+    description->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+    layout->addWidget(description);
+
+    auto* engineRow = new QFormLayout;
     auto* engineCombo = new QComboBox(&dialog);
     for (core::CalculatorKind kind :
          {core::CalculatorKind::EMT, core::CalculatorKind::Gpaw,
           core::CalculatorKind::Vasp, core::CalculatorKind::Mace})
         engineCombo->addItem(EnginePresets::displayName(kind),
                              static_cast<int>(kind));
-    form->addRow(tr("Calculator:"), engineCombo);
+    engineRow->addRow(tr("Calculator:"), engineCombo);
+    layout->addLayout(engineRow);
+
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    form->addRow(buttons);
+    buttons->button(QDialogButtonBox::Ok)->setText(tr("Add Process"));
+    layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    const auto selectedTask = [tree]() -> std::optional<OrchestrationTask> {
+        QTreeWidgetItem* item = tree->currentItem();
+        if (!item || item->data(0, Qt::UserRole).isNull())
+            return std::nullopt;
+        return static_cast<OrchestrationTask>(
+            item->data(0, Qt::UserRole).toInt());
+    };
+    // A transform has no calculator; showing it an engine picker would be
+    // offering a setting that does nothing.
+    const auto syncControls = [&] {
+        const std::optional<OrchestrationTask> task = selectedTask();
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(task.has_value());
+        const bool needsEngine = task
+            && orchestrationTaskFamily(*task) != OrchestrationFamily::Transform;
+        engineCombo->setEnabled(needsEngine);
+        description->setText(
+            task ? tree->currentItem()->toolTip(0)
+                 : tr("Pick a process. Structures enter the pipeline through "
+                      "a Structure Container and flow along the links."));
+    };
+    connect(tree, &QTreeWidget::currentItemChanged, &dialog,
+            [&syncControls] { syncControls(); });
+    connect(tree, &QTreeWidget::itemDoubleClicked, &dialog,
+            [&dialog](QTreeWidgetItem* item) {
+                if (item && !item->data(0, Qt::UserRole).isNull())
+                    dialog.accept();
+            });
+    if (firstLeaf)
+        tree->setCurrentItem(firstLeaf);
+    syncControls();
+
     if (dialog.exec() != QDialog::Accepted)
+        return;
+    const std::optional<OrchestrationTask> task = selectedTask();
+    if (!task)
         return;
 
     OrchestrationNodeItem* node = addProcessNode(
-        static_cast<OrchestrationTask>(taskCombo->currentData().toInt()),
-        materialCombo->currentIndex(),
+        *task,
         static_cast<core::CalculatorKind>(engineCombo->currentData().toInt()));
     if (node && scenePos)
         node->setPos(*scenePos
                      - QPointF(kNodeWidth / 2.0, kNodeHeight / 2.0));
+    // A brand-new container is empty and cannot run; opening its contents
+    // dialog immediately is what the user was going to do next anyway, and it
+    // is where the file/database importers live.
+    if (node && node->task() == OrchestrationTask::Container)
+        openNodeWizard(node);
+}
+
+OrchestrationNodeItem* OrchestrationWindow::addProcessNode(
+    OrchestrationTask task, core::CalculatorKind engine)
+{
+    auto* node = new OrchestrationNodeItem(
+        nextNodeId_++, orchestrationTaskDisplayName(task), task,
+        tr("from input port"), nullptr, engine);
+    // Stagger new nodes left-to-right so a freshly built pipeline reads in
+    // execution order without any manual arranging.
+    node->setPos(static_cast<double>(nodes_.size()) * (kNodeWidth + 60.0),
+                 0.0);
+    scene_->addItem(node);
+    nodes_.push_back(node);
+    refreshInputSummaries();
+    updateRunControls();
+    return node;
 }
 
 OrchestrationNodeItem* OrchestrationWindow::addProcessNode(OrchestrationTask task,
@@ -919,14 +1621,201 @@ OrchestrationNodeItem* OrchestrationWindow::addProcessNode(OrchestrationTask tas
         nextNodeId_++, orchestrationTaskDisplayName(task), task,
         materials_[materialIndex].first, materials_[materialIndex].second,
         engine);
-    // Stagger new nodes left-to-right so a freshly built pipeline reads in
-    // execution order without any manual arranging.
+    // A Container seeded this way starts holding that one material, so it
+    // behaves like an ordinary source. (From the UI a container starts empty
+    // and its contents dialog opens straight away.)
+    if (task == OrchestrationTask::Container)
+        node->setBatchItems({materials_[materialIndex]});
     node->setPos(static_cast<double>(nodes_.size()) * (kNodeWidth + 60.0),
                  0.0);
     scene_->addItem(node);
     nodes_.push_back(node);
     refreshInputSummaries();
+    updateRunControls();
     return node;
+}
+
+std::shared_ptr<const core::Structure>
+OrchestrationWindow::representativeStructure(OrchestrationNodeItem* node) const
+{
+    // Breadth-first upstream, so the nearest source wins: a Supercell node
+    // between a Container and a wizard should still offer the Container's
+    // elements, and the wizard only needs to know WHICH ELEMENTS it will see.
+    std::vector<OrchestrationNodeItem*> frontier{node};
+    std::vector<OrchestrationNodeItem*> seen;
+    while (!frontier.empty()) {
+        std::vector<OrchestrationNodeItem*> next;
+        for (OrchestrationNodeItem* current : frontier) {
+            if (std::find(seen.begin(), seen.end(), current) != seen.end())
+                continue;
+            seen.push_back(current);
+            if (!current->batchItems().isEmpty())
+                return current->batchItems().front().second;
+            if (current->structure())
+                return current->structure();
+            for (OrchestrationEdgeItem* edge : edges_)
+                if (edge->to() == current)
+                    next.push_back(edge->from());
+        }
+        frontier = next;
+    }
+    return nullptr;
+}
+
+QList<QPair<OrchestrationNodeItem*, OrchestrationNodeItem*>>
+OrchestrationWindow::links() const
+{
+    QList<QPair<OrchestrationNodeItem*, OrchestrationNodeItem*>> list;
+    for (const OrchestrationEdgeItem* edge : edges_)
+        list.append(qMakePair(edge->from(), edge->to()));
+    return list;
+}
+
+void OrchestrationWindow::setDatabaseImporter(StructureImporter importer)
+{
+    databaseImporter_ = std::move(importer);
+}
+
+void OrchestrationWindow::exportWorkflow()
+{
+    if (nodes_.empty()) {
+        QMessageBox::information(this, tr("Export Workflow"),
+                                 tr("There is nothing on the canvas to "
+                                    "export."));
+        return;
+    }
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export Workflow"), QStringLiteral("workflow.json"),
+        tr("Calango workflow (*.json);;All files (*)"));
+    if (path.isEmpty())
+        return;
+
+    QStringList warnings;
+    const QJsonObject document = OrchestrationDocument::build(*this, &warnings);
+    QString error;
+    if (!OrchestrationDocument::write(document, path, &error)) {
+        QMessageBox::warning(this, tr("Export Workflow"),
+                             tr("%1 could not be written: %2")
+                                 .arg(QFileInfo(path).fileName(), error));
+        return;
+    }
+    // Warnings are shown even on success. Each one is a structure that is NOT
+    // in the file the user is about to copy to a cluster, and finding that
+    // out there instead of here costs a queue slot and a night.
+    if (!warnings.isEmpty())
+        QMessageBox::warning(
+            this, tr("Export Workflow"),
+            tr("The workflow was written, but some structures were left "
+               "out:\n\n%1")
+                .arg(warnings.join(QLatin1Char('\n'))));
+}
+
+void OrchestrationWindow::clearGraph()
+{
+    // Edges first: they hold raw pointers to the nodes.
+    for (OrchestrationEdgeItem* edge : edges_) {
+        scene_->removeItem(edge);
+        delete edge;
+    }
+    edges_.clear();
+    for (OrchestrationNodeItem* node : nodes_) {
+        scene_->removeItem(node);
+        delete node;
+    }
+    nodes_.clear();
+    // Node ids restart, and so does the run state: whatever ran belonged to
+    // a pipeline that no longer exists, and leaving orchestrationRoot_ set
+    // would leave Resume offering to continue it.
+    nextNodeId_ = 1;
+    orchestrationRoot_.clear();
+    batchIndex_ = 0;
+    batchLength_ = 1;
+    launchedCount_ = 0;
+    updateRunControls();
+}
+
+void OrchestrationWindow::clearOrchestration()
+{
+    if (nodes_.empty())
+        return;
+    if (runningNode_) {
+        refuse(tr("The pipeline is running. Wait for it to finish before "
+                  "clearing the canvas."));
+        return;
+    }
+    if (!confirm(tr("Are you sure you want to delete all nodes from the "
+                    "workflow?")))
+        return;
+    clearGraph();
+}
+
+bool OrchestrationWindow::openWorkflow(const QString& path)
+{
+    if (runningNode_) {
+        refuse(tr("The pipeline is running. Wait for it to finish before "
+                  "opening another workflow."));
+        return false;
+    }
+    // Opening REPLACES the canvas, so it asks the same question clearing does
+    // — the pipeline about to be discarded is worth as much as the one about
+    // to be loaded, and there is no undo for either.
+    if (!nodes_.empty()
+        && !confirm(tr("Opening a workflow replaces everything on the "
+                       "canvas.\n\nAre you sure you want to delete all nodes "
+                       "from the workflow?")))
+        return false;
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        refuse(tr("%1 could not be read: %2")
+                   .arg(QFileInfo(path).fileName(), file.errorString()));
+        return false;
+    }
+    QJsonParseError parse{};
+    const QJsonDocument json =
+        QJsonDocument::fromJson(file.readAll(), &parse);
+    if (parse.error != QJsonParseError::NoError || !json.isObject()) {
+        refuse(tr("%1 is not a valid workflow file: %2")
+                   .arg(QFileInfo(path).fileName(),
+                        parse.error != QJsonParseError::NoError
+                            ? parse.errorString()
+                            : tr("the top level is not an object")));
+        return false;
+    }
+
+    // Loaded into a SCRATCH canvas first, so a document that turns out to be
+    // malformed half way through does not leave the user with a pipeline that
+    // is neither the old one nor the new one. Only a complete load replaces
+    // what is here.
+    OrchestrationWindow scratch(materials_, pythonResolver_);
+    QString error;
+    if (!OrchestrationDocument::load(scratch, json.object(), &error)) {
+        refuse(tr("%1 could not be opened.\n\n%2")
+                   .arg(QFileInfo(path).fileName(), error));
+        return false;
+    }
+
+    clearGraph();
+    if (!OrchestrationDocument::load(*this, json.object(), &error)) {
+        // Unreachable in practice — the scratch load just succeeded on the
+        // same bytes — but leaving the canvas half-built would be the one
+        // outcome worse than refusing, so it is still reported.
+        clearGraph();
+        refuse(tr("%1 could not be opened.\n\n%2")
+                   .arg(QFileInfo(path).fileName(), error));
+        return false;
+    }
+    fitToScreen();
+    return true;
+}
+
+void OrchestrationWindow::openWorkflow()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Open Workflow"), QString(),
+        tr("Calango workflow (*.json);;All files (*)"));
+    if (!path.isEmpty())
+        openWorkflow(path);
 }
 
 void OrchestrationWindow::linkNodes(OrchestrationNodeItem* from, OrchestrationNodeItem* to)
@@ -940,8 +1829,61 @@ void OrchestrationWindow::configureNode(OrchestrationNodeItem* node,
                                    const QString& runCommand,
                                    core::CalculatorKind engine)
 {
-    if (node)
-        node->setConfiguration(script, python, runCommand, engine);
+    if (!node)
+        return;
+    node->setConfiguration(script, python, runCommand, engine);
+    invalidateFrom(node);
+}
+
+void OrchestrationWindow::setNodeBatchItems(
+    OrchestrationNodeItem* node,
+    const QList<OrchestrationNodeItem::BatchItem>& items)
+{
+    if (!node)
+        return;
+    node->setBatchItems(items);
+    invalidateFrom(node);
+    updateRunControls();
+}
+
+void OrchestrationWindow::setNodeSupercell(OrchestrationNodeItem* node,
+                                           const SupercellSpec& spec)
+{
+    if (!node)
+        return;
+    node->setSupercell(spec);
+    invalidateFrom(node);
+}
+
+void OrchestrationWindow::setNodeDefectSpec(OrchestrationNodeItem* node,
+                                            const DefectSpec& spec)
+{
+    if (!node)
+        return;
+    node->setDefectSpec(spec);
+    invalidateFrom(node);
+}
+
+void OrchestrationWindow::invalidateFrom(OrchestrationNodeItem* node)
+{
+    // Only a node that already RAN can be invalidated; a Pending one has
+    // nothing stale about it, and re-configuring during a run must not
+    // rewrite the status of the node currently executing.
+    if (!node || node == runningNode_)
+        return;
+    if (node->status() == OrchestrationNodeItem::Status::Pending)
+        return;
+    node->setStatus(OrchestrationNodeItem::Status::Pending);
+    updateProcessPanel(node);
+    // Its outputs are what every descendant consumed, so they are stale too.
+    // The DIRECTORIES are left alone — invalidating a result is not the same
+    // as deleting it, and jobHistory() must keep pointing at what was
+    // produced, which is exactly the artifact a user compares against after
+    // fixing a parameter.
+    for (OrchestrationEdgeItem* edge : edges_)
+        if (edge->from() == node)
+            invalidateFrom(edge->to());
+    updateRunControls();
 }
 
 void OrchestrationWindow::setWizardFactory(WizardFactory factory)
@@ -954,12 +1896,30 @@ void OrchestrationWindow::setRefusalHandler(RefusalHandler handler)
     refusalHandler_ = std::move(handler);
 }
 
+void OrchestrationWindow::setConfirmHandler(ConfirmHandler handler)
+{
+    confirmHandler_ = std::move(handler);
+}
+
 void OrchestrationWindow::refuse(const QString& message)
 {
     if (refusalHandler_)
         refusalHandler_(message);
     else
         QMessageBox::warning(this, tr("Orchestration"), message);
+}
+
+bool OrchestrationWindow::confirm(const QString& question)
+{
+    if (confirmHandler_)
+        return confirmHandler_(question);
+    // A warning box rather than a question box, defaulting to No: this is one
+    // click standing between the user and several minutes of wiring that the
+    // undo stack does not cover.
+    return QMessageBox::warning(this, tr("Clear Orchestration"), question,
+                                QMessageBox::Yes | QMessageBox::No,
+                                QMessageBox::No)
+        == QMessageBox::Yes;
 }
 
 QList<QPair<OrchestrationInputSlot, OrchestrationNodeItem*>>
@@ -999,6 +1959,36 @@ void OrchestrationWindow::openNodeWizard(OrchestrationNodeItem* node)
 {
     if (!node)
         return;
+
+    // The transforms configure themselves: no engine, no convergence, no
+    // script to generate, and therefore nothing for the host's wizard
+    // catalogue to build.
+    if (orchestrationTaskFamily(node->task()) == OrchestrationFamily::Transform) {
+        switch (node->task()) {
+        case OrchestrationTask::Container: {
+            if (materialsProvider_)
+                materials_ = materialsProvider_();
+            QList<OrchestrationNodeItem::BatchItem> items = node->batchItems();
+            if (editContainer(this, materials_, databaseImporter_, &items))
+                setNodeBatchItems(node, items);
+            break;
+        }
+        case OrchestrationTask::Supercell: {
+            SupercellSpec spec = node->supercell();
+            if (editSupercell(this, &spec))
+                setNodeSupercell(node, spec);
+            break;
+        }
+        default: {
+            DefectSpec spec = node->defectSpec();
+            if (editDefects(this, &spec))
+                setNodeDefectSpec(node, spec);
+            break;
+        }
+        }
+        return;
+    }
+
     if (!wizardFactory_) {
         // Only reachable with no catalogue installed -- the headless tests,
         // which drive configureNode() directly. Saying so beats a double-click
@@ -1012,7 +2002,12 @@ void OrchestrationWindow::openNodeWizard(OrchestrationNodeItem* node)
 
     WizardRequest request;
     request.task = node->task();
-    request.structure = node->structure();
+    // The structure the wizard sees is a STAND-IN, resolved upstream — the
+    // node has none of its own any more. It exists so per-element controls
+    // (cutoff suggestions, a k-path, an atom picker) have something to offer;
+    // the script the wizard writes names `structure.extxyz`, which the runner
+    // stages from whatever actually flows in.
+    request.structure = representativeStructure(node);
     request.engine = node->engine();
     // The baseline paths are what the RUNNER will stage, not what exists now:
     // a node is normally configured before its parents have ever run. Labels
@@ -1036,11 +2031,11 @@ void OrchestrationWindow::openNodeWizard(OrchestrationNodeItem* node)
         return;
     }
     wizard->enterOrchestrationMode();
-    if (node->structure()) {
+    if (request.structure) {
         wizard->setStructureElements(
-            structureElements(node->structure().get()));
-        const auto pbc = node->structure()->cell().pbc();
-        wizard->setStructurePeriodic(node->structure()->cell().isDefined()
+            structureElements(request.structure.get()));
+        const auto pbc = request.structure->cell().pbc();
+        wizard->setStructurePeriodic(request.structure->cell().isDefined()
                                      && (pbc[0] || pbc[1] || pbc[2]));
     }
     wizard->selectCalculator(node->engine());
@@ -1078,6 +2073,7 @@ void OrchestrationWindow::removeSelected()
         }
     }
     refreshInputSummaries();
+    updateRunControls();
 }
 
 void OrchestrationWindow::connectNodes(OrchestrationNodeItem* from,
@@ -1148,6 +2144,212 @@ OrchestrationNodeItem* OrchestrationWindow::nextRunnable() const
     return nullptr;
 }
 
+bool OrchestrationWindow::canResume() const
+{
+    if (orchestrationRoot_.isEmpty() || runningNode_)
+        return false;
+    return std::any_of(nodes_.begin(), nodes_.end(),
+                       [](const OrchestrationNodeItem* node) {
+                           return node->status()
+                               != OrchestrationNodeItem::Status::Done;
+                       });
+}
+
+void OrchestrationWindow::updateRunControls()
+{
+    if (runButton_)
+        runButton_->setEnabled(runningNode_ == nullptr);
+    if (resumeButton_)
+        resumeButton_->setEnabled(canResume());
+}
+
+bool OrchestrationWindow::dependsOnContainer(OrchestrationNodeItem* node) const
+{
+    // Reverse reachability: a node's result depends on which Container item is
+    // being processed exactly when a Container is upstream of it. Everything
+    // else computed something that does not change between items, and
+    // re-running it once per structure would be pure waste.
+    std::vector<OrchestrationNodeItem*> stack{node};
+    std::vector<OrchestrationNodeItem*> seen;
+    while (!stack.empty()) {
+        OrchestrationNodeItem* current = stack.back();
+        stack.pop_back();
+        if (std::find(seen.begin(), seen.end(), current) != seen.end())
+            continue;
+        seen.push_back(current);
+        if (current->task() == OrchestrationTask::Container)
+            return true;
+        for (OrchestrationEdgeItem* edge : edges_)
+            if (edge->to() == current)
+                stack.push_back(edge->from());
+    }
+    return false;
+}
+
+QString OrchestrationWindow::batchLabel() const
+{
+    for (const OrchestrationNodeItem* node : nodes_) {
+        if (node->task() != OrchestrationTask::Container
+            || node->batchItems().isEmpty())
+            continue;
+        const int index =
+            std::min(batchIndex_, static_cast<int>(node->batchItems().size()) - 1);
+        return node->batchItems()[index].first;
+    }
+    return QString();
+}
+
+void OrchestrationWindow::enqueue(OrchestrationNodeItem* node)
+{
+    node->setStatus(OrchestrationNodeItem::Status::Waiting);
+    node->setJobDirectory(QString());
+    const QString label = batchLabel();
+    node->setProcessTaskId(
+        processPanel_
+            ? processPanel_->registerTask(
+                  tr("Orchestration: %1 (%2)")
+                      .arg(node->title(),
+                           label.isEmpty() ? node->materialName() : label),
+                  QString())
+            : -1);
+    updateProcessPanel(node);
+}
+
+QString OrchestrationWindow::makeJobDirectory(OrchestrationNodeItem* node)
+{
+    QString parent = orchestrationRoot_;
+    if (batchLength_ > 1) {
+        // One folder per Container item, so a batch of twelve alloys reads as
+        // twelve labelled studies rather than one folder of sixty runs whose
+        // only distinguishing feature is a counter.
+        QString label = batchLabel();
+        label.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._-]+")),
+                      QStringLiteral("_"));
+        parent += QStringLiteral("/batch_%1_%2").arg(batchIndex_ + 1).arg(label);
+    }
+    // launchedCount_ never resets within an orchestration, so a retry after a
+    // Resume gets its own directory and the failed attempt's files stay where
+    // the provenance record says they are.
+    const QString dir = parent
+        + QStringLiteral("/node_%1_%2")
+              .arg(++launchedCount_)
+              .arg(orchestrationTaskSlug(node->task()));
+    return QDir().mkpath(dir) ? dir : QString();
+}
+
+ProvenanceRecord
+OrchestrationWindow::beginProvenance(OrchestrationNodeItem* node,
+                                     const QString& dir) const
+{
+    ProvenanceRecord record;
+    record.nodeId = node->id();
+    record.task = orchestrationTaskSlug(node->task());
+    record.title = node->title();
+    record.material = node->materialName();
+    record.directory = dir;
+    if (orchestrationTaskFamily(node->task()) != OrchestrationFamily::Transform)
+        record.engine = EnginePresets::displayName(node->engine());
+    record.configured = node->isConfigured();
+    if (node->isConfigured())
+        record.scriptSha256 = QString::fromLatin1(
+            QCryptographicHash::hash(node->configuredScript().toUtf8(),
+                                     QCryptographicHash::Sha256)
+                .toHex());
+    record.runCommand = node->configuredRunCommand();
+    record.python = node->configuredPython();
+    switch (node->task()) {
+    case OrchestrationTask::Container: {
+        QStringList names;
+        for (const auto& [name, structure] : node->batchItems())
+            names << name;
+        record.parameters = names.join(QStringLiteral(", "));
+        break;
+    }
+    case OrchestrationTask::Supercell:
+        record.parameters = node->supercell().describe();
+        break;
+    case OrchestrationTask::DefectGenerator:
+        record.parameters = node->defectSpec().describe();
+        break;
+    default:
+        break;
+    }
+    record.batchIndex = batchIndex_;
+    record.batchTotal = batchLength_;
+    record.batchLabel = batchLabel();
+    record.attempt = std::max(1, node->attempts());
+
+    // Logical provenance: which parent fills which named input, in link order.
+    // Recorded even for the tasks with no slot table, where the single parent
+    // supplies the input geometry.
+    const auto inputs = resolveInputs(node);
+    const QList<OrchestrationNodeItem*> parents = parentsOf(node);
+    for (int index = 0; index < parents.size(); ++index) {
+        const QString role = index < inputs.size()
+            ? inputs[index].first.label
+            : tr("input structure");
+        record.parents.append(
+            {parents[index]->id(),
+             tr("%1 ← %2").arg(role, parents[index]->title())});
+    }
+    record.status = QStringLiteral("running");
+    record.startedUtc = utcNow();
+    return record;
+}
+
+void OrchestrationWindow::finishProvenance(OrchestrationNodeItem* node,
+                                           ProvenanceRecord record,
+                                           int exitCode,
+                                           const QStringList& excluded)
+{
+    record.exitCode = exitCode;
+    record.status = statusSlug(node->status());
+    record.finishedUtc = utcNow();
+    record.outputs = describeOutputs(record.directory, excluded);
+    writeProvenance(record);
+}
+
+void OrchestrationWindow::writeManifest() const
+{
+    if (orchestrationRoot_.isEmpty())
+        return;
+    QJsonArray nodeArray;
+    for (const OrchestrationNodeItem* node : nodes_) {
+        QJsonArray history;
+        for (const QString& directory : node->jobHistory())
+            history.append(directory);
+        nodeArray.append(QJsonObject{
+            {QStringLiteral("id"), node->id()},
+            {QStringLiteral("task"), orchestrationTaskSlug(node->task())},
+            {QStringLiteral("title"), node->title()},
+            {QStringLiteral("material"), node->materialName()},
+            {QStringLiteral("status"), statusSlug(node->status())},
+            {QStringLiteral("configured"), node->isConfigured()},
+            {QStringLiteral("directory"), node->jobDirectory()},
+            {QStringLiteral("attempts"), node->attempts()},
+            {QStringLiteral("directories"), history},
+        });
+    }
+    QJsonArray edgeArray;
+    for (const OrchestrationEdgeItem* edge : edges_)
+        edgeArray.append(QJsonObject{{QStringLiteral("from"), edge->from()->id()},
+                                     {QStringLiteral("to"), edge->to()->id()}});
+    const QJsonObject root{
+        {QStringLiteral("schema"),
+         QStringLiteral("calango.orchestration.manifest/1")},
+        {QStringLiteral("started_utc"), runStartedUtc_},
+        {QStringLiteral("batch"),
+         QJsonObject{{QStringLiteral("index"), batchIndex_},
+                     {QStringLiteral("total"), batchLength_},
+                     {QStringLiteral("label"), batchLabel()}}},
+        {QStringLiteral("nodes"), nodeArray},
+        {QStringLiteral("edges"), edgeArray},
+    };
+    QFile file(orchestrationRoot_ + QStringLiteral("/orchestration.json"));
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+}
+
 void OrchestrationWindow::sendToProcesses()
 {
     if (nodes_.empty()) {
@@ -1158,6 +2360,38 @@ void OrchestrationWindow::sendToProcesses()
     if (runningNode_)
         return; // already executing
 
+    // --- Batch plan --------------------------------------------------------
+    // Every Container must hold the same number of structures, because the
+    // pipeline makes ONE pass per item and a pass has to give each container
+    // an item. Taking a maximum and clamping would quietly re-use the last
+    // structure of the shorter list, which is a study nobody asked for.
+    batchIndex_ = 0;
+    batchLength_ = 1;
+    const OrchestrationNodeItem* reference = nullptr;
+    for (OrchestrationNodeItem* node : nodes_) {
+        if (node->task() != OrchestrationTask::Container)
+            continue;
+        const int count = static_cast<int>(node->batchItems().size());
+        if (count == 0) {
+            refuse(node->configurationProblem());
+            return;
+        }
+        if (!reference) {
+            reference = node;
+            batchLength_ = count;
+        } else if (count != batchLength_) {
+            refuse(tr("%1 holds %2 structures but %3 holds %4.\n\n"
+                      "The pipeline makes one pass per structure, so every "
+                      "container has to supply one per pass. Give them the "
+                      "same length, or put them in separate pipelines.")
+                       .arg(reference->title())
+                       .arg(batchLength_)
+                       .arg(node->title())
+                       .arg(count));
+            return;
+        }
+    }
+
     // Sending queues EVERY node: each shows as "waiting" until its turn, so
     // the canvas reads as a process queue from the moment of submission. A
     // fresh send resets previous results — they are superseded, not
@@ -1165,15 +2399,8 @@ void OrchestrationWindow::sendToProcesses()
     // Processes panel (Queued), so the dispatch is visible and reloadable
     // where every other run lives, not only on this canvas.
     for (OrchestrationNodeItem* node : nodes_) {
-        node->setStatus(OrchestrationNodeItem::Status::Waiting);
-        node->setJobDirectory(QString());
-        node->setProcessTaskId(
-            processPanel_ ? processPanel_->registerTask(
-                tr("Orchestration: %1 (%2)")
-                    .arg(node->title(), node->materialName()),
-                QString())
-                          : -1);
-        updateProcessPanel(node);
+        node->clearJobHistory();
+        enqueue(node);
     }
     launchedCount_ = 0;
 
@@ -1187,11 +2414,20 @@ void OrchestrationWindow::sendToProcesses()
         + QDateTime::currentDateTime().toString(
             QStringLiteral("yyyyMMdd_HHmmss"));
     QDir().mkpath(orchestrationRoot_);
+    runStartedUtc_ = utcNow();
+    // The pipeline itself, beside its results. Written on every send so the
+    // folder is enough to reproduce the run — including on a cluster, where
+    // `calango-cli run workflow.json` reads exactly this file. Failures here
+    // are not fatal: the science still runs.
+    {
+        QStringList warnings;
+        OrchestrationDocument::write(
+            OrchestrationDocument::build(*this, &warnings),
+            orchestrationRoot_ + QStringLiteral("/workflow.json"), nullptr);
+    }
 
-    runButton_->setEnabled(false);
-    OrchestrationNodeItem* first = nextRunnable();
-    if (!first || !startNode(first)) {
-        runButton_->setEnabled(true);
+    updateRunControls();
+    if (!nextRunnable()) {
         // A box, not a toolbar caption. The user just pressed Run and NOTHING
         // happened; a line of grey text beside the button is exactly the way
         // to have that read as the button being broken.
@@ -1201,7 +2437,146 @@ void OrchestrationWindow::sendToProcesses()
                "material) or inherits its parent's results. A node whose "
                "parent produced no usable geometry is refused rather than "
                "run on the wrong structure."));
+        updateRunControls();
+        return;
     }
+    writeManifest();
+    pump();
+}
+
+void OrchestrationWindow::resumeFromFailure()
+{
+    if (runningNode_)
+        return;
+    if (orchestrationRoot_.isEmpty()) {
+        refuse(tr("There is nothing to resume — this pipeline has not been "
+                  "run yet. Use Send to Processes."));
+        return;
+    }
+    if (!canResume()) {
+        refuse(tr("Every node finished successfully; there is nothing to "
+                  "resume. Use Send to Processes to run the pipeline again."));
+        return;
+    }
+
+    // The whole point: a node that is Done keeps its status, its directory and
+    // its artifacts, and is not re-run. Everything else — failed, skipped
+    // because an ancestor failed, or invalidated by a configuration change —
+    // goes back in the queue.
+    for (OrchestrationNodeItem* node : nodes_)
+        if (node->status() != OrchestrationNodeItem::Status::Done)
+            enqueue(node);
+
+    if (!nextRunnable()) {
+        refuse(tr("Nothing can be resumed: every node still to run depends on "
+                  "one that has not finished.\n\n"
+                  "Check the links into the failed node — a parent that never "
+                  "produced a result cannot feed anything."));
+        updateRunControls();
+        return;
+    }
+    updateRunControls();
+    writeManifest();
+    pump();
+}
+
+void OrchestrationWindow::pump()
+{
+    // One loop rather than one call per completion: the transform nodes finish
+    // INSIDE startNode() and never reach the job runner's finished signal, so
+    // a Container feeding a Supercell feeding a Defect Generator has to be
+    // able to advance three times without an external event in between.
+    while (!runningNode_) {
+        OrchestrationNodeItem* next = nextRunnable();
+        if (!next) {
+            if (advanceBatch())
+                continue;
+            writeManifest();
+            break;
+        }
+        if (startNode(next))
+            continue;
+        // Refused or failed to stage. startNode has already said why; the
+        // canvas records the verdict and the pipeline carries on with
+        // whatever branch does not depend on this node.
+        next->setStatus(OrchestrationNodeItem::Status::Failed);
+        updateProcessPanel(next);
+        skipDescendants(next);
+        writeManifest();
+    }
+    updateRunControls();
+}
+
+bool OrchestrationWindow::advanceBatch()
+{
+    if (batchIndex_ + 1 >= batchLength_)
+        return false;
+    ++batchIndex_;
+    bool queued = false;
+    for (OrchestrationNodeItem* node : nodes_) {
+        if (!dependsOnContainer(node))
+            continue; // its result does not vary with the batch item
+        enqueue(node);
+        queued = true;
+    }
+    return queued;
+}
+
+bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
+                                       const QString& dir,
+                                       ProvenanceRecord& record,
+                                       QString* error)
+{
+    const QString input = dir + QStringLiteral("/structure.extxyz");
+    const QString output = dir + QStringLiteral("/transformed.extxyz");
+    core::Structure result;
+
+    if (node->task() == OrchestrationTask::Container) {
+        // A source, not an edit: it ignores whatever reached it and emits the
+        // batch item for this pass.
+        const auto& items = node->batchItems();
+        const int index =
+            std::min(batchIndex_, static_cast<int>(items.size()) - 1);
+        if (index < 0 || !items[index].second) {
+            *error = tr("its structure list is empty");
+            return false;
+        }
+        result = *items[index].second;
+        record.parameters = items[index].first;
+    } else {
+        // Everything else edits the structure that reached this node — staged
+        // by the ordinary geometry handoff, or written from the node's own
+        // material when it has no parent.
+        if (!QFile::exists(input)) {
+            *error = tr("no input structure reached it");
+            return false;
+        }
+        core::Structure incoming;
+        try {
+            incoming = pybridge::AseBridge::readStructure(input.toStdString());
+        } catch (const std::exception& e) {
+            *error = tr("its input structure could not be read (%1)")
+                         .arg(QString::fromUtf8(e.what()));
+            return false;
+        }
+        QString problem;
+        result = node->task() == OrchestrationTask::Supercell
+            ? applySupercell(incoming, node->supercell(), &problem)
+            : applyDefects(incoming, node->defectSpec(), &problem);
+        if (!problem.isEmpty()) {
+            *error = problem;
+            return false;
+        }
+    }
+
+    try {
+        pybridge::AseBridge::writeStructure(result, output.toStdString());
+    } catch (const std::exception& e) {
+        *error = tr("its result could not be written (%1)")
+                     .arg(QString::fromUtf8(e.what()));
+        return false;
+    }
+    return true;
 }
 
 bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
@@ -1210,15 +2585,12 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
     // An analysis module has no defaults to fall back on: its script names a
     // baseline, and no baseline path can be guessed. Running one unconfigured
     // would not produce an approximate answer, it would produce a crash at
-    // best and a run against the wrong file at worst.
-    if (!node->isConfigured() && !orchestrationTaskHasDefaults(node->task())) {
-        refuse(
-            tr("%1 was not started: it has not been configured.\n\n"
-               "Unlike a relaxation or a single point, this process has no "
-               "defaults to fall back on — it reads a completed run, and which "
-               "run that is can only come from its setup wizard. Double-click "
-               "the node and save it first.")
-                .arg(node->title()));
+    // best and a run against the wrong file at worst. The transforms have
+    // their own version of the same question — an empty container, an empty
+    // defect recipe — and configurationProblem() answers all of them.
+    if (const QString problem = node->configurationProblem();
+        !problem.isEmpty()) {
+        refuse(problem);
         return false;
     }
 
@@ -1241,12 +2613,17 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
         return false;
     }
 
-    const QString dir = orchestrationRoot_
-        + QStringLiteral("/node_%1_%2")
-              .arg(++launchedCount_)
-              .arg(taskSlug(node->task()));
-    if (!QDir().mkpath(dir))
+    const QString dir = makeJobDirectory(node);
+    if (dir.isEmpty())
         return false;
+    // Recorded before anything is staged, so a node that dies during staging
+    // still leaves a findable directory holding the record of what went wrong.
+    node->recordJobDirectory(dir);
+    ProvenanceRecord record = beginProvenance(node, dir);
+    // The files the CANVAS put in the directory. Everything else there when
+    // the node finishes is an output.
+    QStringList staged{QStringLiteral("run.py"),
+                       QStringLiteral("provenance.json")};
 
     // --- Inputs: the parent's outputs, or the assigned material -----------
     // A parent's relaxed/final geometry (coordinates AND cell — extxyz
@@ -1260,12 +2637,18 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
     // back to the node's original material here would silently execute the
     // child on the UN-relaxed structure — a run that "succeeds" while
     // computing the wrong thing, which is strictly worse than failing.
-    if (!parents.isEmpty()) {
+    //
+    // A Container is the exception: it is a SOURCE. It emits the batch item
+    // for this pass and has nothing to inherit, so it skips staging entirely
+    // even if somebody linked a parent into it.
+    if (node->task() == OrchestrationTask::Container) {
+        // nothing to stage
+    } else if (!parents.isEmpty()) {
         const QString parentDir = parents.front()->jobDirectory();
         QString source;
         for (const char* candidate :
-             {"optimized.extxyz", "md_final.extxyz", "single_point.extxyz",
-              "structure.extxyz"}) {
+             {"transformed.extxyz", "optimized.extxyz", "md_final.extxyz",
+              "single_point.extxyz", "structure.extxyz"}) {
             const QString path =
                 parentDir + QLatin1Char('/') + QLatin1String(candidate);
             if (QFile::exists(path)) {
@@ -1278,8 +2661,13 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
         // insisted on. For the self-contained tasks it IS the input, and its
         // absence is the strict-handoff refusal below.
         const bool needsGeometry = inputs.isEmpty();
-        if (!source.isEmpty())
-            QFile::copy(source, dir + QStringLiteral("/structure.extxyz"));
+        if (!source.isEmpty()
+            && QFile::copy(source, dir + QStringLiteral("/structure.extxyz"))) {
+            staged << QStringLiteral("structure.extxyz");
+            record.inputs.append(describeFile(
+                dir, QStringLiteral("structure.extxyz"),
+                tr("input structure"), source, parents.front()->id()));
+        }
         if (needsGeometry
             && !QFile::exists(dir + QStringLiteral("/structure.extxyz"))) {
             // The strict-handoff refusal. This is the message that explains
@@ -1303,8 +2691,14 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
         if (inputs.isEmpty()) {
             const QString gpw =
                 parentDir + QStringLiteral("/single_point.gpw");
-            if (QFile::exists(gpw))
-                QFile::copy(gpw, dir + QStringLiteral("/single_point.gpw"));
+            if (QFile::exists(gpw)
+                && QFile::copy(gpw,
+                               dir + QStringLiteral("/single_point.gpw"))) {
+                staged << QStringLiteral("single_point.gpw");
+                record.inputs.append(describeFile(
+                    dir, QStringLiteral("single_point.gpw"),
+                    tr("ground state"), gpw, parents.front()->id()));
+            }
         }
 
         // --- Inherited runs, one staged file per input slot ----------------
@@ -1319,13 +2713,19 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
                 return false; // already refused above; belt and braces
             }
             const QString target = dir + QLatin1Char('/') + slot.stagedName;
+            const QString origin = slot.sourceName.isEmpty()
+                ? parent->jobDirectory()
+                : parent->jobDirectory() + QLatin1Char('/') + slot.sourceName;
             const bool ok = slot.sourceName.isEmpty()
                 ? copyDirectory(parent->jobDirectory(), target)
-                : QFile::copy(parent->jobDirectory() + QLatin1Char('/')
-                                  + slot.sourceName,
-                              target);
-            if (ok)
+                : QFile::copy(origin, target);
+            if (ok) {
+                staged << slot.stagedName;
+                record.inputs.append(describeFile(dir, slot.stagedName,
+                                                  slot.label, origin,
+                                                  parent->id()));
                 continue;
+            }
             // Note this refuses even for an OPTIONAL slot. Optional governs
             // whether an UNLINKED slot blocks the run; a link the user drew on
             // purpose, to a parent that turns out to hold nothing, is a
@@ -1345,8 +2745,18 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
             return false;
         }
     } else {
-        if (!node->structure())
+        // No parent and no structure of its own: nothing feeds this node.
+        // Since structures enter a pipeline through a Structure Container,
+        // that is what the message names — the alternative, inventing a
+        // geometry, is the failure mode this whole panel refuses.
+        if (!node->structure()) {
+            refuse(tr("%1 was not started: nothing feeds it a structure.\n\n"
+                      "A process node takes its geometry from its input port. "
+                      "Add a Structure Container, put the structures to study "
+                      "in it, and link it to this node.")
+                       .arg(node->title()));
             return false;
+        }
         try {
             pybridge::AseBridge::writeStructure(
                 *node->structure(),
@@ -1354,6 +2764,30 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
         } catch (const std::exception&) {
             return false;
         }
+        staged << QStringLiteral("structure.extxyz");
+        record.inputs.append(describeFile(dir,
+                                          QStringLiteral("structure.extxyz"),
+                                          tr("assigned material")));
+    }
+
+    // --- Transforms: performed here, not launched --------------------------
+    // A structure edit is a few hundred microseconds of array work. Spawning
+    // an interpreter for it would spend a thousand times longer starting up
+    // than working, and would give the node a calculator and a launch command
+    // it has no use for.
+    if (orchestrationTaskFamily(node->task()) == OrchestrationFamily::Transform) {
+        QString problem;
+        if (!runTransform(node, dir, record, &problem)) {
+            node->setStatus(OrchestrationNodeItem::Status::Failed);
+            finishProvenance(node, record, -1, staged);
+            refuse(tr("%1 was not run: %2.").arg(node->title(), problem));
+            return false;
+        }
+        node->setStatus(OrchestrationNodeItem::Status::Done);
+        updateProcessPanel(node);
+        finishProvenance(node, record, 0, staged);
+        writeManifest();
+        return true;
     }
 
     // --- Script: wizard-committed, else the task's defaults ----------------
@@ -1365,9 +2799,22 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
     if (script.isEmpty()) {
         core::CalculatorConfig config;
         config.calculator = node->engine();
+        // Elements come from the geometry that was just STAGED, not from the
+        // node: a node created on the canvas owns no structure, and the
+        // per-element cutoff/k-grid suggestion has to describe what will
+        // actually be computed. Falling back to the node's own structure
+        // keeps the scripted/test path (a node seeded with a material)
+        // working unchanged.
+        QStringList elements;
+        try {
+            const core::Structure staged = pybridge::AseBridge::readStructure(
+                (dir + QStringLiteral("/structure.extxyz")).toStdString());
+            elements = structureElements(&staged);
+        } catch (const std::exception&) {
+            elements = structureElements(node->structure().get());
+        }
         const CalculatorParameters::Suggestion suggestion =
-            CalculatorParameters::suggestionFor(
-                node->engine(), structureElements(node->structure().get()));
+            CalculatorParameters::suggestionFor(node->engine(), elements);
         if (suggestion.planeWaveCutoffEv)
             config.planeWaveCutoffEv = *suggestion.planeWaveCutoffEv;
         if (suggestion.kpts)
@@ -1405,16 +2852,28 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
         node->engine(), context, node->configuredRunCommand());
 
     node->setStatus(OrchestrationNodeItem::Status::Running);
-    node->setJobDirectory(dir);
     updateProcessPanel(node);
     runningNode_ = node;
+    // The record is carried across the launch: the start timestamp and the
+    // staged-input list exist only here, and onJobFinished has to close the
+    // same record it opened rather than reconstruct one.
+    runningRecord_ = record;
+    runningStagedFiles_ = staged;
+    writeManifest();
     jobRunner_->start(resolved.commandLine, context.pythonExecutable, dir,
                       resolved.environment);
-    if (node->processTaskId() >= 0)
+    if (node->processTaskId() >= 0) {
+        // The same label the Processes row carries, so a batched pass reads
+        // as its own structure in Results rather than as three runs sharing
+        // the node's originally assigned material.
+        const QString label = batchLabel();
         Q_EMIT nodeStarted(node->processTaskId(),
                            tr("Orchestration: %1 (%2)")
-                               .arg(node->title(), node->materialName()),
+                               .arg(node->title(),
+                                    label.isEmpty() ? node->materialName()
+                                                    : label),
                            dir);
+    }
     return true;
 }
 
@@ -1437,31 +2896,70 @@ void OrchestrationWindow::onJobFinished(int exitCode, bool crashed)
     OrchestrationNodeItem* finished = runningNode_;
     runningNode_ = nullptr;
 
-    if (exitCode == 0 && !crashed) {
+    const bool succeeded = exitCode == 0 && !crashed;
+    if (succeeded) {
         finished->setStatus(OrchestrationNodeItem::Status::Done);
     } else {
         finished->setStatus(OrchestrationNodeItem::Status::Failed);
         // Children cannot run on inputs that never materialized — say so on
-        // the canvas instead of leaving them "pending" forever.
+        // the canvas instead of leaving them "pending" forever. Their
+        // ancestors keep their Done status and their directories: that is
+        // what Resume picks up from.
         skipDescendants(finished);
     }
     updateProcessPanel(finished);
+    finishProvenance(finished, runningRecord_, crashed ? -1 : exitCode,
+                     runningStagedFiles_);
+    runningRecord_ = ProvenanceRecord();
+    runningStagedFiles_.clear();
     if (finished->processTaskId() >= 0)
-        Q_EMIT nodeFinished(finished->processTaskId(),
-                            exitCode == 0 && !crashed);
+        Q_EMIT nodeFinished(finished->processTaskId(), succeeded);
 
-    if (OrchestrationNodeItem* next = nextRunnable()) {
-        if (startNode(next))
-            return;
-        next->setStatus(OrchestrationNodeItem::Status::Failed);
-        updateProcessPanel(next);
-        skipDescendants(next);
+    // No summary line when the run ends: each node's own status strip says
+    // done/failed on the canvas, and the Processes panel holds the same
+    // per-node verdict with its directory.
+    pump();
+}
+
+// ---------------------------------------------------------------------------
+// Viewport
+// ---------------------------------------------------------------------------
+
+QRectF OrchestrationWindow::nodesBoundingRect() const
+{
+    QRectF box;
+    for (const OrchestrationNodeItem* node : nodes_)
+        box = box.united(node->sceneBoundingRect());
+    return box;
+}
+
+QRectF OrchestrationWindow::visibleSceneRect() const
+{
+    return view_ ? view_->mapToScene(view_->viewport()->rect()).boundingRect()
+                 : QRectF();
+}
+
+void OrchestrationWindow::fitToScreen()
+{
+    const QRectF box = nodesBoundingRect();
+    if (box.isNull() || !view_)
+        return;
+    // A margin, so the outermost nodes do not sit against the frame — a node
+    // whose port is flush with the edge reads as clipped, and the link a user
+    // is about to drag from it has nowhere to start.
+    const double margin = std::max(24.0, 0.06 * std::max(box.width(),
+                                                         box.height()));
+    view_->fitInView(box.adjusted(-margin, -margin, margin, margin),
+                     Qt::KeepAspectRatio);
+    // Same clamp the wheel uses, for the same reason: a single node on the
+    // canvas would otherwise be blown up to fill a 250 px dock, and the user
+    // would be looking at one enormous rounded rectangle.
+    const double scale = view_->transform().m11();
+    if (scale > 3.0 || scale < 0.2) {
+        const double target = scale > 3.0 ? 3.0 : 0.2;
+        view_->scale(target / scale, target / scale);
     }
-
-    // The run is over; the button goes live again. No summary line: each
-    // node's own status strip says done/failed on the canvas, and the
-    // Processes panel holds the same per-node verdict with its directory.
-    runButton_->setEnabled(true);
+    view_->centerOn(box.center());
 }
 
 void OrchestrationWindow::updateProcessPanel(OrchestrationNodeItem* node)

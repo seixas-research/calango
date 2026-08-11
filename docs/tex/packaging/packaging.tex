@@ -1,3 +1,9 @@
+% =========================================================================
+% Calango Packaging Guide
+% Build:  latexmk -pdf packaging.tex
+%    or:  pdflatex packaging.tex   (run twice for the ToC)
+% Palette and cover shared with docs/tex/user_guide/calango_user_guide.tex.
+% =========================================================================
 \documentclass[11pt,a4paper]{article}
 
 \usepackage[margin=2.5cm,headheight=24pt,headsep=16pt]{geometry}
@@ -13,21 +19,34 @@
 \usepackage{titlesec}
 \usepackage{fancyhdr}
 \usepackage{parskip}
-\usepackage[colorlinks=true,linkcolor=calangoteal,urlcolor=calangoteal]{hyperref}
+\usepackage[colorlinks=true,linkcolor=calangored,urlcolor=calangored]{hyperref}
 
-\definecolor{calangoteal}{RGB}{0,110,110}
-\definecolor{calangodark}{RGB}{30,34,40}
-\definecolor{codebg}{RGB}{245,246,248}
-\definecolor{shadegray}{RGB}{90,96,104}
+\usepackage{eso-pic}
 
-% --- Section typography: teal numbers, rule under sections -----------------
+% --- Brand palette ---------------------------------------------------------
+% The same four colours, with the same jobs, as the user guide -- see the
+% longer note in docs/tex/user_guide/calango_user_guide.tex. In short:
+% yellow and coral are accents only (1.2:1 and 3.0:1 on white), calangored is
+% the 5.2:1 anchor that carries anything readable, and calangocover is
+% permitted on the cover page and nowhere else.
+\definecolor{calangoyellow}{HTML}{FEEC41}
+\definecolor{calangocoral}{HTML}{FF6060}
+\definecolor{calangored}{HTML}{D51C39}
+\definecolor{calangocover}{HTML}{760031}
+% Neutrals. calangodark is the logo mark's own near-black.
+\definecolor{calangodark}{RGB}{26,26,26}
+\definecolor{codebg}{RGB}{250,246,247}
+\definecolor{shadegray}{RGB}{96,92,94}
+\colorlet{calangoteal}{calangored} % retained so older text keeps compiling
+
+% --- Section typography: red numbers, rule under sections ------------------
 \titleformat{\section}
   {\Large\bfseries\color{calangodark}}
-  {\textcolor{calangoteal}{\thesection}}{0.8em}{}
-  [\vspace{-6pt}{\color{calangoteal}\rule{\textwidth}{1.2pt}}]
+  {\textcolor{calangored}{\thesection}}{0.8em}{}
+  [\vspace{-6pt}{\color{calangocoral}\rule{\textwidth}{1.2pt}}]
 \titleformat{\subsection}
   {\large\bfseries\color{calangodark}}
-  {\textcolor{calangoteal}{\thesubsection}}{0.8em}{}
+  {\textcolor{calangored}{\thesubsection}}{0.8em}{}
 \titlespacing*{\section}{0pt}{18pt}{10pt}
 \titlespacing*{\subsection}{0pt}{12pt}{6pt}
 
@@ -40,17 +59,17 @@
 \fancyfoot[L]{\small\color{shadegray}Leandro Seixas}
 \fancyfoot[R]{\small\color{shadegray}\thepage}
 \renewcommand{\headrulewidth}{0.8pt}
-\renewcommand{\headrule}{{\color{calangoteal}%
+\renewcommand{\headrule}{{\color{calangocoral}%
   \hrule width\headwidth height\headrulewidth}}
 \renewcommand{\footrulewidth}{0pt}
 
-% --- Code blocks: teal accent bar, soft background -------------------------
+% --- Code blocks: red accent bar, soft background --------------------------
 \lstdefinestyle{shell}{
   basicstyle=\ttfamily\small,
   backgroundcolor=\color{codebg},
   frame=leftline,
   framerule=2.4pt,
-  rulecolor=\color{calangoteal},
+  rulecolor=\color{calangored},
   framesep=8pt,
   xleftmargin=12pt,
   xrightmargin=6pt,
@@ -69,28 +88,44 @@
 \newcommand{\file}[1]{\texttt{#1}}
 \newcommand{\opt}[1]{\texttt{#1}}
 
+% Version stamp, as in the user guide: written by docs/tex/Makefile from
+% project(calango VERSION ...) so the cover cannot drift from the binary.
+\IfFileExists{calango_version.tex}{\input{calango_version}}{}
+\providecommand{\calangoversion}{26.8.5}
+
 \begin{document}
 
-% --- Title block with the brand logo ---------------------------------------
+% =========================== TITLE PAGE ===================================
 \begin{titlepage}
+% A full-bleed deep-maroon cover. `\AddToShipoutPictureBG*` paints the whole
+% sheet including the margins, which a coloured \rule cannot reach, and the
+% starred form applies to this page only. calangocover appears here and
+% nowhere else in the document.
+\AddToShipoutPictureBG*{%
+  \AtPageLowerLeft{\color{calangocover}\rule{\paperwidth}{\paperheight}}%
+  % The brand mark along the foot: a coral band with a yellow hairline
+  % above it, so the accent pair appears together once, at full strength.
+  \AtPageLowerLeft{\color{calangocoral}\rule{\paperwidth}{14mm}}%
+  \AtPageLowerLeft{\raisebox{14mm}{\color{calangoyellow}%
+    \rule{\paperwidth}{2mm}}}%
+}
 \centering
-\vspace*{2.2cm}
-\includegraphics[width=0.52\textwidth]{../../../assets/calango/logo_light.png}\par
-\vspace{1.4cm}
-{\color{calangoteal}\rule{0.72\textwidth}{1.6pt}}\par
-\vspace{0.9cm}
-{\Huge\bfseries Packaging Guide\par}
-\vspace{0.5cm}
-{\Large Building the macOS \file{.dmg} and Linux \file{.deb} installers\par}
-\vspace{0.9cm}
-{\color{calangoteal}\rule{0.72\textwidth}{1.6pt}}\par
-\vspace{1.6cm}
-{\large\bfseries Leandro Seixas\par}
-\vspace{0.3cm}
-{\large\color{shadegray}Seixas Research\par}
+\sffamily\color{white}
+\vspace*{3.6cm}
+% logo_dark is the version drawn for dark grounds.
+\includegraphics[width=0.66\textwidth]{../../../assets/calango/logo_dark.png}\par
+\vspace{1.5cm}
+{\color{calangocoral}\rule{0.42\textwidth}{2.4pt}}\par
+\vspace{1.1cm}
+{\fontsize{32}{38}\selectfont\bfseries Packaging Guide\par}
+\vspace{0.7cm}
+{\large\color{calangoyellow} Building the macOS \texttt{.dmg}\\[2pt]
+ and Linux \texttt{.deb} installers\par}
 \vfill
-{\large Calango 26.8.2\par}
-\vspace*{1.2cm}
+{\large\bfseries Leandro Seixas\par}
+\vspace{0.35cm}
+{\small\color{calangoyellow} Calango \calangoversion\par}
+\vspace*{2.5cm}
 \end{titlepage}
 
 \begin{abstract}
