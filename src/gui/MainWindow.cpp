@@ -49,6 +49,7 @@
 #include "gui/KpointsConvergenceWizard.hpp"
 #include "gui/OrchestrationWindow.hpp"
 #include "gui/EnginePresets.hpp"
+#include "dft/CalangoDFTEngine.hpp"
 #include "gui/SinglePointWizard.hpp"
 #include "gui/MonteCarloWizard.hpp"
 #include "gui/PhononWizard.hpp"
@@ -7231,7 +7232,52 @@ void MainWindow::singlePointCalculation()
     if (!prepareSimulation(tr("Single-point Calculation")))
         return;
     SinglePointWizard wizard(this);
+
+    // Calango's own engine is not a generated script — it runs here, in this
+    // process. The dispatch has to happen before runSimulationWizard(), which
+    // would otherwise stage a run.py and launch an interpreter against a
+    // calculator that does not exist in Python.
+    //
+    // Hooked to the wizard's own accept rather than duplicating its setup:
+    // exec() is called by runSimulationWizard, and this callback fires from
+    // inside it when the chosen engine is ours.
     runSimulationWizard(wizard, tr("Single-Point Calculation"), /*expectFrames=*/false);
+}
+
+void MainWindow::runNativeDftSinglePoint(const core::Structure& structure)
+{
+    dft::Parameters parameters;
+    dft::CalangoDFTEngine engine(parameters);
+    const dft::CalangoDFTEngine::Result result = engine.run(structure);
+
+    if (result.outcome.ok()) {
+        // Unreachable today — the engine reports NotImplemented — and written
+        // anyway so the success path exists and is obvious when it starts
+        // being taken. Nothing here invents a number: everything shown comes
+        // from the engine's own breakdown.
+        statusBar()->showMessage(
+            tr("Calango DFT — total %1 eV (%2 SCF iterations)")
+                .arg(result.energy.total, 0, 'f', 6)
+                .arg(result.scfIterations));
+        return;
+    }
+
+    // Reported as a message box, not a status line. The engine produced NO
+    // result, and a run that quietly leaves the status bar unchanged reads as
+    // a run that worked.
+    QString text = tr("The built-in Calango DFT engine did not produce a "
+                      "result.\n\n%1")
+                       .arg(QString::fromStdString(result.outcome.message));
+    if (!result.log.empty()) {
+        QStringList lines;
+        for (const std::string& line : result.log)
+            lines << QString::fromStdString(line);
+        text += tr("\n\nRun context:\n%1").arg(lines.join(QLatin1Char('\n')));
+    }
+    QMessageBox::information(this, tr("Calango DFT"), text);
+    statusBar()->showMessage(
+        tr("Calango DFT: %1")
+            .arg(QString::fromLatin1(dft::toString(result.outcome.status))));
 }
 
 void MainWindow::planeWaveCutoffConvergence()
@@ -7275,6 +7321,15 @@ void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
     // this completed run. stageJob() writes it as calculator.json and clears
     // the pending value.
     pendingCalculatorProvenance_ = wizard.calculatorProvenanceJson();
+
+    // Calango's own engine runs HERE, not as a staged script. Handled before
+    // every other action so nothing downstream has to know the difference.
+    if (wizard.action() == SimulationWizardBase::Action::RunNativeEngine) {
+        const Document* doc = currentDocument();
+        if (doc && doc->structure)
+            runNativeDftSinglePoint(*doc->structure);
+        return;
+    }
 
     if (wizard.action() == SimulationWizardBase::Action::RunRemote) {
         // Zone-11 Remote Access manager: stage the script and submit it.

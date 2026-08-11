@@ -100,6 +100,13 @@ private:
     /// selection so the run command and interpreter resolve for the engine
     /// actually chosen here.
     void onEngineChanged();
+    /// Keep the response mesh spin boxes on values tetrahedron integration can
+    /// actually use: even on every axis, stepped by two. GPAW does not reject
+    /// an odd grid, it RAISES on one, so an odd entry cannot even be tested
+    /// against its IBZ-vertex predicate — the run would have to grow it blind.
+    /// Rounding up here means the number in the dialog is the number the run
+    /// starts from.
+    void applyTetrahedronMeshConstraints();
     core::CalculatorKind selectedEngine() const;
 
     std::shared_ptr<core::Structure> structure_;
@@ -127,6 +134,8 @@ private:
     QSpinBox* responseKptsSpin_[3] = {nullptr, nullptr, nullptr};
     QCheckBox* ibzCheck_ = nullptr;
     QCheckBox* tetrahedronCheck_ = nullptr;
+    /// Live consequence of the tetrahedron choice for the current mesh.
+    QLabel* tetrahedronNote_ = nullptr;
     QCheckBox* dirXxCheck_ = nullptr;
     QCheckBox* dirYyCheck_ = nullptr;
     QCheckBox* dirZzCheck_ = nullptr;

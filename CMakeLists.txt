@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.7
+    VERSION 26.8.8
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -512,6 +512,11 @@ qt_add_executable(calango
     src/gui/ConvergenceResultsWindow.cpp
     src/gui/OrchestrationWindow.hpp
     src/gui/OrchestrationWindow.cpp
+    src/dft/CalangoDFTEngine.cpp
+    src/dft/HamiltonianAssembler.cpp
+    src/dft/NAOBasisSet.cpp
+    src/dft/RadialGrid.cpp
+    src/dft/SCFSolver.cpp
     src/gui/DatabaseImportDialog.cpp
     src/gui/OrchestrationDocument.cpp
     src/gui/OrchestrationTransforms.cpp
@@ -1898,6 +1903,49 @@ if(CALANGO_BUILD_TESTS)
     target_compile_definitions(calango_script_test PRIVATE
         CALANGO_VERSION="${PROJECT_VERSION}")
     add_test(NAME generated_ase_scripts COMMAND calango_script_test)
+
+    # Static checks over the Python the generators EMIT, not over the C++ that
+    # emits it. Two bugs have shipped that byte-compilation cannot see: a use
+    # of a variable whose definition was lost in an edit is valid Python that
+    # dies at run time with a NameError, halfway through somebody's
+    # calculation. The checker dumps every generated script and asserts that
+    # each one compiles AND that every generator-internal `_name` it reads is
+    # assigned somewhere in the same file (reads guarded by `except NameError`
+    # excepted — that is the one legitimate way to read a name that may not
+    # exist). It found three more instances the moment it was written.
+    add_test(NAME generated_script_lint
+        COMMAND ${CMAKE_COMMAND}
+            -DSCRIPT_TEST=$<TARGET_FILE:calango_script_test>
+            -DCHECKER=${CMAKE_CURRENT_SOURCE_DIR}/tests/check_generated_scripts.py
+            -DPYTHON=${Python3_EXECUTABLE}
+            -DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}/generated_scripts
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/RunScriptLint.cmake)
+
+    # Native DFT engine scaffold. The implemented numerics are checked against
+    # CLOSED-FORM answers (radial quadrature against exact integrals, the
+    # radial Poisson solve against the analytic hydrogen 1s Hartree potential,
+    # Pulay mixing against a linear fixed point), and every unimplemented step
+    # is checked to REFUSE and to leave its output untouched — a scaffold whose
+    # stubs return zeros is one that will eventually report an energy of zero
+    # as though it meant it.
+    add_executable(calango_dft_engine_test
+        tests/DftEngineTest.cpp
+        src/core/AseScriptGenerator.cpp
+        src/core/EngineCalculatorBlocks.cpp
+        src/dft/CalangoDFTEngine.cpp
+        src/dft/HamiltonianAssembler.cpp
+        src/dft/NAOBasisSet.cpp
+        src/dft/RadialGrid.cpp
+        src/dft/SCFSolver.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_dft_engine_test PRIVATE src)
+    # AseScriptGenerator stamps the version into every script it writes.
+    target_compile_definitions(calango_dft_engine_test PRIVATE
+        CALANGO_VERSION="${PROJECT_VERSION}")
+    add_test(NAME dft_engine COMMAND calango_dft_engine_test)
 
     # Volumetric grid parsing: the value block is read with a bulk read plus
     # std::from_chars rather than through istream >> double (5x faster on a

@@ -12,6 +12,7 @@ namespace calango::core {
 std::string toString(CalculatorKind kind)
 {
     switch (kind) {
+    case CalculatorKind::CalangoDft: return "Calango DFT";
     case CalculatorKind::EMT: return "EMT";
     case CalculatorKind::LennardJones: return "Lennard-Jones";
     case CalculatorKind::QuantumEspresso: return "Quantum ESPRESSO";
@@ -1104,6 +1105,19 @@ void emitGromacs(std::ostringstream& out, const CalculatorConfig& c)
 void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
 {
     switch (c.calculator) {
+    case CalculatorKind::CalangoDft:
+        // There is no ASE calculator to build. Calango's own engine runs in
+        // process, so a run on it never reaches a generated script — the
+        // caller dispatches to calango::dft::CalangoDFTEngine instead. Emitting
+        // a comment rather than nothing so a script that somehow got here says
+        // why it cannot run, instead of producing an `atoms` with no
+        // calculator and failing at get_potential_energy().
+        out << "raise RuntimeError(\n"
+               "    \"The Calango DFT engine runs inside the application, \"\n"
+               "    \"not as a generated script. Reaching this line means a \"\n"
+               "    \"run was routed to the script generator instead of to \"\n"
+               "    \"the built-in engine.\")\n";
+        break;
     case CalculatorKind::EMT:
         out << "from ase.calculators.emt import EMT\n"
                "\n"

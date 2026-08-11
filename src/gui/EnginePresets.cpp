@@ -13,6 +13,7 @@ namespace EnginePresets {
 QString presetName(core::CalculatorKind kind)
 {
     switch (kind) {
+    case core::CalculatorKind::CalangoDft: return QStringLiteral("CalangoDFT");
     case core::CalculatorKind::Gpaw: return QStringLiteral("GPAW");
     case core::CalculatorKind::Mace: return QStringLiteral("MACE");
     case core::CalculatorKind::QuantumEspresso:
@@ -55,6 +56,8 @@ QString presetName(core::CalculatorKind kind)
 QString displayName(core::CalculatorKind kind)
 {
     switch (kind) {
+    case core::CalculatorKind::CalangoDft:
+        return QStringLiteral("Calango DFT (built-in, experimental)");
     case core::CalculatorKind::Gpaw: return QStringLiteral("GPAW");
     case core::CalculatorKind::Mace: return QStringLiteral("MACE");
     case core::CalculatorKind::QuantumEspresso:

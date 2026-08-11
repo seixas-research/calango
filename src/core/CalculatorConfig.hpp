@@ -114,6 +114,24 @@ enum class CalculatorKind {
     /// is entirely in the prmtop topology file, which must be built beforehand
     /// (tleap / antechamber) — nothing here can type a structure.
     Amber,
+
+    /// Calango's OWN density-functional engine: all-electron, numerical
+    /// atomic orbitals, written in C++ and run IN PROCESS.
+    ///
+    /// The one entry in this list that is not reached through an ASE
+    /// calculator, and therefore the one that breaks the rule stated above.
+    /// It has to: there is no external binary and no Python calculator to
+    /// build, so a generated script would have nothing to put in `atoms.calc`.
+    /// The run is executed by calango::dft::CalangoDFTEngine directly.
+    ///
+    /// STATUS: a SCAFFOLD. Its self-contained numerics are implemented and
+    /// tested (radial mesh and quadrature, the radial Poisson solve, density
+    /// mixing); basis generation, the integration grid, matrix assembly and
+    /// the eigensolver are not, so a run reports what is missing and produces
+    /// no energy. It is exposed anyway so the wiring is exercised and visible
+    /// rather than landing all at once — but nothing in the application may
+    /// treat a result from it as a number until those pieces exist.
+    CalangoDft,
 };
 
 /// How the LAMMPS calculator talks to LAMMPS. ASE ships two interfaces, and
@@ -178,6 +196,10 @@ constexpr CalculatorFamily calculatorFamily(CalculatorKind kind)
     case CalculatorKind::Abinit:
     case CalculatorKind::Cp2k:
     case CalculatorKind::FhiAims:
+    // Calango's own engine is a first-principles DFT code like the rest of
+    // this group; that it happens to run in process rather than as a job
+    // says nothing about the family it belongs to.
+    case CalculatorKind::CalangoDft:
     case CalculatorKind::Siesta:
     case CalculatorKind::OpenMx:
     case CalculatorKind::Fleur:

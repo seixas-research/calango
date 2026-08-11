@@ -4,6 +4,8 @@
 #include "gui/ExtendedEngineGroups.hpp"
 
 #include <QDialog>
+
+#include <functional>
 #include <QString>
 #include <QStringList>
 
@@ -42,9 +44,29 @@ class SimulationWizardBase : public QDialog {
     Q_OBJECT
 
 public:
-    enum class Action { None, RunLocal, RunRemote };
+    enum class Action { None, RunLocal, RunRemote, RunNativeEngine };
 
     Action action() const { return action_; }
+
+    /// Install the host's in-process runner for Calango's own DFT engine.
+    ///
+    /// That engine has no generated script — it runs inside the application —
+    /// so a wizard on it cannot hand the host a run.py. Instead the review
+    /// stage's Run button sets Action::RunNativeEngine, and the host dispatches
+    /// on that. Supplied as a callback so this class stays free of any
+    /// dependency on the engine, exactly as it stays free of the wizards it
+    /// serves.
+    using NativeEngineRunner =
+        std::function<void(const core::CalculatorConfig& config)>;
+    void setNativeEngineRunner(NativeEngineRunner runner)
+    {
+        nativeEngineRunner_ = std::move(runner);
+    }
+    /// True when the chosen engine runs in process rather than as a script.
+    bool usesNativeEngine() const
+    {
+        return selectedCalculator() == core::CalculatorKind::CalangoDft;
+    }
     QString script() const;            ///< the (possibly edited) preview text
     /// The engine the run uses — the host needs it to resolve the launch
     /// command template (Preferences → "Run").
@@ -160,9 +182,18 @@ protected:
     virtual QString exportFileName() const { return QStringLiteral("run.py"); }
 
     /// Whether a calculator kind should appear in the Stage-2 engine combo.
-    /// Default allows every kind; the Electronic Bands wizard overrides this
-    /// to expose only DFT-capable electronic-structure calculators.
-    virtual bool calculatorAllowed(core::CalculatorKind) const { return true; }
+    ///
+    /// Default allows every kind EXCEPT Calango's own DFT engine, which is
+    /// opt-in per module. It runs in process rather than as a generated
+    /// script, so every module that offers it needs a dispatch path of its
+    /// own; defaulting it ON would put it in front of users in wizards whose
+    /// run path would then not know what to do with it. The Electronic Bands
+    /// wizard overrides this the other way, to expose only DFT-capable
+    /// electronic-structure calculators.
+    virtual bool calculatorAllowed(core::CalculatorKind kind) const
+    {
+        return kind != core::CalculatorKind::CalangoDft;
+    }
 
     /// Where the subclass's own settings page sits in the flow. Most wizards
     /// define the *task* first (what to compute), so their page leads. The
@@ -426,6 +457,7 @@ private:
     void refreshRunCommand();
 
     Action action_ = Action::None;
+    NativeEngineRunner nativeEngineRunner_;
     /// Host-supplied element symbols (see setStructureElements()).
     QStringList structureElements_;
     int stage_ = 0;

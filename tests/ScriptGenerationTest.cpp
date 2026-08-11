@@ -2513,9 +2513,11 @@ int main(int argc, char** argv)
         const std::string base = optics(500, 0.0, 20.0, 0, 0, 0);
         checkContains(base, "np.linspace(0, 20, 500)",
                       "the requested frequency grid reaches the script");
-        checkContains(base, "frequencies=frequencies_eV",
+        checkContains(base, "frequencies=_frequency_arg",
                       "and is handed to DielectricFunction");
-        checkContains(base, "hilbert=False",
+        checkContains(base, "_frequency_arg = frequencies_eV",
+                      "which for point integration IS the requested grid");
+        checkContains(base, "_hilbert = False",
                       "with the transform off, as an explicit grid requires");
 
         // The actual regression: two different requests must not produce the
@@ -2548,7 +2550,7 @@ int main(int argc, char** argv)
         // from their own output files.
         checkContains(base, "\"response_kpts\": list(_response_kpts)",
                       "the mesh actually used is written into optics.json");
-        checkContains(base, "\"npoints\": int(len(frequencies))",
+        checkContains(base, "\"npoints\": int(len(omega_eV))",
                       "along with the grid density");
     }
 
@@ -3528,6 +3530,19 @@ int main(int argc, char** argv)
                       "point integration is the default");
         checkContains(script, "\"integrationmode\": integrationmode",
                       "the integrator is recorded in the results");
+        // Point integration keeps the literal evaluation: the response is
+        // computed at exactly the requested frequencies, which costs more
+        // than a transform and is what makes the window and point count mean
+        // what they say. Only the tetrahedron path trades that away.
+        checkContains(script, "_frequency_arg = frequencies_eV",
+                      "and evaluates on the requested grid itself");
+        checkContains(script, "_hilbert = False",
+                      "with the transform off, which is what selects literal "
+                      "evaluation");
+        check(!contains(script, "\"type\": \"nonlinear\""),
+              "and no non-linear descriptor is involved");
+        checkContains(script, "omega_eV = frequencies",
+                      "so the reporting grid is the evaluated one, unresampled");
     }
     {
         OpticsConfig optics;
@@ -3540,13 +3555,90 @@ int main(int argc, char** argv)
                       "tetrahedron mode uses GPAW's exact spelling");
         checkContains(script, "integrationmode=integrationmode",
                       "passed through to DielectricFunction");
-        // The failure mode this guards: an inherited baseline whose k-grid is
-        // not high-symmetry. Falling back would return a spectrum from a
-        // different integrator than the one requested.
+        // The failure this guards: a k-mesh that does not reach the vertices
+        // of the irreducible zone. GPAW tessellates the IBZ and keeps the
+        // ground-state k-points inside it, so a mesh missing the vertices
+        // leaves the tessellation with nothing to anchor on — the run used to
+        // die partway through the first direction with a KeyError-shaped
+        // failure deep inside the response module.
+        //
+        // It is now PREVENTED rather than diagnosed: the mesh is tested
+        // against GPAW's own predicate before the expensive step and raised
+        // to the smallest compliant grid.
+        checkContains(script, "contains_ibz_vertices_predicate",
+                      "the mesh is tested against GPAW's own IBZ-vertex "
+                      "predicate");
+        checkContains(script, "\"gamma\": True",
+                      "and Gamma-centred — a shifted grid can never contain "
+                      "Gamma, which is a vertex of every IBZ");
+        checkContains(script, "kpts=_response_kpts_spec",
+                      "the compliant mesh is what fixed_density receives");
+        // What the first version of this got wrong, and why it shipped a
+        // failing run: the predicate RAISES on an odd grid rather than
+        // returning False for it, and it is vectorised — so a candidate list
+        // stepping by one lost every candidate, including the even ones, to
+        // that single exception. The mesh then went through unchanged and
+        // GPAW rejected it after the NSCF had already been paid for.
+        checkContains(script, "int(_n) + int(_n) % 2 if _pbc[_i]",
+                      "periodic axes are rounded up to even before anything "
+                      "else — GPAW raises on an odd grid rather than "
+                      "rejecting it");
+        checkContains(script, "range(int(_n), int(_n) + _span + 1, 2)",
+                      "and candidates step by two, so no odd grid can reach "
+                      "the predicate at all");
+        checkContains(script, "_span = max(24, int(_n))",
+                      "over a window wide enough for the sparse compliant "
+                      "sizes: an fcc cell needs multiples of 8, so a request "
+                      "of 9 is only satisfied at 16");
+        checkContains(script, "_hits.extend(_compliant([_g]))",
+                      "and a batch that still raises is retried grid by "
+                      "grid, rather than one offender voiding the rest");
+        checkContains(script, "CALANGO_WARN response k-mesh raised from",
+                      "a substituted mesh is reported, not applied quietly");
+        checkContains(script, "\"kpts_spec\"",
+                      "and recorded alongside the spectrum, so the grid it "
+                      "was computed on survives in the results");
         checkContains(script, "vertices of the IBZ",
-                      "detects the incompatible-grid error");
-        checkContains(script, "find_high_symmetry_monkhorst_pack",
-                      "names the remedy in the error message");
+                      "the late GPAW error is still detected");
+        // The second half of the same failure: GPAW implements tetrahedron
+        // integration ONLY as a Hilbert transform of the spectral function,
+        // and that transform is defined on a non-linear frequency grid. An
+        // explicit linear array dies either way — hilbert=False builds the
+        // literal task whose update signature TetrahedronIntegrator does not
+        // match, hilbert=True asserts on the descriptor type — so the window
+        // is translated into that grid's parameters instead.
+        checkContains(script, "\"type\": \"nonlinear\"",
+                      "tetrahedron integration gets the non-linear frequency "
+                      "descriptor its Hilbert transform requires");
+        checkContains(script, "_hilbert = True",
+                      "with the transform ON — there is no literal-evaluation "
+                      "task for the tetrahedron integrator to use");
+        check(!contains(script, "_hilbert = False"),
+              "and never the flag that selects one");
+        checkContains(script, "\"omega2\": 10.0",
+                      "spacing doubles at GPAW's own default energy");
+        checkContains(script, "float(frequencies_eV[-1]) * 1.5 + 5.0",
+                      "and the grid runs past the requested window, because "
+                      "eps_1 there is a Kramers-Kronig integral over the "
+                      "weight above it");
+        // The grid GPAW evaluates on is then NOT the one the user asked for,
+        // so the spectra are brought back to it rather than the window
+        // silently becoming whatever GPAW chose.
+        checkContains(script, "omega_eV = frequencies_eV",
+                      "the reporting grid stays the requested one");
+        checkContains(script, "np.interp(omega_eV, frequencies, _e.real)",
+                      "and the spectra are resampled onto it");
+        checkContains(script, "eps = _on_report_grid(eps)",
+                      "before any observable is derived from them");
+        checkContains(script, "\"resampled\": bool(_resample)",
+                      "with the fact recorded, so reported resolution is not "
+                      "mistaken for computed resolution");
+        // The remedy named in the message has to be an API that EXISTS:
+        // find_high_symmetry_monkhorst_pack was removed from GPAW, so the old
+        // text sent the user to a function they could not call.
+        check(!contains(script, "find_high_symmetry_monkhorst_pack"),
+              "and the message no longer names a GPAW function that has been "
+              "removed");
         check(!contains(script, "integrationmode = \"point integration\""),
               "does not silently fall back to point integration");
     }
@@ -3557,8 +3649,11 @@ int main(int argc, char** argv)
         OpticsConfig optics;
         optics.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
         const std::string script = generateOpticsScript(optics);
-        check(!contains(script, "kpts=_response_kpts"),
+        check(!contains(script, "kpts=_response_kpts_spec"),
               "no k-mesh line when every axis is left to the baseline");
+        checkContains(script, "_response_kpts_spec = _response_kpts",
+                      "and point integration passes the mesh through "
+                      "unchanged — no Gamma-centring, no substitution");
         checkContains(script, "_requested_kpts = (0, 0, 0)",
                       "and the request is still reported for the log");
         checkContains(script, "symmetry=\"off\"",

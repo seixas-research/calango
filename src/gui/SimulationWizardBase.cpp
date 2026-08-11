@@ -138,7 +138,12 @@ void SimulationWizardBase::buildUi()
     connect(exportButton_, &QPushButton::clicked, this,
             &SimulationWizardBase::exportScript);
     connect(runLocalButton_, &QPushButton::clicked, this, [this] {
-        action_ = Action::RunLocal;
+        // Calango's own engine has no script to launch — it runs in this
+        // process. Distinguished here rather than at the host so a wizard
+        // whose host installed no runner still cannot silently stage a
+        // run.py against a calculator Python has never heard of.
+        action_ = usesNativeEngine() ? Action::RunNativeEngine
+                                     : Action::RunLocal;
         accept();
     });
     connect(runRemoteButton_, &QPushButton::clicked, this, [this] {
@@ -205,6 +210,13 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     const auto separate = [&separatorPending] { separatorPending = true; };
 
     // -- Ab initio / DFT ----------------------------------------------------
+    // Calango's own engine first, because it is the only one that needs no
+    // external code installed — and last in usefulness for now, which is why
+    // the label says so rather than leaving the user to find out from a failed
+    // run. `calculatorAllowed()` keeps it out of every module that cannot yet
+    // be served by it, so it appears only where it is genuinely offered.
+    addCalc(tr("Calango DFT — built-in, all-electron (experimental)"),
+            core::CalculatorKind::CalangoDft);
     addCalc(tr("GPAW (DFT)"), core::CalculatorKind::Gpaw);
     addCalc(tr("Quantum ESPRESSO (DFT)"), core::CalculatorKind::QuantumEspresso);
     addCalc(tr("VASP (DFT)"), core::CalculatorKind::Vasp);

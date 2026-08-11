@@ -242,9 +242,19 @@ QWidget* OpticsWizard::buildSettingsPage()
                "The dielectric function is a Brillouin-zone integral over "
                "interband transitions and converges far more slowly with "
                "k-points than the total energy does, so the grid that "
-               "converged the SCF is routinely too coarse for the spectrum."));
+               "converged the SCF is routinely too coarse for the "
+               "spectrum.\n\n"
+               "Under tetrahedron integration these are held EVEN and stepped "
+               "by two: GPAW raises on an odd grid rather than rejecting it, "
+               "so an odd entry could not even be tested against its "
+               "IBZ-vertex predicate."));
         connect(responseKptsSpin_[i], &QSpinBox::valueChanged, this,
                 [this] { refreshPreview(); });
+        // Rounded on editingFinished rather than valueChanged: the latter
+        // fires per keystroke, and a user typing "16" would see the leading
+        // "1" jump to "2" under their cursor.
+        connect(responseKptsSpin_[i], &QSpinBox::editingFinished, this,
+                [this] { applyTetrahedronMeshConstraints(); });
         meshRow->addWidget(responseKptsSpin_[i]);
     }
     meshRow->addStretch(1);
@@ -273,12 +283,27 @@ QWidget* OpticsWizard::buildSettingsPage()
            "absorption edge — is smeared rather than resolved. Tetrahedron "
            "integration resolves those on a mesh where point integration is "
            "still noisy.\n\n"
-           "Requires the BASELINE's k-grid to contain every vertex of the "
-           "irreducible Brillouin zone (gpaw.bztools."
-           "find_high_symmetry_monkhorst_pack). An ordinary Monkhorst-Pack "
-           "grid usually does not, and the run will stop with that message "
-           "rather than quietly switch back to point integration."));
+           "It requires a response k-mesh containing every vertex of the "
+           "irreducible Brillouin zone — GPAW tessellates the zone and keeps "
+           "the k-points inside it, so a mesh that misses the vertices leaves "
+           "that tessellation with nothing to anchor on. That is a narrow "
+           "condition: the grid must be EVEN and Γ-centred on every periodic "
+           "axis, and each axis restricted to multiples of a number set by "
+           "the lattice — 8 for fcc, diamond and rocksalt, 4 for bcc, 6 for "
+           "hexagonal. An ordinary Monkhorst-Pack grid usually does not "
+           "qualify.\n\n"
+           "The run therefore checks the mesh against GPAW's own predicate "
+           "BEFORE the expensive step and raises it to the cheapest grid that "
+           "does qualify, Γ-centred, saying so in the log. Expect that to "
+           "cost real time — 9×9×9 on an fcc cell becomes 16×16×16, five "
+           "times the k-points. A run whose mesh was adjusted records the "
+           "grid it actually used alongside the spectrum."));
     form->addRow(QString(), tetrahedronCheck_);
+
+    tetrahedronNote_ = new QLabel(page);
+    tetrahedronNote_->setWordWrap(true);
+    tetrahedronNote_->setTextFormat(Qt::RichText);
+    form->addRow(QString(), tetrahedronNote_);
 
     npointsSpin_ = new QSpinBox(page);
     npointsSpin_->setRange(2, 100000);
@@ -336,8 +361,10 @@ QWidget* OpticsWizard::buildSettingsPage()
             [this] { refreshPreview(); });
     connect(npointsSpin_, &QSpinBox::valueChanged, this,
             [this] { refreshPreview(); });
-    connect(tetrahedronCheck_, &QCheckBox::toggled, this,
-            [this] { refreshPreview(); });
+    connect(tetrahedronCheck_, &QCheckBox::toggled, this, [this] {
+        onEngineChanged(); // the note appears/disappears with the choice
+        refreshPreview();
+    });
     connect(dirXxCheck_, &QCheckBox::toggled, this,
             [this] { refreshPreview(); });
     connect(dirYyCheck_, &QCheckBox::toggled, this,
@@ -351,6 +378,24 @@ QWidget* OpticsWizard::buildSettingsPage()
     // yet while this page is being built (it is constructed first).
     vaspGroup_->setVisible(false);
     return page;
+}
+
+void OpticsWizard::applyTetrahedronMeshConstraints()
+{
+    if (!tetrahedronCheck_ || !responseKptsSpin_[0])
+        return;
+    const bool tetra = tetrahedronCheck_->isChecked()
+        && selectedEngine() == core::CalculatorKind::Gpaw;
+    for (auto* spin : responseKptsSpin_) {
+        spin->setSingleStep(tetra ? 2 : 1);
+        // 0 is "auto" — inherit the baseline's divisions on that axis — and
+        // is left alone: what it resolves to is only known once the run has
+        // opened the .gpw, and the script grows it there.
+        if (tetra && spin->value() > 0 && spin->value() % 2 != 0) {
+            const QSignalBlocker block(spin);
+            spin->setValue(spin->value() + 1);
+        }
+    }
 }
 
 bool OpticsWizard::calculatorAllowed(core::CalculatorKind kind) const
@@ -392,6 +437,21 @@ void OpticsWizard::onEngineChanged()
         };
         setRowVisible(ibzCheck_, !vasp);
         setRowVisible(tetrahedronCheck_, !vasp);
+        setRowVisible(tetrahedronNote_, !vasp && tetrahedronCheck_->isChecked());
+        // Stated up front rather than discovered from the log: the mesh the
+        // run integrates on may not be the one typed above, and a spectrum
+        // computed on a different grid than the user believes is exactly the
+        // result that cannot be reproduced later.
+        tetrahedronNote_->setText(
+            tr("<i>Tetrahedron integration needs an <b>even, Γ-centred</b> "
+               "mesh whose points include every vertex of the irreducible "
+               "zone — typically multiples of 8 (fcc), 4 (bcc) or 6 "
+               "(hexagonal) per axis. The mesh above is checked against "
+               "GPAW's own predicate before the expensive step and "
+               "<b>raised to the cheapest grid that qualifies</b>, which can "
+               "be several times the k-points asked for. The run logs any "
+               "change and records the grid it used alongside the "
+               "spectrum.</i>"));
         // Shared spins, engine-specific vocabulary: the broadening is GPAW's
         // η and VASP's CSHIFT; the sample count is an explicit grid for GPAW
         // and the NEDOS tag for VASP.
@@ -404,6 +464,7 @@ void OpticsWizard::onEngineChanged()
             label->setText(vasp ? tr("Frequency grid (NEDOS):")
                                 : tr("Number of points:"));
     }
+    applyTetrahedronMeshConstraints();
     refreshPreview();
 }
 

@@ -30,10 +30,219 @@ bool wantsResponseKpts(const OpticsConfig& cfg)
 /// from not having set anything.
 std::string kpointsLine(const OpticsConfig& cfg)
 {
-    if (!wantsResponseKpts(cfg))
+    // Under tetrahedron integration the mesh is ALWAYS set explicitly, even
+    // when no denser one was asked for: the inherited baseline grid is
+    // whatever converged the SCF and has no reason to contain the IBZ
+    // vertices, which is exactly the configuration that fails.
+    if (!wantsResponseKpts(cfg) && !cfg.tetrahedronIntegration)
         return {};
-    return "    kpts=_response_kpts,  # denser response mesh than the "
-           "baseline SCF\n";
+    return "    kpts=_response_kpts_spec,  # see the k-mesh block above\n";
+}
+
+/// Make the response mesh satisfy what tetrahedron integration requires.
+///
+/// GPAW builds the tetrahedron integration domain by Delaunay-tessellating the
+/// irreducible Brillouin zone and keeping the ground-state k-points that fall
+/// inside it (gpaw/response/kpoints.py, get_tetrahedron_ikpts). If the mesh
+/// does not contain the IBZ *vertices*, the tessellation has nothing to anchor
+/// on and the response module raises — which is the failure this block exists
+/// to prevent rather than diagnose.
+///
+/// So the requested grid is TESTED against GPAW's own predicate, and when it
+/// fails the cheapest compliant grid at or above it is used instead. Four
+/// things about that are deliberate:
+///
+///   * The user's request is the starting point, not a hint. Asking GPAW for
+///     an "optimal" grid from a k-point density would silently discard the
+///     mesh they chose, and a denser response mesh is usually chosen for a
+///     reason.
+///   * The substitution is printed. A spectrum computed on a different mesh
+///     than the one requested, reported as if it were not, is the kind of
+///     result nobody can reproduce from its own output.
+///   * Gamma-centred. A shifted Monkhorst-Pack grid excludes Gamma, which is a
+///     vertex of every IBZ, so an unshifted grid can never comply.
+///   * EVEN on every periodic axis, and searched far above the request. Both
+///     came out of what the predicate actually does: it *raises* on an odd
+///     grid rather than returning False for it (an odd grid cannot land on a
+///     zone-boundary vertex at all), and the compliant sizes are sparse —
+///     measured against GPAW 25.x, multiples of 8 for fcc/diamond/rocksalt,
+///     4 for bcc, 6 for hexagonal. A search that stepped by one and stopped
+///     at +6, as this did, could satisfy none of those and had every odd
+///     candidate poison the whole batch through that raise.
+std::string tetrahedronKpointsBlock()
+{
+    return R"PY(# --- Tetrahedron integration: the mesh must reach the IBZ vertices -
+# GPAW tessellates the irreducible zone and keeps the ground-state
+# k-points inside it. A mesh missing the IBZ VERTICES leaves that
+# tessellation with nothing to anchor on, and the response module refuses
+# to start. Two hard requirements follow from gpaw.bztools:
+#
+#   * the grid must be EVEN along every periodic axis and Gamma-centred;
+#     the predicate raises on an odd grid rather than rejecting it, since
+#     no odd grid can reach a zone-boundary vertex;
+#   * every IBZ vertex must land exactly on a mesh point, which in
+#     practice restricts each axis to multiples of a lattice-dependent
+#     number (8 for fcc/diamond/rocksalt, 4 for bcc, 6 for hexagonal).
+#
+# So the requested mesh is grown rather than nudged: the even grids at or
+# above it are ranked by cost and the cheapest one GPAW's own predicate
+# accepts wins. Checked here, before anything expensive runs.
+_tetra_requested = tuple(int(_n) for _n in _response_kpts)
+# The cell the baseline was converged on. `atoms` is NOT in scope here —
+# at this point in the script only the restarted calculator exists, and
+# the predicate below needs an Atoms object.
+_gs_atoms = getattr(gs, "atoms", None)
+if _gs_atoms is None:
+    _gs_atoms = gs.get_atoms()
+_pbc = np.asarray(_gs_atoms.pbc)
+# Evenness is documented by GPAW itself, so it is honoured even if the
+# predicate cannot be consulted at all: a fallback that keeps a grid we
+# already know is rejected is not a fallback.
+_response_kpts = tuple(int(_n) + int(_n) % 2 if _pbc[_i] else int(_n)
+                       for _i, _n in enumerate(_tetra_requested))
+_response_kpts_spec = {"size": _response_kpts, "gamma": True}
+try:
+    from gpaw.bztools import contains_ibz_vertices_predicate
+except Exception as _exc:
+    print(f"CALANGO_WARN gpaw.bztools.contains_ibz_vertices_predicate "
+          f"is unavailable ({_exc!r}); the mesh is used as-is and "
+          f"tetrahedron integration may fail on it.", flush=True)
+else:
+    # Per-axis candidates, even, from the request upwards. The window is
+    # wide because the compliant sizes are sparse — an fcc cell asked for
+    # 9 needs 16 — and non-periodic axes stay put: a sheet sampled in its
+    # vacuum direction is not a denser sheet.
+    _axis_vals = []
+    for _i, _n in enumerate(_response_kpts):
+        if not _pbc[_i]:
+            _axis_vals.append([int(_n)])
+        else:
+            _span = max(24, int(_n))
+            _axis_vals.append(list(range(int(_n), int(_n) + _span + 1, 2)))
+    _cands = [(_a, _b, _c) for _a in _axis_vals[0]
+              for _b in _axis_vals[1] for _c in _axis_vals[2]]
+    # Cheapest first: the NSCF cost is linear in the number of k-points,
+    # and among equally costly grids, the one that grew least.
+    _cands.sort(key=lambda _g: (_g[0] * _g[1] * _g[2],
+                                max(_g[_i] - _response_kpts[_i]
+                                    for _i in range(3))))
+
+    def _compliant(_batch):
+        _mask = contains_ibz_vertices_predicate(
+            np.array(_batch), _gs_atoms, gamma=True, tolerance=1e-5)
+        return [tuple(int(_v) for _v in _g) for _g, _ok
+                in zip(_batch, np.asarray(_mask, dtype=bool)) if _ok]
+
+    # Tested in cost-ordered chunks, stopping at the first chunk that
+    # yields a hit: the predicate materialises the full k-point set for
+    # every grid it accepts, so there is no reason to price grids far
+    # above the one about to be used. A chunk that raises is retried grid
+    # by grid rather than losing every candidate in it to one offender.
+    _chosen = None
+    for _start in range(0, len(_cands), 64):
+        _batch = _cands[_start:_start + 64]
+        try:
+            _hits = _compliant(_batch)
+        except Exception:
+            _hits = []
+            for _g in _batch:
+                try:
+                    _hits.extend(_compliant([_g]))
+                except Exception:
+                    continue
+                if _hits:
+                    break
+        if _hits:
+            _chosen = _hits[0]
+            break
+    if _chosen is None:
+        raise RuntimeError(
+            "Tetrahedron integration needs a response k-mesh containing "
+            "every vertex of the irreducible Brillouin zone, and no even "
+            f"Gamma-centred grid from {_response_kpts} up to "
+            f"{tuple(_v[-1] for _v in _axis_vals)} satisfies that for "
+            "this cell.\n\n"
+            "Either raise the response k-mesh in the Optics wizard and "
+            "re-run, or turn tetrahedron integration off to use point "
+            "integration with the eta broadening.")
+    _response_kpts_spec = {"size": _chosen, "gamma": True}
+    if _chosen != _tetra_requested:
+        print(f"CALANGO_WARN response k-mesh raised from {_tetra_requested} "
+              f"to {_chosen} (Gamma-centred, even): tetrahedron integration "
+              f"requires every vertex of the irreducible Brillouin zone to "
+              f"fall on a mesh point. This is "
+              f"{(_chosen[0] * _chosen[1] * _chosen[2]) / max(1, _tetra_requested[0] * _tetra_requested[1] * _tetra_requested[2]):.1f}x "
+              f"the k-points requested, and costs accordingly.", flush=True)
+    else:
+        print(f"CALANGO_INFO response k-mesh {_chosen} (Gamma-centred) "
+              f"contains the IBZ vertices", flush=True)
+    _response_kpts = _chosen
+
+)PY";
+}
+
+/// How the photon-energy grid is handed to `DielectricFunction` — which is
+/// NOT the same for the two integrators, and getting it wrong is a hard error
+/// rather than a quality difference.
+///
+/// Point integration evaluates the response literally at whatever frequencies
+/// it is given, so it takes the requested linear grid and `hilbert=False`.
+/// That costs more than the transform, which is the honest price of the grid
+/// being the one that was asked for.
+///
+/// Tetrahedron integration has no literal task at all. GPAW implements it only
+/// through the Hilbert transform of the spectral function
+/// (`chi0_base.construct_hilbert_task`, whose tetrahedron branch is the only
+/// one `TetrahedronIntegrator` matches), and that transform is defined on a
+/// NON-LINEAR grid. Both ways of passing a linear array therefore fail:
+/// `hilbert=False` builds the literal task and dies with a signature mismatch
+/// inside `GenericUpdate.run`, and `hilbert=True` trips
+/// `assert isinstance(self.wd, NonLinearFrequencyDescriptor)`. So the wizard's
+/// window and point count are translated into that grid's parameters instead,
+/// and the spectra are resampled back onto the requested grid afterwards.
+std::string frequencyArgumentBlock(const OpticsConfig& cfg)
+{
+    if (!cfg.tetrahedronIntegration)
+        return "# Point integration evaluates the response at exactly these\n"
+               "# frequencies; hilbert=False is what selects that literal\n"
+               "# evaluation over a transform of the spectral function.\n"
+               "_frequency_arg = frequencies_eV\n"
+               "_hilbert = False\n"
+               "\n";
+
+    std::ostringstream out;
+    out << "# Tetrahedron integration is implemented ONLY as a Hilbert\n"
+           "# transform of the spectral function, and that transform is\n"
+           "# defined on GPAW's non-linear frequency grid. Handing it the\n"
+           "# linear grid above is not a slower path, it is a crash:\n"
+           "# hilbert=False builds the literal integral task, whose update\n"
+           "# signature TetrahedronIntegrator does not match, and hilbert=True\n"
+           "# with an array asserts on the descriptor type. So the requested\n"
+           "# window is translated into the grid's parameters here, and the\n"
+           "# spectra are resampled back onto it after the run.\n"
+           "_frequency_arg = {\n"
+           "    \"type\": \"nonlinear\",\n"
+           "    # Spacing at omega=0, in eV: the requested linear spacing, so\n"
+           "    # the resolution asked for is delivered where the structure\n"
+           "    # is. Floored, because the grid size scales with 1/domega0.\n"
+           "    \"domega0\": max(1e-3, float(frequencies_eV[1]\n"
+           "                                - frequencies_eV[0])),\n"
+           "    # Where that spacing has doubled — GPAW's own default.\n"
+           "    \"omega2\": 10.0,\n"
+           "    # Headroom above the window. eps_1 at omega is a\n"
+           "    # Kramers-Kronig integral over the spectral weight ABOVE it\n"
+           "    # too, so a grid stopping exactly at the top of the window\n"
+           "    # biases the real part right where it is being read.\n"
+        << "    \"omegamax\": float(frequencies_eV[-1]) * 1.5 + 5.0,\n"
+           "}\n"
+           "_hilbert = True\n"
+           "print(f\"CALANGO_INFO tetrahedron integration uses GPAW's \"\n"
+           "      f\"non-linear Hilbert grid \"\n"
+           "      f\"(domega0={_frequency_arg['domega0']:.4f} eV, \"\n"
+           "      f\"omegamax={_frequency_arg['omegamax']:.1f} eV); spectra \"\n"
+           "      f\"are resampled onto the requested grid\", flush=True)\n"
+           "\n";
+    return out.str();
 }
 
 /// Resolves the requested mesh against the baseline's own, and says which is
@@ -60,6 +269,10 @@ std::string responseKpointsBlock(const OpticsConfig& cfg)
            "      f\"requested={_requested_kpts} \"\n"
            "      f\"response k-mesh={_response_kpts}\", flush=True)\n"
            "\n";
+    if (cfg.tetrahedronIntegration)
+        out << tetrahedronKpointsBlock();
+    else
+        out << "_response_kpts_spec = _response_kpts\n\n";
     return out.str();
 }
 
@@ -510,14 +723,9 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "# and that grid was read back, so changing \"Number of points\" or\n"
            "# either energy bound changed nothing whatsoever in the output.\n"
            "#\n"
-           "# hilbert=False is REQUIRED alongside an explicit frequency list.\n"
-           "# GPAW's default path builds a spectral function on its own\n"
-           "# non-linear grid and Hilbert-transforms it, and asserts that\n"
-           "# descriptor's type; turning the transform off evaluates exactly the\n"
-           "# frequencies requested. It costs more — the work is now linear in\n"
-           "# the number of points rather than amortized over the transform —\n"
-           "# which is the honest price of the grid actually being the one that\n"
-           "# was asked for.\n"
+           "# This is the REPORTING grid: what the plots, the CSV export and\n"
+           "# the 2D observables are keyed on. Whether GPAW evaluates on it\n"
+           "# directly depends on the integrator — see below.\n"
         << "frequencies_eV = np.linspace(" << cfg.omegaMinEv << ", "
         << cfg.omegaMaxEv << ", " << (cfg.npoints > 1 ? cfg.npoints : 2)
         << ")\n"
@@ -525,11 +733,12 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "      f\"{frequencies_eV[0]:.3f}..{frequencies_eV[-1]:.3f} eV \"\n"
            "      f\"in {len(frequencies_eV)} points\", flush=True)\n"
            "\n"
-           "try:\n"
+        << frequencyArgumentBlock(cfg)
+        << "try:\n"
            "    df = DielectricFunction(\n"
            "        \"gs_nscf.gpw\",\n"
-           "        frequencies=frequencies_eV,\n"
-           "        hilbert=False,  # required by an explicit frequency list\n"
+           "        frequencies=_frequency_arg,\n"
+           "        hilbert=_hilbert,\n"
         << "        eta=" << cfg.broadeningEv
         << ",  # Lorentzian broadening η, eV\n"
            "        intraband=False,  # semiconductor: no Drude/intraband term\n"
@@ -543,19 +752,23 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "except ValueError as exc:\n"
            "    if \"vertices of the IBZ\" not in str(exc):\n"
            "        raise\n"
-           "    # Tetrahedron integration needs every vertex of the irreducible\n"
-           "    # BZ present in the ground-state k-grid. Falling back to point\n"
-           "    # integration here would return a spectrum computed by a\n"
-           "    # different method than the one requested, labeled as if it\n"
-           "    # were not — so this stops instead.\n"
+           "    # The mesh was already checked against GPAW's own\n"
+           "    # contains_ibz_vertices predicate before the NSCF ran, so\n"
+           "    # reaching here means the response module rejected a grid that\n"
+           "    # predicate accepted — a genuine disagreement worth reporting\n"
+           "    # rather than papering over. Falling back to point integration\n"
+           "    # would return a spectrum computed by a different method than\n"
+           "    # the one requested, labeled as if it were not.\n"
            "    raise RuntimeError(\n"
-           "        \"Tetrahedron integration requires a ground-state k-grid \"\n"
-           "        \"that contains all vertices of the irreducible Brillouin \"\n"
-           "        \"zone, and the inherited baseline's grid does not.\\n\\n\"\n"
-           "        \"Either re-run the Single-Point baseline with a grid from \"\n"
-           "        \"gpaw.bztools.find_high_symmetry_monkhorst_pack(), or \"\n"
-           "        \"turn off tetrahedron integration in the Optics wizard to \"\n"
-           "        \"use point integration with the eta broadening.\\n\\n\"\n"
+           "        \"Tetrahedron integration requires a k-grid containing \"\n"
+           "        \"every vertex of the irreducible Brillouin zone. The \"\n"
+           "        \"response mesh was adjusted to satisfy \"\n"
+           "        \"gpaw.bztools.contains_ibz_vertices_predicate before the \"\n"
+           "        \"NSCF step, and the response module still rejected it.\\n\\n\"\n"
+           "        f\"Mesh used: {_response_kpts_spec}\\n\\n\"\n"
+           "        \"Raise the response k-mesh in the Optics wizard, or turn \"\n"
+           "        \"off tetrahedron integration to use point integration \"\n"
+           "        \"with the eta broadening.\\n\\n\"\n"
            "        f\"GPAW reported: {exc}\"\n"
            "    ) from exc\n"
            "# Read back rather than reused: this is the grid the response\n"
@@ -563,23 +776,60 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "# requested is what would catch a future GPAW quietly substituting\n"
            "# its own.\n"
            "frequencies = np.asarray(df.get_frequencies(), dtype=float)\n"
-           "if len(frequencies) != len(frequencies_eV):\n"
-           "    print(f\"CALANGO_WARN GPAW evaluated {len(frequencies)} \"\n"
-           "          f\"frequencies where {len(frequencies_eV)} were \"\n"
-           "          f\"requested; the spectra follow the grid it used.\",\n"
-           "          flush=True)\n"
+           "# Under tetrahedron integration the grid above is GPAW's own\n"
+           "# non-linear one, so the spectra land on it rather than on the\n"
+           "# window the wizard collected. They are resampled onto that window\n"
+           "# below — a spectrum quietly living on a different grid than the\n"
+           "# one asked for cannot be compared with the run beside it.\n"
+           "_resample = integrationmode == \"tetrahedron integration\"\n"
+           "if _resample:\n"
+           "    if frequencies[-1] + 1e-9 < frequencies_eV[-1]:\n"
+           "        print(f\"CALANGO_WARN GPAW's frequency grid stops at \"\n"
+           "              f\"{frequencies[-1]:.3f} eV, below the requested \"\n"
+           "              f\"{frequencies_eV[-1]:.3f} eV; the spectra are held \"\n"
+           "              f\"flat above it.\", flush=True)\n"
+           "    print(f\"CALANGO_INFO tetrahedron integration evaluated \"\n"
+           "          f\"{len(frequencies)} non-linear grid points over \"\n"
+           "          f\"{frequencies[0]:.2f}..{frequencies[-1]:.2f} eV; \"\n"
+           "          f\"resampled onto the {len(frequencies_eV)} requested \"\n"
+           "          f\"points\", flush=True)\n"
+           "    omega_eV = frequencies_eV\n"
+           "else:\n"
+           "    if len(frequencies) != len(frequencies_eV):\n"
+           "        print(f\"CALANGO_WARN GPAW evaluated {len(frequencies)} \"\n"
+           "              f\"frequencies where {len(frequencies_eV)} were \"\n"
+           "              f\"requested; the spectra follow the grid it used.\",\n"
+           "              flush=True)\n"
+           "    omega_eV = frequencies\n"
+           "\n"
+           "\n"
+           "def _on_report_grid(_eps):\n"
+           "    \"\"\"A spectrum on the reporting grid.\n"
+           "\n"
+           "    Identity for point integration, which evaluated on that grid\n"
+           "    already. For tetrahedron integration, linear interpolation of\n"
+           "    the real and imaginary parts off GPAW's non-linear grid;\n"
+           "    np.interp clamps rather than extrapolating, which is why the\n"
+           "    short-grid case above is a warning and not a silent tail.\n"
+           "    \"\"\"\n"
+           "    if not _resample:\n"
+           "        return _eps\n"
+           "    _e = np.asarray(_eps)\n"
+           "    return (np.interp(omega_eV, frequencies, _e.real)\n"
+           "            + 1j * np.interp(omega_eV, frequencies, _e.imag))\n"
+           "\n"
+           "\n"
            "_calango_progress(3, 4)\n"
            "\n"
            "# ħc = 197.3269804 eV·nm = 197.3269804e-7 eV·cm. With ħω in eV the\n"
            "# absorption coefficient α = 2 (ω / ħc) k then comes out in cm^-1.\n"
            "hbar_c_eV_cm = 197.3269804e-7\n"
-           "omega_eV = frequencies\n"
            "\n"
            "# The integrator is recorded alongside the spectra: two runs of the\n"
            "# same system can differ visibly in peak shape purely by this\n"
            "# choice, so a spectrum that does not say which was used is not\n"
            "# reproducible from its own output.\n"
-           "results = {\"energy_eV\": [float(w) for w in frequencies]}\n"
+           "results = {\"energy_eV\": [float(w) for w in omega_eV]}\n"
            "results.update(results_meta)\n"
            "# The sampling that produced these numbers, recorded alongside\n"
            "# them: two spectra that differ only in k-mesh or grid density are\n"
@@ -588,9 +838,23 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "    \"response_kpts\": list(_response_kpts),\n"
            "    \"baseline_kpts\": list(_baseline_kpts),\n"
            "    \"requested_kpts\": list(_requested_kpts),\n"
-           "    \"npoints\": int(len(frequencies)),\n"
-           "    \"omega_min_eV\": float(frequencies[0]),\n"
-           "    \"omega_max_eV\": float(frequencies[-1]),\n"
+           "    # What fixed_density was actually given. Under tetrahedron\n"
+           "    # integration this can differ from the requested mesh, and a\n"
+           "    # spectrum that does not record the grid it was computed on\n"
+           "    # cannot be reproduced from its own output.\n"
+           "    \"kpts_spec\": (dict(_response_kpts_spec)\n"
+           "                  if isinstance(_response_kpts_spec, dict)\n"
+           "                  else list(_response_kpts_spec)),\n"
+           "    \"npoints\": int(len(omega_eV)),\n"
+           "    \"omega_min_eV\": float(omega_eV[0]),\n"
+           "    \"omega_max_eV\": float(omega_eV[-1]),\n"
+           "    # The grid GPAW actually evaluated on, kept separately: under\n"
+           "    # tetrahedron integration it is the non-linear Hilbert grid the\n"
+           "    # spectra were resampled from, and without it the reported\n"
+           "    # resolution looks like computed resolution.\n"
+           "    \"evaluated_npoints\": int(len(frequencies)),\n"
+           "    \"evaluated_omega_max_eV\": float(frequencies[-1]),\n"
+           "    \"resampled\": bool(_resample),\n"
         << "    \"eta_eV\": " << cfg.broadeningEv << ",\n"
            "    \"ibz_points\": int(len(_ibz)),\n"
            "}\n"
@@ -611,7 +875,10 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "    eps = np.asarray(eps_lfc)\n"
            "    # Drop any non-finite frequency points (missing grid entries /\n"
            "    # singular matrix rows) rather than propagating NaNs downstream.\n"
+           "    # Before the resample, not after: one NaN interpolated is a\n"
+           "    # whole neighbourhood of NaN.\n"
            "    eps = np.where(np.isfinite(eps), eps, 0.0)\n"
+           "    eps = _on_report_grid(eps)\n"
            "    eps1 = eps.real\n"
            "    eps2 = eps.imag\n"
            "    refractive = np.sqrt(eps.astype(complex))  # N = n + i k\n"
