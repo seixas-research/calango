@@ -74,6 +74,23 @@ enum class OrchestrationTask {
     // the canvas rather than as a job, which is what the family actually
     // decides.
     TdbGenerator,
+    // -- The alloy pipeline -------------------------------------------------
+    // Container(parent lattice) → SQS Generator → simulations → ECI Fitter →
+    // CVM Entropy. The first is a structure transform in the strict sense; the
+    // other two are in this family for the TdbGenerator's reason — they
+    // consume RESULTS and run on the canvas rather than as a job.
+    SqsGenerator,
+    ClusterExpansionFit,
+    CvmEntropy,
+    /// Thermodynamic integration — the ABSOLUTE Gibbs free energy of a liquid
+    /// (or, with the Einstein reference, a solid).
+    ///
+    /// A Simulation like Molecular Dynamics, and for the same reason: it reads
+    /// a structure, runs a job whose forces come from the chosen engine, and
+    /// produces results. What it runs is one thermostatted MD per λ window
+    /// rather than one trajectory, but that is inside the generated script and
+    /// changes nothing about how the canvas drives it.
+    LiquidFreeEnergy,
 };
 
 /// Which of the three groups a task belongs to. The Add Process list is
@@ -228,6 +245,18 @@ public:
     const TdbGeneratorSpec& tdbGenerator() const { return tdb_; }
     void setTdbGenerator(const TdbGeneratorSpec& spec);
 
+    const SqsGeneratorSpec& sqsGenerator() const { return sqs_; }
+    void setSqsGenerator(const SqsGeneratorSpec& spec);
+
+    const ClusterExpansionFitSpec& clusterExpansionFit() const
+    {
+        return clusterFit_;
+    }
+    void setClusterExpansionFit(const ClusterExpansionFitSpec& spec);
+
+    const CvmEntropySpec& cvmEntropy() const { return cvm_; }
+    void setCvmEntropy(const CvmEntropySpec& spec);
+
     /// Whether this node has everything it needs, as a message: empty when it
     /// is ready, otherwise what is missing. Covers "never configured" for the
     /// analysis modules and the empty-payload cases for the transforms.
@@ -298,6 +327,9 @@ private:
     SupercellSpec supercell_;
     DefectSpec defects_;
     TdbGeneratorSpec tdb_;
+    SqsGeneratorSpec sqs_;
+    ClusterExpansionFitSpec clusterFit_;
+    CvmEntropySpec cvm_;
     std::vector<InputLine> inputLines_;
     std::vector<OrchestrationEdgeItem*> edges_;
 };
@@ -502,6 +534,15 @@ public:
     /// Set a TDB Generator node's assessment settings. Same invalidation rule.
     void setNodeTdbGenerator(OrchestrationNodeItem* node,
                              const TdbGeneratorSpec& spec);
+    /// Set an SQS Generator node's compositions. Same invalidation rule.
+    void setNodeSqsGenerator(OrchestrationNodeItem* node,
+                             const SqsGeneratorSpec& spec);
+    /// Set an ECI Fitter node's cluster basis. Same invalidation rule.
+    void setNodeClusterExpansionFit(OrchestrationNodeItem* node,
+                                    const ClusterExpansionFitSpec& spec);
+    /// Set a CVM Entropy node's lattice and range. Same invalidation rule.
+    void setNodeCvmEntropy(OrchestrationNodeItem* node,
+                           const CvmEntropySpec& spec);
 
     /// The folder the current (or last) run staged everything under. Empty
     /// before the first send.

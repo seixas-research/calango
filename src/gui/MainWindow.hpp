@@ -181,6 +181,13 @@ private Q_SLOTS:
     void kPointsConvergence();
     void geometryOptimization();
     void molecularDynamics();
+    /// Simulation -> "Liquid Free Energy (TI)…": thermodynamic
+    /// integration for an ABSOLUTE Gibbs free energy. Unlike every
+    /// other wizard on this menu it can submit MORE THAN ONE job — the
+    /// lambda windows are independent, so they can be split across the
+    /// existing queue — which is why it does not go through
+    /// runSimulationWizard().
+    void liquidFreeEnergy();
     void openMonteCarlo();
     void openNudgedElasticBand();
     void onRemoteResultsReady(const QString& localDir);
@@ -421,6 +428,8 @@ private Q_SLOTS:
     void openElectronPhonon();
     /// Modules → "CALPHAD…": load a .tdb and choose the system.
     void openCalphad();
+    void openEciFit();
+    void openCvmComparison();
     void openSqsBuilder();
     void openClusterExpansion();
     /// Simulation → "Cluster Expansion Calculation…": batch-relax the current

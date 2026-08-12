@@ -2,6 +2,7 @@
 
 #include "core/CalphadModel.hpp"
 #include "core/Element.hpp"
+#include "core/SqsGenerator.hpp"
 #include "core/Structure.hpp"
 #include "core/TdbWriter.hpp"
 #include "gui/GuiUtils.hpp"
@@ -12,6 +13,9 @@
 #include <QObject>
 #include <QStringList>
 
+#include <algorithm>
+#include <cmath>
+#include <map>
 #include <set>
 
 namespace calango::gui {
@@ -662,6 +666,576 @@ bool runTdbAssessment(const QString& ensembleJson, const TdbGeneratorSpec& spec,
             .arg(assessment.fit.rmsResidualJPerMol, 0, 'f', 1)
             .arg(assessment.fit.usedSamples);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// AlloyComposition / SqsGeneratorSpec
+// ---------------------------------------------------------------------------
+
+QString AlloyComposition::describe() const
+{
+    QStringList parts;
+    for (const auto& [symbol, fraction] : species)
+        parts << QStringLiteral("%1 %2").arg(symbol).arg(fraction, 0, 'g', 3);
+    return parts.join(QStringLiteral(" / "));
+}
+
+QString AlloyComposition::name() const
+{
+    if (!label.isEmpty())
+        return label;
+    // "Cu75Au25": percentages of the NORMALIZED fractions, so a list typed as
+    // 3:1 and one typed as 0.75:0.25 name the same material. Two compositions
+    // that round to the same percentages would collide, which is exactly when
+    // they are the same alloy to three digits and want telling apart by hand.
+    double total = 0.0;
+    for (const auto& [symbol, fraction] : species)
+        total += fraction;
+    if (total <= 0.0)
+        return QObject::tr("alloy");
+    QString out;
+    for (const auto& [symbol, fraction] : species)
+        out += QStringLiteral("%1%2").arg(symbol).arg(
+            qRound(100.0 * fraction / total));
+    return out;
+}
+
+QJsonObject AlloyComposition::toJson() const
+{
+    QJsonArray entries;
+    for (const auto& [symbol, fraction] : species) {
+        QJsonObject entry;
+        entry.insert(QStringLiteral("element"), symbol);
+        entry.insert(QStringLiteral("fraction"), fraction);
+        entries.append(entry);
+    }
+    QJsonObject object;
+    object.insert(QStringLiteral("label"), label);
+    object.insert(QStringLiteral("species"), entries);
+    return object;
+}
+
+AlloyComposition AlloyComposition::fromJson(const QJsonObject& object)
+{
+    AlloyComposition composition;
+    composition.label = object.value(QStringLiteral("label")).toString();
+    for (const QJsonValue& value :
+         object.value(QStringLiteral("species")).toArray()) {
+        const QJsonObject entry = value.toObject();
+        composition.species.append(
+            {entry.value(QStringLiteral("element")).toString(),
+             entry.value(QStringLiteral("fraction")).toDouble()});
+    }
+    return composition;
+}
+
+bool SqsGeneratorSpec::isValid() const
+{
+    if (compositions.isEmpty() || na < 1 || nb < 1 || nc < 1 || steps < 1)
+        return false;
+    if (shell1 <= 0.0)
+        return false;
+    for (const AlloyComposition& composition : compositions) {
+        if (!composition.isValid())
+            return false;
+        for (const auto& [symbol, fraction] : composition.species)
+            if (fraction <= 0.0
+                || core::Elements::atomicNumber(symbol.toStdString()) == 0)
+                return false;
+    }
+    return true;
+}
+
+QString SqsGeneratorSpec::describe() const
+{
+    if (compositions.isEmpty())
+        return QObject::tr("no compositions");
+    QStringList names;
+    for (const AlloyComposition& composition : compositions)
+        names << composition.name();
+    QString clusters = QObject::tr("pairs to %1 Å")
+                           .arg(std::max(shell1, shell2), 0, 'g', 3);
+    if (tripletCutoff > 0.0)
+        clusters += QObject::tr(" + triplets to %1 Å").arg(tripletCutoff, 0, 'g', 3);
+    if (quadrupletCutoff > 0.0)
+        clusters += QObject::tr(" + quadruplets to %1 Å")
+                        .arg(quadrupletCutoff, 0, 'g', 3);
+    return QObject::tr("%1 · %2x%3x%4 · %5")
+        .arg(names.join(QStringLiteral(", ")))
+        .arg(na)
+        .arg(nb)
+        .arg(nc)
+        .arg(clusters);
+}
+
+QJsonObject SqsGeneratorSpec::toJson() const
+{
+    QJsonArray entries;
+    for (const AlloyComposition& composition : compositions)
+        entries.append(composition.toJson());
+    QJsonObject object;
+    object.insert(QStringLiteral("supercell"),
+                  QJsonArray{na, nb, nc});
+    object.insert(QStringLiteral("replace_element"), replaceElement);
+    object.insert(QStringLiteral("compositions"), entries);
+    object.insert(QStringLiteral("shell1"), shell1);
+    object.insert(QStringLiteral("shell2"), shell2);
+    object.insert(QStringLiteral("triplet_cutoff"), tripletCutoff);
+    object.insert(QStringLiteral("quadruplet_cutoff"), quadrupletCutoff);
+    object.insert(QStringLiteral("triplet_weight"), tripletWeight);
+    object.insert(QStringLiteral("quadruplet_weight"), quadrupletWeight);
+    object.insert(QStringLiteral("steps"), steps);
+    object.insert(QStringLiteral("seed"), seed);
+    return object;
+}
+
+SqsGeneratorSpec SqsGeneratorSpec::fromJson(const QJsonObject& object)
+{
+    SqsGeneratorSpec spec;
+    const QJsonArray cell = object.value(QStringLiteral("supercell")).toArray();
+    if (cell.size() == 3) {
+        spec.na = cell[0].toInt(spec.na);
+        spec.nb = cell[1].toInt(spec.nb);
+        spec.nc = cell[2].toInt(spec.nc);
+    }
+    spec.replaceElement =
+        object.value(QStringLiteral("replace_element")).toString();
+    for (const QJsonValue& value :
+         object.value(QStringLiteral("compositions")).toArray())
+        spec.compositions.append(AlloyComposition::fromJson(value.toObject()));
+    spec.shell1 = object.value(QStringLiteral("shell1")).toDouble(spec.shell1);
+    spec.shell2 = object.value(QStringLiteral("shell2")).toDouble(spec.shell2);
+    spec.tripletCutoff = object.value(QStringLiteral("triplet_cutoff"))
+                             .toDouble(spec.tripletCutoff);
+    spec.quadrupletCutoff = object.value(QStringLiteral("quadruplet_cutoff"))
+                                .toDouble(spec.quadrupletCutoff);
+    spec.tripletWeight = object.value(QStringLiteral("triplet_weight"))
+                             .toDouble(spec.tripletWeight);
+    spec.quadrupletWeight = object.value(QStringLiteral("quadruplet_weight"))
+                                .toDouble(spec.quadrupletWeight);
+    spec.steps = object.value(QStringLiteral("steps")).toInt(spec.steps);
+    spec.seed = object.value(QStringLiteral("seed")).toInt(spec.seed);
+    return spec;
+}
+
+bool runSqsGeneration(const core::Structure& parent,
+                      const SqsGeneratorSpec& spec, int index,
+                      SqsGeneratorOutput* output, QString* error)
+{
+    const auto fail = [error](const QString& message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+    if (!output)
+        return fail(QObject::tr("no output was requested"));
+    if (!spec.isValid())
+        return fail(QObject::tr("its settings cannot be used (%1)")
+                        .arg(spec.describe()));
+
+    const int clamped =
+        std::clamp(index, 0, static_cast<int>(spec.compositions.size()) - 1);
+    const AlloyComposition& composition =
+        spec.compositions[static_cast<qsizetype>(clamped)];
+
+    core::SqsGenerator::Params params;
+    params.nx = spec.na;
+    params.ny = spec.nb;
+    params.nz = spec.nc;
+    params.shell1 = spec.shell1;
+    params.shell2 = spec.shell2;
+    params.tripletCutoff = spec.tripletCutoff;
+    params.quadrupletCutoff = spec.quadrupletCutoff;
+    params.tripletWeight = spec.tripletWeight;
+    params.quadrupletWeight = spec.quadrupletWeight;
+    params.steps = spec.steps;
+    params.seed = static_cast<unsigned>(spec.seed);
+    for (const auto& [symbol, fraction] : composition.species)
+        params.composition.emplace_back(symbol.toStdString(), fraction);
+
+    // An unset sublattice element means "whatever this structure is mostly
+    // made of". Resolved HERE rather than in the editor because the node is
+    // normally configured before anything has run, when there is no structure
+    // to resolve it against.
+    QString replace = spec.replaceElement.trimmed();
+    if (replace.isEmpty()) {
+        std::map<int, int> population;
+        for (const core::Atom& atom : parent.atoms())
+            ++population[atom.atomicNumber];
+        int best = 0;
+        int bestCount = 0;
+        for (const auto& [z, count] : population)
+            if (count > bestCount) {
+                best = z;
+                bestCount = count;
+            }
+        if (best == 0)
+            return fail(QObject::tr("its input structure has no atoms"));
+        replace = QString::fromUtf8(core::Elements::data(best).symbol);
+    }
+    params.replaceElement = replace.toStdString();
+
+    core::SqsGenerator::Result result;
+    try {
+        result = core::SqsGenerator::generate(parent, params);
+    } catch (const std::exception& e) {
+        return fail(QObject::tr("the SQS could not be generated (%1)")
+                        .arg(QString::fromUtf8(e.what())));
+    }
+
+    output->structure = std::move(result.structure);
+    output->label = composition.name();
+
+    QJsonObject summary;
+    summary.insert(QStringLiteral("schema"), QStringLiteral("calango.sqs/1"));
+    summary.insert(QStringLiteral("composition"), composition.toJson());
+    summary.insert(QStringLiteral("replace_element"), replace);
+    summary.insert(QStringLiteral("supercell"),
+                   QJsonArray{spec.na, spec.nb, spec.nc});
+    summary.insert(QStringLiteral("sublattice_sites"), result.sublatticeSites);
+    summary.insert(QStringLiteral("objective"), result.objective);
+    summary.insert(QStringLiteral("initial_objective"), result.initialObjective);
+    summary.insert(
+        QStringLiteral("deviation"),
+        QJsonObject{{QStringLiteral("pair"), result.deviation.pair},
+                    {QStringLiteral("triplet"), result.deviation.triplet},
+                    {QStringLiteral("quadruplet"), result.deviation.quadruplet}});
+    summary.insert(QStringLiteral("clusters"),
+                   QJsonObject{{QStringLiteral("pairs"), result.pairs},
+                               {QStringLiteral("triplets"), result.triplets},
+                               {QStringLiteral("quadruplets"),
+                                result.quadruplets}});
+    summary.insert(QStringLiteral("steps"), result.steps);
+    summary.insert(QStringLiteral("accepted"), result.accepted);
+    // The short-range order of what was produced, in the units alloy people
+    // read. ΔΠ is internal to the optimizer; α = 0 is the ideal random alloy
+    // to anyone, and it is what the downstream CVM curve is compared against.
+    QJsonArray shells;
+    double worstAlpha = 0.0;
+    for (const core::WarrenCowleyShell& shell : result.shortRangeOrder.shells) {
+        QJsonArray rows;
+        for (const std::vector<double>& row : shell.alpha) {
+            QJsonArray columns;
+            for (const double alpha : row) {
+                columns.append(std::isnan(alpha) ? QJsonValue()
+                                                 : QJsonValue(alpha));
+                if (!std::isnan(alpha))
+                    worstAlpha = std::max(worstAlpha, std::abs(alpha));
+            }
+            rows.append(columns);
+        }
+        QJsonObject entry;
+        entry.insert(QStringLiteral("r_min"), shell.rMin);
+        entry.insert(QStringLiteral("r_max"), shell.rMax);
+        entry.insert(QStringLiteral("mean_neighbors"), shell.meanNeighbors);
+        entry.insert(QStringLiteral("alpha"), rows);
+        shells.append(entry);
+    }
+    QJsonArray speciesArray;
+    for (const int z : result.shortRangeOrder.species)
+        speciesArray.append(QString::fromUtf8(core::Elements::data(z).symbol));
+    summary.insert(QStringLiteral("warren_cowley"),
+                   QJsonObject{{QStringLiteral("species"), speciesArray},
+                               {QStringLiteral("shells"), shells}});
+    output->summaryJson =
+        QString::fromUtf8(QJsonDocument(summary).toJson(QJsonDocument::Indented));
+
+    output->headline =
+        QObject::tr("%1 on %2 sites: ΔΠ %3 (from %4), max |α| %5")
+            .arg(output->label)
+            .arg(result.sublatticeSites)
+            .arg(result.objective, 0, 'g', 3)
+            .arg(result.initialObjective, 0, 'g', 3)
+            .arg(worstAlpha, 0, 'f', 4);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// ClusterExpansionFitSpec
+// ---------------------------------------------------------------------------
+
+QString ClusterExpansionFitSpec::methodName(Method method)
+{
+    switch (method) {
+    case Method::Ridge:
+        return QObject::tr("ridge");
+    case Method::Ard:
+        return QObject::tr("ARD");
+    case Method::Lasso:
+        break;
+    }
+    return QObject::tr("lasso");
+}
+
+QString ClusterExpansionFitSpec::describe() const
+{
+    QStringList parts;
+    parts << methodName(method);
+    parts << QObject::tr("pairs %1 Å").arg(pairCutoff, 0, 'g', 3);
+    if (tripletCutoff > 0.0)
+        parts << QObject::tr("triplets %1 Å").arg(tripletCutoff, 0, 'g', 3);
+    if (quadrupletCutoff > 0.0)
+        parts << QObject::tr("quadruplets %1 Å").arg(quadrupletCutoff, 0, 'g', 3);
+    parts << (crossValidationFolds > 0
+                  ? QObject::tr("%1-fold CV").arg(crossValidationFolds)
+                  : QObject::tr("leave-one-out"));
+    if (oneStandardError)
+        parts << QObject::tr("1-SE rule");
+    return parts.join(QStringLiteral(", "));
+}
+
+QJsonObject ClusterExpansionFitSpec::toJson() const
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("method"), static_cast<int>(method));
+    object.insert(QStringLiteral("pair_cutoff"), pairCutoff);
+    object.insert(QStringLiteral("triplet_cutoff"), tripletCutoff);
+    object.insert(QStringLiteral("quadruplet_cutoff"), quadrupletCutoff);
+    object.insert(QStringLiteral("lambda_count"), lambdaCount);
+    object.insert(QStringLiteral("cv_folds"), crossValidationFolds);
+    object.insert(QStringLiteral("one_standard_error"), oneStandardError);
+    object.insert(QStringLiteral("standardize"), standardize);
+    return object;
+}
+
+ClusterExpansionFitSpec
+ClusterExpansionFitSpec::fromJson(const QJsonObject& object)
+{
+    ClusterExpansionFitSpec spec;
+    // Clamped, not cast blindly: a document from a newer Calango could name a
+    // method this build has never heard of, and an out-of-range enum is
+    // undefined behaviour the first time it reaches a switch.
+    spec.method = static_cast<Method>(
+        std::clamp(object.value(QStringLiteral("method")).toInt(1), 0, 2));
+    spec.pairCutoff =
+        object.value(QStringLiteral("pair_cutoff")).toDouble(spec.pairCutoff);
+    spec.tripletCutoff = object.value(QStringLiteral("triplet_cutoff"))
+                             .toDouble(spec.tripletCutoff);
+    spec.quadrupletCutoff = object.value(QStringLiteral("quadruplet_cutoff"))
+                                .toDouble(spec.quadrupletCutoff);
+    spec.lambdaCount =
+        object.value(QStringLiteral("lambda_count")).toInt(spec.lambdaCount);
+    spec.crossValidationFolds = object.value(QStringLiteral("cv_folds"))
+                                    .toInt(spec.crossValidationFolds);
+    spec.oneStandardError = object.value(QStringLiteral("one_standard_error"))
+                                .toBool(spec.oneStandardError);
+    spec.standardize =
+        object.value(QStringLiteral("standardize")).toBool(spec.standardize);
+    return spec;
+}
+
+bool runClusterExpansionFit(const QString& ensembleJson,
+                            const ClusterExpansionFitSpec& spec,
+                            ClusterExpansionFitOutput* output, QString* error)
+{
+    const auto fail = [error](const QString& message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+    if (!output)
+        return fail(QObject::tr("no output was requested"));
+    if (!spec.isValid())
+        return fail(QObject::tr("its settings are out of range (%1)")
+                        .arg(spec.describe()));
+
+    // The input is validated BEFORE the refusal below, so that a mis-wired
+    // graph is reported as a mis-wired graph rather than as the missing
+    // solver. These two failures look identical from the canvas and have
+    // nothing to do with each other.
+    const QJsonObject root =
+        QJsonDocument::fromJson(ensembleJson.toUtf8()).object();
+    const QJsonArray configurations =
+        root.value(QStringLiteral("configurations")).toArray();
+    if (configurations.isEmpty())
+        return fail(QObject::tr(
+            "its input carries no configurations — the upstream run is not a "
+            "cluster-expansion ensemble"));
+    int usable = 0;
+    for (const QJsonValue& value : configurations) {
+        const QJsonValue energy =
+            value.toObject().value(QStringLiteral("energy_per_atom"));
+        if (!energy.isNull() && !energy.isUndefined())
+            ++usable;
+    }
+    if (usable < 2)
+        return fail(QObject::tr(
+            "its ensemble holds %1 configuration(s) with an energy. A cluster "
+            "expansion is a regression: it needs more samples than it has "
+            "clusters, and it has at least two.")
+                        .arg(usable));
+
+    // ---------------------- WIRE-UP POINT --------------------------------
+    // This node's I/O is finished. TWO things are still needed, and only the
+    // first is the obvious one:
+    //
+    // 1. The solver. core::fitEffectiveClusterInteractions (in
+    //    core/ClusterExpansionFit.hpp) takes a DESIGN MATRIX and a vector of
+    //    energies, plus core::EciFitOptions, which spec maps onto directly:
+    //        method  -> core::EciMethod (same order: Ridge, Lasso, Ard)
+    //        lambdaCount, cvFolds, oneStandardError, standardize -> same names
+    //    and returns an EciFitResult carrying eci[], intercept, lambda,
+    //    cvScore, rmse and the ranked terms.
+    //
+    // 2. THE DESIGN MATRIX, WHICH DOES NOT EXIST YET. This is the part that is
+    //    easy to miss. `cluster_expansion.json` — written by
+    //    ClusterExpansionScriptGenerator — records per configuration only
+    //    frame/formula/concentration/natoms/energy/energy_per_atom/
+    //    formation_energy. There are NO cluster correlations in it, and the
+    //    fit needs one row of them per configuration. So the correlations have
+    //    to come from somewhere:
+    //      (a) extend the generated script to emit each configuration's
+    //          correlation vector (core::ClusterExpansionConfig already
+    //          carries one) into the JSON alongside its energy — the cheap
+    //          option, and it makes the file self-describing; or
+    //      (b) re-enumerate them here from the ensemble's relaxed trajectory,
+    //          using spec's three cutoffs.
+    //    Whichever is chosen, the cutoffs in this spec describe THAT basis;
+    //    they are not options of the fit itself.
+    //
+    // Then serialize the result into output->eciJson under schema
+    // "calango.cluster_expansion.eci/1", with an "eci" array of
+    // {order, radius, multiplicity, value_eV} plus cv_score and rmse, because
+    // that is what runCvmEntropy() below reads back.
+    //
+    // Refusing is deliberate. Writing a plausible-looking file of zeros would
+    // give the downstream CVM node something to consume and produce a smooth,
+    // completely wrong entropy curve with nothing anywhere to say so.
+    return fail(QObject::tr(
+        "its ECI solver is not wired up in this version yet. The ensemble "
+        "reaching it is usable (%1 configuration(s) with energies), but a "
+        "cluster expansion also needs one row of cluster correlations per "
+        "configuration and cluster_expansion.json carries none. This node "
+        "refuses rather than emitting an ECI file of zeros that the CVM node "
+        "downstream would turn into a plausible and entirely wrong entropy "
+        "curve.")
+                    .arg(usable));
+}
+
+// ---------------------------------------------------------------------------
+// CvmEntropySpec
+// ---------------------------------------------------------------------------
+
+QString CvmEntropySpec::latticeName(Lattice lattice)
+{
+    switch (lattice) {
+    case Lattice::Bcc:
+        return QObject::tr("bcc");
+    case Lattice::Chain:
+        return QObject::tr("chain");
+    case Lattice::Fcc:
+        break;
+    }
+    return QObject::tr("fcc");
+}
+
+QString CvmEntropySpec::approximationName(Approximation approximation)
+{
+    switch (approximation) {
+    case Approximation::Point:
+        return QObject::tr("point (ideal)");
+    case Approximation::Pair:
+        return QObject::tr("pair");
+    case Approximation::Tetrahedron:
+        break;
+    }
+    return QObject::tr("tetrahedron");
+}
+
+QString CvmEntropySpec::describe() const
+{
+    return QObject::tr("%1, %2, %3–%4 K")
+        .arg(latticeName(lattice), approximationName(approximation))
+        .arg(minTemperatureK, 0, 'g', 4)
+        .arg(maxTemperatureK, 0, 'g', 4);
+}
+
+QJsonObject CvmEntropySpec::toJson() const
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("lattice"), static_cast<int>(lattice));
+    object.insert(QStringLiteral("approximation"),
+                  static_cast<int>(approximation));
+    object.insert(QStringLiteral("t_min"), minTemperatureK);
+    object.insert(QStringLiteral("t_max"), maxTemperatureK);
+    object.insert(QStringLiteral("t_steps"), temperatureSteps);
+    return object;
+}
+
+CvmEntropySpec CvmEntropySpec::fromJson(const QJsonObject& object)
+{
+    CvmEntropySpec spec;
+    // Clamped rather than cast blindly: a document written by a newer Calango
+    // could name a lattice this build has never heard of, and an out-of-range
+    // enum would be undefined behaviour the first time it reached a switch.
+    const int lattice = std::clamp(
+        object.value(QStringLiteral("lattice")).toInt(0), 0, 2);
+    const int approximation = std::clamp(
+        object.value(QStringLiteral("approximation")).toInt(2), 0, 2);
+    spec.lattice = static_cast<Lattice>(lattice);
+    spec.approximation = static_cast<Approximation>(approximation);
+    spec.minTemperatureK =
+        object.value(QStringLiteral("t_min")).toDouble(spec.minTemperatureK);
+    spec.maxTemperatureK =
+        object.value(QStringLiteral("t_max")).toDouble(spec.maxTemperatureK);
+    spec.temperatureSteps =
+        object.value(QStringLiteral("t_steps")).toInt(spec.temperatureSteps);
+    return spec;
+}
+
+bool runCvmEntropy(const QString& eciJson, const CvmEntropySpec& spec,
+                   CvmEntropyOutput* output, QString* error)
+{
+    const auto fail = [error](const QString& message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+    if (!output)
+        return fail(QObject::tr("no output was requested"));
+    if (!spec.isValid())
+        return fail(QObject::tr("its temperature range is not usable (%1)")
+                        .arg(spec.describe()));
+
+    const QJsonObject root = QJsonDocument::fromJson(eciJson.toUtf8()).object();
+    if (root.value(QStringLiteral("eci")).toArray().isEmpty())
+        return fail(QObject::tr(
+            "its input carries no ECIs — the node feeding it is not a "
+            "Cluster Expansion (ECI Fitter)"));
+
+    // ---------------------- WIRE-UP POINT --------------------------------
+    // The I/O is finished and core::ClusterVariation exists; what is missing
+    // is its INPUT, because nothing upstream writes an ECI file yet (see
+    // runClusterExpansionFit above). The whole of the connection, the day one
+    // arrives, is this mapping plus one call:
+    //
+    //     #include "core/ClusterVariation.hpp"
+    //     core::CvmInput input;
+    //     input.lattice = spec.lattice == Lattice::Bcc   ? core::CvmLattice::Bcc
+    //                   : spec.lattice == Lattice::Chain ? core::CvmLattice::Chain
+    //                                                    : core::CvmLattice::Fcc;
+    //     input.approximation = ... the same three-way map onto
+    //                           core::CvmApproximation (the two enums are
+    //                           declared in the same order deliberately)
+    //     input.species / input.composition  <- from the ECI file's system
+    //     input.pairEnergiesEv =
+    //         core::pairEnergiesFromEci(<pair ECI from the file>, &ok);
+    //     input.tripletEnergiesEv = ... (tetrahedron approximation only)
+    //     input.minTemperatureK / maxTemperatureK / temperatureSteps <- spec
+    //     const core::CvmResult solved = core::solveClusterVariation(input);
+    //     -> serialize solved.points into output->entropyJson under schema
+    //        "calango.cvm.entropy/1" with S, E, F and α per temperature, plus
+    //        solved.idealEntropyKb and solved.sroVanishingTemperatureK.
+    //
+    // Note pairEnergiesFromEci: the ECI is in the ±1 correlation basis and the
+    // CVM wants bond energies. That transform is a factor of two and a sign,
+    // which is precisely the mistake that turns an ordering alloy into a
+    // clustering one without anything failing.
+    return fail(QObject::tr(
+        "its CVM solver is not wired up in this version yet: nothing upstream "
+        "writes the ECI file it reads. An entropy curve is smooth and "
+        "plausible whatever numbers went into it, so this node refuses rather "
+        "than inventing one."));
 }
 
 } // namespace calango::gui

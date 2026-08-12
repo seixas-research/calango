@@ -26,6 +26,7 @@
 #include "core/NonlinearOpticsScriptGenerator.hpp"
 #include "core/OpticsScriptGenerator.hpp"
 #include "core/PhononScriptGenerator.hpp"
+#include "core/ThermodynamicIntegrationScriptGenerator.hpp"
 #include "core/RamanIrScriptGenerator.hpp"
 #include "core/RandomNoiseScriptGenerator.hpp"
 #include "core/Defect2dScriptGenerator.hpp"
@@ -41,6 +42,11 @@
 #include <cctype>
 #include <fstream>
 #include <string>
+
+#include "core/LocaleSafeNumber.hpp"
+
+#include <algorithm>
+#include <string_view>
 
 using namespace calango::core;
 
@@ -176,6 +182,22 @@ int main(int argc, char** argv)
                      generateElectronPhononScript(small));
         }
 
+        // Cluster expansion WITH a design matrix — the path the ECI fitter
+        // needs — and without, which must still be valid Python.
+        {
+            ClusterExpansionRunConfig ce;
+            ce.calculator = gpawConfig();
+            ce.correlations = {{1.0, 0.5, -0.25}, {1.0, -0.5, 0.25}};
+            ce.orbitLabels = {"empty", "pair r=2.55 m=12", "triplet r=2.55"};
+            dumpText("cluster_expansion_design.py",
+                     ClusterExpansionScriptGenerator::generate(ce));
+            ClusterExpansionRunConfig bare = ce;
+            bare.correlations.clear();
+            bare.orbitLabels.clear();
+            dumpText("cluster_expansion_nodesign.py",
+                     ClusterExpansionScriptGenerator::generate(bare));
+        }
+
         // K-point convergence, with and without the plasma-frequency target.
         // Both branches, because the ω_p option adds a module-level helper
         // and two blocks inside the sweep loop — the lint is what catches a
@@ -189,6 +211,48 @@ int main(int argc, char** argv)
             kpts.plasmaFrequency = true;
             dumpText("kpoints_convergence_plasma.py",
                      KpointsConvergenceScriptGenerator::generate(kpts));
+        }
+
+        // Thermodynamic integration. Four dumps, because the branches that
+        // differ are the ones the lint can actually catch: each reference
+        // system emits a different calculator class and a different set of
+        // module-level constants, the hysteresis option adds a second sweep
+        // over the same loop, and the split-job form changes WINDOW_INDICES
+        // and withdraws the backward sweep. A `_name` read in the sampling
+        // loop whose definition was lost in an edit is valid Python that dies
+        // at run time, halfway through somebody's free energy.
+        {
+            TiRunConfig ti;
+            ti.calculator = maceConfig();
+            ti.calculator.task = TaskKind::MolecularDynamics;
+            ti.resultsDir = "/tmp/calango_ti";
+            dumpText("ti_ideal_gas.py",
+                     ThermodynamicIntegrationScriptGenerator::generate(ti));
+
+            TiRunConfig einstein = ti;
+            einstein.calculator = gpawConfig();
+            einstein.calculator.task = TaskKind::MolecularDynamics;
+            einstein.reference = TiReference::EinsteinCrystal;
+            einstein.schedule = TiLambdaSchedule::Uniform;
+            einstein.quadrature = TiQuadrature::Simpson;
+            einstein.hysteresis = true;
+            einstein.windows = 9;
+            dumpText("ti_einstein_hysteresis.py",
+                     ThermodynamicIntegrationScriptGenerator::generate(
+                         einstein));
+
+            TiRunConfig lj = ti;
+            lj.reference = TiReference::LennardJonesFluid;
+            lj.schedule = TiLambdaSchedule::PowerLaw;
+            lj.calculator.ensemble = MdEnsemble::BerendsenNPT;
+            dumpText("ti_lennard_jones_npt.py",
+                     ThermodynamicIntegrationScriptGenerator::generate(lj));
+
+            TiRunConfig slice = ti;
+            slice.windowIndices = {3, 4, 5};
+            slice.hysteresis = true; // must be withdrawn: this job owns a slice
+            dumpText("ti_window_slice.py",
+                     ThermodynamicIntegrationScriptGenerator::generate(slice));
         }
 
         dump("mace_single_point.py", mace);
@@ -3044,6 +3108,61 @@ int main(int argc, char** argv)
                          "and carries no substitution note");
     }
 
+    // -- Cluster expansion: the design matrix -------------------------------
+    //
+    // The ECI fit regresses energies against cluster correlations, and until
+    // now cluster_expansion.json carried the energies and not the
+    // correlations — so the fitter had a right-hand side and no matrix. These
+    // pin the matrix into the file, and pin the guards that stop a
+    // MISALIGNED one being used, which is the failure that matters: a design
+    // matrix silently truncated or belonging to another ensemble still fits,
+    // and still produces ECIs that look like physics.
+    std::printf("Cluster expansion design matrix:\n");
+    {
+        ClusterExpansionRunConfig ce;
+        ce.calculator = gpawConfig();
+        ce.correlations = {{1.0, 0.5, -0.25}, {1.0, -0.5, 0.25}};
+        ce.orbitLabels = {"empty", "pair r=2.55 m=12", "triplet r=2.55"};
+        const std::string script =
+            ClusterExpansionScriptGenerator::generate(ce);
+        checkContains(script, "correlations = [",
+                      "the correlations are emitted as the design matrix");
+        checkContains(script, "orbit_labels = [\"empty\"",
+                      "with a label per column, so an ECI can be attributed "
+                      "to a cluster rather than to a column number");
+        checkContains(script, "0.5, -0.25",
+                      "at full precision — rounding the regressor biases "
+                      "every fitted interaction");
+        checkContains(script, "record[\"correlation\"] = correlations[index]",
+                      "and each configuration carries its own row, joined by "
+                      "frame index");
+        checkContains(script, "\"orbit_labels\": orbit_labels",
+                      "the labels reach cluster_expansion.json");
+        // The guards. Both are fatal rather than best-effort.
+        checkContains(script, "correlation rows for",
+                      "a row count that disagrees with the trajectory is "
+                      "fatal, not zipped to the shorter of the two");
+        checkContains(script, "design matrix is ragged",
+                      "and so is a ragged matrix");
+
+        ClusterExpansionRunConfig bare = ce;
+        bare.correlations.clear();
+        bare.orbitLabels.clear();
+        const std::string without =
+            ClusterExpansionScriptGenerator::generate(bare);
+        checkContains(without, "cluster_correlations.json",
+                      "without an embedded matrix the script falls back to a "
+                      "sidecar beside the trajectory");
+        checkContains(without, "except FileNotFoundError",
+                      "guarded with try/except rather than os.path.exists — "
+                      "this script never imports os, and a bare os. here "
+                      "would be a NameError that byte-compiling cannot see");
+        checkContains(without, "CALANGO_WARN no cluster correlations",
+                      "and says plainly that no ECI fit is possible from the "
+                      "result, rather than writing a file that merely lacks "
+                      "a key");
+    }
+
     // -- Electron-phonon coupling -------------------------------------------
     //
     // The module's value is not the matrix elements — it is what is derived
@@ -4788,6 +4907,150 @@ int main(int argc, char** argv)
                       "with the dimension order pinned explicitly");
         checkContains(script, ".transpose(",
                       "and so does the binary branch");
+    }
+
+    std::printf("Thermodynamic integration:\n");
+    {
+        TiRunConfig ti;
+        ti.calculator = maceConfig();
+        ti.calculator.task = TaskKind::MolecularDynamics;
+        ti.windows = 8;
+        ti.equilibrationSteps = 1500;
+        ti.productionSteps = 7000;
+        ti.resultsDir = "/tmp/calango_ti";
+        const std::string script =
+            ThermodynamicIntegrationScriptGenerator::generate(ti);
+
+        checkNotContains(script, "import calango",
+                         "the script imports nothing from Calango");
+        checkContains(script, "def _calango_progress(",
+                      "carrying its own embedded logger");
+        // The engine must arrive through the SHARED calculator block, not
+        // through a second engine table of this module's own.
+        checkContains(script, "mace_mp(",
+                      "the target Hamiltonian is the wizard's engine");
+        // Equilibration and production must be two separate dyn.run() calls
+        // with the sampler attached only between them. A single run with the
+        // sampler attached from step 0 averages over the transient, which
+        // biases every window in the same direction and therefore survives the
+        // lambda integral instead of cancelling.
+        check(script.find("dyn.run(EQUILIBRATION_STEPS)")
+                  < script.find("dyn.attach(_ti_record"),
+              "equilibration runs BEFORE the sampler is attached");
+        check(script.find("dyn.attach(_ti_record")
+                  < script.find("dyn.run(PRODUCTION_STEPS)"),
+              "and production runs after it");
+        checkContains(script, "EQUILIBRATION_STEPS = 1500",
+                      "the equilibration length reaches the script");
+        checkContains(script, "PRODUCTION_STEPS = 7000",
+                      "and so does the production length");
+
+        // Gauss-Legendre is the default schedule precisely because its nodes
+        // are strictly interior — lambda = 0 against an ideal gas is the
+        // endpoint singularity.
+        checkNotContains(script, "LAMBDAS = [0,",
+                         "the default path never samples lambda = 0");
+        checkContains(script, "\"quadrature\": QUADRATURE",
+                      "the quadrature rule travels with the results, so the "
+                      "reader never has to guess which weights are valid");
+        checkContains(script, "series_eV",
+                      "the raw dU/dlambda series is written, not just its mean");
+        checkContains(script, "SWEEPS = [\"forward\"]",
+                      "one sweep unless hysteresis was asked for");
+
+        // THE LAMBDA NODES MUST SURVIVE THE ROUND TRIP EXACTLY.
+        //
+        // Gauss-Legendre weights are valid only on the Gauss-Legendre nodes,
+        // and quadratureWeights() checks that before using them. Written at
+        // ostringstream's default six significant digits, every node misses
+        // the exact one by ~1e-9, the check fails, and the run is silently
+        // re-integrated with a trapezoid on a grid chosen for Gauss — an
+        // accuracy loss with nothing in the output pointing at the cause. So
+        // the lambdas are parsed straight back out of the emitted text here
+        // and fed to the rule that will judge them.
+        {
+            const std::size_t begin = script.find("LAMBDAS = [");
+            check(begin != std::string::npos, "the script declares LAMBDAS");
+            const std::size_t open = script.find('[', begin);
+            const std::size_t close = script.find(']', open);
+            std::vector<double> parsed;
+            std::size_t cursor = open + 1;
+            while (cursor < close) {
+                std::size_t next = script.find(',', cursor);
+                if (next == std::string::npos || next > close)
+                    next = close;
+                double value = 0.0;
+                if (localeSafeParse(
+                        std::string_view(script).substr(cursor, next - cursor),
+                        &value))
+                    parsed.push_back(value);
+                cursor = next + 1;
+            }
+            check(parsed.size() == static_cast<std::size_t>(ti.windows),
+                  "and every node parses back out of it");
+            const TiQuadratureWeights weights =
+                quadratureWeights(TiQuadrature::GaussLegendre, parsed);
+            check(weights.ruleUsed == TiQuadrature::GaussLegendre
+                      && weights.note.empty(),
+                  "the emitted nodes are still recognised as Gauss-Legendre "
+                  "ones after a text round trip");
+        }
+
+        TiRunConfig einstein = ti;
+        einstein.reference = TiReference::EinsteinCrystal;
+        einstein.hysteresis = true;
+        const std::string solid =
+            ThermodynamicIntegrationScriptGenerator::generate(einstein);
+        checkContains(solid, "class _TiEinsteinCrystal",
+                      "the Einstein reference brings its own calculator");
+        checkContains(solid, "FixCom",
+                      "and holds the centre of mass, which the closed-form "
+                      "reference is corrected for");
+        checkContains(solid, "SWEEPS = [\"forward\", \"backward\"]",
+                      "hysteresis adds the reverse sweep");
+
+        // A job that owns a SLICE cannot run a hysteresis sweep: there is no
+        // sequential chain of windows to reverse. It must be withdrawn rather
+        // than producing two independent estimates of the same average and
+        // calling their difference hysteresis.
+        TiRunConfig slice = einstein;
+        slice.windowIndices = {2, 3};
+        const std::string partial =
+            ThermodynamicIntegrationScriptGenerator::generate(slice);
+        checkContains(partial, "WINDOW_INDICES = [2, 3]",
+                      "a split job owns only its own windows");
+        checkContains(partial, "SWEEPS = [\"forward\"]",
+                      "and the hysteresis sweep is withdrawn for it");
+        // The whole path is still declared, so the aggregation knows what a
+        // complete set looks like and can say which windows are missing. The
+        // check is that the slice's LAMBDAS line is IDENTICAL to the full
+        // run's: a job that renumbered the path to its own two windows would
+        // write ti_window_000 and ti_window_001 and look complete.
+        const auto lambdaLine = [](const std::string& text) {
+            const std::size_t begin = text.find("LAMBDAS = [");
+            return begin == std::string::npos
+                ? std::string()
+                : text.substr(begin, text.find('\n', begin) - begin);
+        };
+        check(!lambdaLine(partial).empty()
+                  && lambdaLine(partial) == lambdaLine(solid),
+              "while declaring exactly the same lambda path as the full run");
+
+        // Splitting.
+        const auto slices =
+            ThermodynamicIntegrationScriptGenerator::splitWindows(12, 5);
+        check(slices.size() == 5, "12 windows split into 5 jobs");
+        std::size_t total = 0;
+        std::size_t largest = 0;
+        std::size_t smallest = 12;
+        for (const auto& part : slices) {
+            total += part.size();
+            largest = std::max(largest, part.size());
+            smallest = std::min(smallest, part.size());
+        }
+        check(total == 12, "covering every window exactly once");
+        check(largest - smallest <= 1,
+              "as evenly as possible — the run costs the slowest job");
     }
 
     std::printf(failures == 0 ? "\nAll script checks passed.\n"

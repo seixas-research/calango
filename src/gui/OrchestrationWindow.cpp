@@ -309,6 +309,14 @@ QString orchestrationTaskSlug(OrchestrationTask task)
         return QStringLiteral("defect_generator");
     case OrchestrationTask::TdbGenerator:
         return QStringLiteral("tdb_generator");
+    case OrchestrationTask::SqsGenerator:
+        return QStringLiteral("sqs_generator");
+    case OrchestrationTask::ClusterExpansionFit:
+        return QStringLiteral("cluster_expansion_fit");
+    case OrchestrationTask::CvmEntropy:
+        return QStringLiteral("cvm_entropy");
+    case OrchestrationTask::LiquidFreeEnergy:
+        return QStringLiteral("liquid_free_energy");
     case OrchestrationTask::SinglePoint:
         break;
     }
@@ -330,11 +338,19 @@ OrchestrationFamily orchestrationTaskFamily(OrchestrationTask task)
     case OrchestrationTask::SinglePoint:
     case OrchestrationTask::MolecularDynamics:
     case OrchestrationTask::Phonon:
+    // Named explicitly and NOT left to the default arm below, which returns
+    // Analysis: an Analysis node is refused unless a completed baseline is
+    // wired into it, so a TI node that fell through here would be unrunnable
+    // for a reason that appears nowhere in the code.
+    case OrchestrationTask::LiquidFreeEnergy:
         return OrchestrationFamily::Simulation;
     case OrchestrationTask::Container:
     case OrchestrationTask::Supercell:
     case OrchestrationTask::DefectGenerator:
     case OrchestrationTask::TdbGenerator:
+    case OrchestrationTask::SqsGenerator:
+    case OrchestrationTask::ClusterExpansionFit:
+    case OrchestrationTask::CvmEntropy:
         return OrchestrationFamily::Transform;
     default:
         break;
@@ -381,6 +397,14 @@ QString orchestrationTaskDisplayName(OrchestrationTask task)
         return QObject::tr("Defect Generator");
     case OrchestrationTask::TdbGenerator:
         return QObject::tr("TDB Generator (CALPHAD)");
+    case OrchestrationTask::SqsGenerator:
+        return QObject::tr("SQS Generator");
+    case OrchestrationTask::ClusterExpansionFit:
+        return QObject::tr("Cluster Expansion (ECI Fitter)");
+    case OrchestrationTask::CvmEntropy:
+        return QObject::tr("CVM Entropy Calculator");
+    case OrchestrationTask::LiquidFreeEnergy:
+        return QObject::tr("Liquid Free Energy (TI)");
     case OrchestrationTask::SinglePoint:
         break;
     }
@@ -409,6 +433,10 @@ QString orchestrationTaskShortName(OrchestrationTask task)
     case OrchestrationTask::Supercell:            return QObject::tr("Supercell");
     case OrchestrationTask::DefectGenerator:      return QObject::tr("Defect");
     case OrchestrationTask::TdbGenerator:         return QObject::tr("TDB");
+    case OrchestrationTask::SqsGenerator:         return QObject::tr("SQS");
+    case OrchestrationTask::ClusterExpansionFit:  return QObject::tr("ECI fit");
+    case OrchestrationTask::CvmEntropy:           return QObject::tr("CVM");
+    case OrchestrationTask::LiquidFreeEnergy:     return QObject::tr("Free E");
     }
     return QObject::tr("Node");
 }
@@ -421,12 +449,22 @@ QList<OrchestrationTask> orchestrationTasks()
             OrchestrationTask::GeometryOptimization,
             OrchestrationTask::SinglePoint,
             OrchestrationTask::MolecularDynamics,
+            // Directly after MD: it IS molecular dynamics, one thermostatted
+            // run per lambda window, and a user looking for a free energy
+            // looks next to the dynamics that produce it.
+            OrchestrationTask::LiquidFreeEnergy,
             OrchestrationTask::Phonon,
-            // Transform
+            // Transform. The alloy chain is listed in pipeline order — SQS,
+            // then the two nodes that consume what the simulations made of it
+            // — because the Add Process list is where a user discovers that
+            // the chain exists at all.
             OrchestrationTask::Container,
             OrchestrationTask::Supercell,
             OrchestrationTask::DefectGenerator,
+            OrchestrationTask::SqsGenerator,
             OrchestrationTask::TdbGenerator,
+            OrchestrationTask::ClusterExpansionFit,
+            OrchestrationTask::CvmEntropy,
             // Analysis
             OrchestrationTask::ElectronicBands,
             OrchestrationTask::Optics,
@@ -466,7 +504,27 @@ bool orchestrationTaskHasDefaults(OrchestrationTask task)
     // input through untouched" failure mode to guard against, because it does
     // not pass anything through.
     case OrchestrationTask::TdbGenerator:
+    // The ECI Fitter and the CVM solver belong with the TDB Generator for the
+    // same reason: their whole input is the file their slot stages, and the
+    // default cluster basis / temperature range are complete recipes rather
+    // than an identity operation in disguise.
+    //
+    // The SQS Generator is NOT here. Its default is an empty composition list,
+    // and a "default" composition would be a claim about which alloy the user
+    // meant — the pass-through failure mode, in the one place where the
+    // pass-through is a pristine unalloyed cell that every downstream mixing
+    // energy would be computed against.
+    case OrchestrationTask::ClusterExpansionFit:
+    case OrchestrationTask::CvmEntropy:
         return true;
+    // Thermodynamic integration is deliberately NOT here, and it is the one
+    // Simulation-family task that is not. A default TI path would be an
+    // ideal-gas reference at whatever temperature happened to be in the
+    // config, and it would produce an absolute free energy — a number nobody
+    // can look at and see is wrong. The reference system and the temperature
+    // are the whole experiment; the node refuses until they are chosen.
+    case OrchestrationTask::LiquidFreeEnergy:
+        return false;
     default:
         return false;
     }
@@ -486,6 +544,10 @@ QList<OrchestrationInputSlot> orchestrationInputSlots(OrchestrationTask task)
     case OrchestrationTask::SinglePoint:
     case OrchestrationTask::MolecularDynamics:
     case OrchestrationTask::Phonon:
+    // Thermodynamic integration reads a STRUCTURE like the simulations above
+    // it — the reference system is built from that structure's own positions
+    // and masses, not from an upstream run — so it stages nothing.
+    case OrchestrationTask::LiquidFreeEnergy:
     // The transforms consume a STRUCTURE, not a completed run, and a
     // structure arrives through the ordinary geometry handoff (or, with no
     // parent, from the node's own material). There is nothing to stage under
@@ -493,17 +555,32 @@ QList<OrchestrationInputSlot> orchestrationInputSlots(OrchestrationTask task)
     case OrchestrationTask::Container:
     case OrchestrationTask::Supercell:
     case OrchestrationTask::DefectGenerator:
+    // The SQS Generator is a structure transform in the strict sense: a
+    // parent lattice arrives through the ordinary geometry handoff and
+    // decorated supercells leave. Nothing to stage under an agreed name.
+    case OrchestrationTask::SqsGenerator:
         return {};
 
     case OrchestrationTask::TdbGenerator:
-        // The one transform with a slot. It consumes a completed run's
-        // RESULTS, not a structure, and the staged name is the same one the
-        // convex-hull viewer reads — so the file that feeds the hull diagram
-        // and the file that feeds the assessment are the same file, and they
-        // cannot drift apart into two descriptions of one ensemble.
+    case OrchestrationTask::ClusterExpansionFit:
+        // The transforms that consume a completed run's RESULTS rather than a
+        // structure. The staged name is the same one the convex-hull viewer
+        // reads — so the file that feeds the hull diagram, the file that feeds
+        // the CALPHAD assessment and the file that feeds the ECI fit are one
+        // file, and they cannot drift apart into three descriptions of one
+        // ensemble.
         return {{QObject::tr("formation-energy ensemble"),
                  QStringLiteral("cluster_expansion.json"),
                  QStringLiteral("cluster_expansion.json"), false}};
+
+    case OrchestrationTask::CvmEntropy:
+        // Fed by the ECI Fitter, under the name the fitter writes. The two
+        // names being the same string in two places is the whole of the
+        // contract: the fitter's output file and the solver's input file are
+        // agreed here and nowhere else.
+        return {{QObject::tr("fitted ECIs"),
+                 QStringLiteral("cluster_expansion_fit.json"),
+                 QStringLiteral("cluster_expansion_fit.json"), false}};
 
     case OrchestrationTask::ElectronicBands:
     case OrchestrationTask::Optics:
@@ -649,6 +726,25 @@ void OrchestrationNodeItem::setDefectSpec(const DefectSpec& spec)
     update();
 }
 
+void OrchestrationNodeItem::setSqsGenerator(const SqsGeneratorSpec& spec)
+{
+    sqs_ = spec;
+    update();
+}
+
+void OrchestrationNodeItem::setClusterExpansionFit(
+    const ClusterExpansionFitSpec& spec)
+{
+    clusterFit_ = spec;
+    update();
+}
+
+void OrchestrationNodeItem::setCvmEntropy(const CvmEntropySpec& spec)
+{
+    cvm_ = spec;
+    update();
+}
+
 QString OrchestrationNodeItem::configurationProblem() const
 {
     switch (task_) {
@@ -681,6 +777,40 @@ QString OrchestrationNodeItem::configurationProblem() const
                 "forwards the pristine cell untouched would make every "
                 "formation energy downstream come out as zero.")
                 .arg(title_);
+        return QString();
+    case OrchestrationTask::SqsGenerator:
+        if (sqs_.isEmpty())
+            return QObject::tr(
+                "%1 has no compositions.\n\nDouble-click it and add at least "
+                "one alloy composition — one decorated supercell, and one "
+                "pass of everything downstream, is produced per entry. An SQS "
+                "node with no composition would forward the pristine "
+                "unalloyed cell, which every mixing energy downstream would "
+                "then be computed against.")
+                .arg(title_);
+        if (!sqs_.isValid())
+            return QObject::tr(
+                "%1 has a composition it cannot use (%2).\n\nEach entry needs "
+                "at least two elements with positive fractions, and every "
+                "symbol has to be a real one.")
+                .arg(title_, sqs_.describe());
+        return QString();
+    case OrchestrationTask::ClusterExpansionFit:
+        if (!clusterFit_.isValid())
+            return QObject::tr(
+                "%1 has a cluster basis it cannot fit (%2).\n\nThe pair "
+                "cutoff must be positive — an expansion with no pair term has "
+                "no chemistry in it — and the cross-validation must be off or "
+                "at least two-fold.")
+                .arg(title_, clusterFit_.describe());
+        return QString();
+    case OrchestrationTask::CvmEntropy:
+        if (!cvm_.isValid())
+            return QObject::tr(
+                "%1 has a temperature range it cannot scan (%2).\n\nThe upper "
+                "temperature must be above the lower one, both above zero, "
+                "and at least two steps.")
+                .arg(title_, cvm_.describe());
         return QString();
     default:
         break;
@@ -846,6 +976,27 @@ void OrchestrationNodeItem::paint(QPainter* painter,
         // of the pipeline (a cluster expansion carries energies only), not of
         // anything the user chose here.
         secondary = QObject::tr("static assessment, no calculator");
+        break;
+    case OrchestrationTask::SqsGenerator:
+        primary = sqs_.isEmpty() ? QObject::tr("No compositions")
+                                 : sqs_.describe();
+        // How many MATERIALS, for the Defect Generator's reason: this is the
+        // number that decides how many times the whole downstream graph runs,
+        // and a node about to multiply the pipeline by six should say six on
+        // its face.
+        secondary = sqs_.isEmpty()
+            ? QObject::tr("in process, no calculator")
+            : QObject::tr("%n material(s), one per composition", nullptr,
+                          sqs_.variantCount());
+        break;
+    case OrchestrationTask::ClusterExpansionFit:
+        primary = clusterFit_.describe();
+        secondary = QObject::tr("fit on the canvas, no calculator");
+        break;
+    case OrchestrationTask::CvmEntropy:
+        primary = cvm_.describe();
+        secondary = QObject::tr("%n temperature(s), no calculator", nullptr,
+                                cvm_.temperatureSteps);
         break;
     case OrchestrationTask::DefectGenerator:
         primary = defects_.isEmpty() ? QObject::tr("No operations")
@@ -1760,6 +1911,494 @@ bool editDefects(QWidget* parent, DefectSpec* spec)
     return true;
 }
 
+/// "Cu:0.75, Au:0.25" → the fractions, in the order typed.
+///
+/// QString::toDouble, NOT std::stod or QLocale: this machine runs under
+/// pt_BR.UTF-8, where LC_NUMERIC makes the C library read "0.75" as 0. Qt's
+/// QString::toDouble is locale-INDEPENDENT and is the safe one here; the
+/// locale-aware conversion is QLocale::toDouble, which is exactly what must
+/// not be used for a string the user typed with a decimal point in it.
+QList<QPair<QString, double>> parseAlloyFractions(const QString& text)
+{
+    QList<QPair<QString, double>> species;
+    for (const QString& entry :
+         text.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        const QStringList parts =
+            entry.split(QLatin1Char(':'), Qt::SkipEmptyParts);
+        if (parts.size() != 2)
+            return {};
+        bool ok = false;
+        const double fraction = parts[1].trimmed().toDouble(&ok);
+        if (!ok || fraction <= 0.0)
+            return {};
+        species.append({parts[0].trimmed(), fraction});
+    }
+    return species;
+}
+
+constexpr int kAlloyLabelColumn = 0;
+constexpr int kAlloyCompositionColumn = 1;
+
+/// Settings of an SQS Generator node.
+///
+/// A plain dialog like the other transforms, not a wizard: there is no
+/// calculator, no convergence and no script. The compositions are a table
+/// because they are a LIST that fans the pipeline out — the same shape as a
+/// Structure Container's, and for the same reason.
+bool editSqsGenerator(QWidget* parent, SqsGeneratorSpec* spec)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("SQS Generator"));
+    dialog.resize(600, 460);
+    auto* layout = new QVBoxLayout(&dialog);
+
+    auto* intro = new QLabel(
+        QObject::tr(
+            "Decorate the sublattice of the structure reaching this node so "
+            "its cluster correlations match those of the ideal random alloy — "
+            "one supercell per composition below, and one pass of everything "
+            "downstream for each.<br><br>"
+            "The correlations are matched over the <b>pair</b> shells always, "
+            "and over triangles and tetrahedra when their cutoffs are set. A "
+            "pair-only SQS can reproduce every pair correlation exactly while "
+            "its three-body statistics are badly wrong — pairs cannot see the "
+            "difference — which is what bites for high-entropy alloys."),
+        &dialog);
+    intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
+    layout->addWidget(intro);
+
+    auto* table = new QTableWidget(0, 2, &dialog);
+    table->setHorizontalHeaderLabels(
+        {QObject::tr("Name (optional)"), QObject::tr("Composition")});
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->verticalHeader()->setVisible(false);
+    // Not a preference: without this, a dead key (´ ` ~ ^) typed at this table
+    // recurses through the Cocoa input context until the stack is gone. See
+    // disableTypeToEdit().
+    disableTypeToEdit(table);
+    const auto addComposition = [table](const AlloyComposition& composition) {
+        const int row = table->rowCount();
+        table->insertRow(row);
+        table->setItem(row, kAlloyLabelColumn,
+                       new QTableWidgetItem(composition.label));
+        QStringList parts;
+        for (const auto& [symbol, fraction] : composition.species)
+            parts << QStringLiteral("%1:%2").arg(symbol).arg(fraction, 0, 'g', 4);
+        table->setItem(row, kAlloyCompositionColumn,
+                       new QTableWidgetItem(parts.join(QStringLiteral(", "))));
+    };
+    for (const AlloyComposition& composition : spec->compositions)
+        addComposition(composition);
+    layout->addWidget(table, 1);
+
+    auto* rowButtons = new QHBoxLayout;
+    auto* addRow = new QPushButton(QObject::tr("Add composition"), &dialog);
+    auto* removeRow = new QPushButton(QObject::tr("Remove"), &dialog);
+    rowButtons->addWidget(addRow);
+    rowButtons->addWidget(removeRow);
+    rowButtons->addStretch(1);
+    layout->addLayout(rowButtons);
+    QObject::connect(addRow, &QPushButton::clicked, table,
+                     [&addComposition] {
+                         AlloyComposition seed;
+                         seed.species = {{QStringLiteral("Cu"), 0.5},
+                                         {QStringLiteral("Au"), 0.5}};
+                         addComposition(seed);
+                     });
+    QObject::connect(removeRow, &QPushButton::clicked, table, [table] {
+        if (table->currentRow() >= 0)
+            table->removeRow(table->currentRow());
+    });
+
+    auto* form = new QFormLayout;
+    auto* cellRow = new QWidget(&dialog);
+    auto* cellLayout = new QHBoxLayout(cellRow);
+    cellLayout->setContentsMargins(0, 0, 0, 0);
+    QSpinBox* repeats[3] = {nullptr, nullptr, nullptr};
+    const int seeded[3] = {spec->na, spec->nb, spec->nc};
+    for (int i = 0; i < 3; ++i) {
+        repeats[i] = new QSpinBox(cellRow);
+        repeats[i]->setRange(1, 20);
+        repeats[i]->setValue(std::max(1, seeded[i]));
+        cellLayout->addWidget(repeats[i]);
+    }
+    cellRow->setToolTip(QObject::tr(
+        "Supercell of the structure that reaches this node. The SQS is only "
+        "as good as the cell is large: a correlation that does not fit inside "
+        "the cell cannot be matched inside it either."));
+    form->addRow(QObject::tr("Supercell:"), cellRow);
+
+    auto* replace = new QLineEdit(spec->replaceElement, &dialog);
+    replace->setPlaceholderText(QObject::tr("most abundant element"));
+    replace->setToolTip(QObject::tr(
+        "Sites of this element form the sublattice being decorated; every "
+        "other site keeps its species.\n\n"
+        "Left blank it is resolved when the node runs, to whatever the "
+        "incoming structure is mostly made of — which is right for the usual "
+        "single-element parent lattice, and is resolved then rather than now "
+        "because the node normally has no structure while it is configured."));
+    form->addRow(QObject::tr("Replace element:"), replace);
+
+    const auto cutoff = [&dialog](double value, double minimum,
+                                  const QString& special) {
+        auto* spin = new QDoubleSpinBox(&dialog);
+        spin->setRange(minimum, 25.0);
+        spin->setValue(value);
+        spin->setSuffix(QObject::tr(" Å"));
+        if (!special.isEmpty())
+            spin->setSpecialValueText(special);
+        return spin;
+    };
+    auto* shell1 = cutoff(spec->shell1, 0.1, QString());
+    form->addRow(QObject::tr("First shell cutoff:"), shell1);
+    auto* shell2 = cutoff(spec->shell2, 0.0, QObject::tr("off"));
+    form->addRow(QObject::tr("Second shell cutoff:"), shell2);
+    auto* triplet = cutoff(spec->tripletCutoff, 0.0, QObject::tr("off"));
+    triplet->setToolTip(QObject::tr(
+        "Match three-body correlations too: every triangle whose three "
+        "pairwise distances are within this cutoff. Off by default."));
+    form->addRow(QObject::tr("Triplet cutoff:"), triplet);
+    auto* quadruplet = cutoff(spec->quadrupletCutoff, 0.0, QObject::tr("off"));
+    quadruplet->setToolTip(QObject::tr(
+        "Match four-body correlations: every tetrahedron within this cutoff. "
+        "The nearest-neighbour tetrahedron is the cluster the fcc "
+        "cluster-variation method is built on, so this is the one to enable "
+        "when the pipeline ends in a CVM entropy."));
+    form->addRow(QObject::tr("Quadruplet cutoff:"), quadruplet);
+
+    auto* steps = new QSpinBox(&dialog);
+    steps->setRange(100, 1000000);
+    steps->setValue(std::max(100, spec->steps));
+    form->addRow(QObject::tr("Monte Carlo steps:"), steps);
+    auto* seed = new QSpinBox(&dialog);
+    seed->setRange(0, 1000000);
+    seed->setValue(spec->seed);
+    seed->setToolTip(QObject::tr(
+        "Fixed, so the same saved workflow produces the same structures. Draw "
+        "a different one by hand to sample a different decoration."));
+    form->addRow(QObject::tr("Random seed:"), seed);
+    layout->addLayout(form);
+
+    auto* status = new QLabel(&dialog);
+    status->setWordWrap(true);
+    layout->addWidget(status);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                     &QDialog::reject);
+
+    // Read back and validate on OK rather than on every keystroke: the table
+    // is free text, and a half-typed "Cu:0.7" is not an error yet.
+    SqsGeneratorSpec edited;
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+        edited = SqsGeneratorSpec{};
+        edited.na = repeats[0]->value();
+        edited.nb = repeats[1]->value();
+        edited.nc = repeats[2]->value();
+        edited.replaceElement = replace->text().trimmed();
+        edited.shell1 = shell1->value();
+        edited.shell2 = shell2->value();
+        edited.tripletCutoff = triplet->value();
+        edited.quadrupletCutoff = quadruplet->value();
+        edited.steps = steps->value();
+        edited.seed = seed->value();
+        for (int row = 0; row < table->rowCount(); ++row) {
+            AlloyComposition composition;
+            if (const QTableWidgetItem* cell =
+                    table->item(row, kAlloyLabelColumn))
+                composition.label = cell->text().trimmed();
+            const QTableWidgetItem* cell =
+                table->item(row, kAlloyCompositionColumn);
+            composition.species =
+                parseAlloyFractions(cell ? cell->text() : QString());
+            if (composition.species.size() < 2) {
+                status->setStyleSheet(QStringLiteral("color:#c0392b;"));
+                status->setText(QObject::tr(
+                    "Row %1: write at least two species as symbol:fraction "
+                    "pairs, like \"Cu:0.75, Au:0.25\".")
+                                    .arg(row + 1));
+                return;
+            }
+            edited.compositions.append(composition);
+        }
+        if (!edited.isValid()) {
+            status->setStyleSheet(QStringLiteral("color:#c0392b;"));
+            status->setText(QObject::tr(
+                "Add at least one composition, and check that every symbol is "
+                "a real element."));
+            return;
+        }
+        dialog.accept();
+    });
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    *spec = edited;
+    return true;
+}
+
+/// Settings of a Cluster Expansion (ECI Fitter) node.
+bool editClusterExpansionFit(QWidget* parent, ClusterExpansionFitSpec* spec)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("Cluster Expansion (ECI Fitter)"));
+    auto* layout = new QVBoxLayout(&dialog);
+
+    auto* intro = new QLabel(
+        QObject::tr(
+            "Fit <b>effective cluster interactions</b> to the total energies "
+            "of the ensemble reaching this node, and write them beside it as "
+            "<tt>cluster_expansion_fit.json</tt> — which is what a CVM "
+            "Entropy Calculator downstream reads.<br><br>"
+            "Cross-validation is the number that matters. The fit residual "
+            "always improves when clusters are added and therefore says "
+            "nothing about whether the expansion predicts anything; the "
+            "held-out score does."),
+        &dialog);
+    intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
+    layout->addWidget(intro);
+
+    auto* form = new QFormLayout;
+    const auto cutoff = [&dialog](double value, double minimum,
+                                  bool offAtZero) {
+        auto* spin = new QDoubleSpinBox(&dialog);
+        spin->setRange(minimum, 30.0);
+        spin->setValue(value);
+        spin->setSuffix(QObject::tr(" Å"));
+        if (offAtZero)
+            spin->setSpecialValueText(QObject::tr("off"));
+        return spin;
+    };
+    auto* pair = cutoff(spec->pairCutoff, 0.1, false);
+    form->addRow(QObject::tr("Pair cutoff:"), pair);
+    auto* triplet = cutoff(spec->tripletCutoff, 0.0, true);
+    form->addRow(QObject::tr("Triplet cutoff:"), triplet);
+    auto* quadruplet = cutoff(spec->quadrupletCutoff, 0.0, true);
+    form->addRow(QObject::tr("Quadruplet cutoff:"), quadruplet);
+
+    auto* method = new QComboBox(&dialog);
+    for (const ClusterExpansionFitSpec::Method value :
+         {ClusterExpansionFitSpec::Method::Ridge,
+          ClusterExpansionFitSpec::Method::Lasso,
+          ClusterExpansionFitSpec::Method::Ard})
+        method->addItem(ClusterExpansionFitSpec::methodName(value),
+                        static_cast<int>(value));
+    method->setCurrentIndex(method->findData(static_cast<int>(spec->method)));
+    method->setToolTip(QObject::tr(
+        "Ridge keeps every orbit and shrinks them all; the lasso SELECTS "
+        "orbits, which is a cluster expansion's real difficulty; ARD learns "
+        "one relevance per orbit and prunes, with no penalty to choose at "
+        "all.\n\n"
+        "A plain unregularized least squares is not offered: orbits at nearly "
+        "the same radius have nearly the same correlation on any ensemble one "
+        "can afford, so the design matrix is ill-conditioned by construction "
+        "and the unregularized fit has a perfect training residual and "
+        "predicts nothing."));
+    form->addRow(QObject::tr("Method:"), method);
+
+    auto* lambdas = new QSpinBox(&dialog);
+    lambdas->setRange(1, 500);
+    lambdas->setValue(std::max(1, spec->lambdaCount));
+    lambdas->setToolTip(QObject::tr(
+        "How many regularization strengths the cross-validation chooses "
+        "from."));
+    form->addRow(QObject::tr("Regularization path:"), lambdas);
+
+    auto* folds = new QSpinBox(&dialog);
+    folds->setRange(0, 200);
+    folds->setValue(spec->crossValidationFolds);
+    folds->setSpecialValueText(QObject::tr("leave-one-out"));
+    folds->setToolTip(QObject::tr(
+        "Zero is leave-one-out, which is what \"the CV score\" means in the "
+        "cluster-expansion literature. A positive k is k-fold, worth having "
+        "once the ensemble runs to hundreds of configurations."));
+    form->addRow(QObject::tr("Cross-validation folds:"), folds);
+
+    auto* oneSe = new QCheckBox(
+        QObject::tr("Prefer the sparsest model within one standard error"),
+        &dialog);
+    oneSe->setChecked(spec->oneStandardError);
+    oneSe->setToolTip(QObject::tr(
+        "The CV minimum is flat and noisy on the sparse side, and its exact "
+        "location routinely keeps two or three spurious long-range clusters "
+        "that this rule drops at no cost in CV score."));
+    form->addRow(QString(), oneSe);
+
+    auto* standardize = new QCheckBox(
+        QObject::tr("Centre and scale the columns before fitting"), &dialog);
+    standardize->setChecked(spec->standardize);
+    standardize->setToolTip(QObject::tr(
+        "Neither the L1 nor the L2 penalty is scale-invariant, so without "
+        "this the UNITS of an orbit decide how hard it is penalised."));
+    form->addRow(QString(), standardize);
+    layout->addLayout(form);
+
+    auto* status = new QLabel(&dialog);
+    status->setWordWrap(true);
+    layout->addWidget(status);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                     &QDialog::reject);
+    const auto current = [&] {
+        ClusterExpansionFitSpec edited;
+        edited.method = static_cast<ClusterExpansionFitSpec::Method>(
+            method->currentData().toInt());
+        edited.pairCutoff = pair->value();
+        edited.tripletCutoff = triplet->value();
+        edited.quadrupletCutoff = quadruplet->value();
+        edited.lambdaCount = lambdas->value();
+        edited.crossValidationFolds = folds->value();
+        edited.oneStandardError = oneSe->isChecked();
+        edited.standardize = standardize->isChecked();
+        return edited;
+    };
+    const auto refresh = [&] {
+        // One fold is not cross-validation, it is the fit again under another
+        // name, and OK is disabled rather than the meaninglessness being
+        // discovered in the output.
+        const bool ok = current().isValid();
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(ok);
+        status->setStyleSheet(ok ? QString()
+                                 : QStringLiteral("color:#c0392b;"));
+        status->setText(ok ? current().describe()
+                           : QObject::tr("Cross-validation is either "
+                                         "leave-one-out (zero folds) or at "
+                                         "least two-fold."));
+    };
+    QObject::connect(folds, &QSpinBox::valueChanged, &dialog,
+                     [&refresh] { refresh(); });
+    QObject::connect(method, &QComboBox::currentIndexChanged, &dialog,
+                     [&refresh] { refresh(); });
+    for (QDoubleSpinBox* spin : {pair, triplet, quadruplet})
+        QObject::connect(spin, &QDoubleSpinBox::valueChanged, &dialog,
+                         [&refresh] { refresh(); });
+    refresh();
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
+                     &QDialog::accept);
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    *spec = current();
+    return true;
+}
+
+/// Settings of a CVM Entropy Calculator node.
+bool editCvmEntropy(QWidget* parent, CvmEntropySpec* spec)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("CVM Entropy Calculator"));
+    auto* layout = new QVBoxLayout(&dialog);
+
+    auto* intro = new QLabel(
+        QObject::tr(
+            "Configurational entropy against temperature, by the "
+            "<b>Cluster Variation Method</b>, from the ECIs reaching this "
+            "node.<br><br>"
+            "The textbook <i>S = −k<sub>B</sub> Σ x ln x</i> assumes the "
+            "species sit on the sites independently. They do not, so it is an "
+            "upper bound — and for an alloy quoted as \"stabilized by "
+            "configurational entropy\" the gap between the bound and the "
+            "truth is the entire question."),
+        &dialog);
+    intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
+    layout->addWidget(intro);
+
+    auto* form = new QFormLayout;
+    auto* lattice = new QComboBox(&dialog);
+    for (const CvmEntropySpec::Lattice value :
+         {CvmEntropySpec::Lattice::Fcc, CvmEntropySpec::Lattice::Bcc,
+          CvmEntropySpec::Lattice::Chain})
+        lattice->addItem(CvmEntropySpec::latticeName(value),
+                         static_cast<int>(value));
+    lattice->setCurrentIndex(lattice->findData(static_cast<int>(spec->lattice)));
+    lattice->setToolTip(QObject::tr(
+        "Not decoration: the Kikuchi coefficients depend on how many pairs, "
+        "triangles and tetrahedra share a site, which is a property of the "
+        "lattice and nothing else. Getting it wrong does not fail loudly — it "
+        "produces a smooth, plausible, wrong entropy."));
+    form->addRow(QObject::tr("Lattice:"), lattice);
+
+    auto* approximation = new QComboBox(&dialog);
+    for (const CvmEntropySpec::Approximation value :
+         {CvmEntropySpec::Approximation::Point,
+          CvmEntropySpec::Approximation::Pair,
+          CvmEntropySpec::Approximation::Tetrahedron})
+        approximation->addItem(CvmEntropySpec::approximationName(value),
+                               static_cast<int>(value));
+    approximation->setCurrentIndex(
+        approximation->findData(static_cast<int>(spec->approximation)));
+    approximation->setToolTip(QObject::tr(
+        "A hierarchy rather than alternatives — each is the previous one plus "
+        "more correlation. Point is the ideal entropy with the sites "
+        "independent; pair is Bethe-Peierls-Guggenheim; tetrahedron is the "
+        "standard fcc approximation, because the nearest-neighbour "
+        "tetrahedron is the smallest cluster containing the frustrated "
+        "triangles fcc is built from."));
+    form->addRow(QObject::tr("Approximation:"), approximation);
+
+    auto* low = new QDoubleSpinBox(&dialog);
+    low->setRange(1.0, 20000.0);
+    low->setValue(spec->minTemperatureK);
+    low->setSuffix(QObject::tr(" K"));
+    form->addRow(QObject::tr("From:"), low);
+    auto* high = new QDoubleSpinBox(&dialog);
+    high->setRange(1.0, 20000.0);
+    high->setValue(spec->maxTemperatureK);
+    high->setSuffix(QObject::tr(" K"));
+    form->addRow(QObject::tr("To:"), high);
+    auto* steps = new QSpinBox(&dialog);
+    steps->setRange(2, 10000);
+    steps->setValue(std::max(2, spec->temperatureSteps));
+    form->addRow(QObject::tr("Temperature points:"), steps);
+    layout->addLayout(form);
+
+    auto* status = new QLabel(&dialog);
+    status->setWordWrap(true);
+    layout->addWidget(status);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                     &QDialog::reject);
+    const auto current = [&] {
+        CvmEntropySpec edited;
+        edited.lattice = static_cast<CvmEntropySpec::Lattice>(
+            lattice->currentData().toInt());
+        edited.approximation = static_cast<CvmEntropySpec::Approximation>(
+            approximation->currentData().toInt());
+        edited.minTemperatureK = low->value();
+        edited.maxTemperatureK = high->value();
+        edited.temperatureSteps = steps->value();
+        return edited;
+    };
+    const auto refresh = [&] {
+        const bool ok = current().isValid();
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(ok);
+        status->setStyleSheet(ok ? QString()
+                                 : QStringLiteral("color:#c0392b;"));
+        status->setText(ok ? current().describe()
+                           : QObject::tr("The upper temperature has to be "
+                                         "above the lower one."));
+    };
+    for (QDoubleSpinBox* spin : {low, high})
+        QObject::connect(spin, &QDoubleSpinBox::valueChanged, &dialog,
+                         [&refresh] { refresh(); });
+    refresh();
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
+                     &QDialog::accept);
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    *spec = current();
+    return true;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -2417,6 +3056,36 @@ void OrchestrationWindow::setNodeDefectSpec(OrchestrationNodeItem* node,
     invalidateFrom(node);
 }
 
+void OrchestrationWindow::setNodeSqsGenerator(OrchestrationNodeItem* node,
+                                              const SqsGeneratorSpec& spec)
+{
+    if (!node)
+        return;
+    node->setSqsGenerator(spec);
+    invalidateFrom(node);
+    // The composition count is the node's batch dimension, so changing it
+    // changes how many passes the pipeline makes — which is what Run reports.
+    updateRunControls();
+}
+
+void OrchestrationWindow::setNodeClusterExpansionFit(
+    OrchestrationNodeItem* node, const ClusterExpansionFitSpec& spec)
+{
+    if (!node)
+        return;
+    node->setClusterExpansionFit(spec);
+    invalidateFrom(node);
+}
+
+void OrchestrationWindow::setNodeCvmEntropy(OrchestrationNodeItem* node,
+                                            const CvmEntropySpec& spec)
+{
+    if (!node)
+        return;
+    node->setCvmEntropy(spec);
+    invalidateFrom(node);
+}
+
 void OrchestrationWindow::invalidateFrom(OrchestrationNodeItem* node)
 {
     // Only a node that already RAN can be invalidated; a Pending one has
@@ -2540,6 +3209,24 @@ void OrchestrationWindow::openNodeWizard(OrchestrationNodeItem* node)
             TdbGeneratorSpec spec = node->tdbGenerator();
             if (editTdbGenerator(this, &spec))
                 setNodeTdbGenerator(node, spec);
+            break;
+        }
+        case OrchestrationTask::SqsGenerator: {
+            SqsGeneratorSpec spec = node->sqsGenerator();
+            if (editSqsGenerator(this, &spec))
+                setNodeSqsGenerator(node, spec);
+            break;
+        }
+        case OrchestrationTask::ClusterExpansionFit: {
+            ClusterExpansionFitSpec spec = node->clusterExpansionFit();
+            if (editClusterExpansionFit(this, &spec))
+                setNodeClusterExpansionFit(node, spec);
+            break;
+        }
+        case OrchestrationTask::CvmEntropy: {
+            CvmEntropySpec spec = node->cvmEntropy();
+            if (editCvmEntropy(this, &spec))
+                setNodeCvmEntropy(node, spec);
             break;
         }
         default: {
@@ -2738,6 +3425,17 @@ namespace {
 /// each of them. Naming the concept once is what keeps the batch plan, the
 /// per-pass re-queue and the labelling from disagreeing about which nodes
 /// vary.
+/// How many passes this node contributes to the batch odometer, 0 for a node
+/// that does not multiply the pipeline.
+///
+/// A Container is one KIND of dimension (several of them supply one structure
+/// each per pass, so they must agree on the length); a separate-mode Defect
+/// Generator and an SQS Generator are the other — they sit downstream of the
+/// geometry and MULTIPLY whatever reaches them. The two multiply together, and
+/// the second kind is shared: a graph holding both a three-defect generator
+/// and a two-composition SQS node is refused rather than run for six passes,
+/// because "defect 2 of 3 crossed with composition 1 of 2" is a study nobody
+/// described.
 int batchDimensionOf(const OrchestrationNodeItem* node)
 {
     if (node->task() == OrchestrationTask::Container)
@@ -2746,6 +3444,8 @@ int batchDimensionOf(const OrchestrationNodeItem* node)
         return node->defectSpec().mode == DefectSpec::Mode::Separate
             ? node->defectSpec().variantCount()
             : 0;
+    if (node->task() == OrchestrationTask::SqsGenerator)
+        return node->sqsGenerator().variantCount();
     return 0;
 }
 
@@ -2819,15 +3519,24 @@ QString OrchestrationWindow::batchLabel() const
     // only "Si" for three different defects is three folders you cannot tell
     // apart.
     for (const OrchestrationNodeItem* node : nodes_) {
-        if (node->task() != OrchestrationTask::DefectGenerator
-            || batchDimensionOf(node) <= 0)
+        if (batchDimensionOf(node) <= 0)
             continue;
-        const auto& operations = node->defectSpec().operations;
-        const int index =
-            std::min(defectBatchIndex(), static_cast<int>(operations.size()) - 1);
-        if (index >= 0)
-            parts << operations[index].describe();
-        break;
+        if (node->task() == OrchestrationTask::DefectGenerator) {
+            const auto& operations = node->defectSpec().operations;
+            const int index = std::min(defectBatchIndex(),
+                                       static_cast<int>(operations.size()) - 1);
+            if (index >= 0)
+                parts << operations[index].describe();
+            break;
+        }
+        if (node->task() == OrchestrationTask::SqsGenerator) {
+            const auto& compositions = node->sqsGenerator().compositions;
+            const int index = std::min(defectBatchIndex(),
+                                       static_cast<int>(compositions.size()) - 1);
+            if (index >= 0)
+                parts << compositions[index].name();
+            break;
+        }
     }
     return parts.join(QStringLiteral(" / "));
 }
@@ -2906,6 +3615,15 @@ OrchestrationWindow::beginProvenance(OrchestrationNodeItem* node,
         break;
     case OrchestrationTask::TdbGenerator:
         record.parameters = node->tdbGenerator().describe();
+        break;
+    case OrchestrationTask::SqsGenerator:
+        record.parameters = node->sqsGenerator().describe();
+        break;
+    case OrchestrationTask::ClusterExpansionFit:
+        record.parameters = node->clusterExpansionFit().describe();
+        break;
+    case OrchestrationTask::CvmEntropy:
+        record.parameters = node->cvmEntropy().describe();
         break;
     default:
         break;
@@ -3009,19 +3727,22 @@ void OrchestrationWindow::sendToProcesses()
     // per pass, so they have to agree on how many passes there are — a pass
     // that could give one container an item and not another is not a pass.
     //
-    // Separate-mode Defect Generators are the other, and they are not the same
-    // kind of thing. A Defect Generator is downstream of the geometry, not a
-    // source of it: it MULTIPLIES whatever reaches it. One container holding a
-    // single structure feeding a generator that makes three defective versions
-    // of it is the ordinary case, and requiring the two to agree would refuse
-    // exactly the pipeline the feature exists for.
+    // Separate-mode Defect Generators and SQS Generators are the other, and
+    // they are not the same kind of thing. Both sit downstream of the geometry
+    // rather than being a source of it: they MULTIPLY whatever reaches them.
+    // One container holding a single structure feeding a generator that makes
+    // three defective versions (or three alloy compositions) of it is the
+    // ordinary case, and requiring the two to agree would refuse exactly the
+    // pipeline the feature exists for.
     batchDefectSpan_ = 1;
     int containerSpan = 1;
     const OrchestrationNodeItem* containerRef = nullptr;
     const OrchestrationNodeItem* defectRef = nullptr;
     for (OrchestrationNodeItem* node : nodes_) {
-        if (node->task() == OrchestrationTask::Container
-            && node->batchItems().isEmpty()) {
+        if ((node->task() == OrchestrationTask::Container
+             && node->batchItems().isEmpty())
+            || (node->task() == OrchestrationTask::SqsGenerator
+                && node->sqsGenerator().isEmpty())) {
             refuse(node->configurationProblem());
             return;
         }
@@ -3047,10 +3768,11 @@ void OrchestrationWindow::sendToProcesses()
                              .arg(node->title())
                              .arg(count)
                        : tr("%1 makes %2 materials but %3 makes %4.\n\n"
-                            "Two defect generators in one pipeline step "
-                            "through their defects together, so they have to "
-                            "make the same number. Give them the same number "
-                            "of operations, or chain them instead of running "
+                            "Two material-multiplying nodes in one pipeline — "
+                            "defect generators, SQS generators, or one of "
+                            "each — step through their variants together, so "
+                            "they have to make the same number. Give them the "
+                            "same count, or chain them instead of running "
                             "them side by side.")
                              .arg(reference->title())
                              .arg(span)
@@ -3243,33 +3965,89 @@ bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
     const QString output = dir + QStringLiteral("/transformed.extxyz");
     core::Structure result;
 
+    // Writing a text file into the node's own directory. Shared by the three
+    // transforms that emit results rather than a structure.
+    const auto write = [&dir](const QString& name, const QString& text) {
+        QFile out(dir + QLatin1Char('/') + name);
+        if (!out.open(QIODevice::WriteOnly | QIODevice::Text))
+            return false;
+        QTextStream(&out) << text;
+        return true;
+    };
+    // Reading a slot's staged file back. The staged NAME is the contract in
+    // orchestrationInputSlots(); this is the only place it is opened.
+    const auto readStaged = [&dir](const QString& name, QString* text) {
+        QFile file(dir + QLatin1Char('/') + name);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+            return false;
+        *text = QString::fromUtf8(file.readAll());
+        return true;
+    };
+
+    // -- The transforms that consume RESULTS, not a structure ---------------
+    // All three return BEFORE the structure read below, and that is the whole
+    // reason they are first: their input is a results file staged into a slot,
+    // and there may be no geometry in the directory at all. They also write no
+    // transformed.extxyz — they produce a database, a fit or a curve, so
+    // `produced` stays null and no workspace tab is claimed.
+    if (node->task() == OrchestrationTask::ClusterExpansionFit) {
+        QString ensemble;
+        if (!readStaged(QStringLiteral("cluster_expansion.json"), &ensemble)) {
+            *error = tr("its formation-energy ensemble (%1) could not be read")
+                         .arg(QStringLiteral("cluster_expansion.json"));
+            return false;
+        }
+        ClusterExpansionFitOutput fitted;
+        QString problem;
+        if (!runClusterExpansionFit(ensemble, node->clusterExpansionFit(),
+                                    &fitted, &problem)) {
+            *error = problem;
+            return false;
+        }
+        if (!write(QStringLiteral("cluster_expansion_fit.json"), fitted.eciJson)) {
+            *error = tr("its fitted ECIs could not be written into %1").arg(dir);
+            return false;
+        }
+        record.parameters = fitted.headline;
+        return true;
+    }
+
+    if (node->task() == OrchestrationTask::CvmEntropy) {
+        QString eci;
+        if (!readStaged(QStringLiteral("cluster_expansion_fit.json"), &eci)) {
+            *error = tr("its fitted ECIs (%1) could not be read")
+                         .arg(QStringLiteral("cluster_expansion_fit.json"));
+            return false;
+        }
+        CvmEntropyOutput solved;
+        QString problem;
+        if (!runCvmEntropy(eci, node->cvmEntropy(), &solved, &problem)) {
+            *error = problem;
+            return false;
+        }
+        if (!write(QStringLiteral("cvm_entropy.json"), solved.entropyJson)) {
+            *error = tr("its entropy curve could not be written into %1")
+                         .arg(dir);
+            return false;
+        }
+        record.parameters = solved.headline;
+        return true;
+    }
+
     if (node->task() == OrchestrationTask::TdbGenerator) {
-        // Returns BEFORE the structure read below, and that is the whole
-        // reason it is first: this node's input is a results file staged into
-        // its slot, and there may be no geometry in the directory at all. It
-        // also writes no transformed.extxyz — it produces a database, not a
-        // structure, so `produced` stays null and no workspace tab is claimed.
-        const QString ensemble = dir + QStringLiteral("/cluster_expansion.json");
-        QFile file(ensemble);
-        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QString ensemble;
+        if (!readStaged(QStringLiteral("cluster_expansion.json"), &ensemble)) {
             *error = tr("its formation-energy ensemble (%1) could not be read")
                          .arg(QStringLiteral("cluster_expansion.json"));
             return false;
         }
         TdbGeneratorOutput assessed;
         QString problem;
-        if (!runTdbAssessment(QString::fromUtf8(file.readAll()),
-                              node->tdbGenerator(), &assessed, &problem)) {
+        if (!runTdbAssessment(ensemble, node->tdbGenerator(), &assessed,
+                              &problem)) {
             *error = problem;
             return false;
         }
-        const auto write = [&dir](const QString& name, const QString& text) {
-            QFile out(dir + QLatin1Char('/') + name);
-            if (!out.open(QIODevice::WriteOnly | QIODevice::Text))
-                return false;
-            QTextStream(&out) << text;
-            return true;
-        };
         if (!write(QStringLiteral("assessment.tdb"), assessed.databaseText)
             || !write(QStringLiteral("calphad_assessment.json"),
                       assessed.summaryJson)) {
@@ -3312,9 +4090,34 @@ bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
             return false;
         }
         QString problem;
-        if (node->task() == OrchestrationTask::Supercell) {
+        // A SWITCH, with no default arm that "does something reasonable".
+        // This used to be an if/else whose else branch was the defect
+        // generator, so a transform that forgot its case here silently ran the
+        // defect recipe of a node that had none — producing the pristine cell
+        // and a green tick. The compiler now refuses the omission instead.
+        switch (node->task()) {
+        case OrchestrationTask::Supercell:
             result = applySupercell(incoming, node->supercell(), &problem);
-        } else {
+            break;
+        case OrchestrationTask::SqsGenerator: {
+            SqsGeneratorOutput sqs;
+            if (runSqsGeneration(incoming, node->sqsGenerator(),
+                                 defectBatchIndex(), &sqs, &problem)) {
+                result = std::move(sqs.structure);
+                record.parameters = sqs.headline;
+                // The full report beside the structure: ΔΠ by cluster order
+                // and the Warren-Cowley α of what was made. Without it the
+                // only record of whether the decoration is actually
+                // quasirandom is a line in the run report.
+                if (!write(QStringLiteral("sqs.json"), sqs.summaryJson)) {
+                    *error = tr("its SQS report could not be written into %1")
+                                 .arg(dir);
+                    return false;
+                }
+            }
+            break;
+        }
+        case OrchestrationTask::DefectGenerator: {
             // Every variant is built, even in separate mode where only one of
             // them is this pass's output: building the whole set is what
             // catches a recipe whose FOURTH operation is impossible on pass
@@ -3333,6 +4136,18 @@ bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
                                                  std::max(0, index))]
                                         .label;
             }
+            break;
+        }
+        default:
+            // Every transform that edits a structure is named above; the ones
+            // that consume results returned long before this point. Reaching
+            // here means a new task joined the Transform family and nobody
+            // told this function, and saying so is the only honest response —
+            // the alternative is the silent wrong answer this switch replaced.
+            problem = tr("%1 is a transform this build does not know how to "
+                         "perform")
+                          .arg(orchestrationTaskDisplayName(node->task()));
+            break;
         }
         if (!problem.isEmpty()) {
             *error = problem;
@@ -3568,12 +4383,15 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
         // without this its result exists only as a file nobody was told about.
         if (produced) {
             const QString label = tabTitleFor(node);
-            // A separate-mode Defect Generator makes a different material each
-            // pass, so each gets its own tab; everything else is one material
-            // and reuses tab 0.
+            // A separate-mode Defect Generator and an SQS Generator make a
+            // different material each pass, so each gets its own tab;
+            // everything else is one material and reuses tab 0. Showing a set
+            // of alloy compositions one at a time in a single tab is not
+            // showing the set.
             const bool perPassMaterial =
-                node->task() == OrchestrationTask::DefectGenerator
-                && node->defectSpec().mode == DefectSpec::Mode::Separate;
+                (node->task() == OrchestrationTask::DefectGenerator
+                 && node->defectSpec().mode == DefectSpec::Mode::Separate)
+                || node->task() == OrchestrationTask::SqsGenerator;
             Q_EMIT nodeStructureProduced(node->id(),
                                          perPassMaterial ? defectBatchIndex() : 0,
                                          label, produced);
@@ -3617,6 +4435,20 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
             script = QString::fromStdString(core::PhononScriptGenerator::
                                                 generate(phonon,
                                                          "structure.extxyz"));
+        } else if (node->task() == OrchestrationTask::LiquidFreeEnergy) {
+            // Belt and braces against this chain's real hazard: the fall-back
+            // below is a SINGLE POINT, so any task that reaches it without a
+            // case runs the wrong calculation and reports it under its own
+            // name. Thermodynamic integration has no defaults
+            // (orchestrationTaskHasDefaults) precisely so it never gets here,
+            // and if that ever changes this refuses instead of silently
+            // producing an energy where a free energy was asked for.
+            refuse(tr("%1 has no configured script.\n\nThermodynamic "
+                      "integration has no defaults: the reference system and "
+                      "the temperature ARE the experiment. Double-click the "
+                      "node and save it first.")
+                       .arg(node->title()));
+            return false;
         } else {
             config.task = node->task() == OrchestrationTask::GeometryOptimization
                 ? core::TaskKind::GeometryOptimization

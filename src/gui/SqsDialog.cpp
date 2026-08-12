@@ -15,6 +15,8 @@
 #include <QSpinBox>
 #include <QVBoxLayout>
 
+#include <algorithm>
+#include <cmath>
 #include <set>
 
 namespace calango::gui {
@@ -72,6 +74,62 @@ SqsDialog::SqsDialog(std::shared_ptr<const core::Structure> structure,
     shell2Spin_->setSpecialValueText(tr("off"));
     form->addRow(tr("Second shell cutoff:"), shell2Spin_);
 
+    // Multi-body clusters. Off by default, and the cutoff spin says "off" at
+    // zero rather than "0.00 Å" — a cutoff of zero is not a small cutoff, it
+    // is the absence of the term, and the two read very differently at a
+    // glance.
+    //
+    // Cutoff and weight sit on one row each: they are one decision. A user who
+    // turns triplets on and does not touch the weight gets 0.5, which is below
+    // the first shell's 1.0 on purpose — the pair correlations are what the
+    // energy is most sensitive to, and a large triplet population outvoting
+    // them produces beautiful triangles and a wrong coordination number.
+    const auto bodyRow = [this, form](const QString& label, double weight,
+                                      QDoubleSpinBox** cutoff,
+                                      QDoubleSpinBox** weightSpin) {
+        auto* row = new QWidget(this);
+        auto* rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        *cutoff = new QDoubleSpinBox(row);
+        (*cutoff)->setRange(0.0, 25.0);
+        (*cutoff)->setValue(0.0);
+        (*cutoff)->setSuffix(QStringLiteral(" Å"));
+        (*cutoff)->setSpecialValueText(tr("off"));
+        rowLayout->addWidget(*cutoff, 1);
+        rowLayout->addWidget(new QLabel(tr("weight"), row));
+        *weightSpin = new QDoubleSpinBox(row);
+        (*weightSpin)->setRange(0.0, 100.0);
+        (*weightSpin)->setDecimals(2);
+        (*weightSpin)->setValue(weight);
+        rowLayout->addWidget(*weightSpin);
+        // The weight is meaningless while the term is off, and a live spin box
+        // beside a disabled one is how a user concludes the term IS on.
+        QObject::connect(*cutoff, &QDoubleSpinBox::valueChanged, *weightSpin,
+                         [spin = *weightSpin](double value) {
+                             spin->setEnabled(value > 0.0);
+                         });
+        (*weightSpin)->setEnabled(false);
+        form->addRow(label, row);
+    };
+    bodyRow(tr("Triplet cutoff:"), 0.5, &tripletSpin_, &tripletWeightSpin_);
+    tripletSpin_->setToolTip(
+        tr("Include three-body correlations: every triangle whose three "
+           "pairwise distances are within this cutoff.\n\n"
+           "Off by default. A pair-only SQS can reproduce every pair "
+           "correlation exactly and still have badly wrong triplet "
+           "statistics — pairs cannot see the difference — which is what "
+           "bites for high-entropy alloys and anywhere three-body terms carry "
+           "real energy."));
+    bodyRow(tr("Quadruplet cutoff:"), 0.25, &quadrupletSpin_,
+            &quadrupletWeightSpin_);
+    quadrupletSpin_->setToolTip(
+        tr("Include four-body correlations: every tetrahedron whose six "
+           "pairwise distances are within this cutoff.\n\n"
+           "Costlier than triplets and rarely decisive on its own; the "
+           "nearest-neighbour tetrahedron is however the cluster the fcc "
+           "cluster-variation method is built on, so it is the one to enable "
+           "when the SQS feeds a CVM entropy."));
+
     stepsSpin_ = new QSpinBox(this);
     stepsSpin_->setRange(100, 1000000);
     stepsSpin_->setValue(20000);
@@ -110,6 +168,10 @@ void SqsDialog::generate()
     params.replaceElement = elementCombo_->currentText().toStdString();
     params.shell1 = shell1Spin_->value();
     params.shell2 = shell2Spin_->value();
+    params.tripletCutoff = tripletSpin_->value();
+    params.tripletWeight = tripletWeightSpin_->value();
+    params.quadrupletCutoff = quadrupletSpin_->value();
+    params.quadrupletWeight = quadrupletWeightSpin_->value();
     params.steps = stepsSpin_->value();
     params.seed = static_cast<unsigned>(seedSpin_->value());
 
@@ -157,14 +219,37 @@ QString SqsDialog::resultSummary() const
     const auto& r = *result_;
     // The absolute objective means little on its own — how far it fell from
     // the random starting decoration is what says the annealing worked.
-    return tr("SQS: ΔΠ = %1 (from %2) over %3 shell(s), %4 sites, "
-              "%5/%6 swaps accepted")
-        .arg(r.objective, 0, 'g', 4)
-        .arg(r.initialObjective, 0, 'g', 4)
-        .arg(r.shells)
-        .arg(r.sublatticeSites)
-        .arg(r.accepted)
-        .arg(r.steps);
+    QString summary = tr("SQS: ΔΠ = %1 (from %2) over %3 shell(s), %4 sites, "
+                         "%5/%6 swaps accepted")
+                          .arg(r.objective, 0, 'g', 4)
+                          .arg(r.initialObjective, 0, 'g', 4)
+                          .arg(r.shells)
+                          .arg(r.sublatticeSites)
+                          .arg(r.accepted)
+                          .arg(r.steps);
+    // Only when they were asked for: a status bar that mentions triplets on
+    // every run trains the reader to stop reading it.
+    if (r.triplets > 0 || r.quadruplets > 0)
+        summary += tr("; ΔΠ = %1 pair + %2 triplet + %3 quad "
+                      "(%4 triangles, %5 tetrahedra)")
+                       .arg(r.deviation.pair, 0, 'g', 3)
+                       .arg(r.deviation.triplet, 0, 'g', 3)
+                       .arg(r.deviation.quadruplet, 0, 'g', 3)
+                       .arg(r.triplets)
+                       .arg(r.quadruplets);
+    // The short-range order of what was actually produced, as the one number
+    // an alloy reader wants: the largest |α| over the first shell. ΔΠ is a
+    // quantity internal to this optimizer; α = 0 is the ideal random alloy in
+    // anyone's units.
+    if (!r.shortRangeOrder.shells.empty()) {
+        double worst = 0.0;
+        for (const auto& row : r.shortRangeOrder.shells.front().alpha)
+            for (const double alpha : row)
+                if (!std::isnan(alpha))
+                    worst = std::max(worst, std::abs(alpha));
+        summary += tr("; max |α| = %1 in the first shell").arg(worst, 0, 'f', 4);
+    }
+    return summary;
 }
 
 } // namespace calango::gui

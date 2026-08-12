@@ -21,6 +21,7 @@
 #include "core/TdbExpression.hpp"
 #include "core/UnitCell.hpp"
 #include "gui/SettingsManager.hpp"
+#include "gui/OrchestrationDocument.hpp"
 #include "gui/OrchestrationTransforms.hpp"
 #include "gui/OrchestrationWindow.hpp"
 #include "gui/ProcessManagerPanel.hpp"
@@ -41,6 +42,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <utility>
 
 namespace {
 
@@ -344,6 +346,317 @@ int main(int argc, char** argv)
         check(orchestrationTaskFromSlug(QStringLiteral("tdb_generator"))
                   == OrchestrationTask::TdbGenerator,
               "that round-trips, so a saved workflow containing one loads");
+
+        // ---- The alloy pipeline ------------------------------------------
+        // Container(parent lattice) -> SQS -> simulations -> ECI fit -> CVM.
+        // What is pinned here is the WIRING, because it is the part that fails
+        // silently: a node whose slot names a file nobody writes simply never
+        // runs, and a node missing from a dispatch switch runs the wrong
+        // transform under the right name.
+        check(orchestrationTaskFamily(OrchestrationTask::SqsGenerator)
+                      == OrchestrationFamily::Transform
+                  && orchestrationTaskFamily(
+                         OrchestrationTask::ClusterExpansionFit)
+                      == OrchestrationFamily::Transform
+                  && orchestrationTaskFamily(OrchestrationTask::CvmEntropy)
+                      == OrchestrationFamily::Transform,
+              "all three alloy nodes run on the canvas, not as jobs");
+        // The SQS Generator is a structure transform in the strict sense: it
+        // takes the ordinary geometry handoff, so it must declare NO slot.
+        // Declaring one would make it demand a completed run it has no use
+        // for, and refuse every graph that feeds it a plain structure.
+        check(orchestrationInputSlots(OrchestrationTask::SqsGenerator).isEmpty(),
+              "the SQS Generator takes a structure, not a completed run");
+        check(!orchestrationTaskHasDefaults(OrchestrationTask::SqsGenerator),
+              "and cannot run unconfigured — a default composition would be a "
+              "claim about which alloy the user meant");
+        // The two ends of the ECI handoff. These two strings being equal IS
+        // the contract: the fitter writes a file and the solver stages one,
+        // and nothing else connects them.
+        check(orchestrationRequiredInputs(OrchestrationTask::ClusterExpansionFit)
+                      == 1
+                  && orchestrationInputSlots(
+                         OrchestrationTask::ClusterExpansionFit)
+                             .front()
+                             .stagedName
+                      == QStringLiteral("cluster_expansion.json"),
+              "the ECI Fitter reads the same ensemble file as the hull viewer "
+              "and the TDB Generator");
+        check(orchestrationRequiredInputs(OrchestrationTask::CvmEntropy) == 1
+                  && orchestrationInputSlots(OrchestrationTask::CvmEntropy)
+                             .front()
+                             .sourceName
+                      == QStringLiteral("cluster_expansion_fit.json"),
+              "and the CVM node reads exactly the file the ECI Fitter writes");
+        for (const auto& [task, slug] :
+             {std::pair{OrchestrationTask::SqsGenerator,
+                        QStringLiteral("sqs_generator")},
+              std::pair{OrchestrationTask::ClusterExpansionFit,
+                        QStringLiteral("cluster_expansion_fit")},
+              std::pair{OrchestrationTask::CvmEntropy,
+                        QStringLiteral("cvm_entropy")}})
+            check(orchestrationTaskSlug(task) == slug
+                      && orchestrationTaskFromSlug(slug) == task,
+                  qPrintable(QStringLiteral("\"%1\" is a stable slug that "
+                                            "round-trips")
+                                 .arg(slug)));
+
+        // ---- Thermodynamic integration -----------------------------------
+        //
+        // A Simulation, not an Analysis. The distinction is load-bearing and
+        // invisible: orchestrationTaskFamily() has a `default:` arm that
+        // returns Analysis, and an Analysis node is refused unless a completed
+        // baseline is wired into it — so a TI node that fell through would be
+        // permanently unrunnable for a reason spelled nowhere.
+        check(orchestrationTaskFamily(OrchestrationTask::LiquidFreeEnergy)
+                  == OrchestrationFamily::Simulation,
+              "the TI node is a Simulation, not an Analysis");
+        check(orchestrationInputSlots(OrchestrationTask::LiquidFreeEnergy)
+                  .isEmpty(),
+              "it reads a structure, so it stages no completed run");
+        // The one Simulation-family task with no defaults. A default TI path
+        // would produce an ABSOLUTE free energy from an unchosen reference at
+        // an unchosen temperature — a number nobody can look at and see is
+        // wrong.
+        check(!orchestrationTaskHasDefaults(OrchestrationTask::LiquidFreeEnergy),
+              "and refuses to run unconfigured, unlike every other simulation");
+        check(orchestrationTaskSlug(OrchestrationTask::LiquidFreeEnergy)
+                      == QStringLiteral("liquid_free_energy")
+                  && orchestrationTaskFromSlug(
+                         QStringLiteral("liquid_free_energy"))
+                      == OrchestrationTask::LiquidFreeEnergy,
+              "with a stable slug that round-trips");
+        check(calango::gui::orchestrationTasks().contains(
+                  OrchestrationTask::LiquidFreeEnergy),
+              "and it appears in the Add Process list at all");
+    }
+
+    // ---- The SQS Generator transform ---------------------------------------
+    //
+    // End to end through the node's compute function, on the same copper cell
+    // the rest of this file uses. The composition is the closed form: 2x2x2 of
+    // a four-atom fcc conventional cell is 32 sites, and 50/50 is 16 each —
+    // exactly, because the generator rounds onto whole sites by largest
+    // remainder rather than approximately.
+    std::printf("SQS Generator transform:\n");
+    {
+        using calango::gui::AlloyComposition;
+        using calango::gui::SqsGeneratorOutput;
+        using calango::gui::SqsGeneratorSpec;
+
+        SqsGeneratorSpec spec;
+        spec.na = spec.nb = spec.nc = 2;
+        spec.shell1 = 3.0; // brackets the fcc nearest neighbour at 2.55 A
+        spec.shell2 = 3.7;
+        spec.steps = 4000;
+        AlloyComposition half;
+        half.species = {{QStringLiteral("Cu"), 0.5}, {QStringLiteral("Au"), 0.5}};
+        AlloyComposition quarter;
+        quarter.label = QStringLiteral("Cu3Au");
+        quarter.species = {{QStringLiteral("Cu"), 0.75},
+                           {QStringLiteral("Au"), 0.25}};
+        spec.compositions = {half, quarter};
+
+        check(spec.variantCount() == 2,
+              "two compositions means two pipeline passes");
+        check(half.name() == QStringLiteral("Cu50Au50"),
+              "an unnamed composition names itself from its fractions");
+        check(quarter.name() == QStringLiteral("Cu3Au"),
+              "and a named one keeps its name");
+
+        // The copper fixture carries a rattled atom, which is fine for a
+        // relaxation and wrong for an SQS: the sublattice would have one site
+        // off its lattice position. A clean cell, then.
+        Structure fcc;
+        fcc.setCell(UnitCell({a, 0.0, 0.0}, {0.0, a, 0.0}, {0.0, 0.0, a}));
+        for (const auto& site : sites) {
+            Atom atom;
+            atom.atomicNumber = 29;
+            atom.position = {a * site[0], a * site[1], a * site[2]};
+            fcc.addAtom(atom);
+        }
+
+        SqsGeneratorOutput output;
+        QString problem;
+        check(runSqsGeneration(fcc, spec, 0, &output, &problem),
+              "the first composition produces a structure");
+        if (!problem.isEmpty())
+            std::printf("      %s\n", qPrintable(problem));
+        int copper = 0;
+        int gold = 0;
+        for (const auto& atom : output.structure.atoms())
+            (atom.atomicNumber == 29 ? copper : gold) += 1;
+        check(output.structure.size() == 32,
+              "a 2x2x2 supercell of the fcc conventional cell is 32 sites");
+        check(copper == 16 && gold == 16,
+              "and 50/50 lands exactly 16/16 — the composition is not "
+              "approximate");
+        check(output.label == QStringLiteral("Cu50Au50"),
+              "the pass is named after the composition, not numbered");
+        check(output.summaryJson.contains(QStringLiteral("warren_cowley"))
+                  && output.summaryJson.contains(QStringLiteral("deviation")),
+              "and the report carries both the objective split and the "
+              "short-range order of what was made");
+
+        // The second composition, and the clamp that keeps a shrunken list
+        // from reading off the end.
+        check(runSqsGeneration(fcc, spec, 1, &output, &problem)
+                  && output.label == QStringLiteral("Cu3Au"),
+              "index 1 produces the second composition");
+        copper = 0;
+        gold = 0;
+        for (const auto& atom : output.structure.atoms())
+            (atom.atomicNumber == 29 ? copper : gold) += 1;
+        check(copper == 24 && gold == 8, "75/25 of 32 sites is exactly 24/8");
+        check(runSqsGeneration(fcc, spec, 99, &output, &problem),
+              "an out-of-range pass index is clamped, not read off the end");
+
+        SqsGeneratorSpec empty;
+        check(!runSqsGeneration(fcc, empty, 0, &output, &problem)
+                  && !problem.isEmpty(),
+              "a node with no compositions is refused, with a reason");
+    }
+
+    // ---- The two nodes whose solvers are not linked yet ---------------------
+    //
+    // TRIPWIRE. core::ClusterExpansionFit and core::ClusterVariation are being
+    // written separately; until they are in the build, both nodes REFUSE
+    // rather than writing a file of zeros — a downstream CVM curve is smooth
+    // and plausible whatever went into it, so a placeholder would be
+    // indistinguishable from an answer.
+    //
+    // When either solver lands, replace the matching check here with a real
+    // one. A test asserting "not implemented" is only honest while that is
+    // true, and this is the thing that will notice.
+    std::printf("ECI Fitter and CVM solver (pending):\n");
+    {
+        using calango::gui::ClusterExpansionFitOutput;
+        using calango::gui::ClusterExpansionFitSpec;
+        using calango::gui::CvmEntropyOutput;
+        using calango::gui::CvmEntropySpec;
+
+        ClusterExpansionFitSpec fitSpec;
+        check(fitSpec.isValid() && fitSpec.crossValidationFolds == 0,
+              "the default cluster basis is usable and cross-validates "
+              "leave-one-out, the cluster-expansion convention");
+        fitSpec.crossValidationFolds = 1;
+        check(!fitSpec.isValid(),
+              "but one fold is the fit again under another name, and is "
+              "refused");
+        fitSpec.crossValidationFolds = 5;
+
+        ClusterExpansionFitOutput fitted;
+        QString problem;
+        // A mis-wired graph must not be reported as the missing solver: the
+        // two failures look identical from the canvas and have nothing to do
+        // with each other.
+        check(!runClusterExpansionFit(QStringLiteral("{}"), fitSpec, &fitted,
+                                      &problem)
+                  && problem.contains(QStringLiteral("configurations")),
+              "an input that is not an ensemble is refused as such");
+        QJsonArray configurations;
+        for (int i = 0; i < 4; ++i) {
+            QJsonObject entry;
+            entry.insert(QStringLiteral("concentration"), i / 3.0);
+            entry.insert(QStringLiteral("energy_per_atom"), -3.0 - 0.1 * i);
+            configurations.append(entry);
+        }
+        QJsonObject ensemble;
+        ensemble.insert(QStringLiteral("configurations"), configurations);
+        const QString ensembleJson = QString::fromUtf8(
+            QJsonDocument(ensemble).toJson(QJsonDocument::Compact));
+        // The refusal must name the REAL obstacle, which is not the one it
+        // looks like: core::ClusterExpansionFit exists and takes a design
+        // matrix, and cluster_expansion.json carries energies but no cluster
+        // correlations to build one from.
+        check(!runClusterExpansionFit(ensembleJson, fitSpec, &fitted, &problem)
+                  && problem.contains(QStringLiteral("correlations")),
+              "a usable ensemble is refused because it carries no cluster "
+              "correlations to fit against, and the message says so");
+
+        CvmEntropySpec cvmSpec;
+        check(cvmSpec.isValid(), "the default CVM range is a usable one");
+        cvmSpec.maxTemperatureK = cvmSpec.minTemperatureK;
+        check(!cvmSpec.isValid(), "an empty temperature range is refused");
+        cvmSpec.maxTemperatureK = 2000.0;
+        CvmEntropyOutput solved;
+        check(!runCvmEntropy(QStringLiteral("{}"), cvmSpec, &solved, &problem)
+                  && problem.contains(QStringLiteral("ECIs")),
+              "a CVM node fed something that is not an ECI file says so");
+        check(!runCvmEntropy(
+                  QStringLiteral("{\"eci\":[{\"order\":2,\"value_eV\":0.01}]}"),
+                  cvmSpec, &solved, &problem)
+                  && problem.contains(QStringLiteral("not wired up")),
+              "and a readable one is refused only because nothing upstream "
+              "writes that file yet");
+    }
+
+    // ---- The three new specs survive a saved workflow -----------------------
+    // A node whose settings do not round-trip through the document is a node
+    // that computes something else on the cluster than it does on the canvas.
+    std::printf("Alloy nodes in a saved workflow:\n");
+    {
+        using calango::gui::AlloyComposition;
+        using calango::gui::CvmEntropySpec;
+        using calango::gui::SqsGeneratorSpec;
+
+        OrchestrationWindow window({}, pythonResolver);
+        OrchestrationNodeItem* sqsNode = window.addProcessNode(
+            OrchestrationTask::SqsGenerator, calango::core::CalculatorKind::EMT);
+        SqsGeneratorSpec spec;
+        spec.na = 3;
+        spec.nb = 2;
+        spec.nc = 1;
+        spec.tripletCutoff = 4.1;
+        spec.replaceElement = QStringLiteral("Ni");
+        AlloyComposition composition;
+        composition.label = QStringLiteral("HEA");
+        composition.species = {{QStringLiteral("Co"), 0.25},
+                               {QStringLiteral("Cr"), 0.25},
+                               {QStringLiteral("Fe"), 0.25},
+                               {QStringLiteral("Ni"), 0.25}};
+        spec.compositions = {composition};
+        window.setNodeSqsGenerator(sqsNode, spec);
+
+        OrchestrationNodeItem* fitNode = window.addProcessNode(
+            OrchestrationTask::ClusterExpansionFit,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* cvmNode = window.addProcessNode(
+            OrchestrationTask::CvmEntropy, calango::core::CalculatorKind::EMT);
+        CvmEntropySpec cvmSpec;
+        cvmSpec.lattice = CvmEntropySpec::Lattice::Bcc;
+        cvmSpec.approximation = CvmEntropySpec::Approximation::Pair;
+        cvmSpec.temperatureSteps = 37;
+        window.setNodeCvmEntropy(cvmNode, cvmSpec);
+        window.linkNodes(fitNode, cvmNode);
+
+        QStringList warnings;
+        const QJsonObject document =
+            calango::gui::OrchestrationDocument::build(window, &warnings);
+        OrchestrationWindow reloaded({}, pythonResolver);
+        QString error;
+        check(calango::gui::OrchestrationDocument::load(reloaded, document,
+                                                        &error),
+              "a pipeline holding all three alloy nodes reloads");
+        check(reloaded.nodes().size() == 3, "with every node");
+        const OrchestrationNodeItem* back = reloaded.nodes().front();
+        check(back->task() == OrchestrationTask::SqsGenerator
+                  && back->sqsGenerator().compositions.size() == 1
+                  && back->sqsGenerator().compositions.front().species.size() == 4
+                  && back->sqsGenerator().replaceElement
+                      == QStringLiteral("Ni"),
+              "the quaternary composition and its sublattice survive");
+        check(back->sqsGenerator().na == 3 && back->sqsGenerator().nb == 2
+                  && back->sqsGenerator().nc == 1
+                  && std::fabs(back->sqsGenerator().tripletCutoff - 4.1) < 1e-9,
+              "and so do the supercell and the triplet cutoff — the two "
+              "settings that decide what was actually computed");
+        const OrchestrationNodeItem* backCvm = reloaded.nodes().back();
+        check(backCvm->cvmEntropy().lattice == CvmEntropySpec::Lattice::Bcc
+                  && backCvm->cvmEntropy().approximation
+                      == CvmEntropySpec::Approximation::Pair
+                  && backCvm->cvmEntropy().temperatureSteps == 37,
+              "the CVM lattice, approximation and grid survive too");
     }
 
     // ---- The CALPHAD assessment the TDB Generator performs -----------------

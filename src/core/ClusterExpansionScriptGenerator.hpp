@@ -3,6 +3,7 @@
 #include "core/CalculatorConfig.hpp"
 
 #include <string>
+#include <vector>
 
 namespace calango::core {
 
@@ -46,6 +47,25 @@ struct ClusterExpansionRunConfig {
     /// Continue past a configuration whose relaxation raised, recording it as
     /// failed. A single bad decoration should not lose the other 200 runs.
     bool continueOnFailure = true;
+
+    /// The DESIGN MATRIX: one cluster-correlation vector per configuration, in
+    /// the same frame order as `inputTrajectory`.
+    ///
+    /// Carried here rather than recomputed in Python because the builder has
+    /// already computed it (`ClusterExpansionConfig::correlation`) from the
+    /// orbit definitions it enumerated. Re-deriving correlations on the Python
+    /// side would be a SECOND implementation of cluster enumeration, and two
+    /// implementations of the same thing are one more thing that can disagree
+    /// — silently, since a wrong design matrix still fits and still produces
+    /// plausible ECIs.
+    ///
+    /// Empty means the ensemble predates this field; the script then emits no
+    /// `correlation` key and the ECI fitter refuses rather than fitting
+    /// against nothing.
+    std::vector<std::vector<double>> correlations;
+    /// Human-readable label per correlation column, e.g. "pair r=2.55 m=12".
+    /// Same length as each row of `correlations`.
+    std::vector<std::string> orbitLabels;
 };
 
 class ClusterExpansionScriptGenerator {

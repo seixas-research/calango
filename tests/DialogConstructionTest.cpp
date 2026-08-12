@@ -16,6 +16,7 @@
 
 #include "core/CalculatorConfig.hpp"
 #include "core/Structure.hpp"
+#include "gui/CvmComparisonWindow.hpp"
 #include "gui/FilmTimelineWidget.hpp"
 #include "gui/DatabaseImportDialog.hpp"
 #include "gui/GeometryConstraintsDialog.hpp"
@@ -46,6 +47,8 @@
 #include "gui/RandomNoiseWizard.hpp"
 #include "gui/SimulationWizardBase.hpp"
 #include "gui/MolecularDynamicsWizard.hpp"
+#include "gui/ThermodynamicIntegrationWizard.hpp"
+#include "gui/ThermodynamicIntegrationResults.hpp"
 #include "gui/SinglePointWizard.hpp"
 #include "gui/NonlinearOpticsWizard.hpp"
 #include "core/CalphadModel.hpp"
@@ -66,6 +69,7 @@
 #include "python_bridge/PythonEngine.hpp"
 #include "render/StructureRenderer.hpp"
 
+#include <QPainter>
 #include <QAbstractButton>
 #include <QApplication>
 #include <QCheckBox>
@@ -3503,6 +3507,145 @@ int main(int argc, char** argv)
         check(true, "survives every control being toggled in either mode");
     }
 
+    std::printf("Thermodynamic Integration wizard:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        calango::gui::ThermodynamicIntegrationWizard wizard;
+        check(true, "constructs");
+
+        auto* reference =
+            wizard.findChild<QComboBox*>(QStringLiteral("tiReferenceCombo"));
+        auto* schedule =
+            wizard.findChild<QComboBox*>(QStringLiteral("tiScheduleCombo"));
+        auto* quadrature =
+            wizard.findChild<QComboBox*>(QStringLiteral("tiQuadratureCombo"));
+        auto* windows =
+            wizard.findChild<QSpinBox*>(QStringLiteral("tiWindowsSpin"));
+        auto* jobs = wizard.findChild<QSpinBox*>(QStringLiteral("tiJobsSpin"));
+        auto* hysteresis =
+            wizard.findChild<QCheckBox*>(QStringLiteral("tiHysteresisCheck"));
+        auto* equilibration = wizard.findChild<QSpinBox*>(
+            QStringLiteral("tiEquilibrationSpin"));
+        check(reference && schedule && quadrature && windows && jobs
+                  && hysteresis && equilibration,
+              "exposes the path controls");
+
+        // Gauss-Legendre weights are only valid on Gauss-Legendre nodes, so
+        // the two controls are not independent: the schedule wins and the
+        // quadrature follows. Letting the pair disagree would have the core
+        // silently fall back to a trapezoid on a grid chosen for Gauss.
+        if (schedule && quadrature) {
+            schedule->setCurrentIndex(0); // Gauss-Legendre nodes
+            check(!quadrature->isEnabled()
+                      && quadrature->currentData().toInt()
+                          == static_cast<int>(
+                              calango::core::TiQuadrature::GaussLegendre),
+                  "Gauss-Legendre nodes lock the quadrature to Gauss-Legendre");
+            schedule->setCurrentIndex(1); // Uniform
+            check(quadrature->isEnabled()
+                      && quadrature->currentData().toInt()
+                          != static_cast<int>(
+                              calango::core::TiQuadrature::GaussLegendre),
+                  "and a uniform grid frees it, off Gauss-Legendre");
+        }
+
+        // Splitting the run withdraws hysteresis: a reversed sweep needs one
+        // sequential chain of windows, and a job owning a slice has none.
+        if (jobs && hysteresis && windows) {
+            windows->setValue(8);
+            hysteresis->setChecked(true);
+            jobs->setValue(4);
+            check(!hysteresis->isEnabled() && !hysteresis->isChecked(),
+                  "splitting the run withdraws the hysteresis sweep");
+            check(wizard.jobCount() == 4 && wizard.scripts().size() == 4,
+                  "and produces one script per job");
+            // Every script must declare the WHOLE path, or a slice that
+            // renumbered it would write window 000 and look complete.
+            const QStringList slices = wizard.scripts();
+            bool sameLambdas = true;
+            for (const QString& text : slices)
+                sameLambdas = sameLambdas
+                    && text.section(QStringLiteral("LAMBDAS = "), 1, 1)
+                            .section(QLatin1Char('\n'), 0, 0)
+                        == slices.front()
+                               .section(QStringLiteral("LAMBDAS = "), 1, 1)
+                               .section(QLatin1Char('\n'), 0, 0);
+            check(sameLambdas, "each declaring the same full lambda path");
+            jobs->setValue(1);
+            check(hysteresis->isEnabled(),
+                  "and collapsing back to one job offers it again");
+        }
+
+        // generateScript() must ALWAYS be the whole path: the orchestration
+        // canvas runs one node as one process and never asks for scripts().
+        if (jobs && windows) {
+            jobs->setValue(3);
+            const QString single = wizard.script();
+            check(single.contains(QStringLiteral("WINDOW_INDICES = [0, 1, 2, 3, "
+                                                 "4, 5, 6, 7]")),
+                  "the previewed script covers every window, not one slice");
+            jobs->setValue(1);
+        }
+
+        // The endpoint singularity has to be visible before the run, not
+        // discovered afterwards: an ideal-gas reference on a grid that
+        // includes lambda = 0 is the combination that under-converges
+        // silently.
+        if (reference && schedule) {
+            reference->setCurrentIndex(0); // ideal gas
+            schedule->setCurrentIndex(1);  // uniform, includes lambda = 0
+            bool warned = false;
+            for (QLabel* label : wizard.findChildren<QLabel*>())
+                warned = warned
+                    || label->text().contains(QStringLiteral("λ = 0 against an "
+                                                             "ideal gas"));
+            check(warned, "warns about lambda = 0 against an ideal gas");
+            schedule->setCurrentIndex(0); // back to Gauss-Legendre
+        }
+
+        exerciseControls(&wizard);
+        check(true, "survives every control being toggled");
+    }
+
+    std::printf("Thermodynamic Integration results reader:\n");
+    {
+        // An INCOMPLETE run must produce no free energy at all. This is the
+        // behaviour the whole module is built around: quadrature weights are a
+        // property of the node set, so an integral over the surviving windows
+        // is a different integral, not a noisier one.
+        QTemporaryDir dir;
+        const QString path = dir.filePath(QStringLiteral("ti.json"));
+        QFile file(path);
+        file.open(QIODevice::WriteOnly);
+        file.write(R"JSON({
+          "schema": "calango.thermodynamic_integration/1",
+          "reference": "ideal_gas", "schedule": "uniform",
+          "quadrature": "trapezoid", "windows_expected": 3,
+          "natoms": 2, "volume_A3": 1000.0, "temperature_K": 300.0,
+          "pressure_GPa": 0.0, "masses_amu": [39.948, 39.948],
+          "complete": false,
+          "paths": {"forward": {"complete": false, "missing": [2],
+            "failed": [], "windows": [
+              {"index": 0, "lambda": 0.0, "status": "ok", "samples": 4,
+               "mean_dudl_eV": 1.0, "variance_dudl_eV2": 0.0,
+               "series_eV": [1.0, 1.0, 1.0, 1.0], "mean_volume_A3": 1000.0},
+              {"index": 1, "lambda": 0.5, "status": "ok", "samples": 4,
+               "mean_dudl_eV": 1.0, "variance_dudl_eV2": 0.0,
+               "series_eV": [1.0, 1.0, 1.0, 1.0], "mean_volume_A3": 1000.0}]}}
+        })JSON");
+        file.close();
+
+        const auto report =
+            calango::gui::readThermodynamicIntegrationRun(path);
+        check(report.parsed, "the summary parses");
+        check(!report.complete, "a missing window leaves the path incomplete");
+        check(report.assembly.helmholtzEv == 0.0
+                  && report.assembly.gibbsEv == 0.0,
+              "and no free energy is produced");
+        check(report.text.contains(QStringLiteral("INCOMPLETE")),
+              "the report says so in as many words");
+    }
+
     // A small crystal both defect wizards can chew on: 4x4x4 simple cubic.
     const auto cubicCrystal = [] {
         auto structure = std::make_shared<calango::core::Structure>();
@@ -3749,6 +3892,84 @@ int main(int argc, char** argv)
         exerciseControls(&dialog);
         check(dialog.entries().isEmpty(),
               "and survives every control being toggled without a key");
+    }
+
+    // The CVM comparison viewer. Three curves on one canvas is the whole
+    // deliverable, so what is checked is that all three are actually there
+    // and that the ideal one is drawn as a BASELINE against temperature but
+    // as a CURVE against composition — where it is -x ln x - (1-x) ln(1-x)
+    // and drawing it flat would be simply wrong.
+    {
+        std::printf("CvmComparisonWindow:\n");
+        CvmComparisonWindow window;
+        // Rendering headless is the point: the plot holds no viewport and no
+        // GL context, so it can be exercised in this test at all.
+        QImage image(720, 460, QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::white);
+        {
+            QPainter painter(&image);
+            window.findChild<CvmComparisonPlot*>()->render(
+                painter, QRectF(0, 0, 720, 460));
+        }
+        // The canvas must not come back blank: count pixels that are neither
+        // the white canvas nor the pale grid.
+        int ink = 0;
+        for (int y = 0; y < image.height(); y += 2)
+            for (int x = 0; x < image.width(); x += 2) {
+                const QColor c = image.pixelColor(x, y);
+                if (c.red() < 200 || c.green() < 200 || c.blue() < 200)
+                    ++ink;
+            }
+        check(ink > 200,
+              "the comparison canvas renders curves rather than an empty "
+              "frame (" + std::to_string(ink) + " ink samples)");
+        exerciseControls(&window);
+        check(true, "and survives every control being toggled without a key");
+
+        // Long-range order must actually REACH the canvas. The four-sublattice
+        // solver existed in core for a while with no way to run it from the
+        // interface, which is the failure this check exists to prevent: the
+        // curve count and the T_c marker both have to change when the box is
+        // ticked.
+        auto* lro = window.findChild<QCheckBox*>();
+        check(lro != nullptr, "the long-range-order control exists");
+        if (lro) {
+            // exerciseControls() above cycled every spin box, including the
+            // species count — and the stoichiometry snap only fires for a
+            // BINARY. Without resetting it this block silently measured a
+            // multi-component system that cannot form L1_2, and reported a
+            // near-empty canvas as a pass.
+            if (auto* species = window.findChild<QSpinBox*>())
+                species->setValue(2);
+            // Cu3Au: x = 1/4, ordering interaction, a range that brackets T_c.
+            lro->setChecked(true);
+            QMetaObject::invokeMethod(&window, "recompute");
+            QImage ordered(720, 460, QImage::Format_ARGB32_Premultiplied);
+            ordered.fill(Qt::white);
+            {
+                QPainter painter(&ordered);
+                window.findChild<CvmComparisonPlot*>()->render(
+                    painter, QRectF(0, 0, 720, 460));
+            }
+            int ink = 0;
+            for (int y = 0; y < ordered.height(); y += 2)
+                for (int x = 0; x < ordered.width(); x += 2) {
+                    const QColor c = ordered.pixelColor(x, y);
+                    if (c.red() < 200 || c.green() < 200 || c.blue() < 200)
+                        ++ink;
+                }
+            // A real comparison, not merely "something drew": three curves
+            // plus the shaded gap and the T_c rule should ink comparably to
+            // the homogeneous view. The earlier threshold of 200 passed on an
+            // essentially blank plot.
+            check(ink > 1500,
+                  "with long-range order enabled the canvas renders the "
+                  "ordered/disordered comparison ("
+                      + std::to_string(ink) + " ink samples)");
+            lro->setChecked(false);
+            QMetaObject::invokeMethod(&window, "recompute");
+            check(true, "and toggling back restores the homogeneous view");
+        }
     }
 
     std::printf(failures == 0 ? "\nAll dialog construction checks passed.\n"

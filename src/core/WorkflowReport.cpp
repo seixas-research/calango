@@ -389,7 +389,13 @@ QList<ReportMetric> extractReportMetrics(const QString& directory,
         metricsFile.value(QStringLiteral("metrics")).toArray();
     double value = 0.0;
     int step = 0;
-    if (lastMetric(samples, "energy", &value, &step)) {
+    // A thermodynamic-integration run's "energy" samples are per-window
+    // averages of dU/dlambda, one per lambda point. Reporting the last one as
+    // "Final energy" would put a coupling derivative under the name of a total
+    // energy — a plausible-looking number that is not the quantity the module
+    // exists to produce. Its own summary is read further down instead.
+    const bool freeEnergyRun = taskSlug == QLatin1String("liquid_free_energy");
+    if (!freeEnergyRun && lastMetric(samples, "energy", &value, &step)) {
         metrics.append(number(QStringLiteral("final_energy_ev"),
                               QObject::tr("Final energy"), value,
                               QStringLiteral("eV"), 6));
@@ -452,6 +458,47 @@ QList<ReportMetric> extractReportMetrics(const QString& directory,
                                : number(QStringLiteral("band_gap_ev"),
                                         QObject::tr("Band gap"), info.gap,
                                         QStringLiteral("eV"), 3));
+        }
+    }
+
+    // --- Thermodynamic integration -----------------------------------------
+    // Read by file name, like every module summary below. Deliberately reports
+    // the COMPLETENESS of the lambda path first: a run with a dead window has
+    // no free energy at all, and a report that quietly omitted the number
+    // would be indistinguishable from one where the assembly simply had not
+    // run yet.
+    const QJsonObject ti = readJsonObject(directory + QStringLiteral("/ti.json"));
+    if (!ti.isEmpty()) {
+        const QJsonObject forward = ti.value(QStringLiteral("paths"))
+                                        .toObject()
+                                        .value(QStringLiteral("forward"))
+                                        .toObject();
+        const int expected =
+            ti.value(QStringLiteral("windows_expected")).toInt();
+        const int missing =
+            forward.value(QStringLiteral("missing")).toArray().size()
+            + forward.value(QStringLiteral("failed")).toArray().size();
+        metrics.append(text(QStringLiteral("ti_windows"),
+                            QObject::tr("λ windows"),
+                            QStringLiteral("%1 / %2")
+                                .arg(expected - missing)
+                                .arg(expected)));
+        if (ti.value(QStringLiteral("complete")).toBool()) {
+            // The script's own trapezoid value, named as such. The assembled
+            // absolute free energy — with the reference term, the chosen
+            // quadrature and the autocorrelation-corrected error bar — belongs
+            // to the results reader, which is where the physics lives.
+            const QJsonValue deltaF =
+                forward.value(QStringLiteral("delta_F_trapezoid_eV"));
+            if (deltaF.isDouble())
+                metrics.append(number(QStringLiteral("ti_delta_f_ev"),
+                                      QObject::tr("ΔF (trapezoid)"),
+                                      deltaF.toDouble(),
+                                      QStringLiteral("eV"), 6));
+        } else {
+            metrics.append(text(QStringLiteral("ti_status"),
+                                QObject::tr("Free energy"),
+                                QObject::tr("incomplete path — not reported")));
         }
     }
 

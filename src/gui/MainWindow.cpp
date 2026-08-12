@@ -1,3 +1,5 @@
+#include "gui/EciFitDialog.hpp"
+#include "gui/CvmComparisonWindow.hpp"
 #include "gui/MainWindow.hpp"
 
 #include "core/ElectronPhononIo.hpp"
@@ -41,6 +43,8 @@
 #include "gui/GeometryOptimizationWizard.hpp"
 #include "gui/ElectronicBandsWizard.hpp"
 #include "gui/MolecularDynamicsWizard.hpp"
+#include "gui/ThermodynamicIntegrationResults.hpp"
+#include "gui/ThermodynamicIntegrationWizard.hpp"
 #include "gui/RandomNoiseViewer.hpp"
 #include "gui/RandomNoiseWizard.hpp"
 #include "gui/CddWizard.hpp"
@@ -1171,6 +1175,11 @@ void MainWindow::createMenusAndDocks()
                               this, &MainWindow::geometryOptimization);
     simulationMenu->addAction(tr("&Molecular Dynamics…"),
                               this, &MainWindow::molecularDynamics);
+    // Directly after MD: it IS molecular dynamics — one thermostatted run
+    // per lambda window — and the free energy it produces is the quantity
+    // an MD trajectory cannot give you on its own.
+    simulationMenu->addAction(tr("&Liquid Free Energy (TI)…"),
+                              this, &MainWindow::liquidFreeEnergy);
     simulationMenu->addAction(tr("&Phonon…"),
                               this, &MainWindow::openPhononBuilder);
     // Directly after Phonon: it is the same finite-displacement machinery,
@@ -1450,6 +1459,16 @@ void MainWindow::createMenusAndDocks()
                           this, &MainWindow::openSqsBuilder);
     alloysMenu->addAction(tr("&Warren-Cowley Analysis…"),
                           this, &MainWindow::showWarrenCowley);
+    // The missing middle of the pipeline: energies in, interactions out.
+    // Placed between the run and the CVM solver because that is the order the
+    // work happens in — enumerate, compute, FIT, then predict.
+    alloysMenu->addAction(tr("&Effective Cluster Interactions (ECI Fit)…"),
+                          this, &MainWindow::openEciFit);
+    // Configurational thermodynamics. Sits beside Warren-Cowley deliberately:
+    // that dialog MEASURES short-range order in a structure, this one PREDICTS
+    // it from interactions, and reading one against the other is the point.
+    alloysMenu->addAction(tr("C&VM / Alloy Thermodynamics…"), this,
+                          &MainWindow::openCvmComparison);
 
     // Parameters Convergence: sweeps that answer "is this setting tight
     // enough?" with a curve instead of folklore. The plane-wave cutoff is the
@@ -6940,6 +6959,34 @@ void MainWindow::openGrapheneOxideMdmc(
               wizard.runCommand());
 }
 
+void MainWindow::openEciFit()
+{
+    EciFitDialog dialog(this);
+    // The handoff that makes the pipeline a pipeline: the fitted pair ECI is
+    // pushed straight into the CVM module, so nobody has to know that the CVM
+    // solver wants e_AB = -J and convert it by hand.
+    connect(&dialog, &EciFitDialog::sendToCvmRequested, this,
+            [this](double pairEci) {
+                auto* window = new CvmComparisonWindow();
+                window->setAttribute(Qt::WA_DeleteOnClose);
+                window->setPairEci(pairEci);
+                window->resize(1000, 560);
+                window->show();
+            });
+    dialog.exec();
+}
+
+void MainWindow::openCvmComparison()
+{
+    // A plain window, not modal and not a wizard: nothing here launches a job,
+    // every solve is milliseconds, and the whole value is in changing an
+    // interaction and watching the three curves separate.
+    auto* window = new CvmComparisonWindow();
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    window->resize(1000, 560);
+    window->show();
+}
+
 void MainWindow::openSqsBuilder()
 {
     Document* doc = currentDocument();
@@ -7454,13 +7501,26 @@ std::unique_ptr<SimulationWizardBase> makeOrchestrationWizard(
         wizard->setDensityBaselines(request.baselines);
         return wizard;
     }
+    case OrchestrationTask::LiquidFreeEnergy:
+        // One node, one job: on the canvas the lambda windows are always run by
+        // a single script. Splitting them across jobs is a decision the wizard
+        // offers only to the menu path, where the host owns the queue — here
+        // the canvas owns it, and a node that quietly turned into twelve jobs
+        // would break the one-node-one-process invariant the pipeline is
+        // sequenced on.
+        return std::make_unique<ThermodynamicIntegrationWizard>(
+            request.structure);
 
     case OrchestrationTask::Container:
     case OrchestrationTask::Supercell:
     case OrchestrationTask::DefectGenerator:
     case OrchestrationTask::TdbGenerator:
+    case OrchestrationTask::SqsGenerator:
+    case OrchestrationTask::ClusterExpansionFit:
+    case OrchestrationTask::CvmEntropy:
         // The transforms configure themselves on the canvas — a structure
-        // list, three spin boxes, a table of edits, a Redlich-Kister order.
+        // list, three spin boxes, a table of edits, a Redlich-Kister order, a
+        // list of alloy compositions, a cluster basis, a temperature range.
         // There is no engine to pick and no script to generate, so there is no
         // wizard to build and OrchestrationWindow never asks for one.
         break;
@@ -7784,6 +7844,74 @@ void MainWindow::molecularDynamics()
     // species present).
     MolecularDynamicsWizard wizard(doc->structure, this);
     runSimulationWizard(wizard, tr("Molecular Dynamics"));
+}
+
+void MainWindow::liquidFreeEnergy()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Liquid Free Energy"),
+                                 tr("Open or build a structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+    ThermodynamicIntegrationWizard wizard(doc->structure, this);
+    if (doc->structure) {
+        wizard.setStructureElements(structureElements(doc->structure.get()));
+        const auto pbc = doc->structure->cell().pbc();
+        wizard.setStructurePeriodic(doc->structure->cell().isDefined()
+                                    && (pbc[0] || pbc[1] || pbc[2]));
+    }
+    if (wizard.exec() != QDialog::Accepted)
+        return;
+    const QString provenance = wizard.calculatorProvenanceJson();
+    pendingCalculatorProvenance_ = provenance;
+    if (wizard.action() == SimulationWizardBase::Action::RunRemote) {
+        // Remote submission stages ONE script, and a split TI run is several.
+        // Rather than submit a slice and let the cluster report a complete-
+        // looking job that covered a third of the integral, the split is
+        // collapsed to a single job for the remote path.
+        const QString jobDir = stageJob(wizard.script());
+        if (jobDir.isEmpty())
+            return;
+        hpcDock_->show();
+        hpcDock_->raise();
+        const int taskId = processPanel_->registerTask(
+            tr("Remote Thermodynamic Integration"), jobDir);
+        processPanel_->setTaskStatus(taskId,
+                                     ProcessManagerPanel::Status::Running);
+        hpcPanel_->submitStagedJob(
+            jobDir, QFileInfo(doc->fileName).completeBaseName());
+        return;
+    }
+
+    // The lambda windows are INDEPENDENT, so each slice is submitted as its
+    // own job through the existing queue rather than through a second
+    // scheduler of this module's own. They stage into separate proc_<n>/
+    // directories and share only the results directory; whichever finishes
+    // last finds a complete set of per-window files and assembles the summary,
+    // so nothing here has to count completions.
+    //
+    // Note what this does NOT claim: the queue runs one job at a time, so
+    // "dispatched separately" means sequenced, not simultaneous. The win is
+    // resumability — a dead window costs one slice, not the whole path — and
+    // the ability to hand the slices to a cluster.
+    const QStringList scripts = wizard.scripts();
+    for (int index = 0; index < scripts.size(); ++index) {
+        // Re-armed per job: stageJob() consumes and clears it, so without this
+        // only the first slice would carry a calculator.json — and the sidecar
+        // is what tells a later run which engine produced these windows.
+        pendingCalculatorProvenance_ = provenance;
+        runScript(scripts[index], wizard.pythonExecutable(),
+                  scripts.size() > 1
+                      ? tr("Thermodynamic Integration (%1/%2)")
+                            .arg(index + 1)
+                            .arg(scripts.size())
+                      : tr("Thermodynamic Integration"),
+                  /*expectFrames=*/false, wizard.calculatorKind(),
+                  wizard.runCommand());
+    }
 }
 
 void MainWindow::openMonteCarlo()
@@ -8569,6 +8697,16 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     // Phonon runs: open the Phonon Viewer (dispersion + PhDOS).
     if (QFile::exists(lastJobDir_ + QStringLiteral("/phonon_band.json"))) {
         openPhononResults(lastJobDir_);
+        return;
+    }
+    // Thermodynamic integration: the run wrote per-window averages, and the
+    // assembly — quadrature, autocorrelation-corrected error bars, the
+    // closed-form reference free energy — happens HERE. Shown after every job
+    // of a split run, so an incomplete path says which windows are still
+    // missing rather than waiting silently for a job that may never come.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/ti.json"))) {
+        showThermodynamicIntegrationResults(
+            this, lastJobDir_ + QStringLiteral("/ti.json"));
         return;
     }
     // Electron-phonon runs: the script stops at the raw arrays, so the

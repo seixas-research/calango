@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.13
+    VERSION 26.8.14
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -193,6 +193,14 @@ qt_add_executable(calango
     src/core/TetrahedronBz.cpp
     src/core/PhononThermodynamics.hpp
     src/core/PhononThermodynamics.cpp
+    # Thermodynamic integration: absolute free energies of liquids and
+    # solids. MdIntegratorBlocks is header-only on purpose — it is shared
+    # with AseScriptGenerator, which eight targets already compile.
+    src/core/MdIntegratorBlocks.hpp
+    src/core/ThermodynamicIntegration.hpp
+    src/core/ThermodynamicIntegration.cpp
+    src/core/ThermodynamicIntegrationScriptGenerator.hpp
+    src/core/ThermodynamicIntegrationScriptGenerator.cpp
     src/core/VibrationalModes.hpp
     src/core/VibrationalModes.cpp
     src/core/SchedulerScript.hpp
@@ -248,6 +256,10 @@ qt_add_executable(calango
     src/core/AdsorptionSites.cpp
     src/core/ClusterExpansion.hpp
     src/core/ClusterExpansion.cpp
+    src/core/ClusterExpansionFit.hpp
+    src/core/ClusterExpansionFit.cpp
+    src/core/ClusterVariation.cpp
+    src/core/SublatticeClusterVariation.cpp
     src/core/BandGap.hpp
     src/core/BandGap.cpp
     src/core/BandUnfolding.hpp
@@ -569,6 +581,10 @@ qt_add_executable(calango
     src/gui/GpawElectronicRows.cpp
     src/gui/MolecularDynamicsWizard.hpp
     src/gui/MolecularDynamicsWizard.cpp
+    src/gui/ThermodynamicIntegrationWizard.hpp
+    src/gui/ThermodynamicIntegrationWizard.cpp
+    src/gui/ThermodynamicIntegrationResults.hpp
+    src/gui/ThermodynamicIntegrationResults.cpp
     src/gui/SinglePointWizard.hpp
     src/gui/SinglePointWizard.cpp
     src/gui/CutoffConvergenceWizard.hpp
@@ -661,6 +677,10 @@ qt_add_executable(calango
     src/gui/PhononWizard.hpp
     src/gui/PhononWizard.cpp
     src/gui/ClusterExpansionDialog.hpp
+    src/gui/EciFitDialog.hpp
+    src/gui/EciFitDialog.cpp
+    src/gui/CvmComparisonWindow.hpp
+    src/gui/CvmComparisonWindow.cpp
     src/gui/ClusterExpansionDialog.cpp
     src/gui/ClusterExpansionWizard.hpp
     src/gui/ClusterExpansionWizard.cpp
@@ -1005,6 +1025,29 @@ if(CALANGO_BUILD_TESTS)
     add_test(NAME phonon_diamond COMMAND calango_phonon_test)
 
     # Native cores (no embedded Python needed).
+    # Configurational entropy by CVM. The pair approximation is EXACT on a
+    # 1D chain, and the 1D Ising chain has a closed-form transfer-matrix
+    # solution — so this is checked against an identity, not a tolerance.
+    add_executable(calango_cvm_test
+        tests/ClusterVariationTest.cpp
+        src/core/ClusterVariation.cpp
+    )
+    target_include_directories(calango_cvm_test PRIVATE src)
+    add_test(NAME cluster_variation COMMAND calango_cvm_test)
+
+    # Four-sublattice CVM: FCC order-disorder transitions. Links the
+    # homogeneous solver too, because one of its checks is that the disordered
+    # branch of the sublattice-resolved solver reproduces the independently
+    # written homogeneous one to 1e-11.
+    add_executable(calango_sublattice_cvm_test
+        tests/SublatticeClusterVariationTest.cpp
+        src/core/SublatticeClusterVariation.cpp
+        src/core/ClusterVariation.cpp
+    )
+    target_include_directories(calango_sublattice_cvm_test PRIVATE src)
+    add_test(NAME sublattice_cluster_variation
+             COMMAND calango_sublattice_cvm_test)
+
     add_executable(calango_cluster_expansion_test
         tests/ClusterExpansionTest.cpp
         src/core/Structure.cpp
@@ -1014,6 +1057,15 @@ if(CALANGO_BUILD_TESTS)
     )
     target_include_directories(calango_cluster_expansion_test PRIVATE src)
     add_test(NAME cluster_expansion COMMAND calango_cluster_expansion_test)
+
+    # The ECI fit is pure numerics: no Structure, no Qt, two objects.
+    add_executable(calango_cluster_expansion_fit_test
+        tests/ClusterExpansionFitTest.cpp
+        src/core/ClusterExpansionFit.cpp
+    )
+    target_include_directories(calango_cluster_expansion_fit_test PRIVATE src)
+    add_test(NAME cluster_expansion_fit
+             COMMAND calango_cluster_expansion_fit_test)
 
     add_executable(calango_monte_carlo_test
         tests/MonteCarloTest.cpp
@@ -1244,6 +1296,27 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_phonon_thermo_test PRIVATE src)
     add_test(NAME phonon_thermodynamics COMMAND calango_phonon_thermo_test)
 
+    # Thermodynamic integration. Pinned against CLOSED FORMS throughout, never
+    # against a previous run: the thermal wavelength against an independent SI
+    # computation, the ideal gas against Sackur-Tetrode with Stirling's
+    # residual asserted to two orders (that residual IS the ln N! term), the
+    # Einstein crystal against 3NkT ln(beta hbar omega), Gauss-Legendre against
+    # its 2n-1 exactness (and its inexactness at 2n), trapezoid/Simpson against
+    # their O(h^2)/O(h^4) refinement laws, the integration itself against the
+    # analytic dF of a harmonic -> harmonic transformation, the Lennard-Jones
+    # second virial against direct quadrature of the Mayer function plus the
+    # published Boyle temperature, and the autocorrelation time against an
+    # AR(1) process. It also pins the behaviour that matters most: a dead
+    # lambda window produces NO free energy.
+    add_executable(calango_thermodynamic_integration_test
+        tests/ThermodynamicIntegrationTest.cpp
+        src/core/ThermodynamicIntegration.cpp
+    )
+    target_include_directories(calango_thermodynamic_integration_test
+        PRIVATE src)
+    add_test(NAME thermodynamic_integration
+             COMMAND calango_thermodynamic_integration_test)
+
     # Vibrational normal modes: the physics behind the mode animation, which is
     # a picture and therefore unfalsifiable by eye. Pinned against the closed
     # forms it must obey - the reduced-mass harmonic oscillator, the acoustic
@@ -1380,6 +1453,11 @@ if(CALANGO_BUILD_TESTS)
     # driven here. Offscreen, no display.
     qt_add_executable(calango_dialog_test
         tests/DialogConstructionTest.cpp
+        src/gui/CvmComparisonWindow.cpp
+        src/gui/EciFitDialog.cpp
+        src/core/ClusterExpansionFit.cpp
+        src/core/ClusterVariation.cpp
+        src/core/SublatticeClusterVariation.cpp
         # The Processes dock: its walltime column is a live QTimer, which only
         # a running event loop can exercise.
         src/gui/ProcessManagerPanel.cpp
@@ -1428,6 +1506,16 @@ if(CALANGO_BUILD_TESTS)
         # the constructor triggers, and the generated script is the only place
         # a mode that was selected but not applied would ever show up.
         src/gui/MolecularDynamicsWizard.cpp
+        # The thermodynamic-integration wizard: its reference/schedule/quadrature
+        # rows are shown and hidden — and the quadrature combo is FORCED to match
+        # the schedule — from a signal handler the constructor triggers, which is
+        # exactly the construction-order hazard this test exists for. Its results
+        # reader comes with it, so the assembly a run is judged by is built and
+        # linked here rather than only in the application.
+        src/gui/ThermodynamicIntegrationWizard.cpp
+        src/gui/ThermodynamicIntegrationResults.cpp
+        src/core/ThermodynamicIntegration.cpp
+        src/core/ThermodynamicIntegrationScriptGenerator.cpp
         src/gui/TwoDBandsWizard.cpp
         src/core/TwoDBandsScriptGenerator.cpp
         # The 2D Charged Defects wizard: two baseline selectors that have to
@@ -1658,12 +1746,16 @@ if(CALANGO_BUILD_TESTS)
         src/gui/OrchestrationTransforms.cpp
         # The TDB Generator transform fits a CALPHAD model in process, so the
         # transforms translation unit now pulls in the assessment, the hull it
-        # reports against, and the database writer.
+        # reports against, and the database writer. The SQS Generator transform
+        # anneals in process for the same reason, so it pulls in the generator
+        # and the Warren-Cowley order parameters it reports.
         src/core/CalphadModel.cpp
         src/core/ConvexHull.cpp
         src/core/TdbWriter.cpp
         src/core/TdbDatabase.cpp
         src/core/TdbExpression.cpp
+        src/core/SqsGenerator.cpp
+        src/core/ChemicalOrder.cpp
         src/gui/OrchestrationProvenance.cpp
         src/core/WorkflowReport.cpp
         src/core/BandGap.cpp
@@ -1729,12 +1821,16 @@ if(CALANGO_BUILD_TESTS)
         src/gui/OrchestrationTransforms.cpp
         # The TDB Generator transform fits a CALPHAD model in process, so the
         # transforms translation unit now pulls in the assessment, the hull it
-        # reports against, and the database writer.
+        # reports against, and the database writer. The SQS Generator transform
+        # anneals in process for the same reason, so it pulls in the generator
+        # and the Warren-Cowley order parameters it reports.
         src/core/CalphadModel.cpp
         src/core/ConvexHull.cpp
         src/core/TdbWriter.cpp
         src/core/TdbDatabase.cpp
         src/core/TdbExpression.cpp
+        src/core/SqsGenerator.cpp
+        src/core/ChemicalOrder.cpp
         src/gui/OrchestrationProvenance.cpp
         src/core/WorkflowReport.cpp
         src/core/BandGap.cpp
@@ -1799,12 +1895,16 @@ if(CALANGO_BUILD_TESTS)
         src/gui/OrchestrationTransforms.cpp
         # The TDB Generator transform fits a CALPHAD model in process, so the
         # transforms translation unit now pulls in the assessment, the hull it
-        # reports against, and the database writer.
+        # reports against, and the database writer. The SQS Generator transform
+        # anneals in process for the same reason, so it pulls in the generator
+        # and the Warren-Cowley order parameters it reports.
         src/core/CalphadModel.cpp
         src/core/ConvexHull.cpp
         src/core/TdbWriter.cpp
         src/core/TdbDatabase.cpp
         src/core/TdbExpression.cpp
+        src/core/SqsGenerator.cpp
+        src/core/ChemicalOrder.cpp
         src/gui/OrchestrationProvenance.cpp
         src/core/WorkflowReport.cpp
         src/core/BandGap.cpp
@@ -2239,9 +2339,13 @@ if(CALANGO_BUILD_TESTS)
     # Native SQS generator: composition exactness across binary/ternary/
     # quaternary alloys and, above all, that the generated decoration really is
     # quasirandom (first-shell Warren-Cowley order parameter near zero).
+    # ChemicalOrder rides along because the generator now reports the
+    # Warren-Cowley α of what it produced rather than leaving it to be measured
+    # by a second tool.
     add_executable(calango_sqs_generator_test
         tests/SqsGeneratorTest.cpp
         src/core/SqsGenerator.cpp
+        src/core/ChemicalOrder.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
         src/core/Element.cpp
@@ -2288,6 +2392,13 @@ if(CALANGO_BUILD_TESTS)
         src/core/ElectronPhononScriptGenerator.cpp
         src/core/KpointsConvergenceScriptGenerator.cpp
         src/core/ConvergenceSweepBlocks.cpp
+        # Thermodynamic integration. Its script defines two ASE
+        # Calculator subclasses and a sampling loop out of string
+        # fragments, which is exactly the shape the name checker
+        # exists for: a `_name` read in the loop whose definition was
+        # lost in an edit is valid Python that dies at run time.
+        src/core/ThermodynamicIntegrationScriptGenerator.cpp
+        src/core/ThermodynamicIntegration.cpp
         src/core/BandUnfolding.cpp
         src/core/UnitCell.cpp
     )

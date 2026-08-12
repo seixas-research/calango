@@ -2,6 +2,7 @@
 
 #include "core/AseScriptGenerator.hpp"
 
+#include <cstdio>
 #include <sstream>
 
 namespace calango::core {
@@ -100,6 +101,98 @@ std::string ClusterExpansionScriptGenerator::generate(
     out << "    return atoms\n"
            "\n";
 
+    // -- The design matrix ---------------------------------------------------
+    //
+    // Emitted literally rather than recomputed here. The builder enumerated
+    // the cluster orbits and evaluated every configuration's correlation
+    // vector against them; re-deriving that in Python would be a second
+    // implementation of cluster enumeration whose disagreement with the first
+    // would be invisible — a wrong design matrix still fits, and still yields
+    // ECIs that look like physics.
+    if (!c.correlations.empty()) {
+        out << "# Cluster correlations, one row per configuration, in the same\n"
+               "# frame order as the input trajectory. This is the design\n"
+               "# matrix the ECI fit consumes; the energies below are its\n"
+               "# right-hand side.\n"
+               "orbit_labels = [";
+        for (std::size_t i = 0; i < c.orbitLabels.size(); ++i) {
+            out << (i ? ", " : "") << '"';
+            for (const char ch : c.orbitLabels[i])
+                if (ch == '"' || ch == '\\')
+                    out << '\\' << ch;
+                else
+                    out << ch;
+            out << '"';
+        }
+        out << "]\n"
+               "correlations = [\n";
+        char buffer[40];
+        for (const auto& row : c.correlations) {
+            out << "    [";
+            for (std::size_t i = 0; i < row.size(); ++i) {
+                // %.10g, and NOT the stream default of six significant
+                // digits: the correlation columns are what the ECIs are
+                // regressed against, and rounding them is rounding the
+                // regressor, which biases every fitted interaction.
+                std::snprintf(buffer, sizeof(buffer), "%.10g", row[i]);
+                out << (i ? ", " : "") << buffer;
+            }
+            out << "],\n";
+        }
+        out << "]\n"
+               "\n"
+               "# The join is by FRAME INDEX, so a mismatch in length means the\n"
+               "# rows no longer describe the structures. Fatal rather than\n"
+               "# zipped-to-the-shorter: a design matrix silently truncated to\n"
+               "# the first N configurations fits perfectly well and is wrong.\n"
+               "if len(correlations) != len(configs):\n"
+               "    raise RuntimeError(\n"
+               "        f\"{len(correlations)} correlation rows for \"\n"
+               "        f\"{len(configs)} configurations. The design matrix and \"\n"
+               "        f\"the trajectory came from different builder runs; \"\n"
+               "        f\"regenerate the ensemble.\")\n"
+               "if correlations and any(len(row) != len(orbit_labels)\n"
+               "                        for row in correlations):\n"
+               "    raise RuntimeError(\n"
+               "        \"Correlation rows disagree with the orbit labels; the \"\n"
+               "        \"design matrix is ragged.\")\n"
+               "\n";
+    } else {
+        // No matrix was supplied at generation time. Fall back to a sidecar
+        // written beside the trajectory, so the ensemble can carry its own
+        // design matrix without the builder having to thread it through the
+        // run wizard. Absent, the ECI fitter refuses rather than fitting
+        // against nothing.
+        out << "# No design matrix was embedded at generation time. If the\n"
+               "# builder wrote one beside the trajectory, use it; the join is\n"
+               "# still by frame index and is still checked below.\n"
+               "orbit_labels = []\n"
+               "correlations = []\n"
+               "# try/except rather than os.path.exists: this script does not\n"
+               "# import os, and a bare `os.` here would be a NameError at run\n"
+               "# time that byte-compiling cannot see.\n"
+               "try:\n"
+               "    with open(\"cluster_correlations.json\") as _handle:\n"
+               "        _sidecar = json.load(_handle)\n"
+               "    orbit_labels = _sidecar.get(\"orbit_labels\") or []\n"
+               "    correlations = _sidecar.get(\"correlations\") or []\n"
+               "    print(f\"CALANGO_INFO design matrix from \"\n"
+               "          f\"cluster_correlations.json: {len(correlations)} x \"\n"
+               "          f\"{len(orbit_labels)}\", flush=True)\n"
+               "except FileNotFoundError:\n"
+               "    print(\"CALANGO_WARN no cluster correlations available, so \"\n"
+               "          \"cluster_expansion.json will carry no design matrix \"\n"
+               "          \"and an ECI fit is not possible from it. Rebuild the \"\n"
+               "          \"ensemble with the Cluster Expansion builder to get \"\n"
+               "          \"one.\", flush=True)\n"
+               "if len(correlations) not in (0, len(configs)):\n"
+               "    raise RuntimeError(\n"
+               "        f\"cluster_correlations.json has {len(correlations)} \"\n"
+               "        f\"rows for {len(configs)} configurations; it belongs to \"\n"
+               "        f\"a different ensemble.\")\n"
+               "\n";
+    }
+
     out << "\n"
            "for index, atoms in enumerate(configs):\n"
            "    _calango_progress(index, len(configs))\n"
@@ -111,6 +204,8 @@ std::string ClusterExpansionScriptGenerator::generate(
            "        \"concentration\": x,\n"
            "        \"natoms\": len(atoms),\n"
            "    }\n"
+           "    if correlations:\n"
+           "        record[\"correlation\"] = correlations[index]\n"
            "    try:\n"
            "        attach_calculator(atoms)\n";
     if (c.singlePointOnly) {
@@ -230,6 +325,8 @@ std::string ClusterExpansionScriptGenerator::generate(
            "    \"species\": species,\n"
            "    \"reference_a\": reference_a,\n"
            "    \"reference_b\": reference_b,\n"
+           "    \"orbit_labels\": orbit_labels,\n"
+           "    \"correlation_columns\": len(orbit_labels),\n"
            "    \"configurations\": records,\n"
            "}\n"
            "with open(\"cluster_expansion.json\", \"w\") as handle:\n"

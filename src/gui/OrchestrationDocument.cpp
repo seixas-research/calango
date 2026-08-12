@@ -192,6 +192,22 @@ QJsonObject OrchestrationDocument::build(const OrchestrationWindow& window,
             entry.insert(QStringLiteral("tdb_generator"),
                          node->tdbGenerator().toJson());
             break;
+        // Additive for the same reason, and kSchema is not bumped: an older
+        // reader refuses the node outright at orchestrationTaskFromSlug (an
+        // unknown slug is a hard refusal), so there is no half-loaded state to
+        // protect against.
+        case OrchestrationTask::SqsGenerator:
+            entry.insert(QStringLiteral("sqs_generator"),
+                         node->sqsGenerator().toJson());
+            break;
+        case OrchestrationTask::ClusterExpansionFit:
+            entry.insert(QStringLiteral("cluster_expansion_fit"),
+                         node->clusterExpansionFit().toJson());
+            break;
+        case OrchestrationTask::CvmEntropy:
+            entry.insert(QStringLiteral("cvm_entropy"),
+                         node->cvmEntropy().toJson());
+            break;
         default:
             // A node seeded with its own structure through the scripting API
             // rather than fed from a container. Rare, but it has to survive
@@ -338,6 +354,24 @@ bool OrchestrationDocument::load(OrchestrationWindow& window,
             window.setNodeTdbGenerator(
                 node, TdbGeneratorSpec::fromJson(
                           entry.value(QStringLiteral("tdb_generator"))
+                              .toObject()));
+            break;
+        case OrchestrationTask::SqsGenerator:
+            window.setNodeSqsGenerator(
+                node, SqsGeneratorSpec::fromJson(
+                          entry.value(QStringLiteral("sqs_generator"))
+                              .toObject()));
+            break;
+        case OrchestrationTask::ClusterExpansionFit:
+            window.setNodeClusterExpansionFit(
+                node, ClusterExpansionFitSpec::fromJson(
+                          entry.value(QStringLiteral("cluster_expansion_fit"))
+                              .toObject()));
+            break;
+        case OrchestrationTask::CvmEntropy:
+            window.setNodeCvmEntropy(
+                node, CvmEntropySpec::fromJson(
+                          entry.value(QStringLiteral("cvm_entropy"))
                               .toObject()));
             break;
         default:

@@ -174,6 +174,183 @@ struct TdbGeneratorSpec {
     static TdbGeneratorSpec fromJson(const QJsonObject& object);
 };
 
+/// One requested alloy composition of an SQS Generator node.
+///
+/// The label is what names the pass: its job directory, its workspace tab and
+/// its row in the run report. Left empty it is derived from the fractions
+/// ("Cu75Au25"), because a batch of six compositions whose folders are
+/// numbered is six folders nobody can tell apart.
+struct AlloyComposition {
+    QString label;
+    /// Symbol → fraction on the substitutional sublattice. Fractions are
+    /// normalized by the generator and rounded onto whole sites, so they need
+    /// not sum to 1.
+    QList<QPair<QString, double>> species;
+
+    bool isValid() const { return species.size() >= 2; }
+    /// "Cu 0.75 / Au 0.25"
+    QString describe() const;
+    /// `label` if set, else the derived formula.
+    QString name() const;
+
+    QJsonObject toJson() const;
+    static AlloyComposition fromJson(const QJsonObject& object);
+};
+
+/// Settings of an SQS Generator node: decorate the sublattice of the incoming
+/// structure so its cluster correlations match those of the ideal random
+/// alloy, once per requested composition.
+///
+/// The ENTRY POINT of the alloy pipeline, and a Transform in the strict sense
+/// — a structure in, structures out — which is why it takes the ordinary
+/// geometry handoff rather than an input slot. Put the parent lattice in a
+/// Structure Container, link it here, and the compositions fan the downstream
+/// pipeline out exactly the way a separate-mode Defect Generator does: one
+/// pass per composition, each on the pristine incoming cell.
+///
+/// It runs in process on core::SqsGenerator, like every other transform. A
+/// 20 000-step anneal on a hundred-site cell is a tenth of a second; spawning
+/// an interpreter for it would cost more than the work.
+struct SqsGeneratorSpec {
+    /// Supercell of the incoming structure the sublattice is taken from. The
+    /// SQS is only as good as the cell is large — correlations it cannot fit
+    /// inside the cell it cannot fit at all.
+    int na = 2;
+    int nb = 2;
+    int nc = 2;
+    /// Symbol whose sites are decorated. EMPTY means "the most abundant
+    /// element in whatever arrives", which is the right default for the usual
+    /// case (a single-element parent lattice) and is resolved at run time
+    /// because the node normally has no structure when it is configured.
+    QString replaceElement;
+    /// One output structure per entry, in this order.
+    QList<AlloyComposition> compositions;
+
+    double shell1 = 3.2;
+    double shell2 = 4.8;
+    /// Multi-body cluster cutoffs, 0 = off. Off by default: the pair-only
+    /// objective is what an SQS has always meant, and the three-body term is
+    /// worth its cost only when three-body energies are.
+    double tripletCutoff = 0.0;
+    double quadrupletCutoff = 0.0;
+    double tripletWeight = 0.5;
+    double quadrupletWeight = 0.25;
+    int steps = 20000;
+    /// Fixed rather than drawn from the clock, and that is not laziness: a
+    /// pipeline whose structures change between two runs of the same saved
+    /// workflow is a pipeline whose results cannot be reproduced.
+    int seed = 42;
+
+    bool isEmpty() const { return compositions.isEmpty(); }
+    /// How many materials this node produces — the batch dimension it
+    /// contributes.
+    int variantCount() const { return static_cast<int>(compositions.size()); }
+    bool isValid() const;
+    /// "Cu75Au25, Cu50Au50 · 3x3x3 · pairs to 4.8 Å"
+    QString describe() const;
+
+    QJsonObject toJson() const;
+    static SqsGeneratorSpec fromJson(const QJsonObject& object);
+};
+
+/// Settings of a Cluster Expansion (ECI Fitter) node: fit effective cluster
+/// interactions to the total energies an upstream ensemble computed.
+///
+/// Consumes RESULTS, not a structure, so like the TDB Generator it declares an
+/// input slot (`cluster_expansion.json` — the same file the convex-hull viewer
+/// and the TDB Generator read, so one ensemble cannot become two descriptions
+/// of itself) and emits no `transformed.extxyz`.
+struct ClusterExpansionFitSpec {
+    /// Which regularization decides the orbits. Mirrors core::EciMethod, in
+    /// the same order — declared here rather than included for the reason
+    /// given on CvmEntropySpec below: these values are persisted in a saved
+    /// workflow, and a persisted identity must not be an alias for a solver's
+    /// internal enum.
+    enum class Method {
+        Ridge, ///< L2. Keeps every orbit and shrinks them all; never sparse.
+        Lasso, ///< L1. SELECTS orbits, which is a cluster expansion's real
+               ///< difficulty. The default.
+        Ard,   ///< Sparse Bayesian regression; no penalty to choose at all.
+    };
+    Method method = Method::Lasso;
+
+    /// Cluster basis the design matrix is built on. An order is included only
+    /// when its cutoff is > 0; the pair cutoff is the one that must be set,
+    /// because a fit with no pair term is a fit with no chemistry in it.
+    double pairCutoff = 6.0;
+    double tripletCutoff = 4.5;
+    double quadrupletCutoff = 0.0;
+
+    /// Length of the regularization path the cross-validation chooses from.
+    int lambdaCount = 50;
+    /// 0 means LEAVE-ONE-OUT, which is what "the CV score" means in the
+    /// cluster-expansion literature and is core::EciFitOptions's own default.
+    /// A positive k is k-fold, worth having once the ensemble runs to
+    /// hundreds. 1 is neither, and is refused.
+    int crossValidationFolds = 0;
+    /// Take the sparsest model within one standard error of the best CV score
+    /// rather than the exact minimum. The minimum is flat and noisy on the
+    /// sparse side, and its precise location routinely keeps two or three
+    /// spurious long-range clusters at no gain.
+    bool oneStandardError = false;
+    /// Centre and scale the columns before fitting. Without it the UNITS of an
+    /// orbit decide how hard the penalty hits it, because neither L1 nor L2 is
+    /// scale-invariant.
+    bool standardize = true;
+
+    bool isValid() const
+    {
+        return pairCutoff > 0.0 && lambdaCount >= 1
+            && crossValidationFolds >= 0 && crossValidationFolds != 1;
+    }
+    /// "lasso, pairs 6 Å, triplets 4.5 Å, leave-one-out"
+    QString describe() const;
+    static QString methodName(Method method);
+
+    QJsonObject toJson() const;
+    static ClusterExpansionFitSpec fromJson(const QJsonObject& object);
+};
+
+/// Settings of a CVM Entropy Calculator node: configurational entropy against
+/// temperature from the ECIs an upstream fit produced.
+///
+/// The enums mirror core::CvmLattice / core::CvmApproximation but are declared
+/// here rather than included from there. The canvas's node types are persisted
+/// (a saved workflow round-trips them) and must therefore be stable in a way a
+/// solver's internal enum is not; and this way the panel does not fail to
+/// compile whenever the solver's header moves under it.
+struct CvmEntropySpec {
+    /// The lattice the cluster geometry comes from. Not decoration: the
+    /// Kikuchi coefficients depend on how many pairs, triangles and tetrahedra
+    /// share a site, and getting it wrong does not fail loudly — it produces a
+    /// smooth, plausible, wrong entropy.
+    enum class Lattice { Fcc, Bcc, Chain };
+    /// Point (= ideal, sites independent), Pair (Bethe-Peierls-Guggenheim) or
+    /// Tetrahedron (Kikuchi). A hierarchy, not alternatives: each is the
+    /// previous plus more correlation, and the SPREAD between them is the size
+    /// of the correction.
+    enum class Approximation { Point, Pair, Tetrahedron };
+
+    Lattice lattice = Lattice::Fcc;
+    Approximation approximation = Approximation::Tetrahedron;
+    double minTemperatureK = 100.0;
+    double maxTemperatureK = 2000.0;
+    int temperatureSteps = 100;
+
+    bool isValid() const
+    {
+        return maxTemperatureK > minTemperatureK && minTemperatureK > 0.0
+            && temperatureSteps >= 2;
+    }
+    /// "fcc, tetrahedron, 100–2000 K"
+    QString describe() const;
+    static QString latticeName(Lattice lattice);
+    static QString approximationName(Approximation approximation);
+
+    QJsonObject toJson() const;
+    static CvmEntropySpec fromJson(const QJsonObject& object);
+};
+
 /// One defective material produced by a Defect Generator.
 struct DefectVariant {
     /// What was done to it — "substitute 0, 4 with N". Names its tab in the
@@ -235,5 +412,65 @@ struct TdbGeneratorOutput {
 /// is a set of two pure elements and determines nothing.
 bool runTdbAssessment(const QString& ensembleJson, const TdbGeneratorSpec& spec,
                       TdbGeneratorOutput* output, QString* error);
+
+/// What an SQS Generator node produces for ONE composition.
+struct SqsGeneratorOutput {
+    core::Structure structure;
+    /// Names the pass — its directory, its tab, its report row.
+    QString label;
+    QString summaryJson; ///< ΔΠ by cluster order, Warren-Cowley α, the cell
+    QString headline;    ///< one line for the run report / provenance
+};
+
+/// Decorate `parent` at `spec.compositions[index]`.
+///
+/// `index` is clamped into range, which is what makes a node whose composition
+/// list shrank after a run still produce something rather than reading off the
+/// end — the same rule the Container and the Defect Generator follow.
+bool runSqsGeneration(const core::Structure& parent,
+                      const SqsGeneratorSpec& spec, int index,
+                      SqsGeneratorOutput* output, QString* error);
+
+/// What a Cluster Expansion (ECI Fitter) node writes.
+struct ClusterExpansionFitOutput {
+    /// `cluster_expansion_fit.json`: the cluster basis, the fitted ECIs, the
+    /// residual and the cross-validation score. This is the file the CVM node
+    /// stages, so its name is a contract between the two.
+    QString eciJson;
+    QString headline;
+};
+
+/// Fit effective cluster interactions to the ensemble in `ensembleJson` (the
+/// raw text of `cluster_expansion.json`).
+///
+/// *** NOT YET WIRED UP. *** The solver lives in core::ClusterExpansionFit,
+/// which is being written separately; this function validates its input,
+/// reports what it found and then refuses, naming the missing module. It is
+/// deliberately the ONLY place the node touches the solver, so wiring it up is
+/// a change to one function body and to the CMake source lists — nothing in
+/// the canvas, the slot tables, the document format or the provenance depends
+/// on which of the two states it is in.
+bool runClusterExpansionFit(const QString& ensembleJson,
+                            const ClusterExpansionFitSpec& spec,
+                            ClusterExpansionFitOutput* output, QString* error);
+
+/// What a CVM Entropy Calculator node writes.
+struct CvmEntropyOutput {
+    /// `cvm_entropy.json`: S(T), E(T), F(T) and the Warren-Cowley α(T) that
+    /// says WHICH way the alloy departs from random, plus the ideal entropy
+    /// every curve is compared against.
+    QString entropyJson;
+    QString headline;
+};
+
+/// Solve the CVM free-energy minimization over a temperature range, from the
+/// ECIs in `eciJson` (the raw text of `cluster_expansion_fit.json`).
+///
+/// *** NOT YET WIRED UP. *** Same arrangement as runClusterExpansionFit: the
+/// physics belongs to core::ClusterVariation, which is being written
+/// separately. The mapping this function will perform when that module lands
+/// is spelled out at its one wire-up point.
+bool runCvmEntropy(const QString& eciJson, const CvmEntropySpec& spec,
+                   CvmEntropyOutput* output, QString* error);
 
 } // namespace calango::gui
