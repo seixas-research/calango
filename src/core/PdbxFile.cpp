@@ -1,6 +1,7 @@
 #include "core/PdbxFile.hpp"
 
 #include "core/Element.hpp"
+#include "core/LocaleSafeNumber.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -63,15 +64,18 @@ bool isNullValue(const std::string& value)
     return value.empty() || value == "?" || value == ".";
 }
 
+/// LOCALE-INDEPENDENT, and it has to be. mmCIF is specified with a '.' decimal
+/// point, but std::stod follows LC_NUMERIC — which Qt sets from the
+/// environment the moment a QApplication exists. On a decimal-comma locale
+/// (pt_BR, de_DE, fr_FR, …) std::stod("12.345") stops at the '.' and returns
+/// 12, so every atomic coordinate, occupancy and B-factor in an imported
+/// structure was silently truncated to its integer part. Nothing errors: the
+/// file loads, and the molecule is wrong.
 double toDouble(const std::string& value, double fallback = 0.0)
 {
     if (isNullValue(value))
         return fallback;
-    try {
-        return std::stod(value);
-    } catch (const std::exception&) {
-        return fallback;
-    }
+    return localeSafeToDouble(value, fallback);
 }
 
 int toInt(const std::string& value, int fallback = 0)

@@ -113,9 +113,47 @@ std::string toString(GpawEigensolver solver)
     case GpawEigensolver::Davidson: return "dav";
     case GpawEigensolver::ConjugateGradient: return "cg";
     case GpawEigensolver::RmmDiis: return "rmm-diis";
-    case GpawEigensolver::Direct: return "direct";
+    // GPAW's registry has no "direct". The direct LCAO solver is registered
+    // under the name "lcao" (gpaw/old/eigensolvers/__init__.py maps
+    // 'lcao' -> DirectLCAO); "direct" raised KeyError in every mode.
+    case GpawEigensolver::Direct: return "lcao";
     }
     return "dav";
+}
+
+/// The eigensolver name for a (mode, solver) pair — which is not the same as
+/// the name for the solver alone.
+///
+/// GPAW couples the two with an assertion, not a preference:
+///
+///     assert isinstance(eigensolver, DirectLCAO) == (mode.name == 'lcao') or
+///            isinstance(eigensolver, LCAOETDM)  == (mode.name == 'lcao')
+///
+/// so in LCAO mode the ONLY admissible solvers are DirectLCAO ("lcao") and
+/// LCAOETDM ("etdm-lcao"); Davidson, CG and RMM-DIIS all trip it. They are
+/// grid/plane-wave solvers — they iterate wavefunctions on a real-space or
+/// plane-wave representation, and an LCAO calculation has neither: its
+/// variational parameters are the expansion coefficients, and the "solver"
+/// there is a direct generalized-eigenproblem diagonalization.
+///
+/// Verified against gpaw 26.7.1b1 across all three modes.
+///
+/// Coerced here rather than refused. The user picked a MODE and a solver in
+/// two different places, and only one combination of the two is wrong in a way
+/// that surfaces as an AssertionError several hundred lines into the run; the
+/// script says what it did instead.
+std::string eigensolverFor(const CalculatorConfig& c, bool* coerced)
+{
+    const bool lcao = c.gpawMode == GpawMode::Lcao;
+    const std::string requested = toString(c.gpawEigensolver);
+    const bool requestedIsLcao = requested == "lcao";
+    if (coerced)
+        *coerced = (lcao != requestedIsLcao);
+    if (lcao)
+        return "lcao";
+    // The converse also holds: DirectLCAO in a grid/plane-wave run has no
+    // basis to diagonalize over. Davidson is GPAW's own default there.
+    return requestedIsLcao ? "dav" : requested;
 }
 
 std::string toString(GpawMixerKind mixer)
@@ -2496,7 +2534,20 @@ std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,
         out << indent << "nbands=" << (numeric ? "" : "\"") << c.gpawNbands
             << (numeric ? "" : "\"") << ",\n";
     }
-    out << indent << "eigensolver=\"" << toString(c.gpawEigensolver) << "\",\n"
+    bool eigensolverCoerced = false;
+    const std::string eigensolver = eigensolverFor(c, &eigensolverCoerced);
+    if (eigensolverCoerced)
+        // Said in the script, because the script is what the user reads back
+        // when the number looks wrong. A silent substitution of the SCF
+        // solver is not something to discover from a diff against another run.
+        out << indent << "# Eigensolver set to \"" << eigensolver
+            << "\" for this mode: GPAW admits only the direct LCAO solver\n"
+            << indent << "# (\"lcao\"/\"etdm-lcao\") in LCAO mode and only the "
+               "iterative grid/plane-wave\n"
+            << indent << "# solvers (dav/cg/rmm-diis) outside it — the pairing "
+               "is an assertion, not a\n"
+            << indent << "# preference.\n";
+    out << indent << "eigensolver=\"" << eigensolver << "\",\n"
         // Mixer(beta, nmaxold, weight) — GPAW's positional signature.
         << indent << "mixer=" << toString(c.gpawMixer) << "(" << c.gpawMixerBeta
         << ", " << c.gpawMixerNmaxold << ", " << c.gpawMixerWeight << "),\n"

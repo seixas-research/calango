@@ -1,11 +1,8 @@
 #pragma once
 
-#include "core/Structure.hpp"
-
 #include <QDialog>
 #include <QString>
 
-#include <memory>
 #include <vector>
 
 class QDoubleSpinBox;
@@ -16,7 +13,6 @@ class QSlider;
 namespace calango::gui {
 
 class BandPdosView;
-class ViewportWidget;
 
 /// "Phonon Viewer" — the post-processing viewer for a finished phonon job: the
 /// phonon band structure (frequency in cm⁻¹ vs the high-symmetry q-path) side
@@ -25,36 +21,35 @@ class ViewportWidget;
 /// and drives a BandPdosView in phonon mode. hasData() reports whether a band
 /// file was found and parsed.
 ///
-/// It is also the entry point for the two derived analyses, both of which need
-/// exactly the data this window already holds: "Phonon Thermodynamics…"
-/// (harmonic U/F/S from the PhDOS) and "Vibrational Analysis…" (eigenmode
-/// animation on the 3D viewport).
+/// It is also the entry point for "Phonon Thermodynamics…" (harmonic U/F/S
+/// from the PhDOS), which needs exactly the data this window already holds, and
+/// a shortcut into the Vibrational Mode Analysis module for the run it is
+/// showing.
+///
+/// It used to OWN that second one: it constructed the dialog, held the
+/// structure and viewport it needed, and relayed the resulting trajectory back
+/// out to the host. All three are gone. Watching a mode no longer requires
+/// keeping a dispersion plot open — the module is a menu entry that selects its
+/// own phonon run — so this window only asks the host to open it, on the
+/// directory it happens to be showing.
 class PhononPlotWindow : public QDialog {
     Q_OBJECT
 
 public:
-    /// `structure` and `viewport` enable "Vibrational Analysis…" (the mode
-    /// animation needs both); passing null leaves that action disabled while
-    /// everything else still works.
-    PhononPlotWindow(const QString& directory, QWidget* parent = nullptr,
-                     std::shared_ptr<const core::Structure> structure = nullptr,
-                     ViewportWidget* viewport = nullptr);
+    PhononPlotWindow(const QString& directory, QWidget* parent = nullptr);
 
     bool hasData() const { return hasData_; }
 
 Q_SIGNALS:
-    /// Forwarded from the Vibrational Analysis dialog: the host opens these
-    /// frames as a new workspace tab. Relayed rather than connected directly
-    /// because that dialog is created on demand and owns no documents.
-    void modeTrajectoryRequested(
-        const std::vector<std::shared_ptr<core::Structure>>& frames,
-        const QString& label);
+    /// "Vibrational Analysis…": open the module on THIS run. The host owns
+    /// that dialog (it supplies the viewport, the candidate run list and the
+    /// tab the mode trajectory lands in), so this window only names the
+    /// directory rather than constructing a second copy of the module.
+    void vibrationalAnalysisRequested(const QString& directory);
 
 private Q_SLOTS:
     /// "Phonon Thermodynamics…" — harmonic U/F/S from the loaded PhDOS.
     void showThermodynamics();
-    /// "Vibrational Analysis…" — eigenmode animation on the 3D viewport.
-    void showVibrationalAnalysis();
     /// Dispersion only: k-distance + one column per phonon branch.
     void exportBandsCsv();
     /// PhDOS only: frequency + intensity per projection.
@@ -86,10 +81,6 @@ private:
     /// re-interpreting) the file.
     std::vector<double> dosFrequenciesCm_;
     std::vector<double> dosValues_;
-    /// Structure the phonons belong to, for the eigenmode animation. Null when
-    /// the viewer was opened without one (Results menu on an old job).
-    std::shared_ptr<const core::Structure> structure_;
-    ViewportWidget* viewport_ = nullptr;
 };
 
 } // namespace calango::gui

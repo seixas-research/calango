@@ -17,7 +17,7 @@ binaries they need.
 | `spglib` | Symmetry detection, Raman/IR activity, Magnetic Space Group (needs its magnetic tables) | ≥ 2.0 |
 | `scipy` | Interpolation and signal helpers | ≥ 1.9, optional |
 | `matplotlib` | Offline figure export | ≥ 3.6, optional |
-| `paramiko` | Remote Access panel (SSH/SFTP) | ≥ 3.0, optional |
+| `paramiko` | HPC panel (SSH/SFTP) | ≥ 3.0, optional |
 | `pillow` | GIF animation export | optional |
 | `imageio` + `imageio-ffmpeg` | MP4 / MOV / WebM animation export (bundled ffmpeg) | ≥ 2.28 / ≥ 0.4 |
 | `mace-torch` | MACE machine-learning potentials and the MLIP Trainer (pulls `torch` ≥ 2.0, `e3nn`, `torch-geometric`) | ≥ 0.3 |

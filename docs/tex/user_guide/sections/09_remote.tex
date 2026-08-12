@@ -1,7 +1,7 @@
 \chapter{Remote HPC Execution}
 \label{ch:remote}
 
-The \ui{Remote Access} panel (zone 11) submits calculations to a cluster
+The \ui{HPC} panel (zone 11) submits calculations to a cluster
 over SSH, monitors the queue, and brings the results back --- without
 leaving Calango.
 
@@ -15,6 +15,15 @@ All network traffic runs in a separate helper process driven over a JSON
 protocol, mirroring how local jobs are isolated: the interface never blocks
 on the network, and a hung connection can always be resolved by killing
 the helper rather than the application.
+\end{calnote}
+
+\begin{calnote}
+The connection is a \emph{session}, not a login per operation: Calango
+authenticates once and multiplexes every upload, submission, status poll,
+log tail and download over that one SSH transport. On a cluster with
+keyboard-interactive two-factor authentication this is the difference
+between usable and unusable --- the one-time code is typed once, not once
+per queue poll.
 \end{calnote}
 
 \section{Connection}
@@ -32,15 +41,34 @@ The \ui{Connection} tab holds the cluster credentials:
     key.
   \item[\ui{Remote dir}] Working directory on the cluster, relative to
     \opt{\$HOME} (default \file{calango\_jobs}).
-  \item[\ui{Test Connection}] Verifies everything, reports your remote
-    \opt{\$HOME}, and auto-detects the scheduler.
+  \item[\ui{Connect}] Opens the session, reports your remote
+    \opt{\$HOME}, and auto-detects the scheduler. Pressing it first is
+    optional: any operation issued while disconnected authenticates and
+    then runs.
+  \item[\ui{Disconnect}] Closes the session. A job already submitted keeps
+    running on the cluster.
 \end{description}
+
+\subsection*{Two-factor authentication}
+
+If the cluster asks for a second factor, Calango puts the server's own
+challenge on screen --- its wording, its prompts, with the answer masked
+whenever the server says it must not be echoed --- and sends what you type
+straight back. Clusters that ask for the password and the code in one
+exchange get the password filled in from the \ui{Password} field, so only
+the code is asked for.
+
+The code is never stored, which is also why a session opened with 2FA is
+never re-established silently: if it drops, the panel says so and waits for
+you to press \ui{Connect}. A session opened with a key or a password has
+nothing single-use about it and reconnects by itself on the next operation.
 
 \begin{calwarn}
 Passwords and key passphrases are kept in memory only --- never written to
 disk, never placed on a command line where \texttt{ps} could see them.
-Everything else (host, user, key path, scheduler settings) is remembered
-between sessions.
+One-time codes are not kept even that long. Everything else (host, user,
+key path, scheduler settings) is remembered between sessions. A host key
+that \emph{changes} is refused outright rather than pinned over.
 \end{calwarn}
 
 \section{Scheduler settings}

@@ -17,8 +17,11 @@
 
 #include "core/AseScriptGenerator.hpp"
 #include "core/Structure.hpp"
+#include "core/TdbDatabase.hpp"
+#include "core/TdbExpression.hpp"
 #include "core/UnitCell.hpp"
 #include "gui/SettingsManager.hpp"
+#include "gui/OrchestrationTransforms.hpp"
 #include "gui/OrchestrationWindow.hpp"
 #include "gui/ProcessManagerPanel.hpp"
 #include "python_bridge/PythonEngine.hpp"
@@ -27,6 +30,7 @@
 #include <QElapsedTimer>
 #include <QPushButton>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
@@ -34,6 +38,7 @@
 #include <QTemporaryDir>
 
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <memory>
 
@@ -135,9 +140,13 @@ int main(int argc, char** argv)
     using calango::core::Atom;
     using calango::core::Structure;
     using calango::core::UnitCell;
+    using calango::gui::OrchestrationFamily;
     using calango::gui::OrchestrationNodeItem;
     using calango::gui::OrchestrationTask;
     using calango::gui::OrchestrationWindow;
+    using calango::gui::TdbGeneratorOutput;
+    using calango::gui::TdbGeneratorSpec;
+    using calango::gui::orchestrationTaskFromSlug;
 
     // Copper fcc conventional cell with atom 0 rattled well off its site —
     // a relaxation with real work to do, not a fixture that converges on
@@ -308,6 +317,128 @@ int main(int argc, char** argv)
         check(orchestrationTaskHasDefaults(OrchestrationTask::SinglePoint)
                   && !orchestrationTaskHasDefaults(OrchestrationTask::Optics),
               "only the self-contained tasks can run unconfigured");
+
+        // The TDB Generator is the one TRANSFORM with an input slot, and its
+        // staged name is a contract with the convex-hull viewer: both read the
+        // same cluster_expansion.json, so the hull a user looks at and the
+        // ensemble the assessment fits cannot drift into two descriptions of
+        // one calculation.
+        check(orchestrationTaskFamily(OrchestrationTask::TdbGenerator)
+                  == OrchestrationFamily::Transform,
+              "the TDB Generator runs on the canvas, not as a job");
+        check(orchestrationRequiredInputs(OrchestrationTask::TdbGenerator) == 1,
+              "and inherits exactly one completed run");
+        check(orchestrationInputSlots(OrchestrationTask::TdbGenerator)
+                      .front()
+                      .stagedName
+                  == QStringLiteral("cluster_expansion.json"),
+              "staged under the same name the hull viewer reads");
+        check(orchestrationTaskHasDefaults(OrchestrationTask::TdbGenerator),
+              "and can run unconfigured, because everything it needs — "
+              "endpoints, compositions, energies — comes out of that file");
+        // The slug names directories, provenance records and saved workflows.
+        // It is the only persisted identity a node has.
+        check(orchestrationTaskSlug(OrchestrationTask::TdbGenerator)
+                  == QStringLiteral("tdb_generator"),
+              "with a stable slug");
+        check(orchestrationTaskFromSlug(QStringLiteral("tdb_generator"))
+                  == OrchestrationTask::TdbGenerator,
+              "that round-trips, so a saved workflow containing one loads");
+    }
+
+    // ---- The CALPHAD assessment the TDB Generator performs -----------------
+    //
+    // Checked against a CLOSED FORM, end to end: an ensemble whose formation
+    // energies are exactly Omega*x*(1-x) must produce a database whose only
+    // Redlich-Kister coefficient is Omega. That single number crosses the
+    // eV/atom -> J/mol conversion, the endpoint referencing, the least-squares
+    // fit, the .tdb formatting and the parser on the way back, so a factor or
+    // a sign lost anywhere in the chain shows up here.
+    std::printf("TDB Generator assessment:\n");
+    {
+        constexpr double kOmega = 18000.0;     // J/mol
+        constexpr double kEvPerAtomToJPerMol = 96485.33212331001;
+        constexpr double kReferenceA = -3.4;   // eV/atom
+        constexpr double kReferenceB = -2.9;
+        QJsonArray configurations;
+        const auto append = [&](double x, double formationEv) {
+            QJsonObject entry;
+            entry.insert(QStringLiteral("concentration"), x);
+            entry.insert(QStringLiteral("formation_energy"), formationEv);
+            entry.insert(QStringLiteral("energy_per_atom"),
+                         formationEv + (1.0 - x) * kReferenceA
+                             + x * kReferenceB);
+            entry.insert(QStringLiteral("formula"),
+                         QStringLiteral("Ag%1Au%2")
+                             .arg(static_cast<int>(std::lround(100 * (1 - x))))
+                             .arg(static_cast<int>(std::lround(100 * x))));
+            configurations.append(entry);
+        };
+        append(0.0, 0.0);
+        append(1.0, 0.0);
+        for (int i = 1; i < 8; ++i) {
+            const double x = i / 8.0;
+            append(x, kOmega * x * (1.0 - x) / kEvPerAtomToJPerMol);
+        }
+        // One failed relaxation, carrying a null formation energy. It must be
+        // dropped: read as zero it would enter the fit as a perfectly ideal
+        // alloy and pull the coefficient down.
+        {
+            QJsonObject broken;
+            broken.insert(QStringLiteral("concentration"), 0.4);
+            broken.insert(QStringLiteral("formation_energy"), QJsonValue());
+            broken.insert(QStringLiteral("energy_per_atom"), 0.0);
+            configurations.append(broken);
+        }
+        QJsonObject root;
+        root.insert(QStringLiteral("configurations"), configurations);
+        root.insert(QStringLiteral("concentration_element"),
+                    QStringLiteral("Au"));
+        const QString ensemble = QString::fromUtf8(
+            QJsonDocument(root).toJson(QJsonDocument::Compact));
+
+        TdbGeneratorSpec spec;
+        spec.order = 0; // the regular solution: one coefficient, which is Omega
+        TdbGeneratorOutput output;
+        QString problem;
+        check(runTdbAssessment(ensemble, spec, &output, &problem),
+              "an ensemble of formation energies becomes a database");
+        if (!problem.isEmpty())
+            std::printf("      %s\n", qPrintable(problem));
+
+        calango::core::TdbDatabase parsed;
+        std::string error;
+        check(parsed.parse(output.databaseText.toStdString(), &error),
+              "which parses back with the project's own .tdb parser");
+        const calango::core::TdbSubstitutionalPhase model =
+            calango::core::tdbSubstitutionalPhase(parsed, "FCC_A1",
+                                                  {"AG", "AU"}, 1000.0);
+        check(model.ok, "and reads as a substitutional solution");
+        const bool recovered = model.ok && !model.interaction.empty()
+            && !model.interaction[0][1].empty()
+            && std::fabs(model.interaction[0][1][0] - kOmega) < 1.0;
+        check(recovered,
+              "whose interaction parameter is the Omega the ensemble was "
+              "built from");
+        check(output.summaryJson.contains(QStringLiteral("rms_residual")),
+              "and the summary records the residual the .tdb cannot carry");
+
+        // The refusals. Two pure elements determine the reference and nothing
+        // else, and an ensemble missing an endpoint would fold that endpoint's
+        // energy into every interaction parameter.
+        QJsonObject endpointsOnly;
+        QJsonArray justEnds;
+        justEnds.append(configurations[0]);
+        justEnds.append(configurations[1]);
+        endpointsOnly.insert(QStringLiteral("configurations"), justEnds);
+        TdbGeneratorOutput ignored;
+        QString why;
+        check(!runTdbAssessment(
+                  QString::fromUtf8(QJsonDocument(endpointsOnly)
+                                        .toJson(QJsonDocument::Compact)),
+                  spec, &ignored, &why),
+              "an ensemble with no alloy between the endpoints is refused");
+        check(!why.isEmpty(), "with a reason");
     }
 
     QSettings().setValue(

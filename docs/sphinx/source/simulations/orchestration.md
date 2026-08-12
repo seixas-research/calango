@@ -182,6 +182,12 @@ transform node has no calculator, no launch command and nothing that can
 fail inside Python. Its result is written as `transformed.extxyz`, which is
 what the next node inherits.
 
+The **TDB Generator** is the exception to both halves of that description: it
+consumes a completed run's *results* rather than a structure, and produces a
+thermodynamic database rather than a structure. It is a transform because it
+runs on the canvas rather than as a job, which is what the family actually
+decides.
+
 Double-click a transform node to configure it; unlike the simulation and
 analysis nodes it opens a small dialog of its own rather than a setup
 wizard.
@@ -284,6 +290,66 @@ an empty recipe. Both mean the node was written against a different
 structure, and quietly forwarding the pristine cell is how a pipeline
 computes a defect formation energy of exactly zero with nothing anywhere
 reporting a problem.
+:::
+
+### TDB Generator (CALPHAD)
+
+Turns a finished **cluster-expansion** ensemble into a CALPHAD thermodynamic
+database. It is the only transform with an input slot:
+
+| Node type | Slots, in link order | Staged as |
+|---|---|---|
+| TDB Generator | formation-energy ensemble | `cluster_expansion.json` |
+
+That is the same file the convex-hull viewer reads, so the hull you look at
+and the ensemble the assessment fits cannot drift into two descriptions of
+one calculation.
+
+What it does, in one step: take each configuration's formation energy
+relative to the two pure endpoints, fit a **Redlich–Kister** excess Gibbs
+energy
+
+$$G^{\mathrm{ex}}(x) = x_A x_B \sum_\nu L_\nu (x_A - x_B)^\nu$$
+
+to them by least squares, and write the coefficients as `PARAMETER L(…)`
+statements in a `.tdb`. Two files land in the node's results:
+
+`assessment.tdb`
+: the database, readable by Calango's own CALPHAD module and by any
+  CALPHAD tool.
+
+`calphad_assessment.json`
+: the fit's RMS and worst residual, the samples it used, and the static
+  convex hull the configurations sit on. A badly fitted database is still a
+  *valid* database, so the quality of the fit is recorded beside it rather
+  than inside it.
+
+Double-click the node to set the phase name, the Redlich–Kister order and the
+temperature range the database declares itself valid over. The two endpoint
+elements are optional — the ensemble file names the composition axis, and the
+formulas name the other endpoint.
+
+:::{admonition} The assessment is static, and that is a physical statement
+:class: warning
+
+A cluster-expansion ensemble carries total energies and no phonons. The
+fitted excess energy is therefore a pure **enthalpy**, and every excess
+entropy in the emitted database is exactly zero rather than small. A phase
+diagram computed from it has solidus and liquidus lines wrong by whatever the
+vibrational entropy of mixing is — typically a few tenths of $k_B$ per atom,
+which is not negligible near a melting point.
+
+To include the vibrational term, use {menuselection}`Modules --> CALPHAD -->
+From DFT…` instead: it accepts a `phonon_dos.json` per configuration and
+fits $L_\nu(T) = a + bT$ with a real excess entropy.
+:::
+
+:::{admonition} It reads energies, not a structure
+:class: note
+
+Because its input is a results file, a TDB Generator writes no
+`transformed.extxyz` and claims no workspace tab. Anything linked downstream
+of it inherits the structure that was staged into it, not a new one.
 :::
 
 ---

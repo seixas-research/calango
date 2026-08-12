@@ -4,7 +4,6 @@
 #include "gui/BandPdosView.hpp"
 #include "gui/PhononThermodynamicsDialog.hpp"
 #include "gui/PlotStyleDialog.hpp"
-#include "gui/VibrationalAnalysisDialog.hpp"
 
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -34,13 +33,9 @@ namespace {
 
 } // namespace
 
-PhononPlotWindow::PhononPlotWindow(const QString& directory, QWidget* parent,
-                                   std::shared_ptr<const core::Structure> structure,
-                                   ViewportWidget* viewport)
+PhononPlotWindow::PhononPlotWindow(const QString& directory, QWidget* parent)
     : QDialog(parent)
     , directory_(directory)
-    , structure_(std::move(structure))
-    , viewport_(viewport)
 {
     setWindowTitle(tr("Phonon Viewer — %1").arg(directory));
     resize(980, 620);
@@ -167,8 +162,10 @@ PhononPlotWindow::PhononPlotWindow(const QString& directory, QWidget* parent,
     side->addWidget(exportPhdosButton);
 
     // -- Derived analyses ---------------------------------------------------
-    // Both work off data this window already holds, so they belong here rather
-    // than as separate menu entries that would have to re-locate the job.
+    // Thermodynamics integrates the PhDOS this window already holds, so it
+    // belongs here rather than as a menu entry that would have to re-locate the
+    // job. Vibrational Analysis is its own module now (Analysis menu) and is
+    // merely SHORTCUT from here, on the run this window is showing.
     auto* thermoButton = new QPushButton(tr("Phonon Thermodynamics…"), this);
     thermoButton->setToolTip(
         tr("Harmonic vibrational internal energy, free energy and entropy "
@@ -179,10 +176,14 @@ PhononPlotWindow::PhononPlotWindow(const QString& directory, QWidget* parent,
 
     auto* vibrationButton = new QPushButton(tr("Vibrational Analysis…"), this);
     vibrationButton->setToolTip(
-        tr("Pick a branch and q-point and animate its eigenmode displacements "
-           "on the 3D viewport."));
-    connect(vibrationButton, &QPushButton::clicked, this,
-            &PhononPlotWindow::showVibrationalAnalysis);
+        tr("Open the Vibrational Mode Analysis module on this run: pick a "
+           "branch and q-point and animate its eigenmode displacements on the "
+           "3D viewport.\n"
+           "The same module is on the Analysis menu and does not need this "
+           "window open."));
+    connect(vibrationButton, &QPushButton::clicked, this, [this] {
+        Q_EMIT vibrationalAnalysisRequested(directory_);
+    });
     side->addWidget(vibrationButton);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
@@ -309,29 +310,6 @@ void PhononPlotWindow::showThermodynamics()
     auto* dialog = new PhononThermodynamicsDialog(
         dosFrequenciesCm_, dosValues_, QFileInfo(directory_).fileName(), this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->show();
-}
-
-void PhononPlotWindow::showVibrationalAnalysis()
-{
-    if (!structure_ || !viewport_) {
-        QMessageBox::information(
-            this, tr("Vibrational Analysis"),
-            tr("The mode animation needs the structure the phonons were "
-               "computed for. Open this viewer from the finished job (or from "
-               "the Processes panel) with that structure in the active tab."));
-        return;
-    }
-    if (!hasData_) {
-        QMessageBox::information(this, tr("Vibrational Analysis"),
-                                 tr("No phonon dispersion was loaded."));
-        return;
-    }
-    auto* dialog = new VibrationalAnalysisDialog(directory_, structure_,
-                                                 viewport_, this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    connect(dialog, &VibrationalAnalysisDialog::modeTrajectoryRequested, this,
-            &PhononPlotWindow::modeTrajectoryRequested);
     dialog->show();
 }
 

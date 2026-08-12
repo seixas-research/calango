@@ -14,11 +14,13 @@
 #include "core/AseScriptGenerator.hpp"
 #include "core/GrapheneOxideMdmcScriptGenerator.hpp"
 #include "core/BornChargesScriptGenerator.hpp"
+#include "core/CalphadScriptGenerator.hpp"
 #include "core/CddScriptGenerator.hpp"
 #include "core/ClusterExpansionScriptGenerator.hpp"
 #include "core/UnfoldingScriptGenerator.hpp"
 #include "core/XasScriptGenerator.hpp"
 #include "core/ElectronicScriptGenerator.hpp"
+#include "core/ElectronPhononScriptGenerator.hpp"
 #include "core/GwScriptGenerator.hpp"
 #include "core/KpointsConvergenceScriptGenerator.hpp"
 #include "core/NonlinearOpticsScriptGenerator.hpp"
@@ -148,6 +150,30 @@ int main(int argc, char** argv)
             mdmc.pressureGpa = 0.1;
             dumpText("graphene_oxide_mdmc_npt.py",
                  GrapheneOxideMdmcScriptGenerator::generate(mdmc));
+        }
+
+        // Electron-phonon coupling: the three-stage gpaw.elph workflow. Worth
+        // byte-compiling because its body is generated Python doing real array
+        // work — the k+q map, the ordering guard and the manifest — rather
+        // than keyword plumbing. (The alpha^2F sums it used to contain now
+        // live in C++, where ElectronPhononAnalysisTest pins them against a
+        // closed form.)
+        {
+            ElectronPhononConfig epc;
+            epc.calculator = gpawConfig();
+            dumpText("electron_phonon.py",
+                     generateElectronPhononScript(epc));
+            // A second, deliberately small variant the aluminium benchmark
+            // RUNS end to end. Its meshes are the smallest that still produce
+            // a meaningful lambda, chosen so the integration test is minutes
+            // rather than hours — see au/al benchmark notes.
+            ElectronPhononConfig small = epc;
+            small.basis = "sz(dzp)";
+            small.kGrid[0] = small.kGrid[1] = small.kGrid[2] = 6;
+            small.qGrid[0] = small.qGrid[1] = small.qGrid[2] = 2;
+            small.supercell[0] = small.supercell[1] = small.supercell[2] = 2;
+            dumpText("electron_phonon_small.py",
+                     generateElectronPhononScript(small));
         }
 
         // K-point convergence, with and without the plasma-frequency target.
@@ -788,6 +814,26 @@ int main(int argc, char** argv)
             bounded.useOuterWindow = true;
             bounded.outerWindowEv = 8.0;
             dumpInterp("wannier_interp_windows.py", bounded);
+        }
+
+        // The CALPHAD equilibrium script. Dumped in both of its shapes: the
+        // binary and ternary branches share only the preamble, so one dump
+        // would leave half the generated Python unchecked — and this is the
+        // one script in the project that can never be smoke-tested by running
+        // it, since pycalphad is in no Calango environment.
+        {
+            CalphadScriptConfig binary;
+            binary.components = {"AL", "ZN"};
+            binary.phases = {"FCC_A1", "LIQUID"};
+            binary.axisElement = "ZN";
+            dumpText("calphad_binary.py",
+                     CalphadScriptGenerator::generate(binary));
+            CalphadScriptConfig ternary = binary;
+            ternary.ternary = true;
+            ternary.components = {"AL", "MG", "ZN"};
+            ternary.secondAxisElement = "MG";
+            dumpText("calphad_ternary.py",
+                     CalphadScriptGenerator::generate(ternary));
         }
 
         std::printf("scripts written to %s\n", dir.c_str());
@@ -2914,6 +2960,219 @@ int main(int argc, char** argv)
                       "the rate argument stays well-formed with the term off");
     }
 
+    // -- GPAW eigensolver / mode pairing ------------------------------------
+    //
+    // Two bugs, both of which reached a user as a traceback several hundred
+    // lines into a run:
+    //
+    //   1. The generator emitted eigensolver="direct", which is not a name in
+    //      GPAW's registry at all (gpaw/old/eigensolvers/__init__.py maps
+    //      'lcao' -> DirectLCAO). KeyError: 'direct', in every mode.
+    //   2. It emitted the chosen solver regardless of the MODE. GPAW couples
+    //      them with an assertion: in LCAO mode only DirectLCAO/LCAOETDM are
+    //      admissible, so Davidson, CG and RMM-DIIS all abort. They iterate
+    //      wavefunctions on a grid or plane-wave basis, which an LCAO run
+    //      does not have.
+    //
+    // Verified against gpaw 26.7.1b1: lcao+lcao runs, lcao+dav fails, pw+dav
+    // runs.
+    std::printf("GPAW eigensolver / mode pairing:\n");
+    {
+        // "direct" must never appear again, in any mode.
+        for (const auto [mode, name] :
+             {std::pair{GpawMode::Lcao, "lcao"},
+              std::pair{GpawMode::PlaneWave, "pw"},
+              std::pair{GpawMode::FiniteDifference, "fd"}}) {
+            CalculatorConfig c = gpawConfig();
+            c.gpawMode = mode;
+            c.gpawEigensolver = GpawEigensolver::Direct;
+            const std::string script =
+                AseScriptGenerator::generate(c, "structure.extxyz");
+            checkNotContains(script, "eigensolver=\"direct\"",
+                             std::string(name)
+                                 + " mode never emits the non-existent "
+                                   "\"direct\" name");
+        }
+
+        // LCAO mode: whatever was chosen, the emitted solver is the LCAO one.
+        for (const auto solver :
+             {GpawEigensolver::Davidson, GpawEigensolver::ConjugateGradient,
+              GpawEigensolver::RmmDiis, GpawEigensolver::Direct}) {
+            CalculatorConfig c = gpawConfig();
+            c.gpawMode = GpawMode::Lcao;
+            c.gpawEigensolver = solver;
+            checkContains(AseScriptGenerator::generate(c, "structure.extxyz"),
+                          "eigensolver=\"lcao\",",
+                          "LCAO mode always emits the direct LCAO solver");
+        }
+
+        // And the converse: the LCAO solver must not leak into a grid or
+        // plane-wave run, where it has no basis to diagonalize over.
+        for (const auto [mode, name] :
+             {std::pair{GpawMode::PlaneWave, "plane-wave"},
+              std::pair{GpawMode::FiniteDifference, "finite-difference"}}) {
+            CalculatorConfig c = gpawConfig();
+            c.gpawMode = mode;
+            c.gpawEigensolver = GpawEigensolver::Direct;
+            const std::string script =
+                AseScriptGenerator::generate(c, "structure.extxyz");
+            checkNotContains(script, "eigensolver=\"lcao\"",
+                             std::string(name)
+                                 + " mode does not use the LCAO solver");
+            checkContains(script, "eigensolver=\"dav\",",
+                          std::string(name)
+                              + " mode falls back to GPAW's own default");
+        }
+
+        // A coerced choice is stated in the script, not applied silently.
+        CalculatorConfig coerced = gpawConfig();
+        coerced.gpawMode = GpawMode::Lcao;
+        coerced.gpawEigensolver = GpawEigensolver::Davidson;
+        checkContains(AseScriptGenerator::generate(coerced, "structure.extxyz"),
+                      "# Eigensolver set to \"lcao\" for this mode",
+                      "and a substituted solver says so in the script");
+
+        // The ordinary pairings are untouched.
+        CalculatorConfig plain = gpawConfig();
+        plain.gpawMode = GpawMode::PlaneWave;
+        plain.gpawEigensolver = GpawEigensolver::RmmDiis;
+        const std::string plainScript =
+            AseScriptGenerator::generate(plain, "structure.extxyz");
+        checkContains(plainScript, "eigensolver=\"rmm-diis\",",
+                      "a valid pairing is emitted unchanged");
+        checkNotContains(plainScript, "# Eigensolver set to",
+                         "and carries no substitution note");
+    }
+
+    // -- Electron-phonon coupling -------------------------------------------
+    //
+    // The module's value is not the matrix elements — it is what is derived
+    // from them, and specifically that tau comes out in a form the Drude term
+    // in the optics module can consume. These assertions pin that chain and
+    // the two guards that keep an expensive run from being wasted.
+    std::printf("Electron-phonon coupling:\n");
+    {
+        ElectronPhononConfig cfg;
+        cfg.calculator = gpawConfig();
+        const std::string script = generateElectronPhononScript(cfg);
+
+        // The three GPAW stages, in order.
+        checkContains(script, "from gpaw.elph import DisplacementRunner",
+                      "stage 1 uses GPAW's displacement runner");
+        checkContains(script, "_sc.calculate_supercell_matrix(_calc2)",
+                      "stage 2 projects dV/du onto the LCAO basis");
+        checkContains(script, "_epm.bloch_matrix(_calc3, k_qc=_qs",
+                      "stage 3 rotates into the Bloch basis");
+        // LCAO is a requirement of the method, not a speed choice: the
+        // supercell stage projects onto basis functions.
+        checkContains(script, "mode=\"lcao\"",
+                      "throughout in LCAO, which the projection requires");
+        // prefactor=True is what puts g in eV. Without it every derived
+        // quantity is wrong by a mode-dependent factor, silently.
+        checkContains(script, "prefactor=True",
+                      "with the sqrt(hbar/2Mw) prefactor, so g is in eV");
+        // Symmetry off in stage 3: bloch_matrix indexes the full k-set.
+        checkContains(script, "symmetry=\"off\"",
+                      "and no symmetry reduction where the k-set is indexed");
+
+        // The handoff. The script's job now ENDS at the raw arrays: alpha^2F,
+        // lambda and tau are computed by Calango (ElectronPhononAnalysis),
+        // which integrates both Fermi-surface deltas on tetrahedra.
+        //
+        // This replaced an in-script Gaussian whose lambda on fcc Al ran
+        // 0.009, 0.22, 0.49, 1.55, 4.99, 16.6, 31.0 as sigma_e was widened
+        // 16x, with no plateau — the reported number was whatever sigma_e was
+        // set to. Pinned as absent so it cannot come back.
+        checkNotContains(script, "_gaussian(",
+                         "no Gaussian smearing survives in the script — the "
+                         "Fermi-surface integration moved to tetrahedra, "
+                         "which have no width to converge");
+        checkNotContains(script, "lambda vs Fermi smearing",
+                         "and with it the smearing sweep that used to police "
+                         "a parameter that no longer exists");
+        checkContains(script, "np.save(\"elph_eigenvalues.npy\"",
+                      "the eigenvalues are saved for the analysis");
+        checkContains(script, "np.save(\"elph_kplusq.npy\"",
+                      "so is the k+q map, built once here rather than twice");
+        // The RAW frequencies: Calango masks and counts imaginary modes
+        // itself, and a placeholder written here would hide an unstable
+        // structure behind a plausible lambda.
+        checkContains(script, "np.save(\"elph_frequencies.npy\"",
+                      "and the phonon frequencies as they are, negatives "
+                      "included");
+        checkNotContains(script, "_omega_ql = np.where(_valid_ql",
+                         "never with imaginary modes replaced by a "
+                         "placeholder before saving");
+        // The 2*pi ASE's reciprocal() omits. Without it every gradient, so
+        // every tetrahedron weight, so N(E_F) and lambda, is off by (2pi)^3.
+        checkContains(script, "2.0 * np.pi * np.array(atoms.cell.reciprocal())",
+                      "the reciprocal vectors carry the 2*pi that ASE's "
+                      "reciprocal() leaves out");
+        // The biggest array is referenced where GPAW already wrote it rather
+        // than recopied: it is tens of gigabytes on a production mesh.
+        checkContains(script, "gsquared gsqklnn.npy",
+                      "and |g|^2 is read from GPAW's own gsqklnn.npy, not "
+                      "rewritten");
+        checkContains(script, "savetofile=True",
+                      "which stage 3 is therefore asked to write");
+        // The manifest the C++ loader reads.
+        checkContains(script, "calango.elph.raw 1",
+                      "a manifest ties the arrays to the mesh they live on");
+        // mu* travels in the manifest rather than being defaulted at analysis
+        // time: T_c depends on it exponentially, so a run analysed later must
+        // use the value the run was configured with.
+        checkContains(script, "mu_star 0.1",
+                      "and carries mu*, which T_c depends on exponentially");
+        checkContains(script, "CALANGO_RESULT elph=elph_raw.txt",
+                      "and is announced as the run's result");
+        // The ordering assumption, checked rather than trusted: GPAW's BZ
+        // enumeration is row-major today, and if it ever changed every
+        // eigenvalue would attach to the wrong corner of the mesh while still
+        // producing a number.
+        checkContains(script, "k-point order is not the row-major grid order",
+                      "the k-point ordering the tetrahedra assume is verified "
+                      "in the script, not assumed");
+
+        // Guards. Both exist to fail in the first seconds rather than after
+        // the 6N+1 displacement runs have been paid for.
+        checkContains(script, "is denser than the supercell",
+                      "an incommensurate q-mesh is refused up front");
+        checkContains(script, "is not on the k-mesh",
+                      "and so is a k-mesh that does not contain k+q");
+        // A gapped system has no Fermi surface for this to be about. That
+        // refusal now lives in ElectronPhononAnalysis, where its own test
+        // covers it — the script no longer decides anything about E_F.
+        // Imaginary modes are a real result, but 1/w cannot represent them.
+        checkContains(script, "imaginary phonon",
+                      "imaginary modes are reported, not silently integrated");
+        // Resume safety. Stage 1 runs for hours and therefore gets
+        // interrupted; ASE decides which displacements are done by which
+        // files EXIST, so a zero-length file left by a kill counts as done
+        // and that displacement is silently skipped on the rerun. ASE's own
+        // docstring says the file must be deleted and does not delete it.
+        checkContains(script, "strip_empties()",
+                      "an interrupted run's empty cache files are cleared "
+                      "before resuming");
+        checkContains(script, "cleared {_stripped} empty displacement",
+                      "and the recomputation is reported rather than silent");
+
+        // The settings must actually reach the script.
+        ElectronPhononConfig custom = cfg;
+        custom.supercell[0] = custom.supercell[1] = custom.supercell[2] = 3;
+        custom.qGrid[0] = custom.qGrid[1] = custom.qGrid[2] = 3;
+        custom.kGrid[0] = custom.kGrid[1] = custom.kGrid[2] = 12;
+        custom.temperatureK = 77.0;
+        custom.basis = "sz(dzp)";
+        const std::string tuned = generateElectronPhononScript(custom);
+        checkContains(tuned, "SUPERCELL = (3, 3, 3)", "the supercell is used");
+        checkContains(tuned, "QGRID = (3, 3, 3)", "so is the q-mesh");
+        checkContains(tuned, "KGRID = (12, 12, 12)", "and the k-mesh");
+        checkContains(tuned, "temperature 77",
+                      "and the temperature tau is asked at reaches the "
+                      "manifest");
+        checkContains(tuned, "BASIS = \"sz(dzp)\"", "and the LCAO basis");
+    }
+
     // -- 2D optics: the same advanced options as 3D -------------------------
     //
     // "2D Optics" is the SAME wizard and the SAME generator with vacuumAxis
@@ -4470,6 +4729,65 @@ int main(int argc, char** argv)
               "a single-point batch emits no cell filter");
         checkContains(script, "relax_cell = False",
                       "and says so in the run header");
+    }
+
+    // -- CALPHAD: the one script that imports pycalphad ----------------------
+    //
+    // pycalphad is installed in NO Calango environment, and nothing in the
+    // application may import it at load time — that constraint is why the .tdb
+    // parser, the Redlich-Kister fit and the phase diagrams are hand-written
+    // C++. This script is the single exception, and because it can never be
+    // run in CI, what it does WHEN THE IMPORT FAILS is the only part of it any
+    // test can reach.
+    std::printf("CALPHAD equilibrium script:\n");
+    {
+        CalphadScriptConfig config;
+        config.components = {"AL", "ZN"};
+        config.phases = {"FCC_A1", "LIQUID"};
+        config.axisElement = "ZN";
+        const std::string script = CalphadScriptGenerator::generate(config);
+
+        // The import is guarded, and the guard says what to type.
+        checkContains(script, "except ImportError",
+                      "the pycalphad import is guarded");
+        checkContains(script, "pip install pycalphad",
+                      "and the failure names the command that fixes it");
+        checkContains(script, "raise SystemExit(2)",
+                      "exiting non-zero rather than continuing without a "
+                      "solver");
+        checkContains(script, "_calango_event(\"error\"",
+                      "and recording the refusal in log.json, which is what "
+                      "the Results panel reads");
+        // The import must be INSIDE the try. A module-level pycalphad import
+        // would make the script die with a traceback before the logger it
+        // needs to report the failure through even exists.
+        check(script.find("try:\n    from pycalphad") != std::string::npos,
+              "the import sits inside the try, not at module level");
+
+        // VA is appended for the user. Without it pycalphad rejects any
+        // database whose sublattice model names a vacancy, with a message
+        // about components that points nowhere near the cause.
+        checkContains(script, "\"VA\"", "the vacancy joins the component list");
+        checkNotContains(script, "import calango",
+                         "and the script imports nothing from Calango");
+        checkContains(script, "def _calango_progress(",
+                      "carrying its own logger, like every generated script");
+
+        CalphadScriptConfig ternary = config;
+        ternary.ternary = true;
+        ternary.components = {"AL", "MG", "ZN"};
+        ternary.secondAxisElement = "MG";
+        const std::string section = CalphadScriptGenerator::generate(ternary);
+        checkContains(section, "ternary_isothermal_section",
+                      "the ternary branch reports its own kind");
+        // Both branches index the equilibrium grid positionally, so the
+        // dimension order has to be pinned rather than assumed: pycalphad has
+        // changed it between releases, and a silent transpose produces a
+        // diagram that is mirrored about its own diagonal.
+        checkContains(section, ".transpose(",
+                      "with the dimension order pinned explicitly");
+        checkContains(script, ".transpose(",
+                      "and so does the binary branch");
     }
 
     std::printf(failures == 0 ? "\nAll script checks passed.\n"

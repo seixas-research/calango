@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.11
+    VERSION 26.8.12
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -178,9 +178,23 @@ qt_add_executable(calango
     src/core/Noise.hpp
     src/core/Noise.cpp
     src/core/PhononScriptGenerator.hpp
+    src/core/ElectronPhononScriptGenerator.cpp
     src/core/PhononScriptGenerator.cpp
+    src/core/TdbDatabase.cpp
+    src/core/TdbExpression.cpp
+    src/core/TdbWriter.cpp
+    src/core/CalphadModel.cpp
+    src/core/CalphadScriptGenerator.cpp
+    src/core/PhaseDiagram.cpp
+    src/core/ElectronPhononAnalysis.cpp
+    src/core/ElectronPhononIo.cpp
+    src/core/Superconductivity.cpp
+    src/core/NumpyArray.cpp
+    src/core/TetrahedronBz.cpp
     src/core/PhononThermodynamics.hpp
     src/core/PhononThermodynamics.cpp
+    src/core/VibrationalModes.hpp
+    src/core/VibrationalModes.cpp
     src/core/SchedulerScript.hpp
     src/core/SchedulerScript.cpp
     src/core/ChemicalOrder.hpp
@@ -446,8 +460,16 @@ qt_add_executable(calango
     src/gui/RayTraceDialog.cpp
     src/gui/BrandingPanel.hpp
     src/gui/BrandingPanel.cpp
-    src/gui/RemoteAccessPanel.hpp
-    src/gui/RemoteAccessPanel.cpp
+    src/gui/CalphadDialog.hpp
+    src/gui/CalphadDialog.cpp
+    src/gui/PhaseDiagramWindow.hpp
+    src/gui/PhaseDiagramWindow.cpp
+    src/gui/TdbGeneratorDialog.hpp
+    src/gui/TdbGeneratorDialog.cpp
+    src/gui/ClusterPreset.hpp
+    src/gui/ClusterPreset.cpp
+    src/gui/HpcPanel.hpp
+    src/gui/HpcPanel.cpp
     src/gui/SqsDialog.hpp
     src/gui/SqsDialog.cpp
     src/gui/WarrenCowleyDialog.hpp
@@ -616,6 +638,10 @@ qt_add_executable(calango
     src/gui/CastColorsDialog.cpp
     src/gui/AddAdsorbateDialog.hpp
     src/gui/AddAdsorbateDialog.cpp
+    src/gui/ElectronPhononWizard.hpp
+    src/gui/ElectronPhononWizard.cpp
+    src/gui/GpuTelemetry.hpp
+    src/gui/GpuTelemetry.cpp
     src/gui/GrainCasts.hpp
     src/gui/GrainCasts.cpp
     src/gui/GrapheneOxideWizard.hpp
@@ -886,6 +912,11 @@ target_link_libraries(calango PRIVATE
 )
 if(APPLE)
     target_link_libraries(calango PRIVATE "-framework OpenGL")
+    # GPU telemetry reads the accelerator driver's own counters out of the
+    # IORegistry (gui/GpuTelemetry.cpp). Metal has no equivalent: it describes
+    # and schedules, it does not meter.
+    target_link_libraries(calango PRIVATE "-framework IOKit"
+                                          "-framework CoreFoundation")
 else()
     target_link_libraries(calango PRIVATE OpenGL::GL)
 endif()
@@ -904,6 +935,24 @@ endif()
 # Integration tests (GUI-free: core + embedded Python bridge only)
 #   cmake -B build -DCALANGO_BUILD_TESTS=ON ... && ctest --test-dir build
 # ---------------------------------------------------------------------------
+# Headless post-processing for electron-phonon runs.
+#
+# Deliberately a separate binary from the GUI: the runs that need it most
+# are the ones too big to bring home. |g|^2 is
+# (spins, q, k, modes, bands, bands) complex and reaches tens of gigabytes
+# on a production mesh, so the analysis belongs on the cluster beside the
+# run rather than after a download. Qt-free for the same reason — it has
+# to build where there is no Qt.
+add_executable(calango-elph-analyze
+    tools/elph_analyze.cpp
+    src/core/ElectronPhononIo.cpp
+    src/core/ElectronPhononAnalysis.cpp
+    src/core/Superconductivity.cpp
+    src/core/NumpyArray.cpp
+    src/core/TetrahedronBz.cpp
+)
+target_include_directories(calango-elph-analyze PRIVATE src)
+
 option(CALANGO_BUILD_TESTS "Build the integration test executables" OFF)
 if(CALANGO_BUILD_TESTS)
     enable_testing()
@@ -1195,6 +1244,21 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_phonon_thermo_test PRIVATE src)
     add_test(NAME phonon_thermodynamics COMMAND calango_phonon_thermo_test)
 
+    # Vibrational normal modes: the physics behind the mode animation, which is
+    # a picture and therefore unfalsifiable by eye. Pinned against the closed
+    # forms it must obey - the reduced-mass harmonic oscillator, the acoustic
+    # sum rule, orthonormality of the dynamical matrix's eigenbasis, and the
+    # exp(i q.R) phase - never against a stored frame.
+    add_executable(calango_vibrational_modes_test
+        tests/VibrationalModesTest.cpp
+        src/core/VibrationalModes.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_vibrational_modes_test PRIVATE src)
+    add_test(NAME vibrational_modes COMMAND calango_vibrational_modes_test)
+
     # Hydrogen-bond perception: the geometric criteria that separate a real
     # D-H...A contact from any two nearby polar atoms.
     add_executable(calango_hbond_test
@@ -1319,6 +1383,24 @@ if(CALANGO_BUILD_TESTS)
         # The Processes dock: its walltime column is a live QTimer, which only
         # a running event loop can exercise.
         src/gui/ProcessManagerPanel.cpp
+        # The CALPHAD dialog builds its controls from a loaded database, and
+        # its two buttons open a phase diagram and a database generator that
+        # are themselves built from data loaded at run time.
+        src/gui/CalphadDialog.cpp
+        src/gui/PhaseDiagramWindow.cpp
+        src/gui/TdbGeneratorDialog.cpp
+        src/core/CalphadModel.cpp
+        src/core/ConvexHull.cpp
+        src/core/PhaseDiagram.cpp
+        src/core/PhononThermodynamics.cpp
+        src/core/TdbDatabase.cpp
+        src/core/TdbExpression.cpp
+        src/core/TdbWriter.cpp
+        # The HPC dock and the preset store its Save/Delete drive.
+        src/gui/HpcPanel.cpp
+        src/gui/ClusterPreset.cpp
+        src/core/SchedulerScript.cpp
+        src/remote/RemoteClient.cpp
         src/gui/DatabaseImportDialog.cpp
         src/python_bridge/MaterialsProject.cpp
         src/gui/FilmTimelineWidget.cpp
@@ -1397,6 +1479,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/ConvergenceSweepBlocks.cpp
         src/core/CutoffConvergenceScriptGenerator.cpp
         src/gui/KpointsConvergenceWizard.cpp
+        src/core/ElectronPhononScriptGenerator.cpp
         src/core/KpointsConvergenceScriptGenerator.cpp
         src/core/CddScriptGenerator.cpp
         src/core/Noise.cpp
@@ -1480,6 +1563,14 @@ if(CALANGO_BUILD_TESTS)
         src/gui/SettingsManager.cpp
         src/gui/CalculatorParameters.cpp
         src/core/AseScriptGenerator.cpp
+        # The Vibrational Mode Analysis module. It repopulates two combo boxes
+        # from inside its own constructor (it loads a phonon run there), which
+        # is the construction-order shape this test exists for. It costs only
+        # these two translation units because it does NOT hold a
+        # ViewportWidget: the displaced geometry leaves as a signal, precisely
+        # so a headless test can construct it.
+        src/gui/VibrationalAnalysisDialog.cpp
+        src/core/VibrationalModes.cpp
         src/core/GrapheneOxideBuilder.cpp
         src/core/GrapheneOxideSites.cpp
         src/core/Structure.cpp
@@ -1565,6 +1656,14 @@ if(CALANGO_BUILD_TESTS)
         src/gui/OrchestrationDocument.cpp
         src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
+        # The TDB Generator transform fits a CALPHAD model in process, so the
+        # transforms translation unit now pulls in the assessment, the hull it
+        # reports against, and the database writer.
+        src/core/CalphadModel.cpp
+        src/core/ConvexHull.cpp
+        src/core/TdbWriter.cpp
+        src/core/TdbDatabase.cpp
+        src/core/TdbExpression.cpp
         src/gui/OrchestrationProvenance.cpp
         src/core/WorkflowReport.cpp
         src/core/BandGap.cpp
@@ -1628,6 +1727,14 @@ if(CALANGO_BUILD_TESTS)
         src/gui/OrchestrationDocument.cpp
         src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
+        # The TDB Generator transform fits a CALPHAD model in process, so the
+        # transforms translation unit now pulls in the assessment, the hull it
+        # reports against, and the database writer.
+        src/core/CalphadModel.cpp
+        src/core/ConvexHull.cpp
+        src/core/TdbWriter.cpp
+        src/core/TdbDatabase.cpp
+        src/core/TdbExpression.cpp
         src/gui/OrchestrationProvenance.cpp
         src/core/WorkflowReport.cpp
         src/core/BandGap.cpp
@@ -1690,6 +1797,14 @@ if(CALANGO_BUILD_TESTS)
         src/gui/OrchestrationDocument.cpp
         src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
+        # The TDB Generator transform fits a CALPHAD model in process, so the
+        # transforms translation unit now pulls in the assessment, the hull it
+        # reports against, and the database writer.
+        src/core/CalphadModel.cpp
+        src/core/ConvexHull.cpp
+        src/core/TdbWriter.cpp
+        src/core/TdbDatabase.cpp
+        src/core/TdbExpression.cpp
         src/gui/OrchestrationProvenance.cpp
         src/core/WorkflowReport.cpp
         src/core/BandGap.cpp
@@ -1763,6 +1878,171 @@ if(CALANGO_BUILD_TESTS)
     # nothing failing at build time. That is how "Phase colors…" shipped with a
     # name taken from RemixIcon/ (where the SVG exists) but never copied into
     # the curated assets/icons/ subset.
+    # GPU telemetry. Asserts the CONTRACT (a reading, or a stated reason)
+    # rather than a hardware number, so it is meaningful on a CI box with no
+    # GPU as well as on a workstation with one.
+    # The visible-spectrum overlay. Renders the widget and reads pixels back:
+    # a gradient is one of the few things review cannot check, since wrong
+    # colour placement compiles and draws perfectly well.
+    qt_add_executable(calango_visible_spectrum_test
+        tests/VisibleSpectrumTest.cpp
+        src/gui/SpectrumPlotWidget.cpp
+        # OpticsPlotStyle's out-of-line members (fonts, effective grid colour).
+        src/gui/OpticsPlotStyleDialog.cpp
+    )
+    target_include_directories(calango_visible_spectrum_test PRIVATE src)
+    target_link_libraries(calango_visible_spectrum_test PRIVATE Qt6::Gui
+                                                                Qt6::Widgets)
+    add_test(NAME visible_spectrum COMMAND calango_visible_spectrum_test)
+
+    # .tdb parsing: what the CALPHAD module needs to populate its element and
+    # phase selection, independent of pycalphad (which no Calango environment
+    # ships). Checked against a hand-written database covering the syntax that
+    # varies in the wild, and against the real SGTE files when present.
+    # Linear-tetrahedron BZ integration, checked against the closed-form
+    # free-electron DOS. Foundation for the electron-phonon double delta,
+    # which is why it is tested on its own before that goes on top.
+    # Batch-scheduler directives: one resource request translated into SLURM,
+    # PBS and SGE dialects. The mistranslations are silent (a job that queues
+    # forever rather than erroring), so they are pinned.
+    # HPC cluster presets: JSON round trip, list editing, and the assertion
+    # that no password ever reaches the preset file.
+    add_executable(calango_cluster_preset_test
+        tests/ClusterPresetTest.cpp
+        src/gui/ClusterPreset.cpp
+    )
+    target_include_directories(calango_cluster_preset_test PRIVATE src)
+    target_link_libraries(calango_cluster_preset_test PRIVATE Qt6::Core)
+    add_test(NAME cluster_presets COMMAND calango_cluster_preset_test)
+
+    add_executable(calango_scheduler_test
+        tests/SchedulerScriptTest.cpp
+        src/core/SchedulerScript.cpp
+    )
+    target_include_directories(calango_scheduler_test PRIVATE src)
+    add_test(NAME scheduler_script COMMAND calango_scheduler_test)
+
+    # The persistent SSH session, Qt side. Drives RemoteClient against a real
+    # paramiko SSH server on 127.0.0.1 that demands a one-time code (started
+    # by tests/remote_session_test.py --serve). No 2FA cluster is reachable
+    # from a build machine, and the property that matters — ONE challenge for
+    # a whole job's worth of operations, and never one raised by a background
+    # poll — can only be observed against a server that actually challenges.
+    # Self-skips without python3/paramiko.
+    qt_add_executable(calango_remote_session_test
+        tests/RemoteSessionTest.cpp
+        src/remote/RemoteClient.cpp
+    )
+    target_include_directories(calango_remote_session_test PRIVATE src)
+    target_link_libraries(calango_remote_session_test PRIVATE Qt6::Core)
+    add_test(NAME remote_session
+             COMMAND calango_remote_session_test ${CMAKE_CURRENT_SOURCE_DIR}
+                     ${Python3_EXECUTABLE})
+    set_tests_properties(remote_session PROPERTIES TIMEOUT 300)
+
+    # And the helper's own half: the auth ladder (a password answered with
+    # PARTIAL success plus a list of remaining factors), the keyboard-
+    # interactive round trip, SFTP upload/download, and the reconnection
+    # policy that separates a key session (rebuilt silently) from a 2FA one
+    # (never rebuilt without the user).
+    add_test(NAME remote_session_helper
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/remote_session_test.py
+                     ${CMAKE_CURRENT_SOURCE_DIR}/assets/remote/calango_remote.py)
+    set_tests_properties(remote_session_helper PROPERTIES TIMEOUT 300)
+
+    # alpha^2F / lambda / tau from raw elph data, checked end to end against a
+    # closed form: free-electron band + constant |g|^2 + one mode makes
+    # lambda = 2 g0^2 zeta(q) / (N(E_F) w0) exactly.
+    add_executable(calango_elph_analysis_test
+        tests/ElectronPhononAnalysisTest.cpp
+        src/core/ElectronPhononAnalysis.cpp
+        src/core/Superconductivity.cpp
+        src/core/TetrahedronBz.cpp
+    )
+    target_include_directories(calango_elph_analysis_test PRIVATE src)
+    add_test(NAME elph_analysis COMMAND calango_elph_analysis_test)
+
+    # The handoff from GPAW: .npy reading, the manifest, and a round trip of
+    # the closed-form case through files. Uses the build tree for scratch so
+    # nothing lands in the source directory.
+    add_executable(calango_elph_io_test
+        tests/ElectronPhononIoTest.cpp
+        src/core/ElectronPhononIo.cpp
+        src/core/ElectronPhononAnalysis.cpp
+        src/core/Superconductivity.cpp
+        src/core/NumpyArray.cpp
+        src/core/TetrahedronBz.cpp
+    )
+    target_include_directories(calango_elph_io_test PRIVATE src)
+    add_test(NAME elph_io COMMAND calango_elph_io_test)
+    set_tests_properties(elph_io PROPERTIES
+        ENVIRONMENT "CALANGO_TEST_TMPDIR=${CMAKE_CURRENT_BINARY_DIR}")
+
+    # T_c from the coupling. Checked against the closed form AND against the
+    # measured transition temperatures of lead and aluminium, using
+    # literature lambda/omega_log as inputs — the second is what would catch a
+    # mistyped fit constant.
+    add_executable(calango_superconductivity_test
+        tests/SuperconductivityTest.cpp
+        src/core/Superconductivity.cpp
+    )
+    target_include_directories(calango_superconductivity_test PRIVATE src)
+    add_test(NAME superconductivity COMMAND calango_superconductivity_test)
+
+    add_executable(calango_tetrahedron_test
+        tests/TetrahedronBzTest.cpp
+        src/core/TetrahedronBz.cpp
+    )
+    target_include_directories(calango_tetrahedron_test PRIVATE src)
+    add_test(NAME tetrahedron_bz COMMAND calango_tetrahedron_test)
+
+    add_executable(calango_tdb_test
+        tests/TdbDatabaseTest.cpp
+        src/core/TdbDatabase.cpp
+    )
+    target_include_directories(calango_tdb_test PRIVATE src)
+    add_test(NAME tdb_database COMMAND calango_tdb_test)
+
+    # The CALPHAD thermodynamics on top of that parser: the Redlich-Kister
+    # model, the DFT -> .tdb pipeline, the TDB expression evaluator, and the
+    # phase-diagram construction. Every assertion is against a closed form or a
+    # thermodynamic identity — the analytic ideal-lens solution, the
+    # regular-solution binodal and its critical temperature T_c = Omega/2R,
+    # exact recovery of a known Redlich-Kister model from noiseless samples,
+    # and -- the strongest one, because no number in it comes from this project
+    # -- the MELTING POINTS of Al, Cu, Ag, Ni and Mg, solved out of the real
+    # SGTE unary functions as the crossing of their liquid and solid Gibbs
+    # energies and compared against the measured values. Iron is kept in that
+    # list precisely because it misses by 10 K: its magnetic contribution is
+    # not modelled, and pinning the size of a known limitation is what stops it
+    # from growing. GUI-free, Python-free, and pycalphad-free: the whole point
+    # of the module is that none of this needs a solver installed.
+    add_executable(calango_calphad_test
+        tests/CalphadTest.cpp
+        src/core/CalphadModel.cpp
+        src/core/ConvexHull.cpp
+        src/core/PhaseDiagram.cpp
+        src/core/PhononThermodynamics.cpp
+        src/core/TdbDatabase.cpp
+        src/core/TdbExpression.cpp
+        src/core/TdbWriter.cpp
+    )
+    target_include_directories(calango_calphad_test PRIVATE src)
+    add_test(NAME calphad COMMAND calango_calphad_test)
+
+    add_executable(calango_gpu_telemetry_test
+        tests/GpuTelemetryTest.cpp
+        src/gui/GpuTelemetry.cpp
+    )
+    target_include_directories(calango_gpu_telemetry_test PRIVATE src)
+    target_link_libraries(calango_gpu_telemetry_test PRIVATE Qt6::Core)
+    if(APPLE)
+        target_link_libraries(calango_gpu_telemetry_test
+            PRIVATE "-framework IOKit" "-framework CoreFoundation")
+    endif()
+    add_test(NAME gpu_telemetry COMMAND calango_gpu_telemetry_test)
+
     add_executable(calango_icon_registry_test tests/IconRegistryTest.cpp)
     target_compile_definitions(calango_icon_registry_test PRIVATE
         CALANGO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1998,8 +2278,14 @@ if(CALANGO_BUILD_TESTS)
         src/core/TopologyScriptGenerator.cpp
         src/core/ClusterExpansionScriptGenerator.cpp
         src/core/GrapheneOxideMdmcScriptGenerator.cpp
+        # The one script in the project that imports pycalphad. It is here
+        # precisely because it cannot be run in CI — pycalphad is installed
+        # nowhere — so the static check is the only thing standing between a
+        # typo and a user's failed run.
+        src/core/CalphadScriptGenerator.cpp
         # The k-point sweep, which brings its shared measurement/analysis
         # blocks with it (ConvergenceSweepBlocks).
+        src/core/ElectronPhononScriptGenerator.cpp
         src/core/KpointsConvergenceScriptGenerator.cpp
         src/core/ConvergenceSweepBlocks.cpp
         src/core/BandUnfolding.cpp
@@ -2401,6 +2687,25 @@ if(CALANGO_BUILD_TESTS)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/gw_qp_parser_test.py
                 $<TARGET_FILE:calango_script_test>)
 
+    # Electron-phonon coupling end to end on fcc Al. The most expensive test
+    # in the suite by construction — stage 1 is 6N+1 self-consistent runs on
+    # the supercell, and there is no cheap version of that which still means
+    # anything. Al is the anchor: lambda ~ 0.4 from the literature gives
+    # tau ~ 10 fs at 300 K, within a few fs of a Drude fit to its measured
+    # optical conductivity.
+    #
+    # Asserts the STRUCTURE strictly (the Allen relation, hbar/tau, and the
+    # factor of two into the optics module's rate) and the VALUE loosely: a
+    # 2x2x2 supercell on a coarse mesh is not a converged lambda, and
+    # pinning it tightly would test the settings rather than the workflow.
+    #
+    # Self-skips without gpaw.elph.
+    add_test(NAME al_electron_phonon
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/al_electron_phonon_benchmark.py
+                $<TARGET_FILE:calango_script_test>)
+    set_tests_properties(al_electron_phonon PROPERTIES TIMEOUT 10800)
+
     # Optics validation on bulk Si: GPAW SCF → NSCF → DielectricFunction,
     # verifying ε₁/ε₂. Self-skips (exit 0) without the GPAW response stack.
     add_test(NAME optics_silicon
@@ -2552,6 +2857,9 @@ if(APPLE AND CALANGO_MACOS_BUNDLE)
     ")
 elseif(UNIX AND NOT APPLE)
     install(TARGETS calango RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    # Shipped so a cluster job script can analyse its own run in place.
+    install(TARGETS calango-elph-analyze
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
 
     # Desktop integration: launcher entry, MIME types for .calproj project
     # files and .extxyz structures (both reach MainWindow::loadFile via the

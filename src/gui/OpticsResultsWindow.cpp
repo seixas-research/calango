@@ -11,6 +11,7 @@
 
 #include <QColor>
 #include <QSlider>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -84,6 +85,22 @@ OpticsResultsWindow::OpticsResultsWindow(const QString& directory,
         tr("λ = hc/E with hc = 1239.84197 eV·nm. Samples at E ≤ 0 have no "
            "finite wavelength and are omitted from the wavelength view."));
     controls->addWidget(unitCombo_);
+    controls->addSpacing(16);
+    visibleSpectrumCheck_ = new QCheckBox(tr("Show visible spectrum"), this);
+    visibleSpectrumCheck_->setToolTip(
+        tr("Shade the visible range behind the curves — 380–750 nm, which is "
+           "3.26–1.65 eV (λ = hc/E, hc = 1239.84 eV·nm).\n\n"
+           "The gradient is the colour of each wavelength, placed at its own "
+           "position on whichever axis is shown. On the energy axis that is "
+           "deliberately NOT a straight red-to-violet ramp: wavelength goes "
+           "as 1/E, so an even ramp would put green near 2.45 eV where it "
+           "belongs at 2.25 eV.\n\n"
+           "Semi-transparent, and drawn behind the data — it is context for "
+           "reading an absorption edge or a reflectivity feature against "
+           "what the eye sees, not a series."));
+    controls->addWidget(visibleSpectrumCheck_);
+    connect(visibleSpectrumCheck_, &QCheckBox::toggled, this,
+            &OpticsResultsWindow::updatePlot);
     controls->addStretch(1);
     layout->addLayout(controls);
 
@@ -539,6 +556,17 @@ void OpticsResultsWindow::updatePlot()
     plot_->setStyle(style_);
     plot_->setXRange(xMinSpin_ ? xMinSpin_->value() : 0.0,
                      xMaxSpin_ ? xMaxSpin_->value() : 0.0);
+    // The band follows the axis unit, not just the checkbox: the same visible
+    // range is 1.65–3.26 eV or 380–750 nm, and its colours run the opposite
+    // way along the two.
+    const auto unit = static_cast<XAxisUnit>(
+        unitCombo_ ? unitCombo_->currentData().toInt()
+                   : static_cast<int>(XAxisUnit::EnergyEv));
+    plot_->setVisibleSpectrum(
+        visibleSpectrumCheck_ && visibleSpectrumCheck_->isChecked(),
+        unit == XAxisUnit::WavelengthNm
+            ? SpectrumPlotWidget::SpectralAxis::WavelengthNm
+            : SpectrumPlotWidget::SpectralAxis::EnergyEv);
     plot_->setSeries(x, series, xAxisLabel(), yLabel);
 }
 

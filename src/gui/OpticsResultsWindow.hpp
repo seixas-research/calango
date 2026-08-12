@@ -9,6 +9,7 @@
 
 #include <vector>
 
+class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
@@ -140,6 +141,8 @@ private:
     std::vector<double> energy_;                       ///< ħω grid, eV
     QList<QPair<QString, DirectionData>> directions_;  ///< in xx, yy, zz order
 
+    /// "Show visible spectrum" — shades 380-750 nm behind the curves.
+    QCheckBox* visibleSpectrumCheck_ = nullptr;
     class SpectrumPlotWidget* plot_ = nullptr;
     QComboBox* quantityCombo_ = nullptr;
     QComboBox* directionCombo_ = nullptr;

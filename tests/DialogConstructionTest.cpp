@@ -48,11 +48,21 @@
 #include "gui/MolecularDynamicsWizard.hpp"
 #include "gui/SinglePointWizard.hpp"
 #include "gui/NonlinearOpticsWizard.hpp"
+#include "core/CalphadModel.hpp"
+#include "core/PdbxFile.hpp"
+#include "core/TdbExpression.hpp"
+#include "core/PhononThermodynamics.hpp"
+#include "core/TdbDatabase.hpp"
+#include "gui/CalphadDialog.hpp"
+#include "gui/PhaseDiagramWindow.hpp"
+#include "gui/TdbGeneratorDialog.hpp"
+#include "gui/HpcPanel.hpp"
 #include "gui/OpticsWizard.hpp"
 #include "gui/ProcessManagerPanel.hpp"
 #include "gui/RamanIrWizard.hpp"
 #include "gui/Defect2dWizard.hpp"
 #include "gui/TwoDBandsWizard.hpp"
+#include "gui/VibrationalAnalysisDialog.hpp"
 #include "python_bridge/PythonEngine.hpp"
 #include "render/StructureRenderer.hpp"
 
@@ -75,11 +85,19 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QTableWidget>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QTimer>
 #include <QTreeWidget>
 
 #include <algorithm>
+#include <QTemporaryDir>
+
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+
+#include <clocale>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1023,10 +1041,17 @@ int main(int argc, char** argv)
             });
         check(solver != combos.end(), "the eigensolver combo is present");
         if (solver != combos.end()) {
+            // "Direct LCAO", not "Direct". It is GPAW's DirectLCAO and it is
+            // the only solver that runs in LCAO mode; the bare label read as a
+            // general-purpose exact diagonalization and invited pairing it
+            // with a plane-wave run, which aborts inside GPAW.
             check((*solver)->itemText(1) == QStringLiteral("RMM-DIIS")
                       && (*solver)->itemText(2) == QStringLiteral("CG")
-                      && (*solver)->itemText(3) == QStringLiteral("Direct"),
+                      && (*solver)->itemText(3) == QStringLiteral("Direct LCAO"),
                   "capitalized, in the listed order");
+            check((*solver)->toolTip().contains(QStringLiteral("LCAO mode")),
+                  "and the tooltip states that the choice is tied to the "
+                  "basis rather than free");
             // Row 2 is CG, whose enum value is 1 — the case a row-number cast
             // would get wrong.
             check((*solver)->itemData(2).toInt()
@@ -1492,6 +1517,689 @@ int main(int argc, char** argv)
         }
     }
 
+    // The CALPHAD dialog. Its controls do not exist until a database is
+    // loaded — they are built FROM the file — so construction alone proves
+    // very little and the test loads one.
+    std::printf("CALPHAD dialog:\n");
+    {
+        CalphadDialog dialog;
+        dialog.show();
+        check(dialog.selectedElements().isEmpty(),
+              "nothing is selectable before a database is loaded");
+
+        // Refusing a non-database must not be a crash, and must leave the
+        // dialog usable.
+        check(!dialog.loadDatabaseText(QStringLiteral("POSCAR\n1.0\n"),
+                                       QStringLiteral("bad.tdb")),
+              "a file that is not a database is refused");
+
+        const QString feCr = QStringLiteral(
+            "$ test database\n"
+            " ELEMENT VA  VACUUM   0 0 0 !\n"
+            " ELEMENT FE  BCC_A2   55.847 4489 27.28 !\n"
+            " ELEMENT CR  BCC_A2   51.996 4050 23.54 !\n"
+            " PHASE LIQUID % 1 1.0 !\n"
+            " CONSTITUENT LIQUID : FE,CR : !\n"
+            " PHASE BCC_A2 % 2 1 3 !\n"
+            " CONSTITUENT BCC_A2 : CR,FE : VA : !\n"
+            " PHASE SIGMA % 3 8 4 18 !\n"
+            " CONSTITUENT SIGMA : FE : CR : CR,FE : !\n");
+        check(dialog.loadDatabaseText(feCr, QStringLiteral("fecr.tdb")),
+              "a real database loads");
+
+        const auto boxes = dialog.findChildren<QCheckBox*>();
+        const auto boxNamed = [&boxes](const QString& text) {
+            return std::find_if(boxes.begin(), boxes.end(),
+                                [&text](const QCheckBox* b) {
+                                    return b->text() == text;
+                                });
+        };
+        // Element checkboxes are built from the file, and the vacancy is not
+        // one of them — a user cannot build a system out of vacancies.
+        check(boxNamed(QStringLiteral("FE")) != boxes.end()
+                  && boxNamed(QStringLiteral("CR")) != boxes.end(),
+              "element checkboxes appear for Fe and Cr");
+        check(boxNamed(QStringLiteral("VA")) == boxes.end(),
+              "but not for the vacancy");
+        check(boxNamed(QStringLiteral("SIGMA")) != boxes.end(),
+              "and a checkbox per phase");
+
+        // -- Availability follows the element selection -------------------
+        const auto fe = boxNamed(QStringLiteral("FE"));
+        const auto cr = boxNamed(QStringLiteral("CR"));
+        const auto sigma = boxNamed(QStringLiteral("SIGMA"));
+        const auto liquid = boxNamed(QStringLiteral("LIQUID"));
+        if (fe != boxes.end() && cr != boxes.end() && sigma != boxes.end()
+            && liquid != boxes.end()) {
+            (*fe)->setChecked(true);
+            check((*liquid)->isEnabled(),
+                  "Fe alone supports LIQUID — a sublattice needs ANY of its "
+                  "constituents");
+            // SIGMA is (Fe)(Cr)(Cr,Fe); its second sublattice is Cr only.
+            check(!(*sigma)->isEnabled(),
+                  "but not SIGMA, whose second sublattice is Cr only");
+            check(!dialog.selectedPhases().contains(QStringLiteral("SIGMA")),
+                  "and an unavailable phase is excluded from the selection "
+                  "even though its box is still ticked");
+
+            (*cr)->setChecked(true);
+            check((*sigma)->isEnabled(), "adding Cr makes SIGMA available");
+            check(dialog.selectedPhases().contains(QStringLiteral("SIGMA")),
+                  "and it joins the selection");
+
+            // Suspending is the deliberate act; phases start active.
+            (*sigma)->setChecked(false);
+            check(!dialog.selectedPhases().contains(QStringLiteral("SIGMA")),
+                  "unticking suspends a phase without removing it from the "
+                  "database");
+            check((*sigma)->isEnabled(),
+                  "and it stays visible and re-selectable, rather than "
+                  "vanishing from the list");
+
+            check(dialog.selectedElements().size() == 2,
+                  "the element selection reads back");
+        }
+    }
+
+    // Decimal separators in FILE FORMATS, checked here rather than in a core
+    // test for a specific reason: this is the only test binary that builds a
+    // QApplication, and building one is what sets LC_NUMERIC from the
+    // environment. On a decimal-comma locale (pt_BR, de_DE, fr_FR, …)
+    // std::stod("12.345") stops at the '.' and returns 12 — so every atomic
+    // coordinate, occupancy and B-factor in an imported mmCIF was silently
+    // truncated to its integer part. Nothing errored; the file loaded and the
+    // molecule was wrong. A core test cannot see it, because no QApplication
+    // means the C locale stays put.
+    std::printf("Decimal separators under the user's locale:\n");
+    {
+        std::printf("    (LC_NUMERIC = %s)\n",
+                    std::setlocale(LC_NUMERIC, nullptr));
+        QTemporaryDir scratch;
+        if (scratch.isValid()) {
+            const QString path = scratch.path() + QStringLiteral("/tiny.cif");
+            QFile file(path);
+            file.open(QIODevice::WriteOnly | QIODevice::Text);
+            file.write(
+                "data_TEST\n"
+                "loop_\n"
+                "_atom_site.group_PDB\n"
+                "_atom_site.id\n"
+                "_atom_site.type_symbol\n"
+                "_atom_site.Cartn_x\n"
+                "_atom_site.Cartn_y\n"
+                "_atom_site.Cartn_z\n"
+                "ATOM 1 C 12.345 -6.750 0.125\n"
+                "ATOM 2 O 3.500 4.250 -1.875\n");
+            file.close();
+
+            bool parsed = true;
+            calango::core::Structure molecule;
+            try {
+                molecule = calango::core::PdbxFile::read(path.toStdString());
+            } catch (const std::exception&) {
+                parsed = false;
+            }
+            check(parsed && molecule.size() == 2,
+                  "a two-atom mmCIF parses");
+            if (parsed && molecule.size() == 2) {
+                // The fractional part is the whole point: 12.345 truncating to
+                // 12 is a 0.345 A error on every atom, which is a different
+                // molecule, not a rounding difference.
+                check(std::fabs(molecule.atoms()[0].position.x - 12.345) < 1e-9,
+                      "and its coordinates keep their fractional part — a "
+                      "decimal point in a file is a decimal point, whatever "
+                      "the user's locale");
+                check(std::fabs(molecule.atoms()[0].position.y + 6.75) < 1e-9,
+                      "including negative ones");
+                check(std::fabs(molecule.atoms()[1].position.z + 1.875) < 1e-9,
+                      "on every atom, not just the first");
+            }
+        }
+    }
+
+    // The phase-diagram window. Constructed, not just declared: it computes a
+    // diagram in its constructor, and that constructor runs recompute(), which
+    // writes into two plot widgets and a status label. A wizard in this
+    // project has already crashed by refreshing a preview from a constructor
+    // before the page it drew into existed, which is the whole reason this
+    // file exists.
+    std::printf("Phase diagram window:\n");
+    {
+        // A Fe-Cr database with real Gibbs expressions, so the window has
+        // something to evaluate rather than exercising only its empty state.
+        const QString feCr = QStringLiteral(
+            "$ Fe-Cr with expressions\n"
+            " ELEMENT VA  VACUUM   0 0 0 !\n"
+            " ELEMENT FE  BCC_A2   55.847 4489 27.28 !\n"
+            " ELEMENT CR  BCC_A2   51.996 4050 23.54 !\n"
+            " PHASE BCC_A2 % 1 1 !\n"
+            " CONSTITUENT BCC_A2 : CR,FE : !\n"
+            " PHASE LIQUID % 1 1.0 !\n"
+            " CONSTITUENT LIQUID : CR,FE : !\n"
+            " PARAMETER G(BCC_A2,FE;0) 298.15 0; 6000 N !\n"
+            " PARAMETER G(BCC_A2,CR;0) 298.15 0; 6000 N !\n"
+            " PARAMETER L(BCC_A2,CR,FE;0) 298.15 +20500-9.68*T; 6000 N !\n"
+            " PARAMETER G(LIQUID,FE;0) 298.15 +13807-7.63*T; 6000 N !\n"
+            " PARAMETER G(LIQUID,CR;0) 298.15 +21000-9.66*T; 6000 N !\n"
+            " PARAMETER L(LIQUID,CR,FE;0) 298.15 -17737+7.997*T; 6000 N !\n");
+        calango::core::TdbDatabase database;
+        std::string error;
+        check(database.parse(feCr.toStdString(), &error),
+              "the fixture database parses");
+
+        PhaseDiagramWindow window(database, {QStringLiteral("FE"),
+                                             QStringLiteral("CR")},
+                                  {QStringLiteral("BCC_A2"),
+                                   QStringLiteral("LIQUID")});
+        window.show();
+        check(window.statusText().contains(QStringLiteral("2 phase")),
+              "both phases are modelled as substitutional solutions");
+        window.recompute();
+        check(!window.statusText().isEmpty(),
+              "and recomputing on demand leaves a status behind");
+
+        // WHICH SIDE OF THE DIAGRAM IS WHICH. The x axis is the mole fraction
+        // of the user's SECOND selected element, which follows the database's
+        // declaration order (FE then CR here, so x is x_CR). A phase's own
+        // constituents are sorted ALPHABETICALLY, because that is the order
+        // TDB writes interaction parameters in — so for Fe-Cr the two orders
+        // DISAGREE, and a translation that assumes they agree mirrors every
+        // Gibbs curve about x = 1/2. The result still looks like a phase
+        // diagram; it is just the wrong way round.
+        //
+        // Pinned with a fixture whose answer is forced: each phase is 50 kJ/mol
+        // above the other at one end, so the CR-rich end can only be LIQUID and
+        // the FE-rich end can only be BCC_A2.
+        const QString lopsided = QStringLiteral(
+            " ELEMENT VA  VACUUM   0 0 0 !\n"
+            " ELEMENT FE  BCC_A2   55.847 4489 27.28 !\n"
+            " ELEMENT CR  BCC_A2   51.996 4050 23.54 !\n"
+            " PHASE BCC_A2 % 1 1 !\n"
+            " CONSTITUENT BCC_A2 : CR,FE : !\n"
+            " PHASE LIQUID % 1 1.0 !\n"
+            " CONSTITUENT LIQUID : CR,FE : !\n"
+            " PARAMETER G(BCC_A2,FE;0) 298.15 0; 6000 N !\n"
+            " PARAMETER G(BCC_A2,CR;0) 298.15 50000; 6000 N !\n"
+            " PARAMETER G(LIQUID,FE;0) 298.15 50000; 6000 N !\n"
+            " PARAMETER G(LIQUID,CR;0) 298.15 0; 6000 N !\n");
+        calango::core::TdbDatabase forced;
+        check(forced.parse(lopsided.toStdString(), &error),
+              "the lopsided fixture parses");
+        PhaseDiagramWindow sided(forced,
+                                 {QStringLiteral("FE"), QStringLiteral("CR")},
+                                 {QStringLiteral("BCC_A2"),
+                                  QStringLiteral("LIQUID")});
+        sided.show();
+        const auto& computed = sided.binaryDiagram();
+        // A 50 kJ/mol offset each way makes the two-phase field span almost
+        // the whole axis, so the ENDS of its tie-line are what carries the
+        // answer: the Fe-rich end must be BCC_A2 and the Cr-rich end LIQUID.
+        // (Probing a single composition would land inside the field and report
+        // both phases, which says nothing about the direction.)
+        QString feRich;
+        QString crRich;
+        if (!computed.sections.empty()) {
+            const auto& mid = computed.sections[computed.sections.size() / 2];
+            if (!mid.tieLines.empty()) {
+                const auto name = [&computed](int index) {
+                    return index < 0 ? QString()
+                                     : QString::fromStdString(
+                                           computed.phaseNames[static_cast<
+                                               std::size_t>(index)]);
+                };
+                feRich = name(mid.tieLines.front().leftPhase);
+                crRich = name(mid.tieLines.back().rightPhase);
+            }
+        }
+        check(feRich == QStringLiteral("BCC_A2"),
+              "the Fe-rich end of the two-phase field is the phase whose Fe "
+              "endmember is the low one");
+        check(crRich == QStringLiteral("LIQUID"),
+              "and the Cr-rich end the other — the composition axis is not "
+              "mirrored by the alphabetical constituent order");
+
+        // Three elements switches it to the ternary tab. The database has no
+        // NI, so every phase is refused — the point is that it REFUSES with a
+        // reason rather than crashing or drawing an empty triangle silently.
+        PhaseDiagramWindow ternary(database,
+                                   {QStringLiteral("FE"), QStringLiteral("CR"),
+                                    QStringLiteral("NI")},
+                                   {QStringLiteral("BCC_A2")});
+        ternary.show();
+        check(!ternary.statusText().isEmpty(),
+              "a ternary with an element the database cannot dissolve says so");
+    }
+
+    // A REAL, PUBLISHED database: the Nb-Re assessment of Liu, Hargather and
+    // Liu (CALPHAD 41 (2013) 119-127), as distributed by NIMS. It exercises
+    // everything the hand-written fixtures cannot:
+    //
+    //   - interactions written with the symbol G rather than L,
+    //   - a phase name with a space after the parenthesis, "G( BCC_RENB,RE;0)",
+    //   - a lowercase species in one parameter,
+    //   - SIGMARENB, a genuine (Re)10(Nb)4(Re,Nb)16 sublattice phase whose
+    //     endmembers are identified by the WHOLE occupation tuple, and
+    //   - CHI_RENB, which mixes on two sublattices and must be refused.
+    std::printf("Real database — Nb-Re (Liu 2013):\n");
+    {
+        const QString path =
+            QStringLiteral("/Users/leseixas/Downloads/nbre_liu.tdb");
+        QFile source(path);
+        if (!source.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            std::printf("    (not present here — skipped)\n");
+        } else {
+            calango::core::TdbDatabase database;
+            std::string problem;
+            check(database.parse(QString::fromUtf8(source.readAll()).toStdString(),
+                                 &problem),
+                  "the published Nb-Re database parses");
+            check(database.phases.size() == 6, "with its six phases");
+
+            // SIGMA is the one that used to come back "fine" with zero
+            // energies. Zero is not a conservative default for a Gibbs energy:
+            // it undercuts every real phase, so sigma appeared stable across
+            // the whole diagram.
+            const auto sigma = calango::core::tdbSubstitutionalPhase(
+                database, "SIGMARENB", {"NB", "RE"}, 2500.0);
+            check(sigma.ok, "the sigma phase is modelled");
+            check(std::fabs(sigma.atomsPerFormulaUnit - 30.0) < 1e-9,
+                  "with 30 atoms per formula unit (10+4+16)");
+            check(std::fabs(sigma.mixingSites - 16.0) < 1e-9,
+                  "and 16 mixing sites");
+            check(sigma.endmemberJPerMol.size() == 2
+                      && sigma.endmemberJPerMol[0] != 0.0
+                      && sigma.endmemberJPerMol[1] != 0.0,
+                  "and REAL endmember energies — a Gibbs energy of exactly "
+                  "zero is a phase that undercuts every other one");
+            // (Re)10(Nb)4(Re,Nb)16: the site fraction runs over [0,1] but the
+            // MOLE fraction of Nb only over [4/30, 20/30]. Confusing the two
+            // gives sigma the whole axis and invents solubility.
+            check(std::fabs(sigma.minMoleFraction - 10.0 / 30.0) < 1e-9
+                      && std::fabs(sigma.maxMoleFraction - 26.0 / 30.0) < 1e-9,
+                  "spanning only x_Re in [1/3, 13/15], not the whole axis");
+            check(!std::isfinite(sigma.gibbsAtMoleFraction(0.1)),
+                  "and refusing a composition it cannot reach");
+            check(std::isfinite(sigma.gibbsAtMoleFraction(0.5)),
+                  "while answering inside its range");
+
+            const auto chi = calango::core::tdbSubstitutionalPhase(
+                database, "CHI_RENB", {"NB", "RE"}, 2500.0);
+            check(!chi.ok,
+                  "chi, which mixes on two sublattices, is refused rather than "
+                  "approximated");
+
+            // The diagram itself. Nb melts at 2750 K and Re at 3459 K, so a
+            // window to 3600 K contains both melting points and the liquid
+            // must be the stable phase above them.
+            QStringList phaseNames;
+            for (const calango::core::TdbPhase& phase : database.phases)
+                phaseNames << QString::fromStdString(phase.name);
+            PhaseDiagramWindow window(database,
+                                      {QStringLiteral("NB"), QStringLiteral("RE")},
+                                      phaseNames);
+            window.show();
+            // Nb melts at 2750 K and Re at 3459 K, so the 300-2000 K default
+            // window shows nothing but solids for this system.
+            window.setTemperatureRange(800.0, 3600.0);
+            check(window.statusText().contains(QStringLiteral("5 phase")),
+                  "five of the six phases are modelled; chi is reported, not "
+                  "silently dropped");
+
+            const auto& computed = window.binaryDiagram();
+            check(!computed.sections.empty(), "the T-x diagram is computed");
+            const auto phaseAt = [&computed](double temperatureK, double x) {
+                const calango::core::BinarySection* best = nullptr;
+                double bestDistance = 1e30;
+                for (const calango::core::BinarySection& section :
+                     computed.sections) {
+                    const double distance =
+                        std::fabs(section.temperatureK - temperatureK);
+                    if (distance < bestDistance) {
+                        bestDistance = distance;
+                        best = &section;
+                    }
+                }
+                if (!best)
+                    return QString();
+                const std::vector<int> assemblage =
+                    calango::core::binaryAssemblageAt(*best, x);
+                if (assemblage.empty())
+                    return QString();
+                return QString::fromStdString(
+                    computed.phaseNames[static_cast<std::size_t>(
+                        assemblage.front())]);
+            };
+            // Where the whole chain — expression evaluator, sublattice model,
+            // convex hull — has to land on a real assessment. Every one of
+            // these is a fact about Nb-Re, not about this implementation:
+            // Nb melts at 2750 K and is bcc, Re melts at 3459 K and is hcp,
+            // and the two form a sigma phase in between.
+            check(phaseAt(3600.0, 0.5) == QStringLiteral("LIQUID_RENB"),
+                  "above both melting points the system is liquid");
+            check(phaseAt(1000.0, 0.02) == QStringLiteral("BCC_RENB"),
+                  "cold and Nb-rich it is bcc — niobium's own structure");
+            check(phaseAt(2600.0, 0.99) == QStringLiteral("HCP_RENB"),
+                  "Re-rich below rhenium's melting point it is hcp — "
+                  "rhenium's own structure");
+            // The intermetallic actually appears. A sigma phase read with zero
+            // endmember energies would have swallowed the whole diagram; one
+            // whose parameters were skipped would be absent from it entirely.
+            const auto assemblageAt = [&computed](double temperatureK,
+                                                  double x) {
+                const calango::core::BinarySection* best = nullptr;
+                double bestDistance = 1e30;
+                for (const calango::core::BinarySection& section :
+                     computed.sections) {
+                    const double distance =
+                        std::fabs(section.temperatureK - temperatureK);
+                    if (distance < bestDistance) {
+                        bestDistance = distance;
+                        best = &section;
+                    }
+                }
+                QStringList names;
+                if (best) {
+                    for (const int index :
+                         calango::core::binaryAssemblageAt(*best, x))
+                        names << QString::fromStdString(
+                            computed.phaseNames[static_cast<std::size_t>(index)]);
+                }
+                return names;
+            };
+            check(assemblageAt(1000.0, 0.8)
+                      .contains(QStringLiteral("SIGMARENB")),
+                  "and the sigma phase is on the diagram where it belongs");
+            check(!assemblageAt(3600.0, 0.5)
+                       .contains(QStringLiteral("SIGMARENB")),
+                  "but gone above the liquidus, as an intermetallic must be");
+
+            // --- Export ---------------------------------------------------
+            QTemporaryDir out;
+            if (out.isValid()) {
+                const QString csv = out.path() + QStringLiteral("/nbre.csv");
+                check(window.exportCsv(csv), "the tie-lines export as CSV");
+                QFile written(csv);
+                written.open(QIODevice::ReadOnly | QIODevice::Text);
+                const QString text = QString::fromUtf8(written.readAll());
+                check(text.contains(QStringLiteral(
+                          "temperature_K,x_left,x_right,phase_left,phase_right")),
+                      "with a header naming its columns");
+                check(text.contains(QStringLiteral("LIQUID_RENB")),
+                      "and the phase names spelled out, not indices");
+                // The locale rule again, on the other writer: a CSV whose
+                // decimals are commas has twice as many columns as its header.
+                const QStringList rows =
+                    text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+                bool commaDecimals = false;
+                int dataRows = 0;
+                for (const QString& row : rows) {
+                    if (row.startsWith(QLatin1Char('#'))
+                        || row.startsWith(QStringLiteral("temperature")))
+                        continue;
+                    ++dataRows;
+                    if (row.count(QLatin1Char(',')) != 4)
+                        commaDecimals = true;
+                }
+                check(dataRows > 50,
+                      "carrying the whole sweep, not a summary");
+                check(!commaDecimals,
+                      "every row having exactly five fields — decimal points, "
+                      "not decimal commas");
+
+                const QString png = out.path() + QStringLiteral("/nbre.png");
+                check(window.exportImage(png, 3.0), "the plot exports as PNG");
+                check(QFileInfo(png).size() > 5000,
+                      "at a size that says it drew something");
+                const QString svg = out.path() + QStringLiteral("/nbre.svg");
+                check(window.exportImage(svg), "and as SVG vector art");
+                QFile vector(svg);
+                vector.open(QIODevice::ReadOnly | QIODevice::Text);
+                check(QString::fromUtf8(vector.read(400))
+                          .contains(QStringLiteral("<svg")),
+                      "which is a real SVG document");
+            }
+
+            // --- Appearance ------------------------------------------------
+            PhaseDiagramStyle style = window.style();
+            style.canvas = QColor(0, 0, 0);
+            style.showGrid = false;
+            style.showLegend = false;
+            style.phaseColors[0] = QColor(255, 0, 255);
+            window.setStyle(style);
+            check(window.style().canvas == QColor(0, 0, 0)
+                      && !window.style().showGrid,
+                  "a customized appearance is applied");
+            if (out.isValid()) {
+                // Re-exporting after a restyle must still produce a file: the
+                // export renders through the SAME code path as the screen, so
+                // a style that broke drawing would break both.
+                const QString restyled = out.path() + QStringLiteral("/dark.png");
+                check(window.exportImage(restyled, 2.0),
+                      "and the restyled plot still exports");
+            }
+        }
+    }
+
+    // The database generator. Its table, its fit and its .tdb preview are all
+    // built from a file, so construction alone proves little; the test loads
+    // an ensemble whose formation energies are a KNOWN regular solution and
+    // checks that the coefficient comes back.
+    std::printf("TDB generator dialog:\n");
+    {
+        TdbGeneratorDialog dialog;
+        dialog.show();
+        check(dialog.databaseText().isEmpty(),
+              "nothing is written before an ensemble is loaded");
+        check(!dialog.loadEnsembleJson(QStringLiteral("{}"),
+                                       QStringLiteral("empty.json")),
+              "an empty results file is refused");
+
+        constexpr double kOmega = 12000.0;
+        constexpr double kEvPerAtom = 96485.33212331001;
+        QJsonArray configurations;
+        for (int i = 0; i <= 8; ++i) {
+            const double x = i / 8.0;
+            QJsonObject entry;
+            entry.insert(QStringLiteral("concentration"), x);
+            entry.insert(QStringLiteral("formation_energy"),
+                         kOmega * x * (1.0 - x) / kEvPerAtom);
+            entry.insert(QStringLiteral("energy_per_atom"),
+                         kOmega * x * (1.0 - x) / kEvPerAtom - 3.0);
+            entry.insert(QStringLiteral("formula"), QStringLiteral("AgAu"));
+            configurations.append(entry);
+        }
+        QJsonObject root;
+        root.insert(QStringLiteral("configurations"), configurations);
+        root.insert(QStringLiteral("concentration_element"),
+                    QStringLiteral("Au"));
+        check(dialog.loadEnsembleJson(
+                  QString::fromUtf8(QJsonDocument(root).toJson()),
+                  QStringLiteral("cluster_expansion.json")),
+              "a real ensemble loads");
+        check(dialog.assessment().ok, "and is assessed");
+        check(!dialog.assessment().vibrational,
+              "statically, because a cluster expansion carries no phonons");
+        check(dialog.databaseText().contains(QStringLiteral("PARAMETER L(")),
+              "producing a database with an interaction parameter");
+        // The default order is 2, so L0 is not simply Omega — but the excess
+        // energy the model reproduces is, at the composition where the two
+        // agree by construction. Checked through the value rather than the
+        // coefficient so the assertion survives a change of default order.
+        const double excess = calango::core::redlichKisterExcess(
+            dialog.assessment().fit.terms, 0.5, 800.0);
+        check(std::fabs(excess - kOmega * 0.25) < 1.0,
+              "whose excess Gibbs energy at x = 1/2 is the Omega/4 the "
+              "ensemble was built from");
+
+        // --- Attaching a phonon DOS ---------------------------------------
+        // The file the phonon script writes is a HISTOGRAM — mode weight per
+        // bin — while the harmonic integrals want a DENSITY g(ω). Getting that
+        // conversion wrong scales F_vib, and with it every excess entropy
+        // fitted from it, by the bin width: a factor of about five that looks
+        // nothing like a unit error and would never be noticed in a plot.
+        //
+        // Checked against an independent evaluation of the same integrals,
+        // rather than against a remembered number.
+        QTemporaryDir scratch;
+        if (scratch.isValid()) {
+            constexpr double kBin = 0.5; // cm^-1
+            QJsonArray omega;
+            QJsonArray counts;
+            std::vector<double> omegaVec;
+            std::vector<double> densityVec;
+            for (int i = 0; i <= 600; ++i) {
+                const double w = i * kBin;
+                const double weight = w * w * 1e-4; // any positive spectrum
+                omega.append(w);
+                counts.append(weight);
+                omegaVec.push_back(w);
+                densityVec.push_back(weight / kBin); // histogram -> density
+            }
+            QJsonObject dos;
+            dos.insert(QStringLiteral("frequencies"), omega);
+            dos.insert(QStringLiteral("dos"), counts);
+            dos.insert(QStringLiteral("broadened"), false);
+            dos.insert(QStringLiteral("bin_width"), kBin);
+            const QString path =
+                scratch.path() + QStringLiteral("/phonon_dos.json");
+            QFile file(path);
+            file.open(QIODevice::WriteOnly);
+            file.write(QJsonDocument(dos).toJson());
+            file.close();
+
+            check(dialog.loadPhononDos(0, path),
+                  "a phonon DOS attaches to the x = 0 endpoint");
+            const auto& vib = dialog.input().referenceVibAEvPerAtom;
+            check(!vib.empty(), "and lands on the temperature grid");
+            if (!vib.empty()) {
+                // The dialog's default grid starts at 300 K.
+                const calango::core::PhononThermoResult reference =
+                    calango::core::computePhononThermodynamics(
+                        omegaVec, densityVec, 300.0, 300.0, 1);
+                const double atoms = reference.totalModes / 3.0;
+                check(std::fabs(vib.front()
+                                - reference.points.front().freeEnergyEv / atoms)
+                          < 1e-9,
+                      "carrying F_vib per ATOM from the density — not the raw "
+                      "histogram, which would be wrong by the bin width");
+            }
+            check(!dialog.assessment().vibrational,
+                  "one endpoint's phonons are not enough: the assessment stays "
+                  "static until every configuration has them");
+            check(!dialog.loadPhononDos(0, scratch.path()
+                                               + QStringLiteral("/nope.json")),
+                  "and a missing file is refused rather than silently ignored");
+        }
+    }
+
+    // The HPC dock (formerly "Remote Access"). The preset system is the part
+    // worth driving: it is only useful if what Save writes is what selecting
+    // the entry puts back, and that round trip runs through the widgets
+    // rather than through ClusterPreset alone.
+    std::printf("HPC panel:\n");
+    {
+        HpcPanel panel(QString{});
+        panel.show();
+
+        const auto combos = panel.findChildren<QComboBox*>();
+        const auto spins = panel.findChildren<QSpinBox*>();
+        const auto edits = panel.findChildren<QLineEdit*>();
+        const auto buttons = panel.findChildren<QPushButton*>();
+        const auto buttonNamed = [&buttons](const QString& text) {
+            return std::find_if(buttons.begin(), buttons.end(),
+                                [&text](const QPushButton* b) {
+                                    return b->text() == text;
+                                });
+        };
+        check(buttonNamed(QStringLiteral("Save")) != buttons.end(),
+              "has a preset Save button");
+        check(buttonNamed(QStringLiteral("Delete")) != buttons.end(),
+              "and a Delete button");
+        // The preset combo is the only editable one — the name you type is
+        // the name Save uses.
+        const auto presetCombo = std::find_if(
+            combos.begin(), combos.end(),
+            [](const QComboBox* c) { return c->isEditable(); });
+        check(presetCombo != combos.end(), "and an editable cluster combo");
+
+        // The Slurm resource fields part 4 asked for.
+        const auto spinWithSuffix = [&spins](const QString& suffix) {
+            return std::find_if(spins.begin(), spins.end(),
+                                [&suffix](const QSpinBox* s) {
+                                    return s->suffix().contains(suffix);
+                                });
+        };
+        check(spinWithSuffix(QStringLiteral("MB")) != spins.end(),
+              "exposes a memory field");
+        check(spins.size() >= 4,
+              "alongside port, nodes and tasks-per-node spin boxes");
+        // Memory 0 must read as "cluster default", not as a literal zero —
+        // SLURM reads --mem=0 as "all the memory on the node".
+        if (spinWithSuffix(QStringLiteral("MB")) != spins.end())
+            check(!(*spinWithSuffix(QStringLiteral("MB")))
+                       ->specialValueText().isEmpty(),
+                  "whose zero reads as the cluster default rather than none");
+
+        // The verbose paragraph is gone; its content moved to a tooltip.
+        bool verboseProse = false;
+        for (const QLabel* label : panel.findChildren<QLabel*>())
+            if (label->text().contains(QStringLiteral("Stage 4"))
+                || label->text().length() > 160)
+                verboseProse = true;
+        check(!verboseProse,
+              "and carries no multi-line helper paragraph, which cost "
+              "vertical space in a bottom-row dock");
+
+        // -- The round trip -------------------------------------------------
+        if (presetCombo != combos.end()
+            && buttonNamed(QStringLiteral("Save")) != buttons.end()) {
+            const auto hostEdit = std::find_if(
+                edits.begin(), edits.end(), [](const QLineEdit* e) {
+                    return e->placeholderText().contains(
+                        QStringLiteral("cluster.university.edu"));
+                });
+            const auto passwordEdit = std::find_if(
+                edits.begin(), edits.end(), [](const QLineEdit* e) {
+                    return e->echoMode() == QLineEdit::Password;
+                });
+            check(hostEdit != edits.end() && passwordEdit != edits.end(),
+                  "the host and password fields are identifiable");
+            if (hostEdit != edits.end() && passwordEdit != edits.end()) {
+                (*hostEdit)->setText(QStringLiteral("alpha.cluster.test"));
+                (*passwordEdit)->setText(QStringLiteral("hunter2"));
+                (*presetCombo)->setCurrentText(QStringLiteral("Alpha"));
+                (*buttonNamed(QStringLiteral("Save")))->click();
+                check((*presetCombo)->findText(QStringLiteral("Alpha")) >= 0,
+                      "saving adds the cluster to the combo");
+
+                // Move to a different cluster, then come back.
+                (*hostEdit)->setText(QStringLiteral("beta.cluster.test"));
+                (*presetCombo)->setCurrentText(QStringLiteral("Beta"));
+                (*buttonNamed(QStringLiteral("Save")))->click();
+                const int alpha =
+                    (*presetCombo)->findText(QStringLiteral("Alpha"));
+                (*presetCombo)->setCurrentIndex(alpha);
+                Q_EMIT(*presetCombo)->activated(alpha);
+                check((*hostEdit)->text()
+                          == QStringLiteral("alpha.cluster.test"),
+                      "and selecting it restores what was saved");
+                // Switching cluster must not carry the old password across:
+                // silently authenticating elsewhere with it is how an account
+                // gets locked out for reasons nobody can reconstruct.
+                check((*passwordEdit)->text().isEmpty(),
+                      "while the password is cleared, never carried between "
+                      "clusters");
+
+                // Saving the same name again edits rather than duplicating.
+                const int before = (*presetCombo)->count();
+                (*buttonNamed(QStringLiteral("Save")))->click();
+                check((*presetCombo)->count() == before,
+                      "and re-saving a name edits it instead of adding a "
+                      "second entry");
+            }
+        }
+    }
+
     // The Processes dock. Two things here cannot be seen by construction
     // alone: the walltime column is driven by a live QTimer, and the status
     // column's correctness is now about what it does NOT contain.
@@ -1543,11 +2251,20 @@ int main(int argc, char** argv)
                 QTimer::singleShot(ms, &loop, &QEventLoop::quit);
                 loop.exec();
             };
-            spin(1200);
-            // "advanced", not "reads 0:01". Under `ctest -j` a 1200 ms wait
-            // can land well past 2 s, and pinning the exact digit would make
-            // this a test of the machine's load rather than of the timer.
-            const QString ticked = row->text(3);
+            // Waits for the CONDITION, not for a duration. A fixed sleep
+            // tests the machine's load: under `ctest -j` the event loop can
+            // be starved past the tick, and it can equally overshoot several
+            // seconds, so neither "reads 0:01" nor "changed after 1.2 s" is
+            // stable. Spinning until it moves, with a generous ceiling, tests
+            // exactly the claim — the timer advances on its own.
+            QString ticked = row->text(3);
+            QElapsedTimer deadline;
+            deadline.start();
+            while (ticked == QStringLiteral("0:00")
+                   && deadline.elapsed() < 15000) {
+                spin(200);
+                ticked = row->text(3);
+            }
             check(ticked != QStringLiteral("0:00") && !ticked.isEmpty(),
                   "and advances on its own while the task runs");
 
@@ -2793,6 +3510,132 @@ int main(int argc, char** argv)
             }
             check(buildable == kind->count(),
                   "and every one of them produces a structure");
+        }
+    }
+
+    // The Vibrational Mode Analysis module. It loads a phonon run — and with
+    // it repopulates two combo boxes, whose currentIndexChanged slots read
+    // widgets built earlier — from INSIDE its own constructor, which is the
+    // exact shape this test exists for.
+    //
+    // What is pinned beyond "it constructs": the refusals. A directory that is
+    // not a phonon run, and a run whose eigenvectors cover a different number
+    // of atoms than the structure they would be drawn on, must both leave the
+    // animation dead rather than producing a convincing wrong picture.
+    {
+        std::printf("VibrationalAnalysisDialog:\n");
+        QTemporaryDir scratch;
+        check(scratch.isValid(), "a scratch run directory");
+        if (scratch.isValid()) {
+            const auto writeJson = [](const QString& path,
+                                      const QJsonObject& object) {
+                QFile file(path);
+                file.open(QIODevice::WriteOnly);
+                file.write(QJsonDocument(object).toJson());
+            };
+
+            // A two-atom Gamma-only run: one rigid translation (the acoustic
+            // sum rule must find it) and one stretch, written in the ASE
+            // driver's bare-triple encoding.
+            QJsonObject band;
+            QJsonArray gammaRow;
+            gammaRow.append(0.0);
+            gammaRow.append(1800.0);
+            QJsonArray frequencies;
+            frequencies.append(gammaRow);
+            band.insert(QStringLiteral("frequencies"), frequencies);
+            writeJson(scratch.path() + QStringLiteral("/phonon_band.json"), band);
+
+            const auto triple = [](double x, double y, double z) {
+                QJsonArray v;
+                v.append(x);
+                v.append(y);
+                v.append(z);
+                return v;
+            };
+            QJsonArray branches;
+            QJsonArray acoustic;
+            acoustic.append(triple(0.7071067811865476, 0.0, 0.0));
+            acoustic.append(triple(0.7071067811865476, 0.0, 0.0));
+            branches.append(acoustic);
+            QJsonArray stretch;
+            stretch.append(triple(0.7071067811865476, 0.0, 0.0));
+            stretch.append(triple(-0.7071067811865476, 0.0, 0.0));
+            branches.append(stretch);
+            QJsonObject qpoint;
+            qpoint.insert(QStringLiteral("label"), QStringLiteral("G"));
+            qpoint.insert(QStringLiteral("q"), triple(0.0, 0.0, 0.0));
+            qpoint.insert(QStringLiteral("frequencies"), gammaRow);
+            qpoint.insert(QStringLiteral("eigenvectors"), branches);
+            QJsonArray qpoints;
+            qpoints.append(qpoint);
+            QJsonObject modes;
+            modes.insert(QStringLiteral("eigenvector_convention"),
+                         QStringLiteral("displacement"));
+            modes.insert(QStringLiteral("qpoints"), qpoints);
+            writeJson(scratch.path() + QStringLiteral("/phonon_modes.json"),
+                      modes);
+
+            // Two identical atoms, so the mode's displacement pattern and its
+            // mass-weighted form coincide and the acoustic branch is exactly a
+            // rigid translation.
+            auto reference = std::make_shared<calango::core::Structure>();
+            for (int i = 0; i < 2; ++i) {
+                calango::core::Atom atom;
+                atom.atomicNumber = 14;
+                atom.position = {2.35 * i, 0.0, 0.0};
+                reference->addAtom(atom);
+            }
+
+            VibrationalAnalysisDialog dialog({}, scratch.path(), reference);
+            check(true, "constructs on a completed phonon run");
+
+            auto* qCombo = dialog.findChildren<QComboBox*>().value(1);
+            auto* modeCombo = dialog.findChildren<QComboBox*>().value(2);
+            check(qCombo != nullptr && qCombo->count() == 1,
+                  "the q-point combo is filled from the run");
+            check(modeCombo != nullptr && modeCombo->count() == 2,
+                  "and the mode combo lists both branches");
+            // Read off the acoustic sum rule, not off the branch index.
+            check(modeCombo != nullptr
+                      && modeCombo->itemText(0).contains(
+                          QStringLiteral("acoustic")),
+                  "branch 1 is identified as acoustic");
+            check(modeCombo != nullptr
+                      && !modeCombo->itemText(1).contains(
+                          QStringLiteral("acoustic")),
+                  "and the stretch is not");
+
+            // The trajectory request is the module's only output; it must
+            // carry one full period rather than a single frame.
+            std::size_t frameCount = 0;
+            QObject::connect(
+                &dialog, &VibrationalAnalysisDialog::modeTrajectoryRequested,
+                &dialog,
+                [&frameCount](
+                    const std::vector<
+                        std::shared_ptr<calango::core::Structure>>& frames,
+                    const QString&) { frameCount = frames.size(); });
+            if (modeCombo)
+                modeCombo->setCurrentIndex(1);
+            QMetaObject::invokeMethod(&dialog, "createModeTrajectory");
+            check(frameCount == 32, "Create Mode Trajectory emits one period");
+
+            exerciseControls(&dialog);
+            check(true, "survives every control being toggled");
+        }
+
+        // A directory with no phonon data at all: the animation controls must
+        // be dead, not merely empty.
+        QTemporaryDir empty;
+        if (empty.isValid()) {
+            VibrationalAnalysisDialog dialog({}, empty.path(), nullptr);
+            bool anyEnabled = false;
+            for (QPushButton* button : dialog.findChildren<QPushButton*>())
+                if (button->text().contains(QStringLiteral("Trajectory")))
+                    anyEnabled = anyEnabled || button->isEnabled();
+            check(!anyEnabled,
+                  "a directory with no phonon_band.json refuses to animate");
         }
     }
 

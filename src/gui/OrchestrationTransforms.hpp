@@ -129,6 +129,51 @@ struct DefectSpec {
     static QString modeName(Mode mode);
 };
 
+/// Settings of a TDB Generator node: fit a CALPHAD solution model to the
+/// formation energies an upstream ensemble produced, and write a `.tdb`.
+///
+/// The odd one out among the transforms, and deliberately so. It runs on the
+/// canvas in process like the others, for the same reason — a polynomial fit
+/// and some text formatting are microseconds of work, not a job — but it
+/// consumes a completed run's RESULTS rather than a structure, and it produces
+/// a database rather than a structure. So it declares an input SLOT
+/// (`cluster_expansion.json`, the file the convex-hull viewer already reads)
+/// instead of taking the ordinary geometry handoff, and it emits no
+/// `transformed.extxyz`.
+///
+/// STATIC BY CONSTRUCTION, and the node says so on its face and in the file it
+/// writes. A cluster-expansion ensemble carries total energies and nothing
+/// else, so the excess Gibbs energy fitted here is a pure enthalpy and every
+/// excess entropy in the emitted database is exactly zero. Adding the
+/// vibrational term needs one phonon calculation per configuration, which is
+/// not something a single upstream link can supply; the standalone
+/// "From DFT…" dialog is where that is done.
+struct TdbGeneratorSpec {
+    /// Endpoint names. Empty means "take them from the ensemble file", which
+    /// is the usual case — the file records which element the composition axis
+    /// counts, and the formulas name the other.
+    QString elementA;
+    QString elementB;
+    QString phaseName = QStringLiteral("FCC_A1");
+    /// Highest Redlich-Kister order fitted. Order 0 is the regular solution.
+    int order = 2;
+    /// The temperature the database declares its parameters valid over. With a
+    /// static assessment the coefficients do not depend on it, but the range
+    /// is written into the file and a solver reading it will refuse outside.
+    double lowTemperatureK = 298.15;
+    double highTemperatureK = 3000.0;
+
+    bool isValid() const
+    {
+        return order >= 0 && order <= 5 && highTemperatureK > lowTemperatureK;
+    }
+    /// "FCC_A1, Redlich-Kister order 2"
+    QString describe() const;
+
+    QJsonObject toJson() const;
+    static TdbGeneratorSpec fromJson(const QJsonObject& object);
+};
+
 /// One defective material produced by a Defect Generator.
 struct DefectVariant {
     /// What was done to it — "substitute 0, 4 with N". Names its tab in the
@@ -174,5 +219,21 @@ core::Structure applyDefects(const core::Structure& structure,
 /// placed is a study whose conclusion is about the wrong set.
 QList<DefectVariant> applyDefectSet(const core::Structure& structure,
                                     const DefectSpec& spec, QString* error);
+
+/// What a TDB Generator node writes into its own job directory.
+struct TdbGeneratorOutput {
+    QString databaseText;  ///< the `.tdb`
+    QString summaryJson;   ///< the fit, the samples and the static hull
+    QString headline;      ///< one line for the run report / provenance
+};
+
+/// Fit a CALPHAD model to the ensemble in a cluster-expansion results file.
+///
+/// `ensembleJson` is the raw text of `cluster_expansion.json`. Returns false
+/// with `error` set for a file that carries no usable ensemble — a run whose
+/// configurations all failed, or one with no intermediate composition, which
+/// is a set of two pure elements and determines nothing.
+bool runTdbAssessment(const QString& ensembleJson, const TdbGeneratorSpec& spec,
+                      TdbGeneratorOutput* output, QString* error);
 
 } // namespace calango::gui

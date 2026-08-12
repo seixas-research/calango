@@ -1,5 +1,6 @@
 #include "gui/SystemStatusBar.hpp"
 
+#include "gui/GpuTelemetry.hpp"
 #include "jobs/JobRunner.hpp"
 #include "ui/IconManager.hpp"
 
@@ -180,12 +181,8 @@ SystemStatusBar::SystemStatusBar(QWidget* parent)
 
     cpuLabel_->setText(tr("…"));
     ramLabel_->setText(tr("…"));
-    // No per-process GPU/VRAM metric source on this platform (Metal exposes
-    // none) — shown as N/A with an empty bar rather than faked.
-    gpuBar_->setValue(-1.0);
-    gpuLabel_->setText(tr("N/A"));
-    vramBar_->setValue(-1.0);
-    vramLabel_->setText(tr("N/A"));
+    gpuLabel_->setText(tr("…"));
+    vramLabel_->setText(tr("…"));
     refreshThreads();
 
     procWallClock_.start();
@@ -223,8 +220,70 @@ void SystemStatusBar::refresh()
         ramLabel_->setText(tr("%1 MB").arg(mem, 0, 'f', 0));
     }
 
+    refreshGpu();
     refreshThreads();
     refreshJob();
+}
+
+void SystemStatusBar::refreshGpu()
+{
+    const GpuSample gpu = sampleGpu();
+
+    if (!gpu.available) {
+        gpuBar_->setValue(-1.0);
+        gpuLabel_->setText(tr("N/A"));
+        vramBar_->setValue(-1.0);
+        vramLabel_->setText(tr("N/A"));
+        // The REASON, not just the absence. "No GPU detected" and "the driver
+        // library is a different version from the kernel module" are different
+        // problems, and only the second one is fixable by the person reading
+        // this tooltip.
+        const QString why = gpu.unavailableReason.isEmpty()
+            ? tr("no GPU metric source on this platform")
+            : gpu.unavailableReason;
+        const QString tip = tr("No GPU reading: %1").arg(why);
+        gpuBar_->setToolTip(tip);
+        gpuLabel_->setToolTip(tip);
+        vramBar_->setToolTip(tip);
+        vramLabel_->setToolTip(tip);
+        return;
+    }
+
+    gpuBar_->setValue(gpu.utilizationPercent);
+    gpuLabel_->setText(gpu.utilizationPercent < 0.0
+                           ? tr("N/A")
+                           : tr("%1%").arg(gpu.utilizationPercent, 0, 'f', 0));
+
+    if (gpu.memoryUsedMiB < 0.0) {
+        vramBar_->setValue(-1.0);
+        vramLabel_->setText(tr("N/A"));
+    } else if (gpu.memoryTotalMiB > 0.0) {
+        const double pct = 100.0 * gpu.memoryUsedMiB / gpu.memoryTotalMiB;
+        vramBar_->setValue(pct);
+        vramLabel_->setText(tr("%1 MB (%2%)")
+                                .arg(gpu.memoryUsedMiB, 0, 'f', 0)
+                                .arg(pct, 0, 'f', 1));
+    } else {
+        // Unified memory: no separate pool, so no percentage. A bar filled
+        // against system RAM would be a different quantity wearing this label.
+        vramBar_->setValue(-1.0);
+        vramLabel_->setText(tr("%1 MB").arg(gpu.memoryUsedMiB, 0, 'f', 0));
+    }
+
+    // Says DEVICE, and says so explicitly: this is the whole GPU, not
+    // Calango's share of it. Neither platform publishes a supported
+    // per-process utilization number, and labelling a machine-wide metric as
+    // the application's would misattribute every other process's work.
+    const QString tip =
+        tr("%1 — whole-device utilization and memory, via %2.\n\n"
+           "This is the DEVICE, not Calango's share of it: neither IOKit nor "
+           "NVML publishes a supported per-process GPU utilization, so "
+           "anything else on the machine using the GPU is included here.")
+            .arg(gpu.name.isEmpty() ? tr("GPU") : gpu.name, gpu.source);
+    gpuBar_->setToolTip(tip);
+    gpuLabel_->setToolTip(tip);
+    vramBar_->setToolTip(tip);
+    vramLabel_->setToolTip(tip);
 }
 
 void SystemStatusBar::setJobRunner(jobs::JobRunner* runner)

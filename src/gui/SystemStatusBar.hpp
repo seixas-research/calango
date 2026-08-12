@@ -61,6 +61,9 @@ public Q_SLOTS:
 
 private:
     void refresh();
+    /// Refresh the GPU/VRAM pair from gui/GpuTelemetry. Reports the DEVICE,
+    /// with the source and (when it fails) the reason in the tooltip.
+    void refreshGpu();
     /// This process's CPU utilization since the previous call, summed across
     /// cores (like Activity Monitor; can exceed 100). -1 if unavailable.
     double sampleProcessCpuPercent();

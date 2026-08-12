@@ -21,7 +21,7 @@ The workspace
 
    The default layout — Structure, Volumetric Data, and Processes on the left;
    Representation, Cell & Axes, and Visual Effects on the right; the Results
-   dock and Remote Access panel along the bottom.
+   dock and HPC panel along the bottom.
 
 .. figure:: _static/img/gallery_workspace_wizard.png
    :alt: A staged simulation wizard with the live ASE script preview

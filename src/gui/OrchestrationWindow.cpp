@@ -307,6 +307,8 @@ QString orchestrationTaskSlug(OrchestrationTask task)
         return QStringLiteral("supercell");
     case OrchestrationTask::DefectGenerator:
         return QStringLiteral("defect_generator");
+    case OrchestrationTask::TdbGenerator:
+        return QStringLiteral("tdb_generator");
     case OrchestrationTask::SinglePoint:
         break;
     }
@@ -332,6 +334,7 @@ OrchestrationFamily orchestrationTaskFamily(OrchestrationTask task)
     case OrchestrationTask::Container:
     case OrchestrationTask::Supercell:
     case OrchestrationTask::DefectGenerator:
+    case OrchestrationTask::TdbGenerator:
         return OrchestrationFamily::Transform;
     default:
         break;
@@ -376,6 +379,8 @@ QString orchestrationTaskDisplayName(OrchestrationTask task)
         return QObject::tr("Supercell Builder");
     case OrchestrationTask::DefectGenerator:
         return QObject::tr("Defect Generator");
+    case OrchestrationTask::TdbGenerator:
+        return QObject::tr("TDB Generator (CALPHAD)");
     case OrchestrationTask::SinglePoint:
         break;
     }
@@ -403,6 +408,7 @@ QString orchestrationTaskShortName(OrchestrationTask task)
     case OrchestrationTask::Container:            return QObject::tr("Container");
     case OrchestrationTask::Supercell:            return QObject::tr("Supercell");
     case OrchestrationTask::DefectGenerator:      return QObject::tr("Defect");
+    case OrchestrationTask::TdbGenerator:         return QObject::tr("TDB");
     }
     return QObject::tr("Node");
 }
@@ -420,6 +426,7 @@ QList<OrchestrationTask> orchestrationTasks()
             OrchestrationTask::Container,
             OrchestrationTask::Supercell,
             OrchestrationTask::DefectGenerator,
+            OrchestrationTask::TdbGenerator,
             // Analysis
             OrchestrationTask::ElectronicBands,
             OrchestrationTask::Optics,
@@ -451,6 +458,14 @@ bool orchestrationTaskHasDefaults(OrchestrationTask task)
     case OrchestrationTask::MolecularDynamics:
     case OrchestrationTask::Phonon:
     case OrchestrationTask::Supercell:
+    // The TDB Generator belongs here for the opposite reason to the other two
+    // transforms: its default IS a complete operation. Everything it needs —
+    // the two endpoints, the compositions, the energies — comes out of the
+    // file its input slot stages, so an unconfigured node fits an order-2
+    // Redlich-Kister model to whatever ensemble arrives. There is no "pass the
+    // input through untouched" failure mode to guard against, because it does
+    // not pass anything through.
+    case OrchestrationTask::TdbGenerator:
         return true;
     default:
         return false;
@@ -479,6 +494,16 @@ QList<OrchestrationInputSlot> orchestrationInputSlots(OrchestrationTask task)
     case OrchestrationTask::Supercell:
     case OrchestrationTask::DefectGenerator:
         return {};
+
+    case OrchestrationTask::TdbGenerator:
+        // The one transform with a slot. It consumes a completed run's
+        // RESULTS, not a structure, and the staged name is the same one the
+        // convex-hull viewer reads — so the file that feeds the hull diagram
+        // and the file that feeds the assessment are the same file, and they
+        // cannot drift apart into two descriptions of one ensemble.
+        return {{QObject::tr("formation-energy ensemble"),
+                 QStringLiteral("cluster_expansion.json"),
+                 QStringLiteral("cluster_expansion.json"), false}};
 
     case OrchestrationTask::ElectronicBands:
     case OrchestrationTask::Optics:
@@ -612,6 +637,12 @@ void OrchestrationNodeItem::setSupercell(const SupercellSpec& spec)
     update();
 }
 
+void OrchestrationNodeItem::setTdbGenerator(const TdbGeneratorSpec& spec)
+{
+    tdb_ = spec;
+    update();
+}
+
 void OrchestrationNodeItem::setDefectSpec(const DefectSpec& spec)
 {
     defects_ = spec;
@@ -633,6 +664,14 @@ QString OrchestrationNodeItem::configurationProblem() const
         if (!supercell_.isValid())
             return QObject::tr("%1 has an invalid repetition (%2).")
                 .arg(title_, supercell_.describe());
+        return QString();
+    case OrchestrationTask::TdbGenerator:
+        if (!tdb_.isValid())
+            return QObject::tr(
+                "%1 has settings it cannot fit (%2).\n\nThe Redlich-Kister "
+                "order must be between 0 and 5, and the upper temperature "
+                "above the lower one.")
+                .arg(title_, tdb_.describe());
         return QString();
     case OrchestrationTask::DefectGenerator:
         if (defects_.isEmpty())
@@ -799,6 +838,14 @@ void OrchestrationNodeItem::paint(QPainter* painter,
         secondary = supercell_.isIdentity()
             ? QObject::tr("(identity — passes through)")
             : QObject::tr("in process, no calculator");
+        break;
+    case OrchestrationTask::TdbGenerator:
+        primary = tdb_.describe();
+        // Named on the face rather than left to the file: an assessment with
+        // no vibrational data has zero excess entropy, and that is a property
+        // of the pipeline (a cluster expansion carries energies only), not of
+        // anything the user chose here.
+        secondary = QObject::tr("static assessment, no calculator");
         break;
     case OrchestrationTask::DefectGenerator:
         primary = defects_.isEmpty() ? QObject::tr("No operations")
@@ -1378,6 +1425,110 @@ bool editSupercell(QWidget* parent, SupercellSpec* spec)
     if (dialog.exec() != QDialog::Accepted)
         return false;
     *spec = currentSpec();
+    return true;
+}
+
+/// Settings of a TDB Generator node.
+///
+/// A plain dialog like the other two transforms, not a wizard: there is no
+/// calculator to configure, no convergence to choose and no script to
+/// generate. The endpoint fields are deliberately optional — the ensemble file
+/// names the composition axis and the formulas name the other endpoint, and
+/// making the user retype them would be one more place for the node and its
+/// input to disagree.
+bool editTdbGenerator(QWidget* parent, TdbGeneratorSpec* spec)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("TDB Generator"));
+    auto* layout = new QVBoxLayout(&dialog);
+
+    auto* intro = new QLabel(
+        QObject::tr(
+            "Fit a <b>Redlich-Kister</b> excess Gibbs energy to the formation "
+            "energies of the ensemble reaching this node, and write a "
+            "<tt>.tdb</tt> beside them.<br><br>"
+            "The assessment is <b>static</b>: a cluster-expansion ensemble "
+            "carries total energies and no phonons, so the fitted excess "
+            "energy is a pure enthalpy and every excess entropy in the "
+            "database is exactly zero. Modules → CALPHAD → \"From DFT…\" is "
+            "where a vibrational term can be added."),
+        &dialog);
+    intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
+    layout->addWidget(intro);
+
+    auto* form = new QFormLayout;
+    auto* elementA = new QLineEdit(spec->elementA, &dialog);
+    elementA->setPlaceholderText(QObject::tr("from the ensemble"));
+    form->addRow(QObject::tr("Element at x = 0:"), elementA);
+    auto* elementB = new QLineEdit(spec->elementB, &dialog);
+    elementB->setPlaceholderText(QObject::tr("from the ensemble"));
+    form->addRow(QObject::tr("Element at x = 1:"), elementB);
+    auto* phase = new QLineEdit(spec->phaseName, &dialog);
+    form->addRow(QObject::tr("Phase name:"), phase);
+    auto* order = new QSpinBox(&dialog);
+    order->setRange(0, 5);
+    order->setValue(spec->order);
+    order->setToolTip(QObject::tr(
+        "Order 0 is the regular solution — one symmetric interaction. Each "
+        "further order adds an asymmetry, and needs compositions able to "
+        "resolve it: the fit refuses rather than returning coefficients the "
+        "data does not determine."));
+    form->addRow(QObject::tr("Redlich-Kister order:"), order);
+    auto* low = new QDoubleSpinBox(&dialog);
+    low->setRange(1.0, 6000.0);
+    low->setValue(spec->lowTemperatureK);
+    low->setSuffix(QObject::tr(" K"));
+    form->addRow(QObject::tr("Valid from:"), low);
+    auto* high = new QDoubleSpinBox(&dialog);
+    high->setRange(1.0, 20000.0);
+    high->setValue(spec->highTemperatureK);
+    high->setSuffix(QObject::tr(" K"));
+    form->addRow(QObject::tr("Valid to:"), high);
+    layout->addLayout(form);
+
+    auto* status = new QLabel(&dialog);
+    status->setWordWrap(true);
+    layout->addWidget(status);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
+                     &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                     &QDialog::reject);
+    layout->addWidget(buttons);
+
+    // Same seam as the supercell dialog: OK is disabled on a spec that cannot
+    // be run, so the refusal happens here rather than hours into a pipeline.
+    const auto refresh = [&] {
+        const bool ok = high->value() > low->value();
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(ok);
+        status->setStyleSheet(ok ? QString()
+                                 : QStringLiteral("color:#c0392b;"));
+        status->setText(ok
+                            ? QObject::tr("Writes assessment.tdb and "
+                                          "calphad_assessment.json into this "
+                                          "node's results.")
+                            : QObject::tr("The upper temperature limit must be "
+                                          "above the lower one."));
+    };
+    QObject::connect(low, &QDoubleSpinBox::valueChanged, &dialog,
+                     [&refresh] { refresh(); });
+    QObject::connect(high, &QDoubleSpinBox::valueChanged, &dialog,
+                     [&refresh] { refresh(); });
+    refresh();
+
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    spec->elementA = elementA->text().trimmed().toUpper();
+    spec->elementB = elementB->text().trimmed().toUpper();
+    spec->phaseName = phase->text().trimmed().toUpper();
+    if (spec->phaseName.isEmpty())
+        spec->phaseName = QStringLiteral("FCC_A1");
+    spec->order = order->value();
+    spec->lowTemperatureK = low->value();
+    spec->highTemperatureK = high->value();
     return true;
 }
 
@@ -2248,6 +2399,15 @@ void OrchestrationWindow::setNodeSupercell(OrchestrationNodeItem* node,
     invalidateFrom(node);
 }
 
+void OrchestrationWindow::setNodeTdbGenerator(OrchestrationNodeItem* node,
+                                              const TdbGeneratorSpec& spec)
+{
+    if (!node)
+        return;
+    node->setTdbGenerator(spec);
+    invalidateFrom(node);
+}
+
 void OrchestrationWindow::setNodeDefectSpec(OrchestrationNodeItem* node,
                                             const DefectSpec& spec)
 {
@@ -2370,6 +2530,16 @@ void OrchestrationWindow::openNodeWizard(OrchestrationNodeItem* node)
             SupercellSpec spec = node->supercell();
             if (editSupercell(this, &spec))
                 setNodeSupercell(node, spec);
+            break;
+        }
+        case OrchestrationTask::TdbGenerator: {
+            // Explicit, and it must stay above the default: the default arm is
+            // the DEFECT editor, so a transform that forgets its case here
+            // silently opens the wrong dialog and writes a defect recipe into
+            // a node that will never read one.
+            TdbGeneratorSpec spec = node->tdbGenerator();
+            if (editTdbGenerator(this, &spec))
+                setNodeTdbGenerator(node, spec);
             break;
         }
         default: {
@@ -2734,6 +2904,9 @@ OrchestrationWindow::beginProvenance(OrchestrationNodeItem* node,
     case OrchestrationTask::DefectGenerator:
         record.parameters = node->defectSpec().describe();
         break;
+    case OrchestrationTask::TdbGenerator:
+        record.parameters = node->tdbGenerator().describe();
+        break;
     default:
         break;
     }
@@ -3069,6 +3242,46 @@ bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
     const QString input = dir + QStringLiteral("/structure.extxyz");
     const QString output = dir + QStringLiteral("/transformed.extxyz");
     core::Structure result;
+
+    if (node->task() == OrchestrationTask::TdbGenerator) {
+        // Returns BEFORE the structure read below, and that is the whole
+        // reason it is first: this node's input is a results file staged into
+        // its slot, and there may be no geometry in the directory at all. It
+        // also writes no transformed.extxyz — it produces a database, not a
+        // structure, so `produced` stays null and no workspace tab is claimed.
+        const QString ensemble = dir + QStringLiteral("/cluster_expansion.json");
+        QFile file(ensemble);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            *error = tr("its formation-energy ensemble (%1) could not be read")
+                         .arg(QStringLiteral("cluster_expansion.json"));
+            return false;
+        }
+        TdbGeneratorOutput assessed;
+        QString problem;
+        if (!runTdbAssessment(QString::fromUtf8(file.readAll()),
+                              node->tdbGenerator(), &assessed, &problem)) {
+            *error = problem;
+            return false;
+        }
+        const auto write = [&dir](const QString& name, const QString& text) {
+            QFile out(dir + QLatin1Char('/') + name);
+            if (!out.open(QIODevice::WriteOnly | QIODevice::Text))
+                return false;
+            QTextStream(&out) << text;
+            return true;
+        };
+        if (!write(QStringLiteral("assessment.tdb"), assessed.databaseText)
+            || !write(QStringLiteral("calphad_assessment.json"),
+                      assessed.summaryJson)) {
+            *error = tr("its database could not be written into %1").arg(dir);
+            return false;
+        }
+        // The headline carries the RMS residual, which the .tdb cannot: a
+        // badly fitted database is still a valid one, so the quality of the
+        // fit has to be recorded where the run is recorded.
+        record.parameters = assessed.headline;
+        return true;
+    }
 
     if (node->task() == OrchestrationTask::Container) {
         // A source, not an edit: it ignores whatever reached it and emits the

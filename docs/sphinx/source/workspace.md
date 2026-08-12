@@ -11,9 +11,9 @@ Calango opens into two full-height side columns flanking the 3D viewport, with a
 | Left column | Calango (branding) · Structure · Volumetric Data · *Additional Overlays* · Processes |
 | Center | Document tab bar · 3D viewport · playback timeline |
 | Right column | Representation · Spatial References · Visual Effects |
-| Bottom row | Orchestration · *Remote Access* · Results |
+| Bottom row | Orchestration · *HPC* · Results |
 
-Two panels — italicized above — exist in the layout but start **hidden**: *Additional Overlays* (lattice planes, text annotations, geometric primitives — a finishing step, not an every-session panel) and *Remote Access* (a login form that says nothing until used). Both are one {menuselection}`View` click away.
+Two panels — italicized above — exist in the layout but start **hidden**: *Additional Overlays* (lattice planes, text annotations, geometric primitives — a finishing step, not an every-session panel) and *HPC* (a login form that says nothing until used). Both are one {menuselection}`View` click away.
 
 - **Calango** — the branding strip heading the left column. Purely decorative; hide it from {menuselection}`View` if you want the vertical space.
 - **Structure** — formula, atom and bond counts, lattice parameters, detected symmetry, plus the structure-editing action row (see below).
@@ -23,9 +23,9 @@ Two panels — italicized above — exist in the layout but start **hidden**: *A
 - **Representation** — appearance controls: style, mode, color mapping, radii and bond widths.
 - **Spatial References** — three tabs, {guilabel}`Unit cell`, {guilabel}`Axes triad` and {guilabel}`Vectors`: everything that answers "where/which way is this?" about the scene without being the atoms. Under {guilabel}`Unit cell`, *Show atoms of the neighboring unit cell* draws exactly the periodic images that terminate a bond leaving the cell — only those, so no bond ends in mid-air.
 - **Visual Effects** — lighting, shadow, fog, blur and ambient occlusion, all off by default.
-- **Orchestration** — the node canvas: build a pipeline of connected calculation nodes and dispatch it as a DAG. It leads the bottom row, which reads left to right in the order the work happens — build the pipeline (Orchestration), choose where it runs (Remote Access), read what came back (Results).
+- **Orchestration** — the node canvas: build a pipeline of connected calculation nodes and dispatch it as a DAG. It leads the bottom row, which reads left to right in the order the work happens — build the pipeline (Orchestration), choose where it runs (HPC), read what came back (Results).
 - **Results** — the job console: a {guilabel}`Log` tab plus live {guilabel}`Energy`, {guilabel}`Temperature`, {guilabel}`Force` and {guilabel}`Pressure` metric plots, with a {guilabel}`Process:` selector that switches every tab between runs (each run keeps its own metric history), and an {guilabel}`Export Data…` button per plot.
-- **Remote Access** — SSH connection, cluster job submission and queue monitoring. It is held to the narrowest width that still shows its whole form.
+- **HPC** — SSH connection, cluster job submission and queue monitoring. It is held to the narrowest width that still shows its whole form.
 
 % TODO screenshot: full main window in the default layout with a structure loaded, all four regions annotated or at least visible
 ```{figure} /_static/img/workspace_default_layout.png
@@ -136,10 +136,26 @@ The process manager. Each row keeps a live link to its job directory; double-cli
 
 The left side of the status bar carries transient messages — the ready hint, selection counts, load and save confirmations, measurement readouts. The right side is a permanent **system monitor** showing the resource usage of Calango *and* of the background job it has spawned — never host-machine totals:
 
-- **Application group** — Calango's own CPU %, RAM (MB and % of system RAM), GPU %, VRAM (MB) and active thread count, each with a miniature load bar.
+- **Application group** — Calango's own CPU %, RAM (MB and % of system RAM), the **GPU** utilization and memory of the machine's graphics device, and the active thread count, each with a miniature load bar.
 - **Job group** — appears only while a job is running: its name, state, elapsed time, and the CPU and memory of its **whole process tree**. The tree, not the direct child, is the number that matters — the compute usually lives further down (`mpirun -n 4 gpaw …`), and sampling only the launched shell would report a few percent for a machine running flat out.
 
-Metrics are sampled on a strict 1.0 s timer; GPU/VRAM show *N/A* where no per-process metric source exists (e.g. Metal on macOS). {menuselection}`View --> Status Bar` toggles the whole bar.
+Metrics are sampled on a strict 1.0 s timer. {menuselection}`View --> Status Bar` toggles the whole bar.
+
+### GPU telemetry
+
+The GPU and VRAM readings are **device-level, not per-process**, and the tooltip says so. That is a limitation of the platforms rather than a shortcut: macOS publishes accelerator counters per *device* through IOKit, and NVML's per-process accounting covers memory only, and only in a non-default driver mode. Reporting the device is a true statement about the machine; scaling it by anything would be a guess presented as a measurement.
+
+Three backends are tried, in this order:
+
+| Platform | Source | Notes |
+|---|---|---|
+| macOS | IOKit `IOAccelerator` → `PerformanceStatistics` | The same counters Activity Monitor and `powermetrics` read. Metal has no metering API — it describes and schedules devices, it does not meter them. |
+| Linux (NVIDIA) | NVML, loaded at run time via `dlopen` | Not linked at build time, so Calango still starts on a machine with no driver. Falls back to parsing `nvidia-smi` when the library is absent but the binary is present (the usual container case). |
+| Linux (AMD/Intel) | DRM sysfs `gpu_busy_percent` | Kernel-maintained, no vendor library and no subprocess. |
+
+On unified-memory parts (Apple Silicon) the VRAM figure is reported in MB with **no percentage**: there is no separate pool for it to be a fraction of, and a bar filled against system RAM would be a different quantity wearing a VRAM label.
+
+When no reading is possible the cells show *N/A* and the tooltip carries **why** — "no GPU detected" and "the driver library is a different version from the kernel module" are different problems, and only the second is fixable by the person reading it.
 
 ---
 

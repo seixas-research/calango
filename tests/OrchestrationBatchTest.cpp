@@ -651,6 +651,102 @@ int main(int argc, char** argv)
                       == QStringLiteral("transform"),
               "and each node says which family it is in");
 
+        // -- VASP through a workflow chain ---------------------------------
+        //
+        // VASP is the engine in this list that needs the most from outside the
+        // script: an external binary, an MPI launch, and a POTCAR tree found
+        // through an environment variable. Every one of those is carried by
+        // the node rather than by the script text, so a workflow that
+        // serialized the script alone would reload into something that cannot
+        // run — and the failure would appear only when the job started.
+        {
+            using calango::core::CalculatorKind;
+            calango::core::CalculatorConfig vaspConfig;
+            vaspConfig.calculator = CalculatorKind::Vasp;
+            vaspConfig.task = calango::core::TaskKind::GeometryOptimization;
+            vaspConfig.planeWaveCutoffEv = 520.0;
+            vaspConfig.kpts[0] = vaspConfig.kpts[1] = vaspConfig.kpts[2] = 5;
+            vaspConfig.vaspXc = "PBEsol";
+            vaspConfig.vaspPotcarPath = "/opt/vasp/POTCARs";
+            const QString vaspScript = QString::fromStdString(
+                calango::core::AseScriptGenerator::generate(
+                    vaspConfig, "structure.extxyz"));
+
+            OrchestrationWindow vaspWindow(materials, pythonResolver);
+            OrchestrationNodeItem* source = vaspWindow.addProcessNode(
+                OrchestrationTask::Container, 0, CalculatorKind::Vasp);
+            OrchestrationNodeItem* node = vaspWindow.addProcessNode(
+                OrchestrationTask::GeometryOptimization, 0,
+                CalculatorKind::Vasp);
+            vaspWindow.linkNodes(source, node);
+            vaspWindow.configureNode(node, vaspScript, QString(), QString(),
+                                     CalculatorKind::Vasp);
+
+            // 1. The INCAR/KPOINTS/POTCAR settings reach the script at all.
+            check(vaspScript.contains(QStringLiteral("encut=520")),
+                  "VASP: ENCUT reaches the generated script");
+            check(vaspScript.contains(QStringLiteral("kpts=(5, 5, 5)")),
+                  "VASP: the k-mesh reaches it");
+            check(vaspScript.contains(QStringLiteral("xc=\"PBEsol\"")),
+                  "VASP: so does the functional");
+            check(vaspScript.contains(QStringLiteral("VASP_PP_PATH")),
+                  "VASP: and the POTCAR root is exported into the run");
+            // 2. The chain contract: reads the staged input, writes the output
+            //    the next node's link extracts.
+            check(vaspScript.contains(QStringLiteral("structure.extxyz")),
+                  "VASP: reads the structure the link stages for it");
+            check(vaspScript.contains(QStringLiteral("optimized.extxyz")),
+                  "VASP: and writes the geometry the next node inherits");
+
+            QStringList vaspWarnings;
+            const QJsonObject vaspDoc =
+                calango::gui::OrchestrationDocument::build(vaspWindow,
+                                                           &vaspWarnings);
+            const QJsonArray vaspNodes =
+                vaspDoc.value(QStringLiteral("nodes")).toArray();
+            check(vaspNodes.size() == 2, "VASP: the chain exports both nodes");
+            QJsonObject vaspNode;
+            for (const QJsonValue& value : vaspNodes)
+                if (value.toObject().value(QStringLiteral("family")).toString()
+                    == QStringLiteral("simulation"))
+                    vaspNode = value.toObject();
+
+            // 3. The three bindings a reloaded VASP node needs, none of which
+            //    live in the script.
+            check(vaspNode.value(QStringLiteral("engine_id")).toInt(-1)
+                      == static_cast<int>(CalculatorKind::Vasp),
+                  "VASP: the engine survives serialization by id, not by its "
+                  "display name");
+            const QJsonObject launch =
+                vaspNode.value(QStringLiteral("launch")).toObject();
+            check(launch.value(QStringLiteral("template")).toString()
+                      .contains(QStringLiteral("vasp_std")),
+                  "VASP: the launch template names the solver binary");
+            check(launch.value(QStringLiteral("solver_env")).toString()
+                      == QStringLiteral("ASE_VASP_COMMAND"),
+                  "VASP: and the env var ASE reads it from — a VASP node that "
+                  "exported no solver_env would reload as a job with nothing "
+                  "to execute");
+            check(vaspNode.value(QStringLiteral("script")).toString()
+                      .contains(QStringLiteral("encut=520")),
+                  "VASP: the configured script travels with the node");
+
+            // 4. Round-trip: reload and confirm the engine came back. Losing
+            //    it would silently demote the node to the default engine,
+            //    which now runs GPAW rather than failing.
+            OrchestrationWindow reloadedVasp(materials, pythonResolver);
+            QString vaspError;
+            check(calango::gui::OrchestrationDocument::load(
+                      reloadedVasp, vaspDoc, &vaspError),
+                  "VASP: the workflow file reloads");
+            bool engineKept = false;
+            for (OrchestrationNodeItem* item : reloadedVasp.nodes())
+                if (item->engine() == CalculatorKind::Vasp)
+                    engineKept = true;
+            check(engineKept,
+                  "VASP: and the reloaded node is still a VASP node");
+        }
+
         // Self-describing: a two-slot node exports the slot table, so a reader
         // never needs its own copy of the module knowledge.
         OrchestrationWindow slots(materials, pythonResolver);

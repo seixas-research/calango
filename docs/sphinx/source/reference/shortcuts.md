@@ -127,7 +127,7 @@ Zone Builder** is under {guilabel}`Build` (not Analysis); **Volumetric
 Data** is a dock toggled from {guilabel}`View` (not an Analysis dialog);
 **Supercell** creation moved to the Structure panel's action row; the
 standalone *New Remote Calculation* entry is gone — remote execution is
-chosen inside each wizard and monitored in the Remote Access dock; and the
+chosen inside each wizard and monitored in the HPC dock; and the
 *Results* menu is gone — viewers open from the Processes panel entry of the
 run that produced them.
 :::

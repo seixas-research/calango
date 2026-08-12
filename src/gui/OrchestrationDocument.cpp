@@ -184,6 +184,14 @@ QJsonObject OrchestrationDocument::build(const OrchestrationWindow& window,
             entry.insert(QStringLiteral("defects"),
                          node->defectSpec().toJson());
             break;
+        case OrchestrationTask::TdbGenerator:
+            // Additive: an older reader ignores the key and gets a node it
+            // will run with its own defaults, which is a correct (if
+            // differently parameterised) assessment rather than a wrong one.
+            // That is why kSchema is not bumped here.
+            entry.insert(QStringLiteral("tdb_generator"),
+                         node->tdbGenerator().toJson());
+            break;
         default:
             // A node seeded with its own structure through the scripting API
             // rather than fed from a container. Rare, but it has to survive
@@ -325,6 +333,12 @@ bool OrchestrationDocument::load(OrchestrationWindow& window,
             window.setNodeDefectSpec(
                 node, DefectSpec::fromJson(
                           entry.value(QStringLiteral("defects")).toObject()));
+            break;
+        case OrchestrationTask::TdbGenerator:
+            window.setNodeTdbGenerator(
+                node, TdbGeneratorSpec::fromJson(
+                          entry.value(QStringLiteral("tdb_generator"))
+                              .toObject()));
             break;
         default:
             break;

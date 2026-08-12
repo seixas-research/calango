@@ -16,6 +16,8 @@
 
 #include <deque>
 #include <functional>
+#include "core/ElectronPhononAnalysis.hpp"
+
 #include <map>
 #include <set>
 #include <memory>
@@ -46,7 +48,7 @@ class SimulationWizardBase;
 class MetricPlotWidget;
 class OverlayPanel;
 class ProcessManagerPanel;
-class RemoteAccessPanel;
+class HpcPanel;
 class RepresentationPanel;
 class StructureInfoWidget;
 class VolumetricPanel;
@@ -56,6 +58,17 @@ class FilmTimelineWidget;
 class FilmProductionDialog;
 class ViewportWidget;
 class OrchestrationWindow;
+
+/// What the electron-phonon worker thread hands back to the GUI thread.
+///
+/// A struct rather than a bare result because the failure carries a message
+/// worth showing: a run can produce perfectly good matrix elements and still
+/// have no Fermi surface to integrate over.
+struct ElectronPhononOutcome {
+    bool ok = false;
+    calango::core::ElectronPhononResult result;
+    QString error;
+};
 
 /// Application shell and MVC "Controller" with a tabbed multi-document
 /// workspace: each tab is a Document (structure + optional trajectory +
@@ -194,7 +207,19 @@ private Q_SLOTS:
     /// Open the band/PDOS viewer for a finished job directory.
     void openBandResults(const QString& directory);
     /// Open the phonon band structure + PhDOS viewer for a finished job dir.
+    /// Analyse a finished electron-phonon run and report lambda/tau.
+    ///
+    /// The generated script stops at the raw arrays; the Fermi-surface
+    /// integration happens here, on tetrahedra. Runs off the GUI thread —
+    /// |g|^2 reaches tens of gigabytes on a production mesh.
+    void openElectronPhononResults(const QString& directory);
     void openPhononResults(const QString& directory);
+    /// Analysis → "Vibrational Mode Analysis…": animate a phonon branch's
+    /// eigenvector on the viewport. A standalone module — `directory` is the
+    /// run to open on, empty when it comes from the menu (the dialog then
+    /// picks among the completed phonon runs itself); the phonon viewer passes
+    /// the job it is showing so its button lands on the same run.
+    void showVibrationalAnalysis(const QString& directory = QString());
     /// "Create Mode Trajectory Tab" from the Vibrational Analysis dialog: open
     /// one vibrational period as a scrubbable multi-frame workspace tab.
     void openModeTrajectory(
@@ -392,6 +417,10 @@ private Q_SLOTS:
     void showXrd();
     void openNanoBuilder();
     void openPhononBuilder();
+    /// Simulation → "Electron-Phonon Coupling…" (gpaw.elph). Periodic only.
+    void openElectronPhonon();
+    /// Modules → "CALPHAD…": load a .tdb and choose the system.
+    void openCalphad();
     void openSqsBuilder();
     void openClusterExpansion();
     /// Simulation → "Cluster Expansion Calculation…": batch-relax the current
@@ -677,7 +706,7 @@ private:
     void updateUndoActions();
     /// Write run.py + structure.extxyz into a fresh job directory; returns
     /// the directory ("" on failure). Shared by local runs (JobRunner) and
-    /// remote submissions (RemoteAccessPanel). `procId >= 0` names the dir
+    /// remote submissions (HpcPanel). `procId >= 0` names the dir
     /// `proc_<id>` (per-process metric store); -1 falls back to a timestamp.
     QString stageJob(const QString& script, int procId = -1);
     /// Repaint the Results tabs from process `id`'s buffered (or on-disk)
@@ -859,13 +888,13 @@ private:
     QByteArray defaultLayoutState_;
     QDockWidget* jobDock_ = nullptr;
     QDockWidget* visualEffectsDock_ = nullptr; ///< zone 9 (Lighting + effects)
-    QDockWidget* remoteDock_ = nullptr;
+    QDockWidget* hpcDock_ = nullptr;
     /// Zone 14 — the node canvas, leading the bottom row. It replaced the
     /// former "Workflow → Add Workflow…" window, so there is exactly one of
     /// them and it outlives the tabs it draws its materials from.
     QDockWidget* orchestrationDock_ = nullptr;
     OrchestrationWindow* orchestrationPanel_ = nullptr;
-    RemoteAccessPanel* remotePanel_ = nullptr;
+    HpcPanel* hpcPanel_ = nullptr;
     ProcessManagerPanel* processPanel_ = nullptr;
     /// "Additional overlays" dock — lattice planes, text and primitives.
     OverlayPanel* overlayPanel_ = nullptr;

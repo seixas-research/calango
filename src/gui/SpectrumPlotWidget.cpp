@@ -12,6 +12,50 @@
 
 namespace calango::gui {
 
+QColor SpectrumPlotWidget::wavelengthColor(double nm)
+{
+    // The usual piecewise linear fit to the spectral locus. Six bands, each
+    // ramping one channel, which is what produces the red → orange → yellow →
+    // green → cyan → blue → violet sequence a reader expects.
+    double r = 0.0;
+    double g = 0.0;
+    double b = 0.0;
+    if (nm >= 380.0 && nm < 440.0) {
+        r = -(nm - 440.0) / (440.0 - 380.0);
+        b = 1.0;
+    } else if (nm < 490.0) {
+        g = (nm - 440.0) / (490.0 - 440.0);
+        b = 1.0;
+    } else if (nm < 510.0) {
+        g = 1.0;
+        b = -(nm - 510.0) / (510.0 - 490.0);
+    } else if (nm < 580.0) {
+        r = (nm - 510.0) / (580.0 - 510.0);
+        g = 1.0;
+    } else if (nm < 645.0) {
+        r = 1.0;
+        g = -(nm - 645.0) / (645.0 - 580.0);
+    } else if (nm <= 750.0) {
+        r = 1.0;
+    } else {
+        return QColor(0, 0, 0);
+    }
+    // Intensity falls off at both ends of the visible range — the eye's
+    // response does, so a band that stayed saturated to the last nanometre
+    // would read as a hard edge where the physics has a fade.
+    double intensity = 1.0;
+    if (nm < 420.0)
+        intensity = 0.30 + 0.70 * (nm - 380.0) / (420.0 - 380.0);
+    else if (nm > 700.0)
+        intensity = 0.30 + 0.70 * (750.0 - nm) / (750.0 - 700.0);
+    const auto channel = [intensity](double v) {
+        // 0.8 gamma, the conventional companion to this fit.
+        return static_cast<int>(std::lround(255.0 * std::pow(
+            std::clamp(v * intensity, 0.0, 1.0), 0.8)));
+    };
+    return QColor(channel(r), channel(g), channel(b));
+}
+
 bool SpectrumPlotWidget::renderTo(QPainter& p, QSize size) const
 {
     p.setRenderHint(QPainter::Antialiasing, true);
@@ -85,6 +129,46 @@ bool SpectrumPlotWidget::renderTo(QPainter& p, QSize size) const
     };
 
     p.fillRect(plot, style_.plotBackground);
+
+    // -- Visible-spectrum band ---------------------------------------------
+    // Behind the grid and the curves: it is context for the spectrum, not a
+    // series, and anything drawn over the data would cost readability for
+    // decoration.
+    if (showVisibleSpectrum_) {
+        // The visible range expressed in whatever the x axis carries.
+        const bool energyAxis = spectralAxis_ == SpectralAxis::EnergyEv;
+        const double bandLo = energyAxis ? kHcEvNm / kVisibleMaxNm  // 1.65 eV
+                                         : kVisibleMinNm;          // 380 nm
+        const double bandHi = energyAxis ? kHcEvNm / kVisibleMinNm  // 3.26 eV
+                                         : kVisibleMaxNm;          // 750 nm
+        // Clipped to what is on screen — the band is usually a slice of a
+        // 0–20 eV window, and a run plotted over the UV alone gets no band
+        // rather than a misleading edge-to-edge wash.
+        const double lo = std::max(bandLo, xMin);
+        const double hi = std::min(bandHi, xMax);
+        if (hi > lo) {
+            const QRectF band(mapX(lo), plot.top(), mapX(hi) - mapX(lo),
+                              plot.height());
+            QLinearGradient gradient(band.left(), 0.0, band.right(), 0.0);
+            // Stops evaluated at their OWN x rather than two end stops: the
+            // colour follows wavelength and wavelength is 1/energy, so a
+            // straight red→violet ramp across an energy axis puts green at
+            // 2.45 eV where it belongs at 2.25 eV. Sampling handles either
+            // axis without the mapping being written twice.
+            constexpr int kStops = 48;
+            for (int i = 0; i <= kStops; ++i) {
+                const double t = static_cast<double>(i) / kStops;
+                const double xv = lo + t * (hi - lo);
+                const double nm = energyAxis ? kHcEvNm / xv : xv;
+                QColor color = wavelengthColor(nm);
+                // Semi-transparent: the curves are the data and have to stay
+                // legible through it.
+                color.setAlpha(70);
+                gradient.setColorAt(t, color);
+            }
+            p.fillRect(band, gradient);
+        }
+    }
 
     // Grid, ticks and tick labels.
     const int ticks = 5;

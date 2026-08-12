@@ -78,7 +78,7 @@ accumulates there, who writes it, and who reads it:
 | `structure.extxyz` | Staging — the input geometry | `run.py` reads it back with `ase.io.read` |
 | `configs.extxyz` | Staging of a noise-ensemble run | `run.py` (one single point per frame) |
 | `calculator.json` | Staging, from simulation wizards | Baseline-inheriting wizards (Optics, GW, Wannier, Born, Raman/IR) — see {doc}`/reference/job_protocol` |
-| `job.sh`, `calango_job.out`, `calango_job.err` | Remote submission — scheduler wrapper and captured stdout/stderr | The Remote Access panel |
+| `job.sh`, `calango_job.out`, `calango_job.err` | Remote submission — scheduler wrapper and captured stdout/stderr | The HPC panel |
 
 **Live-state files (rewritten during the run)**
 

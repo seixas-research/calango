@@ -1,5 +1,6 @@
 #include "gui/MainWindow.hpp"
 
+#include "core/ElectronPhononIo.hpp"
 #include "core/AseScriptGenerator.hpp"
 #include "core/BrillouinZone.hpp"
 #include "core/HydrogenCompletion.hpp"
@@ -24,7 +25,7 @@
 #include "gui/PeriodicTableDialog.hpp"
 #include "gui/PreferencesDialog.hpp"
 #include "gui/BrandingPanel.hpp"
-#include "gui/RemoteAccessPanel.hpp"
+#include "gui/HpcPanel.hpp"
 #include "gui/RepresentationPanel.hpp"
 #include "gui/SlabWizard.hpp"
 #include "gui/AddAdsorbateDialog.hpp"
@@ -53,6 +54,8 @@
 #include "dft/CalangoDFTEngine.hpp"
 #include "gui/SinglePointWizard.hpp"
 #include "gui/MonteCarloWizard.hpp"
+#include "gui/CalphadDialog.hpp"
+#include "gui/ElectronPhononWizard.hpp"
 #include "gui/PhononWizard.hpp"
 #include "gui/SimulationWizardBase.hpp"
 #include "gui/NanoparticleDialog.hpp"
@@ -93,6 +96,7 @@
 #include "gui/MagneticSpaceGroupDialog.hpp"
 #include "gui/SymmetryDialog.hpp"
 #include "gui/VacfDialog.hpp"
+#include "gui/VibrationalAnalysisDialog.hpp"
 #include "gui/DatasetManagerDialog.hpp"
 #include "gui/ProcessManagerPanel.hpp"
 #include "gui/ScriptViewerDialog.hpp"
@@ -131,6 +135,8 @@
 #include "python_bridge/AseBridge.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
+#include <QFutureWatcher>
+#include <QtConcurrent>
 #include <QActionGroup>
 #include <QApplication>
 #include <QGuiApplication>
@@ -199,7 +205,7 @@ constexpr double kTrajectoryPlaybackFps = 15.0;
 /// Version tag for saveState/restoreState. Bumped when the default dock
 /// grid changes so stale saved layouts don't override the new default
 /// (v2 = the 8-zone grid workspace, v3 = the 12-zone grid with the
-/// branding and Remote Access panels, v4 = the "Job" dock renamed to
+/// branding and HPC panels, v4 = the "Job" dock renamed to
 /// "Results" with a process selector, v5 = the "Lighting" dock renamed to
 /// the tabbed "Visual Effects" panel, v6 = zones 9/12 width-locked to the
 /// side columns and the branding card hidden by default).
@@ -216,7 +222,7 @@ constexpr double kTrajectoryPlaybackFps = 15.0;
 //      Representation, and the branding card shown by default again.
 //  12: Visual Effects joined the right column, which now runs the full window
 //      height (both bottom corners belong to the side areas); the bottom row
-//      is Results | Remote Access, the latter pinned to its minimum width.
+//      is Results | HPC, the latter pinned to its minimum width.
 //  13: "Additional overlays" added to the left column between Volumetric Data
 //      and Processes. A new dock is exactly the case the version guards: a
 //      layout saved under 12 has no slot for it, and restoring one would hide
@@ -224,15 +230,15 @@ constexpr double kTrajectoryPlaybackFps = 15.0;
 //  14: the branding card grew a version caption under the logo, raising its
 //      minimum height; a layout saved under 13 pins the old 30 px strip and
 //      would clip the caption forever.
-//  15: "Workflow" joined the bottom row, which is now Workflow | Remote Access
+//  15: "Workflow" joined the bottom row, which is now Workflow | HPC
 //      | Results — a new dock, so a layout saved under 14 has no slot for it
-//      and would strand the canvas with no way back. Remote Access and
+//      and would strand the canvas with no way back. HPC and
 //      Additional Overlays also became hidden-by-default in the same change.
 //  16: the Workflow dock was renamed Orchestration, objectName included
 //      ("workflowDock" → "orchestrationDock"). restoreState() matches docks
 //      by objectName, so a layout saved under 15 holds state for a dock that
 //      no longer exists — the renamed dock would come up stranded.
-constexpr int kLayoutVersion = 16;
+constexpr int kLayoutVersion = 17;
 
 /// Painted icons for the frame-panel camera toolbar (icon-only buttons).
 /// Plane icons use the axes-triad colors: x red, y green, z blue.
@@ -1167,6 +1173,10 @@ void MainWindow::createMenusAndDocks()
                               this, &MainWindow::molecularDynamics);
     simulationMenu->addAction(tr("&Phonon…"),
                               this, &MainWindow::openPhononBuilder);
+    // Directly after Phonon: it is the same finite-displacement machinery,
+    // and the coupling only means anything alongside the modes it couples to.
+    simulationMenu->addAction(tr("&Electron-Phonon Coupling…"),
+                              this, &MainWindow::openElectronPhonon);
     simulationMenu->addAction(tr("&Monte Carlo Simulation…"),
                               this, &MainWindow::openMonteCarlo);
     // Random noise moved here from Build: it no longer merely displaces a
@@ -1180,7 +1190,7 @@ void MainWindow::createMenusAndDocks()
     // "New Remote Calculation…" was removed along with the legacy calculator
     // dialog it opened: remote execution is now chosen inside each wizard
     // (Stage 2 execution mode + the Stage-4 "Run (Remote)" button) and
-    // monitored in the Zone-11 Remote Access manager, so a second, parallel
+    // monitored in the Zone-11 HPC manager, so a second, parallel
     // entry point would generate scripts the wizards no longer own.
     // Dataset Manager and Trainer moved to Modules → MLIP.
 
@@ -1329,6 +1339,21 @@ void MainWindow::createMenusAndDocks()
                             this, &MainWindow::showPartialCharge);
     analysisMenu->addAction(tr("&Velocity Autocorrelation Function (VACF)…"),
                             this, &MainWindow::showVacf);
+    // Directly after VACF: both read out how the nuclei MOVE, one from a
+    // trajectory in time and one from the normal modes it decomposes into.
+    //
+    // Here rather than in Modules because Modules gathers tool FAMILIES (MLIP,
+    // Alloys, 2D Materials, Parameters Convergence) and this is one tool; and
+    // here rather than in Simulation because it launches no job. Its nearest
+    // structural relative is "Charge Density Difference" a few lines down:
+    // both need no open structure, and both inherit a completed run chosen
+    // inside the dialog rather than computing one.
+    analysisMenu
+        ->addAction(tr("&Vibrational Mode Analysis…"), this,
+                    [this] { showVibrationalAnalysis(); })
+        ->setToolTip(tr("Animate a phonon branch's eigenvector on the 3D "
+                        "viewport, or open one full period as a scrubbable "
+                        "trajectory tab, from a completed phonon run"));
     // "Raman Modes…" was here; it is now a tab of the Symmetry dialog at the
     // top of this menu. "Volumetric Data…" was here too, and is gone: the
     // Volumetric Data DOCK loads the same grids, renders them in the main
@@ -1365,6 +1390,14 @@ void MainWindow::createMenusAndDocks()
     // toolchain (cluster expansion, SQS, short-range order) that were formerly
     // scattered across Build / Simulation / Analysis.
     QMenu* modulesMenu = menuBar()->addMenu(tr("&Modules"));
+
+    // CALPHAD needs no open structure: it works on a thermodynamic database,
+    // not on the geometry in the viewport, so it sits at the top level of the
+    // menu rather than inside a structure-shaped submenu.
+    modulesMenu->addAction(tr("&CALPHAD…"), this, &MainWindow::openCalphad)
+        ->setToolTip(tr("Load a thermodynamic database (.tdb) and choose the "
+                        "elements and phases of the system"));
+    modulesMenu->addSeparator();
 
     QMenu* mlipMenu = modulesMenu->addMenu(tr("&MLIP"));
     mlipMenu->addAction(tr("&Trainer…"), this, &MainWindow::openMaceTrainer);
@@ -1482,7 +1515,7 @@ void MainWindow::createMenusAndDocks()
     // thing that does — nothing in the splitDockWidget calls expresses it.
     // Both bottom corners belong to the side columns here, so the left and
     // right columns run the FULL height and the bottom row spans only the
-    // space between them (Results | Remote Access).
+    // space between them (Results | HPC).
     setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
     setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
 
@@ -1584,9 +1617,9 @@ void MainWindow::createMenusAndDocks()
     visualEffectsDock_->setObjectName(QStringLiteral("visualEffectsDock"));
     visualEffectsDock_->setWidget(new VisualEffectsPanel(viewport_, visualEffectsDock_));
 
-    // Results now TRAILS the bottom row (Orchestration | Remote Access | Results),
+    // Results now TRAILS the bottom row (Orchestration | HPC | Results),
     // so it is built here but placed further down, once the dock that leads
-    // the row exists — see the splitDockWidget chain after Remote Access.
+    // the row exists — see the splitDockWidget chain after HPC.
     jobDock_ = new QDockWidget(tr("Results"), this); // zone 10
     jobDock_->setObjectName(QStringLiteral("resultsDock"));
     auto* jobTabs = new QTabWidget(jobDock_);
@@ -1726,33 +1759,33 @@ void MainWindow::createMenusAndDocks()
     jobTabs->setDocumentMode(true); // flat tab bar, no frame to overlap
     jobDock_->setWidget(jobContainer);
 
-    remoteDock_ = new QDockWidget(tr("Remote Access"), this); // zone 11
-    remoteDock_->setObjectName(QStringLiteral("remoteDock"));
-    remotePanel_ = new RemoteAccessPanel(
+    hpcDock_ = new QDockWidget(tr("HPC"), this); // zone 11
+    hpcDock_->setObjectName(QStringLiteral("hpcDock"));
+    hpcPanel_ = new HpcPanel(
         QString::fromStdString(pybridge::PythonEngine::instance().executable()),
-        remoteDock_);
-    remoteDock_->setWidget(remotePanel_);
+        hpcDock_);
+    hpcDock_->setWidget(hpcPanel_);
 
     // Zone 14 — "Orchestration": the node canvas, formerly a modeless window behind
     // a top-level menu. It leads the bottom row, so it is the dock that
     // establishes the row and the two job panels split off it.
     //
     // The row reads left to right in the order the work happens: you build a
-    // pipeline (Orchestration), choose where it runs (Remote Access), and read what
+    // pipeline (Orchestration), choose where it runs (HPC), and read what
     // came back (Results).
     orchestrationDock_ = new QDockWidget(tr("Orchestration"), this);
     orchestrationDock_->setObjectName(QStringLiteral("orchestrationDock"));
     orchestrationPanel_ = createOrchestrationPanel(orchestrationDock_);
     orchestrationDock_->setWidget(orchestrationPanel_);
     addDockWidget(Qt::BottomDockWidgetArea, orchestrationDock_);
-    splitDockWidget(orchestrationDock_, remoteDock_, Qt::Horizontal);
-    splitDockWidget(remoteDock_, jobDock_, Qt::Horizontal);
-    // Remote Access is hidden by default: submitting to a cluster is a
+    splitDockWidget(orchestrationDock_, hpcDock_, Qt::Horizontal);
+    splitDockWidget(hpcDock_, jobDock_, Qt::Horizontal);
+    // HPC is hidden by default: submitting to a cluster is a
     // deliberate act a minority of sessions perform, and the panel is a login
     // form that says nothing until it is used — unlike Orchestration and Results,
-    // which are useful on sight. View → Remote Access brings it back, and
+    // which are useful on sight. View → HPC brings it back, and
     // restoreState() below still reinstates whatever the user left visible.
-    remoteDock_->setVisible(false);
+    hpcDock_->setVisible(false);
 
     // Zone 12 — "Spatial References": the cell wireframe, the orientation
     // triad and the per-atom vector arrows.
@@ -1782,7 +1815,7 @@ void MainWindow::createMenusAndDocks()
     splitDockWidget(reprDock, overlaysDock, Qt::Vertical);
     splitDockWidget(overlaysDock, visualEffectsDock_, Qt::Vertical);
 
-    connect(remotePanel_, &RemoteAccessPanel::resultsReady,
+    connect(hpcPanel_, &HpcPanel::resultsReady,
             this, &MainWindow::onRemoteResultsReady);
 
     // Default grid proportions: side columns kColumnWidth px wide with a
@@ -1820,7 +1853,7 @@ void MainWindow::createMenusAndDocks()
     // The left column needs a hard minimum for the same reason the right one
     // does: resizeDocks is only a hint, so without it the left column is the
     // one thing in the window with no floor and absorbs every squeeze — it
-    // collapsed to 198 px once Remote Access gained a minimum width.
+    // collapsed to 198 px once HPC gained a minimum width.
     for (QDockWidget* dock : {brandingDock, infoDock, volumetricDock, processDock})
         if (QWidget* panel = dock->widget())
             panel->setMinimumWidth(qMax(kColumnWidth, panel->minimumWidth()));
@@ -1842,21 +1875,21 @@ void MainWindow::createMenusAndDocks()
     // Processes panels below it.
     resizeDocks({brandingDock, infoDock, volumetricDock, processDock},
                 {kBrandingHeight, 220, 300, 300}, Qt::Vertical);
-    resizeDocks({orchestrationDock_, jobDock_, remoteDock_}, {250, 250, 250},
+    resizeDocks({orchestrationDock_, jobDock_, hpcDock_}, {250, 250, 250},
                 Qt::Vertical);
-    // The bottom row is Orchestration | Remote Access | Results. Remote Access is
+    // The bottom row is Orchestration | HPC | Results. HPC is
     // held to the narrowest width that still shows its whole form — its own
     // minimum size hint, asked of the panel rather than guessed at — and the
     // other two split what is left.
-    const int remoteWidth = remotePanel_->minimumSizeHint().width();
-    remoteDock_->setMinimumWidth(remoteWidth);
+    const int remoteWidth = hpcPanel_->minimumSizeHint().width();
+    hpcDock_->setMinimumWidth(remoteWidth);
     // Orchestration and Results are given plain preferred widths rather than
     // enormous ones: resizeDocks normalizes the numbers it is handed, and an
     // extreme ratio makes the solver claw the difference out of the LEFT
     // column, which is not part of this call at all. Orchestration gets the wider
     // share of the two — it is a canvas, and a canvas narrower than a couple
     // of nodes cannot show a pipeline.
-    resizeDocks({orchestrationDock_, remoteDock_, jobDock_},
+    resizeDocks({orchestrationDock_, hpcDock_, jobDock_},
                 {560, remoteWidth, 460}, Qt::Horizontal);
 
     // Dock titles at 1.2× the theme default across all zones (the earlier
@@ -1886,7 +1919,7 @@ void MainWindow::createMenusAndDocks()
     viewMenu->addAction(visualEffectsDock_->toggleViewAction());
     viewMenu->addAction(overlaysDock->toggleViewAction());
     viewMenu->addAction(orchestrationDock_->toggleViewAction());
-    viewMenu->addAction(remoteDock_->toggleViewAction());
+    viewMenu->addAction(hpcDock_->toggleViewAction());
     viewMenu->addAction(jobDock_->toggleViewAction());
 
     // Bottom system status bar: Calango's own CPU / GPU / memory / threads,
@@ -4248,16 +4281,139 @@ void MainWindow::openModeTrajectory(
             .arg(static_cast<int>(frames.size())));
 }
 
+void MainWindow::openElectronPhononResults(const QString& directory)
+{
+    // alpha^2F, lambda and tau, computed here rather than in the generated
+    // script. Both Fermi-surface deltas are integrated on tetrahedra, which
+    // is why there is no smearing to report or to converge: the in-script
+    // Gaussian this replaced gave lambda from 0.009 to 31 on fcc Al as its
+    // width was varied, with no plateau.
+    statusBar()->showMessage(
+        tr("Analysing electron-phonon coupling (tetrahedron integration)…"));
+    QApplication::setOverrideCursor(Qt::BusyCursor);
+
+    auto* watcher = new QFutureWatcher<ElectronPhononOutcome>(this);
+    connect(watcher, &QFutureWatcher<ElectronPhononOutcome>::finished, this,
+            [this, watcher, directory] {
+                QApplication::restoreOverrideCursor();
+                const ElectronPhononOutcome outcome = watcher->result();
+                watcher->deleteLater();
+                if (!outcome.ok) {
+                    statusBar()->clearMessage();
+                    QMessageBox::warning(
+                        this, tr("Electron-Phonon Coupling"),
+                        tr("The run finished, but its coupling could not be "
+                           "analysed:\n\n%1")
+                            .arg(outcome.error));
+                    return;
+                }
+                const auto& result = outcome.result;
+                statusBar()->showMessage(
+                    tr("lambda = %1, tau = %2 fs at %3 K")
+                        .arg(result.lambda, 0, 'f', 3)
+                        .arg(result.relaxationTimeFs, 0, 'f', 2)
+                        .arg(result.temperatureK, 0, 'f', 0));
+
+                QString text =
+                    tr("<b>&lambda; = %1</b><br>"
+                       "&omega;<sub>log</sub> = %2 meV<br>"
+                       "N(E<sub>F</sub>) = %3 states/eV per cell per spin"
+                       "<br><br>"
+                       "At %4 K:<br>"
+                       "&tau; = %5 fs (&hbar;/&tau; = %6 eV)<br>"
+                       "Drude <i>rate</i> for the Optics wizard = %7 eV")
+                        .arg(result.lambda, 0, 'f', 4)
+                        .arg(result.omegaLogEv * 1000.0, 0, 'f', 2)
+                        .arg(result.dosAtFermi, 0, 'f', 4)
+                        .arg(result.temperatureK, 0, 'f', 0)
+                        .arg(result.relaxationTimeFs, 0, 'f', 3)
+                        .arg(result.scatteringRateEv, 0, 'f', 5)
+                        .arg(result.drudeRateEv, 0, 'f', 5);
+                // The factor of two between tau and GPAW's `rate` is the
+                // standing trap, so the Optics number is spelled out rather
+                // than left to be derived.
+                text += tr("<br><br>m*/m = %1 (band-mass enhancement)")
+                            .arg(result.massEnhancement, 0, 'f', 3);
+
+                if (result.lambdaTransport > 0.0) {
+                    text += tr("<br><br><b>Transport</b><br>"
+                               "&lambda;<sub>tr</sub> = %1 "
+                               "(vs &lambda; = %2)<br>"
+                               "&tau;<sub>tr</sub> = %3 fs")
+                                .arg(result.lambdaTransport, 0, 'f', 4)
+                                .arg(result.lambda, 0, 'f', 4)
+                                .arg(result.relaxationTimeTransportFs, 0, 'f', 3);
+                    if (result.resistivityMicroOhmCm > 0.0)
+                        text += tr("<br>&rho;(%1 K) = %2 &micro;&Omega;&middot;cm")
+                                    .arg(result.temperatureK, 0, 'f', 0)
+                                    .arg(result.resistivityMicroOhmCm, 0, 'f', 3);
+                }
+
+                // T_c gets its own block, and its mu* is always shown beside
+                // it: the number depends on that empirical parameter
+                // exponentially and is not interpretable without it.
+                const auto& sc = result.superconductivity;
+                text += QStringLiteral("<br><br><b>")
+                    + tr("Superconductivity (&mu;* = %1)")
+                          .arg(sc.muStar, 0, 'f', 3)
+                    + QStringLiteral("</b><br>");
+                if (!sc.ok) {
+                    text += tr("Not a phonon-mediated superconductor at this "
+                               "coupling.");
+                } else {
+                    text += tr("<b>T<sub>c</sub> = %1 K</b> "
+                               "(Allen&ndash;Dynes, f<sub>1</sub> = %2, "
+                               "f<sub>2</sub> = %3)<br>"
+                               "uncorrected %4 K<br>"
+                               "2&Delta; = %5 meV "
+                               "(2&Delta;/k<sub>B</sub>T<sub>c</sub> = %6)")
+                                .arg(sc.tcAllenDynesCorrectedK, 0, 'f', 3)
+                                .arg(sc.f1, 0, 'f', 3)
+                                .arg(sc.f2, 0, 'f', 3)
+                                .arg(sc.tcAllenDynesK, 0, 'f', 3)
+                                .arg(2.0 * sc.gapMeV, 0, 'f', 4)
+                                .arg(sc.gapRatio, 0, 'f', 2);
+                }
+
+                text += tr("<br><br><small>Written to epc.json in %1.</small>")
+                            .arg(directory);
+                std::vector<std::string> allWarnings = result.warnings;
+                allWarnings.insert(allWarnings.end(), sc.warnings.begin(),
+                                   sc.warnings.end());
+                if (!allWarnings.empty()) {
+                    text += QStringLiteral("<br><br><b>")
+                        + tr("Notes") + QStringLiteral("</b><ul>");
+                    for (const std::string& warning : allWarnings)
+                        text += QStringLiteral("<li>")
+                            + QString::fromStdString(warning).toHtmlEscaped()
+                            + QStringLiteral("</li>");
+                    text += QStringLiteral("</ul>");
+                }
+                QMessageBox box(this);
+                box.setWindowTitle(tr("Electron-Phonon Coupling"));
+                box.setTextFormat(Qt::RichText);
+                box.setText(text);
+                box.exec();
+            });
+    watcher->setFuture(QtConcurrent::run([directory] {
+        ElectronPhononOutcome outcome;
+        std::string error;
+        outcome.ok = calango::core::postProcessElectronPhonon(
+            directory.toStdString(), outcome.result, &error);
+        outcome.error = QString::fromStdString(error);
+        return outcome;
+    }));
+}
+
 void MainWindow::openPhononResults(const QString& directory)
 {
-    // The active document's structure is what the phonons were computed for,
-    // so hand it (and the viewport) over — that is what "Vibrational
-    // Analysis…" animates on.
-    Document* doc = currentDocument();
-    auto* window = new PhononPlotWindow(
-        directory, this, doc ? doc->structure : nullptr, viewport_);
-    connect(window, &PhononPlotWindow::modeTrajectoryRequested, this,
-            &MainWindow::openModeTrajectory);
+    auto* window = new PhononPlotWindow(directory, this);
+    // The viewer no longer owns the mode animation — it asks for the module,
+    // which is also on the Analysis menu and outlives this window. The old
+    // chain (dialog → viewer → here) existed only because the dialog was
+    // constructed inside the viewer.
+    connect(window, &PhononPlotWindow::vibrationalAnalysisRequested, this,
+            &MainWindow::showVibrationalAnalysis);
     if (!window->hasData()) {
         delete window;
         QMessageBox::information(
@@ -4267,6 +4423,50 @@ void MainWindow::openPhononResults(const QString& directory)
     }
     window->setAttribute(Qt::WA_DeleteOnClose);
     window->show();
+}
+
+void MainWindow::showVibrationalAnalysis(const QString& directory)
+{
+    // Deliberately not prepareSimulation(): like the Charge Density Difference
+    // module, this needs no open structure — it reads the geometry back out of
+    // the run it inherits. A project reopened with finished phonon jobs in the
+    // Processes panel and no tab in front is a perfectly good starting point.
+    //
+    // Keyed on phonon_band.json rather than on the task name: what makes a run
+    // usable here is that it produced the data, not what it was launched as
+    // (a phonon stage inside an orchestration run qualifies just as well).
+    QList<QPair<QString, QString>> runs;
+    for (const auto& [label, jsonPath] :
+         processResults(QStringLiteral("phonon_band.json")))
+        runs.append({label, QFileInfo(jsonPath).absolutePath()});
+    // An empty list is NOT refused here. The other inheriting modules put up a
+    // "run X first" box and stop, which strands the common case of a phonon job
+    // finished in an earlier session or copied back from a cluster — the
+    // process list only knows about this session. The dialog opens with its
+    // source unset, says so in place, and offers Browse…, which is both a
+    // clearer refusal (it names what is missing from the directory once one is
+    // chosen) and a way out.
+
+    // The active document is a FALLBACK only: the dialog prefers the run's own
+    // structure.extxyz, because the eigenvectors are indexed by that run's
+    // atom order.
+    Document* doc = currentDocument();
+    auto* dialog = new VibrationalAnalysisDialog(
+        runs, directory, doc ? doc->structure : nullptr, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    // The animation is pushed straight at the viewport rather than through the
+    // document: these frames are a preview, not an edit, and the dialog puts
+    // the undisplaced structure back when it closes. frameCamera=false — a
+    // camera that re-fits every tick makes the structure jitter in place
+    // instead of showing the motion.
+    connect(dialog, &VibrationalAnalysisDialog::previewStructureRequested, this,
+            [this](const std::shared_ptr<const core::Structure>& structure) {
+                if (viewport_ && structure)
+                    viewport_->setStructure(structure, false);
+            });
+    connect(dialog, &VibrationalAnalysisDialog::modeTrajectoryRequested, this,
+            &MainWindow::openModeTrajectory);
+    dialog->show();
 }
 
 
@@ -5705,12 +5905,12 @@ void MainWindow::openMaceTrainer()
         const QString jobDir = stageJob(dialog.runnerScript());
         if (jobDir.isEmpty())
             return;
-        remoteDock_->show();
-        remoteDock_->raise();
+        hpcDock_->show();
+        hpcDock_->raise();
         const int taskId =
             processPanel_->registerTask(tr("Remote %1").arg(label), jobDir);
         processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
-        remotePanel_->submitStagedJob(jobDir, label);
+        hpcPanel_->submitStagedJob(jobDir, label);
         statusBar()->showMessage(tr("Submitting %1 to the cluster…").arg(label));
         return;
     }
@@ -6720,12 +6920,12 @@ void MainWindow::openGrapheneOxideMdmc(
         const QString jobDir = stageJob(wizard.script());
         if (jobDir.isEmpty())
             return;
-        remoteDock_->show();
-        remoteDock_->raise();
+        hpcDock_->show();
+        hpcDock_->raise();
         const int taskId =
             processPanel_->registerTask(tr("Remote graphene oxide MDMC"), jobDir);
         processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
-        remotePanel_->submitStagedJob(jobDir,
+        hpcPanel_->submitStagedJob(jobDir,
                                       QStringLiteral("graphene_oxide_mdmc"));
         statusBar()->showMessage(tr("Submitting MDMC run to the cluster…"));
         return;
@@ -6813,12 +7013,12 @@ void MainWindow::effectiveBandsCalculation()
             stagedPrimitive_.reset();
             return;
         }
-        remoteDock_->show();
-        remoteDock_->raise();
+        hpcDock_->show();
+        hpcDock_->raise();
         const int taskId =
             processPanel_->registerTask(tr("Remote effective bands"), jobDir);
         processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
-        remotePanel_->submitStagedJob(
+        hpcPanel_->submitStagedJob(
             jobDir, QFileInfo(doc->fileName).completeBaseName());
         statusBar()->showMessage(tr("Submitting unfolding run to the cluster…"));
         return;
@@ -6976,6 +7176,44 @@ void MainWindow::openPhononBuilder()
     wizard.setBornChargeProcesses(processResults(QStringLiteral("born_charges.json")));
     wizard.setOpticsProcesses(processResults(QStringLiteral("optics.json")));
     runSimulationWizard(wizard, tr("Phonon Calculation"));
+}
+
+void MainWindow::openElectronPhonon()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Electron-Phonon Coupling"),
+                                 tr("Open or build a structure first."));
+        return;
+    }
+    // Periodicity is not a preference here. The whole method is a supercell
+    // of a periodic cell sampled at phonon momenta q; an isolated molecule has
+    // no q to couple at, and the displacement runner has no supercell to build.
+    const auto pbc = doc->structure->cell().pbc();
+    if (!doc->structure->cell().isDefined()
+        || !(pbc[0] || pbc[1] || pbc[2])) {
+        QMessageBox::information(
+            this, tr("Electron-Phonon Coupling"),
+            tr("This module needs a periodic cell.\n\n"
+               "Electron-phonon coupling here is g(k,q) — electrons at "
+               "crystal momentum k scattering off phonons at momentum q. An "
+               "isolated molecule has neither, and its vibrational analogue "
+               "is the Raman/IR module instead."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+    ElectronPhononWizard wizard(this);
+    runSimulationWizard(wizard, tr("Electron-Phonon Coupling"));
+}
+
+void MainWindow::openCalphad()
+{
+    // No structure requirement and no ASE check: this module reads a database
+    // file, not the viewport, and its parser is self-contained.
+    auto* dialog = new CalphadDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
 }
 
 void MainWindow::openNanoBuilder()
@@ -7220,10 +7458,11 @@ std::unique_ptr<SimulationWizardBase> makeOrchestrationWizard(
     case OrchestrationTask::Container:
     case OrchestrationTask::Supercell:
     case OrchestrationTask::DefectGenerator:
+    case OrchestrationTask::TdbGenerator:
         // The transforms configure themselves on the canvas — a structure
-        // list, three spin boxes, a table of edits. There is no engine to
-        // pick and no script to generate, so there is no wizard to build and
-        // OrchestrationWindow never asks for one.
+        // list, three spin boxes, a table of edits, a Redlich-Kister order.
+        // There is no engine to pick and no script to generate, so there is no
+        // wizard to build and OrchestrationWindow never asks for one.
         break;
     }
     return nullptr;
@@ -7494,17 +7733,17 @@ void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
     }
 
     if (wizard.action() == SimulationWizardBase::Action::RunRemote) {
-        // Zone-11 Remote Access manager: stage the script and submit it.
+        // Zone-11 HPC manager: stage the script and submit it.
         const QString jobDir = stageJob(wizard.script());
         if (jobDir.isEmpty())
             return;
         Document* doc = currentDocument();
-        remoteDock_->show();
-        remoteDock_->raise();
+        hpcDock_->show();
+        hpcDock_->raise();
         const int taskId =
             processPanel_->registerTask(tr("Remote %1").arg(label), jobDir);
         processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
-        remotePanel_->submitStagedJob(
+        hpcPanel_->submitStagedJob(
             jobDir, doc ? QFileInfo(doc->fileName).completeBaseName() : label);
         statusBar()->showMessage(tr("Submitting %1 run to the cluster…").arg(label));
         return;
@@ -8330,6 +8569,18 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     // Phonon runs: open the Phonon Viewer (dispersion + PhDOS).
     if (QFile::exists(lastJobDir_ + QStringLiteral("/phonon_band.json"))) {
         openPhononResults(lastJobDir_);
+        return;
+    }
+    // Electron-phonon runs: the script stops at the raw arrays, so the
+    // analysis happens here. Off the GUI thread because |g|^2 is
+    // (spins, q, k, modes, bands, bands) and reaches tens of gigabytes on a
+    // production mesh — a synchronous read would freeze the window for
+    // minutes with no indication of why.
+    if (QFile::exists(lastJobDir_
+                      + QStringLiteral("/")
+                      + QString::fromLatin1(
+                          calango::core::electronPhononManifestName()))) {
+        openElectronPhononResults(lastJobDir_);
         return;
     }
     // Optics runs: open the optical-spectra viewer.

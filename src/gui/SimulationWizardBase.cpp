@@ -1953,7 +1953,11 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
     addSolver(QStringLiteral("Davidson"), core::GpawEigensolver::Davidson);
     addSolver(QStringLiteral("RMM-DIIS"), core::GpawEigensolver::RmmDiis);
     addSolver(QStringLiteral("CG"), core::GpawEigensolver::ConjugateGradient);
-    addSolver(QStringLiteral("Direct"), core::GpawEigensolver::Direct);
+    // "Direct LCAO", not "Direct": it is GPAW's DirectLCAO, registered under
+    // the name "lcao", and it is the ONLY solver that runs in LCAO mode. The
+    // bare label read like a general-purpose exact diagonalization and invited
+    // exactly the pairing that cannot work.
+    addSolver(QStringLiteral("Direct LCAO"), core::GpawEigensolver::Direct);
 
     // Same sizing rule as the smearing combo directly above it, so the two
     // dropdowns line up instead of one stretching to the margin.
@@ -1961,10 +1965,16 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
     gpawEigensolverCombo_->setSizePolicy(QSizePolicy::Preferred,
                                          QSizePolicy::Fixed);
     gpawEigensolverCombo_->setToolTip(
-        tr("davidson: robust general default.\n"
-           "cg: slower but very stable — try it when the SCF oscillates.\n"
-           "rmm-diis: cheapest per step for large metallic systems.\n"
-           "direct: exact diagonalization (LCAO / small systems)."));
+        tr("Davidson: robust general default.\n"
+           "CG: slower but very stable — try it when the SCF oscillates.\n"
+           "RMM-DIIS: cheapest per step for large metallic systems.\n"
+           "Direct LCAO: direct diagonalization, LCAO mode only.\n\n"
+           "The choice is tied to the basis, not free: the first three "
+           "iterate wavefunctions on a real-space grid or a plane-wave "
+           "basis, which an LCAO calculation does not have. GPAW enforces "
+           "the pairing, so in LCAO mode the solver is Direct LCAO and "
+           "outside it Direct LCAO does not apply. The generated script "
+           "follows the mode and says so when it does."));
     // VASP's counterpart to the eigensolver combo, shown in its place when
     // VASP is the engine. ALGO *is* VASP's eigensolver selector — the names
     // are just VASP's own, and each one names the algorithm it selects — so it

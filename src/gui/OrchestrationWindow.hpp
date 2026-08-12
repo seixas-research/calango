@@ -69,6 +69,11 @@ enum class OrchestrationTask {
     Container,
     Supercell,
     DefectGenerator,
+    // Not a structure edit: it consumes an upstream ensemble's RESULTS and
+    // emits a thermodynamic database. It is in this family because it runs on
+    // the canvas rather than as a job, which is what the family actually
+    // decides.
+    TdbGenerator,
 };
 
 /// Which of the three groups a task belongs to. The Add Process list is
@@ -220,6 +225,9 @@ public:
     const DefectSpec& defectSpec() const { return defects_; }
     void setDefectSpec(const DefectSpec& spec);
 
+    const TdbGeneratorSpec& tdbGenerator() const { return tdb_; }
+    void setTdbGenerator(const TdbGeneratorSpec& spec);
+
     /// Whether this node has everything it needs, as a message: empty when it
     /// is ready, otherwise what is missing. Covers "never configured" for the
     /// analysis modules and the empty-payload cases for the transforms.
@@ -289,6 +297,7 @@ private:
     QList<BatchItem> batchItems_;
     SupercellSpec supercell_;
     DefectSpec defects_;
+    TdbGeneratorSpec tdb_;
     std::vector<InputLine> inputLines_;
     std::vector<OrchestrationEdgeItem*> edges_;
 };
@@ -490,6 +499,9 @@ public:
                           const SupercellSpec& spec);
     /// Set a Defect Generator node's recipe. Same invalidation rule.
     void setNodeDefectSpec(OrchestrationNodeItem* node, const DefectSpec& spec);
+    /// Set a TDB Generator node's assessment settings. Same invalidation rule.
+    void setNodeTdbGenerator(OrchestrationNodeItem* node,
+                             const TdbGeneratorSpec& spec);
 
     /// The folder the current (or last) run staged everything under. Empty
     /// before the first send.

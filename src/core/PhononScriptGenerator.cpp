@@ -366,7 +366,14 @@ void emitSymmetryReducedPhonons(std::ostringstream& out, const PhononConfig& c)
            "    mode_qpoints.append(entry)\n"
            "if mode_qpoints:\n"
            "    with open(\"phonon_modes.json\", \"w\") as f:\n"
-           "        json.dump({\"unit\": \"cm^-1\", \"qpoints\": mode_qpoints}, f)\n"
+           // The convention is declared, not left to be guessed. phonopy hands
+           // back the eigenvectors of the dynamical matrix, w = sqrt(M)*u; ASE
+           // (below) divides the mass weighting out first. Animating one as if
+           // it were the other moves heavy atoms by sqrt(M_heavy/M_light) too
+           // much - a picture that looks entirely plausible and is wrong.
+           "        json.dump({\"unit\": \"cm^-1\",\n"
+           "                   \"eigenvector_convention\": \"mass-weighted\",\n"
+           "                   \"qpoints\": mode_qpoints}, f)\n"
            "    print(\"CALANGO_INFO wrote phonon_modes.json\", flush=True)\n"
            "max_cm1 = float(np.max(freqs_thz) * THZ_TO_CM1) if freqs_thz.size else 0.0\n"
            "print(f\"CALANGO_RESULT branches={freqs_thz.shape[1]} \"\n"
@@ -500,7 +507,12 @@ void emitAsePhonons(std::ostringstream& out, const PhononConfig& c)
            "    mode_qpoints.append(entry)\n"
            "if mode_qpoints:\n"
            "    with open(\"phonon_modes.json\", \"w\") as f:\n"
-           "        json.dump({\"unit\": \"cm^-1\", \"qpoints\": mode_qpoints}, f)\n"
+           // Unlike phonopy above, ASE returns u = e/sqrt(m) already - see the
+           // Gamma block, which has to put the mass weighting BACK to project
+           // onto irreps. The viewer must not divide by sqrt(M) a second time.
+           "        json.dump({\"unit\": \"cm^-1\",\n"
+           "                   \"eigenvector_convention\": \"displacement\",\n"
+           "                   \"qpoints\": mode_qpoints}, f)\n"
            "    print(\"CALANGO_INFO wrote phonon_modes.json\", flush=True)\n"
            "ph.clean()\n"
            "max_cm1 = float(np.max(bands / invcm)) if bands.size else 0.0\n"

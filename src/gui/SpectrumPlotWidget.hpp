@@ -69,9 +69,48 @@ public:
         update();
     }
 
+    /// What the x axis carries, for the visible-spectrum overlay. The band's
+    /// colour is a function of WAVELENGTH, so the widget has to know which
+    /// quantity it is plotting against in order to place it.
+    enum class SpectralAxis { EnergyEv, WavelengthNm };
+
+    /// Shade the visible range (380–750 nm, i.e. 3.26–1.65 eV) behind the
+    /// curves with a spectral gradient.
+    ///
+    /// `axis` is not cosmetic. Colour follows wavelength, and wavelength is
+    /// 1/energy, so a two-stop red→violet gradient drawn across an ENERGY
+    /// axis puts every colour in the wrong place — green would land at
+    /// 2.45 eV (506 nm) where it belongs at 2.25 eV (550 nm). The band is
+    /// therefore built from stops evaluated at their own x, in whichever
+    /// quantity the axis is in.
+    void setVisibleSpectrum(bool show, SpectralAxis axis)
+    {
+        showVisibleSpectrum_ = show;
+        spectralAxis_ = axis;
+        update();
+    }
+
     /// Draw the chart into `painter` filling a logical area of `size`. Returns
     /// false (after drawing a placeholder) when there is nothing to plot.
     bool renderTo(QPainter& painter, QSize size) const;
+
+    /// Photon energy (eV) of a wavelength in nm, and back. hc = 1239.841984
+    /// eV·nm, which is why the visible band's bounds are quoted as both
+    /// 380–750 nm and 3.26–1.65 eV: they are the same two numbers.
+    static constexpr double kHcEvNm = 1239.841984;
+    /// The visible range, as the CIE-ish convention has it.
+    static constexpr double kVisibleMinNm = 380.0;
+    static constexpr double kVisibleMaxNm = 750.0;
+
+    /// Approximate sRGB for a spectral wavelength in nm.
+    ///
+    /// The standard piecewise fit over 380–750 nm: it is what "the colour of
+    /// that wavelength" means to a viewer, not a colorimetrically exact
+    /// rendering (no monitor can show a monochromatic line anyway). Outside
+    /// the visible range it returns black, which the band never asks for
+    /// because it is clipped to that range.
+    static QColor wavelengthColor(double nm);
+
 
 protected:
     void paintEvent(QPaintEvent*) override
@@ -91,6 +130,9 @@ private:
         const int n = static_cast<int>(sizeof(palette) / sizeof(palette[0]));
         return palette[((index % n) + n) % n];
     }
+
+    bool showVisibleSpectrum_ = false;
+    SpectralAxis spectralAxis_ = SpectralAxis::EnergyEv;
 
     std::vector<double> x_;
     std::vector<QPair<QString, std::vector<double>>> series_;

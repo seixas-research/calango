@@ -72,7 +72,7 @@ Point Calango at a different file, or re-read it on demand, in {menuselection}`E
 | `spglib` | 2.0 | Symmetry detection (Structure panel), Raman/IR mode activity |
 | `scipy` | 1.9 | Interpolation and signal processing helpers |
 | `matplotlib` | 3.6 | Offline figure export |
-| `paramiko` | 3.0 | Remote Access panel (SSH/SFTP, cluster submission) |
+| `paramiko` | 3.0 | HPC panel (SSH/SFTP, cluster submission) |
 | `pillow` | — | GIF animation export |
 | `imageio` + `imageio-ffmpeg` | 2.28 / 0.4 | Video animation export — every format in the dialog (MP4, MOV, WebM, …) fails at import without the ffmpeg wheel |
 | `gpaw` + `gpaw-data` | 24.1 | DFT: single points, geometry optimization, bands, PDOS, and the post-SCF workflows built on them |
@@ -126,6 +126,6 @@ This is how you keep heavyweight stacks isolated: a GPAW environment for DFT, a 
 |---|---|---|
 | Embedded runtime (GUI, structure I/O, builders) | Resolved once at launch | `CALANGO_PYTHON` → `VIRTUAL_ENV` → bundled → configure-time |
 | Simulation jobs | Per wizard, per run | {guilabel}`Execution Environment` group (empty = embedded) |
-| Remote jobs | The cluster's own Python | Remote Access panel / generated `job.sh` |
+| Remote jobs | The cluster's own Python | HPC panel / generated `job.sh` |
 
 When anything Python-adjacent misbehaves, `calango --probe-python` answers the first question — *which* interpreter — in one line.

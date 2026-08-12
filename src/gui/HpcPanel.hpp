@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/SchedulerScript.hpp"
+#include "gui/ClusterPreset.hpp"
 #include "remote/RemoteClient.hpp"
 
 #include <QWidget>
@@ -10,15 +11,22 @@ class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QFormLayout;
 class QSpinBox;
 
 namespace calango::gui {
 
-/// Zone-11 "Remote Access" dock: SSH connection to an HPC cluster,
+/// Zone-11 "HPC" dock: SSH connection to an HPC cluster,
 /// scheduler configuration (SLURM / PBS / SGE), job submission over
 /// SFTP + SSH, live queue state, remote log streaming, and result
 /// download. Three compact tabs (Connection / Scheduler / Queue & Logs)
 /// keep it usable at bottom-row height.
+///
+/// The connection is a SESSION, not a series of logins: RemoteClient keeps
+/// one authenticated transport alive and everything below rides it. That is
+/// what makes a cluster with two-factor authentication usable — the code is
+/// typed once, into the dialog this panel raises, rather than once per
+/// status poll.
 ///
 /// The submission flow is driven by MainWindow: a simulation wizard's
 /// Stage-4 "Run (Remote)" makes it stage run.py + structure.extxyz into a
@@ -26,11 +34,11 @@ namespace calango::gui {
 /// so those two files are the whole job)
 /// and hand it to submitStagedJob(). This panel supplies the scheduler
 /// settings that submission is wrapped with, and monitors the result.
-class RemoteAccessPanel : public QWidget {
+class HpcPanel : public QWidget {
     Q_OBJECT
 
 public:
-    explicit RemoteAccessPanel(const QString& pythonExe,
+    explicit HpcPanel(const QString& pythonExe,
                                QWidget* parent = nullptr);
 
     /// Generate job.sh next to run.py, upload the directory's files to
@@ -42,7 +50,21 @@ Q_SIGNALS:
     void resultsReady(const QString& localDir);
 
 private Q_SLOTS:
+    /// (Re)authenticate. This is the ONLY place a 2FA challenge is ever
+    /// raised from — see onSessionStateChanged().
     void testConnection();
+    void closeConnection();
+    /// Put the server's challenge on screen and send back what is typed.
+    void onAuthPromptRequested(const QString& name, const QString& instruction,
+                               const QVector<remote::AuthPrompt>& prompts);
+    void onSessionStateChanged(remote::RemoteClient::SessionState state,
+                               const QString& detail);
+    /// Save the current form under the name in the preset combo.
+    void saveCurrentPreset();
+    /// Forget the selected preset.
+    void deleteCurrentPreset();
+    /// Load the chosen preset into the form.
+    void applySelectedPreset();
     void onProbeFinished(bool ok, const QString& message, const QString& scheduler);
     void onSubmitFinished(bool ok, const QString& jobId, const QString& message);
     void onMonitorFinished(const QString& finalState);
@@ -51,6 +73,13 @@ private Q_SLOTS:
 
 private:
     remote::SshConfig configFromUi() const;
+    /// The form as a preset (minus the password, which is never persisted).
+    ClusterPreset presetFromUi(const QString& name) const;
+    void applyPreset(const ClusterPreset& preset);
+    /// Rebuild the combo from `presets_`, selecting `name` when given.
+    void refreshPresetCombo(const QString& select = QString());
+    /// Show the SGE parallel-environment row only for SGE.
+    void updateSchedulerRows();
     core::RemoteJobSpec specFromUi(const QString& jobName) const;
     core::Scheduler scheduler() const;
     void appendLog(const QString& text, bool isError = false);
@@ -70,12 +99,24 @@ private:
     QLineEdit* passwordEdit_;
     QLineEdit* remoteDirEdit_;
     QPushButton* testButton_;
+    QPushButton* disconnectButton_ = nullptr;
     QLabel* statusLabel_;
+
+    // Cluster presets
+    QComboBox* presetCombo_ = nullptr;
+    QPushButton* presetSaveButton_ = nullptr;
+    QPushButton* presetDeleteButton_ = nullptr;
+    QVector<ClusterPreset> presets_;
 
     // Scheduler tab
     QComboBox* schedulerCombo_;
     QLineEdit* queueEdit_;
+    QSpinBox* nodesSpin_ = nullptr;
     QSpinBox* tasksSpin_;
+    QSpinBox* memorySpin_ = nullptr;
+    QLineEdit* peEdit_ = nullptr;
+    QFormLayout* schedulerForm_ = nullptr;
+    int peRow_ = -1;
     QLineEdit* walltimeEdit_;
     QPlainTextEdit* setupEdit_;
 
