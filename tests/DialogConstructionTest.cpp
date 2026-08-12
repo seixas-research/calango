@@ -48,6 +48,8 @@
 #include "gui/MolecularDynamicsWizard.hpp"
 #include "gui/SinglePointWizard.hpp"
 #include "gui/NonlinearOpticsWizard.hpp"
+#include "gui/OpticsWizard.hpp"
+#include "gui/ProcessManagerPanel.hpp"
 #include "gui/RamanIrWizard.hpp"
 #include "gui/Defect2dWizard.hpp"
 #include "gui/TwoDBandsWizard.hpp"
@@ -73,6 +75,8 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QTableWidget>
+#include <QEventLoop>
+#include <QTimer>
 #include <QTreeWidget>
 
 #include <algorithm>
@@ -92,6 +96,14 @@ void check(bool condition, const char* what)
     std::printf("  %s %s\n", condition ? "ok  " : "FAIL", what);
     if (!condition)
         ++failures;
+}
+
+/// For checks whose label is built at runtime — a wizard exercised in more
+/// than one mode has to say which mode failed, or the output names a
+/// condition without naming the case.
+void check(bool condition, const std::string& what)
+{
+    check(condition, what.c_str());
 }
 
 /// Toggle every checkbox and nudge every numeric control. Each of these emits
@@ -608,9 +620,43 @@ int main(int argc, char** argv)
             // here rather than on the user's first click.
             const int count = engine->count();
             check(count > 0, "offers at least one engine");
+
+            // -- Engine ORDER, which is engine DEFAULT -----------------------
+            // A combo opens on index 0, so whatever leads this list is what an
+            // unmodified run uses. Single-Point is the wizard that matters
+            // here: it is the only one that offers the built-in engine at all,
+            // and that engine used to lead — meaning the out-of-the-box run of
+            // the most-used module was the one that cannot return a number.
+            check(engine->currentIndex() == 0,
+                  "the engine combo opens on its first entry");
+            check(engine->findData(static_cast<int>(
+                      calango::core::CalculatorKind::Gpaw)) == 0,
+                  "GPAW is first, and therefore the default engine");
+            check(engine->itemData(engine->currentIndex()).toInt()
+                      == static_cast<int>(calango::core::CalculatorKind::Gpaw),
+                  "so an untouched wizard runs GPAW");
+
+            const int native = engine->findData(
+                static_cast<int>(calango::core::CalculatorKind::CalangoDft));
+            check(native > 0, "the built-in engine is offered, but not first");
+            if (native > 0) {
+                // Last, past the classical potentials. Not merely "not first":
+                // it produces no energy yet, so anywhere a user could land on
+                // it by scrolling past the DFT codes is too high.
+                check(native == count - 1,
+                      "the built-in engine is the LAST entry in the list");
+                check(engine->itemText(native)
+                          == QStringLiteral("Calango Native DFT (experimental)"),
+                      "and its label carries the experimental warning");
+            }
+
+            // Walking every engine drives updateCalculatorEnabled() against
+            // each one's group set. A group read before it is built crashes
+            // here rather than on the user's first click.
             for (int i = 0; i < count; ++i)
                 engine->setCurrentIndex(i);
             check(true, "switching through every engine does not crash");
+            engine->setCurrentIndex(0);
 
             // LAMMPS specifically: its settings group must appear when it is
             // selected, since the pair style IS the physics and a hidden group
@@ -1443,6 +1489,178 @@ int main(int argc, char** argv)
             check(script.contains(QStringLiteral("EPS_PAR = 6.9"))
                       && script.contains(QStringLiteral("EPS_PERP = 2.8")),
                   "and carries both dielectric constants, separately");
+        }
+    }
+
+    // The Processes dock. Two things here cannot be seen by construction
+    // alone: the walltime column is driven by a live QTimer, and the status
+    // column's correctness is now about what it does NOT contain.
+    std::printf("Processes panel:\n");
+    {
+        ProcessManagerPanel panel;
+        auto* tree = panel.findChild<QTreeWidget*>();
+        check(tree != nullptr, "has a task tree");
+        if (tree) {
+            check(tree->columnCount() == 4, "four columns");
+            check(tree->headerItem()->text(3) == QStringLiteral("Walltime"),
+                  "the fourth of which is Walltime");
+
+            const int id = panel.registerTask(QStringLiteral("job"),
+                                              QStringLiteral("/tmp/proc_0"));
+            check(tree->topLevelItemCount() == 1, "registering adds a row");
+            QTreeWidgetItem* row = tree->topLevelItem(0);
+
+            // Status is a GLYPH now. The text is gone — that is the horizontal
+            // space this change was for — and the word moved to the tooltip so
+            // the meaning did not go with it.
+            check(row->text(1).isEmpty(),
+                  "the status column carries no text at all");
+            // The DECORATION ROLE is what is asserted, not a non-null pixmap:
+            // this binary does not link the icon resource (IconManager reads
+            // it from qrc), so the glyph renders empty here while the role is
+            // still populated. Asserting the pixmap would make this test a
+            // check on the test target's resource list rather than on the
+            // panel.
+            check(row->data(1, Qt::DecorationRole).isValid(),
+                  "the status is carried by the decoration role instead");
+            check(!row->toolTip(1).isEmpty(),
+                  "with the word preserved in its tooltip");
+
+            // A queued task has not run for zero seconds; it has not run.
+            check(row->text(3).isEmpty(),
+                  "a queued task shows no walltime yet");
+
+            panel.setTaskStatus(id, ProcessManagerPanel::Status::Running);
+            check(row->text(3) == QStringLiteral("0:00"),
+                  "the clock starts when the task starts running");
+            check(row->text(1).isEmpty(),
+                  "and the status column stays text-free when it changes");
+
+            // The live part. Nothing but a real event loop proves the timer is
+            // running, connected, and ticking the right rows.
+            const auto spin = [](int ms) {
+                QEventLoop loop;
+                QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+                loop.exec();
+            };
+            spin(1200);
+            // "advanced", not "reads 0:01". Under `ctest -j` a 1200 ms wait
+            // can land well past 2 s, and pinning the exact digit would make
+            // this a test of the machine's load rather than of the timer.
+            const QString ticked = row->text(3);
+            check(ticked != QStringLiteral("0:00") && !ticked.isEmpty(),
+                  "and advances on its own while the task runs");
+
+            panel.setTaskStatus(id, ProcessManagerPanel::Status::Completed);
+            const QString frozen = row->text(3);
+            check(!frozen.isEmpty(), "a finished task keeps its duration");
+            spin(1200);
+            check(row->text(3) == frozen,
+                  "frozen at the total, not still counting");
+
+            // A task that never left the queue has no duration to report, and
+            // 0:00 would be a claim that it ran instantly.
+            const int aborted = panel.registerTask(QStringLiteral("never ran"),
+                                                   QString());
+            panel.setTaskStatus(aborted, ProcessManagerPanel::Status::Failed);
+            check(tree->topLevelItem(1)->text(3).isEmpty(),
+                  "a task aborted while queued reports no walltime");
+        }
+    }
+
+    // The Optics wizard, in both of its modes. "2D Optics" is the SAME class
+    // with twoDimensional=true, so the 2D variant inherits every response
+    // option rather than reimplementing any — which is worth pinning, because
+    // the cheapest way to break it is a 2D-only branch that quietly skips one.
+    //
+    // Also pinned: the relaxation-time row hides when it does not apply. It
+    // sits inside a nested layout, and QFormLayout can only hide a row through
+    // a widget it holds DIRECTLY — addressed through the spin box it would
+    // silently stay visible, showing a number that is not being used.
+    std::printf("Optics wizard (3D and 2D):\n");
+    for (const bool twoD : {false, true}) {
+        calango::pybridge::PythonEngine python;
+        auto structure = std::make_shared<calango::core::Structure>();
+        OpticsWizard wizard(structure, twoD);
+        wizard.setDensityBaselines(
+            {{QStringLiteral("proc_1"), QStringLiteral("/jobs/1/sp.gpw")}});
+        wizard.show();
+        const char* mode = twoD ? "2D" : "3D";
+        check(true, std::string(mode) + ": constructs");
+
+        const auto boxes = wizard.findChildren<QCheckBox*>();
+        const auto boxNamed = [&boxes](const QString& fragment) {
+            return std::find_if(boxes.begin(), boxes.end(),
+                                [&fragment](const QCheckBox* box) {
+                                    return box->text().contains(fragment);
+                                });
+        };
+        const auto drude = boxNamed(QStringLiteral("Drude"));
+        const auto tetra = boxNamed(QStringLiteral("Tetrahedron"));
+        const auto ibz = boxNamed(QStringLiteral("irreducible BZ"));
+        check(drude != boxes.end(),
+              std::string(mode) + ": offers the Drude term");
+        check(tetra != boxes.end(),
+              std::string(mode) + ": offers tetrahedron integration");
+        check(ibz != boxes.end(),
+              std::string(mode) + ": offers the symmetry reduction");
+        if (drude == boxes.end() || tetra == boxes.end())
+            continue;
+        check((*drude)->isChecked(),
+              std::string(mode)
+                  + ": the Drude term is on by default (GPAW gates it on "
+                    "metallicity, so it is a no-op when gapped)");
+
+        // The relaxation time is only meaningful once the rate is untied from
+        // eta, so its row must appear and disappear with that choice.
+        auto* tau = wizard.findChild<QDoubleSpinBox*>();
+        const auto combos = wizard.findChildren<QComboBox*>();
+        const auto rateCombo = std::find_if(
+            combos.begin(), combos.end(), [](const QComboBox* box) {
+                return box->count() == 2
+                    && box->itemText(0).contains(QStringLiteral("broadening"));
+            });
+        check(rateCombo != combos.end(),
+              std::string(mode) + ": has the Drude rate-source selector");
+        if (rateCombo == combos.end())
+            continue;
+        const auto tauSpins = wizard.findChildren<QDoubleSpinBox*>();
+        const auto tauSpin = std::find_if(
+            tauSpins.begin(), tauSpins.end(), [](const QDoubleSpinBox* spin) {
+                return spin->suffix().contains(QStringLiteral("fs"));
+            });
+        check(tauSpin != tauSpins.end(),
+              std::string(mode) + ": has the relaxation-time spin box");
+        if (tauSpin != tauSpins.end()) {
+            check(!(*tauSpin)->isVisibleTo(&wizard),
+                  std::string(mode)
+                      + ": tau is hidden while the rate follows eta");
+            (*rateCombo)->setCurrentIndex(1);  // "From a relaxation time"
+            check((*tauSpin)->isVisibleTo(&wizard),
+                  std::string(mode) + ": and appears once it does not");
+            (*drude)->setChecked(false);
+            check(!(*tauSpin)->isVisibleTo(&wizard),
+                  std::string(mode)
+                      + ": turning the term off hides it again");
+            (*drude)->setChecked(true);
+        }
+
+        // Both advanced options at once, reaching the script — the combination
+        // a metallic monolayer needs.
+        (*tetra)->setChecked(true);
+        const auto* preview = wizard.findChild<QPlainTextEdit*>();
+        check(preview != nullptr, std::string(mode) + ": has a preview");
+        if (preview) {
+            const QString script = preview->toPlainText();
+            check(script.contains(
+                      QStringLiteral("integrationmode = \"tetrahedron")),
+                  std::string(mode) + ": tetrahedron reaches the script");
+            check(script.contains(QStringLiteral("_drude_tau_fs = 10")),
+                  std::string(mode)
+                      + ": so does the relaxation time");
+            check(twoD == script.contains(QStringLiteral("twod_observables")),
+                  std::string(mode)
+                      + ": the sheet observables follow the mode");
         }
     }
 

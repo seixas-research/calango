@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.10
+    VERSION 26.8.11
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -616,6 +616,8 @@ qt_add_executable(calango
     src/gui/CastColorsDialog.cpp
     src/gui/AddAdsorbateDialog.hpp
     src/gui/AddAdsorbateDialog.cpp
+    src/gui/GrainCasts.hpp
+    src/gui/GrainCasts.cpp
     src/gui/GrapheneOxideWizard.hpp
     src/gui/GrapheneOxideWizard.cpp
     src/gui/GrapheneOxideMdmcWizard.hpp
@@ -1172,8 +1174,16 @@ if(CALANGO_BUILD_TESTS)
         src/core/Structure.cpp
         src/core/UnitCell.cpp
         src/core/Element.cpp
+        # The grain -> cast mapping is checked in the same test that builds the
+        # polycrystal: "the tessellation is right" and "the viewport will show
+        # it" are one claim, and splitting them across two binaries would let
+        # either half pass while the pair is broken.
+        src/gui/GrainCasts.cpp
     )
     target_include_directories(calango_solid_interface_test PRIVATE src)
+    # Qt6::Gui for QColor only — no widgets, no OpenGL, so this stays a
+    # headless test that needs no display.
+    target_link_libraries(calango_solid_interface_test PRIVATE Qt6::Gui)
     add_test(NAME solid_interface_builder COMMAND calango_solid_interface_test)
 
     # Harmonic phonon thermodynamics: checked against the closed-form Einstein
@@ -1306,6 +1316,9 @@ if(CALANGO_BUILD_TESTS)
     # driven here. Offscreen, no display.
     qt_add_executable(calango_dialog_test
         tests/DialogConstructionTest.cpp
+        # The Processes dock: its walltime column is a live QTimer, which only
+        # a running event loop can exercise.
+        src/gui/ProcessManagerPanel.cpp
         src/gui/DatabaseImportDialog.cpp
         src/python_bridge/MaterialsProject.cpp
         src/gui/FilmTimelineWidget.cpp
@@ -1351,6 +1364,9 @@ if(CALANGO_BUILD_TESTS)
         # missing its symmetry line.
         src/gui/NonlinearOpticsWizard.cpp
         src/core/NonlinearOpticsScriptGenerator.cpp
+        # The Optics wizard, exercised in both its 3D and 2D modes.
+        src/gui/OpticsWizard.cpp
+        src/core/OpticsScriptGenerator.cpp
         # And the Raman / IR wizard, which now swaps whole group boxes when the
         # engine changes — GPAW selects three inherited runs, VASP and Quantum
         # ESPRESSO converge their own ground state — from a signal its
@@ -1982,6 +1998,10 @@ if(CALANGO_BUILD_TESTS)
         src/core/TopologyScriptGenerator.cpp
         src/core/ClusterExpansionScriptGenerator.cpp
         src/core/GrapheneOxideMdmcScriptGenerator.cpp
+        # The k-point sweep, which brings its shared measurement/analysis
+        # blocks with it (ConvergenceSweepBlocks).
+        src/core/KpointsConvergenceScriptGenerator.cpp
+        src/core/ConvergenceSweepBlocks.cpp
         src/core/BandUnfolding.cpp
         src/core/UnitCell.cpp
     )
@@ -2386,6 +2406,29 @@ if(CALANGO_BUILD_TESTS)
     add_test(NAME optics_silicon
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/optics_silicon_benchmark.py)
+
+    # The metallic half of the optics pipeline: the intraband (Drude) term the
+    # generator now emits for every system. optics_silicon covers the gapped
+    # case, where GPAW's `gs.metallic and intraband` gate makes it a no-op —
+    # only a metal exercises the term itself.
+    #
+    # FCC Au is chosen for a reference the calculation cannot influence: one
+    # nearly-free 6s carrier per atom gives ħω_p = 9.02 eV, and the sweep lands
+    # at 9.04. It also documents WHY the k-mesh matters here, which no other
+    # test does: ω_p is a Fermi-surface integral, so under point integration it
+    # runs 15.2 → 16.2 → 11.8 → 9.6 eV over 4³ → 12³ — non-monotonic, with 8³
+    # and 10³ agreeing to 0.6 % while both are 30 % wrong. Tetrahedron
+    # integration is within 2 % from 4³ onward.
+    #
+    # 5 of the 8 meshes need the qsymmetry=False fallback, so this is also the
+    # end-to-end check that the fallback works on a real cell rather than only
+    # appearing in the generated text.
+    #
+    # ~75 s: one atom per cell, seconds per mesh. Self-skips without GPAW.
+    add_test(NAME au_plasma_convergence
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/au_plasma_convergence_benchmark.py)
+    set_tests_properties(au_plasma_convergence PROPERTIES TIMEOUT 1800)
 
     # Every test runs with its Calango config sandboxed into the build tree.
     # SettingsManager mirrors QSettings to a JSON file at a fixed home-dir

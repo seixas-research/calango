@@ -69,6 +69,26 @@ std::string kpointsLine(const OpticsConfig& cfg)
 ///     4 for bcc, 6 for hexagonal. A search that stepped by one and stopped
 ///     at +6, as this did, could satisfy none of those and had every odd
 ///     candidate poison the whole batch through that raise.
+///
+/// For some lattices the search cannot succeed at ANY size, and that is a
+/// fact about the cell rather than a mesh that was not grown enough. The
+/// vertices of a rhombohedral, monoclinic or triclinic IBZ sit at positions
+/// fixed by the cell angles — for 3R-NbS2 (RHL, alpha = 30.65 deg) at
+/// 0.1838, 0.3419, 0.6581 in reciprocal-lattice units — and a Monkhorst-Pack
+/// grid only ever reaches rationals n/N. GPAW's own
+/// `optimal_monkhorst_pack_grid(contains_ibz_vertices=True)` fails on such a
+/// cell too.
+///
+/// The exhaustion branch therefore does NOT give up, and does not quietly
+/// demote the user to point integration: GPAW imposes the vertex requirement
+/// only while it is using symmetry to shrink the response integration domain
+/// (`chi0_base.get_integrator_cls` guards the check with
+/// `if not self.qsymmetry.disabled`). Passing `qsymmetry=False` lifts the
+/// requirement and the tetrahedron integrator runs on the requested mesh,
+/// integrating the whole zone instead of a wedge. That costs about the
+/// number of crystal symmetry operations more, and is reported when it
+/// happens, but it computes the spectrum with the integrator that was asked
+/// for — which a fallback to point integration would not.
 std::string tetrahedronKpointsBlock()
 {
     return R"PY(# --- Tetrahedron integration: the mesh must reach the IBZ vertices -
@@ -88,6 +108,11 @@ std::string tetrahedronKpointsBlock()
 # above it are ranked by cost and the cheapest one GPAW's own predicate
 # accepts wins. Checked here, before anything expensive runs.
 _tetra_requested = tuple(int(_n) for _n in _response_kpts)
+# Whether the response may use symmetry to reduce its integration domain.
+# Set False only if this cell admits no compliant mesh at all (see the
+# exhaustion branch below); defined here so every path downstream can
+# read it, including the one where the predicate cannot be imported.
+_tetra_qsymmetry = True
 # The cell the baseline was converged on. `atoms` is NOT in scope here —
 # at this point in the script only the restarted calculator exists, and
 # the predicate below needs an Atoms object.
@@ -156,17 +181,39 @@ else:
             _chosen = _hits[0]
             break
     if _chosen is None:
-        raise RuntimeError(
-            "Tetrahedron integration needs a response k-mesh containing "
-            "every vertex of the irreducible Brillouin zone, and no even "
-            f"Gamma-centred grid from {_response_kpts} up to "
-            f"{tuple(_v[-1] for _v in _axis_vals)} satisfies that for "
-            "this cell.\n\n"
-            "Either raise the response k-mesh in the Optics wizard and "
-            "re-run, or turn tetrahedron integration off to use point "
-            "integration with the eta broadening.")
+        # No compliant grid exists — and for these cells none ever will,
+        # at any size, so growing the mesh further is not the answer.
+        # GPAW only demands the IBZ vertices when it is USING symmetry to
+        # reduce the response integration domain
+        # (gpaw/response/chi0_base.py: the check is guarded by
+        # `if not self.qsymmetry.disabled`). With that reduction switched
+        # off the tessellation is anchored on the full zone and the
+        # tetrahedron integrator runs on any Gamma-centred even mesh.
+        #
+        # So symmetry reduction is what gets dropped here, NOT tetrahedron
+        # integration. The integrator the user asked for is the one that
+        # runs; the spectrum is the same one symmetry would have produced,
+        # reached by integrating the whole zone instead of a wedge.
+        _tetra_qsymmetry = False
+        _chosen = _response_kpts
+        print(f"CALANGO_WARN no Gamma-centred even mesh from "
+              f"{_response_kpts} up to "
+              f"{tuple(_v[-1] for _v in _axis_vals)} puts every IBZ vertex "
+              f"on a mesh point for this cell. That is a property of the "
+              f"lattice, not of the mesh: a rhombohedral, monoclinic or "
+              f"triclinic zone has vertices at positions fixed by the cell "
+              f"angles, generally irrational in units of the mesh spacing, "
+              f"so no grid of any size can contain them. Keeping "
+              f"tetrahedron integration and disabling symmetry reduction "
+              f"of the response domain (qsymmetry=False) instead, which "
+              f"lifts the requirement entirely. The mesh stays "
+              f"{_response_kpts}; expect the response step to cost roughly "
+              f"the number of crystal symmetry operations more than a "
+              f"symmetry-reduced run.", flush=True)
     _response_kpts_spec = {"size": _chosen, "gamma": True}
-    if _chosen != _tetra_requested:
+    if not _tetra_qsymmetry:
+        pass  # already reported above, and the mesh was not substituted
+    elif _chosen != _tetra_requested:
         print(f"CALANGO_WARN response k-mesh raised from {_tetra_requested} "
               f"to {_chosen} (Gamma-centred, even): tetrahedron integration "
               f"requires every vertex of the irreducible Brillouin zone to "
@@ -287,6 +334,77 @@ std::string symmetryLine(const OpticsConfig& cfg)
                       "by its degeneracy.\n")
         : std::string("    symmetry=\"off\",  # sample the full Brillouin "
                       "zone\n");
+}
+
+/// The free-carrier (Drude) settings, emitted as named variables the
+/// `DielectricFunction` call below reads.
+///
+/// Named rather than inlined into the constructor because the relaxation rate
+/// is the one number here that a reader will want to check against a paper,
+/// and the factor of two between the two conventions is exactly the kind of
+/// thing that is invisible when buried in an argument list.
+std::string drudeBlock(const OpticsConfig& cfg)
+{
+    std::ostringstream out;
+    out << "# --- Free-carrier (Drude) term ------------------------------------\n";
+    if (!cfg.intrabandDrude) {
+        out << "# Turned OFF in the wizard. Note this is not the same as \"this\n"
+               "# system has no free carriers\": GPAW already gates the term on\n"
+               "# `gs.metallic`, so on a gapped system leaving it on costs\n"
+               "# nothing and changes nothing. Off means a METAL's spectrum is\n"
+               "# computed without its free-carrier response — interband only,\n"
+               "# which is a legitimate thing to want to look at and a wrong\n"
+               "# thing to compare against a measured reflectivity.\n"
+               "_intraband = False\n"
+               "_drude_rate = \"eta\"  # unused: GPAW discards it when "
+               "intraband is off\n"
+               "_drude_tau_fs = None\n"
+               "print(\"CALANGO_WARN intraband (Drude) term DISABLED. On a \"\n"
+               "      \"metal the low-energy spectrum will lack the \"\n"
+               "      \"free-carrier response entirely; on a gapped system \"\n"
+               "      \"this changes nothing.\", flush=True)\n";
+        return out.str();
+    }
+
+    out << "_intraband = True\n";
+    if (cfg.drudeRateFromBroadening) {
+        out << "# The relaxation rate follows the broadening — GPAW's own\n"
+               "# \"eta\" idiom. It must be NON-ZERO whatever it is: the rate is\n"
+               "# what moves the frequency contour off the real axis, and\n"
+               "# rate=0.0 (DielectricFunction's own default) trips\n"
+               "# `assert chi0_drude.zd.upper_half_plane` on any metal.\n"
+               "#\n"
+               "# Tied rather than separate keeps one number where the physics\n"
+               "# has two, which is the conservative choice: it cannot\n"
+               "# disagree with itself. It is also not a scattering time — set\n"
+               "# an explicit relaxation time in the wizard to compare against\n"
+               "# a measured Drude edge.\n"
+               "_drude_rate = \"eta\"\n"
+               "_drude_tau_fs = None\n";
+    } else {
+        // ħ = 0.6582119569 eV·fs. Emitted as an expression rather than a
+        // pre-multiplied constant so the conversion is auditable in the
+        // script itself — this factor of two is the whole trap.
+        out << "# An explicit relaxation time, converted to the rate GPAW\n"
+               "# wants. The factor of two is not a fudge:\n"
+               "#\n"
+               "#   GPAW:      eps = 1 - omega_p^2 / (omega + i*rate)^2\n"
+               "#   textbook:  eps = 1 - omega_p^2 / (omega*(omega + i*Gamma))\n"
+               "#\n"
+               "# which agree to leading order only if Gamma = 2*rate. With\n"
+               "# Gamma = hbar/tau that gives rate = hbar/(2*tau). GPAW's own\n"
+               "# docstring flags the same discrepancy (\"differs from some\n"
+               "# literature by a factor of 2\"), so a tau entered in the\n"
+               "# wizard and a rate quoted in a paper are NOT interchangeable.\n"
+            << "_drude_tau_fs = " << cfg.drudeRelaxationTimeFs << "\n"
+            << "_hbar_eV_fs = 0.6582119569\n"
+               "_drude_rate = _hbar_eV_fs / (2.0 * _drude_tau_fs)  # eV\n"
+               "print(f\"CALANGO_INFO Drude relaxation time \"\n"
+               "      f\"tau={_drude_tau_fs:g} fs -> rate={_drude_rate:.5f} eV \"\n"
+               "      f\"(damping Gamma = 2*rate = {2.0 * _drude_rate:.5f} eV)\",\n"
+               "      flush=True)\n";
+    }
+    return out.str();
 }
 
 /// The 2D-observables block appended to both engine scripts. It only assumes
@@ -714,7 +832,36 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
         << (cfg.tetrahedronIntegration ? "tetrahedron integration"
                                        : "point integration")
         << "\"\n"
-           "results_meta = {\"integrationmode\": integrationmode}\n"
+        << drudeBlock(cfg)
+        << "results_meta = {\"integrationmode\": integrationmode,\n"
+           "                \"intraband\": bool(_intraband),\n"
+           "                \"drude_rate\": _drude_rate,\n"
+           "                \"drude_tau_fs\": _drude_tau_fs}\n"
+           "# Said once, up front: a spectrum with a free-carrier term in it\n"
+           "# and one without are different physics, and which one this is\n"
+           "# should not have to be inferred from the shape of the curve.\n"
+           "print(f\"CALANGO_INFO intraband (Drude) term \"\n"
+           "      f\"{'enabled' if _intraband else 'DISABLED'}, \"\n"
+           "      f\"rate={_drude_rate}. GPAW scales it by the free-carrier \"\n"
+           "      f\"plasma frequency, which vanishes for a gapped system, so \"\n"
+           "      f\"this changes metals only.\", flush=True)\n"
+           "# The one thing that will quietly ruin a metal's low-energy\n"
+           "# spectrum even with everything else right. The plasma frequency\n"
+           "# is a FERMI-SURFACE integral, so it converges with k far more\n"
+           "# slowly than the interband spectrum beside it, and it need not\n"
+           "# converge monotonically — measured on 3R-NbS2, omega_p swung\n"
+           "# 3.4-4.2 eV in-plane between 6^3 and 12^3 while the c-axis\n"
+           "# component was still climbing 70%. Two adjacent meshes agreeing\n"
+           "# is therefore not evidence of convergence. eta enters the Drude\n"
+           "# term as HALF the damping that appears in epsilon (GPAW's\n"
+           "# convention: Gamma = 2*rate, tau = hbar/Gamma), so a rate chosen\n"
+           "# to match a measured resistivity must account for both.\n"
+           "print(\"CALANGO_WARN if this system is metallic, converge the \"\n"
+           "      \"plasma frequency (printed as 'Plasma frequency:' in \"\n"
+           "      \"gpaw_df.txt) against the k-mesh before trusting the \"\n"
+           "      \"low-energy spectrum: it is a Fermi-surface quantity and \"\n"
+           "      \"the mesh that converges the interband part is typically \"\n"
+           "      \"far too coarse for it.\", flush=True)\n"
            "\n"
            "# --- Photon-energy grid ------------------------------------------\n"
            "# The window and sample count the wizard collected, handed to GPAW\n"
@@ -734,44 +881,72 @@ std::string generateOpticsScript(const OpticsConfig& cfg)
            "      f\"in {len(frequencies_eV)} points\", flush=True)\n"
            "\n"
         << frequencyArgumentBlock(cfg)
-        << "try:\n"
-           "    df = DielectricFunction(\n"
+        << "def _make_df(_qsym=True):\n"
+           "    \"\"\"Build the DielectricFunction.\n"
+           "\n"
+           "    `_qsym` reaches GPAW only under tetrahedron integration,\n"
+           "    which is the only mode that carries the IBZ-vertex\n"
+           "    requirement — and carries it only while it is using\n"
+           "    symmetry to reduce the response integration domain.\n"
+           "    \"\"\"\n"
+           "    return DielectricFunction(\n"
            "        \"gs_nscf.gpw\",\n"
            "        frequencies=_frequency_arg,\n"
            "        hilbert=_hilbert,\n"
         << "        eta=" << cfg.broadeningEv
         << ",  # Lorentzian broadening η, eV\n"
-           "        intraband=False,  # semiconductor: no Drude/intraband term\n"
+           "        # Free-carrier (Drude) term and its relaxation rate, both\n"
+           "        # set in the block above. GPAW adds the term only when the\n"
+           "        # ground state is actually metallic — chi0.py gates it on\n"
+           "        # `if self.gs.metallic and intraband` — so leaving it on is\n"
+           "        # the correct setting for both cases rather than a guess\n"
+           "        # about which one this is. On an insulator it is a verified\n"
+           "        # no-op (bitwise-identical spectra); on a metal it supplies\n"
+           "        # the intraband absorption and the negative Drude eps_1\n"
+           "        # that dominate below the interband onset, and whose\n"
+           "        # absence made metals silently wrong here.\n"
+           "        intraband=_intraband,\n"
+           "        rate=_drude_rate,\n"
            "        integrationmode=integrationmode,\n"
-           "        txt=\"gpaw_df.txt\",\n"
+        << (cfg.tetrahedronIntegration ? "        qsymmetry=_qsym,\n" : "")
+        << "        txt=\"gpaw_df.txt\",\n"
            "    )\n"
-           "    # The k-grid check happens lazily, inside the first response\n"
-           "    # evaluation, so it is triggered here rather than left to\n"
-           "    # surface halfway through the direction loop.\n"
-           "    _ = df.get_frequencies()\n"
-           "except ValueError as exc:\n"
-           "    if \"vertices of the IBZ\" not in str(exc):\n"
-           "        raise\n"
-           "    # The mesh was already checked against GPAW's own\n"
-           "    # contains_ibz_vertices predicate before the NSCF ran, so\n"
-           "    # reaching here means the response module rejected a grid that\n"
-           "    # predicate accepted — a genuine disagreement worth reporting\n"
-           "    # rather than papering over. Falling back to point integration\n"
-           "    # would return a spectrum computed by a different method than\n"
-           "    # the one requested, labeled as if it were not.\n"
-           "    raise RuntimeError(\n"
-           "        \"Tetrahedron integration requires a k-grid containing \"\n"
-           "        \"every vertex of the irreducible Brillouin zone. The \"\n"
-           "        \"response mesh was adjusted to satisfy \"\n"
-           "        \"gpaw.bztools.contains_ibz_vertices_predicate before the \"\n"
-           "        \"NSCF step, and the response module still rejected it.\\n\\n\"\n"
-           "        f\"Mesh used: {_response_kpts_spec}\\n\\n\"\n"
-           "        \"Raise the response k-mesh in the Optics wizard, or turn \"\n"
-           "        \"off tetrahedron integration to use point integration \"\n"
-           "        \"with the eta broadening.\\n\\n\"\n"
-           "        f\"GPAW reported: {exc}\"\n"
-           "    ) from exc\n"
-           "# Read back rather than reused: this is the grid the response\n"
+           "\n"
+           "\n"
+        << (cfg.tetrahedronIntegration
+                ? "try:\n"
+                  "    df = _make_df(_tetra_qsymmetry)\n"
+                  "    # The k-grid check happens lazily, inside the first\n"
+                  "    # response evaluation, so it is triggered here rather\n"
+                  "    # than left to surface halfway through the direction\n"
+                  "    # loop.\n"
+                  "    _ = df.get_frequencies()\n"
+                  "except ValueError as exc:\n"
+                  "    if \"vertices of the IBZ\" not in str(exc) \\\n"
+                  "            or not _tetra_qsymmetry:\n"
+                  "        raise\n"
+                  "    # The mesh satisfied gpaw.bztools' own predicate before\n"
+                  "    # the NSCF ran and the response module rejected it\n"
+                  "    # anyway: the two disagree. The remedy is the same one\n"
+                  "    # the exhaustion branch uses — drop symmetry reduction\n"
+                  "    # of the response domain, which is what imposes the\n"
+                  "    # requirement, and keep the integrator that was asked\n"
+                  "    # for. Retried rather than raised, because a spectrum\n"
+                  "    # from the requested integrator is the point.\n"
+                  "    print(f\"CALANGO_WARN mesh {_response_kpts_spec} passed \"\n"
+                  "          f\"gpaw.bztools.contains_ibz_vertices_predicate but \"\n"
+                  "          f\"the response module rejected it ({exc}). Retrying \"\n"
+                  "          f\"with symmetry reduction of the response domain \"\n"
+                  "          f\"disabled (qsymmetry=False), which lifts the \"\n"
+                  "          f\"IBZ-vertex requirement; tetrahedron integration \"\n"
+                  "          f\"is kept.\", flush=True)\n"
+                  "    _tetra_qsymmetry = False\n"
+                  "    df = _make_df(False)\n"
+                  "    _ = df.get_frequencies()\n"
+                  "results_meta[\"qsymmetry\"] = bool(_tetra_qsymmetry)\n"
+                : "df = _make_df()\n"
+                  "_ = df.get_frequencies()\n")
+        << "# Read back rather than reused: this is the grid the response\n"
            "# module actually integrated on, and asserting it against the one\n"
            "# requested is what would catch a future GPAW quietly substituting\n"
            "# its own.\n"

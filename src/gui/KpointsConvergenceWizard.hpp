@@ -58,6 +58,9 @@ protected:
     /// calculator page's k-grid row and BZ toggles would be controls the
     /// generated script ignores.
     bool showsKpointGridRow() const override { return false; }
+    /// The ω_p target follows the engine: only the GPAW branch of the
+    /// generator can reach the response module that supplies it.
+    void updateCalculatorExtras(core::CalculatorKind kind) override;
 
     QString generateScript() const override;
     QString exportFileName() const override
@@ -89,7 +92,15 @@ private:
     QWidget* axisRows_[3] = {nullptr, nullptr, nullptr};
     QSpinBox* stepsSpin_ = nullptr;
 
+    /// Enable/disable the ω_p target with the engine — GPAW's response module
+    /// is the only route to the intraband term this generator has.
+    void updatePlasmaRow(bool gpaw);
+
     QCheckBox* gammaCheck_ = nullptr;
+    /// "Optical properties: intraband plasma frequency ω_p" — the fourth
+    /// convergence target, off by default because it costs a response
+    /// evaluation per mesh and is meaningless on a gapped system.
+    QCheckBox* plasmaCheck_ = nullptr;
     QLabel* sweepSummary_ = nullptr;
     QFormLayout* sweepForm_ = nullptr;
 

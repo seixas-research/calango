@@ -1,6 +1,7 @@
 #include "python_bridge/PythonEngine.hpp"
 
 #include <cassert>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 

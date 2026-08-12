@@ -12,6 +12,7 @@
 #include <QTimer>
 
 #include <algorithm>
+#include <cstdint>
 
 #ifdef __APPLE__
 #include <libproc.h>

@@ -260,12 +260,16 @@ int main(int argc, char** argv)
         check(tree && tree->topLevelItemCount() == 2,
               "dispatch registers both nodes in the Processes panel");
         if (tree && tree->topLevelItemCount() == 2) {
-            const QString first = tree->topLevelItem(0)->text(1);
-            const QString second = tree->topLevelItem(1)->text(1);
-            check((first == QLatin1String("running")
-                   && second == QLatin1String("queued"))
-                      || (first == QLatin1String("queued")
-                          && second == QLatin1String("running")),
+            // Asked as a VALUE, not read off the status column: that column
+            // carries a glyph and no text now, and matching a translated word
+            // was never a sound way to ask this in the first place.
+            using PanelStatus = calango::gui::ProcessManagerPanel::Status;
+            const PanelStatus first = panel.rowStatus(0);
+            const PanelStatus second = panel.rowStatus(1);
+            check((first == PanelStatus::Running
+                   && second == PanelStatus::Queued)
+                      || (first == PanelStatus::Queued
+                          && second == PanelStatus::Running),
                   "panel shows one running and one queued row");
         }
 
@@ -285,12 +289,12 @@ int main(int argc, char** argv)
         check(!readAll(relaxed2).isEmpty()
                   && readAll(injected2) == readAll(relaxed2),
               "relaxed geometry (coordinates + cell) injected into node 2");
-        if (tree && tree->topLevelItemCount() == 2)
-            check(tree->topLevelItem(0)->text(1)
-                          == QLatin1String("completed")
-                      && tree->topLevelItem(1)->text(1)
-                          == QLatin1String("completed"),
+        if (tree && tree->topLevelItemCount() == 2) {
+            using PanelStatus = calango::gui::ProcessManagerPanel::Status;
+            check(panel.rowStatus(0) == PanelStatus::Completed
+                      && panel.rowStatus(1) == PanelStatus::Completed,
                   "both panel rows end completed");
+        }
         check(startedCount == 2 && finishedOk == 2,
               "node lifecycle signals fired for the Results integration");
     }

@@ -66,6 +66,7 @@
 #include "gui/OverlayPanel.hpp"
 #include "gui/GrapheneOxideMdmcWizard.hpp"
 #include "gui/GrapheneOxideWizard.hpp"
+#include "gui/GrainCasts.hpp"
 #include "gui/GuiUtils.hpp"
 #include "gui/GwResultsWindow.hpp"
 #include "gui/OpticsResultsWindow.hpp"
@@ -6624,14 +6625,12 @@ int MainWindow::applyGrainCasts()
     const auto it = fields.find("grain");
     if (it == fields.end() || it->second.size() != doc->structure->size())
         return 0;
-    const std::vector<double>* field = &it->second;
 
-    int grainCount = 0;
-    for (const double value : *field)
-        grainCount = std::max(grainCount, static_cast<int>(value) + 1);
-    // One grain is not a polycrystal, and a single "Grain 1" cast covering
-    // every atom is a control that does nothing.
-    if (grainCount < 2)
+    // How many grains there are, which atom is in which, and what colour each
+    // gets: all of that is grainCastsFor(), which is testable on its own. Only
+    // the write-back into the render style stays here.
+    const GrainCastAssignment assignment = grainCastsFor(it->second);
+    if (assignment.grainCount < 2)
         return 0;
 
     auto& style = viewport_->style();
@@ -6640,33 +6639,22 @@ int MainWindow::applyGrainCasts()
     // carries a grain, but naming it honestly beats leaving the previous
     // structure's label in place.
     style.castName = tr("Ungrouped");
-    for (int grain = 0; grain < grainCount; ++grain) {
+    for (int grain = 0; grain < assignment.grainCount; ++grain) {
         render::StructureRenderer::CastStyle cast = style.castStyle(0);
-        // Golden-angle hue rotation. Consecutive grains land ~137.5° apart, so
-        // any PREFIX of the sequence is well separated — which matters because
-        // the grain count is whatever the user asked for, from 2 to dozens,
-        // and a fixed palette would either run out or waste its best colours.
-        // Saturation and value alternate slightly as well: past roughly a
-        // dozen grains hue alone starts to repeat perceptually, and two
-        // touching grains of the same apparent colour is exactly the thing
-        // this feature exists to prevent.
-        const double hue = std::fmod(grain * 137.508, 360.0);
-        const int saturation = (grain % 3 == 1) ? 165 : 220;
-        const int value = (grain % 3 == 2) ? 195 : 245;
-        cast.castColor = QColor::fromHsv(static_cast<int>(hue), saturation,
-                                         value);
+        cast.castColor = assignment.colors[static_cast<std::size_t>(grain)];
         cast.name = tr("Grain %1").arg(grain + 1);
         style.castStyles.push_back(cast);
     }
+    style.atomCasts = assignment.atomCasts;
 
-    style.atomCasts.assign(doc->structure->size(), 0);
-    for (std::size_t i = 0; i < field->size(); ++i) {
-        const int grain = static_cast<int>((*field)[i]);
-        if (grain >= 0 && grain < grainCount)
-            style.atomCasts[i] = grain + 1; // cast 0 is the fallback
-    }
-    viewport_->update();
-    return grainCount;
+    // Making the casts and leaving the scene on Element colouring would
+    // produce every grain and show none of them — a polycrystal drawn by
+    // element is a uniform block of atoms.
+    style.colorMode = render::ColorMode::Cast;
+    for (auto& cast : style.castStyles)
+        cast.colorMode = render::ColorMode::Cast;
+    viewport_->styleChanged(/*rebuildGeometry=*/true);
+    return assignment.grainCount;
 }
 
 void MainWindow::openGrapheneOxideBuilder()

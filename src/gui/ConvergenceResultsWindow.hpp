@@ -94,8 +94,15 @@ public:
         KpointGrid,      ///< kpoints_convergence.json, x = k-points per axis
     };
 
-    /// The three plotted quantities, in panel order.
-    enum class Quantity { EnergyDelta, ForceError, EigenvalueMad };
+    /// The plotted quantities, in panel order. PlasmaFrequency is optional —
+    /// its panel exists only when the sweep was asked to measure it, so an
+    /// ordinary energy/forces run does not grow an empty fourth column.
+    enum class Quantity {
+        EnergyDelta,
+        ForceError,
+        EigenvalueMad,
+        PlasmaFrequency,
+    };
 
     ConvergenceResultsWindow(Sweep sweep, const QString& directory,
                              QWidget* parent = nullptr);
@@ -133,16 +140,25 @@ private:
     std::vector<double> forceErrorMevPerA_;
     /// NaN where a run produced no eigenvalues — the plot skips the point.
     std::vector<double> eigenvalueMadMev_;
+    /// Δω_p against the reference mesh, meV. NaN where the mesh produced no
+    /// plasma frequency (a failed response evaluation, or a gapped system
+    /// where the quantity does not exist). Empty when the sweep never
+    /// measured it, which is what hides the panel.
+    std::vector<double> plasmaDeltaMev_;
     QString referenceLabel_;
 
     OpticsPlotStyle style_;
     ConvergencePlotWidget* energyPlot_ = nullptr;
     ConvergencePlotWidget* forcePlot_ = nullptr;
     ConvergencePlotWidget* eigenPlot_ = nullptr;
+    /// Null when the sweep carried no plasma-frequency data.
+    ConvergencePlotWidget* plasmaPlot_ = nullptr;
     QCheckBox* thresholdCheck_ = nullptr;
     QDoubleSpinBox* energyThresholdSpin_ = nullptr;
     QDoubleSpinBox* forceThresholdSpin_ = nullptr;
     QDoubleSpinBox* eigenThresholdSpin_ = nullptr;
+    /// Null alongside plasmaPlot_.
+    QDoubleSpinBox* plasmaThresholdSpin_ = nullptr;
     /// σ×threshold y-axis zoom: each panel clamps to ±σ·τ of its own
     /// criterion, so the converged tail is inspectable at the scale that
     /// decides it.

@@ -1,6 +1,7 @@
 #include "gui/KpointsConvergenceWizard.hpp"
 
 #include <QCheckBox>
+#include <QCoreApplication>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -13,6 +14,33 @@
 #include <algorithm>
 
 namespace calango::gui {
+
+namespace {
+
+/// The ω_p target's tooltip. A function rather than set-once on the widget,
+/// because `updatePlasmaRow` swaps in a "requires GPAW" message when the
+/// engine changes and has to be able to put this one back — reading the
+/// current tooltip to restore it later would restore the swapped-in text.
+QString plasmaTargetTooltip()
+{
+    return QCoreApplication::translate(
+        "calango::gui::KpointsConvergenceWizard",
+        "Measure the Drude (free-carrier) plasma frequency at every mesh "
+        "and plot its drift beside the other panels.\n\n"
+        "This is the k-point criterion for optical work on metals, and it "
+        "is a much harsher one than the energy. ω_p is a Fermi-surface "
+        "integral, so it converges slowly and NOT monotonically: on FCC "
+        "Au the 8×8×8 and 10×10×10 meshes agree with each other to 0.6 % "
+        "while both are 30 % away from the converged value. A mesh "
+        "converged to 1 meV/atom in energy can still be badly wrong here, "
+        "and therefore wrong in every low-energy optical property built "
+        "on it.\n\n"
+        "Costs one response evaluation per mesh. GPAW only; zero by "
+        "construction on a gapped system, where the run records that "
+        "instead of plotting a flat line.");
+}
+
+} // namespace
 
 KpointsConvergenceWizard::KpointsConvergenceWizard(QWidget* parent)
     : GpawElectronicWizard(parent)
@@ -131,6 +159,28 @@ QWidget* KpointsConvergenceWizard::buildSettingsPage()
 
     layout->addWidget(sweepGroup);
 
+    // -- Convergence targets -------------------------------------------------
+    // Energy, forces and band energies are measured unconditionally: they are
+    // free, being read straight off the SCF the sweep already ran. The plasma
+    // frequency is not — it costs a response evaluation per mesh — so it is
+    // opt-in, and it is the only target here that can be inapplicable rather
+    // than merely expensive.
+    auto* targetsGroup = new QGroupBox(tr("Convergence Targets"), page);
+    auto* targetsLayout = new QVBoxLayout(targetsGroup);
+    auto* targetsNote = new QLabel(
+        tr("Total energy per atom, the atom-wise force error and the "
+           "band-energy drift are always measured. One more can be added:"),
+        targetsGroup);
+    targetsNote->setWordWrap(true);
+    targetsLayout->addWidget(targetsNote);
+
+    plasmaCheck_ = new QCheckBox(
+        tr("Optical properties: intraband plasma frequency ω_p"),
+        targetsGroup);
+    plasmaCheck_->setToolTip(plasmaTargetTooltip());
+    targetsLayout->addWidget(plasmaCheck_);
+    layout->addWidget(targetsGroup);
+
     sweepSummary_ = new QLabel(page);
     sweepSummary_->setWordWrap(true);
     layout->addWidget(sweepSummary_);
@@ -149,14 +199,45 @@ QWidget* KpointsConvergenceWizard::buildSettingsPage()
                 refresh);
     }
     connect(gammaCheck_, &QCheckBox::toggled, this, refresh);
+    connect(plasmaCheck_, &QCheckBox::toggled, this, refresh);
     connect(anisotropicCheck_, &QCheckBox::toggled, this, [this, refresh] {
         updateModeRows();
         refresh();
     });
 
     updateModeRows();
+    // Seeded from the engine this wizard opens on rather than read off the
+    // calculator page: that page is built AFTER this one, so
+    // baseCalculatorConfig() would dereference spin boxes that do not exist
+    // yet. updateCalculatorExtras() corrects it as soon as the engine is
+    // known, and on every change after that.
+    updatePlasmaRow(true);
     updateSweepSummary();
     return page;
+}
+
+void KpointsConvergenceWizard::updateCalculatorExtras(core::CalculatorKind kind)
+{
+    GpawElectronicWizard::updateCalculatorExtras(kind);
+    updatePlasmaRow(kind == core::CalculatorKind::Gpaw);
+}
+
+void KpointsConvergenceWizard::updatePlasmaRow(bool gpaw)
+{
+    if (!plasmaCheck_)
+        return;
+    // VASP runs through a different branch of the generator, which has no
+    // route to GPAW's response module. Disabled rather than hidden: a control
+    // that vanishes when the engine changes reads like a bug, and the tooltip
+    // is where the reason belongs.
+    plasmaCheck_->setEnabled(gpaw);
+    if (!gpaw)
+        plasmaCheck_->setChecked(false);
+    plasmaCheck_->setToolTip(
+        gpaw ? plasmaTargetTooltip()
+             : tr("Requires GPAW: the intraband term comes from GPAW's "
+                  "response module, which the VASP path of this sweep does "
+                  "not use."));
 }
 
 void KpointsConvergenceWizard::updateModeRows()
@@ -255,6 +336,7 @@ core::KpointsConvergenceRunConfig KpointsConvergenceWizard::runConfig() const
     // The sweep stage owns the mesh definition, Γ-centering included — the
     // calculator page's own toggle is hidden for this wizard.
     config.calculator.kptsGammaCentered = gammaCheck_->isChecked();
+    config.plasmaFrequency = plasmaCheck_ && plasmaCheck_->isChecked();
     electronic_.applyTo(config.calculator);
     return config;
 }

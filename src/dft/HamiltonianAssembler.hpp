@@ -7,6 +7,7 @@
 #include <array>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace calango::dft {

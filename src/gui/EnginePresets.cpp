@@ -56,8 +56,11 @@ QString presetName(core::CalculatorKind kind)
 QString displayName(core::CalculatorKind kind)
 {
     switch (kind) {
+    // Matches the engine dropdown's label exactly. Two different names for the
+    // same engine in the same application is how a user ends up believing
+    // there are two engines.
     case core::CalculatorKind::CalangoDft:
-        return QStringLiteral("Calango DFT (built-in, experimental)");
+        return QStringLiteral("Calango Native DFT (experimental)");
     case core::CalculatorKind::Gpaw: return QStringLiteral("GPAW");
     case core::CalculatorKind::Mace: return QStringLiteral("MACE");
     case core::CalculatorKind::QuantumEspresso:

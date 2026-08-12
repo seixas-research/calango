@@ -20,6 +20,7 @@
 #include "core/XasScriptGenerator.hpp"
 #include "core/ElectronicScriptGenerator.hpp"
 #include "core/GwScriptGenerator.hpp"
+#include "core/KpointsConvergenceScriptGenerator.hpp"
 #include "core/NonlinearOpticsScriptGenerator.hpp"
 #include "core/OpticsScriptGenerator.hpp"
 #include "core/PhononScriptGenerator.hpp"
@@ -147,6 +148,21 @@ int main(int argc, char** argv)
             mdmc.pressureGpa = 0.1;
             dumpText("graphene_oxide_mdmc_npt.py",
                  GrapheneOxideMdmcScriptGenerator::generate(mdmc));
+        }
+
+        // K-point convergence, with and without the plasma-frequency target.
+        // Both branches, because the ω_p option adds a module-level helper
+        // and two blocks inside the sweep loop — the lint is what catches a
+        // NameError in generated Python that no C++ test can see.
+        {
+            KpointsConvergenceRunConfig kpts;
+            kpts.calculator = gpawConfig();
+            kpts.meshes = {{{2, 2, 2}, 2}, {{4, 4, 4}, 4}, {{6, 6, 6}, 6}};
+            dumpText("kpoints_convergence.py",
+                     KpointsConvergenceScriptGenerator::generate(kpts));
+            kpts.plasmaFrequency = true;
+            dumpText("kpoints_convergence_plasma.py",
+                     KpointsConvergenceScriptGenerator::generate(kpts));
         }
 
         dump("mace_single_point.py", mace);
@@ -491,6 +507,25 @@ int main(int argc, char** argv)
             ibz.responseKpts[0] = ibz.responseKpts[1] = ibz.responseKpts[2] = 12;
             ibz.includeIbzPoints = true;
             dumpOptics("optics_ibz.py", ibz);
+            // The Drude branches: each emits a different block, and the
+            // explicit-tau one computes its rate in generated Python, so all
+            // three are worth byte-compiling rather than only the default.
+            OpticsConfig tau = optics;
+            tau.drudeRateFromBroadening = false;
+            tau.drudeRelaxationTimeFs = 9.3;
+            dumpOptics("optics_drude_tau.py", tau);
+            OpticsConfig noDrude = optics;
+            noDrude.intrabandDrude = false;
+            dumpOptics("optics_drude_off.py", noDrude);
+            // A 2D sheet with BOTH advanced options on at once — the
+            // combination a metallic monolayer actually needs, and the one
+            // where the vacuum axis, the tetrahedron mesh search and the
+            // free-carrier term all have to coexist.
+            OpticsConfig sheetTau = tetra;
+            sheetTau.drudeRateFromBroadening = false;
+            sheetTau.drudeRelaxationTimeFs = 20.0;
+            sheetTau.responseKpts[0] = sheetTau.responseKpts[1] = 12;
+            dumpOptics("optics_2d_tetrahedron_drude_tau.py", sheetTau);
         }
 
         // GW: both engines against both frequency treatments. The Yambo path
@@ -2747,6 +2782,241 @@ int main(int argc, char** argv)
         checkContains(generateRamanIrScript(mace),
                       "raise RuntimeError(",
                       "an engine with no response function refuses up front");
+    }
+
+    // -- Tetrahedron integration on a cell with no compliant mesh ------------
+    //
+    // Reported against 3R-NbS2 (rhombohedral, alpha = 30.65 deg): the run died
+    // with "no even Gamma-centred grid from (10, 10, 10) up to (34, 34, 34)
+    // satisfies that for this cell". The search was not too small — the IBZ
+    // vertices of a rhombohedral zone sit at positions fixed by the cell angle
+    // (0.1838, 0.3419, 0.6581 here), and a Monkhorst-Pack grid only reaches
+    // rationals n/N, so no grid of ANY size can contain them. GPAW's own
+    // optimal_monkhorst_pack_grid(contains_ibz_vertices=True) fails there too.
+    //
+    // GPAW imposes the requirement only while it uses symmetry to reduce the
+    // response integration domain (chi0_base.get_integrator_cls guards the
+    // check with `if not self.qsymmetry.disabled`), so qsymmetry=False lifts
+    // it and the tetrahedron integrator runs. Symmetry reduction gives way,
+    // NOT the integrator the user asked for.
+    std::printf("Tetrahedron integration without a compliant mesh:\n");
+    {
+        OpticsConfig cfg;
+        cfg.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        cfg.tetrahedronIntegration = true;
+        const std::string tetra = generateOpticsScript(cfg);
+
+        checkContains(tetra, "_tetra_qsymmetry = True",
+                      "symmetry reduction is the default");
+        checkContains(tetra, "_tetra_qsymmetry = False",
+                      "and is what gives way when no compliant mesh exists");
+        checkContains(tetra, "qsymmetry=_qsym,",
+                      "the flag reaches DielectricFunction");
+        checkContains(tetra, "df = _make_df(_tetra_qsymmetry)",
+                      "which is called with it");
+        // The regression itself: exhausting the search must not be fatal, and
+        // must not silently demote the user to the other integrator.
+        checkNotContains(tetra, "turn tetrahedron integration off",
+                         "exhausting the search no longer tells the user to "
+                         "give up tetrahedron integration");
+        checkNotContains(tetra, "_chosen is None:\n        raise RuntimeError",
+                         "nor raises on it");
+        checkContains(tetra, "results_meta[\"qsymmetry\"]",
+                      "and what was actually used is recorded in the results");
+        // A disagreement between the predicate and the response module gets
+        // the same remedy rather than an abort.
+        checkContains(tetra, "df = _make_df(False)",
+                      "a late IBZ-vertex rejection is retried, not raised");
+
+        // Point integration carries none of this: it has no vertex
+        // requirement, so passing qsymmetry there would be noise.
+        OpticsConfig pointCfg = cfg;
+        pointCfg.tetrahedronIntegration = false;
+        const std::string point = generateOpticsScript(pointCfg);
+        checkNotContains(point, "qsymmetry",
+                         "point integration never mentions qsymmetry");
+        checkContains(point, "df = _make_df()",
+                      "and builds the response with the default");
+
+        // -- Intraband (Drude) free-carrier term --------------------------
+        // 3R-NbS2 is a metal (two bands cross E_F), and the generator used to
+        // hardcode intraband=False labelled "semiconductor", silently
+        // dropping the free-carrier response that dominates a metal below the
+        // interband onset. GPAW gates the term on `self.gs.metallic and
+        // intraband` (chi0.py), so True is right for both cases and no
+        // metallicity guess belongs in the generated script: verified as a
+        // bitwise no-op on gapped Si and as the Drude term appearing on
+        // NbS2 (eps_1(0) 11.5 -> 1.1e4).
+        for (const auto& [script, mode] :
+             {std::pair{tetra, "tetrahedron"}, std::pair{point, "point"}}) {
+            checkContains(script, "_intraband = True",
+                          std::string(mode)
+                              + " integration includes the free-carrier term");
+            checkContains(script, "intraband=_intraband,",
+                          std::string(mode)
+                              + " passes it to DielectricFunction");
+            // rate=0.0 is DielectricFunction's own default and trips
+            // `assert chi0_drude.zd.upper_half_plane` on any metal, so a
+            // non-zero rate is a correctness requirement, not a preference.
+            checkContains(script, "_drude_rate = \"eta\"",
+                          std::string(mode)
+                              + " ties the Drude rate to the broadening "
+                                "rather than leaving it at zero");
+            checkContains(script, "rate=_drude_rate,",
+                          std::string(mode) + " passes that rate through");
+            checkNotContains(script, "_intraband = False",
+                             std::string(mode)
+                                 + " no longer assumes a semiconductor");
+            checkContains(script, "\"intraband\": bool(_intraband)",
+                          std::string(mode)
+                              + " records the term in the results metadata");
+        }
+
+        // -- Relaxation time ------------------------------------------------
+        // eta is a plotting choice; a scattering time is a material property.
+        // Tying them is the safe default but cannot describe a measured Drude
+        // edge, so the rate is settable from tau — with the factor of two
+        // that GPAW's convention demands.
+        OpticsConfig tau = cfg;
+        tau.tetrahedronIntegration = false;
+        tau.drudeRateFromBroadening = false;
+        tau.drudeRelaxationTimeFs = 9.3;
+        const std::string tauScript = generateOpticsScript(tau);
+        checkContains(tauScript, "_drude_tau_fs = 9.3",
+                      "the relaxation time reaches the script");
+        // The conversion is emitted as an expression, not a pre-multiplied
+        // number: this factor of two is the whole trap, and a reader has to
+        // be able to check it without recomputing it.
+        checkContains(tauScript, "_hbar_eV_fs = 0.6582119569",
+                      "with hbar in eV*fs spelled out");
+        checkContains(tauScript, "_drude_rate = _hbar_eV_fs / (2.0 * _drude_tau_fs)",
+                      "and rate = hbar/(2*tau) derived in the script itself");
+        checkNotContains(tauScript, "_drude_rate = \"eta\"",
+                         "an explicit tau replaces the eta idiom rather than "
+                         "sitting beside it");
+        checkContains(tauScript, "\"drude_tau_fs\": _drude_tau_fs",
+                      "and tau is recorded in the results metadata");
+
+        // -- Drude off --------------------------------------------------------
+        // Distinct from "gapped": GPAW already skips the term on a gapped
+        // system, so off is a statement about a METAL and is warned about.
+        OpticsConfig noDrude = cfg;
+        noDrude.tetrahedronIntegration = false;
+        noDrude.intrabandDrude = false;
+        const std::string offScript = generateOpticsScript(noDrude);
+        checkContains(offScript, "_intraband = False",
+                      "the term can be switched off");
+        checkContains(offScript, "CALANGO_WARN intraband (Drude) term DISABLED",
+                      "and says so, since on a metal it changes the physics");
+        // Still passed, still valid: nothing downstream should depend on the
+        // rate being absent when the term is off.
+        checkContains(offScript, "rate=_drude_rate,",
+                      "the rate argument stays well-formed with the term off");
+    }
+
+    // -- 2D optics: the same advanced options as 3D -------------------------
+    //
+    // "2D Optics" is the SAME wizard and the SAME generator with vacuumAxis
+    // set, so tetrahedron integration and the Drude term are not ported into
+    // it — they are structurally shared. What is worth pinning is that the
+    // sharing actually holds, because a future 2D-only branch that skipped
+    // either would be invisible until a monolayer came out wrong.
+    std::printf("2D optics inherits the 3D response options:\n");
+    {
+        OpticsConfig sheet;
+        sheet.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+        sheet.vacuumAxis = 2;
+        sheet.tetrahedronIntegration = true;
+        sheet.drudeRateFromBroadening = false;
+        sheet.drudeRelaxationTimeFs = 20.0;
+        sheet.responseKpts[0] = sheet.responseKpts[1] = 12;
+        const std::string script = generateOpticsScript(sheet);
+
+        checkContains(script, "twod_observables",
+                      "the sheet observables are derived");
+        checkContains(script, "L_z = float(atoms.cell.lengths()[2])",
+                      "from the chosen vacuum axis");
+        checkContains(script, "integrationmode = \"tetrahedron integration\"",
+                      "tetrahedron integration is available in 2D");
+        checkContains(script, "_intraband = True",
+                      "so is the free-carrier term");
+        checkContains(script, "_drude_tau_fs = 20",
+                      "and its relaxation time");
+        // The mesh search must leave the vacuum axis alone. A sheet sampled
+        // in its vacuum direction is not a denser sheet, and forcing that
+        // axis even would double the k-points for nothing — the guard is
+        // GPAW's own pbc flags rather than the wizard's vacuumAxis, so it
+        // still holds for a baseline whose periodicity disagrees.
+        checkContains(script, "if _pbc[_i]",
+                      "the evenness constraint applies only to periodic axes");
+        checkContains(script, "_axis_vals.append([int(_n)])",
+                      "and a non-periodic axis is never grown");
+    }
+
+    // -- K-point convergence: the plasma-frequency target --------------------
+    //
+    // The fourth convergence metric, and the only one that is not free: ΔE,
+    // the forces and the band energies are read off the SCF the sweep already
+    // ran, while ω_p costs a response evaluation per mesh. So it is opt-in,
+    // and the OFF branch must stay byte-for-byte the sweep it always was —
+    // otherwise every existing k-point study silently changes cost.
+    std::printf("K-point convergence, plasma-frequency target:\n");
+    {
+        KpointsConvergenceRunConfig off;
+        off.calculator = gpawConfig();
+        off.meshes = {{{2, 2, 2}, 2}, {{4, 4, 4}, 4}};
+        const std::string without =
+            KpointsConvergenceScriptGenerator::generate(off);
+
+        KpointsConvergenceRunConfig on = off;
+        on.plasmaFrequency = true;
+        const std::string with =
+            KpointsConvergenceScriptGenerator::generate(on);
+
+        checkNotContains(without, "plasma_frequency",
+                         "the sweep says nothing about omega_p unless asked");
+        checkContains(with, "def plasma_frequency(calc, tag):",
+                      "the helper is emitted when the target is on");
+        checkContains(with, "from gpaw.response.chi0_drude import "
+                            "Chi0DrudeCalculator",
+                      "and reaches GPAW's Drude calculator for it");
+        checkContains(with, "record[\"plasma_frequency_eV\"] = _wp",
+                      "every mesh records its omega_p");
+        checkContains(with, "delta_plasma_frequency_eV",
+                      "and its drift from the densest mesh");
+        checkContains(with, "summary[\"plasma_frequency\"] = True",
+                      "the summary flag the results window keys its fourth "
+                      "panel on");
+        // A gapped system has no intraband term at all. Recording the reason
+        // is the difference between "not applicable" and a converged zero.
+        checkContains(with, "if not gs.metallic:",
+                      "a gapped ground state is detected rather than "
+                      "returning a converged-looking 0.0");
+        checkContains(with, "plasma_frequency_note",
+                      "and the reason is carried into the results");
+        // Tetrahedron first, with the qsymmetry retry, then point
+        // integration: the ladder that keeps the better integrator wherever
+        // it can run. Point integration alone would need a far denser mesh
+        // for the same number.
+        checkContains(with, "(\"tetrahedron integration\", True),",
+                      "tetrahedron integration is tried first");
+        checkContains(with, "(\"tetrahedron integration\", False),",
+                      "then without symmetry reduction of the response");
+        checkContains(with, "(\"point integration\", True))",
+                      "with point integration only as the last resort");
+        checkContains(with, "record[\"plasma_integration\"] = _wp_mode",
+                      "and whichever ran is recorded, since two meshes "
+                      "measured by different integrators are not comparable");
+
+        // VASP goes through a different branch of this generator with no
+        // route to GPAW's response module, so the request is dropped rather
+        // than emitted as code that cannot run.
+        KpointsConvergenceRunConfig vasp = on;
+        vasp.calculator.calculator = CalculatorKind::Vasp;
+        checkNotContains(KpointsConvergenceScriptGenerator::generate(vasp),
+                         "plasma_frequency",
+                         "the VASP sweep drops the target instead of emitting "
+                         "GPAW response code it cannot run");
     }
 
     // -- Nonlinear optics (gpaw.nlopt) ---------------------------------------

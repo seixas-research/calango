@@ -9,9 +9,12 @@
 #include <QKeyEvent>
 #include <QPushButton>
 #include <QSize>
+#include <QTimer>
 #include <QTreeWidget>
 #include <QUrl>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace calango::gui {
 
@@ -19,11 +22,26 @@ namespace {
 constexpr int kIdRole = Qt::UserRole;
 constexpr int kDirRole = Qt::UserRole + 1;
 /// The row's Status, so a control can ask what a task is DOING rather than
-/// parsing the translated word in its status column.
+/// parsing the translated word in its status column. Load-bearing now that the
+/// status column carries no text at all: there is nothing left to parse.
 constexpr int kStatusRole = Qt::UserRole + 2;
+/// When the task STARTED RUNNING (ms since epoch), 0 if it never did.
+///
+/// Deliberately not the registration time the "Started" column shows. Calango
+/// queues jobs rather than refusing them, so a task can sit queued for a long
+/// while; counting that as walltime would report a number that has nothing to
+/// do with how long the calculation took.
+constexpr int kRunStartRole = Qt::UserRole + 3;
+/// When it stopped (ms since epoch), 0 while still running. Freezing the end
+/// rather than the duration keeps the two timestamps symmetric and lets the
+/// formatter stay the single place that subtracts.
+constexpr int kRunEndRole = Qt::UserRole + 4;
 
-// RemixIcon stems + per-status tint for the Status column. Colors match the
-// status text so the glyph and label read as one.
+/// Columns. Named because four of them addressed by literal index is how a
+/// column gets written into the wrong cell.
+enum Column { ColTask = 0, ColStatus = 1, ColStarted = 2, ColWalltime = 3 };
+
+// RemixIcon stems + per-status tint for the Status column.
 struct StatusVisual {
     const char* iconName;
     QColor color;
@@ -42,6 +60,50 @@ StatusVisual statusVisual(ProcessManagerPanel::Status status)
     }
     return {"time-line", QColor(160, 160, 170)};
 }
+
+/// The word for a status. No longer shown in the column — it is the status
+/// cell's TOOLTIP, so removing the text saved the width without costing the
+/// meaning for anyone who does not already know the glyphs.
+QString statusText(ProcessManagerPanel::Status status)
+{
+    switch (status) {
+    case ProcessManagerPanel::Status::Queued:
+        return ProcessManagerPanel::tr("queued");
+    case ProcessManagerPanel::Status::Running:
+        return ProcessManagerPanel::tr("running");
+    case ProcessManagerPanel::Status::Completed:
+        return ProcessManagerPanel::tr("completed");
+    case ProcessManagerPanel::Status::Failed:
+        return ProcessManagerPanel::tr("failed");
+    }
+    return {};
+}
+
+/// Elapsed time as a stopwatch reading.
+///
+/// Units grow with the magnitude rather than being fixed: a column wide enough
+/// for "0d 00:00:07" on every row wastes the space this change set out to
+/// reclaim, and a bare seconds count stops being readable within the first
+/// minute of a job that will run for days.
+QString formatWalltime(qint64 ms)
+{
+    const qint64 total = ms / 1000;
+    const qint64 seconds = total % 60;
+    const qint64 minutes = (total / 60) % 60;
+    const qint64 hours = (total / 3600) % 24;
+    const qint64 days = total / 86400;
+    const auto pad = [](qint64 v) {
+        return QStringLiteral("%1").arg(v, 2, 10, QLatin1Char('0'));
+    };
+    if (days > 0)
+        return QStringLiteral("%1d %2:%3:%4")
+            .arg(days).arg(pad(hours), pad(minutes), pad(seconds));
+    if (hours > 0)
+        return QStringLiteral("%1:%2:%3")
+            .arg(hours).arg(pad(minutes), pad(seconds));
+    return QStringLiteral("%1:%2").arg(minutes).arg(pad(seconds));
+}
+
 } // namespace
 
 ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
@@ -52,14 +114,28 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
     layout->setSpacing(4);
 
     tree_ = new QTreeWidget(this);
-    tree_->setColumnCount(3);
-    tree_->setHeaderLabels({tr("Task"), tr("Status"), tr("Started")});
+    tree_->setColumnCount(4);
+    tree_->setHeaderLabels(
+        {tr("Task"), tr("Status"), tr("Started"), tr("Walltime")});
     // Tree-item icons enlarged 20% (default 16 → 17-ish; the status glyphs are
     // rendered at 17 px to match).
     tree_->setIconSize(QSize(17, 17));
     tree_->setRootIsDecorated(false);
     tree_->header()->setStretchLastSection(false);
-    tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    tree_->header()->setSectionResizeMode(ColTask, QHeaderView::Stretch);
+    // The status column now holds a glyph and nothing else, so it should be
+    // exactly glyph-wide — that reclaimed width is the point of dropping the
+    // text, and leaving the column sized for the word would give it away
+    // again. The two time columns are fixed-width strings, so they can size
+    // to their contents too and stop competing with the task name.
+    for (const int column : {ColStatus, ColStarted, ColWalltime})
+        tree_->header()->setSectionResizeMode(column,
+                                              QHeaderView::ResizeToContents);
+    // The dock is narrow and the task name is the one column worth reading in
+    // full; the header text for the rest is what the tooltips explain.
+    tree_->header()->setToolTip(
+        tr("Walltime measures how long the run has been EXECUTING — the clock "
+           "starts when a task leaves the queue, not when it was submitted."));
     tree_->setSelectionMode(QAbstractItemView::SingleSelection);
     // Delete / Backspace on a selected process triggers deletion (see
     // eventFilter); the tree has keyboard focus, so we filter its events.
@@ -149,6 +225,14 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
     // Right-click a process for everything that can be done WITH that process,
     // viewers included. The menu itself is built by the controller, which is
     // what knows how to tell a completed GW run from a completed MD one.
+    // The live stopwatch. One second is the resolution a duration is read at;
+    // faster would repaint the dock for digits nobody is watching change.
+    // Created stopped — syncWalltimeTimer() starts it when something runs.
+    walltimeTimer_ = new QTimer(this);
+    walltimeTimer_->setInterval(1000);
+    connect(walltimeTimer_, &QTimer::timeout, this,
+            &ProcessManagerPanel::updateWalltimes);
+
     tree_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(tree_, &QTreeWidget::customContextMenuRequested, this,
             [this](const QPoint& pos) {
@@ -184,17 +268,26 @@ bool ProcessManagerPanel::eventFilter(QObject* watched, QEvent* event)
 int ProcessManagerPanel::registerTask(const QString& name,
                                       const QString& directory)
 {
+    // The status cell carries NO text — see setTaskStatus. Walltime starts
+    // empty rather than at 0:00: a queued task has not run for zero seconds,
+    // it has not run.
     auto* item = new QTreeWidgetItem(
-        {name, tr("queued"),
-         QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"))});
+        {name, QString(),
+         QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")),
+         QString()});
     const auto queued = statusVisual(Status::Queued);
     // Status glyph enlarged 20% (14 → 17).
-    item->setIcon(1, ui::IconManager::icon(QLatin1String(queued.iconName),
-                                           queued.color, 17));
-    item->setForeground(1, QBrush(queued.color));
+    item->setIcon(ColStatus,
+                  ui::IconManager::icon(QLatin1String(queued.iconName),
+                                        queued.color, 17));
+    item->setToolTip(ColStatus, statusText(Status::Queued));
+    // Durations read as a column of numbers, so they line up on the right.
+    item->setTextAlignment(ColWalltime, Qt::AlignRight | Qt::AlignVCenter);
     item->setData(0, kIdRole, nextId_);
     item->setData(0, kDirRole, directory);
     item->setData(0, kStatusRole, static_cast<int>(Status::Queued));
+    item->setData(0, kRunStartRole, static_cast<qint64>(0));
+    item->setData(0, kRunEndRole, static_cast<qint64>(0));
     item->setToolTip(0, directory.isEmpty() ? name : directory);
     tree_->addTopLevelItem(item);
     tree_->scrollToItem(item);
@@ -223,6 +316,8 @@ void ProcessManagerPanel::removeTask(int id)
 {
     if (QTreeWidgetItem* item = itemForId(id))
         delete tree_->takeTopLevelItem(tree_->indexOfTopLevelItem(item));
+    // Deleting the last running task leaves nothing to tick.
+    syncWalltimeTimer();
 }
 
 void ProcessManagerPanel::setTaskStatus(int id, Status status)
@@ -230,20 +325,96 @@ void ProcessManagerPanel::setTaskStatus(int id, Status status)
     QTreeWidgetItem* item = itemForId(id);
     if (!item)
         return;
-    QString label;
-    switch (status) {
-    case Status::Queued:    label = tr("queued");    break;
-    case Status::Running:   label = tr("running");   break;
-    case Status::Completed: label = tr("completed"); break;
-    case Status::Failed:    label = tr("failed");    break;
-    }
     const auto visual = statusVisual(status);
+    const auto previous = static_cast<Status>(item->data(0, kStatusRole).toInt());
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+    // -- The stopwatch's two edges -----------------------------------------
+    // Entering Running starts the clock, but only on the TRANSITION: a
+    // controller that re-asserts Running (a progress update, a reconnect to a
+    // remote job) must not restart a duration that has been accumulating.
+    if (status == Status::Running && previous != Status::Running)
+        item->setData(0, kRunStartRole, now);
+    // Leaving Running freezes it. A task that never ran — queued and then
+    // aborted — keeps a zero start and shows no duration at all, which is the
+    // honest answer rather than 0:00.
+    if (status == Status::Completed || status == Status::Failed) {
+        if (item->data(0, kRunStartRole).toLongLong() != 0
+            && item->data(0, kRunEndRole).toLongLong() == 0)
+            item->setData(0, kRunEndRole, now);
+    } else {
+        // Re-queued or restarted: the previous end no longer applies.
+        item->setData(0, kRunEndRole, static_cast<qint64>(0));
+    }
+
     item->setData(0, kStatusRole, static_cast<int>(status));
-    item->setText(1, label);
-    item->setForeground(1, QBrush(visual.color));
-    item->setIcon(1, ui::IconManager::icon(QLatin1String(visual.iconName),
-                                           visual.color, 17));
+    // Icon ONLY. The word lives in the tooltip: the column is a fixed-width
+    // glyph in a dock that is always short of horizontal space, and the status
+    // of a run is exactly the kind of thing a colour-coded symbol conveys
+    // faster than a word anyway.
+    item->setIcon(ColStatus,
+                  ui::IconManager::icon(QLatin1String(visual.iconName),
+                                        visual.color, 17));
+    item->setToolTip(ColStatus, statusText(status));
+    refreshWalltime(item);
+    syncWalltimeTimer();
     updateAbortButton();
+}
+
+int ProcessManagerPanel::taskCount() const
+{
+    return tree_->topLevelItemCount();
+}
+
+ProcessManagerPanel::Status ProcessManagerPanel::rowStatus(int row) const
+{
+    if (row < 0 || row >= tree_->topLevelItemCount())
+        return Status::Queued;
+    return static_cast<Status>(
+        tree_->topLevelItem(row)->data(0, kStatusRole).toInt());
+}
+
+void ProcessManagerPanel::refreshWalltime(QTreeWidgetItem* item) const
+{
+    if (!item)
+        return;
+    const qint64 start = item->data(0, kRunStartRole).toLongLong();
+    if (start == 0) {
+        item->setText(ColWalltime, QString());
+        return;
+    }
+    const qint64 end = item->data(0, kRunEndRole).toLongLong();
+    const qint64 until = end != 0 ? end : QDateTime::currentMSecsSinceEpoch();
+    item->setText(ColWalltime, formatWalltime(std::max<qint64>(0, until - start)));
+}
+
+void ProcessManagerPanel::updateWalltimes()
+{
+    for (int i = 0; i < tree_->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* item = tree_->topLevelItem(i);
+        // Only the running rows move. A finished row's duration is frozen and
+        // rewriting it every second would be a repaint for an unchanged
+        // string.
+        if (static_cast<Status>(item->data(0, kStatusRole).toInt())
+            == Status::Running)
+            refreshWalltime(item);
+    }
+    syncWalltimeTimer();
+}
+
+void ProcessManagerPanel::syncWalltimeTimer()
+{
+    if (!walltimeTimer_)
+        return;
+    bool anyRunning = false;
+    for (int i = 0; i < tree_->topLevelItemCount() && !anyRunning; ++i)
+        anyRunning = static_cast<Status>(
+                         tree_->topLevelItem(i)->data(0, kStatusRole).toInt())
+            == Status::Running;
+    if (anyRunning && !walltimeTimer_->isActive())
+        walltimeTimer_->start();
+    else if (!anyRunning && walltimeTimer_->isActive())
+        walltimeTimer_->stop();
 }
 
 void ProcessManagerPanel::updateAbortButton()

@@ -37,6 +37,30 @@ struct KpointsConvergenceRunConfig {
     /// convergence is as real in FD or LCAO as in plane waves.
     CalculatorConfig calculator;
 
+    /// Also measure the intraband (Drude) plasma frequency ω_p at every mesh,
+    /// as a convergence target beside the energy and the forces. GPAW only.
+    ///
+    /// This is a different quantity from the other three, and the reason the
+    /// sweep needs it. ΔE and the forces are integrals over ALL occupied
+    /// states, so they average the Brillouin zone and converge quickly and
+    /// monotonically. ω_p is a FERMI-SURFACE integral — only partially
+    /// occupied bands contribute (`PlasmaFrequencyIntegrand._band_summation`
+    /// returns `nocc1, nocc2`) — so it converges far more slowly, and NOT
+    /// monotonically. Measured on FCC Au under point integration: 15.2, 16.2,
+    /// 11.8, 11.8, 9.6 eV over 4³…12³, where the 8³ and 10³ runs agree to
+    /// 0.6 % while both are 30 % from the answer.
+    ///
+    /// That is the trap this metric exists to expose: a mesh converged to
+    /// 1 meV/atom in energy can still be wrong by tens of percent in ω_p, and
+    /// therefore in every low-energy optical property that follows from it. A
+    /// user who converged on the energy panel and moved on to the Optics
+    /// wizard had no way to see that from inside this module.
+    ///
+    /// Silently zero on a gapped system: GPAW gates the intraband term on
+    /// `gs.metallic`, so the script records the reason rather than plotting a
+    /// flat zero line that reads like perfect convergence.
+    bool plasmaFrequency = false;
+
     /// Carry on past a mesh whose SCF raised, recording it as failed.
     bool continueOnFailure = true;
 };

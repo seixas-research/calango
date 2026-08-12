@@ -21,6 +21,7 @@
 #include "core/GrapheneOxideBuilder.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>

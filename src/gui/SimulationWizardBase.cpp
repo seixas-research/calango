@@ -210,13 +210,15 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     const auto separate = [&separatorPending] { separatorPending = true; };
 
     // -- Ab initio / DFT ----------------------------------------------------
-    // Calango's own engine first, because it is the only one that needs no
-    // external code installed — and last in usefulness for now, which is why
-    // the label says so rather than leaving the user to find out from a failed
-    // run. `calculatorAllowed()` keeps it out of every module that cannot yet
-    // be served by it, so it appears only where it is genuinely offered.
-    addCalc(tr("Calango DFT — built-in, all-electron (experimental)"),
-            core::CalculatorKind::CalangoDft);
+    // GPAW first, and therefore the default selection in every wizard that
+    // allows it: a combo box opens on index 0, so whatever leads this list is
+    // what an unmodified run uses. That position previously belonged to the
+    // built-in engine because it needs no external code installed — which is
+    // true and was the wrong criterion. The built-in engine is a SCAFFOLD that
+    // produces no energy (see CalculatorKind::CalangoDft), so leading with it
+    // meant the out-of-the-box run of every module was the one that cannot
+    // return a number. It now sits at the very bottom of the list, past the
+    // classical potentials; see the end of this function.
     addCalc(tr("GPAW (DFT)"), core::CalculatorKind::Gpaw);
     addCalc(tr("Quantum ESPRESSO (DFT)"), core::CalculatorKind::QuantumEspresso);
     addCalc(tr("VASP (DFT)"), core::CalculatorKind::Vasp);
@@ -258,6 +260,19 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     addCalc(tr("EMT (fast test potential)"), core::CalculatorKind::EMT);
     addCalc(tr("ASAP (fast EMT / OpenKIM)"), core::CalculatorKind::Asap);
     addCalc(tr("Lennard-Jones"), core::CalculatorKind::LennardJones);
+    separate();
+
+    // -- Experimental -------------------------------------------------------
+    // Calango's own engine, last in the list and in its own section. It is the
+    // only entry that needs nothing installed, and the only one that cannot
+    // yet return an energy: its basis generation, integration grid, matrix
+    // assembly and eigensolver are unimplemented, so a run reports what is
+    // missing and produces no result. Bottom placement is therefore not a
+    // ranking of ambition but a statement about what happens if you pick it
+    // without reading — and the label carries the same warning, so the
+    // information does not depend on noticing which section it is in.
+    addCalc(tr("Calango Native DFT (experimental)"),
+            core::CalculatorKind::CalangoDft);
     engineForm->addRow(tr("Calculation engine:"), calcCombo_);
     layout->addWidget(engineWidget_);
     connect(calcCombo_, &QComboBox::currentIndexChanged, this,

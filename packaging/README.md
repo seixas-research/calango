@@ -102,15 +102,40 @@ cmake --build build-macos -j"$(sysctl -n hw.ncpu)"
 ## Linux `.deb`
 
 ```sh
+packaging/linux/build_deb.sh        # → build-deb/calango_<version>_<arch>.deb
+```
+
+The script recreates the build directory from scratch, configures against
+`/usr/bin/python3`, aborts if the binary ends up linking a non-system
+`libpython`, and runs CPack. Flags: `-p` (interpreter), `-b` (build directory),
+`-j` (jobs).
+
+**Never run it under `sudo`** — only the closing `apt install` needs root. A
+`sudo` run leaves `build-deb/` owned by root, and since the script begins by
+deleting that directory, the next ordinary run fails at `rm -rf: Permission
+denied` before doing anything. Undo with `sudo rm -rf build-deb`.
+
+Ships the `.desktop` launcher, the `application/x-calango-project` MIME type for
+`.calproj` files, `application/x-extxyz` for `.extxyz` structures, and the app
+icon. `dpkg-shlibdeps` derives the Qt6/OpenGL/libpython runtime dependencies
+from the linked shared libraries.
+
+The `.deb` build is normally the first time the tree meets GCC/libstdc++ rather
+than macOS Clang/libc++, so it is where a missing `#include <cstdint>` shows up
+— `std::uint32_t` compiles on libc++ via transitive includes and fails on
+libstdc++ 13+ with `'uint32_t' in namespace 'std' does not name a type`. The
+error names the header holding the declaration, not the file you changed, and
+one missing include cascades into unrelated-looking `no member named` errors.
+See the packaging guide (`docs/tex/packaging/`) for the full note.
+
+Manual equivalent:
+
+```sh
 cmake -S . -B build-deb -DCMAKE_BUILD_TYPE=Release \
     -DPython3_EXECUTABLE=/usr/bin/python3
 cmake --build build-deb -j"$(nproc)"
 ( cd build-deb && cpack -G DEB )     # → calango_<version>_<arch>.deb
 ```
-
-Ships the `.desktop` launcher, the `application/x-calango-project` MIME type for
-`.calproj` files, and the app icon. `dpkg-shlibdeps` derives the Qt6/OpenGL/
-libpython runtime dependencies from the linked shared libraries.
 
 The icon is `assets/calango/icon_linux.png` (never the margined `icon_osx.png`
 — see [App icon](#app-icon) above). It always lands in

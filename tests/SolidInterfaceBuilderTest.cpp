@@ -17,6 +17,9 @@
 // GUI-free, Python-free.
 
 #include "core/SolidInterfaceBuilder.hpp"
+#include "gui/GrainCasts.hpp"
+
+#include <QColor>
 
 #include "core/Element.hpp"
 
@@ -529,12 +532,114 @@ void testRefusals()
 
 } // namespace
 
+/// A three-grain polycrystal, cast by cast.
+///
+/// The end of the feature, not the middle of it: a tessellation that tags its
+/// atoms correctly and a viewport that colours them are one claim to a user,
+/// and the half that used to be missing was the second one — the casts were
+/// built and the scene was left on Element colouring, so a polycrystal opened
+/// as a uniform block of aluminium and the grains were invisible.
+///
+/// Three grains because that is the smallest count where "distinct" is a real
+/// constraint: two colours are trivially different, and at three the golden
+/// -angle rotation has to actually work.
+void testGrainCasts()
+{
+    std::printf("grain casts\n");
+    const Structure parent = cubic(1, 3.0, 13);
+
+    SolidInterfaceBuilder::Params params;
+    params.kind = SolidInterfaceBuilder::Kind::Polycrystal;
+    params.repeat = {6, 6, 6};
+    params.grainCount = 3;
+    params.seed = 11;
+    params.mergeTolerance = 1.5;
+
+    const auto poly = SolidInterfaceBuilder::generate({parent}, params);
+    check(poly.grains.size() == 3, "a 3-grain polycrystal was generated");
+    check(poly.structure.scalarFields().count("grain") == 1,
+          "and every atom carries its grain id");
+    if (poly.structure.scalarFields().count("grain") != 1)
+        return;
+
+    const auto assignment =
+        calango::gui::grainCastsFor(poly.structure.scalarFields().at("grain"));
+
+    // 1. Exactly three casts — not two, not four, and not one per atom.
+    check(assignment.grainCount == 3,
+          "exactly 3 casts are created, one per grain");
+    check(assignment.colors.size() == 3, "each with a colour of its own");
+    check(assignment.atomCasts.size() == poly.structure.size(),
+          "and every atom is assigned to one");
+
+    // 2. Every cast is actually USED. Three casts of which one is empty is
+    //    three casts by count and two by anything a user would notice.
+    std::vector<int> perCast(4, 0); // index 0 is the fallback
+    bool inRange = true;
+    for (const int cast : assignment.atomCasts) {
+        if (cast < 0 || cast > 3) {
+            inRange = false;
+            continue;
+        }
+        ++perCast[static_cast<std::size_t>(cast)];
+    }
+    check(inRange, "no atom is assigned to a cast that does not exist");
+    check(perCast[0] == 0,
+          "no atom falls through to the fallback cast — every one was tagged");
+    check(perCast[1] > 0 && perCast[2] > 0 && perCast[3] > 0,
+          "all 3 casts are populated");
+    check(perCast[1] + perCast[2] + perCast[3]
+              == static_cast<int>(poly.structure.size()),
+          "and between them they account for the whole structure");
+
+    // 3. The colours are valid and mutually DISTINCT. "Coloured" is not the
+    //    same claim as "differently coloured", and it is the second one that
+    //    makes the grains readable.
+    bool allValid = true;
+    for (const QColor& color : assignment.colors)
+        allValid = allValid && color.isValid();
+    check(allValid, "every cast colour is a valid colour");
+
+    bool distinct = true;
+    for (std::size_t a = 0; a < assignment.colors.size(); ++a)
+        for (std::size_t b = a + 1; b < assignment.colors.size(); ++b)
+            distinct = distinct && assignment.colors[a] != assignment.colors[b];
+    check(distinct, "the 3 cast colours are pairwise distinct");
+
+    // Distinct as ARGB is a low bar — two colours one step apart in hue would
+    // pass it and look identical. The golden angle puts consecutive grains
+    // ~137.5 deg apart, so require real separation on the colour wheel.
+    int minSeparation = 360;
+    for (std::size_t a = 0; a < assignment.colors.size(); ++a) {
+        for (std::size_t b = a + 1; b < assignment.colors.size(); ++b) {
+            const int delta =
+                std::abs(assignment.colors[a].hue() - assignment.colors[b].hue());
+            minSeparation = std::min(minSeparation, std::min(delta, 360 - delta));
+        }
+    }
+    check(minSeparation > 60,
+          "and separated on the colour wheel, not merely unequal as pixels");
+    std::printf("    3 casts, hues %d/%d/%d, min separation %d deg\n",
+                assignment.colors[0].hue(), assignment.colors[1].hue(),
+                assignment.colors[2].hue(), minSeparation);
+
+    // 4. A single grain is NOT a polycrystal: one cast covering every atom is
+    //    a control that does nothing, so the mapping declines to build it and
+    //    the caller leaves the scene alone.
+    const auto single = calango::gui::grainCastsFor(std::vector<double>(64, 0.0));
+    check(single.grainCount == 0,
+          "a single-grain field produces no casts at all");
+    check(calango::gui::grainCastsFor({}).grainCount == 0,
+          "and neither does an empty one");
+}
+
 int main()
 {
     testStackingFault();
     testTwinBoundary();
     testBicrystal();
     testPolycrystal();
+    testGrainCasts();
     testMultiPhase();
     testRefusals();
 

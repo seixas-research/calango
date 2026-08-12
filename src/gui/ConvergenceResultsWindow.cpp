@@ -84,6 +84,11 @@ QuantityVocabulary vocabularyFor(ConvergenceResultsWindow::Quantity quantity)
                 QObject::tr("band-energy MAD (meV)"),
                 QStringLiteral("eigenvalue_mad_meV"),
                 QStringLiteral("eigenvalues")};
+    case Quantity::PlasmaFrequency:
+        return {QObject::tr("Plasma Frequency vs. %1"),
+                QObject::tr("Δω_p (meV)"),
+                QStringLiteral("delta_plasma_frequency_meV"),
+                QStringLiteral("plasma_frequency")};
     case Quantity::EnergyDelta:
         break;
     }
@@ -363,10 +368,18 @@ ConvergenceResultsWindow::ConvergenceResultsWindow(Sweep sweep,
     intro->setWordWrap(true);
     layout->addWidget(intro);
 
+    const bool hasPlasma = !plasmaDeltaMev_.empty();
+    // Four panels need the room; three keep the established width.
+    if (hasPlasma)
+        resize(1780, 620);
+
     auto* columns = new QHBoxLayout;
     columns->addWidget(buildColumn(Quantity::EnergyDelta, energyPlot_), 1);
     columns->addWidget(buildColumn(Quantity::ForceError, forcePlot_), 1);
     columns->addWidget(buildColumn(Quantity::EigenvalueMad, eigenPlot_), 1);
+    if (hasPlasma)
+        columns->addWidget(buildColumn(Quantity::PlasmaFrequency, plasmaPlot_),
+                           1);
     layout->addLayout(columns, 1);
 
     const auto applyData = [this, &words](Quantity quantity,
@@ -378,6 +391,8 @@ ConvergenceResultsWindow::ConvergenceResultsWindow(Sweep sweep,
     applyData(Quantity::EnergyDelta, energyPlot_);
     applyData(Quantity::ForceError, forcePlot_);
     applyData(Quantity::EigenvalueMad, eigenPlot_);
+    if (hasPlasma)
+        applyData(Quantity::PlasmaFrequency, plasmaPlot_);
 
     // -- Threshold controls ---------------------------------------------------
     auto* thresholds = new QHBoxLayout;
@@ -428,6 +443,26 @@ ConvergenceResultsWindow::ConvergenceResultsWindow(Sweep sweep,
            "them."));
     thresholds->addWidget(new QLabel(tr("Eigenvalues"), this));
     thresholds->addWidget(eigenThresholdSpin_);
+
+    if (hasPlasma) {
+        plasmaThresholdSpin_ = new QDoubleSpinBox(this);
+        plasmaThresholdSpin_->setRange(0.001, 100000.0);
+        plasmaThresholdSpin_->setDecimals(1);
+        // 100 meV on a ~9 eV plasma frequency is ~1 %, which is about where
+        // a Drude edge stops moving visibly. Deliberately far looser than
+        // the 1 meV/atom energy corridor beside it: these are not the same
+        // kind of number, and carrying the energy's tolerance over would
+        // mark every mesh unconverged.
+        plasmaThresholdSpin_->setValue(100.0);
+        plasmaThresholdSpin_->setSuffix(tr(" meV"));
+        plasmaThresholdSpin_->setToolTip(
+            tr("Ceiling of the plasma-frequency corridor: |ω_p − ω_p,ref|. "
+               "100 meV is roughly 1 % of a typical metal's ω_p, the scale "
+               "at which the Drude edge and the low-energy reflectivity "
+               "stop shifting visibly."));
+        thresholds->addWidget(new QLabel(tr("Plasma freq."), this));
+        thresholds->addWidget(plasmaThresholdSpin_);
+    }
 
     thresholds->addStretch(1);
     layout->addLayout(thresholds);
@@ -493,9 +528,11 @@ ConvergenceResultsWindow::ConvergenceResultsWindow(Sweep sweep,
     connect(scaleCheck_, &QCheckBox::toggled, this,
             &ConvergenceResultsWindow::updateThresholdBands);
     for (QDoubleSpinBox* spin : {energyThresholdSpin_, forceThresholdSpin_,
-                                 eigenThresholdSpin_, sigmaSpin_})
-        connect(spin, &QDoubleSpinBox::valueChanged, this,
-                &ConvergenceResultsWindow::updateThresholdBands);
+                                 eigenThresholdSpin_, sigmaSpin_,
+                                 plasmaThresholdSpin_})
+        if (spin)  // plasmaThresholdSpin_ exists only with a plasma panel
+            connect(spin, &QDoubleSpinBox::valueChanged, this,
+                    &ConvergenceResultsWindow::updateThresholdBands);
 
     // In a QDialog every push button is autoDefault, so Return anywhere —
     // including finishing a threshold edit in a spin box — "clicks" the
@@ -506,8 +543,10 @@ ConvergenceResultsWindow::ConvergenceResultsWindow(Sweep sweep,
         button->setDefault(false);
     }
 
-    for (ConvergencePlotWidget* plot : {energyPlot_, forcePlot_, eigenPlot_})
-        plot->setStyle(style_);
+    for (ConvergencePlotWidget* plot :
+         {energyPlot_, forcePlot_, eigenPlot_, plasmaPlot_})
+        if (plot)
+            plot->setStyle(style_);
     updateThresholdBands();
 }
 
@@ -573,7 +612,27 @@ bool ConvergenceResultsWindow::loadResults(const QString& jsonPath)
         eigenvalueMadMev_.push_back(
             eigen.isDouble() ? eigen.toDouble() * 1000.0
                              : std::numeric_limits<double>::quiet_NaN());
+        // Δω_p exists only when the sweep was asked for it AND the reference
+        // mesh produced an ω_p to difference against. A point that recorded
+        // an absolute ω_p but no delta (because the reference failed) still
+        // pushes NaN: the panel plots drift, and an absolute value on a
+        // drift axis would be off by the reference.
+        const QJsonValue plasma =
+            point.value(QStringLiteral("delta_plasma_frequency_eV"));
+        plasmaDeltaMev_.push_back(
+            plasma.isDouble() ? plasma.toDouble() * 1000.0
+                              : std::numeric_limits<double>::quiet_NaN());
     }
+    // A sweep that never measured ω_p leaves the column out entirely rather
+    // than showing a panel of "No data to display" beside three real ones.
+    // Distinguished from "measured and every point failed" by the summary
+    // flag, which only the plasma-enabled generator writes.
+    const bool requested = root.value(QStringLiteral("summary"))
+                               .toObject()
+                               .value(QStringLiteral("plasma_frequency"))
+                               .toBool();
+    if (!requested)
+        plasmaDeltaMev_.clear();
     return !xValues_.empty();
 }
 
@@ -585,6 +644,8 @@ ConvergenceResultsWindow::values(Quantity quantity) const
         return forceErrorMevPerA_;
     case Quantity::EigenvalueMad:
         return eigenvalueMadMev_;
+    case Quantity::PlasmaFrequency:
+        return plasmaDeltaMev_;
     case Quantity::EnergyDelta:
         break;
     }
@@ -648,8 +709,9 @@ void ConvergenceResultsWindow::customizeAppearance()
             [this](const OpticsPlotStyle& style) {
                 style_ = style;
                 for (ConvergencePlotWidget* plot :
-                     {energyPlot_, forcePlot_, eigenPlot_})
-                    plot->setStyle(style_);
+                     {energyPlot_, forcePlot_, eigenPlot_, plasmaPlot_})
+                    if (plot)
+                        plot->setStyle(style_);
             });
     dialog->show();
 }
@@ -671,6 +733,16 @@ void ConvergenceResultsWindow::updateThresholdBands()
                                   show);
     forcePlot_->setThresholdBand(0.0, forceCeilingMev, show);
     eigenPlot_->setThresholdBand(0.0, eigenCeilingMev, show);
+    // Δω_p is signed and NOT monotonic — a coarse mesh overshoots the
+    // converged value as readily as it undershoots — so its corridor is
+    // two-sided like the energy's, not one-sided like the two error norms.
+    const double plasmaCeilingMev =
+        plasmaThresholdSpin_ ? plasmaThresholdSpin_->value() : 0.0;
+    if (plasmaPlot_) {
+        plasmaThresholdSpin_->setEnabled(show);
+        plasmaPlot_->setThresholdBand(-plasmaCeilingMev, plasmaCeilingMev,
+                                      show);
+    }
 
     // σ×threshold y-zoom, each panel against its own criterion. Independent
     // of whether the corridor is drawn — the scale is useful even with the
@@ -684,6 +756,9 @@ void ConvergenceResultsWindow::updateThresholdBands()
                                sigma * forceCeilingMev, clamp);
     eigenPlot_->setFixedYRange(-sigma * eigenCeilingMev,
                                sigma * eigenCeilingMev, clamp);
+    if (plasmaPlot_)
+        plasmaPlot_->setFixedYRange(-sigma * plasmaCeilingMev,
+                                    sigma * plasmaCeilingMev, clamp);
 
     if (!show) {
         thresholdSummary_->clear();
@@ -722,12 +797,27 @@ void ConvergenceResultsWindow::updateThresholdBands()
     const bool anyEigen =
         std::any_of(eigenvalueMadMev_.begin(), eigenvalueMadMev_.end(),
                     [](double v) { return std::isfinite(v); });
-    thresholdSummary_->setText(
+    QString summaryText =
         tr("Within threshold and staying there: energy %1; forces %2; "
            "eigenvalues %3.")
             .arg(describe(energyFrom), describe(forceFrom),
                  anyEigen ? describe(eigenFrom)
-                          : tr("no eigenvalue data in this run")));
+                          : tr("no eigenvalue data in this run"));
+    if (plasmaPlot_) {
+        // Same NaN caveat as the eigenvalues: a mesh whose response
+        // evaluation failed, or a gapped system where ω_p does not exist,
+        // must not be reported as "not reached".
+        const bool anyPlasma =
+            std::any_of(plasmaDeltaMev_.begin(), plasmaDeltaMev_.end(),
+                        [](double v) { return std::isfinite(v); });
+        summaryText += QLatin1Char(' ')
+            + tr("Plasma frequency: %1.")
+                  .arg(anyPlasma
+                           ? describe(convergedFrom(plasmaDeltaMev_,
+                                                    plasmaCeilingMev))
+                           : tr("no plasma-frequency data in this run"));
+    }
+    thresholdSummary_->setText(summaryText);
 }
 
 void ConvergenceResultsWindow::exportCsv(Quantity quantity)
@@ -774,6 +864,8 @@ void ConvergenceResultsWindow::exportImage(Quantity quantity)
         plot = forcePlot_;
     else if (quantity == Quantity::EigenvalueMad)
         plot = eigenPlot_;
+    else if (quantity == Quantity::PlasmaFrequency && plasmaPlot_)
+        plot = plasmaPlot_;
     const QString path = QFileDialog::getSaveFileName(
         this, tr("Export Image"),
         QStringLiteral("%1_%2.png")

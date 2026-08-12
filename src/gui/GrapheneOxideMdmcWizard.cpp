@@ -9,6 +9,8 @@
 #include <QSpinBox>
 #include <QVBoxLayout>
 
+#include <cstdint>
+
 namespace calango::gui {
 
 GrapheneOxideMdmcWizard::GrapheneOxideMdmcWizard(QWidget* parent)

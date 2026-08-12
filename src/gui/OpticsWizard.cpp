@@ -18,6 +18,8 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <algorithm>
+
 namespace calango::gui {
 
 OpticsWizard::OpticsWizard(std::shared_ptr<core::Structure> structure,
@@ -260,18 +262,46 @@ QWidget* OpticsWizard::buildSettingsPage()
     meshRow->addStretch(1);
     form->addRow(tr("Response k-mesh:"), meshRow);
 
-    ibzCheck_ = new QCheckBox(tr("Include IBZ points"), page);
+    // "Include IBZ points" named what it does rather than what it contains:
+    // checked REDUCES the mesh to the irreducible wedge. The old label read
+    // as though it added points, which is the opposite of the cost it has.
+    ibzCheck_ = new QCheckBox(
+        tr("Reduce the response mesh by symmetry (irreducible BZ)"), page);
     ibzCheck_->setToolTip(
         tr("Reduce the response mesh to the irreducible Brillouin zone, "
            "weighting each point by its symmetry degeneracy, instead of "
-           "sampling the full zone.\n"
-           "Measured on bulk Si at 6×6×6: 28 irreducible points against 216 "
-           "in the full zone, with ε₂ agreeing to 0.6 % — the same spectrum "
-           "for a fraction of the work.\n"
-           "The weights are GPAW's own, derived from the cell's symmetry."));
+           "sampling the full zone. The weights are GPAW's own, derived from "
+           "the cell's symmetry.\n\n"
+           "Under POINT integration this is free accuracy-wise: measured on "
+           "bulk Si at 8×8×8, 29 irreducible points against 512 in the full "
+           "zone give ε₁(0) and ε₂ agreeing to every printed digit — the same "
+           "spectrum for a seventeenth of the work.\n\n"
+           "Under TETRAHEDRON integration it is not exact, because the "
+           "tessellation is anchored on the wedge rather than the whole zone: "
+           "ε₁(0) came out 12.879 reduced against 12.596 unreduced at 8×8×8 "
+           "(2.2 %), narrowing to 12.336 against 12.351 at 16×16×16 (0.12 %). "
+           "That is interpolation error converging away with the mesh, not "
+           "one of the two being wrong.\n\n"
+           "Independent of the IBZ-VERTEX condition tetrahedron integration "
+           "imposes on the mesh — that is a separate switch the run handles "
+           "itself, and turning this off does not relax it."));
     form->addRow(QString(), ibzCheck_);
-    connect(ibzCheck_, &QCheckBox::toggled, this,
-            [this] { refreshPreview(); });
+    connect(ibzCheck_, &QCheckBox::toggled, this, [this] {
+        onEngineChanged(); // the tetrahedron caveat appears with the pairing
+        refreshPreview();
+    });
+
+    ibzNote_ = new QLabel(page);
+    ibzNote_->setWordWrap(true);
+    ibzNote_->setTextFormat(Qt::RichText);
+    ibzNote_->setText(
+        tr("<i>Under tetrahedron integration the symmetry reduction is "
+           "<b>not exact</b>: the zone is tessellated on the irreducible "
+           "wedge rather than the full zone, which shifted ε₁(0) by 2.2 % at "
+           "8×8×8 on bulk Si and 0.12 % at 16×16×16. Converge the mesh, or "
+           "leave it unreduced if the two must agree to better than "
+           "that.</i>"));
+    form->addRow(QString(), ibzNote_);
 
     tetrahedronCheck_ =
         new QCheckBox(tr("Tetrahedron integration (Brillouin zone)"), page);
@@ -304,6 +334,86 @@ QWidget* OpticsWizard::buildSettingsPage()
     tetrahedronNote_->setWordWrap(true);
     tetrahedronNote_->setTextFormat(Qt::RichText);
     form->addRow(QString(), tetrahedronNote_);
+
+    // --- Free-carrier (Drude) term ---------------------------------------
+    // A metal's low-energy spectrum is dominated by it, and a gapped system
+    // is unaffected either way (GPAW gates the term on `gs.metallic`), so
+    // the default is on and the control exists for the comparison rather
+    // than for the common case.
+    drudeCheck_ =
+        new QCheckBox(tr("Intraband (Drude) free-carrier term"), page);
+    drudeCheck_->setChecked(true);
+    drudeCheck_->setToolTip(
+        tr("Add the free-carrier response of partially occupied bands to the "
+           "optical limit — the negative ε₁ and the intraband absorption that "
+           "dominate a metal below its interband onset.\n\n"
+           "GPAW applies it only when the ground state is actually metallic, "
+           "so on a gapped system leaving it on is a verified no-op "
+           "(bitwise-identical spectra) rather than a risk. Turn it off to "
+           "look at a metal's interband structure with the Drude tail "
+           "removed — not to describe a semiconductor.\n\n"
+           "Its strength is the plasma frequency ω_p, a FERMI-SURFACE "
+           "integral: it converges with the k-mesh far more slowly, and less "
+           "monotonically, than the interband spectrum beside it. The "
+           "K-points Convergence module can measure it directly."));
+    form->addRow(QString(), drudeCheck_);
+
+    drudeRateCombo_ = new QComboBox(page);
+    drudeRateCombo_->addItem(tr("Follow the broadening η"), 1);
+    drudeRateCombo_->addItem(tr("From a relaxation time τ"), 0);
+    drudeRateCombo_->setToolTip(
+        tr("Where the Drude relaxation rate comes from.\n\n"
+           "\"Follow the broadening η\" is GPAW's own idiom (rate=\"eta\"): "
+           "one number does both jobs, so they cannot disagree. It is the "
+           "safe default, but η is a plotting choice — not a scattering "
+           "time.\n\n"
+           "\"From a relaxation time τ\" sets the free-carrier lifetime "
+           "independently, which is what comparing against a measured Drude "
+           "edge or a resistivity needs. Room-temperature values are a few "
+           "to a few tens of femtoseconds (Au ≈ 9 fs, Al ≈ 8 fs)."));
+    form->addRow(tr("Drude relaxation rate:"), drudeRateCombo_);
+
+    // A container widget rather than a bare QHBoxLayout: QFormLayout's
+    // getWidgetPosition only finds widgets added directly as fields, so a spin
+    // box nested inside a layout cannot be addressed by setRowVisible at all —
+    // the row would silently never hide.
+    drudeTauRow_ = new QWidget(page);
+    auto* tauRow = new QHBoxLayout(drudeTauRow_);
+    tauRow->setContentsMargins(0, 0, 0, 0);
+    drudeTauSpin_ = new QDoubleSpinBox(drudeTauRow_);
+    drudeTauSpin_->setDecimals(2);
+    drudeTauSpin_->setRange(0.01, 10000.0);
+    drudeTauSpin_->setSingleStep(1.0);
+    drudeTauSpin_->setValue(10.0);
+    drudeTauSpin_->setSuffix(tr(" fs"));
+    drudeTauSpin_->setToolTip(
+        tr("Free-carrier relaxation time τ. Converted to the rate GPAW takes "
+           "as rate = ħ/(2τ).\n\n"
+           "The factor of two is GPAW's convention, not a fudge: it damps as "
+           "ω_p²/(ω + i·rate)² where the textbook Drude function is "
+           "ω_p²/(ω(ω + iΓ)) with Γ = ħ/τ, so Γ = 2·rate. GPAW's own "
+           "documentation flags the same discrepancy. A τ set here and a rate "
+           "quoted in a paper are therefore not interchangeable — the "
+           "conversion is shown beside this box and written into the "
+           "script."));
+    tauRow->addWidget(drudeTauSpin_);
+    drudeRateLabel_ = new QLabel(drudeTauRow_);
+    tauRow->addWidget(drudeRateLabel_);
+    tauRow->addStretch(1);
+    form->addRow(tr("Relaxation time τ:"), drudeTauRow_);
+
+    connect(drudeCheck_, &QCheckBox::toggled, this, [this] {
+        updateDrudeRows();
+        refreshPreview();
+    });
+    connect(drudeRateCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        updateDrudeRows();
+        refreshPreview();
+    });
+    connect(drudeTauSpin_, &QDoubleSpinBox::valueChanged, this, [this] {
+        updateDrudeRows();
+        refreshPreview();
+    });
 
     npointsSpin_ = new QSpinBox(page);
     npointsSpin_->setRange(2, 100000);
@@ -380,6 +490,45 @@ QWidget* OpticsWizard::buildSettingsPage()
     return page;
 }
 
+double OpticsWizard::drudeRateEvForTauFs(double tauFs)
+{
+    // ħ = 0.6582119569 eV·fs. rate = ħ/(2τ) — see the τ tooltip for why the
+    // 2 is there and why it must not be dropped when quoting the result.
+    constexpr double kHbarEvFs = 0.6582119569;
+    return kHbarEvFs / (2.0 * std::max(tauFs, 1e-6));
+}
+
+void OpticsWizard::updateDrudeRows()
+{
+    if (!drudeCheck_ || !drudeRateCombo_ || !drudeTauSpin_ || !responseForm_)
+        return;
+    const bool drude = drudeCheck_->isChecked();
+    const bool fromTau = drudeRateCombo_->currentData().toInt() == 0;
+    const bool vasp = selectedEngine() == core::CalculatorKind::Vasp;
+
+    const auto setRowVisible = [this](QWidget* field, bool visible) {
+        int row = -1;
+        QFormLayout::ItemRole role{};
+        responseForm_->getWidgetPosition(field, &row, &role);
+        if (row >= 0)
+            responseForm_->setRowVisible(row, visible);
+    };
+    // The whole group is a gpaw.response concept; VASP's LOPTICS has no
+    // intraband switch, so it is hidden there rather than shown inert.
+    setRowVisible(drudeCheck_, !vasp);
+    setRowVisible(drudeRateCombo_, !vasp && drude);
+    // Only meaningful once the rate is NOT tied to η — shown rather than
+    // merely disabled, so the dialog does not carry a dead number that looks
+    // like it is being used.
+    setRowVisible(drudeTauRow_, !vasp && drude && fromTau);
+
+    const double rate = drudeRateEvForTauFs(drudeTauSpin_->value());
+    drudeRateLabel_->setText(
+        tr("→ rate = %1 eV   (damping Γ = 2·rate = %2 eV)")
+            .arg(rate, 0, 'f', 4)
+            .arg(2.0 * rate, 0, 'f', 4));
+}
+
 void OpticsWizard::applyTetrahedronMeshConstraints()
 {
     if (!tetrahedronCheck_ || !responseKptsSpin_[0])
@@ -438,6 +587,11 @@ void OpticsWizard::onEngineChanged()
         setRowVisible(ibzCheck_, !vasp);
         setRowVisible(tetrahedronCheck_, !vasp);
         setRowVisible(tetrahedronNote_, !vasp && tetrahedronCheck_->isChecked());
+        // The reduction behaves differently under the two integrators, so
+        // the caveat is shown exactly when it is true: exact under point
+        // integration, an interpolation difference under tetrahedron.
+        setRowVisible(ibzNote_, !vasp && tetrahedronCheck_->isChecked()
+                          && ibzCheck_->isChecked());
         // Stated up front rather than discovered from the log: the mesh the
         // run integrates on may not be the one typed above, and a spectrum
         // computed on a different grid than the user believes is exactly the
@@ -449,9 +603,14 @@ void OpticsWizard::onEngineChanged()
                "(hexagonal) per axis. The mesh above is checked against "
                "GPAW's own predicate before the expensive step and "
                "<b>raised to the cheapest grid that qualifies</b>, which can "
-               "be several times the k-points asked for. The run logs any "
-               "change and records the grid it used alongside the "
-               "spectrum.</i>"));
+               "be several times the k-points asked for. Rhombohedral, "
+               "monoclinic and triclinic cells have zone vertices fixed by "
+               "the cell angles, where <b>no mesh of any size</b> qualifies; "
+               "there the run keeps tetrahedron integration and drops "
+               "symmetry reduction of the response instead, costing roughly "
+               "the number of symmetry operations more. The run logs "
+               "whichever route it took and records the grid it used "
+               "alongside the spectrum.</i>"));
         // Shared spins, engine-specific vocabulary: the broadening is GPAW's
         // η and VASP's CSHIFT; the sample count is an explicit grid for GPAW
         // and the NEDOS tag for VASP.
@@ -465,6 +624,7 @@ void OpticsWizard::onEngineChanged()
                                 : tr("Number of points:"));
     }
     applyTetrahedronMeshConstraints();
+    updateDrudeRows();
     refreshPreview();
 }
 
@@ -546,6 +706,9 @@ QString OpticsWizard::generateScript() const
     for (int i = 0; i < 3; ++i)
         cfg.responseKpts[i] = responseKptsSpin_[i]->value();
     cfg.includeIbzPoints = ibzCheck_->isChecked();
+    cfg.intrabandDrude = drudeCheck_->isChecked();
+    cfg.drudeRateFromBroadening = drudeRateCombo_->currentData().toInt() == 1;
+    cfg.drudeRelaxationTimeFs = drudeTauSpin_->value();
     cfg.dirX = dirXxCheck_->isChecked();
     cfg.dirY = dirYyCheck_->isChecked();
     cfg.dirZ = dirZzCheck_->isChecked();

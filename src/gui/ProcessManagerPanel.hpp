@@ -3,6 +3,7 @@
 #include <QWidget>
 
 class QPushButton;
+class QTimer;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -31,6 +32,17 @@ public:
     void setTaskStatus(int id, Status status);
     /// Remove a task's row (the controller purges its data first).
     void removeTask(int id);
+
+    /// How many task rows the panel is showing.
+    int taskCount() const;
+    /// Status of the row at `row` in display order; Queued if out of range.
+    ///
+    /// Exists because the status column no longer HAS text to read. Anything
+    /// that wants to know what a row is doing — a test, a controller
+    /// reasoning about the panel rather than its own bookkeeping — asks for
+    /// the value instead of matching a translated word, which is what the
+    /// column was never a reliable source of anyway.
+    Status rowStatus(int row) const;
 
 protected:
     /// Delete / Backspace (also ⌘⌫ on macOS) on the tree deletes the selected
@@ -66,9 +78,22 @@ private:
     /// Enable Abort for exactly the selections it applies to: a task that is
     /// running or still queued. A finished one has nothing to stop.
     void updateAbortButton();
+    /// Repaint the Walltime cell of one row from its stored timestamps.
+    void refreshWalltime(QTreeWidgetItem* item) const;
+    /// Tick every running row, and stop the timer once none are left.
+    ///
+    /// Started and stopped rather than left running: a dock that wakes the UI
+    /// thread once a second forever is a real cost on a laptop, and there is
+    /// nothing to recompute when every task has finished — a frozen duration
+    /// stays frozen.
+    void updateWalltimes();
+    /// Start the tick if anything is running, stop it if nothing is.
+    void syncWalltimeTimer();
 
     QTreeWidget* tree_;
     QPushButton* abortButton_ = nullptr;
+    /// Drives the live stopwatch; only active while a task is running.
+    QTimer* walltimeTimer_ = nullptr;
     int nextId_ = 0;
 };
 

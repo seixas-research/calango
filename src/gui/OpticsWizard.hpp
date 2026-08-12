@@ -107,7 +107,15 @@ private:
     /// Rounding up here means the number in the dialog is the number the run
     /// starts from.
     void applyTetrahedronMeshConstraints();
+    /// Enable the relaxation-time row only when the Drude term is on AND the
+    /// rate is not tied to η, and keep the τ → rate readout current.
+    void updateDrudeRows();
     core::CalculatorKind selectedEngine() const;
+
+    /// GPAW's `rate` (eV) for a relaxation time in fs: ħ/(2τ). The 2 is
+    /// GPAW's convention — it damps as ω_p²/(ω+i·rate)², so the textbook
+    /// Γ = ħ/τ corresponds to rate = Γ/2.
+    static double drudeRateEvForTauFs(double tauFs);
 
     std::shared_ptr<core::Structure> structure_;
     bool twoDimensional_ = false;
@@ -136,6 +144,26 @@ private:
     QCheckBox* tetrahedronCheck_ = nullptr;
     /// Live consequence of the tetrahedron choice for the current mesh.
     QLabel* tetrahedronNote_ = nullptr;
+    /// What the IBZ reduction costs and changes depends on the integrator —
+    /// exact under point integration, an interpolation difference under
+    /// tetrahedron — so the caveat appears only when it applies.
+    QLabel* ibzNote_ = nullptr;
+
+    /// Intraband (Drude) free-carrier term, on by default: GPAW gates it on
+    /// `gs.metallic`, so it is a no-op on a gapped system.
+    QCheckBox* drudeCheck_ = nullptr;
+    /// Where the Drude relaxation rate comes from: the broadening η, or an
+    /// explicit relaxation time.
+    QComboBox* drudeRateCombo_ = nullptr;
+    /// Container for the τ spin and its rate readout. QFormLayout can only
+    /// hide a row addressed through a widget it holds directly, so the pair
+    /// lives in one rather than in a bare layout.
+    QWidget* drudeTauRow_ = nullptr;
+    QDoubleSpinBox* drudeTauSpin_ = nullptr;
+    /// The τ → rate conversion, shown live. The factor of two between GPAW's
+    /// convention and the textbook one is exactly what a user comparing
+    /// against a paper needs to see rather than infer.
+    QLabel* drudeRateLabel_ = nullptr;
     QCheckBox* dirXxCheck_ = nullptr;
     QCheckBox* dirYyCheck_ = nullptr;
     QCheckBox* dirZzCheck_ = nullptr;

@@ -83,7 +83,63 @@ struct OpticsConfig {
     /// The weights are GPAW's own, derived from the cell's symmetry. Computing
     /// them here and handing over a pre-weighted list would duplicate that
     /// analysis and risk contradicting it.
+    ///
+    /// INDEPENDENT of tetrahedron integration, which was checked rather than
+    /// assumed (bulk Si, PW 250, PBE):
+    ///
+    ///   * It is not what governs the IBZ-VERTEX requirement. On a
+    ///     non-compliant 6³ mesh the tetrahedron run fails identically with
+    ///     symmetry on and off; only `qsymmetry=False` on the response lifts
+    ///     that, and it is a different switch (see tetrahedronKpointsBlock).
+    ///   * Under POINT integration the two agree bitwise — 29 irreducible
+    ///     points against 512 in the full zone at 8³, same ε₁(0)=21.243 and
+    ///     ε₂(3.5 eV)=40.269. Pure cost saving, ~17x here.
+    ///   * Under TETRAHEDRON integration they differ, because the tessellation
+    ///     is anchored on the wedge rather than the zone: ε₁(0) 12.879 vs
+    ///     12.596 at 8³ (2.2 %), 12.336 vs 12.351 at 16³ (0.12 %). That is
+    ///     interpolation error converging away, not one of them being wrong.
+    ///
+    /// So this is neither obsolete nor in conflict with the tetrahedron
+    /// method, and disabling it there would cost the reduction while fixing
+    /// nothing.
     bool includeIbzPoints = false;
+
+    /// Include the intraband (Drude) free-carrier term in the optical limit.
+    ///
+    /// GPAW gates it on `self.gs.metallic and intraband` (chi0.py), so leaving
+    /// it on is a verified no-op for a gapped system and supplies the
+    /// free-carrier response for a metal. That is why the default is true and
+    /// why the generator does not try to guess which case it has: guessing
+    /// wrong in the "off" direction is what made metals silently wrong here,
+    /// producing a spectrum with no Drude ε₁ below the interband onset.
+    ///
+    /// Switchable all the same, because comparing a metal's spectrum with and
+    /// without the free-carrier part is a real thing to want — the interband
+    /// structure is otherwise buried under the Drude tail.
+    bool intrabandDrude = true;
+
+    /// Tie the Drude relaxation rate to the broadening η instead of setting it
+    /// from an explicit relaxation time (GPAW's own `rate="eta"` idiom).
+    ///
+    /// True keeps the free-carrier lifetime and the spectral broadening as one
+    /// number, which is the conservative default: it cannot disagree with
+    /// itself. False uses `drudeRelaxationTimeFs`, which is what a comparison
+    /// against a measured Drude edge needs — the scattering time of a real
+    /// metal (Au ≈ 9 fs, Al ≈ 8 fs) has nothing to do with the broadening
+    /// chosen to make a plot readable.
+    bool drudeRateFromBroadening = true;
+
+    /// Free-carrier relaxation time τ, femtoseconds. Consulted only when
+    /// `drudeRateFromBroadening` is false.
+    ///
+    /// Converted to GPAW's `rate` (eV) by the generator, and the factor of two
+    /// in that conversion is not optional: GPAW implements the term as
+    /// ω_p²/(ω + i·rate)², whereas the textbook Drude function is
+    /// ω_p²/(ω(ω + iΓ)) with Γ = ħ/τ. Matching the two gives Γ = 2·rate, so
+    /// rate = ħ/(2τ). GPAW's own docstring notes the discrepancy ("differs
+    /// from some literature by a factor of 2"); a τ entered here and a rate
+    /// read out of a paper are therefore NOT the same number.
+    double drudeRelaxationTimeFs = 10.0;
 
     double broadeningEv = 0.1;  ///< Lorentzian broadening η (GPAW) / CSHIFT (VASP), eV
     double omegaMinEv = 0.0;    ///< lower photon energy of the spectrum, eV
