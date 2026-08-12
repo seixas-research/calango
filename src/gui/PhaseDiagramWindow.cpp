@@ -193,10 +193,49 @@ PhaseDiagramStyleDialog::PhaseDiagramStyleDialog(const PhaseDiagramStyle& style,
         });
         elementForm->addRow(QString(), box);
     };
+    toggle(tr("Shaded phase regions"), &style_.showShading);
+    toggle(tr("Phase-boundary curves"), &style_.showBoundaryCurves);
+    toggle(tr("Smooth the boundaries"), &style_.smoothBoundaries);
+    toggle(tr("Cross-hatch two-phase fields"), &style_.hatchTwoPhase);
     toggle(tr("Grid lines"), &style_.showGrid);
-    toggle(tr("Tie-lines (two-phase shading)"), &style_.showTieLines);
+    toggle(tr("Tie-lines (the computed isotherms)"), &style_.showTieLines);
     toggle(tr("Phase-boundary points"), &style_.showBoundaryPoints);
     toggle(tr("Legend"), &style_.showLegend);
+
+    auto* shading = new QSpinBox(elements);
+    shading->setRange(10, 255);
+    shading->setValue(style_.shadingAlpha);
+    shading->setToolTip(tr("Opacity of a filled phase region."));
+    connect(shading, &QSpinBox::valueChanged, this, [this](int value) {
+        style_.shadingAlpha = value;
+        Q_EMIT styleChanged(style_);
+    });
+    elementForm->addRow(tr("Region opacity:"), shading);
+
+    auto* boundary = new QDoubleSpinBox(elements);
+    boundary->setRange(0.2, 6.0);
+    boundary->setSingleStep(0.2);
+    boundary->setValue(style_.boundaryWidth);
+    connect(boundary, &QDoubleSpinBox::valueChanged, this, [this](double value) {
+        style_.boundaryWidth = value;
+        Q_EMIT styleChanged(style_);
+    });
+    elementForm->addRow(tr("Boundary width:"), boundary);
+
+    auto* smoothing = new QSpinBox(elements);
+    smoothing->setRange(1, 32);
+    smoothing->setValue(style_.smoothingSubdivisions);
+    smoothing->setToolTip(
+        tr("Points drawn per computed isotherm interval.\n\n"
+           "This changes how smooth the curve LOOKS and not how accurate it "
+           "is: the interpolation is pinned to the same computed points "
+           "either way, and cannot leave the interval they span. To resolve a "
+           "boundary better, raise the temperature steps instead."));
+    connect(smoothing, &QSpinBox::valueChanged, this, [this](int value) {
+        style_.smoothingSubdivisions = value;
+        Q_EMIT styleChanged(style_);
+    });
+    elementForm->addRow(tr("Smoothing density:"), smoothing);
 
     auto* alpha = new QSpinBox(elements);
     alpha->setRange(10, 255);
@@ -278,6 +317,7 @@ void BinaryPhaseDiagramWidget::setDiagram(core::BinaryPhaseDiagram diagram,
     diagram_ = std::move(diagram);
     elementA_ = elementA;
     elementB_ = elementB;
+    rebuildFields();
     minTemperature_ = 0.0;
     maxTemperature_ = 1.0;
     if (!diagram_.sections.empty()) {
@@ -292,13 +332,123 @@ void BinaryPhaseDiagramWidget::setDiagram(core::BinaryPhaseDiagram diagram,
 void BinaryPhaseDiagramWidget::clear()
 {
     diagram_ = {};
+    fields_.clear();
     update();
 }
 
 void BinaryPhaseDiagramWidget::setStyle(const PhaseDiagramStyle& style)
 {
+    const bool resample = style.smoothBoundaries != style_.smoothBoundaries
+        || style.smoothingSubdivisions != style_.smoothingSubdivisions;
     style_ = style;
+    // Only the two settings that change the GEOMETRY force a rebuild; a colour
+    // change must not re-interpolate several thousand points on every click of
+    // the live-updating appearance dialog.
+    if (resample)
+        rebuildFields();
     update();
+}
+
+void BinaryPhaseDiagramWidget::rebuildFields()
+{
+    fields_.clear();
+    cells_.clear();
+
+    // --- The filled cells: every band, given its isotherm's own strip -------
+    // Each isotherm owns the temperature interval halfway to its neighbours,
+    // so the strips abut exactly; the first and last reach the window edge.
+    for (std::size_t i = 0; i < diagram_.sections.size(); ++i) {
+        const double here = diagram_.sections[i].temperatureK;
+        const double below = i > 0 ? diagram_.sections[i - 1].temperatureK : here;
+        const double above = i + 1 < diagram_.sections.size()
+            ? diagram_.sections[i + 1].temperatureK
+            : here;
+        // Halfway to each neighbour; the outermost isotherms own their half
+        // strip only, which is why the shading stops exactly at the window
+        // rather than pretending to know what lies beyond it.
+        const double tLow = 0.5 * (below + here);
+        const double tHigh = 0.5 * (here + above);
+        for (const core::DiagramBand& band :
+             core::binarySectionBands(diagram_.sections[i])) {
+            FillCell cell;
+            cell.xLow = band.xLow;
+            cell.xHigh = band.xHigh;
+            cell.tLow = tLow;
+            cell.tHigh = tHigh;
+            cell.phaseA = band.phaseA;
+            cell.phaseB = band.phaseB;
+            cells_.push_back(cell);
+        }
+    }
+
+    // Half the temperature step. Every field is extended by this much beyond
+    // its first and last computed isotherm, and that is what makes the filled
+    // regions TILE rather than leave white seams between them.
+    //
+    // Each isotherm belongs to exactly one field at any composition, so
+    // consecutive fields share no temperature and their polygons would other-
+    // wise stop one step short of each other. Meeting them halfway also puts
+    // the invariant horizontal midway between the two isotherms that bracket
+    // the reaction, which is the best estimate the sampling supports.
+    //
+    // The extension is a VERTICAL stub — the same composition, not a linear
+    // extrapolation of the boundary. Extrapolating would invent curvature
+    // beyond the last computed point, which is the one thing this whole
+    // rendering path is careful not to do.
+    double halfStep = 0.0;
+    if (diagram_.sections.size() > 1)
+        halfStep = 0.5
+            * (diagram_.sections[1].temperatureK
+               - diagram_.sections[0].temperatureK);
+    const double windowLow = diagram_.sections.empty()
+        ? 0.0 : diagram_.sections.front().temperatureK;
+    const double windowHigh = diagram_.sections.empty()
+        ? 0.0 : diagram_.sections.back().temperatureK;
+
+    // --- The boundary curves: traced fields, smoothed ----------------------
+    for (const core::PhaseField& field : core::tracePhaseFields(diagram_)) {
+        if (field.temperatureK.empty())
+            continue;
+        RenderField out;
+        out.phaseA = field.phaseA;
+        out.phaseB = field.phaseB;
+        out.openBelow = field.openBelow;
+        out.openAbove = field.openAbove;
+
+        const auto build = [&](const std::vector<double>& x,
+                               std::vector<QPointF>* into) {
+            std::vector<double> t;
+            std::vector<double> y;
+            if (!style_.smoothBoundaries
+                || !core::monotoneCubicResample(field.temperatureK, x,
+                                                style_.smoothingSubdivisions,
+                                                &t, &y)) {
+                // Straight segments through the computed points. Never wrong,
+                // just faceted — and the fallback whenever the resampler
+                // refuses (a field only one isotherm tall, for instance).
+                t = field.temperatureK;
+                y = x;
+            }
+            // A field cut off by the window ends AT the window; one that ended
+            // because the assemblage changed is extended halfway to the next
+            // computed isotherm, where the reaction actually lies.
+            const double lowT = field.openBelow
+                ? std::min(windowLow, t.front())
+                : t.front() - halfStep;
+            const double highT = field.openAbove
+                ? std::max(windowHigh, t.back())
+                : t.back() + halfStep;
+            into->push_back(QPointF(y.front(), lowT));
+            for (std::size_t i = 0; i < t.size(); ++i)
+                into->push_back(QPointF(y[i], t[i]));
+            into->push_back(QPointF(y.back(), highT));
+        };
+        build(field.xLow, &out.left);
+        build(field.xHigh, &out.right);
+        if (out.left.size() < 2 || out.right.size() < 2)
+            continue;
+        fields_.push_back(std::move(out));
+    }
 }
 
 QString BinaryPhaseDiagramWidget::toCsv() const
@@ -390,6 +540,92 @@ void BinaryPhaseDiagramWidget::render(QPainter& painter, const QRectF& bounds,
         for (double t = std::ceil(minTemperature_ / step) * step;
              t <= maxTemperature_; t += step) {
             painter.drawLine(toScreen(0.0, t), toScreen(1.0, t));
+        }
+    }
+
+    // --- Filled regions ----------------------------------------------------
+    // Each traced field becomes one closed path: up its left boundary, across
+    // the top, back down its right boundary, closed along the bottom. Because
+    // the bands of every isotherm tile it end to end, the filled regions tile
+    // the diagram too — no seams, no double-painted overlaps.
+    if (style_.showShading) {
+        painter.setPen(Qt::NoPen);
+        // ANTIALIASING OFF, for the fills only. Two translucent polygons that
+        // share an edge each cover their boundary pixel partially, so the
+        // shared row ends up lighter than either — a pale seam tracing every
+        // phase boundary, which reads as a real gap between the fields. With
+        // it off they tile pixel-exactly. The boundary CURVES drawn on top are
+        // antialiased and carry the smoothness; the only edges left bare are
+        // the ones between two single-phase fields, and those are shallow
+        // enough that aliasing is invisible.
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        for (const FillCell& cell : cells_) {
+            const QPointF topLeft = toScreen(cell.xLow, cell.tHigh);
+            const QPointF bottomRight = toScreen(cell.xHigh, cell.tLow);
+            QColor fill = style_.phaseColor(cell.phaseA);
+            if (cell.twoPhase()) {
+                // The blend of the two coexisting phases, so a two-phase field
+                // reads as "between these two" without a legend lookup.
+                const QColor other = style_.phaseColor(cell.phaseB);
+                fill = QColor((fill.red() + other.red()) / 2,
+                              (fill.green() + other.green()) / 2,
+                              (fill.blue() + other.blue()) / 2);
+            }
+            fill.setAlpha(cell.twoPhase() ? style_.shadingAlpha
+                                          : style_.shadingAlpha / 2);
+            if (cell.twoPhase() && style_.hatchTwoPhase) {
+                // Hatching is how a printed diagram distinguishes a two-phase
+                // field from a single-phase one — and the only way to tell an
+                // alpha+alpha miscibility gap from the alpha beside it, since
+                // the blend of a colour with itself is that colour.
+                painter.setBrush(QBrush(fill, Qt::BDiagPattern));
+            } else {
+                painter.setBrush(fill);
+            }
+            painter.drawRect(QRectF(topLeft, bottomRight));
+        }
+        painter.setRenderHint(QPainter::Antialiasing, true);
+    }
+
+    // --- Phase-boundary curves ---------------------------------------------
+    // Only the TWO-PHASE fields are stroked. A single-phase region is bounded
+    // by the two-phase fields around it, so stroking both would draw every
+    // boundary twice — visibly, at partial opacity.
+    if (style_.showBoundaryCurves) {
+        painter.setBrush(Qt::NoBrush);
+        for (const RenderField& field : fields_) {
+            if (!field.twoPhase())
+                continue;
+            const auto stroke = [&](const std::vector<QPointF>& points,
+                                    const QColor& color) {
+                QPainterPath path;
+                path.moveTo(toScreen(points.front().x(), points.front().y()));
+                for (std::size_t i = 1; i < points.size(); ++i)
+                    path.lineTo(toScreen(points[i].x(), points[i].y()));
+                painter.setPen(QPen(color, style_.boundaryWidth, Qt::SolidLine,
+                                    Qt::RoundCap, Qt::RoundJoin));
+                painter.drawPath(path);
+            };
+            // Each side is drawn in the colour of the phase it belongs to: the
+            // left boundary is where phaseA stops, the right where phaseB does.
+            stroke(field.left, style_.phaseColor(field.phaseA));
+            stroke(field.right, style_.phaseColor(field.phaseB));
+
+            // The horizontal caps ARE the invariant reactions — a eutectic,
+            // peritectic or monotectic line. They are drawn only where the
+            // field genuinely ended; where it was merely cut off by the top or
+            // bottom of the computed window there is no reaction, and drawing
+            // one would invent a feature out of the user's choice of range.
+            painter.setPen(QPen(style_.spine, style_.boundaryWidth,
+                                Qt::SolidLine, Qt::FlatCap));
+            if (!field.openBelow)
+                painter.drawLine(
+                    toScreen(field.left.front().x(), field.left.front().y()),
+                    toScreen(field.right.front().x(), field.right.front().y()));
+            if (!field.openAbove)
+                painter.drawLine(
+                    toScreen(field.left.back().x(), field.left.back().y()),
+                    toScreen(field.right.back().x(), field.right.back().y()));
         }
     }
 
@@ -812,7 +1048,12 @@ PhaseDiagramWindow::PhaseDiagramWindow(const core::TdbDatabase& database,
     binaryForm->addRow(tr("Temperature steps:"), temperatureSteps_);
     compositionSteps_ = new QSpinBox(controls);
     compositionSteps_->setRange(21, 4001);
-    compositionSteps_->setValue(401);
+    // 801 rather than 401: every boundary is quantized to this grid, and once
+    // the regions are FILLED the quantization reads as a visible staircase on
+    // a slowly-moving boundary where the old tie-line stack hid it in its own
+    // texture. Smoothing along the temperature axis cannot remove it — the
+    // interpolant passes through the quantized points, as it must.
+    compositionSteps_->setValue(801);
     compositionSteps_->setToolTip(
         tr("Every phase boundary is located to one composition step: the "
            "construction is a convex hull over sampled points, not a root "

@@ -441,6 +441,210 @@ std::vector<int> binaryAssemblageAt(const BinarySection& section, double x)
     return {best};
 }
 
+std::vector<DiagramBand> binarySectionBands(const BinarySection& section)
+{
+    std::vector<DiagramBand> bands;
+    if (section.vertexX.empty())
+        return bands;
+
+    const double left = section.vertexX.front();
+    const double right = section.vertexX.back();
+    if (section.tieLines.empty()) {
+        // No tie-line means no phase change anywhere on this isotherm, so the
+        // whole span is one phase. (computeBinarySection emits a tie-line for
+        // every phase change, however narrow, which is what makes this safe.)
+        DiagramBand band;
+        band.phaseA = section.vertexPhase.front();
+        band.xLow = left;
+        band.xHigh = right;
+        bands.push_back(band);
+        return bands;
+    }
+
+    double cursor = left;
+    for (const BinaryTieLine& tie : section.tieLines) {
+        if (tie.xLeft > cursor + 1e-12) {
+            // The single-phase run leading up to this tie-line. Its phase is
+            // the tie-line's LEFT phase by construction: the tie-line's left
+            // end sits on that phase's Gibbs curve.
+            DiagramBand band;
+            band.phaseA = tie.leftPhase;
+            band.xLow = cursor;
+            band.xHigh = tie.xLeft;
+            bands.push_back(band);
+        }
+        DiagramBand band;
+        band.phaseA = tie.leftPhase;
+        band.phaseB = tie.rightPhase;
+        band.xLow = tie.xLeft;
+        band.xHigh = tie.xRight;
+        bands.push_back(band);
+        cursor = tie.xRight;
+    }
+    if (right > cursor + 1e-12) {
+        DiagramBand band;
+        band.phaseA = section.tieLines.back().rightPhase;
+        band.xLow = cursor;
+        band.xHigh = right;
+        bands.push_back(band);
+    }
+    return bands;
+}
+
+std::vector<PhaseField> tracePhaseFields(const BinaryPhaseDiagram& diagram)
+{
+    std::vector<PhaseField> fields;
+    // Indices into `fields` that are still being extended, paired with the
+    // band interval they were last seen at.
+    std::vector<std::size_t> open;
+
+    for (std::size_t s = 0; s < diagram.sections.size(); ++s) {
+        const BinarySection& section = diagram.sections[s];
+        const std::vector<DiagramBand> bands = binarySectionBands(section);
+
+        std::vector<std::size_t> nextOpen;
+        std::vector<bool> used(open.size(), false);
+        for (const DiagramBand& band : bands) {
+            // Best match among the open fields: same phase pair, and the
+            // largest overlap with the field's most recent interval.
+            int best = -1;
+            double bestOverlap = 0.0;
+            for (std::size_t k = 0; k < open.size(); ++k) {
+                if (used[k])
+                    continue;
+                PhaseField& field = fields[open[k]];
+                if (field.phaseA != band.phaseA || field.phaseB != band.phaseB)
+                    continue;
+                const double lo = std::max(field.xLow.back(), band.xLow);
+                const double hi = std::min(field.xHigh.back(), band.xHigh);
+                // `>=` so that a field which has narrowed to a point — a
+                // congruent melting point, say — still continues rather than
+                // being cut in two by its own zero width.
+                const double overlap = hi - lo;
+                if (overlap >= 0.0 && (best < 0 || overlap > bestOverlap)) {
+                    best = static_cast<int>(k);
+                    bestOverlap = overlap;
+                }
+            }
+            if (best >= 0) {
+                used[static_cast<std::size_t>(best)] = true;
+                PhaseField& field = fields[open[static_cast<std::size_t>(best)]];
+                field.temperatureK.push_back(section.temperatureK);
+                field.xLow.push_back(band.xLow);
+                field.xHigh.push_back(band.xHigh);
+                nextOpen.push_back(open[static_cast<std::size_t>(best)]);
+                continue;
+            }
+            PhaseField field;
+            field.phaseA = band.phaseA;
+            field.phaseB = band.phaseB;
+            field.temperatureK.push_back(section.temperatureK);
+            field.xLow.push_back(band.xLow);
+            field.xHigh.push_back(band.xHigh);
+            // Starting in the very first isotherm means the field is cut off
+            // by the window, not by a reaction.
+            field.openBelow = s == 0;
+            fields.push_back(std::move(field));
+            nextOpen.push_back(fields.size() - 1);
+        }
+        open = std::move(nextOpen);
+    }
+    // Whatever is still open at the top of the sweep was cut off there.
+    for (const std::size_t index : open)
+        fields[index].openAbove = true;
+    return fields;
+}
+
+std::vector<double> monotoneCubicTangents(const std::vector<double>& t,
+                                          const std::vector<double>& y)
+{
+    const std::size_t n = std::min(t.size(), y.size());
+    if (n < 2)
+        return std::vector<double>(n, 0.0);
+
+    std::vector<double> slope(n - 1, 0.0);
+    for (std::size_t i = 0; i + 1 < n; ++i) {
+        const double dt = t[i + 1] - t[i];
+        slope[i] = dt > 0.0 ? (y[i + 1] - y[i]) / dt : 0.0;
+    }
+    std::vector<double> m(n, 0.0);
+    m[0] = slope[0];
+    m[n - 1] = slope[n - 2];
+    for (std::size_t i = 1; i + 1 < n; ++i)
+        m[i] = 0.5 * (slope[i - 1] + slope[i]);
+
+    // The Fritsch-Carlson limiter. Two rules, and the first is the one that
+    // matters most for a phase diagram: where the data has a local extremum
+    // (the slopes change sign, or a segment is flat) the tangent is forced to
+    // ZERO, so the curve turns over exactly at the data point instead of
+    // sailing past it. A retrograde solvus is exactly that shape.
+    for (std::size_t i = 0; i + 1 < n; ++i) {
+        if (slope[i] == 0.0) {
+            m[i] = 0.0;
+            m[i + 1] = 0.0;
+            continue;
+        }
+        const double a = m[i] / slope[i];
+        const double b = m[i + 1] / slope[i];
+        if (a < 0.0)
+            m[i] = 0.0;
+        if (b < 0.0)
+            m[i + 1] = 0.0;
+        const double magnitude = a * a + b * b;
+        if (magnitude > 9.0) {
+            const double tau = 3.0 / std::sqrt(magnitude);
+            m[i] = tau * a * slope[i];
+            m[i + 1] = tau * b * slope[i];
+        }
+    }
+    return m;
+}
+
+bool monotoneCubicResample(const std::vector<double>& t,
+                           const std::vector<double>& y, int subdivisions,
+                           std::vector<double>* outT, std::vector<double>* outY)
+{
+    if (!outT || !outY)
+        return false;
+    outT->clear();
+    outY->clear();
+    const std::size_t n = std::min(t.size(), y.size());
+    if (n < 2)
+        return false;
+    for (std::size_t i = 0; i + 1 < n; ++i)
+        if (!(t[i + 1] > t[i]))
+            return false;
+
+    const int steps = std::max(1, subdivisions);
+    const std::vector<double> m = monotoneCubicTangents(t, y);
+    for (std::size_t i = 0; i + 1 < n; ++i) {
+        const double h = t[i + 1] - t[i];
+        const double lo = std::min(y[i], y[i + 1]);
+        const double hi = std::max(y[i], y[i + 1]);
+        for (int k = 0; k < steps; ++k) {
+            const double u = static_cast<double>(k) / steps;
+            const double u2 = u * u;
+            const double u3 = u2 * u;
+            const double h00 = 2.0 * u3 - 3.0 * u2 + 1.0;
+            const double h10 = u3 - 2.0 * u2 + u;
+            const double h01 = -2.0 * u3 + 3.0 * u2;
+            const double h11 = u3 - u2;
+            const double value = h00 * y[i] + h10 * h * m[i]
+                + h01 * y[i + 1] + h11 * h * m[i + 1];
+            outT->push_back(t[i] + u * h);
+            // The limiter above already guarantees this, so the clamp never
+            // fires. It is here so that the no-overshoot property is enforced
+            // by the code and not only asserted by a comment — if anybody ever
+            // swaps in a different tangent rule, the curve still cannot
+            // invent a solubility limit.
+            outY->push_back(std::clamp(value, lo, hi));
+        }
+    }
+    outT->push_back(t[n - 1]);
+    outY->push_back(y[n - 1]);
+    return true;
+}
+
 TernaryIsothermalSection
 computeTernaryIsothermalSection(const std::vector<TernaryGibbsPhase>& phases,
                                 const TernarySectionOptions& options)

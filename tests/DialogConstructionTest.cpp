@@ -93,6 +93,7 @@
 #include <algorithm>
 #include <QTemporaryDir>
 
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -1948,6 +1949,100 @@ int main(int argc, char** argv)
 
                 const QString png = out.path() + QStringLiteral("/nbre.png");
                 check(window.exportImage(png, 3.0), "the plot exports as PNG");
+
+                // NO HOLES IN THE SHADING. Filled regions used to be built as
+                // one polygon per traced field, and a boundary that moves
+                // faster than the temperature sampling then belongs to neither
+                // the field below nor the one above: the Nb-Re melting line
+                // jumps from x = 0.465 to x = 0.318 between two adjacent
+                // isotherms, and it left a white gash straight across the
+                // diagram that read as "no phase is stable here".
+                //
+                // Checked by scanning a column of the exported image: between
+                // the first and last shaded pixel there must be no unshaded
+                // run. Self-locating, so it does not depend on the plot's
+                // margins.
+                QImage rendered(png);
+                check(!rendered.isNull(), "the exported PNG loads back");
+                if (!rendered.isNull()) {
+                    const int column = rendered.width() / 4; // x_Re about 0.2
+                    const QRgb canvas = window.style().canvas.rgb();
+                    // The plot interior is bounded by the axis frame, which is
+                    // the only thing drawn in the spine colour across the full
+                    // width. Locating it this way keeps the test independent
+                    // of the widget's margins — and stops it mistaking the
+                    // blank strip above the x-axis tick labels for a hole.
+                    const QRgb spine = window.style().spine.rgb();
+                    // Tight tolerance on purpose: the tick-label ink is only
+                    // ~35 per channel away from the frame colour, and a loose
+                    // match picks up the labels BELOW the plot as though they
+                    // were its bottom edge — which then reports the blank
+                    // margin above them as a hole in the shading.
+                    const auto isSpine = [spine](QRgb pixel) {
+                        return std::abs(qRed(pixel) - qRed(spine)) < 12
+                            && std::abs(qGreen(pixel) - qGreen(spine)) < 12
+                            && std::abs(qBlue(pixel) - qBlue(spine)) < 12;
+                    };
+                    int top = -1;
+                    int bottom = -1;
+                    for (int y = 0; y < rendered.height(); ++y) {
+                        const QRgb pixel = rendered.pixel(column, y) | 0xff000000u;
+                        if (!isSpine(pixel))
+                            continue;
+                        if (top < 0)
+                            top = y;
+                        bottom = y;
+                    }
+                    check(top >= 0 && bottom > top + 10,
+                          "the plot frame is found in the exported image");
+                    int longestGap = 0;
+                    int gap = 0;
+                    for (int y = top + 2; y < bottom - 1; ++y) {
+                        const QRgb pixel = rendered.pixel(column, y) | 0xff000000u;
+                        if (pixel == canvas) {
+                            ++gap;
+                            longestGap = std::max(longestGap, gap);
+                        } else {
+                            gap = 0;
+                        }
+                    }
+                    // A couple of pixels of tolerance for antialiasing; the
+                    // bug this pins produced a gash tens of pixels deep.
+                    check(longestGap <= 2,
+                          "and no unshaded gap inside it — the phase regions "
+                          "tile the diagram, whatever the boundary does "
+                          "between two sampled isotherms");
+
+                    // The same scan with the shading turned off must find a
+                    // large gap. Without this the check above would pass on a
+                    // plot that happened to be dark for any other reason, and
+                    // a coverage test that cannot fail is not a test.
+                    PhaseDiagramStyle bare = window.style();
+                    bare.showShading = false;
+                    bare.showBoundaryCurves = false;
+                    bare.showTieLines = false;
+                    bare.showGrid = false;
+                    window.setStyle(bare);
+                    const QString unshaded =
+                        out.path() + QStringLiteral("/bare.png");
+                    check(window.exportImage(unshaded, 3.0),
+                          "the unshaded plot exports too");
+                    QImage empty(unshaded);
+                    int bareGap = 0;
+                    int run = 0;
+                    if (!empty.isNull()) {
+                        for (int y = top + 2; y < bottom - 1; ++y) {
+                            const QRgb pixel =
+                                empty.pixel(column, y) | 0xff000000u;
+                            run = pixel == canvas ? run + 1 : 0;
+                            bareGap = std::max(bareGap, run);
+                        }
+                    }
+                    check(bareGap > 20,
+                          "and with the shading off the very same scan finds "
+                          "the plot empty — so the coverage check has teeth");
+                    window.setStyle(PhaseDiagramStyle{});
+                }
                 check(QFileInfo(png).size() > 5000,
                       "at a size that says it drew something");
                 const QString svg = out.path() + QStringLiteral("/nbre.svg");

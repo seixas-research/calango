@@ -37,14 +37,37 @@ struct PhaseDiagramStyle {
     QList<QColor> phaseColors;
 
     bool showGrid = true;
-    bool showTieLines = true;
-    bool showBoundaryPoints = true;
+    /// Filled phase regions. The default view.
+    bool showShading = true;
+    /// The traced phase-boundary curves that bound those regions.
+    bool showBoundaryCurves = true;
+    /// Resample the boundaries with a monotone cubic (see
+    /// core::monotoneCubicResample). Off gives straight segments between the
+    /// computed isotherms — never wrong, just faceted.
+    bool smoothBoundaries = true;
+    /// Cross-hatch two-phase fields instead of tinting them. The classic
+    /// convention, and the way to tell an alpha+alpha miscibility gap from the
+    /// single-phase alpha beside it when both carry one colour.
+    bool hatchTwoPhase = false;
+    /// The raw isotherm stack the shading replaced. Off by default now that
+    /// the regions are filled, but kept: it is the only view that shows where
+    /// the equilibrium was actually computed rather than interpolated.
+    bool showTieLines = false;
+    bool showBoundaryPoints = false;
     bool showLegend = true;
     /// Opacity of the two-phase shading, 0-255. Several hundred stacked
     /// tie-lines make a field; one alpha suits a dense sweep and another a
     /// sparse one, so it is a control rather than a constant.
     int tieLineAlpha = 90;
     double tieLineWidth = 1.0;
+    /// Opacity of a filled region, 0-255.
+    int shadingAlpha = 110;
+    /// Stroke width of the phase-boundary curves.
+    double boundaryWidth = 1.6;
+    /// Points generated per computed isotherm interval when smoothing. Higher
+    /// is smoother to look at and no more accurate — the curve is pinned to
+    /// the same computed points either way.
+    int smoothingSubdivisions = 8;
     double boundaryPointRadius = 1.6;
     /// Point size for axis numbers and labels; 0 keeps the widget default.
     int fontPointSize = 0;
@@ -123,7 +146,52 @@ private:
     /// drawing path is a second thing to keep in step, and it drifts.
     void render(QPainter& painter, const QRectF& bounds, bool interactive) const;
 
+    /// One traced region, ready to draw: its two boundaries as polylines in
+    /// DATA coordinates (x, T), already smoothed if the style asks for it.
+    ///
+    /// Cached rather than rebuilt per paint. Tracing and resampling do not
+    /// depend on the widget's size, and a resize or a hover must not
+    /// re-interpolate several thousand points.
+    struct RenderField {
+        int phaseA = -1;
+        int phaseB = -1;
+        bool openBelow = false;
+        bool openAbove = false;
+        std::vector<QPointF> left;  ///< (x, T)
+        std::vector<QPointF> right;
+        bool twoPhase() const { return phaseB >= 0; }
+    };
+    /// One filled cell: the composition span of a band, given the vertical
+    /// extent of its own isotherm.
+    ///
+    /// The regions are filled from these rather than from the field polygons,
+    /// and the reason is a real defect that the polygons cannot avoid. A
+    /// boundary that moves faster than the temperature sampling — the Nb-Re
+    /// melting line jumps from x = 0.465 to x = 0.318 between two adjacent
+    /// isotherms — leaves a wedge belonging to neither the field below nor the
+    /// field above, and it renders as a white gash across the diagram. Bands
+    /// tile each isotherm exactly and the isotherm strips tile the temperature
+    /// axis exactly, so cells tile the plane BY CONSTRUCTION: no holes, no
+    /// double-painted overlaps, whatever the data does.
+    ///
+    /// The cost is that a fill edge is stepped at the sampling resolution
+    /// instead of smooth. That is paid back by the boundary CURVES drawn over
+    /// the top, and it is the honest failure mode: where the steps are visible
+    /// the diagram is telling you the temperature grid is too coarse there.
+    struct FillCell {
+        double xLow = 0.0;
+        double xHigh = 0.0;
+        double tLow = 0.0;
+        double tHigh = 0.0;
+        int phaseA = -1;
+        int phaseB = -1;
+        bool twoPhase() const { return phaseB >= 0; }
+    };
+    void rebuildFields();
+
     core::BinaryPhaseDiagram diagram_;
+    std::vector<RenderField> fields_;
+    std::vector<FillCell> cells_;
     PhaseDiagramStyle style_;
     QString elementA_;
     QString elementB_;

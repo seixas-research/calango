@@ -102,6 +102,108 @@ computeBinaryPhaseDiagram(const std::vector<GibbsPhase>& phases,
 std::vector<int> binaryAssemblageAt(const BinarySection& section, double x);
 
 // ---------------------------------------------------------------------------
+// Regions: turning a stack of isotherms into fields with boundaries
+// ---------------------------------------------------------------------------
+
+/// One composition interval at one temperature, and what occupies it.
+///
+/// A section is exactly tiled by these: single-phase and two-phase bands
+/// alternate across the composition axis, because the phase-change rule in
+/// computeBinarySection guarantees a tie-line wherever the stable phase
+/// changes. That tiling is what makes the regions closed areas rather than a
+/// cloud of segments.
+struct DiagramBand {
+    int phaseA = -1;      ///< the phase, or the LEFT phase of a two-phase band
+    int phaseB = -1;      ///< -1 for a single-phase band, else the RIGHT phase
+    double xLow = 0.0;
+    double xHigh = 0.0;
+
+    bool twoPhase() const { return phaseB >= 0; }
+    /// Identity for tracing: two bands continue the same field only when this
+    /// matches. It is deliberately the PHASE PAIR and not merely the position,
+    /// because a change of pair is precisely where an invariant reaction sits.
+    bool sameKindAs(const DiagramBand& other) const
+    {
+        return phaseA == other.phaseA && phaseB == other.phaseB;
+    }
+};
+
+/// The bands of one isotherm, ascending in composition.
+std::vector<DiagramBand> binarySectionBands(const BinarySection& section);
+
+/// A region of the T-x diagram: one band followed up the temperature axis.
+///
+/// `xLow[i]` and `xHigh[i]` are the field's two boundaries at
+/// `temperatureK[i]`. For a two-phase field those are the solidus/liquidus (or
+/// solvus) pair; for a single-phase field they are whatever bounds it there.
+struct PhaseField {
+    int phaseA = -1;
+    int phaseB = -1;
+    std::vector<double> temperatureK; ///< ascending
+    std::vector<double> xLow;
+    std::vector<double> xHigh;
+    /// True when the field is cut off by the bottom/top of the computed
+    /// temperature window rather than by a real phase change. The horizontal
+    /// edge there is an artifact of where the user stopped computing, and
+    /// drawing it as a phase boundary would invent an invariant reaction.
+    bool openBelow = false;
+    bool openAbove = false;
+
+    bool twoPhase() const { return phaseB >= 0; }
+};
+
+/// Group the isotherms into fields.
+///
+/// A band continues a field when it has the SAME PHASE PAIR and its
+/// composition interval still overlaps the field's last one. Both conditions
+/// matter and each guards a different mistake:
+///
+///  - Requiring the same pair is what keeps INVARIANT REACTIONS SHARP. At a
+///    eutectic the assemblage changes from (alpha + beta) below to (L + alpha)
+///    and (L + beta) above; none of those continues any other, so every curve
+///    ENDS at the eutectic temperature and a new one begins. Nothing is ever
+///    interpolated across it, which is the only way a eutectic stays a corner
+///    instead of becoming a smooth minimum.
+///  - Requiring overlap separates two regions that happen to share a pair —
+///    the two halves of a miscibility gap that has split, say — which would
+///    otherwise be welded into one field with a boundary jumping across the
+///    diagram.
+std::vector<PhaseField> tracePhaseFields(const BinaryPhaseDiagram& diagram);
+
+/// Fritsch-Carlson tangents for a monotone cubic Hermite interpolant.
+///
+/// `t` must be strictly increasing. The returned slopes are the standard
+/// three-point differences, then limited so that on every interval the cubic
+/// is monotone between its two endpoints.
+std::vector<double> monotoneCubicTangents(const std::vector<double>& t,
+                                          const std::vector<double>& y);
+
+/// Resample y(t) with a monotone cubic Hermite, `subdivisions` new points per
+/// input interval.
+///
+/// WHY MONOTONE AND NOT A NATURAL CUBIC SPLINE. A phase boundary is read
+/// quantitatively: somebody puts a ruler on the solvus and writes down a
+/// terminal solubility. A natural (or Catmull-Rom) spline overshoots wherever
+/// the curvature changes sign, and an overshoot on a solvus is not a cosmetic
+/// wobble — it is a solubility limit that the database does not contain,
+/// drawn confidently.
+///
+/// Fritsch-Carlson cannot do that. Limiting the tangents to |m| <= 3|delta|
+/// makes the cubic MONOTONE on each interval, and a function monotone between
+/// y[i] and y[i+1] cannot leave [min(y[i], y[i+1]), max(y[i], y[i+1])]. So the
+/// interpolant is confined to the envelope of its own control points, exactly
+/// like the straight segments it replaces. Every sample is additionally
+/// clamped to that interval, which costs nothing and states the guarantee in
+/// code rather than only in this comment.
+///
+/// Returns false (leaving the outputs empty) for fewer than two points or a
+/// non-increasing `t`.
+bool monotoneCubicResample(const std::vector<double>& t,
+                           const std::vector<double>& y, int subdivisions,
+                           std::vector<double>* outT,
+                           std::vector<double>* outY);
+
+// ---------------------------------------------------------------------------
 // Ternary isothermal sections
 // ---------------------------------------------------------------------------
 

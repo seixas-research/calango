@@ -652,6 +652,241 @@ int main()
     }
 
     // =====================================================================
+    std::printf("Monotone interpolation — it must not invent structure:\n");
+    // =====================================================================
+    {
+        // The case that separates a shape-preserving scheme from a pretty one.
+        // A natural cubic spline (or Catmull-Rom) through a flat run followed
+        // by a step OVERSHOOTS: it dips below 0 before the rise and above 1
+        // after it. On a solvus that overshoot is a terminal solubility the
+        // database does not contain, drawn with the same confidence as the
+        // real curve — so the requirement is not "smooth", it is "smooth and
+        // incapable of leaving the data's own envelope".
+        const std::vector<double> t{0.0, 1.0, 2.0, 3.0, 4.0, 5.0};
+        const std::vector<double> y{0.0, 0.0, 0.0, 1.0, 1.0, 1.0};
+        std::vector<double> rt;
+        std::vector<double> ry;
+        check(monotoneCubicResample(t, y, 16, &rt, &ry),
+              "a step-shaped boundary resamples");
+        double lowest = 1e30;
+        double highest = -1e30;
+        for (const double value : ry) {
+            lowest = std::min(lowest, value);
+            highest = std::max(highest, value);
+        }
+        check(lowest >= -1e-12 && highest <= 1.0 + 1e-12,
+              "and never leaves [0, 1] — a natural spline overshoots both "
+              "ends here, and an overshoot on a solvus is a fabricated "
+              "solubility limit");
+        bool nonDecreasing = true;
+        for (std::size_t i = 1; i < ry.size(); ++i)
+            if (ry[i] < ry[i - 1] - 1e-12)
+                nonDecreasing = false;
+        check(nonDecreasing,
+              "and stays monotone, because the data is");
+
+        // Interpolation, not approximation: the original points survive.
+        check(std::fabs(ry.front() - y.front()) < 1e-12
+                  && std::fabs(ry.back() - y.back()) < 1e-12,
+              "the end points are reproduced exactly");
+        // And it is denser than the input, which is the entire purpose.
+        check(ry.size() > y.size() * 8, "with the curve genuinely resampled");
+
+        // A local maximum must stay AT the data point rather than being
+        // sailed past — the retrograde-solvus shape.
+        const std::vector<double> hump{0.0, 1.0, 2.0, 3.0, 4.0};
+        const std::vector<double> peak{0.0, 1.0, 2.0, 1.0, 0.0};
+        std::vector<double> ht;
+        std::vector<double> hy;
+        check(monotoneCubicResample(hump, peak, 16, &ht, &hy),
+              "a curve with a maximum resamples");
+        double top = -1e30;
+        for (const double value : hy)
+            top = std::max(top, value);
+        checkClose(top, 2.0, 1e-9,
+                   "and its peak is the data's own peak, not higher");
+
+        // Refusals rather than nonsense.
+        std::vector<double> ignoredT;
+        std::vector<double> ignoredY;
+        check(!monotoneCubicResample({1.0}, {1.0}, 8, &ignoredT, &ignoredY),
+              "a single point cannot be a curve");
+        check(!monotoneCubicResample({0.0, 1.0, 0.5}, {0.0, 1.0, 2.0}, 8,
+                                     &ignoredT, &ignoredY),
+              "and a non-increasing temperature axis is refused");
+    }
+
+    // =====================================================================
+    std::printf("Phase fields — regions, and invariants that stay sharp:\n");
+    // =====================================================================
+    {
+        // A textbook EUTECTIC, built to have one: two terminal solid solutions
+        // that barely dissolve each other (a large positive interaction) and an
+        // ideal liquid. Below the eutectic the assemblage is alpha + beta;
+        // above it, L + alpha on one side and L + beta on the other. Nothing
+        // continues across, which is what a eutectic IS.
+        constexpr double kMeltA = 1200.0;
+        constexpr double kMeltB = 1000.0;
+        constexpr double kFusionA = 12000.0;
+        constexpr double kFusionB = 10000.0;
+        constexpr double kSolidOmega = 40000.0; // strong demixing in the solid
+        std::vector<GibbsPhase> phases;
+        phases.push_back({"ALPHA",
+                          [](double x, double t) {
+                              return idealMixingGibbs(x, t)
+                                  + redlichKisterExcess({{kSolidOmega, 0.0}}, x, t);
+                          },
+                          0.0, 1.0});
+        phases.push_back({"LIQUID",
+                          [](double x, double t) {
+                              const double ga = kFusionA * (1.0 - t / kMeltA);
+                              const double gb = kFusionB * (1.0 - t / kMeltB);
+                              return (1.0 - x) * ga + x * gb
+                                  + idealMixingGibbs(x, t);
+                          },
+                          0.0, 1.0});
+
+        BinaryPhaseDiagramOptions options;
+        options.minTemperatureK = 500.0;
+        options.maxTemperatureK = 1300.0;
+        options.temperatureSteps = 161; // 5 K per step
+        options.compositionSteps = 801;
+        const BinaryPhaseDiagram diagram =
+            computeBinaryPhaseDiagram(phases, options);
+
+        // Bands tile each isotherm exactly: no gaps, no overlaps. That is what
+        // makes the regions closed areas rather than a cloud of segments.
+        bool tiled = true;
+        for (const BinarySection& section : diagram.sections) {
+            const std::vector<DiagramBand> bands = binarySectionBands(section);
+            if (bands.empty())
+                continue;
+            if (std::fabs(bands.front().xLow - section.vertexX.front()) > 1e-9)
+                tiled = false;
+            if (std::fabs(bands.back().xHigh - section.vertexX.back()) > 1e-9)
+                tiled = false;
+            for (std::size_t i = 1; i < bands.size(); ++i)
+                if (std::fabs(bands[i].xLow - bands[i - 1].xHigh) > 1e-9)
+                    tiled = false;
+        }
+        check(tiled,
+              "the bands of every isotherm tile it end to end, with no gap and "
+              "no overlap");
+
+        const std::vector<PhaseField> fields = tracePhaseFields(diagram);
+        check(!fields.empty(), "the diagram traces into fields");
+
+        // The eutectic temperature, located independently of the tracing: the
+        // lowest temperature at which any liquid-containing field exists.
+        double eutectic = 1e30;
+        for (const BinarySection& section : diagram.sections) {
+            bool hasLiquid = false;
+            for (const int phase : section.vertexPhase)
+                if (phase == 1)
+                    hasLiquid = true;
+            if (hasLiquid)
+                eutectic = std::min(eutectic, section.temperatureK);
+        }
+        check(eutectic > options.minTemperatureK && eutectic < kMeltB,
+              "a eutectic exists below the lower melting point");
+
+        // THE INVARIANT IS SHARP. No field may span the eutectic: the
+        // alpha+beta field must END there and the L+alpha / L+beta fields must
+        // BEGIN there. A field crossing it would be smoothed through, and a
+        // eutectic smoothed through is a rounded minimum — a beautiful,
+        // wrong diagram.
+        int spanning = 0;
+        for (const PhaseField& field : fields) {
+            if (!field.twoPhase())
+                continue;
+            if (field.temperatureK.front() < eutectic - 1e-6
+                && field.temperatureK.back() > eutectic + 1e-6)
+                ++spanning;
+        }
+        check(spanning == 0,
+              "and no two-phase field is traced across it — every curve breaks "
+              "at the invariant instead of being interpolated through it");
+
+        // The fields either side are the ones the phase rule requires.
+        bool sawSolidPair = false;
+        bool sawLiquidPair = false;
+        for (const PhaseField& field : fields) {
+            if (!field.twoPhase())
+                continue;
+            const bool belowOnly = field.temperatureK.back() <= eutectic + 1e-6;
+            const bool aboveOnly = field.temperatureK.front() >= eutectic - 1e-6;
+            // ALPHA is phase 0, LIQUID is phase 1.
+            if (belowOnly && field.phaseA == 0 && field.phaseB == 0)
+                sawSolidPair = true;
+            if (aboveOnly && (field.phaseA == 1 || field.phaseB == 1))
+                sawLiquidPair = true;
+        }
+        check(sawSolidPair,
+              "below it the two terminal solid solutions coexist (one phase "
+              "index at both ends — a miscibility gap)");
+        check(sawLiquidPair, "and above it the liquid appears");
+
+        // Every field's temperature axis is strictly increasing, which is what
+        // the interpolation requires of it.
+        bool ordered = true;
+        for (const PhaseField& field : fields)
+            for (std::size_t i = 1; i < field.temperatureK.size(); ++i)
+                if (!(field.temperatureK[i] > field.temperatureK[i - 1]))
+                    ordered = false;
+        check(ordered, "and every field is ordered in temperature");
+
+        // Window edges are marked as such, so the renderer does not draw the
+        // bottom of the plot as though it were a reaction.
+        const bool markedOpen = std::any_of(
+            fields.begin(), fields.end(),
+            [](const PhaseField& f) { return f.openBelow || f.openAbove; });
+        check(markedOpen,
+              "fields cut off by the temperature window say so, rather than "
+              "presenting the edge of the plot as an invariant");
+    }
+    {
+        // The ideal lens again, now as regions: exactly one two-phase field,
+        // and it must be traced as ONE field across the whole lens rather than
+        // broken into fragments — the identity test must not be so strict that
+        // a continuous boundary is shattered.
+        constexpr double kMeltA = 1000.0;
+        constexpr double kMeltB = 1500.0;
+        std::vector<GibbsPhase> phases;
+        phases.push_back({"SOLID",
+                          [](double x, double t) {
+                              return idealMixingGibbs(x, t);
+                          },
+                          0.0, 1.0});
+        phases.push_back({"LIQUID",
+                          [](double x, double t) {
+                              return (1.0 - x) * 10000.0 * (1.0 - t / kMeltA)
+                                  + x * 15000.0 * (1.0 - t / kMeltB)
+                                  + idealMixingGibbs(x, t);
+                          },
+                          0.0, 1.0});
+        BinaryPhaseDiagramOptions options;
+        options.minTemperatureK = 1050.0;
+        options.maxTemperatureK = 1450.0;
+        options.temperatureSteps = 81;
+        options.compositionSteps = 1601;
+        const std::vector<PhaseField> fields =
+            tracePhaseFields(computeBinaryPhaseDiagram(phases, options));
+        int twoPhaseFields = 0;
+        std::size_t longest = 0;
+        for (const PhaseField& field : fields) {
+            if (!field.twoPhase())
+                continue;
+            ++twoPhaseFields;
+            longest = std::max(longest, field.temperatureK.size());
+        }
+        check(twoPhaseFields == 1,
+              "a lens is exactly one two-phase field, not a stack of "
+              "fragments");
+        check(longest == 81,
+              "spanning every temperature in the window");
+    }
+
+    // =====================================================================
     std::printf("Ternary isothermal sections:\n");
     // =====================================================================
     {
