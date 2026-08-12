@@ -201,9 +201,25 @@ transition metals.
 .. warning::
 
    :math:`T_\mathrm{c}` depends on :math:`\mu^*` *exponentially*. For
-   aluminium, :math:`\mu^* = 0.10` gives 1.8 K and :math:`0.14` gives 0.7 K,
-   against a measured 1.18 K --- a factor of 2.7 across a range that is
-   entirely defensible. Quote a range over 0.10--0.15, never a single value.
+   aluminium at its literature :math:`\lambda = 0.43` and
+   :math:`\omega_{\log} = 296` K, the swept curve reads
+
+   .. list-table::
+      :header-rows: 1
+      :widths: 40 20 20 20
+
+      * - :math:`\mu^*`
+        - 0.08
+        - 0.12
+        - 0.16
+      * - :math:`T_\mathrm{c}`
+        - 2.71 K
+        - 1.19 K
+        - 0.37 K
+
+   --- a factor of **7.5** across a range every value in which is entirely
+   defensible, against a measured 1.18 K. Quote the range, never a single
+   value.
 
 Outputs
 -------
@@ -251,7 +267,13 @@ this happens automatically. For a run on a cluster, do it in place:
    * - ``scattering_rate_eV``
      - :math:`\hbar/\tau` in eV.
    * - ``drude_rate_eV``
-     - :math:`\hbar/2\tau` — the number GPAW's ``rate`` parameter takes.
+     - :math:`\hbar/2\tau_{tr}` — the number GPAW's ``rate`` parameter takes.
+       Built on the **transport** lifetime whenever band velocities were
+       available, because a Drude term describes how a *current* decays. A run
+       that had to fall back to the mass-enhancement :math:`\tau` — no
+       velocities, so no :math:`1-\cos\theta` weight — says so in
+       ``warnings`` rather than quietly handing the optics module a Drude peak
+       of the wrong width.
    * - ``dos_at_fermi``
      - :math:`N(E_\mathrm{F})`, the normalizing density of states.
    * - ``superconductivity``
@@ -314,6 +336,44 @@ solution: the screened repulsion beats the phonon attraction. Calango reports
 that as *"not a phonon-mediated superconductor at this coupling"* rather than
 as :math:`T_\mathrm{c} = 0`, which would be indistinguishable from a
 converged calculation of a very small :math:`T_\mathrm{c}`.
+
+*How well does the closed form do?* The ``superconductivity`` unit test drives
+it from **literature** :math:`\lambda` and :math:`\omega_{\log}` — not from a
+Calango run — so what it measures is the formula, cleanly separated from the
+:math:`\alpha^2F` that feeds it:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 10 12 18 15 15 15 15
+
+   * - Metal
+     - :math:`\lambda`
+     - :math:`\omega_{\log}`
+     - :math:`\mu^*`
+     - Uncorrected
+     - Corrected
+     - Measured
+   * - Pb
+     - 1.55
+     - 56 K
+     - 0.10
+     - 6.58 K
+     - **7.52 K**
+     - 7.19 K
+   * - Al
+     - 0.43
+     - 296 K
+     - 0.12
+     - —
+     - **1.172 K**
+     - 1.18 K
+
+Lead is the case Allen and Dynes wrote :math:`f_1` and :math:`f_2` *for*: at
+:math:`\lambda = 1.55` the uncorrected McMillan-style form **undershoots** the
+measurement by 8 %, and the corrections carry it past it by 5 %. Aluminium, at
+weak coupling where :math:`f_1 f_2 \approx 1`, lands within a per cent — but
+that per cent is an artefact of the :math:`\mu^*` chosen, which is the next
+point.
 
 .. admonition:: What :math:`\mu^*` should I use?
    :class: tip
@@ -392,16 +452,61 @@ material, rather than comparable only against a tabulated constant.
 electron--phonon interaction renormalizes the band mass at the Fermi surface,
 and hence the linear specific-heat coefficient :math:`\gamma`.
 
-Validation
-----------
+Validation, and what is still wrong
+-----------------------------------
 
-The shipped integration benchmark runs the full three-stage workflow on **fcc
-aluminium** and checks that :math:`\lambda` and :math:`\tau` come out
-physically sensible. Aluminium is the right reference: it is close to
-free-electron, its coupling constant is well established at
-:math:`\lambda \approx 0.4`, and the room-temperature relaxation time that
-follows, :math:`\tau \approx 10` fs, is within a few femtoseconds of what a
-Drude fit to the measured optical conductivity gives.
+Two things are validated separately, and it matters which is which.
+
+**The analysis chain is validated in closed form.** ``ElectronPhononAnalysis``
+is exercised on a contrived case that has an exact answer: a free-electron
+band, one phonon mode at a fixed :math:`\omega_0`, and a constant
+:math:`|g|^2`. Then :math:`\lambda = 2\,g_0^2\zeta(q)/
+(N(E_\mathrm{F})N_q\,\omega_0)` end to end with nothing fitted, so a wrong
+normalization, a wrong band sum or a missing :math:`1/N(E_\mathrm{F})` shows
+up as a factor rather than as a plausible number. The same test pins
+:math:`\hbar/\tau = 2\pi\lambda k_\mathrm{B}T`, the exact factor of two in the
+Drude rate, the :math:`\lambda_{tr} \le 2\lambda` bound, and the resistivity
+against :math:`1/(\varepsilon_0\omega_p^2\tau_{tr})`.
+
+**The shipped aluminium run is not.** ``al_electron_phonon_benchmark.py``
+drives all three ``gpaw.elph`` stages on fcc Al and asserts
+:math:`0.05 < \lambda < 3.0` — a window deliberately wide, because a
+:math:`2\times2\times2` supercell on a :math:`6^3` k-mesh puts only about six
+of 864 states within 0.1 eV of :math:`E_\mathrm{F}` and cannot converge
+anything.
+
+.. warning::
+
+   That run has been observed to produce :math:`\lambda \approx 21`, against a
+   literature value near 0.4 — fifty times too large, and outside the
+   assertion window, so the benchmark fails on it. **The cause has not been
+   identified.**
+
+   What is known: the analysis chain above passes its closed-form test, and
+   GPAW's own ``elph`` reference test passes, so the arithmetic downstream of
+   the matrix elements is not the suspect. The most likely culprit is the
+   *run* — specifically its :math:`2\times2\times2` supercell, which is small
+   enough that aluminium comes out with **imaginary acoustic branches**, and
+   :math:`\alpha^2F` integrates :math:`1/\omega`.
+
+   Two consequences for anyone using this module for a number rather than for
+   a shape:
+
+   #. **Validate on a material whose** :math:`\lambda` **you already know**
+      before trusting an absolute value from a new system. A ratio between two
+      systems computed at the same settings is far more defensible than either
+      value alone.
+   #. **Treat a non-zero** ``excluded_modes`` **as a stop signal, not a
+      footnote.** It says the structure is not at a local minimum in the
+      supercell you used. The excluded branches do not merely drop out of
+      :math:`\alpha^2F` — their presence means the dynamical matrix that
+      produced the rest of the spectrum is describing a saddle point.
+
+Aluminium remains the right *choice* of reference — nearly free-electron,
+:math:`\lambda \approx 0.4` well established, and the room-temperature
+:math:`\tau \approx 10` fs that follows from Allen's relation is within a few
+femtoseconds of a Drude fit to the measured optical conductivity. It is the
+particular cheap benchmark cell that is not yet giving it.
 
 .. seealso::
 

@@ -129,11 +129,27 @@ int main()
     check(std::abs(result.relaxationTimeFs - kHbarEvFs / rateExact)
               < 1e-9 * result.relaxationTimeFs,
           "and tau is hbar over it");
-    // The factor of two into the optics module. Exact, not approximate.
-    check(std::abs(result.drudeRateEv - 0.5 * result.scatteringRateEv) < 1e-15,
-          "the Drude rate handed to the optics module is exactly half — "
-          "GPAW damps as omega_p^2/(omega + i rate)^2 where the textbook "
-          "form has Gamma = hbar/tau");
+    // The handoff to the optics module. TWO things have to be right, and the
+    // second is the one that is easy to get wrong without anything looking
+    // wrong afterwards.
+    //
+    // (a) the factor of two: GPAW damps as omega_p^2/(omega + i*rate)^2 while
+    //     the textbook form has Gamma = hbar/tau, so rate = hbar/2tau; and
+    // (b) it must be built on the TRANSPORT lifetime. A Drude term describes
+    //     how a CURRENT decays, and a current survives forward scattering
+    //     that the quasiparticle lifetime still counts. Using lambda instead
+    //     of lambda_tr gives a Drude peak of the wrong width that looks
+    //     perfectly ordinary.
+    check(result.drudeRateFromTransport,
+          "the Drude rate is built on the transport lifetime, not the "
+          "quasiparticle one");
+    check(std::abs(result.drudeRateEv
+                   - 0.5 * result.scatteringRateTransportEv) < 1e-15,
+          "and is exactly half of hbar/tau_tr");
+    check(std::abs(result.drudeRateEv - 0.5 * result.scatteringRateEv) > 1e-12,
+          "which differs from half the quasiparticle rate — the two are not "
+          "interchangeable, and this test would pass on either if it only "
+          "checked the factor of two");
 
     // -- No smearing parameter anywhere -------------------------------------
     // The point of stage 3. The phonon smearing only DRAWS alpha^2F; changing

@@ -76,6 +76,22 @@ struct ClusterExpansionResult {
 /// triplet and quadruplet cluster within the cutoff radii — and two
 /// decorations are treated as equivalent when their fingerprints match. The
 /// deduplicated set is the returned ensemble, ready for ML/DFT training.
+/// Column labels for the correlation fingerprint, one per entry of
+/// `ClusterExpansionConfig::correlation`.
+///
+/// The fingerprint is NOT one number per orbit — it is K point terms followed
+/// by a species-tuple HISTOGRAM per orbit (K(K+1)/2 buckets for a pair, K^3
+/// for a triplet, K^4 for a quadruplet), laid out pairs then triplets then
+/// quadruplets, which is the same order `orbits` is filled in. So a caller
+/// that labelled columns one-per-orbit would mislabel everything after the
+/// first pair, and an ECI attributed to the wrong cluster is worse than an
+/// unlabelled one.
+///
+/// Built here rather than in the GUI because this file owns that layout and
+/// is the only place that can be wrong about it in one edit.
+std::vector<std::string> clusterCorrelationLabels(
+    const ClusterExpansionResult& result, int speciesCount);
+
 ClusterExpansionResult generateClusterExpansion(
     const Structure& parent, const ClusterExpansionOptions& options);
 

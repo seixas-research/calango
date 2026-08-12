@@ -41,6 +41,12 @@ public:
         return frames_;
     }
 
+    /// The design matrix that travels with this ensemble, one correlation row
+    /// per frame. Without it the run emits energies with no regressors and no
+    /// ECI fit is possible from the result.
+    void setDesignMatrix(const std::vector<std::vector<double>>& correlations,
+                         const std::vector<std::string>& orbitLabels);
+
 protected:
     QString wizardTitle() const override;
     QString settingsHeader() const override;
@@ -48,8 +54,12 @@ protected:
     QString generateScript() const override;
     QString exportFileName() const override;
 
+
 private:
+    std::vector<std::vector<double>> designMatrix_;
+    std::vector<std::string> designLabels_;
     core::ClusterExpansionRunConfig runConfig() const;
+
     /// Chemical species present across the ensemble, for the concentration
     /// axis selector.
     QStringList ensembleSpecies() const;

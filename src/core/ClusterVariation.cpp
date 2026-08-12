@@ -63,6 +63,21 @@ std::vector<double> pairEnergiesFromEci(double pairEci, bool* ok)
     return {pairEci, -pairEci, -pairEci, pairEci};
 }
 
+std::vector<double> tripletEnergiesFromEci(double tripletEci, bool* ok)
+{
+    if (ok)
+        *ok = true;
+    // s = +1 for species 0 (A), -1 for species 1 (B).
+    std::vector<double> energies(8, 0.0);
+    const double sign[2] = {1.0, -1.0};
+    for (int i = 0; i < 2; ++i)
+        for (int j = 0; j < 2; ++j)
+            for (int k = 0; k < 2; ++k)
+                energies[static_cast<std::size_t>((i * 2 + j) * 2 + k)] =
+                    tripletEci * sign[i] * sign[j] * sign[k];
+    return energies;
+}
+
 namespace {
 
 /// Pair probabilities at one temperature, by the quasi-chemical form that
@@ -148,6 +163,15 @@ bool solvePairProbabilities(int species, const std::vector<double>& x,
 /// The six vertex-pairs of a tetrahedron, and its four vertices.
 constexpr int kTetPairs[6][2] = {{0, 1}, {0, 2}, {0, 3},
                                  {1, 2}, {1, 3}, {2, 3}};
+/// The four triangular faces of the tetrahedron.
+///
+/// Counting, since it decides a factor: FCC has 8 nearest-neighbour triangles
+/// per site and 2 tetrahedra per site, and each tetrahedron carries 4 faces —
+/// 2 x 4 = 8, so every triangle is counted exactly once per site by summing
+/// each tetrahedron's own faces and weighting by the 2 tetrahedra. That is the
+/// same bookkeeping that gives the pairs a factor z/2 = 6.
+constexpr int kTetTriangles[4][3] = {{0, 1, 2}, {0, 1, 3},
+                                     {0, 2, 3}, {1, 2, 3}};
 
 /// Kikuchi tetrahedron approximation on FCC, by natural iteration.
 ///
@@ -181,7 +205,8 @@ constexpr int kTetPairs[6][2] = {{0, 1}, {0, 2}, {0, 3},
 /// bare fixed point which oscillates between the sublattices it is trying to
 /// average over.
 bool solveTetrahedron(int species, const std::vector<double>& x,
-                      const std::vector<double>& energies, double beta,
+                      const std::vector<double>& energies,
+                      const std::vector<double>& triplets, double beta,
                       int maxIterations, double tolerance,
                       std::vector<double>& w, std::vector<double>& y,
                       int* iterations)
@@ -211,6 +236,23 @@ bool solveTetrahedron(int species, const std::vector<double>& x,
             sum += 0.5
                 * (energies[static_cast<std::size_t>(a) * k + b]
                    + energies[static_cast<std::size_t>(b) * k + a]);
+        }
+        // The four faces. Symmetrized over the six permutations of each
+        // triangle's vertices, so an asymmetric tensor supplied by a caller
+        // cannot make the energy depend on which vertex was written first.
+        if (!triplets.empty()) {
+            for (const auto& tri : kTetTriangles) {
+                const int a = t[tri[0]];
+                const int b = t[tri[1]];
+                const int c = t[tri[2]];
+                const int perm[6][3] = {{a, b, c}, {a, c, b}, {b, a, c},
+                                        {b, c, a}, {c, a, b}, {c, b, a}};
+                double face = 0.0;
+                for (const auto& p : perm)
+                    face += triplets[static_cast<std::size_t>(
+                        (p[0] * k + p[1]) * k + p[2])];
+                sum += face / 6.0;
+            }
         }
         bond[index] = std::exp(-0.5 * beta * sum);
     }
@@ -416,6 +458,29 @@ CvmResult solveClusterVariation(const CvmInput& input)
         return result;
     }
 
+    // The triplet tensor, when one was supplied. Only the tetrahedron can use
+    // it — a triangle is not a subcluster of a pair — so asking for triplets
+    // with the pair approximation is a contradiction rather than a detail,
+    // and is reported instead of being ignored.
+    std::vector<double> triplets = input.tripletEnergiesEv;
+    const std::size_t tripletCount =
+        static_cast<std::size_t>(species) * species * species;
+    if (!triplets.empty() && triplets.size() != tripletCount) {
+        result.warnings.push_back(
+            "The triplet energy tensor is not species x species x species.");
+        return result;
+    }
+    if (!triplets.empty()
+        && input.approximation != CvmApproximation::Tetrahedron) {
+        result.warnings.push_back(
+            "Triplet interactions were supplied but the approximation is not "
+            "the tetrahedron, which is the only one with triangles in it. "
+            "They are IGNORED here — the entropy and the energy below "
+            "describe a pair-only model, so do not read them as the cluster "
+            "expansion that was fitted.");
+        triplets.clear();
+    }
+
     result.idealEntropyKb = idealConfigurationalEntropy(x);
 
     const int z = cvmCoordination(input.lattice);
@@ -470,7 +535,7 @@ CvmResult solveClusterVariation(const CvmInput& input)
             int iterations = 0;
             if (tetrahedron) {
                 point.converged = solveTetrahedron(
-                    species, x, energies, beta, input.maxIterations,
+                    species, x, energies, triplets, beta, input.maxIterations,
                     input.tolerance, w, y, &iterations);
             } else {
                 point.converged = solvePairProbabilities(
@@ -485,6 +550,7 @@ CvmResult solveClusterVariation(const CvmInput& input)
                 return result;
             }
             point.pairProbabilities = y;
+            point.tetrahedronProbabilities = w;
 
             // S/k_B = -(z/2) sum y ln y + (z-1) sum x ln x.
             //
@@ -522,6 +588,29 @@ CvmResult solveClusterVariation(const CvmInput& input)
                                                   + j]
                     * energies[static_cast<std::size_t>(i) * species + j];
         point.energyPerSiteEv = 0.5 * z * energy;
+        // Plus the triangles: 2 tetrahedra per site, each carrying 4 faces,
+        // which is exactly the 8 nearest-neighbour triangles a site has.
+        if (!triplets.empty() && !point.tetrahedronProbabilities.empty()) {
+            double triple = 0.0;
+            const int kk = species;
+            for (std::size_t index = 0;
+                 index < point.tetrahedronProbabilities.size(); ++index) {
+                const double p = point.tetrahedronProbabilities[index];
+                if (p == 0.0)
+                    continue;
+                std::size_t rest = index;
+                int t[4];
+                for (int position = 3; position >= 0; --position) {
+                    t[position] = static_cast<int>(rest % kk);
+                    rest /= kk;
+                }
+                for (const auto& tri : kTetTriangles)
+                    triple += p
+                        * triplets[static_cast<std::size_t>(
+                            (t[tri[0]] * kk + t[tri[1]]) * kk + t[tri[2]])];
+            }
+            point.energyPerSiteEv += 2.0 * triple;
+        }
         point.freeEnergyPerSiteEv = point.energyPerSiteEv
             - kBoltzmannEvPerK * t * point.entropyPerSiteKb;
 

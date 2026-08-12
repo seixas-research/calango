@@ -4,6 +4,7 @@
 #include "core/UnitCell.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <array>
 #include <cmath>
 #include <limits>
@@ -45,6 +46,39 @@ long roundKey(double d, double tol)
 }
 
 } // namespace
+
+std::vector<std::string> clusterCorrelationLabels(
+    const ClusterExpansionResult& result, int speciesCount)
+{
+    std::vector<std::string> labels;
+    const int K = std::max(1, speciesCount);
+    for (int i = 0; i < K; ++i)
+        labels.push_back("point s" + std::to_string(i));
+
+    const auto buckets = [K](int order) {
+        if (order == 2)
+            return K * (K + 1) / 2;
+        int n = 1;
+        for (int i = 0; i < order; ++i)
+            n *= K;
+        return n;
+    };
+    // The orbits are already ordered pairs -> triplets -> quadruplets, which
+    // is the order the fingerprint concatenates them in.
+    for (const ClusterOrbitSummary& orbit : result.orbits) {
+        const int n = buckets(orbit.order);
+        const char* kind = orbit.order == 2   ? "pair"
+            : orbit.order == 3               ? "triplet"
+                                             : "quad";
+        char radius[32];
+        std::snprintf(radius, sizeof(radius), "%.3f", orbit.radius);
+        for (int b = 0; b < n; ++b)
+            labels.push_back(std::string(kind) + " r=" + radius
+                             + " m=" + std::to_string(orbit.multiplicity)
+                             + " b" + std::to_string(b));
+    }
+    return labels;
+}
 
 ClusterExpansionResult generateClusterExpansion(
     const Structure& parent, const ClusterExpansionOptions& options)

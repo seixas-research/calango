@@ -1,5 +1,7 @@
 #include "gui/OrchestrationTransforms.hpp"
 
+#include "core/ClusterVariation.hpp"
+#include "core/ClusterExpansionFit.hpp"
 #include "core/CalphadModel.hpp"
 #include "core/Element.hpp"
 #include "core/SqsGenerator.hpp"
@@ -1065,51 +1067,144 @@ bool runClusterExpansionFit(const QString& ensembleJson,
             "clusters, and it has at least two.")
                         .arg(usable));
 
-    // ---------------------- WIRE-UP POINT --------------------------------
-    // This node's I/O is finished. TWO things are still needed, and only the
-    // first is the obvious one:
-    //
-    // 1. The solver. core::fitEffectiveClusterInteractions (in
-    //    core/ClusterExpansionFit.hpp) takes a DESIGN MATRIX and a vector of
-    //    energies, plus core::EciFitOptions, which spec maps onto directly:
-    //        method  -> core::EciMethod (same order: Ridge, Lasso, Ard)
-    //        lambdaCount, cvFolds, oneStandardError, standardize -> same names
-    //    and returns an EciFitResult carrying eci[], intercept, lambda,
-    //    cvScore, rmse and the ranked terms.
-    //
-    // 2. THE DESIGN MATRIX, WHICH DOES NOT EXIST YET. This is the part that is
-    //    easy to miss. `cluster_expansion.json` — written by
-    //    ClusterExpansionScriptGenerator — records per configuration only
-    //    frame/formula/concentration/natoms/energy/energy_per_atom/
-    //    formation_energy. There are NO cluster correlations in it, and the
-    //    fit needs one row of them per configuration. So the correlations have
-    //    to come from somewhere:
-    //      (a) extend the generated script to emit each configuration's
-    //          correlation vector (core::ClusterExpansionConfig already
-    //          carries one) into the JSON alongside its energy — the cheap
-    //          option, and it makes the file self-describing; or
-    //      (b) re-enumerate them here from the ensemble's relaxed trajectory,
-    //          using spec's three cutoffs.
-    //    Whichever is chosen, the cutoffs in this spec describe THAT basis;
-    //    they are not options of the fit itself.
-    //
-    // Then serialize the result into output->eciJson under schema
-    // "calango.cluster_expansion.eci/1", with an "eci" array of
-    // {order, radius, multiplicity, value_eV} plus cv_score and rmse, because
-    // that is what runCvmEntropy() below reads back.
-    //
-    // Refusing is deliberate. Writing a plausible-looking file of zeros would
-    // give the downstream CVM node something to consume and produce a smooth,
-    // completely wrong entropy curve with nothing anywhere to say so.
-    return fail(QObject::tr(
-        "its ECI solver is not wired up in this version yet. The ensemble "
-        "reaching it is usable (%1 configuration(s) with energies), but a "
-        "cluster expansion also needs one row of cluster correlations per "
-        "configuration and cluster_expansion.json carries none. This node "
-        "refuses rather than emitting an ECI file of zeros that the CVM node "
-        "downstream would turn into a plausible and entirely wrong entropy "
-        "curve.")
-                    .arg(usable));
+    // The design matrix. cluster_expansion.json now carries one correlation
+    // row per configuration (ClusterExpansionScriptGenerator emits it, and the
+    // builder hands it to the run), so the fit has both halves at last. A file
+    // written before that carries energies and no matrix, and is refused
+    // below rather than fitted against whatever else is present — a cluster
+    // expansion regressed on the wrong columns still reproduces its training
+    // energies.
+    std::vector<std::vector<double>> correlations;
+    std::vector<double> energies;
+    for (const QJsonValue& value : configurations) {
+        const QJsonObject record = value.toObject();
+        const QJsonArray row =
+            record.value(QStringLiteral("correlation")).toArray();
+        const QJsonValue energy =
+            record.value(QStringLiteral("energy_per_atom"));
+        if (row.isEmpty() || !energy.isDouble())
+            continue;
+        const double e = energy.toDouble();
+        if (!std::isfinite(e))
+            continue;
+        std::vector<double> correlation;
+        correlation.reserve(row.size());
+        for (const QJsonValue& entry : row)
+            correlation.push_back(entry.toDouble());
+        correlations.push_back(std::move(correlation));
+        energies.push_back(e);
+    }
+    if (correlations.size() < 2)
+        return fail(QObject::tr(
+            "its ensemble carries %1 configuration(s) with energies but no "
+            "cluster correlations, so there is no design matrix to regress "
+            "against. The run predates correlation output: rebuild the "
+            "ensemble with the Cluster Expansion builder and run it again. "
+            "This node refuses rather than emitting an ECI file of zeros that "
+            "the CVM node downstream would turn into a plausible and entirely "
+            "wrong entropy curve.")
+                        .arg(usable));
+    const std::size_t columns = correlations.front().size();
+    for (const auto& row : correlations)
+        if (row.size() != columns)
+            return fail(QObject::tr(
+                "its design matrix is ragged — the configurations do not "
+                "share one cluster basis"));
+
+    core::EciFitOptions options;
+    options.method = spec.method == ClusterExpansionFitSpec::Method::Ridge
+        ? core::EciMethod::Ridge
+        : spec.method == ClusterExpansionFitSpec::Method::Ard
+            ? core::EciMethod::Ard
+            : core::EciMethod::Lasso;
+    options.lambdaCount = spec.lambdaCount;
+    options.cvFolds = spec.crossValidationFolds;
+    options.oneStandardError = spec.oneStandardError;
+    options.standardize = spec.standardize;
+
+    // Column labels, when the run recorded them. Presentation only — a label
+    // this does not recognise costs a blank name, never a wrong fit.
+    std::vector<core::EciColumn> columnsInfo;
+    const QJsonArray labels = root.value(QStringLiteral("orbit_labels")).toArray();
+    for (int i = 0; i < labels.size(); ++i) {
+        core::EciColumn column;
+        const QString text = labels.at(i).toString();
+        column.label = text.toStdString();
+        column.order = text.startsWith(QStringLiteral("pair"))      ? 2
+            : text.startsWith(QStringLiteral("triplet"))            ? 3
+            : text.startsWith(QStringLiteral("quad"))               ? 4
+                                                                    : 0;
+        columnsInfo.push_back(column);
+    }
+
+    const core::EciFitResult fit = core::fitEffectiveClusterInteractions(
+        correlations, energies, options, columnsInfo);
+    if (!fit.ok)
+        return fail(QObject::tr("its ECI fit failed: %1")
+                        .arg(QString::fromStdString(fit.note)));
+
+    // The nearest-neighbour pair ECI is the one number the CVM node can use;
+    // it is written at the top level so the downstream node does not have to
+    // rediscover which term that is.
+    double pairEci = 0.0;
+    double pairRadius = 0.0;
+    double tripletEci = 0.0;
+    double tripletRadius = 0.0;
+    QJsonArray eciArray;
+    for (const core::EciTerm& term : fit.terms) {
+        QJsonObject entry;
+        entry[QStringLiteral("label")] = QString::fromStdString(term.label);
+        entry[QStringLiteral("order")] = term.order;
+        entry[QStringLiteral("radius")] = term.radius;
+        entry[QStringLiteral("multiplicity")] = term.multiplicity;
+        entry[QStringLiteral("value_eV")] = term.eci;
+        entry[QStringLiteral("weighted_eV")] = term.weightedEci;
+        eciArray.append(entry);
+        if (term.order == 2 && term.eci != 0.0
+            && (pairEci == 0.0 || term.radius < pairRadius)) {
+            pairEci = term.eci;
+            pairRadius = term.radius;
+        }
+        // The nearest-neighbour TRIPLET too. It is what breaks the A <-> B
+        // symmetry a pair-only model has, so a downstream CVM given only the
+        // pair term cannot tell A3B from AB3.
+        if (term.order == 3 && term.eci != 0.0
+            && (tripletEci == 0.0 || term.radius < tripletRadius)) {
+            tripletEci = term.eci;
+            tripletRadius = term.radius;
+        }
+    }
+
+    QJsonObject out;
+    out[QStringLiteral("schema")] =
+        QStringLiteral("calango.cluster_expansion.eci/1");
+    out[QStringLiteral("method")] = ClusterExpansionFitSpec::methodName(spec.method);
+    out[QStringLiteral("configurations")] = static_cast<int>(correlations.size());
+    out[QStringLiteral("columns")] = static_cast<int>(columns);
+    out[QStringLiteral("intercept_eV")] = fit.intercept;
+    out[QStringLiteral("lambda")] = fit.lambda;
+    out[QStringLiteral("active_terms")] = fit.activeTerms;
+    // BOTH errors, always. A cluster expansion that reproduces its training
+    // set and predicts nothing is the classic failure, and reporting one
+    // number hides it.
+    out[QStringLiteral("cv_score")] = fit.cvScore;
+    out[QStringLiteral("rmse")] = fit.rmse;
+    out[QStringLiteral("nearest_neighbour_pair_eci_eV")] = pairEci;
+    out[QStringLiteral("nearest_neighbour_triplet_eci_eV")] = tripletEci;
+    out[QStringLiteral("eci")] = eciArray;
+    if (const QJsonValue species = root.value(QStringLiteral("species"));
+        !species.isUndefined())
+        out[QStringLiteral("species")] = species;
+
+    output->eciJson =
+        QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Indented));
+    output->headline =
+        QObject::tr("%1 ECIs from %2 configurations; CV %3, RMSE %4 eV/atom")
+            .arg(fit.activeTerms)
+            .arg(correlations.size())
+            .arg(fit.cvScore, 0, 'g', 3)
+            .arg(fit.rmse, 0, 'g', 3);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1203,39 +1298,129 @@ bool runCvmEntropy(const QString& eciJson, const CvmEntropySpec& spec,
             "its input carries no ECIs — the node feeding it is not a "
             "Cluster Expansion (ECI Fitter)"));
 
-    // ---------------------- WIRE-UP POINT --------------------------------
-    // The I/O is finished and core::ClusterVariation exists; what is missing
-    // is its INPUT, because nothing upstream writes an ECI file yet (see
-    // runClusterExpansionFit above). The whole of the connection, the day one
-    // arrives, is this mapping plus one call:
-    //
-    //     #include "core/ClusterVariation.hpp"
-    //     core::CvmInput input;
-    //     input.lattice = spec.lattice == Lattice::Bcc   ? core::CvmLattice::Bcc
-    //                   : spec.lattice == Lattice::Chain ? core::CvmLattice::Chain
-    //                                                    : core::CvmLattice::Fcc;
-    //     input.approximation = ... the same three-way map onto
-    //                           core::CvmApproximation (the two enums are
-    //                           declared in the same order deliberately)
-    //     input.species / input.composition  <- from the ECI file's system
-    //     input.pairEnergiesEv =
-    //         core::pairEnergiesFromEci(<pair ECI from the file>, &ok);
-    //     input.tripletEnergiesEv = ... (tetrahedron approximation only)
-    //     input.minTemperatureK / maxTemperatureK / temperatureSteps <- spec
-    //     const core::CvmResult solved = core::solveClusterVariation(input);
-    //     -> serialize solved.points into output->entropyJson under schema
-    //        "calango.cvm.entropy/1" with S, E, F and α per temperature, plus
-    //        solved.idealEntropyKb and solved.sroVanishingTemperatureK.
-    //
-    // Note pairEnergiesFromEci: the ECI is in the ±1 correlation basis and the
-    // CVM wants bond energies. That transform is a factor of two and a sign,
-    // which is precisely the mistake that turns an ordering alloy into a
-    // clustering one without anything failing.
-    return fail(QObject::tr(
-        "its CVM solver is not wired up in this version yet: nothing upstream "
-        "writes the ECI file it reads. An entropy curve is smooth and "
-        "plausible whatever numbers went into it, so this node refuses rather "
-        "than inventing one."));
+    // The nearest-neighbour pair ECI is the one term this CVM can consume:
+    // the solver is a nearest-neighbour model. Longer-range pairs and
+    // multi-body terms are in the file and are deliberately NOT folded in —
+    // silently absorbing them would report a coupling the model never used.
+    const double pairEci =
+        root.value(QStringLiteral("nearest_neighbour_pair_eci_eV")).toDouble(0.0);
+    if (pairEci == 0.0)
+        return fail(QObject::tr(
+            "the fit upstream kept no nearest-neighbour pair interaction, so "
+            "there is nothing for a nearest-neighbour CVM to use. That is a "
+            "result about the alloy rather than an error: its ordering is "
+            "carried by longer-range or multi-body clusters, which this "
+            "solver does not model."));
+
+    core::CvmInput input;
+    input.lattice = spec.lattice == CvmEntropySpec::Lattice::Bcc
+        ? core::CvmLattice::Bcc
+        : spec.lattice == CvmEntropySpec::Lattice::Chain
+            ? core::CvmLattice::Chain
+            : core::CvmLattice::Fcc;
+    input.approximation =
+        spec.approximation == CvmEntropySpec::Approximation::Point
+        ? core::CvmApproximation::Point
+        : spec.approximation == CvmEntropySpec::Approximation::Pair
+            ? core::CvmApproximation::Pair
+            : core::CvmApproximation::Tetrahedron;
+
+    // Species and composition from the ECI file when it carries them,
+    // otherwise an equiatomic binary — stated in the output so a default is
+    // never mistaken for the ensemble's actual composition.
+    bool defaulted = true;
+    const QJsonArray speciesArray = root.value(QStringLiteral("species")).toArray();
+    if (speciesArray.size() == 2) {
+        for (const QJsonValue& v : speciesArray)
+            input.species.push_back(v.toString().toStdString());
+        input.composition = {0.5, 0.5};
+    } else {
+        input.species = {"A", "B"};
+        input.composition = {0.5, 0.5};
+    }
+    defaulted = speciesArray.size() != 2;
+
+    // pairEnergiesFromEci, NOT a hand-written transform: the ECI is in the
+    // ±1 correlation basis and the CVM wants bond energies, and that
+    // conversion is a factor of two and a sign — precisely the mistake that
+    // turns an ordering alloy into a clustering one with nothing failing.
+    bool ok = false;
+    input.pairEnergiesEv = core::pairEnergiesFromEci(pairEci, &ok);
+    if (!ok || input.pairEnergiesEv.size() != 4)
+        return fail(QObject::tr("its pair ECI could not be converted into "
+                                "bond energies"));
+
+    // The triplet, when the fit found one and the approximation can hold it.
+    const double tripletEciEv =
+        root.value(QStringLiteral("nearest_neighbour_triplet_eci_eV"))
+            .toDouble(0.0);
+    if (tripletEciEv != 0.0
+        && spec.approximation == CvmEntropySpec::Approximation::Tetrahedron) {
+        bool okTriplet = false;
+        input.tripletEnergiesEv =
+            core::tripletEnergiesFromEci(tripletEciEv, &okTriplet);
+    }
+
+    input.minTemperatureK = spec.minTemperatureK;
+    input.maxTemperatureK = spec.maxTemperatureK;
+    input.temperatureSteps = spec.temperatureSteps;
+
+    const core::CvmResult solved = core::solveClusterVariation(input);
+    if (!solved.ok)
+        return fail(QObject::tr("its CVM solve failed: %1")
+                        .arg(solved.warnings.empty()
+                                 ? QObject::tr("no usable solution")
+                                 : QString::fromStdString(
+                                       solved.warnings.front())));
+
+    QJsonArray points;
+    for (const core::CvmPoint& point : solved.points) {
+        QJsonObject entry;
+        entry[QStringLiteral("temperature_K")] = point.temperatureK;
+        entry[QStringLiteral("entropy_kB")] = point.entropyPerSiteKb;
+        entry[QStringLiteral("energy_eV")] = point.energyPerSiteEv;
+        entry[QStringLiteral("free_energy_eV")] = point.freeEnergyPerSiteEv;
+        QJsonArray alpha;
+        for (const double a : point.warrenCowley)
+            alpha.append(a);
+        entry[QStringLiteral("warren_cowley")] = alpha;
+        points.append(entry);
+    }
+
+    QJsonObject out;
+    out[QStringLiteral("schema")] = QStringLiteral("calango.cvm.entropy/1");
+    out[QStringLiteral("lattice")] = CvmEntropySpec::latticeName(spec.lattice);
+    out[QStringLiteral("approximation")] =
+        CvmEntropySpec::approximationName(spec.approximation);
+    out[QStringLiteral("pair_eci_eV")] = pairEci;
+    out[QStringLiteral("triplet_eci_eV")] = tripletEciEv;
+    out[QStringLiteral("triplet_used")] = !input.tripletEnergiesEv.empty();
+    out[QStringLiteral("ideal_entropy_kB")] = solved.idealEntropyKb;
+    out[QStringLiteral("sro_vanishing_temperature_K")] =
+        solved.sroVanishingTemperatureK;
+    out[QStringLiteral("composition_defaulted")] = defaulted;
+    QJsonArray warnings;
+    for (const std::string& w : solved.warnings)
+        warnings.append(QString::fromStdString(w));
+    // The warnings travel WITH the curve. The headline one — that a
+    // homogeneous CVM cannot produce an order-disorder transition — decides
+    // whether these numbers can be compared with the alloy literature at all.
+    out[QStringLiteral("warnings")] = warnings;
+    out[QStringLiteral("points")] = points;
+
+    output->entropyJson =
+        QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Indented));
+    const double coldest = solved.points.empty()
+        ? 0.0
+        : solved.points.front().entropyPerSiteKb;
+    output->headline =
+        QObject::tr("S = %1 k_B at %2 K against an ideal %3 k_B")
+            .arg(coldest, 0, 'f', 4)
+            .arg(solved.points.empty() ? 0.0
+                                       : solved.points.front().temperatureK,
+                 0, 'f', 0)
+            .arg(solved.idealEntropyKb, 0, 'f', 4);
+    return true;
 }
 
 } // namespace calango::gui

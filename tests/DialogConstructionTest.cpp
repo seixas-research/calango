@@ -14,6 +14,7 @@
 // A dialog is exercised, not merely constructed: toggling every control is
 // what re-enters the slots that read half-built state.
 
+#include "gui/TiIntegrandPlot.hpp"
 #include "core/CalculatorConfig.hpp"
 #include "core/Structure.hpp"
 #include "gui/CvmComparisonWindow.hpp"
@@ -3970,6 +3971,62 @@ int main(int argc, char** argv)
             QMetaObject::invokeMethod(&window, "recompute");
             check(true, "and toggling back restores the homogeneous view");
         }
+    }
+
+    // The TI integrand plot. Delta_F is a number; every characteristic TI
+    // failure is a shape, so what is checked is that the shape actually
+    // renders — and, with a negative control, that the check could fail.
+    {
+        std::printf("TiIntegrandPlot:\n");
+        TiIntegrandPlot plot;
+        std::vector<calango::core::TiWindowSample> windows;
+        for (int i = 0; i < 6; ++i) {
+            calango::core::TiWindowSample w;
+            w.index = i;
+            w.lambda = (i + 0.5) / 6.0;
+            w.dudlEv = -50.0 - 60.0 * w.lambda;
+            w.dudlErrorEv = 0.5 + 3.0 * (1.0 - w.lambda);
+            w.samples = 300;
+            w.ok = true;
+            windows.push_back(w);
+        }
+        plot.setWindows(windows, {});
+        plot.setEndpointWarning(true, QStringLiteral("test"));
+        const auto ink = [](const QImage& image) {
+            int n = 0;
+            for (int y = 0; y < image.height(); y += 2)
+                for (int x = 0; x < image.width(); x += 2) {
+                    const QColor c = image.pixelColor(x, y);
+                    if (c.red() < 200 || c.green() < 200 || c.blue() < 200)
+                        ++n;
+                }
+            return n;
+        };
+        QImage drawn(640, 380, QImage::Format_ARGB32_Premultiplied);
+        drawn.fill(Qt::white);
+        {
+            QPainter painter(&drawn);
+            plot.render(painter, QRectF(0, 0, 640, 380));
+        }
+        const int withData = ink(drawn);
+        // Negative control: no windows must give an essentially empty canvas,
+        // so the count above is measuring the curve and not the frame.
+        TiIntegrandPlot empty;
+        QImage blank(640, 380, QImage::Format_ARGB32_Premultiplied);
+        blank.fill(Qt::white);
+        {
+            QPainter painter(&blank);
+            empty.render(painter, QRectF(0, 0, 640, 380));
+        }
+        const int withoutData = ink(blank);
+        check(withData > 4 * std::max(1, withoutData),
+              "the integrand, its error bars and the shaded integral render ("
+                  + std::to_string(withData) + " vs "
+                  + std::to_string(withoutData) + " ink samples empty)");
+        check(plot.exportImage(QDir::tempPath()
+                                   + QStringLiteral("/calango_ti_plot.png"),
+                               2.0),
+              "and the plot exports through the same render()");
     }
 
     std::printf(failures == 0 ? "\nAll dialog construction checks passed.\n"

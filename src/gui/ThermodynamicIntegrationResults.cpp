@@ -1,3 +1,6 @@
+#include <QPushButton>
+#include <QFileDialog>
+#include "gui/TiIntegrandPlot.hpp"
 #include "gui/ThermodynamicIntegrationResults.hpp"
 
 #include <QDialog>
@@ -349,13 +352,47 @@ void showThermodynamicIntegrationResults(QWidget* parent,
         QObject::tr("Thermodynamic Integration — Free Energy"));
     dialog->resize(760, 620);
     auto* layout = new QVBoxLayout(dialog);
+
+    // The integrand ABOVE the numbers, deliberately. Delta_F is a number and
+    // every characteristic TI failure is a SHAPE — an endpoint running away,
+    // a grid too coarse across a steep region, one window that never
+    // equilibrated, forward and backward not coinciding. A report that leads
+    // with the free energy asks the reader to trust that none of those
+    // happened.
+    auto* plot = new TiIntegrandPlot(dialog);
+    {
+        // Only the forward sweep is plotted: the reader keeps ONE window list
+        // and retains the backward sweep only as its integral, in
+        // `hysteresis`. Reconstructing a backward curve here would mean
+        // inventing points, so the hysteresis verdict stays in the text below
+        // where it is a number rather than a line.
+        plot->setWindows(report.windows, {});
+        const auto diagnostics = core::endpointDiagnostics(report.windows);
+        plot->setEndpointWarning(diagnostics.suspected,
+                                 QString::fromStdString(diagnostics.message));
+    }
+    layout->addWidget(plot, 3);
+
     auto* view = new QPlainTextEdit(dialog);
     view->setReadOnly(true);
     // Fixed pitch: the per-window table is aligned by column, and a
     // proportional font turns it into a smear.
     view->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     view->setPlainText(report.text);
-    layout->addWidget(view);
+    layout->addWidget(view, 2);
+
+    auto* exportButton = new QPushButton(
+        QObject::tr("Export Plot…"), dialog);
+    QObject::connect(exportButton, &QPushButton::clicked, dialog,
+                     [dialog, plot] {
+                         const QString path = QFileDialog::getSaveFileName(
+                             dialog, QObject::tr("Export Plot"), QString(),
+                             QObject::tr("PNG image (*.png)"));
+                         if (!path.isEmpty())
+                             plot->exportImage(path, 3.0);
+                     });
+    layout->addWidget(exportButton);
+
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
     QObject::connect(buttons, &QDialogButtonBox::rejected, dialog,
                      &QDialog::reject);

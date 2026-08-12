@@ -337,6 +337,97 @@ int main()
               "being solved, not falling back");
     }
 
+    // -- Triplet interactions ------------------------------------------------
+    //
+    // The physical point of a three-body term is that it BREAKS THE A<->B
+    // SYMMETRY. A pair-only model on a binary is invariant under swapping the
+    // species at complementary compositions — x and 1-x give the same entropy
+    // and energy — so an alloy that orders as A3B and one that orders as AB3
+    // are indistinguishable to it. A triplet term is odd in the spins and
+    // lifts exactly that degeneracy, which is why a cluster expansion fitted
+    // with triplets and evaluated with a pair-only CVM has discarded the part
+    // of the fit that chose the structure.
+    std::printf("Triplet interactions:\n");
+    {
+        bool ok = false;
+        const auto tri = calango::core::tripletEnergiesFromEci(0.01, &ok);
+        check(ok && tri.size() == 8, "a triplet ECI converts to a 2x2x2 tensor");
+        check(tri[0] == 0.01 && tri[7] == -0.01,
+              "with eps3(AAA) = +J3 and eps3(BBB) = -J3 — odd in the spins, "
+              "which is what makes it asymmetric under A <-> B");
+
+        const auto solveAt = [&](double x, bool withTriplet) {
+            CvmInput in;
+            in.lattice = CvmLattice::Fcc;
+            in.approximation = CvmApproximation::Tetrahedron;
+            in.species = {"A", "B"};
+            in.composition = {1.0 - x, x};
+            bool okp = false;
+            in.pairEnergiesEv = calango::core::pairEnergiesFromEci(0.02, &okp);
+            if (withTriplet)
+                in.tripletEnergiesEv =
+                    calango::core::tripletEnergiesFromEci(0.01, &okp);
+            in.minTemperatureK = in.maxTemperatureK = 600.0;
+            in.temperatureSteps = 1;
+            return calango::core::solveClusterVariation(in);
+        };
+
+        // Pair only: x and 1-x are mirror images.
+        const auto pairLow = solveAt(0.25, false);
+        const auto pairHigh = solveAt(0.75, false);
+        check(pairLow.ok && pairHigh.ok, "both compositions solve pair-only");
+        check(std::abs(pairLow.points.front().energyPerSiteEv
+                       - pairHigh.points.front().energyPerSiteEv)
+                  < 1e-12,
+              "and a PAIR-only model gives x and 1-x the same energy — the "
+              "A <-> B symmetry it cannot break");
+
+        // With a triplet: the mirror is gone.
+        const auto triLow = solveAt(0.25, true);
+        const auto triHigh = solveAt(0.75, true);
+        check(triLow.ok && triHigh.ok, "both solve with a triplet term");
+        const double split = std::abs(triLow.points.front().energyPerSiteEv
+                                      - triHigh.points.front().energyPerSiteEv);
+        std::printf("    E(x=0.25) - E(x=0.75): pair-only %.3e eV, "
+                    "with triplet %.3e eV\n",
+                    std::abs(pairLow.points.front().energyPerSiteEv
+                             - pairHigh.points.front().energyPerSiteEv),
+                    split);
+        check(split > 1e-4,
+              "which the triplet term SPLITS — this is the asymmetry a "
+              "pair-only CVM throws away, and the reason A3B and AB3 are "
+              "different alloys");
+        check(std::abs(triLow.points.front().entropyPerSiteKb
+                       - pairLow.points.front().entropyPerSiteKb) > 1e-9,
+              "and the entropy changes too, so the triplet is entering the "
+              "cluster probabilities rather than only the reported energy");
+    }
+
+    // A triplet with the PAIR approximation is a contradiction: a triangle is
+    // not a subcluster of a pair. Reported rather than silently dropped.
+    {
+        CvmInput in;
+        in.lattice = CvmLattice::Fcc;
+        in.approximation = CvmApproximation::Pair;
+        in.species = {"A", "B"};
+        in.composition = {0.5, 0.5};
+        bool okp = false;
+        in.pairEnergiesEv = calango::core::pairEnergiesFromEci(0.02, &okp);
+        in.tripletEnergiesEv = calango::core::tripletEnergiesFromEci(0.01, &okp);
+        in.minTemperatureK = in.maxTemperatureK = 600.0;
+        in.temperatureSteps = 1;
+        const auto out = calango::core::solveClusterVariation(in);
+        bool told = false;
+        for (const auto& w : out.warnings)
+            if (w.find("not the tetrahedron") != std::string::npos)
+                told = true;
+        check(out.ok && told,
+              "triplets with the pair approximation are IGNORED and said so — "
+              "a pair model has no triangle to put them on, and silently "
+              "dropping them would report a cluster expansion that was never "
+              "evaluated");
+    }
+
     // -- The ECI basis transform --------------------------------------------
     {
         bool ok = false;

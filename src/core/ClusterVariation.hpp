@@ -86,8 +86,16 @@ struct CvmInput {
     /// that a fit from ClusterExpansionFit can be fed straight in.
     std::vector<double> pairEnergiesEv;
 
-    /// Optional nearest-neighbour triplet interaction, eV, for the
-    /// tetrahedron approximation. Empty means zero.
+    /// Nearest-neighbour TRIPLET interaction, eV, indexed
+    /// [(i * species + j) * species + k] and symmetrized over the three
+    /// vertices. Empty means zero.
+    ///
+    /// Only the tetrahedron approximation can use it: a triangle is not a
+    /// subcluster of a pair, so the pair approximation has nowhere to put it.
+    /// Three-body terms are what distinguish an alloy that merely orders from
+    /// one that picks a particular ordered structure, so a cluster expansion
+    /// fitted with triplets and then evaluated with a pair-only CVM has
+    /// thrown away the part of the fit that chose the phase.
     std::vector<double> tripletEnergiesEv;
 
     double minTemperatureK = 100.0;
@@ -120,6 +128,11 @@ struct CvmPoint {
     std::vector<double> warrenCowley;
     /// Nearest-neighbour pair probabilities, [i*species + j].
     std::vector<double> pairProbabilities;
+    /// Tetrahedron probabilities, [((i*K + j)*K + k)*K + l]. Empty unless the
+    /// tetrahedron approximation ran; kept because the triplet energy is a
+    /// sum over the tetrahedron's faces and cannot be recovered from the pair
+    /// marginals.
+    std::vector<double> tetrahedronProbabilities;
     bool converged = false;
     int iterations = 0;
 };
@@ -160,6 +173,15 @@ double idealConfigurationalEntropy(const std::vector<double>& composition);
 /// factor-of-two/sign error that produces a clustering alloy where an ordering
 /// one was meant.
 std::vector<double> pairEnergiesFromEci(double pairEci, bool* ok);
+
+/// Convert a nearest-neighbour TRIPLET ECI in the +/-1 correlation basis into
+/// the species-triplet energy tensor. Binary only; `ok` is false otherwise.
+///
+/// eps3(i,j,k) = J3 * s_i s_j s_k with s = +1 for A and -1 for B, so the
+/// tensor alternates in sign with the number of B atoms on the triangle. A
+/// triplet term breaks the A<->B symmetry that a pair-only model has, which is
+/// exactly why it can distinguish A3B from AB3.
+std::vector<double> tripletEnergiesFromEci(double tripletEci, bool* ok);
 
 /// Number of nearest neighbours for a lattice.
 int cvmCoordination(CvmLattice lattice);

@@ -1180,6 +1180,12 @@ void MainWindow::createMenusAndDocks()
     // an MD trajectory cannot give you on its own.
     simulationMenu->addAction(tr("&Liquid Free Energy (TI)…"),
                               this, &MainWindow::liquidFreeEnergy);
+    // Opening a FINISHED run. Without this the integrand viewer had exactly
+    // one entry point — the instant onJobFinished fired — so closing the
+    // window, running on a cluster, or running in an earlier session all left
+    // a perfectly good ti.json unreachable from the interface.
+    simulationMenu->addAction(tr("Open Liquid Free Energy &Results…"),
+                              this, &MainWindow::openLiquidFreeEnergyResults);
     simulationMenu->addAction(tr("&Phonon…"),
                               this, &MainWindow::openPhononBuilder);
     // Directly after Phonon: it is the same finite-displacement machinery,
@@ -6965,8 +6971,10 @@ void MainWindow::openEciFit()
     // The handoff that makes the pipeline a pipeline: the fitted pair ECI is
     // pushed straight into the CVM module, so nobody has to know that the CVM
     // solver wants e_AB = -J and convert it by hand.
+    // No `this` capture: the CVM window is top-level and deletes itself on
+    // close, so it deliberately outlives this dialog and is not parented here.
     connect(&dialog, &EciFitDialog::sendToCvmRequested, this,
-            [this](double pairEci) {
+            [](double pairEci) {
                 auto* window = new CvmComparisonWindow();
                 window->setAttribute(Qt::WA_DeleteOnClose);
                 window->setPairEci(pairEci);
@@ -7098,6 +7106,17 @@ void MainWindow::clusterExpansionCalculation()
     }
 
     ClusterExpansionWizard wizard(ensemble, this);
+    // The matrix follows the ensemble, or the run emits energies the fitter
+    // cannot use. Absent (an ensemble loaded from disk rather than built this
+    // session) the script falls back to a cluster_correlations.json sidecar,
+    // and failing that says plainly that no ECI fit is possible.
+    {
+        const auto found = ensembleDesignMatrices_.find(doc);
+        if (found != ensembleDesignMatrices_.end()
+            && found->second.correlations.size() == ensemble.size())
+            wizard.setDesignMatrix(found->second.correlations,
+                                   found->second.orbitLabels);
+    }
     // stageJob writes these as configs.extxyz, which the generated script
     // reads; set it before running the wizard's action so both the local and
     // the remote path pick it up.
@@ -7135,6 +7154,28 @@ void MainWindow::openClusterExpansion()
                                           tr("Cluster Expansion (%1 configs)")
                                               .arg(res.configs.size()));
     tabBar_->setCurrentIndex(tab);
+
+    // Keep the DESIGN MATRIX with the ensemble. The builder has already
+    // evaluated every configuration's cluster correlations against the orbits
+    // it enumerated; without carrying them the run produces energies with no
+    // regressors, and the ECI fit has a right-hand side and no matrix. That
+    // was the gap that left the ECI Fitter and CVM orchestration nodes
+    // stubbed.
+    if (Document* built = currentDocument()) {
+        EnsembleDesignMatrix matrix;
+        matrix.correlations.reserve(res.configs.size());
+        for (const auto& cfg : res.configs)
+            matrix.correlations.push_back(cfg.correlation);
+        // Species count from the RESULT (speciesCounts is one entry per
+        // species) rather than from the dialog's parsed field: the result is
+        // what the correlations were actually built against, and the two
+        // cannot disagree.
+        const int species = res.configs.empty()
+            ? 0
+            : static_cast<int>(res.configs.front().speciesCounts.size());
+        matrix.orbitLabels = core::clusterCorrelationLabels(res, species);
+        ensembleDesignMatrices_[built] = std::move(matrix);
+    }
 
     int pairO = 0, tripO = 0, quadO = 0;
     for (const auto& o : res.orbits) {
@@ -7844,6 +7885,36 @@ void MainWindow::molecularDynamics()
     // species present).
     MolecularDynamicsWizard wizard(doc->structure, this);
     runSimulationWizard(wizard, tr("Molecular Dynamics"));
+}
+
+void MainWindow::openLiquidFreeEnergyResults()
+{
+    // Accept either the file or the directory holding it: a split TI run
+    // spreads its per-window files across proc_<n>/ directories but writes
+    // one ti.json into the shared results directory, and the user thinks in
+    // terms of "the run" rather than of that file's name.
+    QString path = QFileDialog::getOpenFileName(
+        this, tr("Open Liquid Free Energy Results"), QString(),
+        tr("Thermodynamic integration (ti.json);;JSON (*.json);;All files (*)"));
+    if (path.isEmpty()) {
+        const QString directory = QFileDialog::getExistingDirectory(
+            this, tr("…or choose the run directory"));
+        if (directory.isEmpty())
+            return;
+        path = directory + QStringLiteral("/ti.json");
+    }
+    if (!QFile::exists(path)) {
+        QMessageBox::information(
+            this, tr("Liquid Free Energy"),
+            tr("No ti.json there.\n\nA thermodynamic-integration run writes "
+               "it into its results directory once every lambda window has "
+               "reported. If the run is still going, or some windows failed, "
+               "the file is not written yet — that is deliberate, because a "
+               "free energy integrated over a partial path is wrong without "
+               "looking wrong."));
+        return;
+    }
+    showThermodynamicIntegrationResults(this, path);
 }
 
 void MainWindow::liquidFreeEnergy()

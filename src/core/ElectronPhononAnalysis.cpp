@@ -372,9 +372,9 @@ ElectronPhononResult analyzeElectronPhonon(const ElectronPhononInput& input)
     result.relaxationTimeFs = result.scatteringRateEv > 0.0
         ? kHbarEvFs / result.scatteringRateEv
         : 0.0;
-    // GPAW's convention, half the textbook damping. Both are reported so the
-    // factor of two cannot be dropped silently on the way to the optics
-    // module.
+    // Provisional: the transport rate below replaces this when band
+    // velocities were available. See the note there — the Drude term wants
+    // the TRANSPORT lifetime, not this one.
     result.drudeRateEv = 0.5 * result.scatteringRateEv;
     result.debyeTemperatureK =
         result.omegaLogEv > 0.0 ? result.omegaLogEv / kBoltzmannEvPerK : 0.0;
@@ -406,6 +406,27 @@ ElectronPhononResult analyzeElectronPhonon(const ElectronPhononInput& input)
             result.scatteringRateTransportEv > 0.0
             ? kHbarEvFs / result.scatteringRateTransportEv
             : 0.0;
+
+        // THE number the optics module consumes, and it is built on
+        // lambda_tr rather than lambda.
+        //
+        // The Drude term describes how a CURRENT decays, and a current is
+        // degraded by backscattering, not by every scattering event: an
+        // electron deflected forward still carries nearly the same current.
+        // That is exactly the (1 - cos theta) weight separating lambda_tr
+        // from lambda, so using lambda here would damp the optical response
+        // by the quasiparticle lifetime instead of the current lifetime.
+        //
+        // The two differ by tens of per cent in a simple metal and can differ
+        // by a factor of several where the Fermi surface is anisotropic, and
+        // nothing about the resulting spectrum looks wrong — it is simply a
+        // Drude peak of the wrong width.
+        //
+        // Still HALF the rate, because GPAW's DielectricFunction damps as
+        // omega_p^2/(omega + i*rate)^2 whereas the textbook form has
+        // Gamma = hbar/tau in omega_p^2/(omega*(omega + i*Gamma)).
+        result.drudeRateEv = 0.5 * result.scatteringRateTransportEv;
+        result.drudeRateFromTransport = true;
 
         // Drude, written so that everything in it is computed rather than
         // assumed: rho = m/(n e^2 tau) and omega_p^2 = n e^2/(eps_0 m) give
@@ -499,6 +520,16 @@ ElectronPhononResult analyzeElectronPhonon(const ElectronPhononInput& input)
     superconducting.muStar = input.muStar;
     superconducting.debyeTemperatureK = result.debyeTemperatureK;
     result.superconductivity = estimateSuperconductingTc(superconducting);
+
+    if (!result.drudeRateFromTransport)
+        result.warnings.push_back(
+            "The Drude rate reported here is built on lambda rather than "
+            "lambda_tr, because band velocities were not available. The "
+            "optical Drude term wants the TRANSPORT lifetime — a current is "
+            "degraded by backscattering, not by every scattering event — so "
+            "this value damps the response by the quasiparticle lifetime "
+            "instead, and the resulting Drude peak has the wrong width "
+            "without looking wrong.");
 
     result.ok = true;
     return result;

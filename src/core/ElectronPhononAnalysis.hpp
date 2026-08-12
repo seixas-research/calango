@@ -92,6 +92,9 @@ struct ElectronPhononResult {
     /// Gamma = hbar/tau. The factor of two is the standing trap, so both are
     /// reported.
     double drudeRateEv = 0.0;
+    /// True when `drudeRateEv` was built on lambda_tr (the correct lifetime
+    /// for an optical Drude term) rather than falling back to lambda.
+    bool drudeRateFromTransport = false;
     /// Occupied bandwidth E_F - min(eigenvalue), eV.
     ///
     /// Reported so that the Morel-Anderson retardation logarithm

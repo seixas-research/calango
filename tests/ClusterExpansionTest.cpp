@@ -77,6 +77,29 @@ int main()
     if (res2.configs.size() != res.configs.size())
         return fail("generation is not deterministic");
 
+    // -- Correlation column labels -------------------------------------------
+    //
+    // The fingerprint is K point terms plus a species-tuple HISTOGRAM per
+    // orbit, NOT one number per orbit. A labeller that assumed one-per-orbit
+    // would mislabel every column after the first pair, and an ECI attributed
+    // to the wrong cluster reads as physics. The label count matching the
+    // fingerprint length exactly is the invariant that prevents it.
+    {
+        const auto labels = core::clusterCorrelationLabels(
+            res, static_cast<int>(opt.speciesZ.size()));
+        const std::size_t columns = res.configs.front().correlation.size();
+        if (labels.size() != columns)
+            return fail("correlation labels do not match the fingerprint "
+                        "length");
+        for (const auto& l : labels)
+            if (l.empty())
+                return fail("a correlation column has a blank label");
+        if (labels.size() <= opt.speciesZ.size())
+            return fail("labels cover only the point terms — the per-orbit "
+                        "histograms are missing");
+        std::printf("PASS: %zu correlation columns, all labelled\n", columns);
+    }
+
     std::printf("PASS: cluster expansion — 4 decorations → 3 inequivalent "
                 "configs (Au-count 0/1/2), %zu pair orbit(s)\n",
                 res.orbits.size());

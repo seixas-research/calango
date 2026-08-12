@@ -225,6 +225,14 @@ QWidget* ClusterExpansionWizard::buildSettingsPage()
     return page;
 }
 
+void ClusterExpansionWizard::setDesignMatrix(
+    const std::vector<std::vector<double>>& correlations,
+    const std::vector<std::string>& orbitLabels)
+{
+    designMatrix_ = correlations;
+    designLabels_ = orbitLabels;
+}
+
 core::ClusterExpansionRunConfig ClusterExpansionWizard::runConfig() const
 {
     core::ClusterExpansionRunConfig config;
@@ -247,6 +255,8 @@ core::ClusterExpansionRunConfig ClusterExpansionWizard::runConfig() const
     config.referenceA = referenceASpin_->value();
     config.referenceB = referenceBSpin_->value();
     config.continueOnFailure = continueOnFailureCheck_->isChecked();
+    config.correlations = designMatrix_;
+    config.orbitLabels = designLabels_;
     return config;
 }
 

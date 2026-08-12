@@ -188,6 +188,8 @@ private Q_SLOTS:
     /// existing queue — which is why it does not go through
     /// runSimulationWizard().
     void liquidFreeEnergy();
+    /// Open a finished TI run's ti.json and show the integrand + assembly.
+    void openLiquidFreeEnergyResults();
     void openMonteCarlo();
     void openNudgedElasticBand();
     void onRemoteResultsReady(const QString& localDir);
@@ -431,6 +433,7 @@ private Q_SLOTS:
     void openEciFit();
     void openCvmComparison();
     void openSqsBuilder();
+
     void openClusterExpansion();
     /// Simulation → "Cluster Expansion Calculation…": batch-relax the current
     /// document's ensemble and build a formation-energy convex hull.
@@ -956,6 +959,18 @@ private:
     std::vector<std::shared_ptr<core::Structure>> stagedBandFrames_;
     /// Cluster-expansion ensemble staged as configs.extxyz on the next
     /// stageJob; consumed and cleared there, like stagedBandFrames_.
+    /// The design matrix of the ensemble the builder last produced, keyed by
+    /// the document it created.
+    ///
+    /// Keyed by Document rather than kept as a single "last result" because
+    /// the user routinely builds an ensemble, opens something else, then comes
+    /// back to run it — and a single slot silently attaches the wrong
+    /// correlations to whichever trajectory happens to be in front.
+    struct EnsembleDesignMatrix {
+        std::vector<std::vector<double>> correlations;
+        std::vector<std::string> orbitLabels;
+    };
+    std::map<Document*, EnsembleDesignMatrix> ensembleDesignMatrices_;
     std::vector<std::shared_ptr<core::Structure>> stagedEnsembleFrames_;
     /// Primitive reference cell staged as primitive.extxyz on the next
     /// stageJob (band unfolding); consumed and cleared there.

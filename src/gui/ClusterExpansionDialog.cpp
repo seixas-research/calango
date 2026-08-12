@@ -83,7 +83,12 @@ ClusterExpansionDialog::ClusterExpansionDialog(
     tripletCutoffSpin_ = new QDoubleSpinBox(this);
     tripletCutoffSpin_->setRange(0.0, 20.0);
     tripletCutoffSpin_->setDecimals(2);
-    tripletCutoffSpin_->setValue(0.0);
+    // Triplets ON by default. A pair-only basis cannot distinguish A3B from
+    // AB3 — the model is symmetric under A <-> B at complementary
+    // compositions — so an ensemble built without them silently discards the
+    // term that chooses the ordered structure. 3.0 A keeps it to the nearest
+    // triangles on a typical close-packed lattice.
+    tripletCutoffSpin_->setValue(3.0);
     tripletCutoffSpin_->setSuffix(tr(" Å"));
     tripletCutoffSpin_->setSpecialValueText(tr("off"));
     form->addRow(tr("Triplet cutoff:"), tripletCutoffSpin_);
@@ -91,6 +96,10 @@ ClusterExpansionDialog::ClusterExpansionDialog(
     quadCutoffSpin_ = new QDoubleSpinBox(this);
     quadCutoffSpin_->setRange(0.0, 20.0);
     quadCutoffSpin_->setDecimals(2);
+    // Quadruplets stay OFF by default: each orbit adds K^4 histogram columns
+    // to the design matrix, and with the usual handful of configurations the
+    // fit runs out of samples before it runs out of clusters. Turn them on
+    // deliberately, with the configuration count to support them.
     quadCutoffSpin_->setValue(0.0);
     quadCutoffSpin_->setSuffix(tr(" Å"));
     quadCutoffSpin_->setSpecialValueText(tr("off"));

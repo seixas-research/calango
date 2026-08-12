@@ -63,7 +63,7 @@ int main(int argc, char** argv)
     std::printf("hbar/tau          %.5f eV\n", result.scatteringRateEv);
     // Spelled out because the factor of two between this and hbar/tau is the
     // standing trap on the way to the optics module.
-    std::printf("Drude rate        %.5f eV  (= hbar/2tau, what GPAW's "
+    std::printf("Drude rate        %.5f eV  (= hbar/2tau_tr, what GPAW's "
                 "DielectricFunction `rate` takes)\n",
                 result.drudeRateEv);
     std::printf("m*/m              %.4f  (band-mass enhancement 1 + lambda)\n",

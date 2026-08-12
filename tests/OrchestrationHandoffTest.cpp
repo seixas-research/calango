@@ -583,12 +583,115 @@ int main(int argc, char** argv)
         check(!runCvmEntropy(QStringLiteral("{}"), cvmSpec, &solved, &problem)
                   && problem.contains(QStringLiteral("ECIs")),
               "a CVM node fed something that is not an ECI file says so");
+        // An ECI file with no nearest-neighbour PAIR term: the solver is a
+        // nearest-neighbour model, so there is nothing it can use. Refused as
+        // a statement about the alloy, not as an error.
         check(!runCvmEntropy(
-                  QStringLiteral("{\"eci\":[{\"order\":2,\"value_eV\":0.01}]}"),
+                  QStringLiteral("{\"eci\":[{\"order\":3,\"value_eV\":0.01}]}"),
                   cvmSpec, &solved, &problem)
-                  && problem.contains(QStringLiteral("not wired up")),
-              "and a readable one is refused only because nothing upstream "
-              "writes that file yet");
+                  && problem.contains(QStringLiteral("nearest-neighbour")),
+              "an ECI file carrying no nearest-neighbour pair term is refused "
+              "with the reason, because a nearest-neighbour CVM has nothing "
+              "to consume");
+    }
+
+    // ---- Both solvers now run, end to end ----------------------------------
+    //
+    // These replace the tripwire above. The chain the module exists for is
+    // ensemble -> ECI fit -> CVM entropy, and the join between the two nodes
+    // is the ECI file: what the fitter writes has to be what the CVM node
+    // reads, including the one field (the nearest-neighbour pair ECI) that
+    // the downstream node would otherwise have to rediscover.
+    std::printf("ECI Fitter -> CVM, end to end:\n");
+    {
+        using calango::gui::ClusterExpansionFitOutput;
+        using calango::gui::ClusterExpansionFitSpec;
+        using calango::gui::CvmEntropyOutput;
+        using calango::gui::CvmEntropySpec;
+
+        // A design matrix with a KNOWN answer: energies built from an exact
+        // linear model, so the fit has something to recover rather than a
+        // tolerance to sit inside.
+        const double j0 = -3.0, j2 = 0.05;
+        QJsonArray configurations;
+        QJsonArray labels;
+        labels.append(QStringLiteral("point s0"));
+        labels.append(QStringLiteral("pair r=2.550 m=12 b0"));
+        for (int i = 0; i < 12; ++i) {
+            const double x = i / 11.0;
+            const double corr = 2.0 * x - 1.0;   // +/-1 correlation
+            QJsonArray row;
+            row.append(1.0);
+            row.append(corr);
+            QJsonObject entry;
+            entry.insert(QStringLiteral("concentration"), x);
+            entry.insert(QStringLiteral("correlation"), row);
+            entry.insert(QStringLiteral("energy_per_atom"), j0 + j2 * corr);
+            configurations.append(entry);
+        }
+        QJsonObject ensemble;
+        ensemble.insert(QStringLiteral("configurations"), configurations);
+        ensemble.insert(QStringLiteral("orbit_labels"), labels);
+        const QString ensembleJson = QString::fromUtf8(
+            QJsonDocument(ensemble).toJson(QJsonDocument::Compact));
+
+        ClusterExpansionFitSpec fitSpec;
+        fitSpec.method = ClusterExpansionFitSpec::Method::Ridge;
+        fitSpec.crossValidationFolds = 4;
+        ClusterExpansionFitOutput fitted;
+        QString problem;
+        if (!runClusterExpansionFit(ensembleJson, fitSpec, &fitted, &problem))
+            std::printf("    fit refused: %s\n", qPrintable(problem));
+        check(!fitted.eciJson.isEmpty(),
+              "an ensemble carrying correlations now FITS");
+        const QJsonObject eci =
+            QJsonDocument::fromJson(fitted.eciJson.toUtf8()).object();
+        check(eci.value(QStringLiteral("schema")).toString()
+                  == QStringLiteral("calango.cluster_expansion.eci/1"),
+              "writing the schema the CVM node expects");
+        const double recovered =
+            eci.value(QStringLiteral("nearest_neighbour_pair_eci_eV")).toDouble();
+        std::printf("    pair ECI recovered %.5f, exact %.5f\n", recovered, j2);
+        check(std::abs(recovered - j2) < 0.02,
+              "and recovers the pair ECI it was built from");
+        // Both errors present: a fit reporting only its training error hides
+        // the classic cluster-expansion failure.
+        check(eci.contains(QStringLiteral("cv_score"))
+                  && eci.contains(QStringLiteral("rmse")),
+              "with the CV score and the training RMSE side by side");
+
+        // The join. The CVM node consumes exactly what the fitter wrote.
+        CvmEntropySpec cvmSpec;
+        cvmSpec.minTemperatureK = 300.0;
+        cvmSpec.maxTemperatureK = 1500.0;
+        cvmSpec.temperatureSteps = 20;
+        CvmEntropyOutput solvedOut;
+        if (!runCvmEntropy(fitted.eciJson, cvmSpec, &solvedOut, &problem))
+            std::printf("    cvm refused: %s\n", qPrintable(problem));
+        check(!solvedOut.entropyJson.isEmpty(),
+              "and the CVM node solves straight from the fitter's file");
+        const QJsonObject curve =
+            QJsonDocument::fromJson(solvedOut.entropyJson.toUtf8()).object();
+        check(curve.value(QStringLiteral("schema")).toString()
+                  == QStringLiteral("calango.cvm.entropy/1"),
+              "under its own schema");
+        const QJsonArray points = curve.value(QStringLiteral("points")).toArray();
+        check(points.size() == cvmSpec.temperatureSteps,
+              "with one point per requested temperature");
+        const double ideal =
+            curve.value(QStringLiteral("ideal_entropy_kB")).toDouble();
+        bool everAbove = false;
+        for (const QJsonValue& v : points)
+            if (v.toObject().value(QStringLiteral("entropy_kB")).toDouble()
+                > ideal + 1e-9)
+                everAbove = true;
+        check(!everAbove,
+              "and no entropy above the ideal bound — correlations can only "
+              "remove arrangements, never add them");
+        // The limitation travels with the curve, or a homogeneous result gets
+        // compared against a published order-disorder temperature.
+        check(!curve.value(QStringLiteral("warnings")).toArray().isEmpty(),
+              "carrying the warnings that say what this solver cannot do");
     }
 
     // ---- The three new specs survive a saved workflow -----------------------

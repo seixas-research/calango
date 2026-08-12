@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.15
+    VERSION 26.8.16
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -585,6 +585,8 @@ qt_add_executable(calango
     src/gui/ThermodynamicIntegrationWizard.cpp
     src/gui/ThermodynamicIntegrationResults.hpp
     src/gui/ThermodynamicIntegrationResults.cpp
+    src/gui/TiIntegrandPlot.hpp
+    src/gui/TiIntegrandPlot.cpp
     src/gui/SinglePointWizard.hpp
     src/gui/SinglePointWizard.cpp
     src/gui/CutoffConvergenceWizard.hpp
@@ -1514,6 +1516,7 @@ if(CALANGO_BUILD_TESTS)
         # linked here rather than only in the application.
         src/gui/ThermodynamicIntegrationWizard.cpp
         src/gui/ThermodynamicIntegrationResults.cpp
+        src/gui/TiIntegrandPlot.cpp
         src/core/ThermodynamicIntegration.cpp
         src/core/ThermodynamicIntegrationScriptGenerator.cpp
         src/gui/TwoDBandsWizard.cpp
@@ -1744,6 +1747,8 @@ if(CALANGO_BUILD_TESTS)
         src/gui/OrchestrationDocument.cpp
         src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
+        src/core/ClusterExpansionFit.cpp
+        src/core/ClusterVariation.cpp
         # The TDB Generator transform fits a CALPHAD model in process, so the
         # transforms translation unit now pulls in the assessment, the hull it
         # reports against, and the database writer. The SQS Generator transform
@@ -1819,6 +1824,8 @@ if(CALANGO_BUILD_TESTS)
         src/gui/OrchestrationDocument.cpp
         src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
+        src/core/ClusterExpansionFit.cpp
+        src/core/ClusterVariation.cpp
         # The TDB Generator transform fits a CALPHAD model in process, so the
         # transforms translation unit now pulls in the assessment, the hull it
         # reports against, and the database writer. The SQS Generator transform
@@ -1893,6 +1900,8 @@ if(CALANGO_BUILD_TESTS)
         src/gui/OrchestrationDocument.cpp
         src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
+        src/core/ClusterExpansionFit.cpp
+        src/core/ClusterVariation.cpp
         # The TDB Generator transform fits a CALPHAD model in process, so the
         # transforms translation unit now pulls in the assessment, the hull it
         # reports against, and the database writer. The SQS Generator transform
