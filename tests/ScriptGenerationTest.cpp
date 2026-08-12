@@ -3234,6 +3234,14 @@ int main(int argc, char** argv)
                       "rewritten");
         checkContains(script, "savetofile=True",
                       "which stage 3 is therefore asked to write");
+        // The mass convention is an OPEN question, not a settled one: GPAW
+        // divides by one atomic mass unit and flags its own uncertainty about
+        // it. Pinned as a comment so the next reader finds the question
+        // rather than rediscovering it from a wrong lambda.
+        checkContains(script, "potential BUG",
+                      "and the open question about which mass belongs in the "
+                      "prefactor travels with the code");
+
         // The manifest the C++ loader reads.
         checkContains(script, "calango.elph.raw 1",
                       "a manifest ties the arrays to the mesh they live on");

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.14
+    VERSION 26.8.15
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
