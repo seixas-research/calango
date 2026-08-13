@@ -1,7 +1,7 @@
 # Fermi surfaces and topological invariants
 
-{menuselection}`Electronics --> Fermi Surface…` and
-{menuselection}`Electronics --> Topological Invariants…` are both
+{menuselection}`Wannier Functions --> Fermi Surface…` and
+{menuselection}`Wannier Functions --> Topological Invariants…` are both
 post-processes of a **completed Wannier Functions run**
 ({doc}`/electronic/wannier`): the first interpolates $E_n(\mathbf{k})$ from
 the localized Wannier Hamiltonian onto a dense 3D grid and extracts the sheets

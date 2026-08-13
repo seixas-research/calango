@@ -11,6 +11,7 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QLabel>
+#include <QPushButton>
 #include <QSpinBox>
 #include <QStringList>
 #include <QWidget>
@@ -45,7 +46,7 @@ ThermodynamicIntegrationWizard::ThermodynamicIntegrationWizard(
 
 QString ThermodynamicIntegrationWizard::wizardTitle() const
 {
-    return tr("Liquid Free Energy — Thermodynamic Integration");
+    return tr("Thermodynamic Integration — Free Energy");
 }
 
 QString ThermodynamicIntegrationWizard::settingsHeader() const
@@ -374,6 +375,25 @@ QWidget* ThermodynamicIntegrationWizard::buildSettingsPage()
     pathSummary_->setWordWrap(true);
     pathSummary_->setTextFormat(Qt::RichText);
     form->addRow(pathSummary_);
+
+    // The module's cold entry point. Setting up a run and reading a finished
+    // one are the same errand often enough — "what did I get last time?" is
+    // asked while choosing this time's windows — and the Simulation menu no
+    // longer carries a second action for it, so the button lives where the
+    // question is asked. The wizard only ASKS: it emits, and the host owns the
+    // file dialog and the viewer.
+    auto* loadResultsButton = new QPushButton(tr("Load Results…"), page);
+    loadResultsButton->setObjectName(QStringLiteral("tiLoadResultsButton"));
+    loadResultsButton->setToolTip(
+        tr("Open the ti.json of a finished run — one from an earlier session, "
+           "or brought back from a cluster — without launching anything"));
+    // Not the default button: Return on this page belongs to the wizard's own
+    // Next, and a file dialog appearing instead would be a trap.
+    loadResultsButton->setAutoDefault(false);
+    loadResultsButton->setDefault(false);
+    connect(loadResultsButton, &QPushButton::clicked, this,
+            &ThermodynamicIntegrationWizard::loadResultsRequested);
+    form->addRow(QString(), loadResultsButton);
 
     updateReferenceRows();
     updateEnsembleRows();

@@ -213,13 +213,17 @@ transition metals.
         - 0.12
         - 0.16
       * - :math:`T_\mathrm{c}`
-        - 2.71 K
+        - 2.72 K
         - 1.19 K
-        - 0.37 K
+        - 0.36 K
 
    --- a factor of **7.5** across a range every value in which is entirely
    defensible, against a measured 1.18 K. Quote the range, never a single
    value.
+
+   Aluminium *needs* :math:`\mu^* \approx 0.12` to land. That is not a defect
+   of the closed form; it is the sensitivity itself, and it is asserted in the
+   test so the warning cannot be quietly dropped.
 
 Outputs
 -------
@@ -358,22 +362,24 @@ Calango run — so what it measures is the formula, cleanly separated from the
      - 56 K
      - 0.10
      - 6.58 K
-     - **7.52 K**
+     - **7.52 K** (:math:`f_1 = 1.094`, :math:`f_2 = 1.045`)
      - 7.19 K
    * - Al
      - 0.43
      - 296 K
      - 0.12
-     - —
-     - **1.172 K**
+     - 1.172 K
+     - 1.19 K (:math:`f_1 \approx 1.014`)
      - 1.18 K
 
 Lead is the case Allen and Dynes wrote :math:`f_1` and :math:`f_2` *for*: at
 :math:`\lambda = 1.55` the uncorrected McMillan-style form **undershoots** the
 measurement by 8 %, and the corrections carry it past it by 5 %. Aluminium, at
-weak coupling where :math:`f_1 f_2 \approx 1`, lands within a per cent — but
-that per cent is an artefact of the :math:`\mu^*` chosen, which is the next
-point.
+weak coupling where :math:`f_1 f_2 \approx 1`, lands within a per cent either
+way — but that per cent is an artefact of the :math:`\mu^*` chosen, which is
+the next point. The test's tolerances are correspondingly loose (:math:`\pm
+1.5` K on Pb, :math:`\pm 0.4` K on Al); the numbers above are what it measures,
+not what it asserts.
 
 .. admonition:: What :math:`\mu^*` should I use?
    :class: tip

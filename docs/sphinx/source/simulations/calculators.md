@@ -2,6 +2,8 @@
 
 The {guilabel}`Calculation engine` dropdown at the top of every wizard's Calculator Settings stage selects which of ASE's calculators the generated script builds. Each engine brings its own settings group, and the page shows only the groups that apply to the current selection.
 
+Calango is **calculator-agnostic**: the wizards, the generated scripts, the job runner and the analysis pipeline are written against ASE's calculator interface rather than against any particular code. The tables below are therefore the engines wired up today, not a ceiling — the list grows as calculators are added, and nothing downstream of the dropdown has to change when one is. The dropdown in your installed version is the authoritative list.
+
 The list is **grouped by family, separated by dividers**: the *ab initio* codes first, then the semi-empirical ones, then the machine-learning potentials, and finally the classical force fields and the engines that run them. Within a family the order is by how often each one is the answer, not alphabetical.
 
 **Ab initio and quantum chemistry**

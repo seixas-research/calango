@@ -8,6 +8,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 #include "core/ThermodynamicIntegration.hpp"
 
 class QWidget;
@@ -42,8 +44,22 @@ struct TiRunReport {
 /// get explained away.
 TiRunReport readThermodynamicIntegrationRun(const QString& jsonPath);
 
-/// Read the run and show the report in a plain read-only window.
-void showThermodynamicIntegrationResults(QWidget* parent,
-                                         const QString& jsonPath);
+/// The report as comma-separated values: the run's settings and assembled free
+/// energies as `#` comment lines, then the per-window table.
+///
+/// Numbers go through QString::number, which formats via QLocale::c() — a plain
+/// printf here would write `1,5514` on this project's own pt_BR machines and
+/// produce a CSV whose every row had one extra column.
+QString thermodynamicIntegrationCsv(const TiRunReport& report);
+
+/// Read the run and show the integrand plot + report in a window.
+///
+/// `loadAnother`, when set, backs the window's "Load Results…" button: the
+/// window itself has no business running a file dialog and deciding what a
+/// thermodynamic-integration path is, so the host passes in the one entry point
+/// that already does both.
+void showThermodynamicIntegrationResults(
+    QWidget* parent, const QString& jsonPath,
+    std::function<void()> loadAnother = {});
 
 } // namespace calango::gui

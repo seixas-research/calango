@@ -22,11 +22,10 @@ class Structure;
 
 namespace calango::gui {
 
-/// Simulation → "Liquid Free Energy (TI)…".
+/// Simulation → "Thermodynamic Integration…".
 ///
-/// Thermodynamic integration: the ABSOLUTE Gibbs free energy of a liquid, by
-/// coupling it reversibly to a reference system whose free energy is known in
-/// closed form. Stage 1 is the shared Calculator Settings — the engine chosen
+/// The ABSOLUTE Helmholtz / Gibbs free energy, by coupling the system
+/// reversibly to a reference whose free energy is known in closed form. Stage 1 is the shared Calculator Settings — the engine chosen
 /// there is the TARGET Hamiltonian, and it goes through CalculatorConfig like
 /// every other module — stage 2 is the path (reference, λ schedule, windows,
 /// sampling), stage 3 is the script review.
@@ -73,6 +72,13 @@ public:
     /// The directory every job of this run writes into. Absolute, created by
     /// the wizard, and the only thing the split jobs share.
     QString resultsDirectory() const { return resultsDirectory_; }
+
+Q_SIGNALS:
+    /// The "Load Results…" button was pressed. The wizard deliberately does
+    /// nothing itself: choosing a ti.json and opening the viewer are the host's
+    /// job, and are the same code path the Processes panel and a finished job
+    /// already go through.
+    void loadResultsRequested();
 
 protected:
     QString wizardTitle() const override;

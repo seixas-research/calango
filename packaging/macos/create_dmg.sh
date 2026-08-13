@@ -15,8 +15,17 @@
 #      when cpack is unavailable or `--manual` is passed.
 #   4. Move the result to Calango-<version>-macOS.dmg, then mount it and prove
 #      the packaged app can import ASE before declaring success.
+#   5. Delete the scratch build tree under ~/Library/Caches/calango, which is
+#      several GB and reproducible. Only after every check above passed — a
+#      failed run keeps its tree so it can be diagnosed, and only inside that
+#      scratch root, never a BUILD_DIR you chose yourself.
+#      --keep-cache skips it, which is what you want while iterating on
+#      packaging itself: the tree caches the ~500 MB embedded-Python payload
+#      and the compiled objects, so --skip-build on a later run is only
+#      useful if the run before it was given --keep-cache.
 #
 # Usage:  packaging/macos/create_dmg.sh [--manual] [--skip-build] [--no-python]
+#                                       [--keep-cache]
 #
 # Overridable via environment:
 #   BUILD_DIR                 build/output directory (default build-macos-bundle)
@@ -60,6 +69,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# Flags first, before anything that touches the filesystem: a mistyped option
+# should cost nothing, and the pre-flight below otherwise creates the scratch
+# directory on its way to rejecting the command line.
+MANUAL=0
+SKIP_BUILD=0
+WITH_PYTHON=1
+KEEP_CACHE=0
+for arg in "$@"; do
+    case "$arg" in
+        --manual)     MANUAL=1 ;;
+        --skip-build) SKIP_BUILD=1 ;;
+        --no-python)  WITH_PYTHON=0 ;;
+        --keep-cache) KEEP_CACHE=1 ;;
+        *) echo "unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
+
 # Whether the caller chose BUILD_DIR themselves decides what happens if it
 # turns out to be cloud-synced: an explicit choice is reported and refused, the
 # default is relocated automatically. Sampled before the default is applied,
@@ -87,6 +113,12 @@ EMBED_PY="${CALANGO_EMBEDDED_PYTHON_DIR:-}"
 # packaging/dependencies.txt.
 EMBED_PKGS="${CALANGO_EMBEDDED_PACKAGES:-ase numpy scipy spglib matplotlib imageio imageio-ffmpeg dftd4 torch-dftd phonopy}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
+
+# Where a relocated BUILD_DIR goes, and the only tree the cleanup step at the
+# end is allowed to delete. ~/Library/Caches is the conventional macOS home for
+# regenerable build output: no provider syncs it, and unlike /tmp it is not
+# swept every few days.
+SCRATCH_ROOT="$HOME/Library/Caches/calango"
 
 # --- Pre-flight: the staging tree must not be cloud-synced ------------------
 #
@@ -157,15 +189,12 @@ EOF
         exit 1
     fi
 
-    # The default landed in a synced folder, so move it. Under
-    # ~/Library/Caches, which is the conventional macOS home for regenerable
-    # build output: no provider syncs it, and unlike /tmp it is not swept
-    # every few days — which matters because $BUILD_DIR/embedded-python caches
-    # a ~500 MB Python payload that is slow to re-download.
-    #
-    # Keyed by the repo's path so two checkouts do not build into each other.
+    # The default landed in a synced folder, so move it into SCRATCH_ROOT.
+    # Keyed by the repo's path so two checkouts do not build into each other —
+    # which is also why the cleanup step deletes this subdirectory rather than
+    # the root: another checkout may have a tree of its own alongside it.
     _repo_key="$(printf '%s' "$REPO_ROOT" | shasum | cut -c1-8)"
-    BUILD_DIR="$HOME/Library/Caches/calango/macos-bundle-$_repo_key"
+    BUILD_DIR="$SCRATCH_ROOT/macos-bundle-$_repo_key"
     mkdir -p "$BUILD_DIR"
     echo "==> BUILD_DIR would be cloud-synced (codesign rejects the xattrs a"
     echo "    file provider stamps); staging in a scratch location instead:"
@@ -201,18 +230,6 @@ if [[ -z "${PYTHON_BIN:-}" ]]; then
 fi
 [[ -x "$PYTHON_BIN" ]] || {
     echo "error: no usable Python interpreter (set PYTHON_BIN)" >&2; exit 1; }
-
-MANUAL=0
-SKIP_BUILD=0
-WITH_PYTHON=1
-for arg in "$@"; do
-    case "$arg" in
-        --manual)     MANUAL=1 ;;
-        --skip-build) SKIP_BUILD=1 ;;
-        --no-python)  WITH_PYTHON=0 ;;
-        *) echo "unknown option: $arg" >&2; exit 2 ;;
-    esac
-done
 
 command -v cmake >/dev/null || { echo "error: cmake not found" >&2; exit 1; }
 MACDEPLOYQT="$QT_PREFIX/bin/macdeployqt"
@@ -412,4 +429,50 @@ echo "    Probe    : $PROBE"
 if [[ "$PROBE" == FAILED* ]]; then
     echo "error: the packaged app could not resolve its Python environment" >&2
     exit 1
+fi
+
+# --- 5. Clean up the scratch build tree ------------------------------------
+#
+# Deliberately the LAST thing, after every check above: a run that failed
+# anywhere keeps its tree, because that tree is what you need to diagnose it —
+# `set -e` already aborts before reaching this point, and the probe check just
+# above exits non-zero without cleaning.
+#
+# The rule is the location, not who chose it: anything under SCRATCH_ROOT is
+# scratch and goes, anything elsewhere is someone's own build directory —
+# possibly a long-lived one — and is left alone with a note saying so.
+#
+# The subdirectory goes, not SCRATCH_ROOT itself: it is keyed by repo path so
+# that several checkouts can coexist there, and deleting the root would take
+# another checkout's cache with it. The root is then removed only if it turns
+# out to be empty, which `rmdir` decides — no test, no race.
+cleanup_scratch() {
+    case "$BUILD_DIR/" in
+        "$SCRATCH_ROOT"/*) ;;
+        *) echo "    Kept     : $BUILD_DIR (your BUILD_DIR — not this script's to delete)"
+           return 0 ;;
+    esac
+
+    local freed
+    freed="$(du -sh "$BUILD_DIR" 2>/dev/null | cut -f1)"
+    rm -rf "$BUILD_DIR"
+    rmdir "$SCRATCH_ROOT" 2>/dev/null || true
+    echo "    Cleaned  : $BUILD_DIR (freed ${freed:-?})"
+
+    # Worth saying, because it is the one cost of cleaning: the embedded-Python
+    # payload was cached in that tree and went with it, so the next run
+    # re-downloads and re-pip-installs ~500 MB. Only when there was one.
+    #
+    # An `[[ ... ]] && echo` here would be a trap rather than a shorthand: as
+    # the last command of the script, a false condition becomes the exit
+    # status, and a perfectly good run would report failure.
+    if [[ "$WITH_PYTHON" -eq 1 ]]; then
+        echo "               next run re-provisions the embedded Python; --keep-cache avoids that"
+    fi
+}
+
+if [[ "$KEEP_CACHE" -eq 1 ]]; then
+    echo "    Kept     : $BUILD_DIR (--keep-cache)"
+else
+    cleanup_scratch
 fi

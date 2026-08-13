@@ -403,8 +403,13 @@ QString orchestrationTaskDisplayName(OrchestrationTask task)
         return QObject::tr("Cluster Expansion (ECI Fitter)");
     case OrchestrationTask::CvmEntropy:
         return QObject::tr("CVM Entropy Calculator");
+    // The enum tag and the slug still read "liquid free energy"; only the NAME
+    // changed. orchestrationTaskSlug() is a persisted key — it is written into
+    // every saved .calproj and every exported calango.workflow/2 document — so
+    // renaming it would make yesterday's workflows unopenable to spell a menu
+    // entry differently.
     case OrchestrationTask::LiquidFreeEnergy:
-        return QObject::tr("Liquid Free Energy (TI)");
+        return QObject::tr("Thermodynamic Integration");
     case OrchestrationTask::SinglePoint:
         break;
     }
@@ -436,7 +441,7 @@ QString orchestrationTaskShortName(OrchestrationTask task)
     case OrchestrationTask::SqsGenerator:         return QObject::tr("SQS");
     case OrchestrationTask::ClusterExpansionFit:  return QObject::tr("ECI fit");
     case OrchestrationTask::CvmEntropy:           return QObject::tr("CVM");
-    case OrchestrationTask::LiquidFreeEnergy:     return QObject::tr("Free E");
+    case OrchestrationTask::LiquidFreeEnergy:     return QObject::tr("TI");
     }
     return QObject::tr("Node");
 }

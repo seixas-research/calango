@@ -1,0 +1,609 @@
+\chapter{Free energies and alloy thermodynamics}
+\label{ch:freeenergy}
+
+Three modules answer questions that a single energy cannot. Thermodynamic
+integration produces an \emph{absolute} free energy from molecular dynamics;
+the ECI fit turns a set of computed alloy configurations into a predictive
+model; and the Cluster Variation Method turns that model into a configurational
+entropy and, where the lattice allows it, an order--disorder temperature.
+
+\section{Thermodynamic integration}
+\label{sec:ti}
+
+\menu{Simulation}\menusep\menu{Thermodynamic Integration\dots} computes $F$, and
+$G = F + PV$, in absolute terms.
+
+That is not something a simulation can measure. Energy, temperature, pressure
+and stress are all mechanical averages over a trajectory; the free energy is the
+logarithm of a partition function, and no average of any observable equals it.
+Thermodynamic integration recovers it by building a \emph{reversible} path from
+a reference system whose free energy is known in closed form:
+\begin{equation}
+  U(\lambda) = (1-\lambda)\,U_\mathrm{ref} + \lambda\,U_\mathrm{target},
+  \qquad
+  \frac{\partial F}{\partial\lambda}
+    = \Bigl\langle \frac{\partial U}{\partial\lambda} \Bigr\rangle_\lambda
+    = \bigl\langle U_\mathrm{target} - U_\mathrm{ref} \bigr\rangle_\lambda ,
+  \label{eq:ti-coupling}
+\end{equation}
+\begin{equation}
+  \Delta F = \int_0^1
+    \bigl\langle U_\mathrm{target} - U_\mathrm{ref} \bigr\rangle_\lambda
+    \,\mathrm{d}\lambda ,
+  \qquad
+  F = F_\mathrm{ref} + \Delta F ,
+  \qquad
+  G = F + PV .
+  \label{eq:ti-integral}
+\end{equation}
+Each $\lambda$ is one MD run --- a \emph{window} --- reporting one number. Every
+energy is per simulation cell, matching the phonon thermodynamics of
+Chapter~\ref{ch:elph}'s neighbour module; per-atom values are reported beside
+them with the convention spelled out in the field names.
+
+\subsection{The reference systems}
+
+The method rests entirely on $F_\mathrm{ref}$ being \emph{exact}. An approximate
+reference does not add noise; it adds a bias no amount of MD removes.
+
+\begin{description}
+  \item[\ui{Ideal gas (Sackur-Tetrode)}] $F_\mathrm{id} = k_\mathrm{B}T
+    \sum_s N_s [\ln(\rho_s\Lambda_s^3) - 1]$, summed over \emph{species}: atoms
+    are grouped by mass, and each group carries its own thermal wavelength and
+    its own $N!$. The factorial is the point --- dropping it gives a number that
+    scales almost right and is wrong by $Nk_\mathrm{B}T(\ln N - 1)$. Exact, with
+    no caveat, and the natural reference for a liquid. It is also the reference
+    with the worst endpoint behaviour (\S\ref{sec:ti-endpoint}).
+  \item[\ui{Einstein crystal (Frenkel-Ladd)}]
+    $F_\mathrm{Ein} = 3Nk_\mathrm{B}T\ln(\beta\hbar\omega)$ with
+    $\omega = \sqrt{\alpha/m}$. Exact, and free of the endpoint singularity
+    because tethered atoms never overlap. There is deliberately \emph{no}
+    $1/N!$ here --- the opposite of the ideal-gas case, and exactly where a
+    copy-paste between the two goes wrong: Einstein atoms are tethered to
+    distinguishable sites, cannot exchange, and a crystal samples one
+    permutation. The \ui{Hold the centre of mass fixed} box drives \emph{both}
+    the \texttt{FixCom} constraint in the run and the matching $O(\ln N)$
+    finite-size correction in the closed form, so the two cannot disagree.
+  \item[\ui{Lennard-Jones fluid}] See the warning below.
+\end{description}
+
+\begin{calwarn}
+\textbf{The Lennard-Jones reference cannot carry a liquid.} There is no exact
+closed form for the free energy of an LJ fluid. Calango evaluates the exact
+Hirschfelder--Curtiss--Bird second-virial series, $\beta A_\mathrm{ex}/N =
+B_2\rho + O(\rho^2)$ --- an exact expansion, not a fit --- which is quantitative
+only for a reduced density $\rho^* = (N/V)\sigma^3 \le 0.05$. Above that
+the reference is marked invalid and no free energy is reported at all.
+
+A liquid is an order of magnitude denser than that, so \textbf{for an actual
+liquid use the ideal gas or the Einstein crystal}. The LJ entry exists to put an
+LJ fluid \emph{on} a path, as the target of its own ideal-gas integration whose
+excess free energy you then supply back --- not to start one at liquid density.
+The alternative would have been to transcribe a 33-parameter equation-of-state
+fit; an unverifiable table of coefficients that silently produces plausible
+numbers is worse than a function that refuses.
+\end{calwarn}
+
+\subsection{The endpoint singularity}
+\label{sec:ti-endpoint}
+
+This is the failure mode of the method. With linear coupling
+\eqref{eq:ti-coupling} and an ideal-gas reference, atoms at small $\lambda$ are
+almost free and may sit on top of one another; a target with a hard repulsive
+core then charges an unbounded energy for those configurations, and
+$\langle\partial U/\partial\lambda\rangle$ diverges as $\lambda \to 0$. A
+uniform grid integrates that divergence without noticing: every window returns a
+finite number, the quadrature returns a finite number, and the answer is wrong.
+
+Three layers stand against it.
+
+\begin{enumerate}
+  \item \textbf{The default schedule never samples $\lambda = 0$.}
+    Gauss--Legendre nodes are strictly interior to $[0,1]$ and already cluster
+    towards both ends, which is where the integrand bends.
+  \item \textbf{A runtime detector.} The variance and the magnitude of the two
+    end windows are compared against the \emph{median over the path} --- a
+    ratio, not a fixed energy, because the integrand's scale is whatever the
+    cohesive energy happens to be and only its \emph{shape} says whether a
+    divergence is being integrated. Above $8\times$ either way, the result
+    carries the diagnosis and both ratios.
+  \item \textbf{A warning in the wizard.} Selecting the ideal gas together with
+    a schedule whose first node is $\lambda = 0$ (Uniform, or Power law) turns a
+    red note on the settings page, before anything has been paid for.
+\end{enumerate}
+
+\begin{calnote}
+\textbf{There is no soft-core coupling, and there cannot be one here.} The
+textbook fix replaces the linear mixing with a coupling that regularises the
+\emph{pair form} of the potential. Calango's target is an arbitrary ASE
+calculator --- MACE, GPAW, xTB, a LAMMPS force field --- and none of them
+exposes a pair form to modify. There is no general way to soften a
+machine-learning potential or a self-consistent DFT energy. So the module avoids
+the endpoint, detects it when it bites anyway, and says so; it does not pretend
+to have solved it.
+\end{calnote}
+
+\subsection{Settings}
+
+\begin{description}
+  \item[\ui{$\lambda$ schedule}] Gauss--Legendre (interior nodes) by default;
+    also Uniform, Power law (clustered at $\lambda = 0$) and Clustered at both
+    ends.
+  \item[\ui{Quadrature}] Gauss--Legendre, Simpson or trapezoid. Gauss weights on
+    non-Gauss nodes are not an approximation of anything, so that combination is
+    \emph{refused} rather than silently reweighted; Simpson needs a uniform grid
+    and falls back to the trapezoid, saying so. The two combos are interlocked
+    in the wizard for the same reason.
+  \item[\ui{$\lambda$ windows}] Default 12. Each is an independent MD run, and
+    this is also the knob that fixes the quadrature error.
+  \item[\ui{Dispatch as separate jobs}] Default 1. See the warning below.
+  \item[\ui{Also sweep $\lambda$ backwards}] The hysteresis check. A reversible
+    path must give the same $\Delta F$ either way; it will not if the windows
+    were under-equilibrated, if the system changed phase along the path, or if
+    the coupling drove it through a barrier --- and none of those looks like
+    noise. Doubles the cost and needs one sequential chain, so it is withdrawn
+    when the run is split.
+  \item[\ui{Ensemble}] NVT--Langevin by default. \textbf{NVE is deliberately
+    absent}: $\langle\partial U/\partial\lambda\rangle$ must be a canonical
+    average at \emph{one} temperature, and a microcanonical window sits at a
+    different temperature for every $\lambda$. NPT is offered but warned about
+    --- the reference free energy is a function of $V$, and under a barostat
+    there is no single volume to evaluate it at.
+  \item[\ui{Equilibration steps / window}] Default 2000, and not optional in
+    practice. Averaging over the transient biases every window in the
+    \emph{same} direction, so the bias survives the $\lambda$ integral instead
+    of cancelling --- and it looks nothing like noise on a plot.
+  \item[\ui{Production steps / window}, \ui{Sampling interval}] 10\,000 and 10.
+\end{description}
+
+\begin{calwarn}
+\textbf{$\lambda$ windows run sequentially.} Splitting the path into jobs
+produces contiguous slices that go through the ordinary job queue, which has a
+single runner, so they execute one after another exactly as the unsplit path
+would. What splitting buys is \emph{resumability} --- a dead slice costs its own
+windows, not the path --- and \emph{cluster dispatch}. It is not a wall-time
+speed-up, and should not be budgeted as one.
+\end{calwarn}
+
+\subsection{Two error bars, and which one to spend on}
+
+The generated script writes the \textbf{raw} $\partial U/\partial\lambda$
+series, not merely its mean and variance: the autocorrelation time cannot be
+recovered from moments, and MD samples are not independent. Calango computes the
+integrated autocorrelation time by \textbf{Sokal's automatic windowing} ---
+truncated, because the tail of the correlogram is pure noise whose variance
+grows with the number of terms added, so the naive full sum does not merely lose
+precision, it does not converge --- and reports
+\begin{equation}
+  \sigma_\mathrm{mean}
+    = \sqrt{\frac{\mathrm{var}\cdot\tau_\mathrm{int}}{N}} .
+\end{equation}
+A naive $\sigma/\sqrt{N}$ over correlated samples under-reports by
+$\sqrt{2\tau}$, routinely a factor of three: exactly the size of the
+discrepancies people then explain away. A block-averaging estimate is computed
+independently as a cross-check, and the two disagreeing by more than $2.5\times$
+is reported as a production run too short for either.
+
+Because every rule here is linear, the quadrature is expressed as
+\emph{weights} rather than as a number, which lets the statistical error
+propagate exactly:
+\begin{equation}
+  \sigma_I = \sqrt{\textstyle\sum_i w_i^2 \sigma_i^2} .
+\end{equation}
+Separately, a \textbf{$\lambda$-grid error} is estimated by comparing the chosen
+rule against a closed trapezoid on the same nodes and on every second node. When
+it exceeds $3\times$ the statistical error the report says so in as many words:
+\emph{the lambda grid, not the sampling, dominates the error --- add windows
+rather than MD steps.}
+
+\subsection{Partial failure}
+
+The number of windows the run was \emph{supposed} to have is passed to the
+integrator separately from the list that came back; passing the length of the
+list defeats the check, which is the whole reason the parameter exists.
+
+A path with a dead window is not a noisier path, it is a \emph{different
+integral}: quadrature weights are a property of the node set, so dropping a node
+and reweighting the survivors integrates a curve that was never sampled. A run
+missing any window therefore reports
+\begin{center}
+\texttt{*** INCOMPLETE --- NO FREE ENERGY IS REPORTED ***}
+\end{center}
+and leaves $\Delta F$ at zero. The summary distinguishes \emph{missing} (no file
+--- the window never ran) from \emph{failed} (a file with a failure status ---
+it ran and died), which is what tells you whether to re-run a slice or to change
+the physics.
+
+\subsection{The integrand viewer}
+
+The free energy is a \emph{number}; what goes wrong is a \emph{shape}. Every
+characteristic TI failure is visible in the integrand and invisible in
+$\Delta F$, so the plot is not decoration. It shows
+$\langle\partial U/\partial\lambda\rangle$ against $\lambda$ with
+
+\begin{itemize}[leftmargin=1.4em]
+  \item $1\sigma$ error bars from the \emph{autocorrelation-corrected} estimate,
+    not the raw variance --- which understates a correlated series by exactly
+    the factor this module exists to compute;
+  \item the shaded integral, because $\Delta F$ \emph{is} that area;
+  \item failed windows as vertical rules, so a gap is visible rather than
+    inferred from a warning list;
+  \item the endpoint band, when the detector fired;
+  \item forward and backward sweeps overlaid when the hysteresis check ran.
+\end{itemize}
+
+It opens \emph{by itself} when a run finishes. There is no menu entry for it:
+an ``open the results'' action whose only job is to ask which file you meant is
+a question the application can already answer. The other three ways in all skip
+that question --- the \ui{Load Results\dots} button on the wizard's
+\emph{Integration Path \& Sampling} stage, the same button on this window
+(which walks from one run to the next), and the Processes panel, which offers
+\ui{Thermodynamic Integration Viewer} on any job directory holding a
+\texttt{ti.json}. \ui{Export Results\dots} writes the per-window table as
+CSV --- with the run's conditions and the assembled $F$, $PV$ and $G$ as
+commented header lines --- or the report text as shown. The quadrature, the statistics,
+the closed-form references and the endpoint diagnostics all run \emph{at read
+time} in C++, so a run downloaded from a cluster is analysed by the same code as
+a local one.
+
+\subsection{A worked example}
+
+Liquid copper, 32 atoms at 1600\,K, MACE as the target, ideal-gas reference,
+five Gauss--Legendre windows. This was a development run rather than a shipped
+test, so the numbers are reported and not asserted.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{7.6cm}@{}}
+\toprule
+Quantity & Value \\
+\midrule
+$\langle\partial U/\partial\lambda\rangle$ across the path & $-53.6 \to -120.9$ eV \\
+Per-sample variance across the path & $301 \to 1.17$ --- a factor of \textbf{257} \\
+Endpoint detector & \textbf{fired}, at $\times 107$ against the path median \\
+$\Delta F$ & $-106.35$ eV \\
+Statistical error & 0.46 eV \\
+$\lambda$-grid error & \textbf{6.57 eV} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The conclusion is the opposite of the instinct: \textbf{more MD time would buy
+nothing.} The sampling error is already 0.46\,eV and the grid error is
+6.57\,eV --- $14\times$ larger. Five nodes cannot resolve an integrand whose
+variance changes by a factor of 257 along the path. The run needs more windows,
+clustered harder towards $\lambda = 0$; longer production runs would shrink the
+smaller of the two errors and leave the answer exactly as wrong. This is
+precisely why the two errors are reported separately rather than added.
+
+\begin{calwarn}
+\textbf{Only EMT and MACE have been exercised end to end.} GPAW and xTB targets
+are supported by construction --- the target is an ordinary ASE calculator and
+the coupling is engine-agnostic --- but they are untested, and a DFT target pays
+a full SCF per MD step, per window. The C++ half is covered by the
+\texttt{thermodynamic\_integration} test (161 assertions): the closed-form
+references against their analytic values, the Gauss--Legendre rule against the
+polynomial exactness that defines it, the autocorrelation estimator against
+block averaging, and the refusal paths.
+\end{calwarn}
+
+\section{Effective cluster interactions}
+\label{sec:eci}
+
+\menu{Modules}\menusep\menu{Alloys}\menusep\menu{Effective Cluster Interactions
+(ECI Fit)\dots} turns a completed Cluster Expansion run into a predictive model,
+\begin{equation}
+  E(\sigma)/\text{atom}
+    = J_0 + \sum_\alpha m_\alpha J_\alpha \Phi_\alpha(\sigma) ,
+\end{equation}
+by regressing the computed energies on the cluster correlations
+$\Phi_\alpha$ that the builder emitted alongside them.
+
+\subsection{Why a plain least-squares solve is a trap}
+
+A cluster-expansion design matrix is ill-conditioned \emph{by construction}:
+orbits at nearly the same radius have nearly the same correlation on every
+configuration one can afford to compute, so their columns are near-parallel; the
+empty cluster is exactly parallel to the intercept; and the number of candidate
+orbits grows faster with the cutoff than the number of configurations anyone is
+willing to run, so the system is frequently underdetermined outright. Forming
+$X^{\mathsf T}X$ squares the condition number of an already borderline matrix
+and then inverts it. The failure is not a crash --- it is a fit with a perfect
+training residual and ECIs of alternating sign and absurd magnitude that
+predicts nothing. Every solver here goes through an SVD or through coordinate
+descent, never through an explicit inverse.
+
+\subsection{Methods}
+
+\begin{description}
+  \item[\ui{LASSO (selects clusters)}] $L_1$. \emph{Selects} orbits, driving
+    them to exactly zero --- bit for bit, not merely small. The default, because
+    deciding which clusters carry the physics is the central difficulty of a
+    cluster expansion and this is the method that decides.
+  \item[\ui{Ridge (keeps all clusters)}] $L_2$. Keeps every orbit and only
+    shrinks it; never sparse. It cannot tell you that a cluster does not matter,
+    only that its coefficient is small, which is a different statement.
+  \item[\ui{ARD / Bayesian}] Learns one precision per orbit by evidence
+    maximisation and prunes outright, with no regularisation parameter to
+    choose. Sharper support recovery than lasso when it works; slower, and it
+    can prune too hard on very small data sets.
+\end{description}
+
+Columns are centred and scaled before fitting and unscaled afterwards; without
+that, neither penalty being scale-invariant, the \emph{units} of an orbit would
+decide how hard it is penalised.
+
+\subsection{The CV score is the diagnostic}
+
+\begin{calwarn}
+A cluster expansion is \textbf{not} judged by its training RMSE but by its
+\textbf{cross-validation score}, the RMS error on configurations the fit never
+saw. The two numbers moving in opposite directions as the regularisation is
+relaxed \emph{is} the definition of overfitting, so both are shown side by side.
+A fit whose CV score exceeds $3\times$ the training error is flagged in red:
+\emph{this expansion fits its own data and does not predict.}
+\end{calwarn}
+
+\ui{CV folds} defaults to leave-one-out, which is the cluster-expansion
+convention --- ``the CV score'' in the CE literature \emph{means} the
+leave-one-out score. The fitted orbits are ranked by $m\cdot J$ rather than by
+$J$: a large ECI on a multiplicity-1 orbit and a small one on a
+multiplicity-24 orbit can be the same physics.
+
+A run made \emph{before} correlations were emitted has energies and no design
+matrix, and is \textbf{refused with instructions} rather than fitted against
+whatever else is present --- the alternative being an ECI file of zeros that the
+CVM downstream would turn into a plausible and entirely wrong entropy curve.
+
+The builder now defaults the \ui{Triplet cutoff} to 3.0\,\AA{} (on), because a
+pair-only basis is symmetric under A$\leftrightarrow$B at complementary
+compositions and cannot distinguish A$_3$B from AB$_3$ --- an ensemble built
+without triplets silently discards the term that chooses the ordered structure.
+\ui{Quadruplet cutoff} stays off: each orbit adds $K^4$ histogram columns, and
+with the usual handful of configurations the fit runs out of samples before it
+runs out of clusters.
+
+\subsection{Send to CVM}
+
+\ui{Send to CVM\dots} opens the CVM module with the fitted nearest-neighbour
+pair ECI already converted and applied.
+
+\begin{calwarn}
+In the $\pm 1$ correlation basis the pair energy is $J s_i s_j$ with $s = +1$
+for A and $-1$ for B, so
+\begin{equation}
+  e_{AB} = -J_2 , \qquad e_{AA} = e_{BB} = +J_2
+  \qquad\Longrightarrow\qquad J_2 > 0 \ \text{ORDERS} .
+  \label{eq:eci-sign}
+\end{equation}
+Half the literature writes the opposite convention. Getting it backwards turns
+an ordering alloy into a clustering one and \emph{nothing fails} --- you get a
+smooth, plausible entropy curve for the wrong material. That is why the
+conversion is done by shared code and why the receiving window shows the
+provenance of the number it was given.
+\end{calwarn}
+
+\section{The Cluster Variation Method}
+\label{sec:cvm}
+
+\menu{Modules}\menusep\menu{Alloys}\menusep\menu{CVM / Alloy
+Thermodynamics\dots} computes the configurational entropy of a substitutional
+alloy, and --- with the long-range-order option --- its order--disorder
+temperature.
+
+The question is how much of an alloy's entropy is really
+$k_\mathrm{B}\ln(\text{arrangements})$. The textbook
+$S_\mathrm{ideal} = -k_\mathrm{B}\sum_i x_i\ln x_i$ assumes the species are
+placed \emph{independently} on every site. They are not: if unlike neighbours are
+favoured the alloy orders, if like neighbours are favoured it clusters, and
+either way there are fewer distinguishable arrangements than the ideal count.
+$S_\mathrm{ideal}$ is an \emph{upper bound} --- and for a high-entropy alloy
+advertised as stabilised by configurational entropy, the gap between the bound
+($\ln 5 = 1.609\,k_\mathrm{B}$ for an equiatomic quinary) and the truth is the
+entire question.
+
+Kikuchi writes the entropy as a sum over clusters with alternating-sign
+corrections, so that correlations already accounted for by a cluster are not
+counted again by its subclusters:
+\begin{equation}
+  S/k_\mathrm{B} = -\sum_\alpha a_\alpha
+    \sum_{\text{configs}} \rho_\alpha \ln \rho_\alpha ,
+\end{equation}
+with $a_\alpha$ the Kikuchi--Barker coefficients, fixed by requiring every
+subcluster's contribution to cancel down to exactly one net counting.
+
+\subsection{A hierarchy, not a menu}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{6.4cm}@{}}
+\toprule
+Approximation & Also known as & What it sees \\
+\midrule
+Point       & Bragg--Williams          & Nothing. Sites independent; this
+                                         \emph{is} $S_\mathrm{ideal}$, and no
+                                         interaction enters. \\
+Pair        & Bethe--Peierls--Guggenheim & Nearest-neighbour pair correlations.
+                                         \textbf{Exact on a 1D chain.} \\
+Tetrahedron & Kikuchi                  & Points, pairs, triangles and
+                                         tetrahedra --- the smallest cluster
+                                         containing the frustrated triangles FCC
+                                         is built from. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Each is the previous one plus more correlation, so \textbf{computing all three
+is the deliverable}: the spread between them \emph{is} the size of the
+correlation correction, and a single number from any one of them does not say
+whether it mattered. For an FCC binary at $x = 0.5$ with
+$e_{AB} = -0.02$\,eV, at 500\,K:
+\begin{equation}
+  S_\mathrm{pair} = 0.5358 \;<\;
+  S_\mathrm{tet}  = 0.6220 \;<\;
+  S_\mathrm{ideal}= 0.6931 \quad k_\mathrm{B} .
+\end{equation}
+The ordering is the physically meaningful part. The pair approximation cannot
+see the frustration of the close-packed tetrahedron --- on FCC one cannot make
+every nearest-neighbour triangle unlike-decorated --- so it believes the alloy
+orders more than it does, and therefore \emph{over}estimates ordering.
+
+\begin{caltip}
+\textbf{Warren--Cowley $\alpha$} is reported at every temperature, and it is
+what makes the temperature dependence legible: $S$ alone does not say
+\emph{which way} the alloy departs from random. $\alpha = 1 - P(j|i)/x_j$ is
+zero for a random alloy, negative for ordering and positive for clustering. It
+is also the more sensitive probe --- the residual short-range order is
+\emph{first} order in $\beta J$ while the entropy deviation is \emph{second}
+order --- and in the disordered phase it is directly comparable against a
+diffuse-scattering measurement, which the entropy is not.
+\end{caltip}
+
+\subsection{Triplets}
+
+The tetrahedron approximation consumes a nearest-neighbour \emph{triplet}
+interaction as well as a pair one, and this changes what the model can express
+at all. A binary with pair interactions only is exactly symmetric under
+A$\leftrightarrow$B at complementary compositions, so it assigns $x = 0.25$ and
+$x = 0.75$ the same energy and cannot distinguish A$_3$B from AB$_3$. On an FCC
+tetrahedron at 600\,K, $E(x{=}0.25) - E(x{=}0.75)$ measures
+$9.4\times10^{-17}$\,eV pair-only --- machine zero, an identity rather than a
+small residual --- and $2.41\times10^{-2}$\,eV with a triplet ECI.
+
+A triangle is not a subcluster of a pair, so a pair model has nowhere to put
+one. Triplets supplied with the Pair approximation are \emph{dropped}, with the
+warning that the numbers below describe a pair-only model and must not be read
+as the cluster expansion that was fitted. The window itself exposes a single
+$e_{AB}$; triplets reach the solver through the Orchestration canvas, whose CVM
+node supplies them only when the approximation is the tetrahedron.
+
+\subsection{Long-range order and $T_\mathrm{c}$}
+
+\begin{calwarn}
+\textbf{The homogeneous solver cannot produce an order--disorder transition at
+all.} One sublattice means every site is statistically identical and there is no
+symmetry left to break. Run Cu$_3$Au through it and you get a perfectly smooth
+$S(T)$ and $\alpha(T)$ straight through 663\,K --- not a bug, but the
+approximation stating its own limits. For a transition, tick \ui{Allow
+long-range order (4 sublattices)}.
+\end{calwarn}
+
+The FCC nearest-neighbour tetrahedron has exactly one vertex on each of the four
+simple-cubic sublattices FCC decomposes into, so the tetrahedron distribution
+can be indexed by \emph{position} = sublattice and \emph{value} = species ---
+and, unlike the homogeneous case, it is not symmetric under permuting the
+positions. That asymmetry \emph{is} the long-range order. Only the overall
+composition is constrained; the per-sublattice compositions are free, which is
+what lets L1$_2$ form at $x = 1/4$ with three A-rich sublattices and one B-rich
+one.
+
+Both branches are solved at every temperature and $T_\mathrm{c}$ is located by
+\textbf{which has the lower free energy} --- by the free energies crossing, not
+by an order parameter decaying to zero. The FCC L1$_2$ transition is
+\textbf{first order} and $\eta$ \emph{jumps}; a search for $\eta \to 0$ would
+either find nothing or find the spinodal, which is above $T_\mathrm{c}$ and is
+not the transition.
+
+Ticking the box also snaps the composition to the structure's stoichiometry
+(L1$_2 \leftrightarrow x = 1/4$, L1$_0 \leftrightarrow x = 1/2$) --- without
+which asking for L1$_2$ at $x = 0.5$ correctly reports ``no transition'' and
+reads as a broken feature --- and raises the minimum temperature, for the reason
+in \S\ref{sec:cvm-limits}.
+
+\paragraph{Cu$_3$Au.} The tetrahedron CVM gives $k_\mathrm{B}T_\mathrm{c} =
+1.9245\,V_2$ for L1$_2$ at $x = 1/4$, against $3.2806\,V_2$ from
+Bragg--Williams on the same system; $V_2 = 29.69$\,meV reproduces the measured
+663\,K. The mean-field comparison is a \emph{provable} check rather than a
+tolerance: for L1$_0$ at $x = 1/2$ the Bragg--Williams transition has the closed
+form $k_\mathrm{B}T_\mathrm{c} = 4V_2$ exactly --- derived by linearising the
+mean-field equations, and equivalently by Fourier-transforming the FCC
+nearest-neighbour interaction, whose minimum sits at the X point with
+$J(X) = -4V_2$ --- which the solver returns as $3.99972$, and one-sidedly: the
+mean-field L1$_0$ transition is \emph{second} order, so both the order parameter
+and the free-energy difference vanish continuously at $T_\mathrm{c}$ and the
+finite thresholds the bisection needs bite a hair below the true temperature.
+CVM must come out \emph{below} mean field because it includes correlations mean
+field ignores, and FCC is frustrated enough that it is not merely a little
+below.
+
+\begin{calnote}
+The bracket \textbf{MC $<$ CVM $<$ mean field} is the robust statement, and both
+its ends are provable. The particular literature values often quoted for the
+middle --- about 1.89 for the tetrahedron CVM, about 1.74 for Monte Carlo, and
+the 25--30\,meV window for the Cu--Au nearest-neighbour $V_2$ --- are recalled
+from standard literature and are \emph{not} traced to a cited source anywhere in
+this codebase. Calango measures 1.893 for L1$_0$ at $x = 1/2$ and 1.9245 for
+L1$_2$ at $x = 1/4$; treat the agreement as encouraging rather than as
+validation against a reference you can look up from here.
+\end{calnote}
+
+\subsection{What this is not}
+\label{sec:cvm-limits}
+
+\begin{calwarn}
+\textbf{This is not a phase diagram.} Neither solver performs a common-tangent
+construction, and both work at \emph{fixed composition}, comparing homogeneous
+phases. There are therefore no two-phase fields, no solvus lines, and no
+composition range over which an ordered phase is stable.
+\end{calwarn}
+
+\begin{itemize}[leftmargin=1.4em]
+  \item \textbf{Nearest-neighbour interactions only.} No second-neighbour terms,
+    which on FCC are what select between competing ordered structures in several
+    systems. The four-sublattice solver additionally takes pair interactions
+    only.
+  \item \textbf{BCC borrows FCC's tetrahedron counting and is not
+    quantitative.} The Kikuchi--Barker coefficients depend on how many pairs,
+    triangles and tetrahedra share a site, which is a property of the lattice
+    and nothing else; BCC needs the \emph{irregular} tetrahedron built from
+    first and second neighbours. Choosing BCC does not fail loudly --- it
+    produces a smooth, plausible, wrong entropy --- so the run says so in its
+    warnings.
+  \item \textbf{Configurational entropy only}; no vibrational, electronic or
+    magnetic contribution. Long-range order is FCC-only (L1$_2$, L1$_0$).
+\end{itemize}
+
+Two pathologies of the truncated Kikuchi expansion on frustrated FCC are
+reported rather than hidden, and neither is a bug in the iteration.
+
+\begin{enumerate}
+  \item \textbf{Negative entropy on the disordered branch.} Well below the
+    transition the \emph{disordered} branch returns $S < 0$ --- at $x = 1/2$ it
+    tends to $-0.929\,k_\mathrm{B}$. The Kikuchi expansion is not a probability
+    and nothing forces its truncation to stay positive on a lattice this
+    frustrated. It never affects the stable branch or $T_\mathrm{c}$, which is
+    what you read; it does mean the disordered free energy is meaningless deep
+    inside the ordered field.
+  \item \textbf{A domain-mixed fixed point.} At $x = 1/2$, below roughly
+    $0.35\,T_\mathrm{c}$, the L1$_0$ start converges onto an equal mixture of
+    the two symmetry-related L1$_0$ domains: exactly the ground-state energy,
+    exactly $S = \ln 2$, and \emph{zero} long-range order, because the point
+    marginals of the two domains average away while their pair correlations do
+    not. It is a fixed point only because zeros in the pair marginals are
+    absorbing under a multiplicative update, and a real crystal would pay a
+    domain wall. Solutions with vanishing order parameter are therefore never
+    accepted as ordered, and hitting one is reported --- which is why an
+    L1$_0$ transition must be bracketed from inside the ordered field, and why
+    ticking the checkbox raises the minimum temperature. L1$_2$ at $x = 1/4$
+    does not suffer from this at any temperature.
+\end{enumerate}
+
+\subsection{Validation}
+
+The tests check identities, not previous outputs. The pair approximation is
+\emph{exact} on a 1D chain, and the 1D Ising chain has a closed-form
+transfer-matrix solution: Calango matches it to $10^{-9}\,k_\mathrm{B}$ in
+entropy and $10^{-12}$\,eV in energy, measuring residuals of order $10^{-16}$.
+Both signs of $J$ are run, because a sign error in the energy convention passes
+one and fails the other.
+
+The zero-interaction limit pins the FCC Kikuchi--Barker coefficients
+$(a_4, a_3, a_2, a_1) = (2, 0, -6, 5)$ --- the triangles genuinely vanish ---
+together with the composition multiplier, by requiring $S$ to be \emph{exactly}
+$S_\mathrm{ideal}$ when nothing interacts. It is checked at $x = 0.3$, not
+$x = 0.5$, and measures $1.7\times10^{-14}\,k_\mathrm{B}$. The composition is
+the point: an earlier derivation dropped the composition multiplier, giving
+$w \sim (\prod x)^{7/8}$, which at $x = 0.5$ is completely invisible --- every
+tuple picks up the same factor and normalisation hides it --- and wrong
+everywhere else. The four-sublattice version of the same identity runs at
+$x = 0.25$ and measures $2.2\times10^{-16}\,k_\mathrm{B}$.

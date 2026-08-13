@@ -12,43 +12,68 @@ namespace {
 /// calculator construction differs, and the Popescu-Zunger algebra is the
 /// same whatever produced the wavefunctions.
 constexpr const char* kProjection = R"PY(
-def unfold_weights(calc, primitive_cell, matrix, k_primitive, k_supercell_index):
-    """Popescu-Zunger spectral weights P_Km(k) for one primitive wavevector.
+def folding_offset(matrix, k_primitive, k_supercell):
+    """The primitive-fractional shift the folding removed, k - K.
 
-    For each supercell band m at the folded wavevector K, sum the squared
-    plane-wave coefficients whose supercell G-vector reduces to a PRIMITIVE
-    reciprocal lattice vector when expressed in the primitive basis:
+    THIS IS NOT k. The band path's k is reduced to K in SUPERCELL fractional
+    coordinates, so what separates them is an integer vector of SUPERCELL
+    reciprocal lattice vectors -- which is not an integer vector of primitive
+    ones. Testing G against k instead of against this offset selects nothing
+    at all except at the zone centre, and the whole map comes out empty.
 
-        P_Km(k) = sum_{G : G in G_prim} |C_{Km}(G)|^2
-
-    Only those components carry primitive Bloch character at k; the rest of
-    the expansion belongs to the other k that fold onto the same K. The sum
-    is exactly 1 for a pristine supercell (every component is primitive) and
-    drops toward 0 for states created by the defect.
+    K is passed in rather than re-derived from round(k @ M.T), and that is not
+    fussiness. Two k that fold to the same K can round to different integer
+    vectors -- numpy rounds 0.5 to 0 and 1.5 to 2 -- and the offsets then
+    differ by half a primitive reciprocal vector, which is a DIFFERENT mask.
+    Taking K from the array the wavefunctions were actually computed at makes
+    the offset consistent with them by construction.
     """
     import numpy as np
 
-    weights = []
-    # Supercell reciprocal lattice vectors of the plane-wave basis at this K,
-    # in units of the supercell reciprocal vectors (integers).
+    inverse = np.linalg.inv(np.asarray(matrix, dtype=float))
+    k_prim_of_K = np.asarray(k_supercell, dtype=float) @ inverse.T
+    return np.asarray(k_primitive, dtype=float) - k_prim_of_K
+
+
+def unfold_weights(calc, projection_cell, matrix, k_primitive, k_supercell,
+                   k_supercell_index, spin):
+    """Popescu-Zunger spectral weights P_Km(k) for one primitive wavevector.
+
+    For each supercell band m at the folded wavevector K, sum the squared
+    plane-wave coefficients whose G satisfies K + G - k in L*_primitive:
+
+        P_Km(k) = sum_{G : G - (k - K) in L*_prim} |C_{Km}(G)|^2
+
+    Only those components carry primitive Bloch character at k; the rest of
+    the expansion belongs to the other |det M| - 1 primitive k that fold onto
+    the same K. Summed over those, the weights are exactly 1 for every band --
+    they partition the basis -- which is what check_partition() below asserts.
+    """
+    import numpy as np
+    from ase.units import Bohr
+
     wfs = calc.wfs
-    kpt_rank, kpt_local = wfs.kd.get_rank_and_index(k_supercell_index)
-    gd_indices = wfs.pd.get_reciprocal_vectors(q=kpt_local, add_q=False)
-    # Express each G in the PRIMITIVE reciprocal basis: G_prim = G_super . M^T
-    # (the same transpose relationship the C++ fold uses). A component is a
-    # primitive reciprocal vector exactly when all three coordinates are
-    # integers to within tolerance.
-    icell_super = calc.atoms.cell.reciprocal()      # rows: b_super / 2pi
-    icell_prim = primitive_cell.reciprocal()
-    # Cartesian G -> primitive fractional.
-    g_cartesian = gd_indices / (2.0 * np.pi)
-    g_primitive = g_cartesian @ np.linalg.inv(icell_prim)
-    # The primitive k we are projecting onto shifts the acceptance test.
-    residual = g_primitive - np.round(g_primitive - k_primitive) - k_primitive
+    # BOTH arguments are required: get_rank_and_index(k, s). Called with the
+    # k alone it raises TypeError, which is how a spin index that was never
+    # threaded through this function announced itself.
+    kpt_rank, kpt_local = wfs.kd.get_rank_and_index(k_supercell_index, spin)
+    # Plane-wave G vectors at this K. GPAW returns them in ATOMIC UNITS
+    # (1/Bohr) and already carrying the 2*pi; ASE's cell.reciprocal() is
+    # 1/Angstrom WITHOUT it. Mixing the two scales every coordinate by
+    # 1.8897, so nothing is ever an integer, the mask selects nothing, and
+    # every weight is 0.0 -- a blank heatmap rather than an error.
+    g_bohr = wfs.pd.get_reciprocal_vectors(q=kpt_local, add_q=False)
+    g_primitive = ((g_bohr / Bohr) / (2.0 * np.pi)) @ np.linalg.inv(
+        projection_cell.reciprocal())
+
+    residual = g_primitive - folding_offset(matrix, k_primitive, k_supercell)
+    residual -= np.round(residual)
     primitive_mask = np.all(np.abs(residual) < 1e-4, axis=1)
 
+    psit_nG = wfs.kpt_u[kpt_local].psit_nG
+    weights = []
     for band in range(wfs.bd.nbands):
-        coefficients = wfs.kpt_u[kpt_local].psit_nG[band]
+        coefficients = psit_nG[band]
         total = np.vdot(coefficients, coefficients).real
         if total <= 0.0:
             weights.append(0.0)
@@ -56,6 +81,44 @@ def unfold_weights(calc, primitive_cell, matrix, k_primitive, k_supercell_index)
         selected = coefficients[primitive_mask]
         weights.append(float(np.vdot(selected, selected).real / total))
     return weights
+
+
+def check_partition(calc, projection_cell, matrix, k_primitive, k_supercell,
+                    k_supercell_index, spin, bands=8):
+    """The one identity here that does not depend on any physics.
+
+    Every plane wave of a supercell state at K belongs to exactly ONE of the
+    |det M| primitive wavevectors that fold onto K, so their weights sum to 1
+    for every band -- pristine cell or defective, metal or insulator. It is a
+    partition of the basis, and it catches a wrong unit, a wrong offset and a
+    wrong transpose in one number.
+
+    Only for a DIAGONAL M, where the partners are k + (i/m00, j/m11, l/m22);
+    enumerating them for a general integer matrix needs its Smith normal form
+    and is not worth carrying into a generated script.
+    """
+    import numpy as np
+    from itertools import product
+
+    m = np.asarray(matrix)
+    if np.count_nonzero(m - np.diag(np.diag(m))):
+        return None
+    diagonal = [int(abs(d)) for d in np.diag(m)]
+    if min(diagonal) < 1:
+        return None
+
+    # Every partner shares K -- adding shift/diag to k adds the integer vector
+    # `shift` to k @ M.T -- so all of them are projections of the SAME
+    # wavefunctions, which is what makes the sum an identity.
+    total = None
+    for shift in product(*(range(d) for d in diagonal)):
+        partner = np.asarray(k_primitive, dtype=float) + np.asarray(
+            shift, dtype=float) / np.asarray(diagonal, dtype=float)
+        w = np.asarray(unfold_weights(calc, projection_cell, matrix, partner,
+                                      k_supercell, k_supercell_index,
+                                      spin)[:bands])
+        total = w if total is None else total + w
+    return float(np.abs(total - 1.0).max())
 )PY";
 
 } // namespace
@@ -114,6 +177,21 @@ std::string generateUnfoldingScript(const UnfoldingConfig& c)
            "print(f\"CALANGO_INFO primitive_cells={int(round(abs(np.linalg.det(M))))}\",\n"
            "      flush=True)\n"
            "\n"
+           "# The lattice the PROJECTION uses, derived from the supercell\n"
+           "# instead of read from the primitive file.\n"
+           "#\n"
+           "# These differ whenever the supercell was relaxed: the two cells\n"
+           "# then agree only to the tolerance checked above. That residual is\n"
+           "# harmless for the band PATH, which is a choice of where to look,\n"
+           "# and fatal for the projection, which asks whether a coordinate is\n"
+           "# an integer. The error grows with |G|, so at the plane-wave cutoff\n"
+           "# a 0.05%% cell mismatch moves a coordinate by far more than the\n"
+           "# 1e-4 acceptance window and quietly discards the high-G half of\n"
+           "# every state. Taking primitive = M^-1 . supercell makes the\n"
+           "# relation exact by construction.\n"
+           "from ase.cell import Cell\n"
+           "projection_cell = Cell(np.linalg.inv(M) @ atoms.cell[:])\n"
+           "\n"
         << "energy_min = " << c.spectral.energyMin << "\n"
         << "energy_max = " << c.spectral.energyMax << "\n"
         << "energy_bins = " << c.spectral.energyBins << "\n"
@@ -160,10 +238,68 @@ std::string generateUnfoldingScript(const UnfoldingConfig& c)
                "_calango_progress(2, 3)\n"
             << kProjection
             << "\n"
+               "# Both spin channels, summed into one spectral function.\n"
+               "# A(k, E) is a sum over states and the heatmap has no spin\n"
+               "# axis, so majority and minority states land in the same\n"
+               "# column — correct for the map, and worth saying out loud,\n"
+               "# because a defect level that appears in one channel only\n"
+               "# (an NV centre's, for instance) is then indistinguishable\n"
+               "# from one that appears in both.\n"
+               "nspins = band_calc.get_number_of_spins()\n"
+               "if nspins > 1:\n"
+               "    print(\"CALANGO_WARN spin-polarized: the map sums both \"\n"
+               "          \"channels, so majority and minority levels are not \"\n"
+               "          \"distinguishable in it\", flush=True)\n"
+               "\n"
+               "# One self-test before the loop.\n"
+               "#\n"
+               "# The weights of the |det M| primitive wavevectors that fold\n"
+               "# onto one K must sum to 1 for every band: they partition the\n"
+               "# plane-wave basis. No physics enters, so a deviation is a bug\n"
+               "# in the projection — a wrong unit, a wrong offset, a wrong\n"
+               "# transpose — and not a property of the system. Checked here\n"
+               "# rather than trusted, because each of those failures produces\n"
+               "# a plausible-looking map rather than an error.\n"
+               "#\n"
+               "# THREE k-points, not one. The path starts at a high-symmetry\n"
+               "# point often enough that a check run only there is close to\n"
+               "# useless: at Gamma the folding offset is zero, so a projection\n"
+               "# that ignores the offset entirely still partitions the basis\n"
+               "# correctly and passes. It is the interior points, where the\n"
+               "# offset is not a lattice vector, that discriminate.\n"
+               "_samples = sorted({0, len(kpts_primitive) // 2,\n"
+               "                   len(kpts_primitive) - 1})\n"
+               "_checked = [check_partition(band_calc, projection_cell, M,\n"
+               "                            kpts_primitive[i], folded[i], i, 0)\n"
+               "            for i in _samples]\n"
+               "_deviation = (None if any(v is None for v in _checked)\n"
+               "              else max(_checked))\n"
+               "if _deviation is None:\n"
+               "    print(\"CALANGO_INFO partition check skipped (M is not \"\n"
+               "          \"diagonal)\", flush=True)\n"
+               "elif _deviation > 1e-3:\n"
+               "    raise RuntimeError(\n"
+               "        f\"The unfolding weights do not partition the basis: \"\n"
+               "        f\"the {int(round(abs(np.linalg.det(M))))} primitive \"\n"
+               "        f\"wavevectors folding onto one K sum to 1 only within \"\n"
+               "        f\"{_deviation:.3e}. That is an identity, not a \"\n"
+               "        f\"convergence criterion, so the projection is wrong \"\n"
+               "        f\"and every weight below would be meaningless.\")\n"
+               "else:\n"
+               "    print(f\"CALANGO_INFO partition check ok \"\n"
+               "          f\"(max |sum-1| = {_deviation:.2e})\", flush=True)\n"
+               "\n"
                "columns = []\n"
                "for index, k in enumerate(kpts_primitive):\n"
-               "    energies = band_calc.get_eigenvalues(kpt=index, spin=0)\n"
-               "    weights = unfold_weights(band_calc, primitive.cell, M, k, index)\n"
+               "    energies = []\n"
+               "    weights = []\n"
+               "    for spin in range(nspins):\n"
+               "        energies.extend(\n"
+               "            float(e)\n"
+               "            for e in band_calc.get_eigenvalues(kpt=index, spin=spin))\n"
+               "        weights.extend(unfold_weights(band_calc, projection_cell,\n"
+               "                                      M, k, folded[index],\n"
+               "                                      index, spin))\n"
                "    columns.append({\n"
                "        \"path_coordinate\": float(band_path.get_linear_kpoint_axis()[0][index]),\n"
                "        \"energies\": [float(e) for e in energies],\n"

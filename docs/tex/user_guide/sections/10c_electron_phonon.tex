@@ -82,9 +82,11 @@ integral, with the same slow $k$-convergence as the plasma frequency
 system --- the run detects a vanishing $N(E_\mathrm{F})$ and says so rather
 than returning a zero that looks like weak coupling.
 
-Both delta functions are represented by Gaussians. The electronic width is not
-a cosmetic broadening: it \emph{is} the Fermi-surface sampling, and trades
-directly against the $k$-mesh.
+The two electron delta functions are integrated by the \textbf{linear
+tetrahedron method}, which interpolates the bands inside each tetrahedron
+rather than requiring states to land near $E_\mathrm{F}$, and therefore has no
+width to choose --- see \S\ref{sec:elph-settings} for what that replaced and
+why.
 
 The first inverse moment of \eqref{eq:a2f} is the mass-enhancement coupling
 constant,
@@ -167,6 +169,7 @@ can measure directly --- \eqref{eq:rate-tau} fixes both parameters of the Drude
 model from first principles, with no fitting to the measured spectrum.
 
 \section{Settings}
+\label{sec:elph-settings}
 
 \begin{description}
   \item[\ui{Supercell}] Repetitions the displacements are made in; the range of
@@ -191,10 +194,13 @@ model from first principles, with no fitting to the measured spectrum.
 \end{description}
 
 \begin{calwarn}
-$T_\mathrm{c}$ depends on $\mu^*$ \emph{exponentially}. For aluminium
-$\mu^* = 0.10$ gives $1.8$~K and $0.14$ gives $0.7$~K against a measured
-$1.18$~K --- a factor of $2.7$ across a range that is entirely defensible.
-Quote a range over $0.10$--$0.15$, never a single value.
+$T_\mathrm{c}$ depends on $\mu^*$ \emph{exponentially}. For aluminium at its
+literature $\lambda = 0.43$ and $\omega_{\log} = 296$~K, $\mu^* = 0.10$ gives
+$1.83$~K and $0.14$ gives $0.69$~K against a measured $1.18$~K --- a factor of
+$2.7$ across a range that is entirely defensible. Over the full swept range the
+spread is wider still: $2.72$~K at $\mu^* = 0.08$ down to $0.36$~K at $0.16$, a
+factor of $7.5$. \textbf{Quote the range, never a single value.} Every run emits
+that sweep for exactly this reason.
 \end{calwarn}
 
 There is deliberately \emph{no} Fermi-surface smearing setting. The two
@@ -255,6 +261,74 @@ phonon-mediated superconductor at this coupling'' rather than as
 $T_\mathrm{c} = 0$, which would be indistinguishable from a converged
 calculation of a very small $T_\mathrm{c}$.
 
+How well the closed form does is checked from \emph{literature} $\lambda$ and
+$\omega_{\log}$ rather than from a Calango run, so what is measured is the
+formula alone:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lllllll@{}}
+\toprule
+Metal & $\lambda$ & $\omega_{\log}$ & $\mu^*$ & Uncorrected & Corrected & Measured \\
+\midrule
+Pb & 1.55 & 56~K  & 0.10 & 6.58~K & \textbf{7.52~K} & 7.19~K \\
+Al & 0.43 & 296~K & 0.12 & 1.172~K & 1.19~K & 1.18~K \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Lead is the case Allen and Dynes wrote $f_1$ and $f_2$ \emph{for}: at
+$\lambda = 1.55$ the uncorrected form undershoots by 8\,\% and the corrections
+($f_1 = 1.094$, $f_2 = 1.045$) carry it past the measurement by 5\,\%.
+Aluminium, at weak coupling where $f_1 f_2 \approx 1$, lands within a per cent
+either way --- but that per cent is an artefact of the $\mu^*$ chosen. The
+assertion bands are correspondingly loose ($\pm 1.5$~K on Pb, $\pm 0.4$~K on
+Al); the table reports what the test measures, not what it asserts.
+
+\paragraph{Converting a bare $\mu$.} $\mu^*$ is not computed here and cannot be,
+but the \emph{conversion} from a bare $\mu$ is, via Morel--Anderson
+\begin{equation}
+  \mu^* = \frac{\mu}{1 + \mu \ln(W/\omega_{\log})} .
+\end{equation}
+The retardation logarithm is computed from the \emph{occupied bandwidth}
+$W = E_\mathrm{F} - \min(\varepsilon)$ --- for aluminium this came out at
+11.80~eV in the reference run, against 11.66~eV for the free-electron estimate
+--- and reported as \texttt{retardation\_log} beside the
+\texttt{occupied\_bandwidth\_eV} it came from. The bare $\mu$ is not computed;
+you supply it. A typical $\mu = 0.4$ on a typical metal lands at
+$\mu^* = 0.117$, which is \emph{why} the conventional window is what it is:
+$0.10$--$0.13$ for sp metals, $0.12$--$0.15$ for transition metals, where
+d-electron correlation raises $\mu$.
+
+\begin{calnote}
+\textbf{The trap.} Much of the literature \emph{fits} $\mu^*$ to reproduce a
+measured $T_\mathrm{c}$. That is legitimate calibration, but the resulting
+$T_\mathrm{c}$ is then not a prediction. If you calibrate on a known material
+and apply the value to a related one, say so.
+\end{calnote}
+
+\paragraph{Transport, and the number handed to optics.} The same Fermi-surface
+sums reweighted by $1 - \cos\theta$ give the transport coupling
+$\lambda_{\mathrm{tr}}$, the transport lifetime $\tau_{\mathrm{tr}}$, and the
+resistivity $\rho = 1/(\varepsilon_0\omega_p^2\tau_{\mathrm{tr}})$ --- Drude
+written so that every quantity in it is computed rather than assumed. Without a
+plasma frequency $\rho$ is \emph{skipped, not estimated}, because
+$\rho \propto 1/\omega_p^2$ and a guessed $\omega_p$ would produce a number
+that looks like a measurement.
+
+Note that $\lambda_{\mathrm{tr}}$ is \textbf{not} bounded above by $\lambda$:
+since $1-\cos\theta \in [0,2]$, the only general bound is
+$\lambda_{\mathrm{tr}} \le 2\lambda$. A run reporting
+$\lambda_{\mathrm{tr}} > \lambda$ is telling you the $\mathbf{q}$-mesh reaches a
+large fraction of $2k_\mathrm{F}$, not that something is broken.
+
+The Drude rate handed to the optics module is
+$\hbar/2\tau_{\mathrm{tr}}$ --- built on the \emph{transport} lifetime, because
+a Drude term describes how a \emph{current} decays --- and it is half the
+textbook damping for the reason derived in \eqref{eq:rate-tau}. A run without
+band velocities falls back to the mass-enhancement $\tau$ and says so in its
+warnings rather than quietly handing optics a Drude peak of the wrong width.
+
 \paragraph{Mode-resolved coupling and linewidths.} $\lambda_{q\nu}$,
 normalised so that $N_q^{-1}\sum_{q\nu}\lambda_{q\nu} = \lambda$, and the
 phonon linewidth $\gamma_{q\nu} = \pi N(E_\mathrm{F})\omega_{q\nu}^2
@@ -266,9 +340,49 @@ inelastic neutron scattering on the same material.
 \paragraph{Mass enhancement.} $m^*/m = 1 + \lambda$, and with it the
 renormalisation of the linear specific-heat coefficient.
 
-\section{Validation}
+\section{Validation, and what is still wrong}
 
-Validation runs the full workflow on fcc aluminium, whose coupling constant is
-well established at $\lambda \approx 0.4$; \eqref{eq:allen} then gives
-$\tau \approx 10$\,fs at room temperature, within a few femtoseconds of a
-Drude fit to the measured optical conductivity.
+Two things are validated separately, and it matters which is which.
+
+\paragraph{The analysis chain is validated in closed form.} It is exercised on
+a contrived case with an exact answer --- a free-electron band, one phonon mode
+at fixed $\omega_0$, and a constant $|g|^2$ --- so that $\lambda$ follows end to
+end with nothing fitted, and a wrong normalisation, a wrong band sum or a
+missing $1/N(E_\mathrm{F})$ appears as a factor rather than as a plausible
+number. The same test pins $\hbar/\tau = 2\pi\lambda k_\mathrm{B}T$, the exact
+factor of two in the Drude rate, the $\lambda_{\mathrm{tr}} \le 2\lambda$ bound,
+and the resistivity against its closed form.
+
+\paragraph{The shipped aluminium run is not.} The benchmark drives all three
+\texttt{gpaw.elph} stages on fcc Al and asserts $0.05 < \lambda < 3.0$ --- a
+window deliberately wide, because a $2\times2\times2$ supercell on a $6^3$
+$k$-mesh puts only about six of 864 states within 0.1~eV of $E_\mathrm{F}$ and
+cannot converge anything.
+
+\begin{calwarn}
+That run has been observed to produce $\lambda \approx 21$ against a literature
+value near $0.4$ --- fifty times too large, and outside the assertion window, so
+the benchmark fails on it. \textbf{The cause has not been identified.}
+
+What is known: the analysis chain above passes its closed-form test and GPAW's
+own \texttt{elph} reference test passes, so the arithmetic downstream of the
+matrix elements is not the suspect. The most likely culprit is the \emph{run} ---
+specifically its $2\times2\times2$ supercell, which is small enough that
+aluminium comes out with \emph{imaginary acoustic branches}, and $\alpha^2F$
+integrates $1/\omega$.
+
+Two consequences for anyone using this module for a number rather than a shape.
+\textbf{Validate on a material whose $\lambda$ you already know} before trusting
+an absolute value from a new system; a ratio between two systems at the same
+settings is far more defensible than either value alone. And \textbf{treat a
+non-zero \texttt{excluded\_modes} count as a stop signal, not a footnote} --- it
+says the structure is not at a local minimum in the supercell you used, so the
+dynamical matrix that produced the rest of the spectrum is describing a saddle
+point.
+\end{calwarn}
+
+Aluminium remains the right \emph{choice} of reference --- nearly free-electron,
+$\lambda \approx 0.4$ well established, and \eqref{eq:allen} then gives
+$\tau \approx 10$\,fs at room temperature, within a few femtoseconds of a Drude
+fit to the measured optical conductivity. It is the particular cheap benchmark
+cell that is not yet giving it.

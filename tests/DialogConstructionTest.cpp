@@ -53,6 +53,7 @@
 #include "gui/SinglePointWizard.hpp"
 #include "gui/NonlinearOpticsWizard.hpp"
 #include "core/CalphadModel.hpp"
+#include "core/LocaleSafeNumber.hpp"
 #include "core/PdbxFile.hpp"
 #include "core/TdbExpression.hpp"
 #include "core/PhononThermodynamics.hpp"
@@ -3604,6 +3605,34 @@ int main(int argc, char** argv)
             schedule->setCurrentIndex(0); // back to Gauss-Legendre
         }
 
+        // The module's cold entry point. The Simulation menu carries ONE TI
+        // action now — the wizard — so a finished run from an earlier session
+        // or from a cluster is reachable only through this button, the same
+        // button on the results window, and the Processes panel. If the button
+        // stops emitting, the only symptom is that old runs quietly become
+        // unopenable, which no other assertion in this file would notice.
+        {
+            auto* loadResults = wizard.findChild<QPushButton*>(
+                QStringLiteral("tiLoadResultsButton"));
+            check(loadResults != nullptr,
+                  "the wizard carries a Load Results button");
+            if (loadResults) {
+                int emitted = 0;
+                QObject::connect(
+                    &wizard,
+                    &ThermodynamicIntegrationWizard::loadResultsRequested,
+                    &wizard, [&emitted] { ++emitted; });
+                loadResults->click();
+                check(emitted == 1,
+                      "which asks the host to open a run rather than doing it");
+                // Return on this page belongs to the wizard's Next. A default
+                // button here would open a file dialog instead.
+                check(!loadResults->isDefault()
+                          && !loadResults->autoDefault(),
+                      "and never steals the Return key");
+            }
+        }
+
         exerciseControls(&wizard);
         check(true, "survives every control being toggled");
     }
@@ -3645,6 +3674,100 @@ int main(int argc, char** argv)
               "and no free energy is produced");
         check(report.text.contains(QStringLiteral("INCOMPLETE")),
               "the report says so in as many words");
+    }
+
+    std::printf("Thermodynamic Integration CSV export:\n");
+    {
+        // What "Export Results…" writes, on a path with one window that RAN
+        // and failed. Two things the file must not do, both of which produce a
+        // CSV that opens fine and says something false.
+        //
+        // (1) Drop the failed window. Three windows were run; two reported. A
+        //     file with two rows and no sign of the third describes a shorter
+        //     path that converged.
+        // (2) Write decimal commas. This binary is the only one that builds a
+        //     QApplication, which is what sets LC_NUMERIC from the environment
+        //     — on pt_BR / de_DE / fr_FR a printf-formatted "0.5" becomes
+        //     "0,5" and every row silently gains a column. QString::number
+        //     formats via QLocale::c(), which is why it is used here; this
+        //     checks that it stays used, under a comma locale engaged on
+        //     purpose.
+        QTemporaryDir dir;
+        const QString path = dir.filePath(QStringLiteral("ti.json"));
+        QFile file(path);
+        file.open(QIODevice::WriteOnly);
+        file.write(R"JSON({
+          "schema": "calango.thermodynamic_integration/1",
+          "reference": "ideal_gas", "schedule": "uniform",
+          "quadrature": "trapezoid", "windows_expected": 3,
+          "natoms": 2, "volume_A3": 1000.0, "temperature_K": 300.0,
+          "pressure_GPa": 0.0, "masses_amu": [39.948, 39.948],
+          "complete": false,
+          "paths": {"forward": {"complete": false, "missing": [],
+            "failed": [1], "windows": [
+              {"index": 0, "lambda": 0.25, "status": "ok", "samples": 4,
+               "mean_dudl_eV": 1.5, "variance_dudl_eV2": 0.0,
+               "series_eV": [1.5, 1.5, 1.5, 1.5], "mean_volume_A3": 1000.0},
+              {"index": 1, "lambda": 0.5, "status": "failed",
+               "error": "the MD run diverged"},
+              {"index": 2, "lambda": 0.75, "status": "ok", "samples": 4,
+               "mean_dudl_eV": 2.5, "variance_dudl_eV2": 0.0,
+               "series_eV": [2.5, 2.5, 2.5, 2.5], "mean_volume_A3": 1000.0}]}}
+        })JSON");
+        file.close();
+
+        const auto report =
+            calango::gui::readThermodynamicIntegrationRun(path);
+
+        const char* savedLocale = std::setlocale(LC_NUMERIC, nullptr);
+        const std::string savedName = savedLocale ? savedLocale : "C";
+        bool commaLocale = false;
+        for (const char* name : {"pt_BR.UTF-8", "de_DE.UTF-8", "fr_FR.UTF-8"})
+            if (std::setlocale(LC_NUMERIC, name)) {
+                commaLocale = true;
+                break;
+            }
+
+        const QString csv = calango::gui::thermodynamicIntegrationCsv(report);
+        std::setlocale(LC_NUMERIC, savedName.c_str());
+
+        int dataRows = 0;
+        int failedRows = 0;
+        bool everyFieldParses = true;
+        for (const QString& row : csv.split(QLatin1Char('\n'))) {
+            if (row.isEmpty() || row.startsWith(QLatin1Char('#'))
+                || row.startsWith(QLatin1String("index,")))
+                continue;
+            ++dataRows;
+            // Seven columns, always: index, lambda, dudl, error, tau, samples,
+            // status. A comma written into a number is exactly what breaks it,
+            // and the failed row's quoted reason must not split either.
+            const QStringList fields = row.split(QLatin1Char(','));
+            if (fields.size() != 7) {
+                everyFieldParses = false;
+                continue;
+            }
+            if (fields.at(6) != QLatin1String("ok")) {
+                ++failedRows;
+                continue;
+            }
+            double value = 0.0;
+            for (int column = 1; column <= 4; ++column)
+                if (!calango::core::localeSafeParse(
+                        fields.at(column).toStdString(), &value))
+                    everyFieldParses = false;
+        }
+        check(dataRows == 3,
+              "the CSV keeps a row for the window that failed");
+        check(failedRows == 1, "and labels it rather than blanking it");
+        check(everyFieldParses,
+              commaLocale
+                  ? "every number reads back with a dot under a comma locale"
+                  : "every number reads back with a dot");
+        check(csv.contains(QLatin1String("# complete,no")),
+              "the header says the run is incomplete");
+        check(!csv.contains(QLatin1String("# F_eV,")),
+              "and carries no free energy, matching the report");
     }
 
     // A small crystal both defect wizards can chew on: 4x4x4 simple cubic.

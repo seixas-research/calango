@@ -1,17 +1,19 @@
-#include <QPushButton>
-#include <QFileDialog>
-#include "gui/TiIntegrandPlot.hpp"
 #include "gui/ThermodynamicIntegrationResults.hpp"
+
+#include "gui/TiIntegrandPlot.hpp"
 
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFile>
+#include <QFileDialog>
 #include <QFontDatabase>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMessageBox>
 #include <QObject>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -341,8 +343,93 @@ TiRunReport readThermodynamicIntegrationRun(const QString& jsonPath)
     return report;
 }
 
+QString thermodynamicIntegrationCsv(const TiRunReport& report)
+{
+    QStringList lines;
+    // The settings and the assembled answer come first, commented. A bare table
+    // of ⟨∂U/∂λ⟩ is not reproducible: the same numbers integrate to a different
+    // free energy under a different quadrature rule, and F_ref depends on T, V
+    // and the masses. Anyone who opens this file a year from now needs the
+    // conditions in it.
+    lines << QStringLiteral("# Calango — thermodynamic integration");
+    lines << QStringLiteral("# atoms,%1").arg(report.system.atomCount);
+    lines << QStringLiteral("# temperature_K,%1")
+                 .arg(QString::number(report.system.temperatureK, 'g', 10));
+    lines << QStringLiteral("# pressure_GPa,%1")
+                 .arg(QString::number(report.system.pressureGPa, 'g', 10));
+    lines << QStringLiteral("# volume_A3,%1")
+                 .arg(QString::number(report.system.volumeA3, 'g', 10));
+    lines << QStringLiteral("# complete,%1")
+                 .arg(report.complete ? QStringLiteral("yes")
+                                      : QStringLiteral("no"));
+    if (report.complete) {
+        const auto& integration = report.assembly.integration;
+        lines << QStringLiteral("# delta_F_eV,%1")
+                     .arg(QString::number(integration.deltaFEv, 'g', 12));
+        lines << QStringLiteral("# delta_F_error_eV,%1")
+                     .arg(QString::number(integration.totalErrorEv, 'g', 6));
+        lines << QStringLiteral("# F_ref_eV,%1")
+                     .arg(QString::number(report.assembly.reference.freeEnergyEv,
+                                          'g', 12));
+        lines << QStringLiteral("# F_eV,%1")
+                     .arg(QString::number(report.assembly.helmholtzEv, 'g', 12));
+        lines << QStringLiteral("# F_eV_per_atom,%1")
+                     .arg(QString::number(report.assembly.helmholtzEvPerAtom,
+                                          'g', 12));
+        lines << QStringLiteral("# PV_eV,%1")
+                     .arg(QString::number(report.assembly.pvEv, 'g', 12));
+        lines << QStringLiteral("# G_eV,%1")
+                     .arg(QString::number(report.assembly.gibbsEv, 'g', 12));
+        lines << QStringLiteral("# G_eV_per_atom,%1")
+                     .arg(QString::number(report.assembly.gibbsEvPerAtom,
+                                          'g', 12));
+        lines << QStringLiteral("# uncertainty_eV,%1")
+                     .arg(QString::number(report.assembly.errorEv, 'g', 6));
+    }
+    if (report.hysteresis.valid) {
+        lines << QStringLiteral("# hysteresis_gap_eV,%1")
+                     .arg(QString::number(report.hysteresis.differenceEv,
+                                          'g', 12));
+        lines << QStringLiteral("# hysteresis_significant,%1")
+                     .arg(report.hysteresis.significant
+                              ? QStringLiteral("yes")
+                              : QStringLiteral("no"));
+    }
+    for (const QString& warning : report.warnings)
+        lines << QStringLiteral("# warning,\"%1\"")
+                     .arg(QString(warning).replace(QLatin1Char('"'),
+                                                   QLatin1String("\"\"")));
+
+    // A failed window keeps its row, with empty fields and its reason. Dropping
+    // it would make the file describe a shorter path that converged, which is
+    // the one thing an incomplete run must not look like.
+    lines << QStringLiteral("index,lambda,dudl_eV,dudl_error_eV,tau_int,"
+                            "samples,status");
+    for (const auto& window : report.windows) {
+        if (!window.ok) {
+            lines << QStringLiteral("%1,%2,,,,,\"%3\"")
+                         .arg(window.index)
+                         .arg(QString::number(window.lambda, 'g', 12))
+                         .arg(QString::fromStdString(window.failure)
+                                  .replace(QLatin1Char('"'),
+                                           QLatin1String("\"\"")));
+            continue;
+        }
+        lines << QStringLiteral("%1,%2,%3,%4,%5,%6,ok")
+                     .arg(window.index)
+                     .arg(QString::number(window.lambda, 'g', 12))
+                     .arg(QString::number(window.dudlEv, 'g', 12))
+                     .arg(QString::number(window.dudlErrorEv, 'g', 6))
+                     .arg(QString::number(window.correlationTime, 'g', 6))
+                     .arg(window.samples);
+    }
+    lines << QString();
+    return lines.join(QLatin1Char('\n'));
+}
+
 void showThermodynamicIntegrationResults(QWidget* parent,
-                                         const QString& jsonPath)
+                                         const QString& jsonPath,
+                                         std::function<void()> loadAnother)
 {
     const TiRunReport report = readThermodynamicIntegrationRun(jsonPath);
 
@@ -381,8 +468,61 @@ void showThermodynamicIntegrationResults(QWidget* parent,
     view->setPlainText(report.text);
     layout->addWidget(view, 2);
 
-    auto* exportButton = new QPushButton(
-        QObject::tr("Export Plot…"), dialog);
+    // Loading and saving live HERE, on the window that shows a run, rather than
+    // on the menu bar. The Simulation menu used to carry an "Open … Results…"
+    // entry whose whole job was to ask for a file; a finished run now opens
+    // this window by itself, and the two buttons cover what remains — reaching
+    // a run from an earlier session or a cluster, and getting these numbers out
+    // to a plotting script.
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, dialog,
+                     &QDialog::reject);
+
+    if (loadAnother) {
+        auto* loadButton = buttons->addButton(QObject::tr("Load Results…"),
+                                              QDialogButtonBox::ActionRole);
+        loadButton->setToolTip(
+            QObject::tr("Open the ti.json of another run — one from an earlier "
+                        "session, or brought back from a cluster"));
+        QObject::connect(loadButton, &QPushButton::clicked, dialog,
+                         [loadAnother] { loadAnother(); });
+    }
+
+    auto* exportDataButton = buttons->addButton(QObject::tr("Export Results…"),
+                                                QDialogButtonBox::ActionRole);
+    exportDataButton->setToolTip(
+        QObject::tr("The per-window table and the assembled free energies, as "
+                    "CSV or as the report text shown below"));
+    QObject::connect(
+        exportDataButton, &QPushButton::clicked, dialog, [dialog, report] {
+            QString selected;
+            const QString path = QFileDialog::getSaveFileName(
+                dialog, QObject::tr("Export Results"),
+                QStringLiteral("thermodynamic_integration.csv"),
+                QObject::tr("Per-window data (*.csv);;Report text (*.txt)"),
+                &selected);
+            if (path.isEmpty())
+                return;
+            // The chosen filter decides, not the typed suffix: a user who
+            // picks "Report text" and types no extension means the report.
+            const bool asText = selected.contains(QLatin1String(".txt"))
+                                || path.endsWith(QLatin1String(".txt"),
+                                                 Qt::CaseInsensitive);
+            QFile out(path);
+            if (!out.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                QMessageBox::warning(dialog, QObject::tr("Export Results"),
+                                     QObject::tr("Could not write %1.")
+                                         .arg(path));
+                return;
+            }
+            const QString content = asText
+                                        ? report.text + QLatin1Char('\n')
+                                        : thermodynamicIntegrationCsv(report);
+            out.write(content.toUtf8());
+        });
+
+    auto* exportButton = buttons->addButton(QObject::tr("Export Plot…"),
+                                            QDialogButtonBox::ActionRole);
     QObject::connect(exportButton, &QPushButton::clicked, dialog,
                      [dialog, plot] {
                          const QString path = QFileDialog::getSaveFileName(
@@ -391,11 +531,7 @@ void showThermodynamicIntegrationResults(QWidget* parent,
                          if (!path.isEmpty())
                              plot->exportImage(path, 3.0);
                      });
-    layout->addWidget(exportButton);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, dialog,
-                     &QDialog::reject);
     layout->addWidget(buttons);
     dialog->show();
 }

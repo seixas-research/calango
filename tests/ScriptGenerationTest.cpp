@@ -1923,6 +1923,66 @@ int main(int argc, char** argv)
                       "and the wizard's tolerance reaches the script");
     }
 
+    std::printf("Unfolding projection (four bugs that produced no error):\n");
+    {
+        // Every one of these was live, and NONE of them failed loudly. The
+        // GPAW signature crashed; the other three would each have written a
+        // plausible effective_bands.json full of zeros or of character
+        // assigned to the wrong wavevector.
+        //
+        // Verified against GPAW 26.7.1b1 by running the generated script: a
+        // pristine Al 2x2x2 supercell unfolds back onto the primitive band
+        // structure to 1.0e-3 eV, and the partition identity holds to 8.9e-16.
+        UnfoldingConfig unfold;
+        const std::string script = generateUnfoldingScript(unfold);
+
+        // (1) get_rank_and_index(k, s) takes the spin too. Called with the k
+        // alone it raises TypeError before any physics happens.
+        checkContains(script, "get_rank_and_index(k_supercell_index, spin)",
+                      "the k-point descriptor is asked for a spin as well");
+
+        // (2) GPAW returns G in 1/Bohr; ASE's cell.reciprocal() is 1/Ang.
+        // Mixing them scales every coordinate by 1.8897, so no coordinate is
+        // ever an integer, the mask selects nothing and every weight is 0.0.
+        checkContains(script, "from ase.units import Bohr",
+                      "the 1/Bohr plane-wave vectors are converted");
+        checkContains(script, "((g_bohr / Bohr) / (2.0 * np.pi))",
+                      "before being expressed in the primitive basis");
+
+        // (3) The acceptance test is against k - K, not against k. At Gamma
+        // the two agree, which is exactly why a check run only there passes.
+        checkContains(script, "folding_offset(matrix, k_primitive, k_supercell)",
+                      "the mask is offset by what the folding removed");
+        check(!contains(script, "np.round(g_primitive - k_primitive)"),
+              "and no longer tests G against the primitive k itself");
+
+        // (4) The projection lattice comes from the supercell, so the integer
+        // test stays exact when the two cells agree only to a tolerance --
+        // which is every relaxed defect cell. The error grows with |G|, so a
+        // 0.05% mismatch discards the high-G half of every state.
+        checkContains(script, "projection_cell = Cell(np.linalg.inv(M) @ atoms.cell[:])",
+                      "the projection lattice is derived, not read");
+
+        // The self-test that would have caught (2), (3) and (4) at runtime.
+        // Sampled at three k, because at Gamma alone it cannot see (3).
+        checkContains(script, "check_partition",
+                      "the run checks that the weights partition the basis");
+        checkContains(script,
+                      "_samples = sorted({0, len(kpts_primitive) // 2,",
+                      "at more than one k-point");
+        // Matched on one emitted line: the message continues across an
+        // f-string break, so the sentence is not contiguous in the source.
+        checkContains(script, "That is an identity, not a",
+                      "and refuses to write a map when the identity fails");
+
+        // Spin. An NV centre is a triplet; unfolding only channel 0 would
+        // silently report half the states.
+        checkContains(script, "for spin in range(nspins):",
+                      "both spin channels are projected");
+        checkContains(script, "CALANGO_WARN spin-polarized",
+                      "and the map says it sums them");
+    }
+
     // -- Band symmetry classification ---------------------------------------
     //
     // The physics that cannot be checked by reading the script: the character

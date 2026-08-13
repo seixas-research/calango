@@ -32,7 +32,7 @@
 \definecolor{calangoyellow}{HTML}{FEEC41}
 \definecolor{calangocoral}{HTML}{FF6060}
 \definecolor{calangored}{HTML}{D51C39}
-\definecolor{calangocover}{HTML}{4F0020} % 760031, 4F0020, 280010
+\definecolor{calangocover}{HTML}{280010} % 760031, 4F0020, 280010
 % Neutrals. calangodark is the logo mark's own near-black.
 \definecolor{calangodark}{RGB}{26,26,26}
 \definecolor{codebg}{RGB}{250,246,247}
@@ -202,27 +202,117 @@ The supporting files are:
 
 \subsection{Commands}
 
-From the repository root:
+The supported one-shot route is the driver script, which provisions the
+relocatable Python payload, builds, packages, and mounts the finished
+image to prove the shipped app can import ASE:
 
 \begin{lstlisting}
-cmake -S . -B build-dmg \
+packaging/macos/create_dmg.sh
+\end{lstlisting}
+
+\noindent It also picks the build directory for you, which matters --- see
+the warning below. To drive the steps by hand instead, from the
+repository root:
+
+\begin{lstlisting}
+BUILD=~/Library/Caches/calango/build-dmg
+
+cmake -S . -B $BUILD \
   -DCMAKE_BUILD_TYPE=Release \
   -DPython3_EXECUTABLE=$PWD/.venv/bin/python \
   -DCMAKE_PREFIX_PATH=/opt/homebrew/opt/qt \
   -DCALANGO_MACOS_BUNDLE=ON
 
-cmake --build build-dmg -j 8
+cmake --build $BUILD -j 8
 
-cd build-dmg && cpack
+cd $BUILD && cpack
 \end{lstlisting}
 
-The result is \file{build-dmg/calango-26.8.2-macos-arm64.dmg}. Mounting
+\noindent\textbf{The staging tree must not be cloud-synced.} A file
+provider (Dropbox, iCloud Drive, OneDrive, Google Drive) stamps its own
+extended attributes on every file it manages, and re-applies them faster
+than they can be cleared. \opt{codesign} rejects those as \emph{``resource fork,
+Finder information, or similar detritus''}. Since the checkout itself
+lives in Dropbox on this machine, a build directory named relative to it
+(\file{build-dmg}) puts \file{\_CPack\_Packages/} inside the synced tree,
+and the run fails at the very last step --- after the full build,
+\file{macdeployqt} and the Python embed --- with
+
+\begin{lstlisting}[basicstyle=\ttfamily\scriptsize]
+calango.app: resource fork, Finder information, or similar detritus not allowed
+error: calango.app fails strict signature validation
+\end{lstlisting}
+
+\noindent The fix is to stage outside the synced folder, as above.
+\file{create\_dmg.sh} does this automatically: a \opt{BUILD\_DIR} you set
+yourself is refused with an explanation, and the default is relocated to
+\file{\textasciitilde/Library/Caches/calango/} with a notice. An already
+built tree does not need reconfiguring --- \opt{cpack -B} moves only the
+staging directory and the output:
+
+\begin{lstlisting}
+cd build-dmg && cpack -G DragNDrop -B ~/Library/Caches/calango/cpack-stage
+\end{lstlisting}
+
+\noindent A finished \file{.dmg} is a single signed file that syncing
+cannot spoil, so only the staging tree has to move.
+
+\subsection{The resulting image}
+
+The result is \file{calango-<version>-macos-arm64.dmg}. Mounting
 it shows \file{calango.app} next to an \file{/Applications} symlink ---
 the standard drag-to-install layout. There is deliberately no
 click-through license sheet
 (\opt{CPACK\_DMG\_SLA\_USE\_RESOURCE\_FILE\_LICENSE OFF}): a license SLA
 blocks scripted \file{hdiutil attach} and adds friction for an
 MIT-licensed application.
+
+\subsection{Cleaning up afterwards}
+\label{sec:dmg-cleanup}
+
+The scratch tree is several GB --- a Release build of the application,
+the CPack staging copy of the bundle, and the provisioned Python payload
+--- and every byte of it is reproducible. \file{create\_dmg.sh} therefore
+deletes it as its last step, once the image has been built, mounted and
+probed:
+
+\begin{lstlisting}[basicstyle=\ttfamily\scriptsize]
+==> SUCCESS
+    Artifact : /path/to/Calango-26.8.16-macOS.dmg
+    Size     : 65M
+    Verified : valid macOS disk image (hdiutil imageinfo)
+    Probe    : python: 3.14.6 ase: 3.29.0
+    Cleaned  : ~/Library/Caches/calango/macos-bundle-a1b2c3d4 (freed 3.4G)
+               next run re-provisions the embedded Python; --keep-cache avoids that
+\end{lstlisting}
+
+\noindent Three properties of that step are deliberate:
+
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{It runs last, and only on success.} A run that failed
+        anywhere keeps its tree, because that tree is exactly what is
+        needed to diagnose the failure.
+  \item \textbf{It deletes the per-checkout subdirectory, not the root.}
+        The scratch directory is keyed by the repository's path
+        (\file{macos-bundle-<hash>}) so that several checkouts can
+        coexist; removing
+        \file{\textasciitilde/Library/Caches/calango} wholesale would
+        take another checkout's cache with it. The root itself is then
+        removed only if it is left empty.
+  \item \textbf{It only ever deletes inside that root.} A
+        \opt{BUILD\_DIR} pointing anywhere else is reported and kept ---
+        it may be a working build directory that predates the packaging
+        run.
+\end{itemize}
+
+\noindent Pass \opt{--keep-cache} while iterating on packaging itself.
+The tree caches the $\sim$500\,MB embedded-Python payload, so a kept tree
+makes the following run skip the download and reuse the compiled objects
+as well. Cleaning up by hand after a manual \opt{cpack} is the same idea:
+
+\begin{lstlisting}
+rm -rf ~/Library/Caches/calango/cpack-stage
+\end{lstlisting}
 
 \subsection{What the install step does}
 
@@ -479,7 +569,7 @@ To ship a fully self-contained installer, pass a \emph{relocatable}
 Python distribution that has ASE installed:
 
 \begin{lstlisting}
-cmake -S . -B build-dmg ... \
+cmake -S . -B $BUILD ... \
   -DCALANGO_EMBEDDED_PYTHON_DIR=/path/to/standalone-python
 \end{lstlisting}
 
@@ -487,6 +577,15 @@ A distribution from the \texttt{python-build-standalone} project is the
 recommended source. A plain project \file{.venv} is \emph{not}
 relocatable --- its \file{bin/python} and \file{pyvenv.cfg} refer back to
 the build machine's base interpreter.
+
+\file{create\_dmg.sh} does all of this for you when the variable is
+unset. It downloads a matching \texttt{python-build-standalone} tree,
+pip-installs
+\opt{CALANGO\_EMBEDDED\_PACKAGES} into it, and caches the result in the
+build directory. Skipping this is what separates a \file{.dmg} that
+only runs on the build machine from a shippable one --- the app still
+launches either way, it just cannot import ASE --- and the mount-and-probe
+check at the end of the script is what tells the two apart.
 
 Independent of this option, the macOS pipeline always embeds the
 \file{Python.framework} that the binary itself links against

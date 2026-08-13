@@ -9,6 +9,20 @@ script that form produces, live and editable.
 
 \subsection{Calculators}
 
+Calango is \emph{calculator-agnostic}. The wizard, the script it generates
+and the job runner are written against ASE's calculator interface, not
+against any particular code, so one staged flow --- calculator, settings,
+task, script review --- drives empirical potentials, semi-empirical tight
+binding, plane-wave and all-electron DFT, quantum chemistry and
+machine-learning potentials alike. Adding an engine adds a settings group
+and nothing else: everything downstream of the \ui{Calculation engine}
+dropdown is unchanged.
+
+The table below is a representative selection of the engines in common
+use, not the complete library --- that keeps growing, and the
+\ui{Calculation engine} dropdown in the version you are running is its
+authoritative list.
+
 \begin{center}
 \small
 \begin{tabular}{@{}lp{8.4cm}@{}}

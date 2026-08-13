@@ -1,11 +1,11 @@
 # Wannier functions
 
 Two menu entries share one machinery.
-{menuselection}`Electronics --> Wannier Functions…` runs the
+{menuselection}`Wannier Functions --> Calculate Wannier Functions…` runs the
 Marzari–Vanderbilt localization (`ase.dft.wannier`) on top of a completed
 single-point calculation, producing maximally localized Wannier functions —
 their centres, spreads, and real-space orbitals.
-{menuselection}`Electronics --> Wannier Interpolation…` then rebuilds that
+{menuselection}`Wannier Functions --> Wannier Interpolation…` then rebuilds that
 localization and uses the short-ranged Wannier Hamiltonian $H(\mathbf{R})$ to
 interpolate bands and a projected DOS anywhere in the zone at the cost of one
 small diagonalization per k-point. The Fermi-surface and topology modules
@@ -97,7 +97,7 @@ isosurface in the viewport.
 
 ## Wannier interpolation
 
-{menuselection}`Electronics --> Wannier Interpolation…` starts from a
+{menuselection}`Wannier Functions --> Wannier Interpolation…` starts from a
 **completed** Wannier Functions process. The Wannier count and trial
 projections are read back from that run's `wannier.json` — the interpolation
 rebuilds the *same* localization from the *same* wavefunctions, so neither is

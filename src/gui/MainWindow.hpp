@@ -181,15 +181,24 @@ private Q_SLOTS:
     void kPointsConvergence();
     void geometryOptimization();
     void molecularDynamics();
-    /// Simulation -> "Liquid Free Energy (TI)…": thermodynamic
-    /// integration for an ABSOLUTE Gibbs free energy. Unlike every
-    /// other wizard on this menu it can submit MORE THAN ONE job — the
-    /// lambda windows are independent, so they can be split across the
-    /// existing queue — which is why it does not go through
-    /// runSimulationWizard().
-    void liquidFreeEnergy();
-    /// Open a finished TI run's ti.json and show the integrand + assembly.
-    void openLiquidFreeEnergyResults();
+    /// Simulation -> "Thermodynamic Integration…": an ABSOLUTE Helmholtz /
+    /// Gibbs free energy by reversibly coupling the system to a reference whose
+    /// free energy is known in closed form. Unlike every other wizard on this
+    /// menu it can submit MORE THAN ONE job — the lambda windows are
+    /// independent, so they can be split across the existing queue — which is
+    /// why it does not go through runSimulationWizard().
+    void thermodynamicIntegration();
+    /// Open a finished TI run and show the integrand + assembly.
+    ///
+    /// Takes the ti.json, the directory holding it, or nothing at all (in which
+    /// case it asks) — so the same slot serves the Processes panel, which knows
+    /// a directory, and a "Load Results…" button, which knows neither.
+    ///
+    /// No longer on a menu. It is reached from the wizard's "Load Results…"
+    /// button, from the results window's own, and from the Processes panel; the
+    /// ordinary path is that a finished run opens it without being asked
+    /// (onJobFinished).
+    void openThermodynamicIntegrationResults(const QString& pathOrDirectory = {});
     void openMonteCarlo();
     void openNudgedElasticBand();
     void onRemoteResultsReady(const QString& localDir);

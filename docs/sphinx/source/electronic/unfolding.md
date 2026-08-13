@@ -128,6 +128,45 @@ now.
 
 ---
 
+## What the run checks before it writes anything
+
+The $|\det M|$ primitive wavevectors that fold onto one $\mathbf{K}$ partition
+the plane-wave basis, so **their weights sum to exactly 1 for every band** —
+pristine cell or defective, metal or insulator. No physics enters that
+statement, which is what makes it useful: a wrong unit, a wrong folding offset
+or a wrong lattice all break it, and all three otherwise produce a *plausible*
+map rather than an error.
+
+The script therefore evaluates the identity at three points along the path
+before projecting anything, prints the deviation, and refuses to write
+`effective_bands.json` if it exceeds $10^{-3}$. A healthy run reports
+
+```text
+CALANGO_INFO partition check ok (max |sum-1| = 8.88e-16)
+```
+
+Three points rather than one because paths usually start at $\Gamma$, where the
+folding offset vanishes and the check cannot discriminate.
+
+:::{note}
+The projection lattice is taken as $M^{-1}\!\cdot\!\mathbf{A}_\text{super}$
+rather than read from the primitive file. The two differ whenever the supercell
+was relaxed — the commensurability warning says by how much — and the residual
+is harmless for the band *path* but fatal for the projection, whose acceptance
+test asks whether a coordinate is an integer. That error grows with $|G|$, so a
+few-per-mille cell mismatch discards the high-$G$ half of every state.
+:::
+
+:::{warning}
+For a **spin-polarized** run both channels are projected into the same column.
+$A(k, E)$ is a sum over states and the heatmap has no spin axis, so this is the
+right object to plot — but a defect level present in one channel only (an NV
+centre's, for instance) is then indistinguishable from one present in both. The
+run says so on stdout.
+:::
+
+---
+
 ## The viewer
 
 `effective_bands.json` stores **per-state weights, not a precomputed

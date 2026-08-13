@@ -339,8 +339,8 @@ diagram computed from it has solidus and liquidus lines wrong by whatever the
 vibrational entropy of mixing is — typically a few tenths of $k_B$ per atom,
 which is not negligible near a melting point.
 
-To include the vibrational term, use {menuselection}`Modules --> CALPHAD -->
-From DFT…` instead: it accepts a `phonon_dos.json` per configuration and
+To include the vibrational term, use {menuselection}`Modules --> Alloys -->
+CALPHAD --> From DFT…` instead: it accepts a `phonon_dos.json` per configuration and
 fits $L_\nu(T) = a + bT$ with a real excess entropy.
 :::
 

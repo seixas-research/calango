@@ -990,8 +990,12 @@ void MainWindow::createMenusAndDocks()
                    | QMainWindow::AllowTabbedDocks);
 
     // Menu bar order is fixed: File, Edit, View, Build, Simulation,
-    // Analysis, Modules (Help trails as is conventional). "Modules" collects
-    // the MLIP and Alloys tool families between Analysis and Help.
+    // Electronics, Wannier Functions, Analysis, Modules (Help trails as is
+    // conventional). "Wannier Functions" sits between Electronics and Analysis
+    // because that is where its work falls: built from a converged electronic
+    // structure, read out like an analysis. "Modules" collects the MLIP,
+    // 2D-materials, Alloys and convergence tool families between Analysis and
+    // Help.
     // ----- File: New | Open | Save | Import/Export | Workspace | Quit ------
     QMenu* fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(tr("&New Workspace"), QKeySequence::New,
@@ -1178,14 +1182,18 @@ void MainWindow::createMenusAndDocks()
     // Directly after MD: it IS molecular dynamics — one thermostatted run
     // per lambda window — and the free energy it produces is the quantity
     // an MD trajectory cannot give you on its own.
-    simulationMenu->addAction(tr("&Liquid Free Energy (TI)…"),
-                              this, &MainWindow::liquidFreeEnergy);
-    // Opening a FINISHED run. Without this the integrand viewer had exactly
-    // one entry point — the instant onJobFinished fired — so closing the
-    // window, running on a cluster, or running in an earlier session all left
-    // a perfectly good ti.json unreachable from the interface.
-    simulationMenu->addAction(tr("Open Liquid Free Energy &Results…"),
-                              this, &MainWindow::openLiquidFreeEnergyResults);
+    //
+    // ONE entry, not two. The companion "Open Liquid Free Energy Results…"
+    // action is gone: a finished run now opens its viewer by itself
+    // (onJobFinished), the Processes panel offers it for any directory holding
+    // a ti.json, and the wizard carries a "Load Results…" button for a run this
+    // session never launched — so the menu no longer needs a second line whose
+    // only job was to ask for a file the application already knows about.
+    simulationMenu->addAction(tr("&Thermodynamic Integration…"),
+                              this, &MainWindow::thermodynamicIntegration)
+        ->setToolTip(tr("Absolute Helmholtz / Gibbs free energy by reversibly "
+                        "coupling the system to a reference whose free energy "
+                        "is known in closed form"));
     simulationMenu->addAction(tr("&Phonon…"),
                               this, &MainWindow::openPhononBuilder);
     // Directly after Phonon: it is the same finite-displacement machinery,
@@ -1243,37 +1251,19 @@ void MainWindow::createMenusAndDocks()
                                &MainWindow::showGwCalculations)
         ->setToolTip(tr("One-shot G₀W₀ quasiparticle corrections on top of a "
                         "completed SCF (GPAW or Yambo)"));
-    // MLWF is a DFT post-process staged & run through the standardized wizard
-    // (engine selection + auto-bound Conda env); its result viewer opens from
-    // the Processes panel when the job finishes.
+    // The four Wannier entries used to sit here. They are a menu of their own
+    // now (below), because they are not four independent readouts of an SCF the
+    // way the entries around them are: three of the four consume the localized
+    // H(R) that the first one produces, so what they form is a CHAIN, and a
+    // chain buried in the middle of a long list reads as four unrelated
+    // options.
     //
-    // ELF used to sit beside it. It no longer needs a module of its own: the
-    // Single-point wizard writes elf.cube from the same SCF as one of its six
-    // density exports, and the grid renders in the main 3D viewport through the
-    // Volumetric Data dock — so a separate wizard, a separate job and a
-    // separate isosurface dialog were three copies of machinery that already
-    // existed.
-    electronicsMenu->addAction(
-        tr("&Wannier Functions…"),
-        this, &MainWindow::showWannier);
-    // The three Wannier post-processes are standalone modules with a strict
-    // prerequisite: each diagonalizes the localized H(R) a completed Wannier Functions run
-    // produced, so each begins by selecting one (and refuses without it).
-    electronicsMenu
-        ->addAction(tr("Wannier &Interpolation…"), this,
-                    &MainWindow::showWannierInterpolation)
-        ->setToolTip(tr("Interpolated band structure + projected DOS "
-                        "(H(R) → H(k)) from a completed Wannier Functions process"));
-    electronicsMenu
-        ->addAction(tr("&Fermi Surface…"), this, &MainWindow::showFermiSurface)
-        ->setToolTip(tr("E_n(k) = E_F sheets on a dense interpolated k-grid, "
-                        "from a completed Wannier Functions process"));
-    electronicsMenu
-        ->addAction(tr("&Topological Invariants…"), this,
-                    &MainWindow::showTopologicalInvariants)
-        ->setToolTip(tr("Chern number and Z₂ index from the hybrid Wannier "
-                        "centre (Wilson loop) flow, from a completed Wannier Functions "
-                        "process"));
+    // ELF used to sit beside them and is gone entirely: the Single-point wizard
+    // writes elf.cube from the same SCF as one of its six density exports, and
+    // the grid renders in the main 3D viewport through the Volumetric Data dock
+    // — so a separate wizard, a separate job and a separate isosurface dialog
+    // were three copies of machinery that already existed.
+    //
     // Charged defects sit with the other post-processes that consume a
     // completed SCF. Its two inputs are both Single-Point runs, which is what
     // distinguishes it from everything above: the physics is in the
@@ -1317,6 +1307,40 @@ void MainWindow::createMenusAndDocks()
         ->setToolTip(tr("Γ-point Raman and infrared spectra: IR from the "
                         "inherited Born effective charges, Raman from the "
                         "polarizability derivative ∂α/∂Q"));
+
+    // ----- Wannier Functions: one calculation and its three post-processes --
+    // Between Electronics (which this menu grew out of) and Analysis, because
+    // that is where the work happens: a Wannier basis is built FROM a converged
+    // electronic structure and is then read out like any other analysis.
+    //
+    // These four are a chain, not a list. "Calculate Wannier Functions" is the
+    // only one that runs a DFT post-process; the other three each begin by
+    // selecting a COMPLETED one of those and diagonalizing the localized H(R)
+    // it produced (and refuse without it). Naming the first entry
+    // "Calculate…" — rather than repeating the menu's own title — is what makes
+    // that split visible from the menu itself.
+    QMenu* wannierMenu = menuBar()->addMenu(tr("&Wannier Functions"));
+    wannierMenu->addAction(tr("&Calculate Wannier Functions…"),
+                           this, &MainWindow::showWannier)
+        ->setToolTip(tr("Maximally-localized Wannier functions from a GPAW "
+                        "baseline: the localized orbitals themselves, their "
+                        "centres and spreads, and the H(R) the three entries "
+                        "below consume"));
+    wannierMenu
+        ->addAction(tr("Wannier &Interpolation…"), this,
+                    &MainWindow::showWannierInterpolation)
+        ->setToolTip(tr("Interpolated band structure + projected DOS "
+                        "(H(R) → H(k)) from a completed Wannier Functions process"));
+    wannierMenu
+        ->addAction(tr("&Fermi Surface…"), this, &MainWindow::showFermiSurface)
+        ->setToolTip(tr("E_n(k) = E_F sheets on a dense interpolated k-grid, "
+                        "from a completed Wannier Functions process"));
+    wannierMenu
+        ->addAction(tr("&Topological Invariants…"), this,
+                    &MainWindow::showTopologicalInvariants)
+        ->setToolTip(tr("Chern number and Z₂ index from the hybrid Wannier "
+                        "centre (Wilson loop) flow, from a completed Wannier Functions "
+                        "process"));
 
     // ----- Analysis: spec order, reciprocal-space tools at the end ---------
     QMenu* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
@@ -1406,14 +1430,6 @@ void MainWindow::createMenusAndDocks()
     // scattered across Build / Simulation / Analysis.
     QMenu* modulesMenu = menuBar()->addMenu(tr("&Modules"));
 
-    // CALPHAD needs no open structure: it works on a thermodynamic database,
-    // not on the geometry in the viewport, so it sits at the top level of the
-    // menu rather than inside a structure-shaped submenu.
-    modulesMenu->addAction(tr("&CALPHAD…"), this, &MainWindow::openCalphad)
-        ->setToolTip(tr("Load a thermodynamic database (.tdb) and choose the "
-                        "elements and phases of the system"));
-    modulesMenu->addSeparator();
-
     QMenu* mlipMenu = modulesMenu->addMenu(tr("&MLIP"));
     mlipMenu->addAction(tr("&Trainer…"), this, &MainWindow::openMaceTrainer);
     mlipMenu->addAction(tr("&Dataset Manager…"),
@@ -1475,6 +1491,20 @@ void MainWindow::createMenusAndDocks()
     // it from interactions, and reading one against the other is the point.
     alloysMenu->addAction(tr("C&VM / Alloy Thermodynamics…"), this,
                           &MainWindow::openCvmComparison);
+    alloysMenu->addSeparator();
+    // CALPHAD closes the same question from the other end, which is why it
+    // belongs on this menu rather than at the top level of Modules: everything
+    // above computes alloy thermodynamics FROM first principles, and this reads
+    // it from an ASSESSED database — the two are alternatives for one job, and
+    // the interesting use is checking one against the other.
+    //
+    // The separator marks the one thing that differs in practice: CALPHAD needs
+    // no open structure. It works on a .tdb, not on the geometry in the
+    // viewport.
+    alloysMenu->addAction(tr("CA&LPHAD…"), this, &MainWindow::openCalphad)
+        ->setToolTip(tr("Load a thermodynamic database (.tdb) and choose the "
+                        "elements and phases of the system — no open structure "
+                        "required"));
 
     // Parameters Convergence: sweeps that answer "is this setting tight
     // enough?" with a curve instead of folklore. The plane-wave cutoff is the
@@ -5160,6 +5190,11 @@ std::vector<MainWindow::ViewerEntry> MainWindow::viewersFor(
         {"topology.json", tr("Topological Invariants Viewer"),
          &MainWindow::openTopologyResults},
         {"gw.json", tr("GW Viewer"), &MainWindow::openGwResults},
+        // The TI viewer's cold entry point. It replaced a menu action whose
+        // only job was to ask which file the user meant — a question this
+        // panel answers by having been clicked on a particular run.
+        {"ti.json", tr("Thermodynamic Integration Viewer"),
+         &MainWindow::openThermodynamicIntegrationResults},
     };
     std::vector<ViewerEntry> available;
     for (const ViewerEntry& entry : kAll)
@@ -5721,6 +5756,10 @@ void MainWindow::onProcessResultRequested(const QString& directory)
     }
     if (QFile::exists(directory + QStringLiteral("/phonon_band.json"))) {
         openPhononResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/ti.json"))) {
+        openThermodynamicIntegrationResults(directory);
         return;
     }
     if (QFile::exists(directory + QStringLiteral("/optics.json"))) {
@@ -7887,47 +7926,99 @@ void MainWindow::molecularDynamics()
     runSimulationWizard(wizard, tr("Molecular Dynamics"));
 }
 
-void MainWindow::openLiquidFreeEnergyResults()
+namespace {
+
+/// Resolve a TI run to its ti.json, asking for one when there is nothing to go
+/// on. Returns an empty string when the user cancels or the file is not there
+/// (having said why).
+///
+/// `parent` is a parameter rather than the main window because the wizard's own
+/// "Load Results…" button opens this while the wizard is running MODALLY: a
+/// results window parented to the main window would be blocked by that modality
+/// and sit unreachable behind it, whereas one parented to the modal dialog is
+/// not blocked at all.
+QString resolveTiResultsPath(QWidget* parent, const QString& pathOrDirectory)
 {
-    // Accept either the file or the directory holding it: a split TI run
+    // Accept the file, the directory holding it, or neither: a split TI run
     // spreads its per-window files across proc_<n>/ directories but writes
-    // one ti.json into the shared results directory, and the user thinks in
-    // terms of "the run" rather than of that file's name.
-    QString path = QFileDialog::getOpenFileName(
-        this, tr("Open Liquid Free Energy Results"), QString(),
-        tr("Thermodynamic integration (ti.json);;JSON (*.json);;All files (*)"));
+    // one ti.json into the shared results directory, the Processes panel knows
+    // that directory, and a "Load Results…" button knows nothing at all.
+    QString path = pathOrDirectory;
+    if (!path.isEmpty() && QFileInfo(path).isDir())
+        path += QStringLiteral("/ti.json");
     if (path.isEmpty()) {
-        const QString directory = QFileDialog::getExistingDirectory(
-            this, tr("…or choose the run directory"));
-        if (directory.isEmpty())
-            return;
-        path = directory + QStringLiteral("/ti.json");
+        path = QFileDialog::getOpenFileName(
+            parent, QObject::tr("Open Thermodynamic Integration Results"),
+            QString(),
+            QObject::tr("Thermodynamic integration (ti.json);;JSON (*.json);;"
+                        "All files (*)"));
+        if (path.isEmpty()) {
+            const QString directory = QFileDialog::getExistingDirectory(
+                parent, QObject::tr("…or choose the run directory"));
+            if (directory.isEmpty())
+                return {};
+            path = directory + QStringLiteral("/ti.json");
+        }
     }
     if (!QFile::exists(path)) {
         QMessageBox::information(
-            this, tr("Liquid Free Energy"),
-            tr("No ti.json there.\n\nA thermodynamic-integration run writes "
-               "it into its results directory once every lambda window has "
-               "reported. If the run is still going, or some windows failed, "
-               "the file is not written yet — that is deliberate, because a "
-               "free energy integrated over a partial path is wrong without "
-               "looking wrong."));
-        return;
+            parent, QObject::tr("Thermodynamic Integration"),
+            QObject::tr(
+                "No ti.json there.\n\nA thermodynamic-integration run writes "
+                "it into its results directory once every lambda window has "
+                "reported. If the run is still going, or some windows failed, "
+                "the file is not written yet — that is deliberate, because a "
+                "free energy integrated over a partial path is wrong without "
+                "looking wrong."));
+        return {};
     }
-    showThermodynamicIntegrationResults(this, path);
+    return path;
 }
 
-void MainWindow::liquidFreeEnergy()
+/// Open the viewer on `pathOrDirectory`, with its "Load Results…" button wired
+/// back to the same call so the window can walk from run to run.
+void openTiResults(QWidget* parent, const QString& pathOrDirectory)
+{
+    const QString path = resolveTiResultsPath(parent, pathOrDirectory);
+    if (path.isEmpty())
+        return;
+    showThermodynamicIntegrationResults(
+        parent, path, [parent] { openTiResults(parent, QString()); });
+}
+
+} // namespace
+
+void MainWindow::openThermodynamicIntegrationResults(
+    const QString& pathOrDirectory)
+{
+    openTiResults(this, pathOrDirectory);
+}
+
+void MainWindow::thermodynamicIntegration()
 {
     Document* doc = currentDocument();
     if (!doc || !doc->structure || doc->structure->empty()) {
-        QMessageBox::information(this, tr("Liquid Free Energy"),
-                                 tr("Open or build a structure first."));
+        // Not a dead end: a run finished in an earlier session (or on a
+        // cluster) has no structure open either, and its results are exactly
+        // what someone reaching for this menu entry may be after.
+        const auto answer = QMessageBox::question(
+            this, tr("Thermodynamic Integration"),
+            tr("Open or build a structure first to set up a new run.\n\n"
+               "Load the results of a finished run instead?"),
+            QMessageBox::Open | QMessageBox::Cancel, QMessageBox::Open);
+        if (answer == QMessageBox::Open)
+            openThermodynamicIntegrationResults();
         return;
     }
     if (!ensureAseAvailable())
         return;
     ThermodynamicIntegrationWizard wizard(doc->structure, this);
+    // Parented to the WIZARD, not to the main window: exec() below makes the
+    // wizard application-modal, and a results window parented anywhere else
+    // would be blocked by that modality — visible, raised, and refusing every
+    // click.
+    connect(&wizard, &ThermodynamicIntegrationWizard::loadResultsRequested,
+            &wizard, [&wizard] { openTiResults(&wizard, QString()); });
     if (doc->structure) {
         wizard.setStructureElements(structureElements(doc->structure.get()));
         const auto pbc = doc->structure->cell().pbc();
@@ -8694,6 +8785,20 @@ void MainWindow::appendStreamedFrame(
 
 void MainWindow::onRemoteResultsReady(const QString& localDir)
 {
+    // Thermodynamic integration first, and it is the one entry here that opens
+    // a VIEWER rather than loading geometry — because it produces no geometry.
+    // Its windows write per-window averages and nothing else, so a remote TI
+    // run that fell through to the loop below would end at the status-bar
+    // message and leave a complete free energy sitting unopened in a directory.
+    //
+    // The remote path matters more than the local one here, not less: a TI run
+    // is exactly the kind of job that gets sent to a cluster, and the assembly
+    // — quadrature, autocorrelation-corrected error bars, the closed-form
+    // F_ref — happens on THIS side either way.
+    if (QFile::exists(localDir + QStringLiteral("/ti.json"))) {
+        openThermodynamicIntegrationResults(localDir);
+        return;
+    }
     // Same convention as local jobs: trajectories first (they activate
     // the timeline), then a bare optimized structure.
     for (const auto* candidate :
@@ -8775,9 +8880,13 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     // closed-form reference free energy — happens HERE. Shown after every job
     // of a split run, so an incomplete path says which windows are still
     // missing rather than waiting silently for a job that may never come.
+    //
+    // This is the ordinary way the viewer opens: the job finishing IS the
+    // trigger, which is why the module carries no "open the results" menu
+    // entry. onJobFinished is a slot on jobRunner_'s finished() signal, so the
+    // ⟨∂U/∂λ⟩ curve and ΔG appear without anyone asking for them.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/ti.json"))) {
-        showThermodynamicIntegrationResults(
-            this, lastJobDir_ + QStringLiteral("/ti.json"));
+        openThermodynamicIntegrationResults(lastJobDir_);
         return;
     }
     // Electron-phonon runs: the script stops at the raw arrays, so the

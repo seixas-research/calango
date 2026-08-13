@@ -136,7 +136,7 @@ The same baseline supports the rest of the analysis suite without recomputing th
 - {menuselection}`Electronics --> Optics…` — the dielectric function $\varepsilon(\omega)$ and the absorption, reflectivity, refractive-index and loss spectra derived from it.
 - The {guilabel}`ELF` checkbox under {guilabel}`Density Exports` in the single-point setup — the covalent bond charge between neighbours, written as `elf.cube` by the same SCF and rendered as an isosurface in the **Volumetric Data** dock. There is no separate ELF module: the field comes out of the ground state we already have.
 - {menuselection}`Analysis --> Charge Density Difference (CDD)…` — $\Delta\rho = \rho_{A+B} - \rho_A - \rho_B$ between two fragments of the same run, showing where the charge went when they were put together.
-- {menuselection}`Electronics --> Wannier Functions…` — the four $sp^3$ bond orbitals of the diamond lattice.
+- {menuselection}`Wannier Functions --> Calculate Wannier Functions…` — the four $sp^3$ bond orbitals of the diamond lattice.
 - {menuselection}`Analysis --> Symmetry, Raman & IR Activity…` — the factor-group analysis that labels silicon's $\Gamma$ optical mode $T_{2g}$ and Raman-active.
 
 We save the workspace with {menuselection}`File --> Project Workspace --> Save Project` ({kbd}`Ctrl+S`) before stopping. Job directories of a saved project are kept alongside the `.calproj` ({doc}`/workspace`), so every result above stays linked in the **Processes** dock and can be reopened without recomputation.
