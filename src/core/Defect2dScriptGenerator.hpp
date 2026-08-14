@@ -107,14 +107,6 @@ struct Defect2dConfig {
     int fermiPoints = 401;
 };
 
-/// The Komsa-Pasquarello model as standalone Python (numpy only).
-///
-/// Exposed separately from the run script so it can be exercised without GPAW:
-/// this is the only new physics in the module, and physics that can only be
-/// checked by running a DFT job is not checked. See
-/// tests/defect_2d_correction_test.py, which extracts exactly this text.
-std::string defect2dCorrectionHelpers();
-
 /// Turns a Defect2dConfig into a standalone ASE/GPAW script: one fixed-geometry
 /// SCF per charge state, the 2D image-charge correction applied to each, and
 /// `charged_defects_2d.json` written with the formation-energy lines, the lower

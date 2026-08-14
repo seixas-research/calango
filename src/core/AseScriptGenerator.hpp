@@ -2,6 +2,7 @@
 
 #include "core/CalculatorConfig.hpp"
 
+#include <sstream>
 #include <string>
 
 namespace calango::core {
@@ -23,6 +24,19 @@ public:
     /// Just the calculator-construction block (imports + `atoms.calc = ...`),
     /// for embedding in other generated scripts (e.g. the phonon builder).
     static std::string calculatorSnippet(const CalculatorConfig& config);
+
+    /// Re-emit a generated block with `indent` prefixed to every non-empty
+    /// line, so a module-level snippet (usually calculatorSnippet()) can live
+    /// inside a Python function body. Blank lines stay blank rather than
+    /// carrying trailing whitespace.
+    static void emitIndented(std::ostringstream& out, const std::string& block,
+                             const std::string& indent);
+
+    /// The `_CellFilter` import shim for variable-cell relaxation: prefers
+    /// ase.filters (ASE >= 3.23) and falls back to ase.constraints, so the
+    /// same script runs on either ASE.
+    static void emitCellFilterImport(std::ostringstream& out,
+                                     CellFilter cellFilter);
 
     /// The structured-logging preamble shared by every generated script: a
     /// plain dict plus the three functions

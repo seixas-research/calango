@@ -1,4 +1,6 @@
 #include "core/SolvationBuilder.hpp"
+#include "core/PhysicalConstants.hpp"
+#include "core/RandomRotation.hpp"
 
 #include "core/Element.hpp"
 
@@ -14,7 +16,6 @@ namespace calango::core {
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
 constexpr double kDegree = kPi / 180.0;
 /// 1 u/Å³ in g/cm³.
 constexpr double kUPerA3ToGCm3 = 1.6605390666;
@@ -181,31 +182,6 @@ Matrix3 inverseOfColumns(const std::array<Vec3, 3>& cell)
     inverse.m[1][0] = r1.x; inverse.m[1][1] = r1.y; inverse.m[1][2] = r1.z;
     inverse.m[2][0] = r2.x; inverse.m[2][1] = r2.y; inverse.m[2][2] = r2.z;
     return inverse;
-}
-
-/// Uniformly distributed rotation matrix (Shoemake's quaternion construction).
-/// A liquid has no preferred molecular axis, and sampling Euler angles
-/// uniformly does NOT give a uniform rotation — it clusters orientations near
-/// the poles, which would show up as a spurious orientational order parameter
-/// at the interface.
-std::array<Vec3, 3> randomRotation(std::mt19937& rng)
-{
-    std::uniform_real_distribution<double> unit(0.0, 1.0);
-    const double u1 = unit(rng);
-    const double u2 = unit(rng);
-    const double u3 = unit(rng);
-    const double s1 = std::sqrt(1.0 - u1);
-    const double s2 = std::sqrt(u1);
-    const double x = s1 * std::sin(2.0 * kPi * u2);
-    const double y = s1 * std::cos(2.0 * kPi * u2);
-    const double z = s2 * std::sin(2.0 * kPi * u3);
-    const double w = s2 * std::cos(2.0 * kPi * u3);
-    return {Vec3{1 - 2 * (y * y + z * z), 2 * (x * y - z * w),
-                 2 * (x * z + y * w)},
-            Vec3{2 * (x * y + z * w), 1 - 2 * (x * x + z * z),
-                 2 * (y * z - x * w)},
-            Vec3{2 * (x * z - y * w), 2 * (y * z + x * w),
-                 1 - 2 * (x * x + y * y)}};
 }
 
 Vec3 rotate(const std::array<Vec3, 3>& rotation, const Vec3& v)
@@ -755,7 +731,7 @@ SolvationBuilder::Result SolvationBuilder::generate(const Structure& substrate,
                 if (clash)
                     continue;
 
-                const std::array<Vec3, 3> rotation = randomRotation(rng);
+                const std::array<Vec3, 3> rotation = randomRotationMatrix(rng);
                 std::vector<Vec3> atoms;
                 atoms.reserve(request.species->positions.size());
                 for (const Vec3& local : request.species->positions)

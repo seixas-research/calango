@@ -372,11 +372,6 @@ void ProcessManagerPanel::setTaskDetail(int id, const QString& detail)
     }
 }
 
-int ProcessManagerPanel::taskCount() const
-{
-    return tree_->topLevelItemCount();
-}
-
 std::vector<ProcessManagerPanel::CompletedRun>
 ProcessManagerPanel::completedRunsWith(const QString& fileName) const
 {

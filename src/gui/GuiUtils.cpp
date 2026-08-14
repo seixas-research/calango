@@ -23,6 +23,7 @@
 #include <QFontMetricsF>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QImage>
 #include <QPainter>
 #include <QRectF>
 #include <QMessageBox>
@@ -173,13 +174,41 @@ bool writeTextFile(QWidget* parent, const QString& path, const QString& body)
                          [&body](QTextStream& out) { out << body; });
 }
 
-
-void setButtonColor(QPushButton* button, const QColor& color)
+double niceTickStep(double range, int maxTicks, double degenerate)
 {
-    button->setStyleSheet(
-        QStringLiteral("background-color: %1; border: 1px solid #666;")
-            .arg(color.name()));
+    if (range <= 0.0 || maxTicks < 1)
+        return degenerate;
+    const double rough = range / maxTicks;
+    const double magnitude = std::pow(10.0, std::floor(std::log10(rough)));
+    const double normalized = rough / magnitude; // in [1, 10)
+    const double nice = normalized <= 1.0 ? 1.0
+        : normalized <= 2.0              ? 2.0
+        : normalized <= 5.0              ? 5.0
+                                         : 10.0;
+    return nice * magnitude;
 }
+
+void savePlotImage(QWidget* parent, const QString& path,
+                   const QSize& logicalSize,
+                   const std::function<void(QPainter&, const QSize&)>& renderTo)
+{
+    // Render at 3x the on-screen size for a crisp, print-quality raster.
+    const int scale = 3;
+    QImage image(logicalSize * scale, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::white);
+    QPainter painter(&image);
+    painter.scale(scale, scale);
+    renderTo(painter, logicalSize);
+    painter.end();
+
+    if (!image.save(path))
+        QMessageBox::warning(
+            parent, QCoreApplication::translate("calango::gui", "Export Image"),
+            QCoreApplication::translate("calango::gui",
+                                        "Could not write the image to %1.")
+                .arg(path));
+}
+
 
 void setFormRowVisible(QGroupBox* group, QWidget* field, bool visible)
 {

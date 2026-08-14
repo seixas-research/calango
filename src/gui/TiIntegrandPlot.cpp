@@ -1,4 +1,5 @@
 #include "gui/TiIntegrandPlot.hpp"
+#include "gui/GuiUtils.hpp"
 
 #include "gui/PlotPalette.hpp"
 
@@ -11,29 +12,6 @@
 #include <cmath>
 
 namespace calango::gui {
-
-namespace {
-
-/// Ticks at 1, 2 or 5 times a power of ten — the spacings people read without
-/// having to decode them.
-double niceStep(double span, int target)
-{
-    if (span <= 0.0 || target <= 0)
-        return 1.0;
-    const double raw = span / target;
-    const double magnitude = std::pow(10.0, std::floor(std::log10(raw)));
-    const double normalized = raw / magnitude;
-    double step = 10.0;
-    if (normalized <= 1.0)
-        step = 1.0;
-    else if (normalized <= 2.0)
-        step = 2.0;
-    else if (normalized <= 5.0)
-        step = 5.0;
-    return step * magnitude;
-}
-
-} // namespace
 
 TiIntegrandPlot::TiIntegrandPlot(QWidget* parent)
     : QWidget(parent)
@@ -125,7 +103,7 @@ void TiIntegrandPlot::render(QPainter& painter, const QRectF& bounds) const
     };
 
     // -- Grid --------------------------------------------------------------
-    const double yStep = niceStep(yMax - yMin, 5);
+    const double yStep = niceTickStep(yMax - yMin, 5, 1.0);
     painter.setPen(QPen(PlotPalette::grid, 1.0));
     for (int i = 0; i <= 10; ++i)
         painter.drawLine(toScreen(i / 10.0, yMin), toScreen(i / 10.0, yMax));

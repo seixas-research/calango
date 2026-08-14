@@ -1,5 +1,6 @@
 #include "core/MonteCarlo.hpp"
 #include "core/PeriodicImages.hpp"
+#include "core/PhysicalConstants.hpp"
 
 #include "core/UnitCell.hpp"
 
@@ -9,12 +10,6 @@
 #include <random>
 
 namespace calango::core {
-
-namespace {
-
-constexpr double kBoltzmann = 8.617333262e-5; // eV/K
-
-} // namespace
 
 SwapMonteCarloResult runSwapMonteCarlo(const Structure& start,
                                        const SwapMonteCarloOptions& options)
@@ -119,7 +114,7 @@ SwapMonteCarloResult runSwapMonteCarlo(const Structure& start,
     std::mt19937 rng(options.seed);
     std::uniform_int_distribution<int> pickSite(0, n - 1);
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
-    const double kT = std::max(kBoltzmann * options.temperatureK, 1e-12);
+    const double kT = std::max(kBoltzmannEvPerK * options.temperatureK, 1e-12);
 
     double energy = totalEnergy();
     result.initialEnergy = energy;

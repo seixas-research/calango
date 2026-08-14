@@ -107,8 +107,6 @@ public:
     {
         return functions_;
     }
-    std::size_t gridSize() const { return gridSize_; }
-
     /// Overlap and kinetic matrices at one k-point (in units of the reciprocal
     /// lattice, i.e. fractional coordinates). Both are Hermitian.
     Outcome buildOverlapAndKinetic(
@@ -159,11 +157,6 @@ public:
     {
         return neutralAtomPotential_;
     }
-
-    /// The electrostatic energy of the free atoms alone, per cell: each atom's
-    /// own electrostatic self-energy plus every neutral-atom pair interaction.
-    /// Constant for a fixed geometry, computed once in `prepare`.
-    double referenceElectrostaticEnergy() const { return referenceEnergy_; }
 
     /// Build the effective potential from a density, and the energies that go
     /// with it.
@@ -234,6 +227,11 @@ private:
         double value = 0.0;
         double kinetic = 0.0;
     };
+
+    /// e^{2πi k·n} for every stored lattice image, with k in fractional
+    /// coordinates. All ones for the non-periodic case.
+    std::vector<std::complex<double>>
+    imagePhases(const std::array<double, 3>& kFractional) const;
 
     /// Bloch sums χ_i^k at every grid point, from the stored contributions.
     /// With `gradients` non-null, ∇χ_i^k as well — the same phases applied to

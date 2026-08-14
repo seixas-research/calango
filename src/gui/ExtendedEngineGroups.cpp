@@ -2,7 +2,6 @@
 
 #include "gui/GuiUtils.hpp"
 
-#include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QDoubleValidator>

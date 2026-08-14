@@ -318,7 +318,7 @@ bool MolecularDynamicsViewer::loadDirectory(const QString& directory)
         energyPlot_->setData(
             time_,
             {{tr("E_tot"), QColor(0x1b, 0x1e, 0x23), total_},
-             {tr("E_pot"), QColor(0x1f, 0x77, 0xb4), potential_},
+             {tr("E_pot"), PlotPalette::series, potential_},
              {tr("E_kin"), QColor(0xd6, 0x27, 0x28), kinetic_}},
             tr("Time (ps)"), tr("Energy (eV)"));
 
@@ -399,7 +399,7 @@ void MolecularDynamicsViewer::recomputeRdf()
     options.bins = 200;
     options.usePbc = frame->cell().isDefined();
     const core::RdfResult result = core::computeRdf(*frame, options);
-    rdfPlot_->setData(result.r, {{tr("g(r)"), QColor(0x1f, 0x77, 0xb4), result.g}},
+    rdfPlot_->setData(result.r, {{tr("g(r)"), PlotPalette::series, result.g}},
                       tr("r (Å)"), tr("g(r)"));
 }
 

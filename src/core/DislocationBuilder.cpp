@@ -1,4 +1,5 @@
 #include "core/DislocationBuilder.hpp"
+#include "core/PhysicalConstants.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -17,7 +18,6 @@ namespace {
 
 using Complex = std::complex<double>;
 
-constexpr double kPi = std::numbers::pi;
 
 // ---------------------------------------------------------------------------
 // Voigt <-> full fourth-rank tensor

@@ -1,4 +1,5 @@
 #include "core/ElectronPhononAnalysis.hpp"
+#include "core/PhysicalConstants.hpp"
 
 #include "core/TetrahedronBz.hpp"
 
@@ -10,9 +11,7 @@ namespace calango::core {
 
 namespace {
 
-constexpr double kBoltzmannEvPerK = 8.617333262e-5;
 constexpr double kHbarEvFs = 0.6582119569;
-constexpr double kPi = 3.14159265358979323846;
 constexpr double kHbarEvS = 6.582119569e-16;
 constexpr double kVacuumPermittivity = 8.8541878128e-12; // F/m
 

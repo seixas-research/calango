@@ -1,15 +1,10 @@
 #include "dft/RadialGrid.hpp"
+#include "dft/Constants.hpp"
 
 #include <algorithm>
 #include <cmath>
 
 namespace calango::dft {
-
-namespace {
-
-constexpr double kFourPi = 12.566370614359172;
-
-} // namespace
 
 RadialGrid::RadialGrid(std::size_t points, double outerRadiusBohr,
                        double innerScaleBohr)

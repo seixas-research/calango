@@ -62,6 +62,10 @@ std::string pathLiteral(const std::string& path)
 /// Gaussian units throughout, with lengths in Bohr and energies in Hartree,
 /// converted once at the boundary. Mixing eV and Å inside an electrostatics
 /// routine is how a factor of 4π survives review.
+///
+/// tests/defect_2d_correction_test.py extracts this block by regex so the
+/// physics can be exercised without GPAW: the variable name and the R"PY(
+/// delimiters are load-bearing.
 constexpr const char* kCorrectionHelpers = R"PY(
 # --- 2D image-charge correction (Komsa-Pasquarello) ------------------------
 #

@@ -103,6 +103,29 @@ orbital. Recording the `.gpw` path matters: a run started from a baseline
 reads wavefunctions from *another job's* directory and writes none of its own,
 and every downstream module resolves the wavefunctions through this record.
 
+It also writes **`wannier_hr.dat`**, the real-space Hamiltonian $H(\mathbf{R})$
+in wannier90's text layout, with the Born–von Kármán set of $\mathbf{R}$
+vectors implied by the k-mesh (a $7\times7\times7$ mesh gives 343 blocks). The
+run's `cell` goes into `wannier.json` alongside it, because the $\mathbf{R}$
+vectors are integers in that basis and mean nothing without it, and `hr`
+records the filename rather than leaving it to be guessed — a run from before
+this existed is then distinguishable from one whose file went missing, and the
+two need different remedies.
+
+This is what {doc}`/electronic/wannier_transport_berry` and the cRPA module
+consume. Before it existed those panels could be driven only by a wannier90
+file or by a built-in toy, which left natively-implemented solvers reachable
+only through the code they were written to replace. Hermiticity —
+$H(-\mathbf{R}) = H(\mathbf{R})^\dagger$ — is checked as the file is written
+and reported in the run log; a failure there is the one way the table can be
+wrong that no consumer would notice.
+
+:::{note}
+Emitting the file costs one `get_hopping` call per $\mathbf{R}$ and is not
+fatal if it fails: the centres, spreads and cubes are already on disk, and the
+run logs a warning rather than losing them.
+:::
+
 ### The viewer
 
 The Wannier Functions window lists every orbital with its centre and spread

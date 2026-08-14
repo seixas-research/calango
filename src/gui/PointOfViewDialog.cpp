@@ -13,7 +13,6 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QSettings>
-#include <QSignalBlocker>
 #include <QVBoxLayout>
 
 #include <cmath>

@@ -35,16 +35,8 @@ CoordinationResult computeCoordination(const Structure& structure,
 
     const auto pbc = structure.cell().pbc();
     const bool usePbc = structure.cell().isDefined() && (pbc[0] || pbc[1] || pbc[2]);
-    std::vector<Vec3> translations{{0.0, 0.0, 0.0}};
-    if (usePbc) {
-        translations.clear();
-        const auto range = imageRange(structure.cell(), rMax);
-        const auto& v = structure.cell().vectors();
-        for (int i = -range[0]; i <= range[0]; ++i)
-            for (int j = -range[1]; j <= range[1]; ++j)
-                for (int k = -range[2]; k <= range[2]; ++k)
-                    translations.push_back(v[0] * i + v[1] * j + v[2] * k);
-    }
+    const std::vector<Vec3> translations =
+        imageTranslations(structure.cell(), rMax, usePbc);
 
     // Neighbor sites of atom i, recorded as the index of the neighbor's
     // representative in the cell (images count once per translation).

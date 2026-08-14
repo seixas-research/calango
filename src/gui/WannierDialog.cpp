@@ -24,7 +24,6 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
-#include <QSpinBox>
 #include <QTableWidget>
 #include <QVBoxLayout>
 #include <QtConcurrent>

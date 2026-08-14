@@ -7,6 +7,8 @@
 #include "core/CrpaSolver.hpp"
 
 #include <QDialog>
+#include <QList>
+#include <QPair>
 #include <QString>
 
 class QComboBox;
@@ -33,16 +35,23 @@ class CrpaDialog : public QDialog {
 public:
     explicit CrpaDialog(QWidget* parent = nullptr);
 
+    /// Offer the completed Wannier runs in this session as sources. Each entry
+    /// is (display label, absolute run directory). Call before exec().
+    void setWannierRuns(const QList<QPair<QString, QString>>& runs);
+
     /// Load a wannier90 `_hr.dat` and populate the orbital table from it.
     bool loadHamiltonian(const QString& path, QString* error);
 
 private Q_SLOTS:
+    void runSelected(int index);
     void browseHamiltonian();
     void loadDemoModel();
     void compute();
 
 private:
     bool buildModel(core::CrpaSolver::Model& model, QString* error) const;
+    /// Drop the run selection when the Hamiltonian comes from somewhere else.
+    void clearRunSelection();
     void rebuildTable(std::size_t orbitals);
 
     QLabel* sourceLabel_ = nullptr;
@@ -58,6 +67,7 @@ private:
     /// H(R) as read from disk (or from the built-in demo), kept apart from the
     /// table because the table only carries the per-orbital metadata.
     std::vector<core::CrpaSolver::HoppingBlock> hoppings_;
+    QComboBox* runCombo_ = nullptr; ///< completed Wannier runs, index 0 = none
     std::array<std::array<double, 3>, 3> cell_{
         {{4.0, 0.0, 0.0}, {0.0, 4.0, 0.0}, {0.0, 0.0, 4.0}}};
 };

@@ -22,7 +22,6 @@
 #include <optional>
 #include <vector>
 
-class QComboBox;
 class QPushButton;
 
 namespace calango::core {

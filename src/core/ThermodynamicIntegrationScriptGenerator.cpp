@@ -12,22 +12,6 @@ namespace calango::core {
 
 namespace {
 
-/// Re-emit a generated block at a deeper indentation, so a module-level snippet
-/// can live inside a function. Same helper the graphene-oxide MDMC generator
-/// uses for the calculator snippet.
-void emitIndented(std::ostringstream& out, const std::string& block,
-                  const std::string& indent)
-{
-    std::istringstream lines(block);
-    std::string line;
-    while (std::getline(lines, line)) {
-        if (line.empty())
-            out << "\n";
-        else
-            out << indent << line << "\n";
-    }
-}
-
 /// Numbers that must SURVIVE THE ROUND TRIP, written with std::to_chars.
 ///
 /// `ostringstream << double` writes six significant digits, and for the λ nodes
@@ -276,7 +260,7 @@ std::string ThermodynamicIntegrationScriptGenerator::generate(
            "    every other Calango module emits.\n"
            "    \"\"\"\n"
            "    atoms = system\n";
-    emitIndented(out, AseScriptGenerator::calculatorSnippet(calculator), "    ");
+    AseScriptGenerator::emitIndented(out, AseScriptGenerator::calculatorSnippet(calculator), "    ");
     out << "    return atoms.calc\n"
            "\n"
            "\n";
@@ -500,7 +484,7 @@ class _TiAccumulator:
            "    if not atoms.pbc.any():\n"
            "        ZeroRotation(atoms)\n"
            "\n";
-    emitIndented(out, [&] {
+    AseScriptGenerator::emitIndented(out, [&] {
         std::ostringstream integrator;
         md_blocks::emitIntegrator(integrator, calculator);
         return integrator.str();

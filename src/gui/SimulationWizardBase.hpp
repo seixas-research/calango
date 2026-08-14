@@ -5,7 +5,6 @@
 
 #include <QDialog>
 
-#include <functional>
 #include <QString>
 #include <QStringList>
 
@@ -48,21 +47,11 @@ public:
 
     Action action() const { return action_; }
 
-    /// Install the host's in-process runner for Calango's own DFT engine.
-    ///
+    /// True when the chosen engine runs in process rather than as a script.
     /// That engine has no generated script — it runs inside the application —
     /// so a wizard on it cannot hand the host a run.py. Instead the review
     /// stage's Run button sets Action::RunNativeEngine, and the host dispatches
-    /// on that. Supplied as a callback so this class stays free of any
-    /// dependency on the engine, exactly as it stays free of the wizards it
-    /// serves.
-    using NativeEngineRunner =
-        std::function<void(const core::CalculatorConfig& config)>;
-    void setNativeEngineRunner(NativeEngineRunner runner)
-    {
-        nativeEngineRunner_ = std::move(runner);
-    }
-    /// True when the chosen engine runs in process rather than as a script.
+    /// on that.
     bool usesNativeEngine() const
     {
         return selectedCalculator() == core::CalculatorKind::CalangoDft;
@@ -457,7 +446,6 @@ private:
     void refreshRunCommand();
 
     Action action_ = Action::None;
-    NativeEngineRunner nativeEngineRunner_;
     /// Host-supplied element symbols (see setStructureElements()).
     QStringList structureElements_;
     int stage_ = 0;

@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QDoubleSpinBox>
 #include <QJsonObject>
+#include <QPushButton>
 #include <QList>
 #include <QPair>
 #include <QString>
@@ -20,6 +21,7 @@ class QJsonArray;
 class QPainter;
 class QPushButton;
 class QRectF;
+class QSize;
 class QWidget;
 
 namespace calango::core {
@@ -33,8 +35,15 @@ namespace calango::gui {
 /// (or a style change) lands everywhere at once.
 
 /// Paint a color-swatch button — the "click to pick a color" buttons in the
-/// Representation, Lighting and Unit Cell & Axes panels.
-void setButtonColor(QPushButton* button, const QColor& color);
+/// Representation, Lighting and Unit Cell & Axes panels. Inline so that the
+/// minimal test targets which compile a single dialog need not link
+/// GuiUtils.cpp.
+inline void setButtonColor(QPushButton* button, const QColor& color)
+{
+    button->setStyleSheet(
+        QStringLiteral("background-color: %1; border: 1px solid #666;")
+            .arg(color.name()));
+}
 
 /// Hide/show the QFormLayout row (label + field) that `field` occupies inside
 /// `group`'s form layout. No-op when the group has no form layout or the field
@@ -134,6 +143,22 @@ bool writeTextFile(QWidget* parent, const QString& path,
                    const std::function<void(QTextStream&)>& body);
 /// Convenience overload for a body that is already a string.
 bool writeTextFile(QWidget* parent, const QString& path, const QString& body);
+
+/// Axis tick spacing at 1, 2 or 5 times a power of ten — the spacings people
+/// read without having to decode them. Rounds *up* to the next nice value so
+/// the tick count never exceeds `maxTicks` (which is what guarantees labels
+/// cannot overlap). `degenerate` is returned for an empty or invalid range:
+/// plots that keep ticking anyway pass 1.0, plots that skip ticks pass 0.0.
+double niceTickStep(double range, int maxTicks, double degenerate);
+
+/// Save a plot to `path` as a raster rendered at 3x its on-screen size on a
+/// white canvas — the print-quality export the result windows share.
+/// `renderTo` is the plot widget's own painter entry point, so the exported
+/// figure is exactly the on-screen figure. Warns on `parent` when the write
+/// fails.
+void savePlotImage(QWidget* parent, const QString& path,
+                   const QSize& logicalSize,
+                   const std::function<void(QPainter&, const QSize&)>& renderTo);
 
 /// The Jmol CPK colour of an element, straight from the element table.
 ///

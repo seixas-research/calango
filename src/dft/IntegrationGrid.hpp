@@ -164,8 +164,6 @@ public:
     /// the angular weights carry).
     const std::vector<double>& shellWeights() const { return shellWeights_; }
 
-    std::size_t atomCount() const { return atomCount_; }
-
     /// Index of the point (atom, shell, direction) in `points()`.
     std::size_t index(std::size_t atom, std::size_t shell,
                       std::size_t direction) const
@@ -188,7 +186,6 @@ private:
     std::vector<double> shellRadii_;
     std::vector<double> shellWeights_;
     std::vector<AngularPoint> directions_;
-    std::size_t atomCount_ = 0;
 };
 
 } // namespace calango::dft

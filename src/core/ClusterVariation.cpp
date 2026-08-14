@@ -1,4 +1,5 @@
 #include "core/ClusterVariation.hpp"
+#include "core/PhysicalConstants.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -6,8 +7,6 @@
 namespace calango::core {
 
 namespace {
-
-constexpr double kBoltzmannEvPerK = 8.617333262e-5;
 
 /// x ln x, continuous at zero.
 ///

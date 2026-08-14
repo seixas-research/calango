@@ -1,11 +1,10 @@
 #include "dft/XcFunctional.hpp"
+#include "dft/Constants.hpp"
 
 #include <cmath>
 
 namespace calango::dft {
 namespace {
-
-constexpr double kPi = 3.14159265358979323846;
 
 /// r_s, the radius of the sphere holding one electron: (3/4πρ)^{1/3}. Every
 /// correlation parameterisation is written in it rather than in ρ because the

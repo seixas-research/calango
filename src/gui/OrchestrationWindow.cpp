@@ -69,13 +69,11 @@ constexpr double kInputLineHeight = 15.0;
 
 // -- Canvas palette ---------------------------------------------------------
 //
-// The canvas is dark REGARDLESS of the application theme, like every other
-// data canvas in Calango (the metric plots, the convergence curves, the Random
-// Noise histograms all fill this same 28/30/34). The Orchestration dock sits
-// immediately beside Results in the bottom row, so anything else would put two
-// differently-lit canvases side by side; and a diagram of light nodes on a
-// dark field is the convention every node editor uses, because it is the node
-// bodies that carry the information and the field that must recede.
+// The canvas is dark REGARDLESS of the application theme. Unlike the 2D data
+// plots — which fill PlotPalette::canvas (white) because they end up in
+// papers — this is app chrome: a diagram of light nodes on a dark field is
+// the convention every node editor uses, because it is the node bodies that
+// carry the information and the field that must recede.
 //
 // These three belong together and MUST move together: the nodes are painted
 // white with dark text, so they take care of themselves, but both link colours

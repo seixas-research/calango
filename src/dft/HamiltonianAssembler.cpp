@@ -1,4 +1,5 @@
 #include "dft/HamiltonianAssembler.hpp"
+#include "dft/Constants.hpp"
 
 #include "dft/XcFunctional.hpp"
 
@@ -9,10 +10,6 @@
 
 namespace calango::dft {
 namespace {
-
-constexpr double kPi = 3.14159265358979323846;
-constexpr double kFourPi = 12.566370614359172;
-constexpr double kTwoPi = 6.283185307179586;
 
 /// Highest angular momentum kept in the multipole expansion of the difference
 /// density. l = 4 is well past where the bonding rearrangement of a
@@ -447,16 +444,9 @@ Outcome HamiltonianAssembler::prepare(
     return Outcome::success();
 }
 
-void HamiltonianAssembler::blochSums(
-    const std::array<double, 3>& kFractional,
-    std::vector<std::complex<double>>& values,
-    std::vector<std::complex<double>>* gradients) const
+std::vector<std::complex<double>> HamiltonianAssembler::imagePhases(
+    const std::array<double, 3>& kFractional) const
 {
-    values.assign(gridSize_ * functions_.size(), {});
-    const bool wantGradients =
-        gradients != nullptr && !contributionGradients_.empty();
-    if (gradients != nullptr)
-        gradients->assign(gridSize_ * functions_.size() * 3, {});
     // e^{ik·T} with k in fractional coordinates and T in integer lattice
     // multiples is e^{2πi(k·n)} — no reciprocal lattice vectors needed, which
     // removes the commonest sign-and-factor mistake in a k-point loop.
@@ -472,6 +462,20 @@ void HamiltonianAssembler::blochSums(
                                              std::sin(argument));
         }
     }
+    return phases;
+}
+
+void HamiltonianAssembler::blochSums(
+    const std::array<double, 3>& kFractional,
+    std::vector<std::complex<double>>& values,
+    std::vector<std::complex<double>>* gradients) const
+{
+    values.assign(gridSize_ * functions_.size(), {});
+    const bool wantGradients =
+        gradients != nullptr && !contributionGradients_.empty();
+    if (gradients != nullptr)
+        gradients->assign(gridSize_ * functions_.size() * 3, {});
+    const std::vector<std::complex<double>> phases = imagePhases(kFractional);
     for (std::size_t g = 0; g < gridSize_; ++g) {
         for (std::size_t n = offsets_[g]; n < offsets_[g + 1]; ++n) {
             const Contribution& contribution = contributions_[n];
@@ -508,18 +512,7 @@ Outcome HamiltonianAssembler::buildOverlapAndKinetic(
     std::vector<std::complex<double>> tChi;
     blochSums(kFractional, chi);
     tChi.assign(gridSize_ * n, {});
-    std::vector<std::complex<double>> phases(images_.size(),
-                                             std::complex<double>(1.0, 0.0));
-    if (!lattice_.empty()) {
-        for (std::size_t t = 0; t < images_.size(); ++t) {
-            const double argument = kTwoPi
-                * (kFractional[0] * imageIndices_[t][0]
-                   + kFractional[1] * imageIndices_[t][1]
-                   + kFractional[2] * imageIndices_[t][2]);
-            phases[t] = std::complex<double>(std::cos(argument),
-                                             std::sin(argument));
-        }
-    }
+    const std::vector<std::complex<double>> phases = imagePhases(kFractional);
     for (std::size_t g = 0; g < gridSize_; ++g) {
         for (std::size_t c = offsets_[g]; c < offsets_[g + 1]; ++c) {
             const Contribution& contribution = contributions_[c];

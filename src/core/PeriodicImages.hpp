@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cmath>
+#include <vector>
 
 namespace calango::core {
 
@@ -43,6 +44,27 @@ inline std::array<int, 3> imageRange(const UnitCell& cell, double rMax)
         range[axis] = static_cast<int>(std::ceil(rMax / width));
     }
     return range;
+}
+
+/// The lattice translation of every periodic image to visit for a neighbor
+/// search of radius `rMax`, via imageRange(). With `usePbc` false — the open
+/// case, or however the caller spells "this structure is not periodic" — the
+/// list is just the zero translation, so callers can loop over the result
+/// unconditionally.
+inline std::vector<Vec3> imageTranslations(const UnitCell& cell, double rMax,
+                                           bool usePbc)
+{
+    std::vector<Vec3> translations{{0.0, 0.0, 0.0}};
+    if (usePbc) {
+        translations.clear();
+        const auto range = imageRange(cell, rMax);
+        const auto& v = cell.vectors();
+        for (int i = -range[0]; i <= range[0]; ++i)
+            for (int j = -range[1]; j <= range[1]; ++j)
+                for (int k = -range[2]; k <= range[2]; ++k)
+                    translations.push_back(v[0] * i + v[1] * j + v[2] * k);
+    }
+    return translations;
 }
 
 } // namespace calango::core

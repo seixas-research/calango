@@ -11,7 +11,6 @@
 
 #include <vector>
 
-class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class QPushButton;
@@ -86,8 +85,6 @@ public:
                             const QStringList& phaseNames,
                             QWidget* parent = nullptr);
 
-    const PhaseDiagramStyle& style() const { return style_; }
-
 Q_SIGNALS:
     /// Emitted on every edit, so the plot behind the dialog updates live —
     /// choosing a colour against a static preview is choosing blind.
@@ -130,7 +127,6 @@ public:
     QString toCsv() const;
 
     void setStyle(const PhaseDiagramStyle& style);
-    const PhaseDiagramStyle& style() const { return style_; }
 
     /// Render to `path`; PNG (at `scale`x for print) or SVG by extension.
     bool exportImage(const QString& path, double scale = 3.0);

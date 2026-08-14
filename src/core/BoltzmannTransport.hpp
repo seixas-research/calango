@@ -138,9 +138,6 @@ public:
     /// interpolated bands. The reference for `carrierConcentration`.
     double electronCount(double temperature, double chemicalPotential) const;
 
-    /// The μ at which electronCount equals `electrons`, by bisection.
-    double findChemicalPotential(double temperature, double electrons) const;
-
     const Options& options() const { return options_; }
     const WannierHamiltonian& hamiltonian() const { return hamiltonian_; }
 

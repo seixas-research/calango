@@ -213,19 +213,10 @@ void WorkfunctionWindow::exportImage()
     if (path.isEmpty())
         return;
 
-    // Render at 3x the on-screen size for a crisp, print-quality raster.
-    const int scale = 3;
-    const QSize logical = plot_->size();
-    QImage image(logical * scale, QImage::Format_ARGB32_Premultiplied);
-    image.fill(Qt::white);
-    QPainter painter(&image);
-    painter.scale(scale, scale);
-    plot_->renderTo(painter, logical);
-    painter.end();
-
-    if (!image.save(path))
-        QMessageBox::warning(this, tr("Export Image"),
-                             tr("Could not write the image to %1.").arg(path));
+    savePlotImage(this, path, plot_->size(),
+                  [this](QPainter& painter, const QSize& logical) {
+                      plot_->renderTo(painter, logical);
+                  });
 }
 
 } // namespace calango::gui

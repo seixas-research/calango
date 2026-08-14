@@ -1,4 +1,5 @@
 #include "gui/ConvergenceResultsWindow.hpp"
+#include "gui/PlotPalette.hpp"
 
 #include "gui/GuiUtils.hpp"
 
@@ -299,7 +300,7 @@ bool ConvergencePlotWidget::renderTo(QPainter& p, QSize size) const
     p.setClipRect(plot);
     const QColor stroke = style_.overrideCurveColor
         ? style_.curveColor
-        : QColor(0x1f, 0x77, 0xb4);
+        : PlotPalette::series;
     QPen pen(stroke);
     pen.setWidthF(style_.lineWidth);
     pen.setStyle(style_.lineStyle);
@@ -874,19 +875,10 @@ void ConvergenceResultsWindow::exportImage(Quantity quantity)
     if (path.isEmpty())
         return;
 
-    // Render at 3x the on-screen size for a crisp, print-quality raster.
-    const int scale = 3;
-    const QSize logical = plot->size();
-    QImage image(logical * scale, QImage::Format_ARGB32_Premultiplied);
-    image.fill(Qt::white);
-    QPainter painter(&image);
-    painter.scale(scale, scale);
-    plot->renderTo(painter, logical);
-    painter.end();
-
-    if (!image.save(path))
-        QMessageBox::warning(this, tr("Export Image"),
-                             tr("Could not write the image to %1.").arg(path));
+    savePlotImage(this, path, plot->size(),
+                  [plot](QPainter& painter, const QSize& logical) {
+                      plot->renderTo(painter, logical);
+                  });
 }
 
 } // namespace calango::gui

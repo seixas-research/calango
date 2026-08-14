@@ -2,6 +2,7 @@
 
 #include "core/AseScriptGenerator.hpp"
 #include "gui/CondaEnvs.hpp"
+#include "gui/SettingsManager.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
 #include <QCheckBox>
@@ -309,7 +310,7 @@ MaceTrainerDialog::MaceTrainerDialog(QWidget* parent) : QDialog(parent)
                 });
     }
     envEdit_ = new QLineEdit(
-        QSettings().value(QStringLiteral("jobs/environmentPath")).toString(),
+        QSettings().value(SettingsManager::kEnvironmentPath).toString(),
         envGroup);
     envEdit_->setPlaceholderText(
         tr("conda env folder or python (empty = embedded); needs mace-torch"));

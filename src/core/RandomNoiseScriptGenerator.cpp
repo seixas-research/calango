@@ -49,16 +49,8 @@ std::string RandomNoiseScriptGenerator::generate(const RandomNoiseRunConfig& c)
         // into the function body. It binds to `atoms`, hence the rebind per
         // member — a shared calculator would carry the previous geometry's
         // converged density into the next member and quietly bias the spread.
-        const std::string snippet =
-            AseScriptGenerator::calculatorSnippet(c.calculator);
-        std::istringstream lines(snippet);
-        std::string line;
-        while (std::getline(lines, line)) {
-            if (line.empty())
-                out << "\n";
-            else
-                out << "    " << line << "\n";
-        }
+        AseScriptGenerator::emitIndented(
+            out, AseScriptGenerator::calculatorSnippet(c.calculator), "    ");
     }
     out << "    return atoms\n"
            "\n"

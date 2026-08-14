@@ -1,4 +1,5 @@
 #include "core/GrapheneOxideBuilder.hpp"
+#include "core/PhysicalConstants.hpp"
 
 #include "core/UnitCell.hpp"
 
@@ -21,7 +22,6 @@ using Group = GrapheneOxideBuilder::Group;
 using Lattice = GrapheneOxideBuilder::Lattice;
 using Region = GrapheneOxideBuilder::Region;
 
-constexpr double kPi = 3.14159265358979323846;
 constexpr double kDeg = kPi / 180.0;
 
 // Graphene lattice constant (Å) and the derived C-C bond length.

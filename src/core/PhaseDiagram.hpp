@@ -119,13 +119,6 @@ struct DiagramBand {
     double xHigh = 0.0;
 
     bool twoPhase() const { return phaseB >= 0; }
-    /// Identity for tracing: two bands continue the same field only when this
-    /// matches. It is deliberately the PHASE PAIR and not merely the position,
-    /// because a change of pair is precisely where an invariant reaction sits.
-    bool sameKindAs(const DiagramBand& other) const
-    {
-        return phaseA == other.phaseA && phaseB == other.phaseB;
-    }
 };
 
 /// The bands of one isotherm, ascending in composition.

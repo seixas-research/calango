@@ -7,7 +7,6 @@
 
 #include <QCheckBox>
 #include <QDoubleSpinBox>
-#include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QComboBox>

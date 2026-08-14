@@ -24,22 +24,6 @@ namespace {
 
 constexpr double kPickRadius = 9.0;
 
-/// Same 1/2/5·10ⁿ axis heuristic as MetricPlotWidget, kept local because the
-/// two widgets otherwise share nothing.
-double niceTickStep(double range, int maxTicks)
-{
-    if (range <= 0.0 || maxTicks < 1)
-        return 0.0;
-    const double rough = range / maxTicks;
-    const double magnitude = std::pow(10.0, std::floor(std::log10(rough)));
-    const double normalized = rough / magnitude;
-    const double nice = normalized <= 1.0 ? 1.0
-        : normalized <= 2.0              ? 2.0
-        : normalized <= 5.0              ? 5.0
-                                         : 10.0;
-    return nice * magnitude;
-}
-
 } // namespace
 
 ConvexHullPlotWidget::ConvexHullPlotWidget(QWidget* parent)
@@ -159,7 +143,7 @@ void ConvexHullPlotWidget::paintEvent(QPaintEvent*)
     const QColor gridColor = PlotPalette::grid;
     const QColor tickColor = PlotPalette::tickText;
     {
-        const double step = niceTickStep(xHi - xLo, 8);
+        const double step = niceTickStep(xHi - xLo, 8, 0.0);
         for (double t = std::ceil(xLo / step) * step; step > 0.0 && t <= xHi;
              t += step) {
             const double x = toX(t);
@@ -169,7 +153,7 @@ void ConvexHullPlotWidget::paintEvent(QPaintEvent*)
             painter.drawText(QRectF(x - 30, plot.bottom() + 4, 60, 14),
                              Qt::AlignHCenter, QString::number(t, 'f', 2));
         }
-        const double yStep = niceTickStep(yHi - yLo, 6);
+        const double yStep = niceTickStep(yHi - yLo, 6, 0.0);
         for (double t = std::ceil(yLo / yStep) * yStep; yStep > 0.0 && t <= yHi;
              t += yStep) {
             const double y = toY(t);

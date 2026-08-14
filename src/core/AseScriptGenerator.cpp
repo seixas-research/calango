@@ -1934,15 +1934,8 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
         }
         const std::string opt = toString(c.optimizer);
         out << "from ase.optimize import " << opt << "\n";
-        if (c.relaxCell) {
-            const char* filter = c.cellFilter == CellFilter::UnitCell
-                ? "UnitCellFilter"
-                : "FrechetCellFilter";
-            out << "try:\n"
-                << "    from ase.filters import " << filter << " as _CellFilter\n"
-                   "except ImportError:  # ASE < 3.23\n"
-                   "    from ase.constraints import UnitCellFilter as _CellFilter\n";
-        }
+        if (c.relaxCell)
+            AseScriptGenerator::emitCellFilterImport(out, c.cellFilter);
         out << "\n"
             << "max_steps = " << c.maxSteps << "\n";
         // Constraints bind to `atoms` BEFORE the cell filter wraps it: the
@@ -2567,6 +2560,32 @@ std::string AseScriptGenerator::calculatorSnippet(const CalculatorConfig& config
     std::ostringstream out;
     emitCalculator(out, config);
     return out.str();
+}
+
+void AseScriptGenerator::emitIndented(std::ostringstream& out,
+                                      const std::string& block,
+                                      const std::string& indent)
+{
+    std::istringstream lines(block);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (line.empty())
+            out << "\n";
+        else
+            out << indent << line << "\n";
+    }
+}
+
+void AseScriptGenerator::emitCellFilterImport(std::ostringstream& out,
+                                              CellFilter cellFilter)
+{
+    const char* filter = cellFilter == CellFilter::UnitCell
+        ? "UnitCellFilter"
+        : "FrechetCellFilter";
+    out << "try:\n"
+        << "    from ase.filters import " << filter << " as _CellFilter\n"
+           "except ImportError:  # ASE < 3.23\n"
+           "    from ase.constraints import UnitCellFilter as _CellFilter\n";
 }
 
 std::string AseScriptGenerator::streamFrameHelper()

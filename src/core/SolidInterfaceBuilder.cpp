@@ -1,4 +1,6 @@
 #include "core/SolidInterfaceBuilder.hpp"
+#include "core/PhysicalConstants.hpp"
+#include "core/RandomRotation.hpp"
 
 #include "core/Element.hpp"
 
@@ -15,7 +17,6 @@ namespace calango::core {
 
 namespace {
 
-constexpr double kPi = std::numbers::pi;
 /// u -> g/cm³ for a mass per unit volume expressed in u/Å³.
 constexpr double kUPerA3ToGCm3 = 1.6605390666;
 
@@ -40,30 +41,6 @@ Matrix3 rotationAbout(const Vec3& axis, double radians)
                  k.y * k.z * t - k.x * s},
             Vec3{k.z * k.x * t - k.y * s, k.z * k.y * t + k.x * s,
                  c + k.z * k.z * t}};
-}
-
-/// A uniformly distributed random rotation (Shoemake's quaternion method).
-/// Sampling three Euler angles uniformly does NOT give a uniform orientation —
-/// it clusters grains near the poles, which shows up as a texture nobody asked
-/// for in a "random" polycrystal.
-Matrix3 randomRotation(std::mt19937& rng)
-{
-    std::uniform_real_distribution<double> uniform(0.0, 1.0);
-    const double u1 = uniform(rng);
-    const double u2 = uniform(rng);
-    const double u3 = uniform(rng);
-    const double r1 = std::sqrt(1.0 - u1);
-    const double r2 = std::sqrt(u1);
-    const double x = r1 * std::sin(2.0 * kPi * u2);
-    const double y = r1 * std::cos(2.0 * kPi * u2);
-    const double z = r2 * std::sin(2.0 * kPi * u3);
-    const double w = r2 * std::cos(2.0 * kPi * u3);
-    return {Vec3{1 - 2 * (y * y + z * z), 2 * (x * y - z * w),
-                 2 * (x * z + y * w)},
-            Vec3{2 * (x * y + z * w), 1 - 2 * (x * x + z * z),
-                 2 * (y * z - x * w)},
-            Vec3{2 * (x * z - y * w), 2 * (y * z + x * w),
-                 1 - 2 * (x * x + y * y)}};
 }
 
 /// Perpendicular spacing of the lattice planes normal to vector `index`.
@@ -588,7 +565,7 @@ SolidInterfaceBuilder::Result SolidInterfaceBuilder::generate(
                         break;
                     }
                 }
-                regions.push_back({randomRotation(rng), seed, phase});
+                regions.push_back({randomRotationMatrix(rng), seed, phase});
             }
         }
 

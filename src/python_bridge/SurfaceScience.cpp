@@ -2,6 +2,7 @@
 
 #include "core/AdsorptionSites.hpp"
 #include "python_bridge/AseBridge.hpp"
+#include "python_bridge/PyError.hpp"
 
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
@@ -13,11 +14,6 @@ namespace py = pybind11;
 namespace calango::pybridge {
 
 namespace {
-
-[[noreturn]] void rethrow(const py::error_already_set& e, const char* what)
-{
-    throw std::runtime_error(std::string(what) + ":\n" + e.what());
-}
 
 /// Adsorbate molecule template: resolve the name and hand back the ASE
 /// molecule as an Atoms object plus the index of the anchor atom (the atom

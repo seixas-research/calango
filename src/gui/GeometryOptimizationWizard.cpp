@@ -6,7 +6,6 @@
 #include "core/Structure.hpp"
 #include "gui/GeometryConstraintsDialog.hpp"
 
-#include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>

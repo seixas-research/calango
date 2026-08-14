@@ -1,9 +1,13 @@
 #include "gui/CrpaDialog.hpp"
 
+#include "gui/WannierRunLoader.hpp"
+
 #include "core/LocaleSafeNumber.hpp"
 #include "gui/GuiUtils.hpp"
 
 #include <QCheckBox>
+#include <QFileInfo>
+#include <QSignalBlocker>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -50,6 +54,26 @@ CrpaDialog::CrpaDialog(QWidget* parent) : QDialog(parent)
     outer->addWidget(intro);
 
     // -- Source -------------------------------------------------------------
+    // A Wannier run this session completed, first: it is the only source that
+    // needs nothing from outside Calango, now that the run writes its own
+    // H(R). Before that these panels could be driven only by a wannier90 file
+    // or by the demo model — a natively-implemented solver reachable only
+    // through the code it was written to replace.
+    auto* runRow = new QHBoxLayout;
+    runRow->addWidget(new QLabel(tr("From a completed run:"), this));
+    runCombo_ = new QComboBox(this);
+    runCombo_->addItem(tr("(choose a Wannier run)"), QString());
+    runCombo_->setToolTip(
+        tr("Take H(R) — and the centres and spreads that fill the table "
+           "below — straight from a Wannier Functions run that finished in "
+           "this session.\n\n"
+           "A run started before Calango wrote H(R) will say so when picked; "
+           "re-running the Wannierization on the same baseline produces it."));
+    connect(runCombo_, &QComboBox::currentIndexChanged, this,
+            &CrpaDialog::runSelected);
+    runRow->addWidget(runCombo_, 1);
+    outer->addLayout(runRow);
+
     auto* sourceRow = new QHBoxLayout;
     sourceLabel_ = new QLabel(tr("No Hamiltonian loaded."), this);
     sourceLabel_->setWordWrap(true);
@@ -194,6 +218,7 @@ void CrpaDialog::rebuildTable(std::size_t orbitals)
 
 void CrpaDialog::loadDemoModel()
 {
+    clearRunSelection();
     // Three correlated orbitals plus a ligand, hybridised, with dispersion
     // along x. The same model the solver's tests use, so what the dialog shows
     // can be checked against them directly.
@@ -233,8 +258,84 @@ void CrpaDialog::loadDemoModel()
     computeButton_->setEnabled(true);
 }
 
+void CrpaDialog::setWannierRuns(const QList<QPair<QString, QString>>& runs)
+{
+    if (!runCombo_)
+        return;
+    const QSignalBlocker blocker(runCombo_);
+    runCombo_->clear();
+    runCombo_->addItem(runs.isEmpty() ? tr("(no completed Wannier runs)")
+                                      : tr("(choose a Wannier run)"),
+                       QString());
+    for (const auto& [label, dir] : runs)
+        runCombo_->addItem(label, dir);
+    runCombo_->setEnabled(!runs.isEmpty());
+}
+
+void CrpaDialog::runSelected(int index)
+{
+    if (index <= 0 || !runCombo_)
+        return;
+    const QString dir = runCombo_->itemData(index).toString();
+    if (dir.isEmpty())
+        return;
+    WannierRunData data;
+    QString error;
+    if (!loadWannierRun(dir, &data, &error)) {
+        QMessageBox::warning(this, tr("Constrained RPA"), error);
+        const QSignalBlocker blocker(runCombo_);
+        runCombo_->setCurrentIndex(0);
+        return;
+    }
+    // The cell has to be adopted BEFORE the table is built: buildModel() hands
+    // it to the solver, and the R vectors of the hopping table are integers in
+    // it — with the placeholder cubic cell still in place every screened
+    // interaction would be computed at the wrong distances.
+    cell_ = data.cell;
+    if (!loadHamiltonian(data.hrPath, &error)) {
+        QMessageBox::warning(this, tr("Constrained RPA"), error);
+        const QSignalBlocker blocker(runCombo_);
+        runCombo_->setCurrentIndex(0);
+        return;
+    }
+
+    // The centres and spreads the run measured, in place of the placeholders
+    // rebuildTable() writes. cRPA weights each transition by how much of the
+    // band lives in the correlated subspace, and the spreads are what the user
+    // reads to decide WHICH orbitals that subspace should hold — so filling
+    // them in from the run is the difference between choosing and guessing.
+    const int rows = orbitalTable_->rowCount();
+    for (int row = 0; row < rows; ++row) {
+        if (row < data.spreads.size())
+            orbitalTable_->item(row, ColSpread)
+                ->setText(QString::number(data.spreads.at(row), 'f', 4));
+        if (row < data.centres.size()) {
+            const core::Vec3& c = data.centres.at(row);
+            orbitalTable_->item(row, ColCentre)
+                ->setText(QStringLiteral("%1 %2 %3")
+                              .arg(c.x, 0, 'f', 4)
+                              .arg(c.y, 0, 'f', 4)
+                              .arg(c.z, 0, 'f', 4));
+        }
+    }
+    sourceLabel_->setText(tr("%1 — %2 Wannier functions, H(R) from %3")
+                              .arg(runCombo_->itemText(index))
+                              .arg(data.nWannier)
+                              .arg(QFileInfo(data.hrPath).fileName()));
+    computeButton_->setEnabled(true);
+}
+
+void CrpaDialog::clearRunSelection()
+{
+    if (!runCombo_ || runCombo_->currentIndex() == 0)
+        return;
+    const QSignalBlocker blocker(runCombo_);
+    runCombo_->setCurrentIndex(0);
+}
+
 void CrpaDialog::browseHamiltonian()
 {
+    clearRunSelection();
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Open a wannier90 Hamiltonian"), QString(),
         tr("wannier90 Hamiltonian (*_hr.dat);;All files (*)"));

@@ -1,4 +1,5 @@
 #include "core/Superconductivity.hpp"
+#include "core/PhysicalConstants.hpp"
 
 #include <cmath>
 // Required on Linux: libstdc++ (GCC 13+) no longer pulls <cstdint> in
@@ -6,12 +7,6 @@
 #include <cstdint>
 
 namespace calango::core {
-
-namespace {
-
-constexpr double kBoltzmannEvPerK = 8.617333262e-5;
-
-} // namespace
 
 SuperconductingResult
 estimateSuperconductingTc(const SuperconductingInput& input)

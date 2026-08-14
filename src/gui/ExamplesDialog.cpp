@@ -18,7 +18,6 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
-#include <QMessageBox>
 #include <QProgressDialog>
 #include <QRegularExpression>
 #include <QSettings>

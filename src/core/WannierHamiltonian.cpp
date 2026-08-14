@@ -1,4 +1,5 @@
 #include "core/WannierHamiltonian.hpp"
+#include "core/PhysicalConstants.hpp"
 
 #include "core/LocaleSafeNumber.hpp"
 
@@ -13,7 +14,6 @@
 namespace calango::core {
 
 namespace {
-constexpr double kPi = 3.14159265358979323846;
 }
 
 namespace linalg {

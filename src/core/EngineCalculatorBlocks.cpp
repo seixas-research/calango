@@ -1,5 +1,7 @@
 #include "core/EngineCalculatorBlocks.hpp"
 
+#include "core/PhysicalConstants.hpp"
+
 #include <sstream>
 #include <string>
 #include <vector>
@@ -15,7 +17,7 @@ namespace {
 /// (the run completes, just badly converged or absurdly expensive).
 constexpr double kRydbergPerEv = 1.0 / 13.605693122994;
 /// Hartree per electronvolt, for the tolerances the same codes take in Ha.
-constexpr double kHartreePerEv = 1.0 / 27.211386245988;
+constexpr double kHartreePerEv = 1.0 / kHartreeEv;
 
 std::string trim(std::string text)
 {

@@ -443,13 +443,10 @@ struct ClusterExpansionFitOutput {
 /// Fit effective cluster interactions to the ensemble in `ensembleJson` (the
 /// raw text of `cluster_expansion.json`).
 ///
-/// *** NOT YET WIRED UP. *** The solver lives in core::ClusterExpansionFit,
-/// which is being written separately; this function validates its input,
-/// reports what it found and then refuses, naming the missing module. It is
-/// deliberately the ONLY place the node touches the solver, so wiring it up is
-/// a change to one function body and to the CMake source lists — nothing in
-/// the canvas, the slot tables, the document format or the provenance depends
-/// on which of the two states it is in.
+/// The solver lives in core::ClusterExpansionFit, and this function is
+/// deliberately the ONLY place the node touches it — nothing in the canvas,
+/// the slot tables, the document format or the provenance knows about the
+/// solver.
 bool runClusterExpansionFit(const QString& ensembleJson,
                             const ClusterExpansionFitSpec& spec,
                             ClusterExpansionFitOutput* output, QString* error);
@@ -466,10 +463,8 @@ struct CvmEntropyOutput {
 /// Solve the CVM free-energy minimization over a temperature range, from the
 /// ECIs in `eciJson` (the raw text of `cluster_expansion_fit.json`).
 ///
-/// *** NOT YET WIRED UP. *** Same arrangement as runClusterExpansionFit: the
-/// physics belongs to core::ClusterVariation, which is being written
-/// separately. The mapping this function will perform when that module lands
-/// is spelled out at its one wire-up point.
+/// Same arrangement as runClusterExpansionFit: the physics belongs to
+/// core::ClusterVariation, and this function is its one wire-up point.
 bool runCvmEntropy(const QString& eciJson, const CvmEntropySpec& spec,
                    CvmEntropyOutput* output, QString* error);
 

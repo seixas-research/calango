@@ -79,7 +79,6 @@ public:
     void setConfig(const SshConfig& config);
     const SshConfig& config() const { return config_; }
 
-    SessionState sessionState() const { return state_; }
     bool isConnected() const { return state_ == SessionState::Connected; }
     /// True once a human answered a challenge for this session — the flag
     /// that forbids silent reconnection.

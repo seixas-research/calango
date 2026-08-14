@@ -143,12 +143,12 @@ void DefectDiagramWidget::paintEvent(QPaintEvent*)
 
     // The band edges ARE the plot's boundaries, and saying so is what makes a
     // transition level "0.7 eV above the VBM" readable as a position.
-    painter.setPen(QPen(QColor(0x1f, 0x77, 0xb4), 1.2, Qt::DashLine));
+    painter.setPen(QPen(PlotPalette::series, 1.2, Qt::DashLine));
     painter.drawLine(QPointF(toX(0.0), box.top()),
                      QPointF(toX(0.0), box.bottom()));
     painter.drawLine(QPointF(toX(xMax), box.top()),
                      QPointF(toX(xMax), box.bottom()));
-    painter.setPen(QColor(0x1f, 0x77, 0xb4));
+    painter.setPen(PlotPalette::series);
     painter.drawText(QPointF(toX(0.0) + 3.0, box.top() + metrics.height()),
                      tr("VBM"));
     painter.drawText(QPointF(toX(xMax) - metrics.horizontalAdvance(tr("CBM"))

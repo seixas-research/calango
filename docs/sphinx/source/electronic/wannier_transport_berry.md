@@ -14,10 +14,21 @@ Reading an `_hr.dat` you already have is fine and is done by Calango's own
 parser; the file is a plain text table of hopping integrals.
 :::
 
-Both modules take their input from the same row: open an `_hr.dat`, or load one
-of two built-in demonstration models (a simple-cubic metal, and the two-band
-Qi–Wu–Zhang Chern insulator). The demo models are the ones the unit tests use,
-so what the panel reports can be checked against the test output directly.
+Both modules take their input from the same row, which offers three sources:
+
+1. **From a completed run** — a Wannier Functions run finished in this session.
+   Its `wannier_hr.dat`, cell, centres and spreads are read straight from the
+   run directory, so nothing outside Calango is involved at any point. This is
+   the normal route.
+2. **Open an `_hr.dat`** — a Hamiltonian you already have, parsed by Calango.
+3. **A built-in demonstration model** — a simple-cubic metal, or the two-band
+   Qi–Wu–Zhang Chern insulator. These are the models the unit tests use, so
+   what the panel reports can be checked against the test output directly.
+
+A run started before Calango wrote $H(\mathbf{R})$ says so when picked, and
+says what to do about it: re-run the Wannierization on the same baseline. That
+is distinguished from a run that recorded the file but no longer has it, which
+is a different problem with a different fix.
 
 ---
 

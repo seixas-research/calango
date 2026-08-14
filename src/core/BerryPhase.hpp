@@ -45,9 +45,6 @@ class BerryPhase {
 public:
     /// e²/ħ in SI, for the anomalous Hall conductivity.
     static constexpr double kEsquaredOverHbar = 2.4341348e-4; ///< S (=A/V)
-    /// Conductance quantum e²/h, S. A 2D Chern insulator has
-    /// σ_xy = C e²/h exactly.
-    static constexpr double kConductanceQuantum = 3.8740458e-5;
 
     struct Options {
         /// Bands included as "occupied" for the loop / polarization / AHC.
@@ -126,7 +123,6 @@ public:
         /// Conductance per layer in units of e²/h — for a 2D model this is
         /// the Chern number and is what a quantised Hall plateau reports.
         double sigmaInConductanceQuanta = 0.0;
-        int degeneraciesSkipped = 0;
     };
     HallResult anomalousHall(int alpha, int beta) const;
 

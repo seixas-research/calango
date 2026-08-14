@@ -37,16 +37,8 @@ RdfResult computeRdf(const Structure& structure, const RdfOptions& options)
     const bool pbc = options.usePbc && structure.cell().isDefined();
 
     // Translation images to consider ((0,0,0) only in the open case).
-    std::vector<Vec3> translations{{0.0, 0.0, 0.0}};
-    if (pbc) {
-        translations.clear();
-        const auto range = imageRange(structure.cell(), options.rMax);
-        const auto& v = structure.cell().vectors();
-        for (int i = -range[0]; i <= range[0]; ++i)
-            for (int j = -range[1]; j <= range[1]; ++j)
-                for (int k = -range[2]; k <= range[2]; ++k)
-                    translations.push_back(v[0] * i + v[1] * j + v[2] * k);
-    }
+    const std::vector<Vec3> translations =
+        imageTranslations(structure.cell(), options.rMax, pbc);
 
     const double rMaxSq = options.rMax * options.rMax;
     for (int i = 0; i < n; ++i) {

@@ -11,6 +11,43 @@ namespace calango::render {
 
 namespace {
 
+/// The PBR entry is identical for atoms and bonds apart from the slot — one
+/// factory, so the description (which is also a translated string) exists
+/// once.
+ShaderProfile pbrEntry(ShaderSlot slot)
+{
+    return {QStringLiteral("pbr"),
+            QCoreApplication::translate("calango::render", "Modern / PBR"),
+            QCoreApplication::translate(
+                "calango::render",
+                "Cook-Torrance physically based shading (GGX + Smith + "
+                "Schlick) "
+                "on impostor geometry, driven by metallic and roughness rather "
+                "than by an ad-hoc specular multiplier. Metals tint their "
+                "reflection and lose their diffuse lobe, which is what makes a "
+                "metal look like metal instead of grey plastic.\n\n"
+                "The environment is an analytic studio gradient rather than a "
+                "captured cubemap — no image asset is shipped — so reflections "
+                "read as light and shade rather than as a recognisable room."),
+            slot, {}, true, true, 1, false};
+}
+
+/// Same arrangement for the Toon entry.
+ShaderProfile toonEntry(ShaderSlot slot)
+{
+    return {QStringLiteral("toon"),
+            QCoreApplication::translate("calango::render", "Stylized / Toon"),
+            QCoreApplication::translate(
+                "calango::render",
+                "Quantized diffuse bands with a darkened silhouette — the "
+                "flat-shaded look a figure or a teaching slide usually wants. "
+                "On "
+                "spheres and cylinders the rim IS the outline, so no "
+                "screen-space "
+                "edge pass is needed."),
+            slot, {}, true, true, 2, false};
+}
+
 /// The registered profiles, per slot.
 ///
 /// Phase 0 ships one profile per slot for atoms and bonds — the existing
@@ -40,28 +77,8 @@ const std::vector<ShaderProfile>& atomProfiles()
              "and the vertex cost drops from 651 vertices per atom to 4. "
              "Shading, finishes, shadows and fog are identical to Legacy."),
          ShaderSlot::Atoms, {}, true, true, 0, false},
-        {QStringLiteral("pbr"),
-         QCoreApplication::translate("calango::render", "Modern / PBR"),
-         QCoreApplication::translate(
-             "calango::render",
-             "Cook-Torrance physically based shading (GGX + Smith + Schlick) "
-             "on impostor geometry, driven by metallic and roughness rather "
-             "than by an ad-hoc specular multiplier. Metals tint their "
-             "reflection and lose their diffuse lobe, which is what makes a "
-             "metal look like metal instead of grey plastic.\n\n"
-             "The environment is an analytic studio gradient rather than a "
-             "captured cubemap — no image asset is shipped — so reflections "
-             "read as light and shade rather than as a recognisable room."),
-         ShaderSlot::Atoms, {}, true, true, 1, false},
-        {QStringLiteral("toon"),
-         QCoreApplication::translate("calango::render", "Stylized / Toon"),
-         QCoreApplication::translate(
-             "calango::render",
-             "Quantized diffuse bands with a darkened silhouette — the "
-             "flat-shaded look a figure or a teaching slide usually wants. On "
-             "spheres and cylinders the rim IS the outline, so no screen-space "
-             "edge pass is needed."),
-         ShaderSlot::Atoms, {}, true, true, 2, false},
+        pbrEntry(ShaderSlot::Atoms),
+        toonEntry(ShaderSlot::Atoms),
     };
     return profiles;
 }
@@ -86,28 +103,8 @@ const std::vector<ShaderProfile>& bondProfiles()
              "per bond instead of 100, and the axial colour gradient is "
              "reproduced exactly."),
          ShaderSlot::Bonds, {}, true, true, 0, false},
-        {QStringLiteral("pbr"),
-         QCoreApplication::translate("calango::render", "Modern / PBR"),
-         QCoreApplication::translate(
-             "calango::render",
-             "Cook-Torrance physically based shading (GGX + Smith + Schlick) "
-             "on impostor geometry, driven by metallic and roughness rather "
-             "than by an ad-hoc specular multiplier. Metals tint their "
-             "reflection and lose their diffuse lobe, which is what makes a "
-             "metal look like metal instead of grey plastic.\n\n"
-             "The environment is an analytic studio gradient rather than a "
-             "captured cubemap — no image asset is shipped — so reflections "
-             "read as light and shade rather than as a recognisable room."),
-         ShaderSlot::Bonds, {}, true, true, 1, false},
-        {QStringLiteral("toon"),
-         QCoreApplication::translate("calango::render", "Stylized / Toon"),
-         QCoreApplication::translate(
-             "calango::render",
-             "Quantized diffuse bands with a darkened silhouette — the "
-             "flat-shaded look a figure or a teaching slide usually wants. On "
-             "spheres and cylinders the rim IS the outline, so no screen-space "
-             "edge pass is needed."),
-         ShaderSlot::Bonds, {}, true, true, 2, false},
+        pbrEntry(ShaderSlot::Bonds),
+        toonEntry(ShaderSlot::Bonds),
     };
     return profiles;
 }

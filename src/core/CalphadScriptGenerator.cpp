@@ -1,6 +1,7 @@
 #include "core/CalphadScriptGenerator.hpp"
 
 #include "core/AseScriptGenerator.hpp"
+#include "core/TextUtils.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -10,14 +11,6 @@
 namespace calango::core {
 
 namespace {
-
-std::string upperCase(std::string text)
-{
-    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
-        return static_cast<char>(std::toupper(c));
-    });
-    return text;
-}
 
 /// A Python list literal of quoted, upper-cased names.
 std::string nameList(const std::vector<std::string>& names)

@@ -31,15 +31,8 @@ std::string ClusterExpansionScriptGenerator::generate(
     // Optimization run uses, imported the same way (ase.filters moved out of
     // ase.constraints in 3.23, and a batch script has to run on both).
     const bool relaxCell = !c.singlePointOnly && c.calculator.relaxCell;
-    if (relaxCell) {
-        const char* filter = c.calculator.cellFilter == CellFilter::UnitCell
-            ? "UnitCellFilter"
-            : "FrechetCellFilter";
-        out << "try:\n"
-            << "    from ase.filters import " << filter << " as _CellFilter\n"
-               "except ImportError:  # ASE < 3.23\n"
-               "    from ase.constraints import UnitCellFilter as _CellFilter\n";
-    }
+    if (relaxCell)
+        AseScriptGenerator::emitCellFilterImport(out, c.calculator.cellFilter);
     out << "\n"
         << AseScriptGenerator::jsonLoggerPreamble()
         << "input_path = r\"" << c.inputTrajectory << "\"\n"
@@ -87,16 +80,8 @@ std::string ClusterExpansionScriptGenerator::generate(
            "    \"\"\"Bind a fresh calculator to one configuration.\"\"\"\n";
     {
         // Re-indent the shared snippet into the function body.
-        const std::string snippet =
-            AseScriptGenerator::calculatorSnippet(c.calculator);
-        std::istringstream lines(snippet);
-        std::string line;
-        while (std::getline(lines, line)) {
-            if (line.empty())
-                out << "\n";
-            else
-                out << "    " << line << "\n";
-        }
+        AseScriptGenerator::emitIndented(
+            out, AseScriptGenerator::calculatorSnippet(c.calculator), "    ");
     }
     out << "    return atoms\n"
            "\n";

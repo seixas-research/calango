@@ -1,4 +1,5 @@
 #include "core/CrpaSolver.hpp"
+#include "core/PhysicalConstants.hpp"
 
 #include "core/WannierHamiltonian.hpp"
 
@@ -12,7 +13,6 @@ namespace calango::core {
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
 /// e²/(4πε₀) in eV·Å — the one constant that fixes the absolute scale of U.
 constexpr double kCoulombEvAngstrom = 14.399645;
 

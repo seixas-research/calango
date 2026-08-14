@@ -1,4 +1,5 @@
 #include "core/BerryPhase.hpp"
+#include "core/PhysicalConstants.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -8,7 +9,6 @@ namespace calango::core {
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
 using linalg::CMatrix;
 using linalg::Cplx;
 

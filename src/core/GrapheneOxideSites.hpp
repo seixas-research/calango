@@ -79,18 +79,6 @@ public:
     bool isFree(int carbon) const { return owner(carbon) == kFree; }
 
     // -- The pools ---------------------------------------------------------
-    //
-    // Returned by reference so a caller can size a distribution without
-    // copying; the vectors are reordered by every mutation, so an index into
-    // one is valid only until the next occupy/release.
-
-    const std::vector<int>& freeBasal() const { return freeBasal_; }
-    const std::vector<int>& freeEdge() const { return freeEdge_; }
-    /// Bonded basal pairs with BOTH carbons free — the epoxide sites.
-    const std::vector<std::pair<int, int>>& freePairs() const
-    {
-        return freePairs_;
-    }
 
     std::size_t freeBasalCount() const { return freeBasal_.size(); }
     std::size_t freeEdgeCount() const { return freeEdge_.size(); }
@@ -129,7 +117,6 @@ public:
     // not merely in the starting structure.
 
     std::optional<int> drawFreeBasal(std::mt19937& rng) const;
-    std::optional<int> drawFreeEdge(std::mt19937& rng) const;
     std::optional<std::pair<int, int>> drawFreePair(std::mt19937& rng) const;
 
     /// Are these two carbons bonded to each other? Used to validate a move

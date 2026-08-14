@@ -1,4 +1,5 @@
 #include "core/BoltzmannTransport.hpp"
+#include "core/PhysicalConstants.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -7,8 +8,6 @@
 namespace calango::core {
 
 namespace {
-
-constexpr double kPi = 3.14159265358979323846;
 
 /// −∂f/∂ε for the Fermi function, in eV⁻¹.
 ///
@@ -224,21 +223,6 @@ double BoltzmannTransport::electronCount(double temperature,
             total += fermi(e, chemicalPotential, kT);
     }
     return total * options_.spinDegeneracy / static_cast<double>(points.size());
-}
-
-double BoltzmannTransport::findChemicalPotential(double temperature,
-                                                 double electrons) const
-{
-    double lo = options_.energyMin - 5.0;
-    double hi = options_.energyMax + 5.0;
-    for (int iter = 0; iter < 80; ++iter) {
-        const double mid = 0.5 * (lo + hi);
-        if (electronCount(temperature, mid) < electrons)
-            lo = mid;
-        else
-            hi = mid;
-    }
-    return 0.5 * (lo + hi);
 }
 
 BoltzmannTransport::Point BoltzmannTransport::evaluate(

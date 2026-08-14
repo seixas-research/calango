@@ -40,10 +40,6 @@ public:
     void setSubstrate(int functionalGroups, int basalCarbons, int edgeCarbons,
                       bool periodic);
 
-    /// The configuration the review stage generated its script from — the
-    /// host needs it to stage the input structure under the right name.
-    const core::GrapheneOxideMdmcConfig& mdmcConfig() const { return config_; }
-
 protected:
     QString wizardTitle() const override;
     QString settingsHeader() const override { return tr("MDMC Settings"); }

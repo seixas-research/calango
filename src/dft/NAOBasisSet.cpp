@@ -1,4 +1,5 @@
 #include "dft/NAOBasisSet.hpp"
+#include "dft/Constants.hpp"
 
 #include "dft/IntegrationGrid.hpp"
 
@@ -7,8 +8,6 @@
 
 namespace calango::dft {
 namespace {
-
-constexpr double kBohrPerAngstrom = 1.8897261254578281;
 
 /// The fraction of an orbital's norm left OUTSIDE the split radius.
 ///
@@ -210,18 +209,6 @@ std::vector<int> NAOBasisSet::species() const
     for (const auto& entry : byAtomicNumber_)
         result.push_back(entry.first);
     return result;
-}
-
-std::size_t NAOBasisSet::totalFunctions(const std::map<int, int>& counts) const
-{
-    std::size_t total = 0;
-    for (const auto& entry : counts) {
-        const SpeciesBasis* basis = forSpecies(entry.first);
-        if (basis == nullptr)
-            return 0;
-        total += static_cast<std::size_t>(basis->functionCount()) * entry.second;
-    }
-    return total;
 }
 
 Outcome NAOBasisSet::generate(const std::vector<Species>& speciesList,

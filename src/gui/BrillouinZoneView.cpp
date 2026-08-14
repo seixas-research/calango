@@ -208,10 +208,7 @@ void BrillouinZoneView::uploadPath()
         if (length < 1e-6f)
             continue;
         const float wing = std::min(0.14f * length, 0.07f * zoneRadius_);
-        const QVector3D reference = std::abs(dir.z()) < 0.9f
-            ? QVector3D(0.0f, 0.0f, 1.0f)
-            : QVector3D(1.0f, 0.0f, 0.0f);
-        const QVector3D perp1 = QVector3D::crossProduct(dir, reference).normalized();
+        const QVector3D perp1 = render::perpendicularTo(dir);
         const QVector3D perp2 = QVector3D::crossProduct(dir, perp1).normalized();
         const QVector3D tip = a + (b - a) * 0.6f;
         for (const QVector3D& perp : {perp1, -perp1, perp2, -perp2}) {

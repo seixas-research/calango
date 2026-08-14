@@ -14,10 +14,18 @@ and none of their auxiliary output files is required. Reading an
 is a plain text table of hopping integrals.
 \end{calnote}
 
-Both take their input from the same row: open an \file{\_hr.dat}, or load one
-of two built-in demonstration models (a simple-cubic metal, and the two-band
+Both take their input from the same row, which offers three sources. The
+normal one is \emph{From a completed run}: a Wannier Functions run finished in
+this session, whose \file{wannier\_hr.dat}, cell, centres and spreads are read
+straight from its directory, so nothing outside Calango is involved. The others
+are opening an \file{\_hr.dat} you already have, and loading one of two
+built-in demonstration models (a simple-cubic metal, and the two-band
 Qi--Wu--Zhang Chern insulator). Those are the models the unit tests use, so
 what the panel reports can be checked against the test output directly.
+
+A run started before Calango wrote $H(\mathbf{R})$ says so when picked, and
+says to re-run the Wannierization on the same baseline --- distinguished from a
+run that recorded the file but no longer has it, which needs a different fix.
 
 \section{Boltzmann Transport}
 

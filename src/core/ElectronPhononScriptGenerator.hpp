@@ -88,9 +88,6 @@ struct ElectronPhononConfig {
     /// Gaussian width for the phonon delta δ(ω − ω_qν) that bins α²F, eV.
     double phononSmearingEv = 0.005;
 
-    /// Frequency bins for α²F(ω).
-    int alpha2fPoints = 400;
-
     /// Temperature at which the electron-phonon relaxation time is reported, K.
     ///
     /// τ is temperature-dependent — that is the physics, not a setting — and

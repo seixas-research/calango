@@ -1,6 +1,7 @@
 #include "core/TdbDatabase.hpp"
 
 #include "core/LocaleSafeNumber.hpp"
+#include "core/TextUtils.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -9,23 +10,6 @@
 namespace calango::core {
 
 namespace {
-
-std::string upper(std::string text)
-{
-    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
-        return static_cast<char>(std::toupper(c));
-    });
-    return text;
-}
-
-std::string trim(const std::string& text)
-{
-    const auto begin = text.find_first_not_of(" \t\r\n");
-    if (begin == std::string::npos)
-        return {};
-    const auto end = text.find_last_not_of(" \t\r\n");
-    return text.substr(begin, end - begin + 1);
-}
 
 /// Whitespace-separated tokens.
 std::vector<std::string> tokenize(const std::string& text)
@@ -45,15 +29,15 @@ std::vector<std::string> split(const std::string& text, char delimiter)
     std::string current;
     for (const char c : text) {
         if (c == delimiter) {
-            if (!trim(current).empty())
-                out.push_back(trim(current));
+            if (!trimmed(current).empty())
+                out.push_back(trimmed(current));
             current.clear();
         } else {
             current.push_back(c);
         }
     }
-    if (!trim(current).empty())
-        out.push_back(trim(current));
+    if (!trimmed(current).empty())
+        out.push_back(trimmed(current));
     return out;
 }
 
@@ -111,13 +95,13 @@ std::vector<TdbExpressionRange> parseExpressionRanges(const std::string& tail)
     std::vector<TdbExpressionRange> ranges;
     // First piece: "<lowT> <expression>".
     {
-        const std::string piece = trim(pieces[0]);
+        const std::string piece = trimmed(pieces[0]);
         const auto space = piece.find_first_of(" \t");
         if (space == std::string::npos)
             return {};
         TdbExpressionRange range;
         range.lowerLimit = toDouble(piece.substr(0, space), 298.15);
-        range.expression = trim(piece.substr(space + 1));
+        range.expression = trimmed(piece.substr(space + 1));
         if (range.expression.empty())
             return {};
         ranges.push_back(range);
@@ -130,7 +114,7 @@ std::vector<TdbExpressionRange> parseExpressionRanges(const std::string& tail)
         ranges.back().upperLimit = toDouble(tokens[0], ranges.back().lowerLimit);
         if (tokens.size() < 2)
             break; // trailing "6000" with no N — tolerated
-        const std::string flag = upper(tokens[1]);
+        const std::string flag = upperCase(tokens[1]);
         if (flag == "N")
             break;
         if (flag != "Y")
@@ -145,7 +129,7 @@ std::vector<TdbExpressionRange> parseExpressionRanges(const std::string& tail)
         const auto flagPos = pieces[i].find(tokens[1]);
         next.expression = flagPos == std::string::npos
             ? std::string()
-            : trim(pieces[i].substr(flagPos + tokens[1].size()));
+            : trimmed(pieces[i].substr(flagPos + tokens[1].size()));
         if (next.expression.empty())
             break;
         ranges.push_back(next);
@@ -157,7 +141,7 @@ std::vector<TdbExpressionRange> parseExpressionRanges(const std::string& tail)
 
 std::string tdbBareElementName(const std::string& name)
 {
-    const std::string up = upper(trim(name));
+    const std::string up = upperCase(trimmed(name));
     // The ATAT distribution's SGTE files prefix every element with ELEM_.
     // Standard databases do not, so this has to be a strip-if-present rather
     // than an assumption either way.
@@ -195,13 +179,13 @@ bool TdbDatabase::parse(const std::string& text, std::string* error)
     // routinely spans four lines.
     int recognized = 0;
     for (const std::string& raw : split(body, '!')) {
-        const std::string statement = trim(raw);
+        const std::string statement = trimmed(raw);
         if (statement.empty())
             continue;
         const std::vector<std::string> tokens = tokenize(statement);
         if (tokens.empty())
             continue;
-        const std::string keyword = upper(tokens[0]);
+        const std::string keyword = upperCase(tokens[0]);
 
         if (keyword == "ELEMENT") {
             // ELEMENT <name> <ref phase> <mass> <H298> <S298>
@@ -210,8 +194,8 @@ bool TdbDatabase::parse(const std::string& text, std::string* error)
                 continue;
             }
             TdbElement element;
-            element.name = upper(tokens[1]);
-            element.referencePhase = upper(tokens[2]);
+            element.name = upperCase(tokens[1]);
+            element.referencePhase = upperCase(tokens[2]);
             element.massKgPerMol = tokens.size() > 3 ? toDouble(tokens[3]) : 0.0;
             element.enthalpy298 = tokens.size() > 4 ? toDouble(tokens[4]) : 0.0;
             element.entropy298 = tokens.size() > 5 ? toDouble(tokens[5]) : 0.0;
@@ -228,7 +212,7 @@ bool TdbDatabase::parse(const std::string& text, std::string* error)
                 continue;
             }
             TdbPhase phase;
-            phase.name = upper(tokens[1]);
+            phase.name = upperCase(tokens[1]);
             phase.typeCode = tokens[2];
             const int declared = static_cast<int>(toDouble(tokens[3], 0.0));
             for (std::size_t i = 4; i < tokens.size(); ++i)
@@ -252,7 +236,7 @@ bool TdbDatabase::parse(const std::string& text, std::string* error)
                 warnings.push_back("Malformed CONSTITUENT: " + statement);
                 continue;
             }
-            const std::string phaseName = upper(tokens[1]);
+            const std::string phaseName = upperCase(tokens[1]);
             const auto colon = statement.find(':');
             if (colon == std::string::npos) {
                 warnings.push_back("CONSTITUENT without sublattices: "
@@ -268,9 +252,9 @@ bool TdbDatabase::parse(const std::string& text, std::string* error)
                     // an annotation, not part of the name.
                     name.erase(std::remove(name.begin(), name.end(), '%'),
                                name.end());
-                    name = trim(name);
+                    name = trimmed(name);
                     if (!name.empty())
-                        species.push_back(upper(name));
+                        species.push_back(upperCase(name));
                 }
                 if (!species.empty())
                     model.push_back(species);
@@ -298,7 +282,7 @@ bool TdbDatabase::parse(const std::string& text, std::string* error)
                 continue;
             }
             TdbParameter parameter;
-            parameter.symbol = upper(trim(statement.substr(
+            parameter.symbol = upperCase(trimmed(statement.substr(
                 keyword.size(), open - keyword.size())));
             const std::string inside =
                 statement.substr(open + 1, close - open - 1);
@@ -308,7 +292,7 @@ bool TdbDatabase::parse(const std::string& text, std::string* error)
                 : inside.substr(0, semicolon);
             if (semicolon != std::string::npos)
                 parameter.order = static_cast<int>(
-                    toDouble(trim(inside.substr(semicolon + 1)), 0.0));
+                    toDouble(trimmed(inside.substr(semicolon + 1)), 0.0));
             // The phase name is up to the first ','; everything after it is
             // the constituent spec. It has to be split ':' FIRST and ',' only
             // within a sublattice, because the two separators interleave:
@@ -317,14 +301,14 @@ bool TdbDatabase::parse(const std::string& text, std::string* error)
             // different groups and loses which sublattice they shared.
             const auto comma = body2.find(',');
             parameter.phase =
-                upper(trim(comma == std::string::npos ? body2
+                upperCase(trimmed(comma == std::string::npos ? body2
                                                       : body2.substr(0, comma)));
             if (comma != std::string::npos) {
                 for (const std::string& sublattice :
                      split(body2.substr(comma + 1), ':')) {
                     std::vector<std::string> species;
                     for (const std::string& name : split(sublattice, ','))
-                        species.push_back(upper(name));
+                        species.push_back(upperCase(name));
                     if (!species.empty())
                         parameter.sublattices.push_back(species);
                 }
@@ -339,7 +323,7 @@ bool TdbDatabase::parse(const std::string& text, std::string* error)
             // the cheapest reliable proxy and needs no expression parsing.
             parameter.temperatureRanges = 1;
             for (const std::string& token : tokens)
-                if (upper(token) == "Y")
+                if (upperCase(token) == "Y")
                     ++parameter.temperatureRanges;
             parameter.ranges = parseExpressionRanges(statement.substr(close + 1));
             if (parameter.ranges.empty())
@@ -352,9 +336,9 @@ bool TdbDatabase::parse(const std::string& text, std::string* error)
             ++recognized;
         } else if (keyword == "FUNCTION") {
             if (tokens.size() >= 2) {
-                functionNames.push_back(upper(tokens[1]));
+                functionNames.push_back(upperCase(tokens[1]));
                 TdbFunction function;
-                function.name = upper(tokens[1]);
+                function.name = upperCase(tokens[1]);
                 // The tail starts after the NAME, not after the keyword: a
                 // function's first token is its own identifier and swallowing
                 // it as the lower temperature limit would make every FUNCTION

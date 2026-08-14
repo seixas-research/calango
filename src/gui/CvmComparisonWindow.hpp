@@ -53,7 +53,6 @@ public:
 
     void setCurves(std::vector<CvmCurve> curves, const QString& xLabel,
                    const QString& yLabel);
-    void setShadeGap(bool shade);
     /// Draw a vertical rule at T_c. Zero removes it.
     void setTransitionTemperature(double kelvin, const QString& label);
     /// Render at an arbitrary size, so the exported figure is the figure on
@@ -70,7 +69,6 @@ private:
     std::vector<CvmCurve> curves_;
     QString xLabel_;
     QString yLabel_;
-    bool shadeGap_ = true;
     double transitionK_ = 0.0;
     QString transitionLabel_;
 };

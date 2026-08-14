@@ -128,8 +128,6 @@ struct SpeciesBasis {
 
     /// Total (2l+1)-resolved basis functions on one atom of this species.
     int functionCount() const;
-    /// How many tiers this basis carries.
-    std::size_t tierCount() const { return tierOffsets.size(); }
     /// Radius beyond which the free-atom density and the neutral-atom
     /// potential are below the engine's own noise floor and are treated as
     /// exactly zero.
@@ -175,10 +173,6 @@ public:
 
     /// Species present, ascending by atomic number.
     std::vector<int> species() const;
-
-    /// Basis functions on one atom of each species, summed over the structure
-    /// the caller describes. `counts` maps atomic number to atom count.
-    std::size_t totalFunctions(const std::map<int, int>& counts) const;
 
     /// Generate the basis for each species by solving its free atom in a
     /// sphere of radius `parameters.confinementRadiusA`.

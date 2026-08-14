@@ -1,6 +1,7 @@
 #include "core/TdbWriter.hpp"
 
 #include "core/LocaleSafeNumber.hpp"
+#include "core/TextUtils.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -12,14 +13,6 @@
 namespace calango::core {
 
 namespace {
-
-std::string upperCase(std::string text)
-{
-    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
-        return static_cast<char>(std::toupper(c));
-    });
-    return text;
-}
 
 /// A double in a form that reads back bit-for-bit.
 ///

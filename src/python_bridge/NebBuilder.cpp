@@ -1,6 +1,7 @@
 #include "python_bridge/NebBuilder.hpp"
 
 #include "python_bridge/AseBridge.hpp"
+#include "python_bridge/PyError.hpp"
 
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
@@ -12,11 +13,6 @@ namespace py = pybind11;
 namespace calango::pybridge {
 
 namespace {
-
-[[noreturn]] void rethrow(const py::error_already_set& e, const char* what)
-{
-    throw std::runtime_error(std::string(what) + ":\n" + e.what());
-}
 
 // Executed with a single dict as both globals and locals (function bodies
 // must see the script-level names).

@@ -61,7 +61,6 @@ struct VibrationalQPoint {
     /// assignment".
     std::vector<std::string> irreps;
 
-    std::size_t branchCount() const { return frequenciesCm.size(); }
     bool hasEigenvectors() const { return !eigenvectorsReal.empty(); }
 };
 

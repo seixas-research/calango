@@ -7,6 +7,8 @@
 #include "core/BerryPhase.hpp"
 
 #include <QDialog>
+#include <QList>
+#include <QPair>
 
 class QComboBox;
 class QDoubleSpinBox;
@@ -38,6 +40,10 @@ class BerryPhaseDialog : public QDialog {
     Q_OBJECT
 
 public:
+    /// Offer the completed Wannier runs in this session as Hamiltonian
+    /// sources; forwarded to the shared source row. Call before exec().
+    void setWannierRuns(const QList<QPair<QString, QString>>& runs);
+
     explicit BerryPhaseDialog(QWidget* parent = nullptr);
 
 private Q_SLOTS:

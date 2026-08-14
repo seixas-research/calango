@@ -69,10 +69,6 @@ public:
     /// How many jobs scripts() will produce.
     int jobCount() const;
 
-    /// The directory every job of this run writes into. Absolute, created by
-    /// the wizard, and the only thing the split jobs share.
-    QString resultsDirectory() const { return resultsDirectory_; }
-
 Q_SIGNALS:
     /// The "Load Results…" button was pressed. The wizard deliberately does
     /// nothing itself: choosing a ti.json and opening the viewer are the host's

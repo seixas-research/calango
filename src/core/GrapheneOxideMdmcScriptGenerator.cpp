@@ -6,24 +6,6 @@
 
 namespace calango::core {
 
-namespace {
-
-/// Re-indent the shared calculator block into a function body.
-void emitIndented(std::ostringstream& out, const std::string& block,
-                  const std::string& indent)
-{
-    std::istringstream lines(block);
-    std::string line;
-    while (std::getline(lines, line)) {
-        if (line.empty())
-            out << "\n";
-        else
-            out << indent << line << "\n";
-    }
-}
-
-} // namespace
-
 std::string
 GrapheneOxideMdmcScriptGenerator::generate(const GrapheneOxideMdmcConfig& c)
 {
@@ -92,7 +74,8 @@ GrapheneOxideMdmcScriptGenerator::generate(const GrapheneOxideMdmcConfig& c)
            "    energy in this run comes from an identically configured "
            "engine.\"\"\"\n"
            "    atoms = system\n";
-    emitIndented(out, AseScriptGenerator::calculatorSnippet(c.calculator),
+    AseScriptGenerator::emitIndented(
+        out, AseScriptGenerator::calculatorSnippet(c.calculator),
                  "    ");
     out << "    return atoms\n"
            "\n"

@@ -5,8 +5,6 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
-#include <QFileInfo>
-#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
@@ -203,7 +201,7 @@ void ThermoPlotWidget::render(QPainter& painter, const QRectF& target) const
         curves.push_back({QColor(0x2c, 0xa0, 0x2c), QStringLiteral("S_vib"), 2});
     else {
         curves.push_back({QColor(0xd6, 0x27, 0x28), QStringLiteral("U_vib"), 0});
-        curves.push_back({QColor(0x1f, 0x77, 0xb4), QStringLiteral("F_vib"), 1});
+        curves.push_back({PlotPalette::series, QStringLiteral("F_vib"), 1});
     }
 
     for (const Curve& curve : curves) {

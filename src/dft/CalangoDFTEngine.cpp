@@ -1,4 +1,5 @@
 #include "dft/CalangoDFTEngine.hpp"
+#include "dft/Constants.hpp"
 
 #include "core/Structure.hpp"
 #include "dft/IntegrationGrid.hpp"
@@ -15,8 +16,6 @@
 namespace calango::dft {
 namespace {
 
-constexpr double kHartreeToEv = 27.211386245988;
-constexpr double kBohrPerAngstrom = 1.8897261254578281;
 
 std::string formatted(const char* format, double a, double b = 0.0,
                       double c = 0.0)

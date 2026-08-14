@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.19
+    VERSION 26.8.20
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -146,6 +146,9 @@ qt_add_executable(calango
     src/core/UnitCell.hpp
     src/core/UnitCell.cpp
     src/core/PeriodicImages.hpp
+    src/core/PhysicalConstants.hpp
+    src/core/RandomRotation.hpp
+    src/core/TextUtils.hpp
     src/core/Structure.hpp
     src/core/Structure.cpp
     src/core/BondRules.hpp
@@ -316,6 +319,7 @@ qt_add_executable(calango
     src/python_bridge/PythonEngine.cpp
     src/python_bridge/AseBridge.hpp
     src/python_bridge/AseBridge.cpp
+    src/python_bridge/PyError.hpp
     src/python_bridge/AnimationExporter.hpp
     src/python_bridge/AnimationExporter.cpp
     src/python_bridge/AlembicExporter.hpp
@@ -696,6 +700,7 @@ qt_add_executable(calango
     src/gui/CurvatureMapWidget.cpp
     src/gui/KkrCpaDialog.cpp
     src/gui/WannierModelSource.cpp
+    src/gui/WannierRunLoader.cpp
     src/gui/SpectralPlotStyleDialog.cpp
     src/gui/CrpaDialog.cpp
     src/gui/CvmComparisonWindow.hpp
@@ -773,7 +778,6 @@ qt_add_resources(calango "icons"
     PREFIX "/"
     FILES
         assets/icons/add-circle-fill.svg
-        assets/icons/add-circle-line.svg
         assets/icons/align-item-vertical-center-line.svg
         assets/icons/anticlockwise-2-line.svg
         assets/icons/arrow-go-back-line.svg
@@ -789,9 +793,7 @@ qt_add_resources(calango "icons"
         assets/icons/close-line.svg
         assets/icons/code-box-fill.svg
         assets/icons/color-filter-fill.svg
-        assets/icons/compasses-2-line.svg
         assets/icons/computer-line.svg
-        assets/icons/contract-left-right-line.svg
         assets/icons/cpu-line.svg
         assets/icons/cursor-line.svg
         assets/icons/delete.svg
@@ -802,13 +804,11 @@ qt_add_resources(calango "icons"
         assets/icons/eraser-line.svg
         assets/icons/expand-height-line.svg
         assets/icons/eye-fill.svg
-        assets/icons/file-code-line.svg
         assets/icons/film-fill.svg
         assets/icons/file-copy-line.svg
         assets/icons/focus-3-line.svg
         assets/icons/folder-open-line.svg
         assets/icons/folder-received-line.svg
-        assets/icons/font-size-2.svg
         assets/icons/fullscreen-line.svg
         assets/icons/grid-line.svg
         assets/icons/group-fill.svg
@@ -825,12 +825,7 @@ qt_add_resources(calango "icons"
         assets/icons/palette-line.svg
         assets/icons/play-circle-fill.svg
         assets/icons/price-tag-fill.svg
-        assets/icons/puzzle-fill.svg
-        assets/icons/line-chart-line.svg
-        assets/icons/links-line.svg
-        assets/icons/arrow-right-up-line.svg
         assets/icons/save-line.svg
-        assets/icons/box-1-line.svg
         assets/icons/gradient.svg
         assets/icons/stairs-fill.svg
         assets/icons/hexagon-fill.svg
@@ -841,14 +836,11 @@ qt_add_resources(calango "icons"
         assets/icons/restart-line.svg
         assets/icons/ruler-2-line.svg
         assets/icons/scissors-cut-line.svg
-        assets/icons/shape-line.svg
         assets/icons/shapes-fill.svg
         assets/icons/share-fill.svg
         assets/icons/slideshow-3-fill.svg
         assets/icons/split-cells-horizontal.svg
-        assets/icons/stack-fill.svg
         assets/icons/stack-line.svg
-        assets/icons/stacked-view.svg
         assets/icons/time-line.svg
         assets/icons/triangle-fill.svg
 )
@@ -1658,6 +1650,15 @@ if(CALANGO_BUILD_TESTS)
         src/gui/WannierWizard.cpp
         src/core/BaselineSummary.cpp
         src/core/WannierScriptGenerator.cpp
+        # The path from a completed Wannier run into the modules that consume
+        # its H(R). Both consumers are constructed, so both come along.
+        src/gui/WannierRunLoader.cpp
+        src/gui/WannierModelSource.cpp
+        src/gui/BoltzmannTransportDialog.cpp
+        src/gui/CrpaDialog.cpp
+        src/core/WannierHamiltonian.cpp
+        src/core/BoltzmannTransport.cpp
+        src/core/CrpaSolver.cpp
         src/core/OpticsScriptGenerator.cpp
         # And the Raman / IR wizard, which now swaps whole group boxes when the
         # engine changes — GPAW selects three inherited runs, VASP and Quantum
@@ -2596,7 +2597,8 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_native_dft_si_mvp_test PRIVATE src)
     calango_dft_link(calango_native_dft_si_mvp_test)
     add_test(NAME native_dft_si_mvp COMMAND calango_native_dft_si_mvp_test)
-    # THE SLOWEST TEST IN THE SUITE, by a wide margin: an all-electron SCF on
+    # The slowest C++ test in the suite (only the al_electron_phonon Python
+    # benchmark, ~66 min, takes longer): an all-electron SCF on
     # a periodic cell, twice over, plus two more for the translation check.
     # Around eight minutes on an M-series laptop. `ctest -E native_dft_si_mvp`
     # skips it when a quick pass is what is wanted; it is not skipped by
@@ -2738,7 +2740,7 @@ if(CALANGO_BUILD_TESTS)
     # absorbance is the universal pi*alpha = 2.293% — a reference independent
     # of the calculation. Runs the GENERATED optics script end to end.
     #
-    # The SLOWEST test in the suite (~4 min): it needs a 36x36 high-symmetry
+    # Slow (~4 min): it needs a 36x36 high-symmetry
     # k-mesh to resolve the Dirac cone. A coarser mesh does cross pi*alpha, but
     # at the wrong energy and for the wrong reason, so it cannot be cheapened
     # without making the test dishonest. Self-skips without GPAW.

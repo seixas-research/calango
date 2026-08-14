@@ -293,7 +293,72 @@ std::string generateWannierScript(const WannierConfig& cfg)
         "for _i in range(nwannier):\n"
         "    _fn = 'wannier_%d.cube' % _i\n"
         "    wan.write_cube(_i, _fn)\n"
-        "    cubes.append(_fn)\n";
+        "    cubes.append(_fn)\n"
+        // The real-space Hamiltonian. Everything needed for it is already in
+        // hand at this point — the localization is converged and `wan` holds
+        // it — and without it the run's output is a picture of the orbitals
+        // with the physics thrown away: Boltzmann Transport, Berry Phase and
+        // cRPA all consume H(R) and nothing else, and had no way to reach one
+        // that Calango produced.
+        //
+        // Written in wannier90's _hr.dat layout because that is the format
+        // those three already read, through Calango's own parser. Emitting a
+        // text table is not a dependency on wannier90 any more than reading
+        // one is; it is the interchange format for this object.
+        "hr_file = 'wannier_hr.dat'\n"
+        "try:\n"
+        // H(R) is a Fourier sum over the k-mesh, so it is periodic in R with
+        // the mesh's own period: the Born-von Karman cell centred on the
+        // origin is the complete, non-redundant set. Listing more R vectors
+        // would repeat blocks, listing fewer would truncate the interaction.
+        "    _n1, _n2, _n3 = (int(_n) for _n in wan.kptgrid)\n"
+        "    def _span(_n):\n"
+        "        return range(-(_n // 2), -(_n // 2) + _n)\n"
+        "    _rs = [(_i, _j, _k) for _i in _span(_n1)\n"
+        "           for _j in _span(_n2) for _k in _span(_n3)]\n"
+        "    with open(hr_file, 'w') as _fh:\n"
+        "        _fh.write(' Wannier Hamiltonian H(R) written by Calango\\n')\n"
+        "        _fh.write('%12d\\n' % nwannier)\n"
+        "        _fh.write('%12d\\n' % len(_rs))\n"
+        // No Wigner-Seitz folding is applied, so every point has weight 1. The
+        // reader DIVIDES by these, so writing them wrong rescales every
+        // hopping silently.
+        "        for _o in range(0, len(_rs), 15):\n"
+        "            _fh.write(''.join('%5d' % 1 for _ in _rs[_o:_o + 15])"
+        " + '\\n')\n"
+        // wannier90 column order: the row index m varies fastest.
+        "        for (_r1, _r2, _r3) in _rs:\n"
+        "            _h = np.asarray(wan.get_hopping([_r1, _r2, _r3]),\n"
+        "                            dtype=complex)\n"
+        "            for _n in range(nwannier):\n"
+        "                for _m in range(nwannier):\n"
+        "                    _fh.write('%5d%5d%5d%5d%5d%22.12f%22.12f\\n'\n"
+        "                              % (_r1, _r2, _r3, _m + 1, _n + 1,\n"
+        "                                 _h[_m, _n].real, _h[_m, _n].imag))\n"
+        // Hermiticity is the cheap check that the blocks came out in the right
+        // gauge: H(-R) must be H(R) conjugate-transposed. A failure here means
+        // the file is wrong in a way no consumer would notice.
+        "    _worst = 0.0\n"
+        "    for (_r1, _r2, _r3) in _rs[:20]:\n"
+        "        _a = np.asarray(wan.get_hopping([_r1, _r2, _r3]))\n"
+        "        _b = np.asarray(wan.get_hopping([-_r1, -_r2, -_r3]))\n"
+        "        _worst = max(_worst, float(np.max(np.abs(_a - _b.conj().T))))\n"
+        "    if _worst > 1e-6:\n"
+        "        _calango_event('warning',\n"
+        "                       'H(R) is not Hermitian to 1e-6 (worst %.2e) - "
+        "transport and cRPA results from it are suspect' % _worst)\n"
+        "    else:\n"
+        "        _calango_event('info',\n"
+        "                       'H(R): %d blocks on a %dx%dx%d mesh, Hermitian "
+        "to %.1e' % (len(_rs), _n1, _n2, _n3, _worst))\n"
+        "except Exception as _exc:\n"
+        // Not fatal: the centres, spreads and cubes are the run's primary
+        // output and are already on disk. Losing H(R) costs the three
+        // downstream modules, not this run.
+        "    hr_file = None\n"
+        "    _calango_event('warning',\n"
+        "                   'could not write the Wannier Hamiltonian: %r' "
+        "% (_exc,))\n";
 
     // Write wannier.json and emit the result marker the controller watches for.
     // `projection` records the trial-orbital seed so the Wannier band
@@ -314,6 +379,17 @@ std::string generateWannierScript(const WannierConfig& cfg)
          << "    'centers': [[float(v) for v in row] for row in centers],\n"
             "    'spreads': [float(s) for s in spreads],\n"
             "    'cubes': cubes,\n"
+            // The real-space Hamiltonian, or null when it could not be
+            // written. Recorded rather than assumed by name so a consumer can
+            // tell "this run has no H(R)" from "look for it under the usual
+            // name and hope".
+            "    'hr': hr_file,\n"
+            // The cell H(R)'s integer R vectors are expressed in. A hopping
+            // table is meaningless without it — every consumer needs it to
+            // turn R into a distance and dH/dk into a velocity — and reading
+            // it back out of the .gpw would mean starting GPAW again.
+            "    'cell': [[float(v) for v in row]\n"
+            "             for row in np.asarray(atoms.cell, dtype=float)],\n"
             "}\n"
             "json.dump(result, open('wannier.json', 'w'), indent=2)\n"
             "print('CALANGO_RESULT wannier=wannier.json', flush=True)\n";

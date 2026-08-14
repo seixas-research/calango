@@ -6,8 +6,6 @@
 
 #include <QDialog>
 #include <QFutureWatcher>
-#include <QList>
-#include <QPair>
 #include <QString>
 
 #include <memory>
@@ -17,7 +15,6 @@ class QDoubleSpinBox;
 class QGroupBox;
 class QLabel;
 class QSlider;
-class QSpinBox;
 class QTableWidget;
 
 namespace calango::gui {

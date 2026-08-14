@@ -291,7 +291,7 @@ RandomNoiseViewer::RandomNoiseViewer(const QString& directory, QWidget* parent)
     auto* energyLayout = new QVBoxLayout(energyGroup);
     energyPlot_ = new HistogramPlotWidget(energyGroup);
     energyPlot_->setLabels(tr("Total energy (eV)"), tr("Members"));
-    energyPlot_->setBarColor(QColor(0x1f, 0x77, 0xb4));
+    energyPlot_->setBarColor(PlotPalette::series);
     energyPlot_->setPlaceholder(tr("No member of this ensemble was evaluated "
                                    "successfully."));
     energyLayout->addWidget(energyPlot_);

@@ -81,8 +81,6 @@ private:
     QDoubleSpinBox* toleranceSpin_ = nullptr;
     QCheckBox* forceCommensurateCheck_ = nullptr;
     QLabel* matrixVerdict_ = nullptr;
-    /// Residual of the last deduction, for the verdict text.
-    double commensurateResidual_ = 0.0;
 
     QDoubleSpinBox* energyMinSpin_ = nullptr;
     QDoubleSpinBox* energyMaxSpin_ = nullptr;

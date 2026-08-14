@@ -2,6 +2,7 @@
 
 #include "core/CalphadModel.hpp"
 #include "core/LocaleSafeNumber.hpp"
+#include "core/TextUtils.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -12,14 +13,6 @@
 namespace calango::core {
 
 namespace {
-
-std::string upperCase(std::string text)
-{
-    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
-        return static_cast<char>(std::toupper(c));
-    });
-    return text;
-}
 
 /// Recursive-descent evaluator over one expression string.
 ///

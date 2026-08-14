@@ -1,7 +1,6 @@
 #include "gui/CddWizard.hpp"
 
 #include <QComboBox>
-#include <QDir>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>

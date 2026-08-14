@@ -81,17 +81,6 @@ double idealMixingGibbs(double moleFractionB, double temperatureK)
     return kGasConstantJPerMolK * temperatureK * (a + b);
 }
 
-double binarySolutionGibbs(double gibbsAJPerMol, double gibbsBJPerMol,
-                           const std::vector<RedlichKisterTerm>& terms,
-                           double moleFractionB, double temperatureK)
-{
-    const double xB = std::clamp(moleFractionB, 0.0, 1.0);
-    const double xA = 1.0 - xB;
-    return xA * gibbsAJPerMol + xB * gibbsBJPerMol
-        + idealMixingGibbs(xB, temperatureK)
-        + redlichKisterExcess(terms, xB, temperatureK);
-}
-
 RedlichKisterFit fitRedlichKister(const std::vector<RedlichKisterSample>& samples,
                                   int order, bool temperatureDependent)
 {

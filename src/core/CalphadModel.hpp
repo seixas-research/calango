@@ -68,18 +68,6 @@ double redlichKisterExcess(const std::vector<RedlichKisterTerm>& terms,
 /// why terminal solid solubility exists at all.
 double idealMixingGibbs(double moleFractionB, double temperatureK);
 
-/// Molar Gibbs energy of a binary substitutional solution phase, J/mol atoms:
-///
-///   G = x_A G_A° + x_B G_B° + G_ideal + G_ex
-///
-/// `gibbsA`/`gibbsB` are the pure-endmember energies in the SAME phase and the
-/// same reference as the caller intends the diagram to be drawn in. For a
-/// first-principles assessment they are the DFT energies of the pure elements
-/// in that structure; for a database they come out of the G parameters.
-double binarySolutionGibbs(double gibbsAJPerMol, double gibbsBJPerMol,
-                           const std::vector<RedlichKisterTerm>& terms,
-                           double moleFractionB, double temperatureK);
-
 /// One (x, T) observation of the excess Gibbs energy, the thing that is fitted.
 struct RedlichKisterSample {
     double moleFractionB = 0.0;

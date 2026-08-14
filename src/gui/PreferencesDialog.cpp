@@ -24,7 +24,6 @@
 #include <QTableWidget>
 
 #include <QTabWidget>
-#include <QThread>
 #include <QVBoxLayout>
 
 namespace calango::gui {

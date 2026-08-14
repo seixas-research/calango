@@ -84,7 +84,6 @@ private Q_SLOTS:
 private:
     /// Colour button that opens a picker, writes into `target` and re-emits.
     QPushButton* colorButton(QColor* target);
-    void paintSwatch(QPushButton* button, const QColor& color);
     void emitStyle();
     void syncToControls();
 

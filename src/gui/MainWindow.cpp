@@ -158,7 +158,6 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
-#include <QCursor>
 #include <QDesktopServices>
 #include <QUrl>
 #include <QDialog>
@@ -176,7 +175,6 @@
 #include <QJsonObject>
 #include <QTimer>
 #include <QLabel>
-#include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -188,10 +186,8 @@
 #include <QSettings>
 #include <QSlider>
 #include <QSpinBox>
-#include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabBar>
-#include <QTemporaryDir>
 #include <QToolBar>
 #include <QWidgetAction>
 #include <QToolButton>
@@ -199,8 +195,11 @@
 #include <QTextStream>
 #include <QVBoxLayout>
 
+#include "gui/PlotPalette.hpp"
+
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <stdexcept>
 #include <string>
 
@@ -1851,7 +1850,7 @@ void MainWindow::createMenusAndDocks()
     // family rather than the pastels the old dark canvas needed: a tint that
     // reads as a bright line on near-black washes out to nearly nothing on
     // white, and these plots are exported and printed.
-    energySpec.lineColor = QColor(0x1f, 0x77, 0xb4); // blue
+    energySpec.lineColor = PlotPalette::series;
     energySpec.decimals = 3;
 
     MetricPlotWidget::MetricSpec temperatureSpec;
@@ -7181,12 +7180,14 @@ void MainWindow::openGrapheneOxideMdmc(
 void MainWindow::openBoltzmannTransport()
 {
     BoltzmannTransportDialog dialog(this);
+    dialog.setWannierRuns(completedMlwfRuns());
     dialog.exec();
 }
 
 void MainWindow::openBerryPhase()
 {
     BerryPhaseDialog dialog(this);
+    dialog.setWannierRuns(completedMlwfRuns());
     dialog.exec();
 }
 
@@ -7199,6 +7200,7 @@ void MainWindow::openKkrCpa()
 void MainWindow::openCrpa()
 {
     CrpaDialog dialog(this);
+    dialog.setWannierRuns(completedMlwfRuns());
     dialog.exec();
 }
 
@@ -7501,14 +7503,9 @@ void MainWindow::showMagneticSpaceGroup()
 
 void MainWindow::openPhononBuilder()
 {
+    if (!prepareSimulation(tr("Phonon")))
+        return;
     Document* doc = currentDocument();
-    if (!doc || !doc->structure || doc->structure->empty()) {
-        QMessageBox::information(this, tr("Phonon"),
-                                 tr("Open or build a structure first."));
-        return;
-    }
-    if (!ensureAseAvailable())
-        return;
     const auto pbc = doc->structure->cell().pbc();
     const bool periodic = doc->structure->cell().isDefined()
         && (pbc[0] || pbc[1] || pbc[2]);
@@ -8113,14 +8110,9 @@ void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
 
 void MainWindow::geometryOptimization()
 {
+    if (!prepareSimulation(tr("Geometry Optimization")))
+        return;
     Document* doc = currentDocument();
-    if (!doc || !doc->structure || doc->structure->empty()) {
-        QMessageBox::information(this, tr("Geometry Optimization"),
-                                 tr("Open or build a structure first."));
-        return;
-    }
-    if (!ensureAseAvailable())
-        return;
     // The structure goes in so the wizard's "Geometry constraints…" editor can
     // list the actual atoms (and the Hubbard editor can complete against the
     // species present).
@@ -8130,14 +8122,9 @@ void MainWindow::geometryOptimization()
 
 void MainWindow::molecularDynamics()
 {
+    if (!prepareSimulation(tr("Molecular Dynamics")))
+        return;
     Document* doc = currentDocument();
-    if (!doc || !doc->structure || doc->structure->empty()) {
-        QMessageBox::information(this, tr("Molecular Dynamics"),
-                                 tr("Open or build a structure first."));
-        return;
-    }
-    if (!ensureAseAvailable())
-        return;
     // The structure goes in so the wizard's "Geometry constraints…" editor can
     // list the actual atoms (and the Hubbard editor can complete against the
     // species present).
@@ -8297,13 +8284,7 @@ void MainWindow::thermodynamicIntegration()
 
 void MainWindow::openMonteCarlo()
 {
-    Document* doc = currentDocument();
-    if (!doc || !doc->structure || doc->structure->empty()) {
-        QMessageBox::information(this, tr("Monte Carlo Simulation"),
-                                 tr("Open or build a structure first."));
-        return;
-    }
-    if (!ensureAseAvailable())
+    if (!prepareSimulation(tr("Monte Carlo Simulation")))
         return;
     MonteCarloWizard wizard(this);
     runSimulationWizard(wizard, tr("Monte Carlo Simulation"));

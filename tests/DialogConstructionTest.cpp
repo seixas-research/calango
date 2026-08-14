@@ -64,6 +64,9 @@
 #include "gui/HpcPanel.hpp"
 #include "gui/OpticsWizard.hpp"
 #include "gui/WannierWizard.hpp"
+#include "gui/WannierRunLoader.hpp"
+#include "gui/BoltzmannTransportDialog.hpp"
+#include "gui/CrpaDialog.hpp"
 #include "gui/ProcessManagerPanel.hpp"
 #include "gui/RamanIrWizard.hpp"
 #include "gui/Defect2dWizard.hpp"
@@ -2396,6 +2399,179 @@ int main(int argc, char** argv)
     // sits inside a nested layout, and QFormLayout can only hide a row through
     // a widget it holds DIRECTLY — addressed through the spin box it would
     // silently stay visible, showing a number that is not being used.
+    // The path from a completed Wannier run into the three modules that
+    // consume its Hamiltonian.
+    //
+    // WHY THIS EXISTS. Boltzmann Transport, Berry Phase and cRPA used to offer
+    // exactly two inputs: a wannier90 `_hr.dat` from somewhere else, or a
+    // built-in toy. Calango's own Wannier run wrote no H(R), so the only route
+    // to real data ran through the code the native solvers were written to
+    // replace. The run emits `wannier_hr.dat` now; this is the reader, and the
+    // cases below are the three ways a directory can fail to be one.
+    std::printf("Wannier run -> Hamiltonian, for the modules that consume it:\n");
+    {
+        const auto writeRun = [](const QTemporaryDir& dir, const char* json,
+                                 const char* hr) {
+            QFile j(dir.filePath(QStringLiteral("wannier.json")));
+            j.open(QIODevice::WriteOnly);
+            j.write(json);
+            j.close();
+            if (hr) {
+                QFile f(dir.filePath(QStringLiteral("wannier_hr.dat")));
+                f.open(QIODevice::WriteOnly);
+                f.write(hr);
+            }
+        };
+        // Two orbitals, three R vectors along a: on-site plus one hop either
+        // way. Small enough to read, and Hermitian, which is what the
+        // consumers assume.
+        const char* kHr =
+            " test\n"
+            "           2\n"
+            "           3\n"
+            "    1    1    1\n"
+            "   -1    0    0    1    1          0.500000000000          0.000000000000\n"
+            "   -1    0    0    2    1          0.000000000000          0.000000000000\n"
+            "   -1    0    0    1    2          0.000000000000          0.000000000000\n"
+            "   -1    0    0    2    2          0.500000000000          0.000000000000\n"
+            "    0    0    0    1    1          1.000000000000          0.000000000000\n"
+            "    0    0    0    2    1          0.250000000000          0.000000000000\n"
+            "    0    0    0    1    2          0.250000000000          0.000000000000\n"
+            "    0    0    0    2    2         -1.000000000000          0.000000000000\n"
+            "    1    0    0    1    1          0.500000000000          0.000000000000\n"
+            "    1    0    0    2    1          0.000000000000          0.000000000000\n"
+            "    1    0    0    1    2          0.000000000000          0.000000000000\n"
+            "    1    0    0    2    2          0.500000000000          0.000000000000\n";
+        const char* kJson =
+            R"({"total_spread":1.5,"nwannier":2,"hr":"wannier_hr.dat",)"
+            R"("cell":[[3.0,0.0,0.0],[0.0,3.5,0.0],[0.0,0.0,4.0]],)"
+            R"("centers":[[0.1,0.2,0.3],[1.5,0.0,0.0]],)"
+            R"("spreads":[0.75,0.75],"cubes":[]})";
+
+        QTemporaryDir good, legacy, missing;
+        writeRun(good, kJson, kHr);
+        // A run from before H(R) was written: no `hr` key at all.
+        writeRun(legacy,
+                 R"({"total_spread":1.5,"nwannier":2,"centers":[],)"
+                 R"("spreads":[],"cubes":[]})",
+                 nullptr);
+        // Recorded, but the file is gone.
+        writeRun(missing, kJson, nullptr);
+
+        WannierRunData data;
+        QString error;
+        check(loadWannierRun(good.path(), &data, &error),
+              "a completed run loads");
+        check(error.isEmpty(), "with no error");
+        check(data.nWannier == 2, "the Wannier count comes from the run");
+        check(data.hamiltonian.orbitals() == 2,
+              "and the Hamiltonian carries that many orbitals");
+        check(data.hamiltonian.hoppings().size() == 3,
+              "with all three H(R) blocks");
+        // The cell is not decoration: the integer R vectors mean nothing
+        // without it, and a default cubic cell would silently give every
+        // hopping the wrong distance.
+        check(std::abs(data.cell[0][0] - 3.0) < 1e-12
+                  && std::abs(data.cell[1][1] - 3.5) < 1e-12
+                  && std::abs(data.cell[2][2] - 4.0) < 1e-12,
+              "the run's own cell is adopted, not a placeholder");
+        check(data.centres.size() == 2 && data.spreads.size() == 2,
+              "centres and spreads come across for the cRPA table");
+        check(std::abs(data.spreads.at(0) - 0.75) < 1e-12,
+              "with their values intact");
+
+        // A one-band cosine: H(k) = 1 + 2*0.5*cos(2 pi k) along a, so the
+        // band edges are exactly 2.0 and 0.0. Closed form, and it proves the
+        // hoppings were read with the right sign and not halved by the
+        // degeneracy division.
+        const auto atGamma = data.hamiltonian.bands({0.0, 0.0, 0.0}, false);
+        const auto atEdge = data.hamiltonian.bands({0.5, 0.0, 0.0}, false);
+        check(atGamma.energies.size() == 2, "two bands at Gamma");
+        // Gamma: diag(1+1, -1+1) = (2, 0) mixed by the 0.25 off-diagonal.
+        double gammaMax = atGamma.energies.front();
+        for (const double e : atGamma.energies)
+            gammaMax = std::max(gammaMax, e);
+        double edgeMin = atEdge.energies.front();
+        for (const double e : atEdge.energies)
+            edgeMin = std::min(edgeMin, e);
+        check(std::abs(gammaMax - 2.0307764064) < 1e-6,
+              "and the top of the band at Gamma is the closed-form value");
+        check(std::abs(edgeMin - (-2.0307764064)) < 1e-6,
+              "as is the bottom at the zone boundary");
+
+        // The two ways a directory fails, told apart — because the remedies
+        // differ: one says re-run, the other says the file moved.
+        WannierRunData other;
+        QString legacyError;
+        check(!loadWannierRun(legacy.path(), &other, &legacyError),
+              "a run with no recorded H(R) is refused");
+        check(legacyError.contains(QStringLiteral("Re-run")),
+              "and is told to re-run the Wannierization");
+        QString missingError;
+        check(!loadWannierRun(missing.path(), &other, &missingError),
+              "a recorded-but-absent file is refused too");
+        check(missingError.contains(QStringLiteral("moved")),
+              "with a different remedy — the file went away");
+        QString emptyError;
+        QTemporaryDir nothing;
+        check(!loadWannierRun(nothing.path(), &other, &emptyError)
+                  && emptyError.contains(QStringLiteral("wannier.json")),
+              "and a directory that is not a Wannier run at all says so");
+
+        // Both consumers must offer the run and load it when picked.
+        const QList<QPair<QString, QString>> runs{
+            {QStringLiteral("#7 — Wannierization"), good.path()}};
+        // These panels carry several combos, so the run selector is found by
+        // what it HOLDS rather than by being first: a positional lookup would
+        // pass or fail on unrelated layout changes.
+        const auto runComboIn = [&good](const QWidget& widget) -> QComboBox* {
+            for (QComboBox* combo : widget.findChildren<QComboBox*>())
+                for (int i = 0; i < combo->count(); ++i)
+                    if (combo->itemData(i).toString() == good.path())
+                        return combo;
+            return nullptr;
+        };
+        {
+            BoltzmannTransportDialog dialog;
+            dialog.setWannierRuns(runs);
+            dialog.show();
+            auto* combo = runComboIn(dialog);
+            check(combo != nullptr && combo->count() == 2,
+                  "Boltzmann Transport lists the completed run");
+            if (combo && combo->count() == 2) {
+                combo->setCurrentIndex(1);
+                const auto labels = dialog.findChildren<QLabel*>();
+                bool adopted = false;
+                for (const QLabel* label : labels)
+                    adopted = adopted
+                        || label->text().contains(QStringLiteral("wannier_hr.dat"));
+                check(adopted,
+                      "and adopts its Hamiltonian when the run is picked");
+            }
+        }
+        {
+            CrpaDialog dialog;
+            dialog.setWannierRuns(runs);
+            dialog.show();
+            auto* combo = runComboIn(dialog);
+            check(combo != nullptr && combo->count() == 2,
+                  "cRPA lists it too");
+            if (combo && combo->count() == 2) {
+                combo->setCurrentIndex(1);
+                // The spreads decide which orbitals the correlated subspace
+                // should hold, so a table still showing the placeholder 1.0
+                // would have the user choosing on invented numbers.
+                auto* table = dialog.findChild<QTableWidget*>();
+                check(table != nullptr && table->rowCount() == 2,
+                      "and rebuilds its orbital table from the run");
+                if (table && table->rowCount() == 2 && table->item(0, 2))
+                    check(table->item(0, 2)->text().startsWith(
+                              QStringLiteral("0.75")),
+                          "with the run's measured spreads, not placeholders");
+            }
+        }
+    }
+
     // The Wannier setup's baseline pre-condition.
     //
     // ASE's Wannier needs the FULL Brillouin zone; a single point that folded

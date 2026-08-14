@@ -1,6 +1,10 @@
 #include "gui/WannierModelSource.hpp"
 
+#include "gui/WannierRunLoader.hpp"
+
 #include <QDoubleSpinBox>
+#include <QComboBox>
+#include <QSignalBlocker>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -15,6 +19,23 @@ WannierModelSource::WannierModelSource(QWidget* parent) : QWidget(parent)
 {
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
+
+    // The Wannier runs this session finished. First, because it is the source
+    // that needs nothing from outside Calango — the run wrote its own H(R).
+    auto* runRow = new QHBoxLayout;
+    runRow->addWidget(new QLabel(tr("From a completed run:"), this));
+    runCombo_ = new QComboBox(this);
+    runCombo_->addItem(tr("(choose a Wannier run)"), QString());
+    runCombo_->setToolTip(
+        tr("Take H(R), the cell, the centres and the spreads straight from a "
+           "Wannier Functions run that finished in this session — no file to "
+           "locate and nothing external involved.\n\n"
+           "A run started before Calango wrote H(R) will say so when picked; "
+           "re-running the Wannierization on the same baseline produces it."));
+    connect(runCombo_, &QComboBox::currentIndexChanged, this,
+            &WannierModelSource::runSelected);
+    runRow->addWidget(runCombo_, 1);
+    outer->addLayout(runRow);
 
     auto* row = new QHBoxLayout;
     summary_ = new QLabel(tr("No Wannier Hamiltonian loaded."), this);
@@ -71,8 +92,59 @@ void WannierModelSource::adopt(core::WannierHamiltonian model,
     Q_EMIT modelChanged();
 }
 
+void WannierModelSource::setWannierRuns(
+    const QList<QPair<QString, QString>>& runs)
+{
+    if (!runCombo_)
+        return;
+    const QSignalBlocker blocker(runCombo_);
+    runCombo_->clear();
+    runCombo_->addItem(runs.isEmpty()
+                           ? tr("(no completed Wannier runs)")
+                           : tr("(choose a Wannier run)"),
+                       QString());
+    for (const auto& [label, dir] : runs)
+        runCombo_->addItem(label, dir);
+    runCombo_->setEnabled(!runs.isEmpty());
+}
+
+void WannierModelSource::runSelected(int index)
+{
+    if (index <= 0 || !runCombo_)
+        return;
+    const QString dir = runCombo_->itemData(index).toString();
+    if (dir.isEmpty())
+        return;
+    WannierRunData data;
+    QString error;
+    if (!loadWannierRun(dir, &data, &error)) {
+        QMessageBox::warning(this, tr("Wannier Hamiltonian"), error);
+        // Back to the prompt rather than leaving a run selected that did not
+        // load: the combo would otherwise name a source the panel has not got.
+        const QSignalBlocker blocker(runCombo_);
+        runCombo_->setCurrentIndex(0);
+        return;
+    }
+    adopt(std::move(data.hamiltonian),
+          tr("%1 — %2 Wannier functions, H(R) from %3")
+              .arg(runCombo_->itemText(index))
+              .arg(data.nWannier)
+              .arg(QFileInfo(data.hrPath).fileName()));
+}
+
+/// Drop the run selection when the model comes from somewhere else, so the
+/// combo never names a source the panel is not showing.
+void WannierModelSource::clearRunSelection()
+{
+    if (!runCombo_ || runCombo_->currentIndex() == 0)
+        return;
+    const QSignalBlocker blocker(runCombo_);
+    runCombo_->setCurrentIndex(0);
+}
+
 void WannierModelSource::browse()
 {
+    clearRunSelection();
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Open a Wannier Hamiltonian"), QString(),
         tr("Wannier Hamiltonian (*_hr.dat);;All files (*)"));
@@ -99,6 +171,7 @@ void WannierModelSource::browse()
 
 void WannierModelSource::loadCubicDemo()
 {
+    clearRunSelection();
     const double a = latticeConstant_->value();
     const double t = 0.5;
     std::vector<core::WannierHamiltonian::HoppingBlock> hoppings;
@@ -118,6 +191,7 @@ void WannierModelSource::loadCubicDemo()
 
 void WannierModelSource::loadChernDemo()
 {
+    clearRunSelection();
     const double a = latticeConstant_->value();
     const double m = 1.0;
     std::vector<core::WannierHamiltonian::HoppingBlock> hoppings;

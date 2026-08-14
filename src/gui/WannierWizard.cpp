@@ -3,7 +3,6 @@
 #include "core/Structure.hpp"
 #include "core/WannierScriptGenerator.hpp"
 
-#include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>

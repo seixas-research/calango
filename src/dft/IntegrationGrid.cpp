@@ -1,13 +1,11 @@
 #include "dft/IntegrationGrid.hpp"
+#include "dft/Constants.hpp"
 
 #include <algorithm>
 #include <cmath>
 
 namespace calango::dft {
 namespace {
-
-constexpr double kPi = 3.14159265358979323846;
-constexpr double kFourPi = 12.566370614359172;
 
 /// How much further than the nearest centre a centre can be and still affect
 /// the partition at a point. Becke's smoothed step is within 10^-12 of 1 once
@@ -316,7 +314,6 @@ double IntegrationGrid::braggRadiusBohr(int atomicNumber)
         1.50, 1.25, 1.10, 1.00, 1.00, 1.00, 1.00, 2.20, 1.80, 1.60, 1.40,
         1.35, 1.40, 1.40, 1.40, 1.35, 1.35, 1.35, 1.35, 1.30, 1.25, 1.15,
         1.15, 1.15, 1.10};
-    constexpr double kBohrPerAngstrom = 1.8897261254578281;
     const int count = static_cast<int>(sizeof(kRadii) / sizeof(kRadii[0]));
     const double angstrom =
         (atomicNumber >= 1 && atomicNumber <= count)
@@ -334,7 +331,6 @@ Outcome IntegrationGrid::build(const std::vector<Atom>& atoms,
     shellRadii_.clear();
     shellWeights_.clear();
     directions_.clear();
-    atomCount_ = atoms.size();
     if (atoms.empty())
         return Outcome::invalid("integration grid: no atoms");
     if (radialShells < 8)

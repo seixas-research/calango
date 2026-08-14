@@ -144,14 +144,6 @@ std::optional<int> ReactiveSiteGraph::drawFreeBasal(std::mt19937& rng) const
     return freeBasal_[pick(rng)];
 }
 
-std::optional<int> ReactiveSiteGraph::drawFreeEdge(std::mt19937& rng) const
-{
-    if (freeEdge_.empty())
-        return std::nullopt;
-    std::uniform_int_distribution<std::size_t> pick(0, freeEdge_.size() - 1);
-    return freeEdge_[pick(rng)];
-}
-
 std::optional<std::pair<int, int>>
 ReactiveSiteGraph::drawFreePair(std::mt19937& rng) const
 {

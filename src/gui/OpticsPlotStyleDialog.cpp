@@ -1,4 +1,5 @@
 #include "gui/OpticsPlotStyleDialog.hpp"
+#include "gui/GuiUtils.hpp"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -213,7 +214,7 @@ QPushButton* OpticsPlotStyleDialog::colorButton(QColor* target)
 {
     auto* button = new QPushButton(this);
     button->setFixedWidth(80);
-    paintSwatch(button, *target);
+    setButtonColor(button, *target);
     connect(button, &QPushButton::clicked, this, [this, button, target] {
         const QColor chosen = QColorDialog::getColor(
             *target, this, tr("Select colour"),
@@ -221,18 +222,10 @@ QPushButton* OpticsPlotStyleDialog::colorButton(QColor* target)
         if (!chosen.isValid())
             return;
         *target = chosen;
-        paintSwatch(button, chosen);
+        setButtonColor(button, chosen);
         emitStyle();
     });
     return button;
-}
-
-void OpticsPlotStyleDialog::paintSwatch(QPushButton* button,
-                                        const QColor& color)
-{
-    button->setStyleSheet(
-        QStringLiteral("background-color: %1; border: 1px solid #666;")
-            .arg(color.name()));
 }
 
 void OpticsPlotStyleDialog::syncToControls()
@@ -257,17 +250,17 @@ void OpticsPlotStyleDialog::syncToControls()
     gridAlphaSpin_->setEnabled(style_.showGrid);
     gridAlphaSpin_->setValue(style_.gridAlpha);
 
-    paintSwatch(canvasButton_, style_.canvasBackground);
-    paintSwatch(plotButton_, style_.plotBackground);
-    paintSwatch(curveButton_, style_.curveColor);
-    paintSwatch(labelButton_, style_.axisLabelColor);
-    paintSwatch(gridButton_, style_.gridColor);
+    setButtonColor(canvasButton_, style_.canvasBackground);
+    setButtonColor(plotButton_, style_.plotBackground);
+    setButtonColor(curveButton_, style_.curveColor);
+    setButtonColor(labelButton_, style_.axisLabelColor);
+    setButtonColor(gridButton_, style_.gridColor);
 
     // Present only when the dialog was built with the band group.
     if (bandButton_) {
         const QSignalBlocker b8(bandPatternCombo_);
         const QSignalBlocker b9(bandOpacitySpin_);
-        paintSwatch(bandButton_, style_.thresholdBandColor);
+        setButtonColor(bandButton_, style_.thresholdBandColor);
         bandPatternCombo_->setCurrentIndex(bandPatternCombo_->findData(
             static_cast<int>(style_.thresholdBandPattern)));
         bandOpacitySpin_->setValue(style_.thresholdBandOpacity);

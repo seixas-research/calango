@@ -325,4 +325,10 @@ void BoltzmannTransportDialog::exportData()
     }
 }
 
+void BoltzmannTransportDialog::setWannierRuns(const QList<QPair<QString, QString>>& runs)
+{
+    if (source_)
+        source_->setWannierRuns(runs);
+}
+
 } // namespace calango::gui

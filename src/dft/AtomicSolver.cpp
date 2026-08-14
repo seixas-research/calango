@@ -1,4 +1,5 @@
 #include "dft/AtomicSolver.hpp"
+#include "dft/Constants.hpp"
 
 #include "dft/SCFSolver.hpp"
 #include "dft/XcFunctional.hpp"
@@ -8,8 +9,6 @@
 
 namespace calango::dft {
 namespace {
-
-constexpr double kFourPi = 12.566370614359172;
 
 /// State carried through the radial integration: u and its derivative with
 /// respect to r. Integrating the pair rather than applying Numerov to u alone
@@ -588,7 +587,7 @@ AtomicResult AtomicSolver::solveConfiguration(
         // the density is still moving — a loop that stops on energy alone
         // stops early and reports a density nobody converged.
         if (iteration > 1 && residual < parameters_.densityToleranceElectrons
-            && energyChange < parameters_.energyToleranceEv / 27.211386245988) {
+            && energyChange < parameters_.energyToleranceEv / kHartreeToEv) {
             converged = true;
             break;
         }

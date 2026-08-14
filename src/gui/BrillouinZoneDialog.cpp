@@ -4,7 +4,6 @@
 #include "gui/BrillouinZoneView.hpp"
 #include "gui/BrillouinZoneWidget.hpp"
 
-#include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QFile>
 #include <QFileDialog>
@@ -14,11 +13,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QLabel>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPushButton>
-#include <QStyle>
 #include <QSvgGenerator>
 #include <QTextStream>
 #include <QVBoxLayout>

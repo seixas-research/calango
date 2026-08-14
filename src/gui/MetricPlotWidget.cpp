@@ -1,4 +1,5 @@
 #include "gui/MetricPlotWidget.hpp"
+#include "gui/GuiUtils.hpp"
 
 #include "gui/PlotPalette.hpp"
 
@@ -17,27 +18,6 @@
 namespace calango::gui {
 
 namespace {
-
-/// "Nice" tick spacing for a range: the 1/2/5·10ⁿ step closest to (but not
-/// finer than) `range / maxTicks`. This is the standard axis heuristic — it
-/// keeps labels on round numbers (0, 250, 500 …) regardless of whether the
-/// run has 37 steps or 120 000, instead of slicing the range into a fixed
-/// count and printing values like 4133.7.
-double niceTickStep(double range, int maxTicks)
-{
-    if (range <= 0.0 || maxTicks < 1)
-        return 0.0;
-    const double rough = range / maxTicks;
-    const double magnitude = std::pow(10.0, std::floor(std::log10(rough)));
-    const double normalized = rough / magnitude; // in [1, 10)
-    // Round *up* to the next nice value so the tick count never exceeds
-    // maxTicks (which is what guarantees labels cannot overlap).
-    const double nice = normalized <= 1.0 ? 1.0
-        : normalized <= 2.0              ? 2.0
-        : normalized <= 5.0              ? 5.0
-                                         : 10.0;
-    return nice * magnitude;
-}
 
 /// Decimal places needed to render `step` without two adjacent ticks
 /// collapsing to the same label (0 for integral steps).
@@ -159,7 +139,7 @@ void MetricPlotWidget::paintEvent(QPaintEvent*)
         const int maxTicks =
             std::clamp(static_cast<int>(plot.width() / std::max(labelWidth, 1.0)),
                        2, 12);
-        double step = niceTickStep(span, maxTicks);
+        double step = niceTickStep(span, maxTicks, 0.0);
         step = std::max(1.0, std::round(step)); // integral steps only
         const double firstTick = std::ceil(firstStep / step) * step;
         for (double t = firstTick; t <= lastStep + 1e-9; t += step) {
@@ -184,7 +164,7 @@ void MetricPlotWidget::paintEvent(QPaintEvent*)
         const int maxTicks =
             std::clamp(static_cast<int>(plot.height() / std::max(rowHeight, 1.0)),
                        2, 10);
-        const double step = niceTickStep(hi - lo, maxTicks);
+        const double step = niceTickStep(hi - lo, maxTicks, 0.0);
         if (step > 0.0) {
             const int decimals = std::max(decimalsForStep(step), 0);
             const double firstTick = std::ceil(lo / step) * step;

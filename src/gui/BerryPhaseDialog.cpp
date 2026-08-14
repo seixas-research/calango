@@ -248,4 +248,10 @@ void BerryPhaseDialog::exportData()
                 << '\n';
 }
 
+void BerryPhaseDialog::setWannierRuns(const QList<QPair<QString, QString>>& runs)
+{
+    if (source_)
+        source_->setWannierRuns(runs);
+}
+
 } // namespace calango::gui

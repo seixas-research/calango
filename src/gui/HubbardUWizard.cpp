@@ -2,7 +2,6 @@
 
 #include "core/Element.hpp"
 
-#include <QCheckBox>
 #include <QComboBox>
 #include <QGroupBox>
 #include <QFormLayout>

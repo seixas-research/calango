@@ -228,20 +228,6 @@ constexpr CalculatorFamily calculatorFamily(CalculatorKind kind)
     return CalculatorFamily::Classical;
 }
 
-/// True for every engine that solves a self-consistent electronic structure
-/// from first principles — i.e. everything in CalculatorFamily::AbInitio.
-///
-/// The DFT-specific wizard chrome (plane-wave cutoff, Brillouin-zone sampling,
-/// smearing, spin) is NOT gated on this: several of these codes take none of
-/// those in the form the shared rows offer. SIESTA, OpenMX and FHI-aims have no
-/// plane-wave cutoff at all; ORCA, NWChem and PySCF are molecular by default
-/// and sample no Brillouin zone. Each one's own settings group says which of
-/// the shared rows apply — see SimulationWizardBase::updateCalculatorEnabled().
-constexpr bool isAbInitioCalculator(CalculatorKind kind)
-{
-    return calculatorFamily(kind) == CalculatorFamily::AbInitio;
-}
-
 /// True for the periodic codes that expand in plane waves and therefore take
 /// the shared "plane-wave cutoff" row and a Monkhorst-Pack k-grid.
 ///

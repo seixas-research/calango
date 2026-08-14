@@ -24,17 +24,9 @@ std::vector<double> computeLocalEntropy(const Structure& structure,
     const bool pbc = structure.cell().isDefined()
         && (structure.cell().pbc()[0] || structure.cell().pbc()[1]
             || structure.cell().pbc()[2]);
-    std::vector<Vec3> translations{{0.0, 0.0, 0.0}};
-    if (pbc) {
-        translations.clear();
-        // Broadened tails reach past rc — pad the image search a little.
-        const auto range = imageRange(structure.cell(), rc + 3.0 * sigma);
-        const auto& v = structure.cell().vectors();
-        for (int i = -range[0]; i <= range[0]; ++i)
-            for (int j = -range[1]; j <= range[1]; ++j)
-                for (int k = -range[2]; k <= range[2]; ++k)
-                    translations.push_back(v[0] * i + v[1] * j + v[2] * k);
-    }
+    // Broadened tails reach past rc — pad the image search a little.
+    const std::vector<Vec3> translations =
+        imageTranslations(structure.cell(), rc + 3.0 * sigma, pbc);
 
     // Neighbor distances per atom (r <= rc + 3σ so gaussians at the edge
     // still contribute to the integral inside rc).

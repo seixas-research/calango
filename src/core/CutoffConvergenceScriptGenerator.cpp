@@ -85,16 +85,8 @@ std::string CutoffConvergenceScriptGenerator::generate(
         // ENCUT then overridden by the loop variable. One directory per
         // cutoff: a shrinking basis must not pick up the previous point's
         // WAVECAR.
-        const std::string snippet =
-            AseScriptGenerator::calculatorSnippet(calculator);
-        std::istringstream lines(snippet);
-        std::string line;
-        while (std::getline(lines, line)) {
-            if (line.empty())
-                out << "\n";
-            else
-                out << "    " << line << "\n";
-        }
+        AseScriptGenerator::emitIndented(
+            out, AseScriptGenerator::calculatorSnippet(calculator), "    ");
         out << "    # ENCUT is the sweep variable; istart=0 forbids any\n"
                "    # restart from a previous point's files.\n"
                "    atoms.calc.set(encut=float(ecut), istart=0,\n"

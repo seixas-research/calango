@@ -121,15 +121,6 @@ void sortAscending(std::vector<double>& values, std::vector<double>& vectors,
 
 } // namespace
 
-bool haveLapack()
-{
-#ifdef CALANGO_DFT_HAVE_LAPACK
-    return true;
-#else
-    return false;
-#endif
-}
-
 Outcome symmetricEigen(const std::vector<double>& matrix, std::size_t n,
                        std::vector<double>& eigenvalues,
                        std::vector<double>& eigenvectors)

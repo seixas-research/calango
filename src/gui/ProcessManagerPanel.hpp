@@ -61,8 +61,6 @@ public:
     /// is against the filesystem and not against what the row remembers.
     std::vector<CompletedRun> completedRunsWith(const QString& fileName) const;
 
-    /// How many task rows the panel is showing.
-    int taskCount() const;
     /// Status of the row at `row` in display order; Queued if out of range.
     ///
     /// Exists because the status column no longer HAS text to read. Anything

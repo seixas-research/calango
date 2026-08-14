@@ -317,7 +317,6 @@ void EffectiveBandsWizard::refreshMatrix()
                    "the host of this supercell."));
             return;
         }
-        commensurateResidual_ = residual;
     }
 
     core::SupercellMatrix manual;

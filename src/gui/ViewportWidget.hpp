@@ -304,7 +304,6 @@ public Q_SLOTS:
     /// left the overlays visible would not read as a cut. Only the Fade in /
     /// Fade out film transition drives this.
     void setFilmFade(float visibility);
-    float filmFade() const { return filmFade_; }
 
     /// Film crossfade: composite `outgoing` over the live render with weight
     /// (1 - `weight`), so weight 0 shows only the cached image and 1 only the

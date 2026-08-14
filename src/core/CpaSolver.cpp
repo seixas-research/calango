@@ -1,4 +1,5 @@
 #include "core/CpaSolver.hpp"
+#include "core/PhysicalConstants.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -6,10 +7,6 @@
 #include <stdexcept>
 
 namespace calango::core {
-
-namespace {
-constexpr double kPi = 3.14159265358979323846;
-} // namespace
 
 CpaSolver::Lattice CpaSolver::Lattice::semicircular(double halfBandwidth,
                                                     int samples)

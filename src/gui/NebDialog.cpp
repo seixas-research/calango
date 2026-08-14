@@ -37,7 +37,6 @@ namespace calango::gui {
 
 namespace {
 
-const auto kEnvSettingsKey = QStringLiteral("jobs/environmentPath");
 
 /// Indent every line of a code block by four spaces so it can be spliced into
 /// a Python function body (used to attach a calculator per NEB image).
@@ -256,7 +255,7 @@ NebDialog::NebDialog(std::vector<NamedStructure> openDocs, QWidget* parent)
     envRow->addWidget(new QLabel(tr("Environment:"), this));
     envEdit_ = new QLineEdit(this);
     envEdit_->setPlaceholderText(tr("conda env / python (empty = embedded)"));
-    envEdit_->setText(QSettings().value(kEnvSettingsKey).toString());
+    envEdit_->setText(QSettings().value(SettingsManager::kEnvironmentPath).toString());
     auto* envButton = new QPushButton(tr("Browse…"), this);
     envRow->addWidget(envEdit_, 1);
     envRow->addWidget(envButton);
@@ -266,7 +265,7 @@ NebDialog::NebDialog(std::vector<NamedStructure> openDocs, QWidget* parent)
     layout->addWidget(envStatus_);
     connect(envButton, &QPushButton::clicked, this, &NebDialog::browseEnvironment);
     connect(envEdit_, &QLineEdit::textChanged, this, [this] {
-        QSettings().setValue(kEnvSettingsKey, envEdit_->text());
+        QSettings().setValue(SettingsManager::kEnvironmentPath, envEdit_->text());
     });
 
     statusLabel_ = new QLabel(this);

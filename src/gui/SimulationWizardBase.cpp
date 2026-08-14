@@ -16,7 +16,6 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFileInfo>
-#include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QDoubleValidator>
 #include <QFile>
@@ -34,19 +33,16 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
-#include <QRadioButton>
 #include <QSettings>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStringList>
-#include <QTextStream>
 #include <QVBoxLayout>
 
 namespace calango::gui {
 
 namespace {
-const auto kEnvSettingsKey = QStringLiteral("jobs/environmentPath");
 /// Where the VASP POTCAR directory is remembered. Under `jobs/` with the other
 /// installation-wide run settings rather than under a wizard's own key, because
 /// it is shared by every VASP-capable dialog.
@@ -3078,7 +3074,7 @@ QString SimulationWizardBase::pythonExecutable() const
     // python.
     QString env = EnginePresets::envFor(selectedCalculator());
     if (env.trimmed().isEmpty())
-        env = QSettings().value(kEnvSettingsKey).toString();
+        env = QSettings().value(SettingsManager::kEnvironmentPath).toString();
     const QString resolved = CondaEnvs::resolvePython(env);
     if (!resolved.isEmpty())
         return resolved;

@@ -37,7 +37,6 @@ namespace calango::dft::linalg {
 /// wrong band structure.
 ///
 /// Everything here is row-major and dense. Sparsity belongs to the assembler.
-bool haveLapack();
 
 /// Eigen-decomposition of a real symmetric matrix.
 ///

@@ -8,12 +8,9 @@
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFormLayout>
-#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
-#include <QMessageBox>
 #include <QPushButton>
-#include <QSaveFile>
 #include <QTableWidget>
 #include <QTextStream>
 #include <QVBoxLayout>

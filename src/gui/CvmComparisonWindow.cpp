@@ -28,29 +28,6 @@
 
 namespace calango::gui {
 
-namespace {
-
-/// Ticks at 1, 2 or 5 times a power of ten — the spacings people read without
-/// having to decode them.
-double niceStep(double span, int target)
-{
-    if (span <= 0.0 || target <= 0)
-        return 1.0;
-    const double raw = span / target;
-    const double magnitude = std::pow(10.0, std::floor(std::log10(raw)));
-    const double normalized = raw / magnitude;
-    double step = 10.0;
-    if (normalized <= 1.0)
-        step = 1.0;
-    else if (normalized <= 2.0)
-        step = 2.0;
-    else if (normalized <= 5.0)
-        step = 5.0;
-    return step * magnitude;
-}
-
-} // namespace
-
 // ---------------------------------------------------------------------------
 // The canvas
 // ---------------------------------------------------------------------------
@@ -67,12 +44,6 @@ void CvmComparisonPlot::setCurves(std::vector<CvmCurve> curves,
     curves_ = std::move(curves);
     xLabel_ = xLabel;
     yLabel_ = yLabel;
-    update();
-}
-
-void CvmComparisonPlot::setShadeGap(bool shade)
-{
-    shadeGap_ = shade;
     update();
 }
 
@@ -162,8 +133,8 @@ void CvmComparisonPlot::render(QPainter& painter, const QRectF& bounds) const
     };
 
     // -- Grid and ticks ------------------------------------------------------
-    const double xStep = niceStep(xMax - xMin, 6);
-    const double yStep = niceStep(yMax - yMin, 5);
+    const double xStep = niceTickStep(xMax - xMin, 6, 1.0);
+    const double yStep = niceTickStep(yMax - yMin, 5, 1.0);
     painter.setPen(QPen(PlotPalette::grid, 1.0));
     for (double x = std::ceil(xMin / xStep) * xStep; x <= xMax; x += xStep)
         painter.drawLine(toScreen(x, yMin), toScreen(x, yMax));
@@ -196,7 +167,7 @@ void CvmComparisonPlot::render(QPainter& painter, const QRectF& bounds) const
     for (const CvmCurve& curve : curves_)
         if (curve.horizontal)
             ideal = &curve;
-    if (shadeGap_ && ideal) {
+    if (ideal) {
         for (const CvmCurve& curve : curves_) {
             if (curve.horizontal || curve.xs.size() < 2)
                 continue;

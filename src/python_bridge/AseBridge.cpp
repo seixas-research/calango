@@ -1,6 +1,7 @@
 #include "python_bridge/AseBridge.hpp"
 
 #include "core/PdbxFile.hpp"
+#include "python_bridge/PyError.hpp"
 
 #include <pybind11/eval.h>
 #include <pybind11/numpy.h>
@@ -19,9 +20,44 @@ namespace calango::pybridge {
 
 namespace {
 
-[[noreturn]] void rethrow(const py::error_already_set& e, const std::string& context)
+/// Import one per-atom numeric array into `structure`: a 1D array of length
+/// `n` becomes a scalar field; an (n, 3) array imports twice — the full
+/// vectors (for arrow rendering — forces, momenta, ...) and their magnitudes
+/// as "|name|" (for scalar color mapping). Anything non-numeric or of another
+/// shape is skipped silently.
+void importPerAtomArray(core::Structure& structure, const std::string& name,
+                        const py::handle& value, std::size_t n,
+                        const py::module_& np)
 {
-    throw std::runtime_error(context + ":\n" + e.what());
+    try {
+        const auto values =
+            np.attr("asarray")(value, py::arg("dtype") = "float64")
+                .cast<py::array_t<double>>();
+        if (values.ndim() == 1
+            && static_cast<std::size_t>(values.shape(0)) == n) {
+            const auto v = values.unchecked<1>();
+            std::vector<double> field(n);
+            for (std::size_t i = 0; i < n; ++i)
+                field[i] = v(static_cast<py::ssize_t>(i));
+            structure.setScalarField(name, std::move(field));
+        } else if (values.ndim() == 2
+                   && static_cast<std::size_t>(values.shape(0)) == n
+                   && values.shape(1) == 3) {
+            const auto v = values.unchecked<2>();
+            std::vector<core::Vec3> vectors(n);
+            std::vector<double> magnitude(n);
+            for (std::size_t i = 0; i < n; ++i) {
+                const auto row = static_cast<py::ssize_t>(i);
+                vectors[i] = {v(row, 0), v(row, 1), v(row, 2)};
+                magnitude[i] = vectors[i].norm();
+            }
+            structure.setVectorField(name, std::move(vectors));
+            structure.setScalarField("|" + name + "|", std::move(magnitude));
+        }
+        // Scalars that are not per-atom (total energy, stress) are not
+        // per-site data and are skipped.
+    } catch (const py::error_already_set&) {
+    }
 }
 
 } // namespace
@@ -64,36 +100,7 @@ core::Structure AseBridge::fromAtoms(const py::handle& atoms)
         const auto name = item.first.cast<std::string>();
         if (name == "numbers" || name == "positions")
             continue;
-        try {
-            const auto values =
-                np.attr("asarray")(item.second, py::arg("dtype") = "float64")
-                    .cast<py::array_t<double>>();
-            if (values.ndim() == 1 && static_cast<std::size_t>(values.shape(0)) == n) {
-                const auto v = values.unchecked<1>();
-                std::vector<double> field(n);
-                for (std::size_t i = 0; i < n; ++i)
-                    field[i] = v(static_cast<py::ssize_t>(i));
-                structure.setScalarField(name, std::move(field));
-            } else if (values.ndim() == 2
-                       && static_cast<std::size_t>(values.shape(0)) == n
-                       && values.shape(1) == 3) {
-                // Vector arrays import twice: the full vectors (for arrow
-                // rendering — forces, momenta, ...) and their magnitudes
-                // (for scalar color mapping).
-                const auto v = values.unchecked<2>();
-                std::vector<core::Vec3> vectors(n);
-                std::vector<double> magnitude(n);
-                for (std::size_t i = 0; i < n; ++i) {
-                    const auto row = static_cast<py::ssize_t>(i);
-                    vectors[i] = {v(row, 0), v(row, 1), v(row, 2)};
-                    magnitude[i] = vectors[i].norm();
-                }
-                structure.setVectorField(name, std::move(vectors));
-                structure.setScalarField("|" + name + "|", std::move(magnitude));
-            }
-        } catch (const py::error_already_set&) {
-            continue;
-        }
+        importPerAtomArray(structure, name, item.second, n, np);
     }
 
     // Calculator results. ASE's extended-XYZ reader does NOT put `forces`,
@@ -106,37 +113,7 @@ core::Structure AseBridge::fromAtoms(const py::handle& atoms)
         if (!calc.is_none()) {
             for (const auto& item : calc.attr("results").cast<py::dict>()) {
                 const auto name = item.first.cast<std::string>();
-                try {
-                    const auto values =
-                        np.attr("asarray")(item.second, py::arg("dtype") = "float64")
-                            .cast<py::array_t<double>>();
-                    if (values.ndim() == 1
-                        && static_cast<std::size_t>(values.shape(0)) == n) {
-                        const auto v = values.unchecked<1>();
-                        std::vector<double> field(n);
-                        for (std::size_t i = 0; i < n; ++i)
-                            field[i] = v(static_cast<py::ssize_t>(i));
-                        structure.setScalarField(name, std::move(field));
-                    } else if (values.ndim() == 2
-                               && static_cast<std::size_t>(values.shape(0)) == n
-                               && values.shape(1) == 3) {
-                        const auto v = values.unchecked<2>();
-                        std::vector<core::Vec3> vectors(n);
-                        std::vector<double> magnitude(n);
-                        for (std::size_t i = 0; i < n; ++i) {
-                            const auto row = static_cast<py::ssize_t>(i);
-                            vectors[i] = {v(row, 0), v(row, 1), v(row, 2)};
-                            magnitude[i] = vectors[i].norm();
-                        }
-                        structure.setVectorField(name, std::move(vectors));
-                        structure.setScalarField("|" + name + "|",
-                                                 std::move(magnitude));
-                    }
-                    // Scalars that are not per-atom (total energy, stress)
-                    // are not per-site data and are skipped.
-                } catch (const py::error_already_set&) {
-                    continue;
-                }
+                importPerAtomArray(structure, name, item.second, n, np);
             }
         }
     } catch (const py::error_already_set&) {

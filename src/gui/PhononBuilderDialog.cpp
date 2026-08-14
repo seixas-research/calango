@@ -8,7 +8,6 @@
 #include "python_bridge/PythonEngine.hpp"
 
 #include <QDialogButtonBox>
-#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
@@ -17,14 +16,12 @@
 #include <QHBoxLayout>
 #include <QMessageBox>
 #include <QSettings>
-#include <QTextStream>
 #include <QVBoxLayout>
 
 namespace calango::gui {
 
 namespace {
 
-const auto kEnvSettingsKey = QStringLiteral("jobs/environmentPath");
 
 /// Calculators offered for phonon force evaluations — the ones that run
 /// out of the box (no external binaries / pseudopotential setup).
@@ -183,10 +180,10 @@ PhononBuilderDialog::PhononBuilderDialog(
             envStatusLabel_->setText(tr("No python interpreter found at this path."));
             envStatusLabel_->setStyleSheet(QStringLiteral("color: #d9534f;"));
         }
-        QSettings().setValue(kEnvSettingsKey, envPathEdit_->text());
+        QSettings().setValue(SettingsManager::kEnvironmentPath, envPathEdit_->text());
     };
     connect(envPathEdit_, &QLineEdit::textChanged, this, updateEnvStatus);
-    envPathEdit_->setText(QSettings().value(kEnvSettingsKey).toString());
+    envPathEdit_->setText(QSettings().value(SettingsManager::kEnvironmentPath).toString());
     updateEnvStatus();
 
     // Editable script preview, same contract as the calculator dialog.

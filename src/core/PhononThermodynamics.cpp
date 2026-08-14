@@ -1,4 +1,5 @@
 #include "core/PhononThermodynamics.hpp"
+#include "core/PhysicalConstants.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -9,8 +10,6 @@ namespace {
 
 /// cm⁻¹ → eV. ħω for ω in wavenumbers: hc/e × 100 m⁻¹.
 constexpr double kCmToEv = 1.239841984e-4;
-/// Boltzmann constant in eV/K.
-constexpr double kBoltzmannEvPerK = 8.617333262e-5;
 
 /// Trapezoidal weight of sample i on a (possibly non-uniform) grid.
 double trapezoidWeight(const std::vector<double>& x, std::size_t i)

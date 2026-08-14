@@ -2,6 +2,7 @@
 
 #include "core/Element.hpp"
 #include "core/LocaleSafeNumber.hpp"
+#include "core/TextUtils.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -46,15 +47,6 @@ std::vector<std::string> splitCifLine(const std::string& line)
         }
     }
     return fields;
-}
-
-std::string trimmed(const std::string& text)
-{
-    const auto begin = text.find_first_not_of(" \t\r\n");
-    if (begin == std::string::npos)
-        return {};
-    const auto end = text.find_last_not_of(" \t\r\n");
-    return text.substr(begin, end - begin + 1);
 }
 
 /// CIF spells "no value" as `?` and "not applicable" as `.`; both mean the

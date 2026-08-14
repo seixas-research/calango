@@ -16,7 +16,6 @@ class QComboBox;
 class QDoubleSpinBox;
 class QSpinBox;
 class QTableWidget;
-class QTableWidgetItem;
 
 namespace calango::gui {
 

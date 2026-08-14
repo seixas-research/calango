@@ -1,7 +1,6 @@
 #include "gui/WaterIceWizard.hpp"
 
 #include <QComboBox>
-#include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QGroupBox>

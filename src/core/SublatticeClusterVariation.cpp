@@ -1,4 +1,5 @@
 #include "core/SublatticeClusterVariation.hpp"
+#include "core/PhysicalConstants.hpp"
 
 // <cstddef> for std::size_t: libstdc++ does not supply it transitively the way
 // libc++ does, and the header's <cstdint> is not a substitute. Neither may be
@@ -11,8 +12,6 @@
 namespace calango::core {
 
 namespace {
-
-constexpr double kBoltzmannEvPerK = 8.617333262e-5;
 
 /// The six vertex-pairs of a tetrahedron. Here the vertex index IS the
 /// sublattice index, so these are the six SUBLATTICE pairs, and each of them

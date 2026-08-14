@@ -236,16 +236,8 @@ std::string KpointsConvergenceScriptGenerator::generate(
         // the mesh then overridden by the loop variable. One directory per
         // mesh; istart=0 forbids restarts across points. ASE's `gamma`
         // keyword is the Γ-centring switch for VASP's KPOINTS file.
-        const std::string snippet =
-            AseScriptGenerator::calculatorSnippet(calculator);
-        std::istringstream lines(snippet);
-        std::string line;
-        while (std::getline(lines, line)) {
-            if (line.empty())
-                out << "\n";
-            else
-                out << "    " << line << "\n";
-        }
+        AseScriptGenerator::emitIndented(
+            out, AseScriptGenerator::calculatorSnippet(calculator), "    ");
         out << "    atoms.calc.set(kpts=tuple(kpts),\n"
             << "                   gamma="
             << (calculator.kptsGammaCentered ? "True" : "False")
