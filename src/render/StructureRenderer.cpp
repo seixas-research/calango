@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -505,6 +506,192 @@ std::vector<StructureRenderer::CastStyle> StructureRenderer::atomCastStyles(
     return perAtom;
 }
 
+QVector3D StructureRenderer::floorPresetNormal(FloorPreset preset)
+{
+    switch (preset) {
+    case FloorPreset::Xy: return {0.0f, 0.0f, 1.0f};
+    case FloorPreset::Xz: return {0.0f, 1.0f, 0.0f};
+    case FloorPreset::Yz: return {1.0f, 0.0f, 0.0f};
+    case FloorPreset::Custom: break;
+    }
+    return {0.0f, 0.0f, 1.0f};
+}
+
+StructureRenderer::FloorPreset
+StructureRenderer::floorPreset(const QVector3D& normal)
+{
+    if (normal.lengthSquared() < 1e-12f)
+        return FloorPreset::Custom;
+    const QVector3D unit = normal.normalized();
+    for (const FloorPreset preset :
+         {FloorPreset::Xy, FloorPreset::Xz, FloorPreset::Yz}) {
+        if ((unit - floorPresetNormal(preset)).lengthSquared() < 1e-6f)
+            return preset;
+    }
+    return FloorPreset::Custom;
+}
+
+void StructureRenderer::floorBasis(const QVector3D& normal, QVector3D& u,
+                                   QVector3D& v, QVector3D& n)
+{
+    n = normal;
+    // A zero (or NaN) normal is not an error to report from here — the UI
+    // rejects it at the point of entry. Falling back to the default keeps
+    // every consumer free of NaN geometry regardless.
+    if (!std::isfinite(n.x()) || !std::isfinite(n.y()) || !std::isfinite(n.z())
+        || n.lengthSquared() < 1e-12f) {
+        n = QVector3D(0.0f, 0.0f, 1.0f);
+    }
+    n.normalize();
+
+    // Gram-Schmidt world +X against n, so n = +Z gives back exactly
+    // (u, v) = (x, y) and the historical placement is reproduced bit for bit.
+    QVector3D seed(1.0f, 0.0f, 0.0f);
+    if (std::abs(QVector3D::dotProduct(seed, n)) > 0.9f)
+        seed = QVector3D(0.0f, 1.0f, 0.0f); // n is along ±x: use +y instead
+    u = (seed - n * QVector3D::dotProduct(seed, n)).normalized();
+    // Right-handed by construction: u x v = n, which is what lets the quad
+    // keep one winding and still face along n whichever way it is turned.
+    v = QVector3D::crossProduct(n, u);
+}
+
+StructureRenderer::FloorPlacement
+StructureRenderer::floorBase(const core::Structure* structure, const Style& style)
+{
+    FloorPlacement placement;
+    floorBasis(style.floorNormal, placement.axisU, placement.axisV,
+               placement.normal);
+    if (!structure || structure->empty())
+        return placement; // nothing to rest on it
+
+    // Bounds of everything DRAWN, in world space. Atoms enter at the radius
+    // they are drawn with (so the plane clears the bottom of the sphere, not
+    // its centre) and hidden hydrogens do not enter at all — a floor pushed
+    // down by an atom the user cannot see would look like a bug.
+    //
+    // Measured in the PLANE'S OWN frame, not in world xy: "below" is the
+    // negative side along the normal, and the footprint is the extent along
+    // the two in-plane axes. With the default +Z normal the frame is exactly
+    // (x, y, z) and this is the arithmetic it always was; turned on its side,
+    // the same lines fit the plane to the structure's vertical extent instead.
+    const QVector3D& u = placement.axisU;
+    const QVector3D& v = placement.axisV;
+    const QVector3D& n = placement.normal;
+    float lowest = std::numeric_limits<float>::max();
+    float minU = std::numeric_limits<float>::max();
+    float maxU = std::numeric_limits<float>::lowest();
+    float minV = std::numeric_limits<float>::max();
+    float maxV = std::numeric_limits<float>::lowest();
+    bool any = false;
+    const auto include = [&](const QVector3D& p, float radius) {
+        // A sphere of radius r reaches r beyond its centre along EVERY
+        // direction, so the same radius applies to all three projections.
+        const float alongN = QVector3D::dotProduct(p, n);
+        const float alongU = QVector3D::dotProduct(p, u);
+        const float alongV = QVector3D::dotProduct(p, v);
+        lowest = std::min(lowest, alongN - radius);
+        minU = std::min(minU, alongU - radius);
+        maxU = std::max(maxU, alongU + radius);
+        minV = std::min(minV, alongV - radius);
+        maxV = std::max(maxV, alongV + radius);
+        any = true;
+    };
+
+    const std::vector<CastStyle> casts = atomCastStyles(structure, style);
+    const auto& atoms = structure->atoms();
+    for (std::size_t i = 0; i < atoms.size(); ++i) {
+        if (!style.showHydrogens && atoms[i].atomicNumber == 1)
+            continue;
+        include(toQt(atoms[i].position),
+                displayRadius(atoms[i].atomicNumber, casts[i]));
+    }
+    // The cell box, when it is drawn. For a slab or a crystal the box is what
+    // visibly stands on the floor, and it routinely reaches below the lowest
+    // atom — this is what "the floor simply sits under the cell" means for a
+    // periodic system.
+    if (structure->cell().isDefined() && (style.showCell || style.fillCell)) {
+        for (const core::Vec3& corner : structure->cell().corners())
+            include(toQt(corner), 0.0f);
+    }
+    if (!any)
+        return placement; // every atom hidden and no cell: nothing is drawn
+
+    // Periodic images ("show neighboring cells"): the union of the home box
+    // translated by each lattice shift, so its bounds are the home bounds
+    // widened by the extreme shifts. Taken over the shifts themselves rather
+    // than against zero — a window that excludes the origin has no image at
+    // the home cell to anchor to.
+    if (structure->cell().isDefined() && !style.neighborCells.homeCellOnly()) {
+        const auto& vectors = structure->cell().vectors();
+        std::vector<QVector3D> shifts;
+        for (const auto& offset : style.neighborCells.cellOffsets()) {
+            shifts.push_back(
+                toQt(vectors[0] * static_cast<double>(offset[0])
+                     + vectors[1] * static_cast<double>(offset[1])
+                     + vectors[2] * static_cast<double>(offset[2])));
+        }
+        // Projected into the plane's frame like everything else. Taking the
+        // extreme SHIFT per axis is only valid because each projection is
+        // monotone in the shift, which a dot product is.
+        float shiftLowN = std::numeric_limits<float>::max();
+        float shiftLowU = std::numeric_limits<float>::max();
+        float shiftHighU = std::numeric_limits<float>::lowest();
+        float shiftLowV = std::numeric_limits<float>::max();
+        float shiftHighV = std::numeric_limits<float>::lowest();
+        for (const QVector3D& shift : shifts) {
+            shiftLowN = std::min(shiftLowN, QVector3D::dotProduct(shift, n));
+            const float su = QVector3D::dotProduct(shift, u);
+            const float sv = QVector3D::dotProduct(shift, v);
+            shiftLowU = std::min(shiftLowU, su);
+            shiftHighU = std::max(shiftHighU, su);
+            shiftLowV = std::min(shiftLowV, sv);
+            shiftHighV = std::max(shiftHighV, sv);
+        }
+        lowest += shiftLowN;
+        minU += shiftLowU;
+        maxU += shiftHighU;
+        minV += shiftLowV;
+        maxV += shiftHighV;
+    }
+
+    // Small and absolute rather than a fraction of the size: the plane is
+    // meant to read as the surface the structure RESTS on, and a clearance
+    // that grew with the model would leave a big cluster hovering.
+    constexpr float kClearance = 0.25f;
+    placement.visible = true;
+    // Reassembled from the plane's frame: centred on the footprint in-plane,
+    // one clearance below the lowest point along the normal.
+    placement.center = u * ((minU + maxU) * 0.5f)
+        + v * ((minV + maxV) * 0.5f)
+        + n * (lowest - kClearance);
+    // Half the diagonal of the footprint: the largest in-plane distance any
+    // drawn point sits from the centre. Floored so a single atom still gets a
+    // plane of a sane size instead of a speck.
+    placement.reach = std::max(
+        0.5f * std::hypot(maxU - minU, maxV - minV), 1.0f);
+    // Solid out to a few times the structure's own footprint, gone by ten.
+    // At the default framing (the camera sits ~2.8 bounding radii back with a
+    // 40° field of view) the floor fills the frame long before the fade
+    // begins, so it reads as ground rather than as a tile; zooming out finds
+    // a soft horizon instead of a hard edge.
+    placement.solidRadius = placement.reach * 3.5f;
+    placement.fadeRadius = placement.reach * 12.0f;
+    placement.halfSize = placement.fadeRadius;
+    return placement;
+}
+
+StructureRenderer::FloorPlacement
+StructureRenderer::floorPlacement(const core::Structure* structure,
+                                  const Style& style)
+{
+    FloorPlacement placement = floorBase(structure, style);
+    placement.visible = placement.visible && style.floorEnabled;
+    // Along the NORMAL, not along z: "raise the floor" has to mean the same
+    // thing whichever way the plane is turned.
+    placement.center += placement.normal * style.floorOffset;
+    return placement;
+}
+
 QColor StructureRenderer::atomColor(int atomicNumber, const Style& style)
 {
     if (const auto it = style.colorOverrides.find(atomicNumber);
@@ -705,6 +892,30 @@ void StructureRenderer::initialize(QOpenGLFunctions_3_3_Core* gl)
     createColoredBuffer(managedOverlayEdges_);
     createColoredBuffer(hydrogenBonds_);
     createLitBuffer(cellFaces_);
+
+    // Ground plane: one -1..+1 quad, uploaded once and never again. Its world
+    // placement lives entirely in floor.vert's uniforms, so following the
+    // structure or the height slider costs nothing here.
+    {
+        // Wound counter-clockwise AS SEEN FROM ABOVE (+y looking down), which
+        // is GL's front face. floor.frag discards the back one, so getting
+        // this backwards would make the plane invisible from every angle it is
+        // meant to be seen from — and visible only from underneath.
+        static constexpr float kCorners[] = {
+            -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f,
+            -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f,
+        };
+        floorVao_.create();
+        floorVao_.bind();
+        floorVbo_.create();
+        floorVbo_.bind();
+        floorVbo_.allocate(kCorners, sizeof(kCorners));
+        gl_->glEnableVertexAttribArray(0);
+        gl_->glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float),
+                                   nullptr);
+        floorVao_.release();
+        floorVbo_.release();
+    }
 
     // Unit 0 must never be left empty while the mesh program is drawing —
     // see dummyTexture_. Created once, for the life of the context.
@@ -1118,6 +1329,119 @@ bool StructureRenderer::ensureLitSurfaceProgram()
                  qPrintable(isosurfaceProgram_.log()));
     }
     return isosurfaceProgramReady_;
+}
+
+bool StructureRenderer::ensureFloorProgram()
+{
+    if (floorProgramTried_)
+        return floorProgramReady_;
+    floorProgramTried_ = true;
+    floorProgramReady_ =
+        floorProgram_.addShaderFromSourceFile(QOpenGLShader::Vertex,
+                                              ":/assets/shaders/floor.vert")
+        && floorProgram_.addShaderFromSourceFile(QOpenGLShader::Fragment,
+                                                 ":/assets/shaders/floor.frag")
+        && floorProgram_.link();
+    if (!floorProgramReady_) {
+        qWarning("Calango: the floor shader did not build on this driver; the "
+                 "ground plane will not be drawn. Log:\n%s",
+                 qPrintable(floorProgram_.log()));
+    }
+    return floorProgramReady_;
+}
+
+void StructureRenderer::drawFloor(const QMatrix4x4& view,
+                                  const QMatrix4x4& projection)
+{
+    FloorPlacement floor = floorBase_;
+    if (!floor.visible || !style_.floorEnabled || style_.floorOpacity <= 0.0f)
+        return;
+    // The offset is applied HERE rather than baked into floorBase_ so the
+    // height slider moves the plane on a plain repaint — dragging it must not
+    // rebuild every instance buffer in the scene.
+    floor.center += floor.normal * style_.floorOffset;
+    if (!ensureFloorProgram())
+        return;
+
+    floorProgram_.bind();
+    floorProgram_.setUniformValue("uView", view);
+    floorProgram_.setUniformValue("uProj", projection);
+    floorProgram_.setUniformValue("uLightSpace", lightSpace_);
+    floorProgram_.setUniformValue("uFloorCenter", floor.center);
+    floorProgram_.setUniformValue("uFloorU", floor.axisU);
+    floorProgram_.setUniformValue("uFloorV", floor.axisV);
+    floorProgram_.setUniformValue("uFloorNormal", floor.normal);
+    floorProgram_.setUniformValue("uHalfSize", floor.halfSize);
+    floorProgram_.setUniformValue("uSolidRadius", floor.solidRadius);
+    floorProgram_.setUniformValue("uFadeRadius", floor.fadeRadius);
+    floorProgram_.setUniformValue(
+        "uFloorColor",
+        QVector3D(static_cast<float>(style_.floorColor.redF()),
+                  static_cast<float>(style_.floorColor.greenF()),
+                  static_cast<float>(style_.floorColor.blueF())));
+    floorProgram_.setUniformValue(
+        "uFloorOpacity", std::clamp(style_.floorOpacity, 0.0f, 1.0f));
+    floorProgram_.setUniformValue("uFloorFinish",
+                                  static_cast<int>(style_.floorFinish));
+    floorProgram_.setUniformValue("uShininess", 48.0f);
+
+    const int count = std::min(static_cast<int>(lights_.size()), kMaxLights);
+    QVector3D directions[kMaxLights];
+    QVector3D ambient[kMaxLights];
+    QVector3D diffuse[kMaxLights];
+    QVector3D specular[kMaxLights];
+    for (int i = 0; i < count; ++i) {
+        const Light& light = lights_[static_cast<std::size_t>(i)];
+        directions[i] = light.direction.normalized();
+        ambient[i] = {static_cast<float>(light.ambient.redF()),
+                      static_cast<float>(light.ambient.greenF()),
+                      static_cast<float>(light.ambient.blueF())};
+        diffuse[i] = {static_cast<float>(light.diffuse.redF()),
+                      static_cast<float>(light.diffuse.greenF()),
+                      static_cast<float>(light.diffuse.blueF())};
+        specular[i] = {static_cast<float>(light.specular.redF()),
+                       static_cast<float>(light.specular.greenF()),
+                       static_cast<float>(light.specular.blueF())};
+    }
+    floorProgram_.setUniformValue("uLightCount", count);
+    floorProgram_.setUniformValueArray("uLightDir", directions, kMaxLights);
+    floorProgram_.setUniformValueArray("uLightAmbient", ambient, kMaxLights);
+    floorProgram_.setUniformValueArray("uLightDiffuse", diffuse, kMaxLights);
+    floorProgram_.setUniformValueArray("uLightSpecular", specular, kMaxLights);
+
+    floorProgram_.setUniformValue("uShadowEnabled", shadowsActive_ ? 1 : 0);
+    floorProgram_.setUniformValue("uShadowStrength", style_.shadowStrength);
+    floorProgram_.setUniformValue("uShadowRadius", style_.shadowSoftness);
+    floorProgram_.setUniformValue("uShadowTexelSize",
+                                  1.0f / static_cast<float>(kShadowMapSize));
+    floorProgram_.setUniformValue("uShadowMap", 0);
+    // Same rule as uploadLights(): unit 0 must never be empty while a program
+    // sampling it is drawing, whichever branch the shader takes.
+    gl_->glActiveTexture(GL_TEXTURE0);
+    gl_->glBindTexture(GL_TEXTURE_2D,
+                       shadowsActive_ ? shadowTexture_ : dummyTexture_);
+
+    floorProgram_.setUniformValue("uFogMode", style_.fogMode);
+    floorProgram_.setUniformValue(
+        "uFogColor", QVector3D(static_cast<float>(style_.fogColor.redF()),
+                               static_cast<float>(style_.fogColor.greenF()),
+                               static_cast<float>(style_.fogColor.blueF())));
+    floorProgram_.setUniformValue("uFogStart", style_.fogStart);
+    floorProgram_.setUniformValue("uFogEnd", style_.fogEnd);
+    floorProgram_.setUniformValue("uFogDensity", style_.fogDensity);
+
+    // Blended, but WITH depth writes: the fade toward the horizon needs alpha,
+    // and both SSAO and depth-of-field read the depth buffer — a plane that
+    // left no depth behind would be treated as infinitely far away and blurred
+    // to nothing by the latter. Drawing it first is what makes that safe: the
+    // only thing it can blend against is the freshly cleared background.
+    gl_->glEnable(GL_BLEND);
+    gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    floorVao_.bind();
+    gl_->glDrawArrays(GL_TRIANGLES, 0, 6);
+    floorVao_.release();
+    gl_->glDisable(GL_BLEND);
+    floorProgram_.release();
 }
 
 void StructureRenderer::uploadIsosurfaceLights()
@@ -1688,6 +2012,10 @@ void StructureRenderer::setStructure(const core::Structure* structure,
         sceneCenter_ = QVector3D();
         sceneRadius_ = 1.0f;
     }
+    // The ground plane's automatic placement follows the same rule: it depends
+    // only on the geometry, so it is resolved once here rather than per frame.
+    // The height offset and the on/off switch are applied at draw time.
+    floorBase_ = floorBase(structure, style_);
 
     std::vector<float> atomInstances;
     std::vector<float> bondInstances;
@@ -2477,6 +2805,17 @@ bool StructureRenderer::ensureShadowTarget()
     if (!gl_)
         return false;
 
+    // Whatever target the caller was drawing into has to come back at the end.
+    // Restoring the literal framebuffer 0 — which this did — is only correct
+    // when 0 IS the caller's target, and it never is here: inside a
+    // QOpenGLWidget the default target is the widget's own FBO, and an
+    // off-screen capture binds its own. The whole frame in which shadows were
+    // first switched on therefore went to framebuffer 0 and the real target
+    // kept whatever it had. One wrong frame in the viewport; a frame of pure
+    // garbage in an off-screen render, which is where it was caught.
+    GLint previousFbo = 0;
+    gl_->glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFbo);
+
     gl_->glGenTextures(1, &shadowTexture_);
     gl_->glBindTexture(GL_TEXTURE_2D, shadowTexture_);
     gl_->glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, kShadowMapSize,
@@ -2500,7 +2839,7 @@ bool StructureRenderer::ensureShadowTarget()
     gl_->glReadBuffer(GL_NONE);
     const bool complete =
         gl_->glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
-    gl_->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gl_->glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(previousFbo));
     if (!complete) {
         // Leave shadows disabled rather than rendering through a broken FBO.
         gl_->glDeleteFramebuffers(1, &shadowFbo_);
@@ -2544,6 +2883,15 @@ void StructureRenderer::renderShadowMap(const QMatrix4x4& lightSpace)
     for (InstancedMesh* mesh : {&sphere_, &cylinder_, &cone_, &cellTube_}) {
         if (mesh->instanceCount == 0)
             continue;
+        // Only what is DRAWN may cast. The cell tube stream is built whenever
+        // the structure has a cell — `showCell` gates the draw, not the build —
+        // so an unguarded depth pass had a hidden wireframe casting twelve thin
+        // shadows of a box nobody could see. Nothing caught them while the only
+        // surfaces around were the atoms themselves; the ground plane catches
+        // everything, and they landed on it as a rectangle ruled across the
+        // floor.
+        if (mesh == &cellTube_ && !style_.showCell)
+            continue;
         mesh->vao.bind();
         gl_->glDrawElementsInstanced(GL_TRIANGLES, mesh->indexCount,
                                      GL_UNSIGNED_INT, nullptr,
@@ -2584,6 +2932,16 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
     }
     shadowsActive_ = shadowsActive;
     lightSpace_ = lightSpace;
+
+    // Ground plane FIRST, right on top of the cleared background.
+    //
+    // It is the only blended surface in the scene that also writes depth, and
+    // drawing it before anything else is what makes that safe: the only thing
+    // its faded rim can blend against is the background, and everything drawn
+    // afterwards depth-tests against it normally. It is a shadow RECEIVER —
+    // the depth pass above has already run, and the plane was deliberately not
+    // part of it.
+    drawFloor(view, projection);
 
     if (hasWires) {
         wireProgram_.bind();

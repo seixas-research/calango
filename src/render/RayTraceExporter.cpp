@@ -23,6 +23,31 @@ struct SceneCylinder {
     QColor color;
 };
 
+/// The ground plane's four corners, in the winding both backends want, or an
+/// empty vector when the floor is off.
+///
+/// Emitted as two triangles rather than as POV-Ray's `plane` / a Tachyon
+/// `Ring`: an infinite plane would swallow the background, both primitives
+/// differ in silhouette between the two renderers, and TRI/triangle are the
+/// two constructs whose syntax is beyond doubt in either parser. The quad's
+/// edge sits where the viewport's radial fade has already gone to nothing —
+/// neither ray tracer can reproduce that fade, so at any framing where it
+/// would matter the edge is off camera anyway.
+std::vector<QVector3D> floorQuad(const RayTraceExporter::SceneInputs& in)
+{
+    const auto floor =
+        StructureRenderer::floorPlacement(in.structure, in.style);
+    if (!floor.visible)
+        return {};
+    // Built from the plane's own axes, so a reoriented floor exports turned
+    // exactly as it is drawn rather than snapping back to horizontal.
+    const float h = floor.halfSize;
+    const QVector3D c = floor.center;
+    const QVector3D du = floor.axisU * h;
+    const QVector3D dv = floor.axisV * h;
+    return {c - du - dv, c + du - dv, c + du + dv, c - du + dv};
+}
+
 
 /// Scene geometry shared by both backends, derived exactly like the
 /// viewport's instance buffers.
@@ -212,6 +237,26 @@ QString RayTraceExporter::povray(const SceneInputs& in)
 
     s << "#declare AtomFinish = finish { ambient 0.25 diffuse 0.75 specular 0.35 "
          "roughness 0.02 };\n";
+
+    // Ground plane, before the structure so the file reads scene-then-subject.
+    // POV-Ray traces real shadows from the parallel light sources above, so
+    // the atoms land on it exactly as they do in the viewport — nothing here
+    // has to reproduce the shadow itself.
+    if (const std::vector<QVector3D> quad = floorQuad(in); !quad.empty()) {
+        const QColor color = in.style.floorColor;
+        // Matte, whatever the on-screen material says: a specular highlight
+        // stretched across a plane this large is the classic ray-traced
+        // artefact, and this file is going into a figure.
+        s << "#declare FloorFinish = finish { ambient 0.30 diffuse 0.70 "
+             "specular 0 };\n"
+          << "triangle { <" << vec(quad[0]) << ">, <" << vec(quad[1])
+          << ">, <" << vec(quad[2]) << "> pigment { rgb <" << rgb(color)
+          << "> } finish { FloorFinish } }\n"
+          << "triangle { <" << vec(quad[0]) << ">, <" << vec(quad[2])
+          << ">, <" << vec(quad[3]) << "> pigment { rgb <" << rgb(color)
+          << "> } finish { FloorFinish } }\n";
+    }
+
     for (const auto& sphere : spheres) {
         s << "sphere { <" << vec(sphere.center) << ">, " << sphere.radius
           << " pigment { rgb <" << rgb(sphere.color) << "> } finish { AtomFinish } }\n";
@@ -328,6 +373,26 @@ QString RayTraceExporter::tachyon(const SceneInputs& in)
             .arg(diffuse, 0, 'f', 3)
             .arg(rgbTriple(color));
     };
+    // Ground plane. Tachyon's Full shader mode traces the directional lights'
+    // shadows onto it, matching the viewport without any special handling.
+    if (const std::vector<QVector3D> quad = floorQuad(in); !quad.empty()) {
+        const QString floorTexture =
+            QStringLiteral("  Texture Ambient %1 Diffuse %2 Specular 0 "
+                           "Opacity 1\n"
+                           "  Phong Plastic 0 Phong_size 1 Color %3 TexFunc 0\n")
+                .arg(ambient, 0, 'f', 3)
+                .arg(diffuse, 0, 'f', 3)
+                .arg(rgbTriple(in.style.floorColor));
+        for (const auto& tri : {std::array<int, 3>{0, 1, 2},
+                                std::array<int, 3>{0, 2, 3}}) {
+            s << "TRI\n"
+              << "  V0 " << xyz(quad[static_cast<std::size_t>(tri[0])]) << "\n"
+              << "  V1 " << xyz(quad[static_cast<std::size_t>(tri[1])]) << "\n"
+              << "  V2 " << xyz(quad[static_cast<std::size_t>(tri[2])]) << "\n"
+              << floorTexture;
+        }
+    }
+
     for (const auto& sphere : spheres) {
         // A zero/negative radius is a hard parse error in Tachyon; the
         // viewport just draws nothing, so guard rather than emit it.

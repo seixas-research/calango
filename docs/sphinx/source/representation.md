@@ -4,7 +4,7 @@ How a structure looks is split across three places, each owning one kind of
 decision. The {guilabel}`Representation` dock (zone 8 — see {doc}`/viewport`)
 styles the atoms and bonds themselves; the {guilabel}`Spatial References` dock
 draws things *onto* the scene that are not atoms — the cell wireframe, the
-axes triad and per-atom vector arrows; and the {guilabel}`Lighting` dock owns
+axes triad and per-atom vector arrows; and the {guilabel}`Light` tab of {guilabel}`Visual Effects` owns
 the lights. Quick display toggles (element symbols, atomic indices,
 hydrogens, gradient bonds) live on the viewport toolbar, where flipping them
 does not require an open dock.
@@ -253,7 +253,8 @@ The Vectors tab drawing initial magnetic moments — one overlay at a time, scal
 
 ## Lighting
 
-The {guilabel}`Lighting` dock edits **up to four directional lights** with
+The {guilabel}`Light` tab of the {guilabel}`Visual Effects` dock edits **up to four
+directional lights** with
 Blinn-Phong shading. A fresh viewport starts with the two-light studio
 default — a warm key light carrying the speculars and a soft, cooler fill
 from the opposite side. Select a light in the list, then edit:
@@ -270,9 +271,9 @@ removed, since a scene with no lights renders black. Light sets can be saved
 to and loaded from JSON presets, and {guilabel}`Reset lights` restores the
 two-light default.
 
-% TODO screenshot: Lighting dock with three lights configured, viewport showing distinct key/fill/rim separation on a nanoparticle
+% TODO screenshot: the Light tab with three lights configured, viewport showing distinct key/fill/rim separation on a nanoparticle
 ```{figure} /_static/img/representation_lighting.png
-:alt: The Lighting dock editing a three-light setup
+:alt: The Light tab editing a three-light setup
 :width: 92%
 :figclass: screenshot
 

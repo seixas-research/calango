@@ -57,6 +57,7 @@ class TimelineWidget;
 class FilmTimelineWidget;
 class FilmProductionDialog;
 class ViewportWidget;
+class VisualEffectsPanel;
 class OrchestrationWindow;
 
 /// What the electron-phonon worker thread hands back to the GUI thread.
@@ -902,6 +903,10 @@ private:
     /// hydrogens" switches it on after building them — hydrogens the user
     /// cannot see are a no-op as far as they can tell.
     QAction* showHydrogensAction_ = nullptr;
+    /// Zone-9 panel. Held so a project restore can tell the Floor tab to
+    /// re-read the settings it just wrote into the render style — the tab's
+    /// controls were built from the defaults when the window was.
+    VisualEffectsPanel* visualEffectsPanel_ = nullptr;
     BrandingPanel* brandingPanel_ = nullptr;      ///< zone 1 (theme-aware logo)
     SystemStatusBar* systemStatusBar_ = nullptr;  ///< permanent status widgets
     QMenu* recentMenu_ = nullptr; ///< File → Open → Open Recent (dynamic)

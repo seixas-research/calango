@@ -12,6 +12,7 @@
 #include "core/HydrogenCompletion.hpp"
 #include "core/JobFailureReason.hpp"
 #include "core/PdbxFile.hpp"
+#include "core/PingPongOrder.hpp"
 #include "core/Structure.hpp"
 #include "core/StructureTransforms.hpp"
 #include "gui/BrillouinZoneDialog.hpp"
@@ -1823,7 +1824,11 @@ void MainWindow::createMenusAndDocks()
     // the END of the bottom row — see the splitDockWidget chain further down.
     visualEffectsDock_ = new QDockWidget(tr("Visual Effects"), this);
     visualEffectsDock_->setObjectName(QStringLiteral("visualEffectsDock"));
-    visualEffectsDock_->setWidget(new VisualEffectsPanel(viewport_, visualEffectsDock_));
+    // Held for syncFloorFromViewport(): a project restore writes the floor
+    // settings straight into the render style, and the panel's controls have
+    // to be told to re-read them.
+    visualEffectsPanel_ = new VisualEffectsPanel(viewport_, visualEffectsDock_);
+    visualEffectsDock_->setWidget(visualEffectsPanel_);
 
     // Results now TRAILS the bottom row (Orchestration | HPC | Results),
     // so it is built here but placed further down, once the dock that leads
@@ -2865,6 +2870,27 @@ bool MainWindow::writeProject(const QString& path)
     viewportJson[QStringLiteral("customField")] = viewport_->customScalarField();
     viewportJson[QStringLiteral("background")]
         = viewport_->backgroundColor().name();
+    // Ground plane. It belongs here beside the background rather than with the
+    // other toolbar toggles (which persist nowhere): those describe how the
+    // structure is drawn and follow the structure, whereas the floor and the
+    // background are the SCENE a figure was composed in, and reopening a
+    // project to a different scene is what loses the figure.
+    viewportJson[QStringLiteral("floor")] = viewport_->style().floorEnabled;
+    viewportJson[QStringLiteral("floorOffset")] =
+        static_cast<double>(viewport_->style().floorOffset);
+    viewportJson[QStringLiteral("floorColor")] =
+        viewport_->style().floorColor.name();
+    viewportJson[QStringLiteral("floorOpacity")] =
+        static_cast<double>(viewport_->style().floorOpacity);
+    viewportJson[QStringLiteral("floorFinish")] =
+        static_cast<int>(viewport_->style().floorFinish);
+    // The plane's orientation, as the normal itself rather than as a preset
+    // name: three numbers cannot be renumbered by a later release, and they
+    // carry the arbitrary orientations the presets cannot name.
+    viewportJson[QStringLiteral("floorNormal")] = QJsonArray{
+        static_cast<double>(viewport_->style().floorNormal.x()),
+        static_cast<double>(viewport_->style().floorNormal.y()),
+        static_cast<double>(viewport_->style().floorNormal.z())};
     root[QStringLiteral("viewport")] = viewportJson;
 
     QJsonObject job;
@@ -2978,6 +3004,49 @@ bool MainWindow::readProject(const QString& path)
             viewport_->setColorMode(
                 static_cast<render::ColorMode>(colorMode),
                 viewportJson[QStringLiteral("customField")].toString());
+
+        // Ground plane. Read defensively — a project written before the floor
+        // existed carries none of these keys, and must open with the floor off
+        // and the defaults intact rather than at 0 Å opacity.
+        auto& style = viewport_->style();
+        style.floorEnabled =
+            viewportJson[QStringLiteral("floor")].toBool(style.floorEnabled);
+        style.floorOffset = static_cast<float>(
+            viewportJson[QStringLiteral("floorOffset")].toDouble(
+                static_cast<double>(style.floorOffset)));
+        if (const QColor floorColor(
+                viewportJson[QStringLiteral("floorColor")].toString());
+            floorColor.isValid())
+            style.floorColor = floorColor;
+        style.floorOpacity = static_cast<float>(
+            viewportJson[QStringLiteral("floorOpacity")].toDouble(
+                static_cast<double>(style.floorOpacity)));
+        const int floorFinish =
+            viewportJson[QStringLiteral("floorFinish")].toInt(
+                static_cast<int>(style.floorFinish));
+        if (floorFinish >= 0
+            && floorFinish <= static_cast<int>(render::SurfaceFinish::Glassy))
+            style.floorFinish = static_cast<render::SurfaceFinish>(floorFinish);
+        // Absent from every project written before the floor could be turned,
+        // and those must open horizontal — so the key is simply not applied
+        // when it is missing, leaving the +Z default in place. A zero vector
+        // (hand-edited, or a truncated write) is rejected for the same reason
+        // the panel rejects one: it defines no plane.
+        if (const QJsonArray normal =
+                viewportJson[QStringLiteral("floorNormal")].toArray();
+            normal.size() == 3) {
+            const QVector3D candidate(
+                static_cast<float>(normal.at(0).toDouble()),
+                static_cast<float>(normal.at(1).toDouble()),
+                static_cast<float>(normal.at(2).toDouble()));
+            if (candidate.lengthSquared() > 1e-12f)
+                style.floorNormal = candidate;
+        }
+        // The Floor tab's controls were built from the defaults long before
+        // this ran, so they have to re-read what was just restored.
+        if (visualEffectsPanel_)
+            Q_EMIT visualEffectsPanel_->syncFloorFromViewport();
+        viewport_->styleChanged(false);
     }
 
     // Job console + metric series of the last (unexported) run.
@@ -3246,6 +3315,14 @@ QImage MainWindow::renderFilmFrame(const render::FilmScript& film, int frame,
     return image;
 }
 
+namespace {
+/// Export Animation → "Ping-pong". Shared with the ray-traced trajectory
+/// export in RayTraceDialog, which offers the same option over its own
+/// (disk-backed) frames — one setting, so ticking it in one dialog is not
+/// silently forgotten by the other.
+const auto kPingPongKey = QStringLiteral("animation/pingPong");
+} // namespace
+
 void MainWindow::exportAnimation()
 {
     Document* doc = currentDocument();
@@ -3336,6 +3413,25 @@ void MainWindow::exportAnimation()
            "and the only one limited to 256 colors per frame."));
     form->addRow(tr("Format:"), formatCombo);
 
+    // Ping-pong. Persisted (the other controls here are not, but this is a
+    // MODE rather than a size: someone who wants looping clips wants them
+    // every time, and having to re-tick it each export is the annoyance the
+    // setting exists to remove).
+    auto* pingPongCheck = new QCheckBox(
+        tr("Ping-pong (play forward, then back)"), &dialog);
+    pingPongCheck->setChecked(
+        QSettings().value(kPingPongKey, false).toBool());
+    pingPongCheck->setToolTip(
+        tr("Append the sequence played in reverse, so the clip returns to "
+           "where it started and loops seamlessly — the usual way to show a "
+           "vibrational mode or a relaxation without a jump-cut back to "
+           "frame 1.\n\n"
+           "Frames are rendered ONCE and re-used in reverse, so this costs "
+           "encoding time but no extra rendering. The two frames that would "
+           "appear twice in a row — at the turnaround and at the loop seam — "
+           "are dropped, so neither shows as a stutter."));
+    form->addRow(QString(), pingPongCheck);
+
     auto* countLabel = new QLabel(&dialog);
     form->addRow(tr("Frames to render:"), countLabel);
     // Rotation frames only mean anything for the turntable; the trajectory
@@ -3356,17 +3452,35 @@ void MainWindow::exportAnimation()
             : source == AnimationSource::Trajectory
                 ? static_cast<int>(doc->frames.size())
                 : film.frameCount();
+        // Rendered and encoded are different numbers once ping-pong is on —
+        // that is the point of the option — so the label states both, plus
+        // the duration the file will actually have. Without it the only
+        // warning that a clip just doubled in length is the clip.
+        const int encoded = pingPongCheck->isChecked()
+            ? core::pingPongFrameCount(count)
+            : count;
+        const int fps = std::max(1, fpsSpin->value());
+        const double seconds =
+            static_cast<double>(encoded) / static_cast<double>(fps);
         countLabel->setText(
-            source == AnimationSource::Film
+            encoded == count
                 ? tr("%1  (%2 s at %3 fps)")
                       .arg(count)
-                      .arg(film.effectiveDuration(), 0, 'f', 2)
-                      .arg(film.fps)
-                : QString::number(count));
+                      .arg(seconds, 0, 'f', 2)
+                      .arg(fps)
+                : tr("%1 rendered → %2 in the video  (%3 s at %4 fps)")
+                      .arg(count)
+                      .arg(encoded)
+                      .arg(seconds, 0, 'f', 2)
+                      .arg(fps));
     };
     connect(sourceCombo, &QComboBox::currentIndexChanged, &dialog,
             [&syncSourceControls] { syncSourceControls(); });
     connect(framesSpin, &QSpinBox::valueChanged, &dialog,
+            [&syncSourceControls] { syncSourceControls(); });
+    connect(fpsSpin, &QSpinBox::valueChanged, &dialog,
+            [&syncSourceControls] { syncSourceControls(); });
+    connect(pingPongCheck, &QCheckBox::toggled, &dialog,
             [&syncSourceControls] { syncSourceControls(); });
     syncSourceControls();
 
@@ -3393,6 +3507,9 @@ void MainWindow::exportAnimation()
 
     if (dialog.exec() != QDialog::Accepted)
         return;
+
+    const bool pingPong = pingPongCheck->isChecked();
+    QSettings().setValue(kPingPongKey, pingPong);
 
     const pybridge::AnimationExporter::VideoFormat& format =
         formats[static_cast<std::size_t>(formatCombo->currentData().toInt())];
@@ -3491,6 +3608,22 @@ void MainWindow::exportAnimation()
     if (progress.wasCanceled())
         return;
     progress.setValue(frameCount);
+
+    // Ping-pong, applied HERE — after every frame is rendered and before any
+    // of them is encoded. That is the only economical place for it: the return
+    // half is the identical set of pictures, so it is a re-ordering of what is
+    // already in `images` rather than a second render pass, and it therefore
+    // costs nothing per frame and works for every source and every codec
+    // without either of them knowing about it.
+    if (pingPong && images.size() > 2) {
+        std::vector<QImage> looped;
+        const std::vector<int> order =
+            core::pingPongOrder(static_cast<int>(images.size()));
+        looped.reserve(order.size());
+        for (const int index : order)
+            looped.push_back(images[static_cast<std::size_t>(index)]);
+        images = std::move(looped);
+    }
 
     try {
         if (isGif) {

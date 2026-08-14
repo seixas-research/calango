@@ -210,6 +210,32 @@ std::map<std::string, AlembicExporter::Mesh> AlembicExporter::buildMeshes(
             meshes.erase("bonds");
     }
 
+    // Ground plane, as one quad under the object named "floor".
+    //
+    // Gated on includeCell along with the wireframe, following the convention
+    // this exporter already sets: the option means "the scene furniture as
+    // well as the chemistry", and the floor is exactly that. A DCC user who
+    // wanted only the molecule turns the same switch off and gets neither.
+    if (options.includeCell) {
+        const auto floor = render::StructureRenderer::floorPlacement(
+            &structure, options.style);
+        if (floor.visible) {
+            Mesh& mesh = meshes["floor"];
+            setColor(mesh, options.style.floorColor);
+            // The plane's own axes, so a reoriented floor arrives in the
+            // DCC tool turned the way the viewport draws it.
+            const float h = floor.halfSize;
+            const QVector3D c = floor.center;
+            const QVector3D du = floor.axisU * h;
+            const QVector3D dv = floor.axisV * h;
+            const std::size_t a = addVertex(mesh, c - du - dv);
+            const std::size_t b = addVertex(mesh, c + du - dv);
+            const std::size_t d = addVertex(mesh, c + du + dv);
+            const std::size_t e = addVertex(mesh, c - du + dv);
+            addQuad(mesh, a, b, d, e);
+        }
+    }
+
     if (options.includeCell && structure.cell().isDefined()) {
         Mesh& cell = meshes["unit_cell"];
         setColor(cell, options.style.cellColor);

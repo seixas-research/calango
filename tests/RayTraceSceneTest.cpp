@@ -547,6 +547,61 @@ int main(int argc, char** argv)
     check(povOrtho.contains(QStringLiteral("right -x*")),
           "orthographic camera keeps the right-handed -x convention");
 
+    // -- The ground plane, at two orientations ------------------------------
+    //
+    // Both back ends trace their own shadows from the directional lights, so
+    // nothing here has to reproduce the shadow — but the plane has to arrive
+    // WHERE the viewport draws it and TURNED the way the viewport turns it,
+    // or the ray-traced version of a figure has the molecule resting on a
+    // different floor from the one on screen.
+    std::printf("Ground plane:\n");
+    {
+        auto floorInputs = makeInputs(structure);
+        check(!RayTraceExporter::tachyon(floorInputs).contains(
+                  QStringLiteral("\nTRI\n")),
+              "no floor is emitted while the floor is off");
+
+        floorInputs.style.floorEnabled = true;
+        const QString withFloor = RayTraceExporter::tachyon(floorInputs);
+        const QString povFloor = RayTraceExporter::povray(floorInputs);
+        // Two triangles, one quad.
+        check(withFloor.count(QStringLiteral("TRI\n")) == 2,
+              "the horizontal floor is two Tachyon triangles");
+        check(povFloor.count(QStringLiteral("triangle {")) == 2,
+              "and two POV-Ray triangles");
+
+        // Every corner of a +z floor shares one z; a +x floor shares one x.
+        // That single property distinguishes a turned plane from one that
+        // silently snapped back to horizontal, and it needs no knowledge of
+        // where the corners are.
+        const QRegularExpression vertex(
+            QStringLiteral("V[012]\\s+(-?[0-9.]+)\\s+(-?[0-9.]+)\\s+(-?[0-9.]+)"));
+        const auto constantColumn = [&vertex](const QString& scene, int column) {
+            auto it = vertex.globalMatch(scene);
+            double first = 0.0;
+            bool have = false, constant = true;
+            while (it.hasNext()) {
+                const double value = it.next().captured(column + 1).toDouble();
+                if (!have) { first = value; have = true; }
+                else if (std::abs(value - first) > 1e-4) constant = false;
+            }
+            return have && constant;
+        };
+        check(constantColumn(withFloor, 2),
+              "a floor with the default normal lies at one constant z");
+
+        floorInputs.style.floorNormal = QVector3D(1.0f, 0.0f, 0.0f);
+        const QString turned = RayTraceExporter::tachyon(floorInputs);
+        check(constantColumn(turned, 0),
+              "and a floor with a +x normal exports at one constant x — "
+              "turned, not snapped back to horizontal");
+        check(!constantColumn(turned, 2),
+              "which is a genuinely different plane from the horizontal one");
+        check(!turned.contains(QStringLiteral("nan"))
+                  && !turned.contains(QStringLiteral("inf")),
+              "with no nan/inf from the reoriented basis");
+    }
+
     std::printf(failures == 0 ? "\nAll scene checks passed.\n"
                               : "\n%d check(s) FAILED.\n",
                 failures);

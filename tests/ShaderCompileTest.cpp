@@ -91,6 +91,12 @@ int main(int argc, char** argv)
                  ":/assets/shaders/wire.frag");
     checkProgram("shadow", ":/assets/shaders/shadow.vert",
                  ":/assets/shaders/shadow.frag");
+    // The ground plane. It carries its own copy of mesh.frag's shadow lookup
+    // (GLSL has no #include), so it is exactly the kind of shader that can
+    // fall out of step with the one it was copied from and only be noticed as
+    // a floor that never darkens.
+    checkProgram("floor", ":/assets/shaders/floor.vert",
+                 ":/assets/shaders/floor.frag");
     checkProgram("volume", ":/assets/shaders/volume.vert",
                  ":/assets/shaders/volume.frag");
     // The lit isosurface profile. Compiled here for the same reason as the

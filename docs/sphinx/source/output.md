@@ -45,7 +45,23 @@ turntable rotation, a trajectory playback, or a film (below).
 | {guilabel}`Resolution preset` | Up to 4K UHD; width/height 64–4096 px, default 640 × 480 |
 | {guilabel}`Frames per second` | 1–60, default 24 (a film export adopts the film's own rate) |
 | {guilabel}`Format` | MP4 (H.264), MP4 (H.265/HEVC), QuickTime `.mov` (H.264), Matroska `.mkv` (H.264), WebM (VP9), AVI (MPEG-4), Animated GIF |
+| {guilabel}`Ping-pong (play forward, then back)` | Off by default; remembered between exports |
 | {guilabel}`Background` | Solid white, viewport color, custom color, or {guilabel}`Transparent (GIF only)` |
+
+{guilabel}`Ping-pong` appends the sequence played in reverse, so the clip
+returns to where it started and loops seamlessly — the usual way to show a
+vibrational mode or a relaxation without a jump-cut back to frame 1. It works
+for every source and every format.
+
+Frames are rendered **once** and re-used in reverse, so it costs encoding time
+but no extra rendering; the same option on the ray-traced trajectory export
+re-lists the PNGs already on disk, where re-tracing the return half would
+otherwise double the wall clock of the whole job. The two frames that would
+appear twice in a row — the turnaround, and the loop seam where the player
+wraps back to the start — are dropped, so neither shows as a stutter. *N*
+rendered frames therefore encode to **2N − 2**, which the
+{guilabel}`Frames to render` read-out states outright ("72 rendered → 142 in
+the video") along with the resulting duration.
 
 The format is picked in the dialog rather than inferred from the typed
 extension — `.mp4` alone does not say H.264 or HEVC, and a silently chosen
@@ -113,7 +129,9 @@ Three actions:
 - {guilabel}`Render Trajectory…` ray-traces **every trajectory frame** and
   stitches them into an MP4 or GIF at the dialog's {guilabel}`Animation FPS`
   (1–60, default 24) — the highest-quality animation path, at the cost of
-  one full render per frame.
+  one full render per frame. {guilabel}`Ping-pong` works here too, sharing
+  its setting with the Export Animation dialog, and still traces each frame
+  only once.
 
 :::{warning}
 POV-Ray and Tachyon are installed separately — neither ships with Calango.

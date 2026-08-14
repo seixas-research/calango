@@ -399,6 +399,55 @@ public:
         /// PCF kernel half-width in shadow-map texels. 0 = hard edges,
         /// larger = softer and more expensive ((2r+1)^2 taps per fragment).
         int shadowSoftness = 2;
+        // -- Ground plane ("floor") ----------------------------------------
+        //
+        // A large plane of constant z under the structure, so an isolated
+        // molecule reads as an object resting in a space rather than one
+        // floating in a void. It exists to RECEIVE the shadow the atoms and
+        // bonds already cast — it goes through the same shadow map, and is
+        // deliberately not a caster itself. See FloorPlacement for why "down"
+        // is -z here.
+        //
+        // Off by default: it is a figure-making aid, and a plane under every
+        // crystal by default would be in the way far more often than not.
+        bool floorEnabled = false;
+        /// Manual height adjustment, angstrom, added to the automatic
+        /// placement (just under the lowest drawn point — see
+        /// floorPlacement()).
+        ///
+        /// An OFFSET rather than an absolute height, deliberately. The
+        /// automatic base has to follow the structure as it is edited or a
+        /// frame is scrubbed, and an absolute height would either be silently
+        /// overwritten by that (losing the user's adjustment) or left behind
+        /// as the structure moved (a floor slicing through the molecule, or
+        /// hanging in space below it). An offset survives both: the plane
+        /// tracks the structure and keeps the nudge.
+        float floorOffset = 0.0f;
+        /// Plane normal, world space. Need not be unit — everything that reads
+        /// it normalizes first (see floorBasis()), so the UI can hand over
+        /// whatever the user typed.
+        ///
+        /// +Z by default: the xy plane, horizontal in the crystallographic
+        /// sense, which is what the floor was before it could be turned. A
+        /// project file without a normal therefore loads as one with this one.
+        QVector3D floorNormal{0.0f, 0.0f, 1.0f};
+        /// White.
+        ///
+        /// A figure's page is white, and a floor that is any other colour is a
+        /// grey rectangle sitting on it. White makes the plane disappear into
+        /// the page and leaves only what it was added for — the shadow.
+        ///
+        /// It stays legible because the shadow term never touches ambient
+        /// light: `shadowStrength` scales the DIRECT contribution only (see
+        /// mesh.frag/floor.frag), so an occluded white fragment falls to its
+        /// ambient value rather than to white. At the default rig that is a
+        /// clearly visible grey — verified by rendering, not by argument.
+        QColor floorColor{255, 255, 255};
+        float floorOpacity = 1.0f;
+        /// Matte by default, for the same reason the Representation panel
+        /// recommends it for print: a specular highlight sliding across a
+        /// large flat plane reads as a rendering artifact in a still figure.
+        SurfaceFinish floorFinish = SurfaceFinish::Matte;
         /// Base opacity of the Glassy finish at face-on incidence (the
         /// Fresnel term drives edges toward opaque). Ignored otherwise.
         float glassOpacity = 0.45f;
@@ -538,6 +587,104 @@ public:
         float fogDensity = 0.300f;
         QColor fogColor{26, 28, 33};
     };
+
+    /// Where the ground plane sits, and how far it reaches, for one structure
+    /// under one style.
+    ///
+    /// Every unit is world-space angstrom, and "up" is along `normal`.
+    ///
+    /// The DEFAULT normal is world +Z, i.e. the horizontal xy plane. Calango
+    /// is a Z-UP application, which is not obvious from the orbit camera's
+    /// Euler angles: the default view is (yaw 0, pitch -70, roll 20), twenty
+    /// degrees off the XZ alignment (0, -90, 0) whose screen-up
+    /// tests/CameraTest pins to +z. Crystallography agrees — a figure stands
+    /// on its c axis.
+    ///
+    /// Everything below is expressed in the plane's OWN frame rather than in
+    /// world xy, which is what lets the same arithmetic serve any orientation:
+    /// "below" is the negative side along `normal`, and the footprint is
+    /// measured along `axisU`/`axisV` rather than along world x and y.
+    struct FloorPlacement {
+        /// False when there is no structure to rest on it — and, for the
+        /// floorPlacement() form below, when the floor is switched off.
+        /// Callers draw nothing in that case.
+        bool visible = false;
+        /// World position of the plane's centre.
+        QVector3D center;
+        /// The plane's own orthonormal frame: `normal` is the unit plane
+        /// normal, `axisU` and `axisV` span the plane, and (u, v, n) is
+        /// right-handed — which is what keeps the quad's front face pointing
+        /// along `normal` for every orientation, with one winding.
+        QVector3D normal{0.0f, 0.0f, 1.0f};
+        QVector3D axisU{1.0f, 0.0f, 0.0f};
+        QVector3D axisV{0.0f, 1.0f, 0.0f};
+        /// Largest IN-PLANE distance from `center` of anything drawn, measured
+        /// along axisU/axisV. The other radii are derived from it, so the
+        /// plane scales with the structure rather than with a fixed guess —
+        /// and it does so in the plane's own axes, so a vertical floor fits
+        /// the structure's vertical extent rather than its footprint.
+        float reach = 1.0f;
+        /// Half-extent of the square the plane is drawn as.
+        float halfSize = 1.0f;
+        /// Fully opaque inside this radius; gone beyond `fadeRadius`. The
+        /// gradient between them is what makes a finite quad read as an
+        /// infinite ground at any sane camera distance.
+        float solidRadius = 1.0f;
+        float fadeRadius = 1.0f;
+    };
+
+    /// The axis-aligned orientations the Floor tab offers as presets, in the
+    /// order the dropdown lists them. `Custom` is not a setting — it is what
+    /// the dropdown reads when the normal is not one of the three.
+    ///
+    /// A plane is named by the two axes it is SPANNED by; its normal is the
+    /// remaining one.
+    enum class FloorPreset { Xy, Xz, Yz, Custom };
+
+    /// The normal of an axis preset. `Custom` yields the default (+Z), since
+    /// there is no such thing as "the custom normal".
+    static QVector3D floorPresetNormal(FloorPreset preset);
+
+    /// Which preset `normal` IS, or Custom.
+    ///
+    /// Compared after normalizing, so (0, 0, 7) still reads as Xy — the length
+    /// carries no meaning. SIGN does, though: a reversed normal puts the plane
+    /// on the other side of the structure (a ceiling rather than a floor), so
+    /// (0, 0, -1) is deliberately Custom rather than Xy.
+    static FloorPreset floorPreset(const QVector3D& normal);
+
+    /// A right-handed orthonormal frame (u, v, n) for a floor whose normal is
+    /// `normal`, with n = normalize(normal).
+    ///
+    /// `u` is world +X made perpendicular to n, so the default +Z normal
+    /// reproduces exactly the (x, y, z) frame the floor used before it could
+    /// be reoriented — no existing placement moves by a rounding step. Where
+    /// that degenerates (a normal along ±X) it falls back to +Y. A zero or
+    /// non-finite `normal` yields the default +Z frame rather than NaNs.
+    static void floorBasis(const QVector3D& normal, QVector3D& u, QVector3D& v,
+                           QVector3D& n);
+
+    /// The structure-derived half of the placement: the AUTOMATIC height (the
+    /// level just under the lowest drawn point), the centre, and the extents.
+    ///
+    /// Deliberately independent of both Style::floorOffset and
+    /// Style::floorEnabled. Everything here changes only when the geometry
+    /// does, so the renderer computes it once per rebuild and still follows a
+    /// live height slider — which repaints without rebuilding — by adding the
+    /// offset at draw time.
+    static FloorPlacement floorBase(const core::Structure* structure,
+                                    const Style& style);
+
+    /// The full placement: floorBase() with the manual offset added and the
+    /// on/off switch applied.
+    ///
+    /// Static and GL-free for the same reason atomCastStyles() is: the ray
+    /// trace exporters and the Alembic writer each have to put the plane in
+    /// exactly the same place the viewport does, and a second copy of this
+    /// arithmetic in each of them is how a figure and its ray-traced version
+    /// end up with the molecule resting on two different floors.
+    static FloorPlacement floorPlacement(const core::Structure* structure,
+                                         const Style& style);
 
     /// Display radius of an atom (Å) — the single source of truth shared
     /// by instance building and by ray-cast picking in the viewport. The
@@ -866,11 +1013,34 @@ private:
     /// Lazily create the depth FBO + texture; returns false if unavailable.
     bool ensureShadowTarget();
     /// Depth-only pass over every instanced mesh from the light's viewpoint.
+    /// The floor is NOT among them — see floorQuad_.
     void renderShadowMap(const QMatrix4x4& lightSpace);
+    /// Link (once) the floor program; false on a driver that rejects it, in
+    /// which case the floor is simply not drawn.
+    bool ensureFloorProgram();
+    /// Draw the ground plane, before everything else, blended over the cleared
+    /// background.
+    void drawFloor(const QMatrix4x4& view, const QMatrix4x4& projection);
 
     QOpenGLShaderProgram meshProgram_;
     QOpenGLShaderProgram shadowProgram_; ///< depth-only, light's-eye pass
     QOpenGLShaderProgram wireProgram_;
+    /// Ground plane. Linked lazily like the isosurface and impostor programs,
+    /// so a driver that rejects it loses the floor rather than the viewport.
+    QOpenGLShaderProgram floorProgram_;
+    bool floorProgramReady_ = false;
+    bool floorProgramTried_ = false;
+    /// The floor's geometry: a single -1..+1 quad, uploaded once. Its world
+    /// placement is entirely in uniforms (see floor.vert), so nothing here is
+    /// ever re-uploaded — not when the structure changes, not when the height
+    /// offset moves.
+    ///
+    /// Kept out of renderShadowMap()'s mesh list on purpose: a plane below
+    /// everything occludes nothing, and putting it in the depth map would only
+    /// add self-shadowing acne to the surface whose whole job is to show
+    /// somebody else's shadow cleanly.
+    QOpenGLVertexArrayObject floorVao_;
+    QOpenGLBuffer floorVbo_{QOpenGLBuffer::VertexBuffer};
     /// "Lit surface" isosurface profile. Linked lazily on first use so a
     /// driver that rejects it falls back to the legacy path with a warning
     /// instead of taking the whole viewport down.
@@ -979,7 +1149,10 @@ private:
     /// tracks the actual model rather than a fixed guess.
     QVector3D sceneCenter_;
     float sceneRadius_ = 1.0f;
-
+    /// floorBase() for the current structure, refreshed alongside the scene
+    /// bounds. The height offset and the on/off switch are applied per frame
+    /// on top of it, so both follow the sliders without a geometry rebuild.
+    FloorPlacement floorBase_;
 };
 
 } // namespace calango::render

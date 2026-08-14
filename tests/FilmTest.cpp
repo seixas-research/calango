@@ -8,12 +8,15 @@
 //
 // GUI-free (Qt Gui math types only, no widgets, no GL).
 
+#include "core/PingPongOrder.hpp"
 #include "render/Film.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 using namespace calango::render;
 
@@ -462,10 +465,68 @@ void testPerShotOverlays()
           "a single-shot film reports its own overlays");
 }
 
+/// Ping-pong frame ordering (Export Animation → "Ping-pong", and the same
+/// option over the ray-traced trajectory frames).
+///
+/// The feature is one line of intent — "play it forward, then back" — and two
+/// off-by-ones, which are the whole of what can go wrong: repeat the
+/// turnaround frame and the clip stalls in the middle; repeat the first frame
+/// at the end and it stalls every time the player loops. Neither is visible in
+/// a still, and both look like an encoder problem rather than an ordering one.
+void testPingPongOrder()
+{
+    using calango::core::pingPongFrameCount;
+    using calango::core::pingPongOrder;
+    std::printf("Ping-pong frame order:\n");
+
+    const std::vector<int> five = pingPongOrder(5);
+    check(five == std::vector<int>({0, 1, 2, 3, 4, 3, 2, 1}),
+          "0 1 2 3 4 3 2 1 — neither endpoint is played twice in a row");
+    check(static_cast<int>(five.size()) == pingPongFrameCount(5),
+          "and the advertised count is the length actually produced");
+
+    // 2n-2, not 2n: the two dropped frames are the feature.
+    for (const int n : {3, 5, 24, 72, 500}) {
+        check(pingPongFrameCount(n) == 2 * n - 2,
+              "n frames encode to 2n-2");
+        check(static_cast<int>(pingPongOrder(n).size()) == 2 * n - 2,
+              "for every length");
+    }
+
+    // Every frame appears, and the sequence is a walk: consecutive entries
+    // never jump. That is the property a viewer actually perceives — a gap
+    // anywhere in the order is a visible skip — and it holds independently of
+    // the endpoint rule above.
+    {
+        const std::vector<int> order = pingPongOrder(24);
+        bool contiguous = true;
+        for (std::size_t i = 1; i < order.size(); ++i)
+            contiguous = contiguous && std::abs(order[i] - order[i - 1]) == 1;
+        check(contiguous, "consecutive frames stay adjacent throughout");
+        // Including across the wrap: the last frame is 1, and the player
+        // returns to 0.
+        check(order.front() == 0 && order.back() == 1,
+              "and across the loop seam, where the player wraps to frame 0");
+        std::vector<int> seen(order.begin(), order.end());
+        std::sort(seen.begin(), seen.end());
+        seen.erase(std::unique(seen.begin(), seen.end()), seen.end());
+        check(seen.size() == 24, "every rendered frame is used");
+    }
+
+    // Degenerate lengths: there is nothing to reverse, and the caller must get
+    // a usable order back rather than an empty one.
+    check(pingPongOrder(1) == std::vector<int>({0}), "one frame is a still");
+    check(pingPongOrder(2) == std::vector<int>({0, 1}),
+          "two frames reduce to themselves");
+    check(pingPongOrder(0).empty(), "and zero frames stay zero");
+    check(pingPongOrder(-3).empty(), "a negative count does not underflow");
+}
+
 } // namespace
 
 int main()
 {
+    testPingPongOrder();
     testFrameCount();
     testTimelinePriority();
     testInterpolation();

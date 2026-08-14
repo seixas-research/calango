@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
 #include <QLineEdit>
@@ -91,6 +92,8 @@ private:
     QPushButton* renderButton_;
     QPushButton* animateButton_;
     QSpinBox* fpsSpin_;
+    /// "Ping-pong": encode the traced frames forward then in reverse.
+    QCheckBox* pingPongCheck_;
     QProgressBar* progress_;
     QPlainTextEdit* log_;
     QProcess process_;

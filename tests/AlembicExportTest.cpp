@@ -199,6 +199,44 @@ int main(int argc, char** argv)
         check(meshes.count("unit_cell") == 0, "cell off emits no cell mesh");
     }
     {
+        // The ground plane. It is scene furniture, so it rides the SAME switch
+        // the cell wireframe does — someone exporting the chemistry alone
+        // should not have to know there are two kinds of furniture — and it is
+        // absent unless the viewport is actually drawing it.
+        check(pybridge::AlembicExporter::buildMeshes(structure,
+                                                     defaultOptions())
+                      .count("floor")
+                  == 0,
+              "the floor is off, so no floor mesh is exported");
+
+        auto options = defaultOptions();
+        options.style.floorEnabled = true;
+        const auto meshes =
+            pybridge::AlembicExporter::buildMeshes(structure, options);
+        check(meshes.count("floor") == 1, "switching it on exports one");
+        checkMeshIsWellFormed(meshes.at("floor"), "floor");
+        // Where it is, not just that it is: the plane has to arrive under the
+        // structure, at the level the viewport put it, or the imported scene
+        // has the molecule hovering over (or buried in) its own ground.
+        const auto placement = render::StructureRenderer::floorPlacement(
+            &structure, options.style);
+        const auto& floor = meshes.at("floor");
+        check(floor.vertexCount() == 4, "as a single quad");
+        bool level = true;
+        for (std::size_t i = 0; i < floor.vertexCount(); ++i) {
+            level = level
+                && std::fabs(floor.positions[3 * i + 2] - placement.center.z())
+                    < 1e-4f;
+        }
+        check(level, "lying at exactly the height the viewport draws it at");
+
+        options.includeCell = false;
+        check(pybridge::AlembicExporter::buildMeshes(structure, options)
+                      .count("floor")
+                  == 0,
+              "and it leaves with the rest of the scene furniture");
+    }
+    {
         // Hiding hydrogens is a DISPLAY filter, and the export must match what
         // the viewport shows — including dropping the bonds that terminate on
         // a hidden hydrogen, or the file contains sticks growing out of nothing.

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.20
+    VERSION 26.8.21
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -147,6 +147,7 @@ qt_add_executable(calango
     src/core/UnitCell.cpp
     src/core/PeriodicImages.hpp
     src/core/PhysicalConstants.hpp
+    src/core/PingPongOrder.hpp
     src/core/RandomRotation.hpp
     src/core/TextUtils.hpp
     src/core/Structure.hpp
@@ -725,6 +726,8 @@ qt_add_resources(calango "shaders"
         assets/shaders/mesh.frag
         assets/shaders/shadow.vert
         assets/shaders/shadow.frag
+        assets/shaders/floor.vert
+        assets/shaders/floor.frag
         assets/shaders/wire.vert
         assets/shaders/wire.frag
         assets/shaders/isosurface.vert
@@ -1493,6 +1496,8 @@ if(CALANGO_BUILD_TESTS)
             assets/shaders/mesh.frag
             assets/shaders/shadow.vert
             assets/shaders/shadow.frag
+            assets/shaders/floor.vert
+            assets/shaders/floor.frag
             assets/shaders/wire.vert
             assets/shaders/wire.frag
             assets/shaders/volume.vert
@@ -1543,6 +1548,11 @@ if(CALANGO_BUILD_TESTS)
             assets/shaders/shadow.frag
             assets/shaders/wire.vert
             assets/shaders/wire.frag
+            # Same reasoning for the ground plane: the floor program links
+            # lazily and simply draws nothing when it is absent, which is
+            # indistinguishable from the floor being switched off.
+            assets/shaders/floor.vert
+            assets/shaders/floor.frag
             # The filled unit cell is shaded through the lit surface program.
             # Without these the renderer silently falls back to the unlit path
             # and the test measures the fallback rather than the feature.
@@ -2985,6 +2995,32 @@ if(CALANGO_BUILD_TESTS)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/au_plasma_convergence_benchmark.py)
     set_tests_properties(au_plasma_convergence PROPERTIES TIMEOUT 1800)
 
+    # --- Documentation -----------------------------------------------------
+    #
+    # The docs are the half of this project no compiler checks. These three are
+    # pure Python with no build dependency, so they cost nothing to keep in the
+    # default run, and each pins a failure mode that is otherwise invisible
+    # until a reader hits it.
+    #
+    # There is deliberately no LaTeX build test. `make -C docs/tex` writes its
+    # PDFs back into the tracked source tree, so running it from ctest would
+    # leave the working tree dirty after every test run — and the guide's cover
+    # version, the one thing that can actually drift, is covered by the
+    # injection check in docs_version_sync without building anything.
+    add_test(NAME docs_version_sync
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/docs_version_sync_test.py)
+    add_test(NAME docs_ui_labels
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/docs_ui_labels_test.py)
+    # Builds into the binary dir, and self-skips where Sphinx is absent.
+    add_test(NAME docs_sphinx_build
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/docs_sphinx_build_test.py)
+    set_tests_properties(docs_sphinx_build PROPERTIES
+        ENVIRONMENT "CALANGO_DOC_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/docs-test"
+        TIMEOUT 900)
+
     # Every test runs with its Calango config sandboxed into the build tree.
     # SettingsManager mirrors QSettings to a JSON file at a fixed home-dir
     # path; without this, any test that constructs a dialog whose code path
@@ -2997,7 +3033,117 @@ if(CALANGO_BUILD_TESTS)
             "CALANGO_CONFIG_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-config")
     endif()
 
-    # --- Test labels: "core" and "dft" -------------------------------------
+    # --- Test labels -------------------------------------------------------
+    #
+    # Two INDEPENDENT axes, because the two questions a developer asks about a
+    # test are independent:
+    #
+    #   what does it cover?     visual | calc | docs
+    #   what does it cost?      core   | dft
+    #
+    # Every test carries exactly one label from each axis, so the sets compose:
+    #
+    #   ctest -L visual              rendering, viewport, meshing, UI panels
+    #   ctest -L calc               physics, numerics, builders, parsers
+    #   ctest -L docs               doc builds and doc/UI consistency
+    #   ctest -L core               everything except the native DFT engine
+    #   ctest -L dft                the native DFT engine only
+    #   ctest -L visual -L core     intersection: the fast display tests
+    #   ctest                       all of it
+    #
+    # --- The subject axis ---------------------------------------------------
+    #
+    # Assignment is by PRIMARY subject, which is the only rule that survives
+    # contact with a codebase where nearly everything is eventually drawn. A
+    # bond-perception test is `calc` even though its output is a cylinder on
+    # screen: what it asserts is the chemistry, and a change to the renderer
+    # cannot break it. A volumetric-parser test is `calc` for the same reason
+    # even though the isosurface is the reason anyone parses the file.
+    #
+    # The lists are EXHAUSTIVE and a test in none of them is a configure-time
+    # error, not a silent default. A default would quietly file every new test
+    # under whichever bucket was chosen as the fallback, and the split would
+    # rot within a release.
+    set(CALANGO_VISUAL_TESTS
+        # Rendering and the render paths that leave the viewport.
+        alembic_export          # scene → Alembic geometry cache
+        isosurface_mesh         # marching tetrahedra, welding, continuation
+        raytrace_scene_files    # POV-Ray / Tachyon scene emission
+        shader_compilation      # every GLSL program compiles and links
+        translucent_render      # renders real frames, compares pixels
+        # Camera, film and the animation timeline.
+        camera                  # orbit conventions, plane alignment, roll
+        film_timeline           # shot timing, transitions, ping-pong order
+        # Widgets, docks and dialogs.
+        dialog_construction     # every dialog builds and survives being driven
+        results_viewers         # result-file viewers and their JSON schemas
+        overlay_model           # "Additional overlays" tessellation + ranges
+        visible_spectrum        # the optics viewer's spectrum gradient, by pixel
+        gpu_telemetry           # the invariant the status bar reads
+        # Display assets.
+        icon_registry           # every icon used is bundled (a blank button
+                                # is silent otherwise)
+        icon_theme              # theme-aware tinting
+        element_colors)         # the CPK palette and user overrides
+
+    set(CALANGO_DOCS_TESTS
+        docs_version_sync       # one version string, everywhere a reader sees it
+        docs_ui_labels          # the manual may not name a control that is gone
+        docs_sphinx_build)      # the site still builds
+
+    # Everything else: physics, numerics, crystallography, parsers of
+    # calculation output, script generation, and the job/orchestration
+    # plumbing that runs calculations.
+    set(CALANGO_CALC_TESTS
+        adsorption_nanoparticle al_electron_phonon au_plasma_convergence
+        band_gap band_unfolding baseline_summary berry_phase
+        boltzmann_transport bond_perception calphad cluster_expansion
+        cluster_expansion_fit cluster_presets cluster_variation convex_hull
+        cpa_solver crpa_solver crpa_vasp_validation cu_wannier_spread
+        defect_2d_correction defect_2d_monolayer dft_engine
+        dislocation_builder dos_smearing double_group elf_silicon
+        elph_analysis elph_io extxyz_attributes frame_streaming
+        generated_ase_scripts generated_script_lint graphene_band_symmetry
+        graphene_oxide graphene_oxide_sites graphene_tetrahedron
+        gw_qp_parser gw_silicon hubbard_linear_response hydrogen_bonds
+        hydrogen_completion ice_builder kpath_table lammps_environment
+        lammps_scripts magnetic_space_group materials_project_mp1434
+        monte_carlo_swap native_dft_si_mvp nlopt_parser
+        optics_2d_observables optics_broadening optics_c_diamond
+        optics_silicon orchestration_batch orchestration_handoff
+        orchestration_si_pipeline partial_charge_si periodic_image_range
+        phonon_diamond phonon_thermodynamics polymer_builder raman_ir_math
+        raman_ir_mgo raman_ir_parsers raman_si_diamond remote_session
+        remote_session_helper scheduler_script solid_interface_builder
+        solvation_builder sqs_generator sqs_sige_alloy structural_phase
+        structure_transforms sublattice_cluster_variation superconductivity
+        symmetry_si_diamond tdb_database tetrahedron_bz
+        thermodynamic_integration vibrational_modes volumetric_parse
+        wannier_interpolation_silicon wannier_preflight wannier_silicon
+        workflow_report xtb_integration)
+
+    set(_calango_unlabelled)
+    foreach(_test IN LISTS _calango_all_tests)
+        if(_test IN_LIST CALANGO_VISUAL_TESTS)
+            set_property(TEST ${_test} APPEND PROPERTY LABELS "visual")
+        elseif(_test IN_LIST CALANGO_CALC_TESTS)
+            set_property(TEST ${_test} APPEND PROPERTY LABELS "calc")
+        elseif(_test IN_LIST CALANGO_DOCS_TESTS)
+            set_property(TEST ${_test} APPEND PROPERTY LABELS "docs")
+        else()
+            list(APPEND _calango_unlabelled ${_test})
+        endif()
+    endforeach()
+    if(_calango_unlabelled)
+        message(FATAL_ERROR
+            "These tests belong to no subject group: ${_calango_unlabelled}\n"
+            "Add each to exactly one of CALANGO_VISUAL_TESTS, "
+            "CALANGO_CALC_TESTS or CALANGO_DOCS_TESTS in CMakeLists.txt. "
+            "Assign by the test's PRIMARY subject: what it asserts, not what "
+            "eventually consumes the result.")
+    endif()
+
+    # --- The cost axis ------------------------------------------------------
     #
     #   ctest -L core     everything except the native DFT engine  (~2 min)
     #   ctest -L dft      the native DFT engine only               (~7 min)

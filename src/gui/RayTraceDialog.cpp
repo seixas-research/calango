@@ -1,10 +1,12 @@
 #include "gui/RayTraceDialog.hpp"
 
+#include "core/PingPongOrder.hpp"
 #include "core/Structure.hpp"
 #include "gui/ViewportWidget.hpp"
 #include "python_bridge/AnimationExporter.hpp"
 #include "render/RayTraceExporter.hpp"
 
+#include <QCheckBox>
 #include <QCoreApplication>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -24,6 +26,10 @@
 namespace calango::gui {
 
 namespace {
+
+/// Shared verbatim with MainWindow's Export Animation dialog — see the
+/// checkbox's comment.
+const auto kPingPongKey = QStringLiteral("animation/pingPong");
 
 QString settingsKeyFor(bool povray)
 {
@@ -68,6 +74,25 @@ RayTraceDialog::RayTraceDialog(ViewportWidget* viewport, QWidget* parent)
     fpsSpin_->setRange(1, 60);
     fpsSpin_->setValue(24);
 
+    // Same option, same setting key and same wording as the Export Animation
+    // dialog: a trajectory rendered here is the same clip, and the two dialogs
+    // disagreeing about whether it loops would be arbitrary.
+    pingPongCheck_ = new QCheckBox(tr("Ping-pong (play forward, then back)"),
+                                   this);
+    pingPongCheck_->setChecked(
+        QSettings().value(kPingPongKey, false).toBool());
+    pingPongCheck_->setToolTip(
+        tr("Append the trajectory played in reverse, so the clip returns to "
+           "its first frame and loops seamlessly.\n\n"
+           "Every frame is still traced exactly ONCE — the return half re-uses "
+           "the images already on disk, which matters here more than anywhere: "
+           "a ray-traced frame costs seconds to minutes. The two frames that "
+           "would otherwise appear twice in a row, at the turnaround and at "
+           "the loop seam, are dropped."));
+    connect(pingPongCheck_, &QCheckBox::toggled, this, [](bool on) {
+        QSettings().setValue(kPingPongKey, on);
+    });
+
     binaryEdit_ = new QLineEdit(this);
     auto* browseButton = new QPushButton(tr("Browse…"), this);
     auto* binaryRow = new QHBoxLayout;
@@ -80,6 +105,7 @@ RayTraceDialog::RayTraceDialog(ViewportWidget* viewport, QWidget* parent)
     form->addRow(tr("Height (px):"), heightSpin_);
     form->addRow(tr("Background:"), backgroundCombo_);
     form->addRow(tr("Animation FPS:"), fpsSpin_);
+    form->addRow(QString(), pingPongCheck_);
     form->addRow(tr("Renderer binary:"), binaryRow);
 
     progress_ = new QProgressBar(this);
@@ -404,21 +430,34 @@ void RayTraceDialog::finishAnimation(const QString& error)
                       .arg(rendered)
                       .arg(expected));
     } else {
-        appendLog(tr("\nEncoding %1 frames…\n").arg(rendered));
+        // Ping-pong, applied to the FILE LIST rather than by rendering the
+        // return pass. It matters more here than anywhere: a Tachyon or
+        // POV-Ray frame costs seconds to minutes, so tracing the reverse half
+        // again would double the wall clock of the whole job to produce
+        // pictures that are already on disk. Re-listing the paths costs
+        // nothing, and the encoder reads each one as many times as it appears.
+        QStringList encodeOrder = framePaths_;
+        if (pingPongCheck_->isChecked() && framePaths_.size() > 2) {
+            encodeOrder.clear();
+            for (const int index :
+                 core::pingPongOrder(static_cast<int>(framePaths_.size())))
+                encodeOrder.append(framePaths_.at(index));
+        }
+        appendLog(tr("\nEncoding %1 frames…\n").arg(encodeOrder.size()));
         try {
             const bool isMp4 = animationOutputPath_.endsWith(
                 QStringLiteral(".mp4"), Qt::CaseInsensitive);
             if (isMp4) {
                 pybridge::AnimationExporter::exportMp4FromFiles(
-                    framePaths_, animationOutputPath_, fpsSpin_->value());
+                    encodeOrder, animationOutputPath_, fpsSpin_->value());
             } else {
                 pybridge::AnimationExporter::exportGifFromFiles(
-                    framePaths_, animationOutputPath_, fpsSpin_->value(),
+                    encodeOrder, animationOutputPath_, fpsSpin_->value(),
                     /*transparent=*/false);
             }
             appendLog(tr("Done: %1 (%2 frames)\n")
                           .arg(animationOutputPath_)
-                          .arg(rendered));
+                          .arg(encodeOrder.size()));
         } catch (const std::exception& e) {
             appendLog(tr("Encoding failed: %1\n").arg(QString::fromUtf8(e.what())));
             QMessageBox::critical(this, windowTitle(), QString::fromUtf8(e.what()));

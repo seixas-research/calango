@@ -9,7 +9,12 @@
 project = 'Calango'
 author = 'Leandro Seixas Rocha'
 copyright = 'Leandro Seixas Rocha, 2026'
-release = '26.8.2'
+# Kept in step with project(calango VERSION ...) in the top-level
+# CMakeLists.txt by hand — this is the only version string in the repository
+# that nothing generates. `ctest -L docs` (docs_version_sync) fails when the
+# two drift, which is how this was caught reading 26.8.2 against a 26.8.20
+# binary: a truncation nobody would notice by eye.
+release = '26.8.20'
 
 # -- General configuration ---------------------------------------------------
 

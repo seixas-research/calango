@@ -86,7 +86,7 @@ Every insertion, bond, and substitution is a single undo step. The neighboring {
 
 ## Visual effects
 
-Visual effects live in the **Visual Effects dock** (zone 9), a five-tab panel: {guilabel}`Lighting` (covered in {doc}`/representation`), {guilabel}`Shadow`, {guilabel}`Fog`, {guilabel}`Blur`, and {guilabel}`Occlusion`. All effects default to off.
+Visual effects live in the **Visual Effects dock** (zone 9), a six-tab panel running from what lights the scene, through the scene itself, to the passes that post-process the finished image: {guilabel}`Light` (covered in {doc}`/representation`), {guilabel}`Shadow`, {guilabel}`Floor`, {guilabel}`Fog`, {guilabel}`Blur`, and {guilabel}`SSAO`. All effects default to off.
 
 ### Distance fog
 
@@ -130,7 +130,40 @@ A radius around one atomic radius reads best. There is no bias control — the d
 
 The {guilabel}`Shadow` tab adds PCF directional shadows following the primary light: {guilabel}`Intensity` 0.0–1.0 (step 0.05) and {guilabel}`Softness / blur radius` 0–6 shadow-map texels — 2–3 suits most structures.
 
-% TODO screenshot: the same nanoparticle rendered twice side by side, SSAO off and SSAO on, with the Occlusion tab of the Visual Effects dock visible
+### The ground plane
+
+The {guilabel}`Floor` tab — next to {guilabel}`Shadow`, because that is the relationship the two have — carries {guilabel}`Ground plane (floor)`: a large plane just under the structure, so an isolated molecule reads as an object resting in a space rather than one floating in a void. It is a shadow **receiver** — the atoms and bonds cast onto it, and it casts nothing itself. The group's own checkbox is the on/off switch; there is no toolbar button for it.
+
+| Control | Values |
+|---|---|
+| {guilabel}`Height offset` | −100 to +100 Å, default 0 — relative to the automatic level |
+| {guilabel}`Color` | White by default — a figure's page is white, so the plane disappears into it and leaves only the shadow |
+| {guilabel}`Material` | Standard, Shiny, Matte (default), Glassy — the same four finishes the Representation panel offers |
+| {guilabel}`Opacity` | 0.05–1.0, default 1.0 |
+| {guilabel}`Plane` | {guilabel}`xy` (default), {guilabel}`xz`, {guilabel}`yz`, {guilabel}`Custom` |
+| {guilabel}`Normal (x, y, z)` | Any direction; length is irrelevant |
+
+### Orientation
+
+{guilabel}`Plane` and {guilabel}`Normal (x, y, z)` are two views of **one** value — the plane's normal. Each preset names the two axes the plane is spanned by, and its normal is the remaining one: {guilabel}`xy` → +z, {guilabel}`xz` → +y, {guilabel}`yz` → +x. Picking a preset fills the normal fields; typing a normal that is not an axis switches the dropdown to {guilabel}`Custom`. Only the normal is stored, so the two cannot disagree and a project file carries three numbers rather than a preset name.
+
+The length of the vector does not matter — it is normalized before use, so `(0, 0, 2)` and `(0, 0, 1)` are the same plane. A **zero** vector defines no plane: the previous orientation is kept and the field is flagged in red rather than the keystroke being refused, so you can still type one component at a time through zero.
+
+Everything else follows the orientation. The plane is placed on the **negative** side of the structure along the normal, the height offset moves it **along the normal**, and the auto-fit extent is measured in the plane's own two axes — so a vertical plane fits the structure's vertical extent rather than its footprint. Reversing a normal (say `(0, 0, -1)`) puts the plane *over* the structure instead of under it; that is a ceiling, a real choice rather than an error, so it is left available and simply reads as {guilabel}`Custom`.
+
+Shadows follow too, in the live viewport and in every export: the shadow lookup works off the fragment's actual normal, so a vertical plane used as a **backdrop** catches the structure's shadow exactly as a horizontal one does — re-aim the primary light along the plane's normal to throw a shadow onto it.
+
+### Placement
+
+With the default {guilabel}`xy` plane the floor is perpendicular to **c** (world +z), the axis Calango's default view has pointing up. It lands one fixed 0.25 Å clearance under the lowest drawn point — the bottom of the lowest atom's *sphere*, or of the unit cell when that is shown, so nothing ever intersects it. It re-fits itself whenever the structure changes, which is why the manual control is an **offset** rather than an absolute height: the plane keeps following an edited structure or a scrubbed trajectory while your adjustment survives. Its lateral extent scales with the structure's own footprint and fades out toward the edges, so at any normal camera distance it reads as ground rather than as a tile; with distance fog on, it recedes into the fog colour instead.
+
+Hidden atoms do not push it down (a hidden hydrogen would otherwise open a gap under the molecule with nothing in it), and seen from its back it is not drawn at all, so orbiting past it never hides the structure.
+
+The floor is **display only**. It is never part of the structure, is not picked by clicks, and never appears in an exported POSCAR, CIF or XYZ. It *does* appear in every render of the scene — off-screen and publication renders, turntable and trajectory animations, POV-Ray and Tachyon scene files, and the Alembic cache (where it rides the same {guilabel}`Include unit cell` switch as the rest of the scene furniture). With a transparent background it still renders, with the shadow on it; turn it off if you want the molecule alone on transparency.
+
+{guilabel}`Material` selects a Blinn-Phong finish, not a mirror — none of the four reflects the structure, which would need a reflection pass the viewport does not have.
+
+% TODO screenshot: the same nanoparticle rendered twice side by side, SSAO off and SSAO on, with the SSAO tab of the Visual Effects dock visible
 ```{figure} /_static/img/viewport_ssao.png
 :alt: Side-by-side comparison of a nanoparticle without and with screen-space ambient occlusion
 :width: 92%
