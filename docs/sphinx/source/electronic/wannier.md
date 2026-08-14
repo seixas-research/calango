@@ -1,7 +1,7 @@
 # Wannier functions
 
 Two menu entries share one machinery.
-{menuselection}`Wannier Functions --> Calculate Wannier Functions…` runs the
+{menuselection}`Wannier Functions --> Wannierization…` runs the
 Marzari–Vanderbilt localization (`ase.dft.wannier`) on top of a completed
 single-point calculation, producing maximally localized Wannier functions —
 their centres, spreads, and real-space orbitals.
@@ -15,9 +15,10 @@ small diagonalization per k-point. The Fermi-surface and topology modules
 `ase.dft.wannier` needs the **full, unsymmetrized Brillouin zone**. A `.gpw`
 written by a symmetry-reduced run carries only the irreducible wedge, and the
 failure would surface deep inside ASE as an index error — so Calango compares
-the IBZ and BZ k-point counts up front and stops with the remedy: re-run the
+the IBZ and BZ k-point counts up front and warns with the remedy: re-run the
 baseline single-point with {guilabel}`Symmetry: off`, or let the wizard run
-its own SCF, which forces it.
+its own SCF, which forces it. The warning does not disable the run — see
+[the baseline summary](#the-baseline-summary) for why.
 :::
 
 ---
@@ -37,6 +38,34 @@ state first and writes `wannier.gpw`.
 | {guilabel}`Wannier functions` | How many to localize — typically the number of occupied bands / valence orbitals | 4 |
 | {guilabel}`Fixed states` | Which states are frozen (see below) | exactly the Wannier count |
 | {guilabel}`Max. minimization iterations` | Cap on `localize()` sweeps (`step=0.25`, tolerance 10⁻⁶); the run exits early once the spread functional Ω stops decreasing | 50 |
+
+(the-baseline-summary)=
+### The baseline summary
+
+Selecting a baseline restates what that run recorded, on the
+{guilabel}`Baseline:` line — its band count, its k-mesh, how many of the
+zone's k-points survived, and the symmetry check:
+
+| Shown | Means | Read from |
+|---|---|---|
+| {guilabel}`Symmetry: off` ✓ | every k-point of the mesh was kept | the engine log's BZ = IBZ counts, else `calculator.json`, else `run.py` |
+| {guilabel}`Symmetry: on` | the zone was folded into the irreducible wedge | the same, in the same order |
+| {guilabel}`Symmetry: unknown` | nothing in the run directory settles it | — |
+
+The engine's own log wins over `calculator.json` when they disagree: the
+sidecar records what was *asked for*, the log records the k-set that was
+actually stored, and that is what the localization will meet. A baseline
+written by an older Calango has no symmetry flag at all — that reads as
+**unknown**, not as "on", and draws a cautionary amber note rather than the
+red one, because demanding a re-run of a calculation that may be perfectly
+good is its own kind of wrong answer.
+
+Neither note disables {guilabel}`Run`. The check has a genuine *unknown*
+state, so a gate would either block correct baselines or wave through the bad
+ones it exists to catch; and the generated script pre-flights the same
+condition, so a run started against a folded zone fails with an actionable
+message rather than an ASE index error. Hover the {guilabel}`Baseline:` line
+to see which file each number came from.
 
 ### The fixed manifold: one selector, not two toggles
 
@@ -82,6 +111,20 @@ isosurface. Wannier amplitudes are signed, so the isovalue slider spans
 $[0, \max|\psi|]$ of the loaded cube (opening at 20 % — a low amplitude
 reveals the lobes); colormaps are Viridis, Plasma, Coolwarm, Rainbow, and a
 slice plane (XY/XZ/YZ with an offset slider) cuts through the volume.
+
+{guilabel}`Periodic continuation` decides how far past the home cell the
+orbital is followed, in cell units (default 0.5). A Wannier function is
+localized but not *confined*: its centre lands wherever the localization put
+it, so a lobe routinely straddles a cell face — and extracting over the cell
+alone cuts it flat there and strands the remainder at the opposite face, where
+it reads as unrelated debris. The neighbouring periodic images hold the same
+function continued, so the isosurface is extracted over a window centred on
+the Wannier centre instead, and the copies that window also covers are dropped
+by connected component. Raise it for longer tails; the cost grows as the cube
+of the window. The same control appears in the **Volumetric Data** dock's
+{guilabel}`Edit Render` dialog, where it is live only for datasets registered
+as Wannier functions — a charge density fills its cell, so continuing one
+would simply draw the same surface 27 times.
 
 % TODO screenshot: Wannier dialog with the centres/spreads table and an sp3-like orbital isosurface
 ```{figure} /_static/img/elec_wannier.png

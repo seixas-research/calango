@@ -65,6 +65,11 @@ public:
     /// (offered as the default base). No signal emitted.
     void setDatasets(const QStringList& labels, int currentIndex);
 
+    /// Tell the dialog whether the tab it is editing holds a Wannier function.
+    /// Periodic continuation applies to those and to nothing else, so this is
+    /// what decides whether that control is live.
+    void setHasWannier(bool hasWannier);
+
 Q_SIGNALS:
     void styleChanged(const VolumetricStyle& style, VolumetricRenderMode mode);
 
@@ -84,6 +89,7 @@ private:
     double fieldMax_ = 1.0;
     bool updating_ = false;
 
+    bool hasWannier_ = false;    ///< see setHasWannier()
     QComboBox* modeCombo_ = nullptr;
     QStackedWidget* stack_ = nullptr;
 
@@ -108,6 +114,7 @@ private:
     QPushButton* posColorButton_ = nullptr;
     QPushButton* negColorButton_ = nullptr;
     QComboBox* isoInterpCombo_ = nullptr;
+    QDoubleSpinBox* continuationSpin_ = nullptr; ///< Wannier periodic halo
 
     // Color slice
     QSpinBox* millerSpins_[3] = {nullptr, nullptr, nullptr}; ///< h, k, l

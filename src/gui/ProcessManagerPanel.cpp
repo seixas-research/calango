@@ -362,6 +362,16 @@ void ProcessManagerPanel::setTaskStatus(int id, Status status)
     updateAbortButton();
 }
 
+void ProcessManagerPanel::setTaskDetail(int id, const QString& detail)
+{
+    if (QTreeWidgetItem* item = itemForId(id)) {
+        // Every column, so the tooltip appears wherever the pointer lands on
+        // the row rather than only over the task name.
+        for (int column = 0; column < item->columnCount(); ++column)
+            item->setToolTip(column, detail);
+    }
+}
+
 int ProcessManagerPanel::taskCount() const
 {
     return tree_->topLevelItemCount();

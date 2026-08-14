@@ -1,5 +1,7 @@
 #include "core/CrpaSolver.hpp"
 
+#include "core/WannierHamiltonian.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -14,145 +16,21 @@ constexpr double kPi = 3.14159265358979323846;
 /// e²/(4πε₀) in eV·Å — the one constant that fixes the absolute scale of U.
 constexpr double kCoulombEvAngstrom = 14.399645;
 
-using Cplx = std::complex<double>;
-using CMatrix = std::vector<std::vector<Cplx>>;
+using linalg::CMatrix;
+using linalg::Cplx;
 
-CMatrix identity(std::size_t n)
-{
-    CMatrix m(n, std::vector<Cplx>(n, Cplx{0.0, 0.0}));
-    for (std::size_t i = 0; i < n; ++i)
-        m[i][i] = Cplx{1.0, 0.0};
-    return m;
-}
-
-CMatrix multiply(const CMatrix& a, const CMatrix& b)
-{
-    const std::size_t n = a.size();
-    CMatrix out(n, std::vector<Cplx>(n, Cplx{0.0, 0.0}));
-    for (std::size_t i = 0; i < n; ++i)
-        for (std::size_t k = 0; k < n; ++k) {
-            const Cplx aik = a[i][k];
-            if (aik == Cplx{0.0, 0.0})
-                continue;
-            for (std::size_t j = 0; j < n; ++j)
-                out[i][j] += aik * b[k][j];
-        }
-    return out;
-}
-
-/// Gauss-Jordan inverse with partial pivoting.
-///
-/// Small dense matrices (one per frequency, dimension = orbital count), so the
-/// cubic cost is irrelevant and an explicit inverse is clearer than a solve —
-/// W is wanted as a matrix, not as the action of one.
-CMatrix invert(CMatrix a)
-{
-    const std::size_t n = a.size();
-    CMatrix inv = identity(n);
-    for (std::size_t col = 0; col < n; ++col) {
-        std::size_t pivot = col;
-        double best = std::abs(a[col][col]);
-        for (std::size_t r = col + 1; r < n; ++r) {
-            if (std::abs(a[r][col]) > best) {
-                best = std::abs(a[r][col]);
-                pivot = r;
-            }
-        }
-        if (best < 1e-300)
-            throw std::runtime_error("CrpaSolver: singular dielectric matrix");
-        std::swap(a[col], a[pivot]);
-        std::swap(inv[col], inv[pivot]);
-
-        const Cplx d = a[col][col];
-        for (std::size_t j = 0; j < n; ++j) {
-            a[col][j] /= d;
-            inv[col][j] /= d;
-        }
-        for (std::size_t r = 0; r < n; ++r) {
-            if (r == col)
-                continue;
-            const Cplx f = a[r][col];
-            if (f == Cplx{0.0, 0.0})
-                continue;
-            for (std::size_t j = 0; j < n; ++j) {
-                a[r][j] -= f * a[col][j];
-                inv[r][j] -= f * inv[col][j];
-            }
-        }
-    }
-    return inv;
-}
-
-/// Cyclic Jacobi eigensolver for a Hermitian matrix.
-///
-/// Self-contained rather than LAPACK: `src/core` links no LAPACK today (only
-/// the native-DFT target does), the matrices here are the size of the Wannier
-/// basis — a handful to a few tens — and Jacobi is backward stable, so the
-/// dependency would buy nothing but a link-order problem.
-void hermitianEigen(CMatrix a, std::vector<double>& values, CMatrix& vectors)
-{
-    const std::size_t n = a.size();
-    vectors = identity(n);
-    for (int sweep = 0; sweep < 100; ++sweep) {
-        double off = 0.0;
-        for (std::size_t p = 0; p < n; ++p)
-            for (std::size_t q = p + 1; q < n; ++q)
-                off += std::norm(a[p][q]);
-        if (off < 1e-26)
-            break;
-
-        for (std::size_t p = 0; p < n; ++p) {
-            for (std::size_t q = p + 1; q < n; ++q) {
-                const double apq = std::abs(a[p][q]);
-                if (apq < 1e-18)
-                    continue;
-                const Cplx phase = a[p][q] / apq;
-                const double tau =
-                    (a[q][q].real() - a[p][p].real()) / (2.0 * apq);
-                const double t = (tau >= 0.0 ? 1.0 : -1.0)
-                    / (std::abs(tau) + std::sqrt(1.0 + tau * tau));
-                const double c = 1.0 / std::sqrt(1.0 + t * t);
-                const double s = t * c;
-
-                CMatrix rot = identity(n);
-                rot[p][p] = Cplx{c, 0.0};
-                rot[q][q] = Cplx{c, 0.0};
-                rot[p][q] = -s * std::conj(phase);
-                rot[q][p] = s * phase;
-
-                // A ← R† A R, V ← V R. Formed explicitly because n is small
-                // and an index slip in a hand-rolled row/column update is the
-                // classic way to get eigenvectors that are almost orthogonal.
-                CMatrix rotH(n, std::vector<Cplx>(n, Cplx{0.0, 0.0}));
-                for (std::size_t i = 0; i < n; ++i)
-                    for (std::size_t j = 0; j < n; ++j)
-                        rotH[i][j] = std::conj(rot[j][i]);
-                a = multiply(rotH, multiply(a, rot));
-                vectors = multiply(vectors, rot);
-            }
-        }
-    }
-
-    values.assign(n, 0.0);
-    for (std::size_t i = 0; i < n; ++i)
-        values[i] = a[i][i].real();
-
-    // Sorted ascending, carrying the eigenvectors with them: the occupation
-    // logic downstream assumes band order.
-    std::vector<std::size_t> order(n);
-    std::iota(order.begin(), order.end(), 0);
-    std::sort(order.begin(), order.end(),
-              [&](std::size_t x, std::size_t y) { return values[x] < values[y]; });
-    std::vector<double> sortedValues(n);
-    CMatrix sortedVectors(n, std::vector<Cplx>(n, Cplx{0.0, 0.0}));
-    for (std::size_t newIdx = 0; newIdx < n; ++newIdx) {
-        sortedValues[newIdx] = values[order[newIdx]];
-        for (std::size_t row = 0; row < n; ++row)
-            sortedVectors[row][newIdx] = vectors[row][order[newIdx]];
-    }
-    values = std::move(sortedValues);
-    vectors = std::move(sortedVectors);
-}
+// identity / multiply / invert / hermitianEigen used to be duplicated here.
+// They now live in core::linalg (WannierHamiltonian.hpp), which is the only
+// copy and the one the Boltzmann-transport and Berry-phase modules share.
+//
+// That de-duplication was not cosmetic: the copy here carried a wrong complex
+// Jacobi rotation, which returns correct eigenvalues whenever the diagonal
+// elements are equal or the off-diagonal is real — true of every matrix these
+// tests built — and wrong ones otherwise. Fixing it in one place fixes it
+// everywhere, which is the point of having one place.
+using linalg::identity;
+using linalg::invert;
+using linalg::multiply;
 
 double fermiOccupation(double energy, double mu, double smearing)
 {
@@ -268,7 +146,7 @@ CMatrix CrpaSolver::hamiltonianAt(const std::array<double, 3>& k) const
 CrpaSolver::Bands CrpaSolver::diagonalize(const std::array<double, 3>& k) const
 {
     Bands bands;
-    hermitianEigen(hamiltonianAt(k), bands.energies, bands.vectors);
+    linalg::hermitianEigen(hamiltonianAt(k), bands.energies, bands.vectors);
     return bands;
 }
 

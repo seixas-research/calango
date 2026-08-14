@@ -21,6 +21,27 @@ namespace calango::gui {
 class ViewportWidget;
 class EditVolumetricRenderDialog;
 
+/// What a volumetric dataset IS, as opposed to what it contains — facts the
+/// panel cannot read off the grid and that change how the field is drawn.
+///
+/// At namespace scope rather than nested in VolumetricPanel because
+/// registerResultFile() defaults it: a default argument may not reach into a
+/// nested class's member initializers while the enclosing class is still being
+/// defined.
+struct DatasetOrigin {
+    /// This field is one Wannier function. Two things follow: its isosurface
+    /// is continued into the neighbouring periodic images instead of being cut
+    /// at the cell faces, and a tab showing one for the first time switches to
+    /// the glossy material.
+    bool wannier = false;
+    /// Wannier centre in Cartesian angstrom, as reported by the
+    /// wannierization. Optional: without it the panel derives the centre from
+    /// the field itself (core::periodicCentroid), which for a Wannier cube is
+    /// the same quantity computed the same way.
+    bool hasCentre = false;
+    core::Vec3 centre{};
+};
+
 /// Zone 13 — the "Volumetric Data" dock: a single-view registry of 3D scalar
 /// volumetric grids (.cube / .xsf / CHGCAR-family, MLWF orbitals) visualized as
 /// overlays on the MAIN 3D viewport, aligned with the atoms.
@@ -59,7 +80,8 @@ public:
     /// load failure (callers fire-and-forget).
     void registerResultFile(const QString& path, const QString& label,
                             const QString& structureLabel = QString(),
-                            int workspaceId = -1);
+                            int workspaceId = -1,
+                            const DatasetOrigin& origin = {});
 
 public Q_SLOTS:
     /// Bind the panel to the workspace tab `id` now on screen: rows registered
@@ -96,6 +118,12 @@ private:
         int workspaceId = -1;
         /// Per-dataset render toggle, driven by the row's check box.
         bool visible = true;
+        /// What this dataset is (see DatasetOrigin). `centre` is resolved here
+        /// once at registration — from the wannierization when it reported one,
+        /// otherwise from the field — so the extraction thread never has to
+        /// walk the whole grid again per isovalue change.
+        bool wannier = false;
+        core::Vec3 centre{};
     };
     /// Result of one off-thread extraction of a single dataset. For an
     /// isosurface, `positive` / `negative` are the ± phase lobes. For a
@@ -126,7 +154,16 @@ private:
 
     void addEntry(std::shared_ptr<const core::VolumetricData> field,
                   const QString& label, const QString& path,
-                  const QString& structureLabel, int workspaceId);
+                  const QString& structureLabel, int workspaceId,
+                  const DatasetOrigin& origin);
+    /// Switch `workspaceId`'s material to Glossy unless the user has already
+    /// picked one. Called once per Wannier dataset registered; see the comment
+    /// at the call site for why this is a promotion rather than a default.
+    void promoteWannierMaterial(int workspaceId);
+    /// True when any dataset bound to the active tab is a Wannier function —
+    /// which is what makes the periodic-continuation control in the Edit
+    /// Render dialog live rather than dead.
+    bool activeWorkspaceHasWannier() const;
     const Entry* currentEntry() const;
     const core::VolumetricData* currentField() const;
     int currentRow() const;

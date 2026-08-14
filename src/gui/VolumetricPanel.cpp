@@ -87,40 +87,18 @@ void smoothMesh(core::IsoMesh& mesh, int passes)
 {
     if (passes <= 0 || mesh.positions.size() < 3)
         return;
-    // Weld tolerance: marching-cubes vertices that should be one point are
-    // bit-identical or within rounding of each other, never merely close, so a
-    // tight grid is enough and distinct nearby surfaces stay distinct.
-    constexpr double kWeld = 1e-5;
-    const auto key = [](const core::Vec3& p) {
-        return std::array<long long, 3>{
-            static_cast<long long>(std::llround(p.x / kWeld)),
-            static_cast<long long>(std::llround(p.y / kWeld)),
-            static_cast<long long>(std::llround(p.z / kWeld))};
-    };
-    struct KeyHash {
-        std::size_t operator()(const std::array<long long, 3>& k) const
-        {
-            std::size_t h = 1469598103934665603ULL;
-            for (const long long v : k)
-                h = (h ^ static_cast<std::size_t>(v)) * 1099511628211ULL;
-            return h;
-        }
-    };
-
+    // The weld lives in core::weldVertices, which is also what the
+    // connected-component filter behind the Wannier periodic continuation runs
+    // on — one implementation, so the two can never disagree about which
+    // vertices are the same point. Its default tolerance is the one this used
+    // to spell out: vertices that should be one point come out of the extractor
+    // bit-identical or within rounding, never merely close, so a tight grid
+    // identifies them all while distinct nearby sheets stay distinct.
+    const core::WeldedMesh welded = core::weldVertices(mesh);
+    const std::vector<int>& weld = welded.index;
+    // A mutable copy: the smoothing passes below swap through it.
+    std::vector<core::Vec3> points = welded.points;
     const std::size_t count = mesh.positions.size();
-    std::unordered_map<std::array<long long, 3>, int, KeyHash> unique;
-    unique.reserve(count);
-    std::vector<int> weld(count);
-    std::vector<core::Vec3> points;
-    points.reserve(count);
-    for (std::size_t i = 0; i < count; ++i) {
-        const auto [it, inserted] =
-            unique.try_emplace(key(mesh.positions[i]),
-                               static_cast<int>(points.size()));
-        if (inserted)
-            points.push_back(mesh.positions[i]);
-        weld[i] = it->second;
-    }
 
     // Adjacency over the welded points, from the triangle edges.
     std::vector<std::vector<int>> neighbors(points.size());
@@ -288,7 +266,8 @@ void VolumetricPanel::loadExternalFile()
 void VolumetricPanel::registerResultFile(const QString& path,
                                          const QString& label,
                                          const QString& structureLabel,
-                                         int workspaceId)
+                                         int workspaceId,
+                                         const DatasetOrigin& origin)
 {
     std::shared_ptr<const core::VolumetricData> field;
     try {
@@ -303,18 +282,41 @@ void VolumetricPanel::registerResultFile(const QString& path,
     // Callers that don't name a tab bind to the one on screen — a calculation
     // result belongs to the workspace it was launched from.
     addEntry(std::move(field), label, path, structureLabel,
-             workspaceId >= 0 ? workspaceId : activeWorkspace_);
+             workspaceId >= 0 ? workspaceId : activeWorkspace_, origin);
 }
 
 void VolumetricPanel::addEntry(
     std::shared_ptr<const core::VolumetricData> field, const QString& label,
-    const QString& path, const QString& structureLabel, int workspaceId)
+    const QString& path, const QString& structureLabel, int workspaceId,
+    const DatasetOrigin& origin)
 {
     if (!field || field->empty())
         return;
+    // Resolve the continuation centre once, here. The wannierization's own
+    // number when it recorded one; otherwise the field's periodic centroid,
+    // which is the same quantity (the circular mean of |psi|^2) computed from
+    // the grid instead of read from JSON. Doing it at registration keeps the
+    // O(N) sweep off the extraction thread, which reruns on every isovalue
+    // nudge.
+    core::Vec3 centre{};
+    if (origin.wannier)
+        centre = origin.hasCentre ? origin.centre
+                                  : core::periodicCentroid(*field);
     const int index = static_cast<int>(entries_.size());
     entries_.push_back({field, label, path, structureLabel, workspaceId,
-                        /*visible=*/true});
+                        /*visible=*/true, origin.wannier, centre});
+
+    // A Wannier function arriving in a tab promotes that tab's material to
+    // Glossy — ONCE, and never over a choice the user has made.
+    //
+    // Glossy is what these need: a Wannier lobe's shape is all curvature, and
+    // Flat draws it as a silhouette in which two overlapping lobes are one
+    // blob. The alternative was a per-dataset material, which this style has
+    // never had — `shading` is one knob per workspace tab, applied to every
+    // surface in it — so this is a default, applied at the moment the tab first
+    // holds something that wants it, rather than a second parallel default.
+    if (origin.wannier)
+        promoteWannierMaterial(workspaceId);
 
     // Build the row with itemChanged muted: setCheckState() during
     // construction would otherwise re-enter onItemChanged before the item is
@@ -348,6 +350,44 @@ bool VolumetricPanel::inActiveWorkspace(const Entry& entry) const
     // A record with no workspace (registered before any tab existed) is never
     // orphaned — it stays available whichever tab is forward.
     return entry.workspaceId < 0 || entry.workspaceId == activeWorkspace_;
+}
+
+void VolumetricPanel::promoteWannierMaterial(int workspaceId)
+{
+    // The style to touch is the LIVE one when the dataset landed in the tab on
+    // screen, and the stashed one otherwise — a run can finish while its tab is
+    // in the background, and writing style_ then would repaint the wrong tab.
+    VolumetricStyle* style = nullptr;
+    if (workspaceId < 0 || workspaceId == activeWorkspace_) {
+        style = &style_;
+    } else {
+        const auto it = workspaceStates_.find(workspaceId);
+        // A tab never visited has no stashed state yet; seed it from the
+        // defaults so the promotion is not lost when it is first shown.
+        if (it == workspaceStates_.end())
+            style = &workspaceStates_[workspaceId].style;
+        else
+            style = &it->second.style;
+    }
+    if (style->shadingChosen)
+        return; // the user's material wins, always
+    style->shading = IsoShading::Glossy;
+
+    if (style == &style_ && editDialog_) {
+        // setStyle() is the dialog's own refresh path; going through it keeps
+        // the combo, the enable states and the tool tips consistent, and its
+        // `updating_` guard stops the sync from echoing back as a change.
+        editDialog_->setStyle(style_, mode_);
+        syncEditDialogDatasets();
+    }
+}
+
+bool VolumetricPanel::activeWorkspaceHasWannier() const
+{
+    for (const Entry& entry : entries_)
+        if (entry.wannier && inActiveWorkspace(entry))
+            return true;
+    return false;
 }
 
 std::vector<int> VolumetricPanel::renderableRows() const
@@ -528,8 +568,13 @@ VolumetricPanel::fieldForIndex(int index) const
 
 void VolumetricPanel::syncEditDialogDatasets()
 {
-    if (editDialog_)
-        editDialog_->setDatasets(datasetLabels(), currentRow());
+    if (!editDialog_)
+        return;
+    editDialog_->setDatasets(datasetLabels(), currentRow());
+    // Every caller of this already runs on the events that change which
+    // datasets a tab holds — registration, removal, tab switch — so it is also
+    // the right place to keep the Wannier-only controls in step.
+    editDialog_->setHasWannier(activeWorkspaceHasWannier());
 }
 
 void VolumetricPanel::defaultIsovalueForField()
@@ -919,9 +964,19 @@ void VolumetricPanel::pumpIsoExtraction()
     // extract a surface with no vertex colours and render it black.
     const bool potential = secondary != nullptr;
 
-    std::vector<std::shared_ptr<const core::VolumetricData>> bases;
-    for (const int row : renderableRows())
-        bases.push_back(entries_[static_cast<std::size_t>(row)].field);
+    // Each base carries what it needs to be extracted, because a Wannier
+    // function is not extracted the same way as a density: the worker below
+    // has no access to entries_.
+    struct Base {
+        std::shared_ptr<const core::VolumetricData> field;
+        bool wannier = false;
+        core::Vec3 centre{};
+    };
+    std::vector<Base> bases;
+    for (const int row : renderableRows()) {
+        const Entry& e = entries_[static_cast<std::size_t>(row)];
+        bases.push_back({e.field, e.wannier, e.centre});
+    }
     if (bases.empty())
         return;
 
@@ -930,6 +985,8 @@ void VolumetricPanel::pumpIsoExtraction()
 
     const double requestedIso = std::abs(style_.isovalue);
     const core::GridInterpolation interp = style_.gridInterpolation;
+    const double margin = std::clamp(style_.continuationMargin, 0.0,
+                                     core::kMaxContinuationMargin);
     // Smoothing runs here, not in pushResults(): it is the expensive half of
     // the geometry work (a weld + adjacency build over every vertex), and this
     // is the thread that already exists to keep that off the GUI.
@@ -937,11 +994,12 @@ void VolumetricPanel::pumpIsoExtraction()
 
     isoWatcher_.setFuture(QtConcurrent::run(
         [bases = std::move(bases), secondary = std::move(secondary),
-         requestedIso, potential, interp,
+         requestedIso, potential, interp, margin,
          smoothing]() -> std::vector<ExtractResult> {
             std::vector<ExtractResult> results;
             results.reserve(bases.size());
-            for (const auto& base : bases) {
+            for (const auto& entry : bases) {
+                const auto& base = entry.field;
                 ExtractResult r;
                 r.potential = potential;
                 // Each field has its own value range: an isovalue chosen for
@@ -962,6 +1020,20 @@ void VolumetricPanel::pumpIsoExtraction()
                     interp == core::GridInterpolation::None ? *base : refined;
                 if (potential) {
                     r.positive = core::extractIsosurface(bf, iso, secondary.get());
+                } else if (entry.wannier) {
+                    // A Wannier function is localized but not confined: its
+                    // centre sits wherever the wannierization put it and its
+                    // tails cross the cell faces, so extracting over the home
+                    // cell alone cuts the lobe flat and strands the rest on
+                    // the far side of the box. Re-window on the centre first.
+                    //
+                    // The centre is in Cartesian angstrom and the refined grid
+                    // (if any) covers the same box, so it needs no rescaling.
+                    r.positive = core::extractContinuedIsosurface(
+                        bf, iso, entry.centre, margin);
+                    if (signedField && iso > 0.0)
+                        r.negative = core::extractContinuedIsosurface(
+                            bf, -iso, entry.centre, margin);
                 } else {
                     r.positive = core::extractIsosurface(bf, iso, nullptr);
                     if (signedField && iso > 0.0)

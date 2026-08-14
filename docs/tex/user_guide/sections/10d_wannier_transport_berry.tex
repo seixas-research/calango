@@ -1,0 +1,129 @@
+\chapter{Boltzmann Transport and Berry Phase}
+\label{ch:wannier-transport-berry}
+
+Two modules on \menu{Wannier Functions} that consume a Wannier Hamiltonian
+$H(\mathbf{R})$ and compute from it directly, in process --- no job is
+launched and no interpreter is started.
+
+\begin{calnote}
+Both are native Calango implementations. Wannier90, postw90 and BoltzWann are
+references for the formulas, conventions and feature scope; they are not
+dependencies. No external binary is invoked, nothing is linked against them,
+and none of their auxiliary output files is required. Reading an
+\file{\_hr.dat} you already have is done by Calango's own parser --- the file
+is a plain text table of hopping integrals.
+\end{calnote}
+
+Both take their input from the same row: open an \file{\_hr.dat}, or load one
+of two built-in demonstration models (a simple-cubic metal, and the two-band
+Qi--Wu--Zhang Chern insulator). Those are the models the unit tests use, so
+what the panel reports can be checked against the test output directly.
+
+\section{Boltzmann Transport}
+
+\menu{Wannier Functions}\menusep\menu{Boltzmann Transport\ldots}
+
+Electronic and thermoelectric transport in the constant relaxation-time
+approximation. Everything derives from the transport distribution function
+\[
+  \Sigma_{\alpha\beta}(\varepsilon) = \frac{1}{V N_k}\sum_{n,\mathbf{k}}
+    \tau\, v_{n\alpha} v_{n\beta}\,
+    \delta(\varepsilon - \varepsilon_{n\mathbf{k}}),
+\]
+whose Onsager moments
+$L^{(m)} = \int \! d\varepsilon\, \Sigma\, (\varepsilon-\mu)^m
+(-\partial f/\partial\varepsilon)$ give the conductivity
+$\sigma = e^2 L^{(0)}$, the Seebeck tensor
+$S = (eT)^{-1}(L^{(0)})^{-1}L^{(1)}$, and the electronic thermal
+conductivity
+\[
+  \kappa_e = \frac{1}{e^2 T}\left[L^{(2)}
+    - L^{(1)}\bigl(L^{(0)}\bigr)^{-1}L^{(1)}\right].
+\]
+That is the \emph{zero-current} thermal conductivity, which is the one $zT$
+wants. The subtracted term is the Peltier heat carried by the compensating
+current; dropping it inflates $\kappa_e$ and deflates $zT$. The panel also
+reports the power factor $S^2\sigma$, the figure of merit
+$zT = S^2\sigma T/(\kappa_e + \kappa_L)$, and the carrier concentration.
+
+\subsection{Band velocities}
+
+Velocities come from $\partial H/\partial \mathbf{k}$ in the Wannier gauge,
+taken analytically. This is not an optimisation: at a band crossing the
+eigenvalue branches swap, so a finite difference of \emph{sorted} eigenvalues
+reports a velocity that jumps discontinuously and can have the wrong sign
+entirely. The matrix gradient has no such problem, because the degeneracy
+lives in the eigenvectors.
+
+\subsection{The relaxation time}
+
+$\tau$ enters $\sigma$ and $\kappa_e$ linearly and cancels \emph{exactly} in
+$S$, which is a ratio of two moments that each carry one factor of it. A
+constant-$\tau$ Seebeck coefficient is therefore a genuine prediction, while
+$\sigma$ and $\kappa_e$ are only as good as the $\tau$ supplied. The lattice
+thermal conductivity $\kappa_L$ is a phonon quantity that nothing in an
+electronic structure determines, so it is a user input and is needed only for
+$zT$.
+
+\begin{calwarn}
+The smearing that resolves the delta function has to sit between two bounds:
+\emph{above} the mean level spacing of the k-mesh, or $\Sigma(\varepsilon)$
+breaks into isolated spikes, and \emph{below} $k_BT$, or the smearing acts as
+extra temperature and the Wiedemann--Franz ratio comes out low. At 300\,K,
+$k_BT$ is 26\,meV. The panel reports the measured level spacing against both
+after every run.
+\end{calwarn}
+
+\section{Berry Phase}
+
+\menu{Wannier Functions}\menusep\menu{Berry Phase\ldots}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{7.6cm}@{}}
+\toprule
+Quantity & How it is obtained \\
+\midrule
+Berry phase on a closed path & Wilson loop: product of overlap matrices \\
+Berry curvature $\Omega(\mathbf{k})$ & Kubo sum over band pairs of
+  $\partial H/\partial k$ elements \\
+Curvature map & the same over a k-plane, drawn with the app's colormaps \\
+Anomalous Hall conductivity & BZ integral of $\Omega$, in SI and in $e^2/h$ \\
+Electric polarization & Berry phase (modern theory), with its quantum \\
+Hybrid Wannier centres & Wilson-loop eigenphases vs transverse $k$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Gauge}
+
+This is the whole difficulty of the subject, so the conventions are fixed
+explicitly. Berry phases are Wilson loops: an arbitrary phase on an
+eigenvector enters once as a bra and once as a ket and cancels around the
+loop, so the result does not depend on what the eigensolver returned. Berry
+curvature uses the Kubo form, in which every factor is a matrix element
+between eigenstates, so the phases cancel pairwise and no eigenvector is ever
+differentiated. $H(\mathbf{k})$ is built in convention~I --- orbital positions
+\emph{not} in the phase --- so $H(\mathbf{k}+\mathbf{G}) = H(\mathbf{k})$
+exactly and a loop closes with no correction factor.
+
+\subsection{Relation to Topological Invariants}
+
+The hybrid Wannier centre flow is the same object
+\menu{Wannier Functions}\menusep\menu{Topological Invariants\ldots} plots.
+That feature generates a Python script and runs it against a completed DFT
+baseline; this one evaluates the same quantity in process from
+$H(\mathbf{R})$. They answer the same question from different inputs, which
+makes them a cross-check rather than duplicates --- and this panel reports the
+Chern number twice, once from the curvature integral and once from the centre
+winding, so that a disagreement flags under-sampled $k$.
+
+\section{Validation}
+
+Both modules are covered by unit tests against results known independently of
+the code: the Wiedemann--Franz limit
+$\kappa_e/\sigma T \to \pi^2 k_B^2/3e^2 = 2.44\times10^{-8}$\,W$\Omega$/K$^2$,
+the Seebeck sign for electron and hole doping, the exact $\tau$-scaling
+identities, the Qi--Wu--Zhang Chern number ($\pm1$ inside $|m|<2$, zero
+outside), the Hall conductance quantised at $e^2/h$, and the SSH Zak phase,
+which comes out exactly $0$ and $\pi$ in the two phases.

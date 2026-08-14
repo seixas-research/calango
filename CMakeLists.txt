@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.18
+    VERSION 26.8.19
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -213,6 +213,10 @@ qt_add_executable(calango
     src/core/VolumetricData.cpp
     src/core/MarchingCubes.hpp
     src/core/MarchingCubes.cpp
+    src/core/IsosurfaceContinuation.hpp
+    src/core/IsosurfaceContinuation.cpp
+    src/core/BaselineSummary.hpp
+    src/core/BaselineSummary.cpp
     src/core/GridInterpolation.hpp
     src/core/GridInterpolation.cpp
     src/core/DatasetSplit.hpp
@@ -259,8 +263,12 @@ qt_add_executable(calango
     src/core/ClusterExpansionFit.hpp
     src/core/ClusterExpansionFit.cpp
     src/core/ClusterVariation.cpp
+    src/core/BerryPhase.cpp
+    src/core/BoltzmannTransport.cpp
     src/core/CpaSolver.cpp
+    src/core/JobFailureReason.cpp
     src/core/CrpaSolver.cpp
+    src/core/WannierHamiltonian.cpp
     src/core/SublatticeClusterVariation.cpp
     src/core/BandGap.hpp
     src/core/BandGap.cpp
@@ -683,7 +691,11 @@ qt_add_executable(calango
     src/gui/ClusterExpansionDialog.hpp
     src/gui/EciFitDialog.hpp
     src/gui/EciFitDialog.cpp
+    src/gui/BerryPhaseDialog.cpp
+    src/gui/BoltzmannTransportDialog.cpp
+    src/gui/CurvatureMapWidget.cpp
     src/gui/KkrCpaDialog.cpp
+    src/gui/WannierModelSource.cpp
     src/gui/SpectralPlotStyleDialog.cpp
     src/gui/CrpaDialog.cpp
     src/gui/CvmComparisonWindow.hpp
@@ -1060,9 +1072,70 @@ if(CALANGO_BUILD_TESTS)
     add_executable(calango_crpa_test
         tests/CrpaSolverTest.cpp
         src/core/CrpaSolver.cpp
+        src/core/WannierHamiltonian.cpp
     )
     target_include_directories(calango_crpa_test PRIVATE src)
     add_test(NAME crpa_solver COMMAND calango_crpa_test)
+
+    # Boltzmann transport in the constant relaxation time approximation.
+    # Anchored on Wiedemann-Franz (an external number the code knows nothing
+    # about), the Seebeck sign convention, and the exact tau-scaling
+    # identities.
+    add_executable(calango_boltzmann_test
+        tests/BoltzmannTransportTest.cpp
+        src/core/BoltzmannTransport.cpp
+        src/core/WannierHamiltonian.cpp
+    )
+    target_include_directories(calango_boltzmann_test PRIVATE src)
+    add_test(NAME boltzmann_transport COMMAND calango_boltzmann_test)
+
+    # Berry phase, curvature and Chern numbers. Anchored on quantisation: a
+    # Chern number is an integer, so a wrong sign, a stray 2*pi or a gauge leak
+    # cannot land on the right answer by accident.
+    add_executable(calango_berry_test
+        tests/BerryPhaseTest.cpp
+        src/core/BerryPhase.cpp
+        src/core/WannierHamiltonian.cpp
+    )
+    target_include_directories(calango_berry_test PRIVATE src)
+    add_test(NAME berry_phase COMMAND calango_berry_test)
+
+    # Regression for the proc_26 failure: nwannier > nbands. Asserts the
+    # generated script now pre-flights it, and that the real captured
+    # traceback is turned into a line worth showing.
+    add_executable(calango_wannier_preflight_test
+        tests/WannierPreflightTest.cpp
+        src/core/WannierScriptGenerator.cpp
+        src/core/JobFailureReason.cpp
+        src/core/AseScriptGenerator.cpp
+        src/core/EngineCalculatorBlocks.cpp
+    )
+    # Isosurface mesh integrity: winding must agree with the gradient
+    # normals. Regression for the reversed complementary marching-tetrahedra
+    # cases that showed as holes under the glossy material.
+    add_executable(calango_isosurface_test
+        tests/IsosurfaceMeshTest.cpp
+        src/core/MarchingCubes.cpp
+        src/core/IsosurfaceContinuation.cpp
+        src/core/VolumetricData.cpp
+    )
+    target_include_directories(calango_isosurface_test PRIVATE src)
+    add_test(NAME isosurface_mesh COMMAND calango_isosurface_test)
+
+    # What a Wannier run can learn about the ground state it inherits: bands,
+    # k-points, and whether the Brillouin zone was folded. The third is a
+    # pre-condition, and "undetermined" has to stay distinguishable from "on".
+    add_executable(calango_baseline_summary_test
+        tests/BaselineSummaryTest.cpp
+        src/core/BaselineSummary.cpp
+    )
+    target_include_directories(calango_baseline_summary_test PRIVATE src)
+    add_test(NAME baseline_summary COMMAND calango_baseline_summary_test)
+
+    target_include_directories(calango_wannier_preflight_test PRIVATE src)
+    target_compile_definitions(calango_wannier_preflight_test PRIVATE
+        CALANGO_VERSION="${PROJECT_VERSION}")
+    add_test(NAME wannier_preflight COMMAND calango_wannier_preflight_test)
 
     # Validation harness against the local VASP cRPA. Fast by default: it
     # checks the generated INCAR/POSCAR, round-trips the OUTCAR/UIJKL parsers
@@ -1072,6 +1145,7 @@ if(CALANGO_BUILD_TESTS)
     add_executable(calango_crpa_vasp_test
         tests/CrpaVaspValidationTest.cpp
         src/core/CrpaSolver.cpp
+        src/core/WannierHamiltonian.cpp
     )
     target_include_directories(calango_crpa_vasp_test PRIVATE src)
     add_test(NAME crpa_vasp_validation COMMAND calango_crpa_vasp_test)
@@ -1578,6 +1652,12 @@ if(CALANGO_BUILD_TESTS)
         src/core/NonlinearOpticsScriptGenerator.cpp
         # The Optics wizard, exercised in both its 3D and 2D modes.
         src/gui/OpticsWizard.cpp
+        # The Wannier setup wizard: its baseline summary states a
+        # pre-condition (full BZ k-set) that decides whether the run
+        # can work at all, so the three verdicts are pinned.
+        src/gui/WannierWizard.cpp
+        src/core/BaselineSummary.cpp
+        src/core/WannierScriptGenerator.cpp
         src/core/OpticsScriptGenerator.cpp
         # And the Raman / IR wizard, which now swaps whole group boxes when the
         # engine changes — GPAW selects three inherited runs, VASP and Quantum
@@ -2859,6 +2939,15 @@ if(CALANGO_BUILD_TESTS)
     # pinning it tightly would test the settings rather than the workflow.
     #
     # Self-skips without gpaw.elph.
+    # Wannier spread validation on bulk FCC Cu, the canonical reference. The
+    # d-like spreads have a literature scale (<= ~1 A^2) that a units or
+    # b-vector-weight error cannot survive, so this pins the wannierization
+    # rather than the settings. Self-skips (exit 0) without GPAW.
+    add_test(NAME cu_wannier_spread
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/cu_wannier_spread_benchmark.py)
+    set_tests_properties(cu_wannier_spread PROPERTIES TIMEOUT 3600)
+
     add_test(NAME al_electron_phonon
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/al_electron_phonon_benchmark.py

@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <limits>
+#include <unordered_map>
+#include <vector>
 
 namespace calango::core {
 
@@ -30,11 +34,20 @@ struct Corner {
 } // namespace
 
 IsoMesh extractIsosurface(const VolumetricData& field, double isovalue,
-                          const VolumetricData* colorField)
+                          const VolumetricData* colorField, FieldWrap wrap)
 {
     IsoMesh mesh;
     if (field.empty() || field.nx < 2 || field.ny < 2 || field.nz < 2)
         return mesh;
+
+    const bool periodic = wrap == FieldWrap::Periodic;
+    // Sampling the field for the gradient has to agree with the wrap mode, or
+    // the outermost shell of a Clamped window gets normals computed from the
+    // opposite side of the box.
+    const auto sampleField = [&](double gx, double gy, double gz) {
+        return periodic ? field.samplePeriodic(gx, gy, gz)
+                        : field.sample(gx, gy, gz);
+    };
 
     // Step vectors of one voxel; M^-T maps grid-space gradients to
     // Cartesian ones.
@@ -52,14 +65,14 @@ IsoMesh extractIsosurface(const VolumetricData& field, double isovalue,
 
     const auto gradient = [&](double gx, double gy, double gz) {
         constexpr double h = 0.5;
-        const double dx = (field.samplePeriodic(gx + h, gy, gz)
-                           - field.samplePeriodic(gx - h, gy, gz))
+        const double dx =
+            (sampleField(gx + h, gy, gz) - sampleField(gx - h, gy, gz))
             / (2.0 * h);
-        const double dy = (field.samplePeriodic(gx, gy + h, gz)
-                           - field.samplePeriodic(gx, gy - h, gz))
+        const double dy =
+            (sampleField(gx, gy + h, gz) - sampleField(gx, gy - h, gz))
             / (2.0 * h);
-        const double dz = (field.samplePeriodic(gx, gy, gz + h)
-                           - field.samplePeriodic(gx, gy, gz - h))
+        const double dz =
+            (sampleField(gx, gy, gz + h) - sampleField(gx, gy, gz - h))
             / (2.0 * h);
         // Cartesian gradient = M^-T * grid gradient.
         Vec3 g{invT[0] * dx + invT[1] * dy + invT[2] * dz,
@@ -82,9 +95,12 @@ IsoMesh extractIsosurface(const VolumetricData& field, double isovalue,
         if (colorField) {
             // Same box assumed: convert fractional coords to the color
             // field's own grid resolution.
-            mesh.colorValues.push_back(colorField->samplePeriodic(
-                gx / field.nx * colorField->nx, gy / field.ny * colorField->ny,
-                gz / field.nz * colorField->nz));
+            const double cx = gx / field.nx * colorField->nx;
+            const double cy = gy / field.ny * colorField->ny;
+            const double cz = gz / field.nz * colorField->nz;
+            mesh.colorValues.push_back(periodic
+                                           ? colorField->samplePeriodic(cx, cy, cz)
+                                           : colorField->sample(cx, cy, cz));
         }
     };
 
@@ -98,9 +114,77 @@ IsoMesh extractIsosurface(const VolumetricData& field, double isovalue,
                                            {0, 1, 0}, {0, 0, 1}, {1, 0, 1},
                                            {1, 1, 1}, {0, 1, 1}};
 
-    for (int ix = 0; ix < field.nx; ++ix) {
-        for (int iy = 0; iy < field.ny; ++iy) {
-            for (int iz = 0; iz < field.nz; ++iz) {
+    // Periodic runs one cell PAST the last node, closing the surface through
+    // the seam onto node 0. Clamped stops one short, so no cell straddles the
+    // outer face and `% n` below is a no-op.
+    const int lastX = periodic ? field.nx : field.nx - 1;
+    const int lastY = periodic ? field.ny : field.ny - 1;
+    const int lastZ = periodic ? field.nz : field.nz - 1;
+
+    // ---- Empty-space skipping ---------------------------------------------
+    //
+    // An isosurface touches a vanishing fraction of the grid it lives in, and
+    // the periodic continuation made that ratio far worse: a localized Wannier
+    // function in a two-cell window occupies about 0.2% of it, so 99.8% of the
+    // marching was spent proving that eight corners agree.
+    //
+    // The remedy is one cheap linear pass. A block of kBlock³ cells can be
+    // skipped outright when every NODE it touches lies on the same side of the
+    // isovalue, which is exactly the condition under which each of its cells
+    // would produce mask 0 or 15 and emit nothing. So this changes no output —
+    // it only declines to rediscover the same answer cell by cell.
+    //
+    // The predicate mirrors the mask test below (`value > isovalue`) rather
+    // than approximating it: a cell emits iff its corners straddle, i.e. iff
+    // min <= isovalue < max. Deriving it from the same comparison is what makes
+    // "skipped" and "would have emitted nothing" the same set and not merely
+    // overlapping ones.
+    constexpr int kBlock = 8;
+    const auto blocks = [](int extent) { return (extent + kBlock - 1) / kBlock; };
+    const int bx = blocks(lastX), by = blocks(lastY), bz = blocks(lastZ);
+    std::vector<unsigned char> active(
+        static_cast<std::size_t>(bx) * by * bz, 0u);
+    for (int i0 = 0; i0 < bx; ++i0)
+        for (int j0 = 0; j0 < by; ++j0)
+            for (int k0 = 0; k0 < bz; ++k0) {
+                // Nodes, not cells: a block's last cell reaches one node past
+                // its own extent, and forgetting that would skip a block whose
+                // surface crosses its far face.
+                const int xEnd = std::min(i0 * kBlock + kBlock, lastX);
+                const int yEnd = std::min(j0 * kBlock + kBlock, lastY);
+                const int zEnd = std::min(k0 * kBlock + kBlock, lastZ);
+                double lo = std::numeric_limits<double>::infinity();
+                double hi = -std::numeric_limits<double>::infinity();
+                for (int x = i0 * kBlock; x <= xEnd; ++x)
+                    for (int y = j0 * kBlock; y <= yEnd; ++y)
+                        for (int z = k0 * kBlock; z <= zEnd; ++z) {
+                            // The same wrapping accessor the march uses, so the
+                            // periodic seam is covered by the scan too.
+                            const double v = field.at(x % field.nx,
+                                                      y % field.ny,
+                                                      z % field.nz);
+                            lo = std::min(lo, v);
+                            hi = std::max(hi, v);
+                        }
+                active[(static_cast<std::size_t>(i0) * by + j0) * bz + k0] =
+                    (lo <= isovalue && isovalue < hi) ? 1u : 0u;
+            }
+
+    for (int ix = 0; ix < lastX; ++ix) {
+        for (int iy = 0; iy < lastY; ++iy) {
+            for (int iz = 0; iz < lastZ; ++iz) {
+                // Skip a whole inactive block in one step rather than testing
+                // every cell in it: z is the contiguous axis, so this turns the
+                // dominant inner loop into one lookup per kBlock cells. The
+                // iteration ORDER is untouched, so the emitted triangle
+                // sequence is identical to the exhaustive march's.
+                if (!active[(static_cast<std::size_t>(ix / kBlock) * by
+                             + iy / kBlock)
+                                * bz
+                            + iz / kBlock]) {
+                    iz = (iz / kBlock + 1) * kBlock - 1; // ++iz lands on the next
+                    continue;
+                }
                 Corner corner[8];
                 for (int c = 0; c < 8; ++c) {
                     const int cx = ix + kOffsets[c][0];
@@ -126,14 +210,54 @@ IsoMesh extractIsosurface(const VolumetricData& field, double isovalue,
                         continue;
 
                     // One corner separated -> single triangle; two
-                    // corners -> quad (two triangles). Enumerate the
-                    // seven distinct cases (complements share geometry).
+                    // corners -> quad (two triangles).
+                    //
+                    // ORIENTATION COMES FROM THE FIELD, NOT FROM THE TABLE.
+                    //
+                    // Two independent parities decide a triangle's winding
+                    // here: each case is shared with its COMPLEMENT (mask 1
+                    // has p0 above the isovalue, mask 14 has it below — same
+                    // surface, opposite outside), and the six tetrahedra of
+                    // the decomposition do not all have the same HANDEDNESS.
+                    // The table as written accounted for neither, leaving
+                    // about 46% of triangles reversed; flipping the complement
+                    // set merely exchanged which 46%.
+                    //
+                    // That mattered because a renderer trusts the winding: the
+                    // lit isosurface shader flips its normal on gl_FrontFacing,
+                    // which turned the (correct, gradient-derived) normals of
+                    // the reversed facets inward, zeroed the diffuse term and
+                    // the specular gated on it, and dropped them to the ambient
+                    // floor — a dense speckle of dark pits that read as holes
+                    // under the glossy material.
+                    //
+                    // The gradient already knows which way is out. Emitting the
+                    // three vertices, comparing the geometric normal against
+                    // them and swapping when they disagree is O(1) per
+                    // triangle, needs no table, and is correct by construction
+                    // for every case and every tetrahedron handedness.
                     const auto tri = [&](const Corner& a1, const Corner& b1,
                                          const Corner& a2, const Corner& b2,
                                          const Corner& a3, const Corner& b3) {
+                        const std::size_t base = mesh.positions.size();
                         emitVertex(a1, b1);
                         emitVertex(a2, b2);
                         emitVertex(a3, b3);
+                        const Vec3 geometric =
+                            (mesh.positions[base + 1] - mesh.positions[base])
+                                .cross(mesh.positions[base + 2]
+                                       - mesh.positions[base]);
+                        const Vec3 outward = mesh.normals[base]
+                            + mesh.normals[base + 1] + mesh.normals[base + 2];
+                        if (geometric.dot(outward) < 0.0) {
+                            std::swap(mesh.positions[base + 1],
+                                      mesh.positions[base + 2]);
+                            std::swap(mesh.normals[base + 1],
+                                      mesh.normals[base + 2]);
+                            if (mesh.colorValues.size() == mesh.positions.size())
+                                std::swap(mesh.colorValues[base + 1],
+                                          mesh.colorValues[base + 2]);
+                        }
                     };
                     switch (mask) {
                     case 1: case 14:
@@ -166,6 +290,44 @@ IsoMesh extractIsosurface(const VolumetricData& field, double isovalue,
         }
     }
     return mesh;
+}
+
+WeldedMesh weldVertices(const IsoMesh& mesh, double tolerance)
+{
+    WeldedMesh welded;
+    const std::size_t count = mesh.positions.size();
+    if (count == 0)
+        return welded;
+
+    const double grid = tolerance > 0.0 ? tolerance : 1e-5;
+    const auto key = [grid](const Vec3& p) {
+        return std::array<long long, 3>{
+            static_cast<long long>(std::llround(p.x / grid)),
+            static_cast<long long>(std::llround(p.y / grid)),
+            static_cast<long long>(std::llround(p.z / grid))};
+    };
+    struct KeyHash {
+        std::size_t operator()(const std::array<long long, 3>& k) const
+        {
+            std::size_t h = 1469598103934665603ULL;
+            for (const long long v : k)
+                h = (h ^ static_cast<std::size_t>(v)) * 1099511628211ULL;
+            return h;
+        }
+    };
+
+    std::unordered_map<std::array<long long, 3>, int, KeyHash> unique;
+    unique.reserve(count);
+    welded.index.resize(count);
+    welded.points.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto [it, inserted] = unique.try_emplace(
+            key(mesh.positions[i]), static_cast<int>(welded.points.size()));
+        if (inserted)
+            welded.points.push_back(mesh.positions[i]);
+        welded.index[i] = it->second;
+    }
+    return welded;
 }
 
 } // namespace calango::core

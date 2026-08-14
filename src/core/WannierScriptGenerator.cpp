@@ -159,6 +159,37 @@ std::string generateWannierScript(const WannierConfig& cfg)
            "                       'available in this ASE install: ' + repr(_e))\n"
         << "nwannier = " << nWannier << "\n"
         << fixedVars.str()
+        // Pre-flight, and it has to live HERE rather than in the wizard.
+        //
+        // With no frozen window ASE fixes exactly `nwannier` states per
+        // k-point, so nwannier can never exceed the band count the parent
+        // ground state actually converged. Asking for more dies inside
+        // rotation_from_projection with
+        //     could not broadcast input array from shape (N,W) into shape (W,W)
+        // which names neither the Wannier count nor the band count.
+        //
+        // The wizard cannot catch this: GPAW chooses nbands itself unless it
+        // was set explicitly (9 for a one-atom Cu cell), so the number does
+        // not exist anywhere until the .gpw is open. This is the first point
+        // that knows both, and it runs before any expensive work.
+        << "_nbands = int(calc.get_number_of_bands())\n"
+           "_calango_event('info', 'ground state has %d bands; %d Wannier "
+           "functions requested' % (_nbands, nwannier))\n"
+           "if nwannier > _nbands:\n"
+           "    raise RuntimeError(\n"
+           "        'Requested %d Wannier functions, but the ground state in "
+           "%s has only '\n"
+           "        '%d bands. With no frozen window ASE fixes exactly one "
+           "state per '\n"
+           "        'Wannier function, and it cannot fix more states than "
+           "exist — it '\n"
+           "        'fails inside the rotation setup with a shape error "
+           "naming neither '\n"
+           "        'number. Lower the Wannier count to %d or fewer, or "
+           "re-run the '\n"
+           "        'Single-Point Calculation with more bands.'\n"
+           "        % (nwannier, os.path.basename(_gpw_path), _nbands, "
+           "_nbands))\n"
         << "# initialwannier seeds the trial projections (atomic orbitals give\n"
            "# good initial overlaps + center estimates).\n"
            "#\n"
@@ -230,6 +261,28 @@ std::string generateWannierScript(const WannierConfig& cfg)
         "    except Exception:\n"
         "        spreads = [float('nan')] * nwannier\n"
         "total_spread = float(np.nansum(spreads))\n"
+        // The total is a SUM, so it is dominated by whichever function is
+        // most diffuse — and on a d-band metal that is the single s-like one,
+        // not a uniformly bad wannierization. Measured on FCC Cu: five d
+        // functions at 0.32-0.54 A^2 (the literature scale) beside one s
+        // function at 4.49, and a frozen window pulls that one to 2.67 while
+        // barely moving the d manifold. Reported so a high total can be read
+        // as the one thing it usually is, instead of being taken for a broken
+        // spread functional.
+        "_finite = [s for s in spreads if s == s]\n"
+        "if _finite:\n"
+        "    _worst = max(_finite)\n"
+        "    _rest = sorted(_finite)[:-1]\n"
+        "    _median = _rest[len(_rest) // 2] if _rest else _worst\n"
+        "    _calango_event('info', 'spreads: total %.3f A^2 over %d "
+        "functions; most diffuse %.3f, median of the rest %.3f'\n"
+        "                   % (total_spread, len(_finite), _worst, _median))\n"
+        "    if _rest and _worst > 4.0 * _median and _fixedenergy is None "
+        "and _fixedstates is None:\n"
+        "        _calango_event('warning', 'One Wannier function is %.1fx more "
+        "diffuse than the rest, which is what dominates the total. This run "
+        "used no frozen window; setting one (Disentanglement) typically halves "
+        "that function without moving the others.' % (_worst / _median))\n"
         "# Localization functional Ω = Ω_I + Ω_D̃ (the minimized value); it is\n"
         "# the trial-projection overlap metric surfaced in the MLWF viewer.\n"
         "try:\n"

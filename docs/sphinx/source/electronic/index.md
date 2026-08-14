@@ -56,8 +56,9 @@ state. {doc}`/electronic/nonlinear_optics` explains why.
 | {doc}`/electronic/workfunction` | {menuselection}`Modules --> 2D Materials --> 2D Workfunction…` | GPAW baseline `.gpw` |
 | {doc}`/electronic/nonlinear_optics` | {menuselection}`Electronics --> Nonlinear Optics…` | converges its own ground state |
 | {doc}`/electronic/gw` | {menuselection}`Electronics --> GW Calculations…` | GPAW `.gpw` or QE `.save` |
-| {doc}`/electronic/wannier` | {menuselection}`Wannier Functions --> Calculate Wannier Functions…` / {menuselection}`Wannier Functions --> Wannier Interpolation…` | GPAW baseline `.gpw` |
+| {doc}`/electronic/wannier` | {menuselection}`Wannier Functions --> Wannierization…` / {menuselection}`Wannier Functions --> Wannier Interpolation…` | GPAW baseline `.gpw` |
 | {doc}`/electronic/fermi_topology` | {menuselection}`Wannier Functions --> Fermi Surface…` / {menuselection}`Wannier Functions --> Topological Invariants…` | completed Wannier Functions run |
+| {doc}`/electronic/wannier_transport_berry` | {menuselection}`Wannier Functions --> Boltzmann Transport…` / {menuselection}`Wannier Functions --> Berry Phase…` | a Wannier H(R) — computed natively, no job launched |
 | {doc}`/electronic/xas` | {menuselection}`Electronics --> X-ray Absorption Spectroscopy (XAS)…` | GPAW (legacy engine) |
 | {doc}`/electronic/hubbard` | {menuselection}`Electronics --> Hubbard Parameter Calculation…` | VASP or Quantum ESPRESSO |
 | {doc}`/electronic/charges` | {menuselection}`Electronics --> Born Effective Charges…` / {menuselection}`Charged defects…` and related | VASP / QE / GPAW |
@@ -84,6 +85,7 @@ nonlinear_optics
 gw
 wannier
 fermi_topology
+wannier_transport_berry
 xas
 hubbard
 charges

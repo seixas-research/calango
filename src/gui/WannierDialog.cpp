@@ -1,5 +1,7 @@
 #include "gui/WannierDialog.hpp"
 
+#include "core/IsosurfaceContinuation.hpp"
+
 #include "gui/VolumeViewWidget.hpp"
 #include "render/ColorMap.hpp"
 
@@ -139,6 +141,29 @@ WannierDialog::WannierDialog(std::shared_ptr<core::Structure> structure,
     isoColormapCombo_ = new QComboBox(isoGroup_);
     isoColormapCombo_->addItems(colormapNames());
     isoForm->addRow(tr("Colormap:"), isoColormapCombo_);
+
+    // How far past the home cell the orbital is followed. A Wannier function
+    // is localized but not confined — its centre lands wherever the
+    // wannierization put it — so without this the lobe is cut flat at the cell
+    // face and its remainder appears across the box.
+    continuationSpin_ = new QDoubleSpinBox(isoGroup_);
+    continuationSpin_->setRange(0.0, core::kMaxContinuationMargin);
+    continuationSpin_->setSingleStep(0.25);
+    continuationSpin_->setDecimals(2);
+    continuationSpin_->setSuffix(tr(" cells"));
+    continuationSpin_->setValue(core::kDefaultContinuationMargin);
+    continuationSpin_->setToolTip(
+        tr("How far past the home cell the orbital's isosurface is followed, "
+           "in cell units.\n\n"
+           "The neighbouring periodic images hold the same function continued, "
+           "so the surface is extracted over a window centred on the Wannier "
+           "centre and the copies that window also covers are dropped. 0.5 "
+           "shows a function whole wherever its centre fell; raise it for "
+           "longer tails — the cost grows as the cube of the window."));
+    isoForm->addRow(tr("Periodic continuation:"), continuationSpin_);
+    connect(continuationSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { rebuildIso(); });
+
     side->addWidget(isoGroup_);
 
     connect(isoGroup_, &QGroupBox::toggled, this, &WannierDialog::rebuildIso);
@@ -235,8 +260,13 @@ void WannierDialog::loadResults(const QString& jsonPath)
     jobDir_ = QFileInfo(jsonPath).absolutePath();
 
     table_->setRowCount(centers.size());
+    centres_.assign(static_cast<std::size_t>(centers.size()), core::Vec3{});
     for (int row = 0; row < centers.size(); ++row) {
         const QJsonArray c = centers.at(row).toArray();
+        if (c.size() >= 3)
+            centres_[static_cast<std::size_t>(row)] = {c.at(0).toDouble(),
+                                                       c.at(1).toDouble(),
+                                                       c.at(2).toDouble()};
         const auto cell = [&](int col, const QString& text) {
             table_->setItem(row, col, new QTableWidgetItem(text));
         };
@@ -280,6 +310,7 @@ void WannierDialog::orbitalSelected(int index)
         gridLabel_->setText(tr("Missing %1").arg(QFileInfo(path).fileName()));
         return;
     }
+    selectedOrbital_ = index;
     loadCube(path);
 }
 
@@ -291,6 +322,13 @@ void WannierDialog::loadCube(const QString& path)
         // an in-flight extraction still references it.
         field_ = std::make_shared<const core::VolumetricData>(
             core::VolumetricData::load(path.toStdString()));
+        // Resolved once per cube, not per extraction: the fallback walks the
+        // whole grid, and the isovalue slider re-extracts on every step.
+        fieldCentre_ =
+            selectedOrbital_ >= 0
+                && selectedOrbital_ < static_cast<int>(centres_.size())
+            ? centres_[static_cast<std::size_t>(selectedOrbital_)]
+            : core::periodicCentroid(*field_);
         QApplication::restoreOverrideCursor();
     } catch (const std::exception& e) {
         QApplication::restoreOverrideCursor();
@@ -351,10 +389,17 @@ void WannierDialog::startIsoExtraction()
     // orbital while it runs.
     FieldPtr field = field_;
     const double isovalue = isoSpin_->value();
+    const core::Vec3 centre = fieldCentre_;
+    const double margin = continuationSpin_->value();
 
     isoWatcher_.setFuture(QtConcurrent::run(
-        [field = std::move(field), isovalue] {
-            return core::extractIsosurface(*field, isovalue, nullptr);
+        [field = std::move(field), isovalue, centre, margin] {
+            // Continued into the neighbouring periodic images rather than cut
+            // at the cell faces — see core/IsosurfaceContinuation.hpp. The
+            // window is centred on the Wannier centre, so the function is
+            // shown whole wherever in the cell it happened to sit.
+            return core::extractContinuedIsosurface(*field, isovalue, centre,
+                                                    margin);
         }));
 }
 

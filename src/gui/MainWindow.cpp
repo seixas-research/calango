@@ -1,3 +1,5 @@
+#include "gui/BerryPhaseDialog.hpp"
+#include "gui/BoltzmannTransportDialog.hpp"
 #include "gui/CrpaDialog.hpp"
 #include "gui/EciFitDialog.hpp"
 #include "gui/KkrCpaDialog.hpp"
@@ -8,6 +10,7 @@
 #include "core/AseScriptGenerator.hpp"
 #include "core/BrillouinZone.hpp"
 #include "core/HydrogenCompletion.hpp"
+#include "core/JobFailureReason.hpp"
 #include "core/PdbxFile.hpp"
 #include "core/Structure.hpp"
 #include "core/StructureTransforms.hpp"
@@ -1116,45 +1119,28 @@ void MainWindow::createMenusAndDocks()
     // roughly by increasing dimensionality/complexity, with the reciprocal-
     // space tool last behind a separator.
     QMenu* buildMenu = menuBar()->addMenu(tr("&Build"));
+    // Ordered by WHAT IS BEING BUILT, and each separator marks a change in
+    // that: a prototype from a library, a low-dimensional shape cut from a
+    // bulk, a defect inserted into an existing lattice, a second component
+    // added to it, and finally the one entry that produces no atoms at all.
+
+    // -- Prototypes and libraries: the entry point, needs nothing open ------
     buildMenu->addAction(tr("From &Database…"), this, &MainWindow::openExamplesBrowser)
         ->setToolTip(tr("Bulk crystals (ase.build.bulk), Materials Project, PubChem"));
-    buildMenu->addAction(tr("Nano&particle Builder…"),
-                         this, &MainWindow::openNanoparticleBuilder);
+
+    buildMenu->addSeparator();
+    // -- Low-dimensional structures ----------------------------------------
+    // Surface Slab leads: it is the most used of the three, and both
+    // "Add adsorbate" and "Liquid / Gas Interface" below consume a slab.
     buildMenu->addAction(tr("&Surface Slab…"), this, &MainWindow::cleaveSurface);
     buildMenu->addAction(tr("&Nanomaterials…"), this, &MainWindow::openNanoBuilder);
-    // Supercell moved to the Structure panel's action row: it is a
-    // whole-structure transform like centring and vacuum padding, and having it
-    // in a menu while its siblings were buttons made the grouping arbitrary.
-    // Decorating a surface follows building one, so it sits under Surface Slab
-    // and Nanoparticle rather than in Analysis with the site *statistics*.
-    buildMenu->addAction(tr("Add &adsorbate…"), this,
-                         &MainWindow::openAddAdsorbate)
-        ->setToolTip(tr("Place one atom or one molecule/radical on the current "
-                        "geometry, on a detected site or at an explicit "
-                        "position; the result opens as a new tab"));
+    buildMenu->addAction(tr("Nano&particle Builder…"),
+                         this, &MainWindow::openNanoparticleBuilder);
+
     buildMenu->addSeparator();
-    // Molecular-system builders: both generate a periodic box of molecules
-    // rather than cleaving or repeating a crystal, so they group together.
-    buildMenu->addAction(tr("&Macromolecules…"),
-                         this, &MainWindow::openMacromoleculeBuilder)
-        ->setToolTip(tr("Polymer chains: monomer chemistry, tacticity, "
-                        "conformation and amorphous multi-chain packing"));
-    buildMenu->addAction(tr("&Water && Ice…"),
-                         this, &MainWindow::openWaterIceBuilder)
-        ->setToolTip(tr("Liquid water and the ice polymorphs, with "
-                        "Bernal-Fowler proton disorder"));
-    // Third in the molecular-systems block because it CONSUMES a structure
-    // rather than generating one from nothing: it needs a slab (from Surface
-    // Slab, above) to open a region on.
-    buildMenu->addAction(tr("&Liquid / Gas Interface…"),
-                         this, &MainWindow::openLiquidInterfaceBuilder)
-        ->setToolTip(tr("Open a fluid region on the current structure and pack "
-                        "it with a liquid, a gas, a mixture, or an ionic "
-                        "solution — solid/liquid and solid/gas interfaces"));
-    buildMenu->addSeparator();
-    // Crystal defects: both CONSUME the current structure as a parent lattice
-    // and both are pure geometry (no engine, no Python), so they group
-    // together and sit after the molecular builders rather than among them.
+    // -- Defects and microstructure ----------------------------------------
+    // Both CONSUME the current structure as a parent lattice and both are pure
+    // geometry (no engine, no Python).
     buildMenu->addAction(tr("&Dislocation…"), this,
                          &MainWindow::openDislocationBuilder)
         ->setToolTip(tr("Edge, screw, glide and climb dislocations, plus the "
@@ -1166,169 +1152,222 @@ void MainWindow::createMenusAndDocks()
         ->setToolTip(tr("Stacking faults, twin boundaries, bicrystals and "
                         "(multi-phase) polycrystals built from the open "
                         "structures as parent lattices"));
-    // Cluster Expansion, SQS and Warren-Cowley now live under Modules → Alloys;
-    // the alloy toolchain is grouped there rather than split across Build /
-    // Simulation / Analysis.
+
     buildMenu->addSeparator();
+    // -- Multi-component and disordered systems ----------------------------
+    // Ordered by how much they depend on what is already open: the first two
+    // decorate or fill a structure that must exist, the last two generate a
+    // molecular box from nothing.
+    buildMenu->addAction(tr("Add &adsorbate…"), this,
+                         &MainWindow::openAddAdsorbate)
+        ->setToolTip(tr("Place one atom or one molecule/radical on the current "
+                        "geometry, on a detected site or at an explicit "
+                        "position; the result opens as a new tab"));
+    buildMenu->addAction(tr("&Liquid / Gas Interface…"),
+                         this, &MainWindow::openLiquidInterfaceBuilder)
+        ->setToolTip(tr("Open a fluid region on the current structure and pack "
+                        "it with a liquid, a gas, a mixture, or an ionic "
+                        "solution — solid/liquid and solid/gas interfaces"));
+    buildMenu->addAction(tr("&Macromolecules…"),
+                         this, &MainWindow::openMacromoleculeBuilder)
+        ->setToolTip(tr("Polymer chains: monomer chemistry, tacticity, "
+                        "conformation and amorphous multi-chain packing"));
+    buildMenu->addAction(tr("&Water && Ice…"),
+                         this, &MainWindow::openWaterIceBuilder)
+        ->setToolTip(tr("Liquid water and the ice polymorphs, with "
+                        "Bernal-Fowler proton disorder"));
+
+    buildMenu->addSeparator();
+    // -- Reciprocal space ---------------------------------------------------
+    // The only entry on this menu that builds no atoms, which is the whole
+    // reason it is fenced off rather than trailing the list.
     buildMenu->addAction(tr("&Brillouin Zone Builder…"),
                          this, &MainWindow::showBrillouinZone);
 
+    // Supercell moved to the Structure panel's action row: it is a
+    // whole-structure transform like centring and vacuum padding, and having it
+    // in a menu while its siblings were buttons made the grouping arbitrary.
+    // Cluster Expansion, SQS and Warren-Cowley live under Modules -> Alloys.
+
     // ----- Simulation: local/remote jobs and ML datasets -------------------
+    // Ordered by what each entry PRESUPPOSES. Single-point first because every
+    // other entry here needs the ability to compute an energy and a force;
+    // then geometry, then sampling, then the methods built on top of a
+    // sampler, then the one thermodynamic potential.
     QMenu* simulationMenu = menuBar()->addMenu(tr("&Simulation"));
+
+    // -- Ground state and geometry -----------------------------------------
     simulationMenu->addAction(tr("&Single-point Calculation…"),
                               QKeySequence(tr("Ctrl+R")),
                               this, &MainWindow::singlePointCalculation);
     simulationMenu->addAction(tr("&Geometry Optimization…"),
                               this, &MainWindow::geometryOptimization);
+
+    simulationMenu->addSeparator();
+    // -- Sampling: generate configurations ----------------------------------
+    // Random Noise belongs here rather than beside the phonon machinery: it
+    // runs a single point on every randomly displaced copy, which is ensemble
+    // sampling, and its output is a training set like an MD trajectory's.
     simulationMenu->addAction(tr("&Molecular Dynamics…"),
                               this, &MainWindow::molecularDynamics);
-    // Directly after MD: it IS molecular dynamics — one thermostatted run
-    // per lambda window — and the free energy it produces is the quantity
-    // an MD trajectory cannot give you on its own.
+    simulationMenu->addAction(tr("&Monte Carlo Simulation…"),
+                              this, &MainWindow::openMonteCarlo);
+    simulationMenu->addAction(tr("Random N&oise Setup…"),
+                              this, &MainWindow::addRandomNoise);
+
+    simulationMenu->addSeparator();
+    // -- Transition paths and vibrations ------------------------------------
+    // NEB first: it is still a geometry-space method (a chain of images
+    // relaxed), so it sits closest to the optimizer above. Electron-phonon
+    // follows Phonon because it is the same finite-displacement machinery and
+    // the coupling only means anything alongside the modes it couples to.
+    simulationMenu->addAction(tr("&Nudged Elastic Band (NEB)…"),
+                              this, &MainWindow::openNudgedElasticBand);
+    simulationMenu->addAction(tr("&Phonon…"),
+                              this, &MainWindow::openPhononBuilder);
+    simulationMenu->addAction(tr("&Electron-Phonon Coupling…"),
+                              this, &MainWindow::openElectronPhonon);
+
+    simulationMenu->addSeparator();
+    // -- Free energies -------------------------------------------------------
+    // Last, and alone, because it is the only entry on this menu that produces
+    // a THERMODYNAMIC POTENTIAL rather than energies, forces or frequencies.
+    // It is molecular dynamics underneath — one thermostatted run per lambda
+    // window — but what it answers is a question none of the samplers above
+    // can answer on their own.
     //
     // ONE entry, not two. The companion "Open Liquid Free Energy Results…"
     // action is gone: a finished run now opens its viewer by itself
     // (onJobFinished), the Processes panel offers it for any directory holding
     // a ti.json, and the wizard carries a "Load Results…" button for a run this
-    // session never launched — so the menu no longer needs a second line whose
-    // only job was to ask for a file the application already knows about.
+    // session never launched.
     simulationMenu->addAction(tr("&Thermodynamic Integration…"),
                               this, &MainWindow::thermodynamicIntegration)
         ->setToolTip(tr("Absolute Helmholtz / Gibbs free energy by reversibly "
                         "coupling the system to a reference whose free energy "
                         "is known in closed form"));
-    simulationMenu->addAction(tr("&Phonon…"),
-                              this, &MainWindow::openPhononBuilder);
-    // Directly after Phonon: it is the same finite-displacement machinery,
-    // and the coupling only means anything alongside the modes it couples to.
-    simulationMenu->addAction(tr("&Electron-Phonon Coupling…"),
-                              this, &MainWindow::openElectronPhonon);
-    simulationMenu->addAction(tr("&Monte Carlo Simulation…"),
-                              this, &MainWindow::openMonteCarlo);
-    // Random noise moved here from Build: it no longer merely displaces a
-    // structure, it runs a single point on every displaced copy — that is a
-    // job, and jobs live on this menu.
-    simulationMenu->addAction(tr("Random N&oise Setup…"),
-                              this, &MainWindow::addRandomNoise);
-    simulationMenu->addAction(tr("&Nudged Elastic Band (NEB)…"),
-                              this, &MainWindow::openNudgedElasticBand);
-    // Cluster Expansion Calculation moved to Modules → Alloys.
+
+    // Cluster Expansion Calculation lives under Modules -> Alloys.
     // "New Remote Calculation…" was removed along with the legacy calculator
     // dialog it opened: remote execution is now chosen inside each wizard
     // (Stage 2 execution mode + the Stage-4 "Run (Remote)" button) and
-    // monitored in the Zone-11 HPC manager, so a second, parallel
-    // entry point would generate scripts the wizards no longer own.
-    // Dataset Manager and Trainer moved to Modules → MLIP.
+    // monitored in the Zone-11 HPC manager.
+    // Dataset Manager and Trainer moved to Modules -> MLIP.
 
     // ----- Electronics: everything that reads out the electronic state ------
     // These all answer questions about the ELECTRONS of an already-solved
-    // system (bands, dielectric response, quasiparticles, localized orbitals)
-    // rather than about where the nuclei end up, which is what the Simulation
-    // menu above is for. They also share a workflow — each inherits a completed
-    // SCF baseline rather than converging its own — so grouping them puts the
-    // whole post-processing chain in one place instead of scattering it down a
-    // long Simulation list.
+    // system rather than about where the nuclei end up, which is what the
+    // Simulation menu above is for. They also share a workflow — each inherits
+    // a completed SCF baseline rather than converging its own.
+    //
+    // Ordered as the results are actually used: the band structure first,
+    // then the corrections that CHANGE it, then the spectra computed on top of
+    // it, then the one entry that reports a formation energy.
     QMenu* electronicsMenu = menuBar()->addMenu(tr("&Electronics"));
+
+    // -- Ground-state band structure ----------------------------------------
     electronicsMenu->addAction(tr("Electronic &Structure…"),
                                this, &MainWindow::showBandStructure);
-    // Effective Bands (Popescu-Zunger unfolding) reads out of an electronic
-    // structure run, so it sits immediately after "Electronic Structure…".
+    // Popescu-Zunger unfolding re-reads the same bands for a supercell, so it
+    // sits immediately after the run it re-reads.
     electronicsMenu->addAction(tr("&Effective Bands (Unfolding)…"),
                                this, &MainWindow::effectiveBandsCalculation);
-    // Linear optical response (dielectric function, absorption, reflectivity,
-    // refractive index, energy loss) via GPAW's response module.
-    electronicsMenu->addAction(tr("&Optics…"),
-                               this, &MainWindow::showOptics);
-    // Directly after the linear response it extends. Second order is where the
-    // symmetry requirement appears — χ⁽²⁾ and the shift current are odd-rank
-    // tensors and vanish identically in a centrosymmetric crystal — so the two
-    // entries sit together and the tooltip says which question each answers.
-    electronicsMenu
-        ->addAction(tr("&Nonlinear Optics…"), this,
-                    &MainWindow::showNonlinearOptics)
-        ->setToolTip(tr("Second-harmonic generation χ⁽²⁾, the shift current "
-                        "and the linear susceptibility tensor, via GPAW's "
-                        "gpaw.nlopt. Needs a non-centrosymmetric crystal"));
-    // G₀W₀ sits right after Optics, the other response-function calculation.
+
+    electronicsMenu->addSeparator();
+    // -- Corrections and derived parameters ---------------------------------
+    // Before the spectra, not after: both change the electronic structure that
+    // everything below is computed from. GW corrects the gap; Hubbard U is the
+    // only entry here that produces a PARAMETER rather than an observable, fed
+    // back into the next calculation's DFT+U.
     electronicsMenu->addAction(tr("&GW Calculations…"), this,
                                &MainWindow::showGwCalculations)
         ->setToolTip(tr("One-shot G₀W₀ quasiparticle corrections on top of a "
                         "completed SCF (GPAW or Yambo)"));
-    // The four Wannier entries used to sit here. They are a menu of their own
-    // now (below), because they are not four independent readouts of an SCF the
-    // way the entries around them are: three of the four consume the localized
-    // H(R) that the first one produces, so what they form is a CHAIN, and a
-    // chain buried in the middle of a long list reads as four unrelated
-    // options.
-    //
-    // ELF used to sit beside them and is gone entirely: the Single-point wizard
-    // writes elf.cube from the same SCF as one of its six density exports, and
-    // the grid renders in the main 3D viewport through the Volumetric Data dock
-    // — so a separate wizard, a separate job and a separate isosurface dialog
-    // were three copies of machinery that already existed.
-    //
-    // Charged defects sit with the other post-processes that consume a
-    // completed SCF. Its two inputs are both Single-Point runs, which is what
-    // distinguishes it from everything above: the physics is in the
-    // DIFFERENCE between a host cell and a defect cell.
-    electronicsMenu->addAction(tr("&Charged defects…"), this,
-                               &MainWindow::showChargedDefects)
-        ->setToolTip(tr("Formation energies E_f(q, E_F), thermodynamic "
-                        "transition levels and the charged-defect diagram, "
-                        "with the Freysoldt-Neugebauer-Van de Walle "
-                        "finite-size correction"));
-    // Hubbard U from linear response. It sits with the post-processes because
-    // it is one — the answer is a response function assembled from a queue of
-    // single points — but it is the only entry here that produces a PARAMETER
-    // rather than an observable: what comes out is fed back into the next
-    // calculation's DFT+U, which is why it is worth computing rather than
-    // borrowing from a paper about a different compound.
     electronicsMenu->addAction(tr("&Hubbard Parameter Calculation…"), this,
                                &MainWindow::showHubbardParameters)
         ->setToolTip(tr("U_eff from the linear response of the on-site "
                         "occupation to a localized perturbation "
                         "(Cococcioni & de Gironcoli) — VASP or Quantum "
                         "ESPRESSO"));
+
     electronicsMenu->addSeparator();
-    // Born charges are the electronic response to a DISPLACEMENT rather than to
-    // a field, which is why they sit slightly apart from the rest.
+    // -- Spectroscopy: the response to a probe ------------------------------
+    // Optics then its second-order extension; then the core-level probe; then
+    // the displacement response and the spectrum that CONSUMES it. Born
+    // charges sit immediately before Raman and IR on purpose: the IR
+    // intensities ARE the Z* tensors contracted with the phonon eigenvectors,
+    // and separating the two put a hard dependency on opposite sides of a
+    // third entry.
+    electronicsMenu->addAction(tr("&Optics…"),
+                               this, &MainWindow::showOptics);
+    electronicsMenu
+        ->addAction(tr("&Nonlinear Optics…"), this,
+                    &MainWindow::showNonlinearOptics)
+        ->setToolTip(tr("Second-harmonic generation χ⁽²⁾, the shift current "
+                        "and the linear susceptibility tensor, via GPAW's "
+                        "gpaw.nlopt. Needs a non-centrosymmetric crystal"));
+    // Its own module rather than an option on one of the others: the core-hole
+    // dataset it has to generate first has no analogue anywhere else.
+    electronicsMenu->addAction(tr("&X-ray Absorption Spectroscopy (XAS)…"),
+                               this, &MainWindow::showXas);
     electronicsMenu->addAction(tr("&Born Effective Charges…"), this,
                                &MainWindow::showBornCharges)
         ->setToolTip(tr("Z* tensors from the polarization response to atomic "
                         "displacements — the LO-TO splitting and IR "
                         "intensities depend on them"));
-    // Directly after Born charges, which it consumes: the IR intensities ARE
-    // the Z* tensors contracted with the phonon eigenvectors, so this is the
-    // step that turns that run into a spectrum.
-    // XAS sits with the other spectroscopies. Its own module rather than an
-    // option on one of them: the core-hole dataset it has to generate first
-    // has no analogue anywhere else in the application.
-    electronicsMenu->addAction(tr("&X-ray Absorption Spectroscopy (XAS)…"),
-                               this, &MainWindow::showXas);
     electronicsMenu->addAction(tr("&Raman and IR Spectroscopy…"), this,
                                &MainWindow::showRamanIrSpectroscopy)
         ->setToolTip(tr("Γ-point Raman and infrared spectra: IR from the "
                         "inherited Born effective charges, Raman from the "
                         "polarizability derivative ∂α/∂Q"));
 
-    // ----- Wannier Functions: one calculation and its three post-processes --
+    electronicsMenu->addSeparator();
+    // -- Defect energetics ---------------------------------------------------
+    // Alone, because it is the only entry here whose answer is a FORMATION
+    // ENERGY rather than a band property or a spectrum, and the only one whose
+    // physics lives in the DIFFERENCE between two completed runs.
+    electronicsMenu->addAction(tr("&Charged defects…"), this,
+                               &MainWindow::showChargedDefects)
+        ->setToolTip(tr("Formation energies E_f(q, E_F), thermodynamic "
+                        "transition levels and the charged-defect diagram, "
+                        "with the Freysoldt-Neugebauer-Van de Walle "
+                        "finite-size correction"));
+
+    // The four Wannier entries used to sit here; they are a menu of their own
+    // now (below), because three of the four consume the localized H(R) that
+    // the first one produces — what they form is a CHAIN.
+    //
+    // ELF used to sit beside them and is gone entirely: the Single-point wizard
+    // writes elf.cube from the same SCF as one of its six density exports.
+
+    // ----- Wannier Functions: one calculation and its consumers -------------
     // Between Electronics (which this menu grew out of) and Analysis, because
     // that is where the work happens: a Wannier basis is built FROM a converged
     // electronic structure and is then read out like any other analysis.
     //
-    // These four are a chain, not a list. "Calculate Wannier Functions" is the
-    // only one that runs a DFT post-process; the other three each begin by
-    // selecting a COMPLETED one of those and diagonalizing the localized H(R)
-    // it produced (and refuse without it). Naming the first entry
-    // "Calculate…" — rather than repeating the menu's own title — is what makes
-    // that split visible from the menu itself.
+    // These are a chain, not a list. "Wannierization" is the only one that runs
+    // a DFT post-process; every other entry begins by selecting a COMPLETED one
+    // of those and diagonalizing the localized H(R) it produced (and refuses
+    // without it). Naming the first entry for the ACT of localizing — rather
+    // than repeating the menu's own title, as "Calculate Wannier Functions…"
+    // did — is what makes that split visible from the menu itself, and the
+    // separator under it is the one that matters most on this menu: it is the
+    // producer/consumer boundary.
     QMenu* wannierMenu = menuBar()->addMenu(tr("&Wannier Functions"));
-    wannierMenu->addAction(tr("&Calculate Wannier Functions…"),
+
+    // -- The producer --------------------------------------------------------
+    wannierMenu->addAction(tr("&Wannierization…"),
                            this, &MainWindow::showWannier)
         ->setToolTip(tr("Maximally-localized Wannier functions from a GPAW "
                         "baseline: the localized orbitals themselves, their "
-                        "centres and spreads, and the H(R) the three entries "
+                        "centres and spreads, and the H(R) the entries "
                         "below consume"));
+
+    wannierMenu->addSeparator();
+    // -- Band structure on the interpolated H(k) -----------------------------
+    // The two entries that answer "what do the bands look like", in the order
+    // one reaches for them: the path first, then the E = E_F sheets that need a
+    // dense mesh of the same interpolation.
     wannierMenu
         ->addAction(tr("Wannier &Interpolation…"), this,
                     &MainWindow::showWannierInterpolation)
@@ -1338,15 +1377,37 @@ void MainWindow::createMenusAndDocks()
         ->addAction(tr("&Fermi Surface…"), this, &MainWindow::showFermiSurface)
         ->setToolTip(tr("E_n(k) = E_F sheets on a dense interpolated k-grid, "
                         "from a completed Wannier Functions process"));
+
+    wannierMenu->addSeparator();
+    // -- Derived properties: what the interpolated bands are USED for ---------
+    // Transport first (a Fermi-surface integral of the group velocities, so it
+    // follows directly from the sheets above), then the two geometric-phase
+    // modules. Berry Phase and Topological Invariants are adjacent because they
+    // are the same Wilson-loop machinery read out twice: one reports the
+    // curvature and the polarization, the other the integer it integrates to.
+    wannierMenu
+        ->addAction(tr("&Boltzmann Transport…"), this,
+                    &MainWindow::openBoltzmannTransport)
+        ->setToolTip(tr("Electrical conductivity, Seebeck coefficient, "
+                        "electronic thermal conductivity, power factor and zT "
+                        "from the Wannier-interpolated bands"));
+    wannierMenu
+        ->addAction(tr("Berry &Phase…"), this, &MainWindow::openBerryPhase)
+        ->setToolTip(tr("Wilson loops, Berry curvature maps, anomalous Hall "
+                        "conductivity, polarization and hybrid Wannier centre "
+                        "flow"));
     wannierMenu
         ->addAction(tr("&Topological Invariants…"), this,
                     &MainWindow::showTopologicalInvariants)
         ->setToolTip(tr("Chern number and Z₂ index from the hybrid Wannier "
                         "centre (Wilson loop) flow, from a completed Wannier Functions "
                         "process"));
-    // Fourth consumer of the same H(R), and on this menu for the same reason
-    // as the other three: its input is a Wannier basis and nothing else.
+
     wannierMenu->addSeparator();
+    // -- Interactions --------------------------------------------------------
+    // Alone, because it is the only consumer here that does not read the bands:
+    // it uses the localized basis as a SUBSPACE definition and returns screened
+    // interaction parameters, not a band property.
     wannierMenu
         ->addAction(tr("Constrained &RPA (Hubbard U, Hund J)…"), this,
                     &MainWindow::openCrpa)
@@ -1354,8 +1415,19 @@ void MainWindow::createMenusAndDocks()
                         "screening the bare Coulomb interaction with every RPA "
                         "process except those inside that subspace"));
 
-    // ----- Analysis: spec order, reciprocal-space tools at the end ---------
+    // ----- Analysis: read out a structure that already exists ---------------
+    // Nothing here launches a self-consistent field. Ordered by WHAT IS BEING
+    // READ, coarsest first: the symmetry of the cell, then real-space geometry,
+    // then the same geometry in reciprocal space, then how the atoms move, then
+    // where the charge is, then the one entry that combines several of those
+    // into an energy.
     QMenu* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
+
+    // -- Symmetry: the properties of the cell as a whole ---------------------
+    // First because it is what one runs on a structure before anything else,
+    // and because half the entries below are only meaningful once the space
+    // group is known.
+    //
     // One entry, not two. "Raman Modes…" used to sit further down this menu
     // and opened a dialog that answered a question about the point group —
     // detected by the same call, at a tolerance it gave the user no way to
@@ -1373,10 +1445,15 @@ void MainWindow::createMenusAndDocks()
         ->setToolTip(tr("Belov-Neronova-Smirnova classification among the "
                         "1651 magnetic space groups, from the coordinates "
                         "plus the atomic magnetic moments"));
-    analysisMenu->addAction(tr("Structure &Factor S(q)…"),
-                            this, &MainWindow::showStructureFactor);
-    analysisMenu->addAction(tr("&X-Ray Diffraction (XRD)…"),
-                            this, &MainWindow::showXrd);
+
+    analysisMenu->addSeparator();
+    // -- Real-space structure: distances, then what is built on them ---------
+    // RDF leads because everything after it is a refinement of the same
+    // question: g(r) is the pair distances binned, the bond-length and -angle
+    // distributions restrict that to bonded neighbours, coordination counts
+    // them, and the local entropy is a functional OF g(r) evaluated per atom.
+    // Reading the list top to bottom is reading one measurement narrowed four
+    // times.
     analysisMenu->addAction(tr("&Radial Distribution Function…"),
                             this, &MainWindow::showRdf);
     analysisMenu->addAction(tr("Bond &Length / Angle Distributions…"),
@@ -1386,44 +1463,74 @@ void MainWindow::createMenusAndDocks()
     // Warren-Cowley (short-range order) moved to Modules → Alloys.
     analysisMenu->addAction(tr("Local &Entropy Analysis…"),
                             this, &MainWindow::showLocalEntropy);
-    analysisMenu->addAction(tr("Partial &Charge Analysis…"),
-                            this, &MainWindow::showPartialCharge);
+
+    analysisMenu->addSeparator();
+    // -- The same structure in reciprocal space ------------------------------
+    // Separated from the real-space block, not because the physics differs but
+    // because the ANSWER is in a different space and is compared against a
+    // different thing (a diffractometer, not a neighbour list). S(q) first: the
+    // XRD pattern is S(q) weighted by the atomic form factors and mapped onto
+    // 2θ through Bragg's law, so it is the derived one.
+    analysisMenu->addAction(tr("Structure &Factor S(q)…"),
+                            this, &MainWindow::showStructureFactor);
+    analysisMenu->addAction(tr("&X-Ray Diffraction (XRD)…"),
+                            this, &MainWindow::showXrd);
+
+    analysisMenu->addSeparator();
+    // -- Dynamics: not where the atoms are, but how they move ----------------
+    // Both read out the same motion from opposite ends — one from a trajectory
+    // in time, the other from the normal modes it decomposes into, which is
+    // exactly what the VACF Fourier-transforms to.
+    //
+    // Vibrational Mode Analysis is here rather than in Modules because Modules
+    // gathers tool FAMILIES (MLIP, Alloys, 2D Materials, Parameters
+    // Convergence) and this is one tool; and here rather than in Simulation
+    // because it launches no job. It inherits a completed phonon run chosen
+    // inside the dialog, the same way "Charge Density Difference" below
+    // inherits a completed single point.
     analysisMenu->addAction(tr("&Velocity Autocorrelation Function (VACF)…"),
                             this, &MainWindow::showVacf);
-    // Directly after VACF: both read out how the nuclei MOVE, one from a
-    // trajectory in time and one from the normal modes it decomposes into.
-    //
-    // Here rather than in Modules because Modules gathers tool FAMILIES (MLIP,
-    // Alloys, 2D Materials, Parameters Convergence) and this is one tool; and
-    // here rather than in Simulation because it launches no job. Its nearest
-    // structural relative is "Charge Density Difference" a few lines down:
-    // both need no open structure, and both inherit a completed run chosen
-    // inside the dialog rather than computing one.
     analysisMenu
         ->addAction(tr("&Vibrational Mode Analysis…"), this,
                     [this] { showVibrationalAnalysis(); })
         ->setToolTip(tr("Animate a phonon branch's eigenvector on the 3D "
                         "viewport, or open one full period as a scrubbable "
                         "trajectory tab, from a completed phonon run"));
-    // "Raman Modes…" was here; it is now a tab of the Symmetry dialog at the
-    // top of this menu. "Volumetric Data…" was here too, and is gone: the
-    // Volumetric Data DOCK loads the same grids, renders them in the main
-    // viewport rather than in a window of its own, and is where every other
-    // part of the application already sends its output.
-    // Charge density difference sits with the volumetric tools because that is
-    // what it produces: one more grid in that dock, rendered in the main
-    // viewport like any other.
+
+    analysisMenu->addSeparator();
+    // -- Charge: the only entries that need a converged density --------------
+    // Everything above works on coordinates (or on a trajectory of them);
+    // these two need a finished electronic-structure run, which is the real
+    // boundary this separator marks. Partial charges reduce the density to one
+    // number per atom; the difference density keeps it as a grid.
+    //
+    // "Volumetric Data…" used to sit here and is gone: the Volumetric Data DOCK
+    // loads the same grids, renders them in the main viewport rather than in a
+    // window of its own, and is where every other part of the application
+    // already sends its output. Charge Density Difference stays because it
+    // COMPUTES a grid rather than displaying one — it just sends the result to
+    // that dock.
+    analysisMenu->addAction(tr("Partial &Charge Analysis…"),
+                            this, &MainWindow::showPartialCharge);
     analysisMenu->addAction(tr("Charge &Density Difference (CDD)…"),
                             this, &MainWindow::showChargeDensityDifference)
         ->setToolTip(tr("Δρ = ρ(A+B) − ρ(A) − ρ(B) from a completed "
                         "single-point: where the charge went when two "
                         "fragments were brought together"));
-    // MLWF is a DFT post-process: its setup + run lives in the Electronics
-    // menu (as a multi-stage wizard); its result viewer opens automatically
-    // when the job finishes.
+
+    analysisMenu->addSeparator();
+    // -- Energetics ----------------------------------------------------------
+    // Last and alone: the only entry on this menu whose output is an ENERGY
+    // (adsorption and reaction energies, barriers, a free-energy diagram)
+    // rather than a distribution, a spectrum or a per-atom number, and the only
+    // one that reasons over SEVERAL completed calculations at once instead of
+    // reading out a single structure.
     analysisMenu->addAction(tr("Adsorption && Catal&ysis…"),
                             this, &MainWindow::showAdsorption);
-    // Brillouin Zone Builder moved to the Build menu.
+    // Brillouin Zone Builder moved to the Build menu. MLWF is a DFT
+    // post-process: its setup + run lives in the Wannier Functions menu (as a
+    // multi-stage wizard); its result viewer opens automatically when the job
+    // finishes.
 
     // The "Results" menu is gone. Its five entries all began by asking which
     // process the user meant — and then failed with "select a completed X in
@@ -1436,96 +1543,24 @@ void MainWindow::createMenusAndDocks()
     // which result files a directory actually holds, which is the same decision
     // made once instead of five times.
 
-    // ----- Modules: MLIP + Alloys tool families (between Analysis and Help) -
-    // "Modules" gathers the machine-learning-potential workflow and the alloy
-    // toolchain (cluster expansion, SQS, short-range order) that were formerly
-    // scattered across Build / Simulation / Analysis.
+    // ----- Modules: tool FAMILIES, not individual tools ---------------------
+    // Everything here is a submenu, and that is the entry criterion: a workflow
+    // that is several dialogs deep, or that only applies to one class of
+    // material, lives in a family of its own rather than lengthening one of the
+    // menus above.
+    //
+    // The two separators split the four families by AUDIENCE. The first two
+    // apply to any system at all; the last two apply only if you are working on
+    // that class of material. Within each half, the more general comes first.
     QMenu* modulesMenu = menuBar()->addMenu(tr("&Modules"));
 
-    QMenu* mlipMenu = modulesMenu->addMenu(tr("&MLIP"));
-    mlipMenu->addAction(tr("&Trainer…"), this, &MainWindow::openMaceTrainer);
-    mlipMenu->addAction(tr("&Dataset Manager…"),
-                        this, &MainWindow::showDatasetManager);
-
-    // 2D Materials: workflows whose physics is specific to a sheet in vacuum,
-    // where the supercell's arbitrary vacuum thickness has to be divided back
-    // out before a quantity means anything.
-    QMenu* twoDimensionalMenu = modulesMenu->addMenu(tr("&2D Materials"));
-    twoDimensionalMenu->addAction(tr("2D &Optics…"), this,
-                                  &MainWindow::show2DOptics)
-        ->setToolTip(tr("Absorbance A(ω), 2D conductivity σ₂D and sheet "
-                        "polarizability α₂D from an inherited ground state"));
-    // Directly after 2D Optics: both are response properties of a sheet
-    // evaluated over its own two-dimensional Brillouin zone, and both inherit
-    // a converged ground state rather than computing one.
-    twoDimensionalMenu->addAction(tr("2D &Bands…"), this,
-                                  &MainWindow::show2DBands)
-        ->setToolTip(tr("Band structure of a sheet as surfaces "
-                        "E_n(kx, ky) over the 2D Brillouin zone, rather than "
-                        "along a k-path"));
-    // Third of the baseline-inheriting trio, before the builder: like the two
-    // above it, this reads a completed ground state rather than computing one.
-    twoDimensionalMenu->addAction(tr("2D &Workfunction…"), this,
-                                  &MainWindow::show2DWorkfunction)
-        ->setToolTip(tr("Work function Φ = E_vac − E_F of both slab faces, "
-                        "from the planar-averaged electrostatic potential of "
-                        "an inherited ground state"));
-    // Fourth baseline-inheriting entry, and the reason it is here rather than
-    // beside the bulk Charged Defects: what differs is not a parameter but the
-    // correction's functional form, because a charged sheet has no scalar
-    // epsilon and its energy diverges with vacuum instead of converging.
-    twoDimensionalMenu->addAction(tr("&Charged Defects in 2D Materials…"), this,
-                                  &MainWindow::show2DChargedDefects)
-        ->setToolTip(tr("Formation energies E_f(q, E_F) and transition levels "
-                        "for a monolayer, with the Komsa-Pasquarello 2D "
-                        "image-charge correction in place of bulk FNV"));
-    twoDimensionalMenu->addAction(tr("&Graphene Oxide…"), this,
-                                  &MainWindow::openGrapheneOxideBuilder)
-        ->setToolTip(tr("Functionalized graphene: epoxides, hydroxyls, "
-                        "carboxyls and carbonyls at target coverages"));
-
-    QMenu* alloysMenu = modulesMenu->addMenu(tr("&Alloys"));
-    alloysMenu->addAction(tr("Cluster &Expansion Builder…"),
-                          this, &MainWindow::openClusterExpansion);
-    alloysMenu->addAction(tr("Cluster Expansion &Calculation…"),
-                          this, &MainWindow::clusterExpansionCalculation);
-    alloysMenu->addAction(tr("Special &Quasirandom Structure (SQS)…"),
-                          this, &MainWindow::openSqsBuilder);
-    alloysMenu->addAction(tr("&Warren-Cowley Analysis…"),
-                          this, &MainWindow::showWarrenCowley);
-    // The missing middle of the pipeline: energies in, interactions out.
-    // Placed between the run and the CVM solver because that is the order the
-    // work happens in — enumerate, compute, FIT, then predict.
-    alloysMenu->addAction(tr("&Effective Cluster Interactions (ECI Fit)…"),
-                          this, &MainWindow::openEciFit);
-    // Configurational thermodynamics. Sits beside Warren-Cowley deliberately:
-    // that dialog MEASURES short-range order in a structure, this one PREDICTS
-    // it from interactions, and reading one against the other is the point.
-    alloysMenu->addAction(tr("C&VM / Alloy Thermodynamics…"), this,
-                          &MainWindow::openCvmComparison);
-    // KKR-CPA answers a different question from everything above it: those
-    // treat a SPECIFIC decorated cell (or an average over one), this treats
-    // the random lattice itself, with no supercell at all.
-    alloysMenu->addAction(tr("&KKR-CPA (Random Alloys)…"), this,
-                          &MainWindow::openKkrCpa);
-    alloysMenu->addSeparator();
-    // CALPHAD closes the same question from the other end, which is why it
-    // belongs on this menu rather than at the top level of Modules: everything
-    // above computes alloy thermodynamics FROM first principles, and this reads
-    // it from an ASSESSED database — the two are alternatives for one job, and
-    // the interesting use is checking one against the other.
+    // -- General-purpose: applies to whatever is open ------------------------
+    // Parameters Convergence leads the whole menu because it is what a careful
+    // user runs BEFORE any production calculation on the menus above — and
+    // every other family here inherits whatever settings it establishes.
     //
-    // The separator marks the one thing that differs in practice: CALPHAD needs
-    // no open structure. It works on a .tdb, not on the geometry in the
-    // viewport.
-    alloysMenu->addAction(tr("CA&LPHAD…"), this, &MainWindow::openCalphad)
-        ->setToolTip(tr("Load a thermodynamic database (.tdb) and choose the "
-                        "elements and phases of the system — no open structure "
-                        "required"));
-
-    // Parameters Convergence: sweeps that answer "is this setting tight
-    // enough?" with a curve instead of folklore. The plane-wave cutoff is the
-    // first; a k-point sweep is the natural next tenant.
+    // Sweeps that answer "is this setting tight enough?" with a curve instead
+    // of folklore.
     QMenu* convergenceMenu =
         modulesMenu->addMenu(tr("&Parameters Convergence"));
     convergenceMenu
@@ -1541,6 +1576,104 @@ void MainWindow::createMenusAndDocks()
                         "meshes; energy per atom and maximum force plotted "
                         "against the mesh density, referenced to the densest "
                         "one"));
+
+    // Machine-learned interatomic potentials: the data comes before the model.
+    QMenu* mlipMenu = modulesMenu->addMenu(tr("&MLIP"));
+    // Dataset Manager first because it is genuinely the first step: the trainer
+    // consumes a dataset, and the commonest way a MACE run fails is a dataset
+    // whose energy/forces keys or E0s were never checked.
+    mlipMenu->addAction(tr("&Dataset Manager…"),
+                        this, &MainWindow::showDatasetManager);
+    mlipMenu->addAction(tr("&Trainer…"), this, &MainWindow::openMaceTrainer);
+
+    modulesMenu->addSeparator();
+    // -- Material-class specific: only if you work on these systems ----------
+
+    // Alloys: the configurational-thermodynamics toolchain, formerly scattered
+    // across Build / Simulation / Analysis.
+    QMenu* alloysMenu = modulesMenu->addMenu(tr("&Alloys"));
+    // The cluster-expansion pipeline, in the order the work happens:
+    // enumerate the clusters, compute the energies, FIT the interactions, then
+    // predict the phase behaviour from them. The ECI fit is the middle of that
+    // pipeline — energies in, interactions out — and reads as a gap when it is
+    // anywhere else.
+    alloysMenu->addAction(tr("Cluster &Expansion Builder…"),
+                          this, &MainWindow::openClusterExpansion);
+    alloysMenu->addAction(tr("Cluster Expansion &Calculation…"),
+                          this, &MainWindow::clusterExpansionCalculation);
+    alloysMenu->addAction(tr("&Effective Cluster Interactions (ECI Fit)…"),
+                          this, &MainWindow::openEciFit);
+    alloysMenu->addAction(tr("C&VM / Alloy Thermodynamics…"), this,
+                          &MainWindow::openCvmComparison);
+
+    alloysMenu->addSeparator();
+    // Disorder handled directly, without going through a cluster expansion.
+    // SQS builds one cell whose correlations imitate the random alloy,
+    // Warren-Cowley MEASURES those correlations in whatever cell you have (so
+    // it is the natural check on the one SQS just produced), and KKR-CPA skips
+    // the supercell entirely and treats the random lattice itself.
+    alloysMenu->addAction(tr("Special &Quasirandom Structure (SQS)…"),
+                          this, &MainWindow::openSqsBuilder);
+    alloysMenu->addAction(tr("&Warren-Cowley Analysis…"),
+                          this, &MainWindow::showWarrenCowley);
+    alloysMenu->addAction(tr("&KKR-CPA (Random Alloys)…"), this,
+                          &MainWindow::openKkrCpa);
+
+    alloysMenu->addSeparator();
+    // CALPHAD closes the same question from the other end, which is why it
+    // belongs on this menu rather than at the top level of Modules: everything
+    // above computes alloy thermodynamics FROM first principles, and this reads
+    // it from an ASSESSED database — the two are alternatives for one job, and
+    // the interesting use is checking one against the other.
+    //
+    // The separator marks the one thing that differs in practice: CALPHAD needs
+    // no open structure. It works on a .tdb, not on the geometry in the
+    // viewport.
+    alloysMenu->addAction(tr("CA&LPHAD…"), this, &MainWindow::openCalphad)
+        ->setToolTip(tr("Load a thermodynamic database (.tdb) and choose the "
+                        "elements and phases of the system — no open structure "
+                        "required"));
+
+    // 2D Materials: workflows whose physics is specific to a sheet in vacuum,
+    // where the supercell's arbitrary vacuum thickness has to be divided back
+    // out before a quantity means anything.
+    QMenu* twoDimensionalMenu = modulesMenu->addMenu(tr("&2D Materials"));
+    // The builder first: it is the only entry here that PRODUCES a structure,
+    // and the four below all need one open before they can inherit a ground
+    // state computed from it.
+    twoDimensionalMenu->addAction(tr("&Graphene Oxide…"), this,
+                                  &MainWindow::openGrapheneOxideBuilder)
+        ->setToolTip(tr("Functionalized graphene: epoxides, hydroxyls, "
+                        "carboxyls and carbonyls at target coverages"));
+
+    twoDimensionalMenu->addSeparator();
+    // The four baseline-inheriting readouts, mirroring the order of the
+    // Electronics menu they parallel: bands first, then the optical response,
+    // then the potential-derived quantity, then the defect energetics.
+    twoDimensionalMenu->addAction(tr("2D &Bands…"), this,
+                                  &MainWindow::show2DBands)
+        ->setToolTip(tr("Band structure of a sheet as surfaces "
+                        "E_n(kx, ky) over the 2D Brillouin zone, rather than "
+                        "along a k-path"));
+    twoDimensionalMenu->addAction(tr("2D &Optics…"), this,
+                                  &MainWindow::show2DOptics)
+        ->setToolTip(tr("Absorbance A(ω), 2D conductivity σ₂D and sheet "
+                        "polarizability α₂D from an inherited ground state"));
+    twoDimensionalMenu->addAction(tr("2D &Workfunction…"), this,
+                                  &MainWindow::show2DWorkfunction)
+        ->setToolTip(tr("Work function Φ = E_vac − E_F of both slab faces, "
+                        "from the planar-averaged electrostatic potential of "
+                        "an inherited ground state"));
+    // Last, mirroring Charged defects' position on the Electronics menu, and
+    // the reason it is here rather than beside it: what differs is not a
+    // parameter but the correction's functional form, because a charged sheet
+    // has no scalar epsilon and its energy diverges with vacuum instead of
+    // converging.
+    twoDimensionalMenu->addAction(tr("&Charged Defects in 2D Materials…"), this,
+                                  &MainWindow::show2DChargedDefects)
+        ->setToolTip(tr("Formation energies E_f(q, E_F) and transition levels "
+                        "for a monolayer, with the Komsa-Pasquarello 2D "
+                        "image-charge correction in place of bulk FNV"));
 
     // The "Workflow" menu and its single "Add Workflow…" action are gone: the
     // node canvas is now a permanent dock in the bottom row (see below) rather
@@ -5143,6 +5276,11 @@ void MainWindow::registerWannierOrbitals(const QString& directory)
         for (int i = 0; i < n; ++i)
             cubes << QStringLiteral("wannier_%1.cube").arg(i);
     }
+    // The centres the wannierization reported, in Cartesian angstrom. They are
+    // what each orbital's isosurface is re-centred on before extraction, so a
+    // function whose lobe straddles a cell face is shown whole instead of cut.
+    const QJsonArray centres = root.value(QStringLiteral("centers")).toArray();
+
     int index = 0;
     for (const QString& name : cubes) {
         if (name.isEmpty())
@@ -5150,9 +5288,24 @@ void MainWindow::registerWannierOrbitals(const QString& directory)
         const QString path = QFileInfo(name).isAbsolute()
             ? name
             : directory + QLatin1Char('/') + name;
-        if (QFile::exists(path))
+        if (QFile::exists(path)) {
+            DatasetOrigin origin;
+            origin.wannier = true;
+            if (index < centres.size()) {
+                const QJsonArray c = centres.at(index).toArray();
+                if (c.size() >= 3) {
+                    origin.hasCentre = true;
+                    origin.centre = {c.at(0).toDouble(), c.at(1).toDouble(),
+                                     c.at(2).toDouble()};
+                }
+            }
+            // No centre recorded is not a failure: the panel derives one from
+            // the cube itself, by the same circular mean that defines a Wannier
+            // centre in the first place.
             volumetricPanel_->registerResultFile(
-                path, tr("Wannier ψ%1").arg(index), structLabel);
+                path, tr("Wannier ψ%1").arg(index), structLabel,
+                /*workspaceId=*/-1, origin);
+        }
         ++index;
     }
 }
@@ -6483,14 +6636,14 @@ void MainWindow::openRamanIrResults(const QString& directory)
 
 void MainWindow::showWannier()
 {
-    if (!prepareSimulation(tr("Wannier Functions")))
+    if (!prepareSimulation(tr("Wannierization")))
         return;
     // MLWF localization is set up + launched through the standardized wizard
     // (engine selection + per-engine Conda env). It writes wannier.json (+
     // per-orbital cubes); onJobFinished() opens the centres table + viewer.
     WannierWizard wizard(currentDocument()->structure, this);
     wizard.setDensityBaselines(gpawBaselines());
-    runSimulationWizard(wizard, tr("Wannier Functions"),
+    runSimulationWizard(wizard, tr("Wannierization"),
                         /*expectFrames=*/false);
 }
 
@@ -7023,6 +7176,18 @@ void MainWindow::openGrapheneOxideMdmc(
     runScript(wizard.script(), wizard.pythonExecutable(),
               tr("Graphene oxide MDMC"), true, wizard.calculatorKind(),
               wizard.runCommand());
+}
+
+void MainWindow::openBoltzmannTransport()
+{
+    BoltzmannTransportDialog dialog(this);
+    dialog.exec();
+}
+
+void MainWindow::openBerryPhase()
+{
+    BerryPhaseDialog dialog(this);
+    dialog.exec();
 }
 
 void MainWindow::openKkrCpa()
@@ -8879,6 +9044,26 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     if (orchestrationRunningIds_.empty())
         metricsTimer_->stop();
     const bool failed = crashed || exitCode != 0;
+
+    // Surface WHY, not just that. A failed run used to turn the process row
+    // red and say nothing further: the traceback sat in log.txt, which the UI
+    // never mentioned, so every failure began by hunting for a file. The
+    // reason is extracted here and shown once, and the row's tooltip keeps it
+    // after the status message has scrolled away.
+    if (failed && !lastJobDir_.isEmpty()) {
+        QFile logFile(lastJobDir_ + QStringLiteral("/log.txt"));
+        QString reason;
+        if (logFile.open(QIODevice::ReadOnly | QIODevice::Text))
+            reason = QString::fromStdString(core::extractFailureReason(
+                QString::fromUtf8(logFile.readAll()).toStdString()));
+        if (reason.isEmpty())
+            reason = crashed ? tr("the process crashed")
+                             : tr("exit code %1").arg(exitCode);
+        statusBar()->showMessage(tr("Run failed — %1").arg(reason), 30000);
+        if (currentTaskId_ >= 0)
+            processPanel_->setTaskDetail(currentTaskId_, reason);
+    }
+
     if (currentTaskId_ >= 0) {
         processPanel_->setTaskStatus(currentTaskId_,
                                      failed ? ProcessManagerPanel::Status::Failed

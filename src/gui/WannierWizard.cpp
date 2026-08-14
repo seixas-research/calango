@@ -45,7 +45,7 @@ void WannierWizard::setDensityBaselines(
 
 QString WannierWizard::wizardTitle() const
 {
-    return tr("Wannier Functions Setup");
+    return tr("Wannierization Setup");
 }
 
 QString WannierWizard::settingsHeader() const
@@ -89,6 +89,26 @@ QWidget* WannierWizard::buildSettingsPage()
     inheritedLabel_->setWordWrap(true);
     inheritedLabel_->setTextFormat(Qt::RichText);
     sourceForm->addRow(tr("Inherited calculator:"), inheritedLabel_);
+
+    // What that run actually stored, as opposed to what it was asked for. The
+    // bands and the k-mesh are the two numbers every Wannier parameter below is
+    // chosen against — the Wannier count cannot exceed the bands, and the
+    // localization quality is set by the mesh — and neither was visible here
+    // before, so both were guesses.
+    baselineSummaryLabel_ = new QLabel(sourceGroup);
+    baselineSummaryLabel_->setWordWrap(true);
+    baselineSummaryLabel_->setTextFormat(Qt::RichText);
+    sourceForm->addRow(tr("Baseline:"), baselineSummaryLabel_);
+
+    // The pre-condition. Its own label rather than a clause appended to the
+    // line above, because it is the one thing on this page that can make the
+    // run impossible and it has to survive being read at a glance.
+    symmetryWarningLabel_ = new QLabel(sourceGroup);
+    symmetryWarningLabel_->setWordWrap(true);
+    symmetryWarningLabel_->setTextFormat(Qt::RichText);
+    symmetryWarningLabel_->setVisible(false);
+    sourceForm->addRow(symmetryWarningLabel_);
+
     layout->addWidget(sourceGroup);
 
     connect(baselineCombo_, &QComboBox::currentIndexChanged, this,
@@ -248,10 +268,10 @@ void WannierWizard::onBaselineChanged()
             if (!inherited_->condaEnv.isEmpty())
                 note += tr(" · env %1")
                             .arg(inherited_->condaEnv.toHtmlEscaped());
-            if (!inherited_->symmetryOff)
-                note += tr(" — <b>warning:</b> baseline ran <i>with</i> "
-                           "symmetry; re-run the Single-Point with "
-                           "\"Symmetry: off\" for a correct localization.");
+            // The symmetry verdict is no longer appended here: it is a
+            // pre-condition, not a footnote on the calculator description, and
+            // refreshBaselineSummary() below states it from what the run
+            // stored rather than from what it was asked for.
             inheritedLabel_->setText(note);
         } else {
             inheritedLabel_->setText(
@@ -262,7 +282,110 @@ void WannierWizard::onBaselineChanged()
                    "parameters are taken straight from the restart file."));
         }
     }
+    refreshBaselineSummary(dir);
     refreshPreview();
+}
+
+void WannierWizard::refreshBaselineSummary(const QString& dir)
+{
+    if (!baselineSummaryLabel_ || !symmetryWarningLabel_)
+        return;
+
+    baselineSummary_ = dir.isEmpty()
+        ? core::BaselineSummary{}
+        : core::readBaselineSummary(dir.toStdString());
+
+    if (dir.isEmpty()) {
+        // No baseline: the wizard runs its own SCF, and that script sets
+        // symmetry="off" itself (WannierScriptGenerator), so there is no
+        // pre-condition left to check.
+        baselineSummaryLabel_->setText(
+            tr("<i>A fresh SCF will be run with <b>Symmetry: off</b>.</i>"));
+        baselineSummaryLabel_->setToolTip(
+            tr("Without a baseline the generated script runs its own ground "
+               "state and forces symmetry=\"off\" on it, so the full "
+               "Brillouin-zone k-set the localization needs is guaranteed."));
+        symmetryWarningLabel_->setVisible(false);
+        return;
+    }
+
+    const core::BaselineSummary& b = baselineSummary_;
+    QStringList facts;
+    facts << (b.bands > 0 ? tr("Bands: <b>%1</b>").arg(b.bands)
+                          : tr("Bands: <b>unknown</b>"));
+    if (b.kpts[0] > 0) {
+        QString k = tr("k-points: <b>%1×%2×%3</b>")
+                        .arg(b.kpts[0])
+                        .arg(b.kpts[1])
+                        .arg(b.kpts[2]);
+        // The two counts are the whole story: how many the mesh has, and how
+        // many the run actually kept.
+        if (b.bzPoints > 0 && b.ibzPoints > 0)
+            k += tr(" — %1 of %2 kept").arg(b.ibzPoints).arg(b.bzPoints);
+        facts << k;
+    } else {
+        facts << tr("k-points: <b>unknown</b>");
+    }
+
+    // The check, in the form the user is looking for.
+    switch (b.symmetry) {
+    case core::SymmetryState::Off:
+        facts << tr("<span style='color:#3c9a5f;'>Symmetry: <b>off</b> ✓</span>");
+        break;
+    case core::SymmetryState::On:
+        facts << tr("<span style='color:#d9534f;'>Symmetry: <b>on</b></span>");
+        break;
+    case core::SymmetryState::Unknown:
+        facts << tr("<span style='color:#d08a4a;'>Symmetry: <b>unknown</b></span>");
+        break;
+    }
+    baselineSummaryLabel_->setText(facts.join(QStringLiteral(" · ")));
+    baselineSummaryLabel_->setToolTip(
+        tr("Read back from what this run recorded.\n\n%1")
+            .arg(QString::fromStdString(b.evidence)));
+
+    // Why the full zone, stated once and reused by both branches: it is the
+    // reason the check exists, and a warning that only says "turn this on"
+    // teaches nothing.
+    const QString why =
+        tr("Wannierization needs the <b>full</b> Brillouin-zone k-set: it "
+           "builds overlaps between neighbouring k-points across the whole "
+           "mesh, and a ground state that stored only the irreducible wedge "
+           "has no state to offer at most of them.");
+
+    switch (b.symmetry) {
+    case core::SymmetryState::Off:
+        symmetryWarningLabel_->setVisible(false);
+        break;
+    case core::SymmetryState::On: {
+        QString detail;
+        if (b.bzPoints > 0 && b.ibzPoints > 0)
+            detail = tr(" This baseline kept <b>%1 of its %2</b> k-points.")
+                         .arg(b.ibzPoints)
+                         .arg(b.bzPoints);
+        symmetryWarningLabel_->setText(
+            QStringLiteral("<span style='color:#d9534f;'>⚠ %1</span>")
+                .arg(tr("<b>\"Symmetry: off\" is required.</b> This "
+                        "Single-point Calculation was run <i>with</i> "
+                        "symmetry.%1<br>%2<br>Re-run the Single-Point "
+                        "Calculation with <b>Symmetry: off</b>.")
+                         .arg(detail, why)));
+        symmetryWarningLabel_->setVisible(true);
+        break;
+    }
+    case core::SymmetryState::Unknown:
+        // Cautionary, not alarming, and explicitly about not knowing — saying
+        // "symmetry is on" here would be a claim the evidence does not support.
+        symmetryWarningLabel_->setText(
+            QStringLiteral("<span style='color:#d08a4a;'>⚠ %1</span>")
+                .arg(tr("<b>Could not determine the symmetry setting</b> of "
+                        "this calculation.<br>%1<br>If it was not run with "
+                        "<b>Symmetry: off</b>, the localization will fail. "
+                        "Hover the line above to see what was looked at.")
+                         .arg(why)));
+        symmetryWarningLabel_->setVisible(true);
+        break;
+    }
 }
 
 QString WannierWizard::pythonExecutable() const

@@ -63,6 +63,7 @@
 #include "gui/TdbGeneratorDialog.hpp"
 #include "gui/HpcPanel.hpp"
 #include "gui/OpticsWizard.hpp"
+#include "gui/WannierWizard.hpp"
 #include "gui/ProcessManagerPanel.hpp"
 #include "gui/RamanIrWizard.hpp"
 #include "gui/Defect2dWizard.hpp"
@@ -2395,6 +2396,148 @@ int main(int argc, char** argv)
     // sits inside a nested layout, and QFormLayout can only hide a row through
     // a widget it holds DIRECTLY — addressed through the spin box it would
     // silently stay visible, showing a number that is not being used.
+    // The Wannier setup's baseline pre-condition.
+    //
+    // ASE's Wannier needs the FULL Brillouin zone; a single point that folded
+    // its k-set into the irreducible wedge cannot feed it, and until this
+    // warning existed the only way to find that out was to run the job and
+    // read the traceback. Three states, and all three are pinned here —
+    // including "unknown", which must warn WITHOUT claiming symmetry was on.
+    std::printf("Wannier setup: baseline bands / k-points / symmetry:\n");
+    {
+        // Three baselines, differing only in what they recorded.
+        QTemporaryDir folded, full, legacy;
+        const auto writeRun = [](const QTemporaryDir& dir, const char* json,
+                                 const char* log) {
+            if (json) {
+                QFile f(dir.filePath(QStringLiteral("calculator.json")));
+                f.open(QIODevice::WriteOnly);
+                f.write(json);
+            }
+            if (log) {
+                QFile f(dir.filePath(QStringLiteral("gpaw.out")));
+                f.open(QIODevice::WriteOnly);
+                f.write(log);
+            }
+        };
+        writeRun(folded,
+                 R"({"engine":"GPAW","engine_kind":5,"kpts":[16,16,16],)"
+                 R"("symmetry_off":false,"xc":"PBE"})",
+                 "Number of symmetries: 6\n"
+                 "  Number of BZ points: 4096\n"
+                 "  Number of IBZ points: 417\n"
+                 "  Monkhorst-Pack size: [16, 16, 16]\n"
+                 "Bands:           19\n");
+        writeRun(full,
+                 R"({"engine":"GPAW","engine_kind":5,"kpts":[8,8,8],)"
+                 R"("symmetry_off":true,"xc":"PBE"})",
+                 "Number of symmetries: 1\n"
+                 "  Number of BZ points: 512\n"
+                 "  Number of IBZ points: 512\n"
+                 "  Monkhorst-Pack size: [8, 8, 8]\n"
+                 "Bands:           26\n");
+        // An older Calango's sidecar: no symmetry flag at all.
+        writeRun(legacy,
+                 R"({"engine":"GPAW","engine_kind":5,"kpts":[4,4,4],)"
+                 R"("xc":"PBE"})",
+                 nullptr);
+
+        calango::pybridge::PythonEngine python;
+        auto structure = std::make_shared<calango::core::Structure>();
+        WannierWizard wizard(structure);
+        wizard.setDensityBaselines({
+            {QStringLiteral("#1 folded"), folded.path()},
+            {QStringLiteral("#2 full"), full.path()},
+            {QStringLiteral("#3 legacy"), legacy.path()},
+        });
+        wizard.show();
+        check(true, "constructs with baselines");
+
+        // The two labels, found by content rather than by object name: the
+        // summary is the one that states the check, the warning the one that
+        // carries the marker.
+        const auto labels = wizard.findChildren<QLabel*>();
+        const auto findLabel = [&labels](const QString& fragment) -> QLabel* {
+            for (QLabel* label : labels)
+                if (label->text().contains(fragment))
+                    return label;
+            return nullptr;
+        };
+        const auto visibleWarning = [&labels]() -> QLabel* {
+            for (QLabel* label : labels)
+                if (label->text().contains(QString::fromUtf8("⚠"))
+                    && !label->isHidden())
+                    return label;
+            return nullptr;
+        };
+
+        // Index 1 = the folded baseline (index 0 is the "(none)" entry).
+        wizard.findChild<QComboBox*>()->setCurrentIndex(1);
+        {
+            QLabel* summary = findLabel(QStringLiteral("Symmetry:"));
+            check(summary != nullptr, "folded: a symmetry line is shown");
+            if (summary) {
+                check(summary->text().contains(QStringLiteral(">on<")),
+                      "folded: it reads \"Symmetry: on\"");
+                check(summary->text().contains(QStringLiteral(">19<")),
+                      "folded: the band count is shown");
+                check(summary->text().contains(QStringLiteral("16×16×16")),
+                      "folded: and the k-mesh");
+                check(summary->text().contains(QStringLiteral("417"))
+                          && summary->text().contains(QStringLiteral("4096")),
+                      "folded: with how many of the zone's points survived");
+            }
+            QLabel* warning = visibleWarning();
+            check(warning != nullptr, "folded: the warning is visible");
+            if (warning) {
+                check(warning->text().contains(QStringLiteral("#d9534f")),
+                      "folded: in the application's red");
+                check(warning->text().contains(QStringLiteral("required")),
+                      "folded: stating that \"Symmetry: off\" is required");
+                check(warning->text().contains(QStringLiteral("full")),
+                      "folded: and why — the full Brillouin-zone k-set");
+            }
+        }
+
+        // Changing the selection must restate all of it immediately: a summary
+        // that lags one selection behind is worse than none, because it
+        // describes a calculation the user is no longer looking at.
+        wizard.findChild<QComboBox*>()->setCurrentIndex(2);
+        {
+            QLabel* summary = findLabel(QStringLiteral("Symmetry:"));
+            check(summary && summary->text().contains(QStringLiteral(">off<")),
+                  "full zone: the line updates to \"Symmetry: off\"");
+            check(summary && summary->text().contains(QStringLiteral(">26<")),
+                  "full zone: with that baseline's own band count");
+            check(visibleWarning() == nullptr,
+                  "full zone: and no warning is shown at all");
+        }
+
+        wizard.findChild<QComboBox*>()->setCurrentIndex(3);
+        {
+            QLabel* summary = findLabel(QStringLiteral("Symmetry:"));
+            check(summary && summary->text().contains(QStringLiteral("unknown")),
+                  "legacy: an undetermined setting says so");
+            QLabel* warning = visibleWarning();
+            check(warning != nullptr, "legacy: and still warns");
+            if (warning) {
+                // Amber, not red, and phrased as not knowing. Reporting this
+                // as "symmetry is on" would put a re-run demand on a baseline
+                // that may be perfectly good.
+                check(warning->text().contains(QStringLiteral("#d08a4a")),
+                      "legacy: in the cautionary amber, not the error red");
+                check(!warning->text().contains(QStringLiteral("was run <i>with</i>")),
+                      "legacy: without claiming symmetry was on");
+            }
+        }
+
+        // "(none)" runs a fresh SCF, and that script sets symmetry="off"
+        // itself — so there is nothing left to warn about.
+        wizard.findChild<QComboBox*>()->setCurrentIndex(0);
+        check(visibleWarning() == nullptr,
+              "no baseline: no warning (the fresh SCF forces symmetry off)");
+    }
+
     std::printf("Optics wizard (3D and 2D):\n");
     for (const bool twoD : {false, true}) {
         calango::pybridge::PythonEngine python;

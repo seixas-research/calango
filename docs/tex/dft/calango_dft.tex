@@ -94,8 +94,16 @@
 \newcommand{\partialimpl}[1]{\badge{calangored}{PARTIAL --- #1}}
 \newcommand{\specified}{\badge{shadegray}{SPECIFICATION --- NOT YET IMPLEMENTED}}
 
-\IfFileExists{calango_version.tex}{\input{calango_version}}{}
-\providecommand{\calangoversion}{26.8.5}
+\IfFileExists{calango_version.tex}{\input{calango_version}}{%
+  % No generated stamp. Say so on the cover rather than inventing a number:
+  % a literal fallback here SILENTLY BACKDATES the document, which is exactly
+  % how these guides came to claim 26.8.5 long after the project had moved on.
+  % Build with `make` in docs/tex, which writes calango_version.tex from the
+  % VERSION in CMakeLists.txt.
+  \newcommand{\calangoversion}{??.??.?? (run make in docs/tex)}%
+  \GenericWarning{}{Calango: calango_version.tex is missing -- the version on
+  the cover is a placeholder. Build the docs with make in docs/tex.}%
+}
 
 \begin{document}
 

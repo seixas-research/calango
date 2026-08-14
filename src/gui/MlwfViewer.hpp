@@ -54,11 +54,19 @@ private:
     void rebuildOverlay();
     /// Load (and cache) one Wannier orbital cube from the results directory.
     std::shared_ptr<const core::VolumetricData> cubeFor(int orbital);
+    /// Where to centre `row`'s isosurface extraction. The wannierization's own
+    /// centre when it reported one for that row, otherwise the cube's periodic
+    /// centroid — the same quantity derived from the grid.
+    core::Vec3 centreForRow(int row, const core::VolumetricData& field) const;
 
     std::shared_ptr<const core::Structure> structure_;
     ViewportWidget* viewport_ = nullptr;
     QString jobDir_;              ///< directory of the loaded wannier.json
     std::vector<QString> cubes_;  ///< per-orbital cube filenames from the JSON
+    /// Wannier centres in Cartesian angstrom, straight from wannier.json.
+    /// Kept as numbers rather than re-parsed out of the table, whose cells hold
+    /// values already formatted for display.
+    std::vector<core::Vec3> centres_;
     std::map<int, std::shared_ptr<const core::VolumetricData>> cubeCache_;
 
     QTableWidget* table_ = nullptr;

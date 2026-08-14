@@ -1,5 +1,6 @@
 #include "gui/MlwfViewer.hpp"
 
+#include "core/IsosurfaceContinuation.hpp"
 #include "core/MarchingCubes.hpp"
 #include "gui/ViewportWidget.hpp"
 #include "render/ColorMap.hpp"
@@ -112,8 +113,13 @@ void MlwfViewer::loadResults(const QString& jsonPath)
     // table is fully populated.
     const QSignalBlocker blocker(table_);
     table_->setRowCount(centers.size());
+    centres_.assign(static_cast<std::size_t>(centers.size()), core::Vec3{});
     for (int row = 0; row < centers.size(); ++row) {
         const QJsonArray c = centers.at(row).toArray();
+        if (c.size() >= 3)
+            centres_[static_cast<std::size_t>(row)] = {c.at(0).toDouble(),
+                                                       c.at(1).toDouble(),
+                                                       c.at(2).toDouble()};
         auto* check = new QTableWidgetItem(QString::number(row));
         check->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled
                         | Qt::ItemIsSelectable);
@@ -181,6 +187,14 @@ std::shared_ptr<const core::VolumetricData> MlwfViewer::cubeFor(int orbital)
     return field;
 }
 
+core::Vec3 MlwfViewer::centreForRow(int row,
+                                    const core::VolumetricData& field) const
+{
+    if (row >= 0 && row < static_cast<int>(centres_.size()))
+        return centres_[static_cast<std::size_t>(row)];
+    return core::periodicCentroid(field);
+}
+
 void MlwfViewer::onOrbitalToggled(QTableWidgetItem* item)
 {
     if (item && item->column() == 0)
@@ -210,8 +224,17 @@ void MlwfViewer::rebuildOverlay()
         const double peak = std::max(std::abs(field->minValue()),
                                      std::abs(field->maxValue()));
         const double isovalue = 0.25 * std::max(peak, 1e-12);
-        const core::IsoMesh mesh =
-            core::extractIsosurface(*field, isovalue, nullptr);
+        // Continued into the neighbouring periodic images rather than cut at
+        // the cell faces: a Wannier centre lands wherever the wannierization
+        // put it, so a lobe straddling a face would otherwise come out sliced
+        // flat with its remainder stranded across the box.
+        //
+        // The centre comes from the table this viewer is built around (it IS
+        // the centres + spreads table), so the row's own centre is used when
+        // the cell parses and the field's periodic centroid otherwise.
+        const core::IsoMesh mesh = core::extractContinuedIsosurface(
+            *field, isovalue, centreForRow(row, *field),
+            core::kDefaultContinuationMargin);
         if (mesh.positions.empty())
             continue;
 

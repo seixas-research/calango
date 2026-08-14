@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/GridInterpolation.hpp"
+#include "core/IsosurfaceContinuation.hpp"
 #include "render/ColorMap.hpp"
 
 #include <QColor>
@@ -86,11 +87,33 @@ struct VolumetricStyle {
     QColor negativeColor = QColor(0x47, 0x82, 0xff); ///< negative phase (−ψ)
     /// Grid refinement applied before marching cubes (smoother meshes).
     core::GridInterpolation gridInterpolation = core::GridInterpolation::None;
+    /// How far past the home cell a WANNIER function's isosurface is continued,
+    /// in fractional cell units, before the periodic copies are filtered out.
+    ///
+    /// Only Wannier datasets are continued, and the reason is physical rather
+    /// than a scoping convenience: a Wannier function is localized, so there is
+    /// one lobe to follow across the boundary and the copies are separable. A
+    /// charge density fills its cell — continuing it would just draw the same
+    /// surface 27 times.
+    ///
+    /// 0.5 (a window two cells across) shows a function whole wherever in the
+    /// cell its centre fell; longer-tailed functions want more. The cost grows
+    /// as (1 + 2·margin)³, which is why this is a dial and not simply "large".
+    double continuationMargin = core::kDefaultContinuationMargin;
 
     // -- Isosurface presentation -------------------------------------------
     IsoDrawStyle drawStyle = IsoDrawStyle::Solid;
     DirectVolumeSettings directVolume;
     IsoShading shading = IsoShading::Flat;
+    /// True once the user has picked a shading model themselves.
+    ///
+    /// `shading` is ONE knob per workspace tab, shared by every dataset in it —
+    /// there is no per-dataset material — so "glossy by default for Wannier
+    /// functions" cannot be a second default sitting beside the first. It is
+    /// applied instead as a one-shot promotion when a tab first receives a
+    /// Wannier dataset, and this flag is what keeps that promotion from
+    /// overwriting a choice the user already made. Nothing else reads it.
+    bool shadingChosen = false;
     /// Ambient floor of the baked shading: the fraction of the base colour a
     /// face turned fully away from every light keeps. 0 makes unlit faces
     /// black, which on a translucent surface reads as a hole rather than as

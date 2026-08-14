@@ -174,8 +174,16 @@
 % project(calango VERSION ...) in CMakeLists.txt, so the cover cannot drift
 % from the binary. Falls back to the value below when compiled directly,
 % without make.
-\IfFileExists{calango_version.tex}{\input{calango_version}}{}
-\providecommand{\calangoversion}{26.8.5}
+\IfFileExists{calango_version.tex}{\input{calango_version}}{%
+  % No generated stamp. Say so on the cover rather than inventing a number:
+  % a literal fallback here SILENTLY BACKDATES the document, which is exactly
+  % how these guides came to claim 26.8.5 long after the project had moved on.
+  % Build with `make` in docs/tex, which writes calango_version.tex from the
+  % VERSION in CMakeLists.txt.
+  \newcommand{\calangoversion}{??.??.?? (run make in docs/tex)}%
+  \GenericWarning{}{Calango: calango_version.tex is missing -- the version on
+  the cover is a placeholder. Build the docs with make in docs/tex.}%
+}
 
 \begin{document}
 
@@ -230,6 +238,7 @@
 \input{sections/10_electronic}
 \input{sections/10b_optics_gw}
 \input{sections/10c_electron_phonon}
+\input{sections/10d_wannier_transport_berry}
 \input{sections/11_analysis}
 \input{sections/12_output}
 \input{sections/13_reference}

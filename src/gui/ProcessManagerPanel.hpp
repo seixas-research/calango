@@ -33,6 +33,12 @@ public:
     /// Update a task's working directory after it has been staged.
     void setTaskDirectory(int id, const QString& directory);
     void setTaskStatus(int id, Status status);
+    /// Attach a one-line explanation to a task's row, shown as its tooltip.
+    ///
+    /// Used for failure reasons: a status message scrolls away, and a red row
+    /// with no explanation is the state this panel used to leave a failed run
+    /// in. The tooltip persists for as long as the row does.
+    void setTaskDetail(int id, const QString& detail);
     /// Remove a task's row (the controller purges its data first).
     void removeTask(int id);
 

@@ -77,6 +77,14 @@ private:
 
     QString jobDir_;        ///< directory of the loaded wannier.json (holds cubes)
     FieldPtr field_;        ///< currently displayed Wannier orbital grid
+    int selectedOrbital_ = -1;  ///< row of `centres_` the loaded cube came from
+    /// Wannier centres in Cartesian angstrom, straight from wannier.json —
+    /// where the displayed orbital's isosurface extraction is re-centred, so a
+    /// lobe crossing a cell face is shown whole rather than sliced.
+    std::vector<core::Vec3> centres_;
+    /// Centre of the orbital on screen. Falls back to the grid's own periodic
+    /// centroid when the JSON listed no centre for it.
+    core::Vec3 fieldCentre_{};
     double fieldMax_ = 1.0; ///< |value| ceiling for the isovalue slider mapping
     core::IsoMesh isoMesh_; ///< last extracted surface
 
@@ -102,6 +110,7 @@ private:
     QSlider* isoSlider_ = nullptr;
     QDoubleSpinBox* isoSpin_ = nullptr;
     QComboBox* isoColormapCombo_ = nullptr;
+    QDoubleSpinBox* continuationSpin_ = nullptr; ///< periodic-continuation halo
     QGroupBox* sliceGroup_ = nullptr;
     QComboBox* planeCombo_ = nullptr;
     QSlider* offsetSlider_ = nullptr;

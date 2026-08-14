@@ -3114,6 +3114,15 @@ QString SimulationWizardBase::calculatorProvenanceJson() const
     o.insert(QStringLiteral("kpts"),
              QJsonArray{c.kpts[0], c.kpts[1], c.kpts[2]});
     o.insert(QStringLiteral("symmetry_off"), c.gpawSymmetryOff);
+    // Recorded so a downstream wizard can state the band count without the
+    // engine log. Only when it was set explicitly: GPAW's own default is a
+    // function of the system, so writing a 0 here would be a claim, not a fact.
+    if (!c.gpawNbands.empty()) {
+        bool ok = false;
+        const int n = QString::fromStdString(c.gpawNbands).toInt(&ok);
+        if (ok && n > 0)
+            o.insert(QStringLiteral("nbands"), n);
+    }
     o.insert(QStringLiteral("python"), pythonExecutable());
     o.insert(QStringLiteral("conda_env"),
              EnginePresets::envFor(c.calculator));

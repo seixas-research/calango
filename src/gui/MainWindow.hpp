@@ -444,6 +444,10 @@ private Q_SLOTS:
     void openKkrCpa();
     /// Wannier Functions → Constrained RPA.
     void openCrpa();
+    /// Wannier Functions → Boltzmann Transport.
+    void openBoltzmannTransport();
+    /// Wannier Functions → Berry Phase.
+    void openBerryPhase();
     void openCvmComparison();
     void openSqsBuilder();
 

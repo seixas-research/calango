@@ -275,6 +275,9 @@ QWidget* EditVolumetricRenderDialog::buildIsosurfacePage()
             return;
         style_.shading =
             static_cast<IsoShading>(shadingCombo_->currentData().toInt());
+        // From here on this tab's material is the user's, and registering
+        // another Wannier function must not silently change it back.
+        style_.shadingChosen = true;
         syncIsoStyleEnabled();
         emitChange();
     });
@@ -371,6 +374,22 @@ QWidget* EditVolumetricRenderDialog::buildIsosurfacePage()
             [this](int i) {
                 style_.gridInterpolation =
                     static_cast<core::GridInterpolation>(i);
+                emitChange();
+            });
+
+    // Periodic continuation of a Wannier isosurface past the cell faces.
+    continuationSpin_ = new QDoubleSpinBox(page);
+    continuationSpin_->setRange(0.0, core::kMaxContinuationMargin);
+    continuationSpin_->setSingleStep(0.25);
+    continuationSpin_->setDecimals(2);
+    continuationSpin_->setSuffix(tr(" cells"));
+    continuationSpin_->setValue(style_.continuationMargin);
+    // The tool tip's second half is written by syncIsoStyleEnabled(), which is
+    // the only place that knows whether this tab holds a Wannier function.
+    form->addRow(tr("Periodic continuation:"), continuationSpin_);
+    connect(continuationSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double v) {
+                style_.continuationMargin = v;
                 emitChange();
             });
 
@@ -497,6 +516,14 @@ QWidget* EditVolumetricRenderDialog::buildIsosurfacePage()
     return page;
 }
 
+void EditVolumetricRenderDialog::setHasWannier(bool hasWannier)
+{
+    if (hasWannier_ == hasWannier)
+        return;
+    hasWannier_ = hasWannier;
+    syncIsoStyleEnabled();
+}
+
 void EditVolumetricRenderDialog::syncIsoStyleEnabled()
 {
     // Grey out what the current draw style and shading model do not read,
@@ -526,6 +553,35 @@ void EditVolumetricRenderDialog::syncIsoStyleEnabled()
                    "shades on the GPU instead and ignores this — it still "
                    "drives the standalone volume viewer windows."));
     ambientSpin_->setEnabled(style_.shading != IsoShading::Flat);
+
+    // Periodic continuation applies to Wannier functions and nothing else, so
+    // it is live only when this tab holds one. Disabled rather than hidden,
+    // with the reason in the tool tip: a control that vanishes reads as a
+    // missing feature.
+    if (continuationSpin_) {
+        continuationSpin_->setEnabled(hasWannier_);
+        continuationSpin_->setToolTip(
+            hasWannier_
+                ? tr("How far past the home cell a Wannier function's "
+                     "isosurface is followed, in cell units.\n\n"
+                     "A Wannier function is localized but not confined: its "
+                     "centre lands wherever the wannierization put it and its "
+                     "tails cross the cell faces, so extracting over the cell "
+                     "alone cuts the lobe flat and strands the rest on the "
+                     "opposite side of the box. The neighbouring images hold "
+                     "the same function continued, so the surface is extracted "
+                     "over a window centred on the Wannier centre instead, and "
+                     "the copies that window also covers are dropped.\n\n"
+                     "0.5 shows a function whole wherever its centre fell. "
+                     "Raise it for longer tails — the cost grows as the cube "
+                     "of the window.")
+                : tr("Applies to Wannier functions, and this tab holds none.\n\n"
+                     "A Wannier function is localized, so there is one lobe to "
+                     "follow across the cell boundary and the periodic copies "
+                     "can be told apart from it. A charge density fills its "
+                     "cell — continuing it would draw the same surface 27 "
+                     "times."));
+    }
     // Specular still drives the lit volume viewers with Flat shading on, so it
     // is only ever informative here — never disabled.
 }
@@ -869,6 +925,7 @@ void EditVolumetricRenderDialog::setStyle(const VolumetricStyle& style,
     updateColorButton(posColorButton_, style_.positiveColor);
     updateColorButton(negColorButton_, style_.negativeColor);
     isoInterpCombo_->setCurrentIndex(static_cast<int>(style_.gridInterpolation));
+    continuationSpin_->setValue(style_.continuationMargin);
 
     // Potential-map colouring.
     potentialGroup_->setChecked(style_.potentialColoring);

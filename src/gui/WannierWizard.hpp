@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/BaselineSummary.hpp"
 #include "core/CalculatorConfig.hpp"
 #include "gui/SimulationWizardBase.hpp"
 
@@ -78,11 +79,27 @@ private Q_SLOTS:
     void onBaselineChanged();
 
 private:
+    /// Re-read `dir`'s recorded bands / k-points / symmetry and restate them,
+    /// including the "Symmetry: off" pre-condition check. Called from
+    /// onBaselineChanged(), so it tracks the selection with no separate hook.
+    void refreshBaselineSummary(const QString& dir);
+
     std::shared_ptr<core::Structure> structure_;
 
     // Stage 1 — process selection + MLWF configuration.
     QComboBox* baselineCombo_ = nullptr;   ///< SCF baseline (origin process dir)
     QLabel* inheritedLabel_ = nullptr;     ///< inherited-calculator note
+    /// Bands / k-points / symmetry of the selected baseline, read back from
+    /// what that run recorded. Not decoration: the symmetry line is a
+    /// pre-condition check — see baselineSummary_.
+    QLabel* baselineSummaryLabel_ = nullptr;
+    /// The red (symmetry on) or amber (symmetry undetermined) note under it.
+    /// Hidden entirely when the baseline is known to be usable, so its
+    /// presence means something.
+    QLabel* symmetryWarningLabel_ = nullptr;
+    /// Facts about the selected baseline's stored k-set. Refreshed on every
+    /// selection change.
+    core::BaselineSummary baselineSummary_;
     QComboBox* projectionCombo_ = nullptr; ///< trial-orbital initialization
     QSpinBox* nWannier_ = nullptr;         ///< number of Wannier functions
     /// Which of ASE's two mutually-exclusive fixed-state selectors is used —

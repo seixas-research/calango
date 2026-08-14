@@ -90,8 +90,16 @@
 
 % Version stamp, as in the user guide: written by docs/tex/Makefile from
 % project(calango VERSION ...) so the cover cannot drift from the binary.
-\IfFileExists{calango_version.tex}{\input{calango_version}}{}
-\providecommand{\calangoversion}{26.8.5}
+\IfFileExists{calango_version.tex}{\input{calango_version}}{%
+  % No generated stamp. Say so on the cover rather than inventing a number:
+  % a literal fallback here SILENTLY BACKDATES the document, which is exactly
+  % how these guides came to claim 26.8.5 long after the project had moved on.
+  % Build with `make` in docs/tex, which writes calango_version.tex from the
+  % VERSION in CMakeLists.txt.
+  \newcommand{\calangoversion}{??.??.?? (run make in docs/tex)}%
+  \GenericWarning{}{Calango: calango_version.tex is missing -- the version on
+  the cover is a placeholder. Build the docs with make in docs/tex.}%
+}
 
 \begin{document}
 
@@ -156,8 +164,8 @@ $\to$ \emph{build} $\to$ \emph{cpack}. The platform decides the generator:
 Platform & CPack generator & Artifact \\
 \midrule
 macOS (\opt{-DCALANGO\_MACOS\_BUNDLE=ON}) & \opt{DragNDrop} &
-\file{calango-26.8.2-macos-arm64.dmg} \\
-Linux & \opt{DEB} & \file{calango\_26.8.2\_amd64.deb} \\
+\file{calango-\calangoversion-macos-arm64.dmg} \\
+Linux & \opt{DEB} & \file{calango\_\calangoversion\_amd64.deb} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -278,7 +286,7 @@ probed:
 
 \begin{lstlisting}[basicstyle=\ttfamily\scriptsize]
 ==> SUCCESS
-    Artifact : /path/to/Calango-26.8.16-macOS.dmg
+    Artifact : /path/to/Calango-<version>-macOS.dmg
     Size     : 65M
     Verified : valid macOS disk image (hdiutil imageinfo)
     Probe    : python: 3.14.6 ase: 3.29.0
@@ -355,7 +363,7 @@ disk image. The install rules perform, in order:
 \subsection{Verification}
 
 \begin{lstlisting}
-APP=_CPack_Packages/Darwin/DragNDrop/calango-26.8.2-macos-arm64/calango.app
+APP=_CPack_Packages/Darwin/DragNDrop/calango-<version>-macos-arm64/calango.app
 
 # 1. Signature must verify strictly, including nested code
 codesign --verify --deep --strict "$APP"
@@ -364,7 +372,7 @@ codesign --verify --deep --strict "$APP"
 "$APP/Contents/MacOS/calango" --probe-python
 
 # 3. The image must mount without an SLA prompt
-hdiutil attach -readonly -nobrowse calango-26.8.2-macos-arm64.dmg
+hdiutil attach -readonly -nobrowse calango-<version>-macos-arm64.dmg
 \end{lstlisting}
 
 To rebuild the package from a clean state, clear the staging area first
@@ -428,11 +436,11 @@ description file name: [/opt/homebrew/share/cmake/Templates/...]}. A
 separate \file{build-deb} directory, configured by the Linux \file{cmake},
 avoids this entirely.
 
-The result is \file{calango\_26.8.2\_<arch>.deb}. Install it via
+The result is \file{calango\_\calangoversion\_<arch>.deb}. Install it via
 \opt{apt} rather than \opt{dpkg -i}, so the dependencies are resolved:
 
 \begin{lstlisting}
-sudo apt install ./calango_26.8.2_amd64.deb
+sudo apt install ./calango_<version>_amd64.deb
 \end{lstlisting}
 
 \subsection{Package contents and desktop integration}
@@ -474,8 +482,8 @@ disabled; users can also point Calango at any interpreter via
 \subsection{Verification}
 
 \begin{lstlisting}
-dpkg-deb --info  calango_26.8.2_amd64.deb   # control fields, Depends
-dpkg-deb --contents calango_26.8.2_amd64.deb
+dpkg-deb --info  calango_<version>_amd64.deb   # control fields, Depends
+dpkg-deb --contents calango_<version>_amd64.deb
 
 # after installing:
 calango --probe-python
