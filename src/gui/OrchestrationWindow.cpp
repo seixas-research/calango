@@ -315,6 +315,10 @@ QString orchestrationTaskSlug(OrchestrationTask task)
         return QStringLiteral("cluster_expansion_fit");
     case OrchestrationTask::CvmEntropy:
         return QStringLiteral("cvm_entropy");
+    case OrchestrationTask::KkrCpa:
+        return QStringLiteral("kkr_cpa");
+    case OrchestrationTask::Crpa:
+        return QStringLiteral("crpa");
     case OrchestrationTask::LiquidFreeEnergy:
         return QStringLiteral("liquid_free_energy");
     case OrchestrationTask::SinglePoint:
@@ -351,6 +355,10 @@ OrchestrationFamily orchestrationTaskFamily(OrchestrationTask task)
     case OrchestrationTask::SqsGenerator:
     case OrchestrationTask::ClusterExpansionFit:
     case OrchestrationTask::CvmEntropy:
+    // Both run in process against data a parent already produced, so they
+    // belong with the canvas-run family rather than with the job launchers.
+    case OrchestrationTask::KkrCpa:
+    case OrchestrationTask::Crpa:
         return OrchestrationFamily::Transform;
     default:
         break;
@@ -403,6 +411,10 @@ QString orchestrationTaskDisplayName(OrchestrationTask task)
         return QObject::tr("Cluster Expansion (ECI Fitter)");
     case OrchestrationTask::CvmEntropy:
         return QObject::tr("CVM Entropy Calculator");
+    case OrchestrationTask::KkrCpa:
+        return QObject::tr("KKR-CPA Random Alloy");
+    case OrchestrationTask::Crpa:
+        return QObject::tr("Constrained RPA (U, J)");
     // The enum tag and the slug still read "liquid free energy"; only the NAME
     // changed. orchestrationTaskSlug() is a persisted key — it is written into
     // every saved .calproj and every exported calango.workflow/2 document — so
@@ -441,6 +453,8 @@ QString orchestrationTaskShortName(OrchestrationTask task)
     case OrchestrationTask::SqsGenerator:         return QObject::tr("SQS");
     case OrchestrationTask::ClusterExpansionFit:  return QObject::tr("ECI fit");
     case OrchestrationTask::CvmEntropy:           return QObject::tr("CVM");
+    case OrchestrationTask::KkrCpa:               return QObject::tr("CPA");
+    case OrchestrationTask::Crpa:                 return QObject::tr("cRPA");
     case OrchestrationTask::LiquidFreeEnergy:     return QObject::tr("TI");
     }
     return QObject::tr("Node");
@@ -586,6 +600,20 @@ QList<OrchestrationInputSlot> orchestrationInputSlots(OrchestrationTask task)
         return {{QObject::tr("fitted ECIs"),
                  QStringLiteral("cluster_expansion_fit.json"),
                  QStringLiteral("cluster_expansion_fit.json"), false}};
+
+    case OrchestrationTask::Crpa:
+        // Fed by a completed Wannier node, under the name that node writes.
+        // Same contract as the ECI fitter above: the producer's output name
+        // and the consumer's input name are agreed here and nowhere else.
+        return {{QObject::tr("Wannier H(R)"),
+                 QStringLiteral("wannier90_hr.dat"),
+                 QStringLiteral("wannier90_hr.dat"), false}};
+
+    case OrchestrationTask::KkrCpa:
+        // No input slot: the CPA takes a component list and a model band, not
+        // a completed run. It is on the canvas so it can be CHAINED FROM —
+        // its moments and Fermi level feed whatever comes next.
+        return {};
 
     case OrchestrationTask::ElectronicBands:
     case OrchestrationTask::Optics:

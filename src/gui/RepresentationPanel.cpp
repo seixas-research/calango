@@ -99,7 +99,7 @@ QWidget* RepresentationPanel::buildAppearanceTab()
     auto* page = new QWidget(this);
     auto* form = new QFormLayout(page);
 
-    // --- Casting -----------------------------------------------------------
+    // --- Cast --------------------------------------------------------------
     // Which GROUP of atoms the representation controls below apply to. Every
     // atom starts in "Cast: 0", so with casts unused this is a one-entry
     // dropdown and the panel behaves exactly as it always did. Split a
@@ -131,7 +131,7 @@ QWidget* RepresentationPanel::buildAppearanceTab()
         tr("Cast change… — which cast each atom belongs to, and how many casts "
            "there are. Each cast draws in its own representation."));
     castRow->addWidget(castButton);
-    form->addRow(tr("Casting:"), castRow);
+    form->addRow(tr("Cast:"), castRow);
     connect(castButton, &QPushButton::clicked, this,
             &RepresentationPanel::openCastSetup);
 

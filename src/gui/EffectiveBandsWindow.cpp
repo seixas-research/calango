@@ -2,6 +2,7 @@
 
 #include "gui/GuiUtils.hpp"
 #include "gui/SpectralHeatmapWidget.hpp"
+#include "gui/SpectralPlotStyleDialog.hpp"
 #include "render/ColorMap.hpp"
 
 #include <QCheckBox>
@@ -32,16 +33,35 @@ EffectiveBandsWindow::EffectiveBandsWindow(const QString& directory,
     auto* row = new QHBoxLayout;
     row->addWidget(new QLabel(tr("Colormap:"), this));
     auto* gradientCombo = new QComboBox(this);
-    gradientCombo->addItem(tr("Viridis"),
-                           static_cast<int>(render::ColorGradient::Viridis));
-    gradientCombo->addItem(tr("Plasma"),
-                           static_cast<int>(render::ColorGradient::Plasma));
-    gradientCombo->addItem(tr("Coolwarm"),
-                           static_cast<int>(render::ColorGradient::Coolwarm));
-    gradientCombo->addItem(tr("Inferno"),
-                           static_cast<int>(render::ColorGradient::Inferno));
-    gradientCombo->addItem(tr("Cividis"),
-                           static_cast<int>(render::ColorGradient::Cividis));
+    // The whole render::ColorGradient set rather than a hand-picked five. The
+    // colormaps already exist and are used by the volumetric and 2D-bands
+    // viewers; offering a subset here only meant this plot could not be made
+    // to match a figure the rest of the app can already produce.
+    //
+    // Perceptually uniform maps first — they are the right default for a
+    // magnitude like a spectral weight — then the rest, with the diverging
+    // and rainbow maps last because they misrepresent an all-positive field.
+    const struct {
+        const char* label;
+        render::ColorGradient gradient;
+    } kGradients[] = {
+        {QT_TR_NOOP("Viridis"), render::ColorGradient::Viridis},
+        {QT_TR_NOOP("Plasma"), render::ColorGradient::Plasma},
+        {QT_TR_NOOP("Inferno"), render::ColorGradient::Inferno},
+        {QT_TR_NOOP("Magma"), render::ColorGradient::Magma},
+        {QT_TR_NOOP("Cividis"), render::ColorGradient::Cividis},
+        {QT_TR_NOOP("Turbo"), render::ColorGradient::Turbo},
+        {QT_TR_NOOP("Greyscale"), render::ColorGradient::Greys},
+        {QT_TR_NOOP("Hot"), render::ColorGradient::Hot},
+        {QT_TR_NOOP("Afmhot"), render::ColorGradient::Afmhot},
+        {QT_TR_NOOP("Gnuplot"), render::ColorGradient::Gnuplot},
+        {QT_TR_NOOP("Spectral"), render::ColorGradient::Spectral},
+        {QT_TR_NOOP("Coolwarm"), render::ColorGradient::Coolwarm},
+        {QT_TR_NOOP("Rainbow"), render::ColorGradient::Rainbow},
+    };
+    for (const auto& entry : kGradients)
+        gradientCombo->addItem(tr(entry.label),
+                               static_cast<int>(entry.gradient));
     row->addWidget(gradientCombo);
     connect(gradientCombo, &QComboBox::currentIndexChanged, this,
             [this, gradientCombo](int) {
@@ -87,6 +107,38 @@ EffectiveBandsWindow::EffectiveBandsWindow(const QString& directory,
     row->addWidget(shiftRow);
     connect(shiftCheck, &QCheckBox::toggled, this,
             [this](bool on) { plot_->setShiftFermiToZero(on); });
+
+    // Everything below the frequently-turned knobs lives in the appearance
+    // dialog, exactly as the band/PDOS window does it: the same button label,
+    // the same live-apply wiring, and a modeless dialog so the plot can be
+    // watched while it is edited.
+    auto* customizeButton = new QPushButton(tr("Customize Appearance…"), this);
+    connect(customizeButton, &QPushButton::clicked, this,
+            [this, gradientCombo, thresholdSpin] {
+                auto* dialog =
+                    new SpectralPlotStyleDialog(plot_->style(), this);
+                dialog->setAttribute(Qt::WA_DeleteOnClose);
+                dialog->setEnergyBounds(plot_->energyMin(), plot_->energyMax());
+                // The dialog holds a SNAPSHOT of the style, but the colormap
+                // and threshold live on the toolbar above and can move while
+                // it is open. Re-imposing them on the way through keeps the
+                // toolbar authoritative for the two fields it owns; without
+                // this, nudging the threshold and then touching any dialog
+                // control would silently put the threshold back.
+                connect(dialog, &SpectralPlotStyleDialog::styleChanged, plot_,
+                        [this, gradientCombo, thresholdSpin](
+                            SpectralHeatmapWidget::Style style) {
+                            style.gradient =
+                                static_cast<render::ColorGradient>(
+                                    gradientCombo->currentData().toInt());
+                            style.intensityThreshold = thresholdSpin->value();
+                            plot_->setStyle(style);
+                        });
+                connect(dialog, &SpectralPlotStyleDialog::energyWindowChanged,
+                        plot_, &SpectralHeatmapWidget::setEnergyWindow);
+                dialog->show();
+            });
+    row->addWidget(customizeButton);
 
     row->addStretch(1);
     auto* exportImage = new QPushButton(tr("Export Image…"), this);

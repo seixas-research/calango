@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.17
+    VERSION 26.8.18
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -259,6 +259,8 @@ qt_add_executable(calango
     src/core/ClusterExpansionFit.hpp
     src/core/ClusterExpansionFit.cpp
     src/core/ClusterVariation.cpp
+    src/core/CpaSolver.cpp
+    src/core/CrpaSolver.cpp
     src/core/SublatticeClusterVariation.cpp
     src/core/BandGap.hpp
     src/core/BandGap.cpp
@@ -681,6 +683,9 @@ qt_add_executable(calango
     src/gui/ClusterExpansionDialog.hpp
     src/gui/EciFitDialog.hpp
     src/gui/EciFitDialog.cpp
+    src/gui/KkrCpaDialog.cpp
+    src/gui/SpectralPlotStyleDialog.cpp
+    src/gui/CrpaDialog.cpp
     src/gui/CvmComparisonWindow.hpp
     src/gui/CvmComparisonWindow.cpp
     src/gui/ClusterExpansionDialog.cpp
@@ -1036,6 +1041,40 @@ if(CALANGO_BUILD_TESTS)
     )
     target_include_directories(calango_cvm_test PRIVATE src)
     add_test(NAME cluster_variation COMMAND calango_cvm_test)
+
+    # Single-site CPA for random alloys. Anchored on the one bare band whose
+    # Hilbert transform is closed-form (semi-elliptic), on the two limits where
+    # the CPA is exact (one component, equal levels), and on the split-band
+    # weights, which are fixed by the concentrations alone.
+    add_executable(calango_cpa_test
+        tests/CpaSolverTest.cpp
+        src/core/CpaSolver.cpp
+    )
+    target_include_directories(calango_cpa_test PRIVATE src)
+    add_test(NAME cpa_solver COMMAND calango_cpa_test)
+
+    # Native cRPA in a Wannier basis. Anchored on the two analytic limits of
+    # the Gaussian Coulomb integral and on the three cases where the screened
+    # interaction must collapse EXACTLY onto the bare one — which is what
+    # actually tests the constraint bookkeeping.
+    add_executable(calango_crpa_test
+        tests/CrpaSolverTest.cpp
+        src/core/CrpaSolver.cpp
+    )
+    target_include_directories(calango_crpa_test PRIVATE src)
+    add_test(NAME crpa_solver COMMAND calango_crpa_test)
+
+    # Validation harness against the local VASP cRPA. Fast by default: it
+    # checks the generated INCAR/POSCAR, round-trips the OUTCAR/UIJKL parsers
+    # against fixtures in VASP's own output format, and runs the native solver
+    # on an SrVO3 model. CALANGO_VASP_CRPA=1 additionally launches VASP, which
+    # is hours of compute and therefore never automatic.
+    add_executable(calango_crpa_vasp_test
+        tests/CrpaVaspValidationTest.cpp
+        src/core/CrpaSolver.cpp
+    )
+    target_include_directories(calango_crpa_vasp_test PRIVATE src)
+    add_test(NAME crpa_vasp_validation COMMAND calango_crpa_vasp_test)
 
     # Four-sublattice CVM: FCC order-disorder transitions. Links the
     # homogeneous solver too, because one of its checks is that the disordered

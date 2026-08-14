@@ -19,13 +19,10 @@ namespace calango::gui {
 
 namespace {
 
-// Standardized light plot canvas (gui/PlotPalette.hpp). The background is
-// also what every sub-threshold pixel of the heatmap keeps, so an unfolded
-// spectral function now reads as ink on white — the form it is published in.
-const QColor kBackground = PlotPalette::canvas;
-const QColor kText = PlotPalette::text;
-const QColor kFrame = PlotPalette::spine;
-constexpr double kTickPointSize = 15.0; // matches the band/PDOS plots
+// The canvas, text and spine colours and the tick size that used to live here
+// as constants are now Style fields, defaulted to the same PlotPalette values
+// in SpectralHeatmapWidget::Style — so the published look is unchanged and it
+// is now adjustable, which is what the appearance dialog edits.
 
 QString prettyLabel(const QString& raw)
 {
@@ -134,41 +131,80 @@ void SpectralHeatmapWidget::rebuildImage()
     // rect with smooth interpolation, so the resolution follows the data
     // rather than the window size.
     heatmap_ = QImage(width, height, QImage::Format_ARGB32);
-    heatmap_.fill(kBackground);
+    heatmap_.fill(style_.background);
 
     for (int x = 0; x < width; ++x) {
         const auto& profile = spectral_.intensity[static_cast<std::size_t>(x)];
         for (int y = 0; y < height; ++y) {
             const double normalized =
                 profile[static_cast<std::size_t>(y)] / spectral_.maxIntensity;
-            if (normalized <= threshold_)
+            if (normalized <= style_.intensityThreshold)
                 continue; // below the noise floor: leave it as background
             // Rescale the surviving range back to [0, 1] so raising the
             // threshold brightens what remains instead of just clipping it.
-            const double t = std::clamp(
-                (normalized - threshold_) / std::max(1e-9, 1.0 - threshold_),
-                0.0, 1.0);
+            const double t = std::clamp((normalized - style_.intensityThreshold)
+                                            / std::max(1e-9,
+                                                       1.0
+                                                           - style_.intensityThreshold),
+                                        0.0, 1.0);
+            QColor color =
+                render::ColorMap::sample(style_.gradient, static_cast<float>(t));
+            // Opacity blended against the plot background rather than written
+            // into the alpha channel: the image is drawn opaque over the
+            // canvas, so a translucent pixel would composite against whatever
+            // QImage was initialised with instead of against the plot.
+            if (style_.opacity < 1.0) {
+                const double a = std::clamp(style_.opacity, 0.0, 1.0);
+                color = QColor(
+                    static_cast<int>(std::lround(color.red() * a
+                                                 + style_.background.red() * (1.0 - a))),
+                    static_cast<int>(std::lround(color.green() * a
+                                                 + style_.background.green() * (1.0 - a))),
+                    static_cast<int>(std::lround(color.blue() * a
+                                                 + style_.background.blue() * (1.0 - a))));
+            }
             // Row 0 of the image is the TOP of the plot, but bin 0 is the
             // LOWEST energy — flip so energy increases upward.
-            heatmap_.setPixelColor(
-                x, height - 1 - y,
-                render::ColorMap::sample(gradient_, static_cast<float>(t)));
+            heatmap_.setPixelColor(x, height - 1 - y, color);
         }
     }
 }
 
 void SpectralHeatmapWidget::setGradient(render::ColorGradient gradient)
 {
-    gradient_ = gradient;
+    style_.gradient = gradient;
     rebuildImage();
     update();
 }
 
 void SpectralHeatmapWidget::setIntensityThreshold(double fraction)
 {
-    threshold_ = std::clamp(fraction, 0.0, 0.99);
+    style_.intensityThreshold = std::clamp(fraction, 0.0, 0.99);
     rebuildImage();
     update();
+}
+
+void SpectralHeatmapWidget::setStyle(const Style& style)
+{
+    const bool windowChanged = false; // the window has its own setter
+    style_ = style;
+    style_.intensityThreshold = std::clamp(style_.intensityThreshold, 0.0, 0.99);
+    style_.opacity = std::clamp(style_.opacity, 0.0, 1.0);
+    style_.markerSize = std::clamp(style_.markerSize, 0.5, 40.0);
+    (void)windowChanged;
+    // Only the image depends on the style; the geometry does not, so a repaint
+    // plus a re-tint is enough and the spectral function is not recomputed.
+    rebuildImage();
+    update();
+}
+
+void SpectralHeatmapWidget::setEnergyWindow(double minimum, double maximum)
+{
+    if (!(maximum > minimum))
+        return;
+    options_.energyMin = minimum;
+    options_.energyMax = maximum;
+    rebuild(); // re-bins, so this one really does need the full path
 }
 
 void SpectralHeatmapWidget::setShiftFermiToZero(bool shift)
@@ -189,7 +225,7 @@ void SpectralHeatmapWidget::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.fillRect(rect(), kBackground);
+    painter.fillRect(rect(), style_.background);
 
     if (!spectral_.valid() || heatmap_.isNull()) {
         painter.setPen(PlotPalette::placeholder);
@@ -200,17 +236,31 @@ void SpectralHeatmapWidget::paintEvent(QPaintEvent*)
     }
 
     QFont font = painter.font();
-    font.setPointSizeF(kTickPointSize);
+    font.setPointSizeF(style_.tickPointSize);
     painter.setFont(font);
     const QFontMetricsF metrics(font);
 
-    const QRectF plot = rect().adjusted(78, 14, -14, -52);
-    // Smooth transformation: the data grid is usually coarser than the widget,
-    // and nearest-neighbour would turn a physical spectrum into visible blocks.
-    painter.setRenderHint(QPainter::SmoothPixmapTransform);
-    painter.drawImage(plot, heatmap_);
-    painter.setPen(QPen(kFrame, 1.2));
+    const QRectF plot =
+        rect().adjusted(78, 14, -14 - colorbarWidth(), -52);
+
+    const double eLo0 = spectral_.energies.front();
+    const double eHi0 = spectral_.energies.back();
+    if (style_.mode == RenderMode::Scatter) {
+        // The eigenvalues themselves, unbroadened. Background painted first so
+        // the markers land on the same canvas the heatmap would have used.
+        painter.fillRect(plot, style_.background);
+        paintScatter(painter, plot, eLo0, eHi0);
+    } else {
+        // Smooth transformation: the data grid is usually coarser than the
+        // widget, and nearest-neighbour would turn a physical spectrum into
+        // visible blocks.
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        painter.drawImage(plot, heatmap_);
+    }
+    painter.setPen(QPen(style_.spineColor, style_.spineWidth));
     painter.drawRect(plot);
+    if (style_.showColorbar)
+        paintColorbar(painter, plot);
 
     const double eLo = spectral_.energies.front();
     const double eHi = spectral_.energies.back();
@@ -219,7 +269,7 @@ void SpectralHeatmapWidget::paintEvent(QPaintEvent*)
     };
 
     // Energy ticks.
-    painter.setPen(kText);
+    painter.setPen(style_.textColor);
     for (int i = 0; i <= 5; ++i) {
         const double e = eLo + (eHi - eLo) * i / 5.0;
         const double y = toY(e);
@@ -247,25 +297,33 @@ void SpectralHeatmapWidget::paintEvent(QPaintEvent*)
                                        PlotPalette::spine.blue(), 90),
                                 1.0));
             painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
-            painter.setPen(kText);
+            painter.setPen(style_.textColor);
+            QFont labelFont = painter.font();
+            labelFont.setPointSizeF(style_.annotationPointSize);
+            painter.setFont(labelFont);
             const QString label = prettyLabel(
                 i < static_cast<std::size_t>(specialLabels_.size())
                     ? specialLabels_.at(static_cast<int>(i))
                     : QString());
             painter.drawText(QRectF(x - 30, plot.bottom() + 4, 60, 22),
                              Qt::AlignHCenter | Qt::AlignTop, label);
+            painter.setFont(font);
         }
     }
 
     // Fermi / zero reference.
-    if (eLo < 0.0 && eHi > 0.0 && shiftFermi_) {
-        painter.setPen(QPen(PlotPalette::reference, 1.4, Qt::DashLine));
+    if (eLo < 0.0 && eHi > 0.0 && shiftFermi_ && style_.showFermi) {
+        painter.setPen(QPen(style_.fermiColor, style_.fermiLineWidth,
+                            style_.fermiPenStyle));
         painter.drawLine(QPointF(plot.left(), toY(0.0)),
                          QPointF(plot.right(), toY(0.0)));
     }
 
     // Axis titles.
-    painter.setPen(kText);
+    painter.setPen(style_.textColor);
+    QFont titleFont = painter.font();
+    titleFont.setPointSizeF(style_.axisTitlePointSize);
+    painter.setFont(titleFont);
     painter.drawText(QRectF(plot.left(), plot.bottom() + 28, plot.width(), 22),
                      Qt::AlignHCenter,
                      tr("k-path (primitive Brillouin zone)"));
@@ -278,6 +336,111 @@ void SpectralHeatmapWidget::paintEvent(QPaintEvent*)
                        shiftFermi_ ? tr("E − E_F (eV)") : tr("E (eV)"));
     painter.restore();
     (void)metrics;
+}
+
+double SpectralHeatmapWidget::colorbarWidth() const
+{
+    // Bar plus its tick labels. Zero when off, so the plot reclaims the space
+    // rather than leaving a gap where the scale used to be.
+    return style_.showColorbar ? 64.0 : 0.0;
+}
+
+void SpectralHeatmapWidget::paintScatter(QPainter& painter, const QRectF& plot,
+                                         double eLo, double eHi) const
+{
+    if (columns_.empty())
+        return;
+
+    // Scatter draws the STORED eigenvalues, so it needs the columns rather
+    // than the broadened field — which is the point of the mode: no σ, no
+    // binning, nothing between the data and the pixel.
+    double maxWeight = 0.0;
+    for (const auto& column : columns_)
+        for (const auto& state : column.states)
+            maxWeight = std::max(maxWeight, state.weight);
+    if (maxWeight <= 0.0)
+        return;
+
+    const double xLo = columns_.front().pathCoordinate;
+    const double xHi = columns_.back().pathCoordinate;
+    const double xSpan = std::max(1e-12, xHi - xLo);
+    const double eSpan = std::max(1e-9, eHi - eLo);
+
+    painter.save();
+    painter.setClipRect(plot);
+    painter.setPen(Qt::NoPen);
+    for (const auto& column : columns_) {
+        const double x =
+            plot.left() + plot.width() * (column.pathCoordinate - xLo) / xSpan;
+        for (const auto& state : column.states) {
+            const double normalized = state.weight / maxWeight;
+            if (normalized <= style_.intensityThreshold)
+                continue;
+            // The energies stored in the columns are absolute; the plot axis
+            // may be shifted to E_F, and the same shift has to be applied here
+            // or the markers land a Fermi level away from the heatmap.
+            const double energy =
+                shiftFermi_ ? state.energy - fermi_ : state.energy;
+            if (energy < eLo || energy > eHi)
+                continue;
+            const double y = plot.bottom() - plot.height() * (energy - eLo) / eSpan;
+
+            const double t = std::clamp((normalized - style_.intensityThreshold)
+                                            / std::max(1e-9,
+                                                       1.0
+                                                           - style_.intensityThreshold),
+                                        0.0, 1.0);
+            QColor color =
+                render::ColorMap::sample(style_.gradient, static_cast<float>(t));
+            color.setAlphaF(std::clamp(style_.opacity, 0.0, 1.0));
+            painter.setBrush(color);
+
+            // Area proportional to weight, hence the square root on the
+            // diameter: scaling the diameter linearly makes a half-weight
+            // state look a quarter as important, which is not what the eye
+            // should be told.
+            const double diameter =
+                style_.markerScalesWithWeight
+                ? style_.markerSize * std::sqrt(t)
+                : style_.markerSize;
+            if (diameter <= 0.0)
+                continue;
+            painter.drawEllipse(QPointF(x, y), 0.5 * diameter, 0.5 * diameter);
+        }
+    }
+    painter.restore();
+}
+
+void SpectralHeatmapWidget::paintColorbar(QPainter& painter,
+                                          const QRectF& plot) const
+{
+    const QRectF bar(plot.right() + 14.0, plot.top(), 16.0, plot.height());
+
+    // Painted top-down, and the gradient runs high-weight at the TOP to match
+    // the energy axis beside it running high-energy at the top.
+    for (int y = 0; y < static_cast<int>(bar.height()); ++y) {
+        const double t = 1.0 - static_cast<double>(y) / std::max(1.0, bar.height());
+        painter.setPen(
+            render::ColorMap::sample(style_.gradient, static_cast<float>(t)));
+        painter.drawLine(QPointF(bar.left(), bar.top() + y),
+                         QPointF(bar.right(), bar.top() + y));
+    }
+    painter.setPen(QPen(style_.spineColor, style_.spineWidth));
+    painter.drawRect(bar);
+
+    // Labelled by the FRACTION of the maximum, not by an absolute intensity:
+    // the vertical scale of A(k,E) depends on σ and the bin width, so an
+    // absolute number here would change when neither the physics nor the
+    // colours did.
+    QFont font = painter.font();
+    font.setPointSizeF(style_.annotationPointSize);
+    painter.setFont(font);
+    painter.setPen(style_.textColor);
+    painter.drawText(QRectF(bar.right() + 4, bar.top() - 10, 44, 20),
+                     Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("1.0"));
+    painter.drawText(QRectF(bar.right() + 4, bar.bottom() - 10, 44, 20),
+                     Qt::AlignLeft | Qt::AlignVCenter,
+                     QString::number(style_.intensityThreshold, 'f', 2));
 }
 
 void SpectralHeatmapWidget::exportImage(QWidget* dialogParent)
@@ -295,7 +458,7 @@ void SpectralHeatmapWidget::exportImage(QWidget* dialogParent)
         return;
     // 3x for print, matching the band/PDOS exporter.
     QImage image(width() * 3, height() * 3, QImage::Format_ARGB32);
-    image.fill(kBackground);
+    image.fill(style_.background);
     QPainter painter(&image);
     painter.setRenderHint(QPainter::Antialiasing);
     painter.scale(3.0, 3.0);

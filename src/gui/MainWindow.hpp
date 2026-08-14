@@ -440,6 +440,10 @@ private Q_SLOTS:
     /// Modules → "CALPHAD…": load a .tdb and choose the system.
     void openCalphad();
     void openEciFit();
+    /// Modules → Alloys → KKR-CPA.
+    void openKkrCpa();
+    /// Wannier Functions → Constrained RPA.
+    void openCrpa();
     void openCvmComparison();
     void openSqsBuilder();
 

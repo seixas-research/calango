@@ -401,7 +401,26 @@ SolidInterfaceBuilder::Result SolidInterfaceBuilder::generate(
             const double along = axisIndex == 0
                 ? fractional.x
                 : (axisIndex == 1 ? fractional.y : fractional.z);
-            if (along - std::floor(along) < params.boundaryPosition)
+            // Tolerant comparison, not a bare <.
+            //
+            // An atom sitting exactly ON the boundary plane has a fractional
+            // coordinate that survives the round trip through Cartesian only
+            // to the last bit or two, so a bare `<` assigns it to whichever
+            // half the rounding happened to favour. That is invisible for a
+            // Bravais lattice — one atom either shifts or does not, and either
+            // is a valid fault — and it corrupts a MULTI-ATOM BASIS: the two
+            // atoms of a diamond {111} pair straddle the plane, one is shifted
+            // and the other is not, and the pair ends up sqrt(b^2 + dz^2)
+            // apart instead of dz. The crystal is broken and nothing reports
+            // it.
+            //
+            // Resolved by a fixed rule rather than by luck: within kOnPlane of
+            // the plane counts as ON it, and an atom on the plane belongs to
+            // the half that moves. Same convention as the twin path's
+            // kOnPlane, so the two planar defects agree about what "on the
+            // boundary" means.
+            constexpr double kOnPlane = 1e-9;
+            if (along - std::floor(along) < params.boundaryPosition - kOnPlane)
                 continue;
             atom.position += fault + normal * params.gap;
             ++shifted;

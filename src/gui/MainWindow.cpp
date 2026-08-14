@@ -1,4 +1,6 @@
+#include "gui/CrpaDialog.hpp"
 #include "gui/EciFitDialog.hpp"
+#include "gui/KkrCpaDialog.hpp"
 #include "gui/CvmComparisonWindow.hpp"
 #include "gui/MainWindow.hpp"
 
@@ -1342,6 +1344,15 @@ void MainWindow::createMenusAndDocks()
         ->setToolTip(tr("Chern number and Z₂ index from the hybrid Wannier "
                         "centre (Wilson loop) flow, from a completed Wannier Functions "
                         "process"));
+    // Fourth consumer of the same H(R), and on this menu for the same reason
+    // as the other three: its input is a Wannier basis and nothing else.
+    wannierMenu->addSeparator();
+    wannierMenu
+        ->addAction(tr("Constrained &RPA (Hubbard U, Hund J)…"), this,
+                    &MainWindow::openCrpa)
+        ->setToolTip(tr("Effective U and J for a correlated subspace, by "
+                        "screening the bare Coulomb interaction with every RPA "
+                        "process except those inside that subspace"));
 
     // ----- Analysis: spec order, reciprocal-space tools at the end ---------
     QMenu* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
@@ -1492,6 +1503,11 @@ void MainWindow::createMenusAndDocks()
     // it from interactions, and reading one against the other is the point.
     alloysMenu->addAction(tr("C&VM / Alloy Thermodynamics…"), this,
                           &MainWindow::openCvmComparison);
+    // KKR-CPA answers a different question from everything above it: those
+    // treat a SPECIFIC decorated cell (or an average over one), this treats
+    // the random lattice itself, with no supercell at all.
+    alloysMenu->addAction(tr("&KKR-CPA (Random Alloys)…"), this,
+                          &MainWindow::openKkrCpa);
     alloysMenu->addSeparator();
     // CALPHAD closes the same question from the other end, which is why it
     // belongs on this menu rather than at the top level of Modules: everything
@@ -7009,6 +7025,18 @@ void MainWindow::openGrapheneOxideMdmc(
               wizard.runCommand());
 }
 
+void MainWindow::openKkrCpa()
+{
+    KkrCpaDialog dialog(this);
+    dialog.exec();
+}
+
+void MainWindow::openCrpa()
+{
+    CrpaDialog dialog(this);
+    dialog.exec();
+}
+
 void MainWindow::openEciFit()
 {
     EciFitDialog dialog(this);
@@ -7620,6 +7648,10 @@ std::unique_ptr<SimulationWizardBase> makeOrchestrationWizard(
     case OrchestrationTask::SqsGenerator:
     case OrchestrationTask::ClusterExpansionFit:
     case OrchestrationTask::CvmEntropy:
+    // Same shape: a component table and a band, or a Wannier basis and a
+    // correlated subspace. No engine, no generated script, so no wizard.
+    case OrchestrationTask::KkrCpa:
+    case OrchestrationTask::Crpa:
         // The transforms configure themselves on the canvas — a structure
         // list, three spin boxes, a table of edits, a Redlich-Kister order, a
         // list of alloy compositions, a cluster basis, a temperature range.

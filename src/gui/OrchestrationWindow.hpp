@@ -82,6 +82,14 @@ enum class OrchestrationTask {
     SqsGenerator,
     ClusterExpansionFit,
     CvmEntropy,
+    /// KKR-CPA for a random alloy. In this family for the CvmEntropy reason:
+    /// it runs on the canvas rather than as a job, because the CPA condition
+    /// is solved in process against a model band rather than by launching an
+    /// interpreter.
+    KkrCpa,
+    /// Constrained RPA. Consumes a completed Wannier run's H(R) and reports U
+    /// and J; also in-process, and for the same reason.
+    Crpa,
     /// Thermodynamic integration — the ABSOLUTE Gibbs free energy of a liquid
     /// (or, with the Einstein reference, a solid).
     ///

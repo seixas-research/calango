@@ -23,6 +23,7 @@
 
 #include "core/Element.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -633,10 +634,364 @@ void testGrainCasts()
           "and neither does an empty one");
 }
 
+// ---------------------------------------------------------------------------
+// Real close-packed crystallography.
+//
+// Everything above builds from a SIMPLE CUBIC lattice, which is the right way
+// to test the mechanics (which atoms moved, by how much, what the cell did)
+// and cannot test the crystallography at all: a cubic lattice has no stacking
+// sequence to fault. These build actual close-packed cells and read the
+// stacking off the result.
+// ---------------------------------------------------------------------------
+
+/// FCC oriented with [111] along c, as the conventional hexagonal cell:
+/// in-plane vectors at 60 degrees with the nearest-neighbour spacing, and one
+/// close-packed layer per interlayer spacing, stacked A B C A B C.
+Structure fcc111(int layers, double aFcc, int z)
+{
+    const double d = aFcc / std::sqrt(2.0);  // in-plane nearest neighbour
+    const double h = aFcc / std::sqrt(3.0);  // {111} interlayer spacing
+    const Vec3 a1{d, 0.0, 0.0};
+    const Vec3 a2{0.5 * d, std::sqrt(3.0) / 2.0 * d, 0.0};
+
+    Structure s;
+    for (int layer = 0; layer < layers; ++layer) {
+        // A at (0,0), B at (a1+a2)/3, C at 2(a1+a2)/3 — the two hollows of the
+        // triangle the 60-degree cell spans.
+        const double f = static_cast<double>(layer % 3) / 3.0;
+        Atom atom;
+        atom.atomicNumber = z;
+        atom.position = a1 * f + a2 * f + Vec3{0.0, 0.0, layer * h};
+        s.addAtom(atom);
+    }
+    s.setCell(UnitCell(a1, a2, {0.0, 0.0, layers * h}, {true, true, true}));
+    return s;
+}
+
+/// HCP with c along the stacking axis: A B A B on the basal plane.
+Structure hcpBasal(int layers, double a, double c, int z)
+{
+    const Vec3 a1{a, 0.0, 0.0};
+    const Vec3 a2{0.5 * a, std::sqrt(3.0) / 2.0 * a, 0.0};
+    const double h = 0.5 * c; // one basal layer per half-c
+
+    Structure s;
+    for (int layer = 0; layer < layers; ++layer) {
+        const double f = (layer % 2 == 0) ? 0.0 : 1.0 / 3.0;
+        Atom atom;
+        atom.atomicNumber = z;
+        atom.position = a1 * f + a2 * f + Vec3{0.0, 0.0, layer * h};
+        s.addAtom(atom);
+    }
+    s.setCell(UnitCell(a1, a2, {0.0, 0.0, layers * h}, {true, true, true}));
+    return s;
+}
+
+/// Read the stacking sequence off a built structure.
+///
+/// Each atom is reduced to its in-plane fractional coordinates; for a
+/// close-packed layer the sum f1 + f2 is 0, 2/3 or 1/3 modulo 1, which labels
+/// the site A, B or C. Derived from the coordinates the builder returned, not
+/// from what the builder was asked to do.
+std::string stackingSequence(const Structure& s, double tolerance = 0.02)
+{
+    struct Layer {
+        double height;
+        char label;
+    };
+    std::vector<Layer> layers;
+    for (const Atom& atom : s.atoms()) {
+        const Vec3 f = s.cell().cartesianToFractional(atom.position);
+        const auto wrap = [](double v) { return v - std::floor(v); };
+        const double sum = wrap(wrap(f.x) + wrap(f.y));
+        char label = '?';
+        if (sum < tolerance || sum > 1.0 - tolerance)
+            label = 'A';
+        else if (std::abs(sum - 1.0 / 3.0) < tolerance)
+            label = 'C';
+        else if (std::abs(sum - 2.0 / 3.0) < tolerance)
+            label = 'B';
+
+        const double height = wrap(f.z);
+        bool merged = false;
+        for (auto& existing : layers)
+            if (std::abs(existing.height - height) < 1e-4) {
+                merged = true;
+                break;
+            }
+        if (!merged)
+            layers.push_back({height, label});
+    }
+    std::sort(layers.begin(), layers.end(),
+              [](const Layer& x, const Layer& y) { return x.height < y.height; });
+    std::string out;
+    for (const auto& layer : layers)
+        out.push_back(layer.label);
+    return out;
+}
+
+void testFccIntrinsicStackingFault()
+{
+    std::printf("FCC {111} intrinsic stacking fault\n");
+    const double aCu = 3.615;
+    const Structure parent = fcc111(6, aCu, 29);
+    check(stackingSequence(parent) == "ABCABC",
+          "the parent stacks ABCABC before anything is done to it");
+
+    SolidInterfaceBuilder::Params params;
+    params.kind = SolidInterfaceBuilder::Kind::StackingFault;
+    params.axis = SolidInterfaceBuilder::Axis::C;
+    params.boundaryPosition = 0.5;
+    // The Shockley partial 1/6<112> IS the A -> B hollow displacement, which
+    // in this 60-degree in-plane basis is (a1 + a2)/3. Expressed as fractions
+    // of the two in-plane vectors that is {1/3, 1/3}.
+    params.faultVector = {1.0 / 3.0, 1.0 / 3.0};
+    params.mergeTolerance = 0.0;
+
+    const auto fault = SolidInterfaceBuilder::generate({parent}, params);
+    const std::string sequence = stackingSequence(fault.structure);
+    check(sequence == "ABCBCA",
+          std::string("a Shockley partial above the mid-plane gives the "
+                      "intrinsic sequence ABC|BCA (got ")
+              + sequence + ")");
+    check(fault.structure.size() == parent.size(),
+          "a rigid shift neither creates nor destroys atoms");
+
+    // No layer may sit directly on the one below it ACROSS THE CHOSEN FAULT.
+    // The seam is a different matter and is checked separately below.
+    bool validAcrossFault = true;
+    for (std::size_t i = 0; i + 1 < sequence.size(); ++i)
+        validAcrossFault = validAcrossFault && sequence[i] != sequence[i + 1];
+    check(validAcrossFault,
+          "and every adjacent pair inside the cell is a real close-packed "
+          "stack (no AA)");
+
+    // Closest approach must still be the in-plane nearest-neighbour distance:
+    // a shift parallel to the planes cannot bring atoms together.
+    const double d = aCu / std::sqrt(2.0);
+    check(closestPair(fault.structure) > 0.99 * std::min(d, aCu / std::sqrt(3.0)),
+          "no atoms are brought into contact by the shift");
+
+    // The compensating fault at the periodic seam is NOT the same defect: the
+    // sequence wraps A -> A, which is an AA stack, not a second intrinsic
+    // fault. This is exactly why the excess energy of this cell cannot simply
+    // be halved, and the builder's warning is checked to say so.
+    check(sequence.front() == sequence.back(),
+          "the periodic seam carries an AA stack — a DIFFERENT fault from the "
+          "intrinsic one, so the two energies are not equal");
+    bool warnsAboutTwo = false;
+    for (const auto& warning : fault.warnings)
+        if (warning.find("TWO") != std::string::npos)
+            warnsAboutTwo = true;
+    check(warnsAboutTwo, "and the builder warns that there are two of them");
+}
+
+void testHcpBasalStackingFault()
+{
+    std::printf("HCP basal stacking fault\n");
+    const Structure parent = hcpBasal(6, 3.209, 5.211, 12); // Mg
+    check(stackingSequence(parent) == "ABABAB",
+          "the parent stacks ABABAB");
+
+    SolidInterfaceBuilder::Params params;
+    params.kind = SolidInterfaceBuilder::Kind::StackingFault;
+    params.axis = SolidInterfaceBuilder::Axis::C;
+    params.boundaryPosition = 0.5;
+    params.faultVector = {1.0 / 3.0, 1.0 / 3.0};
+    params.mergeTolerance = 0.0;
+
+    const auto fault = SolidInterfaceBuilder::generate({parent}, params);
+    const std::string sequence = stackingSequence(fault.structure);
+    check(fault.structure.size() == parent.size(),
+          "atom count is preserved");
+    // Layers 3,4,5 are B,A,B and each advances one hollow: B->C, A->B, B->C.
+    // The cell therefore reads A B A | C B C — the I2-type basal fault, whose
+    // signature is exactly the FCC-like ...ABAC... segment embedded in ABAB.
+    check(sequence == "ABACBC",
+          std::string("the shift introduces the C layer a basal fault is "
+                      "defined by (got ")
+              + sequence + ")");
+    bool basalClosePacked = true;
+    for (std::size_t i = 0; i < sequence.size(); ++i)
+        basalClosePacked = basalClosePacked
+            && sequence[i] != sequence[(i + 1) % sequence.size()];
+    check(basalClosePacked,
+          "and the faulted stack is close packed everywhere, seam included");
+    check(closestPair(fault.structure) > 2.5,
+          "and no atoms are brought into contact");
+}
+
+void testFccTwinIsAMirror()
+{
+    std::printf("FCC {111} twin boundary is a mirror\n");
+    const double aCu = 3.615;
+    const Structure parent = fcc111(6, aCu, 29);
+
+    SolidInterfaceBuilder::Params params;
+    params.kind = SolidInterfaceBuilder::Kind::TwinBoundary;
+    params.axis = SolidInterfaceBuilder::Axis::C;
+    params.boundaryPosition = 0.5;
+    params.mergeTolerance = 0.0;
+
+    const auto twin = SolidInterfaceBuilder::generate({parent}, params);
+    check(twin.structure.size() == parent.size(),
+          "a mirror preserves the atom count");
+
+    // The defining property, checked on the COORDINATES rather than on the
+    // sequence: for every atom there is another atom at the reflection of its
+    // position through the twin plane. If the mirror were applied to the wrong
+    // half, or the plane atoms duplicated, this fails.
+    const auto& cell = twin.structure.cell();
+    int mirrored = 0;
+    for (const Atom& atom : twin.structure.atoms()) {
+        const Vec3 f = cell.cartesianToFractional(atom.position);
+        const auto wrap = [](double v) { return v - std::floor(v); };
+        // Reflection through z = boundaryPosition, in fractional coordinates.
+        const double reflected =
+            wrap(2.0 * params.boundaryPosition - wrap(f.z));
+        const Vec3 target =
+            cell.fractionalToCartesian(Vec3{f.x, f.y, reflected});
+        for (const Atom& other : twin.structure.atoms())
+            if (minimumImage(twin.structure, other.position, target) < 1e-6) {
+                ++mirrored;
+                break;
+            }
+    }
+    check(mirrored == static_cast<int>(twin.structure.size()),
+          "every atom has a partner at its reflection through the twin plane");
+
+    // A coherent twin is still close packed everywhere: no AA anywhere.
+    const std::string sequence = stackingSequence(twin.structure);
+    bool closePacked = true;
+    for (std::size_t i = 0; i < sequence.size(); ++i)
+        closePacked = closePacked
+            && sequence[i] != sequence[(i + 1) % sequence.size()];
+    check(closePacked,
+          std::string("the twinned stack has no AA anywhere, including across "
+                      "the periodic seam (got ")
+              + sequence + ")");
+    check(closestPair(twin.structure) > 0.99 * aCu / std::sqrt(2.0),
+          "and the boundary layer is not doubled — closest approach is still "
+          "the nearest-neighbour distance");
+}
+
+void testDiamondSiliconFault()
+{
+    std::printf("diamond silicon, {111} shift\n");
+    // Diamond is FCC with a two-atom basis, so the {111} stack is AaBbCc: the
+    // same close-packed sequence with a companion atom 1/4 of the interlayer
+    // spacing above each site. Built explicitly so the test exercises a
+    // multi-atom basis rather than a Bravais lattice.
+    const double aSi = 5.431;
+    const double d = aSi / std::sqrt(2.0);
+    const double h = aSi / std::sqrt(3.0);
+    const Vec3 a1{d, 0.0, 0.0};
+    const Vec3 a2{0.5 * d, std::sqrt(3.0) / 2.0 * d, 0.0};
+
+    Structure parent;
+    for (int layer = 0; layer < 6; ++layer) {
+        const double f = static_cast<double>(layer % 3) / 3.0;
+        for (int basis = 0; basis < 2; ++basis) {
+            Atom atom;
+            atom.atomicNumber = 14;
+            atom.position = a1 * f + a2 * f
+                + Vec3{0.0, 0.0, layer * h + basis * 0.25 * h};
+            parent.addAtom(atom);
+        }
+    }
+    parent.setCell(UnitCell(a1, a2, {0.0, 0.0, 6 * h}, {true, true, true}));
+
+    SolidInterfaceBuilder::Params params;
+    params.kind = SolidInterfaceBuilder::Kind::StackingFault;
+    params.axis = SolidInterfaceBuilder::Axis::C;
+    // The cut goes through the WIDE gap between basis pairs, not through a
+    // pair. A glide plane that splits the basis is not a stacking fault at
+    // all, and placing it there would be testing the builder against a request
+    // that has no crystallographic meaning.
+    params.boundaryPosition = (3.0 + 0.6) / 6.0;
+    params.faultVector = {1.0 / 3.0, 1.0 / 3.0};
+    params.mergeTolerance = 0.0;
+
+    const auto fault = SolidInterfaceBuilder::generate({parent}, params);
+    check(fault.structure.size() == parent.size(),
+          "the two-atom basis survives the shift intact");
+    // The basis pair must stay together: a shift that split it would move one
+    // sublattice and not the other.
+    int pairs = 0;
+    for (std::size_t i = 0; i < fault.structure.size(); i += 2) {
+        const double separation =
+            minimumImage(fault.structure, fault.structure.atoms()[i].position,
+                         fault.structure.atoms()[i + 1].position);
+        if (std::abs(separation - 0.25 * h) < 1e-6)
+            ++pairs;
+    }
+    check(pairs == 6, "and every basis pair keeps its internal separation");
+    check(closestPair(fault.structure) > 0.99 * 0.25 * h,
+          "no atoms are brought into contact");
+}
+
+void testAtomExactlyOnFaultPlane()
+{
+    std::printf("an atom lying exactly on the fault plane\n");
+    // Regression test for a real bug. The half-space test used a bare `<` on a
+    // fractional coordinate, so an atom sitting exactly on the boundary was
+    // assigned to whichever half the round trip through Cartesian rounded it
+    // into. Harmless for a Bravais lattice; for a multi-atom basis it split
+    // the basis, shifting one sublattice and not the other.
+    //
+    // Built so the FIRST atom of each pair lands exactly on the plane at 0.5.
+    const double h = 3.0;
+    const double d = 4.0;
+    Structure parent;
+    for (int layer = 0; layer < 6; ++layer)
+        for (int basis = 0; basis < 2; ++basis) {
+            Atom atom;
+            atom.atomicNumber = 14;
+            atom.position = {0.0, 0.0, layer * h + basis * 0.25 * h};
+            parent.addAtom(atom);
+        }
+    parent.setCell(UnitCell({d, 0, 0}, {0, d, 0}, {0, 0, 6 * h},
+                            {true, true, true}));
+
+    SolidInterfaceBuilder::Params params;
+    params.kind = SolidInterfaceBuilder::Kind::StackingFault;
+    params.axis = SolidInterfaceBuilder::Axis::C;
+    params.boundaryPosition = 0.5; // exactly the z of layer 3's first atom
+    params.faultVector = {1.0 / 3.0, 0.0};
+    params.mergeTolerance = 0.0;
+
+    const auto fault = SolidInterfaceBuilder::generate({parent}, params);
+
+    // Whichever side the on-plane atom is assigned to, its basis partner
+    // 0.25h above it must be assigned to the SAME side, or the pair is torn
+    // apart. That is the invariant; the choice of side is a convention.
+    bool pairsIntact = true;
+    for (std::size_t i = 0; i < fault.structure.size(); i += 2) {
+        const double separation =
+            minimumImage(fault.structure, fault.structure.atoms()[i].position,
+                         fault.structure.atoms()[i + 1].position);
+        pairsIntact = pairsIntact && std::abs(separation - 0.25 * h) < 1e-9;
+    }
+    check(pairsIntact,
+          "the basis pair straddling the plane is not torn apart by rounding");
+
+    // And the assignment is deterministic: an atom exactly on the plane joins
+    // the half that moves, so layer 3's pair is shifted along with 4 and 5.
+    const Vec3 delta = fault.structure.atoms()[6].position
+        - parent.atoms()[6].position;
+    check(delta.norm() > 1e-9,
+          "and an atom exactly on the plane is deterministically shifted");
+}
+
 int main()
 {
     testStackingFault();
     testTwinBoundary();
+    testAtomExactlyOnFaultPlane();
+    testFccIntrinsicStackingFault();
+    testHcpBasalStackingFault();
+    testFccTwinIsAMirror();
+    testDiamondSiliconFault();
     testBicrystal();
     testPolycrystal();
     testGrainCasts();

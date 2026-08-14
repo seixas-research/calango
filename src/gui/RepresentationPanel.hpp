@@ -60,7 +60,7 @@ private:
     /// "Appearance" tab: material, mode, colour-by, the editor icon row,
     /// atom/bond scales, gradient bond shading and the background colour.
     QWidget* buildAppearanceTab();
-    /// Re-fill the "Casting" combo from the viewport's cast list, then load
+    /// Re-fill the "Cast" combo from the viewport's cast list, then load
     /// the selected cast into the controls.
     void syncCastsFromViewport();
     /// Show the selected cast's settings in the controls without writing them

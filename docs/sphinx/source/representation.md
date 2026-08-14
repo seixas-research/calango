@@ -18,7 +18,7 @@ Read top-down, the panel answers *what you are styling* before *how*:
 | Row | What it does |
 |---|---|
 | {guilabel}`Background` | Viewport background color — first, because it frames how every color below reads. Distance fog, when enabled, fades into it. |
-| {guilabel}`Casting` | Which **cast** (atom group) the rows below apply to |
+| {guilabel}`Cast` | Which **cast** (atom group) the rows below apply to |
 | {guilabel}`Shading` | Which BRDF shades the scene — {guilabel}`Classic (Blinn-Phong)`, {guilabel}`PBR` or {guilabel}`Toon` |
 | {guilabel}`Style` | Surface finish — {guilabel}`Standard`, {guilabel}`Shiny`, {guilabel}`Matte`, {guilabel}`Glassy` |
 | {guilabel}`Mode` | Representation mode (below) |
@@ -75,7 +75,7 @@ applies to every lit mesh (atom spheres, bond cylinders, cell tubes), so a
 figure reads as one material — including in ray-traced exports
 ({doc}`/output`).
 
-% TODO screenshot: Representation dock beside a two-cast scene — CPK slab in one cast, ball-and-stick molecule in another, Casting dropdown open
+% TODO screenshot: Representation dock beside a two-cast scene — CPK slab in one cast, ball-and-stick molecule in another, Cast dropdown open
 ```{figure} /_static/img/representation_panel.png
 :alt: The Representation dock with per-cast styling controls
 :width: 92%
