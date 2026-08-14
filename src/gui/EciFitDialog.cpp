@@ -16,11 +16,13 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QShowEvent>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
 #include <cmath>
+#include <utility>
 
 namespace calango::gui {
 
@@ -40,6 +42,25 @@ EciFitDialog::EciFitDialog(QWidget* parent)
     intro->setWordWrap(true);
     outer->addWidget(intro);
 
+    // The normal route: pick a finished Cluster Expansion out of the session's
+    // own processes. Browsing for a directory is the fallback, for a run from
+    // another session or one restored from elsewhere — it used to be the only
+    // way in, which meant retyping a path the application already knew.
+    auto* processRow = new QHBoxLayout();
+    processRow->addWidget(new QLabel(tr("From process:"), this));
+    processCombo_ = new QComboBox(this);
+    // Elide rather than widen: proc_<n> directories are long absolute paths,
+    // and letting the combo size to them stretches the whole dialog.
+    processCombo_->setSizeAdjustPolicy(
+        QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    processCombo_->setMinimumContentsLength(28);
+    processRow->addWidget(processCombo_, 1);
+    processLoadButton_ = new QPushButton(tr("Load"), this);
+    connect(processLoadButton_, &QPushButton::clicked, this,
+            &EciFitDialog::loadSelectedProcess);
+    processRow->addWidget(processLoadButton_);
+    outer->addLayout(processRow);
+
     auto* sourceRow = new QHBoxLayout();
     sourceLabel_ = new QLabel(tr("No run loaded."), this);
     sourceLabel_->setWordWrap(true);
@@ -48,6 +69,8 @@ EciFitDialog::EciFitDialog(QWidget* parent)
     connect(browseButton, &QPushButton::clicked, this, &EciFitDialog::browse);
     sourceRow->addWidget(browseButton);
     outer->addLayout(sourceRow);
+
+    refreshProcessSources(); // empty-and-disabled until a provider is set
 
     auto* options = new QGroupBox(tr("Fit"), this);
     auto* form = new QFormLayout(options);
@@ -121,6 +144,77 @@ EciFitDialog::EciFitDialog(QWidget* parent)
     outer->addLayout(buttons);
 
     resize(720, 620);
+}
+
+void EciFitDialog::setProcessSourceProvider(
+    std::function<std::vector<ProcessSource>()> provider)
+{
+    processProvider_ = std::move(provider);
+    refreshProcessSources();
+}
+
+void EciFitDialog::showEvent(QShowEvent* event)
+{
+    QDialog::showEvent(event);
+    refreshProcessSources();
+}
+
+void EciFitDialog::refreshProcessSources()
+{
+    if (!processCombo_)
+        return;
+
+    // The current selection is restored by DIRECTORY, not by index: a run that
+    // finished since the last refresh is prepended, so every index shifts.
+    const QString previous = processCombo_->currentData().toString();
+    processCombo_->clear();
+
+    const auto sources = processProvider_ ? processProvider_()
+                                          : std::vector<ProcessSource>{};
+    for (const auto& source : sources) {
+        // Directory in the tooltip rather than the text: two runs of the same
+        // wizard carry the same label, and proc_<n> is what tells them apart.
+        processCombo_->addItem(source.label, source.directory);
+        processCombo_->setItemData(processCombo_->count() - 1,
+                                   source.directory, Qt::ToolTipRole);
+    }
+
+    const bool any = !sources.empty();
+    if (!any) {
+        // A disabled placeholder rather than an empty combo: an empty control
+        // reads as "still loading", and the reason there is nothing to pick is
+        // worth stating.
+        processCombo_->addItem(tr("No finished run with cluster_expansion.json"));
+    }
+    processCombo_->setEnabled(any);
+    if (processLoadButton_)
+        processLoadButton_->setEnabled(any);
+
+    if (any && !previous.isEmpty()) {
+        const int index = processCombo_->findData(previous);
+        if (index >= 0)
+            processCombo_->setCurrentIndex(index);
+    }
+}
+
+void EciFitDialog::loadSelectedProcess()
+{
+    if (!processCombo_)
+        return;
+    const QString directory = processCombo_->currentData().toString();
+    if (directory.isEmpty())
+        return;
+
+    QString error;
+    if (!loadDirectory(directory, &error)) {
+        QMessageBox::warning(this, tr("Effective Cluster Interactions"), error);
+        // Re-scan rather than leave the stale entry selectable: the usual
+        // reason a listed run fails to load is that its directory was purged
+        // between the scan and the click.
+        refreshProcessSources();
+        return;
+    }
+    fit();
 }
 
 void EciFitDialog::browse()

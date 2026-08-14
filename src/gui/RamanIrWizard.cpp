@@ -52,26 +52,25 @@ QWidget* RamanIrWizard::buildSettingsPage()
     auto* layout = new QVBoxLayout(page);
 
     auto* intro = new QLabel(
-        tr("Both spectra describe the <b>same Γ-point phonons</b>; they differ "
-           "only in which electronic response couples to a mode.<br><br>"
-           "<b>Infrared</b> intensity is the change in macroscopic "
-           "<i>polarization</i> a mode produces, "
-           "|Σ<sub>k</sub> Z*<sub>k</sub>·e<sub>k</sub>/√M<sub>k</sub>|². "
-           "In a periodic crystal there is no molecular dipole to "
-           "differentiate, so the Born effective charges Z* are the only "
-           "route to it. Under GPAW they are inherited — supplying a Born "
-           "Charges run is what turns the IR column on, and without one the "
-           "phonons and the Raman spectrum are computed as usual with every IR "
-           "intensity reported as zero. VASP and Quantum ESPRESSO compute Z* "
-           "in the same linear-response run that gives the force constants, so "
-           "there is nothing to select.<br><br>"
-           "<b>Raman</b> activity is built from ∂χ/∂Q, the change in "
-           "<i>polarizability</i> — the same response the Optics module "
-           "evaluates, taken in the static limit and differentiated by finite "
-           "displacement."),
+        tr("Both spectra describe the <b>same Γ-point phonons</b>; they "
+           "differ only in which electronic response couples to a mode."),
         page);
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
+    intro->setToolTip(
+        tr("INFRARED intensity is the change in macroscopic polarization a "
+           "mode produces, |Σ_k Z*_k·e_k/√M_k|². A periodic crystal has no "
+           "molecular dipole to differentiate, so the Born effective charges "
+           "Z* are the only route to it.\n\n"
+           "Under GPAW they are inherited: supplying a Born Charges run is "
+           "what turns the IR column on, and without one the phonons and the "
+           "Raman spectrum are computed as usual with every IR intensity "
+           "reported as zero. VASP and Quantum ESPRESSO compute Z* in the same "
+           "linear-response run that gives the force constants, so there is "
+           "nothing to select.\n\n"
+           "RAMAN activity is built from ∂χ/∂Q, the change in polarizability — "
+           "the same response the Optics module evaluates, taken in the static "
+           "limit and differentiated by finite displacement."));
     layout->addWidget(intro);
 
     // -- Engine ---------------------------------------------------------------
@@ -167,14 +166,16 @@ QWidget* RamanIrWizard::buildSettingsPage()
     vaspGroup_ = new QGroupBox(tr("VASP Ground State"), page);
     auto* vaspForm = new QFormLayout(vaspGroup_);
     auto* vaspNote = new QLabel(
-        tr("Self-contained. One IBRION=8 run with LEPSILON returns the force "
-           "constants, every ion's Z* and ε∞ together — so the infrared "
-           "spectrum costs a single job, and no Born Charges run has to be "
-           "selected. EDIFF is forced to 1e-8: linear response is a "
-           "derivative of the ground state, so its noise is the SCF's noise "
-           "amplified. POTCARs come from Preferences → External Files."),
+        tr("Self-contained: one IBRION=8 run with LEPSILON returns the force "
+           "constants, every ion's Z* and ε∞ together."),
         vaspGroup_);
     vaspNote->setWordWrap(true);
+    vaspNote->setToolTip(
+        tr("The infrared spectrum therefore costs a single job, and no Born "
+           "Charges run has to be selected.\n\n"
+           "EDIFF is forced to 1e-8: linear response is a derivative of the "
+           "ground state, so its noise is the SCF's noise amplified.\n\n"
+           "POTCARs come from Preferences → External Files."));
     vaspForm->addRow(vaspNote);
     vaspEncutSpin_ = new QDoubleSpinBox(vaspGroup_);
     vaspEncutSpin_->setRange(100.0, 2000.0);
@@ -203,19 +204,20 @@ QWidget* RamanIrWizard::buildSettingsPage()
     espressoGroup_ = new QGroupBox(tr("Quantum ESPRESSO Ground State"), page);
     auto* qeForm = new QFormLayout(espressoGroup_);
     auto* qeNote = new QLabel(
-        tr("Self-contained, and the cheapest of the three: one <code>ph.x</code> "
-           "run at q = 0 returns the force constants, Z*, ε∞ and — with "
-           "<code>lraman</code> — the Raman tensor as an analytic third-order "
-           "response, so there is no displacement amplitude to trade off "
-           "against SCF noise.<br><br>"
-           "<b>The Raman half needs NORM-CONSERVING pseudopotentials.</b> "
-           "<code>lraman</code> is not implemented for ultrasoft or PAW sets; "
-           "<code>ph.x</code> declines rather than approximating, and the run "
-           "stops with that message. The infrared half is unaffected. Edit the "
-           "pseudopotential map in the generated script before running."),
+        tr("Self-contained, and the cheapest of the three. <b>The Raman half "
+           "needs NORM-CONSERVING pseudopotentials.</b>"),
         espressoGroup_);
     qeNote->setWordWrap(true);
     qeNote->setTextFormat(Qt::RichText);
+    qeNote->setToolTip(
+        tr("One ph.x run at q = 0 returns the force constants, Z*, ε∞ and — "
+           "with lraman — the Raman tensor as an analytic third-order "
+           "response, so there is no displacement amplitude to trade off "
+           "against SCF noise.\n\n"
+           "lraman is not implemented for ultrasoft or PAW sets; ph.x declines "
+           "rather than approximating, and the run stops with that message. "
+           "The infrared half is unaffected. Edit the pseudopotential map in "
+           "the generated script before running."));
     qeForm->addRow(qeNote);
     qeEcutwfcSpin_ = new QDoubleSpinBox(espressoGroup_);
     qeEcutwfcSpin_->setRange(10.0, 400.0);
@@ -480,20 +482,21 @@ void RamanIrWizard::updateCostEstimate()
     }
     if (raman) {
         costLabel_->setText(
-            tr("<b>%1 atoms</b> → %2 displaced force evaluations for the "
-               "Hessian, plus %2 self-consistent runs each followed by six "
-               "dielectric evaluations for ∂α/∂Q.<br>"
-               "<i>The Raman half dominates: budget accordingly.</i>")
+            tr("<b>%1 atoms</b> → %2 displaced force evaluations, plus %2 "
+               "SCF runs with six dielectric evaluations each for ∂α/∂Q.")
                 .arg(atoms)
                 .arg(displacements));
+        costLabel_->setToolTip(
+            tr("The Raman half dominates this total: budget accordingly."));
         return;
     }
     costLabel_->setText(
-        tr("<b>%1 atoms</b> → %2 displaced force evaluations for the Hessian. "
-           "The Z* tensors are inherited, so no further self-consistent work "
-           "is needed for the IR spectrum.")
+        tr("<b>%1 atoms</b> → %2 displaced force evaluations for the Hessian; "
+           "the Z* tensors are inherited.")
             .arg(atoms)
             .arg(displacements));
+    costLabel_->setToolTip(
+        tr("No further self-consistent work is needed for the IR spectrum."));
 }
 
 void RamanIrWizard::setDensityBaselines(

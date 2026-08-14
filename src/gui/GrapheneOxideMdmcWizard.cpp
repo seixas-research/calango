@@ -47,8 +47,9 @@ void GrapheneOxideMdmcWizard::setSubstrate(int functionalGroups,
         // run time, after the queue and the engine startup.
         substrateLabel_->setText(
             tr("<b>This structure carries no functional groups.</b> MDMC "
-               "rearranges an EXISTING decoration — it does not create one. Go "
-               "back and raise the oxidation level."));
+               "rearranges an existing decoration; it does not create one."));
+        substrateLabel_->setToolTip(
+            tr("Go back and raise the oxidation level."));
     } else {
         substrateLabel_->setText(
             tr("%n functional group(s) on %1 basal and %2 edge carbons. Each "
@@ -278,13 +279,14 @@ void GrapheneOxideMdmcWizard::refreshCost()
         static_cast<long long>(cycles_->value())
         * std::max(1, mdSteps_->value());
     costLabel_->setText(
-        tr("<b>%1 energy evaluations</b> (%2 cycles × %3 MD steps). That is "
-           "the cost of the run: seconds each on a machine-learning potential, "
-           "minutes each on DFT — with DFT, a few hundred cycles is a large "
-           "calculation, not a quick check.")
+        tr("<b>%1 energy evaluations</b> (%2 cycles × %3 MD steps).")
             .arg(evaluations)
             .arg(cycles_->value())
             .arg(std::max(1, mdSteps_->value())));
+    costLabel_->setToolTip(
+        tr("Seconds each on a machine-learning potential, minutes each on DFT "
+           "— with DFT, a few hundred cycles is a large calculation, not a "
+           "quick check."));
 }
 
 core::GrapheneOxideMdmcConfig GrapheneOxideMdmcWizard::collectConfig() const

@@ -4,6 +4,7 @@
 
 #include <QDateTime>
 #include <QDesktopServices>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QKeyEvent>
@@ -364,6 +365,28 @@ void ProcessManagerPanel::setTaskStatus(int id, Status status)
 int ProcessManagerPanel::taskCount() const
 {
     return tree_->topLevelItemCount();
+}
+
+std::vector<ProcessManagerPanel::CompletedRun>
+ProcessManagerPanel::completedRunsWith(const QString& fileName) const
+{
+    std::vector<CompletedRun> runs;
+    // Walked backwards so the newest run is offered first: rows are appended
+    // in registration order, and the run someone wants to load is almost
+    // always the one that just finished.
+    for (int row = tree_->topLevelItemCount() - 1; row >= 0; --row) {
+        const QTreeWidgetItem* item = tree_->topLevelItem(row);
+        if (static_cast<Status>(item->data(0, kStatusRole).toInt())
+            != Status::Completed)
+            continue;
+        const QString directory = item->data(0, kDirRole).toString();
+        if (directory.isEmpty())
+            continue;
+        if (!QFileInfo::exists(directory + QLatin1Char('/') + fileName))
+            continue;
+        runs.push_back({item->text(ColTask), directory});
+    }
+    return runs;
 }
 
 ProcessManagerPanel::Status ProcessManagerPanel::rowStatus(int row) const

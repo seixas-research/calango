@@ -41,17 +41,17 @@ QWidget* XasWizard::buildSettingsPage()
     auto* layout = new QVBoxLayout(page);
 
     auto* intro = new QLabel(
-        tr("An X-ray absorption spectrum is a transition out of a <b>core "
-           "level</b> of one atom, so it needs a PAW dataset with a hole in "
-           "that level — and none ships with GPAW. The generated script builds "
-           "one for the element below, runs a ground state that uses it on the "
-           "chosen atom, and evaluates the spectrum from those "
-           "wavefunctions.<br><br>"
-           "Following the GPAW XAS tutorial. Note that <code>gpaw.xas</code> "
-           "runs on GPAW's legacy engine, so this is the one script Calango "
-           "generates that does not enable the new one."),
+        tr("A transition out of a <b>core level</b>, so it needs a PAW "
+           "dataset with a hole in that level — none ships with GPAW."),
         page);
     intro->setWordWrap(true);
+    intro->setToolTip(
+        tr("The generated script builds the core-hole dataset for the element "
+           "below, runs a ground state that uses it on the chosen atom, and "
+           "evaluates the spectrum from those wavefunctions.\n\n"
+           "Following the GPAW XAS tutorial. gpaw.xas runs on GPAW's legacy "
+           "engine, so this is the one script Calango generates that does not "
+           "enable the new one."));
     intro->setTextFormat(Qt::RichText);
     layout->addWidget(intro);
 

@@ -2415,7 +2415,10 @@ int main(int argc, char** argv)
         };
         const auto drude = boxNamed(QStringLiteral("Drude"));
         const auto tetra = boxNamed(QStringLiteral("Tetrahedron"));
-        const auto ibz = boxNamed(QStringLiteral("irreducible BZ"));
+        // "IBZ", not "irreducible BZ": the label was shortened to "Use IBZ
+        // symmetry" when the wrapped explanatory paragraph under it was
+        // dropped for clipping the page.
+        const auto ibz = boxNamed(QStringLiteral("IBZ"));
         check(drude != boxes.end(),
               std::string(mode) + ": offers the Drude term");
         check(tetra != boxes.end(),

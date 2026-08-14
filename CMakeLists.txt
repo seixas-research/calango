@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.16
+    VERSION 26.8.17
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -2911,8 +2911,22 @@ set(CALANGO_EMBEDDED_PYTHON_DIR "" CACHE PATH
 
 include(GNUInstallDirs)
 
+# The offline manual that Help → User Guide opens. MainWindow::openUserGuide()
+# looks for it relative to applicationDirPath(), so the two destinations below
+# are the ones it probes — keep them in step with kCandidates there.
+#
+# OPTIONAL on purpose: the PDF is a build product of the LaTeX sources, and a
+# checkout whose copy is a cloud placeholder (or a CI job with no TeX) must
+# still install. The menu item degrades to the online manual when it is absent,
+# so a missing file costs a fallback, not a broken build.
+set(CALANGO_USER_GUIDE_PDF
+    "${CMAKE_CURRENT_SOURCE_DIR}/docs/tex/user_guide/calango_user_guide.pdf")
+
 if(APPLE AND CALANGO_MACOS_BUNDLE)
     install(TARGETS calango BUNDLE DESTINATION .)
+
+    install(FILES "${CALANGO_USER_GUIDE_PDF}"
+            DESTINATION "calango.app/Contents/Resources/doc" OPTIONAL)
 
     # macdeployqt copies the Qt frameworks/plugins into the bundle and
     # rewrites the load paths. It runs at install/package time against the
@@ -2980,6 +2994,10 @@ elseif(UNIX AND NOT APPLE)
     # Shipped so a cluster job script can analyse its own run in place.
     install(TARGETS calango-elph-analyze
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
+
+    # Help → User Guide; see the note beside CALANGO_USER_GUIDE_PDF above.
+    install(FILES "${CALANGO_USER_GUIDE_PDF}"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/calango/doc OPTIONAL)
 
     # Desktop integration: launcher entry, MIME types for .calproj project
     # files and .extxyz structures (both reach MainWindow::loadFile via the

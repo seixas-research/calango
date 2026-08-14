@@ -84,17 +84,19 @@ QWidget* CddWizard::buildSettingsPage()
 
     auto* intro = new QLabel(
         tr("<b>Δρ = ρ(A+B) − ρ(A) − ρ(B)</b> — where the charge went when two "
-           "fragments were brought together. Each density on its own is "
-           "dominated by the atomic cores and shows nothing; the difference "
-           "shows the bond.<br><br>"
-           "The two fragments are recomputed from the selected run's own saved "
-           "wavefunctions, in the same cell and with the same parameters, so "
-           "the three terms cannot drift apart. Nothing is relaxed: Δρ is "
-           "defined at one geometry, and letting a fragment move would mix "
-           "charge transfer with structural rearrangement."),
+           "fragments were brought together. The difference shows the bond."),
         page);
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
+    intro->setToolTip(
+        tr("Each density on its own is dominated by the atomic cores and shows "
+           "nothing.\n\n"
+           "The two fragments are recomputed from the selected run's own saved "
+           "wavefunctions, in the same cell and with the same parameters, so "
+           "the three terms cannot drift apart.\n\n"
+           "Nothing is relaxed: Δρ is defined at one geometry, and letting a "
+           "fragment move would mix charge transfer with structural "
+           "rearrangement."));
     layout->addWidget(intro);
 
     auto* sourceGroup = new QGroupBox(tr("Single-point calculation"), page);
@@ -149,15 +151,16 @@ QWidget* CddWizard::buildSecondSettingsPage()
 
     auto* intro = new QLabel(
         tr("Split the structure into the two fragments whose interaction you "
-           "want to see. Select atoms and move them across; double-clicking a "
-           "row moves it too.<br><br>"
-           "The partition is exhaustive — every atom belongs to exactly one "
-           "side — because Δρ is only zero-summing if A and B together are the "
-           "whole system. A fragment left out would show up as a spurious hole "
-           "in the difference."),
+           "want to see. Every atom must end up on exactly one side."),
         page);
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
+    intro->setToolTip(
+        tr("Select atoms and move them across; double-clicking a row moves it "
+           "too.\n\n"
+           "The partition is exhaustive because Δρ only sums to zero if A and "
+           "B together are the whole system. A fragment left out shows up as a "
+           "spurious hole in the difference."));
     layout->addWidget(intro);
 
     auto* columns = new QHBoxLayout;

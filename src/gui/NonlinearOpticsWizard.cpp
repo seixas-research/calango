@@ -51,22 +51,23 @@ QWidget* NonlinearOpticsWizard::buildSettingsPage()
 
     auto* intro = new QLabel(
         tr("Second-order response from GPAW's <code>gpaw.nlopt</code> module, "
-           "within the independent-particle approximation.<br><br>"
-           "<b>χ⁽²⁾(−2ω; ω, ω)</b> is second-harmonic generation: two photons "
-           "of energy ħω in, one of 2ħω out. <b>σ⁽²⁾(0; ω, −ω)</b> is the "
-           "shift current — the DC photocurrent a homogeneous illuminated "
-           "crystal carries with no junction and no field, the bulk "
-           "photovoltaic effect.<br><br>"
-           "Both are <b>odd-rank tensors and vanish identically in any "
-           "centrosymmetric crystal</b>. The generated script tests the cell "
-           "for an inversion centre before it converges anything and says so, "
-           "because what a finite k-mesh returns in that case looks like a "
-           "spectrum and is numerical residue.<br><br>"
-           "The momentum matrix elements are built <b>once</b> and reused, so "
-           "a second tensor component costs a band sum rather than another "
-           "ground state."),
+           "within the independent-particle approximation. <b>Vanishes in any "
+           "centrosymmetric crystal.</b>"),
         page);
     intro->setWordWrap(true);
+    intro->setToolTip(
+        tr("χ⁽²⁾(−2ω; ω, ω) is second-harmonic generation: two photons of "
+           "energy ħω in, one of 2ħω out.\n\n"
+           "σ⁽²⁾(0; ω, −ω) is the shift current — the DC photocurrent a "
+           "homogeneous illuminated crystal carries with no junction and no "
+           "field, the bulk photovoltaic effect.\n\n"
+           "Both are odd-rank tensors. The generated script tests the cell for "
+           "an inversion centre before it converges anything and says so, "
+           "because what a finite k-mesh returns in that case looks like a "
+           "spectrum and is numerical residue.\n\n"
+           "The momentum matrix elements are built once and reused, so a "
+           "second tensor component costs a band sum rather than another "
+           "ground state."));
     intro->setTextFormat(Qt::RichText);
     layout->addWidget(intro);
 
@@ -198,14 +199,16 @@ QWidget* NonlinearOpticsWizard::buildSettingsPage()
     auto* bandGroup = new QGroupBox(tr("Band Summation"), page);
     auto* bandForm = new QFormLayout(bandGroup);
     auto* bandNote = new QLabel(
-        tr("The ground state on the previous stage is converged with "
-           "<code>nbands=\"nao\"</code> and an explicit converged-band count, "
-           "because these sums run over intermediate states and the empty "
-           "manifold an ordinary SCF leaves behind is unconverged noise. The "
-           "window below narrows what the matrix elements are built for; "
-           "leave it at the defaults unless memory forces otherwise."),
+        tr("The ground state is converged with an explicit band count; these "
+           "sums run over intermediate states."),
         bandGroup);
     bandNote->setWordWrap(true);
+    bandNote->setToolTip(
+        tr("nbands=\"nao\" with an explicit converged-band count, because the "
+           "empty manifold an ordinary SCF leaves behind is unconverged "
+           "noise.\n\n"
+           "The window below narrows what the matrix elements are built for; "
+           "leave it at the defaults unless memory forces otherwise."));
     bandNote->setTextFormat(Qt::RichText);
     bandForm->addRow(bandNote);
 
@@ -255,13 +258,15 @@ QWidget* NonlinearOpticsWizard::buildSettingsPage()
     auto* sheetGroup = new QGroupBox(tr("2D Sheet"), page);
     auto* sheetForm = new QFormLayout(sheetGroup);
     auto* sheetNote = new QLabel(
-        tr("A supercell χ⁽²⁾ is diluted by whatever vacuum was used — double "
-           "the vacuum and the number halves, so it is not a property of the "
-           "sheet. Multiplying the vacuum thickness back in gives the SHEET "
-           "susceptibility χ⁽²⁾ × L in nm²/V, which is what the 2D literature "
-           "quotes and what the GPAW tutorial plots."),
+        tr("A supercell χ⁽²⁾ is diluted by the vacuum used, so it is not a "
+           "property of the sheet."),
         sheetGroup);
     sheetNote->setWordWrap(true);
+    sheetNote->setToolTip(
+        tr("Double the vacuum and the number halves. Multiplying the vacuum "
+           "thickness back in gives the SHEET susceptibility χ⁽²⁾ × L in "
+           "nm²/V, which is what the 2D literature quotes and what the GPAW "
+           "tutorial plots."));
     sheetForm->addRow(sheetNote);
     vacuumAxisCombo_ = new QComboBox(sheetGroup);
     vacuumAxisCombo_->addItem(tr("(none — bulk crystal)"), -1);

@@ -215,9 +215,10 @@ void InterfaceRegionPage::refresh()
     if (!wizard_->substrate || !wizard_->substrate->cell().isDefined()) {
         summaryLabel_->setText(
             tr("<b>No periodic cell.</b><br>An interface region is opened "
-               "along a lattice vector, so the structure needs one. Add a cell "
-               "(Structure panel → Add vacuum) or start from a surface slab "
-               "(Build → Surface Slab…)."));
+               "along a lattice vector, so the structure needs one."));
+        summaryLabel_->setToolTip(
+            tr("Add a cell (Structure panel → Add vacuum) or start from a "
+               "surface slab (Build → Surface Slab…)."));
         if (hadValid)
             Q_EMIT completeChanged();
         return;
@@ -236,11 +237,12 @@ void InterfaceRegionPage::refresh()
     if (fill <= 0.0) {
         summaryLabel_->setText(
             tr("<b>The clearance consumes the whole region.</b><br>Twice the "
-               "surface clearance (%1 Å) is at least the region thickness "
-               "(%2 Å), so there is nowhere to put a molecule. Widen the "
-               "region or reduce the clearance.")
+               "clearance (%1 Å) is at least the thickness (%2 Å).")
                 .arg(2.0 * clearanceSpin_->value(), 0, 'f', 2)
                 .arg(thicknessSpin_->value(), 0, 'f', 2));
+        summaryLabel_->setToolTip(
+            tr("There is nowhere to put a molecule. Widen the region or reduce "
+               "the clearance."));
         if (hadValid)
             Q_EMIT completeChanged();
         return;

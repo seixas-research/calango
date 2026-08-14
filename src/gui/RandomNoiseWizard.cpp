@@ -43,13 +43,7 @@ QWidget* RandomNoiseWizard::buildSettingsPage()
 
     auto* note = new QLabel(
         tr("Displace the structure at random, many times over, and evaluate "
-           "every copy. What comes back is a <b>distribution</b> — the spread "
-           "of energies tells you how steep the well around this geometry is, "
-           "and whether the amplitude below is still small enough to be in it. "
-           "The ensemble doubles as machine-learning training data, which is "
-           "the other reason to build one.<br><br>"
-           "Frame 0 is always the unperturbed structure, so the spread has a "
-           "reference to be measured against."),
+           "every copy. What comes back is a <b>distribution</b>."),
         page);
     note->setWordWrap(true);
     note->setTextFormat(Qt::RichText);
@@ -188,10 +182,8 @@ QWidget* RandomNoiseWizard::buildSecondSettingsPage()
     auto* layout = new QVBoxLayout(page);
 
     auto* note = new QLabel(
-        tr("The run evaluates each structure once, at the geometry it was "
-           "generated with — nothing is relaxed, which is the point: relaxing "
-           "would walk every member back to the same minimum and destroy the "
-           "distribution."),
+        tr("Each structure is evaluated once, at the geometry it was "
+           "generated with. Nothing is relaxed."),
         page);
     note->setWordWrap(true);
     layout->addWidget(note);
@@ -308,16 +300,19 @@ void RandomNoiseWizard::updateGenerationState()
         return;
     if (!ready) {
         generationStatus_->setText(
-            tr("<i>Press <b>Generate structures</b> to build the ensemble. "
-               "It opens in the viewport, so you can scrub through it before "
-               "committing any compute time to it.</i>"));
+            tr("<i>Press <b>Generate structures</b> to build the "
+               "ensemble.</i>"));
+        generationStatus_->setToolTip(
+            tr("It opens in the viewport, so you can scrub through it before "
+               "committing any compute time to it."));
         return;
     }
     generationStatus_->setText(
-        tr("<b>%1 structures ready</b> (frame 0 is the unperturbed reference). "
-           "Regenerate after changing anything above — the run uses the last "
-           "ensemble generated, not the settings currently on screen.")
+        tr("<b>%1 structures ready</b> (frame 0 is the unperturbed reference).")
             .arg(frames_.size()));
+    generationStatus_->setToolTip(
+        tr("Regenerate after changing anything above: the run uses the last "
+           "ensemble generated, not the settings currently on screen."));
 }
 
 core::RandomNoiseRunConfig RandomNoiseWizard::runConfig() const

@@ -64,9 +64,11 @@ QWidget* ClusterExpansionWizard::buildSettingsPage()
     if (frames_.size() < 2) {
         summaryLabel_->setStyleSheet(QStringLiteral("color: #d9534f;"));
         summaryLabel_->setText(
-            tr("This document holds a single structure. The batch will still "
-               "run, but a convex hull needs several compositions — open the "
-               "trajectory produced by Build → Cluster Expansion first."));
+            tr("This document holds a single structure; a convex hull needs "
+               "several compositions."));
+        summaryLabel_->setToolTip(
+            tr("The batch will still run. For a hull, open the trajectory "
+               "produced by Build → Cluster Expansion first."));
     } else {
         summaryLabel_->setText(
             tr("%1 configurations will be relaxed in sequence, one calculator "
@@ -199,12 +201,14 @@ QWidget* ClusterExpansionWizard::buildSettingsPage()
 
     auto* hint = new QLabel(
         tr("On completion the Results panel gains a <b>Convex Hull</b> tab: "
-           "E_form vs x, with configurations on the hull (stable) drawn "
-           "filled and connected by tie-lines, and everything above it hollow "
-           "and labeled by its energy above the hull."),
+           "E_form vs x."),
         page);
     hint->setWordWrap(true);
     hint->setTextFormat(Qt::RichText);
+    hint->setToolTip(
+        tr("Configurations on the hull (stable) are drawn filled and connected "
+           "by tie-lines; everything above it is hollow and labeled by its "
+           "energy above the hull."));
     layout->addWidget(hint);
 
     // Any change to these alters the generated script.

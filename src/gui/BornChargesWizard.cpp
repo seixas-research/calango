@@ -56,18 +56,19 @@ QWidget* BornChargesWizard::buildSettingsPage()
     auto* baselineGroup = new QGroupBox(tr("Ground-State Baseline"), page);
     auto* baselineForm = new QFormLayout(baselineGroup);
     auto* baselineNote = new QLabel(
-        tr("The displacements are taken about the converged geometry of a "
-           "completed Single-Point Calculation, and every displaced run is "
-           "rebuilt from its calculator — so all of them use the settings you "
-           "already validated.<br><br>"
-           "Unlike Optics or Electronic Structure, this does <b>not</b> reuse "
-           "the baseline's density: Z* <i>is</i> the response of the charge "
-           "distribution to a displacement, so each geometry re-converges its "
-           "own SCF. The baseline fixes <i>what</i> is computed, not how much "
-           "work it is."),
+        tr("Displacements are taken about a completed Single-Point run's "
+           "geometry, reusing its calculator settings but <b>not</b> its "
+           "density."),
         baselineGroup);
     baselineNote->setWordWrap(true);
     baselineNote->setTextFormat(Qt::RichText);
+    baselineNote->setToolTip(
+        tr("Every displaced run is rebuilt from the baseline's calculator, so "
+           "all of them use settings you already validated.\n\n"
+           "Unlike Optics or Electronic Structure this cannot reuse the "
+           "baseline's density: Z* IS the response of the charge distribution "
+           "to a displacement, so each geometry re-converges its own SCF. The "
+           "baseline fixes what is computed, not how much work it is."));
     baselineForm->addRow(baselineNote);
     baselineCombo_ = new QComboBox(baselineGroup);
     baselineForm->addRow(tr("Baseline SCF (.gpw):"), baselineCombo_);
@@ -85,19 +86,21 @@ QWidget* BornChargesWizard::buildSettingsPage()
     layout->addStretch(1);
 
     auto* note = new QLabel(
-        tr("The Born effective charge <b>Z*<sub>k,αβ</sub> = (Ω/e) ∂P<sub>α</sub>"
-           " / ∂u<sub>kβ</sub></b> is the dynamical charge coupling an atomic "
-           "displacement to the macroscopic polarization.<br><br>"
-           "It is neither the formal ionic charge nor a scalar: it is a 3×3 "
-           "tensor per atom, and in ferroelectrics it routinely exceeds the "
-           "nominal valence twofold. It is what sets the LO-TO splitting and "
-           "the infrared intensities — a Γ-point phonon spectrum of a polar "
-           "insulator computed without it is wrong by construction.<br><br>"
-           "Computed by central finite differences of the Berry-phase "
-           "polarization, which requires a <b>periodic insulator</b>: the "
-           "polarization of a metal is not defined."),
+        tr("<b>Z*<sub>k,αβ</sub> = (Ω/e) ∂P<sub>α</sub>/∂u<sub>kβ</sub></b>, "
+           "the charge coupling a displacement to the polarization. Needs a "
+           "<b>periodic insulator</b>."),
         settingsGroup);
     note->setWordWrap(true);
+    note->setToolTip(
+        tr("Neither the formal ionic charge nor a scalar: a 3×3 tensor per "
+           "atom, which in ferroelectrics routinely exceeds the nominal "
+           "valence twofold.\n\n"
+           "It sets the LO-TO splitting and the infrared intensities — a "
+           "Γ-point phonon spectrum of a polar insulator computed without it "
+           "is wrong by construction.\n\n"
+           "Computed by central finite differences of the Berry-phase "
+           "polarization, which is why a metal is refused: its polarization is "
+           "not defined."));
     note->setTextFormat(Qt::RichText);
     form->addRow(note);
 

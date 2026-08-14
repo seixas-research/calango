@@ -52,27 +52,38 @@ QWidget* Defect2dWizard::buildSettingsPage()
     auto* page = new QWidget(this);
     auto* layout = new QVBoxLayout(page);
 
+    // Prose and formula are separate labels: the equation is reference
+    // material that has to stay on screen while the page is used, and it is
+    // not a "description" that can be shortened — only the prose around it is.
     auto* intro = new QLabel(
-        tr("<p>Formation energy of a defect in a monolayer, in each charge "
-           "state, as a function of the Fermi level:</p>"
-           "<p align='center'>E<sub>f</sub>[X<sup>q</sup>](E<sub>F</sub>) = "
-           "E<sub>tot</sub>[X<sup>q</sup>] − E<sub>tot</sub>[host] − "
-           "Σ<sub>i</sub> n<sub>i</sub>μ<sub>i</sub> + q(E<sub>VBM</sub> + "
-           "E<sub>F</sub>) + E<sub>corr</sub>(q)</p>"
-           "<p><b>E<sub>corr</sub> is not the bulk correction.</b> A charged "
-           "sheet in a slab supercell has no single dielectric constant to "
-           "divide by — the medium is the sheet inside and vacuum outside — "
-           "and its energy against the neutralizing background <i>diverges</i> "
-           "with the vacuum thickness rather than converging, so adding vacuum "
-           "does not settle the answer. The correction used here is that of "
-           "Komsa and Pasquarello: the Poisson equation ∇·(ε∇V) = −4πρ is "
-           "solved for a model charge in the sheet's own dielectric profile, "
-           "once with the supercell's periodicity and once for the isolated "
-           "sheet, and the difference is E<sub>corr</sub>.</p>"),
+        tr("Formation energy of a defect in a monolayer, in each charge state, "
+           "as a function of the Fermi level:"),
         page);
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
+    intro->setToolTip(
+        tr("E_corr is NOT the bulk correction. A charged sheet in a slab "
+           "supercell has no single dielectric constant to divide by — the "
+           "medium is the sheet inside and vacuum outside — and its energy "
+           "against the neutralizing background DIVERGES with the vacuum "
+           "thickness rather than converging, so adding vacuum does not settle "
+           "the answer.\n\n"
+           "The correction used here is Komsa and Pasquarello's: the Poisson "
+           "equation ∇·(ε∇V) = −4πρ is solved for a model charge in the "
+           "sheet's own dielectric profile, once with the supercell's "
+           "periodicity and once for the isolated sheet, and the difference is "
+           "E_corr."));
     layout->addWidget(intro);
+
+    auto* formula = new QLabel(
+        tr("<p align='center'>E<sub>f</sub>[X<sup>q</sup>](E<sub>F</sub>) = "
+           "E<sub>tot</sub>[X<sup>q</sup>] − E<sub>tot</sub>[host] − "
+           "Σ<sub>i</sub> n<sub>i</sub>μ<sub>i</sub> + q(E<sub>VBM</sub> + "
+           "E<sub>F</sub>) + E<sub>corr</sub>(q)</p>"),
+        page);
+    formula->setWordWrap(true);
+    formula->setTextFormat(Qt::RichText);
+    layout->addWidget(formula);
 
     // -- Inherited runs -----------------------------------------------------
     auto* sources = new QGroupBox(tr("Inherited Single-Point Calculations"),
@@ -125,14 +136,16 @@ QWidget* Defect2dWizard::buildSettingsPage()
 
     auto* speciesLabel = new QLabel(
         tr("<b>Exchanged species.</b> <i>Count</i> is how many atoms the "
-           "defect has that the host does not: −1 for a vacancy, +1 for an "
-           "adatom, and a substitution is two rows. μ is the reservoir the "
-           "species is exchanged with — it encodes the growth condition, so "
-           "the same defect has different formation energies under "
-           "chalcogen-rich and metal-rich growth."),
+           "defect has that the host does not; μ is the reservoir it is "
+           "exchanged with."),
         charges);
     speciesLabel->setWordWrap(true);
     speciesLabel->setTextFormat(Qt::RichText);
+    speciesLabel->setToolTip(
+        tr("Count: −1 for a vacancy, +1 for an adatom; a substitution is two "
+           "rows.\n\n"
+           "μ encodes the growth condition, so the same defect has different "
+           "formation energies under chalcogen-rich and metal-rich growth."));
     chargesForm->addRow(speciesLabel);
 
     speciesTable_ = new QTableWidget(0, 3, charges);
@@ -367,9 +380,11 @@ void Defect2dWizard::suggestSpecies()
         if (present.count(symbol) == 0)
             addSpeciesRow(symbol, 0, 0.0);
     consistencyNote_->setText(
-        tr("<i>Species of the open structure added with count 0 — set the "
-           "count for each one the defect actually exchanges (−1 removed, +1 "
-           "added) and leave the rest at zero.</i>"));
+        tr("<i>Species added with count 0 — set the count for each one the "
+           "defect exchanges.</i>"));
+    consistencyNote_->setToolTip(
+        tr("−1 for a species the defect removed, +1 for one it added; leave "
+           "the rest at zero."));
 }
 
 void Defect2dWizard::refreshNotes()
@@ -377,22 +392,29 @@ void Defect2dWizard::refreshNotes()
     if (consistencyNote_ && pristineCombo_ && neutralCombo_) {
         const QString host = pristineCombo_->currentData().toString();
         const QString defect = neutralCombo_->currentData().toString();
-        if (host.isEmpty() || defect.isEmpty())
+        // Braced: each branch now sets a tooltip as well as the text, and the
+        // tooltip has to match the branch — a stale one from the previous
+        // state would explain a message that is no longer on screen.
+        if (host.isEmpty() || defect.isEmpty()) {
             consistencyNote_->clear();
-        else if (host == defect)
+            consistencyNote_->setToolTip(QString());
+        } else if (host == defect) {
             consistencyNote_->setText(
                 tr("<b style='color:#d9534f;'>The same calculation is selected "
-                   "as both the host and the defect.</b> Every formation "
-                   "energy would come out as the chemical-potential term "
-                   "alone — pick the pristine supercell for one and the defect "
-                   "supercell for the other."));
-        else
+                   "as both the host and the defect.</b>"));
+            consistencyNote_->setToolTip(
+                tr("Every formation energy would come out as the "
+                   "chemical-potential term alone. Pick the pristine supercell "
+                   "for one and the defect supercell for the other."));
+        } else {
             consistencyNote_->setText(
                 tr("<i>Both cells must be the same size, with the same vacuum "
-                   "and the same settings: E<sub>tot</sub>[X<sup>q</sup>] − "
-                   "E<sub>tot</sub>[host] is a difference of two independent "
-                   "total energies, and it only means anything if everything "
-                   "except the defect is identical.</i>"));
+                   "and the same settings.</i>"));
+            consistencyNote_->setToolTip(
+                tr("E_tot[X^q] − E_tot[host] is a difference of two "
+                   "independent total energies, and it only means anything if "
+                   "everything except the defect is identical."));
+        }
     }
 
     if (!profileNote_ || !correctionCheck_)

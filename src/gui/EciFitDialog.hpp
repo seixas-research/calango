@@ -8,6 +8,7 @@
 
 #include <QDialog>
 #include <QString>
+#include <functional>
 #include <vector>
 
 class QComboBox;
@@ -42,6 +43,22 @@ public:
     /// Load a run directory (containing cluster_expansion.json).
     bool loadDirectory(const QString& directory, QString* error);
 
+    /// A finished run this dialog can load without a file dialog.
+    struct ProcessSource {
+        QString label;
+        QString directory;
+    };
+    /// Supplies the finished runs offered in the "From process" row.
+    ///
+    /// A callback rather than a list, and rather than a ProcessManagerPanel
+    /// pointer: the dialog stays ignorant of where runs come from (so it is
+    /// constructible in a test with no panel at all), and the list is pulled
+    /// fresh every time the dialog is shown, so a cluster expansion that
+    /// finishes while this is open appears on the next open rather than being
+    /// frozen at construction.
+    void setProcessSourceProvider(
+        std::function<std::vector<ProcessSource>()> provider);
+
     /// The fitted result, valid once `fit()` has succeeded.
     const core::EciFitResult& result() const { return result_; }
     /// Nearest-neighbour pair ECI, the number the CVM solver consumes.
@@ -52,13 +69,25 @@ Q_SIGNALS:
     /// Emitted by "Send to CVM…" with the nearest-neighbour pair ECI in eV.
     void sendToCvmRequested(double pairEci);
 
+protected:
+    /// Repopulates the process list, so it reflects what has finished by the
+    /// time the dialog is actually put on screen.
+    void showEvent(QShowEvent* event) override;
+
 private Q_SLOTS:
     void browse();
     void fit();
     void sendToCvm();
+    /// Load the run selected in the process combo, skipping the file dialog.
+    void loadSelectedProcess();
 
 private:
     void refreshTable();
+    void refreshProcessSources();
+
+    QComboBox* processCombo_ = nullptr;
+    QPushButton* processLoadButton_ = nullptr;
+    std::function<std::vector<ProcessSource>()> processProvider_;
 
     QComboBox* methodCombo_ = nullptr;
     QSpinBox* foldsSpin_ = nullptr;

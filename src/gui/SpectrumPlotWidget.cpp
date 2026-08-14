@@ -63,15 +63,18 @@ bool SpectrumPlotWidget::renderTo(QPainter& p, QSize size) const
 
     const double W = size.width();
     const double H = size.height();
-    const QRectF plot(70.0, 24.0, W - 70.0 - 20.0, H - 24.0 - 52.0);
 
-    if (x_.empty() || series_.empty() || plot.width() < 20.0
-        || plot.height() < 20.0) {
+    const auto drawEmpty = [&] {
         p.setPen(QColor(120, 120, 120));
         p.drawText(QRect(QPoint(0, 0), size), Qt::AlignCenter,
                    QObject::tr("No data to display"));
         return false;
-    }
+    };
+
+    // Ranges are needed BEFORE the plot rect now, because the left margin is
+    // derived from the tick labels and those depend on the y range.
+    if (x_.empty() || series_.empty())
+        return drawEmpty();
 
     // Data ranges (ignoring non-finite samples such as poles in the loss fn).
     double xMin = x_.front();
@@ -120,6 +123,42 @@ bool SpectrumPlotWidget::renderTo(QPainter& p, QSize size) const
     const double pad = (yMax - yMin) * 0.06;
     yMin -= pad;
     yMax += pad;
+
+    // Left margin measured rather than assumed.
+    //
+    // It carries two things side by side: the rotated y-axis title, and the
+    // column of tick labels right-aligned against the axis. A fixed 70 px held
+    // neither reliably — tick values print in scientific notation, and
+    // "2.673e+06" is about 62 px in the default axis font, so the numbers grew
+    // leftward into the strip the title is drawn in and the two overlapped,
+    // striking the title through the numbers (an absorption spectrum in cm⁻¹
+    // reaches 1e6 routinely, so this was the common case, not the corner).
+    //
+    // Measuring the labels that will actually be drawn fixes it for any
+    // combination of range, unit and axis font, including a user-chosen one.
+    const int ticks = 5;
+    const QFontMetricsF axisMetrics(style_.axisFont());
+    double widestTick = 0.0;
+    for (int i = 0; i <= ticks; ++i) {
+        const double fy = yMin + (yMax - yMin) * i / ticks;
+        widestTick = std::max(
+            widestTick,
+            axisMetrics.horizontalAdvance(QString::number(fy, 'g', 4)));
+    }
+    // The rotated title is turned on its side, so the width it needs is its
+    // font HEIGHT. Zero when there is no title, so an untitled plot pays
+    // nothing for one.
+    const double titleBand =
+        yLabel_.isEmpty() ? 0.0 : axisMetrics.height() + 4.0;
+    // 4 px between title band and numbers, 6 px between numbers and the axis.
+    // Floored at the old 70 so short labels keep the familiar proportions.
+    const double leftMargin =
+        std::max(70.0, titleBand + 4.0 + widestTick + 6.0);
+
+    const QRectF plot(leftMargin, 24.0, W - leftMargin - 20.0,
+                      H - 24.0 - 52.0);
+    if (plot.width() < 20.0 || plot.height() < 20.0)
+        return drawEmpty();
 
     const auto mapX = [&](double v) {
         return plot.left() + (v - xMin) / (xMax - xMin) * plot.width();
@@ -171,7 +210,6 @@ bool SpectrumPlotWidget::renderTo(QPainter& p, QSize size) const
     }
 
     // Grid, ticks and tick labels.
-    const int ticks = 5;
     for (int i = 0; i <= ticks; ++i) {
         const double fx = xMin + (xMax - xMin) * i / ticks;
         const double px = mapX(fx);
@@ -191,7 +229,10 @@ bool SpectrumPlotWidget::renderTo(QPainter& p, QSize size) const
             p.drawLine(QPointF(plot.left(), py), QPointF(plot.right(), py));
         }
         p.setPen(style_.axisLabelColor);
-        p.drawText(QRectF(2.0, py - 8.0, plot.left() - 8.0, 16.0),
+        // Starts clear of the title band and stops 6 px short of the axis, so
+        // the widest label measured above lands exactly inside this box.
+        p.drawText(QRectF(titleBand + 4.0, py - 8.0,
+                          plot.left() - titleBand - 10.0, 16.0),
                    Qt::AlignRight | Qt::AlignVCenter, QString::number(fy, 'g', 4));
     }
 
@@ -248,10 +289,13 @@ bool SpectrumPlotWidget::renderTo(QPainter& p, QSize size) const
     p.setPen(style_.axisLabelColor);
     p.drawText(QRectF(plot.left(), H - 20.0, plot.width(), 18.0),
                Qt::AlignHCenter, xLabel_);
+    // Centred in the band reserved for it above, not at a fixed x — that
+    // constant is what the tick labels used to be drawn over.
     p.save();
-    p.translate(16.0, plot.center().y());
+    p.translate(titleBand / 2.0, plot.center().y());
     p.rotate(-90.0);
-    p.drawText(QRectF(-plot.height() / 2.0, -8.0, plot.height(), 16.0),
+    p.drawText(QRectF(-plot.height() / 2.0, -axisMetrics.height() / 2.0,
+                      plot.height(), axisMetrics.height()),
                Qt::AlignHCenter, yLabel_);
     p.restore();
 

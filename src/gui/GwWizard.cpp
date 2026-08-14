@@ -33,12 +33,13 @@ QWidget* GwWizard::buildSettingsPage()
 
     auto* intro = new QLabel(
         tr("G₀W₀ replaces the DFT exchange-correlation potential with the "
-           "self-energy:  E_qp = ε_DFT + Z·[Σ(ε_DFT) − V_xc].  It is a "
-           "one-shot correction to a specific ground state — nothing here is "
-           "self-consistent, and the result is only meaningful relative to the "
-           "baseline it corrects."),
+           "self-energy: E_qp = ε_DFT + Z·[Σ(ε_DFT) − V_xc]."),
         page);
     intro->setWordWrap(true);
+    intro->setToolTip(
+        tr("A one-shot correction to a specific ground state. Nothing here is "
+           "self-consistent, and the result is only meaningful relative to the "
+           "baseline it corrects."));
     layout->addWidget(intro);
 
     // -- Engine + baseline ---------------------------------------------------

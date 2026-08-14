@@ -151,6 +151,7 @@
 #include <QCloseEvent>
 #include <QColorDialog>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QCursor>
 #include <QDesktopServices>
@@ -1546,6 +1547,10 @@ void MainWindow::createMenusAndDocks()
         {QT_TR_NOOP("&GitHub Repository"),
          "https://github.com/seixas-research/calango"},
     };
+    // The offline manual comes first: it is the only Help entry that works
+    // without a network, and on a packaged build it is right there in the
+    // bundle. openUserGuide() falls back to the online manual when it is not.
+    helpMenu->addAction(tr("&User Guide"), this, &MainWindow::openUserGuide);
     for (const auto& link : kHelpLinks) {
         const QUrl url = QUrl(QLatin1String(link.url));
         helpMenu->addAction(tr(link.title),
@@ -7007,6 +7012,23 @@ void MainWindow::openGrapheneOxideMdmc(
 void MainWindow::openEciFit()
 {
     EciFitDialog dialog(this);
+    // Close the last manual step in the alloy pipeline: the run that produced
+    // cluster_expansion.json is already registered in the Processes dock with
+    // its directory, so the dialog offers those runs directly instead of
+    // making the user navigate back to a path the application recorded itself.
+    //
+    // Queried through a callback so it re-scans on every show — the panel is
+    // the live source of truth, and a run can finish while this is open.
+    dialog.setProcessSourceProvider(
+        [this]() -> std::vector<EciFitDialog::ProcessSource> {
+            std::vector<EciFitDialog::ProcessSource> sources;
+            if (!processPanel_)
+                return sources;
+            for (const auto& run : processPanel_->completedRunsWith(
+                     QStringLiteral("cluster_expansion.json")))
+                sources.push_back({run.name, run.directory});
+            return sources;
+        });
     // The handoff that makes the pipeline a pipeline: the fitted pair ECI is
     // pushed straight into the CVM module, so nobody has to know that the CVM
     // solver wants e_AB = -J and convert it by hand.
@@ -9057,6 +9079,48 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     }
 }
 
+
+void MainWindow::openUserGuide()
+{
+    // Searched rather than hard-coded, because the same binary runs from three
+    // different layouts and only one of them is the one it was built in:
+    //   * macOS bundle   calango.app/Contents/MacOS/../Resources/doc/
+    //   * Linux package  /usr/bin/../share/calango/doc/
+    //   * source build   build/calango → ../docs/tex/user_guide/
+    // Relative to applicationDirPath() in every case, so a moved install or a
+    // second checkout still resolves; nothing bakes in a build-machine path.
+    const QString appDir = QCoreApplication::applicationDirPath();
+    static constexpr const char* kCandidates[] = {
+        "/../Resources/doc/calango_user_guide.pdf",
+        "/../share/calango/doc/calango_user_guide.pdf",
+        "/../docs/tex/user_guide/calango_user_guide.pdf",
+        "/../../docs/tex/user_guide/calango_user_guide.pdf",
+    };
+    for (const char* suffix : kCandidates) {
+        const QFileInfo info(appDir + QLatin1String(suffix));
+        if (!info.exists() || !info.isFile())
+            continue;
+        // openUrl can still fail — no PDF viewer registered, or a sandbox that
+        // refuses the handoff — and it reports that by returning false rather
+        // than by throwing. Falling through to the online manual is better
+        // than a menu item that does nothing visible.
+        if (QDesktopServices::openUrl(
+                QUrl::fromLocalFile(info.canonicalFilePath())))
+            return;
+        break;
+    }
+
+    // No local PDF (or no viewer for it): the same manual, online.
+    const QUrl online(
+        QStringLiteral("https://calango.readthedocs.io/en/stable/"));
+    if (!QDesktopServices::openUrl(online)) {
+        QMessageBox::information(
+            this, tr("User Guide"),
+            tr("The user guide could not be opened.\n\n"
+               "Read it online at %1")
+                .arg(online.toString()));
+    }
+}
 
 void MainWindow::about()
 {

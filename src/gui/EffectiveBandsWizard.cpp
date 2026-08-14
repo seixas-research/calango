@@ -147,12 +147,13 @@ QWidget* EffectiveBandsWizard::buildSettingsPage()
 
     auto* intro = new QLabel(
         tr("Unfolding maps the supercell's bands back onto the Brillouin zone "
-           "of a pristine primitive cell, so a defect or alloy supercell can "
-           "be read against the host band structure. Both cells are needed, "
-           "and the supercell must be an integer multiple of the primitive "
-           "one."),
+           "of a pristine primitive cell."),
         page);
     intro->setWordWrap(true);
+    intro->setToolTip(
+        tr("Lets a defect or alloy supercell be read against the host band "
+           "structure. Both cells are needed, and the supercell must be an "
+           "integer multiple of the primitive one."));
     layout->addWidget(intro);
 
     auto* cellsGroup = new QGroupBox(tr("Cells"), page);
@@ -303,16 +304,17 @@ void EffectiveBandsWizard::refreshMatrix()
             matrixVerdict_->setStyleSheet(QStringLiteral("color: #d9534f;"));
             matrixVerdict_->setText(
                 tr("<b>Not commensurate</b> — the best integer fit is off by "
-                   "%1, past the %2 tolerance. Either raise the tolerance, or "
-                   "tick <i>Force commensurability</i> to rebuild the "
-                   "primitive cell from the supercell — which is what a "
-                   "RELAXED supercell needs. If the miss is large, the "
-                   "primitive cell is probably not the host of this "
-                   "supercell.")
+                   "%1, past the %2 tolerance.")
                     .arg(std::isfinite(residual)
                              ? QString::number(residual, 'g', 3)
                              : tr("a singular cell"))
                     .arg(tolerance, 0, 'g', 3));
+            matrixVerdict_->setToolTip(
+                tr("Either raise the tolerance, or tick \"Force "
+                   "commensurability\" to rebuild the primitive cell from the "
+                   "supercell — which is what a RELAXED supercell needs.\n\n"
+                   "If the miss is large, the primitive cell is probably not "
+                   "the host of this supercell."));
             return;
         }
         commensurateResidual_ = residual;
@@ -417,12 +419,13 @@ QWidget* EffectiveBandsWizard::buildCalculatorExtras()
     form->addRow(tr("Weight threshold:"), thresholdEdit_);
 
     auto* note = new QLabel(
-        tr("GPAW is the reference backend — its plane-wave mode exposes the "
-           "expansion coefficients the projection needs. The other engines "
-           "generate a template with the wavefunction-reading hook left to "
-           "complete."),
+        tr("GPAW is the reference backend: its plane-wave mode exposes the "
+           "expansion coefficients the projection needs."),
         group);
     note->setWordWrap(true);
+    note->setToolTip(
+        tr("The other engines generate a template with the "
+           "wavefunction-reading hook left to complete."));
     form->addRow(note);
 
     for (QDoubleSpinBox* spin : {energyMinSpin_, energyMaxSpin_, sigmaSpin_})

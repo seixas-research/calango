@@ -80,11 +80,12 @@ QWidget* OpticsWizard::buildSettingsPage()
     auto* baselineForm = new QFormLayout(baselineGroup);
     auto* baselineNote = new QLabel(
         tr("The response is evaluated at the FIXED density of a completed "
-           "Single-Point Calculation — its SCF is inherited, never re-run. "
-           "Re-converging here would give a spectrum from a different ground "
-           "state than the one you validated."),
+           "Single-Point Calculation; its SCF is inherited, never re-run."),
         baselineGroup);
     baselineNote->setWordWrap(true);
+    baselineNote->setToolTip(
+        tr("Re-converging here would give a spectrum from a different ground "
+           "state than the one you validated."));
     baselineForm->addRow(baselineNote);
     baselineCombo_ = new QComboBox(baselineGroup);
     baselineForm->addRow(tr("Baseline SCF (.gpw):"), baselineCombo_);
@@ -104,10 +105,11 @@ QWidget* OpticsWizard::buildSettingsPage()
     auto* vaspForm = new QFormLayout(vaspGroup_);
     auto* vaspNote = new QLabel(
         tr("Self-contained: the job runs its own SCF, then restarts at fixed "
-           "density for the LOPTICS step. POTCARs come from Preferences → "
-           "External Files (VASP_PP_PATH)."),
+           "density for the LOPTICS step."),
         vaspGroup_);
     vaspNote->setWordWrap(true);
+    vaspNote->setToolTip(
+        tr("POTCARs come from Preferences → External Files (VASP_PP_PATH)."));
     vaspForm->addRow(vaspNote);
     vaspEncutSpin_ = new QDoubleSpinBox(vaspGroup_);
     vaspEncutSpin_->setRange(100.0, 2000.0);
@@ -153,12 +155,14 @@ QWidget* OpticsWizard::buildSettingsPage()
         auto* sheetGroup = new QGroupBox(tr("2D Sheet"), page);
         auto* sheetForm = new QFormLayout(sheetGroup);
         auto* sheetNote = new QLabel(
-            tr("A supercell dielectric function is diluted by whatever vacuum "
-               "was used — double the vacuum and ε₃D moves, so it is not a "
-               "property of the sheet. Dividing that thickness back out gives "
-               "α₂D, σ₂D and the absorbance, which are."),
+            tr("A supercell dielectric function is diluted by the vacuum used, "
+               "so ε₃D is not a property of the sheet."),
             sheetGroup);
         sheetNote->setWordWrap(true);
+        sheetNote->setToolTip(
+            tr("Double the vacuum and ε₃D moves. Dividing that thickness back "
+               "out gives α₂D, σ₂D and the absorbance, which are properties of "
+               "the sheet."));
         sheetForm->addRow(sheetNote);
         vacuumAxisCombo_ = new QComboBox(sheetGroup);
         vacuumAxisCombo_->addItem(tr("a₁ (x)"), 0);
@@ -176,14 +180,14 @@ QWidget* OpticsWizard::buildSettingsPage()
     }
 
     auto* intro = new QLabel(
-        tr("Compute the frequency-dependent dielectric function ε(ω) and the "
-           "derived optical spectra (absorption, reflectivity, refractive "
-           "index and energy loss) from GPAW's linear-response module. The "
-           "ground-state cutoff and k-grid come from the baseline above — a "
-           "spectrum is only as converged as the SCF it is built on, so a "
-           "coarse baseline k-grid needs a denser one, not a finer η here."),
+        tr("Frequency-dependent ε(ω) and the derived spectra (absorption, "
+           "reflectivity, refractive index, energy loss) from GPAW."),
         page);
     intro->setWordWrap(true);
+    intro->setToolTip(
+        tr("The ground-state cutoff and k-grid come from the baseline above. A "
+           "spectrum is only as converged as the SCF it is built on, so a "
+           "coarse baseline k-grid needs a denser one — not a finer η here."));
     layout->addWidget(intro);
 
     auto* form = new QFormLayout;
@@ -262,11 +266,12 @@ QWidget* OpticsWizard::buildSettingsPage()
     meshRow->addStretch(1);
     form->addRow(tr("Response k-mesh:"), meshRow);
 
-    // "Include IBZ points" named what it does rather than what it contains:
-    // checked REDUCES the mesh to the irreducible wedge. The old label read
-    // as though it added points, which is the opposite of the cost it has.
-    ibzCheck_ = new QCheckBox(
-        tr("Reduce the response mesh by symmetry (irreducible BZ)"), page);
+    // Short label, full story in the tooltip: checked REDUCES the mesh to the
+    // irreducible wedge. The long-form caveat that used to sit under this row
+    // as a wrapped QLabel clipped the page at ordinary dialog widths, so it
+    // now lives in the tooltip below, which is where the rest of this page
+    // keeps its detail.
+    ibzCheck_ = new QCheckBox(tr("Use IBZ symmetry"), page);
     ibzCheck_->setToolTip(
         tr("Reduce the response mesh to the irreducible Brillouin zone, "
            "weighting each point by its symmetry degeneracy, instead of "
@@ -286,25 +291,14 @@ QWidget* OpticsWizard::buildSettingsPage()
            "imposes on the mesh — that is a separate switch the run handles "
            "itself, and turning this off does not relax it."));
     form->addRow(QString(), ibzCheck_);
-    connect(ibzCheck_, &QCheckBox::toggled, this, [this] {
-        onEngineChanged(); // the tetrahedron caveat appears with the pairing
-        refreshPreview();
-    });
+    // Only the preview depends on this now. It used to re-run onEngineChanged()
+    // as well, purely so the paired tetrahedron caveat label could appear and
+    // disappear with the combination; that label is gone.
+    connect(ibzCheck_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
 
-    ibzNote_ = new QLabel(page);
-    ibzNote_->setWordWrap(true);
-    ibzNote_->setTextFormat(Qt::RichText);
-    ibzNote_->setText(
-        tr("<i>Under tetrahedron integration the symmetry reduction is "
-           "<b>not exact</b>: the zone is tessellated on the irreducible "
-           "wedge rather than the full zone, which shifted ε₁(0) by 2.2 % at "
-           "8×8×8 on bulk Si and 0.12 % at 16×16×16. Converge the mesh, or "
-           "leave it unreduced if the two must agree to better than "
-           "that.</i>"));
-    form->addRow(QString(), ibzNote_);
-
-    tetrahedronCheck_ =
-        new QCheckBox(tr("Tetrahedron integration (Brillouin zone)"), page);
+    tetrahedronCheck_ = new QCheckBox(
+        tr("Tetrahedron integration (For even, Γ-centered mesh)"), page);
     tetrahedronCheck_->setToolTip(
         tr("Integrate the response by linear tetrahedron interpolation instead "
            "of summing over k-points.\n"
@@ -326,14 +320,15 @@ QWidget* OpticsWizard::buildSettingsPage()
            "BEFORE the expensive step and raises it to the cheapest grid that "
            "does qualify, Γ-centred, saying so in the log. Expect that to "
            "cost real time — 9×9×9 on an fcc cell becomes 16×16×16, five "
-           "times the k-points. A run whose mesh was adjusted records the "
+           "times the k-points.\n\n"
+           "Rhombohedral, monoclinic and triclinic cells have zone vertices "
+           "fixed by the cell angles, so NO mesh of any size qualifies. There "
+           "the run keeps tetrahedron integration and drops symmetry reduction "
+           "of the response instead, costing roughly the number of symmetry "
+           "operations more. It logs whichever route it took. "
+           "A run whose mesh was adjusted records the "
            "grid it actually used alongside the spectrum."));
     form->addRow(QString(), tetrahedronCheck_);
-
-    tetrahedronNote_ = new QLabel(page);
-    tetrahedronNote_->setWordWrap(true);
-    tetrahedronNote_->setTextFormat(Qt::RichText);
-    form->addRow(QString(), tetrahedronNote_);
 
     // --- Free-carrier (Drude) term ---------------------------------------
     // A metal's low-energy spectrum is dominated by it, and a gapped system
@@ -586,31 +581,6 @@ void OpticsWizard::onEngineChanged()
         };
         setRowVisible(ibzCheck_, !vasp);
         setRowVisible(tetrahedronCheck_, !vasp);
-        setRowVisible(tetrahedronNote_, !vasp && tetrahedronCheck_->isChecked());
-        // The reduction behaves differently under the two integrators, so
-        // the caveat is shown exactly when it is true: exact under point
-        // integration, an interpolation difference under tetrahedron.
-        setRowVisible(ibzNote_, !vasp && tetrahedronCheck_->isChecked()
-                          && ibzCheck_->isChecked());
-        // Stated up front rather than discovered from the log: the mesh the
-        // run integrates on may not be the one typed above, and a spectrum
-        // computed on a different grid than the user believes is exactly the
-        // result that cannot be reproduced later.
-        tetrahedronNote_->setText(
-            tr("<i>Tetrahedron integration needs an <b>even, Γ-centred</b> "
-               "mesh whose points include every vertex of the irreducible "
-               "zone — typically multiples of 8 (fcc), 4 (bcc) or 6 "
-               "(hexagonal) per axis. The mesh above is checked against "
-               "GPAW's own predicate before the expensive step and "
-               "<b>raised to the cheapest grid that qualifies</b>, which can "
-               "be several times the k-points asked for. Rhombohedral, "
-               "monoclinic and triclinic cells have zone vertices fixed by "
-               "the cell angles, where <b>no mesh of any size</b> qualifies; "
-               "there the run keeps tetrahedron integration and drops "
-               "symmetry reduction of the response instead, costing roughly "
-               "the number of symmetry operations more. The run logs "
-               "whichever route it took and records the grid it used "
-               "alongside the spectrum.</i>"));
         // Shared spins, engine-specific vocabulary: the broadening is GPAW's
         // η and VASP's CSHIFT; the sample count is an explicit grid for GPAW
         // and the NEDOS tag for VASP.

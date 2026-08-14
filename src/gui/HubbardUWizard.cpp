@@ -94,18 +94,19 @@ QWidget* HubbardUWizard::buildSettingsPage()
 
     auto* intro = new QLabel(
         tr("<b>Linear response</b> — Cococcioni and de Gironcoli, "
-           "<i>Phys. Rev. B</i> <b>71</b>, 035105 (2005).<br/><br/>"
-           "A localized potential α is added to the Hubbard manifold of one "
+           "<i>Phys. Rev. B</i> <b>71</b>, 035105 (2005)."),
+        page);
+    intro->setWordWrap(true);
+    intro->setToolTip(
+        tr("A localized potential α is added to the Hubbard manifold of one "
            "atom and the occupation of that manifold is measured twice: after "
            "a single diagonalization at the unperturbed potential (the "
            "non-interacting response χ₀) and after full self-consistency (the "
            "screened response χ). The effective interaction is the difference "
-           "of the inverse responses, U<sub>eff</sub> = χ₀⁻¹ − χ⁻¹.<br/><br/>"
-           "The result is a first-principles U for <i>this</i> site in "
-           "<i>this</i> structure — not a literature value transplanted from "
-           "another compound."),
-        page);
-    intro->setWordWrap(true);
+           "of the inverse responses, U_eff = χ₀⁻¹ − χ⁻¹.\n\n"
+           "The result is a first-principles U for THIS site in THIS "
+           "structure, not a literature value transplanted from another "
+           "compound."));
     intro->setTextFormat(Qt::RichText);
     layout->addWidget(intro);
 
@@ -113,13 +114,15 @@ QWidget* HubbardUWizard::buildSettingsPage()
     auto* siteGroup = new QGroupBox(tr("Perturbed sites"), page);
     auto* siteLayout = new QVBoxLayout(siteGroup);
     auto* siteNote = new QLabel(
-        tr("U belongs to a site, not to an element: two crystallographically "
-           "inequivalent atoms of the same species have different ones. Tick "
-           "each site you want a U for — every ticked site is perturbed in "
-           "turn and measured in all of the runs, which is what makes the "
-           "response a matrix rather than a set of independent numbers."),
+        tr("U belongs to a site, not an element: inequivalent atoms of the "
+           "same species have different ones. Tick each site you want a U "
+           "for."),
         siteGroup);
     siteNote->setWordWrap(true);
+    siteNote->setToolTip(
+        tr("Every ticked site is perturbed in turn and measured in all of the "
+           "runs, which is what makes the response a matrix rather than a set "
+           "of independent numbers."));
     siteLayout->addWidget(siteNote);
 
     siteTable_ = new QTableWidget(0, 3, siteGroup);

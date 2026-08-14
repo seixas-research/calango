@@ -53,12 +53,16 @@ PreferencesDialog::PreferencesDialog(QWidget* parent)
     auto* envLayout = new QVBoxLayout(envGroup);
 
     auto* note = new QLabel(
-        tr("At launch Calango reads this file and exports MP_API_KEY (the "
-           "Materials Project API key) into the environment. A key already "
-           "set in the shell takes precedence at startup; \"Reload Now\" "
-           "applies the file unconditionally."),
+        tr("Read at launch to export MP_API_KEY (Materials Project) into the "
+           "environment."),
         envGroup);
     note->setWordWrap(true);
+    // The precedence rule is what someone comes back to check, but it is not
+    // what they need on first read — so it hovers rather than occupying two
+    // more wrapped lines above the path field.
+    note->setToolTip(
+        tr("A key already set in the shell takes precedence at startup. "
+           "\"Reload Now\" applies the file unconditionally."));
     envLayout->addWidget(note);
 
     auto* pathRow = new QHBoxLayout;
@@ -269,12 +273,15 @@ void PreferencesDialog::updateSimulationsStatus()
                   "to <b>%2</b>.</span>")
                    .arg(configured, effective);
     text += QStringLiteral("<br><i>%1</i>")
-                .arg(tr("A saved project keeps its runs in .calango_tmp/ beside "
-                        "the .calproj instead, so the project stays "
-                        "self-contained. This setting applies to unsaved "
-                        "sessions, and only to runs started from now on — "
-                        "existing job folders are not moved."));
+                .arg(tr("Applies to unsaved sessions and to new runs only; a "
+                        "saved project uses .calango_tmp/ beside its .calproj."));
     simulationsStatusLabel_->setText(text);
+    // The consequences the one-liner drops: nothing is migrated, and the
+    // per-project store is what keeps a .calproj self-contained.
+    simulationsStatusLabel_->setToolTip(
+        tr("Existing job folders are not moved when this changes.\n\n"
+           "A saved project keeps its runs beside the .calproj so the project "
+           "stays self-contained."));
 }
 
 QWidget* PreferencesDialog::buildExternalFilesTab()
@@ -284,14 +291,16 @@ QWidget* PreferencesDialog::buildExternalFilesTab()
 
     auto* note = new QLabel(
         tr("Where this machine keeps the data files a run needs but does not "
-           "generate. Set once here rather than per run: a pseudopotential "
-           "library is installed once and a job that silently used the wrong "
-           "set produces a plausible number, not an error.\n\n"
-           "Each pseudopotential path is exported as the environment variable "
-           "its engine already reads, so a blank row leaves the environment "
-           "untouched and whatever the shell already exports keeps working."),
+           "generate. Set once here rather than per run."),
         page);
     note->setWordWrap(true);
+    note->setToolTip(
+        tr("A job that silently used the wrong pseudopotential set produces a "
+           "plausible number, not an error — which is why this is configured "
+           "once, centrally.\n\n"
+           "Each path is exported as the environment variable its engine "
+           "already reads, so a blank row leaves the environment untouched and "
+           "whatever the shell already exports keeps working."));
     layout->addWidget(note);
 
     // Same two-column table as the Python page: name on the left, an editable
@@ -394,12 +403,14 @@ QWidget* PreferencesDialog::buildPythonEnvTab()
     auto* layout = new QVBoxLayout(page);
 
     auto* note = new QLabel(
-        tr("Map each calculator engine to the Conda environment (or python "
-           "executable) its jobs should run in. The simulation wizards resolve "
-           "these automatically — no per-run prompting. Leave a row blank to "
-           "fall back to the active $PATH / embedded interpreter."),
+        tr("Map each engine to the Conda environment (or python executable) "
+           "its jobs run in. Blank falls back to $PATH."),
         page);
     note->setWordWrap(true);
+    note->setToolTip(
+        tr("The simulation wizards resolve these automatically, so there is no "
+           "per-run prompting. A blank row uses the active $PATH or the "
+           "embedded interpreter."));
     layout->addWidget(note);
 
     const auto& engines = EnginePresets::configurableEngines();
@@ -534,20 +545,24 @@ QWidget* PreferencesDialog::buildRunTab()
     auto* page = new QWidget(this);
     auto* layout = new QVBoxLayout(page);
 
+    // The placeholder list stays visible — it is reference material consulted
+    // WHILE typing a template, and a tooltip that covers the field you are
+    // typing into is the wrong place for it. What moved to the tooltip is the
+    // paragraph explaining which of the two dispatch routes a template picks:
+    // read once, then rarely.
     auto* note = new QLabel(
         tr("Shell command each engine's jobs are launched with. Placeholders: "
-           "<b>{cores}</b> MPI ranks, <b>{script}</b> the generated script, "
-           "<b>{python}</b> the engine's interpreter, <b>{input}</b> / "
-           "<b>{output}</b> the solver's files.<br><br>"
-           "A template containing <b>{script}</b> launches the script itself — "
-           "that is how a parallel GPAW run works. A template with "
-           "<b>{input}</b>/<b>{output}</b> is instead handed to ASE as the "
-           "solver command (ASE_ESPRESSO_COMMAND and friends), because running "
-           "the whole Python script under mpirun would start N independent "
-           "copies of it rather than one script driving an N-rank solver."),
+           "{cores} ranks, {script}, {python}, {input}/{output}."),
         page);
     note->setWordWrap(true);
     note->setTextFormat(Qt::RichText);
+    note->setToolTip(
+        tr("A template containing {script} launches the script itself — that "
+           "is how a parallel GPAW run works.\n\n"
+           "A template with {input}/{output} is instead handed to ASE as the "
+           "solver command (ASE_ESPRESSO_COMMAND and friends), because running "
+           "the whole Python script under mpirun would start N independent "
+           "copies of it rather than one script driving an N-rank solver."));
     layout->addWidget(note);
 
     auto* coresRow = new QHBoxLayout;

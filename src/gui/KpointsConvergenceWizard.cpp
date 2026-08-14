@@ -60,18 +60,18 @@ QWidget* KpointsConvergenceWizard::buildSettingsPage()
     auto* layout = new QVBoxLayout(page);
 
     auto* note = new QLabel(
-        tr("One single-point calculation per Monkhorst-Pack mesh, on the "
-           "structure as it stands. The run at the <b>densest</b> mesh is "
-           "the convergence reference; the result window plots ΔE per atom, "
-           "the atom-wise force error and the band-energy drift against the "
-           "mesh density, so \"converged\" becomes a number you read off a "
-           "curve instead of a guess.<br><br>"
+        tr("One single-point calculation per Monkhorst-Pack mesh. The run at "
+           "the <b>densest</b> mesh is the convergence reference."),
+        page);
+    note->setWordWrap(true);
+    note->setToolTip(
+        tr("The result window plots ΔE per atom, the atom-wise force error and "
+           "the band-energy drift against the mesh density, so \"converged\" "
+           "becomes a number you read off a curve instead of a guess.\n\n"
            "The Calculator page therefore offers no k-grid controls — this "
            "sweep is the grid. Every other setting there (mode, cutoff, XC, "
            "convergence targets, spin) is held fixed across the runs, as a "
-           "convergence study requires."),
-        page);
-    note->setWordWrap(true);
+           "convergence study requires."));
     note->setTextFormat(Qt::RichText);
     layout->addWidget(note);
 

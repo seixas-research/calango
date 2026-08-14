@@ -40,12 +40,14 @@ QWidget* TwoDBandsWizard::buildCalculatorExtras()
 
     auto* intro = new QLabel(
         tr("Samples the eigenvalues over the <b>two-dimensional Brillouin "
-           "zone</b> at k<sub>z</sub> = 0 and plots each band as a surface "
-           "E<sub>n</sub>(k<sub>x</sub>, k<sub>y</sub>). The run is "
-           "non-self-consistent on top of the baseline density below, so the "
-           "cutoff, functional and mode come from that calculation."),
+           "zone</b> at k<sub>z</sub> = 0, as surfaces "
+           "E<sub>n</sub>(k<sub>x</sub>, k<sub>y</sub>)."),
         page);
     intro->setWordWrap(true);
+    intro->setToolTip(
+        tr("The run is non-self-consistent on top of the baseline density "
+           "below, so the cutoff, functional and mode all come from that "
+           "calculation."));
     intro->setTextFormat(Qt::RichText);
     layout->addWidget(intro);
 
@@ -159,11 +161,13 @@ QWidget* TwoDBandsWizard::buildCalculatorExtras()
     mapForm->addRow(tr("Map k-mesh (N × N):"), bzMapSamplesSpin_);
 
     auto* mapNote = new QLabel(
-        tr("The mesh covers the primitive 2D reciprocal cell; it is reduced "
-           "to the first Brillouin zone by Wigner–Seitz folding at render "
-           "time, so no zone geometry is baked into the run."),
+        tr("The mesh covers the primitive 2D reciprocal cell; folding to the "
+           "first Brillouin zone happens at render time."),
         mapGroup);
     mapNote->setWordWrap(true);
+    mapNote->setToolTip(
+        tr("Reduced by Wigner–Seitz folding when the surface is drawn, so no "
+           "zone geometry is baked into the run."));
     mapForm->addRow(mapNote);
 
     connect(bzMapCheck_, &QCheckBox::toggled, this, [this](bool on) {
@@ -193,10 +197,8 @@ void TwoDBandsWizard::refreshDimensionalityNote()
     const auto pbc = s->cell().pbc();
     if (!pbc[0] || !pbc[1]) {
         dimensionalityNote_->setText(
-            tr("<b style='color:#d9534f;'>This structure is not periodic in "
-               "both x and y</b> (pbc = %1, %2, %3), so it has no "
-               "two-dimensional Brillouin zone to sample. Set the periodicity "
-               "in <b>Edit Structure…</b> first.")
+            tr("<b style='color:#d9534f;'>Not periodic in both x and y</b> "
+               "(pbc = %1, %2, %3) — no 2D Brillouin zone to sample.")
                 .arg(pbc[0] ? tr("T") : tr("F"))
                 .arg(pbc[1] ? tr("T") : tr("F"))
                 .arg(pbc[2] ? tr("T") : tr("F")));
@@ -204,14 +206,15 @@ void TwoDBandsWizard::refreshDimensionalityNote()
     }
     if (pbc[2]) {
         dimensionalityNote_->setText(
-            tr("<b>Note:</b> this structure is periodic along z as well, so "
-               "the k<sub>z</sub> = 0 plane is one cut through a 3D dispersion "
-               "rather than a complete Brillouin zone. That is a valid thing "
-               "to plot, but it is not the band structure of a 2D material — "
-               "add vacuum along z for that."));
+            tr("<b>Note:</b> periodic along z too, so k<sub>z</sub> = 0 is one "
+               "cut through a 3D dispersion."));
+        dimensionalityNote_->setToolTip(
+            tr("That is a valid thing to plot, but it is not the band "
+               "structure of a 2D material — add vacuum along z for that."));
         return;
     }
     dimensionalityNote_->clear();
+    dimensionalityNote_->setToolTip(QString());
 }
 
 void TwoDBandsWizard::refreshCostNote()

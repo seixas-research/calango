@@ -543,6 +543,12 @@ private Q_SLOTS:
 
     void about();
 
+    /// Help → User Guide: open the bundled `calango_user_guide.pdf` in the
+    /// system PDF viewer, falling back to the online manual when the PDF is
+    /// not installed (a source build that never ran the LaTeX step, or a
+    /// package built without it).
+    void openUserGuide();
+
 private:
     /// What "Export Animation" is rendering. Carried as the source combo's
     /// userData rather than as a row index: which rows exist depends on

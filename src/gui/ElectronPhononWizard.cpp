@@ -30,17 +30,18 @@ QWidget* ElectronPhononWizard::buildSettingsPage()
 
     auto* intro = new QLabel(
         tr("Electron-phonon matrix elements <b>g<sub>mn</sub><sup>ν</sup>(k,q)"
-           "</b> by supercell finite differences (<tt>gpaw.elph</tt>), and the "
-           "quantities derived from them: the Eliashberg spectral function "
-           "α²F(ω), the coupling constant λ, and the electron-phonon "
-           "<b>relaxation time τ</b> that the Drude term in the Optics module "
-           "takes as its input.<br><br>"
-           "The run displaces every atom of the cell by ±δ along x, y and z "
-           "<i>inside the supercell</i> and records how the effective "
-           "potential responds. That is <b>6N+1 supercell SCF runs</b> and is "
-           "essentially the whole cost — everything after it is cheap."),
+           "</b> by supercell finite differences (<tt>gpaw.elph</tt>). Costs "
+           "<b>6N+1 supercell SCF runs</b>."),
         page);
     intro->setWordWrap(true);
+    intro->setToolTip(
+        tr("Derived from g: the Eliashberg spectral function α²F(ω), the "
+           "coupling constant λ, and the electron-phonon relaxation time τ "
+           "that the Drude term in the Optics module takes as its input.\n\n"
+           "The run displaces every atom of the cell by ±δ along x, y and z "
+           "inside the supercell and records how the effective potential "
+           "responds. Those 6N+1 runs are essentially the whole cost — "
+           "everything after them is cheap."));
     intro->setTextFormat(Qt::RichText);
     layout->addWidget(intro);
 
@@ -156,9 +157,8 @@ QWidget* ElectronPhononWizard::buildSettingsPage()
     // the user typed here decided the answer. Removing the parameter was the
     // fix; leaving a disabled control would only invite it back.
     auto* integrationNote = new QLabel(
-        tr("The Fermi-surface integration uses the linear tetrahedron "
-           "method, so it has no smearing parameter to choose. Its accuracy "
-           "is set by the k-mesh above."),
+        tr("Fermi-surface integration uses the linear tetrahedron method — no "
+           "smearing parameter, accuracy set by the k-mesh above."),
         derivedGroup);
     integrationNote->setWordWrap(true);
     derivedForm->addRow(integrationNote);

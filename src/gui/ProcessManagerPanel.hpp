@@ -1,6 +1,9 @@
 #pragma once
 
+#include <QString>
 #include <QWidget>
+
+#include <vector>
 
 class QPushButton;
 class QTimer;
@@ -32,6 +35,25 @@ public:
     void setTaskStatus(int id, Status status);
     /// Remove a task's row (the controller purges its data first).
     void removeTask(int id);
+
+    /// A finished task and the directory holding its output.
+    struct CompletedRun {
+        QString name;
+        QString directory;
+    };
+
+    /// Completed tasks whose directory contains `fileName`, newest first.
+    ///
+    /// Filtered on the ARTIFACT rather than on the task's name, which is the
+    /// only version of this question that stays true. A name is a translated
+    /// label — the same trap `rowStatus()` exists to avoid — and the same file
+    /// is produced by more than one route: the wizard, an Orchestration node,
+    /// a batch fan-out. "Which finished runs left this file behind" is what
+    /// every caller actually wants, and it survives all three.
+    ///
+    /// A run whose directory was purged drops out on its own, since the check
+    /// is against the filesystem and not against what the row remembers.
+    std::vector<CompletedRun> completedRunsWith(const QString& fileName) const;
 
     /// How many task rows the panel is showing.
     int taskCount() const;

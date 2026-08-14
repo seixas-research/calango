@@ -142,12 +142,6 @@ private:
     QSpinBox* responseKptsSpin_[3] = {nullptr, nullptr, nullptr};
     QCheckBox* ibzCheck_ = nullptr;
     QCheckBox* tetrahedronCheck_ = nullptr;
-    /// Live consequence of the tetrahedron choice for the current mesh.
-    QLabel* tetrahedronNote_ = nullptr;
-    /// What the IBZ reduction costs and changes depends on the integrator —
-    /// exact under point integration, an interpolation difference under
-    /// tetrahedron — so the caveat appears only when it applies.
-    QLabel* ibzNote_ = nullptr;
 
     /// Intraband (Drude) free-carrier term, on by default: GPAW gates it on
     /// `gs.metallic`, so it is a no-op on a gapped system.

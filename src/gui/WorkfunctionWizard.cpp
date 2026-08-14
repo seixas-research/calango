@@ -50,11 +50,12 @@ QWidget* WorkfunctionWizard::buildSettingsPage()
     auto* baselineForm = new QFormLayout(baselineGroup);
     auto* baselineNote = new QLabel(
         tr("The work function is read off the FIXED ground state of a "
-           "completed Single-Point Calculation — its SCF is inherited, never "
-           "re-run. Re-converging here would give a Φ from a different ground "
-           "state than the one you validated."),
+           "completed Single-Point Calculation; its SCF is never re-run."),
         baselineGroup);
     baselineNote->setWordWrap(true);
+    baselineNote->setToolTip(
+        tr("Re-converging here would give a Φ from a different ground state "
+           "than the one you validated."));
     baselineForm->addRow(baselineNote);
     baselineCombo_ = new QComboBox(baselineGroup);
     baselineForm->addRow(tr("Baseline SCF (.gpw):"), baselineCombo_);
@@ -107,17 +108,19 @@ QWidget* WorkfunctionWizard::buildSettingsPage()
     layout->addWidget(vacuumGroup);
 
     auto* intro = new QLabel(
-        tr("Compute the work function Φ = E_vac − E_F: the baseline's "
-           "electrostatic potential is planar-averaged over the two in-plane "
-           "axes, and the vacuum level E_vac is read at the cell edges, where "
-           "V̄(z) must be flat. BOTH faces are reported. With a dipole "
-           "correction in the baseline an asymmetric slab genuinely has two "
-           "vacuum levels — one per face. Without one, periodic boundary "
-           "conditions force the two faces onto a single artificial average, "
-           "so equal values then mean the correction is missing, not that the "
-           "slab is symmetric."),
+        tr("Work function Φ = E_vac − E_F, from the planar-averaged "
+           "electrostatic potential. <b>Both faces are reported.</b>"),
         page);
     intro->setWordWrap(true);
+    intro->setToolTip(
+        tr("The baseline's electrostatic potential is planar-averaged over the "
+           "two in-plane axes, and E_vac is read at the cell edges, where V̄(z) "
+           "must be flat.\n\n"
+           "With a dipole correction in the baseline an asymmetric slab "
+           "genuinely has two vacuum levels, one per face. Without one, "
+           "periodic boundary conditions force the two faces onto a single "
+           "artificial average — so equal values mean the correction is "
+           "missing, not that the slab is symmetric."));
     layout->addWidget(intro);
 
     layout->addStretch(1);

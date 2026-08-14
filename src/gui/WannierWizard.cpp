@@ -60,13 +60,15 @@ QWidget* WannierWizard::buildSettingsPage()
 
     auto* intro = new QLabel(
         tr("Run the Marzari-Vanderbilt localization on top of a completed "
-           "Single-Point calculation. The calculator engine and its parameters "
-           "(XC functional, cutoff, grid, k-points) and the Conda environment "
-           "are inherited from the selected baseline — no need to redefine "
-           "them. For a correct localization the baseline should have been run "
-           "with k-point symmetry off."),
+           "Single-Point calculation."),
         page);
     intro->setWordWrap(true);
+    intro->setToolTip(
+        tr("The calculator engine and its parameters (XC functional, cutoff, "
+           "grid, k-points) and the Conda environment are inherited from the "
+           "selected baseline, so there is nothing to redefine.\n\n"
+           "For a correct localization the baseline should have been run with "
+           "k-point symmetry off."));
     layout->addWidget(intro);
 
     // --- SCF process selection --------------------------------------------
@@ -253,9 +255,11 @@ void WannierWizard::onBaselineChanged()
             inheritedLabel_->setText(note);
         } else {
             inheritedLabel_->setText(
-                tr("<i>Restarting from the saved wavefunctions (.gpw); this "
-                   "baseline carries no calculator.json, so its parameters are "
-                   "taken straight from the restart file.</i>"));
+                tr("<i>Restarting from the saved wavefunctions (.gpw); "
+                   "parameters come from the restart file.</i>"));
+            inheritedLabel_->setToolTip(
+                tr("This baseline carries no calculator.json, so its "
+                   "parameters are taken straight from the restart file."));
         }
     }
     refreshPreview();

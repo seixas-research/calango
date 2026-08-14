@@ -28,18 +28,19 @@ QWidget* CutoffConvergenceWizard::buildSettingsPage()
     auto* layout = new QVBoxLayout(page);
 
     auto* note = new QLabel(
-        tr("One single-point calculation per cutoff, on the structure as it "
-           "stands. The run at the <b>highest</b> cutoff is the convergence "
-           "reference; the result window plots the total energy per atom and "
-           "the maximum force magnitude against the cutoff, so \"converged\" "
-           "becomes a number you read off a curve instead of a guess.<br><br>"
-           "The Calculator page therefore offers no single cutoff field — "
-           "this sweep is the cutoff. Every other setting there (XC, "
-           "k-points, convergence targets, spin) is held fixed across the "
-           "runs, as a convergence study requires."),
+        tr("One single-point calculation per cutoff. The run at the "
+           "<b>highest</b> cutoff is the convergence reference."),
         page);
     note->setWordWrap(true);
     note->setTextFormat(Qt::RichText);
+    note->setToolTip(
+        tr("The result window plots total energy per atom and maximum force "
+           "against the cutoff, so \"converged\" becomes a number you read off "
+           "a curve instead of a guess.\n\n"
+           "The Calculator page therefore offers no single cutoff field — this "
+           "sweep is the cutoff. Every other setting there (XC, k-points, "
+           "convergence targets, spin) is held fixed across the runs, as a "
+           "convergence study requires."));
     layout->addWidget(note);
 
     auto* sweepGroup = new QGroupBox(tr("Plane-wave Cutoff Sweep"), page);

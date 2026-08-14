@@ -51,20 +51,30 @@ QWidget* DefectWizard::buildSettingsPage()
     auto* page = new QWidget(this);
     auto* layout = new QVBoxLayout(page);
 
+    // Prose and formula split, as in Defect2dWizard: the equation stays on
+    // screen because it is what the page is about, and only the prose is
+    // subject to the length limit.
     auto* intro = new QLabel(
-        tr("<p>Formation energy of a defect in each charge state, as a "
-           "function of the Fermi level:</p>"
-           "<p align='center'>E<sub>f</sub>[X<sup>q</sup>](E<sub>F</sub>) = "
-           "E<sub>tot</sub>[X<sup>q</sup>] − E<sub>tot</sub>[host] − "
-           "Σ<sub>i</sub> n<sub>i</sub>μ<sub>i</sub> + q(E<sub>VBM</sub> + "
-           "E<sub>F</sub>) + E<sub>corr</sub>(q)</p>"
-           "<p>Each line has slope q, so the charge state can be read off the "
-           "diagram directly; where the lower envelope changes slope is a "
-           "thermodynamic transition level ε(q/q′).</p>"),
+        tr("Formation energy of a defect in each charge state, as a function "
+           "of the Fermi level:"),
         page);
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
+    intro->setToolTip(
+        tr("Each line has slope q, so the charge state can be read off the "
+           "diagram directly. Where the lower envelope changes slope is a "
+           "thermodynamic transition level ε(q/q′)."));
     layout->addWidget(intro);
+
+    auto* formula = new QLabel(
+        tr("<p align='center'>E<sub>f</sub>[X<sup>q</sup>](E<sub>F</sub>) = "
+           "E<sub>tot</sub>[X<sup>q</sup>] − E<sub>tot</sub>[host] − "
+           "Σ<sub>i</sub> n<sub>i</sub>μ<sub>i</sub> + q(E<sub>VBM</sub> + "
+           "E<sub>F</sub>) + E<sub>corr</sub>(q)</p>"),
+        page);
+    formula->setWordWrap(true);
+    formula->setTextFormat(Qt::RichText);
+    layout->addWidget(formula);
 
     // -- Inherited runs -----------------------------------------------------
     auto* sources = new QGroupBox(tr("Inherited Single-Point Calculations"), page);
@@ -118,14 +128,16 @@ QWidget* DefectWizard::buildSettingsPage()
     // -- Chemical potentials ------------------------------------------------
     auto* speciesLabel = new QLabel(
         tr("<b>Exchanged species.</b> <i>Count</i> is how many atoms the "
-           "defect has that the host does not: −1 for a vacancy, +1 for an "
-           "interstitial, and a substitution is two rows. μ is the reservoir "
-           "the species is exchanged with — it encodes the growth condition, "
-           "so the same defect has different formation energies under "
-           "metal-rich and anion-rich growth."),
+           "defect has that the host does not; μ is the reservoir it is "
+           "exchanged with."),
         charges);
     speciesLabel->setWordWrap(true);
     speciesLabel->setTextFormat(Qt::RichText);
+    speciesLabel->setToolTip(
+        tr("Count: −1 for a vacancy, +1 for an interstitial; a substitution is "
+           "two rows.\n\n"
+           "μ encodes the growth condition, so the same defect has different "
+           "formation energies under metal-rich and anion-rich growth."));
     chargesForm->addRow(speciesLabel);
 
     speciesTable_ = new QTableWidget(0, 3, charges);
@@ -305,9 +317,11 @@ void DefectWizard::suggestSpecies()
         if (present.count(symbol) == 0)
             addSpeciesRow(symbol, 0, 0.0);
     consistencyNote_->setText(
-        tr("<i>Species of the open structure added with count 0 — set the "
-           "count for each one the defect actually exchanges (−1 removed, +1 "
-           "added) and leave the rest at zero.</i>"));
+        tr("<i>Species added with count 0 — set the count for each one the "
+           "defect exchanges.</i>"));
+    consistencyNote_->setToolTip(
+        tr("−1 for a species the defect removed, +1 for one it added; leave "
+           "the rest at zero."));
 }
 
 void DefectWizard::refreshConsistencyNote()
@@ -318,22 +332,28 @@ void DefectWizard::refreshConsistencyNote()
     const QString defect = neutralCombo_->currentData().toString();
     if (host.isEmpty() || defect.isEmpty()) {
         consistencyNote_->clear();
+        // Cleared too, or the previous state's explanation would hover over an
+        // empty label.
+        consistencyNote_->setToolTip(QString());
         return;
     }
     if (host == defect) {
         consistencyNote_->setText(
             tr("<b style='color:#d9534f;'>The same calculation is selected as "
-               "both the host and the defect.</b> Every formation energy would "
-               "come out as the chemical-potential term alone — pick the "
-               "pristine supercell for one and the defect supercell for the "
-               "other."));
+               "both the host and the defect.</b>"));
+        consistencyNote_->setToolTip(
+            tr("Every formation energy would come out as the "
+               "chemical-potential term alone. Pick the pristine supercell for "
+               "one and the defect supercell for the other."));
         return;
     }
     consistencyNote_->setText(
-        tr("<i>Both cells must be the same size and use the same settings: "
-           "E<sub>tot</sub>[X<sup>q</sup>] − E<sub>tot</sub>[host] is a "
-           "difference of two independent total energies, and it only means "
-           "anything if everything except the defect is identical.</i>"));
+        tr("<i>Both cells must be the same size and use the same "
+           "settings.</i>"));
+    consistencyNote_->setToolTip(
+        tr("E_tot[X^q] − E_tot[host] is a difference of two independent total "
+           "energies, and it only means anything if everything except the "
+           "defect is identical."));
 }
 
 void DefectWizard::setDensityBaselines(

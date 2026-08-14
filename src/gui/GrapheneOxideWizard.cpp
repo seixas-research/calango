@@ -240,13 +240,14 @@ GrapheneOxideWizard::GrapheneOxideWizard(QWidget* parent)
     stage1Layout->addWidget(baseSummary_);
 
     auto* stage1Note = new QLabel(
-        tr("The sheet is built in the xy plane with 20 Å of vacuum along z — "
-           "enough that the functional groups, which stand ~1.5 Å off the "
-           "plane, do not interact with their own periodic image. A flake is "
-           "not periodic at all: it is fitted with a box carrying 10 Å of "
-           "vacuum on every side."),
+        tr("The sheet is built in the xy plane with 20 Å of vacuum along z; a "
+           "flake gets a box with 10 Å on every side."),
         stage1);
     stage1Note->setWordWrap(true);
+    stage1Note->setToolTip(
+        tr("20 Å is enough that the functional groups, which stand ~1.5 Å off "
+           "the plane, do not interact with their own periodic image. A flake "
+           "is not periodic at all, so it is simply fitted with a box."));
     stage1Layout->addWidget(stage1Note);
     stage1Layout->addStretch(1);
     stack_->addWidget(stage1);
@@ -345,12 +346,14 @@ GrapheneOxideWizard::GrapheneOxideWizard(QWidget* parent)
     // with no explanation reads as a missing feature; one line saying the
     // question does not arise reads as a fact about the substrate.
     edgeNote_ = new QLabel(
-        tr("<i>Edge oxidation does not apply: a periodic sheet is infinite and "
-           "has no rim. Choose the nanoflake base in stage 1 to place "
-           "carboxyls and carbonyls.</i>"),
+        tr("<i>Edge oxidation does not apply: a periodic sheet has no "
+           "rim.</i>"),
         stage2);
     edgeNote_->setWordWrap(true);
     edgeNote_->setTextFormat(Qt::RichText);
+    edgeNote_->setToolTip(
+        tr("Choose the nanoflake base in stage 1 to place carboxyls and "
+           "carbonyls."));
     stage2Layout->addWidget(edgeNote_);
 
     auto* optionsGroup = new QGroupBox(tr("Sampling"), stage2);
@@ -403,22 +406,24 @@ GrapheneOxideWizard::GrapheneOxideWizard(QWidget* parent)
     stage3Layout->addWidget(mdmcCheck_);
 
     auto* mdmcNote = new QLabel(
-        tr("<p>Each cycle lifts one functional group, drops it on a randomly "
-           "drawn free site — a bonded carbon pair for an epoxide, a single "
-           "carbon otherwise, either face of the sheet — runs a short burst of "
-           "molecular dynamics, and accepts or rejects by the Metropolis "
-           "criterion at the sampling temperature.</p>"
-           "<p>A move whose chemistry did not survive the dynamics is rejected "
-           "whatever its energy. That check is not optional bookkeeping: "
-           "dynamics on a reactive surface will abstract a hydroxyl and a "
-           "neighbouring hydrogen and release water, which lowers the energy "
-           "and destroys the material.</p>"
-           "<p><b>This needs a calculator.</b> Choosing one, reviewing the "
-           "script and launching the run happen on the next screen — the "
-           "structure is built and opened either way.</p>"),
+        tr("<p>Each cycle moves one functional group to a random free site "
+           "and accepts or rejects it by the Metropolis criterion. "
+           "<b>This needs a calculator.</b></p>"),
         stage3);
     mdmcNote->setWordWrap(true);
     mdmcNote->setTextFormat(Qt::RichText);
+    mdmcNote->setToolTip(
+        tr("A site is a bonded carbon pair for an epoxide, a single carbon "
+           "otherwise, on either face of the sheet. Each proposal runs a short "
+           "burst of molecular dynamics before it is judged.\n\n"
+           "A move whose chemistry did not survive the dynamics is rejected "
+           "whatever its energy. That check is not optional bookkeeping: "
+           "dynamics on a reactive surface will abstract a hydroxyl and a "
+           "neighbouring hydrogen and release water, which lowers the energy "
+           "and destroys the material.\n\n"
+           "Choosing a calculator, reviewing the script and launching the run "
+           "happen on the next screen — the structure is built and opened "
+           "either way."));
     stage3Layout->addWidget(mdmcNote);
 
     mdmcCostNote_ = new QLabel(stage3);
@@ -585,15 +590,17 @@ void GrapheneOxideWizard::refreshSummary()
     if (flake) {
         const int m = generationCombo_->currentData().toInt();
         baseSummary_->setText(
-            tr("<b>%1</b>, %2 — %3 carbons: %4 basal (interior, three carbon "
-               "neighbours) and %5 edge (rim, one substitutable hydrogen). "
-               "Built from %6 fused rings.")
+            tr("<b>%1</b>, %2 — %3 carbons: %4 basal, %5 edge, from %6 fused "
+               "rings.")
                 .arg(QString::fromLatin1(Builder::flakeName(m)))
                 .arg(QString::fromStdString(Builder::flakeFormula(m)))
                 .arg(carbons)
                 .arg(basal)
                 .arg(edge)
                 .arg(3 * m * (m - 1) + 1));
+        baseSummary_->setToolTip(
+            tr("Basal carbons are interior, with three carbon neighbours; edge "
+               "carbons sit on the rim and carry one substitutable hydrogen."));
     } else {
         const auto lattice =
             static_cast<Lattice>(latticeCombo_->currentData().toInt());
@@ -667,17 +674,20 @@ void GrapheneOxideWizard::refreshSummary()
         const int total = basalGroups + edgeGroups;
         if (total == 0) {
             mdmcCostNote_->setText(
-                tr("<i>This structure will carry no functional groups, so "
-                   "there is nothing for MDMC to rearrange. Raise the "
-                   "oxidation level on the previous stage.</i>"));
+                tr("<i>No functional groups, so there is nothing for MDMC to "
+                   "rearrange.</i>"));
+            mdmcCostNote_->setToolTip(
+                tr("Raise the oxidation level on the previous stage."));
         } else {
             mdmcCostNote_->setText(
-                tr("<i>About <b>%n group(s)</b> will be placed. A run needs "
-                   "several accepted moves per group before the arrangement "
-                   "has forgotten where it started, so plan on a few hundred "
-                   "cycles — each one an energy evaluation, or several with "
-                   "molecular dynamics enabled.</i>",
+                tr("<i>About <b>%n group(s)</b> will be placed; plan on a few "
+                   "hundred cycles.</i>",
                    nullptr, total));
+            mdmcCostNote_->setToolTip(
+                tr("A run needs several accepted moves per group before the "
+                   "arrangement has forgotten where it started. Each cycle is "
+                   "an energy evaluation, or several with molecular dynamics "
+                   "enabled."));
         }
     }
 }
