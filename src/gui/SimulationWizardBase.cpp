@@ -817,6 +817,19 @@ QWidget* SimulationWizardBase::buildVaspGroup(QWidget* parent)
     outputLayout->addStretch(1);
     form->addRow(tr("Write:"), outputRow);
 
+    vaspHdf5CompressCheck_
+        = new QCheckBox(tr("Compress to HDF5 (replaces CHGCAR/AECCAR)"),
+                        vaspGroup_);
+    vaspHdf5CompressCheck_->setToolTip(
+        tr("Convert CHGCAR and any AECCAR files this run writes into "
+           "Calango's compressed HDF5 container (chunked, gzip) once VASP "
+           "finishes, and delete the originals — off by default, since a "
+           "converted file needs an HDF5-aware reader. Calango reads its own "
+           ".h5 back exactly like the CHGCAR it replaced."));
+    connect(vaspHdf5CompressCheck_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
+    form->addRow(QString(), vaspHdf5CompressCheck_);
+
     // -- Parallelization ----------------------------------------------------
     vaspNcoreSpin_ = new QSpinBox(vaspGroup_);
     vaspNcoreSpin_->setRange(0, 4096);
@@ -2211,10 +2224,24 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
         connect(field, &QCheckBox::toggled, this, [this] { refreshPreview(); });
     outLayout->addLayout(fieldGrid);
 
+    hdf5CompressCheck_ = new QCheckBox(
+        tr("Compress to HDF5 (replaces the .cube files)"), outputGroup_);
+    hdf5CompressCheck_->setToolTip(
+        tr("Convert every field written above into Calango's compressed HDF5 "
+           "container (chunked, gzip) once the run finishes, and delete the "
+           "plain .cube — off by default, since a converted file needs an "
+           "HDF5-aware reader. Calango reads its own .h5 back exactly like "
+           "the .cube it replaced, in the Volumetric Data dock and every "
+           "isosurface/slice viewer."));
+    connect(hdf5CompressCheck_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
+    outLayout->addWidget(hdf5CompressCheck_);
+
     if (!showsGpawDensityExport()) {
         gpawDensityExportCheck_->hide();
         for (QCheckBox* field : densityFieldChecks_)
             field->hide();
+        hdf5CompressCheck_->hide();
     }
     layout->addWidget(outputGroup_);
 
@@ -2813,6 +2840,12 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
         c.gpawDensityExports.kineticEnergy =
             densityFieldChecks_[5]->isChecked();
     }
+    // Only one of the two is ever visible (one engine active at a time), and
+    // the hidden one's checked state never changed from its unchecked
+    // default, so OR-ing both is exactly "whichever engine's box is showing".
+    c.compressDensityToHdf5
+        = (hdf5CompressCheck_ && hdf5CompressCheck_->isChecked())
+        || (vaspHdf5CompressCheck_ && vaspHdf5CompressCheck_->isChecked());
 
     if (vaspGroup_) {
         // From Preferences, not from this page — the wizard no longer offers a
@@ -3122,6 +3155,10 @@ QString SimulationWizardBase::calculatorProvenanceJson() const
     o.insert(QStringLiteral("python"), pythonExecutable());
     o.insert(QStringLiteral("conda_env"),
              EnginePresets::envFor(c.calculator));
+    // Read back by MainWindow::compressDensityFilesIfRequested() once the
+    // job finishes — the ONLY thing tying a completed job directory back to
+    // this run's CalculatorConfig, since nothing else survives past launch.
+    o.insert(QStringLiteral("compress_density_hdf5"), c.compressDensityToHdf5);
     return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
 }
 

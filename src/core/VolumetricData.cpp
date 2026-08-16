@@ -1,10 +1,18 @@
 #include "core/VolumetricData.hpp"
 
+#include <hdf5.h>
+
 #include <algorithm>
 #include <charconv>
 #include <iterator>
 #include <cctype>
 #include <cmath>
+// cstdint: needed for int32_t below. clangd's unused-includes flags this on
+// macOS because libstdc++ (GCC 13+, the Linux .deb build) does NOT pull it
+// in transitively the way macOS's libc++ does — removing it builds here and
+// breaks there. Do not remove.
+#include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -157,6 +165,10 @@ VolumetricData VolumetricData::load(const std::string& path)
         return loadCube(path);
     if (lower.size() >= 4 && lower.compare(lower.size() - 4, 4, ".xsf") == 0)
         return loadXsf(path);
+    if ((lower.size() >= 3 && lower.compare(lower.size() - 3, 3, ".h5") == 0)
+        || (lower.size() >= 5
+            && lower.compare(lower.size() - 5, 5, ".hdf5") == 0))
+        return loadHdf5(path);
     if (lower.find("chgcar") != std::string::npos
         || lower.find("locpot") != std::string::npos
         || lower.find("parchg") != std::string::npos
@@ -217,11 +229,14 @@ VolumetricData VolumetricData::loadCube(const std::string& path)
     data.spanB = axes[1] * (unit * dims[1]);
     data.spanC = axes[2] * (unit * dims[2]);
 
-    // Skip atom records.
+    // Atom records: element, nuclear charge (unused — always equal to z for
+    // an all-electron calculation, redundant otherwise), Cartesian position.
+    data.atoms.reserve(static_cast<std::size_t>(natoms));
     for (int i = 0; i < natoms; ++i) {
         int z;
         double q, x, y, zz;
         file >> z >> q >> x >> y >> zz;
+        data.atoms.push_back({z, Vec3{x, y, zz} * unit});
     }
     if (dsetFlag) {
         int nsets = 0;
@@ -238,6 +253,7 @@ VolumetricData VolumetricData::loadCube(const std::string& path)
                          [&](std::size_t i, double v) { data.values[i] = v; }))
         throw parseError(path, "truncated cube value block");
     data.label = fileStem(path);
+    data.sourceFormat = "cube";
     return data;
 }
 
@@ -272,12 +288,19 @@ VolumetricData VolumetricData::loadChgcar(const std::string& path)
     for (const char ch : tokens.empty() ? std::string() : tokens[0])
         if (std::isalpha(static_cast<unsigned char>(ch)))
             symbolic = true;
+    // Empty for VASP4 (no symbol line) — those atoms are recorded with
+    // atomicNumber 0 below, since nothing in the file names their species.
+    const std::vector<std::string> speciesSymbols = symbolic ? tokens
+                                                              : std::vector<std::string>{};
     if (symbolic)
         std::getline(file, line); // the counts line follows the symbols
     std::istringstream countsLine(line);
+    std::vector<long long> speciesCounts;
     long long totalAtoms = 0;
-    for (long long n; countsLine >> n;)
+    for (long long n; countsLine >> n;) {
+        speciesCounts.push_back(n);
         totalAtoms += n;
+    }
     if (totalAtoms <= 0)
         throw parseError(path, "no atom counts in POSCAR header");
 
@@ -285,8 +308,28 @@ VolumetricData VolumetricData::loadChgcar(const std::string& path)
     if (!line.empty()
         && (line[0] == 'S' || line[0] == 's')) // Selective dynamics
         std::getline(file, line);
-    for (long long i = 0; i < totalAtoms; ++i)
-        std::getline(file, line); // positions
+    // POSCAR only distinguishes the two modes by this line's first letter;
+    // anything other than a leading 'C'/'c' (Cartesian) is Direct
+    // (fractional), matching VASP's own reader.
+    const bool cartesianPositions
+        = !line.empty() && (line[0] == 'C' || line[0] == 'c');
+    std::vector<Atom> atoms;
+    atoms.reserve(static_cast<std::size_t>(totalAtoms));
+    for (std::size_t species = 0; species < speciesCounts.size(); ++species) {
+        const int z = species < speciesSymbols.size()
+            ? Elements::atomicNumber(speciesSymbols[species])
+            : 0;
+        for (long long i = 0; i < speciesCounts[species]; ++i) {
+            std::getline(file, line); // "fx fy fz [T/F T/F T/F]"
+            std::istringstream position(line);
+            double px = 0.0, py = 0.0, pz = 0.0;
+            position >> px >> py >> pz;
+            const Vec3 cart = cartesianPositions
+                ? Vec3{px, py, pz} * scale
+                : (a * px + b * py + c * pz) * scale;
+            atoms.push_back({z, cart});
+        }
+    }
 
     int nx = 0, ny = 0, nz = 0;
     file >> nx >> ny >> nz;
@@ -301,6 +344,7 @@ VolumetricData VolumetricData::loadChgcar(const std::string& path)
     data.spanA = a * scale;
     data.spanB = b * scale;
     data.spanC = c * scale;
+    data.atoms = std::move(atoms);
     data.values.resize(static_cast<std::size_t>(nx) * ny * nz);
 
     // VASP order: x fastest, then y, then z. The transpose into our z-fastest
@@ -316,6 +360,7 @@ VolumetricData VolumetricData::loadChgcar(const std::string& path)
         }))
         throw parseError(path, "truncated CHGCAR value block");
     data.label = fileStem(path);
+    data.sourceFormat = "chgcar";
     return data;
 }
 
@@ -367,7 +412,329 @@ VolumetricData VolumetricData::loadXsf(const std::string& path)
                             + iz]
                     = raw[(static_cast<std::size_t>(iz) * gy + iy) * gx + ix];
     data.label = fileStem(path);
+    data.sourceFormat = "xsf";
     return data;
+}
+
+// --- Calango's compressed HDF5 container ------------------------------------
+// Layout (documented for readers/writers outside this file in
+// docs/sphinx/source/reference/hdf5_density.md — keep the two in sync):
+//
+//   Root attributes: calango_hdf5_layout_version (int32, format-evolution
+//   guard), source_format, label (fixed-length C strings), origin, span_a,
+//   span_b, span_c (float64[3] each, Cartesian Angstrom, same convention as
+//   the in-memory fields).
+//
+//   Dataset "/density": shape (nx, ny, nz), float64, chunked + byte-shuffle +
+//   gzip. Row-major C order over (nx, ny, nz) already puts z fastest, so this
+//   is `values` written and read with no permutation on either side.
+//
+//   Group "/atoms": datasets "atomic_numbers" (int32, shape (natoms,)) and
+//   "positions" (float64, shape (natoms, 3), Cartesian Angstrom) — always
+//   present, even for natoms == 0, so a reader never branches on the group
+//   existing at all, only on its datasets being empty.
+namespace {
+
+constexpr std::int32_t kHdf5LayoutVersion = 1;
+
+[[noreturn]] void throwHdf5Error(const std::string& path, const std::string& what)
+{
+    throw std::runtime_error("HDF5 volumetric container " + path + ": " + what);
+}
+
+/// Closes an HDF5 handle on scope exit via whichever H5*close() function it
+/// needs — the alternative is a manual close() at every throw site above,
+/// which is exactly the kind of bookkeeping an early error is guaranteed to
+/// get wrong eventually.
+class Hdf5Guard {
+public:
+    Hdf5Guard(hid_t id, herr_t (*closer)(hid_t)) : id_(id), closer_(closer) {}
+    ~Hdf5Guard()
+    {
+        if (id_ >= 0)
+            closer_(id_);
+    }
+    Hdf5Guard(const Hdf5Guard&) = delete;
+    Hdf5Guard& operator=(const Hdf5Guard&) = delete;
+
+private:
+    hid_t id_;
+    herr_t (*closer_)(hid_t);
+};
+
+void writeStringAttribute(hid_t loc, const char* name, const std::string& value)
+{
+    const hid_t type = H5Tcopy(H5T_C_S1);
+    H5Tset_size(type, value.empty() ? 1 : value.size());
+    H5Tset_strpad(type, H5T_STR_NULLTERM);
+    const hid_t space = H5Screate(H5S_SCALAR);
+    const hid_t attr
+        = H5Acreate2(loc, name, type, space, H5P_DEFAULT, H5P_DEFAULT);
+    H5Awrite(attr, type, value.empty() ? "" : value.data());
+    H5Aclose(attr);
+    H5Sclose(space);
+    H5Tclose(type);
+}
+
+std::string readStringAttribute(hid_t loc, const char* name)
+{
+    if (H5Aexists(loc, name) <= 0)
+        return {};
+    const hid_t attr = H5Aopen(loc, name, H5P_DEFAULT);
+    const hid_t type = H5Aget_type(attr);
+    std::string value(H5Tget_size(type), '\0');
+    H5Aread(attr, type, value.data());
+    H5Tclose(type);
+    H5Aclose(attr);
+    // A fixed-length HDF5 string carries a trailing NUL by construction
+    // (writeStringAttribute always sets H5T_STR_NULLTERM) — trim it back to
+    // an ordinary std::string with no embedded terminator.
+    const auto nul = value.find('\0');
+    if (nul != std::string::npos)
+        value.resize(nul);
+    return value;
+}
+
+void writeVec3Attribute(hid_t loc, const char* name, const Vec3& v)
+{
+    const hsize_t dims[1] = {3};
+    const hid_t space = H5Screate_simple(1, dims, nullptr);
+    const hid_t attr = H5Acreate2(loc, name, H5T_NATIVE_DOUBLE, space,
+                                  H5P_DEFAULT, H5P_DEFAULT);
+    const double values[3] = {v.x, v.y, v.z};
+    H5Awrite(attr, H5T_NATIVE_DOUBLE, values);
+    H5Aclose(attr);
+    H5Sclose(space);
+}
+
+Vec3 readVec3Attribute(hid_t loc, const char* name)
+{
+    if (H5Aexists(loc, name) <= 0)
+        return {};
+    const hid_t attr = H5Aopen(loc, name, H5P_DEFAULT);
+    double values[3] = {0.0, 0.0, 0.0};
+    H5Aread(attr, H5T_NATIVE_DOUBLE, values);
+    H5Aclose(attr);
+    return {values[0], values[1], values[2]};
+}
+
+} // namespace
+
+void VolumetricData::saveHdf5(const std::string& path) const
+{
+    if (nx <= 0 || ny <= 0 || nz <= 0
+        || values.size() != static_cast<std::size_t>(nx) * ny * nz)
+        throwHdf5Error(path, "grid is empty or inconsistent, nothing to write");
+
+    // We report our own errors (throwHdf5Error, checked return values);
+    // HDF5's default handler otherwise prints its own diagnostics to stderr
+    // on every failed call, including the ones this function recovers from.
+    H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
+
+    // Written to a temporary sibling and renamed into place on success only:
+    // an interrupted write (disk full, the process killed mid-compress) must
+    // never leave a truncated file sitting at `path` for a later load() to
+    // trip over.
+    const std::string tmpPath = path + ".tmp";
+    {
+        const hid_t file
+            = H5Fcreate(tmpPath.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+        if (file < 0)
+            throwHdf5Error(path, "could not create the file");
+        Hdf5Guard fileGuard(file, H5Fclose);
+
+        {
+            const hid_t space = H5Screate(H5S_SCALAR);
+            const hid_t attr
+                = H5Acreate2(file, "calango_hdf5_layout_version", H5T_NATIVE_INT32,
+                            space, H5P_DEFAULT, H5P_DEFAULT);
+            const std::int32_t version = kHdf5LayoutVersion;
+            H5Awrite(attr, H5T_NATIVE_INT32, &version);
+            H5Aclose(attr);
+            H5Sclose(space);
+        }
+        writeStringAttribute(file, "source_format", sourceFormat);
+        writeStringAttribute(file, "label", label);
+        writeVec3Attribute(file, "origin", origin);
+        writeVec3Attribute(file, "span_a", spanA);
+        writeVec3Attribute(file, "span_b", spanB);
+        writeVec3Attribute(file, "span_c", spanC);
+
+        // Chunk size clamped to the grid itself so a grid smaller than 64
+        // along some axis never asks HDF5 for a chunk bigger than the
+        // dataset. Byte-shuffle before gzip: it regroups each float64's
+        // bytes by significance across the chunk, which is what lets gzip
+        // find repetition in a smoothly-varying density field instead of
+        // the near-random mantissa bytes it would see un-shuffled.
+        const hsize_t dims[3] = {static_cast<hsize_t>(nx), static_cast<hsize_t>(ny),
+                                 static_cast<hsize_t>(nz)};
+        const hsize_t chunk[3] = {std::min<hsize_t>(dims[0], 64),
+                                  std::min<hsize_t>(dims[1], 64),
+                                  std::min<hsize_t>(dims[2], 64)};
+        const hid_t space = H5Screate_simple(3, dims, nullptr);
+        Hdf5Guard spaceGuard(space, H5Sclose);
+        const hid_t plist = H5Pcreate(H5P_DATASET_CREATE);
+        Hdf5Guard plistGuard(plist, H5Pclose);
+        H5Pset_chunk(plist, 3, chunk);
+        H5Pset_shuffle(plist);
+        H5Pset_deflate(plist, 6);
+        const hid_t dataset = H5Dcreate2(file, "/density", H5T_NATIVE_DOUBLE, space,
+                                         H5P_DEFAULT, plist, H5P_DEFAULT);
+        if (dataset < 0)
+            throwHdf5Error(path, "could not create the /density dataset");
+        const herr_t wrote = H5Dwrite(dataset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL,
+                                      H5P_DEFAULT, values.data());
+        H5Dclose(dataset);
+        if (wrote < 0)
+            throwHdf5Error(path, "could not write the /density dataset");
+
+        const hid_t atomsGroup
+            = H5Gcreate2(file, "/atoms", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        if (atomsGroup < 0)
+            throwHdf5Error(path, "could not create the /atoms group");
+        Hdf5Guard atomsGuard(atomsGroup, H5Gclose);
+
+        const hsize_t natoms = atoms.size();
+        std::vector<std::int32_t> atomicNumbers(natoms);
+        std::vector<double> positions(natoms * 3);
+        for (hsize_t i = 0; i < natoms; ++i) {
+            atomicNumbers[i] = atoms[i].atomicNumber;
+            positions[i * 3 + 0] = atoms[i].position.x;
+            positions[i * 3 + 1] = atoms[i].position.y;
+            positions[i * 3 + 2] = atoms[i].position.z;
+        }
+
+        const hsize_t zDims[1] = {natoms};
+        const hid_t zSpace = H5Screate_simple(1, zDims, nullptr);
+        const hid_t zDataset
+            = H5Dcreate2(atomsGroup, "atomic_numbers", H5T_NATIVE_INT32, zSpace,
+                        H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        if (zDataset >= 0) {
+            if (natoms > 0)
+                H5Dwrite(zDataset, H5T_NATIVE_INT32, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                        atomicNumbers.data());
+            H5Dclose(zDataset);
+        }
+        H5Sclose(zSpace);
+
+        const hsize_t posDims[2] = {natoms, 3};
+        const hid_t posSpace = H5Screate_simple(2, posDims, nullptr);
+        const hid_t posDataset
+            = H5Dcreate2(atomsGroup, "positions", H5T_NATIVE_DOUBLE, posSpace,
+                        H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        if (posDataset >= 0) {
+            if (natoms > 0)
+                H5Dwrite(posDataset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                        positions.data());
+            H5Dclose(posDataset);
+        }
+        H5Sclose(posSpace);
+    } // the file closes here (Hdf5Guard), before the rename below
+
+    if (std::rename(tmpPath.c_str(), path.c_str()) != 0) {
+        std::remove(tmpPath.c_str());
+        throwHdf5Error(path, "could not move the finished file into place");
+    }
+}
+
+VolumetricData VolumetricData::loadHdf5(const std::string& path)
+{
+    H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
+
+    const hid_t file = H5Fopen(path.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+    if (file < 0)
+        throwHdf5Error(path, "file not readable, or not a valid HDF5 container");
+    Hdf5Guard fileGuard(file, H5Fclose);
+
+    VolumetricData data;
+    data.sourceFormat = readStringAttribute(file, "source_format");
+    data.label = readStringAttribute(file, "label");
+    data.origin = readVec3Attribute(file, "origin");
+    data.spanA = readVec3Attribute(file, "span_a");
+    data.spanB = readVec3Attribute(file, "span_b");
+    data.spanC = readVec3Attribute(file, "span_c");
+
+    const hid_t dataset = H5Dopen2(file, "/density", H5P_DEFAULT);
+    if (dataset < 0)
+        throwHdf5Error(path, "no /density dataset");
+    Hdf5Guard datasetGuard(dataset, H5Dclose);
+    const hid_t space = H5Dget_space(dataset);
+    Hdf5Guard spaceGuard(space, H5Sclose);
+    if (H5Sget_simple_extent_ndims(space) != 3)
+        throwHdf5Error(path, "/density is not a 3D dataset");
+    hsize_t dims[3] = {0, 0, 0};
+    H5Sget_simple_extent_dims(space, dims, nullptr);
+    data.nx = static_cast<int>(dims[0]);
+    data.ny = static_cast<int>(dims[1]);
+    data.nz = static_cast<int>(dims[2]);
+    data.values.resize(static_cast<std::size_t>(data.nx) * data.ny * data.nz);
+    if (!data.values.empty()
+        && H5Dread(dataset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                   data.values.data())
+               < 0)
+        throwHdf5Error(path, "could not read the /density dataset");
+
+    if (H5Lexists(file, "/atoms", H5P_DEFAULT) > 0) {
+        const hid_t atomsGroup = H5Gopen2(file, "/atoms", H5P_DEFAULT);
+        if (atomsGroup >= 0) {
+            Hdf5Guard atomsGuard(atomsGroup, H5Gclose);
+            std::vector<std::int32_t> atomicNumbers;
+            std::vector<double> positions;
+
+            if (H5Lexists(atomsGroup, "atomic_numbers", H5P_DEFAULT) > 0) {
+                const hid_t zDataset
+                    = H5Dopen2(atomsGroup, "atomic_numbers", H5P_DEFAULT);
+                if (zDataset >= 0) {
+                    Hdf5Guard zGuard(zDataset, H5Dclose);
+                    const hid_t zSpace = H5Dget_space(zDataset);
+                    Hdf5Guard zSpaceGuard(zSpace, H5Sclose);
+                    hsize_t n = 0;
+                    H5Sget_simple_extent_dims(zSpace, &n, nullptr);
+                    atomicNumbers.resize(n);
+                    if (n > 0)
+                        H5Dread(zDataset, H5T_NATIVE_INT32, H5S_ALL, H5S_ALL,
+                               H5P_DEFAULT, atomicNumbers.data());
+                }
+            }
+            if (H5Lexists(atomsGroup, "positions", H5P_DEFAULT) > 0) {
+                const hid_t posDataset = H5Dopen2(atomsGroup, "positions", H5P_DEFAULT);
+                if (posDataset >= 0) {
+                    Hdf5Guard posGuard(posDataset, H5Dclose);
+                    const hid_t posSpace = H5Dget_space(posDataset);
+                    Hdf5Guard posSpaceGuard(posSpace, H5Sclose);
+                    hsize_t posDims[2] = {0, 0};
+                    H5Sget_simple_extent_dims(posSpace, posDims, nullptr);
+                    positions.resize(static_cast<std::size_t>(posDims[0]) * 3);
+                    if (posDims[0] > 0)
+                        H5Dread(posDataset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL,
+                               H5P_DEFAULT, positions.data());
+                }
+            }
+
+            const std::size_t natoms
+                = std::min(atomicNumbers.size(), positions.size() / 3);
+            data.atoms.reserve(natoms);
+            for (std::size_t i = 0; i < natoms; ++i)
+                data.atoms.push_back(
+                    {atomicNumbers[i], Vec3{positions[i * 3 + 0], positions[i * 3 + 1],
+                                            positions[i * 3 + 2]}});
+        }
+    }
+    return data;
+}
+
+bool VolumetricData::convertToHdf5(const std::string& sourcePath,
+                                   const std::string& destPath, std::string* error)
+{
+    try {
+        const VolumetricData data = load(sourcePath);
+        data.saveHdf5(destPath);
+        return true;
+    } catch (const std::exception& e) {
+        if (error)
+            *error = e.what();
+        return false;
+    }
 }
 
 } // namespace calango::core

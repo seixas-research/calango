@@ -59,10 +59,12 @@ state. {doc}`/electronic/nonlinear_optics` explains why.
 | {doc}`/electronic/wannier` | {menuselection}`Wannier Functions --> Wannierization…` / {menuselection}`Wannier Functions --> Wannier Interpolation…` | GPAW baseline `.gpw` |
 | {doc}`/electronic/fermi_topology` | {menuselection}`Wannier Functions --> Fermi Surface…` / {menuselection}`Wannier Functions --> Topological Invariants…` | completed Wannier Functions run |
 | {doc}`/electronic/wannier_transport_berry` | {menuselection}`Wannier Functions --> Boltzmann Transport…` / {menuselection}`Wannier Functions --> Berry Phase…` | a Wannier H(R) — computed natively, no job launched |
+| {doc}`/electronic/wannier_excitons` | {menuselection}`Wannier Functions --> Wannier-Based Excitons (Bethe-Salpeter)…` | a Wannier H(R) — computed natively, no job launched |
 | {doc}`/electronic/xas` | {menuselection}`Electronics --> X-ray Absorption Spectroscopy (XAS)…` | GPAW (legacy engine) |
 | {doc}`/electronic/hubbard` | {menuselection}`Electronics --> Hubbard Parameter Calculation…` | VASP or Quantum ESPRESSO |
 | {doc}`/electronic/charges` | {menuselection}`Electronics --> Born Effective Charges…` / {menuselection}`Charged defects…` and related | VASP / QE / GPAW |
 | {doc}`/electronic/piezoelectric` | {menuselection}`Electronics --> Piezoelectric Tensor…` | GPAW baseline `.gpw` |
+| {doc}`/electronic/elastic` | {menuselection}`Electronics --> Elastic Properties…` | optional GPAW baseline, or any engine |
 | {doc}`/electronic/raman_ir` | {menuselection}`Electronics --> Raman and IR Spectroscopy…` | GPAW / VASP / QE |
 
 Every entry follows the same pipeline as the rest of Calango
@@ -87,9 +89,11 @@ gw
 wannier
 fermi_topology
 wannier_transport_berry
+wannier_excitons
 xas
 hubbard
 charges
 piezoelectric
+elastic
 raman_ir
 ```

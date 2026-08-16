@@ -285,3 +285,49 @@ C₂O limit, basal chemistry an H/O slider running from all-epoxide to all-hydro
 edge oxidation has its own density and carboxyl:carbonyl controls. The seed reproduces
 the exact decoration.
 ```
+
+### Stage 3 (optional) — MDMC refinement
+
+Stage 2 places groups at random, subject to the chemical constraints above;
+it says nothing about whether that particular *arrangement* is favorable.
+**MDMC** ("Molecular Dynamics / Monte Carlo") is the optional refinement
+step reached from the builder once a structure exists: a hybrid annealing
+loop that relocates functional groups — never adds, removes, or changes
+which kinds are present — to sample lower-energy arrangements.
+
+One cycle: pick a random existing group, release its host carbon(s) back to
+the free-site pool, draw a new site **of the same kind**, rebuild the group
+there, run a short MD burst under the chosen calculator, then accept or
+reject the move by the Metropolis criterion at the configured temperature.
+Because a move only ever relocates a group to another site of its own kind,
+the sheet's total inventory — how many epoxides, hydroxyls, carboxyls,
+carbonyls — is an invariant of the whole run; only *where* they sit changes.
+
+Reached from a separate wizard (not another page of the builder dialog):
+MDMC is where a **calculator** is chosen, and `SimulationWizardBase`'s
+engine picker, environment resolution and script review are reused rather
+than duplicated. Settings include the annealing temperature, the number of
+MC cycles, the MD burst length between moves, and (under **Output**) how
+much of the run to stream to the viewport live.
+
+#### Cast follows the chemistry, frame by frame
+
+**Redefine Cast on every accepted move** (Output page, on by default)
+closes a gap a fixed, frame-0 Cast would otherwise leave open: since MDMC's
+whole point is relocating groups, a Cast computed once at the start goes
+stale the moment the first move is accepted — the carbon that WAS
+"epoxide" may now be bare, and a bare carbon elsewhere may have just become
+one.
+
+With the option on, every streamed frame's own bonding is reclassified —
+using the *same* connectivity-based classifier
+(`core::GrapheneOxideBuilder::functionalGroupLabels()`) the builder itself
+uses to decide where a group can go, not a second, re-derived notion of
+"which carbon is which" — and the result becomes that frame's own
+{ref}`per-frame Cast override <per-frame-cast>`. Scrubbing or
+playing back the resulting trajectory recolors the affected carbons live:
+epoxide-amber, hydroxyl-blue, carboxyl-magenta, carbonyl-teal, bare carbon
+in cast 0 — a **fixed** key across the whole run, so a color always means
+the same chemistry in every frame, even though *which atoms* wear it
+changes. Turning the option off leaves the older, flat behavior: one Cast,
+computed from whichever frame happened to be current when it was last set.

@@ -2,6 +2,7 @@
 
 #include "gui/GuiUtils.hpp"
 
+#include "core/StrainVoigt.hpp"
 #include "core/Structure.hpp"
 
 #include <QCheckBox>
@@ -31,9 +32,33 @@ PiezoelectricWizard::PiezoelectricWizard(
     : SimulationWizardBase(parent)
     , structure_(std::move(structure))
 {
+    detectVacuumAxis();
     buildUi();
     selectCalculator(core::CalculatorKind::Gpaw);
     updateCostEstimate();
+}
+
+void PiezoelectricWizard::detectVacuumAxis()
+{
+    if (!structure_)
+        return;
+    // Primary signal: the geometric read every other 2D-aware wizard seeds
+    // its vacuum-axis combo from — a large fractional-coordinate gap along
+    // one axis. This is what catches monolayer 2H-MoS2's own case: built
+    // with pbc=[True,True,True] (the ordinary ASE slab convention) and a
+    // ~10 A vacuum gap along c, which no pbc flag alone reveals.
+    vacuumAxis_ = guessVacuumAxis(structure_.get());
+    if (vacuumAxis_ >= 0)
+        return;
+    // Fallback: an explicit pbc=False the geometric guess did not need
+    // (e.g. a thin cell where the gap fraction fell under the guess's
+    // threshold).
+    const auto pbc = structure_->cell().pbc();
+    for (int axis = 0; axis < 3; ++axis)
+        if (!pbc[static_cast<std::size_t>(axis)]) {
+            vacuumAxis_ = axis;
+            return;
+        }
 }
 
 QString PiezoelectricWizard::wizardTitle() const
@@ -82,15 +107,45 @@ QWidget* PiezoelectricWizard::buildSettingsPage()
     auto* voigtLayout = new QVBoxLayout(voigtGroup);
     auto* voigtNote = new QLabel(
         tr("<b>e<sub>i,alpha</sub> = dP<sub>i</sub>/d(eps<sub>alpha</sub>)</b>, "
-           "the Voigt strain components to differentiate. Leave every box "
-           "unchecked for all six."),
+           "the Voigt strain components to differentiate. Leave every "
+           "available box unchecked for all of them."),
         voigtGroup);
     voigtNote->setWordWrap(true);
     voigtNote->setTextFormat(Qt::RichText);
     voigtLayout->addWidget(voigtNote);
+
+    dimensionalityNote_ = new QLabel(voigtGroup);
+    dimensionalityNote_->setWordWrap(true);
+    dimensionalityNote_->setTextFormat(Qt::RichText);
+    static const char* const kAxisNames[3] = {"a", "b", "c"};
+    if (vacuumAxis_ >= 0 && vacuumAxis_ <= 2) {
+        dimensionalityNote_->setText(
+            tr("<b style='color:#2a7a2a;'>2D structure detected</b> — "
+               "vacuum along %1. Straining a cell dimension that is not a "
+               "real lattice parameter is not a physical strain, so the "
+               "out-of-plane component(s) below are disabled; e<sub>ij</sub> "
+               "will additionally be reported per unit area (C/m), not just "
+               "per volume (C/m&sup2;).")
+                .arg(QString::fromLatin1(kAxisNames[vacuumAxis_])));
+    } else {
+        dimensionalityNote_->setVisible(false);
+    }
+    voigtLayout->addWidget(dimensionalityNote_);
+
     auto* voigtRow = new QHBoxLayout();
     for (int i = 0; i < 6; ++i) {
         voigtCheck_[i] = new QCheckBox(QString::fromLatin1(kVoigtLabels[i]), voigtGroup);
+        // Voigt pair (j, k) for component i is core::kVoigtPairs[i]; a
+        // component touching the detected vacuum axis is disabled rather
+        // than merely unchecked, so it cannot be turned back on by mistake.
+        if (vacuumAxis_ >= 0 && vacuumAxis_ <= 2
+            && core::voigtInvolvesAxis(i, vacuumAxis_)) {
+            voigtCheck_[i]->setEnabled(false);
+            voigtCheck_[i]->setToolTip(
+                tr("Disabled: this component strains the vacuum axis of the "
+                   "detected 2D structure, which is not a physical "
+                   "deformation."));
+        }
         voigtRow->addWidget(voigtCheck_[i]);
         connect(voigtCheck_[i], &QCheckBox::toggled, this, [this] {
             updateCostEstimate();
@@ -209,9 +264,15 @@ std::vector<int> PiezoelectricWizard::selectedVoigtComponents() const
 {
     std::vector<int> out;
     for (int i = 0; i < 6; ++i)
-        if (voigtCheck_[i] && voigtCheck_[i]->isChecked())
+        // The disabled state already keeps a 2D structure's out-of-plane
+        // boxes unchecked, but isChecked() alone is what generatePiezo
+        // electricScript() also filters defensively — testing isEnabled()
+        // here too costs nothing and means this list can never disagree
+        // with what the checkboxes visually show.
+        if (voigtCheck_[i] && voigtCheck_[i]->isChecked()
+            && voigtCheck_[i]->isEnabled())
             out.push_back(i);
-    return out; // empty means "all six" downstream
+    return out; // empty means "every available component" downstream
 }
 
 std::optional<std::array<std::array<double, 6>, 6>>
@@ -241,7 +302,10 @@ void PiezoelectricWizard::updateCostEstimate()
     if (!costLabel_)
         return;
     const auto voigt = selectedVoigtComponents();
-    const int count = voigt.empty() ? 6 : static_cast<int>(voigt.size());
+    const int available = (vacuumAxis_ >= 0 && vacuumAxis_ <= 2)
+        ? static_cast<int>(core::inPlaneVoigtComponents(vacuumAxis_).size())
+        : 6;
+    const int count = voigt.empty() ? available : static_cast<int>(voigt.size());
     const int points = pointsCombo_ ? pointsCombo_->currentData().toInt() : 2;
     costLabel_->setText(
         tr("<b>%1 strain component(s)</b> -> %2 self-consistent run(s) "
@@ -284,6 +348,7 @@ core::PiezoelectricConfig PiezoelectricWizard::config() const
     if (baselineCombo_)
         cfg.baselinePath = baselineCombo_->currentData().toString().toStdString();
     cfg.voigtComponents = selectedVoigtComponents();
+    cfg.vacuumAxis = vacuumAxis_;
     cfg.strainMagnitude = strainSpin_ ? strainSpin_->value() : 0.005;
     cfg.pointsPerComponent = pointsCombo_ ? pointsCombo_->currentData().toInt() : 2;
     cfg.relaxIons = relaxIonsCheck_ && relaxIonsCheck_->isChecked();

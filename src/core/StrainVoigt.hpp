@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <vector>
 
 namespace calango::core {
 
@@ -96,5 +97,37 @@ constexpr Matrix3 applyDeformationToCell(const Matrix3& cell, const Matrix3& f)
 constexpr std::array<std::array<int, 2>, 6> kVoigtPairs{{
     {0, 0}, {1, 1}, {2, 2}, {1, 2}, {0, 2}, {0, 1},
 }};
+
+/// True when Voigt strain component `voigtIndex` deforms Cartesian axis
+/// `axis` — a normal strain on that axis, or a shear that touches it (i.e.
+/// `axis` appears in kVoigtPairs[voigtIndex]).
+///
+/// This is the test for "does this strain do anything to a monolayer's
+/// vacuum axis" — a slab's out-of-plane cell length is not a real lattice
+/// parameter (it is however much empty space the user chose to pad the cell
+/// with), so a Voigt component that touches it does not correspond to a
+/// physical deformation, unlike every in-plane component.
+constexpr bool voigtInvolvesAxis(int voigtIndex, int axis)
+{
+    return kVoigtPairs[static_cast<std::size_t>(voigtIndex)][0] == axis
+        || kVoigtPairs[static_cast<std::size_t>(voigtIndex)][1] == axis;
+}
+
+/// The Voigt components that do NOT touch `vacuumAxis` — the physically
+/// meaningful strain set for a 2D/monolayer structure whose out-of-plane
+/// (vacuum) axis is `vacuumAxis` (0=x, 1=y, 2=z).
+///
+/// For the common vacuumAxis == 2 case this is {0, 1, 5} = {xx, yy, xy}, the
+/// in-plane strain set a hexagonal monolayer's D3h/C3v-family piezoelectric
+/// response is conventionally expressed in; the general form also handles a
+/// slab built or rotated so its vacuum runs along x or y.
+inline std::vector<int> inPlaneVoigtComponents(int vacuumAxis)
+{
+    std::vector<int> out;
+    for (int v = 0; v < 6; ++v)
+        if (!voigtInvolvesAxis(v, vacuumAxis))
+            out.push_back(v);
+    return out;
+}
 
 } // namespace calango::core

@@ -1065,6 +1065,76 @@ int main()
               "and its basal plane is oxidized as asked");
     }
 
+    std::printf("Per-frame classification tracks a relocated group "
+                "(MDMC-style swap):\n");
+    {
+        // Two structures from the SAME lattice and coverage, different
+        // seeds, so each ends up with its epoxides on a DIFFERENT set of
+        // carbon pairs — standing in for the "before" and "after" frame of
+        // an accepted MDMC move without hand-constructing or hand-editing
+        // any geometry. functionalGroupLabels() is exactly what
+        // MainWindow::redefineFunctionalGroupCastForFrame() (the per-frame
+        // Cast redefinition MDMC uses) calls on every streamed frame; this
+        // exercises that call directly, independent of the GUI it feeds.
+        Config config;
+        config.supercell[0] = config.supercell[1] = 6;
+        config.setCoverage(Group::Epoxide, 0.2);
+        config.seed = 1;
+        Report reportA;
+        const Structure before = Builder::build(config, &reportA);
+        config.seed = 7;
+        Report reportB;
+        const Structure after = Builder::build(config, &reportB);
+
+        check(before.size() == after.size(),
+              "both frames keep the same atom count -- MDMC relocates "
+              "groups, it never adds or removes atoms");
+
+        const auto labelsBefore = Builder::functionalGroupLabels(before);
+        const auto labelsAfter = Builder::functionalGroupLabels(after);
+        check(labelsBefore.size() == before.size()
+                  && labelsAfter.size() == after.size(),
+              "one label per atom, for both frames");
+
+        const auto countEpoxide = [](const std::vector<int>& labels) {
+            int n = 0;
+            for (int label : labels)
+                if (label == static_cast<int>(Group::Epoxide))
+                    ++n;
+            return n;
+        };
+        const int epoxideAtomsBefore = countEpoxide(labelsBefore);
+        const int epoxideAtomsAfter = countEpoxide(labelsAfter);
+        check(epoxideAtomsBefore > 0 && epoxideAtomsAfter > 0,
+              "both frames actually placed at least one epoxide");
+        // functionalGroupLabels() labels every atom OF the group, host
+        // carbon(s) included -- an epoxide is 2 carbons + 1 bridging oxygen,
+        // Builder::carbonCost()/oxygensPerGroup()'s own numbers for it.
+        const int atomsPerEpoxide = Builder::carbonCost(Group::Epoxide)
+            + Builder::oxygensPerGroup(Group::Epoxide);
+        check(epoxideAtomsBefore == reportA.placedFor(Group::Epoxide) * atomsPerEpoxide
+                  && epoxideAtomsAfter
+                      == reportB.placedFor(Group::Epoxide) * atomsPerEpoxide,
+              "the RECOMPUTED label count matches the builder's own "
+              "placement count (2 carbons + 1 oxygen per epoxide), "
+              "independently for each frame");
+
+        // The payoff: the SET of epoxide-bonded atom indices differs
+        // between the two frames -- classification tracks THIS frame's own
+        // bonding, not a cached assignment from whichever frame ran first.
+        // A per-frame Cast built from this moves WITH the group; one built
+        // once from frame 0 would stay pinned to carbons that are bare by
+        // the second frame.
+        bool sameIndices = labelsBefore.size() == labelsAfter.size();
+        for (std::size_t i = 0; sameIndices && i < labelsBefore.size(); ++i)
+            sameIndices = sameIndices
+                && (labelsBefore[i] == static_cast<int>(Group::Epoxide))
+                    == (labelsAfter[i] == static_cast<int>(Group::Epoxide));
+        check(!sameIndices,
+              "the epoxide-bonded atom indices differ between the two "
+              "frames");
+    }
+
     std::printf(failures == 0 ? "\nAll graphene oxide checks passed.\n"
                               : "\n%d check(s) FAILED.\n",
                 failures);

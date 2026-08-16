@@ -14,7 +14,7 @@ copyright = 'Leandro Seixas Rocha, 2026'
 # that nothing generates. `ctest -L docs` (docs_version_sync) fails when the
 # two drift, which is how this was caught reading 26.8.2 against a 26.8.20
 # binary: a truncation nobody would notice by eye.
-release = '26.8.23'
+release = '26.8.25'
 
 # -- General configuration ---------------------------------------------------
 

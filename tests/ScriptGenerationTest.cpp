@@ -15,6 +15,7 @@
 #include "core/GrapheneOxideMdmcScriptGenerator.hpp"
 #include "core/BornChargesScriptGenerator.hpp"
 #include "core/PiezoelectricScriptGenerator.hpp"
+#include "core/ElasticScriptGenerator.hpp"
 #include "core/CalphadScriptGenerator.hpp"
 #include "core/CddScriptGenerator.hpp"
 #include "core/ClusterExpansionScriptGenerator.hpp"
@@ -90,6 +91,18 @@ CalculatorConfig gpawConfig()
 {
     CalculatorConfig c;
     c.calculator = CalculatorKind::Gpaw;
+    c.task = TaskKind::SinglePoint;
+    return c;
+}
+
+/// EMT: ships with ASE itself, computes both energy and stress, and needs
+/// no baseline restart file — the cheap, always-available engine the
+/// elastic module's multi-engine (unlike Piezoelectric's GPAW-only) path is
+/// for.
+CalculatorConfig emtConfig()
+{
+    CalculatorConfig c;
+    c.calculator = CalculatorKind::EMT;
     c.task = TaskKind::SinglePoint;
     return c;
 }
@@ -802,6 +815,54 @@ int main(int argc, char** argv)
                 stiffness[static_cast<std::size_t>(i)][static_cast<std::size_t>(i)] = 300.0;
             piezoElastic.elasticStiffnessGpa = stiffness;
             dumpPiezo("piezoelectric_with_elastic.py", piezoElastic);
+
+            // 2D/monolayer: vacuum along z, no explicit Voigt selection (so
+            // the in-plane default kicks in), relaxed-ion and 4-point on
+            // top — the busiest combination the 2D path has to get right at
+            // once.
+            PiezoelectricConfig piezo2D = piezo;
+            piezo2D.voigtComponents.clear();
+            piezo2D.vacuumAxis = 2;
+            piezo2D.relaxIons = true;
+            piezo2D.pointsPerComponent = 4;
+            dumpPiezo("piezoelectric_2d_monolayer.py", piezo2D);
+        }
+
+        // Elastic properties: the stress-strain (primary, GPAW baseline) and
+        // energy-strain (fallback, plain EMT + PAIR_POINTS for the
+        // off-diagonal cross terms) code paths, plus the 2D/monolayer
+        // variant of each — the busiest combinations the shared strain core
+        // and the two independent fitting methods have to get right at
+        // once.
+        {
+            const auto dumpElastic = [&dir](const std::string& name,
+                                            const ElasticConfig& config) {
+                std::ofstream out(dir + "/" + name);
+                out << generateElasticScript(config);
+            };
+            ElasticConfig elasticStress;
+            elasticStress.calculator = gpawConfig();
+            elasticStress.baselinePath = "/jobs/proc_1/single_point.gpw";
+            elasticStress.method = ElasticMethod::StressStrain;
+            dumpElastic("elastic_stress_strain.py", elasticStress);
+
+            ElasticConfig elasticEnergy;
+            elasticEnergy.calculator = emtConfig();
+            elasticEnergy.method = ElasticMethod::EnergyStrain;
+            elasticEnergy.pointsPerComponent = 4;
+            dumpElastic("elastic_energy_strain_emt.py", elasticEnergy);
+
+            ElasticConfig elasticAuto;
+            elasticAuto.calculator = emtConfig();
+            elasticAuto.method = ElasticMethod::Auto;
+            elasticAuto.relaxIons = true;
+            dumpElastic("elastic_auto_relaxed.py", elasticAuto);
+
+            ElasticConfig elastic2D = elasticStress;
+            elastic2D.voigtComponents.clear();
+            elastic2D.vacuumAxis = 2;
+            elastic2D.method = ElasticMethod::Auto;
+            dumpElastic("elastic_2d_monolayer.py", elastic2D);
         }
 
         // Raman / IR: nested functions, an einsum-heavy numerical body and a
@@ -5490,6 +5551,118 @@ int main(int argc, char** argv)
         checkContains(withD, "d_tensor_pmV = (proper_symmetrized @ "
                              "S_compliance_per_GPa) * 1e3",
                       "and d = e . S is reported in the conventional pm/V");
+
+        // The crash both proc_8 and proc_9 hit: the eps = 0 reference phase
+        // must be evaluated through strained_phase() (symmetry off), never
+        // as a direct call on _baseline (whose density was converged WITH
+        // symmetry — exactly what GPAW's get_berry_phases() refuses).
+        checkContains(script, "reference_phase = strained_phase(atoms.copy(), 'ref')",
+                      "the reference point is evaluated through the SAME "
+                      "symmetry-off path as every strained point");
+        checkNotContains(script, "polarization_phase_c(_baseline, 'ref')",
+                         "and never bypasses it by calling straight on "
+                         "_baseline");
+
+        // A single strain point's SCF/Berry-phase failure must not discard
+        // every other point's already-completed work.
+        checkContains(script, "except Exception as exc:",
+                      "a failed strain point is caught, not left to crash "
+                      "the whole run");
+        checkContains(script, "by_component_failures.setdefault",
+                      "and recorded by voigt component with its error");
+        checkContains(script, "components_with_no_data",
+                      "a component with zero surviving points is reported, "
+                      "not silently dropped from the summary");
+
+        // --- 2D / monolayer -------------------------------------------------
+        PiezoelectricConfig twoD = baseConfig();
+        twoD.voigtComponents.clear(); // empty -> the in-plane default
+        twoD.vacuumAxis = 2;
+        const std::string twoDScript = generatePiezoelectricScript(twoD);
+
+        checkContains(twoDScript, "VACUUM_AXIS = 2",
+                      "the vacuum axis reaches the script as a literal");
+        checkContains(twoDScript, "IS_2D = VACUUM_AXIS is not None",
+                      "and flags the run as 2D");
+        checkContains(twoDScript, "\"voigt\": 0,", "xx is in the in-plane default");
+        checkContains(twoDScript, "\"voigt\": 1,", "yy is in the in-plane default");
+        checkContains(twoDScript, "\"voigt\": 5,", "xy is in the in-plane default");
+        checkNotContains(twoDScript, "\"voigt\": 2,",
+                         "zz (strains the vacuum axis) is excluded by default");
+        checkNotContains(twoDScript, "\"voigt\": 3,",
+                         "yz (touches the vacuum axis) is excluded by default");
+        checkNotContains(twoDScript, "\"voigt\": 4,",
+                         "xz (touches the vacuum axis) is excluded by default");
+        checkContains(twoDScript, "if IS_2D and i == VACUUM_AXIS:",
+                      "the out-of-plane polarization row is never fit");
+        checkContains(twoDScript, "raw_tensor[VACUUM_AXIS, :] = np.nan",
+                      "and is left NaN rather than a misleading zero");
+        // Regression for a real bug caught in the MoS2 verification run:
+        // IEEE 754 defines 0.0 * nan as nan, so masking the vacuum row to
+        // NaN BEFORE _symmetrize()'s einsum runs poisons every other row
+        // the instant a group operation's rotation matrix multiplies that
+        // NaN by its (exactly zero) off-block coefficient — the entire
+        // symmetrized tensor came back all-NaN, not just the one row, the
+        // first time this ran against real GPAW data. The masking has to
+        // happen strictly AFTER both _symmetrize() calls.
+        const auto rawNanPos = twoDScript.find("raw_tensor[VACUUM_AXIS, :] = np.nan");
+        const auto lastSymmetrizeCallPos =
+            twoDScript.rfind("point_group_ops_cartesian)");
+        check(rawNanPos != std::string::npos
+                  && lastSymmetrizeCallPos != std::string::npos
+                  && rawNanPos > lastSymmetrizeCallPos,
+              "the vacuum row is masked to NaN AFTER both _symmetrize() "
+              "calls, not before — masking first would poison every row "
+              "once a rotation multiplies 0.0 by that NaN");
+        checkContains(twoDScript, "improper_symmetrized[VACUUM_AXIS, :] = np.nan",
+                      "the improper symmetrized tensor's vacuum row is "
+                      "masked too");
+        checkContains(twoDScript, "proper_symmetrized[VACUUM_AXIS, :] = np.nan",
+                      "as is the proper symmetrized tensor's");
+        checkContains(twoDScript, "_vacuum_length_m = _axis_length_A * 1e-10",
+                      "the 2D (C/m) coefficient multiplies out the vacuum "
+                      "height");
+        checkContains(twoDScript, "'proper_tensor_symmetrized_2d_Cm': "
+                                  "proper_symmetrized_2d_Cm,",
+                      "and is reported alongside the ordinary C/m^2 tensor");
+        checkContains(twoDScript, "assert np.allclose(_before, _after, atol=1e-10)",
+                      "atoms are asserted not to move along the vacuum axis "
+                      "under an in-plane strain");
+
+        // Defense in depth: an EXPLICIT selection that only names
+        // vacuum-touching components must still be filtered, and refused
+        // outright if nothing in-plane is left — not silently run over zero
+        // strain points.
+        PiezoelectricConfig twoDOnlyForbidden = baseConfig();
+        twoDOnlyForbidden.voigtComponents = {2}; // zz only
+        twoDOnlyForbidden.vacuumAxis = 2;
+        const std::string refusedTwoD =
+            generatePiezoelectricScript(twoDOnlyForbidden);
+        checkContains(refusedTwoD, "raise RuntimeError",
+                      "an explicit zz-only request for a 2D structure is "
+                      "refused");
+        checkContains(refusedTwoD, "vacuum axis",
+                      "and says why");
+        checkNotContains(refusedTwoD, "STRAIN_POINTS = [",
+                         "without ever building a (zero-point) strain "
+                         "stencil");
+
+        // A bulk (vacuumAxis == -1, the default) config with no Voigt
+        // restriction: the same 2D-aware code is emitted either way (so
+        // bulk and 2D never diverge into two separately-maintained code
+        // paths), but Python's own `if IS_2D:` at runtime is what skips it
+        // — VACUUM_AXIS is literally None, and the default strain set is
+        // still all six Voigt components, none excluded.
+        PiezoelectricConfig bulkAllSix = baseConfig();
+        bulkAllSix.voigtComponents.clear();
+        const std::string bulkScript = generatePiezoelectricScript(bulkAllSix);
+        checkContains(bulkScript, "VACUUM_AXIS = None",
+                      "a bulk run's vacuum-axis literal is None");
+        checkContains(bulkScript, "\"voigt\": 2,", "zz is requested by default");
+        checkContains(bulkScript, "\"voigt\": 3,", "as is yz");
+        checkContains(bulkScript, "\"voigt\": 4,",
+                      "and xz — nothing is excluded for an ordinary 3D "
+                      "crystal");
     }
 
     std::printf(failures == 0 ? "\nAll script checks passed.\n"

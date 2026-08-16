@@ -305,6 +305,11 @@ private Q_SLOTS:
     /// every caller that used to look for the single hard-coded "density.cube"
     /// silently dropped the other five on the floor.
     int registerDensityCubes(const QString& directory);
+    /// If `directory`'s `calculator.json` recorded `compress_density_hdf5`,
+    /// convert every density file the run wrote into `<name>.h5` and delete
+    /// the original. Called from registerDensityCubes() before it globs for
+    /// files to register, so the dock only ever sees the final form.
+    void compressDensityFilesIfRequested(const QString& directory);
     /// The interpreter an ad-hoc post-processing script should run under for
     /// `kind` — the engine's Preferences preset, then the last global env,
     /// then the embedded interpreter.
@@ -372,6 +377,12 @@ private Q_SLOTS:
     void showPiezoelectric();
     /// Open the e_ij / d_ij read-out for a completed Piezoelectric process.
     void openPiezoelectricResults(const QString& directory);
+    /// Electronics → "Elastic Properties…": stage and launch the
+    /// finite-strain stress/energy run, sharing the strain-generation core
+    /// with the Piezoelectric wizard above.
+    void showElasticProperties();
+    /// Open the C_ij / Born-stability read-out for a completed Elastic run.
+    void openElasticResults(const QString& directory);
     /// Electronics → "Raman and IR Spectroscopy…": stage and launch the
     /// vibrational-spectroscopy post-process, which consumes a completed Born
     /// Effective Charges run (and, for Raman, an Optics run's settings).
@@ -454,6 +465,8 @@ private Q_SLOTS:
     void openBoltzmannTransport();
     /// Wannier Functions → Berry Phase.
     void openBerryPhase();
+    /// Wannier Functions → Wannier-Based Excitons (Bethe-Salpeter).
+    void openBseExcitons();
     void openCvmComparison();
     void openSqsBuilder();
 
@@ -624,6 +637,35 @@ private:
         /// Process / task descriptor shown in the tab title's third field
         /// (e.g. "Single-Point Calculation"); empty for a plain structure.
         QString task;
+
+        /// Per-frame Cast override: frame index -> that frame's own
+        /// atomCasts assignment (index-aligned with the frame's atoms, same
+        /// convention as render::StructureRenderer::Style::atomCasts).
+        /// SPARSE by design — a long trajectory where every functional-group
+        /// swap moves one atom's cast would otherwise carry one full
+        /// atomCasts-sized vector per frame for no reason; a frame absent
+        /// from this map has no override, and the viewer falls back to
+        /// baseAtomCasts below. Applied on frame change by
+        /// MainWindow::applyFrameCastOverride(); see also
+        /// applyFunctionalGroupCasts()'s per-frame counterpart used by the
+        /// Graphene Oxide Builder's MDMC workflow.
+        std::map<int, std::vector<int>> frameCastOverrides;
+        /// The atomCasts to restore on a frame with no entry above — what
+        /// "global" cast assignment meant before any per-frame override ever
+        /// ran. Captured lazily, the first time an override is applied (see
+        /// applyFrameCastOverride()); a trajectory that never uses per-frame
+        /// casts never touches this at all, which is what keeps every
+        /// existing (global-cast-only) project behaving exactly as before.
+        std::vector<int> baseAtomCasts;
+        bool hasBaseAtomCasts = false;
+        /// Set once, right after the tab is created, when this document is a
+        /// Graphene Oxide Builder MDMC run with "Redefine Cast on every
+        /// accepted move" checked — appendStreamedFrame() then recomputes
+        /// and records a Cast override for every frame it appends, via
+        /// MainWindow::redefineFunctionalGroupCastForFrame(). False (the
+        /// default) for every other document, including an MDMC run with the
+        /// checkbox off: those behave exactly as before this feature existed.
+        bool mdmcCastPerFrame = false;
     };
 
     struct ProcessRecord; // full definition below
@@ -742,6 +784,30 @@ private:
     /// trajectory loaded from disk at the end of the job, frame 0.
     /// No-op for a single-structure tab or one that is not on screen.
     void showFinalFrame(const Document* doc);
+    /// Apply `doc`'s per-frame Cast override for `frameIndex` (if any) to the
+    /// shared viewport's atomCasts, or restore the baseline recorded before
+    /// the first such override ran. Called from showFrame() — every path
+    /// that changes which frame is displayed (the timeline, playback,
+    /// appendStreamedFrame()'s live MDMC streaming) already routes through
+    /// it. No-op, and touches nothing, for a document that has never had a
+    /// per-frame override set — existing global-cast-only trajectories are
+    /// unaffected.
+    void applyFrameCastOverride(Document* doc, int frameIndex);
+    /// The FIXED cast-per-group-kind color key (epoxide=amber, hydroxyl=blue,
+    /// carboxyl=magenta, carbonyl=teal) an MDMC run's per-frame redefinition
+    /// needs — unlike applyFunctionalGroupCasts() (the Builder's one-shot,
+    /// current-structure-only version), creates all four cast styles
+    /// unconditionally rather than only the ones a given frame happens to
+    /// contain, so which slot means "epoxide" cannot shift between frames.
+    /// Idempotent: a no-op once the four styles already exist.
+    void setUpFunctionalGroupCastKey();
+    /// The MDMC counterpart of applyFunctionalGroupCasts(): reclassify
+    /// `doc->frames[frameIndex]`'s own bonding and record the result as that
+    /// frame's Cast override (frameCastOverrides), rather than mutating the
+    /// shared viewport state directly — applyFrameCastOverride() applies it
+    /// live if and when that frame is actually shown. Requires
+    /// setUpFunctionalGroupCastKey() to have already run.
+    void redefineFunctionalGroupCastForFrame(Document* doc, int frameIndex);
     void notifyStructureChanged(bool frameCamera = true);
     void pushUndo();
     void updateUndoActions();

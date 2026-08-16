@@ -133,6 +133,20 @@ struct GrapheneOxideMdmcConfig {
     /// much the more expensive, and because a rejected move's geometry is not
     /// a state of the ensemble at all.
     bool streamMdFrames = false;
+
+    /// NOT read by this generator, and not emitted into the script — MDMC's
+    /// classification of which carbon belongs to which functional group is
+    /// already the C++ classifier (core::GrapheneOxideBuilder::
+    /// functionalGroupLabels()), and re-deriving it from the streamed
+    /// geometry client-side, once per frame, is exactly as cheap as deriving
+    /// it once. Kept on this config purely because GrapheneOxideMdmcWizard
+    /// already collects every other Output-page toggle here, and having
+    /// MainWindow read `wizard.castPerFrame()` (which forwards to this
+    /// field) match the shape of `wizard.streamMdFrames()`-style access
+    /// beat inventing a second, parallel place for one bool to live. See
+    /// MainWindow::openGrapheneOxideMdmc() and
+    /// MainWindow::redefineFunctionalGroupCastForFrame().
+    bool castPerFrame = true;
 };
 
 class GrapheneOxideMdmcScriptGenerator {

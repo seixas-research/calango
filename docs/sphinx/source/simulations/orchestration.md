@@ -121,8 +121,8 @@ lattice, not just its positions.
 A self-contained node reads **one** geometry, from **one** parent — a second
 link into it is refused at the moment you draw it (see
 [Multiple connections](#multiple-connections) below), rather than accepted
-and then silently ignored. [Dump](#dump-ml-training-data) is the one node
-built the other way, to merge several parents on purpose.
+and then silently ignored. [Dump Trajectory](#dump-ml-training-data) is the
+one node built the other way, to merge several parents on purpose.
 
 ### Inherited runs
 
@@ -189,7 +189,8 @@ rules, because they mean different things.
 **Outgoing — fan-out — is always allowed.** One Structure Container can feed
 both a Single-Point Calculation *and* a
 [Single-atom Container](#single-atom-container); one Single-Point
-Calculation can feed both a Dump node and an Electronic Bands analysis. The
+Calculation can feed both a Dump Trajectory node and an Electronic Bands
+analysis. The
 shared parent still runs **exactly once**: staging a copy into each child's
 own job directory is how every parent hand-off already worked, so nothing
 about a second child changes what the first one reads, and nothing a child
@@ -200,13 +201,13 @@ sibling's.
 that names *the* structure, or *the* baseline of a fixed list, has room for
 exactly one parent — a second link there would be drawn but never actually
 read, so it is **refused when you draw it**, with a message naming the node
-and explaining why. [Dump](#dump-ml-training-data) is the exception: since
-it already reads every PASS of whatever feeds it, reading every pass of
-*several* parents — concatenated in the order the links were drawn — is the
-same operation, just over more input. That is what makes "bulk, noisy
-structures from one branch and isolated-atom references from another,
-merged into one training set" a single Dump node rather than two files
-stitched together by hand afterwards.
+and explaining why. [Dump Trajectory](#dump-ml-training-data) is the
+exception: since it already reads every PASS of whatever feeds it, reading
+every pass of *several* parents — concatenated in the order the links were
+drawn — is the same operation, just over more input. That is what makes
+"bulk, noisy structures from one branch and isolated-atom references from
+another, merged into one training set" a single Dump Trajectory node rather
+than two files stitched together by hand afterwards.
 
 Scheduling and persistence both fall out of rules that already existed for
 other reasons, not new machinery: a node becomes runnable once *every one*
@@ -237,11 +238,12 @@ thermodynamic database rather than a structure. It is a transform because it
 runs on the canvas rather than as a job, which is what the family actually
 decides.
 
-**Dump** also consumes results rather than a structure, but differently
-again: where the TDB Generator reads one staged *ensemble* file, Dump reads
-**every pass** of a live fan-out directly, and is therefore also the only
-transform that does not run once per Container item — it runs **once**,
-after the fan-out's last pass. See [below](#dump-ml-training-data).
+**Dump Trajectory** also consumes results rather than a structure, but
+differently again: where the TDB Generator reads one staged *ensemble* file,
+Dump Trajectory reads **every pass** of a live fan-out directly, and is
+therefore also the only transform that does not run once per Container item
+— it runs **once**, after the fan-out's last pass. See
+[below](#dump-ml-training-data).
 
 **Single-atom Container** is a third kind of exception: like Structure
 Container itself, it does not run once per item at all — it is computed
@@ -364,10 +366,11 @@ visually distinct in the simulations folder even when both appear in the
 same run.
 
 :::{note}
-When a **Dump** node downstream of a Single-atom Container writes an
-extxyz training set, every frame it collects from that branch is tagged
+When a **Dump Trajectory** node downstream of a Single-atom Container writes
+an extxyz training set, every frame it collects from that branch is tagged
 `config_type = "IsolatedAtom"` automatically — no toggle needed on the Dump
-node itself. This is `mace.data.utils`' own convention (verified against
+Trajectory node itself. This is `mace.data.utils`' own convention (verified
+against
 the installed mace 0.3.15): a frame with `config_type == "IsolatedAtom"`
 and exactly one atom is auto-recognized as that element's $E_0$ reference
 and excluded from ordinary training by default, which is exactly what an
@@ -546,27 +549,30 @@ of it inherits the structure that was staged into it, not a new one.
 :::
 
 (dump-ml-training-data)=
-### Dump (ML Training Data)
+### Dump Trajectory (ML Training Data)
 
 Collects every pass of the fan-out feeding it — its computed structure,
 energy, forces and (when available) stress — and writes them as one
-**extended-XYZ** training set, ready for an MLIP trainer such as MACE.
+**extended-XYZ** training set, ready for an MLIP trainer such as MACE. See
+also [Dump Charge Densities](#dump-charge-densities), which collects
+volumetric outputs the same way.
 
 | Node type | Slot, in link order | Staged as |
 |---|---|---|
-| Dump | completed calculation | *(the whole parent directory — unused; see note below)* |
+| Dump Trajectory | completed calculation | *(the whole parent directory — unused; see note below)* |
 
 Link it downstream of a **Single-Point Calculation** in fan-out mode (i.e.
 downstream of a Structure Container), or of a Geometry Optimization or
 Molecular Dynamics node. Unlike every other node here, its input link exists
-only so the ordinary "at least one parent" contract applies — Dump does not
-actually read the staged copy. Instead, once the fan-out's last pass has
+only so the ordinary "at least one parent" contract applies — Dump
+Trajectory does not actually read the staged copy. Instead, once the
+fan-out's last pass has
 finished, it reads **every pass's own result file**
 (`single_point.extxyz`, `optimized.extxyz` or `md_final.extxyz`, whichever
 the parent task wrote) directly from the run report, because no file in this
 application holds every pass's forces at once for it to stage as one slot.
 
-That is also why Dump **runs once**, not once per Container item like an
+That is also why Dump Trajectory **runs once**, not once per Container item like an
 ordinary node downstream of a fan-out: its whole point is to see every pass
 at the same time, so re-running it per structure would mean overwriting its
 own output on every pass but the last.
@@ -575,8 +581,8 @@ Double-click the node to configure:
 
 `Output file`
 : where the training set is written. No default — unlike a Supercell's
-  2×2×2, there is no path a Dump node could guess that would not be a claim
-  about your filesystem.
+  2×2×2, there is no path a Dump Trajectory node could guess that would not
+  be a claim about your filesystem.
 
 `Energy key` / `Forces key` / `Stress key`
 : the extxyz info/array keys the written file uses. An extxyz file has no
@@ -616,6 +622,75 @@ misleadingly read as batch *progress* on a node that ran exactly once). A
 `dump_summary.json` beside it records the output path, the frame counts and
 the excluded reasons in full.
 
+(dump-charge-densities)=
+### Dump Charge Densities
+
+Collects the chosen charge-density (or other volumetric) file each pass of a
+fan-out wrote and copies it — or HDF5-compresses it, see
+{doc}`/reference/hdf5_density` — into one destination folder, one enumerated
+file per pass: `density_0000.cube`, `density_0001.cube`, ... aligned to
+frame index. A pass whose job directory holds no file under the chosen
+product's name is **skipped**, not compacted away — `density_0001.cube`
+missing in the middle of a run means pass 1 had no density, not that pass 2
+became "1".
+
+| Node type | Slot, in link order | Staged as |
+|---|---|---|
+| Dump Charge Densities | completed calculation | *(the whole parent directory — unused; same reason as Dump Trajectory's own slot)* |
+
+Link it downstream of a **Single-Point Calculation** or **Geometry
+Optimization** in fan-out mode (i.e. downstream of a Structure Container).
+Unlike Dump Trajectory, it does **not** merge several parents — a density
+file belongs to exactly one calculation, so `connectNodes()` keeps it to the
+ordinary one-parent cap. Like Dump Trajectory it is a **batch aggregator**:
+it runs **once**, after the fan-out's last pass, reading every pass's own
+result directly from the run report rather than a staged copy — the same
+reason, restated for densities rather than structures-with-forces: no file
+in this application holds every pass's density at once for it to stage as
+one slot.
+
+Double-click the node to configure:
+
+`Destination folder`
+: where the enumerated files are written. No default — the same reasoning
+  as Dump Trajectory's output path: there is no folder this node could guess
+  that would not be a claim about your filesystem. Created if it does not
+  already exist.
+
+`File prefix`
+: `density_` by default — `density_0000.cube`, `density_0001.cube`, ...
+
+`Density product`
+: which file each pass's job directory is searched for. The dropdown lists
+  every named volumetric file Calango's own generators/engines can produce
+  — GPAW's six (`density_all_electron.cube`, `density_pseudo.cube`,
+  `density_spin.cube`, `potential_hartree.cube`, `elf.cube`,
+  `kinetic_energy_density.cube`) and VASP's five (`CHGCAR`, `AECCAR0`,
+  `AECCAR2`, `LOCPOT`, `ELFCAR`) — because the node is usually configured
+  before its parent has ever run, so it cannot know in advance which engine
+  will actually feed it. Pick the one your upstream calculation writes; a
+  pass from any other engine (or one that simply never wrote that field)
+  reports as missing rather than silently picking a different file.
+
+`Compress to HDF5`
+: off by default. When on, each collected file is converted through
+  `core::VolumetricData::convertToHdf5()` — Calango's compressed HDF5
+  container, the same conversion the calculator setup pages' own "Compress
+  to HDF5" checkbox uses (see {doc}`/reference/hdf5_density`) — and named
+  `density_0000.h5` rather than `density_0000.cube`: ONE extension, not the
+  source format's stacked with `.h5`'s. A pass whose density was **already**
+  compressed upstream stays compressed either way, copied straight through
+  under its own `.h5` name — there is no cube/CHGCAR writer in this codebase
+  to decompress an `.h5` back into, so "preserve the source format by
+  default" stops there.
+
+Once run, the node's face reports **"87/100 densities written"**, with
+**"13 missing"** beneath it when any were — the same "spelled out rather
+than the generic K/N suffix" treatment as Dump Trajectory, and for the same
+reason: this node also ran exactly once, so a fan-out progress counter would
+misread. A `dump_densities_summary.json` beside it records the destination,
+the chosen product, the counts and the missing reasons in full.
+
 ---
 
 ## Execution
@@ -643,8 +718,9 @@ its **last** pass's outcome once the run ends — a 100-structure sweep and a
 1-structure run otherwise look identical on the canvas the moment either
 finishes. A node re-run per Container item therefore also grows a live
 **"37/100 done"** counter on its second line, updated after every pass —
-the one thing `status` alone cannot show. [Dump](#dump-ml-training-data)
-reuses the same two numbers for a different meaning (frames written out of
+the one thing `status` alone cannot show.
+[Dump Trajectory](#dump-ml-training-data) reuses the same two numbers for a
+different meaning (frames written out of
 frames considered — it runs once, not once per pass), spelled out in its own
 words instead.
 :::
@@ -893,8 +969,9 @@ them:
 - A self-contained node's **input geometry** slot holds exactly one parent —
   a second link there is refused, not silently overridden. Several parents
   contributing at once is limited to the numbered slots of an analysis node
-  (one parent per named slot) and to [Dump](#dump-ml-training-data), the one
-  node that merges. See [Multiple connections](#multiple-connections).
+  (one parent per named slot) and to
+  [Dump Trajectory](#dump-ml-training-data), the one node that merges. See
+  [Multiple connections](#multiple-connections).
 - A node holds a *snapshot* of its material taken when the node was added;
   later edits to the open document do not retroactively change an already
   configured node's staged geometry.

@@ -10,6 +10,7 @@
 
 #include "core/StrainVoigt.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -107,6 +108,96 @@ void testVoigtPairsTable()
     check(kVoigtPairs[5][0] == 0 && kVoigtPairs[5][1] == 1, "6 = xy");
 }
 
+void testVoigtInvolvesAxis()
+{
+    std::printf("voigtInvolvesAxis: which Voigt components touch a given "
+                "axis\n");
+    // Axis 2 (z, the usual vacuum axis): zz(2), yz(3) and xz(4) all touch
+    // it; xx(0), yy(1) and xy(5) do not.
+    check(voigtInvolvesAxis(2, 2), "zz touches z (normal strain)");
+    check(voigtInvolvesAxis(3, 2), "yz touches z (shear)");
+    check(voigtInvolvesAxis(4, 2), "xz touches z (shear)");
+    check(!voigtInvolvesAxis(0, 2), "xx does not touch z");
+    check(!voigtInvolvesAxis(1, 2), "yy does not touch z");
+    check(!voigtInvolvesAxis(5, 2), "xy does not touch z");
+
+    // A vacuum axis along x (axis 0) instead — the same test, rotated,
+    // proves this is not hardcoded to z.
+    check(voigtInvolvesAxis(0, 0), "xx touches x");
+    check(voigtInvolvesAxis(4, 0), "xz touches x");
+    check(voigtInvolvesAxis(5, 0), "xy touches x");
+    check(!voigtInvolvesAxis(1, 0), "yy does not touch x");
+    check(!voigtInvolvesAxis(2, 0), "zz does not touch x");
+    check(!voigtInvolvesAxis(3, 0), "yz does not touch x");
+}
+
+void testInPlaneVoigtComponents()
+{
+    std::printf("inPlaneVoigtComponents: the physically meaningful strain "
+                "set for a 2D structure\n");
+    // Vacuum along z (the overwhelmingly common convention, and monolayer
+    // 2H-MoS2's own case): {xx, yy, xy} survive, {zz, yz, xz} are excluded
+    // — the D3h/C3v in-plane strain set every hexagonal-monolayer
+    // piezoelectric study uses.
+    const auto inPlaneZ = inPlaneVoigtComponents(2);
+    check(inPlaneZ.size() == 3, "exactly three in-plane components for a "
+                                "vacuum along z");
+    check(std::find(inPlaneZ.begin(), inPlaneZ.end(), 0) != inPlaneZ.end(),
+          "xx survives");
+    check(std::find(inPlaneZ.begin(), inPlaneZ.end(), 1) != inPlaneZ.end(),
+          "yy survives");
+    check(std::find(inPlaneZ.begin(), inPlaneZ.end(), 5) != inPlaneZ.end(),
+          "xy survives");
+    check(std::find(inPlaneZ.begin(), inPlaneZ.end(), 2) == inPlaneZ.end(),
+          "zz (strains the vacuum axis) is excluded");
+    check(std::find(inPlaneZ.begin(), inPlaneZ.end(), 3) == inPlaneZ.end(),
+          "yz (touches the vacuum axis) is excluded");
+    check(std::find(inPlaneZ.begin(), inPlaneZ.end(), 4) == inPlaneZ.end(),
+          "xz (touches the vacuum axis) is excluded");
+
+    // Vacuum along x instead: {yy, zz, yz} survive — the general form
+    // handles a slab built or rotated any which way, not just the z case.
+    const auto inPlaneX = inPlaneVoigtComponents(0);
+    check(inPlaneX.size() == 3, "exactly three in-plane components for a "
+                                "vacuum along x too");
+    check(std::find(inPlaneX.begin(), inPlaneX.end(), 1) != inPlaneX.end(),
+          "yy survives a vacuum along x");
+    check(std::find(inPlaneX.begin(), inPlaneX.end(), 2) != inPlaneX.end(),
+          "zz survives a vacuum along x");
+    check(std::find(inPlaneX.begin(), inPlaneX.end(), 3) != inPlaneX.end(),
+          "yz survives a vacuum along x");
+    check(std::find(inPlaneX.begin(), inPlaneX.end(), 0) == inPlaneX.end(),
+          "xx is excluded");
+    check(std::find(inPlaneX.begin(), inPlaneX.end(), 4) == inPlaneX.end(),
+          "xz is excluded");
+    check(std::find(inPlaneX.begin(), inPlaneX.end(), 5) == inPlaneX.end(),
+          "xy is excluded");
+}
+
+void testInPlaneStrainLeavesVacuumAxisUntouched()
+{
+    std::printf("An in-plane-only deformation gradient leaves the vacuum "
+                "axis's row/column at identity\n");
+    // The structural guarantee the 2D module leans on: restricting to
+    // inPlaneVoigtComponents(2) means every resulting F has row 2 and
+    // column 2 exactly [0, 0, 1] — scale_atoms=True can then only leave an
+    // atom's z-fractional coordinate exactly where it was, whatever the
+    // in-plane strain magnitude.
+    for (int v : inPlaneVoigtComponents(2)) {
+        const auto f = deformationGradient(unitVoigtStrain(v, 0.037));
+        checkClose(f[2][0], 0.0, 1e-15,
+                   "voigt " + std::to_string(v) + ": F[2][0] stays 0");
+        checkClose(f[2][1], 0.0, 1e-15,
+                   "voigt " + std::to_string(v) + ": F[2][1] stays 0");
+        checkClose(f[2][2], 1.0, 1e-15,
+                   "voigt " + std::to_string(v) + ": F[2][2] stays 1");
+        checkClose(f[0][2], 0.0, 1e-15,
+                   "voigt " + std::to_string(v) + ": F[0][2] stays 0");
+        checkClose(f[1][2], 0.0, 1e-15,
+                   "voigt " + std::to_string(v) + ": F[1][2] stays 0");
+    }
+}
+
 } // namespace
 
 int main()
@@ -117,6 +208,9 @@ int main()
     testDeformationGradient();
     testApplyToTriclinicCell();
     testVoigtPairsTable();
+    testVoigtInvolvesAxis();
+    testInPlaneVoigtComponents();
+    testInPlaneStrainLeavesVacuumAxisUntouched();
 
     std::printf("\n%d check(s) FAILED.\n", failures);
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

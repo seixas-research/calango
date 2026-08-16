@@ -45,6 +45,31 @@ dropdown) and each gets its own mode, finish, coloring and opacity — a
 space-filling metal surface faded to 0.3 under a fully opaque ball-and-stick
 molecule is one dropdown switch away.
 
+(per-frame-cast)=
+### Per-frame Cast
+
+The **casts themselves** ({guilabel}`Cast colors…`'s palette, and each
+cast's mode/finish/scale/opacity above) are one global set, shared by the
+whole session — "Epoxide is amber" does not change frame to frame. What
+*can* vary per frame is **which cast each atom belongs to**: a trajectory
+may carry, per frame, its own override of the usual atom-to-cast assignment.
+
+This is what the Graphene Oxide Builder's MDMC workflow uses (see
+{doc}`/builders/nanomaterials`): a functional group relocating from one
+carbon to another over the course of the run means the *set of atoms* that
+counts as "epoxide-carbon" changes every accepted move, even though the
+casts themselves ("Epoxide", amber) do not. Scrubbing or playing back such a
+trajectory recolors the affected carbons live, frame by frame, as the
+groups hop.
+
+A frame with no override of its own falls back to the ordinary global
+assignment — an existing project, or a trajectory nothing ever gave a
+per-frame override, behaves exactly as before: one assignment, unchanged as
+you step through frames. There is no separate UI for authoring a per-frame
+override by hand today; it is written by whatever produced the trajectory
+(currently, MDMC's own cast-redefinition step) and saved with the project
+alongside the global cast.
+
 ### Representation modes
 
 | Mode | Drawn as |

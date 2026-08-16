@@ -3,6 +3,7 @@
 #include "core/AseScriptGenerator.hpp"
 #include "core/PhononScriptGenerator.hpp"
 #include "core/Structure.hpp"
+#include "core/VolumetricData.hpp"
 #include "gui/CalculatorParameters.hpp"
 #include "gui/OrchestrationDocument.hpp"
 #include "gui/EnginePresets.hpp"
@@ -314,6 +315,8 @@ QString orchestrationTaskSlug(OrchestrationTask task)
         return QStringLiteral("tdb_generator");
     case OrchestrationTask::Dump:
         return QStringLiteral("dump");
+    case OrchestrationTask::DumpDensities:
+        return QStringLiteral("dump_densities");
     case OrchestrationTask::SqsGenerator:
         return QStringLiteral("sqs_generator");
     case OrchestrationTask::ClusterExpansionFit:
@@ -360,6 +363,7 @@ OrchestrationFamily orchestrationTaskFamily(OrchestrationTask task)
     case OrchestrationTask::RandomNoiseSetup:
     case OrchestrationTask::TdbGenerator:
     case OrchestrationTask::Dump:
+    case OrchestrationTask::DumpDensities:
     case OrchestrationTask::SqsGenerator:
     case OrchestrationTask::ClusterExpansionFit:
     case OrchestrationTask::CvmEntropy:
@@ -418,7 +422,17 @@ QString orchestrationTaskDisplayName(OrchestrationTask task)
     case OrchestrationTask::TdbGenerator:
         return QObject::tr("TDB Generator (CALPHAD)");
     case OrchestrationTask::Dump:
-        return QObject::tr("Dump (ML Training Data)");
+        // The enum tag and the slug ("dump") still read "dump"; only the
+        // NAME changed, the same precedent as LiquidFreeEnergy above:
+        // orchestrationTaskSlug() is a persisted key written into every
+        // saved .calproj and calango.workflow/2 document, so renaming IT
+        // would make yesterday's workflows unopenable. "Dump Trajectory"
+        // pairs with the newer "Dump Charge Densities" node — both collect
+        // a fan-out's per-pass artifacts into one folder, just of a
+        // different kind.
+        return QObject::tr("Dump Trajectory");
+    case OrchestrationTask::DumpDensities:
+        return QObject::tr("Dump Charge Densities");
     case OrchestrationTask::SqsGenerator:
         return QObject::tr("SQS Generator");
     case OrchestrationTask::ClusterExpansionFit:
@@ -467,6 +481,7 @@ QString orchestrationTaskShortName(OrchestrationTask task)
     case OrchestrationTask::RandomNoiseSetup:     return QObject::tr("Noise");
     case OrchestrationTask::TdbGenerator:         return QObject::tr("TDB");
     case OrchestrationTask::Dump:                 return QObject::tr("Dump");
+    case OrchestrationTask::DumpDensities:        return QObject::tr("Densities");
     case OrchestrationTask::SqsGenerator:         return QObject::tr("SQS");
     case OrchestrationTask::ClusterExpansionFit:  return QObject::tr("ECI fit");
     case OrchestrationTask::CvmEntropy:           return QObject::tr("CVM");
@@ -513,6 +528,10 @@ QList<OrchestrationTask> orchestrationTasks()
             // pipeline, and normally sits at the very END of whichever one
             // it is attached to.
             OrchestrationTask::Dump,
+            // Same "sits at the very end" placement as Dump right above it —
+            // a second batch aggregator, this one collecting volumetric
+            // files instead of a training-set trajectory.
+            OrchestrationTask::DumpDensities,
             // Analysis
             OrchestrationTask::ElectronicBands,
             OrchestrationTask::Optics,
@@ -641,6 +660,14 @@ QList<OrchestrationInputSlot> orchestrationInputSlots(OrchestrationTask task)
         // Optimization, Molecular Dynamics, ...), each of which writes its
         // final structure under a different name -- naming one here would
         // refuse the node whenever the parent used a different one.
+        return {{QObject::tr("completed calculation"), QString(),
+                 QStringLiteral("latest_pass"), false}};
+
+    case OrchestrationTask::DumpDensities:
+        // Same reasoning as Dump immediately above: the slot exists only so
+        // "at least one parent" is enforced, since the actual collection
+        // reads every pass of the parent's density file directly through
+        // WorkflowReport once the fan-out finishes.
         return {{QObject::tr("completed calculation"), QString(),
                  QStringLiteral("latest_pass"), false}};
 
@@ -850,6 +877,12 @@ void OrchestrationNodeItem::setDump(const DumpSpec& spec)
     update();
 }
 
+void OrchestrationNodeItem::setDumpDensities(const DumpDensitiesSpec& spec)
+{
+    dumpDensities_ = spec;
+    update();
+}
+
 void OrchestrationNodeItem::setSingleAtomContainer(
     const SingleAtomContainerSpec& spec)
 {
@@ -955,8 +988,16 @@ QString OrchestrationNodeItem::configurationProblem() const
                 "%1 has not been configured (%2).\n\nDouble-click it and "
                 "choose where to write the training set and what to call "
                 "its energy and forces keys — there is no default output "
-                "path a Dump node could guess.")
+                "path a Dump Trajectory node could guess.")
                 .arg(title_, dump_.describe());
+        return QString();
+    case OrchestrationTask::DumpDensities:
+        if (!dumpDensities_.isValid())
+            return QObject::tr(
+                "%1 has not been configured (%2).\n\nDouble-click it and "
+                "choose a destination folder — there is no default folder a "
+                "Dump Charge Densities node could guess.")
+                .arg(title_, dumpDensities_.describe());
         return QString();
     default:
         break;
@@ -1202,6 +1243,33 @@ void OrchestrationNodeItem::paint(QPainter* painter,
         }
         break;
     }
+    case OrchestrationTask::DumpDensities: {
+        if (!dumpDensities_.isValid()) {
+            primary = QObject::tr("Not configured");
+            secondary = QObject::tr("double-click to choose a destination folder");
+        } else if (status_ != Status::Done) {
+            // Same "waiting on the fan-out's last pass" caveat as Dump above.
+            primary = QObject::tr("-> %1")
+                          .arg(QDir(dumpDensities_.outputDirectory).dirName());
+            secondary = QObject::tr("writes once its input is ready");
+        } else if (batchProgressTotal_ == 0) {
+            primary = QObject::tr("Nothing to write");
+            secondary = QObject::tr("no completed pass had this density");
+        } else {
+            // "87/100 densities written, 13 missing" — spelled out rather
+            // than the generic K/N suffix (suppressed below for this task,
+            // same reason as Dump): this node also ran exactly once.
+            primary = QObject::tr("%n/%1 densities written", nullptr,
+                                  batchProgressDone_)
+                          .arg(batchProgressTotal_);
+            secondary = batchProgressTotal_ > batchProgressDone_
+                ? QObject::tr("%n missing", nullptr,
+                              batchProgressTotal_ - batchProgressDone_)
+                : QObject::tr("-> %1")
+                      .arg(QDir(dumpDensities_.outputDirectory).dirName());
+        }
+        break;
+    }
     case OrchestrationTask::DefectGenerator:
         primary = defects_.isEmpty() ? QObject::tr("No operations")
                                      : defects_.describe();
@@ -1238,12 +1306,13 @@ void OrchestrationNodeItem::paint(QPainter* painter,
     // and the reason a 100-pass run could look, at a glance, exactly like a
     // single successful run — this is the visible half of that fix.
     //
-    // Dump is excluded: it reuses the SAME two counters for a different
-    // meaning (frames written / frames considered, not passes done / batch
-    // length) and already spells that out above in its own words — this
-    // generic "K/N done" suffix would misread as fan-out progress on a node
-    // that ran exactly once.
-    if (batchProgressTotal_ > 1 && task_ != OrchestrationTask::Dump)
+    // Dump and DumpDensities are excluded: both reuse the SAME two counters
+    // for a different meaning (frames/densities written vs. considered, not
+    // passes done / batch length) and already spell that out above in their
+    // own words — this generic "K/N done" suffix would misread as fan-out
+    // progress on a node that ran exactly once.
+    if (batchProgressTotal_ > 1 && task_ != OrchestrationTask::Dump
+        && task_ != OrchestrationTask::DumpDensities)
         secondary += QObject::tr("  —  %1/%2 done")
                          .arg(batchProgressDone_)
                          .arg(batchProgressTotal_);
@@ -2805,7 +2874,7 @@ bool editCvmEntropy(QWidget* parent, CvmEntropySpec* spec)
 bool editDump(QWidget* parent, DumpSpec* spec)
 {
     QDialog dialog(parent);
-    dialog.setWindowTitle(QObject::tr("Dump (ML Training Data)"));
+    dialog.setWindowTitle(QObject::tr("Dump Trajectory (ML Training Data)"));
     auto* layout = new QVBoxLayout(&dialog);
 
     auto* intro = new QLabel(
@@ -2919,6 +2988,121 @@ bool editDump(QWidget* parent, DumpSpec* spec)
     for (QLineEdit* field : {path, energyKey, forcesKey, stressKey})
         QObject::connect(field, &QLineEdit::textChanged, &dialog,
                          [&refresh] { refresh(); });
+    refresh();
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
+                     &QDialog::accept);
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    *spec = current();
+    return true;
+}
+
+bool editDumpDensities(QWidget* parent, DumpDensitiesSpec* spec)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("Dump Charge Densities"));
+    auto* layout = new QVBoxLayout(&dialog);
+
+    auto* intro = new QLabel(
+        QObject::tr(
+            "Collect the chosen density from every pass of the fan-out "
+            "feeding this node and write one enumerated file per pass into "
+            "a destination folder — density_0000.cube, density_0001.cube, "
+            "... aligned to frame index (a pass with no matching file is "
+            "skipped, not compacted away).<br><br>"
+            "Runs ONCE, after the fan-out's <b>last</b> pass, the same as "
+            "Dump Trajectory."),
+        &dialog);
+    intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
+    layout->addWidget(intro);
+
+    auto* form = new QFormLayout;
+
+    auto* dirRow = new QHBoxLayout;
+    auto* directory = new QLineEdit(spec->outputDirectory, &dialog);
+    directory->setPlaceholderText(
+        QObject::tr("where the enumerated files are written"));
+    dirRow->addWidget(directory);
+    auto* browse = new QPushButton(QObject::tr("Browse…"), &dialog);
+    dirRow->addWidget(browse);
+    QObject::connect(browse, &QPushButton::clicked, &dialog,
+                     [&dialog, directory] {
+                         const QString chosen = QFileDialog::getExistingDirectory(
+                             &dialog, QObject::tr("Choose Destination Folder"),
+                             directory->text());
+                         if (!chosen.isEmpty())
+                             directory->setText(chosen);
+                     });
+    form->addRow(QObject::tr("Destination folder:"), dirRow);
+
+    auto* prefix = new QLineEdit(spec->filePrefix, &dialog);
+    prefix->setPlaceholderText(QObject::tr("density_"));
+    form->addRow(QObject::tr("File prefix:"), prefix);
+
+    auto* product = new QComboBox(&dialog);
+    int selectedIndex = 0;
+    const QList<DensityProduct> products = densityProducts();
+    for (int i = 0; i < products.size(); ++i) {
+        product->addItem(densityProductLabel(products[i]));
+        if (products[i] == spec->product)
+            selectedIndex = i;
+    }
+    product->setCurrentIndex(selectedIndex);
+    product->setToolTip(QObject::tr(
+        "Which density each pass's job directory is searched for. Lists "
+        "every named volumetric file Calango's own generators/engines can "
+        "produce — the node cannot know in advance which engine will "
+        "actually feed it, so pick the one your upstream calculation "
+        "writes; passes from any other engine simply report as missing."));
+    form->addRow(QObject::tr("Density product:"), product);
+
+    auto* compress = new QCheckBox(
+        QObject::tr("Compress to HDF5 (Calango's own container)"), &dialog);
+    compress->setChecked(spec->compressHdf5);
+    compress->setToolTip(QObject::tr(
+        "Convert each collected file to Calango's compressed HDF5 container "
+        "(core::VolumetricData::saveHdf5 — chunked, gzip) instead of "
+        "copying it verbatim. A pass whose density was already compressed "
+        "upstream stays compressed either way."));
+    form->addRow(QString(), compress);
+    layout->addLayout(form);
+
+    auto* status = new QLabel(&dialog);
+    status->setWordWrap(true);
+    layout->addWidget(status);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                     &QDialog::reject);
+    const auto current = [&] {
+        DumpDensitiesSpec edited;
+        edited.outputDirectory = directory->text().trimmed();
+        edited.filePrefix = prefix->text().trimmed().isEmpty()
+            ? QStringLiteral("density_")
+            : prefix->text().trimmed();
+        edited.product = products[std::max(0, product->currentIndex())];
+        edited.compressHdf5 = compress->isChecked();
+        return edited;
+    };
+    const auto refresh = [&] {
+        const bool ok = current().isValid();
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(ok);
+        status->setStyleSheet(ok ? QString()
+                                 : QStringLiteral("color:#c0392b;"));
+        status->setText(ok ? current().describe()
+                           : QObject::tr("A destination folder is required."));
+    };
+    QObject::connect(directory, &QLineEdit::textChanged, &dialog,
+                     [&refresh] { refresh(); });
+    QObject::connect(prefix, &QLineEdit::textChanged, &dialog,
+                     [&refresh] { refresh(); });
+    QObject::connect(product, &QComboBox::currentIndexChanged, &dialog,
+                     [&refresh] { refresh(); });
+    QObject::connect(compress, &QCheckBox::toggled, &dialog,
+                     [&refresh] { refresh(); });
     refresh();
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
                      &QDialog::accept);
@@ -3672,6 +3856,15 @@ void OrchestrationWindow::setNodeDump(OrchestrationNodeItem* node,
     invalidateFrom(node);
 }
 
+void OrchestrationWindow::setNodeDumpDensities(OrchestrationNodeItem* node,
+                                               const DumpDensitiesSpec& spec)
+{
+    if (!node)
+        return;
+    node->setDumpDensities(spec);
+    invalidateFrom(node);
+}
+
 void OrchestrationWindow::setNodeSingleAtomContainer(
     OrchestrationNodeItem* node, const SingleAtomContainerSpec& spec)
 {
@@ -3852,6 +4045,12 @@ void OrchestrationWindow::openNodeWizard(OrchestrationNodeItem* node)
             DumpSpec spec = node->dump();
             if (editDump(this, &spec))
                 setNodeDump(node, spec);
+            break;
+        }
+        case OrchestrationTask::DumpDensities: {
+            DumpDensitiesSpec spec = node->dumpDensities();
+            if (editDumpDensities(this, &spec))
+                setNodeDumpDensities(node, spec);
             break;
         }
         default: {
@@ -4063,7 +4262,7 @@ namespace {
 
 /// True for a node that is downstream of a fan-out but must NOT be re-run
 /// per pass like an ordinary node — it collects the WHOLE batch's results
-/// and runs exactly once, after the last pass. Currently just Dump, whose
+/// and runs exactly once, after the last pass. Dump and DumpDensities, whose
 /// entire point is to see every pass's result at once rather than one pass
 /// at a time.
 ///
@@ -4073,7 +4272,8 @@ namespace {
 /// merging the two would make one of them wrong.
 bool isBatchAggregator(const OrchestrationNodeItem* node)
 {
-    return node->task() == OrchestrationTask::Dump;
+    return node->task() == OrchestrationTask::Dump
+        || node->task() == OrchestrationTask::DumpDensities;
 }
 
 } // namespace
@@ -4591,6 +4791,11 @@ OrchestrationWindow::beginProvenance(OrchestrationNodeItem* node,
         // Overwritten with the real frame counts once runTransform()
         // finishes; this is only what shows if it never gets that far.
         record.parameters = node->dump().describe();
+        break;
+    case OrchestrationTask::DumpDensities:
+        // Same as Dump above: overwritten with the real written/missing
+        // counts once runTransform() finishes.
+        record.parameters = node->dumpDensities().describe();
         break;
     default:
         break;
@@ -5386,6 +5591,142 @@ bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
         // gated off for a batch aggregator so it does not overwrite this.
         node->setBatchProgress(dumped.framesWritten,
                                dumped.framesWritten + dumped.framesExcluded);
+        return true;
+    }
+
+    if (node->task() == OrchestrationTask::DumpDensities) {
+        // Single parent only (connectNodes() does not exempt this task from
+        // the one-parent cap the way it does Dump): a density file belongs
+        // to exactly one calculation, so there is nothing to merge across
+        // several branches the way Dump's training set can be.
+        const QList<OrchestrationNodeItem*> parents = parentsOf(node);
+        if (parents.isEmpty()) {
+            *error = tr("nothing feeds it a completed calculation");
+            return false;
+        }
+        const DumpDensitiesSpec& spec = node->dumpDensities();
+        if (!spec.isValid()) {
+            *error = tr("no destination folder has been chosen");
+            return false;
+        }
+        QDir outDir(spec.outputDirectory);
+        if (!outDir.exists() && !outDir.mkpath(QStringLiteral("."))) {
+            *error = tr("its destination folder %1 could not be created")
+                         .arg(spec.outputDirectory);
+            return false;
+        }
+
+        OrchestrationNodeItem* parent = parents.first();
+        const QString sourceName = densityProductFileName(spec.product);
+
+        // The LATEST outcome per pass, same "a Resume can leave a failed
+        // attempt AND its retry for one batchIndex, only the later one is
+        // current" reasoning as Dump's own collection loop above.
+        QMap<int, core::NodeOutcome> latest;
+        for (const core::NodeOutcome& outcome : report_.outcomes)
+            if (outcome.nodeId == parent->id())
+                latest[outcome.batchIndex] = outcome;
+        if (latest.isEmpty()) {
+            *error = tr("its parent (%1) has not produced a completed pass "
+                        "yet")
+                         .arg(parent->title());
+            return false;
+        }
+
+        // Zero-padded to the width the LARGEST frame index actually needs —
+        // "density_0000.cube" for a 100-structure sweep, growing past four
+        // digits on its own for a larger one rather than truncating.
+        const int width = std::max(
+            4, static_cast<int>(QString::number(latest.lastKey()).size()));
+        int written = 0;
+        QStringList missing;
+        for (auto it = latest.constBegin(); it != latest.constEnd(); ++it) {
+            const int index = it.key();
+            const core::NodeOutcome& outcome = it.value();
+            const QString label = outcome.batchLabel.isEmpty()
+                ? tr("pass %1").arg(index + 1)
+                : tr("pass %1 (%2)").arg(index + 1).arg(outcome.batchLabel);
+            if (outcome.status != QLatin1String("done")) {
+                missing << tr("%1: did not complete").arg(label);
+                continue;
+            }
+            // Either the plain file, or its already-HDF5-compressed form (a
+            // calculator setup page's own "Compress to HDF5" checkbox may
+            // have converted it during the run) — see
+            // GuiUtils::volumetricDisplayName()'s doc for the same "<name>
+            // .h5" naming convention.
+            QString sourcePath = outcome.directory + QLatin1Char('/') + sourceName;
+            bool sourceIsHdf5 = false;
+            if (!QFile::exists(sourcePath)) {
+                const QString h5Path = sourcePath + QStringLiteral(".h5");
+                if (QFile::exists(h5Path)) {
+                    sourcePath = h5Path;
+                    sourceIsHdf5 = true;
+                } else {
+                    missing << tr("%1: no %2 in its results")
+                                   .arg(label, sourceName);
+                    continue;
+                }
+            }
+
+            const QString indexStr =
+                QStringLiteral("%1").arg(index, width, 10, QChar('0'));
+            // A pass whose density was ALREADY compressed upstream stays
+            // compressed either way (see DumpDensitiesSpec::compressHdf5's
+            // doc comment) — there is no cube/CHGCAR writer in this codebase
+            // to decompress into.
+            const QString destExt = (spec.compressHdf5 || sourceIsHdf5)
+                ? QStringLiteral(".h5")
+                : densityProductExtension(spec.product);
+            const QString destPath =
+                outDir.filePath(spec.filePrefix + indexStr + destExt);
+            QFile::remove(destPath); // a re-run overwrites cleanly
+
+            bool ok = false;
+            if (!sourceIsHdf5 && spec.compressHdf5) {
+                std::string convertError;
+                ok = core::VolumetricData::convertToHdf5(
+                    sourcePath.toStdString(), destPath.toStdString(),
+                    &convertError);
+                if (!ok)
+                    missing << tr("%1: HDF5 conversion failed (%2)")
+                                   .arg(label,
+                                        QString::fromStdString(convertError));
+            } else {
+                ok = QFile::copy(sourcePath, destPath);
+                if (!ok)
+                    missing << tr("%1: could not be copied to %2")
+                                   .arg(label, destPath);
+            }
+            if (ok)
+                ++written;
+        }
+
+        const QJsonObject summary{
+            {QStringLiteral("output_directory"), spec.outputDirectory},
+            {QStringLiteral("product"), densityProductSlug(spec.product)},
+            {QStringLiteral("densities_written"), written},
+            {QStringLiteral("densities_missing"), missing.size()},
+            {QStringLiteral("missing_reasons"),
+             QJsonArray::fromStringList(missing)},
+        };
+        if (!write(QStringLiteral("dump_densities_summary.json"),
+                   QString::fromUtf8(QJsonDocument(summary).toJson(
+                       QJsonDocument::Indented)))) {
+            *error = tr("its summary could not be written into %1").arg(dir);
+            return false;
+        }
+        record.parameters = missing.isEmpty()
+            ? tr("%1 density file(s) written to %2")
+                  .arg(written)
+                  .arg(QDir(spec.outputDirectory).dirName())
+            : tr("%1 density file(s) written to %2 (%3 missing)")
+                  .arg(written)
+                  .arg(QDir(spec.outputDirectory).dirName())
+                  .arg(missing.size());
+        // Same repurposing as Dump's setBatchProgress() call: densities
+        // written / passes considered, not passes done / batch length.
+        node->setBatchProgress(written, written + missing.size());
         return true;
     }
 

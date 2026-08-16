@@ -584,6 +584,11 @@ private:
     /// (two columns) and in the order core::GpawDensityExports declares them.
     static constexpr int kDensityFieldCount = 6;
     QCheckBox* densityFieldChecks_[kDensityFieldCount] = {};
+    /// "Compress to HDF5" — GPAW side. Both this and vaspHdf5CompressCheck_
+    /// below feed the SAME CalculatorConfig::compressDensityToHdf5 (only one
+    /// is ever visible, since only one engine is active), rather than one
+    /// shared widget reparented between two group boxes.
+    QCheckBox* hdf5CompressCheck_ = nullptr;
     // LAMMPS. The engine supplies no force field of its own, so the pair style
     // and its coefficients ARE the physics and every one of these feeds the
     // generated script.
@@ -657,6 +662,8 @@ private:
     QCheckBox* vaspLchargCheck_ = nullptr;
     QCheckBox* vaspLaechgCheck_ = nullptr;
     QCheckBox* vaspLorbitCheck_ = nullptr;
+    /// "Compress to HDF5" — VASP side. See hdf5CompressCheck_ above.
+    QCheckBox* vaspHdf5CompressCheck_ = nullptr;
     QSpinBox* vaspNcoreSpin_ = nullptr;
     QSpinBox* vaspKparSpin_ = nullptr;
     QPlainTextEdit* vaspExtraIncarEdit_ = nullptr;

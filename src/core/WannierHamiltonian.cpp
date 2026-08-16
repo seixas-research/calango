@@ -119,18 +119,46 @@ void hermitianEigen(CMatrix a, std::vector<double>& values, CMatrix& vectors)
                 // transposed, 34% low. Both are invisible whenever a_pp =
                 // a_qq or a_pq is real, which is every 2x2 test case built
                 // from a single Pauli matrix.
-                CMatrix rot = identity(n);
-                rot[p][p] = Cplx{c, 0.0};
-                rot[p][q] = Cplx{s, 0.0};
-                rot[q][p] = -s * std::conj(phase);
-                rot[q][q] = c * std::conj(phase);
+                //
+                // U = rot differs from the identity only in rows/columns p
+                // and q, so U†AU touches only those two rows AND columns —
+                // applied here as the direct O(n) rank-2 update (derived by
+                // hand from rot's four nonzero entries below, not a
+                // shortcut), not the O(n^3) two full N x N matrix
+                // multiplications a naive `multiply(rotH, multiply(a, rot))`
+                // would cost. That full-multiply form is mathematically
+                // identical (every consumer's existing numbers are
+                // unchanged) but makes one sweep O(n^5) instead of O(n^3) —
+                // invisible at the handful-of-orbitals scale every existing
+                // caller (BoltzmannTransport, BerryPhase, CrpaSolver) uses,
+                // and the reason BseSolver's basis (hundreds to thousands of
+                // electron-hole pairs) could not diagonalize even its
+                // small-mesh validation case in under a minute before this
+                // fix.
+                const Cplx rpp{c, 0.0};
+                const Cplx rpq{s, 0.0};
+                const Cplx rqp = -s * std::conj(phase);
+                const Cplx rqq = c * std::conj(phase);
 
-                CMatrix rotH(n, std::vector<Cplx>(n, Cplx{0.0, 0.0}));
-                for (std::size_t i = 0; i < n; ++i)
-                    for (std::size_t j = 0; j < n; ++j)
-                        rotH[i][j] = std::conj(rot[j][i]);
-                a = multiply(rotH, multiply(a, rot));
-                vectors = multiply(vectors, rot);
+                // Step 1: A1 = A * rot -- changes only columns p, q.
+                for (std::size_t i = 0; i < n; ++i) {
+                    const Cplx aip = a[i][p], aiq = a[i][q];
+                    a[i][p] = aip * rpp + aiq * rqp;
+                    a[i][q] = aip * rpq + aiq * rqq;
+                }
+                // Step 2: A' = rot^H * A1 -- changes only rows p, q of the
+                // result of step 1.
+                for (std::size_t j = 0; j < n; ++j) {
+                    const Cplx apj = a[p][j], aqj = a[q][j];
+                    a[p][j] = std::conj(rpp) * apj + std::conj(rqp) * aqj;
+                    a[q][j] = std::conj(rpq) * apj + std::conj(rqq) * aqj;
+                }
+                // vectors = vectors * rot -- changes only columns p, q.
+                for (std::size_t i = 0; i < n; ++i) {
+                    const Cplx vip = vectors[i][p], viq = vectors[i][q];
+                    vectors[i][p] = vip * rpp + viq * rqp;
+                    vectors[i][q] = vip * rpq + viq * rqq;
+                }
             }
     }
 

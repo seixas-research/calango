@@ -230,6 +230,20 @@ QWidget* GrapheneOxideMdmcWizard::buildSettingsPage()
            "ACCEPTED moves. Zero writes no trajectory — only the best "
            "structure found."));
     outputForm->addRow(tr("Snapshot every:"), snapshotInterval_);
+
+    castPerFrame_ = new QCheckBox(
+        tr("Redefine Cast on every accepted move"), outputBox);
+    castPerFrame_->setChecked(true);
+    castPerFrame_->setToolTip(
+        tr("Recompute which functional group (or none) each carbon is bonded "
+           "to for every accepted frame, and recolour by Cast accordingly — "
+           "so a carbon whose epoxide hops away over the run stops reading "
+           "as \"epoxide-carbon\" the moment it does.\n\n"
+           "On by default: a Cast fixed at frame 0, the way every other "
+           "trajectory in Calango behaves, goes stale the moment the first "
+           "move is accepted, since MDMC's whole point is relocating groups. "
+           "Turn this off only to compare against that flat behaviour."));
+    outputForm->addRow(castPerFrame_);
     layout->addWidget(outputBox);
 
     costLabel_ = new QLabel(page);
@@ -318,6 +332,8 @@ core::GrapheneOxideMdmcConfig GrapheneOxideMdmcWizard::collectConfig() const
         config.viewportEveryCycles = viewportEvery_->value();
     if (streamMdFrames_)
         config.streamMdFrames = streamMdFrames_->isChecked();
+    if (castPerFrame_)
+        config.castPerFrame = castPerFrame_->isChecked();
     return config;
 }
 

@@ -298,6 +298,62 @@ void testEndToEndSyntheticTensor()
                "a deliberately wrapped multivalued series");
 }
 
+void testEndToEndTwoDimensionalSelectionRules()
+{
+    std::printf("End-to-end, 2D: D3h's e11 = -e12 = -e26 pattern recovered "
+                "through in-plane-only branch-corrupted P(eps) data\n");
+    // A monolayer restricted to in-plane strain (StrainVoigt::
+    // inPlaneVoigtComponents(2) = {xx, yy, xy} — see StrainVoigtTest.cpp)
+    // only ever fits Cartesian rows i in {0, 1}, never i = 2 (the vacuum
+    // axis; PiezoelectricScriptGenerator leaves that row NaN, never fit at
+    // all). This is exactly what a D3h/-6m2 hexagonal monolayer (2H-MoS2's
+    // own point group) allows: with the piezoelectric tensor's only
+    // independent entry e_x,xx = -e_y,xy* (Nye's e11 = -e26, up to a factor
+    // absorbed into the Voigt shear-strain doubling) alongside its
+    // symmetry-linked partner e_y,yy = -e_x,xx (e12 = -e11) — the two
+    // Cartesian rows this test recovers from synthetic Berry-phase data,
+    // exactly as the real MoS2 tensor should come out symmetrized.
+    const double eXX = 0.35; // e_x,xx = e11 (arbitrary but nonzero, C/m^2)
+    const double delta = 0.005;
+    const std::vector<double> strains{-delta, delta};
+
+    // e_x,xx: P_x(eps_xx) = eXX * eps, wrapped with an injected +2 quanta
+    // jump at the second point — one Cartesian row of one in-plane column.
+    std::vector<double> rawExx;
+    for (std::size_t i = 0; i < strains.size(); ++i) {
+        const double truePhase = eXX * strains[i] + (i == 1 ? 2 * kTwoPi : 0.0);
+        rawExx.push_back(wrapToPi(truePhase));
+    }
+    const auto unwrappedExx = unwrapPhaseBranch(rawExx);
+    const double slopeExx = linearFitSlope(strains, unwrappedExx);
+    checkClose(slopeExx, eXX, 1e-6,
+               "e_x,xx recovered from an in-plane column with an injected "
+               "quantum jump");
+
+    // e_y,yy: the D3h partner, P_y(eps_yy) = -eXX * eps (e12 = -e11), with
+    // its OWN, differently-signed injected jump — proving the branch fix
+    // handles two independent in-plane columns/rows without their
+    // corrections bleeding into each other.
+    std::vector<double> rawEyy;
+    for (std::size_t i = 0; i < strains.size(); ++i) {
+        const double truePhase =
+            -eXX * strains[i] + (i == 0 ? -3 * kTwoPi : 0.0);
+        rawEyy.push_back(wrapToPi(truePhase));
+    }
+    const auto unwrappedEyy = unwrapPhaseBranch(rawEyy);
+    const double slopeEyy = linearFitSlope(strains, unwrappedEyy);
+    checkClose(slopeEyy, -eXX, 1e-6,
+               "e_y,yy = -e_x,xx recovered independently, its own quantum "
+               "jump undone without disturbing e_x,xx's result");
+
+    // The vacuum-axis row (i = 2, P_z) is never part of this at all — the
+    // module does not fit it for a 2D structure (see
+    // PiezoelectricScriptGenerator.cpp's `if IS_2D and i == VACUUM_AXIS:
+    // continue`), so there is nothing here to inject a quantum jump into or
+    // recover: the two in-plane rows above are the whole of what a
+    // monolayer's piezoelectric tensor reports.
+}
+
 } // namespace
 
 int main()
@@ -314,6 +370,7 @@ int main()
     testInvert6x6();
     testStressToStrainConversion();
     testEndToEndSyntheticTensor();
+    testEndToEndTwoDimensionalSelectionRules();
 
     std::printf("\n%d check(s) FAILED.\n", failures);
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

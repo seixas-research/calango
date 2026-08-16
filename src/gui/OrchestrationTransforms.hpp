@@ -536,6 +536,84 @@ struct DumpOutput {
 bool runDump(const QList<DumpSourceFrame>& sources, const DumpSpec& spec,
             DumpOutput* output, QString* error);
 
+/// Which density product a Dump Charge Densities node collects. Spans every
+/// named volumetric file Calango's own generators/engines produce — a node
+/// configured before its parent has ever run cannot know in advance which
+/// engine will feed it, so the dropdown lists all of them rather than
+/// filtering by a guess.
+enum class DensityProduct {
+    GpawAllElectron,
+    GpawPseudo,
+    GpawSpin,
+    GpawHartree,
+    GpawElf,
+    GpawKineticEnergy,
+    VaspChgcar,
+    VaspAeccar0,
+    VaspAeccar2,
+    VaspLocpot,
+    VaspElfcar,
+};
+
+/// The exact file name a completed pass's job directory carries the chosen
+/// product under — core::densityFiles::k* for a GPAW export, VASP's own bare
+/// name (VASP writes CHGCAR/AECCAR0/... itself; nothing in this codebase
+/// renames them) otherwise.
+QString densityProductFileName(DensityProduct product);
+/// The extension a collected file gets when NOT compressed to HDF5: ".cube"
+/// for the GPAW products (matching the source exactly), a lower-cased form
+/// of the VASP name otherwise — VASP's own files carry no extension at all,
+/// which cannot be enumerated ("CHGCAR" repeated 100 times in one folder is
+/// not a dataset).
+QString densityProductExtension(DensityProduct product);
+/// Dropdown label — "All-electron density (GPAW)", "CHGCAR (VASP)".
+QString densityProductLabel(DensityProduct product);
+/// Every DensityProduct, in dropdown order (GPAW's six, then VASP's five).
+QList<DensityProduct> densityProducts();
+/// Stable persisted identifier ("gpaw_all_electron", "vasp_chgcar") — what
+/// DumpDensitiesSpec::toJson() writes, so a saved workflow survives the enum
+/// being reordered (the same reason orchestrationTaskSlug() exists).
+QString densityProductSlug(DensityProduct product);
+/// The inverse; falls back to GpawAllElectron for an unrecognised slug
+/// (rather than refusing the whole node) since this is one field of many —
+/// see DumpDensitiesSpec::fromJson().
+DensityProduct densityProductFromSlug(const QString& slug);
+
+/// Settings of a Dump Charge Densities node: collect the chosen volumetric
+/// product from every pass of an upstream fan-out and write one enumerated
+/// file per pass into `outputDirectory` — see OrchestrationWindow.cpp's
+/// `OrchestrationTask::DumpDensities` case in runTransform() for the actual
+/// collection loop (there is no separate runDumpDensities(): unlike Dump,
+/// there is no ase.io step to factor out — copying a file, or calling
+/// core::VolumetricData::convertToHdf5(), needs nothing OrchestrationWindow
+/// does not already have in scope).
+struct DumpDensitiesSpec {
+    /// Destination folder. No default, for the same reason DumpSpec's
+    /// outputPath has none — there is no path this node could guess that
+    /// would not be a claim about the user's filesystem. Created if it does
+    /// not already exist.
+    QString outputDirectory;
+    /// "density_" -> density_0000.cube, density_0001.cube, ...
+    QString filePrefix = QStringLiteral("density_");
+    DensityProduct product = DensityProduct::GpawAllElectron;
+    /// Convert each collected file to Calango's compressed HDF5 container
+    /// (core::VolumetricData::saveHdf5 — see
+    /// docs/sphinx/source/reference/hdf5_density.md) instead of copying it
+    /// verbatim. A pass whose density was ALREADY compressed upstream (the
+    /// calculator setup page's own HDF5 option) stays compressed either way
+    /// — there is no cube/CHGCAR WRITER in this codebase to decompress into,
+    /// so "preserve the source format by default" stops there.
+    bool compressHdf5 = false;
+
+    bool isValid() const { return !outputDirectory.isEmpty(); }
+    /// "All-electron density (GPAW) -> /path/to/folder" or, with HDF5 on,
+    /// the same with " (HDF5)" appended.
+    QString describe() const;
+
+    QJsonObject toJson() const;
+    static DumpDensitiesSpec fromJson(const QJsonObject& object);
+};
+
 /// One defective material produced by a Defect Generator.
 struct DefectVariant {
     /// What was done to it — "substitute 0, 4 with N". Names its tab in the

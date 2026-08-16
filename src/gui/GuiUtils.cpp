@@ -91,6 +91,18 @@ QString volumetricDisplayName(const QString& fileName)
         {QStringLiteral("ELFCAR"),
          QCoreApplication::translate("calango::gui", "ELF η(r) (ELFCAR)")},
     };
+    // An HDF5-compressed density is named by APPENDING ".h5" to whatever the
+    // original file was called (see
+    // MainWindow::compressDensityFilesIfRequested) — "density_all_electron
+    // .cube" -> "....cube.h5", "CHGCAR" -> "CHGCAR.h5" — rather than
+    // replacing its extension, so the original name (and this table's key
+    // for it) is recoverable just by chopping the suffix back off.
+    if (fileName.endsWith(QStringLiteral(".h5"), Qt::CaseInsensitive)) {
+        const auto it = kLabels.find(fileName.chopped(3));
+        if (it != kLabels.end())
+            return QCoreApplication::translate("calango::gui", "%1 (HDF5)")
+                .arg(it.value());
+    }
     return kLabels.value(fileName, fileName);
 }
 

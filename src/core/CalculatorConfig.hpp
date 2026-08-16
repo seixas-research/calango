@@ -1091,6 +1091,18 @@ struct CalculatorConfig {
     /// which is kept because saved projects and the headless script path still
     /// carry it; when `gpawDensityExports.any()` is true it wins.
     GpawDensityExports gpawDensityExports;
+    /// Convert whichever density/volumetric files THIS run writes into
+    /// Calango's compressed HDF5 container (core::VolumetricData::saveHdf5,
+    /// see docs/sphinx/source/reference/hdf5_density.md) once it finishes —
+    /// GPAW's density_*.cube/elf.cube/potential_hartree.cube/
+    /// kinetic_energy_density.cube AND VASP's CHGCAR/AECCAR0/AECCAR2, covered
+    /// by the one checkbox regardless of engine, since both are "the density
+    /// files this calculator setup page already lets you choose". The
+    /// original file is DELETED once its .h5 is written (replace, to save
+    /// the disk space the option exists for) — off by default, since a
+    /// converted file needs an HDF5-aware reader and every existing workflow
+    /// expects a plain .cube/CHGCAR sitting in the job directory.
+    bool compressDensityToHdf5 = false;
 
     /// DFT+U corrections, emitted as GPAW's `setups={...}` dictionary.
     /// `useHubbardU` gates the whole block so a populated table can be turned

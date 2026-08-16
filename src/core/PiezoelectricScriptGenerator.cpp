@@ -3,6 +3,7 @@
 #include "core/AseScriptGenerator.hpp"
 #include "core/LocaleSafeNumber.hpp"
 #include "core/PolarizationScriptHelpers.hpp"
+#include "core/StrainScriptHelpers.hpp"
 #include "core/StrainVoigt.hpp"
 
 #include <sstream>
@@ -16,36 +17,6 @@ std::string num(double v)
     return localeSafeFormat(v);
 }
 
-/// One Python-literal deformation-gradient matrix, computed HERE in C++
-/// (StrainVoigt.hpp) rather than re-derived in the generated script, so the
-/// Voigt mapping this module is unit-tested against (StrainVoigtTest.cpp)
-/// is exactly what runs.
-std::string matrixLiteral(const Matrix3& f)
-{
-    std::ostringstream out;
-    out << "[[" << num(f[0][0]) << ", " << num(f[0][1]) << ", " << num(f[0][2]) << "], "
-        << "[" << num(f[1][0]) << ", " << num(f[1][1]) << ", " << num(f[1][2]) << "], "
-        << "[" << num(f[2][0]) << ", " << num(f[2][1]) << ", " << num(f[2][2]) << "]]";
-    return out.str();
-}
-
-/// The +-multiples of `strainMagnitude` sampled for one component, in
-/// increasing order: 2 points -> {-1, +1}; 4 -> {-2, -1, +1, +2}. 0 is never
-/// included here — the zero-strain point is the baseline itself, evaluated
-/// once and shared by every component, not re-evaluated per component.
-std::vector<int> sampleMultiples(int pointsPerComponent)
-{
-    int half = pointsPerComponent / 2;
-    if (half < 1)
-        half = 1;
-    std::vector<int> out;
-    for (int m = half; m >= 1; --m)
-        out.push_back(-m);
-    for (int m = 1; m <= half; ++m)
-        out.push_back(m);
-    return out;
-}
-
 } // namespace
 
 std::string generatePiezoelectricScript(const PiezoelectricConfig& config)
@@ -56,10 +27,31 @@ std::string generatePiezoelectricScript(const PiezoelectricConfig& config)
     PiezoelectricConfig cfg = config;
     cfg.calculator.gpawSymmetryOff = true;
 
+    const bool is2D = cfg.vacuumAxis >= 0 && cfg.vacuumAxis <= 2;
+
     std::vector<int> voigt = cfg.voigtComponents;
-    if (voigt.empty())
-        for (int i = 0; i < 6; ++i)
-            voigt.push_back(i);
+    if (voigt.empty()) {
+        // Default set: all six for bulk, in-plane only for a 2D structure —
+        // straining the vacuum axis (not a real lattice parameter) is not a
+        // physical deformation, so it is never a sensible default.
+        if (is2D) {
+            voigt = inPlaneVoigtComponents(cfg.vacuumAxis);
+        } else {
+            for (int i = 0; i < 6; ++i)
+                voigt.push_back(i);
+        }
+    } else if (is2D) {
+        // Defense in depth: even an EXPLICIT selection must not strain the
+        // vacuum axis of a 2D structure. The wizard already disables those
+        // checkboxes once it detects one, but this generator is what a
+        // saved or hand-edited config ultimately runs, and it has to be
+        // correct on its own rather than trust the caller.
+        std::vector<int> filtered;
+        for (int v : voigt)
+            if (!voigtInvolvesAxis(v, cfg.vacuumAxis))
+                filtered.push_back(v);
+        voigt = filtered;
+    }
 
     std::ostringstream out;
     out << "# Piezoelectric tensor e_i,alpha = dP_i / d(eps_alpha) — "
@@ -73,10 +65,24 @@ std::string generatePiezoelectricScript(const PiezoelectricConfig& config)
            "# over ATOMIC DISPLACEMENTS (core/PolarizationScriptHelpers) —\n"
            "# here it is differentiated over CELL STRAIN instead.\n"
            "#\n"
-        << "# Cost: " << sampleMultiples(cfg.pointsPerComponent).size()
+        << "# Cost: " << strainSampleMultiples(cfg.pointsPerComponent).size()
         << " SCF run(s) per requested Voigt component ("
-        << voigt.size() << " requested), plus one reuse of the baseline's\n"
-           "# own converged wavefunctions for the eps = 0 reference point.\n";
+        << voigt.size() << " requested), plus one more (symmetry off) for the\n"
+           "# eps = 0 reference point — it is re-converged rather than reused\n"
+           "# from the baseline: the Berry phase needs symmetry off, and the\n"
+           "# baseline's own density was converged with it on.\n";
+    if (is2D)
+        out << "# 2D structure: vacuum axis " << cfg.vacuumAxis
+            << "; strain restricted to the in-plane component(s) "
+            << [&] {
+                   std::ostringstream v;
+                   v << "[";
+                   for (std::size_t i = 0; i < voigt.size(); ++i)
+                       v << voigt[i] << (i + 1 < voigt.size() ? ", " : "");
+                   v << "]";
+                   return v.str();
+               }()
+            << ".\n";
 
     if (cfg.calculator.calculator != CalculatorKind::Gpaw) {
         // Refusing up front beats running any strained SCF and failing at
@@ -87,6 +93,21 @@ std::string generatePiezoelectricScript(const PiezoelectricConfig& config)
                "    '(GPAW). The selected engine was \""
             << toString(cfg.calculator.calculator) << "\".\\n'\n"
                "    'Re-open the wizard and choose GPAW.')\n";
+        return out.str();
+    }
+
+    if (is2D && voigt.empty()) {
+        // Every requested component touched the vacuum axis and was
+        // stripped above — refuse cleanly rather than run a strain loop
+        // over zero points and silently write an empty tensor.
+        out << "raise RuntimeError(\n"
+               "    'Every requested Voigt strain component touches the "
+               "vacuum axis\\n'\n"
+            << "    '(axis " << cfg.vacuumAxis
+            << ") of this 2D structure; none of them is a physically\\n'\n"
+               "    'meaningful in-plane strain. Choose from the in-plane "
+               "components\\n'\n"
+               "    'instead (xx, yy and/or xy for a vacuum along z).')\n";
         return out.str();
     }
 
@@ -117,58 +138,23 @@ std::string generatePiezoelectricScript(const PiezoelectricConfig& config)
                "\n";
     }
 
-    out << "if not atoms.pbc.all():\n"
-           "    raise RuntimeError(\n"
-           "        'The Berry-phase polarization is defined for a periodic "
-           "crystal.\\n'\n"
-           "        'This structure is not periodic in all three directions — "
-           "the\\n'\n"
-           "        'piezoelectric tensor is only meaningful for a bulk "
-           "insulator.')\n"
-           "\n"
+    // Periodicity: at least the two in-plane directions, three for bulk. A
+    // monolayer legitimately declares pbc=[True, True, False] OR
+    // pbc=[True, True, True] with a vacuum gap (the ordinary ASE slab
+    // convention, and what a structure imported from most builders/DFT
+    // codes carries) — neither is refused here; IS_2D below is what tells
+    // the two apart, from the wizard's own detection, not from this check.
+    out << strainPeriodicityGuardPython("The Berry-phase polarization")
+        << strainVacuumAxisBlockPython(is2D ? cfg.vacuumAxis : -1)
         << AseScriptGenerator::gpawImports(cfg.calculator)
         << berryPhaseImportShim();
 
     // --- Symmetry: point-group detection and the centrosymmetric refusal --
     if (cfg.useSymmetry) {
-        out << "\n"
-               "# --- Symmetry --------------------------------------------\n"
-               "point_group = None\n"
-               "point_group_ops_cartesian = []\n"
-               "try:\n"
-               "    import spglib\n"
-            << "    _sym_symprec = " << num(cfg.symmetryTolerance) << "\n"
-            << "    _sym_cell = (atoms.cell[:], atoms.get_scaled_positions(),\n"
-               "                 atoms.numbers)\n"
-               "    _sym_data = spglib.get_symmetry_dataset(\n"
-               "        _sym_cell, symprec=_sym_symprec)\n"
-               "    _sym_ops = spglib.get_symmetry(_sym_cell, symprec=_sym_symprec)\n"
-               "    if _sym_data is not None and _sym_ops is not None:\n"
-               "        point_group = (_sym_data['pointgroup']\n"
-               "                       if isinstance(_sym_data, dict)\n"
-               "                       else getattr(_sym_data, 'pointgroup', None))\n"
-               "        # Cartesian rotation from spglib's FRACTIONAL one.\n"
-               "        # r_cart = cell^T . f_frac (cell rows are lattice\n"
-               "        # vectors), and spglib's R acts as f' = R . f, so the\n"
-               "        # matching Cartesian map is\n"
-               "        #     R_cart = cell^T . R . (cell^T)^-1.\n"
-               "        _cellT = np.array(atoms.cell[:]).T\n"
-               "        _cellT_inv = np.linalg.inv(_cellT)\n"
-               "        for _r_frac in _sym_ops['rotations']:\n"
-               "            _r_cart = _cellT @ np.asarray(_r_frac, dtype=float) "
-               "@ _cellT_inv\n"
-               "            point_group_ops_cartesian.append(_r_cart)\n"
-               "        print(f'CALANGO_INFO point group: {point_group}, '\n"
-               "              f'{len(point_group_ops_cartesian)} operation(s)',\n"
-               "              flush=True)\n"
-               "except ImportError:\n"
-               "    print('CALANGO_WARN spglib not installed: the "
-               "centrosymmetric\\n'\n"
-               "          '             refusal and the tensor "
-               "symmetrization are both\\n'\n"
-               "          '             skipped.', flush=True)\n"
-               "\n"
-               "\n"
+        out << strainPointGroupDetectionPython(cfg.symmetryTolerance,
+                   "the centrosymmetric refusal and the tensor symmetrization "
+                   "are both skipped.")
+            << "\n"
                "def _is_inversion(r, tol=1e-6):\n"
                "    return np.allclose(r, -np.eye(3), atol=tol)\n"
                "\n"
@@ -196,25 +182,17 @@ std::string generatePiezoelectricScript(const PiezoelectricConfig& config)
            "# --- Strain points (Calango-precomputed deformation gradients) --\n"
            "STRAIN_POINTS = [\n";
     for (int v : voigt) {
-        for (int mult : sampleMultiples(cfg.pointsPerComponent)) {
+        for (int mult : strainSampleMultiples(cfg.pointsPerComponent)) {
             const double eps = cfg.strainMagnitude * static_cast<double>(mult);
             const Matrix3 f = deformationGradient(unitVoigtStrain(v, eps));
             out << "    {\"voigt\": " << v << ", \"eps\": " << num(eps)
-                << ", \"F\": " << matrixLiteral(f) << "},\n";
+                << ", \"F\": " << strainMatrixLiteral(f) << "},\n";
         }
     }
     out << "]\n"
            "\n"
-           "def apply_strain(reference, f_matrix):\n"
-           "    new_cell = np.array(reference.get_cell()[:]) @ np.array(f_matrix).T\n"
-           "    strained = reference.copy()\n"
-           "    # scale_atoms=True keeps the FRACTIONAL coordinates fixed — the\n"
-           "    # CLAMPED-ION convention this base case computes.\n"
-           "    strained.set_cell(new_cell, scale_atoms=True)\n"
-           "    return strained\n"
-           "\n"
-           "\n"
-           "def strained_phase(strained, tag):\n"
+        << applyStrainFunctionPython()
+        << "def strained_phase(strained, tag):\n"
            "    # calc.new() rebuilds the baseline's calculator verbatim, and\n"
            "    # symmetry='off' is forced on top for the same reason as Born\n"
            "    # Charges: the Berry phase integrates the FULL Brillouin zone.\n"
@@ -260,19 +238,61 @@ std::string generatePiezoelectricScript(const PiezoelectricConfig& config)
            "total_steps = len(STRAIN_POINTS)\n"
            "_calango_event('start', f'{total_steps} strained SCF run(s)')\n"
            "\n"
-           "reference_phase = polarization_phase_c(_baseline, 'ref')\n"
+           "# The reference (eps = 0) point goes through strained_phase() "
+           "too, on\n"
+           "# an unmodified copy of the reference geometry (F = identity) — "
+           "NOT\n"
+           "# a direct call on _baseline. _baseline's own density was "
+           "converged\n"
+           "# WITH symmetry reduction (whatever the baseline run used); "
+           "GPAW's\n"
+           "# Berry-phase code unconditionally refuses to run under "
+           "symmetry\n"
+           "# ('Does not work with Symmetry'), so evaluating it straight on\n"
+           "# _baseline crashes on the very first call, before a single "
+           "strained\n"
+           "# point ever runs. Routing the reference through the SAME "
+           "function\n"
+           "# every strained point uses — symmetry off, re-converged from "
+           "scratch\n"
+           "# — is not a special case for the reference; it is removing "
+           "the one\n"
+           "# that caused this bug.\n"
+           "reference_phase = strained_phase(atoms.copy(), 'ref')\n"
            "P0 = phase_to_polarization(reference_phase, cell0, volume0)\n"
            "print(f'CALANGO_INFO reference polarization P0 = {list(P0)} "
            "C/m^2', flush=True)\n"
            "\n"
            "by_component = {}\n"
+           "by_component_failures = {}\n"
            "step = 0\n"
            "for point in STRAIN_POINTS:\n"
            "    strained = apply_strain(atoms, point['F'])\n"
            "    tag = (f'{point[\"voigt\"]}_'\n"
            "           f'{\"p\" if point[\"eps\"] > 0 else \"m\"}'\n"
            "           f'{abs(point[\"eps\"]):.6f}')\n"
-           "    phase = strained_phase(strained, tag)\n"
+           "    # A single strain point's SCF failing to converge, or its "
+           "Berry-\n"
+           "    # phase evaluation raising, must not discard every other "
+           "point's\n"
+           "    # already-completed work — the failure is recorded, "
+           "surfaced with\n"
+           "    # a CALANGO event so the caller sees exactly which point "
+           "and why,\n"
+           "    # and the loop moves on to the rest of the stencil.\n"
+           "    try:\n"
+           "        phase = strained_phase(strained, tag)\n"
+           "    except Exception as exc:\n"
+           "        by_component_failures.setdefault(\n"
+           "            point['voigt'], []).append(\n"
+           "                {'eps': point['eps'], 'error': str(exc)})\n"
+           "        _calango_event(\n"
+           "            'warning',\n"
+           "            f'strain point voigt={point[\"voigt\"]} '\n"
+           "            f'eps={point[\"eps\"]:+.4f} FAILED: {exc}')\n"
+           "        step += 1\n"
+           "        _calango_progress(step, total_steps)\n"
+           "        continue\n"
            "    by_component.setdefault(point['voigt'], []).append(\n"
            "        (point['eps'], phase))\n"
            "    step += 1\n"
@@ -281,7 +301,18 @@ std::string generatePiezoelectricScript(const PiezoelectricConfig& config)
            "VOIGT_PAIRS = [(0, 0), (1, 1), (2, 2), (1, 2), (0, 2), (0, 1)]\n"
            "raw_tensor = np.zeros((3, 6))\n"
            "per_component = {}\n"
-           "for voigt_index, points in by_component.items():\n"
+           "components_with_no_data = []\n"
+           "# Every REQUESTED component, not just the ones that produced at\n"
+           "# least one surviving point — a component whose every strain point\n"
+           "# failed still needs to be visited, so it is reported (NaN'd and\n"
+           "# named) rather than silently missing from both the tensor and the\n"
+           "# summary.\n"
+           "for voigt_index in sorted({p['voigt'] for p in STRAIN_POINTS}):\n"
+           "    points = by_component.get(voigt_index, [])\n"
+           "    if not points:\n"
+           "        components_with_no_data.append(voigt_index)\n"
+           "        raw_tensor[:, voigt_index] = np.nan\n"
+           "        continue\n"
            "    # The eps = 0 reference anchors the branch fix (it removes any\n"
            "    # ambiguity about which side of zero the series starts "
            "continuous\n"
@@ -307,9 +338,22 @@ std::string generatePiezoelectricScript(const PiezoelectricConfig& config)
            "        'P_Cm2': P_series.tolist(),\n"
            "    }\n"
            "    for i in range(3):\n"
+           "        if IS_2D and i == VACUUM_AXIS:\n"
+           "            # The out-of-plane polarization is not meaningful for\n"
+           "            # a slab (the periodic Berry phase along a vacuum\n"
+           "            # direction integrates almost entirely empty space) —\n"
+           "            # left NaN below, never fit.\n"
+           "            continue\n"
            "        slope, _intercept = np.polyfit(eps_values, P_series[:, i], "
            "1)\n"
            "        raw_tensor[i, voigt_index] = slope\n"
+           "# NOT NaN'd here yet — see the note beside the four np.nan\n"
+           "# assignments after symmetrization below for why.\n"
+           "if components_with_no_data:\n"
+           "    print(f'CALANGO_WARN {len(components_with_no_data)} Voigt '\n"
+           "          f'component(s) have NO surviving strain point and are '\n"
+           "          f'reported as NaN: {components_with_no_data}',\n"
+           "          flush=True)\n"
            "\n"
            "# --- Proper vs. improper piezoelectric response -----------------\n"
            "# The above is the IMPROPER (clamped-cell-shape) tensor:\n"
@@ -368,7 +412,59 @@ std::string generatePiezoelectricScript(const PiezoelectricConfig& config)
            "improper_symmetrized = _symmetrize(raw_tensor, "
            "point_group_ops_cartesian)\n"
            "proper_symmetrized = _symmetrize(proper_tensor, "
-           "point_group_ops_cartesian)\n";
+           "point_group_ops_cartesian)\n"
+           "\n"
+           "# The out-of-plane row is masked to NaN HERE — after correction\n"
+           "# and symmetrization run, not before. Both raw_tensor and\n"
+           "# proper_tensor feed _symmetrize()'s einsum contraction, and IEEE\n"
+           "# 754 defines 0.0 * nan as nan, not 0.0: masking the row to NaN\n"
+           "# earlier would poison every OTHER row too, the instant a group\n"
+           "# operation's rotation matrix multiplies a NaN entry by its\n"
+           "# (exactly zero, since z is never mixed with x/y by a genuine 2D\n"
+           "# point-group operation) off-block coefficient. Left as a real\n"
+           "# number through the math, that coefficient being exactly zero is\n"
+           "# what correctly keeps the vacuum row's meaningless data out of\n"
+           "# every in-plane row's result — only the NUMBER reported for the\n"
+           "# vacuum row itself has to be hidden, once nothing downstream can\n"
+           "# still contaminate anything by reading it.\n"
+           "if IS_2D:\n"
+           "    raw_tensor[VACUUM_AXIS, :] = np.nan\n"
+           "    proper_tensor[VACUUM_AXIS, :] = np.nan\n"
+           "    improper_symmetrized[VACUUM_AXIS, :] = np.nan\n"
+           "    proper_symmetrized[VACUUM_AXIS, :] = np.nan\n"
+           "\n"
+           "# --- 2D (sheet) coefficients, in C/m -----------------------------\n"
+           "# e_ij above is C/m^2: dP/deps divided by the FULL 3D cell volume,\n"
+           "# which for a slab includes however much vacuum the cell happens\n"
+           "# to carry — pad the cell with more empty space and the reported\n"
+           "# e_ij shrinks, even though nothing physical changed. Multiplying\n"
+           "# back by the vacuum axis's own cell length exactly cancels that:\n"
+           "# volume = area * vacuum_length (the vacuum axis is orthogonal to\n"
+           "# the periodic plane in every slab this module's strains touch,\n"
+           "# since only in-plane components are ever applied to a 2D cell —\n"
+           "# see apply_strain()'s assertion above), so\n"
+           "#     e_2D = dP/deps / volume * vacuum_length "
+           "= dP/deps / area,\n"
+           "# a coefficient in C/m that no longer depends on how much vacuum\n"
+           "# was chosen — the meaningful, reportable quantity for a "
+           "monolayer.\n"
+           "if IS_2D:\n"
+           "    _vacuum_length_m = _axis_length_A * 1e-10\n"
+           "\n"
+           "    def _to_2d(tensor_Cm2):\n"
+           "        return (np.asarray(tensor_Cm2) * "
+           "_vacuum_length_m).tolist()\n"
+           "\n"
+           "    raw_tensor_2d_Cm = _to_2d(raw_tensor)\n"
+           "    improper_symmetrized_2d_Cm = _to_2d(improper_symmetrized)\n"
+           "    proper_tensor_2d_Cm = _to_2d(proper_tensor)\n"
+           "    proper_symmetrized_2d_Cm = _to_2d(proper_symmetrized)\n"
+           "else:\n"
+           "    _vacuum_length_m = None\n"
+           "    raw_tensor_2d_Cm = None\n"
+           "    improper_symmetrized_2d_Cm = None\n"
+           "    proper_tensor_2d_Cm = None\n"
+           "    proper_symmetrized_2d_Cm = None\n";
 
     if (cfg.elasticStiffnessGpa) {
         out << "\n"
@@ -405,13 +501,27 @@ std::string generatePiezoelectricScript(const PiezoelectricConfig& config)
         << "    'strain_magnitude': " << num(cfg.strainMagnitude) << ",\n"
         << "    'points_per_component': " << cfg.pointsPerComponent << ",\n"
         << "    'relax_ions': " << (cfg.relaxIons ? "True" : "False") << ",\n"
-           "    'voigt_components': sorted(by_component.keys()),\n"
+           "    'voigt_components': sorted({p['voigt'] for p in "
+           "STRAIN_POINTS}),\n"
            "    'point_group': point_group,\n"
+           "    'is_2d': IS_2D,\n"
+           "    'vacuum_axis': VACUUM_AXIS,\n"
+           "    'vacuum_axis_length_A': (\n"
+           "        _axis_length_A if IS_2D else None),\n"
+           "    'components_with_no_data': components_with_no_data,\n"
+           "    'strain_point_failures': {\n"
+           "        str(k): v for k, v in by_component_failures.items()},\n"
            "    'reference_polarization_Cm2': P0.tolist(),\n"
            "    'improper_tensor_Cm2': raw_tensor.tolist(),\n"
            "    'improper_tensor_symmetrized_Cm2': improper_symmetrized.tolist(),\n"
            "    'proper_tensor_Cm2': proper_tensor.tolist(),\n"
            "    'proper_tensor_symmetrized_Cm2': proper_symmetrized.tolist(),\n"
+           "    'improper_tensor_2d_Cm': raw_tensor_2d_Cm,\n"
+           "    'improper_tensor_symmetrized_2d_Cm': "
+           "improper_symmetrized_2d_Cm,\n"
+           "    'proper_tensor_2d_Cm': proper_tensor_2d_Cm,\n"
+           "    'proper_tensor_symmetrized_2d_Cm': "
+           "proper_symmetrized_2d_Cm,\n"
            "    'per_component_P_of_eps': {str(k): v for k, v in "
            "per_component.items()},\n"
            "    'elastic_stiffness_input_GPa': (\n"
@@ -425,7 +535,9 @@ std::string generatePiezoelectricScript(const PiezoelectricConfig& config)
            "    json.dump(summary, handle, indent=2)\n"
            "\n"
            "print(f'CALANGO_RESULT piezoelectric=piezoelectric.json '\n"
-           "      f'components={len(by_component)} point_group={point_group}',\n"
+           "      f'components={len(by_component)}/"
+           "{len(set(p[\"voigt\"] for p in STRAIN_POINTS))} '\n"
+           "      f'point_group={point_group}',\n"
            "      flush=True)\n";
 
     return out.str();

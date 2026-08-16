@@ -84,9 +84,21 @@ private Q_SLOTS:
     void onBaselineChanged();
 
 private:
+    /// Detect a 2D/monolayer structure and disable the Voigt checkboxes
+    /// that would strain its vacuum axis. Called once from the constructor
+    /// (the structure never changes after that): core::guessVacuumAxis's
+    /// geometric read (a large fractional-coordinate gap along one axis) is
+    /// the primary signal, since a monolayer built with pbc=[True,True,True]
+    /// and a vacuum gap — the ordinary ASE slab convention — carries no
+    /// other sign of being 2D; an explicit pbc=False on an axis the geometry
+    /// missed is the fallback.
+    void detectVacuumAxis();
+
     /// 0-based Voigt indices (0..5) currently checked; empty means all six
-    /// (every box unchecked is treated the same as every box checked, so the
-    /// wizard can never silently generate an empty stencil).
+    /// for a bulk structure, or every IN-PLANE component for a 2D one (the
+    /// generator's own default — see core::inPlaneVoigtComponents). Every
+    /// box unchecked is treated the same as every box checked/available, so
+    /// the wizard can never silently generate an empty stencil.
     std::vector<int> selectedVoigtComponents() const;
     /// The 6x6 elastic stiffness table, parsed into GPa, if the "Convert to
     /// d_ij" box is checked and every cell holds a number; std::nullopt
@@ -100,6 +112,12 @@ private:
     QComboBox* baselineCombo_ = nullptr;
     QLabel* inheritanceNote_ = nullptr;
     std::optional<InheritedCalculator> inherited_;
+
+    /// -1 for a bulk 3D structure; 0/1/2 when detectVacuumAxis() finds a
+    /// monolayer/slab. Same sentinel as core::PiezoelectricConfig::
+    /// vacuumAxis, which this is copied into verbatim.
+    int vacuumAxis_ = -1;
+    QLabel* dimensionalityNote_ = nullptr;
 
     QCheckBox* voigtCheck_[6] = {};
     QDoubleSpinBox* strainSpin_ = nullptr;

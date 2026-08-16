@@ -24,12 +24,16 @@ class PiezoelectricPointPlot : public QWidget {
 public:
     explicit PiezoelectricPointPlot(QWidget* parent = nullptr);
 
-    /// `eps` and `pAxis` (the polarization component being differentiated,
-    /// C/m^2) must be the same length. `slope`/`intercept` draw the fitted
-    /// line — the same numbers the JSON's tensor entry came from, not a
-    /// second independent fit, so the plot cannot disagree with the table.
+    /// `eps` and `pAxis` (the polarization component being differentiated)
+    /// must be the same length. `slope`/`intercept` draw the fitted line —
+    /// the same numbers the JSON's tensor entry came from, not a second
+    /// independent fit, so the plot cannot disagree with the table. `units`
+    /// labels the y-axis/slope text — "C/m^2" ordinarily, "C/m" when the
+    /// caller has rescaled `pAxis` and `slope` for a 2D tensor kind; the
+    /// plot itself has no notion of which, it only draws what it is given.
     void setSeries(std::vector<double> eps, std::vector<double> pAxis,
-                   double slope, double intercept, const QString& axisLabel);
+                   double slope, double intercept, const QString& axisLabel,
+                   const QString& units = QStringLiteral("C/m^2"));
 
     QSize sizeHint() const override { return {480, 300}; }
 
@@ -42,6 +46,7 @@ private:
     double slope_ = 0.0;
     double intercept_ = 0.0;
     QString axisLabel_;
+    QString units_ = QStringLiteral("C/m^2");
 };
 
 /// The read-out for a completed Piezoelectric Tensor run. Parses

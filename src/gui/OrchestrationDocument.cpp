@@ -217,6 +217,10 @@ QJsonObject OrchestrationDocument::build(const OrchestrationWindow& window,
         case OrchestrationTask::Dump:
             entry.insert(QStringLiteral("dump"), node->dump().toJson());
             break;
+        case OrchestrationTask::DumpDensities:
+            entry.insert(QStringLiteral("dump_densities"),
+                         node->dumpDensities().toJson());
+            break;
         // Additive too. batchItems_ (the computed elements) are NOT
         // written here, unlike Container's own case above: they are
         // DERIVED, recomputed fresh by populateSingleAtomContainers() on
@@ -403,6 +407,12 @@ bool OrchestrationDocument::load(OrchestrationWindow& window,
             window.setNodeDump(
                 node, DumpSpec::fromJson(
                           entry.value(QStringLiteral("dump")).toObject()));
+            break;
+        case OrchestrationTask::DumpDensities:
+            window.setNodeDumpDensities(
+                node, DumpDensitiesSpec::fromJson(
+                          entry.value(QStringLiteral("dump_densities"))
+                              .toObject()));
             break;
         case OrchestrationTask::SingleAtomContainer:
             window.setNodeSingleAtomContainer(

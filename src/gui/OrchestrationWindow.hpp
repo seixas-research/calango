@@ -129,6 +129,24 @@ enum class OrchestrationTask {
     // that does not run once per Container item: it runs ONCE, after the
     // fan-out's LAST pass — see OrchestrationWindow's isBatchAggregator().
     Dump,
+    /// Collects the charge-density (or other volumetric) file each pass of a
+    /// fan-out wrote and copies — or HDF5-compresses — them into one
+    /// destination folder, one enumerated file per pass:
+    /// `<prefix><zero-padded index>.<ext>`. A second isBatchAggregator(),
+    /// alongside Dump: it too runs ONCE, after the fan-out's last pass, and
+    /// for the same reason — there is no single file anywhere that already
+    /// holds every pass's density at once, so this node has to visit
+    /// WorkflowReport's outcomes for its parent directly rather than read a
+    /// staged copy. Unlike Dump it does NOT merge several parents: a density
+    /// file belongs to exactly one calculation, so one parent is enough (and
+    /// is all connectNodes() allows it).
+    ///
+    /// A pass whose parent did not finish, or whose result directory holds
+    /// no file under the chosen product's name, is SKIPPED rather than
+    /// shifting every later index down — the numbering stays aligned to
+    /// frame index, and the gap is what "missing" on the node's status line
+    /// counts.
+    DumpDensities,
     // -- The alloy pipeline -------------------------------------------------
     // Container(parent lattice) → SQS Generator → simulations → ECI Fitter →
     // CVM Entropy. The first is a structure transform in the strict sense; the
@@ -326,6 +344,9 @@ public:
     const DumpSpec& dump() const { return dump_; }
     void setDump(const DumpSpec& spec);
 
+    const DumpDensitiesSpec& dumpDensities() const { return dumpDensities_; }
+    void setDumpDensities(const DumpDensitiesSpec& spec);
+
     const SingleAtomContainerSpec& singleAtomContainer() const
     {
         return singleAtom_;
@@ -425,6 +446,7 @@ private:
     ClusterExpansionFitSpec clusterFit_;
     CvmEntropySpec cvm_;
     DumpSpec dump_;
+    DumpDensitiesSpec dumpDensities_;
     SingleAtomContainerSpec singleAtom_;
     std::vector<InputLine> inputLines_;
     std::vector<OrchestrationEdgeItem*> edges_;
@@ -671,6 +693,10 @@ public:
                            const CvmEntropySpec& spec);
     /// Set a Dump node's output path and key names. Same invalidation rule.
     void setNodeDump(OrchestrationNodeItem* node, const DumpSpec& spec);
+    /// Set a Dump Charge Densities node's destination, prefix, product and
+    /// HDF5 option. Same invalidation rule.
+    void setNodeDumpDensities(OrchestrationNodeItem* node,
+                              const DumpDensitiesSpec& spec);
     /// Set a Single-atom Container node's box size. Same invalidation rule.
     void setNodeSingleAtomContainer(OrchestrationNodeItem* node,
                                     const SingleAtomContainerSpec& spec);

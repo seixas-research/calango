@@ -32,6 +32,7 @@
 #include "core/AseScriptGenerator.hpp"
 #include "core/Structure.hpp"
 #include "core/UnitCell.hpp"
+#include "core/VolumetricData.hpp"
 #include "gui/OrchestrationDocument.hpp"
 #include "core/WorkflowReport.hpp"
 #include "gui/OrchestrationWindow.hpp"
@@ -180,6 +181,33 @@ QString probeScriptWithMetrics()
         "json.dump({'metrics': [{'step': 1, 'energy': -4.5, 'max_force': 0.31},\n"
         "                       {'step': 2, 'energy': -4.75, 'max_force': 0.02}]},\n"
         "          open('metrics.json', 'w'))\n"
+        "print('CALANGO_DONE', flush=True)\n");
+}
+
+/// Like probeScript(), plus a synthetic `density_all_electron.cube` for
+/// every pass EXCEPT the one whose only element is "Au" — a deterministic
+/// stand-in for "this calculation produced no density file" (a failed ELF
+/// evaluation, an engine that never wrote one, ...), without needing GPAW
+/// installed: no ASE import, no numpy, just enough of the cube format for
+/// core::VolumetricData::load() to parse it back (the exact format
+/// VolumetricParseTest.cpp's cubeWith() fixture also uses).
+QString probeScriptWithDensity()
+{
+    return QStringLiteral(
+        "import pathlib, json\n"
+        "lines = pathlib.Path('structure.extxyz').read_text().splitlines()\n"
+        "symbols = sorted({l.split()[0] for l in lines[2:] if l.strip()})\n"
+        "json.dump({'natoms': int(lines[0]), 'symbols': symbols},\n"
+        "          open('probe.json', 'w'))\n"
+        "if symbols != ['Au']:\n"
+        "    with open('density_all_electron.cube', 'w') as f:\n"
+        "        f.write('comment one\\ncomment two\\n')\n"
+        "        f.write('1    0.000000    0.000000    0.000000\\n')\n"
+        "        f.write('2    1.000000    0.000000    0.000000\\n')\n"
+        "        f.write('2    0.000000    1.000000    0.000000\\n')\n"
+        "        f.write('2    0.000000    0.000000    1.000000\\n')\n"
+        "        f.write('6  0.0  0.0  0.0  0.0\\n')\n"
+        "        f.write(' '.join(str(1.0 + i) for i in range(8)) + '\\n')\n"
         "print('CALANGO_DONE', flush=True)\n");
 }
 
@@ -2587,6 +2615,184 @@ int main(int argc, char** argv)
               "frames 1 through 5 are genuinely perturbed relative to frame "
               "0 -- the noise actually reached the pipeline, not five "
               "copies of the untouched reference");
+    }
+
+    std::printf("Dump Charge Densities: fan-out collection, missing-file "
+                "reporting, HDF5 compression:\n");
+    {
+        using calango::gui::DensityProduct;
+        using calango::gui::DumpDensitiesSpec;
+
+        QSettings().setValue(
+            QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+            sandbox.path() + QStringLiteral("/simulations_dump_densities"));
+
+        OrchestrationWindow window(materials, pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        OrchestrationNodeItem* container = window.addProcessNode(
+            OrchestrationTask::Container, 0, calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* probe = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(container, probe);
+        window.setNodeBatchItems(container, materials); // Cu, Au, Pt
+
+        OrchestrationNodeItem* densities = window.addProcessNode(
+            OrchestrationTask::DumpDensities, 0,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(probe, densities);
+
+        const QString destDir =
+            sandbox.path() + QStringLiteral("/collected_densities");
+        DumpDensitiesSpec spec;
+        spec.outputDirectory = destDir;
+        spec.filePrefix = QStringLiteral("density_");
+        spec.product = DensityProduct::GpawAllElectron;
+        window.setNodeDumpDensities(densities, spec);
+
+        window.configureNode(probe, probeScriptWithDensity(), pythonExe,
+                             QString(), calango::core::CalculatorKind::EMT);
+
+        calango::core::WorkflowReport delivered;
+        int finishedSignals = 0;
+        QObject::connect(&window, &OrchestrationWindow::runFinished,
+                         [&](const calango::core::WorkflowReport& report) {
+                             delivered = report;
+                             ++finishedSignals;
+                         });
+
+        window.sendToProcesses();
+        check(refusals.isEmpty(),
+              "a single-parent Structure Container -> Single-point -> Dump "
+              "Charge Densities graph is accepted");
+
+        settle(densities, 60000);
+        QElapsedTimer e2eTimer;
+        e2eTimer.start();
+        while (finishedSignals == 0 && e2eTimer.elapsed() < 30000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        check(finishedSignals == 1, "the run reports itself exactly once");
+
+        check(densities->status() == OrchestrationNodeItem::Status::Done,
+              "the Dump Charge Densities node finished");
+        check(probe->jobHistory().size() == 3,
+              "the fan-out ran three times, once per structure, before the "
+              "aggregator collected anything");
+
+        // Cu (pass 0) and Pt (pass 2) wrote a density; Au (pass 1) did not
+        // (probeScriptWithDensity()'s deliberate stand-in for a calculation
+        // that produced none) — the numbering must stay aligned to frame
+        // index, not compact around the gap.
+        const QDir out(destDir);
+        check(QFile::exists(out.filePath(QStringLiteral("density_0000.cube"))),
+              "pass 0 (Cu) was collected as density_0000.cube");
+        check(!QFile::exists(out.filePath(QStringLiteral("density_0001.cube"))),
+              "pass 1 (Au, no density) left NO density_0001.cube — the gap "
+              "is real, not filled by shifting Pt's file down");
+        check(QFile::exists(out.filePath(QStringLiteral("density_0002.cube"))),
+              "pass 2 (Pt) was collected as density_0002.cube, at ITS OWN "
+              "frame index rather than the next free slot");
+        check(out.entryList({QStringLiteral("density_*.cube")}, QDir::Files)
+                  .size()
+                  == 2,
+              "exactly two files were written, not three and not one");
+
+        const QJsonObject summary =
+            readJson(densities->jobDirectory()
+                     + QStringLiteral("/dump_densities_summary.json"));
+        check(summary.value(QStringLiteral("densities_written")).toInt() == 2
+                  && summary.value(QStringLiteral("densities_missing"))
+                         .toInt()
+                      == 1,
+              "the summary records 2 written, 1 missing");
+        const QJsonArray missingReasons =
+            summary.value(QStringLiteral("missing_reasons")).toArray();
+        check(missingReasons.size() == 1
+                  && missingReasons[0].toString().contains(
+                      QStringLiteral("no density_all_electron.cube")),
+              "and names why: no density_all_electron.cube in that pass's "
+              "results");
+    }
+
+    std::printf("Dump Charge Densities: HDF5 compression option:\n");
+    {
+        using calango::gui::DensityProduct;
+        using calango::gui::DumpDensitiesSpec;
+
+        QSettings().setValue(
+            QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+            sandbox.path() + QStringLiteral("/simulations_dump_densities_hdf5"));
+
+        OrchestrationWindow window(materials, pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        OrchestrationNodeItem* container = window.addProcessNode(
+            OrchestrationTask::Container, 0, calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* probe = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(container, probe);
+        window.setNodeBatchItems(
+            container,
+            OrchestrationWindow::MaterialList{materials[0], materials[2]});
+
+        OrchestrationNodeItem* densities = window.addProcessNode(
+            OrchestrationTask::DumpDensities, 0,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(probe, densities);
+
+        const QString destDir =
+            sandbox.path() + QStringLiteral("/collected_densities_hdf5");
+        DumpDensitiesSpec spec;
+        spec.outputDirectory = destDir;
+        spec.product = DensityProduct::GpawAllElectron;
+        spec.compressHdf5 = true;
+        window.setNodeDumpDensities(densities, spec);
+
+        window.configureNode(probe, probeScriptWithDensity(), pythonExe,
+                             QString(), calango::core::CalculatorKind::EMT);
+
+        calango::core::WorkflowReport delivered;
+        int finishedSignals = 0;
+        QObject::connect(&window, &OrchestrationWindow::runFinished,
+                         [&](const calango::core::WorkflowReport& report) {
+                             delivered = report;
+                             ++finishedSignals;
+                         });
+
+        window.sendToProcesses();
+        settle(densities, 60000);
+        QElapsedTimer e2eTimer;
+        e2eTimer.start();
+        while (finishedSignals == 0 && e2eTimer.elapsed() < 30000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+
+        const QDir out(destDir);
+        check(QFile::exists(out.filePath(QStringLiteral("density_0000.h5"))),
+              "with HDF5 compression on, the collected file is "
+              "density_0000.h5, not density_0000.cube — one extension, not "
+              "the source format's stacked with .h5's");
+        check(!QFile::exists(out.filePath(QStringLiteral("density_0000.cube"))),
+              "and the uncompressed form was never left behind");
+        bool readable = false;
+        try {
+            const auto data = calango::core::VolumetricData::load(
+                out.filePath(QStringLiteral("density_0000.h5")).toStdString());
+            readable = data.nx == 2 && data.ny == 2 && data.nz == 2
+                && data.values.size() == 8;
+        } catch (const std::exception&) {
+            readable = false;
+        }
+        check(readable,
+              "and it is a genuine HDF5 container VolumetricData::load() "
+              "reads back — the same convertToHdf5() path Task 3's "
+              "round-trip tests cover, exercised here through the "
+              "Orchestration node rather than called directly");
     }
 
     if (failures)

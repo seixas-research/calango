@@ -14,9 +14,14 @@
 //
 // GUI-free, GL-free, Python-free.
 
+#include "core/MarchingCubes.hpp"
 #include "core/VolumetricData.hpp"
 
 #include <cmath>
+// cstdint: needed for std::uintmax_t below (see the HDF5-compression-ratio
+// check). Some libstdc++ versions only pull it in transitively; do not
+// remove even if a tool flags it as unused.
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -66,6 +71,36 @@ std::string cubeWith(const std::string& values)
            "    2    0.000000    0.000000    1.000000\n"
            "    1    1.000000    0.000000    0.000000    0.000000\n"
          + values;
+}
+
+/// An n^3 grid of a single Gaussian blob centred in the box — smooth in the
+/// sense a real charge density is smooth (its values vary gently from voxel
+/// to voxel), which is exactly what byte-shuffle + gzip needs to find any
+/// repetition at all; a grid of independent random doubles would not
+/// compress past 1x no matter how good the codec is.
+core::VolumetricData makeSmoothDensity(int n)
+{
+    core::VolumetricData d;
+    d.nx = d.ny = d.nz = n;
+    d.origin = {0.0, 0.0, 0.0};
+    d.spanA = {10.0, 0.0, 0.0};
+    d.spanB = {0.0, 10.0, 0.0};
+    d.spanC = {0.0, 0.0, 10.0};
+    d.label = "synthetic gaussian";
+    d.sourceFormat = "cube";
+    d.atoms = {{6, {5.0, 5.0, 5.0}}}; // one carbon at the blob's centre
+    d.values.resize(static_cast<std::size_t>(n) * n * n);
+    const double center = (n - 1) / 2.0;
+    const double sigma = n / 6.0;
+    for (int ix = 0; ix < n; ++ix)
+        for (int iy = 0; iy < n; ++iy)
+            for (int iz = 0; iz < n; ++iz) {
+                const double dx = ix - center, dy = iy - center, dz = iz - center;
+                const double r2 = dx * dx + dy * dy + dz * dz;
+                d.values[(static_cast<std::size_t>(ix) * n + iy) * n + iz]
+                    = std::exp(-r2 / (2.0 * sigma * sigma));
+            }
+    return d;
 }
 
 } // namespace
@@ -162,6 +197,147 @@ int main()
                         static_cast<double>(i + 1));
         }
         check(placed, "and transposed from Fortran order into z-fastest");
+    }
+
+    std::printf("HDF5 round trip:\n");
+    {
+        // cube -> .h5 -> read back: grid data, cell and the one atom the
+        // cube's header carried all have to survive the round trip exactly,
+        // since VolumetricData::load(path) on the .h5 is meant to be
+        // indistinguishable from loading the original.
+        const auto original = core::VolumetricData::load(
+            write("roundtrip.cube",
+                  cubeWith("1\n2\n3\n4\n5\n6\n7\n8\n")));
+        const std::string h5Path = (scratch() / "roundtrip.h5").string();
+        original.saveHdf5(h5Path);
+        const auto restored = core::VolumetricData::load(h5Path);
+
+        check(restored.nx == original.nx && restored.ny == original.ny
+                  && restored.nz == original.nz,
+              "cube -> h5: grid dimensions survive");
+        bool valuesEqual = restored.values.size() == original.values.size();
+        for (std::size_t i = 0; valuesEqual && i < original.values.size(); ++i)
+            valuesEqual = restored.values[i] == original.values[i];
+        check(valuesEqual, "cube -> h5: every grid value round-trips bitwise "
+                           "(IEEE-754 float64, no text round trip)");
+        check(near(restored.origin.x, original.origin.x)
+                  && near(restored.spanA.x, original.spanA.x)
+                  && near(restored.spanB.y, original.spanB.y)
+                  && near(restored.spanC.z, original.spanC.z),
+              "cube -> h5: origin and the three spanning vectors survive");
+        check(restored.label == original.label,
+              "cube -> h5: the label survives");
+        check(restored.sourceFormat == "cube",
+              "cube -> h5: source_format records what the .h5 was CONVERTED "
+              "FROM, not \"hdf5\" itself");
+        check(restored.atoms.size() == original.atoms.size()
+                  && !restored.atoms.empty()
+                  && restored.atoms[0].atomicNumber
+                         == original.atoms[0].atomicNumber
+                  && near(restored.atoms[0].position.x,
+                          original.atoms[0].position.x)
+                  && near(restored.atoms[0].position.z,
+                          original.atoms[0].position.z),
+              "cube -> h5: the atom list (species, Cartesian position) survives");
+    }
+    {
+        // Same round trip starting from a CHGCAR, whose atoms carry a real
+        // element symbol (unlike the cube fixture's atomic number 1) — this
+        // is what exercises Elements::atomicNumber() in loadChgcar().
+        const std::string body =
+            "cell\n1.0\n"
+            "  2.0 0.0 0.0\n  0.0 2.0 0.0\n  0.0 0.0 2.0\n"
+            "  H\n  1\nDirect\n  0.25 0.25 0.25\n\n"
+            "  2 2 2\n"
+            "  1 2 3 4 5 6 7 8\n";
+        const auto original
+            = core::VolumetricData::load(write("roundtrip_CHGCAR", body));
+        const std::string h5Path = (scratch() / "roundtrip_chgcar.h5").string();
+        original.saveHdf5(h5Path);
+        const auto restored = core::VolumetricData::load(h5Path);
+
+        bool valuesEqual = restored.values.size() == original.values.size();
+        for (std::size_t i = 0; valuesEqual && i < original.values.size(); ++i)
+            valuesEqual = restored.values[i] == original.values[i];
+        check(valuesEqual, "CHGCAR -> h5: every grid value round-trips bitwise");
+        check(restored.sourceFormat == "chgcar",
+              "CHGCAR -> h5: source_format records \"chgcar\"");
+        check(restored.atoms.size() == 1 && restored.atoms[0].atomicNumber == 1
+                  && near(restored.atoms[0].position.x, 0.5)
+                  && near(restored.atoms[0].position.y, 0.5)
+                  && near(restored.atoms[0].position.z, 0.5),
+              "CHGCAR -> h5: the H atom's species and fractional-to-Cartesian "
+              "position both survive (0.25,0.25,0.25 direct in a 2 Å cubic "
+              "cell -> Cartesian (0.5,0.5,0.5))");
+    }
+    {
+        // A realistic smooth field: chunked + byte-shuffle + gzip has to
+        // actually beat the raw size, not just round-trip correctly.
+        const int n = 48;
+        const auto density = makeSmoothDensity(n);
+        const std::string h5Path = (scratch() / "smooth_density.h5").string();
+        density.saveHdf5(h5Path);
+        const auto rawBytes
+            = static_cast<std::uintmax_t>(n) * n * n * sizeof(double);
+        const auto h5Bytes = std::filesystem::file_size(h5Path);
+        check(h5Bytes > 0 && h5Bytes < rawBytes,
+              "a smooth 48^3 density compresses smaller than its raw "
+              "nx*ny*nz*8 bytes (ratio "
+                  + std::to_string(static_cast<double>(rawBytes)
+                                   / static_cast<double>(h5Bytes))
+                  + "x)");
+    }
+    {
+        // The viewer path: an isosurface extracted from the .h5-loaded grid
+        // has to match the one extracted from the original — the whole point
+        // of a bitwise-exact round trip is that nothing downstream can tell
+        // the difference.
+        const int n = 24;
+        const auto density = makeSmoothDensity(n);
+        const std::string h5Path = (scratch() / "iso_density.h5").string();
+        density.saveHdf5(h5Path);
+        const auto restored = core::VolumetricData::load(h5Path);
+
+        const core::IsoMesh fromOriginal = core::extractIsosurface(
+            density, 0.3, nullptr, core::FieldWrap::Clamped);
+        const core::IsoMesh fromHdf5 = core::extractIsosurface(
+            restored, 0.3, nullptr, core::FieldWrap::Clamped);
+
+        check(!fromOriginal.positions.empty(),
+              "the synthetic blob actually crosses isovalue 0.3 (a "
+              "non-trivial surface to compare)");
+        bool sameMesh = fromOriginal.positions.size() == fromHdf5.positions.size();
+        for (std::size_t i = 0; sameMesh && i < fromOriginal.positions.size(); ++i)
+            sameMesh = near(fromOriginal.positions[i].x, fromHdf5.positions[i].x)
+                && near(fromOriginal.positions[i].y, fromHdf5.positions[i].y)
+                && near(fromOriginal.positions[i].z, fromHdf5.positions[i].z);
+        check(sameMesh,
+              "the isosurface extracted from the .h5 matches the one "
+              "extracted from the source grid vertex-for-vertex");
+    }
+    {
+        // convertToHdf5() is the ONE path both the calculator setup pages'
+        // "HDF5 compression" option and the Dump Charge Densities node call
+        // — it has to actually go through load() + saveHdf5() rather than
+        // being a second, divergent implementation.
+        const std::string cubePath = write(
+            "convert_source.cube", cubeWith("1\n2\n3\n4\n5\n6\n7\n8\n"));
+        const std::string h5Path = (scratch() / "convert_dest.h5").string();
+        std::string error;
+        const bool ok
+            = core::VolumetricData::convertToHdf5(cubePath, h5Path, &error);
+        check(ok && error.empty(), "convertToHdf5() succeeds on a valid cube");
+        check(std::filesystem::exists(h5Path),
+              "and leaves the .h5 file where asked");
+
+        std::string missingError;
+        const bool failed = core::VolumetricData::convertToHdf5(
+            (scratch() / "does_not_exist.cube").string(),
+            (scratch() / "unwritten.h5").string(), &missingError);
+        check(!failed && !missingError.empty(),
+              "convertToHdf5() reports failure (not an exception) when the "
+              "source cannot be read, with a message rather than a silent "
+              "empty destination");
     }
 
     std::printf(failures == 0 ? "\nAll volumetric parse checks passed.\n"

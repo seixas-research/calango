@@ -18,6 +18,7 @@ shortcuts changed), this reference wins.
 | {doc}`/reference/shortcuts` | Which key does what — viewport single-key modes, application shortcuts, mouse gestures, and the complete map of all nine menus |
 | {doc}`/reference/file_formats` | What Calango opens and saves — structure and trajectory formats, volumetric grids, the `.calproj` project format and its MIME types, and every artifact a job directory can contain with its producer and consumer |
 | {doc}`/reference/job_protocol` | How a running script talks to the GUI — the `CALANGO_*` stdout markers, the polled JSON metric files, the job directory layout, and the `calculator.json` provenance chain baseline-inheriting wizards follow |
+| {doc}`/reference/hdf5_density` | The compressed HDF5 container charge densities can be stored in — its on-disk layout, and the one conversion path the calculator setup pages and the Dump Charge Densities node both call |
 | {doc}`/reference/dependencies` | Which Python package or external binary each feature needs, the environment variables Calango reads, and the version constraints it is validated against |
 | {doc}`/reference/troubleshooting` | Symptoms and fixes — from a missing ASE to a blank viewport, plus where the logs live |
 
@@ -70,6 +71,7 @@ A few facts the whole reference leans on:
 shortcuts
 file_formats
 job_protocol
+hdf5_density
 dependencies
 troubleshooting
 ```

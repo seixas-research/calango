@@ -40,6 +40,12 @@ public:
     void setSubstrate(int functionalGroups, int basalCarbons, int edgeCarbons,
                       bool periodic);
 
+    /// Whether MainWindow should redefine each streamed frame's Cast from
+    /// its own functional-group classification (the "Redefine Cast on every
+    /// accepted move" checkbox) — read after exec() returns Accepted, the
+    /// same way pythonExecutable()/calculatorKind()/runCommand() are.
+    bool castPerFrame() const { return config_.castPerFrame; }
+
 protected:
     QString wizardTitle() const override;
     QString settingsHeader() const override { return tr("MDMC Settings"); }
@@ -72,6 +78,7 @@ private:
     /// Live-viewport throttle, in MC cycles; 0 is headless.
     QSpinBox* viewportEvery_ = nullptr;
     QCheckBox* streamMdFrames_ = nullptr;
+    QCheckBox* castPerFrame_ = nullptr;
     QLabel* costLabel_ = nullptr;
     QLabel* substrateLabel_ = nullptr;
 

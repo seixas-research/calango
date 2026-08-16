@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.24
+    VERSION 26.8.25
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -75,6 +75,21 @@ function(calango_dft_link target)
         target_link_libraries(${target} PRIVATE LAPACK::LAPACK)
         target_compile_definitions(${target} PRIVATE CALANGO_DFT_HAVE_LAPACK)
     endif()
+endfunction()
+
+# HDF5 for VolumetricData's saveHdf5()/loadHdf5()/convertToHdf5() — the
+# compressed charge-density container (see
+# docs/sphinx/source/reference/hdf5_density.md). REQUIRED, unlike LAPACK
+# above: there is no native fallback for reading a .h5 file a user already
+# has, and both the calculator setup pages' "HDF5 compression" option and the
+# Dump Charge Densities node call this same conversion path. C API only (not
+# COMPONENTS CXX / libhdf5_cpp) — VolumetricData.cpp is Qt-free src/core, and
+# the plain C API needs no extra library on top of the one every HDF5
+# install ships.
+find_package(HDF5 REQUIRED COMPONENTS C)
+
+function(calango_hdf5_link target)
+    target_link_libraries(${target} PRIVATE HDF5::HDF5)
 endfunction()
 
 
@@ -245,10 +260,16 @@ qt_add_executable(calango
     src/core/PolarizationScriptHelpers.hpp
     src/core/PolarizationScriptHelpers.cpp
     src/core/StrainVoigt.hpp
+    src/core/StrainScriptHelpers.hpp
+    src/core/StrainScriptHelpers.cpp
     src/core/PiezoelectricTensor.hpp
     src/core/PiezoelectricTensor.cpp
     src/core/PiezoelectricScriptGenerator.hpp
     src/core/PiezoelectricScriptGenerator.cpp
+    src/core/ElasticTensor.hpp
+    src/core/ElasticTensor.cpp
+    src/core/ElasticScriptGenerator.hpp
+    src/core/ElasticScriptGenerator.cpp
     src/core/RamanIrScriptGenerator.hpp
     src/core/RamanIrScriptGenerator.cpp
     src/core/PdbxFile.hpp
@@ -279,6 +300,8 @@ qt_add_executable(calango
     src/core/CpaSolver.cpp
     src/core/JobFailureReason.cpp
     src/core/CrpaSolver.cpp
+    src/core/BseSolver.hpp
+    src/core/BseSolver.cpp
     src/core/WannierHamiltonian.cpp
     src/core/SublatticeClusterVariation.cpp
     src/core/BandGap.hpp
@@ -668,6 +691,10 @@ qt_add_executable(calango
     src/gui/PiezoelectricWizard.cpp
     src/gui/PiezoelectricViewer.hpp
     src/gui/PiezoelectricViewer.cpp
+    src/gui/ElasticWizard.hpp
+    src/gui/ElasticWizard.cpp
+    src/gui/ElasticViewer.hpp
+    src/gui/ElasticViewer.cpp
     src/gui/RamanIrWizard.hpp
     src/gui/RamanIrWizard.cpp
     src/gui/RamanIrViewer.hpp
@@ -706,6 +733,8 @@ qt_add_executable(calango
     src/gui/EciFitDialog.hpp
     src/gui/EciFitDialog.cpp
     src/gui/BerryPhaseDialog.cpp
+    src/gui/BseDialog.hpp
+    src/gui/BseDialog.cpp
     src/gui/BoltzmannTransportDialog.cpp
     src/gui/CurvatureMapWidget.cpp
     src/gui/KkrCpaDialog.cpp
@@ -946,6 +975,7 @@ target_compile_definitions(calango PRIVATE
 )
 
 calango_dft_link(calango)
+calango_hdf5_link(calango)
 target_link_libraries(calango PRIVATE
     Qt6::Widgets
     Qt6::OpenGLWidgets
@@ -1104,6 +1134,24 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_berry_test PRIVATE src)
     add_test(NAME berry_phase COMMAND calango_berry_test)
 
+    # Bethe-Salpeter excitons: the hydrogenic/Wannier-Mott model test is the
+    # crucial one -- a synthetic two-band parabolic model with a statically
+    # screened Coulomb kernel must reproduce the analytic 3D Rydberg series
+    # E_b(n) = -R*/n^2 as the k-mesh densifies, plus the 2D non-hydrogenic
+    # (Rytova-Keldysh) analogue, kernel Hermiticity, and the singlet/triplet
+    # exchange switch. Slower than most `calc` tests (a real, if small,
+    # dense/Lanczos diagonalization runs several times over refining
+    # k-meshes) -- TIMEOUT set generously below rather than excluded, since
+    # it still completes in well under a minute.
+    add_executable(calango_bse_test
+        tests/BseSolverTest.cpp
+        src/core/BseSolver.cpp
+        src/core/WannierHamiltonian.cpp
+    )
+    target_include_directories(calango_bse_test PRIVATE src)
+    add_test(NAME bse_solver COMMAND calango_bse_test)
+    set_tests_properties(bse_solver PROPERTIES TIMEOUT 600)
+
     # Piezoelectric module, part 1: strain generation. Voigt -> deformation
     # gradient, and applying one to a cell — checked on a non-diagonal
     # (triclinic) cell specifically, since a left/right matrix-multiply bug
@@ -1127,6 +1175,23 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_piezoelectric_tensor_test PRIVATE src)
     add_test(NAME piezoelectric_tensor COMMAND calango_piezoelectric_tensor_test)
 
+    # Elastic properties module: Voigt assembly (quadratic/cross-term
+    # curvature fits), the general and crystal-class-specific Born stability
+    # criteria (against literature Cu/Si constants), Voigt-Reuss-Hill
+    # moduli, 2D (layer modulus, in-plane Young's/Poisson) quantities, and
+    # point-group symmetrization on synthetic tensors. Real DFT/EMT is
+    # exercised only through generated_ase_scripts's Elastic section below
+    # plus the manual end-to-end verification run described in the module's
+    # docs, since there is no cheap closed-form finite-strain oracle to run
+    # as a ctest.
+    add_executable(calango_elastic_tensor_test
+        tests/ElasticTensorTest.cpp
+        src/core/ElasticTensor.cpp
+        src/core/PiezoelectricTensor.cpp
+    )
+    target_include_directories(calango_elastic_tensor_test PRIVATE src)
+    add_test(NAME elastic_tensor COMMAND calango_elastic_tensor_test)
+
     # Regression for the proc_26 failure: nwannier > nbands. Asserts the
     # generated script now pre-flights it, and that the real captured
     # traceback is turned into a line worth showing.
@@ -1145,8 +1210,10 @@ if(CALANGO_BUILD_TESTS)
         src/core/MarchingCubes.cpp
         src/core/IsosurfaceContinuation.cpp
         src/core/VolumetricData.cpp
+        src/core/Element.cpp
     )
     target_include_directories(calango_isosurface_test PRIVATE src)
+    calango_hdf5_link(calango_isosurface_test)
     add_test(NAME isosurface_mesh COMMAND calango_isosurface_test)
 
     # What a Wannier run can learn about the ground state it inherits: bands,
@@ -1334,6 +1401,7 @@ if(CALANGO_BUILD_TESTS)
     # Qt6::OpenGL only for StructureRenderer's headers; no GL context is
     # created (only its static color/radius helpers are exercised).
     target_link_libraries(calango_raytrace_test PRIVATE Qt6::Gui Qt6::OpenGL)
+    calango_hdf5_link(calango_raytrace_test)
     add_test(NAME raytrace_scene_files COMMAND calango_raytrace_test)
 
     # Film timing and sampling: the transition semantics (a hard cut must not
@@ -1593,6 +1661,7 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_translucent_render_test PRIVATE src)
     target_link_libraries(calango_translucent_render_test
         PRIVATE Qt6::Gui Qt6::OpenGL)
+    calango_hdf5_link(calango_translucent_render_test)
     add_test(NAME translucent_render COMMAND calango_translucent_render_test)
 
     # Dialog construction: a wizard whose constructor emitted a signal into a
@@ -1843,6 +1912,7 @@ if(CALANGO_BUILD_TESTS)
     target_link_libraries(calango_dialog_test
         PRIVATE Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Svg
                 pybind11::embed)
+    calango_hdf5_link(calango_dialog_test)
     add_test(NAME dialog_construction COMMAND calango_dialog_test)
 
     # Live DOS smearing. The run now stores an unbroadened eigenvalue
@@ -1969,6 +2039,7 @@ if(CALANGO_BUILD_TESTS)
         QT_NO_KEYWORDS)
     target_link_libraries(calango_orchestration_si_test
         PRIVATE Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg pybind11::embed)
+    calango_hdf5_link(calango_orchestration_si_test)
     if(APPLE)
         target_link_libraries(calango_orchestration_si_test
             PRIVATE "-framework OpenGL")
@@ -2048,6 +2119,7 @@ if(CALANGO_BUILD_TESTS)
         QT_NO_KEYWORDS)
     target_link_libraries(calango_orchestration_handoff_test
         PRIVATE Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg pybind11::embed)
+    calango_hdf5_link(calango_orchestration_handoff_test)
     if(APPLE)
         target_link_libraries(calango_orchestration_handoff_test
             PRIVATE "-framework OpenGL")
@@ -2133,6 +2205,7 @@ if(CALANGO_BUILD_TESTS)
         QT_NO_KEYWORDS)
     target_link_libraries(calango_orchestration_batch_test
         PRIVATE Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg pybind11::embed)
+    calango_hdf5_link(calango_orchestration_batch_test)
     if(APPLE)
         target_link_libraries(calango_orchestration_batch_test
             PRIVATE "-framework OpenGL")
@@ -2367,6 +2440,7 @@ if(CALANGO_BUILD_TESTS)
     # StructureRenderer.hpp, which carries QOpenGLBuffer members. No widget
     # type is referenced anywhere in the target, so Gui replaces Widgets.
     target_link_libraries(calango_overlay_test PRIVATE Qt6::Gui Qt6::OpenGL)
+    calango_hdf5_link(calango_overlay_test)
     add_test(NAME overlay_model COMMAND calango_overlay_test)
 
     # CPK element colours and the legibility of the symbol written on them.
@@ -2447,6 +2521,7 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_alembic_test PRIVATE src)
     target_link_libraries(calango_alembic_test
         PRIVATE Qt6::Gui Qt6::OpenGL pybind11::embed)
+    calango_hdf5_link(calango_alembic_test)
     target_compile_definitions(calango_alembic_test PRIVATE QT_NO_KEYWORDS)
     add_test(NAME alembic_export COMMAND calango_alembic_test)
 
@@ -2549,8 +2624,11 @@ if(CALANGO_BUILD_TESTS)
         src/core/EngineCalculatorBlocks.cpp
         src/core/BornChargesScriptGenerator.cpp
         src/core/PolarizationScriptHelpers.cpp
+        src/core/StrainScriptHelpers.cpp
         src/core/PiezoelectricScriptGenerator.cpp
         src/core/PiezoelectricTensor.cpp
+        src/core/ElasticScriptGenerator.cpp
+        src/core/ElasticTensor.cpp
         src/core/ElectronicScriptGenerator.cpp
         src/core/BandSymmetryScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
@@ -2668,15 +2746,20 @@ if(CALANGO_BUILD_TESTS)
     # Volumetric grid parsing: the value block is read with a bulk read plus
     # std::from_chars rather than through istream >> double (5x faster on a
     # production grid). A fast parser that is subtly wrong renders a plausible
-    # isosurface of the wrong data, so the tokenizer is pinned here.
+    # isosurface of the wrong data, so the tokenizer is pinned here. Also
+    # covers the HDF5 round trip (VolumetricData::saveHdf5/loadHdf5) and, via
+    # MarchingCubes.cpp, that an .h5-loaded grid extracts the same isosurface
+    # as its source file.
     add_executable(calango_volumetric_parse_test
         tests/VolumetricParseTest.cpp
         src/core/VolumetricData.cpp
+        src/core/MarchingCubes.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
         src/core/Element.cpp
     )
     target_include_directories(calango_volumetric_parse_test PRIVATE src)
+    calango_hdf5_link(calango_volumetric_parse_test)
     add_test(NAME volumetric_parse COMMAND calango_volumetric_parse_test)
 
     # Periodic-image bound: the degenerate-cell guard that five of the seven
@@ -3152,11 +3235,11 @@ if(CALANGO_BUILD_TESTS)
     set(CALANGO_CALC_TESTS
         adsorption_nanoparticle al_electron_phonon au_plasma_convergence
         band_gap band_unfolding baseline_summary berry_phase
-        boltzmann_transport bond_perception calphad cluster_expansion
+        boltzmann_transport bond_perception bse_solver calphad cluster_expansion
         cluster_expansion_fit cluster_presets cluster_variation convex_hull
         cpa_solver crpa_solver crpa_vasp_validation cu_wannier_spread
         defect_2d_correction defect_2d_monolayer dft_engine
-        dislocation_builder dos_smearing double_group elf_silicon
+        dislocation_builder dos_smearing double_group elastic_tensor elf_silicon
         elph_analysis elph_io extxyz_attributes frame_streaming
         generated_ase_scripts generated_script_lint graphene_band_symmetry
         graphene_oxide graphene_oxide_sites graphene_tetrahedron

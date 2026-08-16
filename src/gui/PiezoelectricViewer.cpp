@@ -30,6 +30,29 @@ constexpr const char* kVoigtHeaders[6] = {
     "eps_1 (xx)", "eps_2 (yy)", "eps_3 (zz)", "eps_4 (yz)", "eps_5 (xz)", "eps_6 (xy)"};
 constexpr const char* kRowHeaders[3] = {"P_x", "P_y", "P_z"};
 
+/// The tensor-kind combo's entries and the JSON key each reads from — the
+/// first 4 (C/m^2, volume-normalized) always present; the last 4 (C/m,
+/// vacuum divided out) only added when the run detected a 2D structure. One
+/// table indexed by combo row, rather than two separate paths, so
+/// refreshTensorTable()/refreshPlot() cannot disagree about which key a
+/// given row means.
+struct TensorKindEntry {
+    const char* label;
+    const char* jsonKey;
+};
+constexpr TensorKindEntry kTensorKinds[8] = {
+    {"Proper, symmetrized (recommended)", "proper_tensor_symmetrized_Cm2"},
+    {"Proper, raw", "proper_tensor_Cm2"},
+    {"Improper (clamped-cell-shape), symmetrized",
+     "improper_tensor_symmetrized_Cm2"},
+    {"Improper (clamped-cell-shape), raw", "improper_tensor_Cm2"},
+    {"Proper, symmetrized — 2D (C/m)", "proper_tensor_symmetrized_2d_Cm"},
+    {"Proper, raw — 2D (C/m)", "proper_tensor_2d_Cm"},
+    {"Improper, symmetrized — 2D (C/m)",
+     "improper_tensor_symmetrized_2d_Cm"},
+    {"Improper, raw — 2D (C/m)", "improper_tensor_2d_Cm"},
+};
+
 QVector<QVector<double>> toMatrix3x6(const QJsonValue& value)
 {
     QVector<QVector<double>> m;
@@ -69,13 +92,15 @@ PiezoelectricPointPlot::PiezoelectricPointPlot(QWidget* parent) : QWidget(parent
 
 void PiezoelectricPointPlot::setSeries(std::vector<double> eps,
                                        std::vector<double> pAxis, double slope,
-                                       double intercept, const QString& axisLabel)
+                                       double intercept, const QString& axisLabel,
+                                       const QString& units)
 {
     eps_ = std::move(eps);
     pAxis_ = std::move(pAxis);
     slope_ = slope;
     intercept_ = intercept;
     axisLabel_ = axisLabel;
+    units_ = units;
     update();
 }
 
@@ -150,9 +175,10 @@ void PiezoelectricPointPlot::paintEvent(QPaintEvent*)
 
     painter.setPen(PlotPalette::text);
     painter.drawText(QRectF(plotRect.left(), 0, plotRect.width(), 14), Qt::AlignCenter,
-                     tr("%1 vs. strain — slope (this Voigt column's e_ij) = %2 C/m^2")
+                     tr("%1 vs. strain — slope (this Voigt column's e_ij) = %2 %3")
                          .arg(axisLabel_)
-                         .arg(slope_, 0, 'g', 4));
+                         .arg(slope_, 0, 'g', 4)
+                         .arg(units_));
 }
 
 // --- PiezoelectricViewer -----------------------------------------------------
@@ -172,10 +198,11 @@ PiezoelectricViewer::PiezoelectricViewer(QWidget* parent) : QDialog(parent)
     auto* tensorRow = new QHBoxLayout();
     tensorRow->addWidget(new QLabel(tr("Show:"), this));
     tensorKindCombo_ = new QComboBox(this);
-    tensorKindCombo_->addItem(tr("Proper, symmetrized (recommended)"));
-    tensorKindCombo_->addItem(tr("Proper, raw"));
-    tensorKindCombo_->addItem(tr("Improper (clamped-cell-shape), symmetrized"));
-    tensorKindCombo_->addItem(tr("Improper (clamped-cell-shape), raw"));
+    for (int i = 0; i < 4; ++i)
+        tensorKindCombo_->addItem(tr(kTensorKinds[i].label));
+    // The 2D (C/m) entries are appended in loadResults() once it is known
+    // whether this run detected a 2D structure — added here would show four
+    // meaningless rows of NaN for every ordinary bulk result.
     tensorKindCombo_->setToolTip(
         tr("Proper vs. improper: Vanderbilt's correction for the "
            "volume-definition artefact a cell-strain finite difference picks "
@@ -183,7 +210,11 @@ PiezoelectricViewer::PiezoelectricViewer(QWidget* parent) : QDialog(parent)
            "surface-charge-response tensor.\n\n"
            "Symmetrized vs. raw: whether the point-group averaging that "
            "zeroes symmetry-forbidden components and cleans numerical noise "
-           "has been applied."));
+           "has been applied.\n\n"
+           "For a 2D structure, the C/m entries multiply the ordinary C/m^2 "
+           "value by the vacuum axis's own cell length — the coefficient "
+           "that no longer depends on how much vacuum padding the cell "
+           "happens to carry, unlike C/m^2 divided by the full 3D volume."));
     tensorRow->addWidget(tensorKindCombo_);
     tensorRow->addStretch(1);
     layout->addLayout(tensorRow);
@@ -257,13 +288,51 @@ bool PiezoelectricViewer::loadResults(const QString& jsonPath)
         data_.value(QStringLiteral("point_group")).toString(tr("(unknown — "
                                                                 "spglib unavailable)"));
     const bool relaxIons = data_.value(QStringLiteral("relax_ions")).toBool();
-    summaryLabel_->setText(
+    QString summary =
         tr("<b>Point group:</b> %1 &nbsp; <b>strain delta:</b> %2 &nbsp; "
            "<b>points/component:</b> %3 &nbsp; <b>ions:</b> %4")
             .arg(pointGroup)
             .arg(data_.value(QStringLiteral("strain_magnitude")).toDouble(), 0, 'g', 3)
             .arg(data_.value(QStringLiteral("points_per_component")).toInt())
-            .arg(relaxIons ? tr("relaxed") : tr("clamped")));
+            .arg(relaxIons ? tr("relaxed") : tr("clamped"));
+
+    const bool is2d = data_.value(QStringLiteral("is_2d")).toBool();
+    if (is2d) {
+        static const char* const axisNames[3] = {"a", "b", "c"};
+        const int axis = data_.value(QStringLiteral("vacuum_axis")).toInt(-1);
+        summary += tr(" &nbsp; <b style='color:#2a7a2a;'>2D system</b> "
+                      "(vacuum along %1) — e<sub>ij</sub> reported per "
+                      "volume (C/m&sup2;) and per area (C/m)")
+                       .arg(axis >= 0 && axis < 3
+                                ? QString::fromLatin1(axisNames[axis])
+                                : tr("?"));
+    }
+    const QJsonArray missing =
+        data_.value(QStringLiteral("components_with_no_data")).toArray();
+    if (!missing.isEmpty()) {
+        QStringList names;
+        for (const QJsonValue& v : missing) {
+            const int voigt = v.toInt();
+            names << (voigt >= 0 && voigt < 6
+                          ? QString::fromLatin1(kVoigtHeaders[voigt])
+                          : QString::number(voigt));
+        }
+        summary += tr(" &nbsp; <b style='color:#c0392b;'>%n component(s) "
+                      "have no data</b> (every strain point for %1 "
+                      "failed — see log.txt)",
+                      nullptr, static_cast<int>(missing.size()))
+                       .arg(names.join(QStringLiteral(", ")));
+    }
+    summaryLabel_->setText(summary);
+
+    // The 2D (C/m) rows only make sense once it is known this run detected
+    // a 2D structure — rebuilt every load rather than left to accumulate
+    // duplicates across successive loadResults() calls on the same dialog.
+    tensorKindCombo_->blockSignals(true);
+    tensorKindCombo_->clear();
+    for (int i = 0; i < (is2d ? 8 : 4); ++i)
+        tensorKindCombo_->addItem(tr(kTensorKinds[i].label));
+    tensorKindCombo_->blockSignals(false);
 
     refreshTensorTable();
 
@@ -294,12 +363,11 @@ bool PiezoelectricViewer::loadResults(const QString& jsonPath)
 void PiezoelectricViewer::refreshTensorTable()
 {
     const int index = tensorKindCombo_->currentIndex();
-    const char* key = index == 0   ? "proper_tensor_symmetrized_Cm2"
-        : index == 1               ? "proper_tensor_Cm2"
-        : index == 2               ? "improper_tensor_symmetrized_Cm2"
-                                    : "improper_tensor_Cm2";
+    if (index < 0 || index >= 8)
+        return;
     fillTensorTable(tensorTable_,
-                    toMatrix3x6(data_.value(QString::fromLatin1(key))));
+                    toMatrix3x6(data_.value(
+                        QString::fromLatin1(kTensorKinds[index].jsonKey))));
 }
 
 void PiezoelectricViewer::refreshPlot()
@@ -324,18 +392,27 @@ void PiezoelectricViewer::refreshPlot()
         pAxis.push_back(axis < triple.size() ? triple.at(axis).toDouble() : 0.0);
     }
 
+    const int voigt = key.toInt();
+    const int tensorIndex = tensorKindCombo_->currentIndex();
+    // per_component_P_of_eps only ever stores the C/m^2 (volume-normalized)
+    // series — when a "2D (C/m)" tensor kind is selected, the PLOTTED
+    // points must be rescaled the same way the tensor entry itself was
+    // (multiplied by the vacuum axis length), or the line and the points it
+    // is supposed to run through would silently be in different units.
+    if (tensorIndex >= 4) {
+        const double vacuumLengthM =
+            data_.value(QStringLiteral("vacuum_axis_length_A")).toDouble() * 1e-10;
+        for (double& p : pAxis)
+            p *= vacuumLengthM;
+    }
+
     // The same slope this component's tensor column was fit from — read
     // straight from the currently displayed tensor rather than re-fit here,
     // so the plot and the table can never disagree.
-    const int voigt = key.toInt();
     double slope = 0.0;
-    if (voigt >= 0 && voigt < 6) {
-        const int index = tensorKindCombo_->currentIndex();
-        const char* tkey = index == 0   ? "proper_tensor_symmetrized_Cm2"
-            : index == 1                ? "proper_tensor_Cm2"
-            : index == 2                ? "improper_tensor_symmetrized_Cm2"
-                                         : "improper_tensor_Cm2";
-        const auto matrix = toMatrix3x6(data_.value(QString::fromLatin1(tkey)));
+    if (voigt >= 0 && voigt < 6 && tensorIndex >= 0 && tensorIndex < 8) {
+        const auto matrix = toMatrix3x6(
+            data_.value(QString::fromLatin1(kTensorKinds[tensorIndex].jsonKey)));
         if (axis < matrix.size() && voigt < matrix[axis].size())
             slope = matrix[axis][voigt];
     }
@@ -351,7 +428,9 @@ void PiezoelectricViewer::refreshPlot()
     const double intercept = meanP - slope * meanEps;
 
     plot_->setSeries(eps, pAxis, slope, intercept,
-                     QString::fromLatin1(kRowHeaders[std::clamp(axis, 0, 2)]));
+                     QString::fromLatin1(kRowHeaders[std::clamp(axis, 0, 2)]),
+                     tensorIndex >= 4 ? QStringLiteral("C/m")
+                                      : QStringLiteral("C/m^2"));
 }
 
 void PiezoelectricViewer::copyToClipboard()
@@ -363,6 +442,16 @@ void PiezoelectricViewer::copyToClipboard()
         for (double v : row)
             stream << QString::number(v, 'g', 4) << '\t';
         stream << '\n';
+    }
+    if (data_.value(QStringLiteral("is_2d")).toBool()) {
+        stream << "\n2D piezoelectric coefficient e_ij (C/m), proper & "
+                  "symmetrized\n";
+        for (const auto& row : toMatrix3x6(
+                 data_.value(QStringLiteral("proper_tensor_symmetrized_2d_Cm")))) {
+            for (double v : row)
+                stream << QString::number(v, 'g', 4) << '\t';
+            stream << '\n';
+        }
     }
     QApplication::clipboard()->setText(text);
 }
@@ -395,6 +484,14 @@ void PiezoelectricViewer::exportCsv()
     writeMatrix("proper_raw", "proper_tensor_Cm2");
     writeMatrix("improper_symmetrized", "improper_tensor_symmetrized_Cm2");
     writeMatrix("improper_raw", "improper_tensor_Cm2");
+    if (data_.value(QStringLiteral("is_2d")).toBool()) {
+        writeMatrix("proper_symmetrized_2d_Cm_per_m",
+                    "proper_tensor_symmetrized_2d_Cm");
+        writeMatrix("proper_raw_2d_Cm_per_m", "proper_tensor_2d_Cm");
+        writeMatrix("improper_symmetrized_2d_Cm_per_m",
+                    "improper_tensor_symmetrized_2d_Cm");
+        writeMatrix("improper_raw_2d_Cm_per_m", "improper_tensor_2d_Cm");
+    }
     if (data_.contains(QStringLiteral("d_tensor_pmV"))
         && !data_.value(QStringLiteral("d_tensor_pmV")).isNull())
         writeMatrix("d_pmV", "d_tensor_pmV");

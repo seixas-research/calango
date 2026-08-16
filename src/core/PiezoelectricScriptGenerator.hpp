@@ -47,6 +47,34 @@ struct PiezoelectricConfig {
     /// remains a documented follow-up).
     std::vector<int> voigtComponents;
 
+    /// Out-of-plane vacuum axis for a 2D/monolayer structure (0=x, 1=y,
+    /// 2=z), or -1 for an ordinary bulk 3D system — the same sentinel
+    /// convention as OpticsConfig::vacuumAxis / NonlinearOpticsConfig::
+    /// vacuumAxis. Set by the wizard from core::guessVacuumAxis()'s
+    /// geometric read of the structure (a large fractional gap along one
+    /// axis), OR-ed with an explicit `pbc=False` on that axis — a monolayer
+    /// built with `pbc=[True,True,True]` and a vacuum gap (the ordinary ASE
+    /// slab convention) needs the geometric signal, since pbc alone says
+    /// nothing.
+    ///
+    /// When set (>= 0):
+    ///  - an empty `voigtComponents` defaults to core::inPlaneVoigtComponents
+    ///    (in-plane only) rather than all six, and any explicitly-requested
+    ///    component that touches the vacuum axis is dropped — straining a
+    ///    cell dimension that is not a real lattice parameter is not a
+    ///    physical strain, so this holds regardless of what voigtComponents
+    ///    asked for;
+    ///  - the out-of-plane Cartesian polarization row (index == vacuumAxis)
+    ///    is left NaN in every assembled tensor: the periodic Berry phase
+    ///    along a vacuum direction integrates almost entirely empty space
+    ///    and is not a well-defined polarization for a slab (unlike every
+    ///    in-plane row, which the dense in-plane k-mesh makes physical);
+    ///  - the reported e_ij additionally includes a 2D/sheet form (C/m),
+    ///    the vacuum-independent quantity obtained by multiplying the
+    ///    ordinary C/m^2 value by the vacuum axis's own cell length — see
+    ///    the "2D coefficients" comment in the .cpp for the derivation.
+    int vacuumAxis = -1;
+
     /// Strain magnitude of the smallest sample point (dimensionless, e.g.
     /// 0.005 = 0.5%). Squeezed between the same two errors as
     /// BornChargesConfig::displacement: large enough that the polarization

@@ -1,4 +1,5 @@
 #include "gui/BerryPhaseDialog.hpp"
+#include "gui/BseDialog.hpp"
 #include "gui/BoltzmannTransportDialog.hpp"
 #include "gui/CrpaDialog.hpp"
 #include "gui/EciFitDialog.hpp"
@@ -15,6 +16,7 @@
 #include "core/PingPongOrder.hpp"
 #include "core/Structure.hpp"
 #include "core/StructureTransforms.hpp"
+#include "core/VolumetricData.hpp"
 #include "gui/BrillouinZoneDialog.hpp"
 #include "gui/CoordinationDialog.hpp"
 #include "gui/DistributionDialog.hpp"
@@ -42,6 +44,8 @@
 #include "gui/BornChargesWizard.hpp"
 #include "gui/PiezoelectricViewer.hpp"
 #include "gui/PiezoelectricWizard.hpp"
+#include "gui/ElasticViewer.hpp"
+#include "gui/ElasticWizard.hpp"
 #include "gui/BandPdosWindow.hpp"
 #include "gui/ClusterExpansionDialog.hpp"
 #include "gui/ClusterExpansionWizard.hpp"
@@ -1322,6 +1326,16 @@ void MainWindow::createMenusAndDocks()
         ->setToolTip(tr("e_ij from the polarization response to cell strain "
                         "— proper and improper, clamped- and relaxed-ion, "
                         "with an optional conversion to d_ij"));
+    // Not an electronic-state readout — a mechanical property — but placed
+    // here next to Piezoelectric Tensor since it reuses the exact same
+    // finite-strain machinery and shares its terminology (clamped-/
+    // relaxed-ion, strain magnitude, points per component).
+    electronicsMenu->addAction(tr("&Elastic Properties…"), this,
+                               &MainWindow::showElasticProperties)
+        ->setToolTip(tr("C_ij (Voigt, GPa) from the stress or energy "
+                        "response to cell strain — Born stability, "
+                        "Voigt-Reuss-Hill moduli, and the 2D (N/m) form for "
+                        "a monolayer. Any engine works, not just GPAW."));
     electronicsMenu->addAction(tr("&Raman and IR Spectroscopy…"), this,
                                &MainWindow::showRamanIrSpectroscopy)
         ->setToolTip(tr("Γ-point Raman and infrared spectra: IR from the "
@@ -1409,6 +1423,13 @@ void MainWindow::createMenusAndDocks()
         ->setToolTip(tr("Chern number and Z₂ index from the hybrid Wannier "
                         "centre (Wilson loop) flow, from a completed Wannier Functions "
                         "process"));
+    wannierMenu
+        ->addAction(tr("Wannier-Based &Excitons (Bethe-Salpeter)…"), this,
+                    &MainWindow::openBseExcitons)
+        ->setToolTip(tr("Excitons from the Bethe-Salpeter equation in the "
+                        "Wannier-interpolated valence/conduction basis — "
+                        "model-screened (3D) or Rytova-Keldysh (2D), "
+                        "Tamm-Dancoff approximation"));
 
     wannierMenu->addSeparator();
     // -- Interactions --------------------------------------------------------
@@ -2685,6 +2706,39 @@ void MainWindow::showFrame(int index)
         return;
     doc->structure = doc->frames[static_cast<std::size_t>(index)];
     notifyStructureChanged(false);
+    applyFrameCastOverride(doc, index);
+}
+
+void MainWindow::applyFrameCastOverride(Document* doc, int frameIndex)
+{
+    if (!doc || !doc->structure || !viewport_)
+        return;
+    render::StructureRenderer::Style& style = viewport_->style();
+    const auto it = doc->frameCastOverrides.find(frameIndex);
+    if (it != doc->frameCastOverrides.end()) {
+        // Remember the baseline ONCE, before the first override mutates the
+        // shared atomCasts vector — otherwise a later frame with no override
+        // of its own would "restore" whatever override happened to run
+        // last, not the cast assignment that was there before any per-frame
+        // override existed.
+        if (!doc->hasBaseAtomCasts) {
+            doc->baseAtomCasts = style.atomCasts;
+            doc->hasBaseAtomCasts = true;
+        }
+        // Only applied when it actually matches this structure's atom
+        // count — notifyStructureChanged() already ran setStructure() above,
+        // which clears atomCasts on an atom-count mismatch; an override
+        // recorded against a differently-sized frame (should not happen in
+        // practice — MDMC never changes atom count — but a hand-edited
+        // project file could claim otherwise) is silently skipped rather
+        // than corrupting the render with out-of-range cast indices.
+        if (it->second.size() == doc->structure->size())
+            style.atomCasts = it->second;
+    } else if (doc->hasBaseAtomCasts
+              && doc->baseAtomCasts.size() == doc->structure->size()) {
+        style.atomCasts = doc->baseAtomCasts;
+    }
+    viewport_->update();
 }
 
 void MainWindow::pushTrajectoryToViewport(const Document* doc)
@@ -2830,6 +2884,55 @@ void metricFromJson(const QJsonObject& metric, MetricPlotWidget* plot)
         plot->setTarget(metric[QStringLiteral("target")].toDouble());
 }
 
+/// One render::StructureRenderer::CastStyle — mode/finish/colour mode/scale
+/// factors/opacity/flat colour/name. Shared by the viewport's own cast 0
+/// (whose fields live directly on Style rather than in a CastStyle) and by
+/// every entry of castStyles (casts 1..N) — see castsToJson()/castsFromJson()
+/// just below, which is where the two are told apart.
+QJsonObject castStyleToJson(const render::StructureRenderer::CastStyle& cast)
+{
+    QJsonObject o;
+    o[QStringLiteral("mode")] = static_cast<int>(cast.mode);
+    o[QStringLiteral("surfaceFinish")] = static_cast<int>(cast.surfaceFinish);
+    o[QStringLiteral("colorMode")] = static_cast<int>(cast.colorMode);
+    o[QStringLiteral("atomScaleFactor")] =
+        static_cast<double>(cast.atomScaleFactor);
+    o[QStringLiteral("bondWidthFactor")] =
+        static_cast<double>(cast.bondWidthFactor);
+    o[QStringLiteral("opacity")] = static_cast<double>(cast.opacity);
+    // An unset (invalid) castColor means "no explicit pick, cycle the
+    // qualitative palette" — persisted as an empty string rather than an
+    // arbitrary default colour, so that meaning survives the round trip.
+    o[QStringLiteral("castColor")] =
+        cast.castColor.isValid() ? cast.castColor.name() : QString();
+    o[QStringLiteral("name")] = cast.name;
+    return o;
+}
+
+render::StructureRenderer::CastStyle
+castStyleFromJson(const QJsonObject& o,
+                  const render::StructureRenderer::CastStyle& fallback)
+{
+    render::StructureRenderer::CastStyle cast = fallback;
+    cast.mode = static_cast<render::RepresentationMode>(
+        o[QStringLiteral("mode")].toInt(static_cast<int>(cast.mode)));
+    cast.surfaceFinish = static_cast<render::SurfaceFinish>(
+        o[QStringLiteral("surfaceFinish")].toInt(
+            static_cast<int>(cast.surfaceFinish)));
+    cast.colorMode = static_cast<render::ColorMode>(
+        o[QStringLiteral("colorMode")].toInt(static_cast<int>(cast.colorMode)));
+    cast.atomScaleFactor = static_cast<float>(
+        o[QStringLiteral("atomScaleFactor")].toDouble(cast.atomScaleFactor));
+    cast.bondWidthFactor = static_cast<float>(
+        o[QStringLiteral("bondWidthFactor")].toDouble(cast.bondWidthFactor));
+    cast.opacity =
+        static_cast<float>(o[QStringLiteral("opacity")].toDouble(cast.opacity));
+    const QString colorName = o[QStringLiteral("castColor")].toString();
+    cast.castColor = colorName.isEmpty() ? QColor() : QColor(colorName);
+    cast.name = o[QStringLiteral("name")].toString();
+    return cast;
+}
+
 } // namespace
 
 bool MainWindow::writeProject(const QString& path)
@@ -2863,6 +2966,20 @@ bool MainWindow::writeProject(const QString& path)
         } else if (document->structure) {
             docJson[QStringLiteral("structure")]
                 = ProjectSerializer::structureToJson(*document->structure);
+        }
+        // Per-frame Cast overrides — sparse by construction (see the
+        // Document field's doc comment), so this is empty for every
+        // trajectory that never used the feature, the common case.
+        if (!document->frameCastOverrides.empty()) {
+            QJsonObject overrides;
+            for (const auto& [frameIndex, atomCasts] :
+                document->frameCastOverrides) {
+                QJsonArray casts;
+                for (int cast : atomCasts)
+                    casts.append(cast);
+                overrides[QString::number(frameIndex)] = casts;
+            }
+            docJson[QStringLiteral("frameCastOverrides")] = overrides;
         }
         docs.append(docJson);
     }
@@ -2898,6 +3015,34 @@ bool MainWindow::writeProject(const QString& path)
         static_cast<double>(viewport_->style().floorNormal.x()),
         static_cast<double>(viewport_->style().floorNormal.y()),
         static_cast<double>(viewport_->style().floorNormal.z())};
+    // Cast — atom-to-cast assignment and every cast's own style. Previously
+    // not persisted at all (pure in-session state); fixed here alongside the
+    // per-frame overrides above, since a per-frame override with no
+    // surviving baseline to fall back to on reload would be a strange half
+    // measure. `atomCasts` describes the CURRENTLY DISPLAYED structure —
+    // reloading a project restores the assignment as-is and lets the usual
+    // atom-count check in ViewportWidget::setStructure() clear it if the
+    // reopened tab's structure does not match.
+    if (!viewport_->style().atomCasts.empty()
+        || viewport_->style().castStyles.size() > 0) {
+        QJsonObject castJson;
+        QJsonArray atomCasts;
+        for (int cast : viewport_->style().atomCasts)
+            atomCasts.append(cast);
+        castJson[QStringLiteral("atomCasts")] = atomCasts;
+        // Cast 0's own fields live directly on Style, not in castStyles.
+        render::StructureRenderer::CastStyle cast0;
+        cast0.mode = viewport_->style().mode;
+        cast0.opacity = viewport_->style().opacity;
+        cast0.castColor = viewport_->style().castColor;
+        cast0.name = viewport_->style().castName;
+        castJson[QStringLiteral("cast0")] = castStyleToJson(cast0);
+        QJsonArray castStyles;
+        for (const auto& cast : viewport_->style().castStyles)
+            castStyles.append(castStyleToJson(cast));
+        castJson[QStringLiteral("castStyles")] = castStyles;
+        viewportJson[QStringLiteral("cast")] = castJson;
+    }
     root[QStringLiteral("viewport")] = viewportJson;
 
     QJsonObject job;
@@ -2986,6 +3131,26 @@ bool MainWindow::readProject(const QString& path)
         addDocument(std::move(structure),
                     docJson[QStringLiteral("fileName")].toString(tr("Untitled")),
                     std::move(frames));
+        // Per-frame Cast overrides, if this document ever had any —
+        // documents_.back() rather than the returned tab index: addDocument()
+        // always appends, so this is the node just created regardless of
+        // whether tab indices and documents_ indices happen to agree.
+        if (docJson.contains(QStringLiteral("frameCastOverrides")) && !documents_.empty()) {
+            const QJsonObject overrides =
+                docJson[QStringLiteral("frameCastOverrides")].toObject();
+            for (auto it = overrides.constBegin(); it != overrides.constEnd();
+                 ++it) {
+                bool ok = false;
+                const int frameIndex = it.key().toInt(&ok);
+                if (!ok)
+                    continue;
+                std::vector<int> atomCasts;
+                for (const QJsonValue& value : it.value().toArray())
+                    atomCasts.push_back(value.toInt());
+                documents_.back()->frameCastOverrides[frameIndex] =
+                    std::move(atomCasts);
+            }
+        }
     }
 
     const int activeTab = root[QStringLiteral("activeTab")].toInt(0);
@@ -3048,6 +3213,30 @@ bool MainWindow::readProject(const QString& path)
                 static_cast<float>(normal.at(2).toDouble()));
             if (candidate.lengthSquared() > 1e-12f)
                 style.floorNormal = candidate;
+        }
+        // Cast — absent from every project written before this could be
+        // saved, and those must open with no atom-to-cast assignment (cast
+        // 0 for everyone) rather than a leftover default, so nothing here
+        // applies unless the key is actually present.
+        if (const QJsonObject castJson =
+                viewportJson[QStringLiteral("cast")].toObject();
+            !castJson.isEmpty()) {
+            style.atomCasts.clear();
+            for (const QJsonValue& value :
+                castJson[QStringLiteral("atomCasts")].toArray())
+                style.atomCasts.push_back(value.toInt());
+            const render::StructureRenderer::CastStyle cast0 =
+                castStyleFromJson(castJson[QStringLiteral("cast0")].toObject(),
+                                  render::StructureRenderer::CastStyle{});
+            style.mode = cast0.mode;
+            style.opacity = cast0.opacity;
+            style.castColor = cast0.castColor;
+            style.castName = cast0.name;
+            style.castStyles.clear();
+            for (const QJsonValue& value :
+                castJson[QStringLiteral("castStyles")].toArray())
+                style.castStyles.push_back(castStyleFromJson(
+                    value.toObject(), render::StructureRenderer::CastStyle{}));
         }
         // The Floor tab's controls were built from the defaults long before
         // this ran, so they have to re-read what was just restored.
@@ -5294,10 +5483,61 @@ void MainWindow::openRandomNoiseResults(const QString& directory)
     }
 }
 
+/// If the run in `directory` asked for HDF5 compression
+/// (`CalculatorConfig::compressDensityToHdf5`), convert every density file
+/// it wrote into `<name>.h5` and delete the original — the ONE conversion
+/// path (core::VolumetricData::convertToHdf5, shared with the Dump Charge
+/// Densities Orchestration node) both go through, so a redesign of the
+/// container never has to happen twice. See
+/// docs/sphinx/source/reference/hdf5_density.md for the container's layout.
+///
+/// The flag itself travels through `calculator.json` — the same provenance
+/// sidecar `stageJob()` already writes into every job directory before the
+/// run starts (`SimulationWizardBase::calculatorProvenanceJson()`) — because
+/// nothing else ties a finished job's directory back to the CalculatorConfig
+/// that launched it.
+void MainWindow::compressDensityFilesIfRequested(const QString& directory)
+{
+    QFile provenance(directory + QStringLiteral("/calculator.json"));
+    if (!provenance.open(QIODevice::ReadOnly))
+        return;
+    const QJsonObject config
+        = QJsonDocument::fromJson(provenance.readAll()).object();
+    provenance.close();
+    if (!config.value(QStringLiteral("compress_density_hdf5")).toBool(false))
+        return;
+
+    const QDir dir(directory);
+    QStringList names =
+        dir.entryList({QStringLiteral("*.cube")}, QDir::Files, QDir::Name);
+    for (const QString& vasp : {QStringLiteral("CHGCAR"),
+                                QStringLiteral("AECCAR0"),
+                                QStringLiteral("AECCAR2"),
+                                QStringLiteral("LOCPOT"),
+                                QStringLiteral("ELFCAR")})
+        if (QFileInfo(dir.filePath(vasp)).size() > 0)
+            names << vasp;
+
+    for (const QString& name : names) {
+        const QString sourcePath = dir.filePath(name);
+        const QString destPath = sourcePath + QStringLiteral(".h5");
+        std::string error;
+        if (core::VolumetricData::convertToHdf5(sourcePath.toStdString(),
+                                                destPath.toStdString(), &error)) {
+            QFile::remove(sourcePath);
+        } else {
+            qWarning() << "HDF5 compression of" << sourcePath << "failed:"
+                      << QString::fromStdString(error);
+        }
+    }
+}
+
 int MainWindow::registerDensityCubes(const QString& directory)
 {
     if (!volumetricPanel_)
         return 0;
+    compressDensityFilesIfRequested(directory);
+
     // The file -> display-label mapping lives in GuiUtils, keyed off the same
     // core::densityFiles constants the generators emit, so the two ends cannot
     // drift apart again. Anything unrecognized keeps its own file name rather
@@ -5310,12 +5550,14 @@ int MainWindow::registerDensityCubes(const QString& directory)
 
     const QDir dir(directory);
     int added = 0;
-    // Cube files by extension, VASP grids by name. CHG (the coarse
-    // every-step dump) is deliberately not offered: it is the same field as
-    // CHGCAR at lower resolution, and two near-identical entries in the dock
-    // is worse than one.
-    QStringList names =
-        dir.entryList({QStringLiteral("*.cube")}, QDir::Files, QDir::Name);
+    // Cube files by extension, VASP grids by name, and either's already-
+    // converted ".h5" form (compressDensityFilesIfRequested() above, or one
+    // dropped in by hand). CHG (the coarse every-step dump) is deliberately
+    // not offered: it is the same field as CHGCAR at lower resolution, and
+    // two near-identical entries in the dock is worse than one.
+    QStringList names = dir.entryList({QStringLiteral("*.cube"),
+                                       QStringLiteral("*.cube.h5")},
+                                      QDir::Files, QDir::Name);
     for (const QString& vasp : {QStringLiteral("CHGCAR"),
                                 QStringLiteral("AECCAR0"),
                                 QStringLiteral("AECCAR2"),
@@ -5325,6 +5567,8 @@ int MainWindow::registerDensityCubes(const QString& directory)
         // it, and a zero-byte CHGCAR is not a density.
         if (QFileInfo(dir.filePath(vasp)).size() > 0)
             names << vasp;
+        else if (QFileInfo(dir.filePath(vasp + QStringLiteral(".h5"))).size() > 0)
+            names << (vasp + QStringLiteral(".h5"));
     }
     for (const QString& name : names) {
         // The Wannier orbitals have their own registration path (they are
@@ -5487,6 +5731,8 @@ std::vector<MainWindow::ViewerEntry> MainWindow::viewersFor(
          &MainWindow::openBornChargesResults},
         {"piezoelectric.json", tr("Piezoelectric Tensor Viewer"),
          &MainWindow::openPiezoelectricResults},
+        {"elastic.json", tr("Elastic Properties Viewer"),
+         &MainWindow::openElasticResults},
         {"raman_ir.json", tr("Raman / IR Spectroscopy Viewer"),
          &MainWindow::openRamanIrResults},
         {"nlopt.json", tr("Nonlinear Optics Viewer"),
@@ -6157,6 +6403,10 @@ void MainWindow::onProcessResultRequested(const QString& directory)
             return;
         }
     }
+    if (QFile::exists(directory + QStringLiteral("/elastic.json"))) {
+        openElasticResults(directory);
+        return;
+    }
     for (const auto* candidate :
          // md.extxyz first: it carries the per-atom forces and velocities
          // the Vector overlay needs, which the binary md.traj only exposes
@@ -6777,6 +7027,44 @@ void MainWindow::openPiezoelectricResults(const QString& directory)
     viewer->show();
 }
 
+void MainWindow::showElasticProperties()
+{
+    if (!prepareSimulation(tr("Elastic Properties")))
+        return;
+    Document* doc = currentDocument();
+    // The finite-strain method needs a periodic cell to strain, same check
+    // as Piezoelectric Tensor.
+    if (doc && doc->structure && !doc->structure->cell().isDefined()) {
+        QMessageBox::information(
+            this, tr("Elastic Properties"),
+            tr("The elastic tensor is obtained from the stress/energy "
+               "response to a cell strain, which is only defined for a "
+               "periodic crystal — this structure has no unit cell.\n\n"
+               "Build or import a periodic structure first."));
+        return;
+    }
+
+    ElasticWizard wizard(doc ? doc->structure : nullptr, this);
+    // Unlike Piezoelectric Tensor, a baseline is OPTIONAL: an empty list
+    // here just leaves "(none) — use the current structure" as the only
+    // choice, rather than refusing to open the wizard at all.
+    wizard.setDensityBaselines(gpawDensityFiles());
+    runSimulationWizard(wizard, tr("Elastic Properties"), /*expectFrames=*/false);
+}
+
+void MainWindow::openElasticResults(const QString& directory)
+{
+    auto* viewer = new ElasticViewer(this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    if (!viewer->loadResults(directory + QStringLiteral("/elastic.json"))) {
+        delete viewer;
+        QMessageBox::information(this, tr("Elastic Properties"),
+                                 tr("No elastic.json found in %1.").arg(directory));
+        return;
+    }
+    viewer->show();
+}
+
 void MainWindow::showRamanIrSpectroscopy()
 {
     if (!prepareSimulation(tr("Raman and IR Spectroscopy")))
@@ -7239,6 +7527,70 @@ int MainWindow::applyFunctionalGroupCasts()
     return static_cast<int>(style.castStyles.size());
 }
 
+void MainWindow::setUpFunctionalGroupCastKey()
+{
+    if (!viewport_)
+        return;
+    using Builder = core::GrapheneOxideBuilder;
+    auto& style = viewport_->style();
+    if (style.castStyles.size() >= Builder::kGroupCount)
+        return; // already set up — idempotent
+
+    // The SAME fixed key applyFunctionalGroupCasts() uses, but created
+    // UNCONDITIONALLY for all four groups rather than only the ones present
+    // in one particular structure: an MDMC run's whole point is relocating
+    // groups between frames, so "which cast slot is epoxide" has to be a
+    // property of the RUN, not of whichever frame happened to set it up
+    // first.
+    static const QColor kGroupColors[Builder::kGroupCount] = {
+        QColor(0xFF, 0xB3, 0x2E), // epoxide   amber   — brightest
+        QColor(0x25, 0x5F, 0xD0), // hydroxyl  blue    — darkest
+        QColor(0xE8, 0x5C, 0xC8), // carboxyl  magenta — bright
+        QColor(0x18, 0x8F, 0x6B), // carbonyl  teal    — dark
+    };
+    style.castStyles.clear();
+    style.castName = tr("Bare carbon");
+    for (std::size_t group = 0; group < Builder::kGroupCount; ++group) {
+        render::StructureRenderer::CastStyle cast = style.castStyle(0);
+        cast.castColor = kGroupColors[group];
+        QString name = QString::fromLatin1(
+            Builder::name(static_cast<Builder::Group>(group)));
+        name[0] = name[0].toUpper();
+        cast.name = name;
+        cast.colorMode = render::ColorMode::Cast;
+        style.castStyles.push_back(cast);
+    }
+    style.colorMode = render::ColorMode::Cast;
+}
+
+void MainWindow::redefineFunctionalGroupCastForFrame(Document* doc,
+                                                      int frameIndex)
+{
+    if (!doc || frameIndex < 0
+        || frameIndex >= static_cast<int>(doc->frames.size()))
+        return;
+    const std::shared_ptr<core::Structure>& frame =
+        doc->frames[static_cast<std::size_t>(frameIndex)];
+    if (!frame || frame->empty())
+        return;
+
+    using Builder = core::GrapheneOxideBuilder;
+    const std::vector<int> labels = Builder::functionalGroupLabels(*frame);
+    if (labels.size() != frame->size())
+        return;
+
+    // Cast 0 (bare carbon) plus the fixed 1..4 key setUpFunctionalGroupCastKey()
+    // established — reusing that classifier is the whole point: it is the
+    // SAME bonding logic the builder uses to decide swap sites in the first
+    // place (functionalGroupLabels()), not a second, re-derived notion of
+    // "which carbon is which".
+    std::vector<int> atomCasts(labels.size(), 0);
+    for (std::size_t i = 0; i < labels.size(); ++i)
+        if (labels[i] >= 0 && labels[i] < static_cast<int>(Builder::kGroupCount))
+            atomCasts[i] = labels[i] + 1;
+    doc->frameCastOverrides[frameIndex] = std::move(atomCasts);
+}
+
 int MainWindow::applyGrainCasts()
 {
     Document* doc = currentDocument();
@@ -7368,6 +7720,16 @@ void MainWindow::openGrapheneOxideMdmc(
     runScript(wizard.script(), wizard.pythonExecutable(),
               tr("Graphene oxide MDMC"), true, wizard.calculatorKind(),
               wizard.runCommand());
+    // liveDoc_ is set synchronously by launchJob() when nothing else is
+    // running, which is the overwhelmingly common case for a builder flow
+    // like this one; the task-name check is a defensive match against the
+    // right tab rather than whatever liveDoc_ happened to hold. If this run
+    // instead queued behind another job, liveDoc_ is not (yet) this tab and
+    // the flag is simply not set — that MDMC run falls back to a single,
+    // frame-0 Cast, exactly like the checkbox being off, rather than
+    // silently marking the wrong document.
+    if (liveDoc_ && liveDoc_->task == tr("Graphene oxide MDMC"))
+        liveDoc_->mdmcCastPerFrame = wizard.castPerFrame();
 }
 
 void MainWindow::openBoltzmannTransport()
@@ -7380,6 +7742,13 @@ void MainWindow::openBoltzmannTransport()
 void MainWindow::openBerryPhase()
 {
     BerryPhaseDialog dialog(this);
+    dialog.setWannierRuns(completedMlwfRuns());
+    dialog.exec();
+}
+
+void MainWindow::openBseExcitons()
+{
+    BseDialog dialog(this);
     dialog.setWannierRuns(completedMlwfRuns());
     dialog.exec();
 }
@@ -8001,6 +8370,7 @@ std::unique_ptr<SimulationWizardBase> makeOrchestrationWizard(
     case OrchestrationTask::RandomNoiseSetup:
     case OrchestrationTask::TdbGenerator:
     case OrchestrationTask::Dump:
+    case OrchestrationTask::DumpDensities:
     case OrchestrationTask::SqsGenerator:
     case OrchestrationTask::ClusterExpansionFit:
     case OrchestrationTask::CvmEntropy:
@@ -9197,6 +9567,18 @@ void MainWindow::appendStreamedFrame(
     doc.frames.push_back(frame);
     isDirty_ = true;
 
+    // Graphene Oxide Builder MDMC, with "Redefine Cast on every accepted
+    // move" checked: this frame's own functional-group classification is
+    // recorded as ITS Cast override before anything decides whether to
+    // display it — a frame the user later scrubs back to (not just the tail
+    // this run happens to be following right now) still needs its own
+    // override waiting for it.
+    if (doc.mdmcCastPerFrame) {
+        setUpFunctionalGroupCastKey();
+        redefineFunctionalGroupCastForFrame(
+            &doc, static_cast<int>(doc.frames.size()) - 1);
+    }
+
     if (tabBar_->currentIndex() != index)
         return; // tab exists and accumulates; views update on switch
     timeline_->extendFrameCount(static_cast<int>(doc.frames.size()));
@@ -9408,6 +9790,11 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     // Piezoelectric tensor: open the e_ij / d_ij table.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/piezoelectric.json"))) {
         openPiezoelectricResults(lastJobDir_);
+        return;
+    }
+    // Elastic properties: open the C_ij / Born-stability table.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/elastic.json"))) {
+        openElasticResults(lastJobDir_);
         return;
     }
     // Charge density difference: the cube is registered by the sweep below like

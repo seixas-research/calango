@@ -1,5 +1,6 @@
 #include "gui/OrchestrationTransforms.hpp"
 
+#include "core/CalculatorConfig.hpp"
 #include "core/ClusterVariation.hpp"
 #include "core/ClusterExpansionFit.hpp"
 #include "core/CalphadModel.hpp"
@@ -1655,6 +1656,171 @@ bool runDump(const QList<DumpSourceFrame>& sources, const DumpSpec& spec,
                   .arg(output->framesWritten)
                   .arg(QFileInfo(spec.outputPath).fileName());
     return true;
+}
+
+QString densityProductFileName(DensityProduct product)
+{
+    switch (product) {
+    case DensityProduct::GpawAllElectron:
+        return QLatin1String(core::densityFiles::kAllElectron);
+    case DensityProduct::GpawPseudo:
+        return QLatin1String(core::densityFiles::kPseudo);
+    case DensityProduct::GpawSpin:
+        return QLatin1String(core::densityFiles::kSpin);
+    case DensityProduct::GpawHartree:
+        return QLatin1String(core::densityFiles::kHartree);
+    case DensityProduct::GpawElf:
+        return QLatin1String(core::densityFiles::kElf);
+    case DensityProduct::GpawKineticEnergy:
+        return QLatin1String(core::densityFiles::kKineticEnergy);
+    case DensityProduct::VaspChgcar:
+        return QStringLiteral("CHGCAR");
+    case DensityProduct::VaspAeccar0:
+        return QStringLiteral("AECCAR0");
+    case DensityProduct::VaspAeccar2:
+        return QStringLiteral("AECCAR2");
+    case DensityProduct::VaspLocpot:
+        return QStringLiteral("LOCPOT");
+    case DensityProduct::VaspElfcar:
+        return QStringLiteral("ELFCAR");
+    }
+    return QString();
+}
+
+QString densityProductExtension(DensityProduct product)
+{
+    switch (product) {
+    case DensityProduct::GpawAllElectron:
+    case DensityProduct::GpawPseudo:
+    case DensityProduct::GpawSpin:
+    case DensityProduct::GpawHartree:
+    case DensityProduct::GpawElf:
+    case DensityProduct::GpawKineticEnergy:
+        return QStringLiteral(".cube");
+    case DensityProduct::VaspChgcar:
+        return QStringLiteral(".chgcar");
+    case DensityProduct::VaspAeccar0:
+        return QStringLiteral(".aeccar0");
+    case DensityProduct::VaspAeccar2:
+        return QStringLiteral(".aeccar2");
+    case DensityProduct::VaspLocpot:
+        return QStringLiteral(".locpot");
+    case DensityProduct::VaspElfcar:
+        return QStringLiteral(".elfcar");
+    }
+    return QStringLiteral(".dat");
+}
+
+QString densityProductLabel(DensityProduct product)
+{
+    switch (product) {
+    case DensityProduct::GpawAllElectron:
+        return QObject::tr("All-electron density (GPAW)");
+    case DensityProduct::GpawPseudo:
+        return QObject::tr("Pseudodensity (GPAW)");
+    case DensityProduct::GpawSpin:
+        return QObject::tr("Spin density (GPAW)");
+    case DensityProduct::GpawHartree:
+        return QObject::tr("Hartree potential (GPAW)");
+    case DensityProduct::GpawElf:
+        return QObject::tr("ELF (GPAW)");
+    case DensityProduct::GpawKineticEnergy:
+        return QObject::tr("Kinetic energy density (GPAW)");
+    case DensityProduct::VaspChgcar:
+        return QObject::tr("CHGCAR — charge density (VASP)");
+    case DensityProduct::VaspAeccar0:
+        return QObject::tr("AECCAR0 — core density, Bader (VASP)");
+    case DensityProduct::VaspAeccar2:
+        return QObject::tr("AECCAR2 — all-electron density, Bader (VASP)");
+    case DensityProduct::VaspLocpot:
+        return QObject::tr("LOCPOT — local potential (VASP)");
+    case DensityProduct::VaspElfcar:
+        return QObject::tr("ELFCAR — ELF (VASP)");
+    }
+    return QString();
+}
+
+QList<DensityProduct> densityProducts()
+{
+    return {
+        DensityProduct::GpawAllElectron, DensityProduct::GpawPseudo,
+        DensityProduct::GpawSpin,        DensityProduct::GpawHartree,
+        DensityProduct::GpawElf,         DensityProduct::GpawKineticEnergy,
+        DensityProduct::VaspChgcar,      DensityProduct::VaspAeccar0,
+        DensityProduct::VaspAeccar2,     DensityProduct::VaspLocpot,
+        DensityProduct::VaspElfcar,
+    };
+}
+
+QString densityProductSlug(DensityProduct product)
+{
+    switch (product) {
+    case DensityProduct::GpawAllElectron:
+        return QStringLiteral("gpaw_all_electron");
+    case DensityProduct::GpawPseudo:
+        return QStringLiteral("gpaw_pseudo");
+    case DensityProduct::GpawSpin:
+        return QStringLiteral("gpaw_spin");
+    case DensityProduct::GpawHartree:
+        return QStringLiteral("gpaw_hartree");
+    case DensityProduct::GpawElf:
+        return QStringLiteral("gpaw_elf");
+    case DensityProduct::GpawKineticEnergy:
+        return QStringLiteral("gpaw_kinetic_energy");
+    case DensityProduct::VaspChgcar:
+        return QStringLiteral("vasp_chgcar");
+    case DensityProduct::VaspAeccar0:
+        return QStringLiteral("vasp_aeccar0");
+    case DensityProduct::VaspAeccar2:
+        return QStringLiteral("vasp_aeccar2");
+    case DensityProduct::VaspLocpot:
+        return QStringLiteral("vasp_locpot");
+    case DensityProduct::VaspElfcar:
+        return QStringLiteral("vasp_elfcar");
+    }
+    return QStringLiteral("gpaw_all_electron");
+}
+
+DensityProduct densityProductFromSlug(const QString& slug)
+{
+    for (DensityProduct product : densityProducts())
+        if (densityProductSlug(product) == slug)
+            return product;
+    return DensityProduct::GpawAllElectron;
+}
+
+QString DumpDensitiesSpec::describe() const
+{
+    const QString name = outputDirectory.isEmpty()
+        ? QObject::tr("(no folder set)")
+        : outputDirectory;
+    return compressHdf5
+        ? QObject::tr("%1 -> %2 (HDF5)").arg(densityProductLabel(product), name)
+        : QObject::tr("%1 -> %2").arg(densityProductLabel(product), name);
+}
+
+QJsonObject DumpDensitiesSpec::toJson() const
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("output_directory"), outputDirectory);
+    object.insert(QStringLiteral("file_prefix"), filePrefix);
+    object.insert(QStringLiteral("product"), densityProductSlug(product));
+    object.insert(QStringLiteral("compress_hdf5"), compressHdf5);
+    return object;
+}
+
+DumpDensitiesSpec DumpDensitiesSpec::fromJson(const QJsonObject& object)
+{
+    DumpDensitiesSpec spec;
+    spec.outputDirectory =
+        object.value(QStringLiteral("output_directory")).toString();
+    spec.filePrefix = object.value(QStringLiteral("file_prefix"))
+                          .toString(spec.filePrefix);
+    spec.product = densityProductFromSlug(
+        object.value(QStringLiteral("product")).toString());
+    spec.compressHdf5 =
+        object.value(QStringLiteral("compress_hdf5")).toBool(false);
+    return spec;
 }
 
 } // namespace calango::gui
