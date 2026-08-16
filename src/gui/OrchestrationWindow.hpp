@@ -66,6 +66,27 @@ enum class OrchestrationTask {
     ChargedDefects2d,
     // -- Structure transforms, executed by the canvas itself ----------------
     Container,
+    /// Scans every structure an upstream Container (or another node
+    /// emitting a set of structures) holds, collects the UNIQUE elements
+    /// across all of them, and emits one isolated-atom reference cell per
+    /// element — the usual source of E0s for MLIP training.
+    ///
+    /// A SECOND, INDEPENDENT batch dimension, not a multiplier of the first:
+    /// "3 elements" has nothing to do with "100 noisy structures", and
+    /// forcing them to agree (today's rule for two ordinary Containers)
+    /// would refuse exactly the pipeline this node exists for, while
+    /// MULTIPLYING them would recompute the same 3 elements 100 times. It is
+    /// therefore its own SEQUENTIAL PHASE: everything downstream of the
+    /// primary Container(s) runs to completion first, using
+    /// batchIndex_/batchLength_ exactly as before; THEN this node's own
+    /// element sweep runs, using the separate atomBatchIndex_/
+    /// atomBatchLength_ pair — see OrchestrationWindow's
+    /// dependsOnSingleAtomContainer() and advanceAtomBatch(). Its own
+    /// batchItems_ (the SAME storage Container uses) are computed EAGERLY,
+    /// at Send time, from the parent's already-known structures — not
+    /// during execution — so nothing about it needs the parent to have
+    /// actually RUN a job.
+    SingleAtomContainer,
     Supercell,
     DefectGenerator,
     // Not a structure edit: it consumes an upstream ensemble's RESULTS and
@@ -73,6 +94,15 @@ enum class OrchestrationTask {
     // the canvas rather than as a job, which is what the family actually
     // decides.
     TdbGenerator,
+    // Also consumes RESULTS rather than a structure, but differently from
+    // TdbGenerator/ClusterExpansionFit/CvmEntropy below: those read ONE
+    // staged ensemble file: Dump reads EVERY PASS of a live fan-out directly
+    // (WorkflowReport's outcomes for its parent node), because an ensemble
+    // file that could hold N structures' own forces does not exist anywhere
+    // in this codebase to stage. It is therefore also the only Transform
+    // that does not run once per Container item: it runs ONCE, after the
+    // fan-out's LAST pass — see OrchestrationWindow's isBatchAggregator().
+    Dump,
     // -- The alloy pipeline -------------------------------------------------
     // Container(parent lattice) → SQS Generator → simulations → ECI Fitter →
     // CVM Entropy. The first is a structure transform in the strict sense; the
@@ -264,6 +294,15 @@ public:
     const CvmEntropySpec& cvmEntropy() const { return cvm_; }
     void setCvmEntropy(const CvmEntropySpec& spec);
 
+    const DumpSpec& dump() const { return dump_; }
+    void setDump(const DumpSpec& spec);
+
+    const SingleAtomContainerSpec& singleAtomContainer() const
+    {
+        return singleAtom_;
+    }
+    void setSingleAtomContainer(const SingleAtomContainerSpec& spec);
+
     /// Whether this node has everything it needs, as a message: empty when it
     /// is ready, otherwise what is missing. Covers "never configured" for the
     /// analysis modules and the empty-payload cases for the transforms.
@@ -271,6 +310,22 @@ public:
 
     Status status() const { return status_; }
     void setStatus(Status status);
+    /// Fan-out progress ("37/100 done") for a node whose result varies per
+    /// batch pass (dependsOnContainer() is true for it). `total` <= 1 means
+    /// "not a fan-out node in this run" and paints nothing extra — status_
+    /// alone already tells the whole story for those. Set by
+    /// OrchestrationWindow::recordOutcome() every time one pass of this node
+    /// reaches a terminal state; this is the one thing status_ alone cannot
+    /// show, since a batch re-queues it fresh every pass (see the class doc
+    /// on why the canvas otherwise only ever reflects the LAST pass).
+    void setBatchProgress(int done, int total)
+    {
+        batchProgressDone_ = done;
+        batchProgressTotal_ = total;
+        update();
+    }
+    int batchProgressDone() const { return batchProgressDone_; }
+    int batchProgressTotal() const { return batchProgressTotal_; }
     /// Row id in the global Processes panel for the current send (-1 when
     /// the orchestration runs without a panel, e.g. headless tests).
     int processTaskId() const { return processTaskId_; }
@@ -324,6 +379,8 @@ private:
     std::shared_ptr<const core::Structure> structure_;
     core::CalculatorKind engine_;
     Status status_ = Status::Pending;
+    int batchProgressDone_ = 0;
+    int batchProgressTotal_ = 0;
     int processTaskId_ = -1;
     QString jobDirectory_;
     QStringList jobHistory_;
@@ -337,6 +394,8 @@ private:
     SqsGeneratorSpec sqs_;
     ClusterExpansionFitSpec clusterFit_;
     CvmEntropySpec cvm_;
+    DumpSpec dump_;
+    SingleAtomContainerSpec singleAtom_;
     std::vector<InputLine> inputLines_;
     std::vector<OrchestrationEdgeItem*> edges_;
 };
@@ -484,6 +543,21 @@ public:
     /// was created. Unset (the headless tests) keeps the snapshot.
     void setMaterialsProvider(std::function<MaterialList()> provider);
 
+    /// Given one entry `materials()`/the MaterialsProvider offered (identified
+    /// by its structure pointer, since names are not guaranteed unique), the
+    /// full set of named batch items "Add Open Document…" should add for it:
+    /// a single item for a plain structure, or one item per frame — named
+    /// `<tab> #1`, `<tab> #2`, … — for a multi-frame trajectory tab (Random
+    /// Noise Setup's generated ensemble, an opened .traj/multi-image
+    /// .extxyz, …). Each MaterialList entry only ever carries ONE structure
+    /// (the tab's current/first frame), so without this a multi-frame tab's
+    /// other frames were never reachable from "Add Open Document" at all.
+    /// Unset (the headless tests) falls back to adding just the one
+    /// structure the MaterialList entry names.
+    using FramesProvider = std::function<QList<OrchestrationNodeItem::BatchItem>(
+        const std::shared_ptr<const core::Structure>&)>;
+    void setFramesProvider(FramesProvider provider);
+
     /// Where a Container gets structures that are not open documents.
     ///
     /// The canvas can open files itself, but the database browser is a large
@@ -533,6 +607,17 @@ public:
     /// configureNode.
     void setNodeBatchItems(OrchestrationNodeItem* node,
                            const QList<OrchestrationNodeItem::BatchItem>& items);
+    /// Read every structure out of `path` as Container batch items, one per
+    /// frame for a multi-image file (a trajectory, a multi-frame extxyz) —
+    /// named `<stem> #<n>` — or one item named `<stem>` for a single
+    /// structure. On failure, `*error` is set to a message naming the file
+    /// and returns an empty list rather than throwing.
+    ///
+    /// The production path behind the Container editor's "Import from
+    /// File…" button, exposed here (rather than kept file-local) so a test
+    /// can drive the same code the UI does instead of a second copy of it.
+    static QList<OrchestrationNodeItem::BatchItem>
+    readStructuresFromFile(const QString& path, QString* error);
     /// Set a Supercell node's repetitions. Same invalidation rule.
     void setNodeSupercell(OrchestrationNodeItem* node,
                           const SupercellSpec& spec);
@@ -550,6 +635,11 @@ public:
     /// Set a CVM Entropy node's lattice and range. Same invalidation rule.
     void setNodeCvmEntropy(OrchestrationNodeItem* node,
                            const CvmEntropySpec& spec);
+    /// Set a Dump node's output path and key names. Same invalidation rule.
+    void setNodeDump(OrchestrationNodeItem* node, const DumpSpec& spec);
+    /// Set a Single-atom Container node's box size. Same invalidation rule.
+    void setNodeSingleAtomContainer(OrchestrationNodeItem* node,
+                                    const SingleAtomContainerSpec& spec);
 
     /// The folder the current (or last) run staged everything under. Empty
     /// before the first send.
@@ -736,10 +826,59 @@ private:
     /// Nodes whose results depend on which Container item is being processed —
     /// every Container plus everything reachable from one. Only these are
     /// re-queued between batch items.
+    ///
+    /// Also true (transitively) for a Single-atom Container and everything
+    /// downstream of it, since batchDimensionOf() counts it too — the two
+    /// PHASES are told apart by dependsOnSingleAtomContainer(), not by this
+    /// function, which answers "does this vary across ANY batch dimension".
     bool dependsOnContainer(OrchestrationNodeItem* node) const;
+    /// Nodes belonging to the SECOND, independent batch phase: a Single-atom
+    /// Container and everything reachable from it. Disjoint in PURPOSE from
+    /// dependsOnContainer() (which stays true for these nodes too) — this is
+    /// the one that decides which odometer (batchIndex_/batchLength_ vs.
+    /// atomBatchIndex_/atomBatchLength_) a node's pass count and re-queue
+    /// belong to.
+    bool dependsOnSingleAtomContainer(const OrchestrationNodeItem* node) const;
+    /// A Single-point Calculation or Geometry Optimization node with MORE
+    /// THAN ONE parent: the third batch phase, established by the CONSUMER
+    /// rather than by an upstream Container/Single-atom Container. Pass `i`
+    /// (fanInIndex_) uses parentsOf(node)[i]'s own output as its input
+    /// geometry — one pass per parent, strictly in link order, which is
+    /// what makes "the simulation execution order match the order the
+    /// nodes are connected" true by construction rather than by convention.
+    /// At most one such node is allowed per graph (enforced in
+    /// sendToProcesses()) — its parent count IS fanInLength_, so a second
+    /// one with a different count would need a second, independent odometer
+    /// this phase does not have.
+    bool isFanInNode(const OrchestrationNodeItem* node) const;
+    /// The third phase's own reachability walk, mirroring
+    /// dependsOnSingleAtomContainer(): a fan-in node and everything
+    /// downstream of it. A boundary for the OTHER two phases' walks, the
+    /// same way a Single-atom Container is — see dependsOnContainer()'s and
+    /// dependsOnSingleAtomContainer()'s own stopping conditions.
+    bool dependsOnFanIn(const OrchestrationNodeItem* node) const;
     /// Move to the next Container item and re-queue the nodes that depend on
-    /// one. False when the last item is done.
+    /// one. False when the last item is done. Leaves phase-2 (Single-atom
+    /// Container) nodes untouched — see advanceAtomBatch().
     bool advanceBatch();
+    /// The second phase's own advance: moves to the next element and
+    /// re-queues the nodes that depend on the Single-atom Container. Only
+    /// called once advanceBatch() itself has nothing left to advance — the
+    /// two phases run SEQUENTIALLY, never interleaved. A no-op (always
+    /// false) when the graph has no Single-atom Container.
+    bool advanceAtomBatch();
+    /// The third phase's own advance: moves to the next parent and re-queues
+    /// the nodes that depend on the fan-in node. Only called once
+    /// advanceAtomBatch() has nothing left to advance — phases run strictly
+    /// in sequence. A no-op (always false) when the graph has no fan-in
+    /// node.
+    bool advanceFanIn();
+    /// Populate every Single-atom Container node's batchItems_ from its
+    /// parent's own structures, EAGERLY — before any node has run — so its
+    /// span is known in time for the batch plan below. False (with `*error`
+    /// set) when a Single-atom Container has no usable parent or its parent
+    /// supplies no structures at all.
+    bool populateSingleAtomContainers(QString* error);
     /// Queue `node` for execution and give it a fresh Processes-panel row.
     void enqueue(OrchestrationNodeItem* node);
     /// Directory for `node`'s next attempt, created. Empty on failure.
@@ -747,6 +886,17 @@ private:
     /// Label of the Container item currently being processed, for job
     /// directories and process rows. Empty when the graph has no Container.
     QString batchLabel() const;
+    /// The element currently being processed by the Single-atom Container's
+    /// own phase. Empty when the graph has none, or it holds no elements.
+    QString atomBatchLabel() const;
+    /// The parent currently supplying the fan-in node's geometry. Empty when
+    /// the graph has no fan-in node.
+    QString fanInLabel() const;
+    /// batchLabel(), atomBatchLabel() or fanInLabel(), whichever phase
+    /// `node` belongs to — the one function every per-node call site (job
+    /// directories, process rows, provenance, the workflow report) should
+    /// use instead of picking a phase's label directly.
+    QString batchLabelFor(const OrchestrationNodeItem* node) const;
     /// What a workspace tab showing this node's output is called — short, and
     /// decided in one place so a live trajectory tab and a transform tab from
     /// the same pipeline are named the same way.
@@ -811,6 +961,7 @@ private:
 
     MaterialList materials_;
     std::function<MaterialList()> materialsProvider_;
+    FramesProvider framesProvider_;
     WizardFactory wizardFactory_;
     StructureImporter databaseImporter_;
     RefusalHandler refusalHandler_;
@@ -858,6 +1009,28 @@ private:
     /// Materials a separate-mode Defect Generator contributes per container
     /// item — the fast digit's radix. 1 when there is no such node.
     int batchDefectSpan_ = 1;
+    /// The SECOND, independent phase's own odometer — a Single-atom
+    /// Container's element sweep. Deliberately NOT folded into
+    /// batchIndex_/batchLength_/batchDefectSpan_ above: those three describe
+    /// ONE multiplicative space (container items × defect/SQS variants) that
+    /// the whole graph steps through in lockstep, while this one runs
+    /// SEQUENTIALLY AFTER it, over a completely unrelated count (unique
+    /// elements, not structures or defects) that must neither multiply with
+    /// nor be forced to equal the first phase's length. 0/1 for a graph with
+    /// no Single-atom Container node, in which case nothing below ever
+    /// touches these two fields.
+    int atomBatchIndex_ = 0;
+    int atomBatchLength_ = 1;
+    /// The THIRD, independent phase's own odometer — a fan-in Single-point
+    /// Calculation or Geometry Optimization node's per-parent sweep.
+    /// Sequential AFTER phase 2, over yet another unrelated count (how many
+    /// parents the ONE fan-in node in this graph has). 0/1 for a graph with
+    /// no fan-in node. fanInLength_ is set once, from parentsOf() — a
+    /// structural count known immediately, unlike the other two phases'
+    /// lengths (a Container's item count and a Single-atom Container's
+    /// element count), which need something computed or configured first.
+    int fanInIndex_ = 0;
+    int fanInLength_ = 1;
     QString runStartedUtc_;
     /// Accumulated as the run goes; written to the orchestration folder and
     /// handed to the host when it ends.

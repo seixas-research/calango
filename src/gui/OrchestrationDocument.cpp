@@ -208,6 +208,21 @@ QJsonObject OrchestrationDocument::build(const OrchestrationWindow& window,
             entry.insert(QStringLiteral("cvm_entropy"),
                          node->cvmEntropy().toJson());
             break;
+        // Additive for the same reason as TdbGenerator above: an older
+        // reader refuses the node outright at orchestrationTaskFromSlug.
+        case OrchestrationTask::Dump:
+            entry.insert(QStringLiteral("dump"), node->dump().toJson());
+            break;
+        // Additive too. batchItems_ (the computed elements) are NOT
+        // written here, unlike Container's own case above: they are
+        // DERIVED, recomputed fresh by populateSingleAtomContainers() on
+        // the next Send rather than carried in the document -- a saved
+        // workflow should reflect what its parent Container holds THEN,
+        // not a snapshot of what it happened to hold when last saved.
+        case OrchestrationTask::SingleAtomContainer:
+            entry.insert(QStringLiteral("single_atom_container"),
+                         node->singleAtomContainer().toJson());
+            break;
         default:
             // A node seeded with its own structure through the scripting API
             // rather than fed from a container. Rare, but it has to survive
@@ -372,6 +387,17 @@ bool OrchestrationDocument::load(OrchestrationWindow& window,
             window.setNodeCvmEntropy(
                 node, CvmEntropySpec::fromJson(
                           entry.value(QStringLiteral("cvm_entropy"))
+                              .toObject()));
+            break;
+        case OrchestrationTask::Dump:
+            window.setNodeDump(
+                node, DumpSpec::fromJson(
+                          entry.value(QStringLiteral("dump")).toObject()));
+            break;
+        case OrchestrationTask::SingleAtomContainer:
+            window.setNodeSingleAtomContainer(
+                node, SingleAtomContainerSpec::fromJson(
+                          entry.value(QStringLiteral("single_atom_container"))
                               .toObject()));
             break;
         default:

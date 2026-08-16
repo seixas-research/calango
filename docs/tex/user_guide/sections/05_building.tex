@@ -518,29 +518,58 @@ supercells this is the dominant cost; symmetry-reduced displacement sets
 are a planned improvement.
 \end{calnote}
 
-\section{Structure perturbation and noise}
+\section{Random Noise Setup}
 \label{sec:noise}
 
-\menu{Build}\menusep\menu{Structure Perturbation / Noise} adds random
-displacements --- for shaking a structure out of a symmetric saddle point,
-or for generating training ensembles for machine-learning potentials.
+\menu{Simulation}\menusep\menu{Random Noise Setup} perturbs the structure in
+the current tab into a trajectory --- for shaking a structure out of a
+symmetric saddle point, or for generating training ensembles for
+machine-learning potentials. It is a pure generator: native throughout, with
+no script and no job, since the perturbation is evaluated in process and the
+result opens immediately as a scrubbable trajectory tab.
+
+\begin{calnote}
+Evaluating the ensemble (energies, forces, \ldots) is not this dialog's job
+any more. Save the generated trajectory (\menu{File}\menusep\menu{Save
+Trajectory As\ldots} on the tab it opens) and load it into a
+\textbf{Structure Container} node on the Orchestration canvas, which fans a
+Single-point Calculation node out once per structure --- the same batch
+machinery every other multi-structure Orchestration pipeline uses. An
+earlier version of this dialog ran a single-point pass on every member
+itself; nothing about that configuration was ever saved to a project file,
+so there is no old setup to migrate.
+\end{calnote}
 
 \begin{description}
   \item[\ui{Distribution}] \ui{Gaussian (normal)} or \ui{Uniform}.
   \item[\ui{Amplitude}] Default 0.05\,\AA. For Gaussian this is $\sigma$
-    per component; for uniform it is the half-width.
-  \item[\ui{Random seed}] Default 42, for reproducibility.
+    per component; for uniform it is the half-width. With the ramp on
+    (below), this is the value the LAST frame reaches.
+  \item[\ui{Random seed}] Default 42 --- the same seed regenerates the same
+    trajectory exactly, ramp on or off.
   \item[\ui{Perturb atomic positions}] On by default.
   \item[\ui{Perturb unit cell vectors (random strain)}] Atoms follow the
     cell affinely, preserving fractional coordinates.
-  \item[\ui{Frames}] 1 perturbs in place; more generates a trajectory.
+  \item[\ui{Structures}] Default 20 (1--1000): how many displaced copies to
+    generate, on top of the always-included reference frame.
   \item[\ui{Accumulation}] \ui{Independent} draws each frame from the
     original structure; \ui{Cumulative} performs a random walk from the
     previous frame.
+  \item[\ui{Amplitude schedule}] \ui{Constant amplitude}, or \ui{Linear ramp
+    (0 $\to$ max)}.
 \end{description}
 
-A multi-frame run opens as a trajectory whose frame 0 is the unperturbed
-original, is registered in the process manager, and is checkpointed to
-\file{perturbed.extxyz} in the managed temporary directory
-(Section~\ref{sec:calango-tmp}) --- so the ensemble can be reloaded later
-and fed to the analysis or dataset tools.
+\textbf{Frame 0 is always the unperturbed structure.} With the linear ramp
+on, frame $i$ of $N$ total frames (reference plus displaced members) uses
+$i/(N-1)$ of the set amplitude --- frame 0 is already the ramp's zero-noise
+endpoint by construction, with no special case needed, and the last frame
+reaches the full amplitude. Each frame still draws its own independent
+random displacement; only the magnitude is interpolated, so the same seed
+still reproduces the same trajectory exactly. A ramped trajectory is what a
+training set for an interatomic potential usually wants: near-equilibrium
+configurations shading into the more anharmonic displacements a model needs
+to see to generalize, from one generated set.
+
+The generated trajectory opens immediately as a scrubbable tab, so the
+displacement magnitude can be judged by eye --- and regenerated with a
+different seed or amplitude --- before it is saved anywhere.

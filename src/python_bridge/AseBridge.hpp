@@ -135,6 +135,62 @@ public:
                                            double symprec, bool toPrimitive,
                                            bool idealize);
 
+    // -- Dump ("training-data writer") node ---------------------------------
+    // Deliberately not "structure conversion": these two touch ase.io the
+    // same way readStructure/writeStructure do, but the object in play is a
+    // calculator's RESULTS (energy, forces, stress), which core::Structure
+    // has no field for at all -- so there is nothing to convert THROUGH,
+    // only files to read, rename and re-write. Kept here anyway rather than
+    // a new translation unit: this class is already the one place every
+    // target that touches ASE links against, and a second one would have to
+    // be added to the same handful of CMakeLists source lists for no benefit.
+
+    /// One source file for writeDumpTrainingSet(): a completed pass's own
+    /// result file (e.g. "single_point.extxyz"), plus a label used only in
+    /// DumpWriteResult::excludedReasons.
+    struct DumpSourceFile {
+        std::string path;
+        std::string label;
+        /// Overrides the call's own `configType` for THIS frame alone;
+        /// empty means "use `configType`". See
+        /// gui::DumpSourceFrame::configTypeOverride for why this exists.
+        std::string configTypeOverride;
+    };
+
+    /// What one writeDumpTrainingSet() call did.
+    struct DumpWriteResult {
+        int framesWritten = 0;
+        int framesExcluded = 0;
+        /// One line per excluded frame: "<label>: <why>".
+        std::vector<std::string> excludedReasons;
+    };
+
+    /// Read every file in `sources`, in order, via ase.io.read, recover
+    /// whichever of energy/forces/stress its calculator reported
+    /// (get_potential_energy/get_forces/get_stress — each independently
+    /// optional; a calculator that does not implement one raises, and the
+    /// frame simply does not carry it), and write ONE combined extxyz at
+    /// `outputPath` with those properties renamed to the caller's own keys:
+    /// `energyKey` into info (scalar), `forcesKey` into arrays (per-atom,
+    /// N x 3), `stressKey` into info as ASE's own Voigt-6 (empty
+    /// `stressKey` = do not carry stress at all). `configType`, when
+    /// non-empty, is stamped into every written frame's info['config_type'].
+    ///
+    /// A source that fails to read, or that reports no energy, is EXCLUDED
+    /// unless `includeIncomplete` is set — never given a placeholder value,
+    /// which would silently teach a model a wrong number for a frame that
+    /// was never actually computed. `append` opens the ase.io writer in
+    /// append mode instead of overwriting.
+    ///
+    /// Throws std::runtime_error only for a failure that stops the WHOLE
+    /// write (e.g. an unwritable output path); a single bad source frame is
+    /// reported in the returned DumpWriteResult instead.
+    static DumpWriteResult writeDumpTrainingSet(
+        const std::vector<DumpSourceFile>& sources,
+        const std::string& outputPath, const std::string& energyKey,
+        const std::string& forcesKey, const std::string& stressKey,
+        const std::string& configType, bool includeIncomplete, bool append);
+
     /// core::Structure -> ase.Atoms (positions, symbols, cell, pbc).
     static pybind11::object toAtoms(const core::Structure& structure);
 

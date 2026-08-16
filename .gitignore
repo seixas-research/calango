@@ -74,6 +74,7 @@ build-dmg/
 build-macos-bundle/
 build-verify/
 build-warn/
+build2/
 develop-eggs/
 dist/
 downloads/

@@ -4,7 +4,10 @@
 
 #include <QJsonObject>
 #include <QList>
+#include <QPair>
 #include <QString>
+
+#include <memory>
 
 namespace calango::gui {
 
@@ -128,6 +131,49 @@ struct DefectSpec {
     static DefectSpec fromJson(const QJsonObject& object);
     static QString modeName(Mode mode);
 };
+
+/// One named structure a Container-family node hands downstream: the same
+/// pair OrchestrationNodeItem::BatchItem is, spelled out so this header does
+/// not have to include OrchestrationWindow.hpp (which includes THIS header)
+/// to name the type.
+using NamedStructure = QPair<QString, std::shared_ptr<const core::Structure>>;
+
+/// Settings of a Single-atom Container node: the box size for the isolated-
+/// atom reference cells it generates. Everything else about the operation —
+/// which elements, how many, PBC — is either derived from the incoming
+/// structures or a fixed policy stated on the node's own face.
+struct SingleAtomContainerSpec {
+    /// Side of the cubic reference cell, in Å. 10 Å is the usual choice for
+    /// an isolated-atom reference in a periodic/plane-wave code: large
+    /// enough that periodic images do not interact for any element's
+    /// interaction range, small enough that a plane-wave basis stays a
+    /// reasonable size.
+    double boxSizeAngstrom = 10.0;
+
+    bool isValid() const { return boxSizeAngstrom > 0.0; }
+    /// "10 Å box, periodic"
+    QString describe() const;
+
+    QJsonObject toJson() const;
+    static SingleAtomContainerSpec fromJson(const QJsonObject& object);
+};
+
+/// One isolated-atom structure per UNIQUE element across `sources`: a single
+/// atom of that element, centered in a periodic cubic box of
+/// `spec.boxSizeAngstrom`. Elements are returned in order of FIRST
+/// appearance across `sources` — deterministic, and readable, since it is
+/// the order the source list itself puts them in.
+///
+/// PBC is ALWAYS on. A large periodic box is the standard approach for the
+/// plane-wave/periodic codes this pipeline targets (GPAW, VASP, MACE's own
+/// training convention) — an isolated molecule in a non-periodic cell is a
+/// DIFFERENT reference energy (no k-point sampling, no plane-wave cutoff
+/// truncation error) and is not offered here; see the node's own tooltip.
+///
+/// Empty (with no error) is a valid answer for an empty `sources`: the
+/// caller decides whether "no elements found" is worth refusing over.
+QList<NamedStructure> buildSingleAtomBatch(const QList<NamedStructure>& sources,
+                                           const SingleAtomContainerSpec& spec);
 
 /// Settings of a TDB Generator node: fit a CALPHAD solution model to the
 /// formation energies an upstream ensemble produced, and write a `.tdb`.
@@ -350,6 +396,111 @@ struct CvmEntropySpec {
     QJsonObject toJson() const;
     static CvmEntropySpec fromJson(const QJsonObject& object);
 };
+
+/// Settings of a Dump node: collect every pass of an upstream fan-out's own
+/// computed structure and properties, and write them as one extended-XYZ
+/// training set (e.g. for MACE).
+///
+/// The key names are the crux of the node. An extxyz file has no fixed
+/// vocabulary for "the reference energy" — every MLIP trainer reads whichever
+/// info/array keys it is told to. The MACE preset (applyMaceTrainingPreset())
+/// writes REF_energy / REF_forces / REF_stress, matching
+/// mace.tools.default_keys.DefaultKeys as shipped in mace 0.3.15 (also
+/// mace_run_train's own --energy_key/--forces_key/--stress_key defaults) —
+/// verified against the installed package rather than assumed. Deliberately
+/// NOT the bare "energy"/"forces"/"stress" ASE itself uses for a live
+/// calculator's results: MACE's own data loader refuses stress_key="stress"
+/// outright, warning that since ASE 3.23.0b1 the bare key is not safe to
+/// round-trip between ASE and MACE, and names this exact REF_ prefix as the
+/// fix.
+struct DumpSpec {
+    /// Where the aggregate file is written. No default: unlike a Supercell's
+    /// 2x2x2, there is no path a Dump node could guess that would not be a
+    /// claim about the user's filesystem.
+    QString outputPath;
+    /// Written into every frame's info[energyKey] (a scalar). ASE's own
+    /// "energy" by default — deliberately not MACE-safe until the preset is
+    /// applied, so a freshly added node's defaults describe plain ASE
+    /// results rather than silently claiming a MACE convention nobody chose.
+    QString energyKey = QStringLiteral("energy");
+    /// Written into every frame's arrays[forcesKey] (N x 3, per atom).
+    QString forcesKey = QStringLiteral("forces");
+    /// Written into every frame's info[stressKey] as ASE's own Voigt-6.
+    /// Empty = do not carry stress at all, which is the honest choice when
+    /// nothing upstream computed one.
+    QString stressKey;
+    /// Free-form; stamped into every frame's info['config_type'] when
+    /// non-empty. Left empty, no such key is written.
+    QString configType;
+    /// A pass whose energy could not be recovered (the calculation failed,
+    /// or its result file is missing/unreadable) is dropped rather than
+    /// given a placeholder value — a written zero would silently teach a
+    /// model a wrong number. Checking this includes such passes anyway,
+    /// wherever they still carry SOME usable properties.
+    bool includeFailedFrames = false;
+    /// Append to an existing file instead of overwriting it.
+    bool appendToExistingFile = false;
+
+    bool isValid() const
+    {
+        return !outputPath.isEmpty() && !energyKey.isEmpty()
+            && !forcesKey.isEmpty();
+    }
+    /// "energy/forces -> training.extxyz" or, with a stress key set,
+    /// "REF_energy/REF_forces/REF_stress -> training.extxyz".
+    QString describe() const;
+
+    QJsonObject toJson() const;
+    static DumpSpec fromJson(const QJsonObject& object);
+};
+
+/// Fill `spec`'s key names with mace 0.3.15's own defaults
+/// (mace.tools.default_keys.DefaultKeys) — the "MACE training" preset
+/// button. Leaves outputPath, configType and the two checkboxes untouched.
+void applyMaceTrainingPreset(DumpSpec* spec);
+
+/// One completed pass a Dump node reads from its parent's own results.
+struct DumpSourceFrame {
+    /// The parent's result file for this pass (e.g.
+    /// ".../job_003/single_point.extxyz") — already resolved by the caller,
+    /// since which filename carries a calculator's results depends on the
+    /// parent's task (Single-Point, Geometry Optimization, ...).
+    QString path;
+    /// "pass 3 (Al)" — names this frame in the excluded-reasons report and
+    /// nowhere else.
+    QString label;
+    /// Overrides DumpSpec::configType for THIS frame alone; empty means "use
+    /// the spec's own value". The one caller today is a Single-atom
+    /// Container's downstream: MACE's own data loader recognizes
+    /// info['config_type'] == "IsolatedAtom" (verified against the
+    /// installed package) to auto-extract E0s and exclude the frame from
+    /// ordinary training — a convention the frame's ORIGIN decides, not
+    /// whatever free-form tag the rest of the file happens to be using.
+    QString configTypeOverride;
+};
+
+/// What a Dump node wrote (and could not write) on one run.
+struct DumpOutput {
+    int framesWritten = 0;
+    int framesExcluded = 0;
+    /// One line per excluded frame, capped by the caller for display but
+    /// kept in full for the summary JSON.
+    QStringList excludedReasons;
+    /// "97 frames written to training.extxyz (3 excluded)"
+    QString headline;
+};
+
+/// Read every frame in `sources`, in order, and write ONE combined extxyz at
+/// `spec.outputPath` under `spec`'s chosen key names.
+///
+/// The one place a Dump node touches ase.io — see
+/// pybridge::AseBridge::writeDumpTrainingSet(), which does the actual
+/// reading and renaming. `false` (with `*error` set) only for a failure that
+/// stops the WHOLE write (an unwritable output path); a single bad source
+/// frame is reported in the returned DumpOutput instead; it is not a failure
+/// of the node.
+bool runDump(const QList<DumpSourceFrame>& sources, const DumpSpec& spec,
+            DumpOutput* output, QString* error);
 
 /// One defective material produced by a Defect Generator.
 struct DefectVariant {

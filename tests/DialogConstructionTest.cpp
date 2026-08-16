@@ -712,14 +712,14 @@ int main(int argc, char** argv)
         }
     }
 
-    // The Random Noise wizard is the only four-stage flow built on the shared
-    // base (settings, calculator, second settings, review), and it generates
-    // its ensemble from a button on stage 1 rather than on OK — so both the
-    // stage assembly and the generate-then-run path are worth a construction
-    // check.
-    std::printf("Random Noise wizard:\n");
+    // The Random Noise dialog is a pure in-process generator (no script, no
+    // job) that publishes its ensemble from a button rather than on OK — the
+    // construction check is that the button works and the ensemble it
+    // publishes has the shape callers rely on: frame 0 untouched, later
+    // frames displaced, and — with the linear ramp on — displacement growing
+    // monotonically from frame to frame.
+    std::printf("Random Noise dialog:\n");
     {
-        calango::pybridge::PythonEngine python;
         auto reference = std::make_shared<calango::core::Structure>();
         reference->setCell(calango::core::UnitCell({4, 0, 0}, {0, 4, 0},
                                                    {0, 0, 4}));
@@ -777,8 +777,49 @@ int main(int argc, char** argv)
                 check(differs, "and the other frames are actually displaced");
             }
         }
-        check(!wizard.script().isEmpty(),
-              "the review stage has a script to show");
+
+        // Linear ramp: find the schedule combo, switch it to "Linear ramp",
+        // regenerate, and check the black-box shape the wizard-level feature
+        // promises: frame 0 exactly unperturbed, and the last (full-
+        // amplitude) frame displaced well past the first (smallest-
+        // amplitude) perturbed frame. Comparing only the two endpoints —
+        // rather than every adjacent pair — is deliberate: each frame draws
+        // its own INDEPENDENT random displacement, so with 20 ramped frames
+        // (a ~5% amplitude step apart) a strict pairwise comparison would be
+        // a coin flip at points and flake; the exact per-frame FORMULA is
+        // pinned deterministically in NoiseTest.cpp instead, where no
+        // randomness is involved. The ~20x amplitude gap between the first
+        // and last ramped frame here is not.
+        const auto combos = wizard.findChildren<QComboBox*>();
+        const auto rampCombo = std::find_if(
+            combos.begin(), combos.end(), [](const QComboBox* combo) {
+                return combo->count() == 2
+                    && combo->itemText(1).contains(QStringLiteral("ramp"));
+            });
+        check(rampCombo != combos.end(), "offers an amplitude-schedule combo");
+        if (rampCombo != combos.end()) {
+            (*rampCombo)->setCurrentIndex(1);
+            generated = 0;
+            (*generate)->click();
+            check(generated > 2, "the ramped ensemble still generates");
+
+            const auto rms = [&](std::size_t index) {
+                const auto& frame = wizard.frames()[index]->atoms();
+                const auto& source = reference->atoms();
+                double sum = 0.0;
+                for (std::size_t i = 0; i < frame.size(); ++i)
+                    sum += (frame[i].position - source[i].position).norm();
+                return sum;
+            };
+            if (wizard.frames().size() >= 3) {
+                check(rms(0) < 1e-12,
+                      "ramped frame 0 is still exactly the unperturbed "
+                      "reference — the ramp's zero-noise endpoint");
+                check(rms(wizard.frames().size() - 1) > 3.0 * rms(1),
+                      "and the full-amplitude last frame is displaced well "
+                      "past the smallest-amplitude first perturbed frame");
+            }
+        }
     }
 
     // The Cutoff Convergence wizard restricts the engine combo to GPAW and

@@ -7776,32 +7776,30 @@ void MainWindow::addRandomNoise()
     const QString baseName = doc->fileName;
 
     RandomNoiseWizard wizard(doc->structure, this);
-    // The ensemble is generated DURING the wizard, so it is captured as it
-    // arrives rather than read back after exec() — stageJob() consumes
-    // stagedEnsembleFrames_ as configs.extxyz, which is what the generated
-    // script reads.
+    // The ensemble is a pure in-process generator now (no script, no job) —
+    // it is captured live, as each generation arrives, rather than read back
+    // after exec(). Saving it to a file (File → Save Trajectory As… on the
+    // tab this opens) and evaluating it lives in Orchestration's Structure
+    // Container node from here on.
     connect(&wizard, &RandomNoiseWizard::structuresGenerated, this,
             [this, baseName](
                 const std::vector<std::shared_ptr<core::Structure>>& frames) {
-                stagedEnsembleFrames_ = frames;
                 if (frames.empty())
                     return;
                 // Open it as a scrubbable trajectory, so the displacement can
-                // be judged by eye before any compute time is spent on it.
+                // be judged by eye — and saved — before it goes anywhere else.
                 addTrajectoryDocument(frames,
                                       tr("%1 (noise ×%2)")
                                           .arg(baseName)
                                           .arg(frames.size() - 1));
                 statusBar()->showMessage(
-                    tr("Generated %1 perturbed structures — scrub the new tab.")
+                    tr("Generated %1 perturbed structures — scrub the new "
+                       "tab, then File → Save Trajectory As… to evaluate it "
+                       "in Orchestration.")
                         .arg(frames.size() - 1));
             });
 
-    runSimulationWizard(wizard, tr("Random Noise Single-point"),
-                        /*expectFrames=*/false);
-    // Not consumed (the user cancelled) — do not leak the staging into the
-    // next unrelated job.
-    stagedEnsembleFrames_.clear();
+    wizard.exec();
 }
 
 void MainWindow::openExamplesBrowser()
@@ -7997,9 +7995,11 @@ std::unique_ptr<SimulationWizardBase> makeOrchestrationWizard(
             request.structure);
 
     case OrchestrationTask::Container:
+    case OrchestrationTask::SingleAtomContainer:
     case OrchestrationTask::Supercell:
     case OrchestrationTask::DefectGenerator:
     case OrchestrationTask::TdbGenerator:
+    case OrchestrationTask::Dump:
     case OrchestrationTask::SqsGenerator:
     case OrchestrationTask::ClusterExpansionFit:
     case OrchestrationTask::CvmEntropy:
@@ -8032,6 +8032,41 @@ OrchestrationWindow* MainWindow::createOrchestrationPanel(QWidget* parent)
                 materials.append({doc->fileName, doc->structure});
         return materials;
     };
+    // One list row per open tab, even a multi-frame trajectory one -- the
+    // row names doc->structure, the tab's current/first frame, only. What
+    // "Add Open Document…" actually ADDS for a picked row is a SEPARATE
+    // question, answered by this: for a plain structure, itself; for a
+    // multi-frame trajectory tab (Random Noise Setup's generated ensemble,
+    // an opened .traj/multi-image .extxyz, ...), every one of its frames,
+    // named `<tab> #n` -- the same "one entry per frame, not just the
+    // first" contract OrchestrationWindow::readStructuresFromFile() already
+    // gives a multi-frame FILE import, reached with one list pick instead
+    // of the picker offering all 100 frames as 100 separate rows to click
+    // through one at a time. frames.size() < 2 is the same "not really a
+    // trajectory" threshold saveTrajectoryAs() uses. Matched by STRUCTURE
+    // POINTER, not name: two tabs can share a display name, and the pointer
+    // is exactly what a MaterialList row already carries.
+    const auto framesFor =
+        [this](const std::shared_ptr<const core::Structure>& structure) {
+            QList<OrchestrationNodeItem::BatchItem> items;
+            for (const auto& doc : documents_) {
+                if (!doc || doc->structure != structure)
+                    continue;
+                if (doc->frames.size() >= 2) {
+                    for (std::size_t i = 0; i < doc->frames.size(); ++i)
+                        if (doc->frames[i] && !doc->frames[i]->empty())
+                            items.append(
+                                {tr("%1 #%2").arg(doc->fileName).arg(i + 1),
+                                 doc->frames[i]});
+                } else {
+                    items.append({doc->fileName, doc->structure});
+                }
+                break;
+            }
+            if (items.isEmpty())
+                items.append({QString(), structure});
+            return items;
+        };
     // The global Processes panel rides along: every dispatched node shows
     // up there (Queued → Running → Completed/Failed) with its directory, so
     // "Load Result" works on orchestration jobs like on any wizard run.
@@ -8040,6 +8075,7 @@ OrchestrationWindow* MainWindow::createOrchestrationPanel(QWidget* parent)
         [this](core::CalculatorKind kind) { return pythonForEngine(kind); },
         processPanel_, parent);
     window->setMaterialsProvider(materialsNow);
+    window->setFramesProvider(framesFor);
     window->setWizardFactory(&makeOrchestrationWizard);
     // Filling a Structure Container from the database. A dedicated picker,
     // not ExamplesDialog: that one exists to open documents in TABS, so its

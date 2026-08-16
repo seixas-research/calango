@@ -22,4 +22,29 @@ struct NoiseOptions {
 
 void applyRandomNoise(Structure& structure, const NoiseOptions& options);
 
+/// Linear-ramp amplitude scale for ensemble member `memberIndex` (1-based:
+/// 1..count) of a `count`-member noisy ensemble.
+///
+/// The ensemble's frame 0 is always the untouched reference (never passed
+/// through applyRandomNoise at all), so it is already exactly the "zero
+/// noise" endpoint of the ramp without needing a special case here — this
+/// function only has to place the `count` PERTURBED members between it and
+/// the full-amplitude endpoint. For a trajectory of N = count + 1 total
+/// frames, member `memberIndex` is frame `memberIndex`, and the requested
+/// law "frame i of N gets amplitude i/(N-1)" becomes
+/// memberIndex / (N - 1) = memberIndex / count — which is what this returns.
+///
+/// `count` is always >= 1 in the wizard (the spin box's minimum), so the
+/// division never sees count == 0; the defensive fallback below exists only
+/// for callers outside that guarantee, and returns full amplitude rather
+/// than dividing by zero. At count == 1 the single perturbed member gets
+/// memberIndex/count == 1/1 == full amplitude — exactly the two-frame edge
+/// case "first frame zero noise, last (only) member full amplitude" the
+/// ramp is specified to produce, with no separate N == 1 branch needed.
+constexpr double rampAmplitudeFactor(int memberIndex, int count)
+{
+    return count > 0 ? static_cast<double>(memberIndex) / static_cast<double>(count)
+                     : 1.0;
+}
+
 } // namespace calango::core

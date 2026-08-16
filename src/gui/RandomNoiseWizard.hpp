@@ -1,9 +1,9 @@
 #pragma once
 
 #include "core/Noise.hpp"
-#include "core/RandomNoiseScriptGenerator.hpp"
 #include "core/Structure.hpp"
-#include "gui/GpawElectronicWizard.hpp"
+
+#include <QDialog>
 
 #include <memory>
 #include <vector>
@@ -11,34 +11,35 @@
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
-class QFormLayout;
 class QLabel;
 class QPushButton;
 class QSpinBox;
 
 namespace calango::gui {
 
-/// Simulation → "Random Noise Setup…": generate a randomly-perturbed ensemble
-/// and run a single point on every member of it.
+/// Simulation → "Random Noise Setup…": generate a randomly-perturbed
+/// trajectory from a reference structure.
 ///
-/// This replaces the old Build → "Structure Perturbation / Noise…" dialog,
-/// which stopped at generation. That was the wrong place to stop: nobody
-/// displaces a structure for its own sake. The perturbation exists to sample
-/// the potential-energy surface around a geometry — to check that a relaxed
-/// structure is really in a well, to measure how steep that well is, or to
-/// build training data for a machine-learned potential — and every one of
-/// those needs energies, which meant leaving the dialog, finding the new tab
-/// and starting a Single-point wizard by hand. Making it a wizard closes that
-/// loop, and moves it to the Simulation menu where the thing it produces (a
-/// job) actually lives.
+/// A pure generator, native throughout — like BerryPhaseDialog, there is no
+/// script and no job, because there is nothing to run: the perturbation is
+/// evaluated in process (core::applyRandomNoise) and the result is a
+/// trajectory of frame 0 (the untouched reference) followed by `count`
+/// displaced copies, previewed live as a scrubbable tab the moment
+/// "Generate structures" is pressed.
 ///
-/// Four stages:
-///   1. Random Noise            — the displacement, with Generate structures
-///                                and Run simulation
-///   2. Calculator & Convergence Settings — the standard engine page
-///   3. Single-point Adjustments — what each evaluation records
-///   4. ASE Script Review
-class RandomNoiseWizard : public GpawElectronicWizard {
+/// Evaluating the ensemble's energies (or forces, or anything else a
+/// calculator produces) is deliberately NOT this dialog's job any more: save
+/// the generated trajectory (File → Save Trajectory As…) and load it into an
+/// Orchestration "Structure Container" node, which fans a Single-point
+/// Calculation node out once per structure — the batch machinery already
+/// built for exactly this shape of workflow, rather than a second,
+/// wizard-embedded copy of it. A prior version of this dialog DID embed a
+/// single-point run per member (RandomNoiseScriptGenerator, since removed);
+/// nothing about that configuration was ever persisted to a project file or
+/// QSettings, so there is no old data to migrate here — only, potentially, a
+/// completed job directory's `random_noise.json` from before this change,
+/// which RandomNoiseViewer still reads unmodified.
+class RandomNoiseWizard : public QDialog {
     Q_OBJECT
 
 public:
@@ -48,8 +49,9 @@ public:
                                QWidget* parent = nullptr);
 
     /// The generated ensemble — frame 0 is the unperturbed reference, so the
-    /// energy distribution has something to be a distribution AROUND. Empty
-    /// until "Generate structures" has been pressed.
+    /// energy distribution (once evaluated downstream) has something to be a
+    /// distribution AROUND. Empty until "Generate structures" has been
+    /// pressed.
     const std::vector<std::shared_ptr<core::Structure>>& frames() const
     {
         return frames_;
@@ -57,39 +59,9 @@ public:
 
 Q_SIGNALS:
     /// A fresh ensemble was generated. The host previews it as a scrubbable
-    /// trajectory and stages it for the job.
+    /// trajectory.
     void structuresGenerated(
         const std::vector<std::shared_ptr<core::Structure>>& frames);
-
-protected:
-    QString wizardTitle() const override;
-    QString settingsHeader() const override { return tr("Random Noise"); }
-    QWidget* buildSettingsPage() override;
-    QString calculatorSettingsHeader() const override
-    {
-        return tr("Calculator & Convergence Settings");
-    }
-    /// The optional third stage. Non-empty enables it, giving the four-stage
-    /// flow described above.
-    QString secondSettingsHeader() const override
-    {
-        return tr("Single-point Adjustments");
-    }
-    QWidget* buildSecondSettingsPage() override;
-
-    QStringList calculatorElements() const override;
-
-    QString generateScript() const override;
-    QString exportFileName() const override
-    {
-        return QStringLiteral("random_noise.py");
-    }
-
-    /// Generate the ensemble first if the user advanced with Next instead of
-    /// pressing the button. Without this the job would stage no configs.extxyz
-    /// and the script would die on its first read() — a failure that belongs
-    /// to the wizard, not to the run.
-    void goNext() override;
 
 private Q_SLOTS:
     /// Build the ensemble from the current settings and publish it.
@@ -97,9 +69,9 @@ private Q_SLOTS:
 
 private:
     core::NoiseOptions noiseOptions() const;
-    core::RandomNoiseRunConfig runConfig() const;
-    /// Enable "Run simulation" only once there is something to run on, and
-    /// keep the status line honest about what has been generated.
+    /// Enable "Generate structures" only once there is a structure to
+    /// perturb, and keep the status line honest about what has been
+    /// generated.
     void updateGenerationState();
 
     std::shared_ptr<const core::Structure> reference_;
@@ -112,14 +84,11 @@ private:
     QCheckBox* cellCheck_ = nullptr;
     QSpinBox* countSpin_ = nullptr;
     QComboBox* accumulationCombo_ = nullptr;
+    /// Constant amplitude (today's behaviour, index 0) vs. a linear ramp from
+    /// zero at frame 0 to the full set amplitude at the last frame (index 1).
+    QComboBox* rampCombo_ = nullptr;
     QPushButton* generateButton_ = nullptr;
-    QPushButton* runButton_ = nullptr;
     QLabel* generationStatus_ = nullptr;
-
-    QCheckBox* forcesCheck_ = nullptr;
-    QCheckBox* stressCheck_ = nullptr;
-    QCheckBox* continueCheck_ = nullptr;
-
 };
 
 } // namespace calango::gui

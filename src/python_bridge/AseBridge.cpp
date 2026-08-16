@@ -637,4 +637,118 @@ core::Structure AseBridge::makeSupercellMatrix(const core::Structure& structure,
     }
 }
 
+AseBridge::DumpWriteResult AseBridge::writeDumpTrainingSet(
+    const std::vector<DumpSourceFile>& sources, const std::string& outputPath,
+    const std::string& energyKey, const std::string& forcesKey,
+    const std::string& stressKey, const std::string& configType,
+    bool includeIncomplete, bool append)
+{
+    DumpWriteResult result;
+    try {
+        const py::module_ aseIo = py::module_::import("ase.io");
+        py::list images;
+
+        for (const DumpSourceFile& source : sources) {
+            py::object atoms;
+            try {
+                atoms = aseIo.attr("read")(source.path);
+            } catch (const py::error_already_set&) {
+                ++result.framesExcluded;
+                result.excludedReasons.push_back(
+                    source.label + ": its result file could not be read");
+                continue;
+            }
+
+            // Each property is independently optional: a calculator that
+            // never computed one raises, and that one property is simply
+            // absent from this frame rather than aborting it. Energy is the
+            // one every MLIP frame needs, so it alone decides inclusion.
+            bool hasEnergy = false;
+            double energy = 0.0;
+            try {
+                energy = atoms.attr("get_potential_energy")().cast<double>();
+                hasEnergy = true;
+            } catch (const py::error_already_set&) {
+            }
+
+            if (!hasEnergy && !includeIncomplete) {
+                ++result.framesExcluded;
+                result.excludedReasons.push_back(
+                    source.label + ": no energy was reported");
+                continue;
+            }
+
+            py::object forces;
+            bool hasForces = false;
+            try {
+                forces = atoms.attr("get_forces")();
+                hasForces = true;
+            } catch (const py::error_already_set&) {
+            }
+
+            py::object stress;
+            bool hasStress = false;
+            if (!stressKey.empty()) {
+                try {
+                    stress = atoms.attr("get_stress")();
+                    hasStress = true;
+                } catch (const py::error_already_set&) {
+                }
+            }
+
+            // Every property this function needs has now been read FROM the
+            // attached calculator, so the calculator itself is detached here
+            // -- before anything is written into atoms.info below. Left
+            // attached, ase.io.write(..., format="extxyz") auto-saves the
+            // calculator's OWN results into atoms.info/atoms.arrays under
+            // the SAME bare property names ("energy", "forces", "stress", …
+            // -- extxyz always uses calc_prefix="", regardless of the
+            // calculator's class) and raises KeyError the moment any of
+            // those keys is already present -- which happens for EVERY
+            // frame whenever energyKey/forcesKey/stressKey are left at
+            // their plain, non-MACE-preset defaults ("energy"/"forces"),
+            // since that is exactly the bare name ASE's own auto-save also
+            // wants. Detaching leaves ase.io.write nothing left to
+            // auto-save, so this function's own explicit writes below are
+            // the only ones that happen, regardless of which key names were
+            // chosen. Verified against ase.io.extxyz.write_xyz /
+            // save_calc_results (installed ASE, not assumed).
+            atoms.attr("calc") = py::none();
+
+            // atoms.info is a plain dict attribute -- this mutates the SAME
+            // object ase.io.write below serializes, not a copy.
+            const py::dict info = atoms.attr("info");
+            if (hasEnergy)
+                info[py::str(energyKey)] = energy;
+            if (hasStress)
+                info[py::str(stressKey)] = stress;
+            // The frame's own override wins over the call's blanket
+            // configType -- an isolated-atom reference is tagged
+            // "IsolatedAtom" regardless of what the rest of the file uses.
+            const std::string& effectiveConfigType =
+                source.configTypeOverride.empty() ? configType
+                                                   : source.configTypeOverride;
+            if (!effectiveConfigType.empty())
+                info[py::str("config_type")] = effectiveConfigType;
+            // Per-atom, so it goes into arrays rather than info — new_array
+            // both creates the column and validates its length against the
+            // atom count.
+            if (hasForces)
+                atoms.attr("new_array")(forcesKey, forces);
+
+            images.append(atoms);
+            ++result.framesWritten;
+        }
+
+        if (result.framesWritten > 0) {
+            aseIo.attr("write")(outputPath, images,
+                                py::arg("format") = "extxyz",
+                                py::arg("append") = append);
+        }
+    } catch (const py::error_already_set& e) {
+        rethrow(e, "Failed to write training set '" + outputPath + "'");
+    }
+    return result;
+}
+
 } // namespace calango::pybridge

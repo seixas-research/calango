@@ -35,10 +35,13 @@
 #include "gui/OrchestrationDocument.hpp"
 #include "core/WorkflowReport.hpp"
 #include "gui/OrchestrationWindow.hpp"
+#include "gui/RandomNoiseWizard.hpp"
 #include "gui/SettingsManager.hpp"
+#include "python_bridge/AseBridge.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
 #include <QApplication>
+#include <QComboBox>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -46,11 +49,16 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QPushButton>
 #include <QSettings>
+#include <QSpinBox>
 #include <QTemporaryDir>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
+#include <map>
 #include <memory>
 
 namespace {
@@ -93,6 +101,23 @@ std::shared_ptr<calango::core::Structure> fcc(int z, double a)
         atom.position = {a * site[0], a * site[1], a * site[2]};
         structure->addAtom(atom);
     }
+    return structure;
+}
+
+/// fcc PRIMITIVE cell of `z` with conventional lattice constant `a` (1 atom;
+/// a 3x3x3 repeat of this is the reported bug's exact 27-atom Au supercell).
+std::shared_ptr<calango::core::Structure> fccPrimitive(int z, double a)
+{
+    using calango::core::Atom;
+    using calango::core::Structure;
+    using calango::core::UnitCell;
+    auto structure = std::make_shared<Structure>();
+    structure->setCell(UnitCell({0.0, a / 2, a / 2}, {a / 2, 0.0, a / 2},
+                                {a / 2, a / 2, 0.0}));
+    Atom atom;
+    atom.atomicNumber = z;
+    atom.position = {0.0, 0.0, 0.0};
+    structure->addAtom(atom);
     return structure;
 }
 
@@ -198,8 +223,10 @@ int main(int argc, char** argv)
         }
     }
 
+    using calango::gui::applyMaceTrainingPreset;
     using calango::gui::DefectOperation;
     using calango::gui::DefectSpec;
+    using calango::gui::DumpSpec;
     using calango::gui::OrchestrationNodeItem;
     using calango::gui::OrchestrationTask;
     using calango::gui::OrchestrationWindow;
@@ -418,6 +445,108 @@ int main(int argc, char** argv)
                   && batch.value(QStringLiteral("label")).toString()
                       == QStringLiteral("Au"),
               "the second pass's record says it is item 2 of 3, \"Au\"");
+    }
+
+    // ---- Scenario 2b: one bad structure mid-batch must not swallow the rest -
+    //
+    // The reported symptom read as "only ONE structure came out with a
+    // computed energy, expected 100" -- exactly what a batch would look like
+    // if a SINGLE failing pass (a heavily-displaced structure from a noise
+    // ramp, say, crashing the calculator) stopped the whole fan-out instead
+    // of being recorded as failed while the rest of the odometer kept
+    // advancing. Nothing above exercises this: every EMT/MACE pass in every
+    // other scenario in this file succeeds, so a regression that aborts the
+    // batch on the FIRST failure -- rather than re-queuing the container and
+    // continuing -- would pass every other check here and still reproduce
+    // the report on a real, occasionally-flaky calculator. This pins that a
+    // mid-batch failure is contained to its own pass.
+    std::printf("Batch fan-out survives one failing pass mid-batch:\n");
+    QSettings().setValue(
+        QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+        sandbox.path() + QStringLiteral("/simulations_batch_failure"));
+    {
+        OrchestrationWindow window(materials, pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        OrchestrationNodeItem* container = window.addProcessNode(
+            OrchestrationTask::Container, 0, calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* probe = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(container, probe);
+
+        constexpr int kTotal = 10;
+        constexpr int kPoisoned = 4; // zero-based: the 5th of 10 passes
+        QList<OrchestrationNodeItem::BatchItem> items;
+        for (int i = 0; i < kTotal; ++i)
+            items.append({QStringLiteral("item %1").arg(i + 1),
+                         i == kPoisoned
+                             ? fcc(47, 4.09)  // Ag marks "this one crashes"
+                             : fcc(29, 3.61)});
+        window.setNodeBatchItems(container, items);
+        // Fails deterministically on whichever pass carries the marked
+        // (Ag) structure -- standing in for the structure that makes a
+        // real calculator (SCF, geometry, whatever) legitimately die,
+        // rather than an artificial "raise on attempt N" counter that
+        // would not exercise the same content-driven code path Container
+        // actually uses each pass.
+        window.configureNode(
+            probe,
+            QStringLiteral(
+                "import pathlib, json\n"
+                "lines = pathlib.Path('structure.extxyz').read_text()."
+                "splitlines()\n"
+                "symbols = sorted({l.split()[0] for l in lines[2:] if "
+                "l.strip()})\n"
+                "if 'Ag' in symbols:\n"
+                "    raise SystemExit('deliberate failure: this pass is "
+                "the poisoned structure')\n"
+                "json.dump({'natoms': int(lines[0]), 'symbols': symbols},\n"
+                "          open('probe.json', 'w'))\n"
+                "json.dump({'metrics': [{'step': 1, 'energy': -4.5,\n"
+                "                        'max_force': 0.31}]},\n"
+                "          open('metrics.json', 'w'))\n"
+                "print('CALANGO_DONE', flush=True)\n"),
+            pythonExe, QString(), calango::core::CalculatorKind::EMT);
+
+        window.sendToProcesses();
+        check(window.batchLength() == kTotal,
+              "ten structures in the container means ten passes");
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < 180000
+               && !(probe->jobHistory().size() >= kTotal && terminal(probe)))
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        for (int turn = 0; turn < 20; ++turn)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+
+        check(refusals.isEmpty(),
+              "the failing pass is a job failure, not a refusal -- the run "
+              "is never stopped outright by it");
+        check(probe->jobHistory().size() == kTotal,
+              "all ten passes were attempted -- the failure on pass 5 did "
+              "not truncate the batch to just the passes before it");
+        check(container->jobHistory().size() == kTotal,
+              "and the container emitted all ten items, not just the one "
+              "before the failure");
+
+        int done = 0;
+        int failed = 0;
+        for (const QString& dir : probe->jobHistory()) {
+            if (QFile::exists(dir + QStringLiteral("/probe.json")))
+                ++done;
+            else
+                ++failed;
+        }
+        check(done == kTotal - 1 && failed == 1,
+              "nine passes completed and exactly the poisoned one failed -- "
+              "not \"one succeeded and the rest never ran\"");
+        check(probe->status() == OrchestrationNodeItem::Status::Done,
+              "the LAST pass (item 10, not poisoned) still completed, so "
+              "the run's final on-canvas status is Done rather than stuck "
+              "on the mid-batch failure");
     }
 
     // ---- Scenario 3: resume strictly from the failed node -------------------
@@ -1263,6 +1392,1071 @@ int main(int argc, char** argv)
         check(QFile::exists(window.orchestrationRoot()
                             + QStringLiteral("/workflow_report.txt")),
               "with a plain-text twin for a terminal");
+    }
+
+    // ---- End-to-end: Random Noise (ramp) -> Structure Container ->
+    // Single-point (EMT) ------------------------------------------------------
+    //
+    // The intended workflow this pair of features exists for: a noisy
+    // trajectory generated with the linear ramp on, saved to a real file,
+    // loaded into a Structure Container, and evaluated one EMT single-point
+    // per structure through the same batch fan-out Scenario 2 exercises
+    // above -- but here driven end to end from the real RandomNoiseWizard
+    // rather than a hand-built ensemble, loaded through the real
+    // readStructuresFromFile() rather than setNodeBatchItems() directly, and
+    // evaluated with a real AseScriptGenerator single-point script rather
+    // than the synthetic probe.
+    std::printf("End-to-end: Random Noise ramp -> Structure Container -> "
+                "Single-point (EMT):\n");
+    QSettings().setValue(
+        QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+        sandbox.path() + QStringLiteral("/simulations_e2e"));
+    {
+        using calango::gui::RandomNoiseWizard;
+
+        // 1. Generate the ramped trajectory through the real wizard.
+        auto reference = fcc(29, 3.61); // Cu
+        RandomNoiseWizard wizard(reference);
+        const auto combos = wizard.findChildren<QComboBox*>();
+        const auto rampCombo = std::find_if(
+            combos.begin(), combos.end(), [](const QComboBox* combo) {
+                return combo->count() == 2
+                    && combo->itemText(1).contains(QStringLiteral("ramp"));
+            });
+        check(rampCombo != combos.end(), "the ramp combo is findable");
+        if (rampCombo != combos.end())
+            (*rampCombo)->setCurrentIndex(1);
+        const auto spinBoxes = wizard.findChildren<QSpinBox*>();
+        for (QSpinBox* spin : spinBoxes)
+            if (spin->maximum() == 1000) // countSpin_'s range is (1, 1000)
+                spin->setValue(99);      // 99 perturbed + 1 reference = 100 frames
+        const auto generateButtons = wizard.findChildren<QPushButton*>();
+        const auto generate = std::find_if(
+            generateButtons.begin(), generateButtons.end(),
+            [](const QPushButton* button) {
+                return button->text().contains(QStringLiteral("Generate"));
+            });
+        check(generate != generateButtons.end(),
+              "the Generate button is findable");
+        if (generate != generateButtons.end())
+            (*generate)->click();
+        const int frameCount = static_cast<int>(wizard.frames().size());
+        check(frameCount == 100, "99 perturbed + the always-included "
+                                 "reference frame is 100 structures total "
+                                 "-- the reported bug's exact scale");
+
+        // 2. Save it to a real trajectory file -- the Task 2 deliverable --
+        // exactly what File -> Save Trajectory As... would write.
+        const QString trajectoryPath =
+            sandbox.path() + QStringLiteral("/noisy_cu.extxyz");
+        calango::pybridge::AseBridge::writeTrajectory(
+            wizard.frames(), trajectoryPath.toStdString(), "extxyz");
+        check(QFile::exists(trajectoryPath),
+              "the generated ensemble is written to disk as a real "
+              "trajectory file");
+
+        // 3. Load it into a Structure Container -- the exact production code
+        // path behind the "Import from File..." button.
+        QString importError;
+        const auto items = OrchestrationWindow::readStructuresFromFile(
+            trajectoryPath, &importError);
+        check(importError.isEmpty(), "the file reads back with no error");
+        check(items.size() == frameCount,
+              "and splits into one item per structure in the trajectory");
+
+        OrchestrationWindow window(materials, pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+        OrchestrationNodeItem* container = window.addProcessNode(
+            OrchestrationTask::Container, 0, calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* singlePoint = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(container, singlePoint);
+        window.setNodeBatchItems(container, items);
+
+        // 4. A REAL single-point script -- not the synthetic probe -- so the
+        // per-frame result really is an EMT energy.
+        calango::core::CalculatorConfig config;
+        config.calculator = calango::core::CalculatorKind::EMT;
+        config.task = calango::core::TaskKind::SinglePoint;
+        const QString script = QString::fromStdString(
+            calango::core::AseScriptGenerator::generate(config,
+                                                         "structure.extxyz"));
+        window.configureNode(singlePoint, script, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+
+        calango::core::WorkflowReport delivered;
+        int finishedSignals = 0;
+        QObject::connect(&window, &OrchestrationWindow::runFinished,
+                         [&](const calango::core::WorkflowReport& report) {
+                             delivered = report;
+                             ++finishedSignals;
+                         });
+
+        window.sendToProcesses();
+        check(window.batchLength() == frameCount,
+              "N structures in means N passes -- the fan-out this whole "
+              "feature exists for");
+        settle(singlePoint, 180000);
+        QElapsedTimer e2eTimer;
+        e2eTimer.start();
+        while (finishedSignals == 0 && e2eTimer.elapsed() < 30000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+
+        check(refusals.isEmpty(), "nothing was refused");
+        check(finishedSignals == 1, "the run reports itself exactly once");
+        check(delivered.batchTotal == frameCount,
+              "the report knows it was an N-pass run");
+        check(delivered.allSucceeded(),
+              "N structures in, N completed single-points out -- no failure "
+              "anywhere in the batch");
+
+        // 4b. UI VISIBILITY, the reported bug's other half: a batch re-
+        // queues status_ fresh every pass, so by the time the run ends the
+        // canvas node's own status only ever reflects the LAST pass -- with
+        // no per-node progress counter, a 100-pass run and a 1-pass run
+        // looked identical on the canvas, which is exactly how "did the
+        // fan-out even run 100 times" became unanswerable by looking at it.
+        check(container->batchProgressTotal() == frameCount
+                  && container->batchProgressDone() == frameCount,
+              "the container itself shows its own pass count as complete");
+        check(singlePoint->batchProgressTotal() == frameCount
+                  && singlePoint->batchProgressDone() == frameCount,
+              "and the fan-out node shows N/N done, not just a single "
+              "done/failed status with no count -- this is the on-canvas "
+              "signal a user reads without opening the workflow report");
+
+        // 5. Energies retrievable per frame.
+        int framesWithEnergy = 0;
+        double frame0Energy = 0.0;
+        bool haveFrame0Energy = false;
+        for (const auto& outcome : delivered.outcomes) {
+            if (outcome.nodeId != singlePoint->id())
+                continue;
+            for (const auto& metric : outcome.metrics) {
+                if (metric.key != QLatin1String("final_energy_ev"))
+                    continue;
+                ++framesWithEnergy;
+                if (outcome.batchIndex == 0) {
+                    frame0Energy = metric.number;
+                    haveFrame0Energy = true;
+                }
+            }
+        }
+        check(framesWithEnergy == frameCount,
+              "every one of the N structures contributed a retrievable "
+              "energy, indexable by frame (batchIndex) -- exactly what a "
+              "later energy-vs-frame plot or ML training set would read");
+        check(haveFrame0Energy,
+              "the zero-noise first frame (batchIndex 0) has an energy");
+
+        // 6. That first frame's energy really is the UNPERTURBED structure's
+        // energy: run the same EMT single-point independently, entirely
+        // outside Orchestration, on the reference structure itself, and
+        // compare -- EMT is deterministic, so the two must agree exactly.
+        const QString independentDir =
+            sandbox.path() + QStringLiteral("/independent_reference");
+        QDir().mkpath(independentDir);
+        calango::pybridge::AseBridge::writeStructure(
+            *reference,
+            (independentDir + QStringLiteral("/structure.extxyz")).toStdString(),
+            "extxyz");
+        {
+            QFile scriptFile(independentDir + QStringLiteral("/run.py"));
+            check(scriptFile.open(QIODevice::WriteOnly | QIODevice::Text),
+                  "the independent reference script is written");
+            scriptFile.write(script.toUtf8());
+        }
+        QProcess independentRun;
+        independentRun.setWorkingDirectory(independentDir);
+        independentRun.start(pythonExe, {QStringLiteral("run.py")});
+        const bool independentFinished = independentRun.waitForFinished(60000);
+        check(independentFinished && independentRun.exitCode() == 0,
+              "the independent reference calculation completes");
+        const QJsonObject independentMetrics =
+            readJson(independentDir + QStringLiteral("/metrics.json"));
+        const QJsonArray independentSamples =
+            independentMetrics.value(QStringLiteral("metrics")).toArray();
+        check(!independentSamples.isEmpty(), "and writes its own metrics.json");
+        if (!independentSamples.isEmpty() && haveFrame0Energy) {
+            const double independentEnergy =
+                independentSamples.last().toObject()
+                    .value(QStringLiteral("energy"))
+                    .toDouble();
+            check(std::abs(independentEnergy - frame0Energy) < 1e-6,
+                  "and its energy matches the batch's zero-noise first-frame "
+                  "energy exactly -- the ramp's frame 0 really is the "
+                  "unperturbed structure, evaluated identically");
+        }
+    }
+
+    // ---- End-to-end with MACE specifically, at the reported bug's exact
+    // structure (27-atom Au 3x3x3 supercell) -------------------------------
+    //
+    // The EMT scenario above passes at both N=4 and N=100 -- confirming the
+    // fan-out SCHEDULER was never the bug -- so this exists to rule out (or
+    // implicate) the calculator path specifically, per the debugging plan.
+    // It does not reproduce a failure either: every pass completes and the
+    // root cause turned out to be purely the UI-visibility half (see the
+    // batchProgress checks below and in the EMT scenario) -- kept as a
+    // permanent regression test since it is the one scenario here that
+    // exercises a REAL ML-potential calculator through the batch machinery.
+    // Uses mace_env's interpreter directly (the bundled test interpreter has
+    // no mace-torch); self-skips if that environment is not present.
+    {
+        const QString maceExe =
+            QStringLiteral("/Users/leseixas/miniconda3/envs/mace_env/bin/python");
+        QProcess maceProbe;
+        maceProbe.start(maceExe, {QStringLiteral("-c"),
+                                  QStringLiteral("import ase, mace")});
+        const bool maceUsable =
+            maceProbe.waitForFinished(30000) && maceProbe.exitCode() == 0;
+        if (!maceUsable) {
+            std::printf("MACE end-to-end: SKIP -- %s cannot import "
+                        "ase+mace\n",
+                        qPrintable(maceExe));
+        } else {
+            std::printf("End-to-end: Random Noise ramp -> Structure "
+                        "Container -> Single-point (MACE, Au 3x3x3):\n");
+            QSettings().setValue(
+                QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+                sandbox.path() + QStringLiteral("/simulations_mace_diag"));
+
+            using calango::gui::RandomNoiseWizard;
+            auto auPrimitive = fccPrimitive(79, 4.08);
+            std::shared_ptr<const calango::core::Structure> auSupercell =
+                std::make_shared<const calango::core::Structure>(
+                    calango::pybridge::AseBridge::makeSupercell(*auPrimitive,
+                                                                 3, 3, 3));
+            check(auSupercell->size() == 27,
+                  "the reference is the reported bug's exact 27-atom Au "
+                  "3x3x3 supercell");
+
+            RandomNoiseWizard wizard(auSupercell);
+            const auto combos = wizard.findChildren<QComboBox*>();
+            const auto rampCombo = std::find_if(
+                combos.begin(), combos.end(), [](const QComboBox* combo) {
+                    return combo->count() == 2
+                        && combo->itemText(1).contains(QStringLiteral("ramp"));
+                });
+            if (rampCombo != combos.end())
+                (*rampCombo)->setCurrentIndex(1);
+            const auto spinBoxes = wizard.findChildren<QSpinBox*>();
+            for (QSpinBox* spin : spinBoxes)
+                if (spin->maximum() == 1000)
+                    spin->setValue(4); // 4 perturbed + 1 reference = 5 frames
+            const auto generateButtons = wizard.findChildren<QPushButton*>();
+            const auto generate = std::find_if(
+                generateButtons.begin(), generateButtons.end(),
+                [](const QPushButton* button) {
+                    return button->text().contains(QStringLiteral("Generate"));
+                });
+            if (generate != generateButtons.end())
+                (*generate)->click();
+            const int frameCount = static_cast<int>(wizard.frames().size());
+            check(frameCount == 5, "5 total frames for the diagnostic");
+
+            const QString trajectoryPath =
+                sandbox.path() + QStringLiteral("/noisy_au.extxyz");
+            calango::pybridge::AseBridge::writeTrajectory(
+                wizard.frames(), trajectoryPath.toStdString(), "extxyz");
+
+            QString importError;
+            const auto items = OrchestrationWindow::readStructuresFromFile(
+                trajectoryPath, &importError);
+            check(importError.isEmpty(),
+                  "the 27-atom Au trajectory reads back with no error");
+            check(items.size() == frameCount,
+                  "and splits into one item per structure");
+
+            OrchestrationWindow window(materials, pythonResolver);
+            QStringList refusals;
+            window.setRefusalHandler(
+                [&refusals](const QString& message) { refusals << message; });
+            OrchestrationNodeItem* container = window.addProcessNode(
+                OrchestrationTask::Container, 0,
+                calango::core::CalculatorKind::Mace);
+            OrchestrationNodeItem* singlePoint = window.addProcessNode(
+                OrchestrationTask::SinglePoint, 0,
+                calango::core::CalculatorKind::Mace);
+            window.linkNodes(container, singlePoint);
+            window.setNodeBatchItems(container, items);
+
+            calango::core::CalculatorConfig config;
+            config.calculator = calango::core::CalculatorKind::Mace;
+            config.task = calango::core::TaskKind::SinglePoint;
+            config.maceSource = calango::core::MaceModelSource::FoundationMP;
+            config.maceSize = "small"; // fastest foundation checkpoint
+            config.maceDevice = "cpu";
+            config.macePrecision = calango::core::MacePrecision::Float64;
+            const QString script = QString::fromStdString(
+                calango::core::AseScriptGenerator::generate(
+                    config, "structure.extxyz"));
+            window.configureNode(singlePoint, script, maceExe, QString(),
+                                 calango::core::CalculatorKind::Mace);
+
+            calango::core::WorkflowReport delivered;
+            int finishedSignals = 0;
+            QObject::connect(&window, &OrchestrationWindow::runFinished,
+                             [&](const calango::core::WorkflowReport& report) {
+                                 delivered = report;
+                                 ++finishedSignals;
+                             });
+
+            window.sendToProcesses();
+            check(window.batchLength() == frameCount,
+                  "N structures in means N passes, with MACE selected");
+            // Generous timeout: MACE model loading is real wall-clock time,
+            // once per pass (a fresh Python process every time).
+            QElapsedTimer maceTimer;
+            maceTimer.start();
+            while (!terminal(singlePoint) && maceTimer.elapsed() < 600000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            for (int turn = 0; turn < 20; ++turn)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            QElapsedTimer signalTimer;
+            signalTimer.start();
+            while (finishedSignals == 0 && signalTimer.elapsed() < 30000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+
+            check(refusals.isEmpty(), "nothing was refused");
+            check(singlePoint->jobHistory().size() == static_cast<qsizetype>(frameCount),
+                  "ran once per structure, not just once -- confirmed with a "
+                  "real MACE evaluation, not only EMT");
+            check(delivered.allSucceeded(),
+                  "all MACE single-points in the batch succeeded");
+            check(singlePoint->batchProgressTotal() == frameCount
+                      && singlePoint->batchProgressDone() == frameCount,
+                  "and the fan-out node's on-canvas progress reads N/N done "
+                  "with MACE selected too");
+            if (!delivered.allSucceeded()) {
+                for (const auto& outcome : delivered.outcomes)
+                    if (outcome.status != QLatin1String("done"))
+                        std::printf("  -- FAILED pass %d (%s): %s\n",
+                                    outcome.batchIndex,
+                                    qPrintable(outcome.directory),
+                                    qPrintable(outcome.note));
+            }
+        }
+    }
+
+    // ---- End-to-end: Dump (ML training-data writer), at the reported bug's
+    // exact scale -- Au 3x3x3 supercell, 100 ramped-noise structures,
+    // Structure Container, Single-point, then Dump with the MACE preset.
+    //
+    // EMT rather than MACE for the single-points: Au is EMT-supported (per
+    // the debugging plan above), and it is what lets this run all 100
+    // passes in the time the N=5 MACE scenario above needs for five --
+    // MACE-specific correctness is already that scenario's job. What this
+    // one adds is everything about Dump itself: it collects the WHOLE batch
+    // and writes it once, under the verified mace 0.3.15 key names, and the
+    // written file is read back with an INDEPENDENT script and checked
+    // against what the batch itself computed.
+    std::printf("End-to-end: Random Noise ramp -> Structure Container -> "
+                "Single-point (EMT, Au 3x3x3) -> Dump (MACE preset):\n");
+    QSettings().setValue(
+        QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+        sandbox.path() + QStringLiteral("/simulations_dump"));
+    {
+        using calango::gui::RandomNoiseWizard;
+
+        auto auPrimitive = fccPrimitive(79, 4.08);
+        std::shared_ptr<const calango::core::Structure> auSupercell =
+            std::make_shared<const calango::core::Structure>(
+                calango::pybridge::AseBridge::makeSupercell(*auPrimitive, 3,
+                                                             3, 3));
+        check(auSupercell->size() == 27,
+              "the reference is the reported bug's exact 27-atom Au 3x3x3 "
+              "supercell, again");
+
+        RandomNoiseWizard wizard(auSupercell);
+        const auto combos = wizard.findChildren<QComboBox*>();
+        const auto rampCombo = std::find_if(
+            combos.begin(), combos.end(), [](const QComboBox* combo) {
+                return combo->count() == 2
+                    && combo->itemText(1).contains(QStringLiteral("ramp"));
+            });
+        if (rampCombo != combos.end())
+            (*rampCombo)->setCurrentIndex(1);
+        const auto spinBoxes = wizard.findChildren<QSpinBox*>();
+        for (QSpinBox* spin : spinBoxes)
+            if (spin->maximum() == 1000)
+                spin->setValue(99); // 99 perturbed + 1 reference = 100 frames
+        const auto generateButtons = wizard.findChildren<QPushButton*>();
+        const auto generate = std::find_if(
+            generateButtons.begin(), generateButtons.end(),
+            [](const QPushButton* button) {
+                return button->text().contains(QStringLiteral("Generate"));
+            });
+        if (generate != generateButtons.end())
+            (*generate)->click();
+        const int frameCount = static_cast<int>(wizard.frames().size());
+        check(frameCount == 100,
+              "100 structures total -- the reported bug's exact scale, "
+              "again, now feeding a Dump node downstream");
+
+        const QString trajectoryPath =
+            sandbox.path() + QStringLiteral("/noisy_au_for_dump.extxyz");
+        calango::pybridge::AseBridge::writeTrajectory(
+            wizard.frames(), trajectoryPath.toStdString(), "extxyz");
+
+        QString importError;
+        const auto items = OrchestrationWindow::readStructuresFromFile(
+            trajectoryPath, &importError);
+        check(importError.isEmpty(), "the Au trajectory reads back with no error");
+
+        OrchestrationWindow window(materials, pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+        OrchestrationNodeItem* container = window.addProcessNode(
+            OrchestrationTask::Container, 0, calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* singlePoint = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* dump = window.addProcessNode(
+            OrchestrationTask::Dump, 0, calango::core::CalculatorKind::EMT);
+        window.linkNodes(container, singlePoint);
+        window.linkNodes(singlePoint, dump);
+        window.setNodeBatchItems(container, items);
+
+        calango::core::CalculatorConfig config;
+        config.calculator = calango::core::CalculatorKind::EMT;
+        config.task = calango::core::TaskKind::SinglePoint;
+        const QString script = QString::fromStdString(
+            calango::core::AseScriptGenerator::generate(config,
+                                                         "structure.extxyz"));
+        window.configureNode(singlePoint, script, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+
+        const QString trainingPath =
+            sandbox.path() + QStringLiteral("/au_training.extxyz");
+        DumpSpec dumpSpec;
+        applyMaceTrainingPreset(&dumpSpec);
+        check(dumpSpec.energyKey == QStringLiteral("REF_energy")
+                  && dumpSpec.forcesKey == QStringLiteral("REF_forces")
+                  && dumpSpec.stressKey == QStringLiteral("REF_stress"),
+              "the MACE preset fills mace 0.3.15's own default key names "
+              "(mace.tools.default_keys.DefaultKeys), verified against the "
+              "installed package rather than assumed");
+        dumpSpec.outputPath = trainingPath;
+        window.setNodeDump(dump, dumpSpec);
+
+        calango::core::WorkflowReport delivered;
+        int finishedSignals = 0;
+        QObject::connect(&window, &OrchestrationWindow::runFinished,
+                         [&](const calango::core::WorkflowReport& report) {
+                             delivered = report;
+                             ++finishedSignals;
+                         });
+
+        window.sendToProcesses();
+        check(window.batchLength() == frameCount,
+              "N structures in means N single-point passes upstream of Dump");
+        settle(singlePoint, 180000);
+        QElapsedTimer e2eTimer;
+        e2eTimer.start();
+        while (finishedSignals == 0 && e2eTimer.elapsed() < 30000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+
+        check(refusals.isEmpty(), "nothing was refused");
+        check(finishedSignals == 1, "the run reports itself exactly once");
+        check(delivered.allSucceeded(),
+              "every single-point AND the Dump node itself succeeded");
+        check(dump->status() == OrchestrationNodeItem::Status::Done,
+              "the Dump node itself reports Done");
+        check(QFile::exists(trainingPath),
+              "and the training file actually exists on disk");
+
+        // Dump ran exactly ONCE, not once per pass -- the whole point of
+        // isBatchAggregator(): a node downstream of a fan-out that collects
+        // the WHOLE batch must not be re-queued on every pass like an
+        // ordinary analysis node, or it would overwrite its own output 99
+        // times with an ever-smaller partial file.
+        int dumpOutcomes = 0;
+        for (const auto& outcome : delivered.outcomes)
+            if (outcome.nodeId == dump->id())
+                ++dumpOutcomes;
+        check(dumpOutcomes == 1,
+              "the Dump node appears exactly once in the run report, not "
+              "once per fan-out pass -- it collects the whole batch instead "
+              "of repeating itself");
+        check(dump->batchProgressDone() == frameCount
+                  && dump->batchProgressTotal() == frameCount,
+              "and its on-canvas readout says N frames written out of N "
+              "considered, with nothing excluded");
+
+        // The single-point energies the batch itself computed, indexed by
+        // frame -- the independent truth the written file is checked
+        // against below.
+        std::map<int, double> computedEnergy;
+        for (const auto& outcome : delivered.outcomes) {
+            if (outcome.nodeId != singlePoint->id())
+                continue;
+            for (const auto& metric : outcome.metrics)
+                if (metric.key == QLatin1String("final_energy_ev"))
+                    computedEnergy[outcome.batchIndex] = metric.number;
+        }
+        check(static_cast<int>(computedEnergy.size()) == frameCount,
+              "every pass contributed a computed energy to check the file "
+              "against");
+
+        // Read the written extxyz back with an INDEPENDENT script -- not
+        // AseBridge, which has no field for a calculator's results at all
+        // (see AseBridge::writeDumpTrainingSet's own doc comment) -- and
+        // report what it finds as JSON, the same pattern the ramp scenario
+        // above uses to verify frame 0's energy independently.
+        const QString verifyDir = sandbox.path() + QStringLiteral("/verify_dump");
+        QDir().mkpath(verifyDir);
+        const QString verifyScriptPath = verifyDir + QStringLiteral("/verify.py");
+        const QString verifyOutPath = verifyDir + QStringLiteral("/verify.json");
+        {
+            QFile verifyScript(verifyScriptPath);
+            check(verifyScript.open(QIODevice::WriteOnly | QIODevice::Text),
+                  "the verification script is written");
+            verifyScript.write(QByteArray(
+                "import ase.io, json, sys\n"
+                "frames = ase.io.read(sys.argv[1], index=':')\n"
+                "out = {\n"
+                "    'n_frames': len(frames),\n"
+                "    'natoms': [len(a) for a in frames],\n"
+                "    'energies': [a.info.get('REF_energy') for a in "
+                "frames],\n"
+                "    'has_forces': [('REF_forces' in a.arrays) for a in "
+                "frames],\n"
+                "    'forces_shape': [list(a.arrays['REF_forces'].shape) "
+                "if 'REF_forces' in a.arrays else None for a in frames],\n"
+                "    'has_stress': [('REF_stress' in a.info) for a in "
+                "frames],\n"
+                "    'pbc': [[bool(x) for x in a.pbc] for a in frames],\n"
+                "    'cell_nonzero': [bool(a.cell.volume > 0) for a in "
+                "frames],\n"
+                "}\n"
+                "with open(sys.argv[2], 'w') as fh:\n"
+                "    json.dump(out, fh)\n"));
+        }
+        QProcess verifyRun;
+        verifyRun.start(pythonExe,
+                        {verifyScriptPath, trainingPath, verifyOutPath});
+        const bool verifyFinished = verifyRun.waitForFinished(60000);
+        check(verifyFinished && verifyRun.exitCode() == 0,
+              "the independent read-back script runs cleanly");
+        const QJsonObject verified = readJson(verifyOutPath);
+
+        check(verified.value(QStringLiteral("n_frames")).toInt() == frameCount,
+              "the written file holds exactly N frames -- 100 in, 100 out, "
+              "nothing collapsed to one");
+
+        const QJsonArray natoms = verified.value(QStringLiteral("natoms")).toArray();
+        bool allNatoms27 = !natoms.isEmpty();
+        for (const QJsonValue& value : natoms)
+            allNatoms27 = allNatoms27 && value.toInt() == 27;
+        check(allNatoms27, "every frame keeps its 27 Au atoms");
+
+        const QJsonArray energies =
+            verified.value(QStringLiteral("energies")).toArray();
+        bool allHaveEnergy = !energies.isEmpty();
+        for (const QJsonValue& value : energies)
+            allHaveEnergy = allHaveEnergy && !value.isNull();
+        check(allHaveEnergy,
+              "every frame carries an energy under the MACE preset's own "
+              "key, REF_energy -- not the bare 'energy' ASE itself would "
+              "have used");
+
+        // Frame-by-frame agreement between the batch's own computed energy
+        // and what actually landed in the training file, under the RENAMED
+        // key.
+        bool allMatch = frameCount > 0;
+        for (int i = 0; i < energies.size() && i < frameCount; ++i) {
+            const auto it = computedEnergy.find(i);
+            if (it == computedEnergy.end()) {
+                allMatch = false;
+                continue;
+            }
+            allMatch = allMatch
+                && std::abs(energies[i].toDouble() - it->second) < 1e-6;
+        }
+        check(allMatch,
+              "every written REF_energy matches the single-point-computed "
+              "value for its own frame, exactly");
+
+        const QJsonArray hasForces =
+            verified.value(QStringLiteral("has_forces")).toArray();
+        bool allHaveForces = !hasForces.isEmpty();
+        for (const QJsonValue& value : hasForces)
+            allHaveForces = allHaveForces && value.toBool();
+        check(allHaveForces,
+              "every frame carries per-atom forces under REF_forces");
+
+        const QJsonArray forcesShape =
+            verified.value(QStringLiteral("forces_shape")).toArray();
+        bool shapeOk = !forcesShape.isEmpty();
+        for (const QJsonValue& value : forcesShape) {
+            const QJsonArray shape = value.toArray();
+            shapeOk = shapeOk && shape.size() == 2 && shape[0].toInt() == 27
+                && shape[1].toInt() == 3;
+        }
+        check(shapeOk,
+              "and REF_forces has shape (27, 3) -- one 3-vector per atom, "
+              "not a flattened or transposed array");
+
+        const QJsonArray hasStress =
+            verified.value(QStringLiteral("has_stress")).toArray();
+        bool allHaveStress = !hasStress.isEmpty();
+        for (const QJsonValue& value : hasStress)
+            allHaveStress = allHaveStress && value.toBool();
+        check(allHaveStress,
+              "and REF_stress is present too -- EMT reports a stress for a "
+              "periodic cell, so the preset's stress key is not left empty "
+              "here");
+
+        const QJsonArray pbcArray = verified.value(QStringLiteral("pbc")).toArray();
+        bool allPeriodic = !pbcArray.isEmpty();
+        for (const QJsonValue& value : pbcArray) {
+            const QJsonArray axes = value.toArray();
+            allPeriodic = allPeriodic && axes.size() == 3 && axes[0].toBool()
+                && axes[1].toBool() && axes[2].toBool();
+        }
+        check(allPeriodic,
+              "PBC is carried through as fully periodic, matching the Au "
+              "supercell");
+
+        const QJsonArray cellNonzero =
+            verified.value(QStringLiteral("cell_nonzero")).toArray();
+        bool allCells = !cellNonzero.isEmpty();
+        for (const QJsonValue& value : cellNonzero)
+            allCells = allCells && value.toBool();
+        check(allCells, "and every frame keeps a real (non-degenerate) lattice");
+    }
+
+    std::printf("End-to-end: Structure Container -> Single-atom Container -> "
+                "Single-point (EMT) -> Dump (IsolatedAtom tagging):\n");
+    {
+        using calango::core::Atom;
+        using calango::core::Structure;
+        using calango::core::UnitCell;
+        using calango::gui::SingleAtomContainerSpec;
+
+        // Two source structures: one MIXED (Cu + Au), one pure (Pt). The
+        // union across BOTH is the three unique elements this test checks
+        // for -- exercising "scans ALL input structures and collects the
+        // UNIQUE elements" rather than just relabeling one multi-element
+        // structure's own atom list.
+        auto cuAu = std::make_shared<Structure>();
+        cuAu->setCell(
+            UnitCell({6.0, 0.0, 0.0}, {0.0, 6.0, 0.0}, {0.0, 0.0, 6.0}));
+        Atom cuAtom;
+        cuAtom.atomicNumber = 29; // Cu
+        cuAtom.position = {0.0, 0.0, 0.0};
+        cuAu->addAtom(cuAtom);
+        Atom auAtom;
+        auAtom.atomicNumber = 79; // Au
+        auAtom.position = {3.0, 3.0, 3.0};
+        cuAu->addAtom(auAtom);
+        auto ptOnly = fccPrimitive(78, 3.92); // Pt
+
+        OrchestrationWindow window(materials, pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        OrchestrationNodeItem* container = window.addProcessNode(
+            OrchestrationTask::Container, 0,
+            calango::core::CalculatorKind::EMT);
+        window.setNodeBatchItems(
+            container,
+            {{QStringLiteral("CuAu"),
+              std::shared_ptr<const Structure>(cuAu)},
+             {QStringLiteral("Pt"),
+              std::shared_ptr<const Structure>(ptOnly)}});
+
+        OrchestrationNodeItem* singleAtom = window.addProcessNode(
+            OrchestrationTask::SingleAtomContainer, 0,
+            calango::core::CalculatorKind::EMT);
+        SingleAtomContainerSpec atomSpec;
+        atomSpec.boxSizeAngstrom = 12.0; // non-default: checks the UI value
+                                         // actually reaches the structure,
+                                         // not just the 10 A default
+        window.setNodeSingleAtomContainer(singleAtom, atomSpec);
+
+        OrchestrationNodeItem* singlePoint = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* dump = window.addProcessNode(
+            OrchestrationTask::Dump, 0, calango::core::CalculatorKind::EMT);
+
+        window.linkNodes(container, singleAtom);
+        window.linkNodes(singleAtom, singlePoint);
+        window.linkNodes(singlePoint, dump);
+
+        calango::core::CalculatorConfig config;
+        config.calculator = calango::core::CalculatorKind::EMT;
+        config.task = calango::core::TaskKind::SinglePoint;
+        const QString script = QString::fromStdString(
+            calango::core::AseScriptGenerator::generate(config,
+                                                         "structure.extxyz"));
+        window.configureNode(singlePoint, script, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+
+        const QString trainingPath =
+            sandbox.path() + QStringLiteral("/isolated_atoms.extxyz");
+        DumpSpec dumpSpec;
+        dumpSpec.outputPath = trainingPath;
+        window.setNodeDump(dump, dumpSpec);
+
+        calango::core::WorkflowReport delivered;
+        int finishedSignals = 0;
+        QObject::connect(&window, &OrchestrationWindow::runFinished,
+                         [&](const calango::core::WorkflowReport& report) {
+                             delivered = report;
+                             ++finishedSignals;
+                         });
+
+        window.sendToProcesses();
+        check(refusals.isEmpty(), "nothing was refused when sending to processes");
+
+        // Three unique elements (Cu, Au, Pt) across the two source
+        // structures drive the SECOND, sequential batch phase -- three
+        // single-point passes, independent of the primary Container-item
+        // count (two).
+        settle(singlePoint, 60000);
+        QElapsedTimer e2eTimer;
+        e2eTimer.start();
+        while (finishedSignals == 0 && e2eTimer.elapsed() < 30000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+
+        check(finishedSignals == 1, "the run reports itself exactly once");
+        check(delivered.allSucceeded(),
+              "every single-point AND the Dump node itself succeeded");
+        if (!delivered.allSucceeded()) {
+            for (const auto& outcome : delivered.outcomes)
+                if (outcome.status != QLatin1String("done"))
+                    std::printf("  -- FAILED node %d, pass %d (%s): %s\n",
+                                outcome.nodeId, outcome.batchIndex,
+                                qPrintable(outcome.directory),
+                                qPrintable(outcome.note));
+        }
+        check(QFile::exists(trainingPath),
+              "the training file actually exists on disk");
+
+        const QString verifyDir =
+            sandbox.path() + QStringLiteral("/verify_isolated_atoms");
+        QDir().mkpath(verifyDir);
+        const QString verifyScriptPath =
+            verifyDir + QStringLiteral("/verify.py");
+        const QString verifyOutPath = verifyDir + QStringLiteral("/verify.json");
+        {
+            QFile verifyScript(verifyScriptPath);
+            check(verifyScript.open(QIODevice::WriteOnly | QIODevice::Text),
+                  "the verification script is written");
+            verifyScript.write(QByteArray(
+                "import ase.io, json, sys\n"
+                "frames = ase.io.read(sys.argv[1], index=':')\n"
+                "out = {\n"
+                "    'n_frames': len(frames),\n"
+                "    'symbols': [a.get_chemical_symbols() for a in "
+                "frames],\n"
+                "    'natoms': [len(a) for a in frames],\n"
+                "    'config_types': [a.info.get('config_type') for a in "
+                "frames],\n"
+                // Written under the bare "energy" key -- one of ASE's own
+                // recognized calculator-result property names, so extxyz
+                // round-trips it through a SinglePointCalculator rather than
+                // leaving it in atoms.info verbatim (unlike the MACE
+                // preset's REF_energy, which the OTHER end-to-end test in
+                // this file reads back via a.info.get(), since that name
+                // means nothing special to ASE).
+                "    'energies': [a.get_potential_energy() if a.calc else "
+                "None for a in frames],\n"
+                "    'pbc': [[bool(x) for x in a.pbc] for a in frames],\n"
+                "    'cells': [[list(row) for row in a.cell[:]] for a in "
+                "frames],\n"
+                "    'positions': [a.positions.tolist() for a in frames],\n"
+                "}\n"
+                "with open(sys.argv[2], 'w') as fh:\n"
+                "    json.dump(out, fh)\n"));
+        }
+        QProcess verifyRun;
+        verifyRun.start(pythonExe,
+                        {verifyScriptPath, trainingPath, verifyOutPath});
+        const bool verifyFinished = verifyRun.waitForFinished(60000);
+        check(verifyFinished && verifyRun.exitCode() == 0,
+              "the independent read-back script runs cleanly");
+        const QJsonObject verified = readJson(verifyOutPath);
+
+        check(verified.value(QStringLiteral("n_frames")).toInt() == 3,
+              "exactly one frame per unique element -- Cu, Au, Pt -- not "
+              "one per source structure (two) and not one per source atom "
+              "(three, coincidentally the same number here)");
+
+        const QJsonArray natomsArray =
+            verified.value(QStringLiteral("natoms")).toArray();
+        bool oneAtomEach = !natomsArray.isEmpty();
+        for (const QJsonValue& value : natomsArray)
+            oneAtomEach = oneAtomEach && value.toInt() == 1;
+        check(oneAtomEach, "every frame is a single isolated atom");
+
+        QStringList frameElements;
+        const QJsonArray symbolsArray =
+            verified.value(QStringLiteral("symbols")).toArray();
+        for (const QJsonValue& value : symbolsArray) {
+            const QJsonArray syms = value.toArray();
+            if (syms.size() == 1)
+                frameElements << syms[0].toString();
+        }
+        check(frameElements
+                  == (QStringList{QStringLiteral("Cu"),
+                                  QStringLiteral("Au"),
+                                  QStringLiteral("Pt")}),
+              "the elements are exactly Cu, Au, Pt, in first-appearance "
+              "order across the source list (Cu and Au from the first, "
+              "mixed structure; Pt from the second)");
+
+        const QJsonArray configTypes =
+            verified.value(QStringLiteral("config_types")).toArray();
+        bool allTaggedIsolated = !configTypes.isEmpty();
+        for (const QJsonValue& value : configTypes)
+            allTaggedIsolated = allTaggedIsolated
+                && value.toString() == QStringLiteral("IsolatedAtom");
+        check(allTaggedIsolated,
+              "every frame is tagged config_type=IsolatedAtom -- mace "
+              "0.3.15's own convention (mace/data/utils.py) for an E0 "
+              "reference, applied automatically because the frame's parent "
+              "is a Single-atom Container, with no Dump-side toggle needed");
+
+        const QJsonArray energies =
+            verified.value(QStringLiteral("energies")).toArray();
+        bool allHaveEnergy = !energies.isEmpty();
+        for (const QJsonValue& value : energies)
+            allHaveEnergy = allHaveEnergy && !value.isNull();
+        check(allHaveEnergy, "every frame carries a computed EMT energy");
+
+        const QJsonArray pbcArray =
+            verified.value(QStringLiteral("pbc")).toArray();
+        bool allPeriodic = !pbcArray.isEmpty();
+        for (const QJsonValue& value : pbcArray) {
+            const QJsonArray axes = value.toArray();
+            allPeriodic = allPeriodic && axes.size() == 3 && axes[0].toBool()
+                && axes[1].toBool() && axes[2].toBool();
+        }
+        check(allPeriodic,
+              "every isolated-atom cell is periodic -- the default this "
+              "node documents on its own face, matching the plane-wave/"
+              "periodic codes this pipeline targets");
+
+        const QJsonArray cells = verified.value(QStringLiteral("cells")).toArray();
+        bool allCubic12 = !cells.isEmpty();
+        for (const QJsonValue& value : cells) {
+            const QJsonArray cell = value.toArray();
+            if (cell.size() != 3) {
+                allCubic12 = false;
+                break;
+            }
+            for (int i = 0; i < 3 && allCubic12; ++i) {
+                const QJsonArray row = cell[i].toArray();
+                if (row.size() != 3) {
+                    allCubic12 = false;
+                    break;
+                }
+                for (int j = 0; j < 3 && allCubic12; ++j) {
+                    const double expected = (i == j) ? 12.0 : 0.0;
+                    allCubic12 = allCubic12
+                        && std::abs(row[j].toDouble() - expected) < 1e-9;
+                }
+            }
+        }
+        check(allCubic12,
+              "every cell is exactly the 12 A cubic box the node was "
+              "configured with -- the non-default value, confirming the UI "
+              "setting actually reaches the generated structure rather than "
+              "the 10 A default silently winning");
+
+        const QJsonArray positions =
+            verified.value(QStringLiteral("positions")).toArray();
+        bool allCentered = !positions.isEmpty();
+        for (const QJsonValue& value : positions) {
+            const QJsonArray frame = value.toArray();
+            if (frame.size() != 1) {
+                allCentered = false;
+                break;
+            }
+            const QJsonArray pos = frame[0].toArray();
+            if (pos.size() != 3) {
+                allCentered = false;
+                break;
+            }
+            for (int i = 0; i < 3 && allCentered; ++i)
+                allCentered = allCentered
+                    && std::abs(pos[i].toDouble() - 6.0) < 1e-9;
+        }
+        check(allCentered,
+              "the single atom sits at the box center (6, 6, 6) of the 12 A "
+              "cube, not at the origin");
+    }
+
+    std::printf("Dump: IsolatedAtom frames always sort first, even when "
+                "linked/gathered last:\n");
+    {
+        using calango::core::Atom;
+        using calango::core::Structure;
+        using calango::core::UnitCell;
+        using calango::gui::SingleAtomContainerSpec;
+
+        auto ptBulk = fccPrimitive(78, 3.92); // "bulk" branch: one Pt atom
+
+        auto cuAu = std::make_shared<Structure>();
+        cuAu->setCell(
+            UnitCell({6.0, 0.0, 0.0}, {0.0, 6.0, 0.0}, {0.0, 0.0, 6.0}));
+        Atom cuAtom;
+        cuAtom.atomicNumber = 29;
+        cuAtom.position = {0.0, 0.0, 0.0};
+        cuAu->addAtom(cuAtom);
+        Atom auAtom;
+        auAtom.atomicNumber = 79;
+        auAtom.position = {3.0, 3.0, 3.0};
+        cuAu->addAtom(auAtom);
+
+        OrchestrationWindow window(materials, pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        // Bulk branch.
+        OrchestrationNodeItem* bulkContainer = window.addProcessNode(
+            OrchestrationTask::Container, 0,
+            calango::core::CalculatorKind::EMT);
+        window.setNodeBatchItems(
+            bulkContainer,
+            {{QStringLiteral("Pt bulk"),
+              std::shared_ptr<const Structure>(ptBulk)}});
+        OrchestrationNodeItem* bulkPoint = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(bulkContainer, bulkPoint);
+
+        // Isolated-atom branch.
+        OrchestrationNodeItem* atomContainer = window.addProcessNode(
+            OrchestrationTask::Container, 0,
+            calango::core::CalculatorKind::EMT);
+        window.setNodeBatchItems(
+            atomContainer,
+            {{QStringLiteral("CuAu"),
+              std::shared_ptr<const Structure>(cuAu)}});
+        OrchestrationNodeItem* singleAtom = window.addProcessNode(
+            OrchestrationTask::SingleAtomContainer, 0,
+            calango::core::CalculatorKind::EMT);
+        window.setNodeSingleAtomContainer(singleAtom, SingleAtomContainerSpec());
+        window.linkNodes(atomContainer, singleAtom);
+        OrchestrationNodeItem* atomPoint = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(singleAtom, atomPoint);
+
+        OrchestrationNodeItem* dump = window.addProcessNode(
+            OrchestrationTask::Dump, 0, calango::core::CalculatorKind::EMT);
+        // LINKED BULK FIRST, isolated-atom branch SECOND -- gathered in that
+        // order by runTransform()'s Dump case, so a passing test here means
+        // the sort genuinely reorders rather than happening to already
+        // match link order.
+        window.linkNodes(bulkPoint, dump);
+        window.linkNodes(atomPoint, dump);
+
+        calango::core::CalculatorConfig config;
+        config.calculator = calango::core::CalculatorKind::EMT;
+        config.task = calango::core::TaskKind::SinglePoint;
+        const QString script = QString::fromStdString(
+            calango::core::AseScriptGenerator::generate(config,
+                                                         "structure.extxyz"));
+        window.configureNode(bulkPoint, script, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+        window.configureNode(atomPoint, script, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+
+        const QString trainingPath =
+            sandbox.path() + QStringLiteral("/sorted_dump.extxyz");
+        DumpSpec dumpSpec;
+        applyMaceTrainingPreset(&dumpSpec);
+        dumpSpec.outputPath = trainingPath;
+        window.setNodeDump(dump, dumpSpec);
+
+        calango::core::WorkflowReport delivered;
+        int finishedSignals = 0;
+        QObject::connect(&window, &OrchestrationWindow::runFinished,
+                         [&](const calango::core::WorkflowReport& report) {
+                             delivered = report;
+                             ++finishedSignals;
+                         });
+
+        window.sendToProcesses();
+        check(refusals.isEmpty(), "the mixed bulk + isolated-atom graph is accepted");
+
+        settle(dump, 60000);
+        QElapsedTimer e2eTimer;
+        e2eTimer.start();
+        while (finishedSignals == 0 && e2eTimer.elapsed() < 30000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+
+        check(finishedSignals == 1, "the run reports itself exactly once");
+        check(delivered.allSucceeded(), "every branch and the merge succeeded");
+        check(QFile::exists(trainingPath), "the merged training file exists");
+
+        const QString verifyDir =
+            sandbox.path() + QStringLiteral("/verify_sorted_dump");
+        QDir().mkpath(verifyDir);
+        const QString verifyScriptPath =
+            verifyDir + QStringLiteral("/verify.py");
+        const QString verifyOutPath = verifyDir + QStringLiteral("/verify.json");
+        {
+            QFile verifyScript(verifyScriptPath);
+            check(verifyScript.open(QIODevice::WriteOnly | QIODevice::Text),
+                  "the verification script is written");
+            verifyScript.write(QByteArray(
+                "import ase.io, json, sys\n"
+                "frames = ase.io.read(sys.argv[1], index=':')\n"
+                "out = {\n"
+                "    'n_frames': len(frames),\n"
+                "    'symbols': [a.get_chemical_symbols() for a in "
+                "frames],\n"
+                "    'config_types': [a.info.get('config_type') for a in "
+                "frames],\n"
+                "}\n"
+                "with open(sys.argv[2], 'w') as fh:\n"
+                "    json.dump(out, fh)\n"));
+        }
+        QProcess verifyRun;
+        verifyRun.start(pythonExe,
+                        {verifyScriptPath, trainingPath, verifyOutPath});
+        check(verifyRun.waitForFinished(60000) && verifyRun.exitCode() == 0,
+              "the independent read-back script runs cleanly");
+        const QJsonObject verified = readJson(verifyOutPath);
+        check(verified.value(QStringLiteral("n_frames")).toInt() == 3,
+              "three frames total -- two isolated atoms and one bulk "
+              "structure");
+
+        const QJsonArray configTypes =
+            verified.value(QStringLiteral("config_types")).toArray();
+        const QJsonArray symbolsArray =
+            verified.value(QStringLiteral("symbols")).toArray();
+        bool firstTwoAreIsolated = configTypes.size() == 3
+            && configTypes[0].toString() == QStringLiteral("IsolatedAtom")
+            && configTypes[1].toString() == QStringLiteral("IsolatedAtom");
+        bool lastIsNotIsolated =
+            configTypes.size() == 3 && configTypes[2].toString().isEmpty();
+        check(firstTwoAreIsolated && lastIsNotIsolated,
+              "the two IsolatedAtom frames sort BEFORE the bulk frame in "
+              "the written file, even though the bulk branch was linked "
+              "and gathered first -- config_type=IsolatedAtom, "
+              "IsolatedAtom, then the bulk frame with no config_type");
+
+        bool bulkFrameIsPt = symbolsArray.size() == 3
+            && symbolsArray[2].toArray().size() == 1
+            && symbolsArray[2].toArray()[0].toString()
+                   == QStringLiteral("Pt");
+        check(bulkFrameIsPt,
+              "and the bulk frame really is the Pt structure, not "
+              "coincidentally also tagged");
     }
 
     if (failures)

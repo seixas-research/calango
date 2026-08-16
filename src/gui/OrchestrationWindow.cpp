@@ -39,6 +39,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMap>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPen>
@@ -301,12 +302,16 @@ QString orchestrationTaskSlug(OrchestrationTask task)
         return QStringLiteral("charged_defects_2d");
     case OrchestrationTask::Container:
         return QStringLiteral("container");
+    case OrchestrationTask::SingleAtomContainer:
+        return QStringLiteral("single_atom_container");
     case OrchestrationTask::Supercell:
         return QStringLiteral("supercell");
     case OrchestrationTask::DefectGenerator:
         return QStringLiteral("defect_generator");
     case OrchestrationTask::TdbGenerator:
         return QStringLiteral("tdb_generator");
+    case OrchestrationTask::Dump:
+        return QStringLiteral("dump");
     case OrchestrationTask::SqsGenerator:
         return QStringLiteral("sqs_generator");
     case OrchestrationTask::ClusterExpansionFit:
@@ -347,9 +352,11 @@ OrchestrationFamily orchestrationTaskFamily(OrchestrationTask task)
     case OrchestrationTask::LiquidFreeEnergy:
         return OrchestrationFamily::Simulation;
     case OrchestrationTask::Container:
+    case OrchestrationTask::SingleAtomContainer:
     case OrchestrationTask::Supercell:
     case OrchestrationTask::DefectGenerator:
     case OrchestrationTask::TdbGenerator:
+    case OrchestrationTask::Dump:
     case OrchestrationTask::SqsGenerator:
     case OrchestrationTask::ClusterExpansionFit:
     case OrchestrationTask::CvmEntropy:
@@ -397,12 +404,16 @@ QString orchestrationTaskDisplayName(OrchestrationTask task)
         return QObject::tr("Charged Defects in 2D Materials");
     case OrchestrationTask::Container:
         return QObject::tr("Structure Container");
+    case OrchestrationTask::SingleAtomContainer:
+        return QObject::tr("Single-atom Container");
     case OrchestrationTask::Supercell:
         return QObject::tr("Supercell Builder");
     case OrchestrationTask::DefectGenerator:
         return QObject::tr("Defect Generator");
     case OrchestrationTask::TdbGenerator:
         return QObject::tr("TDB Generator (CALPHAD)");
+    case OrchestrationTask::Dump:
+        return QObject::tr("Dump (ML Training Data)");
     case OrchestrationTask::SqsGenerator:
         return QObject::tr("SQS Generator");
     case OrchestrationTask::ClusterExpansionFit:
@@ -445,9 +456,11 @@ QString orchestrationTaskShortName(OrchestrationTask task)
     case OrchestrationTask::ChargedDefects:       return QObject::tr("Charged");
     case OrchestrationTask::ChargedDefects2d:     return QObject::tr("Charged 2D");
     case OrchestrationTask::Container:            return QObject::tr("Container");
+    case OrchestrationTask::SingleAtomContainer:  return QObject::tr("1-atom");
     case OrchestrationTask::Supercell:            return QObject::tr("Supercell");
     case OrchestrationTask::DefectGenerator:      return QObject::tr("Defect");
     case OrchestrationTask::TdbGenerator:         return QObject::tr("TDB");
+    case OrchestrationTask::Dump:                 return QObject::tr("Dump");
     case OrchestrationTask::SqsGenerator:         return QObject::tr("SQS");
     case OrchestrationTask::ClusterExpansionFit:  return QObject::tr("ECI fit");
     case OrchestrationTask::CvmEntropy:           return QObject::tr("CVM");
@@ -476,12 +489,23 @@ QList<OrchestrationTask> orchestrationTasks()
             // — because the Add Process list is where a user discovers that
             // the chain exists at all.
             OrchestrationTask::Container,
+            // Right after Container, not inside the alloy chain: its ONLY
+            // job is to sit downstream of a Container (or of another
+            // structures-emitting node) and turn "everything it sees" into
+            // isolated-atom references, which is the natural next thing to
+            // discover once a user has found the Container itself.
+            OrchestrationTask::SingleAtomContainer,
             OrchestrationTask::Supercell,
             OrchestrationTask::DefectGenerator,
             OrchestrationTask::SqsGenerator,
             OrchestrationTask::TdbGenerator,
             OrchestrationTask::ClusterExpansionFit,
             OrchestrationTask::CvmEntropy,
+            // Training-data writer. Listed last among the transforms rather
+            // than inside the alloy chain above: it is not a step of that
+            // pipeline, and normally sits at the very END of whichever one
+            // it is attached to.
+            OrchestrationTask::Dump,
             // Analysis
             OrchestrationTask::ElectronicBands,
             OrchestrationTask::Optics,
@@ -570,6 +594,13 @@ QList<OrchestrationInputSlot> orchestrationInputSlots(OrchestrationTask task)
     // parent, from the node's own material). There is nothing to stage under
     // an agreed name, so there are no slots.
     case OrchestrationTask::Container:
+    // Also nothing to stage under an agreed name -- but UNLIKE the others in
+    // this bucket, it is not optional: it reads its parent's WHOLE structure
+    // set directly (populateSingleAtomContainers(), called before ANY node
+    // runs), not one staged geometry file, and refuses on its own, with its
+    // own message, if there is no parent to read. See
+    // OrchestrationWindow::sendToProcesses().
+    case OrchestrationTask::SingleAtomContainer:
     case OrchestrationTask::Supercell:
     case OrchestrationTask::DefectGenerator:
     // The SQS Generator is a structure transform in the strict sense: a
@@ -589,6 +620,21 @@ QList<OrchestrationInputSlot> orchestrationInputSlots(OrchestrationTask task)
         return {{QObject::tr("formation-energy ensemble"),
                  QStringLiteral("cluster_expansion.json"),
                  QStringLiteral("cluster_expansion.json"), false}};
+
+    case OrchestrationTask::Dump:
+        // Not really a staged artifact: Dump reads every PASS of its
+        // parent's own results directly through WorkflowReport once the
+        // fan-out's LAST pass has finished (isBatchAggregator()), not just
+        // this one staged copy. The slot exists so the ordinary "at least
+        // one parent" contract applies -- an unlinked Dump node is refused
+        // like any other. Its (unused) staged copy takes the WHOLE parent
+        // directory rather than naming one file, because a Dump node's
+        // parent can be any Simulation task (Single-Point, Geometry
+        // Optimization, Molecular Dynamics, ...), each of which writes its
+        // final structure under a different name -- naming one here would
+        // refuse the node whenever the parent used a different one.
+        return {{QObject::tr("completed calculation"), QString(),
+                 QStringLiteral("latest_pass"), false}};
 
     case OrchestrationTask::CvmEntropy:
         // Fed by the ECI Fitter, under the name the fitter writes. The two
@@ -718,6 +764,14 @@ OrchestrationNodeItem::OrchestrationNodeItem(
         tip += QObject::tr("\n\nInherits, in the order parents are linked:\n%1")
                    .arg(lines.join(QLatin1Char('\n')));
     }
+    if (task_ == OrchestrationTask::SingleAtomContainer)
+        tip += QObject::tr(
+            "\n\nIsolated atoms are often SPIN-POLARIZED (an open-shell "
+            "ground state) — this node does not set anything about spin "
+            "itself, so if the Single-point Calculation reading its output "
+            "exposes spin settings, consider turning them on there for a "
+            "correct reference energy. Nothing here forces that choice "
+            "either way.");
     setToolTip(tip);
 }
 
@@ -776,6 +830,19 @@ void OrchestrationNodeItem::setCvmEntropy(const CvmEntropySpec& spec)
     update();
 }
 
+void OrchestrationNodeItem::setDump(const DumpSpec& spec)
+{
+    dump_ = spec;
+    update();
+}
+
+void OrchestrationNodeItem::setSingleAtomContainer(
+    const SingleAtomContainerSpec& spec)
+{
+    singleAtom_ = spec;
+    update();
+}
+
 QString OrchestrationNodeItem::configurationProblem() const
 {
     switch (task_) {
@@ -786,6 +853,23 @@ QString OrchestrationNodeItem::configurationProblem() const
                 "materials the pipeline should be run over — one pass per "
                 "structure, in the order they are listed.")
                 .arg(title_);
+        return QString();
+    case OrchestrationTask::SingleAtomContainer:
+        // In the ordinary case this is already populated by the time
+        // anything checks it -- populateSingleAtomContainers() runs before
+        // ANY node starts, and sendToProcesses() refuses the whole run (with
+        // its OWN, more specific message) if it could not fill this node.
+        // Reachable defensively: e.g. a parent whose structures happen to
+        // carry no atoms at all.
+        if (batchItems_.isEmpty())
+            return QObject::tr(
+                "%1 has no elements to work with.\n\nLink it downstream of a "
+                "Structure Container (or another node emitting a set of "
+                "structures) that actually holds some atoms.")
+                .arg(title_);
+        if (!singleAtom_.isValid())
+            return QObject::tr("%1 has an invalid box size (%2).")
+                .arg(title_, singleAtom_.describe());
         return QString();
     case OrchestrationTask::Supercell:
         if (!supercell_.isValid())
@@ -842,6 +926,15 @@ QString OrchestrationNodeItem::configurationProblem() const
                 "temperature must be above the lower one, both above zero, "
                 "and at least two steps.")
                 .arg(title_, cvm_.describe());
+        return QString();
+    case OrchestrationTask::Dump:
+        if (!dump_.isValid())
+            return QObject::tr(
+                "%1 has not been configured (%2).\n\nDouble-click it and "
+                "choose where to write the training set and what to call "
+                "its energy and forces keys — there is no default output "
+                "path a Dump node could guess.")
+                .arg(title_, dump_.describe());
         return QString();
     default:
         break;
@@ -984,14 +1077,44 @@ void OrchestrationNodeItem::paint(QPainter* painter,
         QObject::tr("Calculator: %1").arg(EnginePresets::displayName(engine_));
     switch (task_) {
     case OrchestrationTask::Container: {
-        QStringList names;
-        for (const BatchItem& item : batchItems_)
-            names << item.first;
-        primary = names.isEmpty()
-            ? QObject::tr("Structures: none yet")
-            : QObject::tr("Structures: %1").arg(names.join(QStringLiteral(", ")));
-        secondary = QObject::tr("%n pipeline pass(es)", nullptr,
-                                static_cast<int>(batchItems_.size()));
+        // The COUNT leads, not a joined name list: "Structures: a #1, a #2,
+        // a #3, …" elides on a 100-item container to something that LOOKS
+        // like just "a #1" was loaded — indistinguishable, at a glance, from
+        // a container that genuinely only has one item. A number cannot
+        // lie that way regardless of how much of the line the elision cuts.
+        if (batchItems_.isEmpty()) {
+            primary = QObject::tr("Structures: none yet");
+            secondary = QObject::tr("double-click to load some");
+        } else {
+            // Two independently-worded lines that both lead with the SAME
+            // number, rather than one count plus one joined name list that
+            // elision can cut down to something indistinguishable from a
+            // single-item container. Neither line can misread the other.
+            primary = QObject::tr("%n structure(s) loaded", nullptr,
+                                  static_cast<int>(batchItems_.size()));
+            secondary = QObject::tr("%n pipeline pass(es)", nullptr,
+                                    static_cast<int>(batchItems_.size()));
+        }
+        break;
+    }
+    case OrchestrationTask::SingleAtomContainer: {
+        // Unlike a Structure Container's own count-only face (a joined name
+        // list elides on a hundred-item container to something that looks
+        // like one item), the element count here is realistically small —
+        // a handful of symbols, not hundreds — so naming them is the more
+        // useful line, not a misleading one.
+        if (batchItems_.isEmpty()) {
+            primary = QObject::tr("No elements yet");
+            secondary = QObject::tr("computed when the pipeline runs");
+        } else {
+            QStringList symbols;
+            for (const auto& item : batchItems_)
+                symbols << item.first;
+            primary = QObject::tr("%n element(s): %1", nullptr,
+                                  static_cast<int>(batchItems_.size()))
+                          .arg(symbols.join(QStringLiteral(", ")));
+            secondary = singleAtom_.describe();
+        }
         break;
     }
     case OrchestrationTask::Supercell:
@@ -1029,6 +1152,34 @@ void OrchestrationNodeItem::paint(QPainter* painter,
         secondary = QObject::tr("%n temperature(s), no calculator", nullptr,
                                 cvm_.temperatureSteps);
         break;
+    case OrchestrationTask::Dump: {
+        const QString fileName = QFileInfo(dump_.outputPath).fileName();
+        if (!dump_.isValid()) {
+            primary = QObject::tr("Not configured");
+            secondary = QObject::tr("double-click to choose an output file");
+        } else if (status_ != Status::Done) {
+            // Not written yet either because it has not run, or because it
+            // is WAITING on earlier passes of an upstream fan-out — it only
+            // actually runs on the last one (isBatchAggregator()), so a
+            // "Waiting" status here can mean "everything upstream is still
+            // going", not "stuck". Worded to hold for a plain (non-fan-out)
+            // pipeline too, where it runs the moment its one parent is done.
+            primary = QObject::tr("-> %1").arg(fileName);
+            secondary = QObject::tr("writes once its input is ready");
+        } else {
+            // Spelled out explicitly rather than left to the generic K/N
+            // suffix below (which is suppressed for this task): "37/100
+            // done" would read as fan-out PROGRESS, when what actually
+            // varies pass to pass is nothing — this node ran exactly once.
+            primary = QObject::tr("%n frame(s) written", nullptr,
+                                  batchProgressDone_);
+            secondary = batchProgressTotal_ > batchProgressDone_
+                ? QObject::tr("%n excluded", nullptr,
+                              batchProgressTotal_ - batchProgressDone_)
+                : QObject::tr("-> %1").arg(fileName);
+        }
+        break;
+    }
     case OrchestrationTask::DefectGenerator:
         primary = defects_.isEmpty() ? QObject::tr("No operations")
                                      : defects_.describe();
@@ -1048,6 +1199,21 @@ void OrchestrationNodeItem::paint(QPainter* painter,
     default:
         break;
     }
+    // Fan-out progress, appended to whichever line the task already set:
+    // the one thing status_ cannot show (a batch re-queues it fresh every
+    // pass, so by the time the run finishes it reflects only the LAST one)
+    // and the reason a 100-pass run could look, at a glance, exactly like a
+    // single successful run — this is the visible half of that fix.
+    //
+    // Dump is excluded: it reuses the SAME two counters for a different
+    // meaning (frames written / frames considered, not passes done / batch
+    // length) and already spells that out above in its own words — this
+    // generic "K/N done" suffix would misread as fan-out progress on a node
+    // that ran exactly once.
+    if (batchProgressTotal_ > 1 && task_ != OrchestrationTask::Dump)
+        secondary += QObject::tr("  —  %1/%2 done")
+                         .arg(batchProgressDone_)
+                         .arg(batchProgressTotal_);
     const QFontMetricsF metrics(painter->font());
     const double textWidth = box.width() - 24;
     painter->drawText(
@@ -1202,36 +1368,6 @@ void OrchestrationScene::mouseReleaseEvent(QGraphicsSceneMouseEvent* event)
 
 namespace {
 
-/// Read every structure out of `path`. A multi-frame file (a trajectory, a
-/// multi-image extxyz) contributes one container entry per frame, named
-/// `stem #n` — importing a 20-frame trajectory into a container is one of the
-/// obvious ways to build a sweep, and taking only its first frame would be a
-/// silent loss.
-QList<OrchestrationNodeItem::BatchItem> readStructuresFrom(const QString& path,
-                                                           QString* error)
-{
-    QList<OrchestrationNodeItem::BatchItem> items;
-    const QString stem = QFileInfo(path).completeBaseName();
-    try {
-        std::vector<core::Structure> frames =
-            pybridge::AseBridge::readTrajectory(path.toStdString());
-        if (frames.empty()) {
-            *error = QObject::tr("%1 holds no structures.").arg(stem);
-            return items;
-        }
-        const bool many = frames.size() > 1;
-        for (std::size_t i = 0; i < frames.size(); ++i)
-            items.append({many ? QStringLiteral("%1 #%2").arg(stem).arg(i + 1)
-                               : stem,
-                          std::make_shared<const core::Structure>(
-                              std::move(frames[i]))});
-    } catch (const std::exception& e) {
-        *error = QObject::tr("%1 could not be read: %2")
-                     .arg(stem, QString::fromUtf8(e.what()));
-    }
-    return items;
-}
-
 /// Bulk crystals straight from `ase.build.bulk`, one container entry per
 /// element or formula typed.
 ///
@@ -1366,6 +1502,7 @@ bool addBulkCrystals(QWidget* parent,
 /// documents, from files on disk, or from the database browser.
 bool editContainer(QWidget* parent, const OrchestrationWindow::MaterialList& open,
                    const OrchestrationWindow::StructureImporter& fromDatabase,
+                   const OrchestrationWindow::FramesProvider& framesFor,
                    QList<OrchestrationNodeItem::BatchItem>* items)
 {
     QDialog dialog(parent);
@@ -1383,15 +1520,23 @@ bool editContainer(QWidget* parent, const OrchestrationWindow::MaterialList& ope
     // holds things that are not open anywhere — a file, a database hit, one
     // frame of a trajectory — so there is no document to look them up in, and
     // the widget is only ever a view of this list.
+    auto* countLabel = new QLabel(&dialog);
+    countLabel->setWordWrap(true);
+    layout->addWidget(countLabel);
+
     QList<OrchestrationNodeItem::BatchItem> working = *items;
     auto* list = new QListWidget(&dialog);
     list->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    const auto refill = [list, &working] {
+    const auto refill = [list, countLabel, &working] {
         list->clear();
         for (int index = 0; index < working.size(); ++index)
             list->addItem(QStringLiteral("%1. %2")
                               .arg(index + 1)
                               .arg(working[index].first));
+        countLabel->setText(working.isEmpty()
+                                ? QObject::tr("No structures loaded yet.")
+                                : QObject::tr("<b>%n structure(s) loaded</b>",
+                                              nullptr, working.size()));
     };
     const auto addItem = [&working](const OrchestrationNodeItem::BatchItem& item) {
         working.append(item);
@@ -1425,10 +1570,21 @@ bool editContainer(QWidget* parent, const OrchestrationWindow::MaterialList& ope
         if (!ok)
             return;
         const int index = names.indexOf(chosen);
-        if (index >= 0) {
-            addItem(open[index]);
-            refill();
-        }
+        if (index < 0)
+            return;
+        // One list pick, but a multi-frame trajectory tab (Random Noise
+        // Setup's ensemble, an opened .traj/multi-image .extxyz, ...) adds
+        // EVERY one of its frames -- not just the one structure this list
+        // row names -- exactly like picking a multi-frame FILE through
+        // "Import from File…" already does. Without a provider (the
+        // headless tests), fall back to the single structure the row
+        // itself names.
+        const QList<OrchestrationNodeItem::BatchItem> picked =
+            framesFor ? framesFor(open[index].second)
+                      : QList<OrchestrationNodeItem::BatchItem>{open[index]};
+        for (const auto& item : picked)
+            addItem(item);
+        refill();
     });
     QObject::connect(fromBulk, &QPushButton::clicked, &dialog, [&] {
         if (addBulkCrystals(&dialog, &working))
@@ -1441,15 +1597,26 @@ bool editContainer(QWidget* parent, const OrchestrationWindow::MaterialList& ope
                         "*.pdb *.poscar POSCAR CONTCAR *.vasp *.gen *.cube);;"
                         "All files (*)"));
         QStringList problems;
+        QStringList imports; // "<file>: N structure(s)", one per file picked
         for (const QString& path : paths) {
             QString error;
-            const auto imported = readStructuresFrom(path, &error);
+            const auto imported =
+                OrchestrationWindow::readStructuresFromFile(path, &error);
             if (!error.isEmpty())
                 problems << error;
+            if (!imported.isEmpty())
+                imports << QObject::tr("%1: %n structure(s)", nullptr,
+                                       imported.size())
+                                .arg(QFileInfo(path).fileName());
             for (const auto& item : imported)
                 addItem(item);
         }
         refill();
+        if (!imports.isEmpty())
+            countLabel->setText(
+                countLabel->text() + QStringLiteral("<br>")
+                + QObject::tr("Imported from %1.").arg(imports.join(
+                    QStringLiteral(", "))));
         if (!problems.isEmpty())
             QMessageBox::warning(&dialog, QObject::tr("Import from File"),
                                  problems.join(QLatin1Char('\n')));
@@ -1607,6 +1774,73 @@ bool editSupercell(QWidget* parent, SupercellSpec* spec)
     if (dialog.exec() != QDialog::Accepted)
         return false;
     *spec = currentSpec();
+    return true;
+}
+
+/// Settings of a Single-atom Container node: just the box size — which
+/// elements it holds is COMPUTED, not typed in, so there is nothing else
+/// to edit. `computed`, when non-empty (a previous Send already populated
+/// it), is shown as a preview so double-clicking answers "what does this
+/// node currently hold" without having to run the pipeline first.
+bool editSingleAtomContainer(QWidget* parent,
+                             const QList<OrchestrationNodeItem::BatchItem>& computed,
+                             SingleAtomContainerSpec* spec)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("Single-atom Container"));
+    auto* layout = new QVBoxLayout(&dialog);
+
+    auto* intro = new QLabel(
+        QObject::tr(
+            "Scans every structure reaching this node, collects the UNIQUE "
+            "elements across all of them, and emits one isolated-atom "
+            "reference cell per element — the usual source of E0s for "
+            "MLIP training. Always periodic: a large cubic box is the "
+            "standard approach for the plane-wave/periodic codes this "
+            "pipeline targets.<br><br>"
+            "Recomputed every time the pipeline runs, from whatever its "
+            "parent currently holds — there is nothing to type in here but "
+            "the box size."),
+        &dialog);
+    intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
+    layout->addWidget(intro);
+
+    auto* form = new QFormLayout;
+    auto* boxSize = new QDoubleSpinBox(&dialog);
+    boxSize->setRange(1.0, 100.0);
+    boxSize->setSuffix(QObject::tr(" Å"));
+    boxSize->setValue(spec->boxSizeAngstrom);
+    boxSize->setToolTip(QObject::tr(
+        "10 Å is the usual choice: large enough that periodic images do not "
+        "interact for any element's interaction range, small enough that a "
+        "plane-wave basis stays a reasonable size."));
+    form->addRow(QObject::tr("Box size:"), boxSize);
+    layout->addLayout(form);
+
+    if (!computed.isEmpty()) {
+        QStringList symbols;
+        for (const auto& item : computed)
+            symbols << item.first;
+        auto* preview = new QLabel(
+            QObject::tr("Currently holds %n element(s), from the last run: "
+                        "%1").arg(symbols.join(QStringLiteral(", "))),
+            &dialog);
+        preview->setWordWrap(true);
+        layout->addWidget(preview);
+    }
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
+                     &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                     &QDialog::reject);
+
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    spec->boxSizeAngstrom = boxSize->value();
     return true;
 }
 
@@ -2430,6 +2664,132 @@ bool editCvmEntropy(QWidget* parent, CvmEntropySpec* spec)
     return true;
 }
 
+bool editDump(QWidget* parent, DumpSpec* spec)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("Dump (ML Training Data)"));
+    auto* layout = new QVBoxLayout(&dialog);
+
+    auto* intro = new QLabel(
+        QObject::tr(
+            "Collect every pass of the fan-out feeding this node — its "
+            "computed structure, energy, forces and (when available) "
+            "stress — and write them as one extended-XYZ training set.<br>"
+            "<br>Runs ONCE, after the fan-out's <b>last</b> pass, not once "
+            "per structure: its whole point is to see all of them at "
+            "once.<br><br>"
+            "An extxyz file has no fixed vocabulary for \"the reference "
+            "energy\" — each trainer reads whichever keys it is told to. "
+            "Name the ones yours expects, or use the MACE preset below."),
+        &dialog);
+    intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
+    layout->addWidget(intro);
+
+    auto* form = new QFormLayout;
+
+    auto* pathRow = new QHBoxLayout;
+    auto* path = new QLineEdit(spec->outputPath, &dialog);
+    path->setPlaceholderText(
+        QObject::tr("where the training set is written"));
+    pathRow->addWidget(path);
+    auto* browse = new QPushButton(QObject::tr("Browse…"), &dialog);
+    pathRow->addWidget(browse);
+    QObject::connect(browse, &QPushButton::clicked, &dialog, [&dialog, path] {
+        const QString chosen = QFileDialog::getSaveFileName(
+            &dialog, QObject::tr("Write Training Set"), path->text(),
+            QObject::tr("Extended XYZ (*.extxyz);;All files (*)"));
+        if (!chosen.isEmpty())
+            path->setText(chosen);
+    });
+    form->addRow(QObject::tr("Output file:"), pathRow);
+
+    auto* preset = new QPushButton(QObject::tr("MACE training preset"), &dialog);
+    preset->setToolTip(QObject::tr(
+        "Fills the key names below with mace 0.3.15's own defaults "
+        "(mace.tools.default_keys.DefaultKeys) — REF_energy / REF_forces / "
+        "REF_stress, matching mace_run_train's --energy_key etc. The REF_ "
+        "prefix is MACE's own convention, not Calango's: its data loader "
+        "refuses a bare \"stress\" key outright, since ASE 3.23.0b1 made it "
+        "unsafe to round-trip between ASE and MACE."));
+    form->addRow(QString(), preset);
+
+    auto* energyKey = new QLineEdit(spec->energyKey, &dialog);
+    form->addRow(QObject::tr("Energy key:"), energyKey);
+    auto* forcesKey = new QLineEdit(spec->forcesKey, &dialog);
+    form->addRow(QObject::tr("Forces key:"), forcesKey);
+    auto* stressKey = new QLineEdit(spec->stressKey, &dialog);
+    stressKey->setPlaceholderText(
+        QObject::tr("empty — do not write a stress key"));
+    form->addRow(QObject::tr("Stress key:"), stressKey);
+    auto* configType = new QLineEdit(spec->configType, &dialog);
+    configType->setPlaceholderText(QObject::tr("empty — do not tag frames"));
+    form->addRow(QObject::tr("config_type:"), configType);
+
+    QObject::connect(preset, &QPushButton::clicked, &dialog,
+                     [energyKey, forcesKey, stressKey] {
+                         DumpSpec maceKeys;
+                         applyMaceTrainingPreset(&maceKeys);
+                         energyKey->setText(maceKeys.energyKey);
+                         forcesKey->setText(maceKeys.forcesKey);
+                         stressKey->setText(maceKeys.stressKey);
+                     });
+
+    auto* includeFailed =
+        new QCheckBox(QObject::tr("Include failed-calculation frames"), &dialog);
+    includeFailed->setChecked(spec->includeFailedFrames);
+    includeFailed->setToolTip(QObject::tr(
+        "Off by default: a pass whose energy could not be recovered is "
+        "dropped rather than given a placeholder value, which would "
+        "silently teach a model a wrong number."));
+    form->addRow(QString(), includeFailed);
+    auto* append =
+        new QCheckBox(QObject::tr("Append to the file if it exists"), &dialog);
+    append->setChecked(spec->appendToExistingFile);
+    form->addRow(QString(), append);
+    layout->addLayout(form);
+
+    auto* status = new QLabel(&dialog);
+    status->setWordWrap(true);
+    layout->addWidget(status);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                     &QDialog::reject);
+    const auto current = [&] {
+        DumpSpec edited;
+        edited.outputPath = path->text().trimmed();
+        edited.energyKey = energyKey->text().trimmed();
+        edited.forcesKey = forcesKey->text().trimmed();
+        edited.stressKey = stressKey->text().trimmed();
+        edited.configType = configType->text().trimmed();
+        edited.includeFailedFrames = includeFailed->isChecked();
+        edited.appendToExistingFile = append->isChecked();
+        return edited;
+    };
+    const auto refresh = [&] {
+        const bool ok = current().isValid();
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(ok);
+        status->setStyleSheet(ok ? QString()
+                                 : QStringLiteral("color:#c0392b;"));
+        status->setText(ok ? current().describe()
+                           : QObject::tr("An output file and both the energy "
+                                         "and forces key names are required."));
+    };
+    for (QLineEdit* field : {path, energyKey, forcesKey, stressKey})
+        QObject::connect(field, &QLineEdit::textChanged, &dialog,
+                         [&refresh] { refresh(); });
+    refresh();
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
+                     &QDialog::accept);
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    *spec = current();
+    return true;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -2637,6 +2997,11 @@ void OrchestrationWindow::addNodeAt(const QPointF& scenePos)
 void OrchestrationWindow::setMaterialsProvider(std::function<MaterialList()> provider)
 {
     materialsProvider_ = std::move(provider);
+}
+
+void OrchestrationWindow::setFramesProvider(FramesProvider provider)
+{
+    framesProvider_ = std::move(provider);
 }
 
 void OrchestrationWindow::promptAddNode(const QPointF* scenePos)
@@ -3060,6 +3425,36 @@ void OrchestrationWindow::setNodeBatchItems(
     updateRunControls();
 }
 
+QList<OrchestrationNodeItem::BatchItem>
+OrchestrationWindow::readStructuresFromFile(const QString& path, QString* error)
+{
+    QList<OrchestrationNodeItem::BatchItem> items;
+    const QString stem = QFileInfo(path).completeBaseName();
+    try {
+        std::vector<core::Structure> frames =
+            pybridge::AseBridge::readTrajectory(path.toStdString());
+        if (frames.empty()) {
+            *error = QObject::tr("%1 holds no structures.").arg(stem);
+            return items;
+        }
+        // A multi-frame file (a trajectory, a multi-image extxyz) contributes
+        // one container entry per frame, named `stem #n` — importing a
+        // 20-frame trajectory into a container is one of the obvious ways to
+        // build a sweep, and taking only its first frame would be a silent
+        // loss.
+        const bool many = frames.size() > 1;
+        for (std::size_t i = 0; i < frames.size(); ++i)
+            items.append({many ? QStringLiteral("%1 #%2").arg(stem).arg(i + 1)
+                               : stem,
+                          std::make_shared<const core::Structure>(
+                              std::move(frames[i]))});
+    } catch (const std::exception& e) {
+        *error = QObject::tr("%1 could not be read: %2")
+                     .arg(stem, QString::fromUtf8(e.what()));
+    }
+    return items;
+}
+
 void OrchestrationWindow::setNodeSupercell(OrchestrationNodeItem* node,
                                            const SupercellSpec& spec)
 {
@@ -3114,6 +3509,24 @@ void OrchestrationWindow::setNodeCvmEntropy(OrchestrationNodeItem* node,
     if (!node)
         return;
     node->setCvmEntropy(spec);
+    invalidateFrom(node);
+}
+
+void OrchestrationWindow::setNodeDump(OrchestrationNodeItem* node,
+                                      const DumpSpec& spec)
+{
+    if (!node)
+        return;
+    node->setDump(spec);
+    invalidateFrom(node);
+}
+
+void OrchestrationWindow::setNodeSingleAtomContainer(
+    OrchestrationNodeItem* node, const SingleAtomContainerSpec& spec)
+{
+    if (!node)
+        return;
+    node->setSingleAtomContainer(spec);
     invalidateFrom(node);
 }
 
@@ -3222,8 +3635,18 @@ void OrchestrationWindow::openNodeWizard(OrchestrationNodeItem* node)
             if (materialsProvider_)
                 materials_ = materialsProvider_();
             QList<OrchestrationNodeItem::BatchItem> items = node->batchItems();
-            if (editContainer(this, materials_, databaseImporter_, &items))
+            if (editContainer(this, materials_, databaseImporter_,
+                              framesProvider_, &items))
                 setNodeBatchItems(node, items);
+            break;
+        }
+        case OrchestrationTask::SingleAtomContainer: {
+            // Explicit, and it must stay above the default: the default arm
+            // is the DEFECT editor, so a transform that forgets its case
+            // here silently opens the wrong dialog.
+            SingleAtomContainerSpec spec = node->singleAtomContainer();
+            if (editSingleAtomContainer(this, node->batchItems(), &spec))
+                setNodeSingleAtomContainer(node, spec);
             break;
         }
         case OrchestrationTask::Supercell: {
@@ -3258,6 +3681,16 @@ void OrchestrationWindow::openNodeWizard(OrchestrationNodeItem* node)
             CvmEntropySpec spec = node->cvmEntropy();
             if (editCvmEntropy(this, &spec))
                 setNodeCvmEntropy(node, spec);
+            break;
+        }
+        case OrchestrationTask::Dump: {
+            // Explicit, and it must stay above the default: the default arm
+            // is the DEFECT editor, so a transform that forgets its case
+            // here silently opens the wrong dialog and writes a defect
+            // recipe into a node that will never read one.
+            DumpSpec spec = node->dump();
+            if (editDump(this, &spec))
+                setNodeDump(node, spec);
             break;
         }
         default: {
@@ -3322,8 +3755,14 @@ void OrchestrationWindow::openNodeWizard(OrchestrationNodeItem* node)
     wizard->selectCalculator(node->engine());
     if (wizard->exec() != QDialog::Accepted)
         return;
-    node->setConfiguration(wizard->script(), wizard->pythonExecutable(),
-                           wizard->runCommand(), wizard->calculatorKind());
+    // configureNode(), not node->setConfiguration() directly: reconfiguring
+    // an already-Done node (editing its settings after a run) has to reset
+    // it and everything downstream to Pending, or a subsequent Resume treats
+    // the stale, pre-edit output as current. On a never-run node this is a
+    // no-op (invalidateFrom() refuses anything already Pending), which is
+    // why the gap was invisible on a fresh graph.
+    configureNode(node, wizard->script(), wizard->pythonExecutable(),
+                 wizard->runCommand(), wizard->calculatorKind());
 }
 
 void OrchestrationWindow::removeSelected()
@@ -3363,12 +3802,61 @@ void OrchestrationWindow::connectNodes(OrchestrationNodeItem* from,
     for (const OrchestrationEdgeItem* edge : edges_)
         if (edge->from() == from && edge->to() == to)
             return; // already linked
+    // Both refusals below go through refuse() rather than a QMessageBox
+    // call of their own — refuse() already has the test-bypassable
+    // refusalHandler_ indirection every OTHER refusal in this class uses
+    // (see setRefusalHandler()), and a raw QMessageBox::information() call
+    // is MODAL: under the offscreen QPA platform this test suite runs
+    // under, nothing can ever click its (nonexistent) OK button, so it
+    // blocks forever rather than returning. That is true of any headless
+    // caller, not just a test — a batch/CI invocation of anything that
+    // reaches this path would hang identically.
     if (wouldCreateCycle(from, to)) {
-        QMessageBox::information(
-            this, tr("Orchestration"),
+        refuse(
             tr("That link would close a cycle — a process cannot run before "
                "its own results exist."));
         return;
+    }
+    // Reject a link into a port where a SECOND parent has no well-defined
+    // meaning, rather than silently accepting it and then never reading it.
+    // Three tasks are built to accept more than one: Dump reads every
+    // parent's own pass set directly (runTransform()'s Dump case) and
+    // concatenates them in link order; Single-point Calculation and
+    // Geometry Optimization become FAN-IN nodes (isFanInNode()) that run
+    // once per parent, in link order — see dependsOnFanIn()/advanceFanIn().
+    // Everywhere else, a parent fills either the single ordinary geometry
+    // port (no named slots at all — Container, a structure transform) or
+    // one of a FIXED list of named baselines (orchestrationInputSlots(),
+    // filled one parent per slot in link order) — in both cases a parent
+    // beyond that count would just never be read (parentsOf() is walked in
+    // full, but only the first N in link order fill anything), which is
+    // exactly the silent failure this guards against.
+    if (to->task() != OrchestrationTask::Dump
+        && to->task() != OrchestrationTask::SinglePoint
+        && to->task() != OrchestrationTask::GeometryOptimization) {
+        const int slots =
+            static_cast<int>(orchestrationInputSlots(to->task()).size());
+        const int maxParents = slots > 1 ? slots : 1;
+        int existing = 0;
+        for (const OrchestrationEdgeItem* edge : edges_)
+            if (edge->to() == to)
+                ++existing;
+        if (existing >= maxParents) {
+            refuse(
+                maxParents == 1
+                    ? tr("%1 already has an input connected. It reads a "
+                         "single structure — a second link would be drawn "
+                         "but never actually read. Remove the existing "
+                         "link first if you meant to replace it.")
+                          .arg(to->title())
+                    : tr("%1 already has all %2 of its inputs connected. A "
+                         "further link would be drawn but never actually "
+                         "read. Remove one first if you meant to replace "
+                         "it.")
+                          .arg(to->title())
+                          .arg(maxParents));
+            return;
+        }
     }
     auto* edge = new OrchestrationEdgeItem(from, to);
     scene_->addItem(edge);
@@ -3410,6 +3898,25 @@ OrchestrationWindow::parentsOf(OrchestrationNodeItem* node) const
     return parents;
 }
 
+namespace {
+
+/// True for a node that is downstream of a fan-out but must NOT be re-run
+/// per pass like an ordinary node — it collects the WHOLE batch's results
+/// and runs exactly once, after the last pass. Currently just Dump, whose
+/// entire point is to see every pass's result at once rather than one pass
+/// at a time.
+///
+/// Kept as its own predicate rather than folded into dependsOnContainer():
+/// every OTHER caller of dependsOnContainer() — the per-pass re-queue, the
+/// generic progress counter — needs exactly the OPPOSITE answer for it, so
+/// merging the two would make one of them wrong.
+bool isBatchAggregator(const OrchestrationNodeItem* node)
+{
+    return node->task() == OrchestrationTask::Dump;
+}
+
+} // namespace
+
 OrchestrationNodeItem* OrchestrationWindow::nextRunnable() const
 {
     for (OrchestrationNodeItem* node : nodes_) {
@@ -3419,6 +3926,60 @@ OrchestrationNodeItem* OrchestrationWindow::nextRunnable() const
         for (const OrchestrationNodeItem* parent : parentsOf(node))
             ready = ready
                 && parent->status() == OrchestrationNodeItem::Status::Done;
+        // A batch aggregator downstream of a fan-out is not ready just
+        // because its parent's CURRENT pass finished -- that is true after
+        // EVERY pass, since a fan-out node's status is re-queued and
+        // overwritten each time (see the class doc). It only sees the
+        // whole batch once the odometer has reached the LAST pass.
+        if (ready && isBatchAggregator(node) && dependsOnContainer(node)
+            && batchIndex_ + 1 < batchLength_)
+            ready = false;
+        // Phase 2 (a Single-atom Container and everything downstream of it)
+        // is not ready until phase 1 has FULLY finished -- its own element
+        // scan needs every one of phase 1's structures to already exist.
+        // Without this, the very first time its parent Container reaches
+        // Done (after pass 1 of potentially many), a phase-2 node would
+        // look ready by the ordinary parent-Done check above, and run on an
+        // INCOMPLETE structure set.
+        if (ready && dependsOnSingleAtomContainer(node)
+            && batchIndex_ + 1 < batchLength_)
+            ready = false;
+        // An aggregator that reads a phase-2 branch (Dump downstream of a
+        // Single-atom Container) additionally waits for phase 2 itself to
+        // be fully done -- the ordinary aggregator gate above only covers
+        // phase 1.
+        if (ready && isBatchAggregator(node)
+            && dependsOnSingleAtomContainer(node)
+            && atomBatchIndex_ + 1 < atomBatchLength_)
+            ready = false;
+        // The fan-in node ITSELF is a boundary for dependsOnContainer()/
+        // dependsOnSingleAtomContainer() (see those functions), so neither
+        // of the two gates above ever fires for it directly -- even when
+        // one of its OWN several parents genuinely belongs to phase 1 or 2,
+        // and is only reporting Done because that phase re-queues and
+        // overwrites status after EVERY pass, not just its last. Checked
+        // over its direct parents specifically, not by reachability,
+        // because only ITS parents' phase membership matters here.
+        if (ready && isFanInNode(node)) {
+            bool parentInPhase1 = false;
+            bool parentInPhase2 = false;
+            for (OrchestrationNodeItem* parent : parentsOf(node)) {
+                if (dependsOnSingleAtomContainer(parent))
+                    parentInPhase2 = true;
+                else if (dependsOnContainer(parent))
+                    parentInPhase1 = true;
+            }
+            if (parentInPhase1 && batchIndex_ + 1 < batchLength_)
+                ready = false;
+            if (parentInPhase2 && atomBatchIndex_ + 1 < atomBatchLength_)
+                ready = false;
+        }
+        // An aggregator that reads a phase-3 branch (Dump downstream of a
+        // fan-in node) additionally waits for phase 3 itself to be fully
+        // done, the same way it already waits for phases 1 and 2 above.
+        if (ready && isBatchAggregator(node) && dependsOnFanIn(node)
+            && fanInIndex_ + 1 < fanInLength_)
+            ready = false;
         if (ready)
             return node;
     }
@@ -3469,7 +4030,14 @@ namespace {
 /// described.
 int batchDimensionOf(const OrchestrationNodeItem* node)
 {
-    if (node->task() == OrchestrationTask::Container)
+    // Container and Single-atom Container are the SAME kind of dimension
+    // structurally (one item per pass, from batchItems_) but are kept
+    // SEPARATE in sendToProcesses()'s span-agreement loop — see
+    // OrchestrationWindow::dependsOnSingleAtomContainer(). Counting both
+    // here is still correct: this function only answers "does this node
+    // multiply the pipeline AT ALL", which is true for either.
+    if (node->task() == OrchestrationTask::Container
+        || node->task() == OrchestrationTask::SingleAtomContainer)
         return static_cast<int>(node->batchItems().size());
     if (node->task() == OrchestrationTask::DefectGenerator)
         return node->defectSpec().mode == DefectSpec::Mode::Separate
@@ -3481,6 +4049,48 @@ int batchDimensionOf(const OrchestrationNodeItem* node)
 }
 
 } // namespace
+
+bool OrchestrationWindow::isFanInNode(const OrchestrationNodeItem* node) const
+{
+    if (!node)
+        return false;
+    if (node->task() != OrchestrationTask::SinglePoint
+        && node->task() != OrchestrationTask::GeometryOptimization)
+        return false;
+    // Counted directly over edges_ rather than via parentsOf() so this stays
+    // callable from a CONST walk (dependsOnSingleAtomContainer() below) on a
+    // const node -- parentsOf() takes a non-const pointer for reasons
+    // unrelated to this check, and nothing here needs to mutate anything.
+    int parents = 0;
+    for (const OrchestrationEdgeItem* edge : edges_)
+        if (edge->to() == node)
+            ++parents;
+    return parents > 1;
+}
+
+bool OrchestrationWindow::dependsOnFanIn(const OrchestrationNodeItem* node) const
+{
+    // Same reachability walk as dependsOnSingleAtomContainer(), but looking
+    // for the THIRD phase's own marker (isFanInNode()) instead of a
+    // specific task. A fan-in node counts itself too (the walk starts at
+    // `node`): it is re-run once per pass of its OWN phase, the same way
+    // Container and Single-atom Container re-run once per pass of theirs.
+    std::vector<const OrchestrationNodeItem*> stack{node};
+    std::vector<const OrchestrationNodeItem*> seen;
+    while (!stack.empty()) {
+        const OrchestrationNodeItem* current = stack.back();
+        stack.pop_back();
+        if (std::find(seen.begin(), seen.end(), current) != seen.end())
+            continue;
+        seen.push_back(current);
+        if (isFanInNode(current))
+            return true;
+        for (const OrchestrationEdgeItem* edge : edges_)
+            if (edge->to() == current)
+                stack.push_back(edge->from());
+    }
+    return false;
+}
 
 bool OrchestrationWindow::dependsOnContainer(OrchestrationNodeItem* node) const
 {
@@ -3496,9 +4106,64 @@ bool OrchestrationWindow::dependsOnContainer(OrchestrationNodeItem* node) const
         if (std::find(seen.begin(), seen.end(), current) != seen.end())
             continue;
         seen.push_back(current);
+        // A Single-atom Container is an OPAQUE boundary for the primary
+        // phase, not a second way to trigger it. batchDimensionOf() answers
+        // "does this node multiply the pipeline at all", which is true for
+        // Container AND Single-atom Container both — so without this check,
+        // a node downstream of a Single-atom Container reads as depending
+        // on the primary phase too (because the walk finds the Single-atom
+        // Container's OWN dimension and stops there, mistaking it for
+        // Container's), gating it on batchLength_ in addition to
+        // atomBatchLength_, coupling two phases that are supposed to be
+        // independent. It fully absorbs whatever Container fed it — a
+        // node downstream of it is governed ONLY by
+        // dependsOnSingleAtomContainer()'s phase, never this one, so the
+        // walk stops here rather than continuing to the real Container.
+        if (current->task() == OrchestrationTask::SingleAtomContainer)
+            continue;
+        // A fan-in node (Single-point/Geometry Optimization with more than
+        // one parent) is the THIRD phase's own opaque boundary, for the
+        // same reason a Single-atom Container is: it absorbs whatever fed
+        // its several parents into one new, independent sweep, so anything
+        // downstream of it is governed by dependsOnFanIn()'s phase alone.
+        if (isFanInNode(current))
+            continue;
         if (batchDimensionOf(current) > 0)
             return true;
         for (OrchestrationEdgeItem* edge : edges_)
+            if (edge->to() == current)
+                stack.push_back(edge->from());
+    }
+    return false;
+}
+
+bool OrchestrationWindow::dependsOnSingleAtomContainer(
+    const OrchestrationNodeItem* node) const
+{
+    // Same reachability walk as dependsOnContainer(), but looking for one
+    // SPECIFIC task rather than "any batch-dimension producer" — this is
+    // what tells the two phases apart. A Single-atom Container node counts
+    // itself too (the walk starts at `node`), exactly like Container does
+    // for dependsOnContainer(): it is re-run once per pass of its OWN
+    // phase, the same way Container re-runs once per pass of the primary
+    // one.
+    std::vector<const OrchestrationNodeItem*> stack{node};
+    std::vector<const OrchestrationNodeItem*> seen;
+    while (!stack.empty()) {
+        const OrchestrationNodeItem* current = stack.back();
+        stack.pop_back();
+        if (std::find(seen.begin(), seen.end(), current) != seen.end())
+            continue;
+        seen.push_back(current);
+        if (current->task() == OrchestrationTask::SingleAtomContainer)
+            return true;
+        // Same boundary as dependsOnContainer() above: a fan-in node absorbs
+        // phase 2 (if one of its several parents happened to belong to it)
+        // the same way it absorbs phase 1, so this walk stops rather than
+        // reporting phase 2 for something the THIRD phase already governs.
+        if (isFanInNode(current))
+            continue;
+        for (const OrchestrationEdgeItem* edge : edges_)
             if (edge->to() == current)
                 stack.push_back(edge->from());
     }
@@ -3524,7 +4189,7 @@ QString OrchestrationWindow::tabTitleFor(const OrchestrationNodeItem* node) cons
     // short task name. Capped so a long container label cannot push the task
     // out of the visible part of the tab.
     constexpr int kMaxLabel = 22;
-    QString label = batchLabel();
+    QString label = batchLabelFor(node);
     if (label.isEmpty())
         label = node->materialName();
     if (label.size() > kMaxLabel)
@@ -3572,11 +4237,48 @@ QString OrchestrationWindow::batchLabel() const
     return parts.join(QStringLiteral(" / "));
 }
 
+QString OrchestrationWindow::atomBatchLabel() const
+{
+    for (const OrchestrationNodeItem* node : nodes_) {
+        if (node->task() != OrchestrationTask::SingleAtomContainer
+            || node->batchItems().isEmpty())
+            continue;
+        const int index = std::min(
+            atomBatchIndex_, static_cast<int>(node->batchItems().size()) - 1);
+        return node->batchItems()[index].first;
+    }
+    return QString();
+}
+
+QString OrchestrationWindow::fanInLabel() const
+{
+    for (OrchestrationNodeItem* node : nodes_) {
+        if (!isFanInNode(node))
+            continue;
+        const QList<OrchestrationNodeItem*> parents = parentsOf(node);
+        const int index =
+            std::min(fanInIndex_, static_cast<int>(parents.size()) - 1);
+        // The label IS the contributing parent's own title -- there is no
+        // synthetic item name here the way a Container entry has one, since
+        // this phase's "items" are other nodes' results, not user-entered
+        // structures.
+        return index >= 0 ? parents[index]->title() : QString();
+    }
+    return QString();
+}
+
+QString OrchestrationWindow::batchLabelFor(const OrchestrationNodeItem* node) const
+{
+    if (dependsOnFanIn(node))
+        return fanInLabel();
+    return dependsOnSingleAtomContainer(node) ? atomBatchLabel() : batchLabel();
+}
+
 void OrchestrationWindow::enqueue(OrchestrationNodeItem* node)
 {
     node->setStatus(OrchestrationNodeItem::Status::Waiting);
     node->setJobDirectory(QString());
-    const QString label = batchLabel();
+    const QString label = batchLabelFor(node);
     node->setProcessTaskId(
         processPanel_
             ? processPanel_->registerTask(
@@ -3591,14 +4293,31 @@ void OrchestrationWindow::enqueue(OrchestrationNodeItem* node)
 QString OrchestrationWindow::makeJobDirectory(OrchestrationNodeItem* node)
 {
     QString parent = orchestrationRoot_;
-    if (batchLength_ > 1) {
-        // One folder per Container item, so a batch of twelve alloys reads as
-        // twelve labelled studies rather than one folder of sixty runs whose
-        // only distinguishing feature is a counter.
-        QString label = batchLabel();
+    const bool phase3 = dependsOnFanIn(node);
+    const bool phase2 = !phase3 && dependsOnSingleAtomContainer(node);
+    const int length = phase3 ? fanInLength_ : phase2 ? atomBatchLength_ : batchLength_;
+    if (length > 1) {
+        // One folder per Container item (or, for phase 2, per element; or,
+        // for phase 3, per contributing parent), so a batch of twelve
+        // alloys reads as twelve labelled studies rather than one folder of
+        // sixty runs whose only distinguishing feature is a counter.
+        // "atom_batch_"/"fan_in_" rather than "batch_" for phases 2 and 3,
+        // so the three odometers are never mistaken for one on disk.
+        QString label = batchLabelFor(node);
         label.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._-]+")),
                       QStringLiteral("_"));
-        parent += QStringLiteral("/batch_%1_%2").arg(batchIndex_ + 1).arg(label);
+        if (phase3)
+            parent += QStringLiteral("/fan_in_%1_%2")
+                          .arg(fanInIndex_ + 1)
+                          .arg(label);
+        else if (phase2)
+            parent += QStringLiteral("/atom_batch_%1_%2")
+                          .arg(atomBatchIndex_ + 1)
+                          .arg(label);
+        else
+            parent += QStringLiteral("/batch_%1_%2")
+                          .arg(batchIndex_ + 1)
+                          .arg(label);
     }
     // launchedCount_ never resets within an orchestration, so a retry after a
     // Resume gets its own directory and the failed attempt's files stay where
@@ -3656,12 +4375,27 @@ OrchestrationWindow::beginProvenance(OrchestrationNodeItem* node,
     case OrchestrationTask::CvmEntropy:
         record.parameters = node->cvmEntropy().describe();
         break;
+    case OrchestrationTask::Dump:
+        // Overwritten with the real frame counts once runTransform()
+        // finishes; this is only what shows if it never gets that far.
+        record.parameters = node->dump().describe();
+        break;
     default:
         break;
     }
-    record.batchIndex = batchIndex_;
-    record.batchTotal = batchLength_;
-    record.batchLabel = batchLabel();
+    // Phase-aware: a node downstream of a Single-atom Container or a fan-in
+    // node reports against ITS OWN odometer, not the primary Container's.
+    if (dependsOnFanIn(node)) {
+        record.batchIndex = fanInIndex_;
+        record.batchTotal = fanInLength_;
+    } else if (dependsOnSingleAtomContainer(node)) {
+        record.batchIndex = atomBatchIndex_;
+        record.batchTotal = atomBatchLength_;
+    } else {
+        record.batchIndex = batchIndex_;
+        record.batchTotal = batchLength_;
+    }
+    record.batchLabel = batchLabelFor(node);
     record.attempt = std::max(1, node->attempts());
 
     // Logical provenance: which parent fills which named input, in link order.
@@ -3669,13 +4403,25 @@ OrchestrationWindow::beginProvenance(OrchestrationNodeItem* node,
     // supplies the input geometry.
     const auto inputs = resolveInputs(node);
     const QList<OrchestrationNodeItem*> parents = parentsOf(node);
-    for (int index = 0; index < parents.size(); ++index) {
-        const QString role = index < inputs.size()
-            ? inputs[index].first.label
-            : tr("input structure");
-        record.parents.append(
-            {parents[index]->id(),
-             tr("%1 ← %2").arg(role, parents[index]->title())});
+    if (isFanInNode(node)) {
+        // Only the ONE parent THIS pass actually used -- listing all of
+        // them here would read as if every parent contributed to a single
+        // pass, when fan-in runs one pass PER parent instead.
+        const int index =
+            std::min(fanInIndex_, static_cast<int>(parents.size()) - 1);
+        if (index >= 0)
+            record.parents.append(
+                {parents[index]->id(),
+                 tr("input structure ← %1").arg(parents[index]->title())});
+    } else {
+        for (int index = 0; index < parents.size(); ++index) {
+            const QString role = index < inputs.size()
+                ? inputs[index].first.label
+                : tr("input structure");
+            record.parents.append(
+                {parents[index]->id(),
+                 tr("%1 ← %2").arg(role, parents[index]->title())});
+        }
     }
     record.status = QStringLiteral("running");
     record.startedUtc = utcNow();
@@ -3719,7 +4465,7 @@ void OrchestrationWindow::writeManifest() const
     for (const OrchestrationEdgeItem* edge : edges_)
         edgeArray.append(QJsonObject{{QStringLiteral("from"), edge->from()->id()},
                                      {QStringLiteral("to"), edge->to()->id()}});
-    const QJsonObject root{
+    QJsonObject root{
         {QStringLiteral("schema"),
          QStringLiteral("calango.orchestration.manifest/1")},
         {QStringLiteral("started_utc"), runStartedUtc_},
@@ -3730,9 +4476,79 @@ void OrchestrationWindow::writeManifest() const
         {QStringLiteral("nodes"), nodeArray},
         {QStringLiteral("edges"), edgeArray},
     };
+    // Additive: only present when a Single-atom Container actually makes the
+    // graph have a second phase, so a manifest from a graph without one is
+    // byte-for-byte what it always was.
+    if (atomBatchLength_ > 1)
+        root.insert(QStringLiteral("atom_batch"),
+                    QJsonObject{{QStringLiteral("index"), atomBatchIndex_},
+                                {QStringLiteral("total"), atomBatchLength_},
+                                {QStringLiteral("label"), atomBatchLabel()}});
+    // Additive, same reasoning: only present for a graph with a fan-in node.
+    if (fanInLength_ > 1)
+        root.insert(QStringLiteral("fan_in"),
+                    QJsonObject{{QStringLiteral("index"), fanInIndex_},
+                                {QStringLiteral("total"), fanInLength_},
+                                {QStringLiteral("label"), fanInLabel()}});
     QFile file(orchestrationRoot_ + QStringLiteral("/orchestration.json"));
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
         file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+}
+
+bool OrchestrationWindow::populateSingleAtomContainers(QString* error)
+{
+    // EAGER, and the whole reason this can be a plain data update rather
+    // than something staged through a job: a Container's batchItems_ are
+    // already fully known before Send is ever pressed (the user set them,
+    // or an earlier such call already computed them), so there is nothing
+    // to WAIT for -- unlike an ordinary transform, which edits a structure
+    // that reaches it only once its parent has actually RUN.
+    for (OrchestrationNodeItem* node : nodes_) {
+        if (node->task() != OrchestrationTask::SingleAtomContainer)
+            continue;
+        const QList<OrchestrationNodeItem*> parents = parentsOf(node);
+        if (parents.isEmpty()) {
+            if (error)
+                *error = tr(
+                    "%1 was not started: nothing feeds it structures.\n\n"
+                    "Link a Structure Container (or another node whose "
+                    "output is a set of structures) upstream of it.")
+                             .arg(node->title());
+            return false;
+        }
+        // The first parent only -- the same single-source contract every
+        // other transform follows. Merging several sources' structures is
+        // Dump's job, not this one's.
+        const QList<OrchestrationNodeItem::BatchItem> sources =
+            parents.front()->batchItems();
+        if (sources.isEmpty()) {
+            if (error)
+                *error = tr(
+                    "%1 was not started: %2 provides no structures to scan."
+                    "\n\nLink a Structure Container that actually holds "
+                    "some, or fill the one already linked (double-click "
+                    "it).")
+                             .arg(node->title(), parents.front()->title());
+            return false;
+        }
+        const QList<OrchestrationNodeItem::BatchItem> items =
+            buildSingleAtomBatch(sources, node->singleAtomContainer());
+        if (items.isEmpty()) {
+            if (error)
+                *error = tr(
+                    "%1 was not started: none of %2's structures carry any "
+                    "atoms.")
+                             .arg(node->title(), parents.front()->title());
+            return false;
+        }
+        // Direct, not setNodeSingleAtomContainer()/setNodeBatchItems(): this
+        // is a quiet recomputation ahead of a fresh Send, which is about to
+        // enqueue() (and so re-Waiting) every node anyway -- invalidateFrom()
+        // here would just be redundant work on a graph that has not run yet
+        // this send.
+        node->setBatchItems(items);
+    }
+    return true;
 }
 
 void OrchestrationWindow::sendToProcesses()
@@ -3745,6 +4561,17 @@ void OrchestrationWindow::sendToProcesses()
     if (runningNode_)
         return; // already executing
 
+    // --- Phase 2's own source, resolved before anything else: its span has
+    // to be known for the batch plan below, and unlike everything else here
+    // it needs no job to have run first -- see populateSingleAtomContainers().
+    {
+        QString error;
+        if (!populateSingleAtomContainers(&error)) {
+            refuse(error);
+            return;
+        }
+    }
+
     // --- Batch plan --------------------------------------------------------
     // Every Container must hold the same number of structures, because the
     // pipeline makes ONE pass per item and a pass has to give each container
@@ -3752,6 +4579,8 @@ void OrchestrationWindow::sendToProcesses()
     // structure of the shorter list, which is a study nobody asked for.
     batchIndex_ = 0;
     batchLength_ = 1;
+    atomBatchIndex_ = 0;
+    atomBatchLength_ = 1;
     // Two INDEPENDENT dimensions, and they multiply.
     //
     // Containers are one dimension: several of them supply one structure each
@@ -3777,6 +4606,12 @@ void OrchestrationWindow::sendToProcesses()
             refuse(node->configurationProblem());
             return;
         }
+        // Phase 2's own dimension, handled in its own loop below: forcing it
+        // to agree with (or multiply into) the primary Container/Defect/SQS
+        // span here would refuse or mis-scale exactly the graphs this node
+        // exists for -- see the SingleAtomContainer enum entry's own doc.
+        if (node->task() == OrchestrationTask::SingleAtomContainer)
+            continue;
         const int count = batchDimensionOf(node);
         if (count == 0)
             continue;
@@ -3814,6 +4649,66 @@ void OrchestrationWindow::sendToProcesses()
     }
     batchLength_ = containerSpan * batchDefectSpan_;
 
+    // Phase 2's own span, in its own pass: SEQUENTIAL after the one above,
+    // not multiplied or agreement-checked against it — see the
+    // SingleAtomContainer enum entry's own doc for why. Multiple
+    // Single-atom Container nodes ARE still checked against EACH OTHER,
+    // for the same reason two ordinary Containers are: if both feed the
+    // same downstream phase-2 subtree, a pass has to give both an item.
+    {
+        const OrchestrationNodeItem* atomRef = nullptr;
+        for (OrchestrationNodeItem* node : nodes_) {
+            if (node->task() != OrchestrationTask::SingleAtomContainer)
+                continue;
+            const int count = static_cast<int>(node->batchItems().size());
+            if (!atomRef) {
+                atomRef = node;
+                atomBatchLength_ = count;
+            } else if (count != atomBatchLength_) {
+                refuse(tr("%1 holds %2 elements but %3 holds %4.\n\n"
+                          "The pipeline makes one phase-2 pass per element, "
+                          "so every Single-atom Container has to supply the "
+                          "same number. Give them the same count, or chain "
+                          "them instead of running them side by side.")
+                             .arg(atomRef->title())
+                             .arg(atomBatchLength_)
+                             .arg(node->title())
+                             .arg(count));
+                return;
+            }
+        }
+    }
+
+    // Phase 3's own span, in its own pass: SEQUENTIAL after phase 2, over a
+    // count unrelated to either — how many parents the fan-in node has.
+    // Known immediately, unlike phase 1/2's lengths: parentsOf() is
+    // structural, not something that has to be computed or configured
+    // first. At most ONE fan-in node is allowed per graph: two, possibly
+    // with different parent counts, would need a second independent
+    // odometer this phase does not have, the same reason two ordinary
+    // Containers of different lengths are refused above rather than run at
+    // whichever is shorter.
+    fanInIndex_ = 0;
+    fanInLength_ = 1;
+    {
+        OrchestrationNodeItem* fanInRef = nullptr;
+        for (OrchestrationNodeItem* node : nodes_) {
+            if (!isFanInNode(node))
+                continue;
+            if (fanInRef) {
+                refuse(tr("%1 and %2 each have more than one parent.\n\n"
+                          "Only one Single-point Calculation or Geometry "
+                          "Optimization node may fan in over several "
+                          "parents per graph — put the second one in a "
+                          "separate pipeline.")
+                           .arg(fanInRef->title(), node->title()));
+                return;
+            }
+            fanInRef = node;
+            fanInLength_ = static_cast<int>(parentsOf(node).size());
+        }
+    }
+
     // Sending queues EVERY node: each shows as "waiting" until its turn, so
     // the canvas reads as a process queue from the moment of submission. A
     // fresh send resets previous results — they are superseded, not
@@ -3823,6 +4718,19 @@ void OrchestrationWindow::sendToProcesses()
     for (OrchestrationNodeItem* node : nodes_) {
         node->clearJobHistory();
         enqueue(node);
+        // Fresh progress for a fresh run -- a fan-out node's "37/100 done"
+        // from a previous send must not linger and read as this run's.
+        // Phase-aware: a node downstream of a Single-atom Container or a
+        // fan-in node counts against ITS OWN phase's length, not
+        // batchLength_.
+        const bool phase3 = dependsOnFanIn(node);
+        const bool phase2 = !phase3 && dependsOnSingleAtomContainer(node);
+        node->setBatchProgress(0,
+                               phase3 ? fanInLength_
+                               : phase2 ? atomBatchLength_
+                                        : (dependsOnContainer(node)
+                                               ? batchLength_
+                                               : 0));
     }
     launchedCount_ = 0;
 
@@ -3946,6 +4854,16 @@ void OrchestrationWindow::pump()
         if (!next) {
             if (advanceBatch())
                 continue;
+            // Phase 1 is exhausted; try phase 2. Sequential, never
+            // interleaved -- see advanceAtomBatch()'s own doc. A no-op
+            // (always false) when the graph has no Single-atom Container.
+            if (advanceAtomBatch())
+                continue;
+            // Phase 2 is exhausted; try phase 3 (a fan-in Single-point/
+            // Geometry Optimization node's per-parent sweep). Same strict
+            // sequencing, same no-op-when-absent behaviour.
+            if (advanceFanIn())
+                continue;
             writeManifest();
             // Every pass made and nothing left runnable: this is the end of
             // the run, and the only moment at which the whole of what happened
@@ -3980,6 +4898,59 @@ bool OrchestrationWindow::advanceBatch()
     for (OrchestrationNodeItem* node : nodes_) {
         if (!dependsOnContainer(node))
             continue; // its result does not vary with the batch item
+        // A batch aggregator is deliberately left alone here: re-queuing it
+        // every pass is exactly the per-pass behaviour it is NOT supposed to
+        // have. It stays Waiting from its initial enqueue() at Send time
+        // until nextRunnable()'s own gate lets it through, on the last pass.
+        if (isBatchAggregator(node))
+            continue;
+        // Phase 2 has its OWN advance (advanceAtomBatch()), called only
+        // once this phase is exhausted -- re-queuing it here too would
+        // re-run it once per PHASE-1 pass instead of once per element.
+        if (dependsOnSingleAtomContainer(node))
+            continue;
+        // Phase 3 (advanceFanIn()) likewise -- a fan-in node with a
+        // phase-1-driven parent must not be re-queued here on every
+        // phase-1 pass; it runs once per PARENT once its own phase starts.
+        if (dependsOnFanIn(node))
+            continue;
+        enqueue(node);
+        queued = true;
+    }
+    return queued;
+}
+
+bool OrchestrationWindow::advanceAtomBatch()
+{
+    if (atomBatchIndex_ + 1 >= atomBatchLength_)
+        return false;
+    ++atomBatchIndex_;
+    bool queued = false;
+    for (OrchestrationNodeItem* node : nodes_) {
+        if (!dependsOnSingleAtomContainer(node))
+            continue;
+        if (isBatchAggregator(node))
+            continue;
+        // Same exclusion as advanceBatch() above, one phase over.
+        if (dependsOnFanIn(node))
+            continue;
+        enqueue(node);
+        queued = true;
+    }
+    return queued;
+}
+
+bool OrchestrationWindow::advanceFanIn()
+{
+    if (fanInIndex_ + 1 >= fanInLength_)
+        return false;
+    ++fanInIndex_;
+    bool queued = false;
+    for (OrchestrationNodeItem* node : nodes_) {
+        if (!dependsOnFanIn(node))
+            continue;
+        if (isBatchAggregator(node))
+            continue;
         enqueue(node);
         queued = true;
     }
@@ -4016,11 +4987,168 @@ bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
     };
 
     // -- The transforms that consume RESULTS, not a structure ---------------
-    // All three return BEFORE the structure read below, and that is the whole
-    // reason they are first: their input is a results file staged into a slot,
-    // and there may be no geometry in the directory at all. They also write no
-    // transformed.extxyz — they produce a database, a fit or a curve, so
-    // `produced` stays null and no workspace tab is claimed.
+    // These return BEFORE the structure read below, and that is the whole
+    // reason they are first: their input is a results file (or, for Dump, a
+    // whole set of them) rather than the ordinary geometry handoff, and there
+    // may be no geometry in this directory at all. They also write no
+    // transformed.extxyz — they produce a database, a fit, a curve or a
+    // training set, so `produced` stays null and no workspace tab is claimed.
+    if (node->task() == OrchestrationTask::Dump) {
+        // Unlike the other three, Dump does not read one staged file: it
+        // runs exactly once (isBatchAggregator() gates nextRunnable() on
+        // the fan-out's LAST pass), and by then report_ already holds one
+        // outcome per pass of its parent — that IS the ensemble, with no
+        // file ever needing to hold every pass's forces at once.
+        const QList<OrchestrationNodeItem*> parents = parentsOf(node);
+        if (parents.isEmpty()) {
+            *error = tr("nothing feeds it a completed calculation");
+            return false;
+        }
+        // The result file a Simulation task's structure-WITH-RESULTS lands
+        // under — the same priority order startNode() itself searches when
+        // handing a parent's output to its next node, restricted to the
+        // three that actually carry a calculator's results (a transform's
+        // "transformed.extxyz" and the plain "structure.extxyz" never do,
+        // so they are not worth a frame with no properties on it).
+        static const char* const kResultNames[] = {
+            "single_point.extxyz", "optimized.extxyz", "md_final.extxyz"};
+        QList<DumpSourceFrame> sources;
+        QStringList preExcluded;
+        // Dump is the one node built to MERGE: connectNodes() allows any
+        // number of parents into it specifically because concatenation in
+        // link order is a well-defined operation on a set of structures —
+        // bulk noisy structures from one branch, isolated-atom references
+        // from another, both landing in one training set. parentsOf()
+        // already returns parents in link order, so walking it in order
+        // and each parent's own passes in batchIndex order beneath it is
+        // deterministic end to end: the same graph always merges the same
+        // way.
+        for (const OrchestrationNodeItem* parent : parents) {
+            // Verified against mace/data/utils.py (mace 0.3.15, the
+            // installed package): a frame with
+            // info['config_type'] == "IsolatedAtom" (and exactly one atom)
+            // is auto-recognized as an E0 reference -- MACE extracts its
+            // energy as that element's E0 and excludes it from ordinary
+            // training by default. Applied automatically to every frame
+            // THIS parent contributes, regardless of the node's own
+            // configType field or of what any OTHER merged parent is —
+            // one branch can be bulk structures and another isolated
+            // atoms, tagged independently, because a Single-atom
+            // Container's origin is exactly what this convention exists
+            // to mark, not something worth a UI toggle.
+            const bool isolatedAtomSource =
+                dependsOnSingleAtomContainer(parent);
+
+            // The LATEST recorded outcome per pass, for THIS parent. A
+            // Resume can leave more than one entry for the same
+            // batchIndex — the failed attempt, then the retry that
+            // succeeded — and only the most recent is current;
+            // report_.outcomes is append-only, so a later entry always
+            // overwrites an earlier one for the same key here.
+            QMap<int, core::NodeOutcome> latest;
+            for (const core::NodeOutcome& outcome : report_.outcomes)
+                if (outcome.nodeId == parent->id())
+                    latest[outcome.batchIndex] = outcome;
+
+            for (auto it = latest.constBegin(); it != latest.constEnd();
+                 ++it) {
+                const core::NodeOutcome& outcome = it.value();
+                QString label = outcome.batchLabel.isEmpty()
+                    ? tr("pass %1").arg(outcome.batchIndex + 1)
+                    : tr("pass %1 (%2)")
+                          .arg(outcome.batchIndex + 1).arg(outcome.batchLabel);
+                // Only prefixed with the parent's own title when there is
+                // more than one — with a single parent (the overwhelmingly
+                // common case) the label is unchanged from before Dump
+                // could merge at all.
+                if (parents.size() > 1)
+                    label = tr("%1, %2").arg(parent->title(), label);
+                if (outcome.status != QLatin1String("done")
+                    && !node->dump().includeFailedFrames) {
+                    preExcluded << tr("%1: %2")
+                                       .arg(label, outcome.note.isEmpty()
+                                                        ? tr("did not complete")
+                                                        : outcome.note);
+                    continue;
+                }
+                QString resultPath;
+                for (const char* candidate : kResultNames) {
+                    const QString path = outcome.directory + QLatin1Char('/')
+                        + QLatin1String(candidate);
+                    if (QFile::exists(path)) {
+                        resultPath = path;
+                        break;
+                    }
+                }
+                if (resultPath.isEmpty()) {
+                    preExcluded << tr("%1: no computed structure in its "
+                                      "results")
+                                       .arg(label);
+                    continue;
+                }
+                sources.append(
+                    {resultPath, label,
+                     isolatedAtomSource ? QStringLiteral("IsolatedAtom")
+                                        : QString()});
+            }
+        }
+
+        // IsolatedAtom frames sort first in the written trajectory,
+        // regardless of which parent/pass contributed them: MACE's own
+        // config_type convention marks them as E0 references rather than
+        // ordinary training data, and several MLIP tooling conventions
+        // (this one included) expect a file's E0 references up front,
+        // before the bulk/defect frames they normalize against. A stable
+        // partition -- not a full re-sort -- so link/pass order is
+        // otherwise preserved exactly as gathered above.
+        std::stable_partition(
+            sources.begin(), sources.end(), [](const DumpSourceFrame& frame) {
+                return frame.configTypeOverride
+                    == QStringLiteral("IsolatedAtom");
+            });
+
+        DumpOutput dumped;
+        QString problem;
+        if (!runDump(sources, node->dump(), &dumped, &problem)) {
+            *error = problem;
+            return false;
+        }
+        // Merged AFTER runDump(): these are passes that never became a
+        // source frame at all (no result file, or excluded by status before
+        // one was even looked for), on top of whatever runDump's own read
+        // of the files it DID get excluded once it tried them.
+        dumped.framesExcluded += preExcluded.size();
+        dumped.excludedReasons = preExcluded + dumped.excludedReasons;
+        if (dumped.framesExcluded > 0)
+            dumped.headline = tr("%1 frame(s) written to %2 (%3 excluded)")
+                                   .arg(dumped.framesWritten)
+                                   .arg(QFileInfo(node->dump().outputPath)
+                                            .fileName())
+                                   .arg(dumped.framesExcluded);
+
+        const QJsonObject summary{
+            {QStringLiteral("output_path"), node->dump().outputPath},
+            {QStringLiteral("frames_written"), dumped.framesWritten},
+            {QStringLiteral("frames_excluded"), dumped.framesExcluded},
+            {QStringLiteral("excluded_reasons"),
+             QJsonArray::fromStringList(dumped.excludedReasons)},
+        };
+        if (!write(QStringLiteral("dump_summary.json"),
+                   QString::fromUtf8(
+                       QJsonDocument(summary).toJson(QJsonDocument::Indented)))) {
+            *error = tr("its summary could not be written into %1").arg(dir);
+            return false;
+        }
+        record.parameters = dumped.headline;
+        // Repurposes the SAME two counters the fan-out progress uses, but
+        // for a different meaning here: frames written / frames considered,
+        // not passes done / batch length. recordOutcome()'s generic block is
+        // gated off for a batch aggregator so it does not overwrite this.
+        node->setBatchProgress(dumped.framesWritten,
+                               dumped.framesWritten + dumped.framesExcluded);
+        return true;
+    }
+
     if (node->task() == OrchestrationTask::ClusterExpansionFit) {
         QString ensemble;
         if (!readStaged(QStringLiteral("cluster_expansion.json"), &ensemble)) {
@@ -4092,12 +5220,18 @@ bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
         return true;
     }
 
-    if (node->task() == OrchestrationTask::Container) {
+    if (node->task() == OrchestrationTask::Container
+        || node->task() == OrchestrationTask::SingleAtomContainer) {
         // A source, not an edit: it ignores whatever reached it and emits the
-        // batch item for this pass.
+        // batch item for this pass. Single-atom Container is structurally
+        // the SAME thing (batchItems_ set in advance, one emitted per pass)
+        // but steps through its OWN, independent phase-2 odometer.
         const auto& items = node->batchItems();
-        const int index =
-            std::min(containerBatchIndex(), static_cast<int>(items.size()) - 1);
+        const bool phase2 =
+            node->task() == OrchestrationTask::SingleAtomContainer;
+        const int index = std::min(
+            phase2 ? atomBatchIndex_ : containerBatchIndex(),
+            static_cast<int>(items.size()) - 1);
         if (index < 0 || !items[index].second) {
             *error = tr("its structure list is empty");
             return false;
@@ -4259,11 +5393,30 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
     //
     // A Container is the exception: it is a SOURCE. It emits the batch item
     // for this pass and has nothing to inherit, so it skips staging entirely
-    // even if somebody linked a parent into it.
-    if (node->task() == OrchestrationTask::Container) {
+    // even if somebody linked a parent into it. A Single-atom Container is
+    // the same kind of exception, for a different reason: its own
+    // batchItems_ were already filled in, EAGERLY, by
+    // populateSingleAtomContainers() before this run even started — staging
+    // its parent's LATEST structure here would stage exactly one bulk
+    // structure it has no use for.
+    if (node->task() == OrchestrationTask::Container
+        || node->task() == OrchestrationTask::SingleAtomContainer) {
         // nothing to stage
     } else if (!parents.isEmpty()) {
-        const QString parentDir = parents.front()->jobDirectory();
+        // Ordinarily the first (and only) connected parent. A fan-in node
+        // (isFanInNode(): a Single-point Calculation or Geometry
+        // Optimization with more than one parent) instead uses the ONE
+        // parent THIS pass belongs to — parentsOf() is already in link
+        // order, and fanInIndex_ is exactly "which pass" — which is what
+        // makes execution order match connection order: pass i's geometry
+        // always comes from the i-th linked parent, never from whichever
+        // parent happened to finish first.
+        OrchestrationNodeItem* effectiveParent =
+            isFanInNode(node)
+                ? parents[std::min(fanInIndex_,
+                                   static_cast<int>(parents.size()) - 1)]
+                : parents.front();
+        const QString parentDir = effectiveParent->jobDirectory();
         QString source;
         for (const char* candidate :
              {"transformed.extxyz", "optimized.extxyz", "md_final.extxyz",
@@ -4285,7 +5438,7 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
             staged << QStringLiteral("structure.extxyz");
             record.inputs.append(describeFile(
                 dir, QStringLiteral("structure.extxyz"),
-                tr("input structure"), source, parents.front()->id()));
+                tr("input structure"), source, effectiveParent->id()));
         }
         if (needsGeometry
             && !QFile::exists(dir + QStringLiteral("/structure.extxyz"))) {
@@ -4316,7 +5469,7 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
                 staged << QStringLiteral("single_point.gpw");
                 record.inputs.append(describeFile(
                     dir, QStringLiteral("single_point.gpw"),
-                    tr("ground state"), gpw, parents.front()->id()));
+                    tr("ground state"), gpw, effectiveParent->id()));
             }
         }
 
@@ -4331,11 +5484,32 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
                     continue;
                 return false; // already refused above; belt and braces
             }
+            // The "ground state" slot names single_point.gpw, which is what
+            // every baseline-inheriting task's SCRIPT reads for a GPAW
+            // parent -- but a VASP parent writes no such file; its density
+            // lives in CHGCAR. Electronic Bands and Wannier are the two
+            // baseline-inheriting tasks whose OWN VASP script generation
+            // (ElectronicScriptGenerator.cpp's ElectronicBackend::Vasp case
+            // and WannierScriptGenerator.cpp's generateVaspWannier90Script,
+            // both ICHARG=11 off a copied-in CHGCAR) is actually correct and
+            // complete, so those are the two this session makes the staging
+            // itself engine-aware for -- see FUTURE.md §7b for why the
+            // other seven baseline-inheriting tasks are deliberately left
+            // as they were rather than generalized to all of them at once.
+            // The staged NAME is unchanged (baseline_1.gpw) either way --
+            // it is an opaque path as far as the generated script is
+            // concerned, not a claim about the file's format.
+            QString sourceName = slot.sourceName;
+            if ((node->task() == OrchestrationTask::ElectronicBands
+                 || node->task() == OrchestrationTask::Wannier)
+                && sourceName == QLatin1String("single_point.gpw")
+                && parent->engine() == core::CalculatorKind::Vasp)
+                sourceName = QStringLiteral("CHGCAR");
             const QString target = dir + QLatin1Char('/') + slot.stagedName;
-            const QString origin = slot.sourceName.isEmpty()
+            const QString origin = sourceName.isEmpty()
                 ? parent->jobDirectory()
-                : parent->jobDirectory() + QLatin1Char('/') + slot.sourceName;
-            const bool ok = slot.sourceName.isEmpty()
+                : parent->jobDirectory() + QLatin1Char('/') + sourceName;
+            const bool ok = sourceName.isEmpty()
                 ? copyDirectory(parent->jobDirectory(), target)
                 : QFile::copy(origin, target);
             if (ok) {
@@ -4351,16 +5525,25 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
             // mis-wired graph either way -- and the wizard has already been
             // configured against the file that is missing.
             refuse(
-                tr("%1 was not started: its \"%2\" input expects %3 in the "
-                   "results of %4, and there is none.\n\n"
-                   "That process did not save what this one reads — a "
-                   "Single-Point Calculation has to save its wavefunctions "
-                   "(.gpw) for anything downstream to restart from it.")
-                    .arg(node->title(), slot.label,
-                         slot.sourceName.isEmpty()
-                             ? tr("its results directory")
-                             : slot.sourceName,
-                         parent->title()));
+                sourceName == QLatin1String("CHGCAR")
+                    ? tr("%1 was not started: its \"%2\" input expects %3 in "
+                         "the results of %4, and there is none.\n\n"
+                         "That process did not save what this one reads — a "
+                         "VASP Single-Point Calculation has to write its "
+                         "charge density (LCHARG = .TRUE., the default) for "
+                         "anything downstream to restart from it.")
+                          .arg(node->title(), slot.label, sourceName,
+                               parent->title())
+                    : tr("%1 was not started: its \"%2\" input expects %3 in "
+                         "the results of %4, and there is none.\n\n"
+                         "That process did not save what this one reads — a "
+                         "Single-Point Calculation has to save its "
+                         "wavefunctions (.gpw) for anything downstream to "
+                         "restart from it.")
+                          .arg(node->title(), slot.label,
+                               sourceName.isEmpty() ? tr("its results directory")
+                                                    : sourceName,
+                               parent->title()));
             return false;
         }
     } else {
@@ -4495,6 +5678,33 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
     if (!writeScript(dir + QStringLiteral("/run.py"), script, &error))
         return false;
 
+    // Minimal calculator provenance — engine name/kind only, not the full
+    // parameter set a standalone wizard's calculatorProvenanceJson() records
+    // (xc, cutoff, k-mesh, ...), which is not available here and not what
+    // this fixes. Written for EVERY Simulation-family launch, not just
+    // SinglePoint, for the same reason provenance.json is: a baseline-
+    // inheriting wizard reading this node's directory later has no other way
+    // to learn what engine actually ran here — before this, an
+    // ORCHESTRATION-launched job wrote no calculator.json at all, so
+    // anything downstream reading it back (readBaselineSummary(), and
+    // therefore the Wannier wizard's "inherited calculator" / "Symmetry:
+    // off" detection) silently defaulted to treating an UNKNOWN engine as
+    // GPAW — which was actively wrong for a VASP (or QE, or SIESTA)
+    // baseline reached through this canvas rather than through the
+    // standalone menu wizard.
+    {
+        const QJsonObject provenance{
+            {QStringLiteral("engine"),
+             QString::fromStdString(core::toString(node->engine()))},
+            {QStringLiteral("engine_kind"), static_cast<int>(node->engine())},
+        };
+        QFile calcJson(dir + QStringLiteral("/calculator.json"));
+        if (calcJson.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            calcJson.write(QJsonDocument(provenance).toJson(QJsonDocument::Compact));
+            staged << QStringLiteral("calculator.json");
+        }
+    }
+
     // --- Launch through the shared command machinery -----------------------
     RunCommands::Context context;
     context.pythonExecutable = !node->configuredPython().isEmpty()
@@ -4520,7 +5730,7 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
         // The same label the Processes row carries, so a batched pass reads
         // as its own structure in Results rather than as three runs sharing
         // the node's originally assigned material.
-        const QString label = batchLabel();
+        const QString label = batchLabelFor(node);
         Q_EMIT nodeStarted(node->processTaskId(),
                            tr("Orchestration: %1 (%2)")
                                .arg(node->title(),
@@ -4544,8 +5754,10 @@ void OrchestrationWindow::recordOutcome(OrchestrationNodeItem* node,
         : EnginePresets::displayName(node->engine());
     outcome.directory = node->jobDirectory();
     outcome.status = statusSlug(node->status());
-    outcome.batchIndex = batchIndex_;
-    outcome.batchLabel = batchLabel();
+    const bool phase3 = dependsOnFanIn(node);
+    const bool phase2 = !phase3 && dependsOnSingleAtomContainer(node);
+    outcome.batchIndex = phase3 ? fanInIndex_ : phase2 ? atomBatchIndex_ : batchIndex_;
+    outcome.batchLabel = batchLabelFor(node);
     outcome.attempt = node->attempts();
     outcome.note = note;
     // Only a node that actually produced artifacts has physics to extract.
@@ -4553,6 +5765,36 @@ void OrchestrationWindow::recordOutcome(OrchestrationNodeItem* node,
         outcome.metrics = core::extractReportMetrics(outcome.directory,
                                                      outcome.task);
     report_.outcomes.append(outcome);
+
+    // On-node fan-out progress ("37/100 done"): count how many passes of
+    // THIS node have reached a terminal state so far, against the batch
+    // length. status_ alone cannot show this -- a batch re-queues it fresh
+    // every pass, so by the time the run finishes it reflects only the LAST
+    // pass (see the class doc on recordOutcome's own reasoning for why the
+    // report has to accumulate as the run happens rather than after).
+    // Gated on dependsOnContainer(): a node that runs only once per whole
+    // orchestration (everything upstream of the container, or a sibling
+    // branch the batch does not touch) showing "1/100" would say it is
+    // short 99 runs it was never meant to make.
+    //
+    // Also gated OFF for a batch aggregator: it runs exactly once no matter
+    // how long the batch is, so this counter would say "1/100" about a node
+    // that finished completely -- runTransform() sets its progress itself,
+    // to the count that actually varies for it (frames written / frames
+    // considered), and this block must not override that.
+    //
+    // Phase-aware: `total` is fanInLength_/atomBatchLength_/batchLength_
+    // depending which phase `node` belongs to -- using the wrong one would
+    // count against a different phase's length entirely.
+    const int total = phase3 ? fanInLength_ : phase2 ? atomBatchLength_ : batchLength_;
+    if (total > 1 && (dependsOnContainer(node) || phase3)
+        && !isBatchAggregator(node)) {
+        int completed = 0;
+        for (const auto& recorded : report_.outcomes)
+            if (recorded.nodeId == node->id())
+                ++completed;
+        node->setBatchProgress(completed, total);
+    }
 }
 
 void OrchestrationWindow::finishRun(bool completed)

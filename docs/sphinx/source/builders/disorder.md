@@ -76,47 +76,61 @@ and, for the internal one, the residual objective.
 ## Random noise setup
 
 {menuselection}`Simulation --> Random Noise Setup` perturbs the structure in the current
-tab. It lives on the Simulation menu rather than Build because it no longer merely
-displaces a structure — it can run a single-point calculation on every displaced copy,
-and jobs live on that menu (see {doc}`/simulations/jobs`).
+tab into a trajectory. It is a pure generator — native throughout, with no script and no
+job, since there is nothing to run: the perturbation is evaluated in process and the
+result opens immediately as a scrubbable trajectory tab.
+
+:::{note}
+Evaluating the ensemble (energies, forces, …) is not this dialog's job. Save the
+generated trajectory ({menuselection}`File --> Save Trajectory As…` on the tab it opens)
+and load it into an Orchestration **Structure Container** node
+({doc}`/simulations/orchestration`), which fans a Single-point Calculation node out once
+per structure — the same batch machinery every other multi-structure Orchestration
+pipeline uses, rather than a second, wizard-embedded copy of it. An earlier version of
+this dialog ran a single-point pass on every member itself; nothing about that
+configuration was ever saved to a project file, so there is no old setup to migrate —
+only, potentially, a completed job directory's results from before this change, which
+still open normally.
+:::
 
 ### The perturbation
 
 | Control | Default | Meaning |
 |---|---|---|
 | {guilabel}`Distribution` | Gaussian (normal) | or Uniform. Gaussian is the physical choice — it is what a harmonic mode at finite temperature actually produces |
-| {guilabel}`Amplitude` | 0.05 Å (0.001–5) | Gaussian: $\sigma$ per Cartesian component; Uniform: half-width of the interval |
-| {guilabel}`Random seed` | 42 | the same seed regenerates the same ensemble exactly |
+| {guilabel}`Amplitude` | 0.05 Å (0.001–5) | Gaussian: $\sigma$ per Cartesian component; Uniform: half-width of the interval. With the ramp on, this is the value the LAST frame reaches |
+| {guilabel}`Random seed` | 42 | the same seed regenerates the same trajectory exactly, ramp on or off |
 | {guilabel}`Perturb atomic positions` | on | the usual mode |
 | {guilabel}`Perturb unit cell vectors (random strain)` | off | atoms follow the cell affinely — fractional coordinates preserved — so this is a random strain, not a second position noise. Disabled when the structure has no cell |
-| {guilabel}`Structures` | 20 (1–1000) | ensemble size |
+| {guilabel}`Structures` | 20 (1–1000) | how many displaced copies to generate, on top of the always-included reference frame |
 | {guilabel}`Accumulation` | Independent | each member drawn from the original structure; *Cumulative* performs a random walk from the previous member |
+| {guilabel}`Amplitude schedule` | Constant amplitude | or *Linear ramp (0 → max)* — see below |
 
 **Frame 0 is always the unperturbed structure**, so the spread has a reference, and each
 ensemble member draws from its own seeded stream derived from the one seed — the whole
-ensemble is reproducible, not just its first member.
+trajectory is reproducible, not just its first member.
 
-The generated ensemble opens immediately as a scrubbable trajectory tab, so the
-displacement magnitude can be judged by eye — and regenerated with a different seed or
-amplitude — *before* any compute time is spent on it.
+The generated trajectory opens immediately as a scrubbable tab, so the displacement
+magnitude can be judged by eye — and regenerated with a different seed or amplitude —
+before it is saved anywhere.
 
-### Per-structure results
+### Linear ramp
 
-The second settings page configures the single-point pass over the ensemble:
+With {guilabel}`Amplitude schedule` set to **Linear ramp (0 → max)**, the amplitude no
+longer stays fixed across the trajectory: frame $i$ of $N$ total frames (reference plus
+displaced members) uses $i/(N-1)$ of the set amplitude. Frame 0 is already the
+unperturbed reference — exactly the ramp's zero-noise endpoint, with no special case
+needed — and the last frame reaches the full amplitude. Each frame still draws its own
+independent random displacement; only the *magnitude* they are drawn at is interpolated,
+so the same seed still reproduces the same trajectory exactly. With a single displaced
+structure requested, that one member is also the trajectory's last frame and reaches
+full amplitude — the smallest possible ramp is exactly "zero, then full".
 
-- {guilabel}`Record forces` — on by default. The same evaluation produces them nearly
-  for free, and forces are what turn the ensemble from an energy histogram into usable
-  ML training data.
-- {guilabel}`Record the stress tensor` — periodic cells only, and not every calculator
-  implements it; where missing, the energy is still recorded.
-- {guilabel}`Continue past a failed structure` — on by default. One SCF that will not
-  converge — which a large displacement can easily produce — should not lose the other
-  ninety-nine; failed members are recorded as such and excluded from the statistics.
-
-The staged frames are written to the job directory as `configs.extxyz`, which the
-generated script iterates over; finished ensembles (including `perturbed.extxyz`
-checkpoints from earlier runs) reload as trajectories and can be fed to the dataset and
-analysis tools.
+A ramped trajectory is what a training set for an interatomic potential usually wants:
+near-equilibrium configurations at the start (where the potential-energy surface is
+smooth and easy to fit) shading into the more anharmonic displacements a model needs to
+see to generalize, all from a single generated set rather than several runs stitched
+together by hand.
 
 ### Choosing an amplitude
 

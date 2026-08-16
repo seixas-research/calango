@@ -27,9 +27,9 @@ defaults if you never open its wizard: {guilabel}`Geometry Optimization`,
 
 **Transform** — reads a structure and produces a structure, *on the canvas*
 rather than as a job: {guilabel}`Structure Container`,
-{guilabel}`Supercell Builder`, {guilabel}`Defect Generator`. They have no
-calculator and no launch command, and they finish in microseconds. See
-{ref}`orchestration-transforms`.
+{guilabel}`Single-atom Container`, {guilabel}`Supercell Builder`,
+{guilabel}`Defect Generator`. They have no calculator and no launch command,
+and they finish in microseconds. See {ref}`orchestration-transforms`.
 
 **Analysis** — reads one or more *completed runs* rather than a structure,
 so each needs that many parent nodes linked to it:
@@ -115,9 +115,13 @@ relaxation must hand on the *expanded* cell, not the relaxed one it read.
 
 The geometry hand-off carries **coordinates and cell** — extended XYZ
 stores both, which is what lets a variable-cell relaxation hand over its
-lattice, not just its positions. For a self-contained node with several
-parents, the first connected one supplies the geometry — the common
-pipelines are chains anyway.
+lattice, not just its positions.
+
+A self-contained node reads **one** geometry, from **one** parent — a second
+link into it is refused at the moment you draw it (see
+[Multiple connections](#multiple-connections) below), rather than accepted
+and then silently ignored. [Dump](#dump-ml-training-data) is the one node
+built the other way, to merge several parents on purpose.
 
 ### Inherited runs
 
@@ -162,11 +166,55 @@ Three refusals follow from the same principle, and all of them happen
   path can be guessed. Open its wizard and save it first.
 - **Too few parents.** A node with two input slots wired to one parent is
   refused, naming both slots it wanted.
+- **Too many parents.** A link into a slot that is already full — including
+  a self-contained node's single geometry input — is refused the moment you
+  draw it, rather than accepted and then never actually read. See
+  [Multiple connections](#multiple-connections) below.
 - **A parent that saved nothing to inherit.** A Single-Point Calculation has
   to save its wavefunctions (`.gpw`) for anything downstream to restart from
   it; if it did not, the child says so rather than letting the failure
   surface inside Python as an apparent bug in the module.
 :::
+
+(multiple-connections)=
+### Multiple connections
+
+Drawing a link never removes one that is already there — a node can end up
+with several **outgoing** links (one output feeding several consumers) and,
+on the one node built to want it, several **incoming** links too (several
+results merged into one). The two directions are governed by different
+rules, because they mean different things.
+
+**Outgoing — fan-out — is always allowed.** One Structure Container can feed
+both a Single-Point Calculation *and* a
+[Single-atom Container](#single-atom-container); one Single-Point
+Calculation can feed both a Dump node and an Electronic Bands analysis. The
+shared parent still runs **exactly once**: staging a copy into each child's
+own job directory is how every parent hand-off already worked, so nothing
+about a second child changes what the first one reads, and nothing a child
+does to its own copy can reach back and change the parent's result or any
+sibling's.
+
+**Incoming — merging — is allowed only where it means something.** A slot
+that names *the* structure, or *the* baseline of a fixed list, has room for
+exactly one parent — a second link there would be drawn but never actually
+read, so it is **refused when you draw it**, with a message naming the node
+and explaining why. [Dump](#dump-ml-training-data) is the exception: since
+it already reads every PASS of whatever feeds it, reading every pass of
+*several* parents — concatenated in the order the links were drawn — is the
+same operation, just over more input. That is what makes "bulk, noisy
+structures from one branch and isolated-atom references from another,
+merged into one training set" a single Dump node rather than two files
+stitched together by hand afterwards.
+
+Scheduling and persistence both fall out of rules that already existed for
+other reasons, not new machinery: a node becomes runnable once *every one*
+of its parents is `Done` (already true the moment a node could have more
+than one parent, for the named-slot case above), so a merge node
+automatically waits for every branch feeding it; and a saved workflow
+stores edges as a flat `{from, to}` list with no assumption that a node
+appears as `to` at most once, so a fan-out-then-merge graph reloads exactly
+as drawn.
 
 ---
 
@@ -187,6 +235,19 @@ consumes a completed run's *results* rather than a structure, and produces a
 thermodynamic database rather than a structure. It is a transform because it
 runs on the canvas rather than as a job, which is what the family actually
 decides.
+
+**Dump** also consumes results rather than a structure, but differently
+again: where the TDB Generator reads one staged *ensemble* file, Dump reads
+**every pass** of a live fan-out directly, and is therefore also the only
+transform that does not run once per Container item — it runs **once**,
+after the fan-out's last pass. See [below](#dump-ml-training-data).
+
+**Single-atom Container** is a third kind of exception: like Structure
+Container itself, it does not run once per item at all — it is computed
+**once**, from *all* of its parent's items at once, before the pipeline
+starts, and what it produces becomes a second, independent pass count for
+whatever is linked downstream of it. See
+[below](#single-atom-container).
 
 Double-click a transform node to configure it; unlike the simulation and
 analysis nodes it opens a small dialog of its own rather than a setup
@@ -210,7 +271,12 @@ requires the structure to be open in a tab:
   everything else ASE reads. A **multi-frame file contributes one entry per
   frame**, named `stem #n`: importing a 20-frame trajectory is one of the
   obvious ways to build a sweep, and taking only its first frame would be a
-  silent loss.
+  silent loss. A file that cannot be read (wrong format, holds no
+  structures) is reported by name rather than failing silently or
+  half-importing. This is the natural destination for a
+  {doc}`Random Noise Setup </builders/disorder>` trajectory: generate it
+  there (with the linear ramp on, for a set that shades from near-equilibrium
+  to more anharmonic displacements), save it, and import it here.
 - {guilabel}`Import from Database…` — search the Materials Project, select
   rows, press {guilabel}`Add Selected to Container`. Several searches can be
   added in one visit (a running count shows what you have collected), which
@@ -218,7 +284,9 @@ requires the structure to be open in a tab:
   *materialsproject.org/api*; it shares the key with the File menu's database
   browser, so entering it in either place is enough.
 
-Entries can be removed and the list order is the pass order.
+Entries can be removed and the list order is the pass order. A status line
+above the list always states the current count ("12 structures loaded"),
+updated the moment a file import or bulk-crystal add completes.
 
 - The pipeline makes one pass per item. Nodes that are *not* downstream of a
   container run once, in the first pass, and keep their result — re-running
@@ -229,9 +297,81 @@ Entries can be removed and the list order is the pass order.
 - Every container in a graph must hold the **same number** of structures. A
   maximum-and-clamp rule would quietly re-use the last structure of the
   shorter list, which is a study nobody asked for; unequal lengths are
-  refused instead.
+  refused instead. A [Single-atom Container](#single-atom-container) is
+  exempt — its own pass count comes from the elements it finds, an
+  unrelated quantity by design, not a second Structure Container to agree
+  with this one.
 - A node keeps its whole run history, so a batched node's per-pass
   directories are all reachable, not just the last.
+
+(single-atom-container)=
+### Single-atom Container
+
+Reads every structure a **Structure Container** upstream of it holds,
+collects the **unique chemical elements** across all of them, and produces
+one isolated-atom reference structure per element: a single atom, centered
+in a periodic cubic box. Link it downstream of a Structure Container and a
+**Single-Point Calculation** (or any other node) downstream of *it* fans out
+over the elements, one pass each — exactly the shape a Structure Container
+itself produces, which is what lets the same downstream nodes work
+unmodified whether they are fed real structures or isolated-atom references.
+
+The node's face reports what it found once the graph is sent —
+**"3 elements: Au, O, H"**, listed in first-appearance order across the
+source structures — or *"No elements yet"* before that, since the element
+list is not known until the parent Container's contents are read.
+
+Double-click it to set:
+
+`Box size`
+: the side of the cubic cell, in Å. **10 Å by default** — large enough that
+  periodic images do not interact for any element's interaction range,
+  small enough to keep a plane-wave basis a reasonable size. This is the one
+  setting the node has; everything else about the operation (which
+  elements, how many, cell shape) is derived from what reaches it.
+
+The generated cell is **always periodic**, matching the plane-wave/periodic
+codes this pipeline targets (GPAW, VASP, MACE's own training convention). An
+isolated atom in a non-periodic cell is a *different* reference energy (no
+k-point sampling, no plane-wave cutoff truncation error) and is not offered
+here.
+
+:::{note}
+Isolated atoms are frequently **spin-polarized** in their ground state (an
+isolated Au atom has one unpaired electron; O has two). This node does not
+force spin polarization — it has no opinion on your calculator's settings —
+but if the Single-Point Calculation downstream of it is not itself
+spin-polarized, its isolated-atom energies may not be physically meaningful
+references. Check your calculator's spin settings before relying on them.
+:::
+
+**Execution model.** Unlike a transform that runs once per Container item,
+Single-atom Container runs **once**, reading its parent's *entire* item list
+in a single pass, before any node in the pipeline starts — the same way a
+Structure Container's own contents are fixed before the pipeline runs,
+rather than discovered pass by pass. What it produces then drives its own,
+**second and independent** pass count for anything downstream of it: a
+Structure Container feeding it 12 structures across 3 elements produces a
+3-pass fan-out downstream, regardless of the 12. This second count does
+**not** need to match any Structure Container's item count elsewhere in the
+graph — the "every container holds the same number of structures" rule
+above applies only among Structure Containers, since Single-atom Container's
+pass count is a different, unrelated quantity by design. Its own per-pass
+job directories are named `atom_batch_<n>_<element>/`, distinct from an
+ordinary Container's `batch_<n>_<structure>/`, so the two dimensions stay
+visually distinct in the simulations folder even when both appear in the
+same run.
+
+:::{note}
+When a **Dump** node downstream of a Single-atom Container writes an
+extxyz training set, every frame it collects from that branch is tagged
+`config_type = "IsolatedAtom"` automatically — no toggle needed on the Dump
+node itself. This is `mace.data.utils`' own convention (verified against
+the installed mace 0.3.15): a frame with `config_type == "IsolatedAtom"`
+and exactly one atom is auto-recognized as that element's $E_0$ reference
+and excluded from ordinary training by default, which is exactly what an
+isolated-atom cell is for.
+:::
 
 ### Supercell Builder
 
@@ -352,6 +492,77 @@ Because its input is a results file, a TDB Generator writes no
 of it inherits the structure that was staged into it, not a new one.
 :::
 
+(dump-ml-training-data)=
+### Dump (ML Training Data)
+
+Collects every pass of the fan-out feeding it — its computed structure,
+energy, forces and (when available) stress — and writes them as one
+**extended-XYZ** training set, ready for an MLIP trainer such as MACE.
+
+| Node type | Slot, in link order | Staged as |
+|---|---|---|
+| Dump | completed calculation | *(the whole parent directory — unused; see note below)* |
+
+Link it downstream of a **Single-Point Calculation** in fan-out mode (i.e.
+downstream of a Structure Container), or of a Geometry Optimization or
+Molecular Dynamics node. Unlike every other node here, its input link exists
+only so the ordinary "at least one parent" contract applies — Dump does not
+actually read the staged copy. Instead, once the fan-out's last pass has
+finished, it reads **every pass's own result file**
+(`single_point.extxyz`, `optimized.extxyz` or `md_final.extxyz`, whichever
+the parent task wrote) directly from the run report, because no file in this
+application holds every pass's forces at once for it to stage as one slot.
+
+That is also why Dump **runs once**, not once per Container item like an
+ordinary node downstream of a fan-out: its whole point is to see every pass
+at the same time, so re-running it per structure would mean overwriting its
+own output on every pass but the last.
+
+Double-click the node to configure:
+
+`Output file`
+: where the training set is written. No default — unlike a Supercell's
+  2×2×2, there is no path a Dump node could guess that would not be a claim
+  about your filesystem.
+
+`Energy key` / `Forces key` / `Stress key`
+: the extxyz info/array keys the written file uses. An extxyz file has no
+  fixed vocabulary for "the reference energy" — every MLIP trainer reads
+  whichever keys it is told to. Energy and forces are required; leaving the
+  stress key empty omits stress from the file entirely (the honest choice
+  when nothing upstream computed one).
+
+`MACE training preset`
+: fills the three keys with **`REF_energy` / `REF_forces` / `REF_stress`** —
+  `mace.tools.default_keys.DefaultKeys` as shipped in mace 0.3.15, the same
+  values `mace_run_train`'s own `--energy_key`/`--forces_key`/`--stress_key`
+  default to. Deliberately **not** the bare `energy`/`forces`/`stress` a live
+  ASE calculator's own results use: MACE's data loader refuses a bare
+  `stress_key="stress"` outright, warning that since ASE 3.23.0b1 that name
+  is not safe to round-trip between ASE and MACE, and names this exact
+  `REF_` prefix as the fix.
+
+`config_type`
+: free text, stamped into every frame's `info['config_type']` when
+  non-empty. Left empty, no such key is written.
+
+`Include failed-calculation frames`
+: off by default. A pass whose energy could not be recovered — the
+  calculation failed, or its result file is missing or unreadable — is
+  **dropped** rather than given a placeholder value: a written zero would
+  silently teach a model a wrong number. The node reports how many frames
+  were excluded, and why, once it runs.
+
+`Append to the file if it exists`
+: opens the ASE writer in append mode instead of overwriting.
+
+Once run, the node's face reports the outcome directly — **"97 frame(s)
+written"**, with **"3 excluded"** beneath it when any were — rather than the
+generic per-pass progress counter every other fan-out node uses (which would
+misleadingly read as batch *progress* on a node that ran exactly once). A
+`dump_summary.json` beside it records the output path, the frame counts and
+the excluded reasons in full.
+
 ---
 
 ## Execution
@@ -372,6 +583,18 @@ status walks a six-state lifecycle:
 Failure propagates by `skipDescendants`: when a node fails, every child
 still waiting is marked Skipped, recursively — the canvas says why the
 pipeline stopped instead of stalling silently.
+
+:::{note}
+`status` is one field, so a node downstream of a Container only ever shows
+its **last** pass's outcome once the run ends — a 100-structure sweep and a
+1-structure run otherwise look identical on the canvas the moment either
+finishes. A node re-run per Container item therefore also grows a live
+**"37/100 done"** counter on its second line, updated after every pass —
+the one thing `status` alone cannot show. [Dump](#dump-ml-training-data)
+reuses the same two numbers for a different meaning (frames written out of
+frames considered — it runs once, not once per pass), spelled out in its own
+words instead.
+:::
 
 Each run creates a timestamped `orchestration_YYYYMMDD_HHmmss/` folder under the
 simulations directory, and every node stages its own `node_<n>_<task>/` job
@@ -614,9 +837,11 @@ them:
 - Execution within a canvas is strictly **one node at a time**, in
   dependency order — there is no parallel fan-out even for independent
   branches, and a Container's passes are sequential rather than concurrent.
-- For the **input geometry**, only the first connected parent's output is
-  inherited; the numbered slots of an analysis node are the only place where
-  several parents each contribute something.
+- A self-contained node's **input geometry** slot holds exactly one parent —
+  a second link there is refused, not silently overridden. Several parents
+  contributing at once is limited to the numbered slots of an analysis node
+  (one parent per named slot) and to [Dump](#dump-ml-training-data), the one
+  node that merges. See [Multiple connections](#multiple-connections).
 - A node holds a *snapshot* of its material taken when the node was added;
   later edits to the open document do not retroactively change an already
   configured node's staged geometry.

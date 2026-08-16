@@ -25,6 +25,29 @@ std::string groundState(const WannierConfig& cfg)
 
     if (!cfg.baselineDir.empty()) {
         out << "_base = r\"" << cfg.baselineDir << "\"\n"
+               // A clearer refusal than the bare .gpw-glob miss below, when
+               // the baseline says outright which engine produced it: fails
+               // in milliseconds, before the .gpw search even runs. Absent
+               // for a baseline staged before this check existed (or one
+               // reached without going through the wizard's own pre-flight
+               // check in WannierWizard::refreshBaselineSummary) —
+               // json.load then simply finds nothing and this block is a
+               // no-op, falling through to the .gpw glob below.
+               "try:\n"
+               "    with open(os.path.join(_base, 'calculator.json')) as _cf:\n"
+               "        _prov = json.load(_cf)\n"
+               "    _engine = _prov.get('engine', '')\n"
+               "    if _engine and _engine.upper() != 'GPAW':\n"
+               "        raise RuntimeError(\n"
+               "            'Wannier Functions cannot be driven from a ' "
+               "+ _engine + ' '\n"
+               "            'baseline: ase.dft.wannier.Wannier needs the '\n"
+               "            'calculator method get_wannier_localization_matrix(), '\n"
+               "            'which only GPAW implements. Re-run the Single-Point '\n"
+               "            'Calculation with GPAW, or run this node with no '\n"
+               "            'baseline selected for a fresh GPAW SCF.')\n"
+               "except (OSError, ValueError):\n"
+               "    pass\n"
                "_gpw = sorted(glob.glob(os.path.join(_base, '*.gpw')))\n"
                "if not _gpw:\n"
                "    raise RuntimeError('No GPAW wavefunction (.gpw) found in '\n"
@@ -69,12 +92,210 @@ std::string groundState(const WannierConfig& cfg)
                "_gpw_path = os.path.abspath('wannier.gpw')\n"
                "_calango_progress(2, 3)\n";
     } else {
-        out << "# Ground state via the selected engine ("
-            << toString(cfg.calculator.calculator) << ").\n"
-            << AseScriptGenerator::calculatorSnippet(cfg.calculator)
-            << "atoms.get_potential_energy()\n"
-               "_calango_progress(2, 3)\n";
+        // True pre-flight: raised BEFORE calculatorSnippet() below runs
+        // anything, so a non-GPAW engine fails in milliseconds rather than
+        // after a (possibly VASP-expensive) SCF that ase.dft.wannier could
+        // never have used anyway — verified against the installed ASE
+        // source (ase/dft/wannier.py's new_Z() calls
+        // calc.get_wannier_localization_matrix() unconditionally, a
+        // GPAW-only method). WannierWizard::calculatorAllowed() already
+        // keeps this UNREACHABLE from the wizard's own "no baseline"
+        // path (which fixes the engine at GPAW), but a hand-edited or
+        // programmatically built WannierConfig is not bound by that.
+        out << "raise RuntimeError(\n"
+               "    'Wannier Functions cannot run a fresh SCF with "
+            << toString(cfg.calculator.calculator)
+            << ": '\n"
+               "    'ase.dft.wannier.Wannier needs the calculator method '\n"
+               "    'get_wannier_localization_matrix(), which only GPAW "
+               "implements.')\n";
     }
+    return out.str();
+}
+
+/// VASP's OWN native Wannier90 interface, entirely independent of
+/// ase.dft.wannier and its GPAW-only get_wannier_localization_matrix(). Two
+/// INCAR tags drive it (verified against the VASP wiki this session, not
+/// assumed): LWANNIER90 switches the interface on; LWANNIER90_RUN makes VASP
+/// run the wannier90 LIBRARY IT IS LINKED AGAINST to completion (disentangle
+/// + wannierise), rather than only writing .amn/.mmn/.eig for an external
+/// wannier90.x to finish — so this needs no wannier90 BINARY, matching the
+/// "reads files VASP's own interface writes" rule as literally as possible:
+/// with LWANNIER90_RUN the intermediate files are not even written, per the
+/// same source.
+///
+/// The wannier90.win Calango pre-writes carries ONLY num_wann, write_hr and
+/// a projections block — deliberately NOT mp_grid/kpoints/unit_cell_cart/
+/// atoms_cart. VASP fills those in from its OWN actual KPOINTS/POSCAR
+/// whenever a pre-existing win file omits them (same source), and "the
+/// program will not check whether this [k-points] block agrees with the k
+/// points used in the VASP calculation" — so writing them by hand risks a
+/// SILENT mismatch the interface itself does not catch, while leaving them
+/// out makes correctness a property of the SAME Vasp(kpts=...) call already
+/// used for the calculation, not a second, independently-typed copy of it.
+///
+/// Disentanglement window: only FixedStatesMode::FromWannierCount (no
+/// frozen window) is mapped. wannier90's window keywords (dis_froz_min/max)
+/// are referenced to the FERMI level by a convention this session did not
+/// verify to the same standard as the rest of this function, and an
+/// unverified numeric window is worse than none — EnergyWindow/BandCount
+/// fall back to no window with a logged warning rather than risk a silently
+/// wrong one. See FUTURE.md.
+std::string generateVaspWannier90Script(const WannierConfig& cfg)
+{
+    std::ostringstream out;
+    out << "# Wannier Functions (VASP's own Wannier90 library) — generated "
+           "by Calango\n"
+           "import json\n"
+           "import os\n"
+           "import shutil\n"
+           "import numpy as np\n"
+           "from ase.io import read\n"
+           "from ase.io.wannier90 import read_wout_all\n"
+           "from ase.calculators.vasp import Vasp\n"
+           "\n"
+        << AseScriptGenerator::jsonLoggerPreamble()
+        << "atoms = read('structure.extxyz')\n"
+           "_calango_progress(1, 4)\n"
+           "\n";
+
+    const CalculatorConfig& c = cfg.calculator;
+    const std::string kpts = std::to_string(c.kpts[0]) + ", "
+        + std::to_string(c.kpts[1]) + ", " + std::to_string(c.kpts[2]);
+
+    if (!cfg.baselineDir.empty()) {
+        out << "# Reuse the baseline's converged charge density (CHGCAR).\n"
+               "# Unlike a restart from saved WAVEFUNCTIONS (the GPAW path's\n"
+               "# .gpw), CHGCAR carries no k-point-specific data, so the\n"
+               "# baseline's OWN symmetry setting does not matter here — this\n"
+               "# node's own Wannier90 pass below sets isym=0 on ITSELF.\n"
+            << "_base = r\"" << cfg.baselineDir << "\"\n"
+               "if not os.path.exists(_base):\n"
+               "    raise RuntimeError(\n"
+               "        'The baseline charge density is gone: ' + _base + '\\n'\n"
+               "        'The Wannier90 run needs it — re-run the Single-Point '\n"
+               "        'Calculation that produced it.')\n"
+               "_baseline_chgcar = os.path.join(_base, 'CHGCAR')\n"
+               "if not os.path.exists(_baseline_chgcar):\n"
+               "    raise RuntimeError(\n"
+               "        'No CHGCAR found in ' + _base + '. The Wannier90 run "
+               "needs '\n"
+               "        'the converged charge density — re-run the "
+               "Single-Point '\n"
+               "        'Calculation with LCHARG = .TRUE. (the default).')\n"
+               "if os.path.abspath(_baseline_chgcar) != "
+               "os.path.abspath('CHGCAR'):\n"
+               "    shutil.copyfile(_baseline_chgcar, 'CHGCAR')\n"
+               "_calango_progress(2, 4)\n"
+               "\n";
+    } else {
+        out << "# No baseline: run the SCF here first, writing its own "
+               "CHGCAR.\n"
+            << "scf = Vasp(xc=\"" << c.vaspXc << "\", encut="
+            << c.planeWaveCutoffEv << ",\n"
+               "           kpts=(" << kpts
+            << "), ismear=0, sigma=0.05,\n"
+               "           lcharg=True, directory=\".\")\n"
+               "atoms.calc = scf\n"
+               "atoms.get_potential_energy()\n"
+               "_calango_progress(2, 4)\n"
+               "\n";
+    }
+
+    out << "# The win file VASP reads before running its Wannier90 library —\n"
+           "# see this function's own doc comment for why mp_grid/kpoints/\n"
+           "# unit_cell_cart/atoms_cart are deliberately absent.\n"
+           "with open('wannier90.win', 'w') as _fh:\n"
+        << "    _fh.write('num_wann = " << cfg.nWannier << "\\n')\n";
+    if (cfg.fixedMode != WannierConfig::FixedStatesMode::FromWannierCount)
+        out << "    # A frozen-window request (EnergyWindow/BandCount) was "
+               "made,\n"
+               "    # but this path does not map it yet — see this "
+               "function's\n"
+               "    # own doc comment. Proceeding with NO frozen window "
+               "rather\n"
+               "    # than an unverified one.\n"
+               "    pass\n"
+               "_calango_event('warning', 'The requested disentanglement "
+               "window is '\n"
+               "               'not applied on the VASP/Wannier90 path yet "
+               "— running '\n"
+               "               'with no frozen window instead. See "
+               "FUTURE.md.')\n";
+    out << "    _fh.write('write_hr = .true.\\n')\n"
+           "    _fh.write('begin projections\\nrandom\\nend projections\\n')\n"
+           "\n"
+           "# The Wannier90 pass itself: isym=0 for the full (unsymmetrized)\n"
+           "# Brillouin zone the localization needs; LWANNIER90_RUN makes "
+           "VASP\n"
+           "# run wannier90's disentangle+wannierise INTERNALLY rather than\n"
+           "# only writing .amn/.mmn/.eig for an external binary.\n"
+        << "bands = Vasp(xc=\"" << c.vaspXc << "\", encut="
+        << c.planeWaveCutoffEv << ", icharg=11,\n"
+           "             ismear=0, sigma=0.05, isym=0,\n"
+           "             lwannier90=True, lwannier90_run=True,\n"
+           "             directory=\".\", kpts=(" << kpts << "))\n"
+           "atoms.calc = bands\n"
+           "atoms.get_potential_energy()\n"
+           "_calango_progress(3, 4)\n"
+           "\n"
+           "if not os.path.exists('wannier90.wout'):\n"
+           "    raise RuntimeError(\n"
+           "        'VASP finished but wrote no wannier90.wout — the "
+           "Wannier90 '\n"
+           "        'library run did not complete. Check OUTCAR for the "
+           "actual '\n"
+           "        'error.')\n"
+           "with open('wannier90.wout') as _fh:\n"
+           "    _wout = read_wout_all(_fh)\n"
+           "centers = np.asarray(_wout['centers'], dtype=float)\n"
+           "spreads = [float(s) for s in np.asarray(_wout['spreads'], "
+           "dtype=float)]\n"
+           "if centers.shape[0] == 0:\n"
+           "    raise RuntimeError(\n"
+           "        \"wannier90.wout has no 'Final State' — the Wannier90 "
+           "run \"\n"
+           "        'inside VASP did not converge, or was never reached. '\n"
+           "        'Check OUTCAR and wannier90.wout for the actual "
+           "error.')\n"
+           "total_spread = float(np.nansum(spreads)) if spreads else "
+           "float('nan')\n"
+           "_calango_event('info', 'centres: %d, total spread %.3f A^2' "
+           "% (len(spreads), total_spread))\n"
+           "\n"
+           "hr_file = None\n"
+           "if os.path.exists('wannier90_hr.dat'):\n"
+           "    shutil.copyfile('wannier90_hr.dat', 'wannier_hr.dat')\n"
+           "    hr_file = 'wannier_hr.dat'\n"
+           "    _calango_event('info', 'H(R) written by VASP\\'s own "
+           "Wannier90 library')\n"
+           "else:\n"
+           "    _calango_event('warning',\n"
+           "                   'VASP wrote no wannier90_hr.dat — H(R) will "
+           "be '\n"
+           "                   'unavailable to Boltzmann Transport / Berry "
+           "Phase / cRPA.')\n"
+           "\n"
+        << "result = {\n"
+           "    'total_spread': total_spread,\n"
+           "    'functional_value': None,  # not computed on the VASP/\n"
+           "                                # Wannier90 path; None -> JSON\n"
+           "                                # null, never a bare NaN token\n"
+           "    'gpw': None,\n"
+        << "    'nwannier': " << cfg.nWannier << ",\n"
+           "    'projection': 'random',\n"
+           "    'centers': [[float(v) for v in row] for row in centers],\n"
+           "    'spreads': spreads,\n"
+           "    'cubes': [],\n"
+           "    'hr': hr_file,\n"
+           "    'cell': [[float(v) for v in row]\n"
+           "             for row in np.asarray(atoms.cell, dtype=float)],\n"
+           "    'engine': 'VASP',\n"
+           "}\n"
+           "with open('wannier.json', 'w') as _fh:\n"
+           "    json.dump(result, _fh, indent=2)\n"
+           "print('CALANGO_RESULT wannier=wannier.json', flush=True)\n"
+           "_calango_progress(4, 4)\n";
     return out.str();
 }
 
@@ -82,6 +303,14 @@ std::string groundState(const WannierConfig& cfg)
 
 std::string generateWannierScript(const WannierConfig& cfg)
 {
+    // VASP is a COMPLETELY DIFFERENT path — its own native Wannier90
+    // library, not ase.dft.wannier at all — so it bypasses everything
+    // below entirely rather than threading a second calculator branch
+    // through GPAW-oriented code. See generateVaspWannier90Script()'s own
+    // doc comment.
+    if (cfg.calculator.calculator == CalculatorKind::Vasp)
+        return generateVaspWannier90Script(cfg);
+
     const std::string preamble =
         std::string(
             "# Wannier Functions — generated by "
@@ -285,10 +514,17 @@ std::string generateWannierScript(const WannierConfig& cfg)
         "that function without moving the others.' % (_worst / _median))\n"
         "# Localization functional Ω = Ω_I + Ω_D̃ (the minimized value); it is\n"
         "# the trial-projection overlap metric surfaced in the MLWF viewer.\n"
+        "#\n"
+        "# None on failure, not float('nan'): json.dump writes a bare NaN\n"
+        "# token for that by default, which is not valid JSON (RFC 8259) and\n"
+        "# Qt's strict QJsonDocument parser rejects it outright — the whole\n"
+        "# file would fail to load, not just this one field. The MLWF viewer\n"
+        "# (MlwfViewer.cpp) already treats a missing/null value the same way\n"
+        "# it would have treated a NaN: no functional line shown.\n"
         "try:\n"
         "    functional_value = float(wan.get_functional_value())\n"
         "except Exception:\n"
-        "    functional_value = float('nan')\n"
+        "    functional_value = None\n"
         "cubes = []\n"
         "for _i in range(nwannier):\n"
         "    _fn = 'wannier_%d.cube' % _i\n"
@@ -432,6 +668,26 @@ std::string generateWannierInterpolationScript(
            "run\\'s '\n"
            "        'summary — point this at a COMPLETED MLWF job.')\n"
            "_meta = json.load(open(_mj))\n"
+           "\n"
+           "# A VASP-sourced wannier.json (engine='VASP', gpw=None — see\n"
+           "# generateVaspWannier90Script) has no restartable wavefunction file\n"
+           "# at all: its H(k) came from VASP's own linked Wannier90 library, not\n"
+           "# from ase.dft.wannier, so there is nothing here to rebuild the\n"
+           "# localization from. Left unguarded this falls through to the .gpw\n"
+           "# search below, finds nothing, and reports 'that run predates\n"
+           "# Calango recording the path' — true of the field, false of the\n"
+           "# reason, and not actionable. Caught explicitly instead.\n"
+           "if _meta.get('engine') == 'VASP':\n"
+           "    raise RuntimeError(\n"
+           "        'The MLWF run in ' + _base + ' used VASP\\'s own Wannier90 "
+           "library, '\n"
+           "        'not ase.dft.wannier — band interpolation from that route is "
+           "not '\n"
+           "        'implemented yet (see FUTURE.md). Its wannier90_hr.dat / "
+           "wannier_hr.dat '\n"
+           "        'already holds H(R); interpolating H(k) from it would need a "
+           "reader '\n"
+           "        'for that instead of a GPAW restart.')\n"
            "\n"
            "# Resolution order: the path the MLWF run recorded, then any .gpw\n"
            "# sitting in its directory (which is where a fresh-SCF MLWF puts\n"

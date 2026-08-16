@@ -1897,7 +1897,21 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "    _magmoms = _np.asarray(atoms.get_magnetic_moments(),\n"
                "                           dtype=float).tolist()\n"
                "except Exception:\n"
-               "    _magmoms = None\n";
+               "    _magmoms = None\n"
+               "# Stress: defined only for a periodic cell, and not every\n"
+               "# calculator implements it (a molecular one has no notion of\n"
+               "# a cell to stress). Left as None rather than guessed at --\n"
+               "# a Dump node downstream drops the stress key entirely for a\n"
+               "# frame that carries none, rather than writing a wrong zero.\n"
+               "# Computing it here (once) is also what lets ase.io.write\n"
+               "# below embed it in single_point.extxyz: it reads whatever is\n"
+               "# already in atoms.calc.results and never calls get_stress()\n"
+               "# itself.\n"
+               "try:\n"
+               "    _stress = atoms.get_stress().tolist() if any(atoms.pbc) "
+               "else None\n"
+               "except Exception:\n"
+               "    _stress = None\n";
         // 1 Hartree = 27.211386245988 eV (CODATA). The convergence targets the
         // wizard collected are echoed into the summary so the viewer can show
         // the tolerance the run was held to.
@@ -1912,6 +1926,7 @@ void emitTask(std::ostringstream& out, const CalculatorConfig& c)
                "    \"natoms\": int(len(atoms)),\n"
                "    \"forces_eV_per_A\": [[float(v) for v in row] "
                "for row in _forces],\n"
+               "    \"stress_eV_per_A3\": _stress,\n"
                "    \"scf\": {\n"
                "        \"completed\": True,\n"
                "        \"iterations\": _nscf,\n"

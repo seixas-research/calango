@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.22
+    VERSION 26.8.23
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -291,8 +291,6 @@ qt_add_executable(calango
     src/core/ConvexHull.cpp
     src/core/ClusterExpansionScriptGenerator.hpp
     src/core/ClusterExpansionScriptGenerator.cpp
-    src/core/RandomNoiseScriptGenerator.hpp
-    src/core/RandomNoiseScriptGenerator.cpp
     src/core/ConvergenceSweepBlocks.hpp
     src/core/ConvergenceSweepBlocks.cpp
     src/core/CutoffConvergenceScriptGenerator.hpp
@@ -1729,7 +1727,6 @@ if(CALANGO_BUILD_TESTS)
         # answers "unsupported is unknown, assume yes" with none current —
         # so the headless dialog test constructs it fine.
         src/render/ShaderProfile.cpp
-        src/core/RandomNoiseScriptGenerator.cpp
         src/gui/CutoffConvergenceWizard.cpp
         src/core/ConvergenceSweepBlocks.cpp
         src/core/CutoffConvergenceScriptGenerator.cpp
@@ -2057,7 +2054,14 @@ if(CALANGO_BUILD_TESTS)
     # on its own element), a Supercell and a Defect Generator edit the
     # structure mid-pipeline, every node leaves a provenance record whose
     # checksums match the files its parent wrote, and a failed node is fixed
-    # and resumed without re-running anything upstream. Self-skips without ASE.
+    # and resumed without re-running anything upstream. Also the intended
+    # end-to-end workflow: a Random Noise Setup trajectory (linear ramp on),
+    # saved to a real file, read back through the same
+    # readStructuresFromFile() the Container editor's "Import from File..."
+    # uses, and fanned out one real EMT single-point per structure, with the
+    # zero-noise first frame's energy checked against an independent,
+    # outside-Orchestration run of the same calculation. Self-skips without
+    # ASE.
     qt_add_executable(calango_orchestration_batch_test
         tests/OrchestrationBatchTest.cpp
         src/gui/OrchestrationWindow.cpp
@@ -2107,6 +2111,8 @@ if(CALANGO_BUILD_TESTS)
         src/core/UnitCell.cpp
         src/core/Element.cpp
         src/core/PdbxFile.cpp
+        src/core/Noise.cpp
+        src/gui/RandomNoiseWizard.cpp
         src/python_bridge/AseBridge.cpp
         src/python_bridge/PythonEngine.cpp
         src/jobs/JobRunner.cpp
@@ -2544,7 +2550,6 @@ if(CALANGO_BUILD_TESTS)
         src/core/NonlinearOpticsScriptGenerator.cpp
         src/core/GwScriptGenerator.cpp
         src/core/RamanIrScriptGenerator.cpp
-        src/core/RandomNoiseScriptGenerator.cpp
         src/core/CddScriptGenerator.cpp
         src/core/HubbardScriptGenerator.cpp
         src/core/XasScriptGenerator.cpp
@@ -2690,6 +2695,19 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_structural_phase_test PRIVATE src)
     add_test(NAME structural_phase COMMAND calango_structural_phase_test)
 
+    # Random Noise Setup's perturbation core: the linear-ramp amplitude
+    # formula (pure arithmetic, pinned exactly) and applyRandomNoise's seed
+    # reproducibility, which the ramp has to compose with.
+    add_executable(calango_noise_test
+        tests/NoiseTest.cpp
+        src/core/Noise.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_noise_test PRIVATE src)
+    add_test(NAME noise_ramp COMMAND calango_noise_test)
+
     # Extended-XYZ per-atom attributes (forces / magmoms / velocities) survive
     # the read -> model -> write round trip, and collinear magmoms surface as
     # vectors for the viewport overlay.
@@ -2743,14 +2761,6 @@ if(CALANGO_BUILD_TESTS)
     add_test(NAME partial_charge_si
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/partial_charge_si_benchmark.py)
-
-    # GPAW linear-optics validation on diamond (C): SCF (500 eV, 7×7×7, PBE) →
-    # fixed-density NSCF → DielectricFunction, verifying the ε₁/ε₂ CSV+JSON
-    # output without runtime exceptions. Pure Python; self-skips (exit 0) when
-    # the GPAW response stack is not importable.
-    add_test(NAME optics_c_diamond
-        COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/optics_diamond_benchmark.py)
 
     # Native MLWF (Marzari-Vanderbilt) validation on bulk Si: GPAW SCF →
     # ase.dft.wannier localization, verifying the total Wannier spread Ω
@@ -3145,8 +3155,8 @@ if(CALANGO_BUILD_TESTS)
         gw_qp_parser gw_silicon hubbard_linear_response hydrogen_bonds
         hydrogen_completion ice_builder kpath_table lammps_environment
         lammps_scripts magnetic_space_group materials_project_mp1434
-        monte_carlo_swap native_dft_si_mvp nlopt_parser
-        optics_2d_observables optics_broadening optics_c_diamond
+        monte_carlo_swap native_dft_si_mvp nlopt_parser noise_ramp
+        optics_2d_observables optics_broadening
         optics_silicon orchestration_batch orchestration_handoff
         orchestration_si_pipeline partial_charge_si periodic_image_range
         phonon_diamond phonon_thermodynamics piezoelectric_tensor

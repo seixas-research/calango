@@ -95,6 +95,7 @@ accumulates there, who writes it, and who reads it:
 | `opt.traj`, `optimized.extxyz`, `geometry_optimization.json` | Geometry optimization | Trajectory loader; optimization viewer |
 | `md.traj`, `md.extxyz` | Molecular dynamics | Trajectory loader — `md.extxyz` preferred: it carries forces/velocities for overlays and the VACF |
 | `single_point.json` | Single-point calculation | Single-point viewer |
+| `single_point.extxyz` | Single-point calculation — the converged geometry with the calculator's results (energy, forces, ...) still attached | Overlay vectors (forces/magmoms); a downstream Orchestration Dump node reads this file directly, once per fan-out pass |
 | `*.gpw` | GPAW single point (restart file) | Baseline-inheriting wizards; partial-charge and CDD workflows |
 | `density_*.cube`, `elf.cube`, `potential_hartree.cube`, `kinetic_energy_density.cube` | Single-point density exports | Volumetric Data dock (auto-registered) |
 | `bands.json`, `pdos.json` | Electronic Structure run | Band structure / PDOS viewer |
@@ -112,7 +113,8 @@ accumulates there, who writes it, and who reads it:
 | `charged_defects.json` | Charged defects | Defect-diagram viewer |
 | `cluster_expansion.json` | Cluster expansion | Hull viewer |
 | `cutoff_convergence.json`, `kpoints_convergence.json` | Parameters Convergence sweeps | Shared convergence viewer |
-| `random_noise.json`, `perturbed.extxyz` | Random-noise ensemble | Ensemble viewer / dataset manager |
+| `random_noise.json`, `noise_singlepoint.extxyz` | Random-noise ensemble (legacy — Random Noise Setup no longer writes these; a job directory from before that change still opens with the ensemble viewer) | Ensemble viewer / dataset manager |
+| `dump_summary.json` | Orchestration Dump node — frame counts, excluded reasons, the output path | Informational only; the training set itself is the extxyz file the node's *Output file* field names, written wherever chosen rather than into the job directory |
 
 **The dispatch rule**: when you ask a completed process for its results,
 Calango checks which of these files the directory actually holds and opens

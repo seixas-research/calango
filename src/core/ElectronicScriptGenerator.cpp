@@ -544,6 +544,16 @@ std::string generateElectronicScript(const ElectronicConfig& c)
         break;
 
     case ElectronicBackend::Vasp:
+        // No explicit ispin= anywhere below, on either the fresh-SCF or the
+        // baseline-reuse Vasp() call — verified against ASE's own
+        // create_input.py (set_magmom()): it auto-sets ISPIN = 2 whenever
+        // `atoms` carries nonzero initial magnetic moments and the caller did
+        // not pass ispin itself. `atoms` here is `read("structure.extxyz")`
+        // just below, unconditionally, so a spin-polarized structure stays
+        // spin-polarized through both the SCF and the NSCF band pass without
+        // Calango having to track or re-assert it — the same outcome GPAW
+        // gets for free from a full .gpw restart, reached here by a different
+        // route because CHGCAR alone carries no calculator state to restart.
         out << "# VASP workflow (requires VASP_PP_PATH + ASE_VASP_COMMAND).\n"
                "from ase.calculators.vasp import Vasp\n"
                "import os\n"

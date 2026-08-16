@@ -431,6 +431,84 @@ int main(int argc, char** argv)
               "and it appears in the Add Process list at all");
     }
 
+    // ---- Dump (ML training-data writer) plumbing ---------------------------
+    //
+    // Just the static contract -- slug, family, input slot -- the same shape
+    // the SQS/ECI/CVM check above pins for the alloy pipeline. The actual
+    // aggregation (reading every fan-out pass, writing the extxyz under the
+    // MACE preset's keys) is exercised end to end in OrchestrationBatchTest.
+    std::printf("Dump (ML training-data writer) plumbing:\n");
+    {
+        check(orchestrationTaskSlug(OrchestrationTask::Dump)
+                      == QStringLiteral("dump")
+                  && orchestrationTaskFromSlug(QStringLiteral("dump"))
+                      == OrchestrationTask::Dump,
+              "\"dump\" is a stable slug that round-trips");
+        check(orchestrationTaskFamily(OrchestrationTask::Dump)
+                  == OrchestrationFamily::Transform,
+              "it is a Transform: no calculator, no launch command, and it "
+              "runs on the canvas rather than as a job");
+        check(orchestrationRequiredInputs(OrchestrationTask::Dump) == 1,
+              "it refuses to run unlinked, like every other node that reads "
+              "a completed run rather than defaulting to something");
+        check(calango::gui::orchestrationTasks().contains(
+                  OrchestrationTask::Dump),
+              "and it appears in the Add Process list");
+
+        // Round-trip through the saved-workflow document -- the same
+        // additive pattern TdbGenerator/SqsGenerator/etc. use
+        // (entry.insert("dump", ...) / DumpSpec::fromJson), which an older
+        // reader ignores rather than chokes on.
+        OrchestrationWindow source({{QStringLiteral("Cu (rattled)"), copper}},
+                                   pythonResolver);
+        OrchestrationNodeItem* container = source.addProcessNode(
+            OrchestrationTask::Container, 0, calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* singlePoint = source.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* dump = source.addProcessNode(
+            OrchestrationTask::Dump, 0, calango::core::CalculatorKind::EMT);
+        source.linkNodes(container, singlePoint);
+        source.linkNodes(singlePoint, dump);
+        calango::gui::DumpSpec spec;
+        calango::gui::applyMaceTrainingPreset(&spec);
+        spec.outputPath = QStringLiteral("/tmp/whatever_training.extxyz");
+        spec.configType = QStringLiteral("bulk");
+        spec.includeFailedFrames = true;
+        spec.appendToExistingFile = true;
+        source.setNodeDump(dump, spec);
+
+        QStringList warnings;
+        const QJsonObject document =
+            calango::gui::OrchestrationDocument::build(source, &warnings);
+
+        OrchestrationWindow reopened(
+            {{QStringLiteral("Cu (rattled)"), copper}}, pythonResolver);
+        QString error;
+        check(calango::gui::OrchestrationDocument::load(reopened, document,
+                                                         &error),
+              "the document reloads");
+        OrchestrationNodeItem* reopenedDump = nullptr;
+        for (OrchestrationNodeItem* node : reopened.nodes())
+            if (node->task() == OrchestrationTask::Dump)
+                reopenedDump = node;
+        check(reopenedDump != nullptr, "the Dump node survives the round trip");
+        if (reopenedDump) {
+            const calango::gui::DumpSpec& reopenedSpec = reopenedDump->dump();
+            check(reopenedSpec.outputPath == spec.outputPath
+                      && reopenedSpec.energyKey == spec.energyKey
+                      && reopenedSpec.forcesKey == spec.forcesKey
+                      && reopenedSpec.stressKey == spec.stressKey
+                      && reopenedSpec.configType == spec.configType
+                      && reopenedSpec.includeFailedFrames
+                          == spec.includeFailedFrames
+                      && reopenedSpec.appendToExistingFile
+                          == spec.appendToExistingFile,
+                  "and every field of its settings round-trips exactly, "
+                  "including the MACE preset's key names");
+        }
+    }
+
     // ---- The SQS Generator transform ---------------------------------------
     //
     // End to end through the node's compute function, on the same copper cell
@@ -1013,6 +1091,454 @@ int main(int argc, char** argv)
         check(second == QStringLiteral("DEFECT"),
               "baseline_2.gpw is the second-linked parent (the defect)");
         check(first != second, "the two slots are genuinely different files");
+    }
+
+    // ---- Diamond graph: fan-out then merge ---------------------------------
+    //
+    // One shared source feeds TWO children (fan-out: connectNodes() has
+    // never restricted outgoing edges, and staging is copy-based, so a
+    // second child cannot corrupt what the first one already read), and
+    // both branches feed ONE Dump node (merge: connectNodes() now allows
+    // more than one incoming edge specifically for Dump, which reads every
+    // parent's own pass set directly and concatenates them in link order).
+    std::printf("Diamond graph (fan-out then merge into one Dump):\n");
+    QSettings().setValue(
+        QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+        sandbox.path() + QStringLiteral("/simulations_diamond"));
+    {
+        calango::core::CalculatorConfig singlePointConfig;
+        singlePointConfig.task = calango::core::TaskKind::SinglePoint;
+        singlePointConfig.calculator = calango::core::CalculatorKind::EMT;
+        const QString singlePointScript = QString::fromStdString(
+            calango::core::AseScriptGenerator::generate(singlePointConfig,
+                                                         "structure.extxyz"));
+
+        OrchestrationWindow window({{QStringLiteral("Cu (rattled)"), copper}},
+                                   pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        OrchestrationNodeItem* source = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* branchA = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* branchB = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* dump = window.addProcessNode(
+            OrchestrationTask::Dump, 0, calango::core::CalculatorKind::EMT);
+
+        // Fan-out: source has TWO children.
+        window.linkNodes(source, branchA);
+        window.linkNodes(source, branchB);
+        // Merge: dump has TWO parents.
+        window.linkNodes(branchA, dump);
+        window.linkNodes(branchB, dump);
+
+        window.configureNode(source, singlePointScript, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+        window.configureNode(branchA, singlePointScript, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+        window.configureNode(branchB, singlePointScript, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+
+        const QString trainingPath =
+            sandbox.path() + QStringLiteral("/diamond_merge.extxyz");
+        calango::gui::DumpSpec dumpSpec;
+        calango::gui::applyMaceTrainingPreset(&dumpSpec);
+        dumpSpec.outputPath = trainingPath;
+        window.setNodeDump(dump, dumpSpec);
+
+        // Persistence: the multi-edge graph survives a save/reload round
+        // trip -- the same connectNodes() rule applies on load (it calls
+        // linkNodes() per saved edge, in file order), so a graph that was
+        // valid to draw interactively reloads with every edge intact.
+        QStringList warnings;
+        const QJsonObject document =
+            calango::gui::OrchestrationDocument::build(window, &warnings);
+        check(document.value(QStringLiteral("edges")).toArray().size() == 4,
+              "the saved document holds all four edges of the diamond -- "
+              "fan-out and merge both round-trip through the same flat "
+              "edge list an old, single-edge graph already used");
+
+        OrchestrationWindow reopened(
+            {{QStringLiteral("Cu (rattled)"), copper}}, pythonResolver);
+        QString reopenError;
+        check(calango::gui::OrchestrationDocument::load(reopened, document,
+                                                         &reopenError),
+              "the diamond graph reloads with no error");
+        OrchestrationNodeItem* reopenedDump = nullptr;
+        int reopenedDumpParents = 0;
+        for (OrchestrationNodeItem* node : reopened.nodes())
+            if (node->task() == OrchestrationTask::Dump)
+                reopenedDump = node;
+        if (reopenedDump)
+            for (const auto& link : reopened.links())
+                if (link.second == reopenedDump)
+                    ++reopenedDumpParents;
+        check(reopenedDumpParents == 2,
+              "and the reloaded Dump node still has both of its merged "
+              "parents");
+
+        // Execute the ORIGINAL window (not the reload, which shares no
+        // configured scripts) end to end.
+        calango::core::WorkflowReport delivered;
+        int finishedSignals = 0;
+        QObject::connect(&window, &OrchestrationWindow::runFinished,
+                         [&](const calango::core::WorkflowReport& report) {
+                             delivered = report;
+                             ++finishedSignals;
+                         });
+
+        window.sendToProcesses();
+        check(refusals.isEmpty(),
+              "the diamond itself -- fan-out then merge -- is accepted");
+
+        settle(dump, dump);
+        QElapsedTimer e2eTimer;
+        e2eTimer.start();
+        while (finishedSignals == 0 && e2eTimer.elapsed() < 30000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+
+        check(finishedSignals == 1, "the run reports itself exactly once");
+        check(delivered.allSucceeded(), "every node in the diamond succeeded");
+
+        check(source->jobHistory().size() == 1,
+              "the shared source ran exactly ONCE, not once per child -- "
+              "fan-out does not duplicate the parent's own work");
+        int sourceOutcomes = 0, branchAOutcomes = 0, branchBOutcomes = 0,
+            dumpOutcomes = 0;
+        for (const auto& outcome : delivered.outcomes) {
+            if (outcome.nodeId == source->id())
+                ++sourceOutcomes;
+            else if (outcome.nodeId == branchA->id())
+                ++branchAOutcomes;
+            else if (outcome.nodeId == branchB->id())
+                ++branchBOutcomes;
+            else if (outcome.nodeId == dump->id())
+                ++dumpOutcomes;
+        }
+        check(sourceOutcomes == 1,
+              "...and its outcome appears exactly once in the report");
+        check(branchAOutcomes == 1 && branchBOutcomes == 1,
+              "both branches completed, each exactly once");
+        check(dumpOutcomes == 1,
+              "the merge node ran exactly once, not once per parent -- it "
+              "waited for BOTH branches before running at all");
+        check(QFile::exists(trainingPath), "the merged training file exists");
+
+        const QString verifyDir =
+            sandbox.path() + QStringLiteral("/verify_diamond");
+        QDir().mkpath(verifyDir);
+        const QString verifyScriptPath =
+            verifyDir + QStringLiteral("/verify.py");
+        const QString verifyOutPath = verifyDir + QStringLiteral("/verify.json");
+        {
+            QFile verifyScript(verifyScriptPath);
+            check(verifyScript.open(QIODevice::WriteOnly | QIODevice::Text),
+                  "the verification script is written");
+            verifyScript.write(QByteArray(
+                "import ase.io, json, sys\n"
+                "frames = ase.io.read(sys.argv[1], index=':')\n"
+                "out = {'n_frames': len(frames),\n"
+                "       'energies': [a.info.get('REF_energy') for a in "
+                "frames]}\n"
+                "with open(sys.argv[2], 'w') as fh:\n"
+                "    json.dump(out, fh)\n"));
+        }
+        QProcess verifyRun;
+        verifyRun.start(pythonExe,
+                        {verifyScriptPath, trainingPath, verifyOutPath});
+        check(verifyRun.waitForFinished(60000) && verifyRun.exitCode() == 0,
+              "the independent read-back script runs cleanly");
+        const QJsonObject verified =
+            QJsonDocument::fromJson(readAll(verifyOutPath).toUtf8()).object();
+        check(verified.value(QStringLiteral("n_frames")).toInt() == 2,
+              "the merged Dump holds both branches' frames -- one from "
+              "branchA, one from branchB, concatenated in link order -- "
+              "not one (only the first parent) and not more than two");
+        const QJsonArray energies =
+            verified.value(QStringLiteral("energies")).toArray();
+        bool allHaveEnergy = energies.size() == 2;
+        for (const QJsonValue& value : energies)
+            allHaveEnergy = allHaveEnergy && !value.isNull();
+        check(allHaveEnergy,
+              "and both merged frames carry a real computed energy, not a "
+              "placeholder for whichever parent was silently dropped");
+
+        // The complementary half of "merge only where it is well-defined":
+        // a second link into a SINGLE-geometry input is refused outright,
+        // not silently accepted and then never read. NOT branchA (a
+        // Single-point Calculation) any more -- that task is now, on
+        // purpose, one of the three exempt from this cap (see the fan-in
+        // test below) -- so a Supercell Builder stands in as a task that is
+        // still genuinely capped at one parent. Attempted only now, after
+        // the run has already finished, so a rejected (and therefore
+        // orphaned, parentless) stray node cannot be picked up by a
+        // scheduler pass that no longer runs.
+        OrchestrationNodeItem* capped = window.addProcessNode(
+            OrchestrationTask::Supercell, 0, calango::core::CalculatorKind::EMT);
+        window.linkNodes(branchA, capped);
+        OrchestrationNodeItem* stray = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(stray, capped);
+        // ONE call to links(), not one per iterator: window.links().cbegin()
+        // and window.links().cend() would each construct a SEPARATE
+        // temporary QList, making begin() of one and end() of another an
+        // invalid range (undefined behaviour, not merely "less efficient")
+        // rather than the pair of iterators into the SAME list this needs.
+        const auto currentLinks = window.links();
+        check(std::none_of(currentLinks.cbegin(), currentLinks.cend(),
+                           [&](const auto& link) {
+                               return link.second == capped
+                                   && link.first == stray;
+                           }),
+              "a second link into a single-geometry input is rejected, not "
+              "silently drawn and then never actually read");
+    }
+
+    // ---- Fan-in: a Single-point Calculation with several parents ----------
+    //
+    // Three independent branches (Cu, Au, Pt -- each its own Container ->
+    // Single-point Calculation) linked, in that order, into ONE Single-point
+    // Calculation node. It must run three times, once per parent, and pass i
+    // must use parent i's own structure -- not whichever branch happens to
+    // finish first.
+    std::printf("Fan-in: Single-point Calculation with three parents, pass "
+                "order matching link order:\n");
+    QSettings().setValue(
+        QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+        sandbox.path() + QStringLiteral("/simulations_fanin"));
+    {
+        using calango::core::Atom;
+        using calango::core::Structure;
+        using calango::core::UnitCell;
+
+        const auto oneAtom = [](int z) {
+            auto s = std::make_shared<Structure>();
+            s->setCell(UnitCell({12.0, 0.0, 0.0}, {0.0, 12.0, 0.0},
+                                {0.0, 0.0, 12.0}));
+            Atom atom;
+            atom.atomicNumber = z;
+            atom.position = {0.0, 0.0, 0.0};
+            s->addAtom(atom);
+            return s;
+        };
+        const QList<QPair<int, QString>> elements = {
+            {29, QStringLiteral("Cu")}, {79, QStringLiteral("Au")},
+            {78, QStringLiteral("Pt")}};
+
+        calango::core::CalculatorConfig singlePointConfig;
+        singlePointConfig.task = calango::core::TaskKind::SinglePoint;
+        singlePointConfig.calculator = calango::core::CalculatorKind::EMT;
+        const QString script = QString::fromStdString(
+            calango::core::AseScriptGenerator::generate(singlePointConfig,
+                                                         "structure.extxyz"));
+
+        OrchestrationWindow window({{QStringLiteral("Cu (rattled)"), copper}},
+                                   pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        QList<OrchestrationNodeItem*> branchPoints;
+        for (const auto& [z, symbol] : elements) {
+            OrchestrationNodeItem* container = window.addProcessNode(
+                OrchestrationTask::Container, 0,
+                calango::core::CalculatorKind::EMT);
+            window.setNodeBatchItems(
+                container, {{symbol,
+                            std::shared_ptr<const Structure>(oneAtom(z))}});
+            OrchestrationNodeItem* point = window.addProcessNode(
+                OrchestrationTask::SinglePoint, 0,
+                calango::core::CalculatorKind::EMT);
+            window.linkNodes(container, point);
+            window.configureNode(point, script, pythonExe, QString(),
+                                 calango::core::CalculatorKind::EMT);
+            branchPoints << point;
+        }
+
+        OrchestrationNodeItem* fanIn = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        // Linked in element order: Cu, Au, Pt -- pass 0 must use Cu's
+        // branch, pass 1 Au's, pass 2 Pt's.
+        for (OrchestrationNodeItem* point : branchPoints)
+            window.linkNodes(point, fanIn);
+        window.configureNode(fanIn, script, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+
+        calango::core::WorkflowReport delivered;
+        int finishedSignals = 0;
+        QObject::connect(&window, &OrchestrationWindow::runFinished,
+                         [&](const calango::core::WorkflowReport& report) {
+                             delivered = report;
+                             ++finishedSignals;
+                         });
+
+        window.sendToProcesses();
+        check(refusals.isEmpty(),
+              "the fan-in graph -- three parents into one Single-point -- "
+              "is accepted");
+
+        settle(fanIn, fanIn);
+        QElapsedTimer e2eTimer;
+        e2eTimer.start();
+        while (finishedSignals == 0 && e2eTimer.elapsed() < 30000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+
+        check(finishedSignals == 1, "the run reports itself exactly once");
+        check(delivered.allSucceeded(),
+              "every branch and every fan-in pass succeeded");
+
+        int fanInOutcomes = 0;
+        for (const auto& outcome : delivered.outcomes)
+            if (outcome.nodeId == fanIn->id())
+                ++fanInOutcomes;
+        check(fanInOutcomes == 3,
+              "the fan-in node ran exactly three times -- once per parent, "
+              "not once total and not nine times (3x3, as an accidental "
+              "cross product with the branches' own single pass would give)");
+
+        // Pass order: read back which element each pass actually staged as
+        // its OWN structure.extxyz, independent of AseBridge or anything
+        // this feature itself wrote, and check it matches link order.
+        QStringList passElements(3, QString());
+        for (const auto& outcome : delivered.outcomes) {
+            if (outcome.nodeId != fanIn->id())
+                continue;
+            if (outcome.batchIndex < 0 || outcome.batchIndex >= 3)
+                continue;
+            const QString content = readAll(
+                outcome.directory + QStringLiteral("/structure.extxyz"));
+            for (const auto& [z, symbol] : elements)
+                if (content.contains(symbol))
+                    passElements[outcome.batchIndex] = symbol;
+        }
+        check(passElements
+                  == (QStringList{QStringLiteral("Cu"), QStringLiteral("Au"),
+                                  QStringLiteral("Pt")}),
+              "pass 0 used Cu's branch, pass 1 Au's, pass 2 Pt's -- "
+              "execution order matches connection order exactly, not "
+              "whichever branch happened to finish first");
+
+        // At most one fan-in node per graph: this odometer has no way to
+        // track two independent per-node parent counts at once.
+        refusals.clear();
+        OrchestrationNodeItem* secondFanIn = window.addProcessNode(
+            OrchestrationTask::GeometryOptimization, 0,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(branchPoints[0], secondFanIn);
+        window.linkNodes(branchPoints[1], secondFanIn);
+        window.sendToProcesses();
+        check(!refusals.isEmpty()
+                  && refusals.constLast().contains(
+                         QStringLiteral("more than one parent")),
+              "a second fan-in node in the same graph is refused, naming "
+              "the ambiguity, rather than silently picking one");
+    }
+
+    // ---- Fan-in: a Geometry Optimization with several parents --------------
+    //
+    // The SAME mechanism, proven for the other task the user asked for
+    // specifically -- a separate window so it is not blocked by the "one
+    // fan-in node per graph" rule the test just above exercises.
+    std::printf("Fan-in: Geometry Optimization with two parents, same "
+                "mechanism as Single-point:\n");
+    QSettings().setValue(
+        QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+        sandbox.path() + QStringLiteral("/simulations_fanin_relax"));
+    {
+        using calango::core::Atom;
+        using calango::core::Structure;
+        using calango::core::UnitCell;
+
+        const auto oneAtom = [](int z) {
+            auto s = std::make_shared<Structure>();
+            s->setCell(UnitCell({12.0, 0.0, 0.0}, {0.0, 12.0, 0.0},
+                                {0.0, 0.0, 12.0}));
+            Atom atom;
+            atom.atomicNumber = z;
+            atom.position = {0.0, 0.0, 0.0};
+            s->addAtom(atom);
+            return s;
+        };
+        const QList<QPair<int, QString>> elements = {
+            {29, QStringLiteral("Cu")}, {79, QStringLiteral("Au")}};
+
+        calango::core::CalculatorConfig pointConfig;
+        pointConfig.task = calango::core::TaskKind::SinglePoint;
+        pointConfig.calculator = calango::core::CalculatorKind::EMT;
+        const QString pointScript = QString::fromStdString(
+            calango::core::AseScriptGenerator::generate(pointConfig,
+                                                         "structure.extxyz"));
+        const QString relaxScript = QString::fromStdString(
+            calango::core::AseScriptGenerator::generate(relaxConfig(),
+                                                         "structure.extxyz"));
+
+        OrchestrationWindow window({{QStringLiteral("Cu (rattled)"), copper}},
+                                   pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        QList<OrchestrationNodeItem*> branchPoints;
+        for (const auto& [z, symbol] : elements) {
+            OrchestrationNodeItem* container = window.addProcessNode(
+                OrchestrationTask::Container, 0,
+                calango::core::CalculatorKind::EMT);
+            window.setNodeBatchItems(
+                container, {{symbol,
+                            std::shared_ptr<const Structure>(oneAtom(z))}});
+            OrchestrationNodeItem* point = window.addProcessNode(
+                OrchestrationTask::SinglePoint, 0,
+                calango::core::CalculatorKind::EMT);
+            window.linkNodes(container, point);
+            window.configureNode(point, pointScript, pythonExe, QString(),
+                                 calango::core::CalculatorKind::EMT);
+            branchPoints << point;
+        }
+
+        OrchestrationNodeItem* fanIn = window.addProcessNode(
+            OrchestrationTask::GeometryOptimization, 0,
+            calango::core::CalculatorKind::EMT);
+        for (OrchestrationNodeItem* point : branchPoints)
+            window.linkNodes(point, fanIn);
+        window.configureNode(fanIn, relaxScript, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+
+        calango::core::WorkflowReport delivered;
+        int finishedSignals = 0;
+        QObject::connect(&window, &OrchestrationWindow::runFinished,
+                         [&](const calango::core::WorkflowReport& report) {
+                             delivered = report;
+                             ++finishedSignals;
+                         });
+
+        window.sendToProcesses();
+        check(refusals.isEmpty(),
+              "the fan-in graph is accepted for Geometry Optimization too");
+
+        settle(fanIn, fanIn);
+        QElapsedTimer e2eTimer;
+        e2eTimer.start();
+        while (finishedSignals == 0 && e2eTimer.elapsed() < 60000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+
+        check(finishedSignals == 1, "the run reports itself exactly once");
+        check(delivered.allSucceeded(), "every branch and both relaxations "
+                                        "succeeded");
+        int fanInOutcomes = 0;
+        for (const auto& outcome : delivered.outcomes)
+            if (outcome.nodeId == fanIn->id())
+                ++fanInOutcomes;
+        check(fanInOutcomes == 2,
+              "the fan-in Geometry Optimization ran exactly twice -- once "
+              "per parent, the same mechanism as Single-point Calculation");
     }
 
     // ---- Abort: stopping a run in flight, and resuming it ------------------

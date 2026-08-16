@@ -10,6 +10,7 @@
 #include "gui/GuiUtils.hpp"
 #include "python_bridge/AseBridge.hpp"
 
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QObject>
@@ -251,6 +252,66 @@ DefectSpec DefectSpec::fromJson(const QJsonObject& object)
         ? Mode::Separate
         : Mode::Combined;
     return spec;
+}
+
+// ---------------------------------------------------------------------------
+// SingleAtomContainerSpec
+// ---------------------------------------------------------------------------
+
+QString SingleAtomContainerSpec::describe() const
+{
+    return QObject::tr("%1 Å box, periodic")
+        .arg(boxSizeAngstrom, 0, 'g', 6);
+}
+
+QJsonObject SingleAtomContainerSpec::toJson() const
+{
+    return QJsonObject{{QStringLiteral("box_size_angstrom"), boxSizeAngstrom}};
+}
+
+SingleAtomContainerSpec SingleAtomContainerSpec::fromJson(const QJsonObject& object)
+{
+    SingleAtomContainerSpec spec;
+    spec.boxSizeAngstrom = object.value(QStringLiteral("box_size_angstrom"))
+                               .toDouble(spec.boxSizeAngstrom);
+    return spec;
+}
+
+QList<NamedStructure> buildSingleAtomBatch(const QList<NamedStructure>& sources,
+                                           const SingleAtomContainerSpec& spec)
+{
+    // First-appearance order: walk every source structure's atoms in order,
+    // recording each atomic number the first time it is seen. A std::set
+    // would sort by Z instead, which reads as an arbitrary reshuffling of
+    // the elements the source list actually names them in.
+    std::vector<int> uniqueZ;
+    for (const NamedStructure& source : sources) {
+        if (!source.second)
+            continue;
+        for (const core::Atom& atom : source.second->atoms()) {
+            if (std::find(uniqueZ.begin(), uniqueZ.end(), atom.atomicNumber)
+                == uniqueZ.end())
+                uniqueZ.push_back(atom.atomicNumber);
+        }
+    }
+
+    QList<NamedStructure> result;
+    const double side = spec.boxSizeAngstrom;
+    for (int z : uniqueZ) {
+        auto single = std::make_shared<core::Structure>();
+        // UnitCell's own default is periodic on all three axes -- exactly
+        // the "large periodic cubic box" convention this node commits to;
+        // nothing here needs to ask for it separately.
+        single->setCell(core::UnitCell({side, 0.0, 0.0}, {0.0, side, 0.0},
+                                       {0.0, 0.0, side}));
+        core::Atom atom;
+        atom.atomicNumber = z;
+        atom.position = {side / 2.0, side / 2.0, side / 2.0};
+        single->addAtom(atom);
+        result.append(
+            {QString::fromUtf8(core::Elements::data(z).symbol), single});
+    }
+    return result;
 }
 
 QList<DefectVariant> applyDefectSet(const core::Structure& structure,
@@ -1420,6 +1481,113 @@ bool runCvmEntropy(const QString& eciJson, const CvmEntropySpec& spec,
                                        : solved.points.front().temperatureK,
                  0, 'f', 0)
             .arg(solved.idealEntropyKb, 0, 'f', 4);
+    return true;
+}
+
+QString DumpSpec::describe() const
+{
+    QStringList keys{energyKey, forcesKey};
+    if (!stressKey.isEmpty())
+        keys << stressKey;
+    const QString name =
+        outputPath.isEmpty() ? QObject::tr("(no path set)")
+                             : QFileInfo(outputPath).fileName();
+    return QObject::tr("%1 -> %2").arg(keys.join(QStringLiteral("/")), name);
+}
+
+QJsonObject DumpSpec::toJson() const
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("output_path"), outputPath);
+    object.insert(QStringLiteral("energy_key"), energyKey);
+    object.insert(QStringLiteral("forces_key"), forcesKey);
+    object.insert(QStringLiteral("stress_key"), stressKey);
+    object.insert(QStringLiteral("config_type"), configType);
+    object.insert(QStringLiteral("include_failed_frames"), includeFailedFrames);
+    object.insert(QStringLiteral("append"), appendToExistingFile);
+    return object;
+}
+
+DumpSpec DumpSpec::fromJson(const QJsonObject& object)
+{
+    DumpSpec spec;
+    spec.outputPath = object.value(QStringLiteral("output_path")).toString();
+    spec.energyKey = object.value(QStringLiteral("energy_key"))
+                         .toString(spec.energyKey);
+    spec.forcesKey = object.value(QStringLiteral("forces_key"))
+                         .toString(spec.forcesKey);
+    spec.stressKey = object.value(QStringLiteral("stress_key")).toString();
+    spec.configType = object.value(QStringLiteral("config_type")).toString();
+    spec.includeFailedFrames =
+        object.value(QStringLiteral("include_failed_frames")).toBool(false);
+    spec.appendToExistingFile =
+        object.value(QStringLiteral("append")).toBool(false);
+    return spec;
+}
+
+void applyMaceTrainingPreset(DumpSpec* spec)
+{
+    if (!spec)
+        return;
+    // mace.tools.default_keys.DefaultKeys, mace 0.3.15 (verified against the
+    // installed package, not assumed): ENERGY = "REF_energy",
+    // FORCES = "REF_forces", STRESS = "REF_stress" — the same values
+    // mace_run_train's --energy_key/--forces_key/--stress_key default to.
+    // The REF_ prefix is deliberate on MACE's side, not a Calango
+    // convention: its data loader refuses a bare "stress" key outright,
+    // since ASE 3.23.0b1 made that name unsafe to round-trip between ASE and
+    // MACE, and names this prefix as the fix.
+    spec->energyKey = QStringLiteral("REF_energy");
+    spec->forcesKey = QStringLiteral("REF_forces");
+    spec->stressKey = QStringLiteral("REF_stress");
+}
+
+bool runDump(const QList<DumpSourceFrame>& sources, const DumpSpec& spec,
+            DumpOutput* output, QString* error)
+{
+    const auto fail = [error](const QString& message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+    if (!output)
+        return fail(QObject::tr("no output was requested"));
+    if (!spec.isValid())
+        return fail(QObject::tr(
+            "it has no output path, or no energy/forces key names (%1)")
+                        .arg(spec.describe()));
+
+    std::vector<pybridge::AseBridge::DumpSourceFile> files;
+    files.reserve(static_cast<std::size_t>(sources.size()));
+    for (const DumpSourceFrame& source : sources)
+        files.push_back({source.path.toStdString(), source.label.toStdString(),
+                         source.configTypeOverride.toStdString()});
+
+    pybridge::AseBridge::DumpWriteResult written;
+    try {
+        written = pybridge::AseBridge::writeDumpTrainingSet(
+            files, spec.outputPath.toStdString(), spec.energyKey.toStdString(),
+            spec.forcesKey.toStdString(), spec.stressKey.toStdString(),
+            spec.configType.toStdString(), spec.includeFailedFrames,
+            spec.appendToExistingFile);
+    } catch (const std::exception& e) {
+        return fail(QObject::tr("its training set could not be written (%1)")
+                        .arg(QString::fromUtf8(e.what())));
+    }
+
+    output->framesWritten = written.framesWritten;
+    output->framesExcluded = written.framesExcluded;
+    for (const std::string& reason : written.excludedReasons)
+        output->excludedReasons << QString::fromStdString(reason);
+    output->headline =
+        output->framesExcluded > 0
+            ? QObject::tr("%1 frame(s) written to %2 (%3 excluded)")
+                  .arg(output->framesWritten)
+                  .arg(QFileInfo(spec.outputPath).fileName())
+                  .arg(output->framesExcluded)
+            : QObject::tr("%1 frame(s) written to %2")
+                  .arg(output->framesWritten)
+                  .arg(QFileInfo(spec.outputPath).fileName());
     return true;
 }
 

@@ -29,7 +29,6 @@
 #include "core/PhononScriptGenerator.hpp"
 #include "core/ThermodynamicIntegrationScriptGenerator.hpp"
 #include "core/RamanIrScriptGenerator.hpp"
-#include "core/RandomNoiseScriptGenerator.hpp"
 #include "core/Defect2dScriptGenerator.hpp"
 #include "core/DefectScriptGenerator.hpp"
 #include "core/FermiSurfaceScriptGenerator.hpp"
@@ -474,29 +473,6 @@ int main(int argc, char** argv)
             pseudo.subsystemB = {2, 3, 5};
             std::ofstream pseudoOut(dir + "/cdd_pseudo.py");
             pseudoOut << CddScriptGenerator::generate(pseudo);
-        }
-
-        // Random-noise ensemble sweep: the calculator block is re-indented
-        // into a function body and the per-member loop nests two more levels
-        // under it, so this is exactly the shape where an indentation slip
-        // parses as valid Python that does the wrong thing.
-        {
-            RandomNoiseRunConfig noise;
-            noise.calculator = gpawConfig();
-            noise.calculator.task = TaskKind::SinglePoint;
-            noise.computeForces = true;
-            noise.computeStress = true;
-            std::ofstream out(dir + "/random_noise.py");
-            out << RandomNoiseScriptGenerator::generate(noise);
-
-            // The failure branch is a `raise` rather than a recovery block, so
-            // both variants are compiled.
-            RandomNoiseRunConfig strict = noise;
-            strict.continueOnFailure = false;
-            strict.computeForces = false;
-            strict.computeStress = false;
-            std::ofstream strictOut(dir + "/random_noise_strict.py");
-            strictOut << RandomNoiseScriptGenerator::generate(strict);
         }
 
         // LAMMPS: both interfaces, since they emit structurally different
@@ -2272,6 +2248,19 @@ int main(int argc, char** argv)
               "with NO SCF calculator built — that is the whole point");
         checkContains(reused, "The baseline charge density is gone",
                       "a missing baseline is caught before VASP starts");
+
+        // Spin: neither Vasp() call hand-writes ispin=. Verified against
+        // ASE's own create_input.py (set_magmom()) that this is deliberate,
+        // not an oversight — ASE auto-sets ISPIN=2 itself whenever `atoms`
+        // (read from structure.extxyz, unconditionally, on every VASP
+        // branch) carries nonzero initial magnetic moments and the caller
+        // left ispin unset, so a spin-polarized structure stays
+        // spin-polarized through both the SCF and the NSCF band pass with
+        // no extra code here.
+        check(!contains(fresh, "ispin="),
+              "fresh-SCF leaves ISPIN to ASE's own magmom auto-detection");
+        check(!contains(reused, "ispin="),
+              "baseline-reuse leaves ISPIN to ASE's own magmom auto-detection");
     }
 
     std::printf("XAS generation:\n");
@@ -2608,6 +2597,31 @@ int main(int argc, char** argv)
         checkContains(script, "write(\"single_point.extxyz\", atoms)",
                       "a result structure carries them to the viewport");
     }
+    {
+        // Stress: computed once, before the extxyz write, so ase.io picks up
+        // whatever is already in atoms.calc.results rather than recomputing
+        // it -- and gated on periodicity, since a molecular calculator has no
+        // notion of a cell to stress. This is what lets a Dump node's stress
+        // key be non-empty for a real periodic single point.
+        const std::string script =
+            AseScriptGenerator::generate(gpawConfig(), "structure.extxyz");
+        checkContains(script, "atoms.get_stress().tolist() if any(atoms.pbc)",
+                      "stress is only asked for on a periodic cell");
+        checkContains(script, "\"stress_eV_per_A3\": _stress",
+                      "and reported in the summary alongside the energy and "
+                      "forces");
+        checkContains(script, "except Exception:\n    _stress = None",
+                      "left None -- not a wrong zero -- for a calculator "
+                      "that does not implement it");
+        // Computed BEFORE the extxyz write, not after: ase.io.write reads
+        // whatever is already in atoms.calc.results and never calls
+        // get_stress() itself, so a stress call placed after the write would
+        // silently never reach the file.
+        check(script.find("_stress = atoms.get_stress()")
+                  < script.find("write(\"single_point.extxyz\", atoms)"),
+              "the stress call happens before the file is written, or the "
+              "extxyz would carry no stress at all");
+    }
 
     // -- 2D band surfaces ----------------------------------------------------
     std::printf("2D band surfaces:\n");
@@ -2792,6 +2806,37 @@ int main(int argc, char** argv)
         checkContains(plain, "ASE needs at least as",
                       "the run explains a negative extra-degrees-of-freedom "
                       "count instead of failing opaquely");
+    }
+
+    // -- VASP Wannierization: routed through VASP's OWN native Wannier90
+    // library, not ase.dft.wannier (which needs a GPAW-only calculator
+    // method — verified against the installed ASE source and the VASP
+    // wiki). Exercised here mainly so generated_script_lint's byte-compile
+    // + undefined-name sweep covers it; WannierPreflightTest.cpp carries
+    // the detailed content assertions.
+    std::printf("VASP Wannierization (native Wannier90 library):\n");
+    {
+        // Through the PUBLIC entry point only -- generateVaspWannier90Script()
+        // is file-local to WannierScriptGenerator.cpp, so this is also the
+        // check that generateWannierScript() actually dispatches VASP to it.
+        WannierConfig vasp;
+        vasp.calculator.calculator = CalculatorKind::Vasp;
+        vasp.nWannier = 8;
+        const std::string fresh = generateWannierScript(vasp);
+        checkContains(fresh, "lwannier90_run=True",
+                      "a fresh VASP Wannierization runs the library to "
+                      "completion");
+        checkContains(fresh, "num_wann = 8",
+                      "with the requested Wannier count");
+
+        WannierConfig vaspBaseline;
+        vaspBaseline.calculator.calculator = CalculatorKind::Vasp;
+        vaspBaseline.baselineDir = "/jobs/proc_200";
+        const std::string baselined = generateWannierScript(vaspBaseline);
+        checkContains(baselined, "/jobs/proc_200",
+                      "a baseline-inheriting run names the parent directory");
+        checkContains(baselined, "CHGCAR",
+                      "and reuses its charge density");
     }
 
     // -- Interpolation windows actually reach ASE ----------------------------

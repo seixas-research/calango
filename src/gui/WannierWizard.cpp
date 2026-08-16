@@ -309,6 +309,79 @@ void WannierWizard::refreshBaselineSummary(const QString& dir)
     }
 
     const core::BaselineSummary& b = baselineSummary_;
+    const bool baselineIsVasp =
+        b.engineKind == static_cast<int>(core::CalculatorKind::Vasp);
+
+    // ase.dft.wannier.Wannier's localization (new_Z(), ase/dft/wannier.py)
+    // calls calc.get_wannier_localization_matrix() UNCONDITIONALLY to build
+    // the overlap matrices — verified against the installed ASE source
+    // (mace_env / gpaw_fast, ase 3.28–3.29), not assumed. That method is a
+    // GPAW-only addition to ASE's calculator interface, so THAT route is
+    // closed for any other engine — but VASP has its OWN native Wannier90
+    // interface (LWANNIER90 / LWANNIER90_RUN, verified against the VASP
+    // wiki this session), which runs the ENTIRE localization inside VASP
+    // itself and needs no ase.dft.wannier involvement at all;
+    // generateWannierScript() routes a VASP-engined config through that
+    // path instead. Quantum ESPRESSO and SIESTA have no equivalent verified
+    // this session, so they stay refused.
+    if (b.engineKind >= 0
+        && b.engineKind != static_cast<int>(core::CalculatorKind::Gpaw)
+        && !baselineIsVasp) {
+        const QString engineName = b.engine.empty()
+            ? tr("This baseline's calculator")
+            : QString::fromStdString(b.engine);
+        baselineSummaryLabel_->setText(
+            QStringLiteral("<span style='color:#d9534f;'><b>%1</b></span>")
+                .arg(tr("Engine: %1 — not supported for Wannierization")
+                         .arg(engineName)));
+        baselineSummaryLabel_->setToolTip(
+            tr("ASE's Wannier localization (ase.dft.wannier.Wannier) needs "
+               "the calculator method get_wannier_localization_matrix(), "
+               "which only GPAW implements — %1's ASE calculator does not, "
+               "and (unlike VASP) it has no native Wannier90 interface this "
+               "app drives instead. Pick a GPAW or VASP baseline, or run a "
+               "fresh GPAW SCF with no baseline selected.")
+                .arg(engineName));
+        symmetryWarningLabel_->setText(
+            QStringLiteral("<span style='color:#d9534f;'>⚠ %1</span>")
+                .arg(tr("<b>This run cannot work.</b> %1 does not expose "
+                        "the calculator method ASE's Wannier localization "
+                        "requires (get_wannier_localization_matrix — GPAW-"
+                        "only) and has no native Wannier90 interface this "
+                        "app drives instead. Choose a GPAW or VASP "
+                        "baseline, or run with no baseline for a fresh "
+                        "GPAW SCF.")
+                         .arg(engineName)));
+        symmetryWarningLabel_->setVisible(true);
+        return;
+    }
+
+    if (baselineIsVasp) {
+        // A DIFFERENT run entirely from the GPAW/ASE path below, and its
+        // own "Symmetry: off" question does not apply the same way: VASP's
+        // Wannier90 run is a FRESH non-SCF pass on the baseline's CHGCAR
+        // (charge density only — no k-point-specific wavefunction data),
+        // and this app always sets ISYM = 0 on THAT pass itself
+        // (generateWannierScript()'s VASP branch), regardless of what ISYM
+        // the ORIGINAL baseline SCF used. There is nothing here that can
+        // be wrong the way a folded GPAW .gpw is.
+        QStringList vaspFacts;
+        vaspFacts << tr("Bands: <b>%1</b> (from a fresh non-SCF Wannier90 run)")
+                         .arg(b.bands > 0 ? QString::number(b.bands)
+                                          : tr("as many as VASP reports"));
+        vaspFacts << tr("<span style='color:#3c9a5f;'>Symmetry: <b>off</b> "
+                        "(forced on this run) ✓</span>");
+        baselineSummaryLabel_->setText(vaspFacts.join(QStringLiteral(" · ")));
+        baselineSummaryLabel_->setToolTip(
+            tr("VASP's own Wannier90 library (LWANNIER90_RUN) runs the "
+               "localization, reusing the baseline's charge density "
+               "(CHGCAR) at ICHARG = 11 with ISYM = 0 forced on this pass "
+               "— not restarted from saved wavefunctions the way the GPAW "
+               "path is, so there is no earlier symmetry setting to check."));
+        symmetryWarningLabel_->setVisible(false);
+        return;
+    }
+
     QStringList facts;
     facts << (b.bands > 0 ? tr("Bands: <b>%1</b>").arg(b.bands)
                           : tr("Bands: <b>unknown</b>"));
@@ -399,14 +472,22 @@ QString WannierWizard::pythonExecutable() const
 
 bool WannierWizard::calculatorAllowed(core::CalculatorKind kind) const
 {
-    // DFT engines only: the localization needs the Bloch wavefunctions from a
-    // self-consistent ground state. GPAW drives ase.dft.wannier directly;
-    // Quantum ESPRESSO / SIESTA select their own env + SCF. (The engine combo
-    // is not shown — the calculator is inherited — but this still constrains
-    // the fresh-SCF fallback and the default selection.)
+    // Only the two engines that can ACTUALLY drive a localization. GPAW
+    // does it through ase.dft.wannier directly (calc.
+    // get_wannier_localization_matrix(), a GPAW-only ASE calculator
+    // method); VASP does it through its own native Wannier90 library
+    // (LWANNIER90_RUN — verified against the VASP wiki this session),
+    // entirely independent of ase.dft.wannier. Quantum ESPRESSO and SIESTA
+    // were listed here before despite NEITHER actually working — same
+    // GPAW-only-method gap as any other non-GPAW engine, just never
+    // checked — and refreshBaselineSummary() now refuses a baseline from
+    // either regardless of what this function claims, so leaving them
+    // "allowed" here would only be a claim the rest of the wizard
+    // contradicts. (The engine combo itself is not shown — the calculator
+    // is inherited from the baseline — so this constrains the fresh-SCF
+    // fallback and the default selection, not a user-facing picker.)
     return kind == core::CalculatorKind::Gpaw
-        || kind == core::CalculatorKind::QuantumEspresso
-        || kind == core::CalculatorKind::Siesta;
+        || kind == core::CalculatorKind::Vasp;
 }
 
 QString WannierWizard::generateScript() const
