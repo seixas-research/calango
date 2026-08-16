@@ -1342,20 +1342,38 @@ void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
         }
         out << "\n"
                "from ase.calculators.siesta import Siesta\n"
-               "\n"
-               "atoms.calc = Siesta(\n"
-               "    label=\"calango\",\n"
-            << "    xc=\"" << c.siestaXc << "\",\n"
-            << "    basis_set=\"" << c.siestaBasisSize << "\",\n"
-            << "    energy_shift=" << c.siestaEnergyShiftEv << ",  # eV\n"
-            << "    mesh_cutoff=" << c.siestaMeshCutoffEv << ",  # eV\n"
-            << "    kpts=[" << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2] << "],\n"
-            << "    fdf_arguments={\n"
-            << "        \"PAO.BasisType\": \"" << toString(c.siestaBasisType) << "\",\n"
-            << "        \"SpinPolarized\": " << (c.spinPolarized ? "True" : "False")
-            << ",\n"
-               "    },\n"
-               ")\n";
+               "\n";
+        {
+            // ASE's Siesta writes `Spin <value>` from this TOP-LEVEL
+            // constructor keyword, and derives the legacy
+            // SpinPolarized/NonCollinearSpin backward-compatibility fdf line
+            // from it automatically. Putting "SpinPolarized" inside
+            // fdf_arguments instead — the previous approach — does not work:
+            // fdf_arguments is written first, but FDFWriter unconditionally
+            // appends its own `Spin <self.spin>` line right after it, and
+            // self.spin defaults to "non-polarized" whenever the top-level
+            // keyword is left unset. A spin-polarized run therefore silently
+            // stayed unpolarized regardless of what fdf_arguments said.
+            const std::string spinValue = c.spinMode == SpinMode::NonCollinear
+                ? "non-collinear"
+                : (c.spinMode == SpinMode::Collinear || c.spinPolarized)
+                    ? "collinear"
+                    : "non-polarized";
+            out << "atoms.calc = Siesta(\n"
+                   "    label=\"calango\",\n"
+                << "    xc=\"" << c.siestaXc << "\",\n"
+                << "    basis_set=\"" << c.siestaBasisSize << "\",\n"
+                << "    energy_shift=" << c.siestaEnergyShiftEv << ",  # eV\n"
+                << "    mesh_cutoff=" << c.siestaMeshCutoffEv << ",  # eV\n"
+                << "    kpts=[" << c.kpts[0] << ", " << c.kpts[1] << ", "
+                << c.kpts[2] << "],\n"
+                << "    spin=\"" << spinValue << "\",\n"
+                << "    fdf_arguments={\n"
+                << "        \"PAO.BasisType\": \"" << toString(c.siestaBasisType)
+                << "\",\n"
+                   "    },\n"
+                   ")\n";
+        }
         break;
 
     case CalculatorKind::Orca: {

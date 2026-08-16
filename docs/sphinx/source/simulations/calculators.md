@@ -173,6 +173,30 @@ The {guilabel}`VASP settings` group exposes the primary INCAR tags; everything w
 
 The pseudopotential library (`SIESTA_PP_PATH`) comes from {menuselection}`Preferences --> External Files`.
 
+:::{note}
+**Spin polarization reaches SIESTA through ASE's top-level `spin=` keyword**
+(`"non-polarized"` / `"collinear"` / `"non-collinear"`), not through a
+`SpinPolarized` fdf argument on its own — the modern `Siesta` calculator
+always writes its own `Spin <value>` line from that keyword regardless, so a
+script that only set `SpinPolarized` inside `fdf_arguments` left every run
+non-polarized no matter what was requested. Verified against a real
+`siesta` build and a real pseudopotential.
+:::
+
+:::{warning}
+**Pseudopotential file naming.** Unless a `pseudo_qualifier` is set, ASE
+looks for `<Symbol>.<xc-family>.psf` first (e.g. `Si.gga.psf` for a GGA
+functional) and only falls back to the bare `<Symbol>.psml`, not
+`<Symbol>.psf` — a library that names its files plainly (`Si.psf`, no
+qualifier, a common convention) is not found, and ASE creates a symlink to
+the nonexistent fallback rather than failing immediately. SIESTA itself then
+refuses with a `Pseudopotential file not found` error, which is legible but
+appears after the job has already started rather than before. Calango does
+not currently expose the qualifier as a setting; renaming the library's
+files to include the functional family (or symlinking `Si.psf` to
+`Si.gga.psf`) is the workaround until it does.
+:::
+
 ---
 
 ## ORCA
@@ -342,6 +366,23 @@ Driven through `ase.calculators.aims.Aims`. **There is no plane-wave cutoff here
 | {guilabel}`Extra control.in keywords` | — | one `keyword value` per line |
 
 The tier is a **subfolder** of the species-defaults directory; point the path at the parent and the script joins the two. `light` is the production default for geometries and is already better than a typical plane-wave setup; `tight` is what a published energy or barrier wants; `really_tight` is a convergence check rather than a production setting.
+
+The shared smearing control ({guilabel}`Occupation smearing`) maps onto aims's own `occupation_type` keyword — `fermi` for Fermi-Dirac (the default), `gaussian`, `methfessel-paxton` (with its order, in that argument order — width then order, not GPAW's or VASP's), and `cold` for Marzari-Vanderbilt, aims's own name for it.
+
+:::{note}
+**Every FHI-aims parameter has to reach the constructor.** ASE's `Aims` is a
+`GenericFileIOCalculator`; unlike every other engine in this list, calling
+`.set(...)` on it *after* construction raises unconditionally ("No setting
+parameters for now, please. Just create new calculators."). k-grid, spin and
+smearing are therefore collected into one keyword-argument dictionary and
+passed to a single `Aims(...)` call — k-grid stays conditional on
+`any(atoms.pbc)` inside that dictionary-building step, since aims rejects a
+k-grid outright on a non-periodic system and whether the loaded structure is
+periodic is only known once the script runs. Verified end to end against a
+real `aims.x` build (bulk Si, `light` species defaults, both unpolarized and
+spin-polarized) — before the fix, every one of these runs raised immediately
+instead of ever reaching the SCF.
+:::
 
 :::{warning}
 `atomic_zora scalar` is **required** past the first rows of the periodic table. A non-relativistic all-electron run on a 5d element is not merely less accurate — it is wrong.

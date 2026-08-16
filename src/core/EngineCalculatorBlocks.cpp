@@ -62,6 +62,56 @@ void emitExtraKeyword(std::ostringstream& out, const std::string& entry,
         << ",\n";
 }
 
+/// One `dictName["key"] = value` assignment from a "key value" or
+/// "key = value" line of a free-form "extra settings" field — the same
+/// parsing as emitExtraKeyword, but as a dict-item statement rather than a
+/// call keyword, for calculators (FHI-aims) where every parameter has to
+/// land in a dict built up BEFORE construction rather than in a call's
+/// argument list or a later .set().
+void emitExtraDictItem(std::ostringstream& out, const std::string& entry,
+                       const char* dictName)
+{
+    const auto split = entry.find_first_of(" \t=");
+    if (split == std::string::npos)
+        return;
+    const std::string key = trim(entry.substr(0, split));
+    std::string value = trim(entry.substr(split + 1));
+    if (!value.empty() && value.front() == '=')
+        value = trim(value.substr(1));
+    if (key.empty() || value.empty())
+        return;
+    const bool numeric =
+        value.find_first_not_of("0123456789+-.eEdD") == std::string::npos;
+    out << dictName << "[\"" << key << "\"] = "
+        << (numeric ? value : "\"" + value + "\"") << "\n";
+}
+
+/// FHI-aims' `occupation_type` keyword for `method` (manual section 3.9,
+/// "Eigenvalue solver and (fractional) occupation numbers"): `gaussian`,
+/// `fermi`, `methfessel-paxton` (needs a trailing integer order) or `cold`
+/// (Marzari-Vanderbilt "cold smearing" — FHI-aims' own name for it, matching
+/// how QeSmearing::MarzariVanderbilt is documented as "cold smearing" too).
+/// Only called when smearingUsesWidth(method) is true (see the guard at the
+/// call site in emitAims), so every SmearingMethod that can reach here has a
+/// real FHI-aims spelling; the tetrahedron / orbital-free / fixed-occupation
+/// methods aims has no equivalent for never do.
+const char* aimsOccupationType(SmearingMethod method)
+{
+    switch (method) {
+    case SmearingMethod::Gaussian: return "gaussian";
+    case SmearingMethod::FermiDirac: return "fermi";
+    case SmearingMethod::MethfesselPaxton: return "methfessel-paxton";
+    case SmearingMethod::MarzariVanderbilt: return "cold";
+    case SmearingMethod::None:
+    case SmearingMethod::TetrahedronMethod:
+    case SmearingMethod::ImprovedTetrahedronMethod:
+    case SmearingMethod::OrbitalFree:
+    case SmearingMethod::FixedOccupations:
+        break;
+    }
+    return "gaussian"; // unreachable given the smearingUsesWidth() guard
+}
+
 /// The task note every engine that cannot be driven by an ASE optimizer shares.
 void emitAseDrivenTasksOnly(std::ostringstream& out, const char* engine)
 {
@@ -158,37 +208,48 @@ void emitAims(std::ostringstream& out, const CalculatorConfig& c)
             << "    \"" << c.aimsSpeciesTier << "\")\n";
     }
     out << "\n"
-           "atoms.calc = Aims(\n"
-           "    profile=AimsProfile(command=os.environ.get(\n"
-           "        \"ASE_AIMS_COMMAND\", \"aims.x\")),\n"
+           "# Modern ASE's Aims is a GenericFileIOCalculator: EVERY parameter\n"
+           "# has to reach the CONSTRUCTOR's `parameters` dict. Calling\n"
+           "# .set(...) afterwards — the pattern every other engine here\n"
+           "# uses — raises unconditionally: \"No setting parameters for now,\n"
+           "# please. Just create new calculators.\" k_grid and spin are\n"
+           "# collected into a dict first rather than passed directly,\n"
+           "# because whether k_grid even applies depends on this ATOMS\n"
+           "# object (aims rejects one outright on a non-periodic system,\n"
+           "# \"Found k-grid but no lattice vectors!\") — known only once the\n"
+           "# structure is loaded, not at script-generation time.\n"
+           "aims_kwargs = dict(\n"
            "    species_dir=species_dir,\n"
         << "    xc=\"" << c.aimsXc << "\",\n"
         << "    relativistic=\"" << c.aimsRelativistic << "\",\n"
         << "    sc_accuracy_etot=" << c.aimsScfAccuracyEv << ",  # eV\n"
            ")\n"
-           "\n";
-    // aims decides periodicity from the Atoms object; a k_grid on a molecule is
-    // rejected outright, so it is written conditionally rather than always.
-    // Everything below is therefore .set() on the constructed calculator, not
-    // another constructor argument.
-    out << "if any(atoms.pbc):\n"
-           "    atoms.calc.set(k_grid=("
-        << c.kpts[0] << ", " << c.kpts[1] << ", " << c.kpts[2] << "))\n";
+           "if any(atoms.pbc):\n"
+        << "    aims_kwargs[\"k_grid\"] = (" << c.kpts[0] << ", " << c.kpts[1]
+        << ", " << c.kpts[2] << ")\n";
     if (c.spinPolarized) {
-        out << "atoms.calc.set(spin=\"collinear\",\n"
-               "               default_initial_moment="
-            << c.initialMagMoment << ")\n";
+        out << "aims_kwargs[\"spin\"] = \"collinear\"\n"
+            << "aims_kwargs[\"default_initial_moment\"] = " << c.initialMagMoment
+            << "\n";
     }
-    if (c.smearing != SmearingMethod::None && smearingUsesWidth(c.smearing))
-        out << "atoms.calc.set(occupation_type=\"gaussian "
-            << c.smearingWidthEv << "\")  # eV\n";
-    for (const std::string& entry : extraLines(c.aimsExtra)) {
-        std::ostringstream keyword;
-        emitExtraKeyword(keyword, entry, "");
-        std::string text = keyword.str();
-        if (text.size() > 2)
-            out << "atoms.calc.set(" << text.substr(0, text.size() - 2) << ")\n";
+    if (c.smearing != SmearingMethod::None && smearingUsesWidth(c.smearing)) {
+        out << "aims_kwargs[\"occupation_type\"] = \""
+            << aimsOccupationType(c.smearing) << " " << c.smearingWidthEv;
+        if (smearingUsesOrder(c.smearing))
+            out << " " << c.smearingOrder;
+        out << "\"  # eV";
+        if (smearingUsesOrder(c.smearing))
+            out << " (width, order)";
+        out << "\n";
     }
+    for (const std::string& entry : extraLines(c.aimsExtra))
+        emitExtraDictItem(out, entry, "aims_kwargs");
+    out << "\n"
+           "atoms.calc = Aims(\n"
+           "    profile=AimsProfile(command=os.environ.get(\n"
+           "        \"ASE_AIMS_COMMAND\", \"aims.x\")),\n"
+           "    **aims_kwargs,\n"
+           ")\n";
     emitAseDrivenTasksOnly(out, "FHI-aims");
 }
 

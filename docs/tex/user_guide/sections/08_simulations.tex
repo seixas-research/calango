@@ -244,6 +244,17 @@ here. The per-atom initial moments are a property of the structure: set them in
 \menu{Edit Structure\dots} (\S\ref{sec:editstructure}), where you can see which
 atom is which, and they travel with the staged geometry into every calculation.
 
+\begin{calnote}
+For SIESTA, that mode reaches the generated script through ASE's own
+top-level \texttt{spin=} keyword (\texttt{non-polarized} /
+\texttt{collinear} / \texttt{non-collinear}) rather than a lone
+\texttt{SpinPolarized} \texttt{fdf} entry --- the modern \texttt{Siesta}
+calculator always writes its own \texttt{Spin} line from that keyword, so a
+script relying on \texttt{SpinPolarized} alone left every run
+non-polarized regardless of what was requested. Verified end to end against
+a real \texttt{siesta} build.
+\end{calnote}
+
 ORCA has its own group:
 
 \begin{description}

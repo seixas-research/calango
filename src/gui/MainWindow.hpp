@@ -367,6 +367,11 @@ private Q_SLOTS:
     void showBornCharges();
     /// Open the Z* tensor read-out for a completed Born-charges process.
     void openBornChargesResults(const QString& directory);
+    /// Electronics → "Piezoelectric Tensor…": stage and launch the
+    /// strain-polarization finite-difference run.
+    void showPiezoelectric();
+    /// Open the e_ij / d_ij read-out for a completed Piezoelectric process.
+    void openPiezoelectricResults(const QString& directory);
     /// Electronics → "Raman and IR Spectroscopy…": stage and launch the
     /// vibrational-spectroscopy post-process, which consumes a completed Born
     /// Effective Charges run (and, for Raman, an Optics run's settings).

@@ -1,0 +1,78 @@
+#include "core/PolarizationScriptHelpers.hpp"
+
+namespace calango::core {
+
+std::string berryPhaseImportShim()
+{
+    return "# GPAW renamed this in the 25.x/26.x line (get_polarization_phase ->\n"
+           "# polarization_phase) and changed its calling convention twice more\n"
+           "# on top of the rename, so bind whichever spelling is installed and\n"
+           "# work the signature out at the first call site.\n"
+           "try:\n"
+           "    from gpaw.berryphase import polarization_phase as _phase_fn\n"
+           "except ImportError:\n"
+           "    from gpaw.berryphase import get_polarization_phase as _phase_fn\n"
+           "from gpaw.mpi import world as _gpaw_world\n"
+           "\n";
+}
+
+std::string polarizationPhaseCFunction()
+{
+    return "def polarization_phase_c(calc, tag):\n"
+           "    \"\"\"Total polarization phase (3 crystal components, radians).\n"
+           "\n"
+           "    Papers over three GPAW generations, which differ in more than\n"
+           "    the function's name:\n"
+           "\n"
+           "      26.x  polarization_phase(*, calc=, gpw_wfs=, comm=)  keyword-only\n"
+           "      25.x  polarization_phase(gpw_wfs, comm, cleanup=False)  positional,\n"
+           "            with comm REQUIRED and no calc= at all\n"
+           "      <=24  get_polarization_phase(gpw) returning a bare array\n"
+           "\n"
+           "    Each shape is tried in turn rather than switched on a version\n"
+           "    string: what matters is the signature actually installed, and a\n"
+           "    version test would have to be revised again at the next rename.\n"
+           "    \"\"\"\n"
+           "    # The file forms need the wavefunctions on disk; only written\n"
+           "    # if a call that needs them is reached.\n"
+           "    gpw = None\n"
+           "\n"
+           "    def _gpw_path():\n"
+           "        nonlocal gpw\n"
+           "        if gpw is None:\n"
+           "            gpw = f'polarization_{tag}.gpw'\n"
+           "            calc.write(gpw, mode='all')\n"
+           "        return Path(gpw)\n"
+           "\n"
+           "    attempts = (\n"
+           "        lambda: _phase_fn(calc=calc),\n"
+           "        lambda: _phase_fn(gpw_wfs=_gpw_path(), comm=_gpaw_world),\n"
+           "        lambda: _phase_fn(_gpw_path(), _gpaw_world),\n"
+           "        lambda: _phase_fn(_gpw_path()),\n"
+           "    )\n"
+           "    result = None\n"
+           "    errors = []\n"
+           "    for attempt in attempts:\n"
+           "        try:\n"
+           "            result = attempt()\n"
+           "            break\n"
+           "        except TypeError as exc:\n"
+           "            # A TypeError here is a SIGNATURE mismatch, so try the\n"
+           "            # next shape. Anything else is a real failure of the\n"
+           "            # polarization itself and must not be swallowed.\n"
+           "            errors.append(str(exc))\n"
+           "    else:\n"
+           "        raise RuntimeError(\n"
+           "            'CALANGO_ERROR no supported gpaw.berryphase calling '\n"
+           "            'convention worked: ' + '; '.join(errors))\n"
+           "    if gpw is not None:\n"
+           "        os.remove(gpw)   # one .gpw per displacement/strain fills the disk\n"
+           "    if isinstance(result, dict):\n"
+           "        # 'phase_c' is electronic + ionic, which is the total.\n"
+           "        result = result['phase_c']\n"
+           "    return np.asarray(result, dtype=float)\n"
+           "\n"
+           "\n";
+}
+
+} // namespace calango::core

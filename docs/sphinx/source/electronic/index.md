@@ -62,6 +62,7 @@ state. {doc}`/electronic/nonlinear_optics` explains why.
 | {doc}`/electronic/xas` | {menuselection}`Electronics --> X-ray Absorption Spectroscopy (XAS)…` | GPAW (legacy engine) |
 | {doc}`/electronic/hubbard` | {menuselection}`Electronics --> Hubbard Parameter Calculation…` | VASP or Quantum ESPRESSO |
 | {doc}`/electronic/charges` | {menuselection}`Electronics --> Born Effective Charges…` / {menuselection}`Charged defects…` and related | VASP / QE / GPAW |
+| {doc}`/electronic/piezoelectric` | {menuselection}`Electronics --> Piezoelectric Tensor…` | GPAW baseline `.gpw` |
 | {doc}`/electronic/raman_ir` | {menuselection}`Electronics --> Raman and IR Spectroscopy…` | GPAW / VASP / QE |
 
 Every entry follows the same pipeline as the rest of Calango
@@ -89,5 +90,6 @@ wannier_transport_berry
 xas
 hubbard
 charges
+piezoelectric
 raman_ir
 ```

@@ -40,6 +40,8 @@
 #include "gui/AdsorptionDialog.hpp"
 #include "gui/BornChargesViewer.hpp"
 #include "gui/BornChargesWizard.hpp"
+#include "gui/PiezoelectricViewer.hpp"
+#include "gui/PiezoelectricWizard.hpp"
 #include "gui/BandPdosWindow.hpp"
 #include "gui/ClusterExpansionDialog.hpp"
 #include "gui/ClusterExpansionWizard.hpp"
@@ -1315,6 +1317,11 @@ void MainWindow::createMenusAndDocks()
         ->setToolTip(tr("Z* tensors from the polarization response to atomic "
                         "displacements — the LO-TO splitting and IR "
                         "intensities depend on them"));
+    electronicsMenu->addAction(tr("&Piezoelectric Tensor…"), this,
+                               &MainWindow::showPiezoelectric)
+        ->setToolTip(tr("e_ij from the polarization response to cell strain "
+                        "— proper and improper, clamped- and relaxed-ion, "
+                        "with an optional conversion to d_ij"));
     electronicsMenu->addAction(tr("&Raman and IR Spectroscopy…"), this,
                                &MainWindow::showRamanIrSpectroscopy)
         ->setToolTip(tr("Γ-point Raman and infrared spectra: IR from the "
@@ -5478,6 +5485,8 @@ std::vector<MainWindow::ViewerEntry> MainWindow::viewersFor(
          &MainWindow::openGeometryOptimizationResults},
         {"born_charges.json", tr("Born Effective Charges Viewer"),
          &MainWindow::openBornChargesResults},
+        {"piezoelectric.json", tr("Piezoelectric Tensor Viewer"),
+         &MainWindow::openPiezoelectricResults},
         {"raman_ir.json", tr("Raman / IR Spectroscopy Viewer"),
          &MainWindow::openRamanIrResults},
         {"nlopt.json", tr("Nonlinear Optics Viewer"),
@@ -6712,6 +6721,57 @@ void MainWindow::openBornChargesResults(const QString& directory)
         QMessageBox::information(
             this, tr("Born Effective Charges"),
             tr("No born_charges.json found in %1.").arg(directory));
+        return;
+    }
+    viewer->show();
+}
+
+void MainWindow::showPiezoelectric()
+{
+    if (!prepareSimulation(tr("Piezoelectric Tensor")))
+        return;
+    Document* doc = currentDocument();
+    // The Berry-phase polarization needs a periodic crystal, same check as
+    // Born Effective Charges and for the same reason.
+    if (doc && doc->structure && !doc->structure->cell().isDefined()) {
+        QMessageBox::information(
+            this, tr("Piezoelectric Tensor"),
+            tr("The piezoelectric tensor is obtained from the polarization "
+               "response to a cell strain, which is only defined for a "
+               "periodic crystal — this structure has no unit cell.\n\n"
+               "Build or import a periodic insulator first."));
+        return;
+    }
+    // Like Born Effective Charges, this starts from a completed Single-Point
+    // Calculation: it supplies the relaxed reference geometry the strains
+    // are applied to, and the calculator every strained run is rebuilt from.
+    const auto baselines = gpawDensityFiles();
+    if (baselines.isEmpty()) {
+        QMessageBox::critical(
+            this, tr("Piezoelectric Tensor"),
+            tr("This calculation starts from a converged ground state, so it "
+               "needs a completed GPAW Single-Point Calculation that saved "
+               "its wavefunctions (.gpw).\n\n"
+               "Run one on this structure first."));
+        return;
+    }
+
+    PiezoelectricWizard wizard(doc ? doc->structure : nullptr, this);
+    wizard.setDensityBaselines(baselines);
+    runSimulationWizard(wizard, tr("Piezoelectric Tensor"),
+                        /*expectFrames=*/false);
+}
+
+void MainWindow::openPiezoelectricResults(const QString& directory)
+{
+    auto* viewer = new PiezoelectricViewer(this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    if (!viewer->loadResults(directory
+                             + QStringLiteral("/piezoelectric.json"))) {
+        delete viewer;
+        QMessageBox::information(
+            this, tr("Piezoelectric Tensor"),
+            tr("No piezoelectric.json found in %1.").arg(directory));
         return;
     }
     viewer->show();
@@ -9306,6 +9366,11 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     // Born effective charges: open the Z* tensor table.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/born_charges.json"))) {
         openBornChargesResults(lastJobDir_);
+        return;
+    }
+    // Piezoelectric tensor: open the e_ij / d_ij table.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/piezoelectric.json"))) {
+        openPiezoelectricResults(lastJobDir_);
         return;
     }
     // Charge density difference: the cube is registered by the sweep below like

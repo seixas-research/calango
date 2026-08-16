@@ -14,6 +14,7 @@
 #include "core/AseScriptGenerator.hpp"
 #include "core/GrapheneOxideMdmcScriptGenerator.hpp"
 #include "core/BornChargesScriptGenerator.hpp"
+#include "core/PiezoelectricScriptGenerator.hpp"
 #include "core/CalphadScriptGenerator.hpp"
 #include "core/CddScriptGenerator.hpp"
 #include "core/ClusterExpansionScriptGenerator.hpp"
@@ -379,6 +380,41 @@ int main(int argc, char** argv)
             internalRelax.vaspRelaxDriver = VaspRelaxDriver::Vasp;
             internalRelax.vaspPotcarPath = "/opt/vasp/POTCARs";
             dump("vasp_relax_internal.py", internalRelax);
+        }
+
+        // FHI-aims and SIESTA single-point, bulk-Si-shaped settings: k-grid,
+        // xc, spin all set the way the wizard would set them for a real
+        // periodic run, so the dump can be dry-run against a real ASE
+        // install (task 2/3 verification).
+        {
+            CalculatorConfig aims;
+            aims.calculator = CalculatorKind::FhiAims;
+            aims.task = TaskKind::SinglePoint;
+            aims.kpts[0] = aims.kpts[1] = aims.kpts[2] = 4;
+            aims.aimsXc = "pbe";
+            aims.aimsSpeciesDir = "/opt/aims/species_defaults";
+            aims.aimsSpeciesTier = "light";
+            dump("aims_single_point.py", aims);
+
+            CalculatorConfig aimsSpin = aims;
+            aimsSpin.spinPolarized = true;
+            aimsSpin.spinMode = SpinMode::Collinear;
+            aimsSpin.initialMagMoment = 2.0;
+            dump("aims_single_point_spin.py", aimsSpin);
+
+            CalculatorConfig siesta;
+            siesta.calculator = CalculatorKind::Siesta;
+            siesta.task = TaskKind::SinglePoint;
+            siesta.kpts[0] = siesta.kpts[1] = siesta.kpts[2] = 4;
+            siesta.siestaXc = "PBE";
+            siesta.siestaBasisSize = "DZP";
+            siesta.siestaPseudoDir = "/opt/psml";
+            dump("siesta_single_point.py", siesta);
+
+            CalculatorConfig siestaSpin = siesta;
+            siestaSpin.spinPolarized = true;
+            siestaSpin.spinMode = SpinMode::Collinear;
+            dump("siesta_single_point_spin.py", siestaSpin);
         }
 
         // VASP band structure, with and without a reused CHGCAR: the baseline
@@ -762,6 +798,34 @@ int main(int argc, char** argv)
             subset.atomIndices = {0, 2, 5};
             subset.acousticSumRule = false;
             dumpBorn("born_charges_subset.py", subset);
+        }
+
+        // Piezoelectric tensor: nested functions, a Calango-precomputed
+        // strain-stencil literal, an einsum-based symmetrization and a
+        // conditional e -> d block — dumped both without and with the
+        // elastic-stiffness input, since that branch only appears with one.
+        {
+            const auto dumpPiezo = [&dir](const std::string& name,
+                                          const PiezoelectricConfig& config) {
+                std::ofstream out(dir + "/" + name);
+                out << generatePiezoelectricScript(config);
+            };
+            PiezoelectricConfig piezo;
+            piezo.calculator = gpawConfig();
+            piezo.baselinePath = "/jobs/proc_1/single_point.gpw";
+            dumpPiezo("piezoelectric.py", piezo);
+
+            PiezoelectricConfig piezoRelaxed = piezo;
+            piezoRelaxed.relaxIons = true;
+            piezoRelaxed.pointsPerComponent = 4;
+            dumpPiezo("piezoelectric_relaxed_4point.py", piezoRelaxed);
+
+            PiezoelectricConfig piezoElastic = piezo;
+            std::array<std::array<double, 6>, 6> stiffness{};
+            for (int i = 0; i < 6; ++i)
+                stiffness[static_cast<std::size_t>(i)][static_cast<std::size_t>(i)] = 300.0;
+            piezoElastic.elasticStiffnessGpa = stiffness;
+            dumpPiezo("piezoelectric_with_elastic.py", piezoElastic);
         }
 
         // Raman / IR: nested functions, an einsum-heavy numerical body and a
@@ -1637,6 +1701,54 @@ int main(int argc, char** argv)
               "the bug this replaces");
         check(!contains(script, "ENCUT") && !contains(script, "ecutwfc"),
               "and no other engine's cutoff appears either");
+        checkContains(script, "kpts=[7, 7, 7]", "and the shared k-grid");
+
+        // Spin: the TOP-LEVEL `spin=` keyword, not a lone "SpinPolarized"
+        // fdf argument. ASE's own Siesta writer defaults `self.spin` to
+        // "non-polarized" and unconditionally re-emits `Spin <self.spin>`
+        // after the user's fdf_arguments block — so a script that only set
+        // "SpinPolarized" inside fdf_arguments left every SIESTA run
+        // non-polarized regardless of what the wizard's checkbox said. This
+        // is the fix: the keyword actually read by ASE's Siesta calculator.
+        checkNotContains(script, "SpinPolarized",
+                         "the legacy standalone fdf key is gone — ASE "
+                         "derives it from spin= itself now");
+        checkContains(script, "spin=\"non-polarized\"",
+                      "unpolarized is the explicit default, not silence");
+
+        CalculatorConfig siestaSpin = siesta;
+        siestaSpin.spinPolarized = true;
+        siestaSpin.spinMode = SpinMode::Collinear;
+        const std::string spinScript =
+            AseScriptGenerator::calculatorSnippet(siestaSpin);
+        checkContains(spinScript, "spin=\"collinear\"",
+                      "a spin-polarized run reaches SIESTA through the "
+                      "keyword ASE actually reads");
+
+        CalculatorConfig siestaNonCollinear = siesta;
+        siestaNonCollinear.spinMode = SpinMode::NonCollinear;
+        const std::string ncScript =
+            AseScriptGenerator::calculatorSnippet(siestaNonCollinear);
+        checkContains(ncScript, "spin=\"non-collinear\"",
+                      "and non-collinear spin gets its own distinct value");
+
+        // A full single-point script: the pseudopotential-missing refusal,
+        // and that output parsing is reached at all for this engine.
+        CalculatorConfig noPseudo = siesta;
+        noPseudo.siestaPseudoDir.clear();
+        const std::string refused =
+            AseScriptGenerator::generate(noPseudo, "structure.extxyz");
+        checkContains(refused, "SIESTA_PP_PATH is not set",
+                      "no pseudopotential directory: a clear message, not a "
+                      "traceback from deep inside write_input()");
+        checkContains(refused, "raise SystemExit",
+                      "and the script refuses before ever invoking siesta");
+
+        const std::string full =
+            AseScriptGenerator::generate(siesta, "structure.extxyz");
+        checkContains(full, "CALANGO_RESULT single_point=single_point.json",
+                      "a configured run reaches the same result JSON every "
+                      "engine writes — output parsing is calculator-agnostic");
     }
 
     // -- Simulated annealing ------------------------------------------------
@@ -4730,18 +4842,105 @@ int main(int argc, char** argv)
         checkContains(script, "\"tight\"", "joins the species tier onto the dir");
         checkContains(script, "relativistic=\"atomic_zora scalar\"",
                       "defaults to the scalar-relativistic treatment");
-        // aims rejects a k_grid outright on a non-periodic system, so it is
-        // written conditionally rather than unconditionally — which means the
-        // constructor call has to be CLOSED before the condition. It was not,
-        // once, and the result was a file that failed to parse on line 92 of a
-        // script nothing else in the suite byte-compiles.
-        checkContains(script, ")\n\nif any(atoms.pbc):",
-                      "closes Aims(...) before the conditional k_grid");
-        checkContains(script, "atoms.calc.set(k_grid=",
-                      "and sets the mesh on the built calculator");
+        // Modern ASE's Aims is a GenericFileIOCalculator: calling .set(...)
+        // AFTER construction — the pattern every other engine block here
+        // uses, and what this generator used to do — raises unconditionally
+        // ("No setting parameters for now, please. Just create new
+        // calculators."), confirmed against the real installed ase 3.29.
+        // EVERY parameter (k_grid included, despite depending on whether the
+        // structure is periodic) has to reach the ORIGINAL constructor call.
+        checkNotContains(script, "atoms.calc.set(",
+                         "no post-construction .set() call anywhere — aims's "
+                         "GenericFileIOCalculator raises RuntimeError the "
+                         "instant one is attempted");
+        checkContains(script, "if any(atoms.pbc):\n"
+                              "    aims_kwargs[\"k_grid\"]",
+                      "k_grid is conditional (aims rejects one on a "
+                      "non-periodic system) but still lands in the kwargs "
+                      "dict BEFORE Aims(...) is constructed");
+        checkContains(script, "atoms.calc = Aims(\n"
+                              "    profile=AimsProfile(command=os.environ.get(\n"
+                              "        \"ASE_AIMS_COMMAND\", \"aims.x\")),\n"
+                              "    **aims_kwargs,\n"
+                              ")\n",
+                      "exactly one Aims(...) call, built from the "
+                      "accumulated kwargs");
         // The basis is the species tier; there is no plane-wave cutoff to set,
         // and emitting one would be a keyword aims does not have.
         check(!contains(script, "ecut"), "emits no plane-wave cutoff");
+        checkContains(script, "profile=AimsProfile(command=os.environ.get(",
+                      "the launch command is resolved through AimsProfile, "
+                      "ASE's GenericFileIOCalculator profile — not a bare "
+                      "command= kwarg the calculator no longer accepts");
+        checkContains(script, "xc=\"pbe\"", "the XC functional is written");
+        checkContains(script, "aims_kwargs[\"k_grid\"] = (7, 7, 7)",
+                      "translated onto aims's own k_grid keyword");
+        checkContains(script, "sc_accuracy_etot=1e-06",
+                      "the SCF energy-convergence target reaches aims");
+
+        // Smearing: the DEFAULT SmearingMethod is Fermi-Dirac, and until this
+        // was fixed the generated occupation_type was hard-coded to
+        // "gaussian" regardless of the method actually selected — so every
+        // aims run silently computed a Gaussian-smeared density instead.
+        checkContains(script, "aims_kwargs[\"occupation_type\"] = \"fermi 0.1\"",
+                      "Fermi-Dirac (the default) reaches aims's own name for "
+                      "it, not a fixed \"gaussian\"");
+
+        CalculatorConfig aimsGaussian = aims;
+        aimsGaussian.smearing = SmearingMethod::Gaussian;
+        aimsGaussian.smearingWidthEv = 0.2;
+        checkContains(AseScriptGenerator::generate(aimsGaussian, "structure.extxyz"),
+                      "aims_kwargs[\"occupation_type\"] = \"gaussian 0.2\"",
+                      "Gaussian smearing keeps its own name and width");
+
+        CalculatorConfig aimsMp = aims;
+        aimsMp.smearing = SmearingMethod::MethfesselPaxton;
+        aimsMp.smearingWidthEv = 0.15;
+        aimsMp.smearingOrder = 2;
+        checkContains(AseScriptGenerator::generate(aimsMp, "structure.extxyz"),
+                      "aims_kwargs[\"occupation_type\"] = "
+                      "\"methfessel-paxton 0.15 2\"",
+                      "Methfessel-Paxton carries its order AFTER the width — "
+                      "aims's argument order, not GPAW's");
+
+        CalculatorConfig aimsCold = aims;
+        aimsCold.smearing = SmearingMethod::MarzariVanderbilt;
+        checkContains(AseScriptGenerator::generate(aimsCold, "structure.extxyz"),
+                      "aims_kwargs[\"occupation_type\"] = \"cold ",
+                      "Marzari-Vanderbilt is aims's \"cold\" smearing, not "
+                      "\"marzari-vanderbilt\" (aims has no such keyword)");
+
+        // Spin.
+        CalculatorConfig aimsSpin = aims;
+        aimsSpin.spinPolarized = true;
+        aimsSpin.spinMode = SpinMode::Collinear;
+        aimsSpin.initialMagMoment = 2.5;
+        const std::string aimsSpinScript =
+            AseScriptGenerator::generate(aimsSpin, "structure.extxyz");
+        checkContains(aimsSpinScript, "aims_kwargs[\"spin\"] = \"collinear\"",
+                      "spin polarization reaches aims through the kwargs dict");
+        checkContains(aimsSpinScript,
+                      "aims_kwargs[\"default_initial_moment\"] = 2.5",
+                      "and so does the seed moment");
+        checkNotContains(aimsSpinScript, "atoms.calc.set(",
+                         "still no post-construction .set() with spin on");
+
+        // The AIMS_SPECIES_DIR environment fallback, when no directory is
+        // configured in Preferences.
+        CalculatorConfig noSpecies = aims;
+        noSpecies.aimsSpeciesDir.clear();
+        checkContains(AseScriptGenerator::generate(noSpecies, "structure.extxyz"),
+                      "os.environ.get(\"AIMS_SPECIES_DIR\"",
+                      "an unconfigured species_defaults directory falls back "
+                      "to the environment variable rather than a silent "
+                      "empty path aims would then fail to resolve obscurely");
+
+        // The free-form escape hatch.
+        CalculatorConfig aimsExtra = aims;
+        aimsExtra.aimsExtra = "charge_mix_param 0.3";
+        checkContains(AseScriptGenerator::generate(aimsExtra, "structure.extxyz"),
+                      "aims_kwargs[\"charge_mix_param\"] = 0.3",
+                      "extra control.in keywords reach the kwargs dict too");
     }
 
     std::printf("NWChem — the molecular / periodic split:\n");
@@ -5119,6 +5318,133 @@ int main(int argc, char** argv)
         check(total == 12, "covering every window exactly once");
         check(largest - smallest <= 1,
               "as evenly as possible — the run costs the slowest job");
+    }
+
+    std::printf("Piezoelectric tensor:\n");
+    {
+        auto baseConfig = []() {
+            PiezoelectricConfig cfg;
+            cfg.calculator = gpawConfig();
+            cfg.baselinePath = "/jobs/proc_1/single_point.gpw";
+            cfg.strainMagnitude = 0.01;
+            cfg.voigtComponents = {0}; // xx only, for a small script
+            return cfg;
+        };
+
+        // A non-GPAW engine is refused before any strained SCF is
+        // generated — same rationale, and same shape of message, as Born
+        // Charges: this method only exists through GPAW's Berry-phase
+        // module today.
+        PiezoelectricConfig notGpaw = baseConfig();
+        notGpaw.calculator.calculator = CalculatorKind::Vasp;
+        const std::string refused = generatePiezoelectricScript(notGpaw);
+        checkContains(refused, "raise RuntimeError",
+                      "a non-GPAW engine fails immediately");
+        checkContains(refused, "Berry-phase",
+                      "and the message names why");
+        checkNotContains(refused, "STRAIN_POINTS",
+                         "without ever building the strain stencil");
+
+        const std::string script = generatePiezoelectricScript(baseConfig());
+        checkContains(script, "from gpaw.berryphase import polarization_phase",
+                      "reuses the shared GPAW Berry-phase evaluation");
+        checkContains(script, "get_polarization_phase",
+                      "with the pre-25.x fallback intact");
+        checkContains(script, "result['phase_c']",
+                      "and reads the total (electronic + ionic) phase");
+        // The exact F entry for the xx component at delta = 0.01: F_00 =
+        // 1 + eps = 1.01. This is the one number StrainVoigtTest.cpp proves
+        // correct in isolation; this assertion is what proves the SAME
+        // number reaches the generated script rather than a re-derived
+        // (and possibly diverging) copy.
+        checkContains(script, "\"F\": [[1.01, 0, 0]",
+                      "the precomputed deformation gradient for eps=+0.01 "
+                      "on Voigt 0 (xx) reaches the script verbatim");
+        checkContains(script, "\"voigt\": 0, \"eps\": -0.01",
+                      "and its -delta partner is also generated");
+        checkContains(script, "scale_atoms=True",
+                      "clamped-ion: fractional coordinates stay fixed under "
+                      "the strain");
+        checkContains(script, "np.unwrap(phases, axis=0)",
+                      "branch fix: the multivalued Berry phase is resolved "
+                      "onto a continuous series before differencing");
+        checkContains(script, "d_jk * P0[i]",
+                      "assembles the proper/improper correction "
+                      "(Vanderbilt Eq. 15)");
+        checkContains(script, "CALANGO_RESULT piezoelectric=piezoelectric.json",
+                      "emits the marker the controller watches for");
+
+        // Symmetry: on by default, with the centrosymmetric short-circuit
+        // present; off, neither spglib nor the refusal is emitted at all.
+        checkContains(script, "import spglib",
+                      "symmetry detection is on by default");
+        checkContains(script, "CENTROSYMMETRIC",
+                      "and refuses outright for a centrosymmetric point "
+                      "group, before spending any compute");
+        PiezoelectricConfig noSymmetry = baseConfig();
+        noSymmetry.useSymmetry = false;
+        const std::string withoutSymmetry = generatePiezoelectricScript(noSymmetry);
+        checkNotContains(withoutSymmetry, "import spglib",
+                         "symmetry can be turned off entirely");
+
+        // Clamped-ion is the base case; relaxed-ion swaps in a geometry
+        // optimization of the internal coordinates at the fixed, strained
+        // cell before the polarization is read off.
+        // apply_strain() ALWAYS sets the clamped-ion (scale_atoms=True)
+        // starting positions — relaxed-ion then optionally minimizes from
+        // there, so "CLAMPED-ION" legitimately appears in both scripts; what
+        // is mutually exclusive is whether strained_phase() stops at that
+        // bare SCF or goes on to relax it.
+        checkContains(script, "strained.get_potential_energy()",
+                      "clamped-ion evaluates the SCF at the strain-scaled "
+                      "positions with no further relaxation");
+        checkNotContains(script, "LBFGS",
+                         "and no relaxation runs unless asked for");
+        PiezoelectricConfig relaxed = baseConfig();
+        relaxed.relaxIons = true;
+        const std::string relaxedScript = generatePiezoelectricScript(relaxed);
+        checkContains(relaxedScript, "RELAXED-ION",
+                      "relaxed-ion is offered as an explicit opt-in");
+        checkContains(relaxedScript, "LBFGS(strained",
+                      "which relaxes positions at the strained (fixed) cell");
+        checkNotContains(relaxedScript, "strained.get_potential_energy()",
+                         "not both conventions' terminal SCF call in the "
+                         "same script — LBFGS drives the energy calls "
+                         "itself");
+
+        // More points per component: a 4-point stencil doubles the sample
+        // count for the one requested component, all still Calango-side
+        // precomputed deformation gradients.
+        PiezoelectricConfig fourPoint = baseConfig();
+        fourPoint.pointsPerComponent = 4;
+        const std::string fourPointScript = generatePiezoelectricScript(fourPoint);
+        std::size_t voigtZeroCount = 0;
+        std::size_t pos = 0;
+        while ((pos = fourPointScript.find("\"voigt\": 0,", pos)) != std::string::npos) {
+            ++voigtZeroCount;
+            pos += 1;
+        }
+        check(voigtZeroCount == 4,
+              "the 4-point option samples +-delta and +-2*delta for the "
+              "requested component");
+
+        // The e -> d conversion is emitted only when an elastic stiffness
+        // tensor is supplied — and is a clean no-op (None) otherwise, never
+        // a silently wrong zero tensor.
+        checkContains(script, "d_tensor_pmV = None",
+                      "no elastic stiffness supplied: d_ij is explicitly "
+                      "absent, not a wrong zero");
+        PiezoelectricConfig withElastic = baseConfig();
+        std::array<std::array<double, 6>, 6> stiffness{};
+        for (int i = 0; i < 6; ++i)
+            stiffness[static_cast<std::size_t>(i)][static_cast<std::size_t>(i)] = 300.0; // GPa
+        withElastic.elasticStiffnessGpa = stiffness;
+        const std::string withD = generatePiezoelectricScript(withElastic);
+        checkContains(withD, "S_compliance_per_GPa = np.linalg.inv",
+                      "with a stiffness tensor supplied, S = C^-1 is computed");
+        checkContains(withD, "d_tensor_pmV = (proper_symmetrized @ "
+                             "S_compliance_per_GPa) * 1e3",
+                      "and d = e . S is reported in the conventional pm/V");
     }
 
     std::printf(failures == 0 ? "\nAll script checks passed.\n"

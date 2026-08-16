@@ -435,6 +435,71 @@ plausible number of the right magnitude and the wrong value, applied silently
 to every point of the diagram.
 \end{calwarn}
 
+\section{Piezoelectric tensor}
+\label{sec:piezoelectric}
+
+\menu{Electronics}\menusep\menu{Piezoelectric Tensor} computes
+
+\[
+e_{i\alpha} = \frac{\partial P_i}{\partial \varepsilon_\alpha}
+\qquad (i = 1..3,\ \alpha = 1..6 \text{ Voigt}),
+\]
+
+the piezoelectric tensor, by the finite-difference strain-polarization
+method: apply a small homogeneous strain to a relaxed reference cell,
+evaluate the total polarization $P$ by the modern (Berry-phase) theory at
+each strained point, and differentiate. It reuses exactly the GPAW
+Berry-phase evaluation Born Effective Charges differentiates over
+\emph{atomic displacements} --- here the same evaluation is differentiated
+over \emph{cell strain} instead, and only GPAW is offered for the same
+reason. Like Born Effective Charges, the run starts from a completed
+\menu{Simulation}\menusep\menu{Single-point Calculation} \file{.gpw}, which
+supplies both the reference geometry and the calculator every strained run
+is rebuilt from.
+
+\textbf{The strain stencil.} \menu{Strain Components} picks which of the six
+Voigt components to differentiate (all six by default); \menu{Strain
+magnitude $\delta$} is the smallest sample point (0.5\% by default); and
+\menu{Points per component} offers the exact central difference (2, at
+$\pm\delta$) or a least-squares fit over four points ($\pm\delta,
+\pm2\delta$) for a better-conditioned slope --- the viewer plots the points
+behind every column, so the linearity the method assumes can be checked
+directly.
+
+\begin{calnote}
+\textbf{The polarization quantum.} $P$ is defined only modulo $eR/\Omega$,
+and the Berry phase computed at two different strain points routinely lands
+on different branches. The generated script resolves this with
+\texttt{np.unwrap} across each component's ordered strain series before
+differencing --- the classic pitfall of this method.
+\end{calnote}
+
+\textbf{Clamped-ion vs.\ relaxed-ion.} Clamped-ion (the default) leaves the
+internal coordinates at their strain-scaled positions and re-converges only
+the SCF. Relaxed-ion additionally minimizes the internal coordinates at each
+fixed, strained cell before reading off the polarization --- the physical,
+zero-stress response, at the cost of one geometry optimization per strain
+point.
+
+\textbf{Proper vs.\ improper, and symmetry.} The raw finite difference is the
+\emph{improper} (clamped-cell-shape) tensor, which carries a pure
+volume-definition artefact the physical \emph{proper} response does not
+have. The script applies the correction from Vanderbilt, \emph{Berry-phase
+theory of proper piezoelectric response}, J. Phys. Chem. Solids \textbf{61},
+147 (2000) (arXiv:cond-mat/9903137, Eq.~15), symmetrized in the strain pair.
+\menu{Use point-group symmetry} runs spglib on the reference structure
+first: if the point group contains the inversion, the run refuses outright
+--- piezoelectricity is forbidden by symmetry for every centrosymmetric
+point group, exactly rather than approximately. Otherwise the assembled
+tensor is symmetrized by averaging the general rank-3 tensor transform over
+every point-group operation, which both zeroes forbidden components and
+cleans up numerical noise in the allowed ones.
+
+Supplying an elastic stiffness tensor $C$ (Voigt, GPa) in the wizard turns
+on the piezoelectric \emph{strain} tensor $d_{i\alpha} = \sum_\beta
+e_{i\beta} S_{\beta\alpha}$ with $S = C^{-1}$, reported in the conventional
+pm/V alongside $e_{ij}$.
+
 \section{Raman and infrared spectra}
 \label{sec:raman-ir}
 

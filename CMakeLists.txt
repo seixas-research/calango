@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.21
+    VERSION 26.8.22
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -242,6 +242,13 @@ qt_add_executable(calango
     src/core/GrapheneOxideMdmcScriptGenerator.cpp
     src/core/BornChargesScriptGenerator.hpp
     src/core/BornChargesScriptGenerator.cpp
+    src/core/PolarizationScriptHelpers.hpp
+    src/core/PolarizationScriptHelpers.cpp
+    src/core/StrainVoigt.hpp
+    src/core/PiezoelectricTensor.hpp
+    src/core/PiezoelectricTensor.cpp
+    src/core/PiezoelectricScriptGenerator.hpp
+    src/core/PiezoelectricScriptGenerator.cpp
     src/core/RamanIrScriptGenerator.hpp
     src/core/RamanIrScriptGenerator.cpp
     src/core/PdbxFile.hpp
@@ -659,6 +666,10 @@ qt_add_executable(calango
     src/gui/BornChargesWizard.cpp
     src/gui/BornChargesViewer.hpp
     src/gui/BornChargesViewer.cpp
+    src/gui/PiezoelectricWizard.hpp
+    src/gui/PiezoelectricWizard.cpp
+    src/gui/PiezoelectricViewer.hpp
+    src/gui/PiezoelectricViewer.cpp
     src/gui/RamanIrWizard.hpp
     src/gui/RamanIrWizard.cpp
     src/gui/RamanIrViewer.hpp
@@ -1094,6 +1105,29 @@ if(CALANGO_BUILD_TESTS)
     )
     target_include_directories(calango_berry_test PRIVATE src)
     add_test(NAME berry_phase COMMAND calango_berry_test)
+
+    # Piezoelectric module, part 1: strain generation. Voigt -> deformation
+    # gradient, and applying one to a cell — checked on a non-diagonal
+    # (triclinic) cell specifically, since a left/right matrix-multiply bug
+    # is invisible on a cubic one.
+    add_executable(calango_strain_voigt_test
+        tests/StrainVoigtTest.cpp
+    )
+    target_include_directories(calango_strain_voigt_test PRIVATE src)
+    add_test(NAME strain_voigt COMMAND calango_strain_voigt_test)
+
+    # Piezoelectric module, part 2: the assembly pipeline (branch fixing,
+    # the linear fit, the proper/improper correction, point-group
+    # symmetrization) on synthetic P(eps) data. Real DFT is exercised only
+    # through generated_ase_scripts's Piezoelectric section below, which
+    # asserts on the script text since no cheap Berry-phase-under-strain
+    # oracle exists to run for real.
+    add_executable(calango_piezoelectric_tensor_test
+        tests/PiezoelectricTensorTest.cpp
+        src/core/PiezoelectricTensor.cpp
+    )
+    target_include_directories(calango_piezoelectric_tensor_test PRIVATE src)
+    add_test(NAME piezoelectric_tensor COMMAND calango_piezoelectric_tensor_test)
 
     # Regression for the proc_26 failure: nwannier > nbands. Asserts the
     # generated script now pre-flights it, and that the real captured
@@ -2500,6 +2534,9 @@ if(CALANGO_BUILD_TESTS)
         src/core/AseScriptGenerator.cpp
         src/core/EngineCalculatorBlocks.cpp
         src/core/BornChargesScriptGenerator.cpp
+        src/core/PolarizationScriptHelpers.cpp
+        src/core/PiezoelectricScriptGenerator.cpp
+        src/core/PiezoelectricTensor.cpp
         src/core/ElectronicScriptGenerator.cpp
         src/core/BandSymmetryScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
@@ -3112,10 +3149,12 @@ if(CALANGO_BUILD_TESTS)
         optics_2d_observables optics_broadening optics_c_diamond
         optics_silicon orchestration_batch orchestration_handoff
         orchestration_si_pipeline partial_charge_si periodic_image_range
-        phonon_diamond phonon_thermodynamics polymer_builder raman_ir_math
+        phonon_diamond phonon_thermodynamics piezoelectric_tensor
+        polymer_builder raman_ir_math
         raman_ir_mgo raman_ir_parsers raman_si_diamond remote_session
         remote_session_helper scheduler_script solid_interface_builder
-        solvation_builder sqs_generator sqs_sige_alloy structural_phase
+        solvation_builder sqs_generator sqs_sige_alloy strain_voigt
+        structural_phase
         structure_transforms sublattice_cluster_variation superconductivity
         symmetry_si_diamond tdb_database tetrahedron_bz
         thermodynamic_integration vibrational_modes volumetric_parse
