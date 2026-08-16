@@ -255,6 +255,72 @@ DefectSpec DefectSpec::fromJson(const QJsonObject& object)
 }
 
 // ---------------------------------------------------------------------------
+// RandomNoiseSpec
+// ---------------------------------------------------------------------------
+
+QString RandomNoiseSpec::describe() const
+{
+    if (!isValid())
+        return QObject::tr("not configured");
+    QStringList what;
+    if (options.perturbPositions)
+        what << QObject::tr("positions");
+    if (options.perturbCell)
+        what << QObject::tr("cell");
+    return QObject::tr("%1 frames (%2 perturbed + reference), %3 %4 = %5 Å%6")
+        .arg(variantCount())
+        .arg(count)
+        .arg(options.distribution
+                     == core::NoiseOptions::Distribution::Gaussian
+                 ? QObject::tr("Gaussian σ")
+                 : QObject::tr("uniform ±"),
+             what.join(QObject::tr(" & ")))
+        .arg(options.amplitude, 0, 'g', 3)
+        .arg(ramped ? QObject::tr(", ramped") : QString());
+}
+
+QJsonObject RandomNoiseSpec::toJson() const
+{
+    return QJsonObject{
+        {QStringLiteral("distribution"),
+         options.distribution == core::NoiseOptions::Distribution::Gaussian
+             ? QStringLiteral("gaussian")
+             : QStringLiteral("uniform")},
+        {QStringLiteral("amplitude"), options.amplitude},
+        {QStringLiteral("seed"), static_cast<int>(options.seed)},
+        {QStringLiteral("perturb_positions"), options.perturbPositions},
+        {QStringLiteral("perturb_cell"), options.perturbCell},
+        {QStringLiteral("count"), count},
+        {QStringLiteral("cumulative"), cumulative},
+        {QStringLiteral("ramped"), ramped},
+    };
+}
+
+RandomNoiseSpec RandomNoiseSpec::fromJson(const QJsonObject& object)
+{
+    RandomNoiseSpec spec;
+    spec.options.distribution =
+        object.value(QStringLiteral("distribution")).toString()
+                == QLatin1String("uniform")
+            ? core::NoiseOptions::Distribution::Uniform
+            : core::NoiseOptions::Distribution::Gaussian;
+    spec.options.amplitude =
+        object.value(QStringLiteral("amplitude")).toDouble(spec.options.amplitude);
+    spec.options.seed = static_cast<unsigned int>(
+        object.value(QStringLiteral("seed")).toInt(static_cast<int>(spec.options.seed)));
+    spec.options.perturbPositions =
+        object.value(QStringLiteral("perturb_positions"))
+            .toBool(spec.options.perturbPositions);
+    spec.options.perturbCell =
+        object.value(QStringLiteral("perturb_cell")).toBool(spec.options.perturbCell);
+    spec.count = object.value(QStringLiteral("count")).toInt(spec.count);
+    spec.cumulative =
+        object.value(QStringLiteral("cumulative")).toBool(spec.cumulative);
+    spec.ramped = object.value(QStringLiteral("ramped")).toBool(spec.ramped);
+    return spec;
+}
+
+// ---------------------------------------------------------------------------
 // SingleAtomContainerSpec
 // ---------------------------------------------------------------------------
 

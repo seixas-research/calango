@@ -308,6 +308,8 @@ QString orchestrationTaskSlug(OrchestrationTask task)
         return QStringLiteral("supercell");
     case OrchestrationTask::DefectGenerator:
         return QStringLiteral("defect_generator");
+    case OrchestrationTask::RandomNoiseSetup:
+        return QStringLiteral("random_noise_setup");
     case OrchestrationTask::TdbGenerator:
         return QStringLiteral("tdb_generator");
     case OrchestrationTask::Dump:
@@ -355,6 +357,7 @@ OrchestrationFamily orchestrationTaskFamily(OrchestrationTask task)
     case OrchestrationTask::SingleAtomContainer:
     case OrchestrationTask::Supercell:
     case OrchestrationTask::DefectGenerator:
+    case OrchestrationTask::RandomNoiseSetup:
     case OrchestrationTask::TdbGenerator:
     case OrchestrationTask::Dump:
     case OrchestrationTask::SqsGenerator:
@@ -410,6 +413,8 @@ QString orchestrationTaskDisplayName(OrchestrationTask task)
         return QObject::tr("Supercell Builder");
     case OrchestrationTask::DefectGenerator:
         return QObject::tr("Defect Generator");
+    case OrchestrationTask::RandomNoiseSetup:
+        return QObject::tr("Random Noise Setup");
     case OrchestrationTask::TdbGenerator:
         return QObject::tr("TDB Generator (CALPHAD)");
     case OrchestrationTask::Dump:
@@ -459,6 +464,7 @@ QString orchestrationTaskShortName(OrchestrationTask task)
     case OrchestrationTask::SingleAtomContainer:  return QObject::tr("1-atom");
     case OrchestrationTask::Supercell:            return QObject::tr("Supercell");
     case OrchestrationTask::DefectGenerator:      return QObject::tr("Defect");
+    case OrchestrationTask::RandomNoiseSetup:     return QObject::tr("Noise");
     case OrchestrationTask::TdbGenerator:         return QObject::tr("TDB");
     case OrchestrationTask::Dump:                 return QObject::tr("Dump");
     case OrchestrationTask::SqsGenerator:         return QObject::tr("SQS");
@@ -497,6 +503,7 @@ QList<OrchestrationTask> orchestrationTasks()
             OrchestrationTask::SingleAtomContainer,
             OrchestrationTask::Supercell,
             OrchestrationTask::DefectGenerator,
+            OrchestrationTask::RandomNoiseSetup,
             OrchestrationTask::SqsGenerator,
             OrchestrationTask::TdbGenerator,
             OrchestrationTask::ClusterExpansionFit,
@@ -603,6 +610,7 @@ QList<OrchestrationInputSlot> orchestrationInputSlots(OrchestrationTask task)
     case OrchestrationTask::SingleAtomContainer:
     case OrchestrationTask::Supercell:
     case OrchestrationTask::DefectGenerator:
+    case OrchestrationTask::RandomNoiseSetup:
     // The SQS Generator is a structure transform in the strict sense: a
     // parent lattice arrives through the ordinary geometry handoff and
     // decorated supercells leave. Nothing to stage under an agreed name.
@@ -811,6 +819,12 @@ void OrchestrationNodeItem::setDefectSpec(const DefectSpec& spec)
     update();
 }
 
+void OrchestrationNodeItem::setRandomNoise(const RandomNoiseSpec& spec)
+{
+    randomNoise_ = spec;
+    update();
+}
+
 void OrchestrationNodeItem::setSqsGenerator(const SqsGeneratorSpec& spec)
 {
     sqs_ = spec;
@@ -892,6 +906,14 @@ QString OrchestrationNodeItem::configurationProblem() const
                 "forwards the pristine cell untouched would make every "
                 "formation energy downstream come out as zero.")
                 .arg(title_);
+        return QString();
+    case OrchestrationTask::RandomNoiseSetup:
+        if (!randomNoise_.isValid())
+            return QObject::tr(
+                "%1 has nothing to generate (%2).\n\nDouble-click it: the "
+                "frame count must be positive, and at least one of "
+                "positions or the cell must be selected to perturb.")
+                .arg(title_, randomNoise_.describe());
         return QString();
     case OrchestrationTask::SqsGenerator:
         if (sqs_.isEmpty())
@@ -1195,6 +1217,17 @@ void OrchestrationNodeItem::paint(QPainter* painter,
                                  defects_.variantCount())
                    : QObject::tr("1 material, %n defect(s)", nullptr,
                                  static_cast<int>(defects_.operations.size())));
+        break;
+    case OrchestrationTask::RandomNoiseSetup:
+        primary = randomNoise_.describe();
+        // Same reasoning as DefectGenerator just above: the number that
+        // decides how long the pipeline runs (variantCount(), frames
+        // INCLUDING the untouched reference) is what belongs on the face,
+        // not the raw "count" setting alone.
+        secondary = randomNoise_.isValid()
+            ? QObject::tr("%n pass(es) downstream", nullptr,
+                          randomNoise_.variantCount())
+            : QObject::tr("in process, no calculator");
         break;
     default:
         break;
@@ -1841,6 +1874,111 @@ bool editSingleAtomContainer(QWidget* parent,
     if (dialog.exec() != QDialog::Accepted)
         return false;
     spec->boxSizeAngstrom = boxSize->value();
+    return true;
+}
+
+/// Settings of a Random Noise Setup node.
+///
+/// The same core::NoiseOptions/count/cumulative/ramped fields the standalone
+/// Random Noise Setup WIZARD exposes (RandomNoiseWizard), in the plain
+/// QFormLayout style every other transform's own dialog already uses here —
+/// not a second copy of the wizard's own widget tree, just its settings.
+bool editRandomNoiseSetup(QWidget* parent, RandomNoiseSpec* spec)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("Random Noise Setup"));
+    auto* layout = new QVBoxLayout(&dialog);
+
+    auto* intro = new QLabel(
+        QObject::tr(
+            "Perturbs the ONE structure that reaches this node into a "
+            "randomly-displaced ensemble — frame 0 is always the untouched "
+            "reference, then the requested number of perturbed variants. "
+            "Acts like a Structure Container downstream: with no other "
+            "batch source in the pipeline, the frame count alone becomes "
+            "how many times everything after it runs."),
+        &dialog);
+    intro->setWordWrap(true);
+    layout->addWidget(intro);
+
+    auto* form = new QFormLayout;
+
+    auto* distribution = new QComboBox(&dialog);
+    distribution->addItem(QObject::tr("Gaussian"));
+    distribution->addItem(QObject::tr("Uniform"));
+    distribution->setCurrentIndex(
+        spec->options.distribution == core::NoiseOptions::Distribution::Uniform
+            ? 1
+            : 0);
+    form->addRow(QObject::tr("Distribution:"), distribution);
+
+    auto* amplitude = new QDoubleSpinBox(&dialog);
+    amplitude->setDecimals(4);
+    amplitude->setRange(0.0001, 10.0);
+    amplitude->setSingleStep(0.01);
+    amplitude->setSuffix(QObject::tr(" Å"));
+    amplitude->setValue(spec->options.amplitude);
+    form->addRow(QObject::tr("Amplitude:"), amplitude);
+
+    auto* seed = new QSpinBox(&dialog);
+    seed->setRange(0, 1000000);
+    seed->setValue(static_cast<int>(spec->options.seed));
+    form->addRow(QObject::tr("Seed:"), seed);
+
+    auto* positions = new QCheckBox(QObject::tr("Perturb atomic positions"),
+                                    &dialog);
+    positions->setChecked(spec->options.perturbPositions);
+    layout->addLayout(form);
+    layout->addWidget(positions);
+
+    auto* cell = new QCheckBox(
+        QObject::tr("Perturb the cell (atoms follow affinely)"), &dialog);
+    cell->setChecked(spec->options.perturbCell);
+    layout->addWidget(cell);
+
+    auto* form2 = new QFormLayout;
+    auto* count = new QSpinBox(&dialog);
+    count->setRange(1, 10000);
+    count->setValue(spec->count);
+    count->setToolTip(QObject::tr(
+        "Perturbed frames, NOT counting the untouched reference (frame 0), "
+        "which is always included too."));
+    form2->addRow(QObject::tr("Frame count:"), count);
+    layout->addLayout(form2);
+
+    auto* cumulative = new QCheckBox(
+        QObject::tr("Cumulative (each frame perturbs the previous one)"),
+        &dialog);
+    cumulative->setChecked(spec->cumulative);
+    layout->addWidget(cumulative);
+
+    auto* ramped = new QCheckBox(
+        QObject::tr("Ramp amplitude from zero (frame 0) to full (last "
+                    "frame)"),
+        &dialog);
+    ramped->setChecked(spec->ramped);
+    layout->addWidget(ramped);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
+                     &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                     &QDialog::reject);
+
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    spec->options.distribution = distribution->currentIndex() == 1
+        ? core::NoiseOptions::Distribution::Uniform
+        : core::NoiseOptions::Distribution::Gaussian;
+    spec->options.amplitude = amplitude->value();
+    spec->options.seed = static_cast<unsigned int>(seed->value());
+    spec->options.perturbPositions = positions->isChecked();
+    spec->options.perturbCell = cell->isChecked();
+    spec->count = count->value();
+    spec->cumulative = cumulative->isChecked();
+    spec->ramped = ramped->isChecked();
     return true;
 }
 
@@ -3482,6 +3620,19 @@ void OrchestrationWindow::setNodeDefectSpec(OrchestrationNodeItem* node,
     invalidateFrom(node);
 }
 
+void OrchestrationWindow::setNodeRandomNoise(OrchestrationNodeItem* node,
+                                             const RandomNoiseSpec& spec)
+{
+    if (!node)
+        return;
+    node->setRandomNoise(spec);
+    invalidateFrom(node);
+    // The frame count is the node's batch dimension, so changing it changes
+    // how many passes the pipeline makes -- the same reason
+    // setNodeSqsGenerator() calls this too.
+    updateRunControls();
+}
+
 void OrchestrationWindow::setNodeSqsGenerator(OrchestrationNodeItem* node,
                                               const SqsGeneratorSpec& spec)
 {
@@ -3653,6 +3804,16 @@ void OrchestrationWindow::openNodeWizard(OrchestrationNodeItem* node)
             SupercellSpec spec = node->supercell();
             if (editSupercell(this, &spec))
                 setNodeSupercell(node, spec);
+            break;
+        }
+        case OrchestrationTask::RandomNoiseSetup: {
+            // Explicit, and it must stay above the default: the default arm
+            // is the DEFECT editor, so a transform that forgets its case
+            // here silently opens the wrong dialog and writes a defect
+            // recipe into a node that will never read one.
+            RandomNoiseSpec spec = node->randomNoise();
+            if (editRandomNoiseSetup(this, &spec))
+                setNodeRandomNoise(node, spec);
             break;
         }
         case OrchestrationTask::TdbGenerator: {
@@ -4045,6 +4206,15 @@ int batchDimensionOf(const OrchestrationNodeItem* node)
             : 0;
     if (node->task() == OrchestrationTask::SqsGenerator)
         return node->sqsGenerator().variantCount();
+    // The third multiplying-transform kind, the same bucket as
+    // DefectGenerator's separate mode and SqsGenerator: count() perturbed
+    // frames PLUS the untouched reference (variantCount()), sharing
+    // batchDefectSpan_/defectBatchIndex() with them rather than a new
+    // dimension — with no Container upstream (containerSpan == 1) this
+    // count alone becomes the whole batch length, which is what "acts like
+    // a Structure Container" needs.
+    if (node->task() == OrchestrationTask::RandomNoiseSetup)
+        return node->randomNoise().variantCount();
     return 0;
 }
 
@@ -4066,6 +4236,40 @@ bool OrchestrationWindow::isFanInNode(const OrchestrationNodeItem* node) const
         if (edge->to() == node)
             ++parents;
     return parents > 1;
+}
+
+int OrchestrationWindow::fanInSpanOf(const OrchestrationNodeItem* parent) const
+{
+    if (!parent)
+        return 1;
+    // batchItems() is the WHOLE batch, permanently -- unlike jobDirectory()/
+    // status(), which only ever reflect this parent's OWN latest primary-
+    // phase pass by the time a fan-in node (which waits for every parent to
+    // be fully Done) gets to read it. Reading it directly is what stops a
+    // 21-item Structure Container linked straight into a fan-in node from
+    // silently contributing only its last item.
+    if (parent->task() == OrchestrationTask::Container
+        || parent->task() == OrchestrationTask::SingleAtomContainer) {
+        const int count = static_cast<int>(parent->batchItems().size());
+        return count > 0 ? count : 1;
+    }
+    return 1;
+}
+
+QPair<OrchestrationNodeItem*, int>
+OrchestrationWindow::fanInSource(OrchestrationNodeItem* fanInNode,
+                                 int passIndex) const
+{
+    if (passIndex < 0)
+        return {nullptr, -1};
+    int remaining = passIndex;
+    for (OrchestrationNodeItem* parent : parentsOf(fanInNode)) {
+        const int span = fanInSpanOf(parent);
+        if (remaining < span)
+            return {parent, remaining};
+        remaining -= span;
+    }
+    return {nullptr, -1};
 }
 
 bool OrchestrationWindow::dependsOnFanIn(const OrchestrationNodeItem* node) const
@@ -4255,14 +4459,19 @@ QString OrchestrationWindow::fanInLabel() const
     for (OrchestrationNodeItem* node : nodes_) {
         if (!isFanInNode(node))
             continue;
-        const QList<OrchestrationNodeItem*> parents = parentsOf(node);
-        const int index =
-            std::min(fanInIndex_, static_cast<int>(parents.size()) - 1);
-        // The label IS the contributing parent's own title -- there is no
-        // synthetic item name here the way a Container entry has one, since
-        // this phase's "items" are other nodes' results, not user-entered
-        // structures.
-        return index >= 0 ? parents[index]->title() : QString();
+        const auto [parent, itemIndex] = fanInSource(node, fanInIndex_);
+        if (!parent)
+            return QString();
+        // A Container-family parent names each of its own items; anything
+        // else contributes exactly one, so its own title already says
+        // everything the label needs to.
+        if (itemIndex >= 0
+            && (parent->task() == OrchestrationTask::Container
+                || parent->task() == OrchestrationTask::SingleAtomContainer)
+            && itemIndex < parent->batchItems().size())
+            return tr("%1 / %2").arg(parent->title(),
+                                     parent->batchItems()[itemIndex].first);
+        return parent->title();
     }
     return QString();
 }
@@ -4363,6 +4572,9 @@ OrchestrationWindow::beginProvenance(OrchestrationNodeItem* node,
     case OrchestrationTask::DefectGenerator:
         record.parameters = node->defectSpec().describe();
         break;
+    case OrchestrationTask::RandomNoiseSetup:
+        record.parameters = node->randomNoise().describe();
+        break;
     case OrchestrationTask::TdbGenerator:
         record.parameters = node->tdbGenerator().describe();
         break;
@@ -4404,15 +4616,15 @@ OrchestrationWindow::beginProvenance(OrchestrationNodeItem* node,
     const auto inputs = resolveInputs(node);
     const QList<OrchestrationNodeItem*> parents = parentsOf(node);
     if (isFanInNode(node)) {
-        // Only the ONE parent THIS pass actually used -- listing all of
-        // them here would read as if every parent contributed to a single
-        // pass, when fan-in runs one pass PER parent instead.
-        const int index =
-            std::min(fanInIndex_, static_cast<int>(parents.size()) - 1);
-        if (index >= 0)
+        // Only the ONE (parent, item) THIS pass actually used -- listing
+        // every parent here would read as if all of them contributed to a
+        // single pass, when fan-in runs one pass per ITEM across them
+        // instead (several from a Container-family parent, one from
+        // anything else).
+        OrchestrationNodeItem* parent = fanInSource(node, fanInIndex_).first;
+        if (parent)
             record.parents.append(
-                {parents[index]->id(),
-                 tr("input structure ← %1").arg(parents[index]->title())});
+                {parent->id(), tr("input structure ← %1").arg(fanInLabel())});
     } else {
         for (int index = 0; index < parents.size(); ++index) {
             const QString role = index < inputs.size()
@@ -4612,6 +4824,29 @@ void OrchestrationWindow::sendToProcesses()
         // exists for -- see the SingleAtomContainer enum entry's own doc.
         if (node->task() == OrchestrationTask::SingleAtomContainer)
             continue;
+        // A Container whose ONLY children are Single-atom Container nodes
+        // is ALSO exempt, for the same reason: its item count is private to
+        // phase 2's own element scan, which reads batchItems() directly
+        // rather than "whichever item containerBatchIndex() currently
+        // points at". Without this, a 5-structure bulk branch and a
+        // 1-structure isolated-atom source feeding two SEPARATE downstream
+        // phases would be refused for "disagreeing" about a primary-phase
+        // pass count neither of them actually needs to agree on.
+        if (node->task() == OrchestrationTask::Container) {
+            bool onlyFeedsSingleAtomContainer = false;
+            for (OrchestrationEdgeItem* edge : edges_) {
+                if (edge->from() != node)
+                    continue;
+                if (edge->to()->task()
+                    != OrchestrationTask::SingleAtomContainer) {
+                    onlyFeedsSingleAtomContainer = false;
+                    break;
+                }
+                onlyFeedsSingleAtomContainer = true;
+            }
+            if (onlyFeedsSingleAtomContainer)
+                continue;
+        }
         const int count = batchDimensionOf(node);
         if (count == 0)
             continue;
@@ -4680,14 +4915,17 @@ void OrchestrationWindow::sendToProcesses()
     }
 
     // Phase 3's own span, in its own pass: SEQUENTIAL after phase 2, over a
-    // count unrelated to either — how many parents the fan-in node has.
-    // Known immediately, unlike phase 1/2's lengths: parentsOf() is
-    // structural, not something that has to be computed or configured
-    // first. At most ONE fan-in node is allowed per graph: two, possibly
-    // with different parent counts, would need a second independent
-    // odometer this phase does not have, the same reason two ordinary
-    // Containers of different lengths are refused above rather than run at
-    // whichever is shorter.
+    // count unrelated to either — the SUM of each parent's own span
+    // (fanInSpanOf(): several items for a Structure/Single-atom Container
+    // linked in directly, one for anything else). Known immediately, unlike
+    // phase 1/2's lengths needing something computed or configured first:
+    // parentsOf() is structural, and a Container's own batchItems() is
+    // already filled in by the time Send is pressed (the user set it, or
+    // populateSingleAtomContainers() above already did). At most ONE fan-in
+    // node is allowed per graph: two, possibly with different totals, would
+    // need a second independent odometer this phase does not have, the same
+    // reason two ordinary Containers of different lengths are refused above
+    // rather than run at whichever is shorter.
     fanInIndex_ = 0;
     fanInLength_ = 1;
     {
@@ -4705,7 +4943,9 @@ void OrchestrationWindow::sendToProcesses()
                 return;
             }
             fanInRef = node;
-            fanInLength_ = static_cast<int>(parentsOf(node).size());
+            fanInLength_ = 0;
+            for (OrchestrationNodeItem* parent : parentsOf(node))
+                fanInLength_ += fanInSpanOf(parent);
         }
     }
 
@@ -5303,6 +5543,35 @@ bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
             }
             break;
         }
+        case OrchestrationTask::RandomNoiseSetup: {
+            const RandomNoiseSpec& spec = node->randomNoise();
+            if (!spec.isValid()) {
+                problem = tr("has nothing to generate (%1)").arg(spec.describe());
+                break;
+            }
+            // The whole ensemble is built every pass and only ONE frame of
+            // it kept -- the same "build the whole set, even in separate
+            // mode where only one member is this pass's output" reasoning
+            // DefectGenerator uses just above, and cheap for the same
+            // reason: this is a few hundred microseconds of in-process
+            // array work even at three-digit counts (core::Noise.hpp's own
+            // doc on buildNoiseEnsemble()), not something worth threading
+            // per-pass state through to avoid.
+            const auto ensemble = core::buildNoiseEnsemble(
+                incoming, spec.options, spec.count, spec.cumulative,
+                spec.ramped);
+            const int index = std::min(defectBatchIndex(),
+                                       static_cast<int>(ensemble.size()) - 1);
+            if (index < 0 || !ensemble[index]) {
+                problem = tr("its generator produced no frames");
+                break;
+            }
+            result = *ensemble[index];
+            record.parameters = index == 0
+                ? tr("frame 0 (untouched reference)")
+                : tr("frame %1 of %2").arg(index).arg(spec.count);
+            break;
+        }
         default:
             // Every transform that edits a structure is named above; the ones
             // that consume results returned long before this point. Reaching
@@ -5405,27 +5674,65 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
     } else if (!parents.isEmpty()) {
         // Ordinarily the first (and only) connected parent. A fan-in node
         // (isFanInNode(): a Single-point Calculation or Geometry
-        // Optimization with more than one parent) instead uses the ONE
-        // parent THIS pass belongs to — parentsOf() is already in link
-        // order, and fanInIndex_ is exactly "which pass" — which is what
-        // makes execution order match connection order: pass i's geometry
-        // always comes from the i-th linked parent, never from whichever
+        // Optimization with more than one parent) instead resolves the
+        // (parent, item) THIS pass belongs to via fanInSource() — parents
+        // are consumed in link order, each for fanInSpanOf() passes, which
+        // is what makes execution order match connection order: pass i's
+        // geometry always comes from the same place regardless of which
         // parent happened to finish first.
-        OrchestrationNodeItem* effectiveParent =
-            isFanInNode(node)
-                ? parents[std::min(fanInIndex_,
-                                   static_cast<int>(parents.size()) - 1)]
-                : parents.front();
-        const QString parentDir = effectiveParent->jobDirectory();
+        OrchestrationNodeItem* effectiveParent = parents.front();
+        int fanInItemIndex = -1;
+        if (isFanInNode(node)) {
+            const auto [sourceParent, itemIndex] =
+                fanInSource(node, fanInIndex_);
+            // Only null if fanInLength_ was computed wrong somewhere above;
+            // falling back to the first parent is a safe default rather
+            // than a crash, and the missing-geometry refusal below still
+            // catches anything this leaves unstaged.
+            if (sourceParent) {
+                effectiveParent = sourceParent;
+                fanInItemIndex = itemIndex;
+            }
+        }
+        // A fan-in parent that is ITSELF a Structure/Single-atom Container:
+        // its item is read straight from batchItems() (in-memory, and the
+        // WHOLE batch, permanently) rather than searched for on disk —
+        // there is no per-item job directory to search, and jobDirectory()
+        // by this point holds only that Container's own LAST primary-phase
+        // pass, not the one this fan-in pass actually needs.
+        const bool sourceIsContainerItem = fanInItemIndex >= 0
+            && (effectiveParent->task() == OrchestrationTask::Container
+                || effectiveParent->task()
+                       == OrchestrationTask::SingleAtomContainer);
+        QString parentDir = effectiveParent->jobDirectory();
         QString source;
-        for (const char* candidate :
-             {"transformed.extxyz", "optimized.extxyz", "md_final.extxyz",
-              "single_point.extxyz", "structure.extxyz"}) {
-            const QString path =
-                parentDir + QLatin1Char('/') + QLatin1String(candidate);
-            if (QFile::exists(path)) {
-                source = path;
-                break;
+        if (sourceIsContainerItem) {
+            const auto& items = effectiveParent->batchItems();
+            parentDir = tr("%1 (item %2 of %3)")
+                            .arg(effectiveParent->title())
+                            .arg(fanInItemIndex + 1)
+                            .arg(items.size());
+            if (fanInItemIndex < items.size() && items[fanInItemIndex].second) {
+                try {
+                    pybridge::AseBridge::writeStructure(
+                        *items[fanInItemIndex].second,
+                        (dir + QStringLiteral("/structure.extxyz")).toStdString());
+                    source = items[fanInItemIndex].first;
+                } catch (const std::exception&) {
+                    // source stays empty; falls through to the same
+                    // strict-handoff refusal an unreadable file would.
+                }
+            }
+        } else {
+            for (const char* candidate :
+                 {"transformed.extxyz", "optimized.extxyz", "md_final.extxyz",
+                  "single_point.extxyz", "structure.extxyz"}) {
+                const QString path =
+                    parentDir + QLatin1Char('/') + QLatin1String(candidate);
+                if (QFile::exists(path)) {
+                    source = path;
+                    break;
+                }
             }
         }
         // A baseline-inheriting module restarts from the .gpw, which carries
@@ -5433,7 +5740,13 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
         // insisted on. For the self-contained tasks it IS the input, and its
         // absence is the strict-handoff refusal below.
         const bool needsGeometry = inputs.isEmpty();
-        if (!source.isEmpty()
+        if (!source.isEmpty() && sourceIsContainerItem) {
+            // Already written directly above; only the bookkeeping is left.
+            staged << QStringLiteral("structure.extxyz");
+            record.inputs.append(describeFile(
+                dir, QStringLiteral("structure.extxyz"),
+                tr("input structure"), source, effectiveParent->id()));
+        } else if (!source.isEmpty()
             && QFile::copy(source, dir + QStringLiteral("/structure.extxyz"))) {
             staged << QStringLiteral("structure.extxyz");
             record.inputs.append(describeFile(

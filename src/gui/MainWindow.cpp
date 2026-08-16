@@ -7998,6 +7998,7 @@ std::unique_ptr<SimulationWizardBase> makeOrchestrationWizard(
     case OrchestrationTask::SingleAtomContainer:
     case OrchestrationTask::Supercell:
     case OrchestrationTask::DefectGenerator:
+    case OrchestrationTask::RandomNoiseSetup:
     case OrchestrationTask::TdbGenerator:
     case OrchestrationTask::Dump:
     case OrchestrationTask::SqsGenerator:

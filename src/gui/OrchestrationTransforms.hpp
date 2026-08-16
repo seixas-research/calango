@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Noise.hpp"
 #include "core/Structure.hpp"
 
 #include <QJsonObject>
@@ -130,6 +131,39 @@ struct DefectSpec {
     QJsonObject toJson() const;
     static DefectSpec fromJson(const QJsonObject& object);
     static QString modeName(Mode mode);
+};
+
+/// Settings of a Random Noise Setup node: the same core::NoiseOptions the
+/// standalone wizard exposes, plus how many perturbed variants to generate
+/// and how (see core::buildNoiseEnsemble(), which both paths call).
+struct RandomNoiseSpec {
+    core::NoiseOptions options;
+    /// Perturbed variants, NOT counting frame 0 (the untouched reference,
+    /// always included) — variantCount() below is the batch length this
+    /// node actually contributes.
+    int count = 20;
+    /// Each member perturbs the PREVIOUS one (a random walk) instead of
+    /// always restarting from the untouched reference.
+    bool cumulative = false;
+    /// Amplitude ramps from zero at frame 0 (already true, since it is
+    /// unperturbed) to the full configured amplitude at the last frame,
+    /// instead of every member using the same amplitude.
+    bool ramped = false;
+
+    bool isValid() const
+    {
+        return count > 0 && (options.perturbPositions || options.perturbCell);
+    }
+    /// How many passes this node contributes to the batch it multiplies —
+    /// the perturbed members AND frame 0, since the untouched reference is
+    /// itself one of the structures downstream should see, not just an
+    /// internal detail of the ramp.
+    int variantCount() const { return isValid() ? count + 1 : 0; }
+    /// "21 frames (20 perturbed + reference), Gaussian sigma=0.050 A"
+    QString describe() const;
+
+    QJsonObject toJson() const;
+    static RandomNoiseSpec fromJson(const QJsonObject& object);
 };
 
 /// One named structure a Container-family node hands downstream: the same

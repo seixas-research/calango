@@ -180,6 +180,10 @@ QJsonObject OrchestrationDocument::build(const OrchestrationWindow& window,
             entry.insert(QStringLiteral("supercell"),
                          node->supercell().toJson());
             break;
+        case OrchestrationTask::RandomNoiseSetup:
+            entry.insert(QStringLiteral("random_noise"),
+                         node->randomNoise().toJson());
+            break;
         case OrchestrationTask::DefectGenerator:
             entry.insert(QStringLiteral("defects"),
                          node->defectSpec().toJson());
@@ -359,6 +363,12 @@ bool OrchestrationDocument::load(OrchestrationWindow& window,
             window.setNodeSupercell(
                 node, SupercellSpec::fromJson(
                           entry.value(QStringLiteral("supercell")).toObject()));
+            break;
+        case OrchestrationTask::RandomNoiseSetup:
+            window.setNodeRandomNoise(
+                node, RandomNoiseSpec::fromJson(
+                          entry.value(QStringLiteral("random_noise"))
+                              .toObject()));
             break;
         case OrchestrationTask::DefectGenerator:
             window.setNodeDefectSpec(

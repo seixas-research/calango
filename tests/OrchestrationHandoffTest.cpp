@@ -1442,6 +1442,160 @@ int main(int argc, char** argv)
               "the ambiguity, rather than silently picking one");
     }
 
+    // ---- Fan-in: a Structure Container linked DIRECTLY as a fan-in parent --
+    //
+    // The exact regression this reproduces: a Structure Container holding
+    // SEVERAL structures, linked straight into a fan-in Single-point node
+    // alongside a Single-atom Container, must contribute ALL of its items —
+    // not collapse to just its last one, which is what reading
+    // jobDirectory()/status() instead of batchItems() would give (that
+    // Container keeps advancing through its own primary-phase passes
+    // independently, so by the time the fan-in node's parents are all
+    // Done, jobDirectory() only ever points at the LAST of them).
+    std::printf("Fan-in: a Structure Container with several items, linked "
+                "directly as a fan-in parent, contributes ALL of them:\n");
+    QSettings().setValue(
+        QLatin1String(calango::gui::SettingsManager::kSimulationsDir),
+        sandbox.path() + QStringLiteral("/simulations_fanin_container"));
+    {
+        using calango::core::Atom;
+        using calango::core::Structure;
+        using calango::core::UnitCell;
+        using calango::gui::SingleAtomContainerSpec;
+
+        const auto oneAtom = [](int z) {
+            auto s = std::make_shared<Structure>();
+            s->setCell(UnitCell({12.0, 0.0, 0.0}, {0.0, 12.0, 0.0},
+                                {0.0, 0.0, 12.0}));
+            Atom atom;
+            atom.atomicNumber = z;
+            atom.position = {0.0, 0.0, 0.0};
+            s->addAtom(atom);
+            return s;
+        };
+        // Five bulk items (Container, linked FIRST) and a separate
+        // two-element source for the isolated-atom branch (Single-atom
+        // Container, linked SECOND) -- seven fan-in passes total, none of
+        // them the Structure Container's own primary-phase odometer, which
+        // this graph never touches at all (nothing depends on it in the
+        // ordinary, phase-1 sense -- it is a DIRECT fan-in parent instead).
+        const QList<QPair<int, QString>> bulkElements = {
+            {29, QStringLiteral("Cu")}, {79, QStringLiteral("Au")},
+            {78, QStringLiteral("Pt")}, {47, QStringLiteral("Ag")},
+            {28, QStringLiteral("Ni")}};
+        const QList<QPair<int, QString>> atomElements = {
+            {13, QStringLiteral("Al")}, {46, QStringLiteral("Pd")}};
+
+        calango::core::CalculatorConfig singlePointConfig;
+        singlePointConfig.task = calango::core::TaskKind::SinglePoint;
+        singlePointConfig.calculator = calango::core::CalculatorKind::EMT;
+        const QString script = QString::fromStdString(
+            calango::core::AseScriptGenerator::generate(singlePointConfig,
+                                                         "structure.extxyz"));
+
+        OrchestrationWindow window({{QStringLiteral("Cu (rattled)"), copper}},
+                                   pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        OrchestrationNodeItem* bulkContainer = window.addProcessNode(
+            OrchestrationTask::Container, 0,
+            calango::core::CalculatorKind::EMT);
+        QList<OrchestrationNodeItem::BatchItem> bulkItems;
+        for (const auto& [z, symbol] : bulkElements)
+            bulkItems << OrchestrationNodeItem::BatchItem{
+                symbol, std::shared_ptr<const Structure>(oneAtom(z))};
+        window.setNodeBatchItems(bulkContainer, bulkItems);
+
+        auto atomSource = std::make_shared<Structure>();
+        atomSource->setCell(UnitCell({6.0, 0.0, 0.0}, {0.0, 6.0, 0.0},
+                                     {0.0, 0.0, 6.0}));
+        Atom al;
+        al.atomicNumber = 13;
+        al.position = {0.0, 0.0, 0.0};
+        atomSource->addAtom(al);
+        Atom pd;
+        pd.atomicNumber = 46;
+        pd.position = {3.0, 3.0, 3.0};
+        atomSource->addAtom(pd);
+        OrchestrationNodeItem* atomContainer = window.addProcessNode(
+            OrchestrationTask::Container, 0,
+            calango::core::CalculatorKind::EMT);
+        window.setNodeBatchItems(
+            atomContainer,
+            {{QStringLiteral("AlPd"),
+              std::shared_ptr<const Structure>(atomSource)}});
+        OrchestrationNodeItem* singleAtom = window.addProcessNode(
+            OrchestrationTask::SingleAtomContainer, 0,
+            calango::core::CalculatorKind::EMT);
+        window.setNodeSingleAtomContainer(singleAtom, SingleAtomContainerSpec());
+        window.linkNodes(atomContainer, singleAtom);
+
+        OrchestrationNodeItem* fanIn = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        // Bulk Container linked FIRST, Single-atom Container SECOND.
+        window.linkNodes(bulkContainer, fanIn);
+        window.linkNodes(singleAtom, fanIn);
+        window.configureNode(fanIn, script, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+
+        calango::core::WorkflowReport delivered;
+        int finishedSignals = 0;
+        QObject::connect(&window, &OrchestrationWindow::runFinished,
+                         [&](const calango::core::WorkflowReport& report) {
+                             delivered = report;
+                             ++finishedSignals;
+                         });
+
+        window.sendToProcesses();
+        check(refusals.isEmpty(),
+              "a Container and a Single-atom Container, both linked "
+              "directly as fan-in parents, is accepted");
+
+        settle(fanIn, fanIn);
+        QElapsedTimer e2eTimer;
+        e2eTimer.start();
+        while (finishedSignals == 0 && e2eTimer.elapsed() < 30000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+
+        check(finishedSignals == 1, "the run reports itself exactly once");
+        check(delivered.allSucceeded(), "every fan-in pass succeeded");
+
+        QMap<int, QString> passElement;
+        for (const auto& outcome : delivered.outcomes) {
+            if (outcome.nodeId != fanIn->id())
+                continue;
+            const QString content = readAll(
+                outcome.directory + QStringLiteral("/structure.extxyz"));
+            for (const auto& [z, symbol] : bulkElements + atomElements)
+                if (content.contains(symbol))
+                    passElement[outcome.batchIndex] = symbol;
+        }
+        check(passElement.size() == 7,
+              "the fan-in node ran exactly seven times -- five from the "
+              "Container's own full batch plus two from the Single-atom "
+              "Container's elements, not two (one per DIRECT parent, "
+              "collapsing each Container to its last item) and not just "
+              "the Container's own five with the isolated-atom branch "
+              "dropped, or any other truncation");
+
+        QStringList order;
+        for (int i = 0; i < 7; ++i)
+            order << passElement.value(i);
+        check(order
+                  == (QStringList{QStringLiteral("Cu"), QStringLiteral("Au"),
+                                  QStringLiteral("Pt"), QStringLiteral("Ag"),
+                                  QStringLiteral("Ni"), QStringLiteral("Al"),
+                                  QStringLiteral("Pd")}),
+              "in exactly this order: the Container's own five items in "
+              "their own order (link position 1), then the Single-atom "
+              "Container's two elements in their own order (link "
+              "position 2) -- connection order all the way down, not just "
+              "at the top level");
+    }
+
     // ---- Fan-in: a Geometry Optimization with several parents --------------
     //
     // The SAME mechanism, proven for the other task the user asked for

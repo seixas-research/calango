@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.23
+    VERSION 26.8.24
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -1908,6 +1908,10 @@ if(CALANGO_BUILD_TESTS)
         src/gui/OrchestrationDocument.cpp
         src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
+        # The Random Noise Setup transform perturbs its incoming structure in
+        # process (core::buildNoiseEnsemble()), so OrchestrationWindow.cpp's
+        # runTransform() now pulls this in too.
+        src/core/Noise.cpp
         src/core/ClusterExpansionFit.cpp
         src/core/ClusterVariation.cpp
         # The TDB Generator transform fits a CALPHAD model in process, so the
@@ -1985,6 +1989,10 @@ if(CALANGO_BUILD_TESTS)
         src/gui/OrchestrationDocument.cpp
         src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
+        # The Random Noise Setup transform perturbs its incoming structure in
+        # process (core::buildNoiseEnsemble()), so OrchestrationWindow.cpp's
+        # runTransform() now pulls this in too.
+        src/core/Noise.cpp
         src/core/ClusterExpansionFit.cpp
         src/core/ClusterVariation.cpp
         # The TDB Generator transform fits a CALPHAD model in process, so the

@@ -28,17 +28,20 @@ namespace calango::gui {
 /// "Generate structures" is pressed.
 ///
 /// Evaluating the ensemble's energies (or forces, or anything else a
-/// calculator produces) is deliberately NOT this dialog's job any more: save
-/// the generated trajectory (File → Save Trajectory As…) and load it into an
+/// calculator produces) is deliberately NOT this dialog's job: save the
+/// generated trajectory (File → Save Trajectory As…) and load it into an
 /// Orchestration "Structure Container" node, which fans a Single-point
-/// Calculation node out once per structure — the batch machinery already
-/// built for exactly this shape of workflow, rather than a second,
-/// wizard-embedded copy of it. A prior version of this dialog DID embed a
-/// single-point run per member (RandomNoiseScriptGenerator, since removed);
-/// nothing about that configuration was ever persisted to a project file or
-/// QSettings, so there is no old data to migrate here — only, potentially, a
-/// completed job directory's `random_noise.json` from before this change,
-/// which RandomNoiseViewer still reads unmodified.
+/// Calculation node out once per structure, OR skip the save/import
+/// round trip entirely with Orchestration's own "Random Noise Setup" node
+/// (OrchestrationWindow.cpp's RandomNoiseSpec/runTransform() case), which
+/// perturbs its incoming structure the same way, in the pipeline itself —
+/// both call the SAME core::buildNoiseEnsemble(), so they can never
+/// disagree about what "20 noisy frames" means. A prior version of THIS
+/// dialog DID embed a single-point run per member (RandomNoiseScriptGenerator,
+/// since removed); nothing about that configuration was ever persisted to a
+/// project file or QSettings, so there is no old data to migrate here —
+/// only, potentially, a completed job directory's `random_noise.json` from
+/// before that change, which RandomNoiseViewer still reads unmodified.
 class RandomNoiseWizard : public QDialog {
     Q_OBJECT
 

@@ -89,6 +89,32 @@ enum class OrchestrationTask {
     SingleAtomContainer,
     Supercell,
     DefectGenerator,
+    /// Reads the ONE structure that reaches it (the ordinary geometry
+    /// hand-off, same as Supercell/DefectGenerator) and emits `count`
+    /// randomly-perturbed variants of it — the in-process generator behind
+    /// the standalone Random Noise Setup wizard
+    /// (core::buildNoiseEnsemble()), reused here so the two never disagree
+    /// about what "20 noisy frames" means.
+    ///
+    /// A MULTIPLYING dimension, the same kind DefectGenerator's separate
+    /// mode and SqsGenerator already are (batchDefectSpan_, not a second
+    /// independent phase the way Single-atom Container is): a Container
+    /// feeding it 5 base structures produces 5 x count total passes, and
+    /// with no Container upstream at all (containerSpan == 1) `count`
+    /// alone becomes the whole batch length — the "acts like a Structure
+    /// Container" shape asked for, reached for free by the SAME
+    /// multiplying-dimension arithmetic rather than a third bespoke phase.
+    /// Two multiplying nodes in one pipeline (this one and a DefectGenerator
+    /// or SqsGenerator) still have to agree on count, for the reason any two
+    /// of them do — see batchDimensionOf()'s own doc.
+    ///
+    /// Reversing an earlier, deliberate decision: RandomNoiseWizard's own
+    /// class doc used to say to save the generated trajectory and import it
+    /// into a Structure Container by hand, rather than embed a second
+    /// generator here — reasonable when the Container's own multi-frame
+    /// import already worked for it, less so once round-tripping through a
+    /// save dialog is the ONLY reason to leave the canvas at all.
+    RandomNoiseSetup,
     // Not a structure edit: it consumes an upstream ensemble's RESULTS and
     // emits a thermodynamic database. It is in this family because it runs on
     // the canvas rather than as a job, which is what the family actually
@@ -279,6 +305,9 @@ public:
     const DefectSpec& defectSpec() const { return defects_; }
     void setDefectSpec(const DefectSpec& spec);
 
+    const RandomNoiseSpec& randomNoise() const { return randomNoise_; }
+    void setRandomNoise(const RandomNoiseSpec& spec);
+
     const TdbGeneratorSpec& tdbGenerator() const { return tdb_; }
     void setTdbGenerator(const TdbGeneratorSpec& spec);
 
@@ -390,6 +419,7 @@ private:
     QList<BatchItem> batchItems_;
     SupercellSpec supercell_;
     DefectSpec defects_;
+    RandomNoiseSpec randomNoise_;
     TdbGeneratorSpec tdb_;
     SqsGeneratorSpec sqs_;
     ClusterExpansionFitSpec clusterFit_;
@@ -623,6 +653,10 @@ public:
                           const SupercellSpec& spec);
     /// Set a Defect Generator node's recipe. Same invalidation rule.
     void setNodeDefectSpec(OrchestrationNodeItem* node, const DefectSpec& spec);
+    /// Set a Random Noise Setup node's generator settings. Same invalidation
+    /// rule.
+    void setNodeRandomNoise(OrchestrationNodeItem* node,
+                            const RandomNoiseSpec& spec);
     /// Set a TDB Generator node's assessment settings. Same invalidation rule.
     void setNodeTdbGenerator(OrchestrationNodeItem* node,
                              const TdbGeneratorSpec& spec);
@@ -841,16 +875,32 @@ private:
     bool dependsOnSingleAtomContainer(const OrchestrationNodeItem* node) const;
     /// A Single-point Calculation or Geometry Optimization node with MORE
     /// THAN ONE parent: the third batch phase, established by the CONSUMER
-    /// rather than by an upstream Container/Single-atom Container. Pass `i`
-    /// (fanInIndex_) uses parentsOf(node)[i]'s own output as its input
-    /// geometry — one pass per parent, strictly in link order, which is
-    /// what makes "the simulation execution order match the order the
-    /// nodes are connected" true by construction rather than by convention.
-    /// At most one such node is allowed per graph (enforced in
-    /// sendToProcesses()) — its parent count IS fanInLength_, so a second
-    /// one with a different count would need a second, independent odometer
-    /// this phase does not have.
+    /// rather than by an upstream Container/Single-atom Container. Its total
+    /// pass count is the SUM of each parent's own span (fanInSpanOf()) —
+    /// several structures from a Container parent, or one final result from
+    /// an ordinary one — concatenated in link order, which is what makes
+    /// "the simulation execution order match the order the nodes are
+    /// connected" true by construction rather than by convention. At most
+    /// one such node is allowed per graph (enforced in sendToProcesses()) —
+    /// two, each with their own per-parent spans, would need a second,
+    /// independent odometer this phase does not have.
     bool isFanInNode(const OrchestrationNodeItem* node) const;
+    /// How many items a fan-in parent contributes: batchItems().size() when
+    /// it IS a Structure Container or Single-atom Container directly (its
+    /// WHOLE batch, sourced from batchItems() itself — never collapsed to
+    /// just its latest pass, which is what jobDirectory()/status() alone
+    /// would give), or 1 for everything else (its own single final result,
+    /// the ordinary geometry hand-off). At least 1, even for a node with no
+    /// batch items configured, so a parent never contributes zero passes.
+    int fanInSpanOf(const OrchestrationNodeItem* parent) const;
+    /// Which parent, and which of THAT parent's own items (0 for an
+    /// ordinary one-item parent), fan-in pass `passIndex` belongs to.
+    /// Parents are walked in link order, each consuming fanInSpanOf() of
+    /// the index before the next one starts — the inverse of how
+    /// fanInLength_ is summed in sendToProcesses(). {nullptr, -1} if
+    /// `passIndex` is out of range.
+    QPair<OrchestrationNodeItem*, int>
+    fanInSource(OrchestrationNodeItem* fanInNode, int passIndex) const;
     /// The third phase's own reachability walk, mirroring
     /// dependsOnSingleAtomContainer(): a fan-in node and everything
     /// downstream of it. A boundary for the OTHER two phases' walks, the

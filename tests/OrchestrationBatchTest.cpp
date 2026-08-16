@@ -2459,6 +2459,136 @@ int main(int argc, char** argv)
               "coincidentally also tagged");
     }
 
+    std::printf("Random Noise Setup node: acts like a Structure Container "
+                "downstream, one pass per frame:\n");
+    {
+        using calango::gui::RandomNoiseSpec;
+
+        auto reference = fccPrimitive(29, 3.61); // Cu
+
+        OrchestrationWindow window(materials, pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        OrchestrationNodeItem* container = window.addProcessNode(
+            OrchestrationTask::Container, 0, calango::core::CalculatorKind::EMT);
+        window.setNodeBatchItems(
+            container,
+            {{QStringLiteral("Cu"),
+              std::shared_ptr<const calango::core::Structure>(reference)}});
+
+        OrchestrationNodeItem* noise = window.addProcessNode(
+            OrchestrationTask::RandomNoiseSetup, 0,
+            calango::core::CalculatorKind::EMT);
+        RandomNoiseSpec spec;
+        spec.count = 5; // + frame 0 (the untouched reference) = 6 passes
+        spec.options.amplitude = 0.05;
+        spec.options.seed = 7;
+        window.setNodeRandomNoise(noise, spec);
+        window.linkNodes(container, noise);
+
+        OrchestrationNodeItem* point = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(noise, point);
+
+        OrchestrationNodeItem* dump = window.addProcessNode(
+            OrchestrationTask::Dump, 0, calango::core::CalculatorKind::EMT);
+        window.linkNodes(point, dump);
+
+        calango::core::CalculatorConfig config;
+        config.calculator = calango::core::CalculatorKind::EMT;
+        config.task = calango::core::TaskKind::SinglePoint;
+        const QString script = QString::fromStdString(
+            calango::core::AseScriptGenerator::generate(config,
+                                                         "structure.extxyz"));
+        window.configureNode(point, script, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+
+        const QString trainingPath =
+            sandbox.path() + QStringLiteral("/noise_node.extxyz");
+        DumpSpec dumpSpec;
+        applyMaceTrainingPreset(&dumpSpec);
+        dumpSpec.outputPath = trainingPath;
+        window.setNodeDump(dump, dumpSpec);
+
+        calango::core::WorkflowReport delivered;
+        int finishedSignals = 0;
+        QObject::connect(&window, &OrchestrationWindow::runFinished,
+                         [&](const calango::core::WorkflowReport& report) {
+                             delivered = report;
+                             ++finishedSignals;
+                         });
+
+        window.sendToProcesses();
+        check(refusals.isEmpty(),
+              "a Container feeding a Random Noise Setup node is accepted -- "
+              "no upstream batch to disagree with, count alone becomes the "
+              "batch length");
+        check(window.batchLength() == spec.variantCount(),
+              "the pipeline makes exactly variantCount() passes -- 6 (5 "
+              "perturbed + the untouched reference), not 5");
+
+        settle(dump, 60000);
+        QElapsedTimer e2eTimer;
+        e2eTimer.start();
+        while (finishedSignals == 0 && e2eTimer.elapsed() < 30000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+
+        check(finishedSignals == 1, "the run reports itself exactly once");
+        check(delivered.allSucceeded(), "every one of the six passes succeeded");
+        check(QFile::exists(trainingPath), "the training file exists");
+
+        const QString verifyDir =
+            sandbox.path() + QStringLiteral("/verify_noise_node");
+        QDir().mkpath(verifyDir);
+        const QString verifyScriptPath =
+            verifyDir + QStringLiteral("/verify.py");
+        const QString verifyOutPath = verifyDir + QStringLiteral("/verify.json");
+        {
+            QFile verifyScript(verifyScriptPath);
+            check(verifyScript.open(QIODevice::WriteOnly | QIODevice::Text),
+                  "the verification script is written");
+            verifyScript.write(QByteArray(
+                "import ase.io, json, sys\n"
+                "import numpy as np\n"
+                "frames = ase.io.read(sys.argv[1], index=':')\n"
+                "positions = [a.positions.tolist() for a in frames]\n"
+                "out = {\n"
+                "    'n_frames': len(frames),\n"
+                "    'natoms': [len(a) for a in frames],\n"
+                "    'others_moved': [bool(np.any(np.abs(np.array(p) - "
+                "np.array(positions[0])) > 1e-6)) for p in positions[1:]],\n"
+                "}\n"
+                "with open(sys.argv[2], 'w') as fh:\n"
+                "    json.dump(out, fh)\n"));
+        }
+        QProcess verifyRun;
+        verifyRun.start(pythonExe,
+                        {verifyScriptPath, trainingPath, verifyOutPath});
+        check(verifyRun.waitForFinished(60000) && verifyRun.exitCode() == 0,
+              "the independent read-back script runs cleanly");
+        const QJsonObject verified = readJson(verifyOutPath);
+        check(verified.value(QStringLiteral("n_frames")).toInt() == 6,
+              "the merged training file holds exactly six frames");
+        const QJsonArray natomsArray =
+            verified.value(QStringLiteral("natoms")).toArray();
+        bool allOneAtom = natomsArray.size() == 6;
+        for (const QJsonValue& value : natomsArray)
+            allOneAtom = allOneAtom && value.toInt() == 1;
+        check(allOneAtom, "every frame keeps the reference's single atom");
+        const QJsonArray othersMoved =
+            verified.value(QStringLiteral("others_moved")).toArray();
+        bool allFiveMoved = othersMoved.size() == 5;
+        for (const QJsonValue& value : othersMoved)
+            allFiveMoved = allFiveMoved && value.toBool();
+        check(allFiveMoved,
+              "frames 1 through 5 are genuinely perturbed relative to frame "
+              "0 -- the noise actually reached the pipeline, not five "
+              "copies of the untouched reference");
+    }
+
     if (failures)
         std::printf("\n%d check(s) FAILED.\n", failures);
     else

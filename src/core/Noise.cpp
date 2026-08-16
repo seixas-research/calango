@@ -1,5 +1,6 @@
 #include "core/Noise.hpp"
 
+#include <algorithm>
 #include <array>
 #include <random>
 #include <vector>
@@ -41,6 +42,36 @@ void applyRandomNoise(Structure& structure, const NoiseOptions& options)
         for (Atom& atom : structure.atoms())
             atom.position += Vec3{draw(), draw(), draw()};
     }
+}
+
+std::vector<std::shared_ptr<Structure>> buildNoiseEnsemble(
+    const Structure& reference, const NoiseOptions& options, int count,
+    bool cumulative, bool ramped)
+{
+    std::vector<std::shared_ptr<Structure>> frames;
+    frames.reserve(static_cast<std::size_t>(std::max(count, 0)) + 1);
+    // Frame 0 is the untouched reference: the statistics are a spread AROUND
+    // something, and without it nothing has a centre to be a distribution
+    // around. It is also, unmodified, exactly the ramp's zero-noise
+    // endpoint.
+    frames.push_back(std::make_shared<Structure>(reference));
+
+    Structure walker = reference;
+    for (int k = 1; k <= count; ++k) {
+        NoiseOptions member = options;
+        member.seed = options.seed + static_cast<unsigned int>(k);
+        if (ramped)
+            member.amplitude *= rampAmplitudeFactor(k, count);
+        if (cumulative) {
+            applyRandomNoise(walker, member);
+            frames.push_back(std::make_shared<Structure>(walker));
+        } else {
+            Structure fresh = reference;
+            applyRandomNoise(fresh, member);
+            frames.push_back(std::make_shared<Structure>(std::move(fresh)));
+        }
+    }
+    return frames;
 }
 
 } // namespace calango::core

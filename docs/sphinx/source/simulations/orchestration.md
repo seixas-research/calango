@@ -28,8 +28,9 @@ defaults if you never open its wizard: {guilabel}`Geometry Optimization`,
 **Transform** — reads a structure and produces a structure, *on the canvas*
 rather than as a job: {guilabel}`Structure Container`,
 {guilabel}`Single-atom Container`, {guilabel}`Supercell Builder`,
-{guilabel}`Defect Generator`. They have no calculator and no launch command,
-and they finish in microseconds. See {ref}`orchestration-transforms`.
+{guilabel}`Defect Generator`, {guilabel}`Random Noise Setup`. They have no
+calculator and no launch command, and they finish in microseconds. See
+{ref}`orchestration-transforms`.
 
 **Analysis** — reads one or more *completed runs* rather than a structure,
 so each needs that many parent nodes linked to it:
@@ -431,6 +432,58 @@ structure, and quietly forwarding the pristine cell is how a pipeline
 computes a defect formation energy of exactly zero with nothing anywhere
 reporting a problem.
 :::
+
+### Random Noise Setup
+
+Perturbs the ONE structure that reaches it (the ordinary geometry hand-off)
+into a randomly-displaced ensemble: frame 0 is always the untouched
+reference, followed by the requested number of perturbed variants — the
+in-process generator behind the standalone **Simulation → Random Noise
+Setup…** wizard, reused here so the two never disagree about what "20 noisy
+frames" means.
+
+Double-click it to set:
+
+`Distribution`
+: Gaussian (a standard deviation) or uniform (a half-width) — the same
+  choice, and the same meaning, as the standalone wizard's.
+
+`Amplitude`
+: the displacement scale, in Å.
+
+`Seed`
+: reproducible for a given value; each member draws from `seed + member
+  index`, so the whole ensemble regenerates identically from the one number.
+
+`Perturb atomic positions` / `Perturb the cell`
+: either or both. A cell perturbation moves the lattice vectors and carries
+  every atom's *fractional* coordinates through unchanged, so the noise acts
+  as a random strain rather than tearing the structure apart.
+
+`Frame count`
+: perturbed variants, **not counting** frame 0 (the untouched reference,
+  always included on top of this count).
+
+`Cumulative`
+: each frame perturbs the *previous* one — a random walk — instead of every
+  member independently perturbing the same untouched reference.
+
+`Ramped`
+: amplitude scales from zero at frame 0 (already true, since it is
+  unperturbed) up to the full configured amplitude at the last frame,
+  instead of every member using the same amplitude.
+
+**Acts like a Structure Container downstream.** It is a MULTIPLYING
+transform — the same kind DefectGenerator's *one material per defect* mode
+and the SQS Generator already are — not a second independent phase the way
+[Single-atom Container](#single-atom-container) is: with no Container
+upstream at all, the frame count alone becomes the whole batch length (the
+"provides multiple structures, like a Structure Container" shape), and with
+one upstream, every one of its structures gets the full noisy ensemble —
+`5 base structures x 21 frames` is 105 total passes, not a mistake to guard
+against. Two multiplying nodes in the same pipeline (this one alongside a
+DefectGenerator or SQS Generator) still have to agree on their count, for
+the same reason any two of them do.
 
 ### TDB Generator (CALPHAD)
 

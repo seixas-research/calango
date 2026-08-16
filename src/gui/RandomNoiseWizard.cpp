@@ -138,11 +138,15 @@ RandomNoiseWizard::RandomNoiseWizard(
            "it.\n\n"
            "Save it from there (File → Save Trajectory As…) to evaluate it "
            "through Orchestration's Structure Container node."));
-    actionLayout->addWidget(generateButton_);
+    // Clustered together at the right edge, Close then Generate -- not one
+    // pinned to each far edge with a stretch BETWEEN them (the previous
+    // layout), which read backwards against the usual convention of
+    // secondary-then-primary action, both on the same side.
     actionLayout->addStretch(1);
     auto* close = new QPushButton(tr("Close"), actionRow);
     connect(close, &QPushButton::clicked, this, &QDialog::accept);
     actionLayout->addWidget(close);
+    actionLayout->addWidget(generateButton_);
     layout->addWidget(actionRow);
 
     generationStatus_ = new QLabel(this);
@@ -201,35 +205,14 @@ void RandomNoiseWizard::generateStructures()
         return;
     }
 
-    const core::Structure original = *reference_;
     const int count = countSpin_->value();
     const bool cumulative = accumulationCombo_->currentIndex() == 1;
     const bool ramped = rampCombo_->currentIndex() == 1;
-    frames_.reserve(static_cast<std::size_t>(count) + 1);
-    // Frame 0 is the untouched reference: the statistics are a spread AROUND
-    // something, and without it the script has nothing to centre on. It is
-    // also, unmodified, exactly the ramp's zero-noise endpoint.
-    frames_.push_back(std::make_shared<core::Structure>(original));
-
-    core::Structure walker = original;
-    for (int k = 1; k <= count; ++k) {
-        core::NoiseOptions member = options;
-        // A distinct stream per member, derived from the one seed, so the whole
-        // ensemble stays reproducible from the single number on the page —
-        // ramp on or off: the ramp only rescales the amplitude passed into
-        // this call, it never touches the seed or the number of draws.
-        member.seed = options.seed + static_cast<unsigned int>(k);
-        if (ramped)
-            member.amplitude *= core::rampAmplitudeFactor(k, count);
-        if (cumulative) {
-            core::applyRandomNoise(walker, member);
-            frames_.push_back(std::make_shared<core::Structure>(walker));
-        } else {
-            core::Structure fresh = original;
-            core::applyRandomNoise(fresh, member);
-            frames_.push_back(std::make_shared<core::Structure>(std::move(fresh)));
-        }
-    }
+    // Shared with the Orchestration "Random Noise Setup" node
+    // (OrchestrationTransforms.cpp), so the two paths can never disagree
+    // about what "20 noisy frames" means.
+    frames_ = core::buildNoiseEnsemble(*reference_, options, count, cumulative,
+                                       ramped);
 
     Q_EMIT structuresGenerated(frames_);
     updateGenerationState();

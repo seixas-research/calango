@@ -2,6 +2,9 @@
 
 #include "core/Structure.hpp"
 
+#include <memory>
+#include <vector>
+
 namespace calango::core {
 
 /// Thermal / structural random perturbation of a structure.
@@ -46,5 +49,23 @@ constexpr double rampAmplitudeFactor(int memberIndex, int count)
     return count > 0 ? static_cast<double>(memberIndex) / static_cast<double>(count)
                      : 1.0;
 }
+
+/// The full noisy ensemble: frame 0 the untouched `reference`, then `count`
+/// perturbed members, one seed per member (options.seed + memberIndex) so
+/// the whole ensemble stays reproducible from the one seed on the page
+/// regardless of `ramped`. `cumulative` walks each member from the PREVIOUS
+/// one instead of always restarting at `reference` — a random walk rather
+/// than `count` independent draws around the same centre.
+///
+/// Shared between the standalone Random Noise Setup wizard
+/// (RandomNoiseWizard::generateStructures()) and the same-named
+/// Orchestration node (OrchestrationTransforms.cpp's RandomNoiseSetup case),
+/// so the two paths can never disagree about what "20 noisy frames" means —
+/// the Orchestration node calls this once per pass and keeps the one frame
+/// that pass needs, which costs nothing extra: this whole function is a few
+/// hundred microseconds of in-process array work even at three-digit counts.
+std::vector<std::shared_ptr<Structure>> buildNoiseEnsemble(
+    const Structure& reference, const NoiseOptions& options, int count,
+    bool cumulative, bool ramped);
 
 } // namespace calango::core
