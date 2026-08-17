@@ -70,6 +70,12 @@ void RepresentationPanel::syncShadingFromRegistry()
     syncSurfaceFinishEnabled();
 }
 
+void RepresentationPanel::syncFromViewport()
+{
+    syncColoringFromViewport();
+    syncCastsFromViewport();
+}
+
 void RepresentationPanel::syncSurfaceFinishEnabled()
 {
     if (!surfaceFinishCombo_ || !shadingCombo_)

@@ -1,5 +1,7 @@
 #include "gui/HpcPanel.hpp"
 
+#include "ui/IconManager.hpp"
+
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -64,13 +66,22 @@ HpcPanel::HpcPanel(const QString& pythonExe, QWidget* parent)
            "\n\nPasswords are never stored — only what is safe to keep on "
            "disk and copy between machines."));
     presetLayout->addWidget(presetCombo_, 1);
-    presetSaveButton_ = new QPushButton(tr("Save"), presetRow);
+    presetSaveButton_ = new QPushButton(presetRow);
+    ui::IconManager::bind(presetSaveButton_, QStringLiteral("save-line"));
+    presetSaveButton_->setIconSize(QSize(20, 20));
+    presetSaveButton_->setFocusPolicy(Qt::NoFocus);
     presetSaveButton_->setToolTip(
-        tr("Store the current Connection and Scheduler settings under the "
-           "name in the box."));
+        tr("Save connection profile — store the current Connection and "
+           "Scheduler settings under the name in the box."));
+    presetSaveButton_->setAccessibleName(tr("Save connection profile"));
     presetLayout->addWidget(presetSaveButton_);
-    presetDeleteButton_ = new QPushButton(tr("Delete"), presetRow);
-    presetDeleteButton_->setToolTip(tr("Forget the selected cluster."));
+    presetDeleteButton_ = new QPushButton(presetRow);
+    ui::IconManager::bind(presetDeleteButton_, QStringLiteral("delete-bin-line"));
+    presetDeleteButton_->setIconSize(QSize(20, 20));
+    presetDeleteButton_->setFocusPolicy(Qt::NoFocus);
+    presetDeleteButton_->setToolTip(
+        tr("Delete connection profile — forget the selected cluster."));
+    presetDeleteButton_->setAccessibleName(tr("Delete connection profile"));
     presetLayout->addWidget(presetDeleteButton_);
     layout->addWidget(presetRow);
 
@@ -132,28 +143,48 @@ HpcPanel::HpcPanel(const QString& pythonExe, QWidget* parent)
     auto* testRow = new QWidget(connectionPage);
     auto* testLayout = new QHBoxLayout(testRow);
     testLayout->setContentsMargins(0, 0, 0, 0);
-    testButton_ = new QPushButton(tr("Connect"), connectionPage);
-    testButton_->setToolTip(
+    connectionButton_ = new QPushButton(tr("Connect"), connectionPage);
+    connectionButton_->setToolTip(
         tr("Open the SSH session and keep it open. Everything after this — "
            "uploads, submission, status polls, log tailing, downloads — "
            "shares this one connection, so a cluster that asks for a "
            "one-time code asks exactly once.\n\nIt is also the button to "
            "press after a session drops: re-authenticating is deliberately "
-           "never automatic when a code was involved."));
-    disconnectButton_ = new QPushButton(tr("Disconnect"), connectionPage);
-    disconnectButton_->setEnabled(false);
-    disconnectButton_->setToolTip(tr("Close the SSH session. A monitored job "
-                                     "keeps running on the cluster."));
+           "never automatic when a code was involved.\n\nBecomes Disconnect "
+           "once the session is open — closing it leaves a monitored job "
+           "running on the cluster."));
     statusLabel_ = new QLabel(tr("Not connected"), connectionPage);
     statusLabel_->setStyleSheet(QStringLiteral("color: gray;"));
-    testLayout->addWidget(testButton_);
-    testLayout->addWidget(disconnectButton_);
+    // Never let a long status/error string widen the dock: Ignored drops the
+    // label's sizeHint from the layout's width calculation, so it only ever
+    // takes the space testLayout has left over, and word-wrapping keeps
+    // whatever doesn't fit on one line legible instead of clipped.
+    statusLabel_->setWordWrap(true);
+    statusLabel_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    statusLabel_->setMinimumWidth(0);
+    testLayout->addWidget(connectionButton_);
     testLayout->addWidget(statusLabel_, 1);
     form->addRow(QString(), testRow);
-    connect(testButton_, &QPushButton::clicked,
-            this, &HpcPanel::testConnection);
-    connect(disconnectButton_, &QPushButton::clicked,
-            this, &HpcPanel::closeConnection);
+    connect(connectionButton_, &QPushButton::clicked, this, [this] {
+        using State = remote::RemoteClient::SessionState;
+        switch (connectionState_) {
+        case State::Connected:
+        case State::Reconnecting:
+            closeConnection();
+            break;
+        case State::Connecting:
+        case State::Authenticating:
+            // The button is disabled in this state (see
+            // updateConnectionButton()) — RemoteClient has no way to cancel
+            // an in-flight connect attempt, so there is nothing to wire a
+            // click to here.
+            break;
+        case State::Disconnected:
+        case State::NeedsReauth:
+            testConnection();
+            break;
+        }
+    });
 
     const auto syncAuthMode = [this](int index) {
         const bool key = index == 0;
@@ -306,15 +337,15 @@ HpcPanel::HpcPanel(const QString& pythonExe, QWidget* parent)
             [this](bool ok, const QString& error, remote::RemoteClient::ErrorKind kind) {
                 if (ok)
                     return;
-                // A changed host key is not a connection problem to shrug at
-                // and retry — it is the one failure the user has to read.
-                setStatus(kind == remote::RemoteClient::ErrorKind::HostKey
-                              ? tr("HOST KEY CHANGED — %1").arg(error)
-                              : error,
-                          false);
+                // Status line stays a short, human-readable cause; the raw
+                // SSH/library text goes in the tooltip and the log, not on
+                // the line that has to fit in the dock.
+                setStatus(shortConnectionError(error, kind), false, error);
+                appendLog(error, true);
             });
     connect(client_, &remote::RemoteClient::busyChanged, this, [this](bool busy) {
-        testButton_->setEnabled(!busy);
+        connectionBusy_ = busy;
+        updateConnectionButton();
     });
     connect(client_, &remote::RemoteClient::fileUploaded, this, [this](const QString& f) {
         appendLog(tr("uploaded %1\n").arg(f));
@@ -472,12 +503,15 @@ void HpcPanel::onSessionStateChanged(
     remote::RemoteClient::SessionState state, const QString& detail)
 {
     using State = remote::RemoteClient::SessionState;
-    disconnectButton_->setEnabled(state == State::Connected
-                                  || state == State::Reconnecting);
+    connectionState_ = state;
+    updateConnectionButton();
     switch (state) {
     case State::Disconnected:
-        setStatus(detail.isEmpty() ? tr("Not connected") : detail,
-                  detail.isEmpty());
+        // A non-empty detail here is the reason the session went away, not
+        // an ordinary "you pressed Disconnect" — keep the line terse and
+        // put the reason where the rest of this panel's detail lives.
+        setStatus(detail.isEmpty() ? tr("Not connected") : tr("Disconnected"),
+                  detail.isEmpty(), detail);
         break;
     case State::Connecting:
         setStatus(tr("Connecting to %1…").arg(detail));
@@ -486,16 +520,16 @@ void HpcPanel::onSessionStateChanged(
         setStatus(tr("Authenticating…"));
         break;
     case State::Connected:
-        setStatus(tr("Session open on %1").arg(detail), true);
+        setStatus(tr("Connected to %1").arg(detail), true);
         break;
     case State::Reconnecting:
-        setStatus(tr("Connection dropped — reconnecting…"), false);
+        setStatus(tr("Reconnecting…"), false);
         break;
     case State::NeedsReauth:
         // Deliberately a message and not a dialog: this state exists exactly
         // so a background poll cannot make a 2FA prompt appear unbidden.
-        setStatus(tr("Session lost — press Connect to authenticate again"),
-                  false);
+        setStatus(tr("Session lost — press Connect to reauthenticate"), false,
+                  detail);
         appendLog(tr("--- %1 ---\n")
                       .arg(detail.isEmpty()
                                ? tr("the SSH session was lost")
@@ -509,7 +543,8 @@ void HpcPanel::onProbeFinished(bool ok, const QString& message,
                                         const QString& schedulerFound)
 {
     if (!ok) {
-        setStatus(message, false);
+        setStatus(tr("Connection check failed"), false, message);
+        appendLog(message, true);
         return;
     }
     QString status = tr("Connected — home: %1").arg(message);
@@ -675,11 +710,68 @@ void HpcPanel::appendLog(const QString& text, bool isError)
         logView_->verticalScrollBar()->maximum());
 }
 
-void HpcPanel::setStatus(const QString& text, bool ok)
+void HpcPanel::setStatus(const QString& text, bool ok, const QString& detail)
 {
     statusLabel_->setText(text);
+    statusLabel_->setToolTip(detail.isEmpty() ? text : detail);
     statusLabel_->setStyleSheet(ok ? QStringLiteral("color: #4caf50;")
                                    : QStringLiteral("color: #e06c60;"));
+}
+
+QString HpcPanel::shortConnectionError(
+    const QString& raw, remote::RemoteClient::ErrorKind kind) const
+{
+    using Kind = remote::RemoteClient::ErrorKind;
+    // Checked ahead of `kind`: a timeout can surface through more than one
+    // ErrorKind depending on which step of the handshake it interrupted, but
+    // the raw text always says "timed out" — a cause worth naming precisely
+    // when it's there, rather than folding into the vaguer kind below it.
+    if (raw.contains(QLatin1String("timed out"), Qt::CaseInsensitive)
+        || raw.contains(QLatin1String("timeout"), Qt::CaseInsensitive))
+        return tr("Timeout");
+    switch (kind) {
+    case Kind::Auth:
+    case Kind::AuthRequired:
+        return tr("Authentication failed");
+    case Kind::HostKey:
+        return tr("Host key changed");
+    case Kind::Network:
+        return tr("Host unreachable");
+    case Kind::Remote:
+        return tr("Remote error");
+    case Kind::Internal:
+        return tr("Internal error");
+    case Kind::None:
+        break;
+    }
+    return tr("Connection failed");
+}
+
+void HpcPanel::updateConnectionButton()
+{
+    using State = remote::RemoteClient::SessionState;
+    switch (connectionState_) {
+    case State::Disconnected:
+    case State::NeedsReauth:
+        connectionButton_->setText(tr("Connect"));
+        connectionButton_->setEnabled(!connectionBusy_);
+        break;
+    case State::Connecting:
+    case State::Authenticating:
+        connectionButton_->setText(tr("Connecting…"));
+        // RemoteClient::abort() does not interrupt an in-flight Op::Connect
+        // on the helper side, so there is no real cancel to wire up here —
+        // disabling the button is the documented fallback for that case.
+        connectionButton_->setEnabled(false);
+        break;
+    case State::Connected:
+    case State::Reconnecting:
+        connectionButton_->setText(tr("Disconnect"));
+        // Always clickable, even mid-job: closing the session is the escape
+        // hatch, and a monitored job keeps running on the cluster regardless.
+        connectionButton_->setEnabled(true);
+        break;
+    }
 }
 
 void HpcPanel::saveSettings() const

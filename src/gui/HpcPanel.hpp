@@ -83,7 +83,20 @@ private:
     core::RemoteJobSpec specFromUi(const QString& jobName) const;
     core::Scheduler scheduler() const;
     void appendLog(const QString& text, bool isError = false);
-    void setStatus(const QString& text, bool ok = true);
+    /// Set the terse status line. `detail`, when given, becomes the label's
+    /// tooltip (the full text `text` is shortened from) — empty falls back
+    /// to `text` itself, so an ordinary short status still has a tooltip.
+    void setStatus(const QString& text, bool ok = true,
+                   const QString& detail = QString());
+    /// A short, human-readable cause for a connection failure — "the raw
+    /// SSH/library error goes in setStatus()'s detail (tooltip) and the log,
+    /// never on the status line itself, which must stay short enough that it
+    /// cannot widen the dock.
+    QString shortConnectionError(const QString& raw,
+                                 remote::RemoteClient::ErrorKind kind) const;
+    /// Reflect connectionState_/connectionBusy_ onto the single Connect /
+    /// Disconnect toggle button.
+    void updateConnectionButton();
     void saveSettings() const;
     void restoreSettings();
 
@@ -98,8 +111,12 @@ private:
     QPushButton* keyBrowseButton_;
     QLineEdit* passwordEdit_;
     QLineEdit* remoteDirEdit_;
-    QPushButton* testButton_;
-    QPushButton* disconnectButton_ = nullptr;
+    /// Single Connect/Disconnect toggle — label and enabled state are driven
+    /// by connectionState_/connectionBusy_ via updateConnectionButton().
+    QPushButton* connectionButton_;
+    remote::RemoteClient::SessionState connectionState_ =
+        remote::RemoteClient::SessionState::Disconnected;
+    bool connectionBusy_ = false;
     QLabel* statusLabel_;
 
     // Cluster presets

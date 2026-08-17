@@ -63,6 +63,10 @@ QPalette lightPalette()
     p.setColor(QPalette::Disabled, QPalette::WindowText, disabled);
     p.setColor(QPalette::Disabled, QPalette::Text, disabled);
     p.setColor(QPalette::Disabled, QPalette::ButtonText, disabled);
+    // Symmetric with darkPalette()'s Disabled/Highlight override just below
+    // it — leaving this one out was the one role apply() did not set the
+    // same way in both directions.
+    p.setColor(QPalette::Disabled, QPalette::Highlight, QColor(200, 200, 200));
     return p;
 }
 
@@ -131,13 +135,26 @@ bool ThemeManager::apply(Theme theme)
     if (auto* fusion = QStyleFactory::create(QStringLiteral("Fusion")))
         QApplication::setStyle(fusion);
 
-    QApplication::setPalette(dark ? darkPalette() : lightPalette());
+    const QPalette palette = dark ? darkPalette() : lightPalette();
+    QApplication::setPalette(palette);
 
-    // Small stylesheet touch-ups the palette alone can't express (tooltip
-    // borders, group-box titles) for both schemes.
+    // QToolTip is matched by this style sheet's "QToolTip" selector, and once
+    // a style sheet matches a widget class, Qt's QSS engine does not reliably
+    // keep resolving THAT widget's unset properties from a later
+    // QApplication::setPalette() call the way an unstyled widget would — this
+    // is what left tooltips on the light-theme background/text after a
+    // Light -> Dark round trip even though the border colour (which IS set
+    // here) updated correctly both ways. Declaring background/text
+    // explicitly, read from the very palette just applied above, closes that
+    // gap for any number of round trips: nothing about a tooltip is left to
+    // implicit re-propagation.
+    const QColor tooltipBg = palette.color(QPalette::ToolTipBase);
+    const QColor tooltipFg = palette.color(QPalette::ToolTipText);
     const QString border = dark ? QStringLiteral("#555") : QStringLiteral("#b0b0b0");
     qApp->setStyleSheet(
-        QStringLiteral("QToolTip { border: 1px solid %1; }").arg(border));
+        QStringLiteral("QToolTip { background-color: %1; color: %2; "
+                       "border: 1px solid %3; }")
+            .arg(tooltipBg.name(), tooltipFg.name(), border));
 
     return dark;
 }

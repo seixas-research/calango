@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.26
+    VERSION 26.8.27
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -2360,6 +2360,19 @@ if(CALANGO_BUILD_TESTS)
         FILES assets/icons/focus-3-line.svg)
     add_test(NAME icon_theme COMMAND calango_icon_theme_test)
 
+    # Theme round trip: a Light -> Dark switch back once left QToolTip on the
+    # light theme's background/text (QApplication::setPalette() updated
+    # correctly, but the QSS string only carried the tooltip border colour).
+    # Checks that the tooltip style sheet agrees with the live palette after
+    # any number of round trips, not just the first switch.
+    qt_add_executable(calango_theme_round_trip_test
+        tests/ThemeRoundTripTest.cpp
+        src/gui/ThemeManager.cpp
+    )
+    target_include_directories(calango_theme_round_trip_test PRIVATE src)
+    target_link_libraries(calango_theme_round_trip_test PRIVATE Qt6::Widgets)
+    add_test(NAME theme_round_trip COMMAND calango_theme_round_trip_test)
+
     # Icon registry: every name the UI passes to IconManager must have a file in
     # assets/icons/, and every file there must be listed for qt_add_resources.
     # A missing asset is a NULL pixmap — a blank button at run time, with
@@ -3360,6 +3373,7 @@ if(CALANGO_BUILD_TESTS)
         icon_registry           # every icon used is bundled (a blank button
                                 # is silent otherwise)
         icon_theme              # theme-aware tinting
+        theme_round_trip        # tooltip colours survive a Light<->Dark round trip
         element_colors)         # the CPK palette and user overrides
 
     set(CALANGO_DOCS_TESTS

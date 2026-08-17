@@ -661,9 +661,8 @@ MainWindow::MainWindow(QWidget* parent)
     // Directly after the projection toggle: both are about how the scene is
     // LOOKED AT rather than what is drawn, and this is the one that makes a
     // framing reproducible instead of hand-dragged.
-    QAction* povAction = frameToolbar->addAction(
-        ui::IconManager::icon(QStringLiteral("eye-fill")),
-        tr("Set point-of-view…"));
+    QAction* povAction = frameToolbar->addAction(tr("Set point-of-view…"));
+    ui::IconManager::bind(povAction, QStringLiteral("eye-fill"));
     povAction->setToolTip(
         tr("Set point-of-view… — read out and type the camera's zoom, "
            "rotation and pan, and save named views to reuse on other "
@@ -673,8 +672,8 @@ MainWindow::MainWindow(QWidget* parent)
     // Film mode, directly after the point-of-view it is built out of: a film
     // IS a sequence of saved points-of-view, so the button that authors one
     // belongs next to the button that saves them.
-    filmModeAction_ = frameToolbar->addAction(
-        ui::IconManager::icon(QStringLiteral("film-fill")), tr("Film mode"));
+    filmModeAction_ = frameToolbar->addAction(tr("Film mode"));
+    ui::IconManager::bind(filmModeAction_, QStringLiteral("film-fill"));
     filmModeAction_->setCheckable(true);
     filmModeAction_->setToolTip(
         tr("Film mode — swap the trajectory timeline for a film timeline in "
@@ -683,9 +682,8 @@ MainWindow::MainWindow(QWidget* parent)
            "off, so previewing never costs you the view you set up."));
     connect(filmModeAction_, &QAction::toggled, this, &MainWindow::setFilmMode);
 
-    filmProductionAction_ = frameToolbar->addAction(
-        ui::IconManager::icon(QStringLiteral("clapperboard-fill")),
-        tr("Film production…"));
+    filmProductionAction_ = frameToolbar->addAction(tr("Film production…"));
+    ui::IconManager::bind(filmProductionAction_, QStringLiteral("clapperboard-fill"));
     filmProductionAction_->setToolTip(
         tr("Film production… — build a film from the saved points-of-view: "
            "transitions between shots, total duration and frame rate, cast "
@@ -7442,6 +7440,42 @@ void MainWindow::openWaterIceBuilder()
             .arg(generated.densityGCm3, 0, 'f', 3));
 }
 
+namespace {
+
+/// Cast colour for pristine (bare) graphene carbons — cast 0's colour in
+/// both applyFunctionalGroupCasts() and setUpFunctionalGroupCastKey(). A
+/// tasteful mid grey rather than pure black/white: it must stay legible as
+/// "no chemistry here" against the coloured groups on both themes and the
+/// viewport's optional white floor.
+QColor grapheneOxidePristineCastColor()
+{
+    return QColor(0x8C, 0x8F, 0x94);
+}
+
+/// One entry per core::GrapheneOxideBuilder::Group, in that enum's
+/// declaration order (Epoxide, Hydroxyl, Carboxyl, Carbonyl) — the
+/// conventional chemistry-figure hues (red/blue/green/orange), muted rather
+/// than saturated primaries so they read on both the Light and Dark themes
+/// and against the viewport's optional white floor. Shared by
+/// applyFunctionalGroupCasts() (one-shot builder) and
+/// setUpFunctionalGroupCastKey() (the MDMC per-frame key) so the two can
+/// never drift apart — a FIXED key deliberately not drawn from the shared
+/// kQualitativePalette in StructureRenderer, so a figure in a paper and a
+/// figure on screen agree, and a structure carrying only carbonyls does not
+/// colour them with cast 0's grey.
+std::array<QColor, core::GrapheneOxideBuilder::kGroupCount>
+grapheneOxideGroupCastColors()
+{
+    return {
+        QColor(0xC2, 0x3B, 0x3B), // epoxide  — muted red
+        QColor(0x3E, 0x6F, 0xB5), // hydroxyl — muted blue
+        QColor(0x4C, 0x9A, 0x5C), // carboxyl — muted green
+        QColor(0xD1, 0x8A, 0x3E), // carbonyl — muted orange
+    };
+}
+
+} // namespace
+
 int MainWindow::applyFunctionalGroupCasts()
 {
     Document* doc = currentDocument();
@@ -7463,29 +7497,7 @@ int MainWindow::applyFunctionalGroupCasts()
     using Builder = core::GrapheneOxideBuilder;
     std::array<int, Builder::kGroupCount> castOfGroup{};
     castOfGroup.fill(0);
-    // In the order the groups are declared, chosen against the element colours
-    // the sheet is drawn in (grey C, red O, white H) so a group reads as a
-    // group rather than blending into the substrate.
-    //
-    // SEPARATED IN LIGHTNESS AS WELL AS HUE. The previous four were distinct
-    // hues at almost exactly the same brightness (relative luminance 0.16-0.26,
-    // a worst-pair ratio of 1.02), and on a LIT SPHERE that is not enough:
-    // shading sweeps each sphere across a far wider range than 1.02, so the
-    // shadowed side of one group and the lit side of another land on the same
-    // grey and a decorated sheet reads as mottled rather than as four
-    // chemistries. These span 0.13 to 0.54 — a ratio of 4.1 — while keeping
-    // every pair at least 58 degrees apart in hue.
-    //
-    // Deliberately not the shared kQualitativePalette in StructureRenderer:
-    // these four are a FIXED key (epoxide is always amber), so a figure in a
-    // paper and a figure on screen agree, and a structure carrying only
-    // carbonyls does not colour them with cast 0's blue.
-    static const QColor kGroupColors[Builder::kGroupCount] = {
-        QColor(0xFF, 0xB3, 0x2E), // epoxide   amber   — brightest
-        QColor(0x25, 0x5F, 0xD0), // hydroxyl  blue    — darkest
-        QColor(0xE8, 0x5C, 0xC8), // carboxyl  magenta — bright
-        QColor(0x18, 0x8F, 0x6B), // carbonyl  teal    — dark
-    };
+    const auto kGroupColors = grapheneOxideGroupCastColors();
 
     auto& style = viewport_->style();
     style.castStyles.clear();
@@ -7510,6 +7522,7 @@ int MainWindow::applyFunctionalGroupCasts()
         style.castName.clear();
         return 0;
     }
+    style.castColor = grapheneOxidePristineCastColor();
 
     style.atomCasts.assign(labels.size(), 0);
     for (std::size_t i = 0; i < labels.size(); ++i) {
@@ -7524,6 +7537,13 @@ int MainWindow::applyFunctionalGroupCasts()
     for (auto& cast : style.castStyles)
         cast.colorMode = render::ColorMode::Cast;
     viewport_->styleChanged(/*rebuildGeometry=*/true);
+    // The Representation dock only reflects a change like this — mutating
+    // viewport_->style() directly and calling styleChanged() on the viewport
+    // itself, rather than going through the dock's own controls — through an
+    // explicit call: without this, the viewport is already colouring by cast
+    // but the dock still shows "Element" until the user toggles it by hand.
+    if (representationPanel_)
+        representationPanel_->syncFromViewport();
     return static_cast<int>(style.castStyles.size());
 }
 
@@ -7542,14 +7562,10 @@ void MainWindow::setUpFunctionalGroupCastKey()
     // groups between frames, so "which cast slot is epoxide" has to be a
     // property of the RUN, not of whichever frame happened to set it up
     // first.
-    static const QColor kGroupColors[Builder::kGroupCount] = {
-        QColor(0xFF, 0xB3, 0x2E), // epoxide   amber   — brightest
-        QColor(0x25, 0x5F, 0xD0), // hydroxyl  blue    — darkest
-        QColor(0xE8, 0x5C, 0xC8), // carboxyl  magenta — bright
-        QColor(0x18, 0x8F, 0x6B), // carbonyl  teal    — dark
-    };
+    const auto kGroupColors = grapheneOxideGroupCastColors();
     style.castStyles.clear();
     style.castName = tr("Bare carbon");
+    style.castColor = grapheneOxidePristineCastColor();
     for (std::size_t group = 0; group < Builder::kGroupCount; ++group) {
         render::StructureRenderer::CastStyle cast = style.castStyle(0);
         cast.castColor = kGroupColors[group];
@@ -7561,6 +7577,14 @@ void MainWindow::setUpFunctionalGroupCastKey()
         style.castStyles.push_back(cast);
     }
     style.colorMode = render::ColorMode::Cast;
+    // First activation from inside an MDMC run: an MDMC that starts from
+    // bare graphene never goes through applyFunctionalGroupCasts() (there
+    // was nothing to colour until the first group appeared), so nothing has
+    // told the Representation dock yet. Tell it the same way that function
+    // does — otherwise Cast colouring is live in the viewport but the dock
+    // still shows "Element" until the user toggles it by hand.
+    if (representationPanel_)
+        representationPanel_->syncFromViewport();
 }
 
 void MainWindow::redefineFunctionalGroupCastForFrame(Document* doc,
@@ -7636,6 +7660,10 @@ int MainWindow::applyGrainCasts()
     for (auto& cast : style.castStyles)
         cast.colorMode = render::ColorMode::Cast;
     viewport_->styleChanged(/*rebuildGeometry=*/true);
+    // Same gap as applyFunctionalGroupCasts(): the dock only picks this up
+    // through an explicit call.
+    if (representationPanel_)
+        representationPanel_->syncFromViewport();
     return assignment.grainCount;
 }
 

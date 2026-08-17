@@ -2251,10 +2251,16 @@ int main(int argc, char** argv)
         const auto spins = panel.findChildren<QSpinBox*>();
         const auto edits = panel.findChildren<QLineEdit*>();
         const auto buttons = panel.findChildren<QPushButton*>();
+        // Save/Delete are icon-only buttons (Task 4): they carry no visible
+        // text, only a tooltip and an accessibleName ("Save connection
+        // profile" / "Delete connection profile") — matched here by
+        // `contains` so the short names below still find them, alongside
+        // every other button in the panel that IS still found by its text.
         const auto buttonNamed = [&buttons](const QString& text) {
             return std::find_if(buttons.begin(), buttons.end(),
                                 [&text](const QPushButton* b) {
-                                    return b->text() == text;
+                                    return b->text() == text
+                                        || b->accessibleName().contains(text);
                                 });
         };
         check(buttonNamed(QStringLiteral("Save")) != buttons.end(),

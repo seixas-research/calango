@@ -48,6 +48,15 @@ public Q_SLOTS:
     /// modal, so the host calls this when that dialog closes. Two controls on
     /// one setting is only acceptable while neither can go stale.
     void syncShadingFromRegistry();
+    /// Re-read colour mode and the cast list from the viewport.
+    ///
+    /// Mirrors syncShadingFromRegistry()'s reason for existing: the host
+    /// sometimes mutates viewport_->style() directly and calls
+    /// styleChanged() on the viewport itself — building the Graphene Oxide
+    /// Builder's per-group casts, or a polycrystal's per-grain casts — and
+    /// this panel only reflects a change like that through a call, not
+    /// automatically. Call after any such direct mutation.
+    void syncFromViewport();
 
 private Q_SLOTS:
     void applyColorMode();
