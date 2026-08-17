@@ -493,6 +493,133 @@ struct DumpSpec {
 /// button. Leaves outputPath, configType and the two checkboxes untouched.
 void applyMaceTrainingPreset(DumpSpec* spec);
 
+/// One externally loaded file added directly to a Dataset Manager node
+/// (rather than arriving through an upstream calculation node's own
+/// fan-out).
+struct DatasetManagerExternalFile {
+    QString path;
+    /// Manual isolated-atom tagging: treat every frame this file
+    /// contributes as an isolated-atom reference
+    /// (info['config_type'] = "IsolatedAtom"), the same MACE-recognized
+    /// convention an upstream Single-atom Container's frames already carry
+    /// through Dump's mechanism — for a file that was not produced by one
+    /// and so carries no such tag on its own.
+    bool isolatedAtom = false;
+
+    QJsonObject toJson() const;
+    static DatasetManagerExternalFile fromJson(const QJsonObject& object);
+};
+
+/// Settings of a Dataset Manager node: concatenate every connected parent's
+/// fan-out (like Dump) plus any directly-loaded files, apply dataset
+/// hygiene, and write a deterministic, stratified train/validation/test
+/// split.
+///
+/// The key names below are filled by the SAME applyMaceTrainingPreset()
+/// implementation Dump's own "MACE training preset" button uses — see the
+/// DumpSpec overload above and OrchestrationWindow.cpp's editDatasetManager()
+/// — so the two nodes can never quietly drift onto different REF_ key
+/// conventions.
+struct DatasetManagerSpec {
+    /// Folder train.extxyz / valid.extxyz / test.extxyz are written into. No
+    /// default, for the same reason DumpSpec::outputPath has none.
+    QString outputDirectory;
+    /// Fraction of the (unpinned — see makeStratified()) pool used for
+    /// training; the remainder splits between validation and test below.
+    double trainFraction = 0.8;
+    double validationFraction = 0.1;
+    /// Deterministic shuffle seed — the same (frame set, fractions, seed)
+    /// always yields the same split.
+    unsigned seed = 42;
+
+    QString energyKey = QStringLiteral("energy");
+    QString forcesKey = QStringLiteral("forces");
+    QString stressKey;
+
+    /// Files loaded directly onto this node (Node A's "existing .extxyz
+    /// files loaded directly" input kind), concatenated after every
+    /// connected parent's own frames, in list order.
+    QList<DatasetManagerExternalFile> externalFiles;
+
+    /// Each hygiene step is independently optional and always REPORTED
+    /// (DatasetManagerOutput), never silently applied — see runDatasetManager().
+    bool dropMissingProperties = true;
+    bool dropExactDuplicates = true;
+    /// A kept frame beyond this |energy|/atom is FLAGGED, not dropped —
+    /// outliers are for the user to judge, not for this node to discard.
+    bool flagOutliers = false;
+    double outlierEnergyPerAtomThresholdEv = 5.0;
+
+    bool isValid() const
+    {
+        return !outputDirectory.isEmpty() && !energyKey.isEmpty()
+            && !forcesKey.isEmpty()
+            && trainFraction > 0.0 && trainFraction <= 1.0
+            && validationFraction >= 0.0
+            && trainFraction + validationFraction <= 1.0;
+    }
+    /// "energy/forces -> my_dataset (80/10/10)"
+    QString describe() const;
+
+    QJsonObject toJson() const;
+    static DatasetManagerSpec fromJson(const QJsonObject& object);
+};
+
+/// Fill `spec`'s key names with mace 0.3.15's own defaults — the SAME
+/// implementation the DumpSpec overload above uses (see
+/// OrchestrationTransforms.cpp), so a Dataset Manager node feeding a MACE
+/// Trainer node and a Dump node feeding a hand-run `mace_run_train` agree on
+/// REF_energy/REF_forces/REF_stress by construction, not by coincidence.
+void applyMaceTrainingPreset(DatasetManagerSpec* spec);
+
+/// One source frame (or whole file) a Dataset Manager node reads —
+/// analogous to DumpSourceFrame, extended with `wholeFile` for a directly
+/// loaded, possibly multi-frame .extxyz (see
+/// pybridge::AseBridge::DatasetSourceFile, which this maps onto directly).
+struct DatasetManagerSourceFrame {
+    QString path;
+    QString label;
+    bool wholeFile = false;
+    QString configTypeOverride;
+};
+
+/// What a Dataset Manager node's summary reports — the "dataset summary on
+/// the node" the task asks for (total frames, per-source counts, elements
+/// covered, energy range, split sizes), plus what hygiene did.
+struct DatasetManagerOutput {
+    int totalKeptFrames = 0;
+    int trainFrames = 0;
+    int validFrames = 0;
+    int testFrames = 0;
+    int droppedMissing = 0;
+    int droppedDuplicate = 0;
+    QStringList outlierWarnings;
+    /// "pass 3 (Al): 1 frame(s) kept" / "noisy.extxyz: 40 frame(s) kept",
+    /// one line per source in the order they were read.
+    QStringList perSourceSummary;
+    /// Every element covered by the kept frames, first-appearance order.
+    QStringList elements;
+    bool hasEnergyRange = false;
+    double minEnergyPerAtomEv = 0.0;
+    double maxEnergyPerAtomEv = 0.0;
+    /// "137 frames kept (train 109 / valid 14 / test 14), 3 dropped"
+    QString headline;
+};
+
+/// Read every source (parents' fan-out passes AND `spec.externalFiles`, in
+/// that order — a parent's pass is always identified by an
+/// already-resolved result-file path, exactly like Dump's own sources),
+/// apply hygiene, compute a stratified split (isolated-atom frames pinned
+/// to train — see core::DatasetSplit::makeStratified()) and write it.
+///
+/// `false` (with `*error` set) only for a failure that stops the WHOLE
+/// write (an unwritable output directory, or nothing left to write after
+/// hygiene); an individual bad or excluded source frame is reflected in the
+/// returned DatasetManagerOutput instead.
+bool runDatasetManager(const QList<DatasetManagerSourceFrame>& sources,
+                       const DatasetManagerSpec& spec,
+                       DatasetManagerOutput* output, QString* error);
+
 /// One completed pass a Dump node reads from its parent's own results.
 struct DumpSourceFrame {
     /// The parent's result file for this pass (e.g.

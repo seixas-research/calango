@@ -201,13 +201,14 @@ sibling's.
 that names *the* structure, or *the* baseline of a fixed list, has room for
 exactly one parent — a second link there would be drawn but never actually
 read, so it is **refused when you draw it**, with a message naming the node
-and explaining why. [Dump Trajectory](#dump-ml-training-data) is the
-exception: since it already reads every PASS of whatever feeds it, reading
-every pass of *several* parents — concatenated in the order the links were
-drawn — is the same operation, just over more input. That is what makes
-"bulk, noisy structures from one branch and isolated-atom references from
-another, merged into one training set" a single Dump Trajectory node rather
-than two files stitched together by hand afterwards.
+and explaining why. [Dump Trajectory](#dump-ml-training-data) and
+[Dataset Manager](#dataset-manager) are the exception: since each already
+reads every PASS of whatever feeds it, reading every pass of *several*
+parents — concatenated in the order the links were drawn — is the same
+operation, just over more input. That is what makes "bulk, noisy structures
+from one branch and isolated-atom references from another, merged into one
+training set" a single Dump Trajectory or Dataset Manager node rather than
+several files stitched together by hand afterwards.
 
 Scheduling and persistence both fall out of rules that already existed for
 other reasons, not new machinery: a node becomes runnable once *every one*
@@ -691,6 +692,150 @@ reason: this node also ran exactly once, so a fan-out progress counter would
 misread. A `dump_densities_summary.json` beside it records the destination,
 the chosen product, the counts and the missing reasons in full.
 
+(dataset-manager)=
+### Dataset Manager
+
+The data-preparation step of the pipeline `[noisy structures + isolated
+atoms + any other labeled sets] → Dataset Manager → MACE Trainer → trained
+MLIP file`: like Dump Trajectory, it **merges every connected parent's own
+fan-out** — plus any `.extxyz` files loaded directly onto the node — applies
+dataset hygiene, and writes a deterministic, **stratified**
+train/validation/test split ready for [MACE Trainer](#mace-trainer)
+downstream.
+
+| Node type | Slot, in link order | Staged as |
+|---|---|---|
+| Dataset Manager | completed calculation | *(the whole parent directory — unused; same reason as Dump Trajectory's own slot)* |
+
+Like Dump Trajectory, its input link exists only so "at least one parent, or
+at least one directly-loaded file" is enforced — it does not read the staged
+copy, and it is a **batch aggregator**: it runs once, after every fan-out
+feeding it has finished its last pass, reading each pass's own result file
+directly from the run report. `connectNodes()` gives it the identical
+multi-parent exemption Dump Trajectory has, for the identical reason:
+concatenation in link order is a well-defined operation on a set of
+structures, so "bulk noisy structures from one branch, isolated-atom
+references from another" is one Dataset Manager node, not several files
+merged by hand.
+
+Double-click the node to configure:
+
+`Output folder`
+: where `train.extxyz`, `valid.extxyz` and `test.extxyz` are written. No
+  default, for the same reason Dump Trajectory's output path has none.
+
+`Energy key` / `Forces key` / `Stress key`, `MACE training preset`
+: the same fields, and the **same preset implementation**, as Dump
+  Trajectory's own — REF_energy/REF_forces/REF_stress,
+  `mace.tools.default_keys.DefaultKeys` from mace 0.3.15 — so a Dataset
+  Manager node feeding MACE Trainer and a Dump Trajectory node feeding a
+  hand-run `mace_run_train` can never quietly drift onto different key
+  conventions.
+
+`Training` / `Validation` / `Test`
+: split percentages (test is whatever is left over), and:
+
+`Random seed`
+: the deterministic shuffle seed — the same (frame set, fractions, seed)
+  always produces the same split (`core::DatasetSplit::makeStratified()`).
+
+`Dataset hygiene`
+: three independently optional steps, each always **reported**, never
+  silently applied:
+  - **Drop frames missing energy or forces** (on by default) — a frame with
+    neither is useless to a trainer and worse than absent if kept.
+  - **Drop exact-duplicate frames** (on by default) — identical formula,
+    cell and positions to an already-kept frame, checked at full precision
+    (a literal duplicate, not a similarity threshold).
+  - **Flag (do not drop) frames beyond** an energy/atom threshold (off by
+    default) — an outlier is for you to judge, not for the node to discard;
+    flagged frames are listed in the node's summary, still written to
+    whichever split they landed in.
+
+`Directly loaded files`
+: `.extxyz` files added straight to the node (Node A's second input kind,
+  alongside connected parents), each optionally **tagged as an
+  isolated-atom reference** for a file that did not come through an
+  upstream [Single-atom Container](#single-atom-container) and so carries no
+  such tag on its own.
+
+**Stratified split.** Every isolated-atom-tagged frame — whether it arrived
+via a Single-atom Container branch or a manually-tagged directly-loaded file
+— lands in **train** unconditionally; the requested fractions apply to the
+*rest* of the pool. An MLIP's E0 reference has to be available at every
+stage of training, so a validation- or test-only isolated-atom frame would
+silently defeat the point of tagging it at all.
+
+Once run, the node's face reports **"137 frame(s) kept"**, with **"N
+dropped"** beneath it when hygiene removed any — the same "ran exactly once,
+not once per pass" treatment as the two Dump nodes. A `dataset_manifest.json`
+beside it records the output folder, every split's frame count, the
+elements covered, the energy range, the hygiene counts, and — this is the
+file [MACE Trainer](#mace-trainer) reads — the absolute paths to
+`train.extxyz`/`valid.extxyz`/`test.extxyz` plus the energy/forces/stress
+key names, since the split itself lives in your chosen output folder, not
+under this node's own job directory.
+
+(mace-trainer)=
+### MACE Trainer
+
+Trains a [MACE](https://github.com/ACEsuit/mace) machine-learned
+interatomic potential from a Dataset Manager node's split. **Simulation**
+family — it launches a real job through the ordinary job-runner/Processes-
+panel machinery, the same as any other Simulation node — but its setup
+dialog is the pre-existing, standalone MACE Trainer dialog (also reachable
+from the {guilabel}`Simulation` menu on its own), reused as-is rather than
+rebuilt behind the wizard interface every other Simulation node uses.
+
+| Node type | Slot | Staged as |
+|---|---|---|
+| MACE Trainer | dataset | `dataset_manifest.json` |
+
+Link it downstream of exactly one **Dataset Manager** node. Double-clicking
+it opens the MACE Trainer dialog: on first configure, if the linked Dataset
+Manager has already produced a manifest (it may not have — a node is
+normally configured before its parents have ever run), the dialog's
+training-file, validation-file and energy/forces-key fields are **pre-wired
+from it** automatically — the "typed output edge" hand-off, in the absence
+of any actual edge-typing system on this canvas. Re-opening an
+already-configured node instead restores exactly the YAML you last saved,
+including any hand edits, rather than re-deriving it and silently discarding
+them.
+
+The dialog itself covers model size/architecture presets, the cutoff radius
+and per-property loss weights, batch size/epochs/learning rate/seed, device
+(cpu/cuda/mps), isolated-atom energy (E0s) handling, stage-two (SWA) and EMA
+settings, and an optional Query-by-Committee ensemble — see
+{doc}`/simulations/mlip` for the full reference. Two things specific to
+running it from this canvas:
+
+**Dependency pre-flight.** Both Run buttons check that `mace-torch` is
+importable under the configured interpreter **before** launching anything —
+mace-torch is never vendored or hard-depended-on by Calango itself. Missing,
+you get a clear message naming the package and `pip install mace-torch`,
+and nothing is launched; found, its version is recorded as a comment at the
+top of the generated config (run metadata — which mace-torch a config was
+actually generated/verified against), and which PyTorch devices are
+actually usable (cpu always; cuda/mps only when the installed PyTorch build
+and hardware support them) is reported next to the device selector.
+
+**Execution.** Same job infrastructure as every other node — queue, live
+log streaming, resume. MACE's own `restart_latest: true` (always emitted)
+means a resumed run picks up from its last checkpoint rather than starting
+over. The generated launcher also writes a per-epoch metrics file
+(`mace_train_<seed>_metrics.json`: loss, energy RMSE, force RMSE, parsed
+from MACE's own training log) beside the config — not yet wired into
+Calango's live metric *plot*, so today it is data on disk rather than a
+chart in the Results panel (see `FUTURE.md`); the raw training log itself
+already streams to the live-monitoring view like any other job's output.
+
+**Output.** The trained model file(s) land in the job directory under the
+name(s) the config's `name:` field controls (one per Query-by-Committee
+seed, if that ensemble is enabled). To use one afterwards, point a MACE
+calculator's model source at **Custom file** and browse to it — already
+fully wired (`mace.calculators.MACECalculator(model_paths=...)`), just not
+yet a single click from a finished run (see `FUTURE.md`).
+
 ---
 
 ## Execution
@@ -950,6 +1095,55 @@ To run the same thing on a cluster instead, stop after step 5, press
 `calango-cli run workflow.json -o results/`. Later,
 {guilabel}`Open Workflow…` on that same file brings the pipeline back onto
 the canvas.
+
+## Worked example — training an MLIP end to end
+
+The whole chain `[noisy structures + isolated atoms] → Dataset Manager →
+MACE Trainer → trained model`, on one canvas:
+
+1. Add a {guilabel}`Structure Container` node with the structure(s) you want
+   a potential for, and a {guilabel}`Random Noise Setup` node linked after
+   it — this is the bulk training data: the reference structure plus a set
+   of randomly perturbed variants, one pass each.
+2. Link a {guilabel}`Single Point` node after Random Noise Setup, with the
+   engine you want your reference labels from (a fast one like EMT for a
+   dry run; the real DFT engine for a production potential).
+3. In parallel, add a **second** {guilabel}`Structure Container` holding
+   the *same* structure(s) — this branch supplies isolated-atom references
+   rather than bulk data — linked to a
+   {guilabel}`Single-atom Container` node, which turns "every unique
+   element across what feeds it" into one isolated-atom reference cell per
+   element. Link a {guilabel}`Single Point` node after that too.
+4. Add a {guilabel}`Dataset Manager` node and link **both** Single Point
+   nodes into it (draw two links onto the same node — this is the
+   multi-parent exemption [described above](#multiple-connections)).
+   Double-click it: press {guilabel}`MACE training preset`, set a split
+   (80/10/10 is a reasonable start), choose an output folder, and leave
+   hygiene at its defaults.
+5. Add a {guilabel}`MACE Trainer` node and link the Dataset Manager into
+   it. Double-click it — since Dataset Manager has not run yet, the dialog
+   opens with its own defaults; that is normal. Press
+   {guilabel}`Check Environment` to confirm `mace-torch` is available under
+   the interpreter you have selected, adjust the epoch/architecture
+   settings for a first run (a small model and a handful of epochs is
+   plenty to confirm the pipeline works end to end before committing to a
+   long one), and {guilabel}`Save process node`.
+6. {guilabel}`Send to Processes`. Both branches fan out and run; Dataset
+   Manager waits for both, merges them (isolated-atom frames pinned to
+   train regardless of the split fractions), and writes the split; MACE
+   Trainer waits for Dataset Manager and trains on it.
+7. Re-open the MACE Trainer node once Dataset Manager has actually run —
+   now its training/validation-file and energy/forces-key fields are
+   pre-wired from Dataset Manager's own manifest, and you can bump the
+   epoch count up for a real run and re-save.
+8. Once training finishes, open a MACE calculator's setup elsewhere in
+   Calango, pick {guilabel}`Custom trained model`, and browse to the
+   checkpoint in the MACE Trainer node's job directory.
+
+The same pipeline works with a real DFT engine at step 2 and a much larger
+Random Noise Setup count for genuine training-set scale; nothing about the
+graph shape changes, only how long {guilabel}`Send to Processes` takes to
+get through it.
 
 ---
 

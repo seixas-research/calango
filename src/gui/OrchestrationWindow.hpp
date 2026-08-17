@@ -172,6 +172,26 @@ enum class OrchestrationTask {
     /// rather than one trajectory, but that is inside the generated script and
     /// changes nothing about how the canvas drives it.
     LiquidFreeEnergy,
+    /// Concatenates every connected parent's own fan-out (like Dump, whose
+    /// merge-in-link-order/isBatchAggregator() mechanism it reuses directly)
+    /// plus any directly-loaded .extxyz files, applies dataset hygiene
+    /// (drop-missing, drop-duplicate, flag-outlier), and writes a
+    /// deterministic, stratified train/validation/test split — the MLIP
+    /// training pipeline's data-preparation step, upstream of MaceTrainer.
+    ///
+    /// A Transform, not an Analysis: like Dump, it runs on the canvas
+    /// in-process (Python via the embedded interpreter, not a launched
+    /// job), and connectNodes() gives it the SAME multi-parent exemption as
+    /// Dump for the same reason — concatenation in link order is a
+    /// well-defined operation on a set of structures.
+    DatasetManager,
+    /// Trains a MACE MLIP from a Dataset Manager node's split. A
+    /// Simulation — it launches a real job through the ordinary
+    /// JobRunner/Processes-panel machinery — but its setup dialog is the
+    /// pre-existing, standalone MaceTrainerDialog (a plain QDialog, not a
+    /// SimulationWizardBase), reused as-is rather than duplicated: see
+    /// openNodeWizard()'s special case for this task.
+    MaceTrainer,
 };
 
 /// Which of the three groups a task belongs to. The Add Process list is
@@ -353,6 +373,18 @@ public:
     }
     void setSingleAtomContainer(const SingleAtomContainerSpec& spec);
 
+    const DatasetManagerSpec& datasetManager() const { return datasetManager_; }
+    void setDatasetManager(const DatasetManagerSpec& spec);
+
+    /// The MACE Trainer node's own payload: just the (possibly hand-edited)
+    /// YAML text, so re-opening its dialog restores exactly where the user
+    /// left off. Execution itself uses the generic configuredScript()/
+    /// configuredPython()/configuredRunCommand() triple every other
+    /// Simulation-family node already persists — this is convenience state
+    /// for the dialog only, not a second copy of what runs.
+    const QString& maceTrainerYaml() const { return maceTrainerYaml_; }
+    void setMaceTrainerYaml(const QString& yaml);
+
     /// Whether this node has everything it needs, as a message: empty when it
     /// is ready, otherwise what is missing. Covers "never configured" for the
     /// analysis modules and the empty-payload cases for the transforms.
@@ -448,6 +480,8 @@ private:
     DumpSpec dump_;
     DumpDensitiesSpec dumpDensities_;
     SingleAtomContainerSpec singleAtom_;
+    DatasetManagerSpec datasetManager_;
+    QString maceTrainerYaml_;
     std::vector<InputLine> inputLines_;
     std::vector<OrchestrationEdgeItem*> edges_;
 };
@@ -700,6 +734,10 @@ public:
     /// Set a Single-atom Container node's box size. Same invalidation rule.
     void setNodeSingleAtomContainer(OrchestrationNodeItem* node,
                                     const SingleAtomContainerSpec& spec);
+    /// Set a Dataset Manager node's split, hygiene and key-name settings.
+    /// Same invalidation rule.
+    void setNodeDatasetManager(OrchestrationNodeItem* node,
+                               const DatasetManagerSpec& spec);
 
     /// The folder the current (or last) run staged everything under. Empty
     /// before the first send.

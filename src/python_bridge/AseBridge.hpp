@@ -191,6 +191,104 @@ public:
         const std::string& forcesKey, const std::string& stressKey,
         const std::string& configType, bool includeIncomplete, bool append);
 
+    // -- Dataset Manager (MLIP training-set assembly) ------------------------
+    // Two calls rather than one: prepareDataset() reads every source, renames
+    // properties, tags config_type and applies hygiene ONCE, keeping the
+    // resulting ase.Atoms list alive on the Python side (`framesHandle`)
+    // rather than round-tripping it through C++; the caller then computes a
+    // DETERMINISTIC train/validation/test split in C++ (core::DatasetSplit,
+    // which this class has no business re-implementing in Python) and hands
+    // the three index lists to writeDatasetSplit(), which slices the SAME
+    // already-prepared list rather than re-reading every source file a
+    // second time.
+
+    /// One source for prepareDataset(): either a single completed
+    /// calculation pass's own result file (mirrors DumpSourceFile) or a
+    /// directly-loaded, possibly multi-frame .extxyz a user added to a
+    /// Dataset Manager node.
+    struct DatasetSourceFile {
+        std::string path;
+        std::string label;
+        /// Read every frame in the file (ase.io.read index=":") when true —
+        /// a directly loaded .extxyz that may hold many structures; read
+        /// just the one frame ase.io.read() gives by default when false — a
+        /// completed calculation pass's own result file, exactly like
+        /// DumpSourceFile.
+        bool wholeFile = false;
+        /// "IsolatedAtom" for every frame this source contributes, or empty
+        /// to leave config_type as whatever the frame already carries (if
+        /// anything). Manual tagging of an externally loaded file uses this
+        /// the same way an upstream Single-atom Container's frames do
+        /// through Dump's own configTypeOverride mechanism.
+        std::string configTypeOverride;
+    };
+
+    /// One frame that survived prepareDataset()'s hygiene pass, in the same
+    /// order as (and parallel to) the Python list held in
+    /// DatasetPrepareResult::framesHandle.
+    struct DatasetFrameInfo {
+        int sourceIndex = -1; ///< index into the `sources` prepareDataset() was called with
+        bool isIsolatedAtom = false;
+        bool hasEnergy = false;
+        double energyPerAtom = 0.0; ///< only meaningful when hasEnergy
+        std::vector<std::string> elements; ///< this frame's unique symbols
+    };
+
+    /// What prepareDataset() did.
+    struct DatasetPrepareResult {
+        std::vector<DatasetFrameInfo> keptFrames;
+        int droppedMissing = 0;
+        int droppedDuplicate = 0;
+        /// One line per frame prepareDataset() flagged (not dropped) as a
+        /// numeric outlier.
+        std::vector<std::string> outlierWarnings;
+        /// Frames kept per source, parallel to `sources`.
+        std::vector<int> perSourceKeptCounts;
+        /// Opaque: the prepared ase.Atoms list, parallel to `keptFrames`.
+        /// Pass straight to writeDatasetSplit() and nowhere else.
+        pybind11::object framesHandle;
+    };
+
+    /// Read every source, recover energy/forces/(optionally) stress exactly
+    /// as writeDumpTrainingSet() does (a live calculator's results take
+    /// priority; a frame that already carries the target key names — e.g. a
+    /// user's own pre-labelled .extxyz — is read from there instead), rename
+    /// to the caller's key names, tag config_type, then apply hygiene:
+    /// frames missing energy or forces are dropped when `dropMissing` is
+    /// set (kept, un-flagged, otherwise); EXACT-duplicate frames (identical
+    /// formula, cell and positions to an earlier-kept one) are dropped when
+    /// `dropDuplicates` is set; a kept frame whose |energy/atom| exceeds
+    /// `outlierEnergyPerAtomThresholdEv` is FLAGGED (recorded in
+    /// `outlierWarnings`) rather than dropped, when `flagOutliers` is set.
+    ///
+    /// Throws std::runtime_error only for a failure that stops the whole
+    /// read; an individual bad source frame is reflected in the returned
+    /// counts instead.
+    static DatasetPrepareResult prepareDataset(
+        const std::vector<DatasetSourceFile>& sources,
+        const std::string& energyKey, const std::string& forcesKey,
+        const std::string& stressKey, const std::string& defaultConfigType,
+        bool dropMissing, bool dropDuplicates, bool flagOutliers,
+        double outlierEnergyPerAtomThresholdEv);
+
+    /// What one writeDatasetSplit() call wrote.
+    struct DatasetWriteResult {
+        int trainWritten = 0;
+        int validWritten = 0;
+        int testWritten = 0;
+    };
+
+    /// Write three subsets of `framesHandle` (flat indices into the SAME
+    /// list prepareDataset() returned) to `outputDirectory`/train.extxyz,
+    /// valid.extxyz and test.extxyz. An empty index list skips writing that
+    /// file entirely rather than writing an empty one.
+    static DatasetWriteResult writeDatasetSplit(
+        const pybind11::object& framesHandle,
+        const std::vector<int>& trainIndices,
+        const std::vector<int>& validIndices,
+        const std::vector<int>& testIndices,
+        const std::string& outputDirectory);
+
     /// core::Structure -> ase.Atoms (positions, symbols, cell, pbc).
     static pybind11::object toAtoms(const core::Structure& structure);
 

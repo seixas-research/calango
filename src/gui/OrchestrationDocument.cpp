@@ -231,6 +231,24 @@ QJsonObject OrchestrationDocument::build(const OrchestrationWindow& window,
             entry.insert(QStringLiteral("single_atom_container"),
                          node->singleAtomContainer().toJson());
             break;
+        // Additive for the same reason as Dump above: an older reader
+        // refuses the node outright at orchestrationTaskFromSlug.
+        case OrchestrationTask::DatasetManager:
+            entry.insert(QStringLiteral("dataset_manager"),
+                         node->datasetManager().toJson());
+            break;
+        // Convenience state only (re-opening the node's dialog restores
+        // exactly where the user left off) — not part of what actually
+        // runs, which is the generic script/python/launch triple written
+        // above for every non-Transform node. Written unconditionally
+        // (an empty string round-trips to an empty string) rather than
+        // gated like the others, since there is no isValid()-style check
+        // that would make an empty value meaningfully different from
+        // "not yet configured".
+        case OrchestrationTask::MaceTrainer:
+            entry.insert(QStringLiteral("mace_trainer_yaml"),
+                         node->maceTrainerYaml());
+            break;
         default:
             // A node seeded with its own structure through the scripting API
             // rather than fed from a container. Rare, but it has to survive
@@ -419,6 +437,20 @@ bool OrchestrationDocument::load(OrchestrationWindow& window,
                 node, SingleAtomContainerSpec::fromJson(
                           entry.value(QStringLiteral("single_atom_container"))
                               .toObject()));
+            break;
+        case OrchestrationTask::DatasetManager:
+            window.setNodeDatasetManager(
+                node, DatasetManagerSpec::fromJson(
+                          entry.value(QStringLiteral("dataset_manager"))
+                              .toObject()));
+            break;
+        case OrchestrationTask::MaceTrainer:
+            // Convenience state only — see the writer's own comment. The
+            // node's actual configuration (script/python/launch) was
+            // already restored above via the generic "configured" branch,
+            // shared by every non-Transform task.
+            node->setMaceTrainerYaml(
+                entry.value(QStringLiteral("mace_trainer_yaml")).toString());
             break;
         default:
             break;

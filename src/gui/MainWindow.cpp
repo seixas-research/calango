@@ -8378,11 +8378,23 @@ std::unique_ptr<SimulationWizardBase> makeOrchestrationWizard(
     // correlated subspace. No engine, no generated script, so no wizard.
     case OrchestrationTask::KkrCpa:
     case OrchestrationTask::Crpa:
+    // Also configures itself on the canvas — a split, hygiene toggles, a
+    // key-name preset. No engine, no generated script, so no wizard here
+    // either.
+    case OrchestrationTask::DatasetManager:
         // The transforms configure themselves on the canvas — a structure
         // list, three spin boxes, a table of edits, a Redlich-Kister order, a
         // list of alloy compositions, a cluster basis, a temperature range.
         // There is no engine to pick and no script to generate, so there is no
         // wizard to build and OrchestrationWindow never asks for one.
+        break;
+    // Simulation family, but openNodeWizard() special-cases it before ever
+    // reaching wizardFactory_ — its setup dialog is the pre-existing
+    // MaceTrainerDialog, not a SimulationWizardBase this factory could
+    // build. Unreachable in practice; named explicitly rather than folded
+    // into the transforms' `break` above so a future reader does not read
+    // this arm as "no wizard exists" the way the transforms' comment means it.
+    case OrchestrationTask::MaceTrainer:
         break;
     }
     return nullptr;

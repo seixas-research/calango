@@ -4,6 +4,7 @@
 #include "core/ClusterVariation.hpp"
 #include "core/ClusterExpansionFit.hpp"
 #include "core/CalphadModel.hpp"
+#include "core/DatasetSplit.hpp"
 #include "core/Element.hpp"
 #include "core/SqsGenerator.hpp"
 #include "core/Structure.hpp"
@@ -11,6 +12,7 @@
 #include "gui/GuiUtils.hpp"
 #include "python_bridge/AseBridge.hpp"
 
+#include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -1592,21 +1594,38 @@ DumpSpec DumpSpec::fromJson(const QJsonObject& object)
     return spec;
 }
 
+namespace {
+
+/// The one implementation both applyMaceTrainingPreset() overloads call —
+/// mace.tools.default_keys.DefaultKeys, mace 0.3.15 (verified against the
+/// installed package, not assumed): ENERGY = "REF_energy",
+/// FORCES = "REF_forces", STRESS = "REF_stress" — the same values
+/// mace_run_train's --energy_key/--forces_key/--stress_key default to.
+/// The REF_ prefix is deliberate on MACE's side, not a Calango convention:
+/// its data loader refuses a bare "stress" key outright, since ASE
+/// 3.23.0b1 made that name unsafe to round-trip between ASE and MACE, and
+/// names this prefix as the fix.
+void fillMaceKeys(QString* energyKey, QString* forcesKey, QString* stressKey)
+{
+    *energyKey = QStringLiteral("REF_energy");
+    *forcesKey = QStringLiteral("REF_forces");
+    *stressKey = QStringLiteral("REF_stress");
+}
+
+} // namespace
+
 void applyMaceTrainingPreset(DumpSpec* spec)
 {
     if (!spec)
         return;
-    // mace.tools.default_keys.DefaultKeys, mace 0.3.15 (verified against the
-    // installed package, not assumed): ENERGY = "REF_energy",
-    // FORCES = "REF_forces", STRESS = "REF_stress" — the same values
-    // mace_run_train's --energy_key/--forces_key/--stress_key default to.
-    // The REF_ prefix is deliberate on MACE's side, not a Calango
-    // convention: its data loader refuses a bare "stress" key outright,
-    // since ASE 3.23.0b1 made that name unsafe to round-trip between ASE and
-    // MACE, and names this prefix as the fix.
-    spec->energyKey = QStringLiteral("REF_energy");
-    spec->forcesKey = QStringLiteral("REF_forces");
-    spec->stressKey = QStringLiteral("REF_stress");
+    fillMaceKeys(&spec->energyKey, &spec->forcesKey, &spec->stressKey);
+}
+
+void applyMaceTrainingPreset(DatasetManagerSpec* spec)
+{
+    if (!spec)
+        return;
+    fillMaceKeys(&spec->energyKey, &spec->forcesKey, &spec->stressKey);
 }
 
 bool runDump(const QList<DumpSourceFrame>& sources, const DumpSpec& spec,
@@ -1655,6 +1674,228 @@ bool runDump(const QList<DumpSourceFrame>& sources, const DumpSpec& spec,
             : QObject::tr("%1 frame(s) written to %2")
                   .arg(output->framesWritten)
                   .arg(QFileInfo(spec.outputPath).fileName());
+    return true;
+}
+
+QJsonObject DatasetManagerExternalFile::toJson() const
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("path"), path);
+    object.insert(QStringLiteral("isolated_atom"), isolatedAtom);
+    return object;
+}
+
+DatasetManagerExternalFile
+DatasetManagerExternalFile::fromJson(const QJsonObject& object)
+{
+    DatasetManagerExternalFile file;
+    file.path = object.value(QStringLiteral("path")).toString();
+    file.isolatedAtom =
+        object.value(QStringLiteral("isolated_atom")).toBool(false);
+    return file;
+}
+
+QString DatasetManagerSpec::describe() const
+{
+    QStringList keys{energyKey, forcesKey};
+    if (!stressKey.isEmpty())
+        keys << stressKey;
+    const QString name = outputDirectory.isEmpty()
+        ? QObject::tr("(no folder set)")
+        : QDir(outputDirectory).dirName();
+    const int trainPct = static_cast<int>(std::lround(trainFraction * 100.0));
+    const int validPct =
+        static_cast<int>(std::lround(validationFraction * 100.0));
+    const int testPct = std::max(0, 100 - trainPct - validPct);
+    return QObject::tr("%1 -> %2 (%3/%4/%5)")
+        .arg(keys.join(QStringLiteral("/")), name)
+        .arg(trainPct)
+        .arg(validPct)
+        .arg(testPct);
+}
+
+QJsonObject DatasetManagerSpec::toJson() const
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("output_directory"), outputDirectory);
+    object.insert(QStringLiteral("train_fraction"), trainFraction);
+    object.insert(QStringLiteral("validation_fraction"), validationFraction);
+    object.insert(QStringLiteral("seed"), static_cast<int>(seed));
+    object.insert(QStringLiteral("energy_key"), energyKey);
+    object.insert(QStringLiteral("forces_key"), forcesKey);
+    object.insert(QStringLiteral("stress_key"), stressKey);
+    QJsonArray files;
+    for (const DatasetManagerExternalFile& file : externalFiles)
+        files.append(file.toJson());
+    object.insert(QStringLiteral("external_files"), files);
+    object.insert(QStringLiteral("drop_missing_properties"), dropMissingProperties);
+    object.insert(QStringLiteral("drop_exact_duplicates"), dropExactDuplicates);
+    object.insert(QStringLiteral("flag_outliers"), flagOutliers);
+    object.insert(QStringLiteral("outlier_energy_per_atom_threshold_ev"),
+                 outlierEnergyPerAtomThresholdEv);
+    return object;
+}
+
+DatasetManagerSpec DatasetManagerSpec::fromJson(const QJsonObject& object)
+{
+    DatasetManagerSpec spec;
+    spec.outputDirectory =
+        object.value(QStringLiteral("output_directory")).toString();
+    spec.trainFraction = object.value(QStringLiteral("train_fraction"))
+                             .toDouble(spec.trainFraction);
+    spec.validationFraction =
+        object.value(QStringLiteral("validation_fraction"))
+            .toDouble(spec.validationFraction);
+    spec.seed = static_cast<unsigned>(
+        object.value(QStringLiteral("seed")).toInt(static_cast<int>(spec.seed)));
+    spec.energyKey =
+        object.value(QStringLiteral("energy_key")).toString(spec.energyKey);
+    spec.forcesKey =
+        object.value(QStringLiteral("forces_key")).toString(spec.forcesKey);
+    spec.stressKey = object.value(QStringLiteral("stress_key")).toString();
+    for (const QJsonValue& value :
+        object.value(QStringLiteral("external_files")).toArray())
+        spec.externalFiles.append(
+            DatasetManagerExternalFile::fromJson(value.toObject()));
+    spec.dropMissingProperties =
+        object.value(QStringLiteral("drop_missing_properties")).toBool(true);
+    spec.dropExactDuplicates =
+        object.value(QStringLiteral("drop_exact_duplicates")).toBool(true);
+    spec.flagOutliers = object.value(QStringLiteral("flag_outliers")).toBool(false);
+    spec.outlierEnergyPerAtomThresholdEv =
+        object.value(QStringLiteral("outlier_energy_per_atom_threshold_ev"))
+            .toDouble(spec.outlierEnergyPerAtomThresholdEv);
+    return spec;
+}
+
+bool runDatasetManager(const QList<DatasetManagerSourceFrame>& sources,
+                       const DatasetManagerSpec& spec,
+                       DatasetManagerOutput* output, QString* error)
+{
+    const auto fail = [error](const QString& message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+    if (!output)
+        return fail(QObject::tr("no output was requested"));
+    if (!spec.isValid())
+        return fail(QObject::tr(
+            "it has no output folder, no energy/forces key names, or an "
+            "invalid split (%1)")
+                        .arg(spec.describe()));
+
+    std::vector<pybridge::AseBridge::DatasetSourceFile> files;
+    files.reserve(static_cast<std::size_t>(sources.size())
+                  + static_cast<std::size_t>(spec.externalFiles.size()));
+    for (const DatasetManagerSourceFrame& source : sources)
+        files.push_back({source.path.toStdString(), source.label.toStdString(),
+                         source.wholeFile,
+                         source.configTypeOverride.toStdString()});
+    for (const DatasetManagerExternalFile& file : spec.externalFiles)
+        files.push_back({file.path.toStdString(),
+                         QFileInfo(file.path).fileName().toStdString(),
+                         /*wholeFile=*/true,
+                         file.isolatedAtom ? "IsolatedAtom" : ""});
+
+    pybridge::AseBridge::DatasetPrepareResult prepared;
+    try {
+        prepared = pybridge::AseBridge::prepareDataset(
+            files, spec.energyKey.toStdString(), spec.forcesKey.toStdString(),
+            spec.stressKey.toStdString(), std::string(), spec.dropMissingProperties,
+            spec.dropExactDuplicates, spec.flagOutliers,
+            spec.outlierEnergyPerAtomThresholdEv);
+    } catch (const std::exception& e) {
+        return fail(QObject::tr("its sources could not be read (%1)")
+                        .arg(QString::fromUtf8(e.what())));
+    }
+
+    output->droppedMissing = prepared.droppedMissing;
+    output->droppedDuplicate = prepared.droppedDuplicate;
+    for (const std::string& warning : prepared.outlierWarnings)
+        output->outlierWarnings << QString::fromStdString(warning);
+    output->totalKeptFrames = static_cast<int>(prepared.keptFrames.size());
+
+    if (output->totalKeptFrames == 0)
+        return fail(QObject::tr(
+            "nothing survived (every source was empty, unreadable, or "
+            "dropped by hygiene) — nothing was written"));
+
+    // Per-source summary, in source order (parents' passes first, then the
+    // externally loaded files, matching `files`' own construction above).
+    for (std::size_t i = 0; i < static_cast<std::size_t>(sources.size()); ++i)
+        output->perSourceSummary << QObject::tr("%1: %n frame(s) kept", nullptr,
+                                                 prepared.perSourceKeptCounts[i])
+                                         .arg(sources[static_cast<int>(i)].label);
+    for (int i = 0; i < spec.externalFiles.size(); ++i) {
+        const std::size_t sourceIndex =
+            static_cast<std::size_t>(sources.size() + i);
+        output->perSourceSummary
+            << QObject::tr("%1: %n frame(s) kept", nullptr,
+                          prepared.perSourceKeptCounts[sourceIndex])
+                   .arg(QFileInfo(spec.externalFiles[i].path).fileName());
+    }
+
+    // Elements covered + energy range, over every kept frame.
+    for (const auto& frame : prepared.keptFrames) {
+        for (const std::string& element : frame.elements) {
+            const QString symbol = QString::fromStdString(element);
+            if (!output->elements.contains(symbol))
+                output->elements << symbol;
+        }
+        if (frame.hasEnergy) {
+            if (!output->hasEnergyRange) {
+                output->minEnergyPerAtomEv = frame.energyPerAtom;
+                output->maxEnergyPerAtomEv = frame.energyPerAtom;
+                output->hasEnergyRange = true;
+            } else {
+                output->minEnergyPerAtomEv =
+                    std::min(output->minEnergyPerAtomEv, frame.energyPerAtom);
+                output->maxEnergyPerAtomEv =
+                    std::max(output->maxEnergyPerAtomEv, frame.energyPerAtom);
+            }
+        }
+    }
+
+    // Stratified split: an isolated-atom reference frame is pinned to
+    // train unconditionally — MLIP training needs its E0 reference
+    // available regardless of how the split fractions fall, and a
+    // validation/test-only isolated-atom frame would simply never be seen
+    // during training.
+    std::vector<bool> pinnedToTrain(prepared.keptFrames.size(), false);
+    for (std::size_t i = 0; i < prepared.keptFrames.size(); ++i)
+        pinnedToTrain[i] = prepared.keptFrames[i].isIsolatedAtom;
+    const core::DatasetSplit split = core::DatasetSplit::makeStratified(
+        output->totalKeptFrames, spec.trainFraction, spec.validationFraction,
+        spec.seed, pinnedToTrain);
+
+    pybridge::AseBridge::DatasetWriteResult written;
+    try {
+        written = pybridge::AseBridge::writeDatasetSplit(
+            prepared.framesHandle, split.train, split.validation, split.test,
+            spec.outputDirectory.toStdString());
+    } catch (const std::exception& e) {
+        return fail(QObject::tr("the split could not be written (%1)")
+                        .arg(QString::fromUtf8(e.what())));
+    }
+
+    output->trainFrames = written.trainWritten;
+    output->validFrames = written.validWritten;
+    output->testFrames = written.testWritten;
+    output->headline =
+        output->droppedMissing + output->droppedDuplicate > 0
+            ? QObject::tr("%1 frame(s) kept (train %2 / valid %3 / test %4), "
+                          "%5 dropped")
+                  .arg(output->totalKeptFrames)
+                  .arg(output->trainFrames)
+                  .arg(output->validFrames)
+                  .arg(output->testFrames)
+                  .arg(output->droppedMissing + output->droppedDuplicate)
+            : QObject::tr("%1 frame(s) kept (train %2 / valid %3 / test %4)")
+                  .arg(output->totalKeptFrames)
+                  .arg(output->trainFrames)
+                  .arg(output->validFrames)
+                  .arg(output->testFrames);
     return true;
 }
 

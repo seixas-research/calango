@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.25
+    VERSION 26.8.26
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -355,6 +355,8 @@ qt_add_executable(calango
     src/python_bridge/AlembicExporter.cpp
     src/python_bridge/MaterialsProject.hpp
     src/python_bridge/MaterialsProject.cpp
+    src/python_bridge/C2db.hpp
+    src/python_bridge/C2db.cpp
     src/python_bridge/BulkBuilder.hpp
     src/python_bridge/BulkBuilder.cpp
     src/python_bridge/PubChem.hpp
@@ -563,6 +565,8 @@ qt_add_executable(calango
     src/gui/CondaEnvs.cpp
     src/gui/MaceTrainerDialog.hpp
     src/gui/MaceTrainerDialog.cpp
+    src/gui/PythonPackagePreflight.hpp
+    src/gui/PythonPackagePreflight.cpp
     src/gui/BandPdosView.hpp
     src/gui/BandPdosView.cpp
     src/gui/BandPdosWindow.hpp
@@ -1323,6 +1327,28 @@ if(CALANGO_BUILD_TESTS)
     set_tests_properties(materials_project_mp1434 PROPERTIES
         SKIP_RETURN_CODE 77)
 
+    # C2DB (Computational 2D Materials Database): query-string construction
+    # and HTML result-table parsing are pure/offline and always run; the one
+    # live-network case is opt-in (CALANGO_TEST_C2DB_NETWORK=1), not
+    # skip-by-default like materials_project_mp1434 above — C2DB has no
+    # per-user API key to gate on, so an automated sweep must not hit DTU's
+    # server unasked.
+    add_executable(calango_c2db_test
+        tests/C2dbTest.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/python_bridge/PythonEngine.cpp
+        src/python_bridge/AseBridge.cpp
+        src/core/PdbxFile.cpp
+        src/python_bridge/C2db.cpp
+    )
+    target_include_directories(calango_c2db_test PRIVATE src)
+    target_compile_definitions(calango_c2db_test PRIVATE
+        CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}")
+    target_link_libraries(calango_c2db_test PRIVATE pybind11::embed)
+    add_test(NAME c2db COMMAND calango_c2db_test)
+
     add_executable(calango_raman_test
         tests/RamanSiTest.cpp
         src/core/Structure.cpp
@@ -1815,6 +1841,7 @@ if(CALANGO_BUILD_TESTS)
         # uses, and its launcher has to be valid Python. All three fail at run
         # time on someone else's cluster, hours in, so they are pinned here.
         src/gui/MaceTrainerDialog.cpp
+        src/gui/PythonPackagePreflight.cpp
         # The Magnetic Space Group dialog: it determines the group inside its
         # own constructor and writes the answer back into widgets that
         # constructor created, which is precisely the hazard this test exists
@@ -2028,6 +2055,13 @@ if(CALANGO_BUILD_TESTS)
         src/python_bridge/AseBridge.cpp
         src/python_bridge/PythonEngine.cpp
         src/jobs/JobRunner.cpp
+        # A MaceTrainer node's setup dialog is the pre-existing, standalone
+        # MaceTrainerDialog (openNodeWizard()'s special case for it), and a
+        # Dataset Manager node's stratified split goes through
+        # core::DatasetSplit::makeStratified().
+        src/gui/MaceTrainerDialog.cpp
+        src/gui/PythonPackagePreflight.cpp
+        src/core/DatasetSplit.cpp
     )
     target_include_directories(calango_orchestration_si_test PRIVATE src
         "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -2048,6 +2082,86 @@ if(CALANGO_BUILD_TESTS)
     endif()
     add_test(NAME orchestration_si_pipeline COMMAND calango_orchestration_si_test)
     set_tests_properties(orchestration_si_pipeline PROPERTIES TIMEOUT 900)
+
+    # MACE Trainer: dependency pre-flight (both the absent-package failure
+    # path, using the embedded interpreter as a genuine instance of it, and
+    # the success path against a discovered mace_env), device probing, and
+    # config-generation golden tests keyed to whatever mace-torch version is
+    # actually installed. Reuses the SAME dependency closure as the
+    # orchestration tests above rather than a hand-pruned subset — this
+    # target does not touch OrchestrationWindow at all, but MaceTrainerDialog
+    # pulls in AseScriptGenerator.cpp (jsonLoggerPreamble()), which pulls in
+    # the rest.
+    qt_add_executable(calango_mace_trainer_preflight_test
+        tests/MaceTrainerPreflightTest.cpp
+        src/gui/OrchestrationWindow.cpp
+        src/gui/OrchestrationDocument.cpp
+        src/python_bridge/BulkBuilder.cpp
+        src/gui/OrchestrationTransforms.cpp
+        src/core/Noise.cpp
+        src/core/ClusterExpansionFit.cpp
+        src/core/ClusterVariation.cpp
+        src/core/CalphadModel.cpp
+        src/core/ConvexHull.cpp
+        src/core/TdbWriter.cpp
+        src/core/TdbDatabase.cpp
+        src/core/TdbExpression.cpp
+        src/core/SqsGenerator.cpp
+        src/core/ChemicalOrder.cpp
+        src/gui/OrchestrationProvenance.cpp
+        src/core/WorkflowReport.cpp
+        src/core/BandGap.cpp
+        src/gui/SimulationWizardBase.cpp
+        src/gui/GpawElectronicRows.cpp
+        src/gui/HubbardParametersDialog.cpp
+        src/gui/ExtendedEngineGroups.cpp
+        src/core/EngineCalculatorBlocks.cpp
+        src/ui/IconManager.cpp
+        src/gui/ThemeManager.cpp
+        src/gui/ProcessManagerPanel.cpp
+        src/gui/CondaEnvs.cpp
+        src/gui/EnginePresets.cpp
+        src/gui/PythonHighlighter.cpp
+        src/gui/RunCommands.cpp
+        src/gui/ScriptStaging.cpp
+        src/gui/SettingsManager.cpp
+        src/gui/CalculatorParameters.cpp
+        src/gui/GuiUtils.cpp
+        src/gui/OverlayModel.cpp
+        src/render/ColorMap.cpp
+        src/render/ShaderProfile.cpp
+        src/core/VolumetricData.cpp
+        src/core/AseScriptGenerator.cpp
+        src/core/PhononScriptGenerator.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+        src/core/PdbxFile.cpp
+        src/python_bridge/AseBridge.cpp
+        src/python_bridge/PythonEngine.cpp
+        src/jobs/JobRunner.cpp
+        src/gui/MaceTrainerDialog.cpp
+        src/gui/PythonPackagePreflight.cpp
+        src/core/DatasetSplit.cpp
+    )
+    target_include_directories(calango_mace_trainer_preflight_test PRIVATE src
+        "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_compile_definitions(calango_mace_trainer_preflight_test PRIVATE
+        CALANGO_VERSION="${PROJECT_VERSION}"
+        CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}"
+        QT_NO_KEYWORDS)
+    target_link_libraries(calango_mace_trainer_preflight_test
+        PRIVATE Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg pybind11::embed)
+    calango_hdf5_link(calango_mace_trainer_preflight_test)
+    if(APPLE)
+        target_link_libraries(calango_mace_trainer_preflight_test
+            PRIVATE "-framework OpenGL")
+    else()
+        target_link_libraries(calango_mace_trainer_preflight_test PRIVATE OpenGL::GL)
+    endif()
+    add_test(NAME mace_trainer_preflight COMMAND calango_mace_trainer_preflight_test)
+    # Generous: the opt-in end-to-end path actually launches mace_run_train.
+    set_tests_properties(mace_trainer_preflight PROPERTIES TIMEOUT 300)
 
     # Workflow data handoff: the same two Geometry Optimization nodes run
     # unlinked (both relax the rattled structure independently, full step
@@ -2110,6 +2224,13 @@ if(CALANGO_BUILD_TESTS)
         src/python_bridge/AseBridge.cpp
         src/python_bridge/PythonEngine.cpp
         src/jobs/JobRunner.cpp
+        # A MaceTrainer node's setup dialog is the pre-existing, standalone
+        # MaceTrainerDialog (openNodeWizard()'s special case for it), and a
+        # Dataset Manager node's stratified split goes through
+        # core::DatasetSplit::makeStratified().
+        src/gui/MaceTrainerDialog.cpp
+        src/gui/PythonPackagePreflight.cpp
+        src/core/DatasetSplit.cpp
     )
     target_include_directories(calango_orchestration_handoff_test PRIVATE src
         "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -2196,6 +2317,13 @@ if(CALANGO_BUILD_TESTS)
         src/python_bridge/AseBridge.cpp
         src/python_bridge/PythonEngine.cpp
         src/jobs/JobRunner.cpp
+        # A MaceTrainer node's setup dialog is the pre-existing, standalone
+        # MaceTrainerDialog (openNodeWizard()'s special case for it), and a
+        # Dataset Manager node's stratified split goes through
+        # core::DatasetSplit::makeStratified().
+        src/gui/MaceTrainerDialog.cpp
+        src/gui/PythonPackagePreflight.cpp
+        src/core/DatasetSplit.cpp
     )
     target_include_directories(calango_orchestration_batch_test PRIVATE src
         "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -2827,6 +2955,16 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_convex_hull_test PRIVATE src)
     add_test(NAME convex_hull COMMAND calango_convex_hull_test)
 
+    # Deterministic train/validation/test partitioning behind both the
+    # standalone Dataset Manager dialog and the Orchestration Dataset
+    # Manager node — makeStratified()'s isolated-atom pinning in particular.
+    add_executable(calango_dataset_split_test
+        tests/DatasetSplitTest.cpp
+        src/core/DatasetSplit.cpp
+    )
+    target_include_directories(calango_dataset_split_test PRIVATE src)
+    add_test(NAME dataset_split COMMAND calango_dataset_split_test)
+
     # Automated band-gap detection (direct / indirect / metallic) behind the
     # Electronic Structure summary box.
     add_executable(calango_bandgap_test
@@ -3235,9 +3373,10 @@ if(CALANGO_BUILD_TESTS)
     set(CALANGO_CALC_TESTS
         adsorption_nanoparticle al_electron_phonon au_plasma_convergence
         band_gap band_unfolding baseline_summary berry_phase
-        boltzmann_transport bond_perception bse_solver calphad cluster_expansion
+        boltzmann_transport bond_perception bse_solver c2db calphad cluster_expansion
         cluster_expansion_fit cluster_presets cluster_variation convex_hull
         cpa_solver crpa_solver crpa_vasp_validation cu_wannier_spread
+        dataset_split
         defect_2d_correction defect_2d_monolayer dft_engine
         dislocation_builder dos_smearing double_group elastic_tensor elf_silicon
         elph_analysis elph_io extxyz_attributes frame_streaming
@@ -3245,7 +3384,7 @@ if(CALANGO_BUILD_TESTS)
         graphene_oxide graphene_oxide_sites graphene_tetrahedron
         gw_qp_parser gw_silicon hubbard_linear_response hydrogen_bonds
         hydrogen_completion ice_builder kpath_table lammps_environment
-        lammps_scripts magnetic_space_group materials_project_mp1434
+        lammps_scripts mace_trainer_preflight magnetic_space_group materials_project_mp1434
         monte_carlo_swap native_dft_si_mvp nlopt_parser noise_ramp
         optics_2d_observables optics_broadening
         optics_silicon orchestration_batch orchestration_handoff

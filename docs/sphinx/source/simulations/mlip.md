@@ -2,6 +2,8 @@
 
 {menuselection}`Modules --> MLIP` holds the two ends of the machine-learning-potential loop: the {guilabel}`Dataset Manager…` assembles and partitions training data from the trajectories you have generated, and the {guilabel}`Trainer…` builds and launches a MACE training run on it. The models that come out are what the MACE (and the other MLIP) engines in {doc}`/simulations/calculators` consume as custom checkpoints.
 
+The same two steps also exist as {doc}`/simulations/orchestration` canvas nodes — {ref}`dataset-manager` and {ref}`mace-trainer` — for chaining them directly onto the calculations that produce the training data: `Structure Container → Single-point fan-out → Dataset Manager → MACE Trainer` is one graph, run end to end, rather than an export-then-reopen-a-dialog round trip. The node versions reuse this page's own dialogs (the Trainer's setup dialog is literally the same one), so everything below applies to both; the pipeline-specific parts (multi-parent merging, the manifest hand-off between the two nodes) are documented on the Orchestration page instead of duplicated here.
+
 ---
 
 ## The trainer
@@ -47,7 +49,24 @@ Two production settings are on by default: **stage-two SWA** (from epoch 150 —
 
 The optional Query-by-Committee group (off by default) trains an ensemble instead of one model: committee size default **3** (2–16), with an uncertainty threshold (default **0.05**) recorded for the selection step. The exported runner script is a standalone Python launcher that writes `mace_train.yaml` and invokes the MACE trainer **once per committee seed**, so the ensemble members differ by initialization. Pair it with the Dataset Manager's committee export below for members that also differ by data.
 
-The dialog has its own execution-environment selector (a conda environment dropdown plus a free path field) — training wants the `mace-torch` CUDA stack, not the embedded interpreter. {guilabel}`Export YAML…` saves the config; the run buttons launch through the standard job machinery ({doc}`/simulations/jobs`, {doc}`/simulations/remote`).
+The dialog has its own execution-environment selector (a conda environment dropdown plus a free path field) — training wants the `mace-torch` CUDA/MPS stack, not the embedded interpreter (which never ships `mace-torch`; it is not vendored or hard-depended-on by Calango at all). {guilabel}`Export YAML…` saves the config; the run buttons launch through the standard job machinery ({doc}`/simulations/jobs`, {doc}`/simulations/remote`).
+
+### Dependency pre-flight and device detection
+
+{guilabel}`Check Environment` probes the interpreter selected above — a real subprocess `import mace` under it — and reports:
+
+- Whether `mace-torch` is importable at all, and **which version**, read straight off the installed package (never assumed). The version is recorded as a comment at the top of the generated YAML, so a config file names the package it was actually generated/verified against.
+- Which PyTorch **compute devices** are actually usable: `cpu` always; `cuda`/`mps` only when the installed PyTorch build and the machine's own hardware report them available (`torch.cuda.is_available()` / `torch.backends.mps.is_available()`, probed under the same interpreter). The best available device (cuda, then mps, then cpu) is suggested as the {guilabel}`Device` selection — not forced, so a deliberate choice (testing the cpu path, say) is left alone.
+
+**Both {guilabel}`Run (Local)` and {guilabel}`Run (Remote)` run this same check automatically before launching anything.** `mace-torch` missing produces a clear message naming the package and `pip install mace-torch`, and the run is refused — never a crash partway through. (Run Remote checks the *local* interpreter field, which is what you have told Calango to resolve for this run; the actual remote host cannot be probed from here, but the common case — a conda env name reused verbatim on the cluster — is caught before anything is even staged.)
+
+### Using the trained model
+
+The finished checkpoint(s) land in the run's job directory under the name(s) the config's {guilabel}`name` field controls (one per Query-by-Committee seed, when that ensemble is enabled). To use one: open a MACE calculator's setup ({doc}`/simulations/calculators`), pick {guilabel}`Custom trained model` as the model, and {guilabel}`Browse…` to the checkpoint — already fully wired end to end, just not (yet) a single click straight from a finished training run.
+
+### Live per-epoch metrics
+
+The generated launcher installs a small logging hook around MACE's own training loop that parses its "`Epoch N: ... loss=X, RMSE_E_per_atom=Y meV, RMSE_F=Z meV`" log lines and writes them, one entry per epoch, to `mace_train_<seed>_metrics.json` beside the config — genuine training progress, not synthesized. It is intentionally **separate** from the committee progress file the launcher also writes (one entry per completed committee member): a re-entrant per-model training process cannot safely append into that shared file without risking another member's entry. The per-epoch file is not yet wired into a live chart in the Results panel — read it directly, or watch the raw training log, which already streams to the live-monitoring view like any other job's output.
 
 % TODO screenshot: the MACE Trainer dialog with the dataset/architecture forms on the left and the live YAML preview on the right
 ```{figure} /_static/img/sim_mlip_trainer.png

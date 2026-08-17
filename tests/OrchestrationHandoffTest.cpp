@@ -509,6 +509,176 @@ int main(int argc, char** argv)
         }
     }
 
+    // ---- Dataset Manager / MACE Trainer plumbing ----------------------------
+    //
+    // The same static-contract shape as Dump immediately above (it reuses
+    // Dump's own multi-parent merge mechanism), plus MaceTrainer's own
+    // family/input-slot contract. The actual dataset assembly (hygiene,
+    // stratified split, manifest hand-off) is exercised end to end in
+    // OrchestrationBatchTest.
+    std::printf("Dataset Manager / MACE Trainer plumbing:\n");
+    {
+        using calango::gui::DatasetManagerSpec;
+
+        check(orchestrationTaskSlug(OrchestrationTask::DatasetManager)
+                      == QStringLiteral("dataset_manager")
+                  && orchestrationTaskFromSlug(QStringLiteral("dataset_manager"))
+                      == OrchestrationTask::DatasetManager,
+              "\"dataset_manager\" is a stable slug that round-trips");
+        check(orchestrationTaskFamily(OrchestrationTask::DatasetManager)
+                  == OrchestrationFamily::Transform,
+              "it is a Transform, exactly like Dump: no calculator, no "
+              "launch command, runs on the canvas");
+        check(orchestrationRequiredInputs(OrchestrationTask::DatasetManager)
+                  == 1,
+              "it refuses to run with nothing feeding it, like Dump");
+        check(calango::gui::orchestrationTasks().contains(
+                  OrchestrationTask::DatasetManager),
+              "and it appears in the Add Process list");
+
+        check(orchestrationTaskSlug(OrchestrationTask::MaceTrainer)
+                      == QStringLiteral("mace_trainer")
+                  && orchestrationTaskFromSlug(QStringLiteral("mace_trainer"))
+                      == OrchestrationTask::MaceTrainer,
+              "\"mace_trainer\" is a stable slug that round-trips");
+        check(orchestrationTaskFamily(OrchestrationTask::MaceTrainer)
+                  == OrchestrationFamily::Simulation,
+              "it is Simulation family — it launches a real job through the "
+              "ordinary JobRunner, even though its setup dialog (the "
+              "pre-existing MaceTrainerDialog) is not a SimulationWizardBase");
+        check(orchestrationRequiredInputs(OrchestrationTask::MaceTrainer) == 1,
+              "it needs exactly one Dataset Manager parent");
+        check(calango::gui::orchestrationInputSlots(OrchestrationTask::MaceTrainer)
+                      .size()
+                  == 1,
+              "with exactly one named input slot");
+        check(calango::gui::orchestrationTasks().contains(
+                  OrchestrationTask::MaceTrainer),
+              "and it appears in the Add Process list");
+
+        // Multi-parent exemption: connectNodes() must accept a SECOND link
+        // into a Dataset Manager node without refusing it, the same
+        // exemption Dump already has — this is the mechanism the node's
+        // whole "concatenate several sources" design depends on.
+        {
+            OrchestrationWindow window(
+                {{QStringLiteral("Cu (rattled)"), copper}}, pythonResolver);
+            QStringList refusals;
+            window.setRefusalHandler(
+                [&refusals](const QString& message) { refusals << message; });
+            OrchestrationNodeItem* branchA = window.addProcessNode(
+                OrchestrationTask::Container, 0,
+                calango::core::CalculatorKind::EMT);
+            OrchestrationNodeItem* branchB = window.addProcessNode(
+                OrchestrationTask::Container, 0,
+                calango::core::CalculatorKind::EMT);
+            OrchestrationNodeItem* datasetManager = window.addProcessNode(
+                OrchestrationTask::DatasetManager, 0,
+                calango::core::CalculatorKind::EMT);
+            window.linkNodes(branchA, datasetManager);
+            window.linkNodes(branchB, datasetManager);
+            check(refusals.isEmpty(),
+                  "linking TWO parents into one Dataset Manager node is not "
+                  "refused");
+            check(window.links().size() == 2,
+                  "and both links actually landed");
+        }
+
+        // Round-trip through the saved-workflow document, same pattern as
+        // Dump's own check above.
+        OrchestrationWindow source({{QStringLiteral("Cu (rattled)"), copper}},
+                                   pythonResolver);
+        OrchestrationNodeItem* container = source.addProcessNode(
+            OrchestrationTask::Container, 0, calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* singlePoint = source.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* datasetManager = source.addProcessNode(
+            OrchestrationTask::DatasetManager, 0,
+            calango::core::CalculatorKind::EMT);
+        OrchestrationNodeItem* maceTrainer = source.addProcessNode(
+            OrchestrationTask::MaceTrainer, 0, calango::core::CalculatorKind::Mace);
+        source.linkNodes(container, singlePoint);
+        source.linkNodes(singlePoint, datasetManager);
+        source.linkNodes(datasetManager, maceTrainer);
+
+        DatasetManagerSpec spec;
+        calango::gui::applyMaceTrainingPreset(&spec);
+        check(spec.energyKey == QStringLiteral("REF_energy")
+                  && spec.forcesKey == QStringLiteral("REF_forces")
+                  && spec.stressKey == QStringLiteral("REF_stress"),
+              "the SAME MACE preset implementation Dump's own button uses — "
+              "single implementation, reused, not duplicated");
+        spec.outputDirectory = QStringLiteral("/tmp/whatever_dataset");
+        spec.trainFraction = 0.7;
+        spec.validationFraction = 0.2;
+        spec.seed = 7;
+        spec.dropExactDuplicates = false;
+        spec.flagOutliers = true;
+        spec.outlierEnergyPerAtomThresholdEv = 12.5;
+        source.setNodeDatasetManager(datasetManager, spec);
+
+        const QString maceScript = QStringLiteral(
+            "#!/usr/bin/env python3\nprint('placeholder mace launcher')\n");
+        source.configureNode(maceTrainer, maceScript, pythonExe, QString(),
+                             calango::core::CalculatorKind::Mace);
+        maceTrainer->setMaceTrainerYaml(
+            QStringLiteral("train_file: \"/tmp/whatever_dataset/train.extxyz\"\n"));
+
+        QStringList warnings;
+        const QJsonObject document =
+            calango::gui::OrchestrationDocument::build(source, &warnings);
+
+        OrchestrationWindow reopened(
+            {{QStringLiteral("Cu (rattled)"), copper}}, pythonResolver);
+        QString error;
+        check(calango::gui::OrchestrationDocument::load(reopened, document,
+                                                         &error),
+              "the document reloads");
+        OrchestrationNodeItem* reopenedDatasetManager = nullptr;
+        OrchestrationNodeItem* reopenedMaceTrainer = nullptr;
+        for (OrchestrationNodeItem* node : reopened.nodes()) {
+            if (node->task() == OrchestrationTask::DatasetManager)
+                reopenedDatasetManager = node;
+            if (node->task() == OrchestrationTask::MaceTrainer)
+                reopenedMaceTrainer = node;
+        }
+        check(reopenedDatasetManager != nullptr,
+              "the Dataset Manager node survives the round trip");
+        if (reopenedDatasetManager) {
+            const DatasetManagerSpec& reopenedSpec =
+                reopenedDatasetManager->datasetManager();
+            check(reopenedSpec.outputDirectory == spec.outputDirectory
+                      && reopenedSpec.energyKey == spec.energyKey
+                      && reopenedSpec.forcesKey == spec.forcesKey
+                      && reopenedSpec.stressKey == spec.stressKey
+                      && qFuzzyCompare(reopenedSpec.trainFraction, spec.trainFraction)
+                      && qFuzzyCompare(reopenedSpec.validationFraction,
+                                      spec.validationFraction)
+                      && reopenedSpec.seed == spec.seed
+                      && reopenedSpec.dropExactDuplicates
+                          == spec.dropExactDuplicates
+                      && reopenedSpec.flagOutliers == spec.flagOutliers
+                      && qFuzzyCompare(reopenedSpec.outlierEnergyPerAtomThresholdEv,
+                                      spec.outlierEnergyPerAtomThresholdEv),
+                  "and every field of its settings round-trips exactly, "
+                  "including the MACE preset's key names");
+        }
+        check(reopenedMaceTrainer != nullptr,
+              "the MACE Trainer node survives the round trip");
+        if (reopenedMaceTrainer) {
+            check(reopenedMaceTrainer->isConfigured()
+                      && reopenedMaceTrainer->configuredScript() == maceScript,
+                  "its committed script round-trips through the SAME generic "
+                  "script/python/launch mechanism every other Simulation-"
+                  "family node already uses");
+            check(reopenedMaceTrainer->maceTrainerYaml()
+                      == maceTrainer->maceTrainerYaml(),
+                  "and its convenience YAML (for re-opening the dialog) "
+                  "round-trips too");
+        }
+    }
+
     // ---- The SQS Generator transform ---------------------------------------
     //
     // End to end through the node's compute function, on the same copper cell

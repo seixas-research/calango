@@ -8,6 +8,7 @@
 #include "gui/OrchestrationDocument.hpp"
 #include "gui/EnginePresets.hpp"
 #include "gui/GuiUtils.hpp"
+#include "gui/MaceTrainerDialog.hpp"
 #include "gui/ProcessManagerPanel.hpp"
 #include "gui/RunCommands.hpp"
 #include "gui/ScriptStaging.hpp"
@@ -329,6 +330,10 @@ QString orchestrationTaskSlug(OrchestrationTask task)
         return QStringLiteral("crpa");
     case OrchestrationTask::LiquidFreeEnergy:
         return QStringLiteral("liquid_free_energy");
+    case OrchestrationTask::DatasetManager:
+        return QStringLiteral("dataset_manager");
+    case OrchestrationTask::MaceTrainer:
+        return QStringLiteral("mace_trainer");
     case OrchestrationTask::SinglePoint:
         break;
     }
@@ -354,7 +359,18 @@ OrchestrationFamily orchestrationTaskFamily(OrchestrationTask task)
     // Analysis: an Analysis node is refused unless a completed baseline is
     // wired into it, so a TI node that fell through here would be unrunnable
     // for a reason that appears nowhere in the code.
+    // MaceTrainer launches a real job (mace_run_train, through the ordinary
+    // JobRunner/Processes-panel machinery) exactly like Molecular Dynamics
+    // or a Single-Point Calculation does — its setup dialog just happens to
+    // be the pre-existing MaceTrainerDialog rather than a
+    // SimulationWizardBase, which openNodeWizard() special-cases. Named
+    // explicitly for the same reason LiquidFreeEnergy is: the default arm
+    // below returns Analysis, which would refuse the node for having no
+    // completed baseline wired in — a MACE Trainer's "baseline" is a
+    // Dataset Manager's split, staged through the ordinary input-slot
+    // mechanism, not an Analysis-style completed-run dependency.
     case OrchestrationTask::LiquidFreeEnergy:
+    case OrchestrationTask::MaceTrainer:
         return OrchestrationFamily::Simulation;
     case OrchestrationTask::Container:
     case OrchestrationTask::SingleAtomContainer:
@@ -371,6 +387,10 @@ OrchestrationFamily orchestrationTaskFamily(OrchestrationTask task)
     // belong with the canvas-run family rather than with the job launchers.
     case OrchestrationTask::KkrCpa:
     case OrchestrationTask::Crpa:
+    // Runs in process (Python via the embedded interpreter) exactly like
+    // Dump, whose merge mechanism it reuses directly — see the enum's own
+    // doc comment.
+    case OrchestrationTask::DatasetManager:
         return OrchestrationFamily::Transform;
     default:
         break;
@@ -450,6 +470,10 @@ QString orchestrationTaskDisplayName(OrchestrationTask task)
     // entry differently.
     case OrchestrationTask::LiquidFreeEnergy:
         return QObject::tr("Thermodynamic Integration");
+    case OrchestrationTask::DatasetManager:
+        return QObject::tr("Dataset Manager");
+    case OrchestrationTask::MaceTrainer:
+        return QObject::tr("MACE Trainer");
     case OrchestrationTask::SinglePoint:
         break;
     }
@@ -488,6 +512,8 @@ QString orchestrationTaskShortName(OrchestrationTask task)
     case OrchestrationTask::KkrCpa:               return QObject::tr("CPA");
     case OrchestrationTask::Crpa:                 return QObject::tr("cRPA");
     case OrchestrationTask::LiquidFreeEnergy:     return QObject::tr("TI");
+    case OrchestrationTask::DatasetManager:       return QObject::tr("Dataset");
+    case OrchestrationTask::MaceTrainer:          return QObject::tr("MACE");
     }
     return QObject::tr("Node");
 }
@@ -505,6 +531,14 @@ QList<OrchestrationTask> orchestrationTasks()
             // looks next to the dynamics that produce it.
             OrchestrationTask::LiquidFreeEnergy,
             OrchestrationTask::Phonon,
+            // Also Simulation family (it launches a real job) even though it
+            // sits conceptually right after the Transform-family Dataset
+            // Manager below it in the pipeline this pair exists for — the
+            // Add Process list groups strictly by family (see this
+            // function's own comment), so it is listed here, at the end of
+            // the Simulation block, rather than beside its usual upstream
+            // node.
+            OrchestrationTask::MaceTrainer,
             // Transform. The alloy chain is listed in pipeline order — SQS,
             // then the two nodes that consume what the simulations made of it
             // — because the Add Process list is where a user discovers that
@@ -532,6 +566,14 @@ QList<OrchestrationTask> orchestrationTasks()
             // a second batch aggregator, this one collecting volumetric
             // files instead of a training-set trajectory.
             OrchestrationTask::DumpDensities,
+            // A third batch aggregator, and listed right after the other
+            // two for the same reason: it also merges a fan-out's several
+            // parents and normally sits at the very end of whichever
+            // pipeline feeds it. Chained to MaceTrainer (Simulation block,
+            // above) rather than to Dump — the two serve the SAME MLIP
+            // training use case but write a stratified split instead of one
+            // flat file.
+            OrchestrationTask::DatasetManager,
             // Analysis
             OrchestrationTask::ElectronicBands,
             OrchestrationTask::Optics,
@@ -591,6 +633,17 @@ bool orchestrationTaskHasDefaults(OrchestrationTask task)
     // can look at and see is wrong. The reference system and the temperature
     // are the whole experiment; the node refuses until they are chosen.
     case OrchestrationTask::LiquidFreeEnergy:
+        return false;
+    // A Dataset Manager with no output folder chosen is the same
+    // pass-through hazard as Dump with no output path: there is no folder
+    // this node could guess that would not be a claim about the user's
+    // filesystem.
+    case OrchestrationTask::DatasetManager:
+        return false;
+    // A MACE Trainer with nothing configured has no dataset to train on —
+    // like the analysis modules, there is no default baseline it could run
+    // against.
+    case OrchestrationTask::MaceTrainer:
         return false;
     default:
         return false;
@@ -670,6 +723,30 @@ QList<OrchestrationInputSlot> orchestrationInputSlots(OrchestrationTask task)
         // WorkflowReport once the fan-out finishes.
         return {{QObject::tr("completed calculation"), QString(),
                  QStringLiteral("latest_pass"), false}};
+
+    case OrchestrationTask::DatasetManager:
+        // Same reasoning as Dump immediately above, and for the same
+        // structural reason: connectNodes() gives this task the identical
+        // multi-parent exemption, and runTransform() reads every parent's
+        // own pass set directly through WorkflowReport rather than this
+        // (unused) staged copy — the slot exists only so "at least one
+        // parent OR at least one directly-loaded file" is meaningful to
+        // enforce.
+        return {{QObject::tr("completed calculation"), QString(),
+                 QStringLiteral("latest_pass"), false}};
+
+    case OrchestrationTask::MaceTrainer:
+        // Fed by a Dataset Manager node, under the name it writes into its
+        // OWN job directory (see runTransform()'s DatasetManager case) —
+        // the manifest names the absolute paths to train/valid/test.extxyz
+        // (which live in the Dataset Manager's user-chosen output folder,
+        // not necessarily under this staged copy) plus the energy/forces/
+        // stress key names, so openNodeWizard()'s MaceTrainer case can
+        // pre-wire MaceTrainerDialog's fields from it — the "typed output
+        // edge carrying the dataset description" the task asks for, in the
+        // absence of any actual edge-typing system on this canvas.
+        return {{QObject::tr("dataset"), QStringLiteral("dataset_manifest.json"),
+                 QStringLiteral("dataset_manifest.json"), false}};
 
     case OrchestrationTask::CvmEntropy:
         // Fed by the ECI Fitter, under the name the fitter writes. The two
@@ -890,6 +967,17 @@ void OrchestrationNodeItem::setSingleAtomContainer(
     update();
 }
 
+void OrchestrationNodeItem::setDatasetManager(const DatasetManagerSpec& spec)
+{
+    datasetManager_ = spec;
+    update();
+}
+
+void OrchestrationNodeItem::setMaceTrainerYaml(const QString& yaml)
+{
+    maceTrainerYaml_ = yaml;
+}
+
 QString OrchestrationNodeItem::configurationProblem() const
 {
     switch (task_) {
@@ -998,6 +1086,15 @@ QString OrchestrationNodeItem::configurationProblem() const
                 "choose a destination folder — there is no default folder a "
                 "Dump Charge Densities node could guess.")
                 .arg(title_, dumpDensities_.describe());
+        return QString();
+    case OrchestrationTask::DatasetManager:
+        if (!datasetManager_.isValid())
+            return QObject::tr(
+                "%1 has not been configured (%2).\n\nDouble-click it and "
+                "choose an output folder, a valid train/validation split, "
+                "and what to call the energy and forces keys — there is no "
+                "default folder a Dataset Manager node could guess.")
+                .arg(title_, datasetManager_.describe());
         return QString();
     default:
         break;
@@ -1270,6 +1367,36 @@ void OrchestrationNodeItem::paint(QPainter* painter,
         }
         break;
     }
+    case OrchestrationTask::DatasetManager: {
+        const QString folderName = QDir(datasetManager_.outputDirectory).dirName();
+        if (!datasetManager_.isValid()) {
+            primary = QObject::tr("Not configured");
+            secondary = QObject::tr("double-click to choose an output folder");
+        } else if (status_ != Status::Done) {
+            // Same "waiting on the fan-out's last pass" caveat as Dump.
+            primary = QObject::tr("-> %1").arg(folderName);
+            secondary = QObject::tr("writes once its input is ready");
+        } else {
+            // Repurposes the same two counters as Dump's own
+            // setBatchProgress() call, for a different meaning again: kept
+            // frames / frames considered, not passes done / batch length.
+            primary = QObject::tr("%n frame(s) kept", nullptr,
+                                  batchProgressDone_);
+            secondary = batchProgressTotal_ > batchProgressDone_
+                ? QObject::tr("%n dropped", nullptr,
+                              batchProgressTotal_ - batchProgressDone_)
+                : QObject::tr("-> %1").arg(folderName);
+        }
+        break;
+    }
+    case OrchestrationTask::MaceTrainer:
+        // "Structure: from input port" (the fallback set above the switch)
+        // would be actively wrong here — this node takes no geometry at
+        // all, only a Dataset Manager's split.
+        primary = isConfigured() ? QObject::tr("Configured")
+                                 : QObject::tr("Dataset: from input port");
+        secondary = QObject::tr("Calculator: MACE");
+        break;
     case OrchestrationTask::DefectGenerator:
         primary = defects_.isEmpty() ? QObject::tr("No operations")
                                      : defects_.describe();
@@ -1306,13 +1433,15 @@ void OrchestrationNodeItem::paint(QPainter* painter,
     // and the reason a 100-pass run could look, at a glance, exactly like a
     // single successful run — this is the visible half of that fix.
     //
-    // Dump and DumpDensities are excluded: both reuse the SAME two counters
-    // for a different meaning (frames/densities written vs. considered, not
-    // passes done / batch length) and already spell that out above in their
-    // own words — this generic "K/N done" suffix would misread as fan-out
-    // progress on a node that ran exactly once.
+    // Dump, DumpDensities and DatasetManager are excluded: all three reuse
+    // the SAME two counters for a different meaning (frames/densities
+    // written or kept vs. considered, not passes done / batch length) and
+    // already spell that out above in their own words — this generic "K/N
+    // done" suffix would misread as fan-out progress on a node that ran
+    // exactly once.
     if (batchProgressTotal_ > 1 && task_ != OrchestrationTask::Dump
-        && task_ != OrchestrationTask::DumpDensities)
+        && task_ != OrchestrationTask::DumpDensities
+        && task_ != OrchestrationTask::DatasetManager)
         secondary += QObject::tr("  —  %1/%2 done")
                          .arg(batchProgressDone_)
                          .arg(batchProgressTotal_);
@@ -3112,6 +3241,244 @@ bool editDumpDensities(QWidget* parent, DumpDensitiesSpec* spec)
     return true;
 }
 
+bool editDatasetManager(QWidget* parent, DatasetManagerSpec* spec)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("Dataset Manager"));
+    auto* layout = new QVBoxLayout(&dialog);
+
+    auto* intro = new QLabel(
+        QObject::tr(
+            "Concatenate every pass of the fan-out feeding this node (like "
+            "Dump Trajectory — bulk noisy structures from one branch, "
+            "isolated-atom references from another) plus any directly "
+            "loaded .extxyz files below, apply dataset hygiene, and write a "
+            "deterministic train/validation/test split.<br><br>"
+            "Runs ONCE, after the fan-out's <b>last</b> pass, not once per "
+            "structure."),
+        &dialog);
+    intro->setWordWrap(true);
+    intro->setTextFormat(Qt::RichText);
+    layout->addWidget(intro);
+
+    auto* form = new QFormLayout;
+
+    auto* dirRow = new QHBoxLayout;
+    auto* directory = new QLineEdit(spec->outputDirectory, &dialog);
+    directory->setPlaceholderText(
+        QObject::tr("where train/valid/test.extxyz are written"));
+    dirRow->addWidget(directory);
+    auto* browse = new QPushButton(QObject::tr("Browse…"), &dialog);
+    dirRow->addWidget(browse);
+    QObject::connect(browse, &QPushButton::clicked, &dialog,
+                     [&dialog, directory] {
+                         const QString chosen = QFileDialog::getExistingDirectory(
+                             &dialog, QObject::tr("Choose Output Folder"),
+                             directory->text());
+                         if (!chosen.isEmpty())
+                             directory->setText(chosen);
+                     });
+    form->addRow(QObject::tr("Output folder:"), dirRow);
+
+    auto* preset = new QPushButton(QObject::tr("MACE training preset"), &dialog);
+    preset->setToolTip(QObject::tr(
+        "Fills the key names below with mace 0.3.15's own defaults — the "
+        "SAME preset Dump Trajectory's own button applies, so the two nodes "
+        "can never quietly disagree on REF_energy / REF_forces / "
+        "REF_stress."));
+    form->addRow(QString(), preset);
+
+    auto* energyKey = new QLineEdit(spec->energyKey, &dialog);
+    form->addRow(QObject::tr("Energy key:"), energyKey);
+    auto* forcesKey = new QLineEdit(spec->forcesKey, &dialog);
+    form->addRow(QObject::tr("Forces key:"), forcesKey);
+    auto* stressKey = new QLineEdit(spec->stressKey, &dialog);
+    stressKey->setPlaceholderText(
+        QObject::tr("empty — do not write a stress key"));
+    form->addRow(QObject::tr("Stress key:"), stressKey);
+
+    QObject::connect(preset, &QPushButton::clicked, &dialog,
+                     [energyKey, forcesKey, stressKey] {
+                         DatasetManagerSpec maceKeys;
+                         applyMaceTrainingPreset(&maceKeys);
+                         energyKey->setText(maceKeys.energyKey);
+                         forcesKey->setText(maceKeys.forcesKey);
+                         stressKey->setText(maceKeys.stressKey);
+                     });
+
+    auto* trainSpin = new QSpinBox(&dialog);
+    trainSpin->setRange(1, 100);
+    trainSpin->setSuffix(QStringLiteral(" %"));
+    trainSpin->setValue(
+        static_cast<int>(std::lround(spec->trainFraction * 100.0)));
+    form->addRow(QObject::tr("Training:"), trainSpin);
+    auto* validSpin = new QSpinBox(&dialog);
+    validSpin->setRange(0, 99);
+    validSpin->setSuffix(QStringLiteral(" %"));
+    validSpin->setValue(
+        static_cast<int>(std::lround(spec->validationFraction * 100.0)));
+    form->addRow(QObject::tr("Validation:"), validSpin);
+    auto* testLabel = new QLabel(&dialog);
+    form->addRow(QObject::tr("Test:"), testLabel);
+    const auto syncTestLabel = [trainSpin, validSpin, testLabel] {
+        if (trainSpin->value() + validSpin->value() > 100)
+            validSpin->setValue(100 - trainSpin->value());
+        testLabel->setText(
+            QStringLiteral("%1 %").arg(100 - trainSpin->value() - validSpin->value()));
+    };
+    QObject::connect(trainSpin, &QSpinBox::valueChanged, &dialog, syncTestLabel);
+    QObject::connect(validSpin, &QSpinBox::valueChanged, &dialog, syncTestLabel);
+    syncTestLabel();
+
+    auto* seedSpin = new QSpinBox(&dialog);
+    seedSpin->setRange(0, 1000000);
+    seedSpin->setValue(static_cast<int>(spec->seed));
+    seedSpin->setToolTip(QObject::tr(
+        "Deterministic shuffle seed: the same frame set, fractions and seed "
+        "always produce the same split."));
+    form->addRow(QObject::tr("Random seed:"), seedSpin);
+
+    auto* hygieneGroup = new QGroupBox(QObject::tr("Dataset hygiene"), &dialog);
+    auto* hygieneLayout = new QVBoxLayout(hygieneGroup);
+    auto* dropMissing = new QCheckBox(
+        QObject::tr("Drop frames missing energy or forces"), hygieneGroup);
+    dropMissing->setChecked(spec->dropMissingProperties);
+    hygieneLayout->addWidget(dropMissing);
+    auto* dropDuplicates = new QCheckBox(
+        QObject::tr("Drop exact-duplicate frames"), hygieneGroup);
+    dropDuplicates->setChecked(spec->dropExactDuplicates);
+    hygieneLayout->addWidget(dropDuplicates);
+    auto* outlierRow = new QHBoxLayout;
+    auto* flagOutliers = new QCheckBox(
+        QObject::tr("Flag (do not drop) frames beyond"), hygieneGroup);
+    flagOutliers->setChecked(spec->flagOutliers);
+    auto* outlierSpin = new QDoubleSpinBox(hygieneGroup);
+    outlierSpin->setRange(0.001, 1000.0);
+    outlierSpin->setDecimals(3);
+    outlierSpin->setValue(spec->outlierEnergyPerAtomThresholdEv);
+    outlierSpin->setSuffix(QObject::tr(" eV/atom"));
+    outlierSpin->setEnabled(spec->flagOutliers);
+    QObject::connect(flagOutliers, &QCheckBox::toggled, outlierSpin,
+                     &QWidget::setEnabled);
+    outlierRow->addWidget(flagOutliers);
+    outlierRow->addWidget(outlierSpin, 1);
+    hygieneLayout->addLayout(outlierRow);
+    layout->addWidget(hygieneGroup);
+    layout->addLayout(form);
+
+    // Directly loaded files (Node A's "existing .extxyz files loaded
+    // directly" input kind), each optionally manually tagged as an
+    // isolated-atom source — for a file that was not produced by an
+    // upstream Single-atom Container and so carries no such tag itself.
+    auto* filesGroup =
+        new QGroupBox(QObject::tr("Directly loaded files"), &dialog);
+    auto* filesLayout = new QVBoxLayout(filesGroup);
+    auto* filesList = new QListWidget(filesGroup);
+    filesLayout->addWidget(filesList, 1);
+    QList<DatasetManagerExternalFile> externalFiles = spec->externalFiles;
+    const auto refreshFilesList = [filesList, &externalFiles] {
+        filesList->clear();
+        for (const DatasetManagerExternalFile& file : externalFiles)
+            filesList->addItem(
+                QStringLiteral("%1%2")
+                    .arg(QFileInfo(file.path).fileName(),
+                        file.isolatedAtom
+                            ? QObject::tr("  [isolated-atom reference]")
+                            : QString()));
+    };
+    refreshFilesList();
+    auto* filesButtonRow = new QHBoxLayout;
+    auto* addFilesButton = new QPushButton(QObject::tr("Add Files…"), filesGroup);
+    auto* tagIsolatedButton =
+        new QPushButton(QObject::tr("Tag Selected as Isolated-atom"), filesGroup);
+    auto* removeFileButton =
+        new QPushButton(QObject::tr("Remove Selected"), filesGroup);
+    filesButtonRow->addWidget(addFilesButton);
+    filesButtonRow->addWidget(tagIsolatedButton);
+    filesButtonRow->addWidget(removeFileButton);
+    filesButtonRow->addStretch(1);
+    filesLayout->addLayout(filesButtonRow);
+    layout->addWidget(filesGroup);
+    QObject::connect(
+        addFilesButton, &QPushButton::clicked, &dialog,
+        [&dialog, &externalFiles, refreshFilesList] {
+            const QStringList paths = QFileDialog::getOpenFileNames(
+                &dialog, QObject::tr("Add Structures"), QString(),
+                QObject::tr("Extended XYZ (*.xyz *.extxyz);;All files (*)"));
+            for (const QString& path : paths)
+                externalFiles.append({path, false});
+            refreshFilesList();
+        });
+    QObject::connect(tagIsolatedButton, &QPushButton::clicked, &dialog,
+                     [filesList, &externalFiles, refreshFilesList] {
+                         for (const QListWidgetItem* item : filesList->selectedItems()) {
+                             const int row = filesList->row(item);
+                             if (row >= 0 && row < externalFiles.size())
+                                 externalFiles[row].isolatedAtom = true;
+                         }
+                         refreshFilesList();
+                     });
+    QObject::connect(
+        removeFileButton, &QPushButton::clicked, &dialog,
+        [filesList, &externalFiles, refreshFilesList] {
+            QList<int> rows;
+            for (const QListWidgetItem* item : filesList->selectedItems())
+                rows.append(filesList->row(item));
+            std::sort(rows.begin(), rows.end(), std::greater<int>());
+            for (int row : rows)
+                if (row >= 0 && row < externalFiles.size())
+                    externalFiles.removeAt(row);
+            refreshFilesList();
+        });
+
+    auto* status = new QLabel(&dialog);
+    status->setWordWrap(true);
+    layout->addWidget(status);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
+                     &QDialog::reject);
+    const auto current = [&] {
+        DatasetManagerSpec edited;
+        edited.outputDirectory = directory->text().trimmed();
+        edited.energyKey = energyKey->text().trimmed();
+        edited.forcesKey = forcesKey->text().trimmed();
+        edited.stressKey = stressKey->text().trimmed();
+        edited.trainFraction = trainSpin->value() / 100.0;
+        edited.validationFraction = validSpin->value() / 100.0;
+        edited.seed = static_cast<unsigned>(seedSpin->value());
+        edited.dropMissingProperties = dropMissing->isChecked();
+        edited.dropExactDuplicates = dropDuplicates->isChecked();
+        edited.flagOutliers = flagOutliers->isChecked();
+        edited.outlierEnergyPerAtomThresholdEv = outlierSpin->value();
+        edited.externalFiles = externalFiles;
+        return edited;
+    };
+    const auto refresh = [&] {
+        const bool ok = current().isValid();
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(ok);
+        status->setStyleSheet(ok ? QString()
+                                 : QStringLiteral("color:#c0392b;"));
+        status->setText(ok ? current().describe()
+                           : QObject::tr("An output folder and both the "
+                                         "energy and forces key names are "
+                                         "required, and the split fractions "
+                                         "must fit within 100%."));
+    };
+    for (QLineEdit* field : {directory, energyKey, forcesKey, stressKey})
+        QObject::connect(field, &QLineEdit::textChanged, &dialog,
+                         [&refresh] { refresh(); });
+    refresh();
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
+                     &QDialog::accept);
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+    *spec = current();
+    return true;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -3874,6 +4241,15 @@ void OrchestrationWindow::setNodeSingleAtomContainer(
     invalidateFrom(node);
 }
 
+void OrchestrationWindow::setNodeDatasetManager(OrchestrationNodeItem* node,
+                                                const DatasetManagerSpec& spec)
+{
+    if (!node)
+        return;
+    node->setDatasetManager(spec);
+    invalidateFrom(node);
+}
+
 void OrchestrationWindow::invalidateFrom(OrchestrationNodeItem* node)
 {
     // Only a node that already RAN can be invalidated; a Pending one has
@@ -4053,6 +4429,16 @@ void OrchestrationWindow::openNodeWizard(OrchestrationNodeItem* node)
                 setNodeDumpDensities(node, spec);
             break;
         }
+        case OrchestrationTask::DatasetManager: {
+            // Explicit, and it must stay above the default: the default arm
+            // is the DEFECT editor, so a transform that forgets its case
+            // here silently opens the wrong dialog and writes a defect
+            // recipe into a node that will never read one.
+            DatasetManagerSpec spec = node->datasetManager();
+            if (editDatasetManager(this, &spec))
+                setNodeDatasetManager(node, spec);
+            break;
+        }
         default: {
             DefectSpec spec = node->defectSpec();
             if (editDefects(this, &spec))
@@ -4060,6 +4446,66 @@ void OrchestrationWindow::openNodeWizard(OrchestrationNodeItem* node)
             break;
         }
         }
+        return;
+    }
+
+    // MaceTrainer is Simulation family (it launches a real job) but its
+    // setup dialog is the pre-existing, standalone MaceTrainerDialog, not a
+    // SimulationWizardBase built by wizardFactory_ — reusing it as-is (per
+    // the task that added this node: "wire MaceTrainerDialog as the MACE
+    // Trainer node's edit dialog") rather than duplicating its several
+    // hundred lines of MACE-config UI behind the wizard interface.
+    if (node->task() == OrchestrationTask::MaceTrainer) {
+        MaceTrainerDialog dialog(this);
+        if (!node->maceTrainerYaml().isEmpty()) {
+            // Re-opening an already-configured node: restore exactly the
+            // (possibly hand-edited) YAML it was saved with, rather than
+            // re-deriving fields from the parent's dataset — which would
+            // silently discard anything the user had changed since.
+            dialog.setInitialYaml(node->maceTrainerYaml());
+        } else {
+            // First-time configure: pre-wire the dataset fields from the
+            // Dataset Manager parent's own manifest, when it has already
+            // run and one exists to read (see runTransform()'s
+            // DatasetManager case for where dataset_manifest.json is
+            // written) — the "typed output edge" the task asks for, absent
+            // any actual edge-typing system on this canvas. A parent that
+            // has not run yet (the ordinary case: a node is normally
+            // configured before its parents have) simply leaves the
+            // dialog's own defaults in place.
+            const QList<OrchestrationNodeItem*> parents = parentsOf(node);
+            OrchestrationNodeItem* parent =
+                parents.isEmpty() ? nullptr : parents.first();
+            if (parent && parent->task() == OrchestrationTask::DatasetManager
+                && !parent->jobDirectory().isEmpty()) {
+                QFile manifestFile(parent->jobDirectory()
+                                   + QStringLiteral("/dataset_manifest.json"));
+                if (manifestFile.open(QIODevice::ReadOnly)) {
+                    const QJsonObject manifest =
+                        QJsonDocument::fromJson(manifestFile.readAll()).object();
+                    dialog.prefillFromDatasetManifest(
+                        manifest.value(QStringLiteral("train_path")).toString(),
+                        manifest.value(QStringLiteral("valid_path")).toString(),
+                        manifest.value(QStringLiteral("energy_key")).toString(),
+                        manifest.value(QStringLiteral("forces_key")).toString());
+                }
+            }
+        }
+        if (dialog.exec() != QDialog::Accepted
+            || dialog.action() == MaceTrainerDialog::Action::None)
+            return;
+        RunCommands::Context context;
+        context.pythonExecutable = dialog.pythonExecutable();
+        context.scriptFile = QStringLiteral("run.py");
+        context.cores = RunCommands::cores();
+        const QString runCommand =
+            RunCommands::displayCommand(core::CalculatorKind::Mace, context);
+        // Same configureNode() rule as every other node: it invalidates an
+        // already-Done node and everything downstream, so a Resume never
+        // treats output computed from the PREVIOUS config as current.
+        configureNode(node, dialog.runnerScript(), dialog.pythonExecutable(),
+                     runCommand, core::CalculatorKind::Mace);
+        node->setMaceTrainerYaml(dialog.yaml());
         return;
     }
 
@@ -4179,19 +4625,21 @@ void OrchestrationWindow::connectNodes(OrchestrationNodeItem* from,
     }
     // Reject a link into a port where a SECOND parent has no well-defined
     // meaning, rather than silently accepting it and then never reading it.
-    // Three tasks are built to accept more than one: Dump reads every
-    // parent's own pass set directly (runTransform()'s Dump case) and
-    // concatenates them in link order; Single-point Calculation and
-    // Geometry Optimization become FAN-IN nodes (isFanInNode()) that run
-    // once per parent, in link order — see dependsOnFanIn()/advanceFanIn().
-    // Everywhere else, a parent fills either the single ordinary geometry
-    // port (no named slots at all — Container, a structure transform) or
-    // one of a FIXED list of named baselines (orchestrationInputSlots(),
-    // filled one parent per slot in link order) — in both cases a parent
-    // beyond that count would just never be read (parentsOf() is walked in
-    // full, but only the first N in link order fill anything), which is
-    // exactly the silent failure this guards against.
+    // Four tasks are built to accept more than one: Dump and DatasetManager
+    // both read every parent's own pass set directly (runTransform()'s
+    // respective cases) and concatenate them in link order; Single-point
+    // Calculation and Geometry Optimization become FAN-IN nodes
+    // (isFanInNode()) that run once per parent, in link order — see
+    // dependsOnFanIn()/advanceFanIn(). Everywhere else, a parent fills
+    // either the single ordinary geometry port (no named slots at all —
+    // Container, a structure transform) or one of a FIXED list of named
+    // baselines (orchestrationInputSlots(), filled one parent per slot in
+    // link order) — in both cases a parent beyond that count would just
+    // never be read (parentsOf() is walked in full, but only the first N in
+    // link order fill anything), which is exactly the silent failure this
+    // guards against.
     if (to->task() != OrchestrationTask::Dump
+        && to->task() != OrchestrationTask::DatasetManager
         && to->task() != OrchestrationTask::SinglePoint
         && to->task() != OrchestrationTask::GeometryOptimization) {
         const int slots =
@@ -4273,7 +4721,8 @@ namespace {
 bool isBatchAggregator(const OrchestrationNodeItem* node)
 {
     return node->task() == OrchestrationTask::Dump
-        || node->task() == OrchestrationTask::DumpDensities;
+        || node->task() == OrchestrationTask::DumpDensities
+        || node->task() == OrchestrationTask::DatasetManager;
 }
 
 } // namespace
@@ -5430,6 +5879,16 @@ bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
         *text = QString::fromUtf8(file.readAll());
         return true;
     };
+    // The result file a Simulation task's structure-WITH-RESULTS lands
+    // under — the same priority order startNode() itself searches when
+    // handing a parent's output to its next node, restricted to the three
+    // that actually carry a calculator's results (a transform's
+    // "transformed.extxyz" and the plain "structure.extxyz" never do, so
+    // they are not worth a frame with no properties on it). Shared by both
+    // Dump and Dataset Manager, the two nodes that read every pass of a
+    // fan-out directly.
+    static const char* const kResultNames[] = {
+        "single_point.extxyz", "optimized.extxyz", "md_final.extxyz"};
 
     // -- The transforms that consume RESULTS, not a structure ---------------
     // These return BEFORE the structure read below, and that is the whole
@@ -5449,14 +5908,6 @@ bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
             *error = tr("nothing feeds it a completed calculation");
             return false;
         }
-        // The result file a Simulation task's structure-WITH-RESULTS lands
-        // under — the same priority order startNode() itself searches when
-        // handing a parent's output to its next node, restricted to the
-        // three that actually carry a calculator's results (a transform's
-        // "transformed.extxyz" and the plain "structure.extxyz" never do,
-        // so they are not worth a frame with no properties on it).
-        static const char* const kResultNames[] = {
-            "single_point.extxyz", "optimized.extxyz", "md_final.extxyz"};
         QList<DumpSourceFrame> sources;
         QStringList preExcluded;
         // Dump is the one node built to MERGE: connectNodes() allows any
@@ -5591,6 +6042,138 @@ bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
         // gated off for a batch aggregator so it does not overwrite this.
         node->setBatchProgress(dumped.framesWritten,
                                dumped.framesWritten + dumped.framesExcluded);
+        return true;
+    }
+
+    if (node->task() == OrchestrationTask::DatasetManager) {
+        // Same multi-parent merge as Dump immediately above (connectNodes()
+        // gives this task the identical exemption, for the identical
+        // reason), PLUS the node's own directly-loaded files appended after
+        // every parent's frames.
+        const QList<OrchestrationNodeItem*> parents = parentsOf(node);
+        const DatasetManagerSpec& spec = node->datasetManager();
+        if (parents.isEmpty() && spec.externalFiles.isEmpty()) {
+            *error = tr("nothing feeds it a completed calculation, and no "
+                        "files were loaded directly");
+            return false;
+        }
+        if (!spec.isValid()) {
+            *error = tr("it has no output folder, no energy/forces key "
+                        "names, or an invalid split (%1)")
+                         .arg(spec.describe());
+            return false;
+        }
+
+        QList<DatasetManagerSourceFrame> sources;
+        QStringList preExcluded;
+        for (const OrchestrationNodeItem* parent : parents) {
+            // Same MACE config_type="IsolatedAtom" auto-tagging as Dump's
+            // own merge loop, and for the identical reason: one branch can
+            // be bulk structures and another isolated atoms, tagged
+            // independently of what any OTHER merged parent is.
+            const bool isolatedAtomSource =
+                dependsOnSingleAtomContainer(parent);
+            QMap<int, core::NodeOutcome> latest;
+            for (const core::NodeOutcome& outcome : report_.outcomes)
+                if (outcome.nodeId == parent->id())
+                    latest[outcome.batchIndex] = outcome;
+            for (auto it = latest.constBegin(); it != latest.constEnd();
+                 ++it) {
+                const core::NodeOutcome& outcome = it.value();
+                QString label = outcome.batchLabel.isEmpty()
+                    ? tr("pass %1").arg(outcome.batchIndex + 1)
+                    : tr("pass %1 (%2)")
+                          .arg(outcome.batchIndex + 1).arg(outcome.batchLabel);
+                if (parents.size() > 1)
+                    label = tr("%1, %2").arg(parent->title(), label);
+                if (outcome.status != QLatin1String("done")) {
+                    preExcluded << tr("%1: did not complete").arg(label);
+                    continue;
+                }
+                QString resultPath;
+                for (const char* candidate : kResultNames) {
+                    const QString path = outcome.directory + QLatin1Char('/')
+                        + QLatin1String(candidate);
+                    if (QFile::exists(path)) {
+                        resultPath = path;
+                        break;
+                    }
+                }
+                if (resultPath.isEmpty()) {
+                    preExcluded << tr("%1: no computed structure in its "
+                                      "results")
+                                       .arg(label);
+                    continue;
+                }
+                sources.append(
+                    {resultPath, label, /*wholeFile=*/false,
+                     isolatedAtomSource ? QStringLiteral("IsolatedAtom")
+                                        : QString()});
+            }
+        }
+        for (const DatasetManagerExternalFile& file : spec.externalFiles)
+            sources.append({file.path, QFileInfo(file.path).fileName(),
+                            /*wholeFile=*/true,
+                            file.isolatedAtom ? QStringLiteral("IsolatedAtom")
+                                              : QString()});
+
+        DatasetManagerOutput result;
+        QString problem;
+        if (!runDatasetManager(sources, spec, &result, &problem)) {
+            *error = preExcluded.isEmpty()
+                ? problem
+                : tr("%1 (also: %2)").arg(problem, preExcluded.join(QStringLiteral("; ")));
+            return false;
+        }
+
+        // The manifest is the actual hand-off to a MaceTrainer node's
+        // input slot (see orchestrationInputSlots() and openNodeWizard()'s
+        // MaceTrainer case) — absolute paths, since the split itself lives
+        // in the user-chosen output folder, not under this job directory.
+        const QDir outDir(spec.outputDirectory);
+        const QJsonObject manifest{
+            {QStringLiteral("output_directory"), spec.outputDirectory},
+            {QStringLiteral("train_path"),
+             result.trainFrames > 0 ? outDir.filePath(QStringLiteral("train.extxyz"))
+                                    : QString()},
+            {QStringLiteral("valid_path"),
+             result.validFrames > 0 ? outDir.filePath(QStringLiteral("valid.extxyz"))
+                                    : QString()},
+            {QStringLiteral("test_path"),
+             result.testFrames > 0 ? outDir.filePath(QStringLiteral("test.extxyz"))
+                                   : QString()},
+            {QStringLiteral("energy_key"), spec.energyKey},
+            {QStringLiteral("forces_key"), spec.forcesKey},
+            {QStringLiteral("stress_key"), spec.stressKey},
+            {QStringLiteral("total_frames"), result.totalKeptFrames},
+            {QStringLiteral("train_frames"), result.trainFrames},
+            {QStringLiteral("valid_frames"), result.validFrames},
+            {QStringLiteral("test_frames"), result.testFrames},
+            {QStringLiteral("dropped_missing"), result.droppedMissing},
+            {QStringLiteral("dropped_duplicate"), result.droppedDuplicate},
+            {QStringLiteral("elements"), QJsonArray::fromStringList(result.elements)},
+            {QStringLiteral("has_energy_range"), result.hasEnergyRange},
+            {QStringLiteral("min_energy_per_atom_ev"), result.minEnergyPerAtomEv},
+            {QStringLiteral("max_energy_per_atom_ev"), result.maxEnergyPerAtomEv},
+            {QStringLiteral("per_source_summary"),
+             QJsonArray::fromStringList(result.perSourceSummary)},
+            {QStringLiteral("outlier_warnings"),
+             QJsonArray::fromStringList(result.outlierWarnings)},
+        };
+        if (!write(QStringLiteral("dataset_manifest.json"),
+                   QString::fromUtf8(QJsonDocument(manifest).toJson(
+                       QJsonDocument::Indented)))) {
+            *error = tr("its manifest could not be written into %1").arg(dir);
+            return false;
+        }
+
+        record.parameters = result.headline;
+        // Repurposes the SAME two counters as Dump's own setBatchProgress()
+        // call, for a different meaning again: frames kept / frames
+        // considered, not passes done / batch length.
+        node->setBatchProgress(
+            result.totalKeptFrames,
+            result.totalKeptFrames + result.droppedMissing + result.droppedDuplicate);
         return true;
     }
 

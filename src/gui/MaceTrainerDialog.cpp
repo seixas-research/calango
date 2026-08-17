@@ -2,9 +2,11 @@
 
 #include "core/AseScriptGenerator.hpp"
 #include "gui/CondaEnvs.hpp"
+#include "gui/PythonPackagePreflight.hpp"
 #include "gui/SettingsManager.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -315,6 +317,24 @@ MaceTrainerDialog::MaceTrainerDialog(QWidget* parent) : QDialog(parent)
     envEdit_->setPlaceholderText(
         tr("conda env folder or python (empty = embedded); needs mace-torch"));
     envLayout->addWidget(envEdit_);
+    auto* checkEnvRow = new QHBoxLayout;
+    checkEnvButton_ = new QPushButton(tr("Check Environment"), envGroup);
+    checkEnvButton_->setToolTip(
+        tr("Probes the interpreter above for mace-torch (reporting its "
+           "version) and for which PyTorch compute devices it can actually "
+           "use — cpu always, cuda/mps only when the installed PyTorch "
+           "build and hardware support them. mace-torch is never vendored "
+           "or hard-depended-on by Calango itself; this is the same check "
+           "either Run button runs automatically before launching."));
+    checkEnvRow->addWidget(checkEnvButton_);
+    checkEnvRow->addStretch(1);
+    envLayout->addLayout(checkEnvRow);
+    envStatus_ = new QLabel(
+        tr("Not checked yet — press Check Environment, or Run."), envGroup);
+    envStatus_->setWordWrap(true);
+    envLayout->addWidget(envStatus_);
+    connect(checkEnvButton_, &QPushButton::clicked, this,
+            &MaceTrainerDialog::checkEnvironment);
     settings->addWidget(envGroup);
     settings->addStretch(1);
 
@@ -409,10 +429,21 @@ MaceTrainerDialog::MaceTrainerDialog(QWidget* parent) : QDialog(parent)
     connect(exportButton, &QPushButton::clicked, this,
             &MaceTrainerDialog::exportYaml);
     connect(runLocalButton, &QPushButton::clicked, this, [this] {
+        if (!preflightMaceTorch())
+            return;
         action_ = Action::RunLocal;
         accept();
     });
     connect(runRemoteButton, &QPushButton::clicked, this, [this] {
+        // Remote: the check still runs against the LOCAL interpreter field
+        // above, which is what the user has told Calango to resolve for
+        // this node — the actual remote host may differ, and there is no
+        // way to probe it from here. Worth doing anyway: the common case is
+        // a local conda env name reused verbatim as the remote one, and
+        // catching a missing mace-torch before anything is even staged is
+        // strictly better than catching it only once a cluster job fails.
+        if (!preflightMaceTorch())
+            return;
         action_ = Action::RunRemote;
         accept();
     });
@@ -420,6 +451,84 @@ MaceTrainerDialog::MaceTrainerDialog(QWidget* parent) : QDialog(parent)
 
     applySizePreset();
     refreshPreview();
+}
+
+void MaceTrainerDialog::checkEnvironment()
+{
+    envStatus_->setStyleSheet(QString());
+    envStatus_->setText(tr("Checking %1…").arg(pythonExecutable()));
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    QApplication::processEvents();
+
+    const PythonPackagePreflightResult mace =
+        checkPythonPackage(pythonExecutable(), QStringLiteral("mace"));
+    lastCheckAvailable_ = mace.available;
+    QString text;
+    if (mace.available) {
+        detectedMaceVersion_ = mace.version;
+        text = tr("mace-torch %1 found.")
+                   .arg(mace.version.isEmpty() ? tr("(version unknown)")
+                                               : mace.version);
+        const TorchDeviceAvailability devices =
+            probeTorchDevices(pythonExecutable());
+        if (devices.probeSucceeded) {
+            QStringList available{QStringLiteral("cpu")};
+            if (devices.cuda)
+                available << QStringLiteral("cuda");
+            if (devices.mps)
+                available << QStringLiteral("mps");
+            text += tr(" PyTorch devices available: %1.")
+                        .arg(available.join(QStringLiteral(", ")));
+            // Suggest the best available device — cuda, then mps, then cpu
+            // — as a DEFAULT, not forced: a user who already picked one
+            // deliberately (e.g. testing the cpu path) is left alone.
+            if (!manuallyEdited_) {
+                if (devices.cuda)
+                    deviceCombo_->setCurrentText(QStringLiteral("cuda"));
+                else if (devices.mps)
+                    deviceCombo_->setCurrentText(QStringLiteral("mps"));
+            }
+            const QString chosen = deviceCombo_->currentText();
+            const bool chosenAvailable = chosen == QStringLiteral("cpu")
+                || (chosen == QStringLiteral("cuda") && devices.cuda)
+                || (chosen == QStringLiteral("mps") && devices.mps);
+            if (!chosenAvailable)
+                text += tr(" Warning: \"%1\" is selected but was not "
+                          "reported as available — the run will likely "
+                          "fail or silently fall back.")
+                            .arg(chosen);
+        } else {
+            text += tr(" (could not probe which devices PyTorch itself "
+                      "sees — device availability is unknown, not "
+                      "necessarily absent.)");
+        }
+        envStatus_->setStyleSheet(QStringLiteral("color: #2e7d32;"));
+    } else {
+        detectedMaceVersion_.clear();
+        text = tr("mace-torch was not found under %1: %2\n\nInstall it "
+                  "with: pip install mace-torch")
+                   .arg(pythonExecutable(), mace.errorMessage);
+        envStatus_->setStyleSheet(QStringLiteral("color: #c0392b;"));
+    }
+    envStatus_->setText(text);
+    QApplication::restoreOverrideCursor();
+    refreshPreview();
+}
+
+bool MaceTrainerDialog::preflightMaceTorch()
+{
+    // Re-checked every time rather than trusting a stale
+    // lastCheckAvailable_: the interpreter field is freely editable right
+    // up to the moment Run is pressed, and a check against yesterday's
+    // choice would be worse than no check at all — it would say "fine"
+    // about an environment nobody is about to use.
+    checkEnvironment();
+    if (lastCheckAvailable_)
+        return true;
+    QMessageBox::warning(
+        this, tr("mace-torch not found"),
+        tr("%1\n\nNothing was launched.").arg(envStatus_->text()));
+    return false;
 }
 
 void MaceTrainerDialog::applySizePreset()
@@ -461,6 +570,13 @@ QString MaceTrainerDialog::buildYaml() const
     y += QStringLiteral("# MACE training configuration — generated by Calango.\n");
     y += QStringLiteral("# Every key below is one mace.tools.arg_parser "
                         "accepts; MACE aborts on any it does not.\n");
+    if (!detectedMaceVersion_.isEmpty())
+        // Run metadata: which mace-torch this config was generated/verified
+        // against, from the last successful "Check Environment"/Run
+        // pre-flight — not vendored, not assumed, read off the package
+        // actually installed under the interpreter above.
+        y += QStringLiteral("# mace-torch %1 (detected under %2)\n")
+                 .arg(detectedMaceVersion_, pythonExecutable());
     y += QStringLiteral("model: MACE\n");
     y += QStringLiteral("name: mace_model\n");
     y += QStringLiteral("train_file: \"%1\"\n").arg(trainFile);
@@ -560,6 +676,34 @@ QString MaceTrainerDialog::yaml() const
     return preview_->toPlainText();
 }
 
+void MaceTrainerDialog::setInitialYaml(const QString& yaml)
+{
+    const QSignalBlocker blocker(preview_);
+    preview_->setPlainText(yaml);
+    // Marks it hand-edited so refreshPreview() (fired by every settings
+    // change below, e.g. applySizePreset() at the end of the constructor)
+    // never clobbers the restored text with a freshly regenerated config —
+    // the individual widgets keep their OWN constructor defaults, not
+    // whatever the saved YAML actually contains, since this restores the
+    // text only, not the widget state it was generated from.
+    manuallyEdited_ = true;
+}
+
+void MaceTrainerDialog::prefillFromDatasetManifest(const QString& trainPath,
+                                                    const QString& validPath,
+                                                    const QString& energyKey,
+                                                    const QString& forcesKey)
+{
+    if (!trainPath.isEmpty())
+        trainFileEdit_->setText(trainPath);
+    if (!validPath.isEmpty())
+        validFileEdit_->setText(validPath);
+    if (!energyKey.isEmpty())
+        energyKeyCombo_->setCurrentText(energyKey);
+    if (!forcesKey.isEmpty())
+        forcesKeyCombo_->setCurrentText(forcesKey);
+}
+
 QString MaceTrainerDialog::runnerScript() const
 {
     const int base = seedSpin_->value();
@@ -589,7 +733,9 @@ QString MaceTrainerDialog::runnerScript() const
         "    the invocation MACE actually supports, and it keeps working when\n"
         "    the package ships no runnable __main__.\n"
         "    \"\"\"\n"
+        "    import json\n"
         "    import logging\n"
+        "    import re\n"
         "    import warnings\n"
         "\n"
         "    warnings.filterwarnings(\"ignore\")\n"
@@ -599,6 +745,54 @@ QString MaceTrainerDialog::runnerScript() const
         "    # this point, so without clearing them every line of the training\n"
         "    # log is emitted twice.\n"
         "    logging.getLogger().handlers.clear()\n"
+        "\n"
+        "    # Live per-epoch metrics: a SELF-CONTAINED handler that only\n"
+        "    # regex-parses MACE's own \"Epoch N: ... loss=X, "
+        "RMSE_E_per_atom=Y meV, RMSE_F=Z meV / A\" log lines and appends\n"
+        "    # them to their own file, one config per process (so a\n"
+        "    # committee's several children never write over each other).\n"
+        "    # Deliberately NOT wired into the shared _calango_metric()\n"
+        "    # progress file below: that one is per-SEED-completed (one\n"
+        "    # entry per committee member, written by the PARENT process),\n"
+        "    # and a re-entrant child appending its own per-epoch stream\n"
+        "    # into the same file would overwrite the parent's own record —\n"
+        "    # see the re-entry guard's comment above this function.\n"
+        "    class _EpochMetricsHandler(logging.Handler):\n"
+        "        _pattern = re.compile(\n"
+        "            r\"(?:Epoch (?P<epoch>\\d+)|Initial): .*?\"\n"
+        "            r\"loss=(?P<loss>[\\d.eE+-]+), \"\n"
+        "            r\"RMSE_E_per_atom=\\s*(?P<rmse_e>[\\d.eE+-]+) meV, \"\n"
+        "            r\"RMSE_F=\\s*(?P<rmse_f>[\\d.eE+-]+) meV\")\n"
+        "\n"
+        "        def __init__(self, path):\n"
+        "            super().__init__()\n"
+        "            self.path = path\n"
+        "            self.entries = []\n"
+        "\n"
+        "        def emit(self, record):\n"
+        "            match = self._pattern.search(record.getMessage())\n"
+        "            if not match:\n"
+        "                return\n"
+        "            self.entries.append({\n"
+        "                \"epoch\": int(match.group(\"epoch\")) "
+        "if match.group(\"epoch\") else -1,\n"
+        "                \"loss\": float(match.group(\"loss\")),\n"
+        "                \"rmse_energy_mev_per_atom\": float(match.group(\"rmse_e\")),\n"
+        "                \"rmse_forces_mev_per_a\": float(match.group(\"rmse_f\")),\n"
+        "            })\n"
+        "            try:\n"
+        "                with open(self.path, \"w\") as fh:\n"
+        "                    json.dump({\"metrics\": self.entries}, fh)\n"
+        "            except OSError:\n"
+        "                pass  # best-effort only -- never fail a training "
+        "run over a metrics file\n"
+        "\n"
+        "    metrics_path = os.path.splitext(config_file_path)[0] + "
+        "\"_metrics.json\"\n"
+        "    epoch_handler = _EpochMetricsHandler(metrics_path)\n"
+        "    epoch_handler.setLevel(logging.INFO)\n"
+        "    logging.getLogger().addHandler(epoch_handler)\n"
+        "\n"
         "    sys.argv = [\"program\", \"--config\", config_file_path]\n"
         "    mace_run_train()\n"
         "\n"

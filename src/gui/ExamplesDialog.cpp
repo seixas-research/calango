@@ -5,6 +5,7 @@
 #include "gui/PeriodicTableDialog.hpp"
 #include "gui/ViewportWidget.hpp"
 #include "python_bridge/BulkBuilder.hpp"
+#include "python_bridge/C2db.hpp"
 #include "python_bridge/MaterialsProject.hpp"
 #include "python_bridge/PubChem.hpp"
 
@@ -46,6 +47,19 @@ enum ResultColumn {
     ColSites,
     ColMaterialId,
     ResultColumnCount,
+};
+
+/// C2DB result-table columns.
+enum C2dbResultColumn {
+    C2dbColFormula = 0,
+    C2dbColEhull,
+    C2dbColHform,
+    C2dbColGapPbe,
+    C2dbColMagnetic,
+    C2dbColDynStab,
+    C2dbColLayerGroup,
+    C2dbColUid,
+    C2dbColumnCount,
 };
 
 /// A numeric cell that sorts by value rather than by its displayed text
@@ -101,6 +115,7 @@ ExamplesDialog::ExamplesDialog(QWidget* parent)
     tabs->addTab(createBulkTab(), tr("Bulk"));
     tabs->addTab(createMaterialsProjectTab(), tr("Materials Project"));
     tabs->addTab(createPubChemTab(), tr("PubChem"));
+    tabs->addTab(createC2dbTab(), tr("C2DB (2D Materials)"));
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -1096,6 +1111,452 @@ void ExamplesDialog::fetchFromPubChem()
     }
     QGuiApplication::restoreOverrideCursor();
     pubchemButton_->setEnabled(true);
+}
+
+// ---------------------------------------------------------------------------
+// C2DB tab (Computational 2D Materials Database, DTU)
+// ---------------------------------------------------------------------------
+
+QWidget* ExamplesDialog::createC2dbTab()
+{
+    auto* c2dbPage = new QWidget(this);
+    auto* c2dbLayout = new QVBoxLayout(c2dbPage);
+
+    auto* modeRow = new QHBoxLayout;
+    modeRow->addWidget(new QLabel(tr("Access:"), c2dbPage));
+    c2dbModeCombo_ = new QComboBox(c2dbPage);
+    c2dbModeCombo_->addItem(tr("Online (c2db.fysik.dtu.dk)"));
+    c2dbModeCombo_->addItem(tr("Local .db file"));
+    c2dbModeCombo_->setToolTip(
+        tr("Online: c2db.fysik.dtu.dk's own search, no account needed — only "
+           "the filters its search form actually has (formula, energy above "
+           "hull, PBE band gap).\n"
+           "Local .db file: an ase.db-format c2db.db you already obtained "
+           "(C2DB's full dataset is provided on request, not a public "
+           "download) — every field is filterable, including magnetic "
+           "state, dynamic stability and layer group."));
+    modeRow->addWidget(c2dbModeCombo_, 1);
+    c2dbLayout->addLayout(modeRow);
+
+    auto* localRow = new QHBoxLayout;
+    localRow->addWidget(new QLabel(tr(".db file:"), c2dbPage));
+    c2dbLocalPathEdit_ = new QLineEdit(c2dbPage);
+    c2dbLocalPathEdit_->setPlaceholderText(tr("Path to a local c2db.db"));
+    c2dbLocalBrowseButton_ = new QPushButton(tr("Browse…"), c2dbPage);
+    localRow->addWidget(c2dbLocalPathEdit_, 1);
+    localRow->addWidget(c2dbLocalBrowseButton_);
+    c2dbLayout->addLayout(localRow);
+    connect(c2dbLocalBrowseButton_, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, tr("Select a local C2DB database"), c2dbLocalPathEdit_->text(),
+            tr("ASE database (*.db);;All files (*)"));
+        if (!path.isEmpty())
+            c2dbLocalPathEdit_->setText(path);
+    });
+
+    auto* filterGroup = new QGroupBox(tr("Filters"), c2dbPage);
+    auto* filterForm = new QFormLayout(filterGroup);
+
+    c2dbFormulaEdit_ = new QLineEdit(filterGroup);
+    c2dbFormulaEdit_->setPlaceholderText(
+        tr("Formula or elements, e.g. MoS2, or Mo,S"));
+    filterForm->addRow(tr("Formula / elements:"), c2dbFormulaEdit_);
+
+    auto* ehullRow = new QHBoxLayout;
+    c2dbUseEhullMax_ = new QCheckBox(tr("Energy above hull ≤"), filterGroup);
+    c2dbEhullMaxSpin_ = new QDoubleSpinBox(filterGroup);
+    c2dbEhullMaxSpin_->setRange(0.0, 10.0);
+    c2dbEhullMaxSpin_->setDecimals(3);
+    c2dbEhullMaxSpin_->setSingleStep(0.01);
+    c2dbEhullMaxSpin_->setValue(0.2);
+    c2dbEhullMaxSpin_->setSuffix(tr(" eV/atom"));
+    c2dbEhullMaxSpin_->setEnabled(false);
+    connect(c2dbUseEhullMax_, &QCheckBox::toggled, c2dbEhullMaxSpin_, &QWidget::setEnabled);
+    ehullRow->addWidget(c2dbUseEhullMax_);
+    ehullRow->addWidget(c2dbEhullMaxSpin_, 1);
+    filterForm->addRow(QString(), ehullRow);
+
+    auto* gapRow = new QHBoxLayout;
+    c2dbUseGapMin_ = new QCheckBox(tr("Band gap (PBE) ≥"), filterGroup);
+    c2dbGapMinSpin_ = new QDoubleSpinBox(filterGroup);
+    c2dbGapMinSpin_->setRange(0.0, 20.0);
+    c2dbGapMinSpin_->setDecimals(2);
+    c2dbGapMinSpin_->setSuffix(tr(" eV"));
+    c2dbGapMinSpin_->setEnabled(false);
+    connect(c2dbUseGapMin_, &QCheckBox::toggled, c2dbGapMinSpin_, &QWidget::setEnabled);
+    c2dbUseGapMax_ = new QCheckBox(tr("≤"), filterGroup);
+    c2dbGapMaxSpin_ = new QDoubleSpinBox(filterGroup);
+    c2dbGapMaxSpin_->setRange(0.0, 20.0);
+    c2dbGapMaxSpin_->setDecimals(2);
+    c2dbGapMaxSpin_->setValue(20.0);
+    c2dbGapMaxSpin_->setSuffix(tr(" eV"));
+    c2dbGapMaxSpin_->setEnabled(false);
+    connect(c2dbUseGapMax_, &QCheckBox::toggled, c2dbGapMaxSpin_, &QWidget::setEnabled);
+    gapRow->addWidget(c2dbUseGapMin_);
+    gapRow->addWidget(c2dbGapMinSpin_, 1);
+    gapRow->addWidget(c2dbUseGapMax_);
+    gapRow->addWidget(c2dbGapMaxSpin_, 1);
+    filterForm->addRow(QString(), gapRow);
+
+    c2dbDynStabCombo_ = new QComboBox(filterGroup);
+    c2dbDynStabCombo_->addItem(tr("Any"));
+    c2dbDynStabCombo_->addItem(tr("Yes"));
+    c2dbDynStabCombo_->addItem(tr("No"));
+    filterForm->addRow(tr("Dynamically stable:"), c2dbDynStabCombo_);
+
+    c2dbMagStateEdit_ = new QLineEdit(filterGroup);
+    c2dbMagStateEdit_->setPlaceholderText(tr("Exact match, e.g. NM, FM, AFM"));
+    filterForm->addRow(tr("Magnetic state:"), c2dbMagStateEdit_);
+
+    c2dbLayerGroupEdit_ = new QLineEdit(filterGroup);
+    c2dbLayerGroupEdit_->setPlaceholderText(tr("Exact match, e.g. p-6m2"));
+    filterForm->addRow(tr("Layer group:"), c2dbLayerGroupEdit_);
+
+    c2dbLocalOnlyNote_ = new QLabel(
+        tr("Dynamic stability, magnetic state and layer group can only be "
+           "used as search filters in Local .db file mode — c2db.fysik.dtu.dk's "
+           "own search form has no input for them (they still appear as "
+           "result columns online, when the site shows them)."),
+        filterGroup);
+    c2dbLocalOnlyNote_->setWordWrap(true);
+    c2dbLocalOnlyNote_->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    filterForm->addRow(QString(), c2dbLocalOnlyNote_);
+
+    auto* limitRow = new QHBoxLayout;
+    c2dbLimitSpin_ = new QSpinBox(filterGroup);
+    c2dbLimitSpin_->setRange(1, 1000);
+    c2dbLimitSpin_->setValue(50);
+    c2dbLimitSpin_->setPrefix(tr("max "));
+    c2dbSearchButton_ = new QPushButton(tr("Search"), filterGroup);
+    limitRow->addWidget(c2dbLimitSpin_);
+    limitRow->addStretch(1);
+    limitRow->addWidget(c2dbSearchButton_);
+    filterForm->addRow(QString(), limitRow);
+
+    c2dbLayout->addWidget(filterGroup);
+
+    c2dbResultsTable_ = new QTableWidget(0, C2dbColumnCount, c2dbPage);
+    c2dbResultsTable_->setHorizontalHeaderLabels(
+        {tr("Formula"), tr("E above hull (eV/atom)"), tr("Heat of formation (eV/atom)"),
+         tr("Band gap, PBE (eV)"), tr("Magnetic"), tr("Dyn. stable"), tr("Layer group"),
+         tr("UID")});
+    c2dbResultsTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    c2dbResultsTable_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    c2dbResultsTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    c2dbResultsTable_->setSortingEnabled(true);
+    c2dbResultsTable_->verticalHeader()->setVisible(false);
+    c2dbResultsTable_->horizontalHeader()->setStretchLastSection(true);
+    c2dbLayout->addWidget(c2dbResultsTable_, 1);
+
+    auto* actionRow = new QHBoxLayout;
+    c2dbOpenSeparatelyButton_ =
+        new QPushButton(tr("Open Selected in Separate Workspace Tabs"), c2dbPage);
+    c2dbGroupTrajectoryButton_ =
+        new QPushButton(tr("Group Selected into Single Trajectory File"), c2dbPage);
+    c2dbOpenSeparatelyButton_->setEnabled(false);
+    c2dbGroupTrajectoryButton_->setEnabled(false);
+    actionRow->addWidget(c2dbOpenSeparatelyButton_);
+    actionRow->addWidget(c2dbGroupTrajectoryButton_);
+    actionRow->addStretch(1);
+    c2dbLayout->addLayout(actionRow);
+
+    c2dbStatus_ = new QLabel(c2dbPage);
+    c2dbStatus_->setWordWrap(true);
+    c2dbLayout->addWidget(c2dbStatus_);
+
+    // Attribution: C2DB's own site asks that both papers be cited, and its
+    // data are CC BY-NC 4.0 (non-commercial) — shown every time this tab is
+    // used, not just documented in a header comment.
+    auto* attributionGroup = new QGroupBox(tr("Citation & license"), c2dbPage);
+    auto* attributionLayout = new QVBoxLayout(attributionGroup);
+    auto* citationLabel = new QLabel(
+        QString::fromStdString(pybridge::C2db::citationText()), attributionGroup);
+    citationLabel->setWordWrap(true);
+    citationLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto* licenseLabel = new QLabel(
+        QString::fromStdString(pybridge::C2db::licenseText()), attributionGroup);
+    licenseLabel->setWordWrap(true);
+    licenseLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    attributionLayout->addWidget(citationLabel);
+    attributionLayout->addWidget(licenseLabel);
+    c2dbLayout->addWidget(attributionGroup);
+
+    connect(c2dbModeCombo_, &QComboBox::currentIndexChanged, this,
+            &ExamplesDialog::updateC2dbModeVisibility);
+    connect(c2dbSearchButton_, &QPushButton::clicked, this, &ExamplesDialog::searchC2db);
+    connect(c2dbFormulaEdit_, &QLineEdit::returnPressed, this, &ExamplesDialog::searchC2db);
+    connect(c2dbOpenSeparatelyButton_, &QPushButton::clicked,
+            this, &ExamplesDialog::openC2dbSelectedSeparately);
+    connect(c2dbGroupTrajectoryButton_, &QPushButton::clicked,
+            this, &ExamplesDialog::groupC2dbSelectedIntoTrajectory);
+    connect(c2dbResultsTable_, &QTableWidget::itemSelectionChanged, this, [this] {
+        const int count = selectedC2dbUids().size();
+        c2dbOpenSeparatelyButton_->setEnabled(count > 0);
+        c2dbGroupTrajectoryButton_->setEnabled(count > 1);
+    });
+
+    updateC2dbModeVisibility();
+    return c2dbPage;
+}
+
+bool ExamplesDialog::c2dbOnlineMode() const
+{
+    return c2dbModeCombo_ && c2dbModeCombo_->currentIndex() == 0;
+}
+
+void ExamplesDialog::updateC2dbModeVisibility()
+{
+    const bool online = c2dbOnlineMode();
+    c2dbLocalPathEdit_->setEnabled(!online);
+    c2dbLocalBrowseButton_->setEnabled(!online);
+    // Only the local-db route can filter on these — see the class doc
+    // comment and python_bridge/C2db.hpp for why (the live search form has
+    // no input for any of the three).
+    c2dbDynStabCombo_->setEnabled(!online);
+    c2dbMagStateEdit_->setEnabled(!online);
+    c2dbLayerGroupEdit_->setEnabled(!online);
+    c2dbLocalOnlyNote_->setVisible(online);
+}
+
+void ExamplesDialog::setC2dbBusy(bool busy)
+{
+    c2dbSearchButton_->setEnabled(!busy);
+    c2dbOpenSeparatelyButton_->setEnabled(!busy && !selectedC2dbUids().isEmpty());
+    c2dbGroupTrajectoryButton_->setEnabled(!busy && selectedC2dbUids().size() > 1);
+}
+
+void ExamplesDialog::searchC2db()
+{
+    pybridge::C2db::SearchFilters filters;
+    const QString formula = c2dbFormulaEdit_->text().trimmed();
+    // Free-text field: treat it as an exact formula when it looks like one
+    // (no separators), otherwise as an element list — matches how the
+    // Materials Project tab's single search box disambiguates by content.
+    if (formula.contains(QLatin1Char(',')) || formula.contains(QLatin1Char(' ')))
+        filters.elements = formula.toStdString();
+    else
+        filters.formula = formula.toStdString();
+    if (c2dbUseEhullMax_->isChecked())
+        filters.energyAboveHullMaxEvPerAtom = c2dbEhullMaxSpin_->value();
+    if (c2dbUseGapMin_->isChecked())
+        filters.gapMinEv = c2dbGapMinSpin_->value();
+    if (c2dbUseGapMax_->isChecked())
+        filters.gapMaxEv = c2dbGapMaxSpin_->value();
+    if (!c2dbOnlineMode()) {
+        if (c2dbDynStabCombo_->currentIndex() == 1)
+            filters.dynamicallyStable = true;
+        else if (c2dbDynStabCombo_->currentIndex() == 2)
+            filters.dynamicallyStable = false;
+        if (!c2dbMagStateEdit_->text().trimmed().isEmpty())
+            filters.magneticState = c2dbMagStateEdit_->text().trimmed().toStdString();
+        if (!c2dbLayerGroupEdit_->text().trimmed().isEmpty())
+            filters.layerGroup = c2dbLayerGroupEdit_->text().trimmed().toStdString();
+    }
+    filters.limit = c2dbLimitSpin_->value();
+
+    setC2dbBusy(true);
+    c2dbStatus_->setStyleSheet(QString());
+    c2dbStatus_->setText(c2dbOnlineMode()
+                             ? tr("Searching c2db.fysik.dtu.dk…")
+                             : tr("Searching local database…"));
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    QGuiApplication::processEvents();
+
+    std::vector<pybridge::C2db::SearchHit> hits;
+    QString error;
+    try {
+        hits = c2dbOnlineMode()
+                  ? pybridge::C2db::searchOnline(filters)
+                  : pybridge::C2db::searchLocalDb(c2dbLocalPathEdit_->text().trimmed().toStdString(),
+                                                  filters);
+    } catch (const std::exception& e) {
+        error = QString::fromUtf8(e.what());
+    }
+    QGuiApplication::restoreOverrideCursor();
+
+    if (!error.isEmpty()) {
+        c2dbStatus_->setStyleSheet(QStringLiteral("color: #d9534f;"));
+        c2dbStatus_->setText(error);
+        setC2dbBusy(false);
+        return;
+    }
+
+    // Sorting must be off while filling, or rows shuffle mid-population and
+    // the item/row mapping breaks (same reasoning as the Materials Project
+    // tab above).
+    c2dbResultsTable_->setSortingEnabled(false);
+    c2dbResultsTable_->clearContents();
+    c2dbResultsTable_->setRowCount(static_cast<int>(hits.size()));
+    for (int row = 0; row < static_cast<int>(hits.size()); ++row) {
+        const auto& hit = hits[static_cast<std::size_t>(row)];
+        c2dbResultsTable_->setItem(
+            row, C2dbColFormula, new QTableWidgetItem(QString::fromStdString(hit.formula)));
+        c2dbResultsTable_->setItem(
+            row, C2dbColEhull,
+            new NumericItem(hit.hasEhull ? QString::number(hit.ehull, 'f', 4)
+                                         : QStringLiteral("—"),
+                            hit.hasEhull ? hit.ehull : std::numeric_limits<double>::max()));
+        c2dbResultsTable_->setItem(
+            row, C2dbColHform,
+            new NumericItem(hit.hasHform ? QString::number(hit.hform, 'f', 4)
+                                         : QStringLiteral("—"),
+                            hit.hasHform ? hit.hform : std::numeric_limits<double>::max()));
+        c2dbResultsTable_->setItem(
+            row, C2dbColGapPbe,
+            new NumericItem(hit.hasGapPbe ? QString::number(hit.gapPbe, 'f', 3)
+                                          : QStringLiteral("—"),
+                            hit.hasGapPbe ? hit.gapPbe : std::numeric_limits<double>::max()));
+        c2dbResultsTable_->setItem(
+            row, C2dbColMagnetic, new QTableWidgetItem(QString::fromStdString(hit.magneticState)));
+        c2dbResultsTable_->setItem(
+            row, C2dbColDynStab,
+            new QTableWidgetItem(hit.hasDynamicStability
+                                     ? (hit.dynamicallyStable ? tr("Yes") : tr("No"))
+                                     : QStringLiteral("—")));
+        c2dbResultsTable_->setItem(
+            row, C2dbColLayerGroup, new QTableWidgetItem(QString::fromStdString(hit.layerGroup)));
+        c2dbResultsTable_->setItem(
+            row, C2dbColUid, new QTableWidgetItem(QString::fromStdString(hit.uid)));
+    }
+    c2dbResultsTable_->setSortingEnabled(true);
+    c2dbResultsTable_->resizeColumnsToContents();
+
+    c2dbStatus_->setText(
+        hits.empty() ? tr("No materials matched.")
+                    : tr("%1 material(s) found. Select one or more rows, then "
+                         "choose an action below.")
+                          .arg(hits.size()));
+    setC2dbBusy(false);
+}
+
+QStringList ExamplesDialog::selectedC2dbUids() const
+{
+    QStringList uids;
+    if (!c2dbResultsTable_)
+        return uids;
+    const QModelIndexList rows =
+        c2dbResultsTable_->selectionModel()->selectedRows(C2dbColUid);
+    for (const QModelIndex& index : rows) {
+        const QTableWidgetItem* item = c2dbResultsTable_->item(index.row(), C2dbColUid);
+        if (item && !item->text().isEmpty())
+            uids.append(item->text());
+    }
+    return uids;
+}
+
+void ExamplesDialog::openC2dbSelectedSeparately()
+{
+    const QStringList uids = selectedC2dbUids();
+    if (uids.isEmpty())
+        return;
+
+    setC2dbBusy(true);
+    const bool online = c2dbOnlineMode();
+    const std::string dbPath = c2dbLocalPathEdit_->text().trimmed().toStdString();
+    QStringList errors;
+    int opened = 0;
+
+    QProgressDialog progress(tr("Fetching structures from C2DB…"), tr("Cancel"),
+                             0, uids.size(), this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    for (int i = 0; i < uids.size(); ++i) {
+        progress.setValue(i);
+        progress.setLabelText(
+            tr("Fetching %1 (%2 of %3)…").arg(uids.at(i)).arg(i + 1).arg(uids.size()));
+        QGuiApplication::processEvents();
+        if (progress.wasCanceled())
+            break;
+        try {
+            auto structure = std::make_shared<core::Structure>(
+                online ? pybridge::C2db::fetchStructureOnline(uids.at(i).toStdString())
+                       : pybridge::C2db::fetchStructureLocalDb(dbPath, uids.at(i).toStdString()));
+            const QString label = QStringLiteral("%1 %2").arg(
+                uids.at(i), QString::fromStdString(structure->chemicalFormula()));
+            Q_EMIT structureFetched(std::move(structure), label);
+            ++opened;
+        } catch (const std::exception& e) {
+            errors.append(QStringLiteral("%1: %2").arg(
+                uids.at(i), QString::fromUtf8(e.what()).section('\n', 0, 0)));
+        }
+    }
+    progress.setValue(uids.size());
+
+    c2dbStatus_->setStyleSheet(errors.isEmpty() ? QString() : QStringLiteral("color: #d9534f;"));
+    c2dbStatus_->setText(errors.isEmpty()
+                             ? tr("Opened %1 structure(s) in separate tabs.").arg(opened)
+                             : tr("Opened %1 of %2; failed: %3")
+                                   .arg(opened)
+                                   .arg(uids.size())
+                                   .arg(errors.join(QStringLiteral("; "))));
+    setC2dbBusy(false);
+}
+
+void ExamplesDialog::groupC2dbSelectedIntoTrajectory()
+{
+    const QStringList uids = selectedC2dbUids();
+    if (uids.size() < 2)
+        return;
+
+    setC2dbBusy(true);
+    const bool online = c2dbOnlineMode();
+    const std::string dbPath = c2dbLocalPathEdit_->text().trimmed().toStdString();
+    QStringList errors;
+    std::vector<std::shared_ptr<core::Structure>> frames;
+
+    QProgressDialog progress(tr("Fetching structures from C2DB…"), tr("Cancel"),
+                             0, uids.size(), this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    for (int i = 0; i < uids.size(); ++i) {
+        progress.setValue(i);
+        progress.setLabelText(
+            tr("Fetching %1 (%2 of %3)…").arg(uids.at(i)).arg(i + 1).arg(uids.size()));
+        QGuiApplication::processEvents();
+        if (progress.wasCanceled())
+            break;
+        try {
+            frames.push_back(std::make_shared<core::Structure>(
+                online ? pybridge::C2db::fetchStructureOnline(uids.at(i).toStdString())
+                       : pybridge::C2db::fetchStructureLocalDb(dbPath, uids.at(i).toStdString())));
+        } catch (const std::exception& e) {
+            errors.append(QStringLiteral("%1: %2").arg(
+                uids.at(i), QString::fromUtf8(e.what()).section('\n', 0, 0)));
+        }
+    }
+    progress.setValue(uids.size());
+
+    if (frames.size() < 2) {
+        c2dbStatus_->setStyleSheet(QStringLiteral("color: #d9534f;"));
+        c2dbStatus_->setText(
+            tr("Need at least two structures to build a trajectory (fetched %1). %2")
+                .arg(frames.size())
+                .arg(errors.join(QStringLiteral("; "))));
+        setC2dbBusy(false);
+        return;
+    }
+
+    const bool ragged =
+        std::any_of(frames.begin(), frames.end(),
+                    [&frames](const std::shared_ptr<core::Structure>& frame) {
+                        return frame->size() != frames.front()->size();
+                    });
+
+    const QString name = tr("C2DB group (%1 entries)").arg(frames.size());
+    const std::size_t frameCount = frames.size();
+    Q_EMIT trajectoryFetched(std::move(frames), name);
+
+    QString message =
+        tr("Grouped %1 structures into one trajectory document.").arg(frameCount);
+    if (ragged) {
+        message += tr(" Frames have differing atom counts — save as extxyz "
+                      "(not .traj) to keep them all.");
+    }
+    if (!errors.isEmpty())
+        message += tr(" Failed: %1").arg(errors.join(QStringLiteral("; ")));
+    c2dbStatus_->setStyleSheet(errors.isEmpty() ? QString() : QStringLiteral("color: #d9534f;"));
+    c2dbStatus_->setText(message);
+    setC2dbBusy(false);
 }
 
 } // namespace calango::gui

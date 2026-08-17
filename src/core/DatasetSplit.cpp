@@ -40,6 +40,40 @@ DatasetSplit DatasetSplit::make(int count, double trainFraction,
     return split;
 }
 
+DatasetSplit DatasetSplit::makeStratified(int count, double trainFraction,
+                                          double validationFraction,
+                                          unsigned seed,
+                                          const std::vector<bool>& pinnedToTrain)
+{
+    if (static_cast<int>(pinnedToTrain.size()) != count)
+        return make(count, trainFraction, validationFraction, seed);
+
+    std::vector<int> pinned;
+    std::vector<int> rest;
+    for (int i = 0; i < count; ++i)
+        (pinnedToTrain[static_cast<std::size_t>(i)] ? pinned : rest).push_back(i);
+
+    // Split only the unpinned pool; the pinned indices join train
+    // unconditionally, so the requested fractions describe what the REST of
+    // the dataset gets, not the whole set (an isolated-atom-heavy dataset
+    // would otherwise silently shrink the requested validation/test share).
+    DatasetSplit restSplit = make(static_cast<int>(rest.size()), trainFraction,
+                                  validationFraction, seed);
+
+    DatasetSplit split;
+    split.train = pinned;
+    for (const int i : restSplit.train)
+        split.train.push_back(rest[static_cast<std::size_t>(i)]);
+    for (const int i : restSplit.validation)
+        split.validation.push_back(rest[static_cast<std::size_t>(i)]);
+    for (const int i : restSplit.test)
+        split.test.push_back(rest[static_cast<std::size_t>(i)]);
+    std::sort(split.train.begin(), split.train.end());
+    std::sort(split.validation.begin(), split.validation.end());
+    std::sort(split.test.begin(), split.test.end());
+    return split;
+}
+
 std::vector<int> bootstrapSample(const std::vector<int>& pool, unsigned seed)
 {
     std::vector<int> sample;

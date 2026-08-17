@@ -751,4 +751,235 @@ AseBridge::DumpWriteResult AseBridge::writeDumpTrainingSet(
     return result;
 }
 
+AseBridge::DatasetPrepareResult AseBridge::prepareDataset(
+    const std::vector<DatasetSourceFile>& sources, const std::string& energyKey,
+    const std::string& forcesKey, const std::string& stressKey,
+    const std::string& defaultConfigType, bool dropMissing, bool dropDuplicates,
+    bool flagOutliers, double outlierEnergyPerAtomThresholdEv)
+{
+    DatasetPrepareResult result;
+    result.perSourceKeptCounts.assign(sources.size(), 0);
+    try {
+        const py::module_ aseIo = py::module_::import("ase.io");
+        py::list prepared; // the frames list held for writeDatasetSplit()
+        std::set<std::string> seenSignatures; // exact-duplicate detection
+
+        for (std::size_t sourceIndex = 0; sourceIndex < sources.size();
+            ++sourceIndex) {
+            const DatasetSourceFile& source = sources[sourceIndex];
+            py::list frames;
+            try {
+                if (source.wholeFile) {
+                    py::object read =
+                        aseIo.attr("read")(source.path, py::arg("index") = ":");
+                    frames = read.cast<py::list>();
+                } else {
+                    frames.append(aseIo.attr("read")(source.path));
+                }
+            } catch (const py::error_already_set&) {
+                ++result.droppedMissing;
+                continue;
+            }
+
+            for (std::size_t frameIndex = 0; frameIndex < frames.size();
+                ++frameIndex) {
+                py::object atoms = frames[frameIndex];
+                const std::string label = frames.size() > 1
+                    ? source.label + " frame "
+                          + std::to_string(frameIndex + 1)
+                    : source.label;
+
+                // Energy/forces: a live calculator's results take priority
+                // (a completed pass's own result file); failing that, an
+                // already-labelled frame (a user's own pre-prepared
+                // .extxyz) is read straight from info/arrays under either
+                // the CALLER's target key name or ASE's own bare
+                // "energy"/"forces" — covering both conventions the task's
+                // two source kinds actually produce.
+                bool hasEnergy = false;
+                double energy = 0.0;
+                try {
+                    energy = atoms.attr("get_potential_energy")().cast<double>();
+                    hasEnergy = true;
+                } catch (const py::error_already_set&) {
+                }
+                const py::dict info = atoms.attr("info");
+                if (!hasEnergy) {
+                    for (const char* candidate : {energyKey.c_str(), "energy",
+                                                   "REF_energy"}) {
+                        if (info.contains(candidate)) {
+                            try {
+                                energy = info[candidate].cast<double>();
+                                hasEnergy = true;
+                                break;
+                            } catch (const py::error_already_set&) {
+                            }
+                        }
+                    }
+                }
+
+                py::object forces;
+                bool hasForces = false;
+                try {
+                    forces = atoms.attr("get_forces")();
+                    hasForces = true;
+                } catch (const py::error_already_set&) {
+                }
+                const py::dict arrays = atoms.attr("arrays");
+                if (!hasForces) {
+                    for (const char* candidate : {forcesKey.c_str(), "forces",
+                                                   "REF_forces"}) {
+                        if (arrays.contains(candidate)) {
+                            forces = arrays[candidate];
+                            hasForces = true;
+                            break;
+                        }
+                    }
+                }
+
+                py::object stress;
+                bool hasStress = false;
+                if (!stressKey.empty()) {
+                    try {
+                        stress = atoms.attr("get_stress")();
+                        hasStress = true;
+                    } catch (const py::error_already_set&) {
+                        for (const char* candidate :
+                            {stressKey.c_str(), "stress", "REF_stress"}) {
+                            if (info.contains(candidate)) {
+                                stress = info[candidate];
+                                hasStress = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (dropMissing && (!hasEnergy || !hasForces)) {
+                    ++result.droppedMissing;
+                    continue;
+                }
+
+                const std::size_t atomCount = py::len(atoms);
+                const std::string effectiveConfigType =
+                    !source.configTypeOverride.empty() ? source.configTypeOverride
+                    : info.contains("config_type")
+                        ? info["config_type"].cast<std::string>()
+                        : defaultConfigType;
+                const bool isIsolatedAtom =
+                    effectiveConfigType == "IsolatedAtom";
+
+                // Exact-duplicate detection: full-precision positions, cell
+                // and symbols, concatenated into one signature string. Not
+                // rounded — "exact duplicate" is taken literally, matching
+                // the task's own wording, rather than a near-duplicate /
+                // similarity threshold this node does not claim to offer.
+                if (dropDuplicates) {
+                    std::ostringstream sig;
+                    sig.precision(17);
+                    for (const std::string& s :
+                        atoms.attr("get_chemical_symbols")()
+                            .cast<std::vector<std::string>>())
+                        sig << s << ',';
+                    for (double v : atoms.attr("get_positions")()
+                                        .attr("flatten")()
+                                        .cast<std::vector<double>>())
+                        sig << v << ',';
+                    for (double v : atoms.attr("get_cell")()
+                                        .attr("array")
+                                        .attr("flatten")()
+                                        .cast<std::vector<double>>())
+                        sig << v << ',';
+                    const std::string signature = sig.str();
+                    if (!seenSignatures.insert(signature).second) {
+                        ++result.droppedDuplicate;
+                        continue;
+                    }
+                }
+
+                const double energyPerAtom =
+                    hasEnergy && atomCount > 0
+                        ? energy / static_cast<double>(atomCount)
+                        : 0.0;
+                if (flagOutliers && hasEnergy
+                    && std::abs(energyPerAtom) > outlierEnergyPerAtomThresholdEv) {
+                    std::ostringstream warning;
+                    warning << label << ": energy/atom " << energyPerAtom
+                            << " eV exceeds the " << outlierEnergyPerAtomThresholdEv
+                            << " eV/atom threshold";
+                    result.outlierWarnings.push_back(warning.str());
+                }
+
+                // Every property has now been read FROM the source
+                // (calculator or already-labelled info/arrays), so it is
+                // safe to detach the calculator and rewrite under the
+                // caller's own key names — same reasoning and the same
+                // KeyError hazard as writeDumpTrainingSet() above.
+                atoms.attr("calc") = py::none();
+                if (hasEnergy)
+                    info[py::str(energyKey)] = energy;
+                if (hasStress)
+                    info[py::str(stressKey)] = stress;
+                if (!effectiveConfigType.empty())
+                    info[py::str("config_type")] = effectiveConfigType;
+                if (hasForces)
+                    atoms.attr("new_array")(forcesKey, forces);
+
+                DatasetFrameInfo meta;
+                meta.sourceIndex = static_cast<int>(sourceIndex);
+                meta.isIsolatedAtom = isIsolatedAtom;
+                meta.hasEnergy = hasEnergy;
+                meta.energyPerAtom = energyPerAtom;
+                for (const std::string& s :
+                    atoms.attr("get_chemical_symbols")()
+                        .cast<std::vector<std::string>>()) {
+                    if (std::find(meta.elements.begin(), meta.elements.end(), s)
+                        == meta.elements.end())
+                        meta.elements.push_back(s);
+                }
+                result.keptFrames.push_back(std::move(meta));
+                prepared.append(atoms);
+                ++result.perSourceKeptCounts[sourceIndex];
+            }
+        }
+        result.framesHandle = std::move(prepared);
+    } catch (const py::error_already_set& e) {
+        rethrow(e, "Failed to prepare dataset");
+    }
+    return result;
+}
+
+AseBridge::DatasetWriteResult AseBridge::writeDatasetSplit(
+    const pybind11::object& framesHandle, const std::vector<int>& trainIndices,
+    const std::vector<int>& validIndices, const std::vector<int>& testIndices,
+    const std::string& outputDirectory)
+{
+    DatasetWriteResult result;
+    try {
+        const py::module_ aseIo = py::module_::import("ase.io");
+        const py::module_ os = py::module_::import("os");
+        os.attr("makedirs")(outputDirectory, py::arg("exist_ok") = true);
+        const py::list frames(framesHandle);
+
+        const auto writeSubset = [&](const std::vector<int>& indices,
+                                     const char* fileName) {
+            if (indices.empty())
+                return 0;
+            py::list selection;
+            for (int i : indices)
+                selection.append(frames[static_cast<std::size_t>(i)]);
+            const std::string path =
+                outputDirectory + "/" + std::string(fileName);
+            aseIo.attr("write")(path, selection, py::arg("format") = "extxyz");
+            return static_cast<int>(indices.size());
+        };
+        result.trainWritten = writeSubset(trainIndices, "train.extxyz");
+        result.validWritten = writeSubset(validIndices, "valid.extxyz");
+        result.testWritten = writeSubset(testIndices, "test.extxyz");
+    } catch (const py::error_already_set& e) {
+        rethrow(e, "Failed to write dataset split into '" + outputDirectory + "'");
+    }
+    return result;
+}
+
 } // namespace calango::pybridge

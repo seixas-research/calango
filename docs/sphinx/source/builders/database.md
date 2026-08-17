@@ -1,12 +1,13 @@
 # From databases
 
 {menuselection}`Build --> From Database` opens the Database Browser, the structure
-source most sessions start from. It has three tabs — {guilabel}`Bulk`,
-{guilabel}`Materials Project` and {guilabel}`PubChem` — ordered so that the one needing
-no network and no API key comes first. Every fetched or built structure opens as a **new
-workspace tab**; nothing in the browser modifies an existing document.
+source most sessions start from. It has four tabs — {guilabel}`Bulk`,
+{guilabel}`Materials Project`, {guilabel}`PubChem` and {guilabel}`C2DB (2D Materials)` —
+ordered so that the one needing no network and no API key comes first. Every fetched or
+built structure opens as a **new workspace tab**; nothing in the browser modifies an
+existing document.
 
-All three tabs run through the embedded Python bridge, so a working ASE environment is a
+All four tabs run through the embedded Python bridge, so a working ASE environment is a
 prerequisite (see {doc}`/python_environment`).
 
 % TODO screenshot: Database Browser on the Bulk tab, prototype mode, with the live 3D preview showing a silicon diamond cell
@@ -140,6 +141,71 @@ PubChem serves the database's stored 3D conformer — a reasonable gas-phase geo
 one optimised with your calculator. Relax it before quoting geometric or energetic
 properties.
 :::
+
+---
+
+## C2DB (2D Materials)
+
+The {guilabel}`C2DB (2D Materials)` tab searches the [Computational 2D Materials
+Database](https://c2db.fysik.dtu.dk/) (C2DB), a DTU-maintained database of monolayer and
+few-layer 2D crystals computed with DFT. Imported structures carry vacuum and periodic
+boundary conditions exactly as C2DB provides them (2D-periodic with a vacuum gap), so
+downstream 2D-aware modules — 2D elastic properties, 2D piezoelectric response, 2D
+excitons — detect them correctly without any manual PBC editing.
+
+### Access mode
+
+An {guilabel}`Access` combo chooses how the tab reaches C2DB — deliberately **not** the
+same for every field, because the two routes genuinely support different things:
+
+- **Online** — c2db.fysik.dtu.dk's own live search, no account needed. This goes through
+  the site's actual search form (confirmed by reading its markup directly, not assumed),
+  which accepts only **formula/elements**, an **energy-above-hull** ceiling, and a
+  **PBE band-gap range** — nothing else. Submitting is two polite, rate-limited requests
+  (one to obtain a session id, one for the filtered results), and the results page is
+  scraped (there is no JSON/CSV export of a search result), so this route degrades to a
+  clear error message rather than a crash if the site is unreachable or its page layout
+  changes.
+- **Local .db file** — an `ase.db`-format `c2db.db` file you already have. C2DB's full
+  dataset is documented as *provided upon request*, not a public download, so Calango
+  cannot fetch it automatically — but once you have a copy, this mode queries it with
+  ASE's own query language and exposes **every** field, including magnetic state,
+  dynamic stability and layer group.
+
+:::{note}
+Dynamic stability, magnetic state and layer group are only usable as **search filters**
+in Local .db file mode — the live site's search form simply has no input for them. They
+still appear as **result columns** when searching online, since the results table itself
+shows magnetic state and layer group by default; Calango does not fabricate a filter the
+access route does not actually support.
+:::
+
+### Search and import
+
+Type a formula (`MoS2`) or an element list (`Mo,S`), optionally constrain energy above
+hull and/or PBE band gap, and press {guilabel}`Search`. Results list formula, energy
+above hull, heat of formation, PBE band gap, magnetic state, dynamic stability and layer
+group — a `—` means that field was not available from the chosen route for that hit, not
+that the value is zero. Select rows and either {guilabel}`Open Selected in Separate
+Workspace Tabs` or {guilabel}`Group Selected into Single Trajectory File`, exactly as in
+the Materials Project tab above; a failed fetch never aborts the rest of a batch.
+
+Fetching a structure (online) downloads the material's own extended-XYZ file from its
+detail page — ASE's native round-trip format, chosen specifically because it is the one
+download format guaranteed to preserve cell and PBC flags exactly.
+
+### Citation
+
+C2DB is **CC BY-NC 4.0** (non-commercial). Its own site asks that both papers behind the
+database be cited; the tab displays the exact citation text and license note at the
+bottom, every time it is used:
+
+> S. Haastrup et al., *The Computational 2D Materials Database: High-Throughput Modeling
+> and Discovery of Atomically Thin Crystals*, 2D Materials **5**, 042002 (2018),
+> doi:10.1088/2053-1583/aacfc1.
+>
+> M. N. Gjerding et al., *Recent Progress of the Computational 2D Materials Database
+> (C2DB)*, 2D Materials **8**, 044002 (2021), doi:10.1088/2053-1583/ac1059.
 
 ---
 

@@ -31,6 +31,14 @@ class ViewportWidget;
 ///     single multi-frame trajectory.
 ///   - PubChem tab: fetch a 3D molecular conformer by name, SMILES or CID
 ///     (no key required).
+///   - C2DB tab: search the Computational 2D Materials Database (DTU), by
+///     either its live web search (no account needed, but only the filters
+///     its own search form actually exposes — formula, energy-above-hull
+///     and PBE band-gap range) or a local `c2db.db` ase.db file the user
+///     has separately obtained (every field, via ASE's query language,
+///     including magnetic state / dynamic stability / layer group, which
+///     the live route cannot filter on). See python_bridge/C2db.hpp for the
+///     access-route rationale.
 /// The dialog only *fetches/builds*; the controller (MainWindow) opens the
 /// resulting document via the emitted signals.
 class ExamplesDialog : public QDialog {
@@ -55,6 +63,10 @@ private Q_SLOTS:
     void searchMaterialsProject();
     void openSelectedSeparately();
     void groupSelectedIntoTrajectory();
+    void searchC2db();
+    void openC2dbSelectedSeparately();
+    void groupC2dbSelectedIntoTrajectory();
+    void updateC2dbModeVisibility();
 
 private:
     // -- Bulk tab -----------------------------------------------------------
@@ -95,6 +107,13 @@ private:
 
     QWidget* createPubChemTab();
 
+    // -- C2DB tab -------------------------------------------------------------
+    QWidget* createC2dbTab();
+    /// uids of the currently selected result rows, in table order.
+    QStringList selectedC2dbUids() const;
+    void setC2dbBusy(bool busy);
+    bool c2dbOnlineMode() const;
+
     QString apiKey() const;
 
     // Materials Project
@@ -116,6 +135,28 @@ private:
     QLineEdit* pubchemQueryEdit_ = nullptr;
     QPushButton* pubchemButton_ = nullptr;
     QLabel* pubchemStatus_ = nullptr;
+
+    // C2DB
+    QComboBox* c2dbModeCombo_ = nullptr; ///< 0 = online, 1 = local .db file
+    QLineEdit* c2dbLocalPathEdit_ = nullptr;
+    QPushButton* c2dbLocalBrowseButton_ = nullptr;
+    QLineEdit* c2dbFormulaEdit_ = nullptr;
+    QCheckBox* c2dbUseEhullMax_ = nullptr;
+    QDoubleSpinBox* c2dbEhullMaxSpin_ = nullptr;
+    QCheckBox* c2dbUseGapMin_ = nullptr;
+    QDoubleSpinBox* c2dbGapMinSpin_ = nullptr;
+    QCheckBox* c2dbUseGapMax_ = nullptr;
+    QDoubleSpinBox* c2dbGapMaxSpin_ = nullptr;
+    QComboBox* c2dbDynStabCombo_ = nullptr; ///< local-db only: Any/Yes/No
+    QLineEdit* c2dbMagStateEdit_ = nullptr; ///< local-db only: exact match
+    QLineEdit* c2dbLayerGroupEdit_ = nullptr; ///< local-db only: exact match
+    QLabel* c2dbLocalOnlyNote_ = nullptr;
+    QSpinBox* c2dbLimitSpin_ = nullptr;
+    QPushButton* c2dbSearchButton_ = nullptr;
+    QTableWidget* c2dbResultsTable_ = nullptr;
+    QPushButton* c2dbOpenSeparatelyButton_ = nullptr;
+    QPushButton* c2dbGroupTrajectoryButton_ = nullptr;
+    QLabel* c2dbStatus_ = nullptr;
 
     // Bulk
     QComboBox* bulkModeCombo_ = nullptr;

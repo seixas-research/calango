@@ -61,6 +61,9 @@
 #include <cstdio>
 #include <map>
 #include <memory>
+#include <set>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -2485,6 +2488,243 @@ int main(int argc, char** argv)
         check(bulkFrameIsPt,
               "and the bulk frame really is the Pt structure, not "
               "coincidentally also tagged");
+    }
+
+    // ---- Dataset Manager: multi-parent merge, hygiene, stratified split ----
+    //
+    // Same two-branch shape as the Dump scenario immediately above (bulk +
+    // isolated-atom), now feeding a Dataset Manager node instead: 6 bulk
+    // metals (one SinglePoint pass each) merged with 2 isolated-atom
+    // references, split with fixed fractions/seed so the counts are the
+    // closed form core::DatasetSplit::makeStratified() computes (verified
+    // directly in DatasetSplitTest) -- what this end-to-end run adds is
+    // that the isolated-atom pinning survives the WHOLE pipeline (fan-out,
+    // merge, hygiene, split, write), not just the C++ function in
+    // isolation.
+    std::printf("Dataset Manager: multi-parent merge with a stratified, "
+                "isolated-atom-pinned split:\n");
+    {
+        using calango::core::Atom;
+        using calango::core::Structure;
+        using calango::core::UnitCell;
+        using calango::gui::DatasetManagerSpec;
+        using calango::gui::SingleAtomContainerSpec;
+
+        // Six EMT-supported fcc metals -- the bulk branch.
+        const std::vector<std::pair<QString, std::shared_ptr<Structure>>>
+            bulkMetals = {
+                {QStringLiteral("Cu"), fcc(29, 3.61)},
+                {QStringLiteral("Au"), fcc(79, 4.08)},
+                {QStringLiteral("Pt"), fcc(78, 3.92)},
+                {QStringLiteral("Ag"), fcc(47, 4.09)},
+                {QStringLiteral("Al"), fcc(13, 4.05)},
+                {QStringLiteral("Ni"), fcc(28, 3.52)},
+            };
+        QList<OrchestrationNodeItem::BatchItem> bulkItems;
+        for (const auto& [name, structure] : bulkMetals)
+            bulkItems.append({name, structure});
+
+        auto cuAu = std::make_shared<Structure>();
+        cuAu->setCell(
+            UnitCell({6.0, 0.0, 0.0}, {0.0, 6.0, 0.0}, {0.0, 0.0, 6.0}));
+        Atom cuAtom;
+        cuAtom.atomicNumber = 29;
+        cuAtom.position = {0.0, 0.0, 0.0};
+        cuAu->addAtom(cuAtom);
+        Atom auAtom;
+        auAtom.atomicNumber = 79;
+        auAtom.position = {3.0, 3.0, 3.0};
+        cuAu->addAtom(auAtom);
+
+        OrchestrationWindow window(materials, pythonResolver);
+        QStringList refusals;
+        window.setRefusalHandler(
+            [&refusals](const QString& message) { refusals << message; });
+
+        // Bulk branch: 6 items -> 6 SinglePoint passes.
+        OrchestrationNodeItem* bulkContainer = window.addProcessNode(
+            OrchestrationTask::Container, 0, calango::core::CalculatorKind::EMT);
+        window.setNodeBatchItems(bulkContainer, bulkItems);
+        OrchestrationNodeItem* bulkPoint = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(bulkContainer, bulkPoint);
+
+        // Isolated-atom branch: CuAu -> 2 isolated-atom passes (Cu, Au).
+        OrchestrationNodeItem* atomContainer = window.addProcessNode(
+            OrchestrationTask::Container, 0, calango::core::CalculatorKind::EMT);
+        window.setNodeBatchItems(
+            atomContainer,
+            {{QStringLiteral("CuAu"), std::shared_ptr<const Structure>(cuAu)}});
+        OrchestrationNodeItem* singleAtom = window.addProcessNode(
+            OrchestrationTask::SingleAtomContainer, 0,
+            calango::core::CalculatorKind::EMT);
+        window.setNodeSingleAtomContainer(singleAtom, SingleAtomContainerSpec());
+        window.linkNodes(atomContainer, singleAtom);
+        OrchestrationNodeItem* atomPoint = window.addProcessNode(
+            OrchestrationTask::SinglePoint, 0,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(singleAtom, atomPoint);
+
+        OrchestrationNodeItem* datasetManager = window.addProcessNode(
+            OrchestrationTask::DatasetManager, 0,
+            calango::core::CalculatorKind::EMT);
+        window.linkNodes(bulkPoint, datasetManager);
+        window.linkNodes(atomPoint, datasetManager);
+
+        calango::core::CalculatorConfig config;
+        config.calculator = calango::core::CalculatorKind::EMT;
+        config.task = calango::core::TaskKind::SinglePoint;
+        const QString script = QString::fromStdString(
+            calango::core::AseScriptGenerator::generate(config,
+                                                         "structure.extxyz"));
+        window.configureNode(bulkPoint, script, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+        window.configureNode(atomPoint, script, pythonExe, QString(),
+                             calango::core::CalculatorKind::EMT);
+
+        const QString datasetDir =
+            sandbox.path() + QStringLiteral("/dataset_manager_out");
+        DatasetManagerSpec spec;
+        applyMaceTrainingPreset(&spec);
+        spec.outputDirectory = datasetDir;
+        // Chosen so the split is the exact closed form
+        // DatasetSplitTest.cpp's "pinned indices" case already verifies in
+        // isolation: 6 unpinned bulk frames -> round(0.5*6)=3 train,
+        // round(0.34*6)=2 validation, remainder 1 test; plus the 2 pinned
+        // isolated-atom frames added to train unconditionally.
+        spec.trainFraction = 0.5;
+        spec.validationFraction = 0.34;
+        spec.seed = 11;
+        window.setNodeDatasetManager(datasetManager, spec);
+
+        calango::core::WorkflowReport delivered;
+        int finishedSignals = 0;
+        QObject::connect(&window, &OrchestrationWindow::runFinished,
+                         [&](const calango::core::WorkflowReport& report) {
+                             delivered = report;
+                             ++finishedSignals;
+                         });
+
+        window.sendToProcesses();
+        check(refusals.isEmpty(),
+              "the mixed bulk + isolated-atom graph feeding Dataset Manager "
+              "is accepted (the same multi-parent exemption as Dump)");
+
+        settle(datasetManager, 60000);
+        QElapsedTimer e2eTimer;
+        e2eTimer.start();
+        while (finishedSignals == 0 && e2eTimer.elapsed() < 30000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+
+        check(finishedSignals == 1, "the run reports itself exactly once");
+        check(delivered.allSucceeded(), "every branch and the merge succeeded");
+        check(datasetManager->status() == OrchestrationNodeItem::Status::Done,
+              "the Dataset Manager node itself reports Done");
+
+        const QString manifestPath =
+            datasetManager->jobDirectory() + QStringLiteral("/dataset_manifest.json");
+        check(QFile::exists(manifestPath), "its manifest was written");
+        const QJsonObject manifest = readJson(manifestPath);
+        check(manifest.value(QStringLiteral("total_frames")).toInt() == 8,
+              "8 frames total: 6 bulk metals + 2 isolated atoms, none dropped");
+        check(manifest.value(QStringLiteral("train_frames")).toInt() == 5,
+              "train = 3 (bulk, 50% of 6) + 2 (pinned isolated atoms) = 5");
+        check(manifest.value(QStringLiteral("valid_frames")).toInt() == 2,
+              "validation = round(34% of 6 bulk) = 2, none of it pinned");
+        check(manifest.value(QStringLiteral("test_frames")).toInt() == 1,
+              "test = the 6-item bulk pool's remainder = 1");
+        check(manifest.value(QStringLiteral("energy_key")).toString()
+                      == QStringLiteral("REF_energy")
+                  && manifest.value(QStringLiteral("forces_key")).toString()
+                      == QStringLiteral("REF_forces"),
+              "the manifest names the MACE preset's key names -- the hand-off "
+              "a MaceTrainer node's dialog pre-fills itself from");
+        check(manifest.value(QStringLiteral("has_energy_range")).toBool(),
+              "an energy range was recorded across the kept frames");
+        const QJsonArray elements = manifest.value(QStringLiteral("elements")).toArray();
+        std::set<QString> elementSet;
+        for (const QJsonValue& v : elements)
+            elementSet.insert(v.toString());
+        check(elementSet
+                  == std::set<QString>({QStringLiteral("Cu"), QStringLiteral("Au"),
+                                        QStringLiteral("Pt"), QStringLiteral("Ag"),
+                                        QStringLiteral("Al"), QStringLiteral("Ni")}),
+              "and every element across the 8 kept frames is covered, exactly "
+              "the six bulk metals (the isolated atoms are Cu and Au, already "
+              "in the set)");
+
+        const QString trainPath = datasetDir + QStringLiteral("/train.extxyz");
+        const QString validPath = datasetDir + QStringLiteral("/valid.extxyz");
+        const QString testPath = datasetDir + QStringLiteral("/test.extxyz");
+        check(QFile::exists(trainPath) && QFile::exists(validPath)
+                  && QFile::exists(testPath),
+              "train.extxyz, valid.extxyz and test.extxyz all exist in the "
+              "user-chosen output folder");
+
+        // Independent read-back: the isolated-atom frames must be IN
+        // train.extxyz specifically, not merely counted correctly.
+        const QString verifyDir =
+            sandbox.path() + QStringLiteral("/verify_dataset_manager");
+        QDir().mkpath(verifyDir);
+        const QString verifyScriptPath = verifyDir + QStringLiteral("/verify.py");
+        const QString verifyOutPath = verifyDir + QStringLiteral("/verify.json");
+        {
+            QFile verifyScript(verifyScriptPath);
+            check(verifyScript.open(QIODevice::WriteOnly | QIODevice::Text),
+                  "the verification script is written");
+            verifyScript.write(QByteArray(
+                "import ase.io, json, sys\n"
+                "frames = ase.io.read(sys.argv[1], index=':')\n"
+                "out = {\n"
+                "    'n_frames': len(frames),\n"
+                "    'config_types': [a.info.get('config_type') for a in "
+                "frames],\n"
+                "    'has_energy': [('REF_energy' in a.info) for a in "
+                "frames],\n"
+                "    'has_forces': [('REF_forces' in a.arrays) for a in "
+                "frames],\n"
+                "}\n"
+                "with open(sys.argv[2], 'w') as fh:\n"
+                "    json.dump(out, fh)\n"));
+        }
+        QProcess verifyRun;
+        verifyRun.start(pythonExe, {verifyScriptPath, trainPath, verifyOutPath});
+        check(verifyRun.waitForFinished(60000) && verifyRun.exitCode() == 0,
+              "the independent read-back of train.extxyz runs cleanly");
+        const QJsonObject verifiedTrain = readJson(verifyOutPath);
+        check(verifiedTrain.value(QStringLiteral("n_frames")).toInt() == 5,
+              "train.extxyz itself holds exactly 5 frames");
+        int isolatedInTrain = 0;
+        for (const QJsonValue& v :
+            verifiedTrain.value(QStringLiteral("config_types")).toArray())
+            if (v.toString() == QStringLiteral("IsolatedAtom"))
+                ++isolatedInTrain;
+        check(isolatedInTrain == 2,
+              "both isolated-atom frames (Cu and Au) are genuinely inside "
+              "train.extxyz, end to end -- not just counted right in the "
+              "manifest");
+        bool everyTrainFrameHasEnergyAndForces = true;
+        for (const QJsonValue& v :
+            verifiedTrain.value(QStringLiteral("has_energy")).toArray())
+            everyTrainFrameHasEnergyAndForces =
+                everyTrainFrameHasEnergyAndForces && v.toBool();
+        for (const QJsonValue& v :
+            verifiedTrain.value(QStringLiteral("has_forces")).toArray())
+            everyTrainFrameHasEnergyAndForces =
+                everyTrainFrameHasEnergyAndForces && v.toBool();
+        check(everyTrainFrameHasEnergyAndForces,
+              "every frame in train.extxyz carries both REF_energy and "
+              "REF_forces under the MACE preset's own key names");
+
+        QProcess verifyValid;
+        verifyValid.start(pythonExe, {verifyScriptPath, validPath, verifyOutPath});
+        check(verifyValid.waitForFinished(60000) && verifyValid.exitCode() == 0,
+              "the independent read-back of valid.extxyz runs cleanly");
+        const QJsonObject verifiedValid = readJson(verifyOutPath);
+        check(verifiedValid.value(QStringLiteral("n_frames")).toInt() == 2,
+              "valid.extxyz holds exactly 2 frames, and (by construction "
+              "above) none of them is an isolated atom");
     }
 
     std::printf("Random Noise Setup node: acts like a Structure Container "
