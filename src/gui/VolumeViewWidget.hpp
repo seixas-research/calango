@@ -31,6 +31,14 @@ public:
                     double colorMin, double colorMax, bool colored);
     void clearIsoMesh();
 
+    /// The isosurface's material: Flat/Diffuse/Glossy shading — matching
+    /// gui::IsoShading's numbering, so a caller can pass
+    /// static_cast<int>(style.shading) directly — plus the ambient floor and
+    /// the Glossy specular strength. Defaults reproduce the shader's
+    /// original hardcoded formula exactly (Glossy, 0.28 ambient, 0.35
+    /// specular), so a caller that never calls this sees no change.
+    void setIsoMaterial(int shadingMode, float ambient, float specular);
+
     /// Replace the slice-plane geometry: a grid of quads with per-vertex
     /// colors already baked (positions + rgb triplets).
     void setSlice(const std::vector<float>& interleavedPosColor);
@@ -76,6 +84,30 @@ public:
     /// want to be opaque, or every sheet shows through every other.
     void setMeshOpacity(float alpha);
 
+    /// The mesh's own triangle edges, drawn as a thin unlit overlay ON TOP
+    /// of the solid fill (a `glPolygonOffset` on the fill is what keeps
+    /// them from z-fighting with the coincident triangle surface). Same
+    /// vertex layout as setMesh() — color is read but not shaded, so pass
+    /// whatever the wireframe should look like (typically the surface's own
+    /// color, darkened) already baked in.
+    void setWireframeOverlay(std::vector<float> interleavedPosNormalColor);
+    void clearWireframeOverlay();
+
+    /// A 3D line segment meant to be drawn as a screen-space QPainter
+    /// overlay rather than as GL_LINES — core-profile GL clamps
+    /// glLineWidth to 1px on macOS, so this is how a line gets an
+    /// adjustable width at all (see StructureRenderer's cell edges, which
+    /// use instanced tube geometry for the same reason; a handful of
+    /// Brillouin-zone edges don't need geometry that heavy).
+    struct OverlayLine {
+        QVector3D a, b;
+    };
+    /// Replace the width-adjustable line overlay (e.g. the Brillouin-zone
+    /// wireframe). Projected through the live camera and painted after the
+    /// GL pass, same as the label overlay. An empty `lines` clears it.
+    void setOverlayLines(std::vector<OverlayLine> lines, const QColor& color,
+                         float width);
+
     /// A short caption pinned to a point in the scene.
     struct Label {
         QVector3D position; ///< world space
@@ -114,19 +146,32 @@ private:
     void draw(Buffer& buffer, GLenum mode, bool unlit, float alpha);
     /// Project labels_ through the live camera and paint them over the scene.
     void drawLabels(class QPainter& painter);
+    /// Project overlayLines_ through the live camera and paint them over the
+    /// scene, same projection drawLabels() uses.
+    void drawOverlayLines(class QPainter& painter);
 
     render::OrbitCamera camera_;
     QOpenGLShaderProgram program_;
     Buffer isoBuffer_;
     Buffer sliceBuffer_;
     Buffer boxBuffer_;
+    Buffer wireOverlayBuffer_;
     QPointF lastMousePos_;
     QVector3D boxCenter_;
     float boxRadius_ = 10.0f;
     /// Slightly translucent by default so a colour slice behind an isosurface
     /// stays readable; setMeshOpacity() overrides it.
     float meshAlpha_ = 0.88f;
+    /// Isosurface material — see setIsoMaterial(). Defaults reproduce the
+    /// shader's original hardcoded formula (Glossy shading, 0.28 ambient,
+    /// 0.35 specular).
+    int isoShadingMode_ = 2;
+    float isoAmbient_ = 0.28f;
+    float isoSpecular_ = 0.35f;
     std::vector<Label> labels_;
+    std::vector<OverlayLine> overlayLines_;
+    QColor overlayLineColor_{150, 152, 160};
+    float overlayLineWidth_ = 1.0f;
     bool initialized_ = false;
 };
 

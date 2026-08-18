@@ -15,6 +15,16 @@ struct IsoMesh {
     std::vector<Vec3> positions;
     std::vector<Vec3> normals; ///< from the field gradient (smooth shading)
     std::vector<double> colorValues;
+    /// |∇field| at each vertex, from the SAME central-difference stencil
+    /// `normals` is already built from — always populated (it costs nothing
+    /// beyond what normalizing the gradient already computes), regardless of
+    /// whether `colorValues` is. For a Fermi surface this is the group
+    /// velocity magnitude up to a constant (E_n(k) is the field), which is
+    /// why this exists rather than overloading `colorValues`: that field's
+    /// existing contract (empty unless an explicit colorField was supplied)
+    /// is relied on elsewhere to mean "no secondary field," and quietly
+    /// filling it by default would change what every other caller sees.
+    std::vector<double> gradientMagnitude;
 };
 
 /// What the extractor believes lies beyond the last grid node.
@@ -66,8 +76,8 @@ WeldedMesh weldVertices(const IsoMesh& mesh, double tolerance = 1e-5);
 
 /// Replace each triangle's three (smooth, gradient-derived) vertex normals
 /// with a single flat one: their average, or the geometric
-/// (edge1 × edge2) normal when that average degenerates. Positions and
-/// colorValues pass through unchanged.
+/// (edge1 × edge2) normal when that average degenerates. Positions,
+/// colorValues and gradientMagnitude pass through unchanged.
 ///
 /// A sheet built of small, curved facets reads as faceted under smooth
 /// shading no differently than under flat — the facets are geometry, not a
@@ -78,5 +88,22 @@ WeldedMesh weldVertices(const IsoMesh& mesh, double tolerance = 1e-5);
 /// cutting, sidesteps the question: every fragment of a triangle inherits
 /// that triangle's one normal, cut or not.
 IsoMesh flattenTriangleNormals(const IsoMesh& mesh);
+
+/// Laplacian-smooth `mesh` in place, `passes` iterations, under-relaxed
+/// (λ = 0.5, so the surface creeps toward its neighbours instead of
+/// collapsing — a few passes at λ = 1 visibly shrinks a lobe).
+///
+/// The mesh has no shared vertices — every triangle carries its own three —
+/// so neighbours are found by welding on quantized position first (the
+/// SAME weldVertices() the periodic-continuation component filter uses, so
+/// the two can never disagree about which vertices are the same point).
+/// Positions AND normals are smoothed — re-derived area-weighted over the
+/// triangles meeting each welded point — since leaving the normals alone
+/// would keep the faceted shading the smoothing was meant to remove.
+/// `colorValues`/`gradientMagnitude` are left untouched: they are physical
+/// samples of the field, and smoothing the shape they are attached to must
+/// not also blur what they say. A `passes <= 0` or a mesh under one
+/// triangle is a no-op.
+void smoothMesh(IsoMesh& mesh, int passes);
 
 } // namespace calango::core

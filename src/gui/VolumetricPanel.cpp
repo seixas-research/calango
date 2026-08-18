@@ -77,91 +77,6 @@ ShadeTerms shadeNormal(const core::Vec3& normal, const VolumetricStyle& style)
     return terms;
 }
 
-/// Laplacian smoothing of a marching-cubes triangle soup.
-///
-/// The mesh has no shared vertices — every triangle carries its own three —
-/// so neighbours are found by welding on quantized position first. Positions
-/// AND normals are smoothed: leaving the normals alone would keep the faceted
-/// shading the smoothing was meant to remove.
-void smoothMesh(core::IsoMesh& mesh, int passes)
-{
-    if (passes <= 0 || mesh.positions.size() < 3)
-        return;
-    // The weld lives in core::weldVertices, which is also what the
-    // connected-component filter behind the Wannier periodic continuation runs
-    // on — one implementation, so the two can never disagree about which
-    // vertices are the same point. Its default tolerance is the one this used
-    // to spell out: vertices that should be one point come out of the extractor
-    // bit-identical or within rounding, never merely close, so a tight grid
-    // identifies them all while distinct nearby sheets stay distinct.
-    const core::WeldedMesh welded = core::weldVertices(mesh);
-    const std::vector<int>& weld = welded.index;
-    // A mutable copy: the smoothing passes below swap through it.
-    std::vector<core::Vec3> points = welded.points;
-    const std::size_t count = mesh.positions.size();
-
-    // Adjacency over the welded points, from the triangle edges.
-    std::vector<std::vector<int>> neighbors(points.size());
-    const std::size_t triangles = count / 3;
-    for (std::size_t t = 0; t < triangles; ++t) {
-        const int a = weld[3 * t], b = weld[3 * t + 1], c = weld[3 * t + 2];
-        const int edges[3][2] = {{a, b}, {b, c}, {c, a}};
-        for (const auto& e : edges) {
-            if (e[0] == e[1])
-                continue;
-            neighbors[static_cast<std::size_t>(e[0])].push_back(e[1]);
-            neighbors[static_cast<std::size_t>(e[1])].push_back(e[0]);
-        }
-    }
-
-    // Under-relaxed (lambda < 1) so the surface creeps toward its neighbours
-    // instead of collapsing: at lambda = 1 a few passes visibly shrink a lobe.
-    constexpr double kLambda = 0.5;
-    std::vector<core::Vec3> next(points.size());
-    for (int pass = 0; pass < passes; ++pass) {
-        for (std::size_t i = 0; i < points.size(); ++i) {
-            const auto& adjacent = neighbors[i];
-            if (adjacent.empty()) {
-                next[i] = points[i];
-                continue;
-            }
-            core::Vec3 sum{0.0, 0.0, 0.0};
-            for (const int j : adjacent)
-                sum = sum + points[static_cast<std::size_t>(j)];
-            const core::Vec3 average = sum * (1.0 / adjacent.size());
-            next[i] = points[i] + (average - points[i]) * kLambda;
-        }
-        points.swap(next);
-    }
-
-    for (std::size_t i = 0; i < count; ++i)
-        mesh.positions[i] = points[static_cast<std::size_t>(weld[i])];
-
-    // Re-derive the normals from the smoothed geometry, area-weighted over the
-    // triangles meeting each welded point.
-    if (!mesh.normals.empty()) {
-        std::vector<core::Vec3> accumulated(points.size(),
-                                            core::Vec3{0.0, 0.0, 0.0});
-        for (std::size_t t = 0; t < triangles; ++t) {
-            const core::Vec3& p0 = mesh.positions[3 * t];
-            const core::Vec3& p1 = mesh.positions[3 * t + 1];
-            const core::Vec3& p2 = mesh.positions[3 * t + 2];
-            const core::Vec3 face = (p1 - p0).cross(p2 - p0);
-            for (int k = 0; k < 3; ++k) {
-                const auto index = static_cast<std::size_t>(weld[3 * t + k]);
-                accumulated[index] = accumulated[index] + face;
-            }
-        }
-        for (std::size_t i = 0; i < count; ++i) {
-            const core::Vec3& n =
-                accumulated[static_cast<std::size_t>(weld[i])];
-            // A cancelled-out sum leaves the extraction's own normal, which is
-            // still the field gradient and better than a zero vector.
-            if (n.norm() > 1e-12)
-                mesh.normals[i] = n.normalized();
-        }
-    }
-}
 } // namespace
 
 VolumetricPanel::VolumetricPanel(ViewportWidget* viewport, QWidget* parent)
@@ -1053,8 +968,8 @@ void VolumetricPanel::pumpIsoExtraction()
                     if (signedField && iso > 0.0)
                         r.negative = core::extractIsosurface(bf, -iso, nullptr);
                 }
-                smoothMesh(r.positive, smoothing);
-                smoothMesh(r.negative, smoothing);
+                core::smoothMesh(r.positive, smoothing);
+                core::smoothMesh(r.negative, smoothing);
                 results.push_back(std::move(r));
             }
             return results;

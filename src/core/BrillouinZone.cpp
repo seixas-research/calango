@@ -35,23 +35,38 @@ std::vector<Plane> bisectorPlanes(const std::array<Vec3, 3>& basis)
     return planes;
 }
 
+/// A polygon vertex plus one auxiliary scalar riding along for the clip —
+/// today that's gradientMagnitude, the only per-vertex quantity (besides
+/// position, which the clip works in anyway) that has to survive a cut.
+struct ClipVertex {
+    Vec3 pos;
+    double scalar = 0.0;
+};
+
 /// Clip a convex polygon against the half-space x·g ≤ d (Sutherland-Hodgman).
 /// A cut edge lands on the plane by linear interpolation, which for a facet
-/// of an isosurface keeps the new edge exactly on the surface.
-std::vector<Vec3> clipHalfSpace(const std::vector<Vec3>& polygon, const Plane& plane)
+/// of an isosurface keeps the new edge exactly on the surface — and, since
+/// `scalar` is interpolated by the same parameter `t`, keeps it consistent
+/// with the interpolated position rather than picked from whichever original
+/// endpoint happened to survive.
+std::vector<ClipVertex> clipHalfSpace(const std::vector<ClipVertex>& polygon,
+                                      const Plane& plane)
 {
-    std::vector<Vec3> out;
+    std::vector<ClipVertex> out;
     const auto n = polygon.size();
     const auto side = [&plane](const Vec3& v) { return v.dot(plane.g) - plane.d; };
     for (std::size_t i = 0; i < n; ++i) {
-        const Vec3& a = polygon[i];
-        const Vec3& b = polygon[(i + 1) % n];
-        const double da = side(a);
-        const double db = side(b);
+        const ClipVertex& a = polygon[i];
+        const ClipVertex& b = polygon[(i + 1) % n];
+        const double da = side(a.pos);
+        const double db = side(b.pos);
         if (da <= 0.0)
             out.push_back(a);
-        if ((da < 0.0 && db > 0.0) || (da > 0.0 && db < 0.0))
-            out.push_back(a + (b - a) * (da / (da - db)));
+        if ((da < 0.0 && db > 0.0) || (da > 0.0 && db < 0.0)) {
+            const double t = da / (da - db);
+            out.push_back({a.pos + (b.pos - a.pos) * t,
+                           a.scalar + (b.scalar - a.scalar) * t});
+        }
     }
     return out;
 }
@@ -231,8 +246,13 @@ IsoMesh clipToWignerSeitzCell(const IsoMesh& mesh, const std::array<Vec3, 3>& ba
                     addShift({i, j, k});
     }
 
+    const bool hasGradientMagnitude =
+        flat.gradientMagnitude.size() == flat.positions.size();
+
     out.positions.reserve(flat.positions.size());
     out.normals.reserve(flat.normals.size());
+    if (hasGradientMagnitude)
+        out.gradientMagnitude.reserve(flat.gradientMagnitude.size());
 
     for (std::size_t t = 0; t + 2 < flat.positions.size(); t += 3) {
         const Vec3& normal = flat.normals[t]; // same on t, t+1, t+2
@@ -240,21 +260,31 @@ IsoMesh clipToWignerSeitzCell(const IsoMesh& mesh, const std::array<Vec3, 3>& ba
         for (const std::array<int, 3>& shift : shifts) {
             const Vec3 offset = basis[0] * shift[0] + basis[1] * shift[1]
                 + basis[2] * shift[2];
-            std::vector<Vec3> polygon{flat.positions[t] + offset,
-                                      flat.positions[t + 1] + offset,
-                                      flat.positions[t + 2] + offset};
+            std::vector<ClipVertex> polygon{
+                {flat.positions[t] + offset,
+                 hasGradientMagnitude ? flat.gradientMagnitude[t] : 0.0},
+                {flat.positions[t + 1] + offset,
+                 hasGradientMagnitude ? flat.gradientMagnitude[t + 1] : 0.0},
+                {flat.positions[t + 2] + offset,
+                 hasGradientMagnitude ? flat.gradientMagnitude[t + 2] : 0.0},
+            };
             for (const Plane& plane : sortedPlanes) {
                 polygon = clipHalfSpace(polygon, plane);
                 if (polygon.size() < 3)
                     break;
             }
             for (std::size_t k = 1; k + 1 < polygon.size(); ++k) {
-                out.positions.push_back(polygon[0]);
-                out.positions.push_back(polygon[k]);
-                out.positions.push_back(polygon[k + 1]);
+                out.positions.push_back(polygon[0].pos);
+                out.positions.push_back(polygon[k].pos);
+                out.positions.push_back(polygon[k + 1].pos);
                 out.normals.push_back(normal);
                 out.normals.push_back(normal);
                 out.normals.push_back(normal);
+                if (hasGradientMagnitude) {
+                    out.gradientMagnitude.push_back(polygon[0].scalar);
+                    out.gradientMagnitude.push_back(polygon[k].scalar);
+                    out.gradientMagnitude.push_back(polygon[k + 1].scalar);
+                }
             }
         }
     }

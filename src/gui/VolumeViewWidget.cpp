@@ -6,6 +6,7 @@
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <optional>
 
 namespace calango::gui {
 
@@ -33,7 +34,8 @@ VolumeViewWidget::VolumeViewWidget(QWidget* parent)
 VolumeViewWidget::~VolumeViewWidget()
 {
     makeCurrent();
-    for (Buffer* buffer : {&isoBuffer_, &sliceBuffer_, &boxBuffer_}) {
+    for (Buffer* buffer :
+        {&isoBuffer_, &sliceBuffer_, &boxBuffer_, &wireOverlayBuffer_}) {
         buffer->vbo.destroy();
         buffer->vao.destroy();
     }
@@ -66,6 +68,14 @@ void VolumeViewWidget::clearIsoMesh()
     isoBuffer_.staging.clear();
     isoBuffer_.vertexCount = 0;
     isoBuffer_.dirty = true;
+    update();
+}
+
+void VolumeViewWidget::setIsoMaterial(int shadingMode, float ambient, float specular)
+{
+    isoShadingMode_ = std::clamp(shadingMode, 0, 2);
+    isoAmbient_ = ambient;
+    isoSpecular_ = specular;
     update();
 }
 
@@ -195,6 +205,33 @@ void VolumeViewWidget::setMeshOpacity(float alpha)
     update();
 }
 
+void VolumeViewWidget::setWireframeOverlay(
+    std::vector<float> interleavedPosNormalColor)
+{
+    wireOverlayBuffer_.staging = std::move(interleavedPosNormalColor);
+    wireOverlayBuffer_.vertexCount =
+        static_cast<int>(wireOverlayBuffer_.staging.size() / 9);
+    wireOverlayBuffer_.dirty = true;
+    update();
+}
+
+void VolumeViewWidget::clearWireframeOverlay()
+{
+    wireOverlayBuffer_.staging.clear();
+    wireOverlayBuffer_.vertexCount = 0;
+    wireOverlayBuffer_.dirty = true;
+    update();
+}
+
+void VolumeViewWidget::setOverlayLines(std::vector<OverlayLine> lines,
+                                       const QColor& color, float width)
+{
+    overlayLines_ = std::move(lines);
+    overlayLineColor_ = color;
+    overlayLineWidth_ = width;
+    update();
+}
+
 void VolumeViewWidget::setLabels(std::vector<Label> labels)
 {
     labels_ = std::move(labels);
@@ -261,7 +298,8 @@ void VolumeViewWidget::paintGL()
     glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    for (Buffer* buffer : {&isoBuffer_, &sliceBuffer_, &boxBuffer_})
+    for (Buffer* buffer :
+        {&isoBuffer_, &sliceBuffer_, &boxBuffer_, &wireOverlayBuffer_})
         upload(*buffer);
 
     const float aspect = height() > 0
@@ -270,18 +308,69 @@ void VolumeViewWidget::paintGL()
     program_.bind();
     program_.setUniformValue("uView", camera_.view());
     program_.setUniformValue("uProj", camera_.projection(aspect));
+    program_.setUniformValue("uShadingMode", isoShadingMode_);
+    program_.setUniformValue("uAmbient", isoAmbient_);
+    program_.setUniformValue("uSpecular", isoSpecular_);
 
     draw(boxBuffer_, GL_LINES, true, 1.0f);
     draw(sliceBuffer_, GL_TRIANGLES, true, 1.0f);
     // The isosurface last, slightly translucent, so slices stay readable.
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    // A polygon offset pushes the FILLED triangles back a hair in depth, so
+    // the wireframe overlay — drawn right after, at the true depth — wins
+    // the z-test along every coincident edge instead of flickering against
+    // it. The overlay itself needs no offset.
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(1.0f, 1.0f);
     draw(isoBuffer_, GL_TRIANGLES, false, meshAlpha_);
+    glDisable(GL_POLYGON_OFFSET_FILL);
+    draw(wireOverlayBuffer_, GL_LINES, true, 1.0f);
     glDisable(GL_BLEND);
     program_.release();
 
     painter.endNativePainting();
+    drawOverlayLines(painter);
     drawLabels(painter);
+}
+
+void VolumeViewWidget::drawOverlayLines(QPainter& painter)
+{
+    if (overlayLines_.empty())
+        return;
+    const float aspect = height() > 0
+        ? static_cast<float>(width()) / static_cast<float>(height())
+        : 1.0f;
+    const QMatrix4x4 viewProjection = camera_.projection(aspect) * camera_.view();
+
+    // Screen-space point of a world point, or nullopt when it is behind the
+    // eye — same rule drawLabels() uses, and for the same reason: the
+    // perspective divide would otherwise fold it back into view as a
+    // mirrored ghost on the far side of the screen.
+    const auto toScreen = [&](const QVector3D& p) -> std::optional<QPointF> {
+        const QVector4D clip = viewProjection * QVector4D(p, 1.0f);
+        if (clip.w() <= 0.0f)
+            return std::nullopt;
+        const QVector3D ndc = clip.toVector3DAffine();
+        return QPointF(
+            (ndc.x() * 0.5f + 0.5f) * static_cast<float>(width()),
+            (1.0f - (ndc.y() * 0.5f + 0.5f)) * static_cast<float>(height()));
+    };
+
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(QPen(overlayLineColor_, overlayLineWidth_));
+    for (const OverlayLine& line : overlayLines_) {
+        const auto a = toScreen(line.a);
+        const auto b = toScreen(line.b);
+        // No near-plane clipping: an edge with either endpoint behind the
+        // eye is simply skipped, same as drawLabels() skips an off-screen
+        // caption rather than clipping it. The zone sits near the orbit
+        // camera's look-at point, well inside the frustum for any framing
+        // this viewer actually uses, so this is a rare case, not a common
+        // one worth a clip implementation for.
+        if (a && b)
+            painter.drawLine(*a, *b);
+    }
 }
 
 void VolumeViewWidget::drawLabels(QPainter& painter)

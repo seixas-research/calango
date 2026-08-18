@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.28
+    VERSION 26.8.29
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -444,6 +444,8 @@ qt_add_executable(calango
     src/gui/DefectDiagramWindow.cpp
     src/gui/FermiSurfaceDialog.hpp
     src/gui/FermiSurfaceDialog.cpp
+    src/gui/FermiSurfaceStyle.hpp
+    src/gui/FermiSurfaceStyle.cpp
     src/gui/FermiSurfaceWindow.hpp
     src/gui/FermiSurfaceWindow.cpp
     src/gui/TopologyDialog.hpp

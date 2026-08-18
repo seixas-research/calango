@@ -238,6 +238,110 @@ void testNormalsAreFlattenedPerSourceTriangle()
     check(allSame, "every fragment of the cut triangle shares one flat normal");
 }
 
+/// Barycentric weights of `p` in the plane of triangle (v0, v1, v2) — the
+/// least-squares solution of p = v0 + w1*(v1-v0) + w2*(v2-v0), valid for any
+/// p actually in that plane (weights outside [0,1] just mean p is outside
+/// the triangle, in-plane).
+std::array<double, 3> barycentric(const Vec3& p, const Vec3& v0, const Vec3& v1,
+                                  const Vec3& v2)
+{
+    const Vec3 e1 = v1 - v0, e2 = v2 - v0, e0 = p - v0;
+    const double d11 = e1.dot(e1), d12 = e1.dot(e2), d22 = e2.dot(e2);
+    const double d1 = e0.dot(e1), d2 = e0.dot(e2);
+    const double denom = d11 * d22 - d12 * d12;
+    const double w1 = (d22 * d1 - d12 * d2) / denom;
+    const double w2 = (d11 * d2 - d12 * d1) / denom;
+    return {1.0 - w1 - w2, w1, w2};
+}
+
+void testGradientMagnitudeSurvivesTheClip()
+{
+    // Closed-form check, re-derived independently of clipToWignerSeitzCell's
+    // own machinery: every output vertex — an original corner, translated to
+    // whichever periodic image it belongs to, or a new point interpolated
+    // onto a cut — is some point of the ORIGINAL triangle's plane, shifted by
+    // SOME integer combination of the lattice vectors. Its gradientMagnitude
+    // must equal the ORIGINAL triangle's own barycentric interpolation at
+    // that (de-shifted) point: a plain copy is barycentric weights (1,0,0)
+    // etc., a cut point is whatever weights the cutting plane put it at, and
+    // in neither case is a periodic field's value re-evaluated at the new
+    // position — a translated copy keeps the value it had.
+    const std::array<Vec3, 3> basis{Vec3{0.0, 1.0, 1.0}, Vec3{1.0, 0.0, 1.0},
+                                    Vec3{1.0, 1.0, 0.0}};
+    // Straddles several WS-cell faces at once, so both plain copies (to the
+    // images that already contain a corner) and genuine cuts are exercised.
+    // Deliberately NOT symmetric under the basis's own x<->y permutation
+    // symmetry (b0=(0,1,1) and b1=(1,0,1) swap under it): a triangle that
+    // shared that symmetry let two DIFFERENT shifts both look like valid,
+    // in-triangle reconstructions of the same output point, which is a
+    // genuine ambiguity in how this test verifies the answer, not a defect
+    // in clipToWignerSeitzCell itself — this asymmetric one has only one.
+    const Vec3 v0{-0.15, -0.11, -0.13}, v1{0.91, -0.17, -0.09},
+        v2{-0.13, 0.87, -0.19};
+    const double s0 = 2.3, s1 = -1.7, s2 = 0.6; // arbitrary, no relation to position
+    core::IsoMesh input;
+    input.positions = {v0, v1, v2};
+    input.normals = {Vec3{0, 0, 1}, Vec3{0, 0, 1}, Vec3{0, 0, 1}};
+    input.gradientMagnitude = {s0, s1, s2};
+
+    const core::IsoMesh out = core::clipToWignerSeitzCell(input, basis);
+    check(!out.positions.empty(), "the straddling triangle produced clipped fragments");
+    check(out.gradientMagnitude.size() == out.positions.size(),
+         "gradientMagnitude has one entry per output vertex, same as positions");
+
+    // Per OUTPUT TRIANGLE, not per vertex: Sutherland-Hodgman clips one
+    // translated copy of the source triangle per shift, so a triangle's own
+    // three vertices always share the shift that produced them. Matching
+    // per vertex instead is ambiguous exactly where two images meet — a
+    // point ON a shared Wigner-Seitz face can look like a valid, in-triangle
+    // point under more than one shift, and picking the wrong one of two
+    // otherwise-valid matches would compare against the wrong barycentric
+    // weights. Requiring all three vertices to agree on ONE shift resolves
+    // that ambiguity in every case this test constructs.
+    int matchedTriangles = 0;
+    int totalTriangles = 0;
+    bool allConsistent = true;
+    for (std::size_t t = 0; t + 2 < out.positions.size(); t += 3) {
+        ++totalTriangles;
+        bool foundShift = false;
+        for (int a = -1; a <= 1 && !foundShift; ++a) {
+            for (int b = -1; b <= 1 && !foundShift; ++b) {
+                for (int c = -1; c <= 1 && !foundShift; ++c) {
+                    const Vec3 shift = basis[0] * a + basis[1] * b + basis[2] * c;
+                    std::array<double, 3> expected{};
+                    bool allThreeMatch = true;
+                    for (std::size_t k = 0; k < 3 && allThreeMatch; ++k) {
+                        const Vec3 q = out.positions[t + k] - shift;
+                        const auto w = barycentric(q, v0, v1, v2);
+                        const Vec3 reconstructed =
+                            v0 * w[0] + v1 * w[1] + v2 * w[2];
+                        if ((q - reconstructed).norm() > 1e-9
+                            || w[0] < -1e-6 || w[0] > 1 + 1e-6 || w[1] < -1e-6
+                            || w[1] > 1 + 1e-6 || w[2] < -1e-6 || w[2] > 1 + 1e-6)
+                            allThreeMatch = false;
+                        else
+                            expected[k] = s0 * w[0] + s1 * w[1] + s2 * w[2];
+                    }
+                    if (!allThreeMatch)
+                        continue;
+                    foundShift = true;
+                    ++matchedTriangles;
+                    for (std::size_t k = 0; k < 3; ++k)
+                        if (std::abs(out.gradientMagnitude[t + k] - expected[k])
+                            > 1e-6)
+                            allConsistent = false;
+                }
+            }
+        }
+    }
+    check(matchedTriangles == totalTriangles,
+         "every output triangle is traceable back to the original triangle "
+         "under a single consistent lattice shift");
+    check(allConsistent,
+         "and each vertex's gradientMagnitude matches the original "
+         "triangle's own barycentric interpolation there");
+}
+
 } // namespace
 
 int main()
@@ -247,6 +351,7 @@ int main()
     testSkewedCellCornersAreRecovered();
     testEveryOutputVertexIsInsideTheZone();
     testNormalsAreFlattenedPerSourceTriangle();
+    testGradientMagnitudeSurvivesTheClip();
 
     std::printf("\n%d check(s) FAILED.\n", failures);
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

@@ -230,10 +230,13 @@ IsoMesh keepComponentsAroundCentre(const IsoMesh& mesh,
 
     IsoMesh out;
     const bool colored = mesh.colorValues.size() == vertices;
+    const bool hasGradientMagnitude = mesh.gradientMagnitude.size() == vertices;
     out.positions.reserve(vertices);
     out.normals.reserve(vertices);
     if (colored)
         out.colorValues.reserve(vertices);
+    if (hasGradientMagnitude)
+        out.gradientMagnitude.reserve(vertices);
     for (std::size_t t = 0; t < triangles; ++t) {
         if (keep.find(components.find(static_cast<int>(t))) == keep.end())
             continue;
@@ -244,6 +247,8 @@ IsoMesh keepComponentsAroundCentre(const IsoMesh& mesh,
                 out.normals.push_back(mesh.normals[v]);
             if (colored)
                 out.colorValues.push_back(mesh.colorValues[v]);
+            if (hasGradientMagnitude)
+                out.gradientMagnitude.push_back(mesh.gradientMagnitude[v]);
         }
     }
     return out;

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <limits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace calango::core {
@@ -63,6 +64,12 @@ IsoMesh extractIsosurface(const VolumetricData& field, double isovalue,
                                      inv[7], inv[2], inv[5], inv[8]};
     }();
 
+    // Returns the unit outward normal AND the raw gradient magnitude — the
+    // latter is already computed here (it's what `norm` normalizes away),
+    // so keeping it costs nothing extra. For a scalar field that is itself
+    // an energy (e.g. a Fermi surface's E_n(k)), this magnitude is the
+    // group-velocity proxy |∇E(k)| a caller may want to color the surface
+    // by; anything not asking for it just ignores the second element.
     const auto gradient = [&](double gx, double gy, double gz) {
         constexpr double h = 0.5;
         const double dx =
@@ -79,7 +86,8 @@ IsoMesh extractIsosurface(const VolumetricData& field, double isovalue,
                invT[3] * dx + invT[4] * dy + invT[5] * dz,
                invT[6] * dx + invT[7] * dy + invT[8] * dz};
         const double norm = g.norm();
-        return norm > 1e-12 ? g * (1.0 / norm) : Vec3{0.0, 0.0, 1.0};
+        const Vec3 unit = norm > 1e-12 ? g * (1.0 / norm) : Vec3{0.0, 0.0, 1.0};
+        return std::pair<Vec3, double>{unit, norm};
     };
 
     const auto emitVertex = [&](const Corner& a, const Corner& b) {
@@ -91,7 +99,9 @@ IsoMesh extractIsosurface(const VolumetricData& field, double isovalue,
         const double gy = a.gy + t * (b.gy - a.gy);
         const double gz = a.gz + t * (b.gz - a.gz);
         mesh.positions.push_back(field.position(gx, gy, gz));
-        mesh.normals.push_back(gradient(gx, gy, gz) * -1.0);
+        const auto [unitGradient, gradientMagnitude] = gradient(gx, gy, gz);
+        mesh.normals.push_back(unitGradient * -1.0);
+        mesh.gradientMagnitude.push_back(gradientMagnitude);
         if (colorField) {
             // Same box assumed: convert fractional coords to the color
             // field's own grid resolution.
@@ -335,6 +345,7 @@ IsoMesh flattenTriangleNormals(const IsoMesh& mesh)
     IsoMesh out;
     out.positions = mesh.positions;
     out.colorValues = mesh.colorValues;
+    out.gradientMagnitude = mesh.gradientMagnitude;
     out.normals.resize(mesh.normals.size());
     for (std::size_t t = 0; t + 2 < mesh.positions.size(); t += 3) {
         Vec3 normal = mesh.normals[t] + mesh.normals[t + 1] + mesh.normals[t + 2];
@@ -348,6 +359,77 @@ IsoMesh flattenTriangleNormals(const IsoMesh& mesh)
         out.normals[t + 2] = normal;
     }
     return out;
+}
+
+void smoothMesh(IsoMesh& mesh, int passes)
+{
+    if (passes <= 0 || mesh.positions.size() < 3)
+        return;
+    const WeldedMesh welded = weldVertices(mesh);
+    const std::vector<int>& weld = welded.index;
+    // A mutable copy: the smoothing passes below swap through it.
+    std::vector<Vec3> points = welded.points;
+    const std::size_t count = mesh.positions.size();
+
+    // Adjacency over the welded points, from the triangle edges.
+    std::vector<std::vector<int>> neighbors(points.size());
+    const std::size_t triangles = count / 3;
+    for (std::size_t t = 0; t < triangles; ++t) {
+        const int a = weld[3 * t], b = weld[3 * t + 1], c = weld[3 * t + 2];
+        const int edges[3][2] = {{a, b}, {b, c}, {c, a}};
+        for (const auto& e : edges) {
+            if (e[0] == e[1])
+                continue;
+            neighbors[static_cast<std::size_t>(e[0])].push_back(e[1]);
+            neighbors[static_cast<std::size_t>(e[1])].push_back(e[0]);
+        }
+    }
+
+    // Under-relaxed (lambda < 1) so the surface creeps toward its neighbours
+    // instead of collapsing: at lambda = 1 a few passes visibly shrink a lobe.
+    constexpr double kLambda = 0.5;
+    std::vector<Vec3> next(points.size());
+    for (int pass = 0; pass < passes; ++pass) {
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            const auto& adjacent = neighbors[i];
+            if (adjacent.empty()) {
+                next[i] = points[i];
+                continue;
+            }
+            Vec3 sum{0.0, 0.0, 0.0};
+            for (const int j : adjacent)
+                sum = sum + points[static_cast<std::size_t>(j)];
+            const Vec3 average = sum * (1.0 / static_cast<double>(adjacent.size()));
+            next[i] = points[i] + (average - points[i]) * kLambda;
+        }
+        points.swap(next);
+    }
+
+    for (std::size_t i = 0; i < count; ++i)
+        mesh.positions[i] = points[static_cast<std::size_t>(weld[i])];
+
+    // Re-derive the normals from the smoothed geometry, area-weighted over the
+    // triangles meeting each welded point.
+    if (!mesh.normals.empty()) {
+        std::vector<Vec3> accumulated(points.size(), Vec3{0.0, 0.0, 0.0});
+        for (std::size_t t = 0; t < triangles; ++t) {
+            const Vec3& p0 = mesh.positions[3 * t];
+            const Vec3& p1 = mesh.positions[3 * t + 1];
+            const Vec3& p2 = mesh.positions[3 * t + 2];
+            const Vec3 face = (p1 - p0).cross(p2 - p0);
+            for (int k = 0; k < 3; ++k) {
+                const auto index = static_cast<std::size_t>(weld[3 * t + k]);
+                accumulated[index] = accumulated[index] + face;
+            }
+        }
+        for (std::size_t i = 0; i < count; ++i) {
+            const Vec3& n = accumulated[static_cast<std::size_t>(weld[i])];
+            // A cancelled-out sum leaves the extraction's own normal, which is
+            // still the field gradient and better than a zero vector.
+            if (n.norm() > 1e-12)
+                mesh.normals[i] = n.normalized();
+        }
+    }
 }
 
 } // namespace calango::core

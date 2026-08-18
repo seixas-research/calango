@@ -218,6 +218,57 @@ void testDegenerateTrianglesAreRare()
     std::printf("       %.2f%% degenerate\n", 100.0 * fraction);
 }
 
+void testSmoothMeshMovesGeometryNotFieldSamples()
+{
+    // core::smoothMesh() is a GEOMETRY operation: it must move positions
+    // (and re-derive normals from the smoothed shape) but leave any
+    // per-vertex SAMPLE of the field itself untouched. A Fermi surface
+    // colored by |grad E(k)| relies on this: turning smoothing on must
+    // change the shape without silently blurring the color it is drawn in.
+    using calango::core::IsoMesh;
+    const auto field = sphereField(20, 10.0, 3.0); // coarse -> visibly faceted
+    IsoMesh mesh = calango::core::extractIsosurface(field, 0.0);
+    check(mesh.gradientMagnitude.size() == mesh.positions.size(),
+          "extractIsosurface populates gradientMagnitude for every vertex");
+
+    const std::vector<Vec3> before = mesh.positions;
+    const std::vector<double> magnitudesBefore = mesh.gradientMagnitude;
+
+    calango::core::smoothMesh(mesh, 0);
+    bool unchangedAtZeroPasses = true;
+    for (std::size_t i = 0; i < mesh.positions.size(); ++i)
+        if ((mesh.positions[i] - before[i]).norm() > 0.0)
+            unchangedAtZeroPasses = false;
+    check(unchangedAtZeroPasses, "0 passes is a documented no-op");
+
+    calango::core::smoothMesh(mesh, 3);
+    bool magnitudesUntouched = mesh.gradientMagnitude.size() == magnitudesBefore.size();
+    for (std::size_t i = 0; magnitudesUntouched && i < mesh.gradientMagnitude.size(); ++i)
+        if (mesh.gradientMagnitude[i] != magnitudesBefore[i])
+            magnitudesUntouched = false;
+    check(magnitudesUntouched,
+          "gradientMagnitude is untouched by smoothing — a shape change, "
+          "not a re-sample of the field");
+    check(mesh.positions.size() == before.size(),
+          "vertex count is unchanged — smoothing moves points, it does not "
+          "add or remove triangles");
+    bool moved = false;
+    for (std::size_t i = 0; i < mesh.positions.size(); ++i) {
+        if ((mesh.positions[i] - before[i]).norm() > 1e-6) {
+            moved = true;
+            break;
+        }
+    }
+    check(moved, "3 passes actually moved at least one vertex on a "
+                "deliberately coarse, faceted sphere");
+    bool unitNormals = true;
+    for (const Vec3& n : mesh.normals)
+        if (std::abs(n.norm() - 1.0) > 1e-6)
+            unitNormals = false;
+    check(unitNormals, "normals stay unit length after being re-derived "
+                       "from the smoothed geometry");
+}
+
 // ---------------------------------------------------------------------------
 // Periodic continuation
 // ---------------------------------------------------------------------------
@@ -809,6 +860,7 @@ int main()
     testNormalsPointOutward();
     testGeometryIsTheSphere();
     testDegenerateTrianglesAreRare();
+    testSmoothMeshMovesGeometryNotFieldSamples();
 
     std::printf("\nPeriodic continuation\n\n");
     testPeriodicCentroidFindsASplitFunction();

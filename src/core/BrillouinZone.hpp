@@ -74,8 +74,11 @@ PolyhedronMesh computeWignerSeitzCell(const UnitCell& cell);
 ///
 /// Which images are needed is read off the Wigner-Seitz cell's own vertices
 /// — not assumed from a fixed neighbour-shell count — so this holds for any
-/// non-degenerate basis, not only cubic/BCC/FCC ones. `mesh.colorValues` is
-/// dropped rather than carried through: nothing that calls this passes a
+/// non-degenerate basis, not only cubic/BCC/FCC ones. `mesh.gradientMagnitude`
+/// is linearly interpolated across a cut edge exactly like position — a
+/// Fermi surface colored by group velocity has to stay correctly colored
+/// after clipping to the zone, not just correctly shaped. `mesh.colorValues`
+/// is dropped rather than carried through: nothing that calls this passes a
 /// colour field alongside the isosurface today. One normal per SOURCE
 /// triangle (its vertex normals, averaged) is kept on every fragment that
 /// triangle clips into, matching how marching cubes' flat facets are already
