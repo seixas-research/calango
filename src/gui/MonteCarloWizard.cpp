@@ -95,13 +95,9 @@ QWidget* MonteCarloWizard::buildSettingsPage()
     swapProbSpin_->setToolTip(tr("Probability of attempting a species swap each step."));
     form->addRow(tr("Swap probability:"), swapProbSpin_);
 
-    fmaxSpin_ = new QDoubleSpinBox(page);
-    fmaxSpin_->setRange(0.001, 1.0);
-    fmaxSpin_->setDecimals(3);
-    fmaxSpin_->setValue(0.05);
-    fmaxSpin_->setSuffix(tr(" eV/Å"));
-    fmaxSpin_->setToolTip(tr("Local-optimization force convergence for each hop."));
-    form->addRow(tr("Energy convergence (fmax):"), fmaxSpin_);
+    fmax_.build(form, page, tr("Energy convergence (fmax):"));
+    fmax_.spinBox()->setToolTip(
+        tr("Local-optimization force convergence for each hop."));
 
     optimizerCombo_ = new QComboBox(page);
     optimizerCombo_->addItems({QStringLiteral("FIRE"), QStringLiteral("BFGS"),
@@ -120,7 +116,7 @@ void MonteCarloWizard::updateMethodEnabled()
 {
     const bool basinHopping = methodCombo_->currentIndex() == 0;
     displacementSpin_->setEnabled(basinHopping);
-    fmaxSpin_->setEnabled(basinHopping);
+    fmax_.spinBox()->setEnabled(basinHopping);
     optimizerCombo_->setEnabled(basinHopping);
     swapProbSpin_->setEnabled(!basinHopping);
 }
@@ -146,7 +142,7 @@ QString MonteCarloWizard::buildBasinHoppingScript() const
         << "T = " << temperatureSpin_->value() << "\n"
         << "dr = " << displacementSpin_->value() << "\n"
         << "nsteps = " << stepsSpin_->value() << "\n"
-        << "fmax = " << fmaxSpin_->value() << "\n"
+        << "fmax = " << fmax_.value() << "\n"
         << "rng = np.random.default_rng(" << seedSpin_->value() << ")\n\n"
            "def local_opt():\n"
         << "    opt = " << optimizer << "(atoms, logfile=None)\n"

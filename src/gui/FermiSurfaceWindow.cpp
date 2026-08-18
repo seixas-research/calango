@@ -25,7 +25,6 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
-#include <cmath>
 
 namespace calango::gui {
 
@@ -40,28 +39,10 @@ void pushVertex(std::vector<float>& out, const QVector3D& p,
                 static_cast<float>(c.blueF())});
 }
 
-/// Clip a convex polygon against the half-space k·n ≤ d (Sutherland-Hodgman
-/// in 3D). New vertices land on the plane by linear interpolation, which for
-/// a triangle of an isosurface keeps the cut edge on the surface.
-std::vector<QVector3D> clipHalfSpace(const std::vector<QVector3D>& polygon,
-                                     const std::array<double, 4>& plane)
+QVector3D toQVector3D(const core::Vec3& v)
 {
-    std::vector<QVector3D> out;
-    const auto n = polygon.size();
-    const auto side = [&plane](const QVector3D& v) {
-        return plane[0] * v.x() + plane[1] * v.y() + plane[2] * v.z() - plane[3];
-    };
-    for (std::size_t i = 0; i < n; ++i) {
-        const QVector3D& a = polygon[i];
-        const QVector3D& b = polygon[(i + 1) % n];
-        const double da = side(a);
-        const double db = side(b);
-        if (da <= 0.0)
-            out.push_back(a);
-        if ((da < 0.0 && db > 0.0) || (da > 0.0 && db < 0.0))
-            out.push_back(a + (b - a) * static_cast<float>(da / (da - db)));
-    }
-    return out;
+    return {static_cast<float>(v.x), static_cast<float>(v.y),
+           static_cast<float>(v.z)};
 }
 
 } // namespace
@@ -285,31 +266,6 @@ std::size_t FermiSurfaceWindow::pointCount() const
         * static_cast<std::size_t>(samples_[2]);
 }
 
-std::vector<std::array<double, 4>> FermiSurfaceWindow::zoneHalfSpaces() const
-{
-    // Wigner-Seitz cell of the reciprocal lattice: k is inside when it is no
-    // further from Γ than from any other reciprocal-lattice point G, which is
-    // k·Ĝ ≤ |G|/2. Two shells is enough for any Niggli-reasonable cell.
-    std::vector<std::array<double, 4>> planes;
-    for (int i = -2; i <= 2; ++i) {
-        for (int j = -2; j <= 2; ++j) {
-            for (int k = -2; k <= 2; ++k) {
-                if (i == 0 && j == 0 && k == 0)
-                    continue;
-                const core::Vec3 g = reciprocal_[0] * static_cast<double>(i)
-                    + reciprocal_[1] * static_cast<double>(j)
-                    + reciprocal_[2] * static_cast<double>(k);
-                const double length = g.norm();
-                if (length < 1e-9)
-                    continue;
-                planes.push_back(
-                    {g.x / length, g.y / length, g.z / length, 0.5 * length});
-            }
-        }
-    }
-    return planes;
-}
-
 bool FermiSurfaceWindow::loadResults(const QString& jsonPath)
 {
     data_ = readJsonObject(jsonPath);
@@ -419,9 +375,7 @@ void FermiSurfaceWindow::rebuild()
     if (!canvas_ || bands_.empty())
         return;
     const double target = fermiEv_ + energySpin_->value();
-    const auto planes =
-        clipCheck_ && clipCheck_->isChecked() ? zoneHalfSpaces()
-                                              : std::vector<std::array<double, 4>>{};
+    const bool clip = clipCheck_ && clipCheck_->isChecked();
 
     // The grid spans one reciprocal cell centred on Γ, sampled without its
     // upper endpoint — exactly how the generator laid it out, so the box has
@@ -463,46 +417,41 @@ void FermiSurfaceWindow::rebuild()
         const core::IsoMesh iso = core::extractIsosurface(refined, target);
         if (iso.positions.empty())
             continue;
+
+        // The sheet is extracted on the reciprocal-cell PARALLELEPIPED, not
+        // the Wigner-Seitz cell it is conventionally drawn in — the two are
+        // the same volume but a different shape, so clipping a single
+        // un-replicated copy to the zone would just delete the corners that
+        // reach past the parallelepiped's own faces instead of filling them
+        // in. clipToWignerSeitzCell() replicates the periodic images that are
+        // actually needed (read off the zone's own vertices) before clipping,
+        // which is what recovers them. A degenerate cell falls back to the
+        // raw sheet, flattened the same way, so a bad basis loses the zone
+        // shape but not the sheet.
+        const core::IsoMesh drawMesh = [&]() -> core::IsoMesh {
+            if (!clip)
+                return core::flattenTriangleNormals(iso);
+            try {
+                return core::clipToWignerSeitzCell(iso, reciprocal_);
+            } catch (const std::exception&) {
+                return core::flattenTriangleNormals(iso);
+            }
+        }();
+        if (drawMesh.positions.empty())
+            continue;
         ++drawn;
 
         const QColor color = bandColor(index);
-        for (std::size_t t = 0; t + 2 < iso.positions.size(); t += 3) {
-            std::vector<QVector3D> polygon;
-            std::vector<QVector3D> normals;
-            for (std::size_t v = 0; v < 3; ++v) {
-                const core::Vec3& p = iso.positions[t + v];
-                const core::Vec3& n = iso.normals[t + v];
-                polygon.emplace_back(static_cast<float>(p.x),
-                                     static_cast<float>(p.y),
-                                     static_cast<float>(p.z));
-                normals.emplace_back(static_cast<float>(n.x),
-                                     static_cast<float>(n.y),
-                                     static_cast<float>(n.z));
-            }
-            // One normal per triangle after clipping: the clipped fragment is
-            // planar and coincident with the original face, so its normal is
-            // the face's.
-            QVector3D normal = normals[0] + normals[1] + normals[2];
-            normal = normal.lengthSquared() > 1e-12
-                ? normal.normalized()
-                : QVector3D::crossProduct(polygon[1] - polygon[0],
-                                          polygon[2] - polygon[0])
-                      .normalized();
-            for (const auto& plane : planes) {
-                polygon = clipHalfSpace(polygon, plane);
-                if (polygon.size() < 3)
-                    break;
-            }
+        for (std::size_t t = 0; t + 2 < drawMesh.positions.size(); t += 3) {
             // "Lighting off" is expressed as a normal facing the viewer on
             // every triangle: the shader stays one shader, and every facet
             // then takes the same diffuse term, which is flat colour.
-            const QVector3D shadeNormal =
-                lit ? normal : QVector3D(0.0f, 0.0f, 1.0f);
-            for (std::size_t k = 1; k + 1 < polygon.size(); ++k) {
-                pushVertex(mesh, polygon[0], shadeNormal, color);
-                pushVertex(mesh, polygon[k], shadeNormal, color);
-                pushVertex(mesh, polygon[k + 1], shadeNormal, color);
-            }
+            const QVector3D shadeNormal = lit
+                ? toQVector3D(drawMesh.normals[t])
+                : QVector3D(0.0f, 0.0f, 1.0f);
+            for (std::size_t v = 0; v < 3; ++v)
+                pushVertex(mesh, toQVector3D(drawMesh.positions[t + v]),
+                          shadeNormal, color);
         }
     }
     canvas_->setMesh(std::move(mesh));

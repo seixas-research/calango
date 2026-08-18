@@ -3,6 +3,7 @@
 #include "core/ClusterExpansionScriptGenerator.hpp"
 #include "core/Structure.hpp"
 #include "gui/CellRelaxationControls.hpp"
+#include "gui/ForceConvergenceControl.hpp"
 #include "gui/SimulationWizardBase.hpp"
 
 #include <memory>
@@ -43,9 +44,13 @@ public:
 
     /// The design matrix that travels with this ensemble, one correlation row
     /// per frame. Without it the run emits energies with no regressors and no
-    /// ECI fit is possible from the result.
+    /// ECI fit is possible from the result. `degeneracies`, when given
+    /// (empty is accepted for an ensemble built before this field existed),
+    /// is g_j per frame — EGQCA needs it and the ECI fit does not, so it
+    /// rides alongside rather than inside the design matrix.
     void setDesignMatrix(const std::vector<std::vector<double>>& correlations,
-                         const std::vector<std::string>& orbitLabels);
+                         const std::vector<std::string>& orbitLabels,
+                         const std::vector<int>& degeneracies = {});
 
 protected:
     QString wizardTitle() const override;
@@ -58,6 +63,7 @@ protected:
 private:
     std::vector<std::vector<double>> designMatrix_;
     std::vector<std::string> designLabels_;
+    std::vector<int> designDegeneracies_;
     core::ClusterExpansionRunConfig runConfig() const;
 
     /// Chemical species present across the ensemble, for the concentration
@@ -68,7 +74,7 @@ private:
 
     QLabel* summaryLabel_ = nullptr;
     QCheckBox* singlePointCheck_ = nullptr;
-    QDoubleSpinBox* fmaxSpin_ = nullptr;
+    ForceConvergenceControl fmax_;
     QSpinBox* maxStepsSpin_ = nullptr;
     QComboBox* optimizerCombo_ = nullptr;
     QComboBox* concentrationCombo_ = nullptr;

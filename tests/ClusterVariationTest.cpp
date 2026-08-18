@@ -441,6 +441,77 @@ int main()
               "literature writes the other way round");
     }
 
+    // -- K-species general ECI handoff (Task 6: ternary Cluster Expansion) --
+    //
+    // ClusterExpansionFit's design matrix for a pair orbit is a raw
+    // per-species-pair-type COUNT, not the +/-1 Ising basis above, so a
+    // bucket's fitted coefficient already IS that species pair's bond
+    // energy — the general overload reads bucketEci straight into the
+    // matrix, no transform. Bucket order is upper-triangular (i <= j):
+    // for K=2 that is {AA, AB, BB}; for K=3, {AA, AB, AC, BB, BC, CC}.
+    {
+        bool ok = false;
+        // Feeding it what the +/-1 basis IMPLIES those three buckets would
+        // be (e_AA=J, e_AB=-J, e_BB=J) must reproduce the scalar overload's
+        // matrix exactly: the general path is a strict superset of the old
+        // one, not a divergent second formula.
+        const auto binary = calango::core::pairEnergiesFromEci(
+            {0.03, -0.03, 0.03}, /*speciesCount=*/2, &ok);
+        check(ok && binary.size() == 4, "K=2 general pair handoff accepts 3 buckets");
+        check(binary[0] == 0.03 && binary[1] == -0.03 && binary[2] == -0.03
+                  && binary[3] == 0.03,
+              "and reproduces the scalar overload's matrix exactly when fed "
+              "its implied bucket values");
+    }
+    {
+        bool ok = false;
+        // AA=10, AB=20, AC=30, BB=40, BC=50, CC=60 (arbitrary, all distinct
+        // so a transposition bug in the bucket formula cannot hide).
+        const auto ternary = calango::core::pairEnergiesFromEci(
+            {10.0, 20.0, 30.0, 40.0, 50.0, 60.0}, /*speciesCount=*/3, &ok);
+        check(ok && ternary.size() == 9, "K=3 pair handoff accepts 6 buckets");
+        const int K = 3;
+        const auto at = [&](int i, int j) { return ternary[static_cast<std::size_t>(i * K + j)]; };
+        check(at(0, 0) == 10.0 && at(1, 1) == 40.0 && at(2, 2) == 60.0,
+              "diagonal entries are the AA/BB/CC buckets");
+        check(at(0, 1) == 20.0 && at(1, 0) == 20.0,
+              "off-diagonal entries are symmetric and match the AB bucket");
+        check(at(0, 2) == 30.0 && at(2, 0) == 30.0
+                  && at(1, 2) == 50.0 && at(2, 1) == 50.0,
+              "...and the AC/BC buckets");
+    }
+    {
+        bool ok = true;
+        calango::core::pairEnergiesFromEci({1.0, 2.0}, /*speciesCount=*/3, &ok);
+        check(!ok,
+              "K=3 pair handoff refuses a bucket count that is not "
+              "K*(K+1)/2 (6), rather than silently mis-reading the tail");
+    }
+    {
+        // Triplet: K=3 has 27 dense slots but only the 10 sorted-order
+        // ones (K(K+1)(K+2)/6) are ever populated by a real configuration —
+        // every permutation of a populated sorted triple must read back the
+        // SAME value (the tensor is symmetric under any relabelling of its
+        // three vertices, which is what makes it usable by a CVM tetrahedron
+        // sum that does not itself track vertex order).
+        bool ok = false;
+        std::vector<double> buckets(27, 0.0);
+        // Bucket index for the sorted triple (0,0,1) under core::
+        // ClusterExpansion's mixed-radix convention: ((0*3)+0)*3+1 = 1.
+        buckets[1] = 5.0;
+        const auto tri = calango::core::tripletEnergiesFromEci(buckets, 3, &ok);
+        check(ok && tri.size() == 27, "K=3 triplet handoff accepts 27 buckets");
+        const int K = 3;
+        const auto at3 = [&](int i, int j, int k) {
+            return tri[static_cast<std::size_t>((i * K + j) * K + k)];
+        };
+        check(at3(0, 0, 1) == 5.0 && at3(0, 1, 0) == 5.0 && at3(1, 0, 0) == 5.0,
+              "every permutation of species (A,A,B) reads back the same "
+              "energy — the tensor is symmetric under vertex relabelling");
+        check(at3(0, 0, 0) == 0.0 && at3(1, 1, 1) == 0.0,
+              "a bucket nobody set stays zero, not garbage");
+    }
+
     // -- Refusals ------------------------------------------------------------
     {
         CvmInput in;

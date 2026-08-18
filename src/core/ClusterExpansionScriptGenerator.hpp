@@ -66,6 +66,15 @@ struct ClusterExpansionRunConfig {
     /// Human-readable label per correlation column, e.g. "pair r=2.55 m=12".
     /// Same length as each row of `correlations`.
     std::vector<std::string> orbitLabels;
+
+    /// g_j per configuration (core::ClusterExpansionConfig::degeneracy),
+    /// same frame order as `inputTrajectory` — how many raw decorations of
+    /// the active sublattice collapsed onto this one during enumeration.
+    /// The ECI fit does not use it (empty is fine there); EGQCA does, since
+    /// it is exactly the cluster degeneracy the theory is written in terms
+    /// of. Empty means the ensemble predates this field, same convention as
+    /// `correlations`.
+    std::vector<int> degeneracies;
 };
 
 class ClusterExpansionScriptGenerator {

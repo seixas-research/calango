@@ -178,15 +178,43 @@ std::string ClusterExpansionScriptGenerator::generate(
                "\n";
     }
 
+    // g_j per configuration (Task 1, EGQCA): same join-by-frame-index
+    // convention as correlations, but no ragged-row concern — it is one
+    // int per config, not one row per config.
+    if (!c.degeneracies.empty()) {
+        out << "degeneracies = [";
+        for (std::size_t i = 0; i < c.degeneracies.size(); ++i)
+            out << (i ? ", " : "") << c.degeneracies[i];
+        out << "]\n"
+               "if len(degeneracies) != len(configs):\n"
+               "    raise RuntimeError(\n"
+               "        f\"{len(degeneracies)} degeneracies for \"\n"
+               "        f\"{len(configs)} configurations; the ensemble and \"\n"
+               "        f\"the degeneracy list came from different builder \"\n"
+               "        f\"runs.\")\n"
+               "\n";
+    } else {
+        out << "degeneracies = []\n\n";
+    }
+
     out << "\n"
            "for index, atoms in enumerate(configs):\n"
            "    _calango_progress(index, len(configs))\n"
            "    formula = atoms.get_chemical_formula()\n"
            "    x = concentration_of(atoms)\n"
+           "    _symbols = atoms.get_chemical_symbols()\n"
+           "    # Full per-species composition, not just concentration_element's\n"
+           "    # axis — the binary hull only ever needed the one scalar, but a\n"
+           "    # ternary+ composition triangle needs every species' fraction.\n"
+           "    composition = ({sp: _symbols.count(sp) / len(_symbols)\n"
+           "                    for sp in species} if _symbols else {})\n"
            "    record = {\n"
            "        \"frame\": index,\n"
            "        \"formula\": formula,\n"
            "        \"concentration\": x,\n"
+           "        \"composition\": composition,\n"
+           "        \"degeneracy\": (degeneracies[index] if degeneracies "
+                                    "else None),\n"
            "        \"natoms\": len(atoms),\n"
            "    }\n"
            "    if correlations:\n"
@@ -257,59 +285,77 @@ std::string ClusterExpansionScriptGenerator::generate(
            "          f\"({len(relaxed)} structures)\", flush=True)\n"
            "\n";
 
-    // -- Formation energies -------------------------------------------------
-    out << "# Formation energy per atom relative to the elemental endpoints.\n"
-           "# Referencing the ensemble's own x = 0 and x = 1 configurations\n"
-           "# cancels the calculator's absolute energy scale exactly, which is\n"
-           "# what makes hulls from different codes comparable.\n"
+    // -- Formation energies ---------------------------------------------------
+    //
+    // Relative to the elemental endpoints, one reference energy per species —
+    // the binary case (2 species) is simply this with K=2. Referencing the
+    // ensemble's OWN purest-per-species configurations (rather than a
+    // separate pure-element calculation) cancels the calculator's absolute
+    // energy scale exactly, which is what makes hulls from different codes
+    // comparable; it is also what makes this loop K-species-general for
+    // free, since "purest in species s" needs no composition AXIS the way
+    // the old x=0/x=1 endpoint search did.
+    out << "# Formation energy per atom relative to the elemental endpoints —\n"
+           "# one reference per species, generalizing the binary x=0/x=1\n"
+           "# endpoints to however many species this ensemble has.\n"
            "valid = [r for r in records\n"
            "         if r.get(\"energy_per_atom\") is not None\n"
            "         and not math.isnan(r[\"energy_per_atom\"])]\n";
     if (c.useEnsembleEndpoints) {
-        out << "reference_a = None\n"
-               "reference_b = None\n"
+        out << "references = {}\n"
                "if valid:\n"
-               "    lo = min(valid, key=lambda r: r[\"concentration\"])\n"
-               "    hi = max(valid, key=lambda r: r[\"concentration\"])\n"
-               "    # Use the LOWEST energy found at each endpoint composition,\n"
-               "    # not merely the first — the endpoint may itself appear as\n"
-               "    # several decorations.\n"
-               "    at_lo = [r for r in valid\n"
-               "             if abs(r[\"concentration\"] - lo[\"concentration\"]) < 1e-9]\n"
-               "    at_hi = [r for r in valid\n"
-               "             if abs(r[\"concentration\"] - hi[\"concentration\"]) < 1e-9]\n"
-               "    reference_a = min(r[\"energy_per_atom\"] for r in at_lo)\n"
-               "    reference_b = min(r[\"energy_per_atom\"] for r in at_hi)\n"
-               "    x_lo, x_hi = lo[\"concentration\"], hi[\"concentration\"]\n"
-               "    if abs(x_hi - x_lo) < 1e-9:\n"
-               "        # Fixed-composition ensemble: there is no second\n"
-               "        # endpoint, so formation energies are reported relative\n"
-               "        # to the most stable configuration found.\n"
-               "        reference_b = reference_a\n"
-               "        x_lo, x_hi = 0.0, 1.0\n";
+               "    for _sp in species:\n"
+               "        _purest = max(\n"
+               "            r[\"composition\"].get(_sp, 0.0) for r in valid)\n"
+               "        _candidates = [\n"
+               "            r for r in valid\n"
+               "            if abs(r[\"composition\"].get(_sp, 0.0) - _purest) < 1e-9]\n"
+               "        references[_sp] = min(\n"
+               "            r[\"energy_per_atom\"] for r in _candidates)\n";
     } else {
-        out << "reference_a = " << c.referenceA << "\n"
-            << "reference_b = " << c.referenceB << "\n"
-               "x_lo, x_hi = 0.0, 1.0\n";
+        // Manual references remain the two-species case the fields were
+        // written for; a ternary+ ensemble asking for manual references is
+        // refused (formation_energy left None) rather than silently
+        // reporting energies with a missing species' contribution dropped.
+        out << "references = {}\n"
+               "if len(species) <= 2:\n"
+               "    _other = next((s for s in species\n"
+               "                  if s != concentration_element), None)\n"
+               "    if _other is not None:\n"
+               "        references[_other] = " << c.referenceA << "\n"
+               "    references[concentration_element] = " << c.referenceB << "\n"
+               "else:\n"
+               "    print(\"CALANGO_WARN manual reference energies only cover \"\n"
+               "          \"two species; this ensemble has \"\n"
+               "          f\"{len(species)} — formation energies need \"\n"
+               "          \"'Use ensemble endpoints' for more than two.\",\n"
+               "          flush=True)\n";
     }
     out << "\n"
            "for record in records:\n"
            "    energy_per_atom = record.get(\"energy_per_atom\")\n"
            "    if (energy_per_atom is None or math.isnan(energy_per_atom)\n"
-           "            or reference_a is None):\n"
+           "            or not references\n"
+           "            or any(s not in references for s in species\n"
+           "                  if record[\"composition\"].get(s, 0.0) > 1e-12)):\n"
            "        record[\"formation_energy\"] = None\n"
            "        continue\n"
-           "    span = (x_hi - x_lo) if abs(x_hi - x_lo) > 1e-12 else 1.0\n"
-           "    t = (record[\"concentration\"] - x_lo) / span\n"
-           "    record[\"formation_energy\"] = (\n"
-           "        energy_per_atom - ((1.0 - t) * reference_a + t * reference_b))\n"
+           "    record[\"formation_energy\"] = energy_per_atom - sum(\n"
+           "        frac * references[sp]\n"
+           "        for sp, frac in record[\"composition\"].items())\n"
            "\n"
            "summary = {\n"
            "    \"concentration_element\": concentration_element,\n"
            "    \"relax_cell\": relax_cell,\n"
            "    \"species\": species,\n"
-           "    \"reference_a\": reference_a,\n"
-           "    \"reference_b\": reference_b,\n"
+           "    \"references\": references,\n"
+           "    # Kept for older binary-only consumers: the two species'\n"
+           "    # references under their old names, when there are exactly two.\n"
+           "    \"reference_a\": (references.get(next(\n"
+           "        (s for s in species if s != concentration_element), None))\n"
+           "        if len(species) == 2 else None),\n"
+           "    \"reference_b\": (references.get(concentration_element)\n"
+           "        if len(species) == 2 else None),\n"
            "    \"orbit_labels\": orbit_labels,\n"
            "    \"correlation_columns\": len(orbit_labels),\n"
            "    \"configurations\": records,\n"

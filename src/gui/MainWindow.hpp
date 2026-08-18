@@ -58,6 +58,7 @@ class FilmTimelineWidget;
 class FilmProductionDialog;
 class ViewportWidget;
 class VisualEffectsPanel;
+class FloorPanel;
 class OrchestrationWindow;
 
 /// What the electron-phonon worker thread hands back to the GUI thread.
@@ -468,6 +469,9 @@ private Q_SLOTS:
     /// Wannier Functions → Wannier-Based Excitons (Bethe-Salpeter).
     void openBseExcitons();
     void openCvmComparison();
+    /// Alloys → EGQCA (Task 1): pick a finished Cluster Expansion
+    /// Calculation's directory and open its cluster ensemble in EgqcaWindow.
+    void openEgqca();
     void openSqsBuilder();
 
     void openClusterExpansion();
@@ -974,10 +978,10 @@ private:
     /// hydrogens" switches it on after building them — hydrogens the user
     /// cannot see are a no-op as far as they can tell.
     QAction* showHydrogensAction_ = nullptr;
-    /// Zone-9 panel. Held so a project restore can tell the Floor tab to
-    /// re-read the settings it just wrote into the render style — the tab's
-    /// controls were built from the defaults when the window was.
-    VisualEffectsPanel* visualEffectsPanel_ = nullptr;
+    /// Zone-12 "Spatial References" panel. Held so a project restore can
+    /// tell it to re-read the settings it just wrote into the render style —
+    /// its controls were built from the defaults when the window was.
+    FloorPanel* floorPanel_ = nullptr;
     BrandingPanel* brandingPanel_ = nullptr;      ///< zone 1 (theme-aware logo)
     SystemStatusBar* systemStatusBar_ = nullptr;  ///< permanent status widgets
     QMenu* recentMenu_ = nullptr; ///< File → Open → Open Recent (dynamic)
@@ -1068,6 +1072,10 @@ private:
     struct EnsembleDesignMatrix {
         std::vector<std::vector<double>> correlations;
         std::vector<std::string> orbitLabels;
+        /// Per-configuration g_j (core::ClusterExpansionConfig::degeneracy)
+        /// — EGQCA needs it and the cluster-expansion fit does not, so it
+        /// travels alongside the design matrix rather than inside it.
+        std::vector<int> degeneracies;
     };
     std::map<Document*, EnsembleDesignMatrix> ensembleDesignMatrices_;
     std::vector<std::shared_ptr<core::Structure>> stagedEnsembleFrames_;

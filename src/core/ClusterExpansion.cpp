@@ -10,7 +10,6 @@
 #include <limits>
 #include <map>
 #include <random>
-#include <set>
 
 namespace calango::core {
 
@@ -46,6 +45,23 @@ long roundKey(double d, double tol)
 }
 
 } // namespace
+
+int clusterExpansionPairBucket(int speciesCount, int speciesI, int speciesJ)
+{
+    const int a = std::min(speciesI, speciesJ), b = std::max(speciesI, speciesJ);
+    return a * speciesCount - a * (a - 1) / 2 + (b - a);
+}
+
+int clusterExpansionTripletBucket(int speciesCount, int speciesI, int speciesJ,
+                                  int speciesK)
+{
+    std::array<int, 3> s{speciesI, speciesJ, speciesK};
+    std::sort(s.begin(), s.end());
+    int idx = 0;
+    for (int v : s)
+        idx = idx * speciesCount + v;
+    return idx;
+}
 
 std::vector<std::string> clusterCorrelationLabels(
     const ClusterExpansionResult& result, int speciesCount)
@@ -231,10 +247,13 @@ ClusterExpansionResult generateClusterExpansion(
     const int tripKeys = K * K * K;
     const int quadKeys = K * K * K * K;
 
+    // Thin wrappers over the exported bucket functions (single source of
+    // truth — see clusterExpansionPairBucket()'s own doc comment): the
+    // triplet/quadruplet case also needs a variable-arity sorted index that
+    // the exported function's fixed 3-argument signature doesn't cover, so
+    // that one stays local.
     auto pairIndex = [K](int s0, int s1) {
-        int a = std::min(s0, s1), b = std::max(s0, s1);
-        // index into upper-triangular incl. diagonal
-        return a * K - a * (a - 1) / 2 + (b - a);
+        return clusterExpansionPairBucket(K, s0, s1);
     };
     auto sortedIndex = [K](std::vector<int> s) {
         std::sort(s.begin(), s.end());
@@ -291,18 +310,26 @@ ClusterExpansionResult generateClusterExpansion(
     };
 
     // --- Enumerate / sample occupations, dedup by fingerprint --------------
-    std::set<std::vector<int>> seen;
+    // Maps a canonical fingerprint to its config's index in result.configs,
+    // rather than a plain set, so a repeat hit can increment that config's
+    // degeneracy — the g_j count EGQCA (core::EgqcaCluster::degeneracy)
+    // needs and this enumerator did not track before.
+    std::map<std::vector<int>, std::size_t> seen;
     std::mt19937 rng(options.seed);
 
     auto consider = [&](const std::vector<int>& occ) {
         ++result.enumerated;
         auto fp = fingerprint(occ);
-        if (!seen.insert(fp).second)
+        const auto it = seen.find(fp);
+        if (it != seen.end()) {
+            ++result.configs[it->second].degeneracy;
             return;
+        }
         ClusterExpansionConfig cfg;
         cfg.structure = decorate(occ);
         cfg.speciesCounts = counts(occ);
         cfg.correlation.assign(fp.begin(), fp.end());
+        seen.emplace(std::move(fp), result.configs.size());
         result.configs.push_back(std::move(cfg));
     };
 

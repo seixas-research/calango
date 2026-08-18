@@ -57,13 +57,7 @@ QWidget* GeometryOptimizationWizard::buildSettingsPage()
                                tr("MDMin (velocity-quench MD)")});
     form->addRow(tr("Optimizer:"), optimizerCombo_);
 
-    fmaxSpin_ = new QDoubleSpinBox(page);
-    fmaxSpin_->setRange(0.001, 2.0);
-    fmaxSpin_->setDecimals(3);
-    fmaxSpin_->setSingleStep(0.01);
-    fmaxSpin_->setValue(0.020);
-    fmaxSpin_->setSuffix(tr(" eV/Å"));
-    form->addRow(tr("Force convergence (fmax):"), fmaxSpin_);
+    fmax_.build(form, page, tr("Force convergence (fmax):"));
 
     maxStepsSpin_ = new QSpinBox(page);
     maxStepsSpin_->setRange(1, 100000);
@@ -127,7 +121,7 @@ core::CalculatorConfig GeometryOptimizationWizard::config() const
     electronic_.applyTo(c);
     c.constraints = constraints_;
     c.optimizer = static_cast<core::Optimizer>(optimizerCombo_->currentIndex());
-    c.fmax = fmaxSpin_->value();
+    c.fmax = fmax_.value();
     c.maxSteps = maxStepsSpin_->value();
     cell_.applyTo(c);
     return c;

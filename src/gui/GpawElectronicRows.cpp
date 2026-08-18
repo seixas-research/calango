@@ -187,7 +187,9 @@ void GpawElectronicRows::buildConvergenceRows(QFormLayout* form,
     smearingWidthSpin_->setDecimals(3);
     smearingWidthSpin_->setRange(0.0, 5.0);
     smearingWidthSpin_->setSingleStep(0.05);
-    smearingWidthSpin_->setValue(0.1);
+    // core::CalculatorConfig::smearingWidthEv's own default — the two are
+    // kept in step (see the comment there).
+    smearingWidthSpin_->setValue(0.050);
     smearingWidthSpin_->setSuffix(tr(" eV"));
     smearingWidthSpin_->setToolTip(
         tr("Broadening width σ (electronic temperature) for the smearing."));

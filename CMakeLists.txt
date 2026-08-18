@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.27
+    VERSION 26.8.28
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -295,6 +295,8 @@ qt_add_executable(calango
     src/core/ClusterExpansionFit.hpp
     src/core/ClusterExpansionFit.cpp
     src/core/ClusterVariation.cpp
+    src/core/Egqca.hpp
+    src/core/Egqca.cpp
     src/core/BerryPhase.cpp
     src/core/BoltzmannTransport.cpp
     src/core/CpaSolver.cpp
@@ -312,6 +314,8 @@ qt_add_executable(calango
     src/core/UnfoldingScriptGenerator.cpp
     src/core/ConvexHull.hpp
     src/core/ConvexHull.cpp
+    src/core/TernaryConvexHull.hpp
+    src/core/TernaryConvexHull.cpp
     src/core/ClusterExpansionScriptGenerator.hpp
     src/core/ClusterExpansionScriptGenerator.cpp
     src/core/ConvergenceSweepBlocks.hpp
@@ -424,6 +428,8 @@ qt_add_executable(calango
     src/gui/RepresentationPanel.cpp
     src/gui/CellAxesTabs.hpp
     src/gui/CellAxesTabs.cpp
+    src/gui/FloorPanel.hpp
+    src/gui/FloorPanel.cpp
     src/gui/NeighborCellsDialog.hpp
     src/gui/NeighborCellsDialog.cpp
     src/gui/TwoDBandsWizard.hpp
@@ -557,6 +563,12 @@ qt_add_executable(calango
     src/ui/IconManager.cpp
     src/gui/ConvexHullWindow.hpp
     src/gui/ConvexHullWindow.cpp
+    src/gui/TernaryClusterHullWindow.hpp
+    src/gui/TernaryClusterHullWindow.cpp
+    src/gui/EgqcaPlotWidget.hpp
+    src/gui/EgqcaPlotWidget.cpp
+    src/gui/EgqcaWindow.hpp
+    src/gui/EgqcaWindow.cpp
     src/gui/EffectiveBandsWindow.hpp
     src/gui/EffectiveBandsWindow.cpp
     src/gui/SystemStatusBar.hpp
@@ -611,6 +623,8 @@ qt_add_executable(calango
     src/gui/VolumetricMetadataDialog.cpp
     src/gui/EditVolumetricRenderDialog.hpp
     src/gui/EditVolumetricRenderDialog.cpp
+    src/gui/IsovalueHistogramWidget.hpp
+    src/gui/IsovalueHistogramWidget.cpp
     src/gui/OverlayModel.hpp
     src/gui/OverlayModel.cpp
     src/gui/OverlayEditDialog.hpp
@@ -729,6 +743,8 @@ qt_add_executable(calango
     src/gui/EffectiveBandsWizard.cpp
     src/gui/CellRelaxationControls.hpp
     src/gui/CellRelaxationControls.cpp
+    src/gui/ForceConvergenceControl.hpp
+    src/gui/ForceConvergenceControl.cpp
     src/gui/GeometryOptimizationWizard.hpp
     src/gui/GeometryOptimizationWizard.cpp
     src/gui/PhononWizard.hpp
@@ -753,6 +769,8 @@ qt_add_executable(calango
     src/gui/ClusterExpansionWizard.cpp
     src/gui/ConvexHullPlotWidget.hpp
     src/gui/ConvexHullPlotWidget.cpp
+    src/gui/TernaryClusterHullWidget.hpp
+    src/gui/TernaryClusterHullWidget.cpp
     src/gui/SpectralHeatmapWidget.hpp
     src/gui/SpectralHeatmapWidget.cpp
     src/gui/MonteCarloWizard.hpp
@@ -1092,6 +1110,20 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_cvm_test PRIVATE src)
     add_test(NAME cluster_variation COMMAND calango_cvm_test)
 
+    # Extended Generalized Quasichemical Approximation (Task 1): the ideal-
+    # limit reduction, probability normalization, an independent brute-force
+    # global-minimum oracle for a small worked example, and the vibrational
+    # (the "Extended" part) wiring — see EgqcaTest.cpp for why this substitutes
+    # for a literal paper-figure reproduction (the paper's own worked examples
+    # need Supplementary Table data this repository does not have).
+    add_executable(calango_egqca_test
+        tests/EgqcaTest.cpp
+        src/core/Egqca.cpp
+        src/core/PhononThermodynamics.cpp
+    )
+    target_include_directories(calango_egqca_test PRIVATE src)
+    add_test(NAME egqca COMMAND calango_egqca_test)
+
     # Single-site CPA for random alloys. Anchored on the one bare band whose
     # Hilbert transform is closed-form (semi-elliptic), on the two limits where
     # the CPA is exact (one component, equal levels), and on the split-band
@@ -1220,6 +1252,23 @@ if(CALANGO_BUILD_TESTS)
     calango_hdf5_link(calango_isosurface_test)
     add_test(NAME isosurface_mesh COMMAND calango_isosurface_test)
 
+    # Wigner-Seitz-cell clipping of an isosurface mesh. Regression for the Cu
+    # Fermi-surface "holes" bug: extraction runs on the reciprocal cell's own
+    # parallelepiped, a different shape from the Wigner-Seitz cell it is
+    # displayed in, so a single un-replicated clip silently dropped the
+    # corners the zone reaches past the box's own faces to reach.
+    add_executable(calango_brillouin_zone_clip_test
+        tests/BrillouinZoneClipTest.cpp
+        src/core/BrillouinZone.cpp
+        src/core/MarchingCubes.cpp
+        src/core/VolumetricData.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_brillouin_zone_clip_test PRIVATE src)
+    calango_hdf5_link(calango_brillouin_zone_clip_test)
+    add_test(NAME brillouin_zone_clip COMMAND calango_brillouin_zone_clip_test)
+
     # What a Wannier run can learn about the ground state it inherits: bands,
     # k-points, and whether the Brillouin zone was folded. The third is a
     # pre-condition, and "undetermined" has to stay distinguishable from "on".
@@ -1267,6 +1316,11 @@ if(CALANGO_BUILD_TESTS)
         src/core/UnitCell.cpp
         src/core/Element.cpp
         src/core/ClusterExpansion.cpp
+        # Ternary fit round trip (Task 6): ClusterExpansionFit.cpp has no
+        # dependencies of its own (calango_cluster_expansion_fit_test links
+        # only it), so pulling it in here to close the enumeration->fit loop
+        # costs nothing beyond itself.
+        src/core/ClusterExpansionFit.cpp
     )
     target_include_directories(calango_cluster_expansion_test PRIVATE src)
     add_test(NAME cluster_expansion COMMAND calango_cluster_expansion_test)
@@ -1816,6 +1870,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/HubbardScriptGenerator.cpp
         src/core/XasScriptGenerator.cpp
         src/gui/EditVolumetricRenderDialog.cpp
+        src/gui/IsovalueHistogramWidget.cpp
         src/gui/VolumetricStyle.cpp
         # The isosurface "Lit surface" checkbox reads and writes the shader
         # profile registry. It queries no GL context here — ShaderRegistry
@@ -1896,6 +1951,11 @@ if(CALANGO_BUILD_TESTS)
         src/gui/BrillouinZoneView.cpp
         src/gui/BrillouinZoneStyleDialog.cpp
         src/core/BrillouinZone.cpp
+        # clipToWignerSeitzCell() (BrillouinZone.cpp) calls
+        # flattenTriangleNormals(), defined in MarchingCubes.cpp — not
+        # otherwise reachable from this target (VolumetricData.cpp, which
+        # MarchingCubes.cpp itself needs, is already listed below).
+        src/core/MarchingCubes.cpp
         src/core/KPath.cpp
         src/core/ElectronicScriptGenerator.cpp
         src/core/BandSymmetryScriptGenerator.cpp
@@ -1982,6 +2042,12 @@ if(CALANGO_BUILD_TESTS)
         src/ui/IconManager.cpp
         src/render/Camera.cpp
         src/core/BrillouinZone.cpp
+        # clipToWignerSeitzCell() (BrillouinZone.cpp) calls
+        # flattenTriangleNormals(), defined in MarchingCubes.cpp, which in
+        # turn calls VolumetricData's sample()/samplePeriodic() — neither is
+        # otherwise reachable from this target.
+        src/core/MarchingCubes.cpp
+        src/core/VolumetricData.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
         src/core/Element.cpp
@@ -1992,6 +2058,7 @@ if(CALANGO_BUILD_TESTS)
     target_link_libraries(calango_kpath_table_test
         PRIVATE Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Svg
                 pybind11::embed)
+    calango_hdf5_link(calango_kpath_table_test)
     add_test(NAME kpath_table COMMAND calango_kpath_table_test)
 
     # Workflow pipeline validation on silicon: two linked nodes (geometry
@@ -2968,6 +3035,33 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_convex_hull_test PRIVATE src)
     add_test(NAME convex_hull COMMAND calango_convex_hull_test)
 
+    # Same, for the ternary (composition-triangle) generalization backing
+    # Task 6's ternary Cluster Expansion ground-state map.
+    add_executable(calango_ternary_convex_hull_test
+        tests/TernaryConvexHullTest.cpp
+        src/core/TernaryConvexHull.cpp
+    )
+    target_include_directories(calango_ternary_convex_hull_test PRIVATE src)
+    add_test(NAME ternary_convex_hull COMMAND calango_ternary_convex_hull_test)
+
+    # Plot-generation smoke test for the native ternary Cluster Expansion
+    # widget (Task 6.3) — real enumeration + hull, rendered, checked for ink.
+    qt_add_executable(calango_ternary_cluster_hull_widget_test
+        tests/TernaryClusterHullWidgetTest.cpp
+        src/gui/TernaryClusterHullWidget.cpp
+        src/gui/GuiUtils.cpp
+        src/core/TernaryConvexHull.cpp
+        src/core/ClusterExpansion.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_ternary_cluster_hull_widget_test PRIVATE src)
+    target_link_libraries(calango_ternary_cluster_hull_widget_test
+        PRIVATE Qt6::Widgets)
+    add_test(NAME ternary_cluster_hull_widget
+             COMMAND calango_ternary_cluster_hull_widget_test)
+
     # Deterministic train/validation/test partitioning behind both the
     # standalone Dataset Manager dialog and the Orchestration Dataset
     # Manager node — makeStratified()'s isolated-atom pinning in particular.
@@ -3373,6 +3467,7 @@ if(CALANGO_BUILD_TESTS)
         icon_registry           # every icon used is bundled (a blank button
                                 # is silent otherwise)
         icon_theme              # theme-aware tinting
+        ternary_cluster_hull_widget # native ternary CE plot renders ink
         theme_round_trip        # tooltip colours survive a Light<->Dark round trip
         element_colors)         # the CPK palette and user overrides
 
@@ -3387,10 +3482,11 @@ if(CALANGO_BUILD_TESTS)
     set(CALANGO_CALC_TESTS
         adsorption_nanoparticle al_electron_phonon au_plasma_convergence
         band_gap band_unfolding baseline_summary berry_phase
-        boltzmann_transport bond_perception bse_solver c2db calphad cluster_expansion
+        boltzmann_transport bond_perception brillouin_zone_clip bse_solver c2db calphad cluster_expansion
         cluster_expansion_fit cluster_presets cluster_variation convex_hull
         cpa_solver crpa_solver crpa_vasp_validation cu_wannier_spread
-        dataset_split
+        ternary_convex_hull
+        dataset_split egqca
         defect_2d_correction defect_2d_monolayer dft_engine
         dislocation_builder dos_smearing double_group elastic_tensor elf_silicon
         elph_analysis elph_io extxyz_attributes frame_streaming

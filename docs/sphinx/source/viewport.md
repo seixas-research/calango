@@ -86,7 +86,7 @@ Every insertion, bond, and substitution is a single undo step. The neighboring {
 
 ## Visual effects
 
-Visual effects live in the **Visual Effects dock** (zone 9), a six-tab panel running from what lights the scene, through the scene itself, to the passes that post-process the finished image: {guilabel}`Light` (covered in {doc}`/representation`), {guilabel}`Shadow`, {guilabel}`Floor`, {guilabel}`Fog`, {guilabel}`Blur`, and {guilabel}`SSAO`. All effects default to off.
+Visual effects live in the **Visual Effects dock** (zone 9), a five-tab panel running from what lights the scene, through the scene itself, to the passes that post-process the finished image: {guilabel}`Light` (covered in {doc}`/representation`), {guilabel}`Shadow`, {guilabel}`Fog`, {guilabel}`Blur`, and {guilabel}`SSAO`. All effects default to off. The ground plane, which used to sit here as a {guilabel}`Floor` tab, is covered below under its new home, the **Spatial References dock** (zone 12).
 
 ### Distance fog
 
@@ -130,13 +130,13 @@ A radius around one atomic radius reads best. There is no bias control — the d
 
 The {guilabel}`Shadow` tab adds PCF directional shadows following the primary light: {guilabel}`Intensity` 0.0–1.0 (step 0.05) and {guilabel}`Softness / blur radius` 0–6 shadow-map texels — 2–3 suits most structures.
 
-### The ground plane
+## The ground plane
 
-The {guilabel}`Floor` tab — next to {guilabel}`Shadow`, because that is the relationship the two have — carries {guilabel}`Ground plane (floor)`: a large plane just under the structure, so an isolated molecule reads as an object resting in a space rather than one floating in a void. It is a shadow **receiver** — the atoms and bonds cast onto it, and it casts nothing itself. The group's own checkbox is the on/off switch; there is no toolbar button for it.
+The {guilabel}`Floor` tab — in the **Spatial References dock** (zone 12), next to {guilabel}`Unit cell`, because the plane's automatic placement is derived from the cell's own corners among everything else drawn — carries {guilabel}`Ground plane (floor)`: a large plane just under the structure, so an isolated molecule reads as an object resting in a space rather than one floating in a void. It is a shadow **receiver** — the atoms and bonds cast onto it, from the {guilabel}`Shadow` tab of the Visual Effects dock, and it casts nothing itself. The group's own checkbox is the on/off switch; there is no toolbar button for it.
 
 | Control | Values |
 |---|---|
-| {guilabel}`Height offset` | −100 to +100 Å, default 0 — relative to the automatic level |
+| {guilabel}`Height` | −100 to +100 Å, default 0 — relative to the automatic level. A linked slider and spin box: the slider's own range scales with the structure's size (roughly twice its footprint in either direction), so it stays useful from a single atom to a large slab; type into the box for anything further out than the slider currently reaches. |
 | {guilabel}`Color` | White by default — a figure's page is white, so the plane disappears into it and leaves only the shadow |
 | {guilabel}`Material` | Standard, Shiny, Matte (default), Glassy — the same four finishes the Representation panel offers |
 | {guilabel}`Opacity` | 0.05–1.0, default 1.0 |
@@ -149,7 +149,7 @@ The {guilabel}`Floor` tab — next to {guilabel}`Shadow`, because that is the re
 
 The length of the vector does not matter — it is normalized before use, so `(0, 0, 2)` and `(0, 0, 1)` are the same plane. A **zero** vector defines no plane: the previous orientation is kept and the field is flagged in red rather than the keystroke being refused, so you can still type one component at a time through zero.
 
-Everything else follows the orientation. The plane is placed on the **negative** side of the structure along the normal, the height offset moves it **along the normal**, and the auto-fit extent is measured in the plane's own two axes — so a vertical plane fits the structure's vertical extent rather than its footprint. Reversing a normal (say `(0, 0, -1)`) puts the plane *over* the structure instead of under it; that is a ceiling, a real choice rather than an error, so it is left available and simply reads as {guilabel}`Custom`.
+Everything else follows the orientation. The plane is placed on the **negative** side of the structure along the normal, {guilabel}`Height` moves it **along the normal**, and the auto-fit extent is measured in the plane's own two axes — so a vertical plane fits the structure's vertical extent rather than its footprint. Reversing a normal (say `(0, 0, -1)`) puts the plane *over* the structure instead of under it; that is a ceiling, a real choice rather than an error, so it is left available and simply reads as {guilabel}`Custom`.
 
 Shadows follow too, in the live viewport and in every export: the shadow lookup works off the fragment's actual normal, so a vertical plane used as a **backdrop** catches the structure's shadow exactly as a horizontal one does — re-aim the primary light along the plane's normal to throw a shadow onto it.
 

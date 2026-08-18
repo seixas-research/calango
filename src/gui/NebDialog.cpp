@@ -124,12 +124,7 @@ NebDialog::NebDialog(std::vector<NamedStructure> openDocs, QWidget* parent)
     springSpin_->setValue(0.1);
     springSpin_->setSuffix(tr(" eV/Å²"));
     solverForm->addRow(tr("Spring constant k:"), springSpin_);
-    fmaxSpin_ = new QDoubleSpinBox(solverBox);
-    fmaxSpin_->setRange(0.001, 2.0);
-    fmaxSpin_->setDecimals(3);
-    fmaxSpin_->setValue(0.05);
-    fmaxSpin_->setSuffix(tr(" eV/Å"));
-    solverForm->addRow(tr("Force convergence (fmax):"), fmaxSpin_);
+    fmax_.build(solverForm, solverBox, tr("Force convergence (fmax):"));
     maxStepsSpin_ = new QSpinBox(solverBox);
     maxStepsSpin_->setRange(1, 100000);
     maxStepsSpin_->setValue(200);
@@ -642,7 +637,7 @@ QString NebDialog::buildNebScript() const
            "    for _img in images:\n"
            "        _emit(_img)\n\n"
         << "k_spring = " << springSpin_->value() << "\n"
-        << "fmax = " << fmaxSpin_->value() << "\n"
+        << "fmax = " << fmax_.value() << "\n"
         << "max_steps = " << maxStepsSpin_->value() << "\n";
 
     if (variant == 2) {

@@ -110,15 +110,24 @@ HpcPanel::HpcPanel(const QString& pythonExe, QWidget* parent)
     userEdit_ = new QLineEdit(connectionPage);
     form->addRow(tr("User:"), userEdit_);
 
-    authCombo_ = new QComboBox(connectionPage);
-    authCombo_->addItems({tr("SSH key"), tr("Password")});
-    form->addRow(tr("Auth:"), authCombo_);
-
+    // No explicit auth-method picker: which method is used is INFERRED from
+    // what these two fields hold, each time a connection is attempted (see
+    // configFromUi()) — a key file present selects key auth (with the
+    // password field, if also filled, used as that key's passphrase, the
+    // SSH-conventional precedence); no key but a password selects password
+    // auth; neither filled attempts the connection anyway with no explicit
+    // credential, so the SSH layer's own defaults (agent keys, then
+    // ~/.ssh/id_ed25519 / id_ecdsa / id_rsa) apply.
     auto* keyRow = new QWidget(connectionPage);
     auto* keyLayout = new QHBoxLayout(keyRow);
     keyLayout->setContentsMargins(0, 0, 0, 0);
     keyPathEdit_ = new QLineEdit(connectionPage);
     keyPathEdit_->setPlaceholderText(tr("~/.ssh/id_rsa (empty = agent/default keys)"));
+    keyPathEdit_->setToolTip(
+        tr("A key file here selects key authentication, tried first — the "
+           "Password field below, if also filled, is used as this key's "
+           "passphrase. Leave both fields empty to try the SSH agent and "
+           "the default key files with no explicit credential at all."));
     keyBrowseButton_ = new QPushButton(tr("…"), connectionPage);
     keyBrowseButton_->setFixedWidth(28);
     keyLayout->addWidget(keyPathEdit_, 1);
@@ -134,6 +143,10 @@ HpcPanel::HpcPanel(const QString& pythonExe, QWidget* parent)
     passwordEdit_ = new QLineEdit(connectionPage);
     passwordEdit_->setEchoMode(QLineEdit::Password);
     passwordEdit_->setPlaceholderText(tr("password / key passphrase — never stored"));
+    passwordEdit_->setToolTip(
+        tr("Used as the key file's passphrase when a Key file is set above; "
+           "otherwise used directly as the login password. Never stored — "
+           "retype it after loading a saved cluster or reopening Calango."));
     form->addRow(tr("Password:"), passwordEdit_);
 
     remoteDirEdit_ = new QLineEdit(connectionPage);
@@ -185,14 +198,6 @@ HpcPanel::HpcPanel(const QString& pythonExe, QWidget* parent)
             break;
         }
     });
-
-    const auto syncAuthMode = [this](int index) {
-        const bool key = index == 0;
-        keyPathEdit_->setEnabled(key);
-        keyBrowseButton_->setEnabled(key);
-    };
-    connect(authCombo_, &QComboBox::currentIndexChanged, this, syncAuthMode);
-    syncAuthMode(authCombo_->currentIndex());
 
     tabs->addTab(connectionPage, tr("Connection"));
 
@@ -340,7 +345,16 @@ HpcPanel::HpcPanel(const QString& pythonExe, QWidget* parent)
                 // Status line stays a short, human-readable cause; the raw
                 // SSH/library text goes in the tooltip and the log, not on
                 // the line that has to fit in the dock.
-                setStatus(shortConnectionError(error, kind), false, error);
+                QString cause = shortConnectionError(error, kind);
+                using Kind = remote::RemoteClient::ErrorKind;
+                // Worth naming specifically: with no auth-method picker left,
+                // a bare "Authentication failed" no longer even implies which
+                // method was tried — say plainly that neither field was set.
+                if ((kind == Kind::Auth || kind == Kind::AuthRequired)
+                    && keyPathEdit_->text().trimmed().isEmpty()
+                    && passwordEdit_->text().isEmpty())
+                    cause += tr(" — no password or key provided");
+                setStatus(cause, false, error);
                 appendLog(error, true);
             });
     connect(client_, &remote::RemoteClient::busyChanged, this, [this](bool busy) {
@@ -393,11 +407,19 @@ remote::SshConfig HpcPanel::configFromUi() const
     config.host = hostEdit_->text().trimmed();
     config.port = portSpin_->value();
     config.username = userEdit_->text().trimmed();
-    config.auth = authCombo_->currentIndex() == 1
-        ? remote::SshConfig::Auth::Password
-        : remote::SshConfig::Auth::Key;
     config.keyPath = keyPathEdit_->text().trimmed();
     config.password = passwordEdit_->text();
+    // Inferred, not picked: a key file present means key auth (the password,
+    // if also given, is that key's passphrase — see _try_publickey() in
+    // calango_remote.py, which already loads it that way regardless of this
+    // flag). No key but a password means password auth. Neither means Key
+    // with an empty path, which is also what "no explicit credential" needs:
+    // the helper still tries the SSH agent and the default key files, and
+    // falls through to a live keyboard-interactive prompt if the server asks
+    // for something else.
+    config.auth = (config.keyPath.isEmpty() && !config.password.isEmpty())
+        ? remote::SshConfig::Auth::Password
+        : remote::SshConfig::Auth::Key;
     const QString dir = remoteDirEdit_->text().trimmed();
     config.remoteDir = dir.isEmpty() ? QStringLiteral("calango_jobs") : dir;
     return config;
@@ -781,7 +803,6 @@ void HpcPanel::saveSettings() const
     settings.setValue(QStringLiteral("host"), hostEdit_->text());
     settings.setValue(QStringLiteral("port"), portSpin_->value());
     settings.setValue(QStringLiteral("user"), userEdit_->text());
-    settings.setValue(QStringLiteral("auth"), authCombo_->currentIndex());
     settings.setValue(QStringLiteral("keyPath"), keyPathEdit_->text());
     settings.setValue(QStringLiteral("remoteDir"), remoteDirEdit_->text());
     settings.setValue(QStringLiteral("scheduler"), schedulerCombo_->currentIndex());
@@ -806,7 +827,9 @@ void HpcPanel::restoreSettings()
     hostEdit_->setText(settings.value(QStringLiteral("host")).toString());
     portSpin_->setValue(settings.value(QStringLiteral("port"), 22).toInt());
     userEdit_->setText(settings.value(QStringLiteral("user")).toString());
-    authCombo_->setCurrentIndex(settings.value(QStringLiteral("auth"), 0).toInt());
+    // The old "auth" key (which method was picked) is left unread: there is
+    // no more picker to seed, and the method is now inferred fresh from
+    // keyPath/password every time a connection is attempted.
     keyPathEdit_->setText(settings.value(QStringLiteral("keyPath")).toString());
     remoteDirEdit_->setText(settings.value(QStringLiteral("remoteDir")).toString());
     schedulerCombo_->setCurrentIndex(
@@ -836,7 +859,9 @@ ClusterPreset HpcPanel::presetFromUi(const QString& name) const
     preset.host = hostEdit_->text().trimmed();
     preset.port = portSpin_->value();
     preset.username = userEdit_->text().trimmed();
-    preset.auth = authCombo_->currentIndex();
+    // preset.auth is left at its default: there is no picker to read it
+    // from any more, and ClusterPreset::auth exists only so a preset file
+    // saved before this change still deserializes without error.
     preset.keyPath = keyPathEdit_->text().trimmed();
     preset.remoteDir = remoteDirEdit_->text().trimmed();
     preset.scheduler = schedulerCombo_->currentIndex();
@@ -856,7 +881,9 @@ void HpcPanel::applyPreset(const ClusterPreset& preset)
     hostEdit_->setText(preset.host);
     portSpin_->setValue(preset.port);
     userEdit_->setText(preset.username);
-    authCombo_->setCurrentIndex(preset.auth);
+    // preset.auth (a saved-before-this-change picker selection, if present)
+    // is deliberately not applied — the method is inferred fresh from
+    // keyPath/password below and whatever gets typed into Password next.
     keyPathEdit_->setText(preset.keyPath);
     remoteDirEdit_->setText(preset.remoteDir);
     schedulerCombo_->setCurrentIndex(preset.scheduler);

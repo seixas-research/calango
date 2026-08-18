@@ -183,6 +183,40 @@ std::vector<double> pairEnergiesFromEci(double pairEci, bool* ok);
 /// exactly why it can distinguish A3B from AB3.
 std::vector<double> tripletEnergiesFromEci(double tripletEci, bool* ok);
 
+/// Convert a nearest-neighbour pair orbit's fitted ECIs — one per
+/// species-pair-type histogram bucket, in core::ClusterExpansion's own
+/// upper-triangular bucket order (i <= j: bucket = i*K - i*(i-1)/2 + (j-i),
+/// matching clusterExpansionPairBucket() in ClusterExpansion.hpp, duplicated
+/// rather than shared — see the .cpp for why) — directly into the K x K
+/// species-pair energy matrix this module wants. `bucketEci` must have
+/// exactly speciesCount*(speciesCount+1)/2 entries; `ok` is set false
+/// otherwise.
+///
+/// NOT the same transform as the single-scalar overload above, and
+/// deliberately a separate overload rather than a replacement for it: that
+/// one assumes the classical +/-1 Ising pair basis (which only has a
+/// consistent meaning for two species), whereas ClusterExpansionFit's actual
+/// design matrix for a pair orbit is a raw per-species-pair-type COUNT
+/// (energy = sum_bucket ECI_bucket * count_bucket), so a bucket's fitted
+/// coefficient already IS that species pair's bond energy — no basis
+/// transform is needed, or even meaningful, once there are more than two
+/// species. Existing binary callers keep using the scalar overload
+/// unchanged; this one is for K >= 2 general use (K = 2 happens to still
+/// work here, just as three independent numbers rather than one).
+std::vector<double> pairEnergiesFromEci(const std::vector<double>& bucketEci,
+                                        int speciesCount, bool* ok);
+
+/// Same generalization for the nearest-neighbour TRIPLET orbit, using
+/// core::ClusterExpansion's canonical (sorted) bucket order — sort (si, sj,
+/// sk) ascending, then read it as a base-K digit string — matching
+/// clusterExpansionTripletBucket() in ClusterExpansion.hpp.
+/// `bucketEci` must have exactly speciesCount^3 entries (ClusterExpansion's
+/// dense triplet histogram — most of them zero for K > 2, since only the
+/// speciesCount*(speciesCount+1)*(speciesCount+2)/6 sorted-order buckets are
+/// ever populated by a real configuration).
+std::vector<double> tripletEnergiesFromEci(const std::vector<double>& bucketEci,
+                                           int speciesCount, bool* ok);
+
 /// Number of nearest neighbours for a lattice.
 int cvmCoordination(CvmLattice lattice);
 

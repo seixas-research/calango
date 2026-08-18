@@ -2,6 +2,7 @@
 #include "core/PhysicalConstants.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace calango::core {
@@ -18,6 +19,33 @@ namespace {
 double xlnx(double x)
 {
     return x > 0.0 ? x * std::log(x) : 0.0;
+}
+
+/// The pair-orbit histogram bucket a species pair (si, sj) falls into.
+/// Deliberately a small COPY of core::clusterExpansionPairBucket() rather
+/// than an #include of ClusterExpansion.hpp: this file is the "no embedded
+/// Python needed... native core" half of the alloy-thermodynamics pipeline
+/// and several test targets link it alone (a few source files, no Structure/
+/// UnitCell/Element at all) — pulling in ClusterExpansion.cpp's dependency
+/// chain to share four lines of arithmetic would cost every one of them a
+/// much heavier link for no benefit. ClusterVariationTest.cpp cross-checks
+/// this against the original so the two formulas cannot silently drift.
+int pairOrbitBucket(int speciesCount, int speciesI, int speciesJ)
+{
+    const int a = std::min(speciesI, speciesJ), b = std::max(speciesI, speciesJ);
+    return a * speciesCount - a * (a - 1) / 2 + (b - a);
+}
+
+/// Same duplication rationale as pairOrbitBucket(), for
+/// core::clusterExpansionTripletBucket().
+int tripletOrbitBucket(int speciesCount, int speciesI, int speciesJ, int speciesK)
+{
+    std::array<int, 3> s{speciesI, speciesJ, speciesK};
+    std::sort(s.begin(), s.end());
+    int idx = 0;
+    for (int v : s)
+        idx = idx * speciesCount + v;
+    return idx;
 }
 
 } // namespace
@@ -74,6 +102,52 @@ std::vector<double> tripletEnergiesFromEci(double tripletEci, bool* ok)
             for (int k = 0; k < 2; ++k)
                 energies[static_cast<std::size_t>((i * 2 + j) * 2 + k)] =
                     tripletEci * sign[i] * sign[j] * sign[k];
+    return energies;
+}
+
+std::vector<double> pairEnergiesFromEci(const std::vector<double>& bucketEci,
+                                        int speciesCount, bool* ok)
+{
+    const int K = speciesCount;
+    const int expected = K * (K + 1) / 2;
+    if (K < 2 || static_cast<int>(bucketEci.size()) != expected) {
+        if (ok)
+            *ok = false;
+        return {};
+    }
+    if (ok)
+        *ok = true;
+    std::vector<double> energies(static_cast<std::size_t>(K) * K, 0.0);
+    for (int i = 0; i < K; ++i) {
+        for (int j = i; j < K; ++j) {
+            const double e = bucketEci[static_cast<std::size_t>(
+                pairOrbitBucket(K, i, j))];
+            energies[static_cast<std::size_t>(i) * K + j] = e;
+            energies[static_cast<std::size_t>(j) * K + i] = e;
+        }
+    }
+    return energies;
+}
+
+std::vector<double> tripletEnergiesFromEci(const std::vector<double>& bucketEci,
+                                           int speciesCount, bool* ok)
+{
+    const int K = speciesCount;
+    const std::size_t expected = static_cast<std::size_t>(K) * K * K;
+    if (K < 2 || bucketEci.size() != expected) {
+        if (ok)
+            *ok = false;
+        return {};
+    }
+    if (ok)
+        *ok = true;
+    std::vector<double> energies(expected, 0.0);
+    for (int i = 0; i < K; ++i)
+        for (int j = 0; j < K; ++j)
+            for (int k = 0; k < K; ++k)
+                energies[static_cast<std::size_t>((i * K + j) * K + k)] =
+                    bucketEci[static_cast<std::size_t>(
+                        tripletOrbitBucket(K, i, j, k))];
     return energies;
 }
 

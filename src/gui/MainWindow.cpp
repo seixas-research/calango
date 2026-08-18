@@ -31,6 +31,7 @@
 #include "gui/BondEditorDialog.hpp"
 #include "gui/CellAxesTabs.hpp"
 #include "gui/EnvFile.hpp"
+#include "gui/FloorPanel.hpp"
 #include "gui/VisualEffectsPanel.hpp"
 #include "gui/PeriodicTableDialog.hpp"
 #include "gui/PreferencesDialog.hpp"
@@ -50,6 +51,8 @@
 #include "gui/ClusterExpansionDialog.hpp"
 #include "gui/ClusterExpansionWizard.hpp"
 #include "gui/ConvexHullWindow.hpp"
+#include "gui/TernaryClusterHullWindow.hpp"
+#include "gui/EgqcaWindow.hpp"
 #include "gui/EffectiveBandsWizard.hpp"
 #include "gui/EffectiveBandsWindow.hpp"
 #include "gui/GeometryOptimizationWizard.hpp"
@@ -1631,6 +1634,13 @@ void MainWindow::createMenusAndDocks()
                           this, &MainWindow::openEciFit);
     alloysMenu->addAction(tr("C&VM / Alloy Thermodynamics…"), this,
                           &MainWindow::openCvmComparison);
+    // A second route to phase behaviour from the SAME Calculation batch
+    // results, alongside the ECI Fit -> CVM path rather than downstream of
+    // it: EGQCA solves the explicit cluster ensemble directly (Ferreira et
+    // al., Mater. Today Phys. 48 (2024) 101547), where ECI Fit + CVM instead
+    // fits an effective model and extrapolates it to a large system.
+    alloysMenu->addAction(tr("EGQ&CA (Alloy Thermodynamics)…"), this,
+                          &MainWindow::openEgqca);
 
     alloysMenu->addSeparator();
     // Disorder handled directly, without going through a cluster expansion.
@@ -1846,15 +1856,14 @@ void MainWindow::createMenusAndDocks()
     connect(representationPanel_, &RepresentationPanel::bondEditorRequested,
             this, &MainWindow::showBondEditor);
 
-    // Zone 9. Constructed here (its panel is referenced below) but placed at
-    // the END of the bottom row — see the splitDockWidget chain further down.
+    // Zone 9. Constructed here but placed at the END of the bottom row — see
+    // the splitDockWidget chain further down. Nothing outside this
+    // constructor needs the panel itself (that used to be the Floor tab's
+    // project-restore sync — see floorPanel_ now, in the Spatial References
+    // dock below), so it is not held as a member.
     visualEffectsDock_ = new QDockWidget(tr("Visual Effects"), this);
     visualEffectsDock_->setObjectName(QStringLiteral("visualEffectsDock"));
-    // Held for syncFloorFromViewport(): a project restore writes the floor
-    // settings straight into the render style, and the panel's controls have
-    // to be told to re-read them.
-    visualEffectsPanel_ = new VisualEffectsPanel(viewport_, visualEffectsDock_);
-    visualEffectsDock_->setWidget(visualEffectsPanel_);
+    visualEffectsDock_->setWidget(new VisualEffectsPanel(viewport_, visualEffectsDock_));
 
     // Results now TRAILS the bottom row (Orchestration | HPC | Results),
     // so it is built here but placed further down, once the dock that leads
@@ -2044,6 +2053,12 @@ void MainWindow::createMenusAndDocks()
     overlayTabs->setElideMode(Qt::ElideNone);
     overlayTabs->tabBar()->setExpanding(false);
     overlayTabs->addTab(new UnitCellPanel(viewport_, overlayTabs), tr("Unit cell"));
+    // Floor sits right after Unit cell: the two share a ground/footprint
+    // relationship — the plane's automatic placement is derived from the
+    // cell's own corners among everything else drawn — that neither has with
+    // Axes triad or Vectors.
+    floorPanel_ = new FloorPanel(viewport_, overlayTabs);
+    overlayTabs->addTab(floorPanel_, tr("Floor"));
     overlayTabs->addTab(new AxesTriadPanel(viewport_, overlayTabs), tr("Axes triad"));
     overlayTabs->addTab(new VectorsPanel(viewport_, overlayTabs), tr("Vectors"));
     overlayTabs->setMinimumWidth(overlayTabs->tabBar()->sizeHint().width() + 24);
@@ -3238,8 +3253,8 @@ bool MainWindow::readProject(const QString& path)
         }
         // The Floor tab's controls were built from the defaults long before
         // this ran, so they have to re-read what was just restored.
-        if (visualEffectsPanel_)
-            Q_EMIT visualEffectsPanel_->syncFloorFromViewport();
+        if (floorPanel_)
+            Q_EMIT floorPanel_->syncFromViewport();
         viewport_->styleChanged(false);
     }
 
@@ -5663,6 +5678,7 @@ void MainWindow::registerWannierOrbitals(const QString& directory)
     const QJsonArray centres = root.value(QStringLiteral("centers")).toArray();
 
     int index = 0;
+    int registered = 0;
     for (const QString& name : cubes) {
         if (name.isEmpty())
             continue;
@@ -5686,8 +5702,21 @@ void MainWindow::registerWannierOrbitals(const QString& directory)
             volumetricPanel_->registerResultFile(
                 path, tr("Wannier ψ%1").arg(index), structLabel,
                 /*workspaceId=*/-1, origin);
+            ++registered;
         }
         ++index;
+    }
+    // Every entry lands unchecked (VolumetricPanel::addEntry) — say so, and
+    // raise the dock, or "listed but not rendered" reads as "nothing
+    // happened" rather than "N functions are waiting to be turned on".
+    if (registered > 0 && volumetricDock_) {
+        statusBar()->showMessage(
+            tr("%n Wannier function(s) added to the Volumetric Data dock — "
+               "select the ones to render.",
+               nullptr, registered),
+            6000);
+        volumetricDock_->show();
+        volumetricDock_->raise();
     }
 }
 
@@ -6273,29 +6302,54 @@ void MainWindow::onProcessResultRequested(const QString& directory)
     // A cluster-expansion run produces both a hull and a trajectory: open the
     // hull in its standalone window, then fall through so the optimized
     // structures open in a tab too.
-    if (QFile::exists(directory + QStringLiteral("/cluster_expansion.json"))) {
-        auto* window = new ConvexHullWindow(directory, this);
-        if (window->hasData()) {
-            // Double-clicking a configuration jumps the viewport to that frame
-            // of the optimized trajectory (once it has been loaded into a tab).
-            connect(window, &ConvexHullWindow::frameActivated, this,
-                    [this](int frame) {
-                        if (Document* doc = currentDocument();
-                            doc && frame >= 0
-                            && frame < static_cast<int>(doc->frames.size())) {
-                            timeline_->setCurrentFrame(frame);
-                        } else {
-                            statusBar()->showMessage(
-                                tr("Load the optimized ensemble (Process panel → "
-                                   "Load Result) to inspect configuration %1")
-                                    .arg(frame));
-                        }
-                    });
-            window->setAttribute(Qt::WA_DeleteOnClose);
-            window->show();
-            statusBar()->showMessage(tr("Convex hull analytics opened"));
+    //
+    // Binary (2 species) opens ConvexHullWindow's E_form-vs-concentration
+    // diagram; 3+ species opens the ternary ground-state map instead — the
+    // one JSON schema now carries a full per-species "composition" for
+    // either, so which window applies is read from "species" here rather
+    // than guessed from the file's presence alone.
+    const QString clusterExpansionJson =
+        directory + QStringLiteral("/cluster_expansion.json");
+    if (QFile::exists(clusterExpansionJson)) {
+        const QJsonObject summary = readJsonObject(clusterExpansionJson);
+        const int speciesCount =
+            summary[QStringLiteral("species")].toArray().size();
+        if (speciesCount >= 3) {
+            auto* window = new TernaryClusterHullWindow(directory, this);
+            if (window->hasData()) {
+                window->setAttribute(Qt::WA_DeleteOnClose);
+                window->show();
+                statusBar()->showMessage(
+                    tr("Ternary ground-state map opened"));
+            } else {
+                delete window;
+            }
         } else {
-            delete window;
+            auto* window = new ConvexHullWindow(directory, this);
+            if (window->hasData()) {
+                // Double-clicking a configuration jumps the viewport to that
+                // frame of the optimized trajectory (once it has been loaded
+                // into a tab).
+                connect(window, &ConvexHullWindow::frameActivated, this,
+                        [this](int frame) {
+                            if (Document* doc = currentDocument();
+                                doc && frame >= 0
+                                && frame < static_cast<int>(doc->frames.size())) {
+                                timeline_->setCurrentFrame(frame);
+                            } else {
+                                statusBar()->showMessage(
+                                    tr("Load the optimized ensemble (Process "
+                                       "panel → Load Result) to inspect "
+                                       "configuration %1")
+                                        .arg(frame));
+                            }
+                        });
+                window->setAttribute(Qt::WA_DeleteOnClose);
+                window->show();
+                statusBar()->showMessage(tr("Convex hull analytics opened"));
+            } else {
+                delete window;
+            }
         }
     }
     if (QFile::exists(directory + QStringLiteral("/effective_bands.json"))) {
@@ -7841,6 +7895,27 @@ void MainWindow::openCvmComparison()
     window->show();
 }
 
+void MainWindow::openEgqca()
+{
+    const QString directory = QFileDialog::getExistingDirectory(
+        this, tr("EGQCA — Select Cluster Expansion Calculation Directory"));
+    if (directory.isEmpty())
+        return;
+    if (!QFile::exists(directory + QStringLiteral("/cluster_expansion.json"))) {
+        QMessageBox::information(
+            this, tr("EGQCA"),
+            tr("No cluster_expansion.json in that directory — run a "
+               "Cluster Expansion Calculation there first."));
+        return;
+    }
+    // Shown either way, even when hasData() is false: the window's own
+    // status label already explains why (wrong species count, no
+    // degeneracy, missing an end-member) — more useful than a silent no-op.
+    auto* window = new EgqcaWindow(directory, this);
+    window->setAttribute(Qt::WA_DeleteOnClose);
+    window->show();
+}
+
 void MainWindow::openSqsBuilder()
 {
     Document* doc = currentDocument();
@@ -7961,7 +8036,8 @@ void MainWindow::clusterExpansionCalculation()
         if (found != ensembleDesignMatrices_.end()
             && found->second.correlations.size() == ensemble.size())
             wizard.setDesignMatrix(found->second.correlations,
-                                   found->second.orbitLabels);
+                                   found->second.orbitLabels,
+                                   found->second.degeneracies);
     }
     // stageJob writes these as configs.extxyz, which the generated script
     // reads; set it before running the wizard's action so both the local and
@@ -8010,8 +8086,11 @@ void MainWindow::openClusterExpansion()
     if (Document* built = currentDocument()) {
         EnsembleDesignMatrix matrix;
         matrix.correlations.reserve(res.configs.size());
-        for (const auto& cfg : res.configs)
+        matrix.degeneracies.reserve(res.configs.size());
+        for (const auto& cfg : res.configs) {
             matrix.correlations.push_back(cfg.correlation);
+            matrix.degeneracies.push_back(cfg.degeneracy);
+        }
         // Species count from the RESULT (speciesCounts is one entry per
         // species) rather than from the dialog's parsed field: the result is
         // what the correlations were actually built against, and the two
@@ -10031,6 +10110,11 @@ void MainWindow::about()
          "PSF License"},
         {"pybind11", tr("C++ ↔ Python bridge for the embedded interpreter"),
          "BSD 3-Clause"},
+        {"LAPACK", tr("dense linear algebra for the native DFT engine's "
+                      "generalised eigenproblem"),
+         "BSD 3-Clause (modified)"},
+        {"HDF5", tr("compressed charge-density (.h5) volumetric storage"),
+         "HDF5 License (BSD-style)"},
         {"ASE", tr("atomistic structures, calculators and dynamics"),
          "LGPL v2.1+"},
         {"GPAW", tr("density-functional theory engine (PAW / plane waves)"),
@@ -10051,6 +10135,9 @@ void MainWindow::about()
         {"MACE", tr("machine-learning interatomic potentials"), "MIT"},
         {"icet", tr("cluster expansions and special quasirandom structures"),
          "MIT"},
+        {"paramiko", tr("SSH/SFTP client behind the HPC panel's remote "
+                        "connection helper"),
+         "LGPL v2.1+"},
         {"Remix Icon", tr("the icon set used throughout the interface"),
          "Apache 2.0"},
     };

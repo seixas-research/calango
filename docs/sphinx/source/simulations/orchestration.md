@@ -943,8 +943,11 @@ checksum" is never confusable with "checksum of nothing".
 
 ## Saving, reopening and running a workflow elsewhere
 
-{guilabel}`Export Workflow…` writes the whole pipeline to one JSON file, and
-{guilabel}`Open Workflow…` loads one back onto the canvas. The same file is
+{guilabel}`Save Workflow` writes the whole pipeline to one JSON file, and
+{guilabel}`Open Workflow…` loads one back onto the canvas. It asks where the
+first time; after that it saves back to the same file without asking, until
+you open a different workflow (or clear the canvas) — the same Save vs Save
+As split the main {guilabel}`Save Project` command uses. The same file is
 written as `workflow.json` into every run's `orchestration_*` folder, so a
 results directory always says what produced it — and reopening that copy is
 how you get back the pipeline that computed a set of results.
@@ -1091,7 +1094,7 @@ results are already on disk and stay *Done*; fix that node and press
 {guilabel}`Resume` to compute Pt alone.
 
 To run the same thing on a cluster instead, stop after step 5, press
-{guilabel}`Export Workflow…`, copy the file across and
+{guilabel}`Save Workflow`, copy the file across and
 `calango-cli run workflow.json -o results/`. Later,
 {guilabel}`Open Workflow…` on that same file brings the pipeline back onto
 the canvas.
@@ -1153,7 +1156,7 @@ Stated plainly, so a pipeline is designed around them rather than into
 them:
 
 - **The canvas is not saved in the project file.** A workflow file is how a
-  pipeline is kept: {guilabel}`Export Workflow…` writes it,
+  pipeline is kept: {guilabel}`Save Workflow` writes it,
   {guilabel}`Open Workflow…` reads it back. It is not reopened automatically
   on startup, and Resume only works within the session that started the run —
   a reopened pipeline starts from a clean slate.

@@ -4988,7 +4988,7 @@ int main(int argc, char** argv)
         // was fixed the generated occupation_type was hard-coded to
         // "gaussian" regardless of the method actually selected — so every
         // aims run silently computed a Gaussian-smeared density instead.
-        checkContains(script, "aims_kwargs[\"occupation_type\"] = \"fermi 0.1\"",
+        checkContains(script, "aims_kwargs[\"occupation_type\"] = \"fermi 0.05\"",
                       "Fermi-Dirac (the default) reaches aims's own name for "
                       "it, not a fixed \"gaussian\"");
 

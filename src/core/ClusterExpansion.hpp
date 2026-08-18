@@ -55,6 +55,14 @@ struct ClusterExpansionConfig {
     Structure structure;
     std::vector<int> speciesCounts;   ///< per species (aligned to speciesZ)
     std::vector<double> correlation;  ///< cluster-correlation fingerprint
+    /// How many raw decorations of the active sublattice collapsed onto
+    /// this one canonical fingerprint before dedup — g_j in the sense
+    /// EGQCA (core::EgqcaCluster::degeneracy) and Eq. 6-7 of the working
+    /// paper use it: the multiplicity of this configuration CLASS, not a
+    /// geometric cluster-orbit multiplicity (that is
+    /// ClusterOrbitSummary::multiplicity, a different quantity this
+    /// enumerator also produces). Always >= 1.
+    int degeneracy = 1;
 };
 
 struct ClusterExpansionResult {
@@ -91,6 +99,20 @@ struct ClusterExpansionResult {
 /// is the only place that can be wrong about it in one edit.
 std::vector<std::string> clusterCorrelationLabels(
     const ClusterExpansionResult& result, int speciesCount);
+
+/// The pair-orbit histogram bucket a species pair (si, sj) falls into — the
+/// upper-triangular (order-independent) index generateClusterExpansion()
+/// itself fills the fingerprint with. Exported so a caller translating a
+/// fitted pair ECI back into a per-species-pair energy (ClusterVariation's
+/// pairEnergiesFromEci()) uses the exact same bucket numbering rather than a
+/// second, hand-derived copy of the formula.
+int clusterExpansionPairBucket(int speciesCount, int speciesI, int speciesJ);
+
+/// The triplet-orbit histogram bucket a species triple (si, sj, sk) falls
+/// into — the canonical (sorted) mixed-radix index generateClusterExpansion()
+/// fills the fingerprint with. See clusterExpansionPairBucket().
+int clusterExpansionTripletBucket(int speciesCount, int speciesI, int speciesJ,
+                                  int speciesK);
 
 ClusterExpansionResult generateClusterExpansion(
     const Structure& parent, const ClusterExpansionOptions& options);

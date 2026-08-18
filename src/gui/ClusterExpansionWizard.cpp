@@ -99,13 +99,7 @@ QWidget* ClusterExpansionWizard::buildSettingsPage()
     optimizerCombo_->setCurrentIndex(1); // LBFGS: cheapest per step in batch
     relaxForm->addRow(tr("Optimizer:"), optimizerCombo_);
 
-    fmaxSpin_ = new QDoubleSpinBox(relaxGroup);
-    fmaxSpin_->setRange(0.001, 1.0);
-    fmaxSpin_->setDecimals(3);
-    fmaxSpin_->setSingleStep(0.005);
-    fmaxSpin_->setValue(0.05);
-    fmaxSpin_->setSuffix(tr(" eV/Å"));
-    relaxForm->addRow(tr("Force convergence:"), fmaxSpin_);
+    fmax_.build(relaxForm, relaxGroup, tr("Force convergence:"));
 
     maxStepsSpin_ = new QSpinBox(relaxGroup);
     maxStepsSpin_->setRange(1, 100000);
@@ -143,7 +137,7 @@ QWidget* ClusterExpansionWizard::buildSettingsPage()
 
     connect(singlePointCheck_, &QCheckBox::toggled, this, [this](bool on) {
         for (QWidget* w : {static_cast<QWidget*>(optimizerCombo_),
-                           static_cast<QWidget*>(fmaxSpin_),
+                           static_cast<QWidget*>(fmax_.spinBox()),
                            static_cast<QWidget*>(maxStepsSpin_)}) {
             w->setEnabled(!on);
         }
@@ -215,7 +209,7 @@ QWidget* ClusterExpansionWizard::buildSettingsPage()
     for (QComboBox* combo : {optimizerCombo_, concentrationCombo_})
         connect(combo, &QComboBox::currentIndexChanged, this,
                 [this] { refreshPreview(); });
-    connect(fmaxSpin_, &QDoubleSpinBox::valueChanged, this,
+    connect(fmax_.spinBox(), &QDoubleSpinBox::valueChanged, this,
             [this] { refreshPreview(); });
     connect(maxStepsSpin_, &QSpinBox::valueChanged, this,
             [this] { refreshPreview(); });
@@ -231,10 +225,12 @@ QWidget* ClusterExpansionWizard::buildSettingsPage()
 
 void ClusterExpansionWizard::setDesignMatrix(
     const std::vector<std::vector<double>>& correlations,
-    const std::vector<std::string>& orbitLabels)
+    const std::vector<std::string>& orbitLabels,
+    const std::vector<int>& degeneracies)
 {
     designMatrix_ = correlations;
     designLabels_ = orbitLabels;
+    designDegeneracies_ = degeneracies;
 }
 
 core::ClusterExpansionRunConfig ClusterExpansionWizard::runConfig() const
@@ -244,7 +240,7 @@ core::ClusterExpansionRunConfig ClusterExpansionWizard::runConfig() const
     config.calculator.task = core::TaskKind::GeometryOptimization;
     config.calculator.optimizer =
         static_cast<core::Optimizer>(optimizerCombo_->currentIndex());
-    config.calculator.fmax = fmaxSpin_->value();
+    config.calculator.fmax = fmax_.value();
     config.calculator.maxSteps = maxStepsSpin_->value();
     cell_.applyTo(config.calculator);
     config.singlePointOnly = singlePointCheck_->isChecked();
@@ -261,6 +257,7 @@ core::ClusterExpansionRunConfig ClusterExpansionWizard::runConfig() const
     config.continueOnFailure = continueOnFailureCheck_->isChecked();
     config.correlations = designMatrix_;
     config.orbitLabels = designLabels_;
+    config.degeneracies = designDegeneracies_;
     return config;
 }
 

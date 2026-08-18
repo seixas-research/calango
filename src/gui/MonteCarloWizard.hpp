@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gui/ForceConvergenceControl.hpp"
 #include "gui/GpawElectronicWizard.hpp"
 
 class QComboBox;
@@ -44,7 +45,7 @@ private:
     QDoubleSpinBox* temperatureSpin_;
     QDoubleSpinBox* displacementSpin_; // Basin Hopping perturbation dr (Å)
     QDoubleSpinBox* swapProbSpin_;     // Swap-atoms swap probability
-    QDoubleSpinBox* fmaxSpin_;         // Basin Hopping local-opt force tol
+    ForceConvergenceControl fmax_;     // Basin Hopping local-opt force tol
     QComboBox* optimizerCombo_;        // Basin Hopping local optimizer
     QSpinBox* seedSpin_;
     /// baseCalculatorConfig() plus the shared GPAW electronic rows. Folded

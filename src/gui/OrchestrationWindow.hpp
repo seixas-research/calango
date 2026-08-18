@@ -814,10 +814,16 @@ public Q_SLOTS:
     /// a pipeline is minutes of wiring that a mis-click would otherwise cost
     /// in full.
     void clearOrchestration();
-    /// Write the pipeline to a JSON file the user picks — the document
-    /// `calango-cli` runs on a cluster. Structures travel inside it, so the
-    /// file is self-contained and can simply be copied across.
-    void exportWorkflow();
+    /// Write the pipeline to its JSON file — the document `calango-cli` runs
+    /// on a cluster, structures travelling inside it, so the file is
+    /// self-contained and can simply be copied across.
+    ///
+    /// The first save (or a save with nothing open yet) asks where; every
+    /// save after that overwrites the same file silently, like
+    /// MainWindow::saveProject()'s Save vs Save As split — the file a
+    /// workflow was opened from, or was last saved to, becomes the one Save
+    /// writes to from then on.
+    void saveWorkflow();
     /// Ask for a workflow file and load it, REPLACING the canvas.
     void openWorkflow();
 
@@ -1106,6 +1112,9 @@ private:
 
     std::vector<OrchestrationNodeItem*> nodes_;
     std::vector<OrchestrationEdgeItem*> edges_;
+    /// The file a workflow was last opened from, or saved to — mirrors
+    /// MainWindow::projectPath_. Empty means saveWorkflow() still has to ask.
+    QString workflowPath_;
     jobs::JobRunner* jobRunner_ = nullptr;
     OrchestrationNodeItem* runningNode_ = nullptr;
     /// Provenance for the node currently running, opened at launch and closed

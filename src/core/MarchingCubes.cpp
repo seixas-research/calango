@@ -330,4 +330,24 @@ WeldedMesh weldVertices(const IsoMesh& mesh, double tolerance)
     return welded;
 }
 
+IsoMesh flattenTriangleNormals(const IsoMesh& mesh)
+{
+    IsoMesh out;
+    out.positions = mesh.positions;
+    out.colorValues = mesh.colorValues;
+    out.normals.resize(mesh.normals.size());
+    for (std::size_t t = 0; t + 2 < mesh.positions.size(); t += 3) {
+        Vec3 normal = mesh.normals[t] + mesh.normals[t + 1] + mesh.normals[t + 2];
+        normal = normal.dot(normal) > 1e-24
+            ? normal.normalized()
+            : (mesh.positions[t + 1] - mesh.positions[t])
+                  .cross(mesh.positions[t + 2] - mesh.positions[t])
+                  .normalized();
+        out.normals[t] = normal;
+        out.normals[t + 1] = normal;
+        out.normals[t + 2] = normal;
+    }
+    return out;
+}
+
 } // namespace calango::core

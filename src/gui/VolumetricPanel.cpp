@@ -303,8 +303,14 @@ void VolumetricPanel::addEntry(
         centre = origin.hasCentre ? origin.centre
                                   : core::periodicCentroid(*field);
     const int index = static_cast<int>(entries_.size());
+    // Wannier functions land UNCHECKED: a wannierization typically produces
+    // several orbitals, and rendering every isosurface at once the moment
+    // the calculation finishes is a wall of overlapping lobes nobody asked
+    // for — the user picks which ones to look at. Every other origin keeps
+    // the previous "visible on arrival" default (a single density cube, or
+    // a file loaded by hand, is exactly the one thing you want to see).
     entries_.push_back({field, label, path, structureLabel, workspaceId,
-                        /*visible=*/true, origin.wannier, centre});
+                        /*visible=*/!origin.wannier, origin.wannier, centre});
 
     // A Wannier function arriving in a tab promotes that tab's material to
     // Glossy — ONCE, and never over a choice the user has made.
@@ -333,7 +339,7 @@ void VolumetricPanel::addEntry(
         item->setToolTip(0, path);
         item->setData(0, Qt::UserRole, index);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(0, Qt::Checked);
+        item->setCheckState(0, origin.wannier ? Qt::Unchecked : Qt::Checked);
     }
     // A record registered while another tab is on screen stays hidden until
     // its own tab comes forward.
@@ -599,8 +605,14 @@ void VolumetricPanel::onSelectionChanged()
     if (const core::VolumetricData* field = currentField()) {
         if (!restoringWorkspace_)
             defaultIsovalueForField();
-        if (editDialog_)
+        if (editDialog_) {
             editDialog_->setFieldRange(field->minValue(), field->maxValue());
+            // The isovalue histogram bins this volume's own values once,
+            // here, rather than per slider move — the load-time cost this
+            // caches against.
+            editDialog_->setFieldHistogram(field->values, field->minValue(),
+                                           field->maxValue());
+        }
     }
     render();
 }
@@ -640,6 +652,8 @@ void VolumetricPanel::openEditDialog()
     } else {
         editDialog_->setFieldRange(lo, hi);
     }
+    if (field)
+        editDialog_->setFieldHistogram(field->values, lo, hi);
     syncEditDialogDatasets();
     editDialog_->show();
     editDialog_->raise();

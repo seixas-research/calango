@@ -3561,14 +3561,17 @@ OrchestrationWindow::OrchestrationWindow(
         QStringLiteral("folder-open-line"),
         tr("Open Workflow… — load a pipeline from a JSON file, replacing "
            "what is on the canvas.\n\n"
-           "Asks first when there is something to replace. Reads what Export "
+           "Asks first when there is something to replace. Reads what Save "
            "Workflow writes, including the workflow.json saved beside every "
            "run's results."));
-    auto* exportButton = makeButton(
-        QStringLiteral("share-fill"),
-        tr("Export Workflow… — write the whole pipeline to a JSON file.\n\n"
+    auto* saveButton = makeButton(
+        QStringLiteral("save-line"),
+        tr("Save Workflow — write the whole pipeline to a JSON file.\n\n"
            "Structures travel inside the file, so it is self-contained: copy "
-           "it to a cluster and run it there with calango-cli, headlessly."));
+           "it to a cluster and run it there with calango-cli, headlessly.\n\n"
+           "Asks where the first time; after that, saves back to the same "
+           "file without asking. Open a different workflow (or Clear) to "
+           "save somewhere else."));
     auto* layoutButton = makeButton(
         QStringLiteral("node-tree"),
         tr("Auto-Layout — rearrange every node into columns in execution "
@@ -3637,8 +3640,8 @@ OrchestrationWindow::OrchestrationWindow(
     // overload set is ambiguous without it.
     connect(openButton, &QPushButton::clicked, this,
             qOverload<>(&OrchestrationWindow::openWorkflow));
-    connect(exportButton, &QPushButton::clicked, this,
-            &OrchestrationWindow::exportWorkflow);
+    connect(saveButton, &QPushButton::clicked, this,
+            &OrchestrationWindow::saveWorkflow);
     connect(layoutButton, &QPushButton::clicked, this,
             &OrchestrationWindow::autoLayout);
     connect(fitButton, &QPushButton::clicked, this,
@@ -3944,35 +3947,43 @@ void OrchestrationWindow::setDatabaseImporter(StructureImporter importer)
     databaseImporter_ = std::move(importer);
 }
 
-void OrchestrationWindow::exportWorkflow()
+void OrchestrationWindow::saveWorkflow()
 {
     if (nodes_.empty()) {
-        QMessageBox::information(this, tr("Export Workflow"),
+        QMessageBox::information(this, tr("Save Workflow"),
                                  tr("There is nothing on the canvas to "
-                                    "export."));
+                                    "save."));
         return;
     }
-    const QString path = QFileDialog::getSaveFileName(
-        this, tr("Export Workflow"), QStringLiteral("workflow.json"),
-        tr("Calango workflow (*.json);;All files (*)"));
-    if (path.isEmpty())
-        return;
+    // First save (or nothing open yet): ask where, same as Save As. Every
+    // save after that overwrites workflowPath_ silently — the file a
+    // workflow was opened from, or was last saved to, following
+    // MainWindow::saveProject()'s own Save vs Save As split.
+    QString path = workflowPath_;
+    if (path.isEmpty()) {
+        path = QFileDialog::getSaveFileName(
+            this, tr("Save Workflow"), QStringLiteral("workflow.json"),
+            tr("Calango workflow (*.json);;All files (*)"));
+        if (path.isEmpty())
+            return;
+    }
 
     QStringList warnings;
     const QJsonObject document = OrchestrationDocument::build(*this, &warnings);
     QString error;
     if (!OrchestrationDocument::write(document, path, &error)) {
-        QMessageBox::warning(this, tr("Export Workflow"),
+        QMessageBox::warning(this, tr("Save Workflow"),
                              tr("%1 could not be written: %2")
                                  .arg(QFileInfo(path).fileName(), error));
         return;
     }
+    workflowPath_ = path;
     // Warnings are shown even on success. Each one is a structure that is NOT
     // in the file the user is about to copy to a cluster, and finding that
     // out there instead of here costs a queue slot and a night.
     if (!warnings.isEmpty())
         QMessageBox::warning(
-            this, tr("Export Workflow"),
+            this, tr("Save Workflow"),
             tr("The workflow was written, but some structures were left "
                "out:\n\n%1")
                 .arg(warnings.join(QLatin1Char('\n'))));
@@ -3999,6 +4010,10 @@ void OrchestrationWindow::clearGraph()
     batchIndex_ = 0;
     batchLength_ = 1;
     launchedCount_ = 0;
+    // No current file either — an emptied canvas has nothing to overwrite,
+    // and openWorkflow(path) (the other caller) sets this to the file it is
+    // about to load right after this returns.
+    workflowPath_.clear();
     updateRunControls();
 }
 
@@ -4074,6 +4089,9 @@ bool OrchestrationWindow::openWorkflow(const QString& path)
         return false;
     }
     fitToScreen();
+    // The file this canvas now IS, so Save writes back to it without asking
+    // — the same role MainWindow::projectPath_ plays for readProject().
+    workflowPath_ = path;
     return true;
 }
 

@@ -85,6 +85,26 @@ Only the *lower* hull is physically meaningful: a configuration is stable exactl
 A hull needs several compositions. If the current document holds a single structure, the wizard warns and the batch still runs — but open the trajectory produced by the Builder first if you want a diagram rather than a point.
 :::
 
+---
+
+## Ternary systems (3+ species)
+
+Everything above already generalizes: enumeration, correlation fingerprints and the ECI fit are species-count-agnostic, so typing three (or more) substitution species into the builder — e.g. `Cu, Au, Ag` — produces a ternary ensemble the same way. `cluster_expansion.json` carries a `composition` field per configuration (every species' site fraction, not just one concentration axis), and formation energy generalizes to
+
+$$
+E_\text{form} = \frac{E}{N} - \sum_s x_s\,\mu_s ,
+$$
+
+with one reference $\mu_s$ per species — the ensemble's own purest-in-$s$ configuration, by the same "reference the ensemble's own endpoints" logic as the binary case (the two coincide exactly for two species). Manual reference energies remain a two-species-only option; a 3+-species ensemble asking for them is told so and left without formation energies rather than silently dropping a species' contribution.
+
+With three or more species, opening the result shows a **Ternary Cluster Expansion — Ground-State Map** window instead of the binary Convex Hull tab: formation energy plotted over the composition triangle (one point per configuration, colour-mapped) with the ground-state facets — the lower convex hull's generalization to a composition triangle — drawn over it as a wireframe. Only the first three named species are plotted for a quaternary+ ensemble, noted in the window itself.
+
+This plot is drawn natively (`QPainter`, the same way as every other Calango chart — see {doc}`/reference/dependencies` on the project's "no external plotting library" convention) rather than through mpltern or matplotlib, reproducing the visual language of a typical ternary composition-triangle figure: the matplotlib "Spectral" colormap, dashed gridlines at 0.20 composition intervals on all three axes, tick marks, and a colorbar.
+
+:::{note}
+Ground-state identification on a full enumeration is a genuine 3D convex-hull problem. Calango's implementation reduces the candidate set to the lowest-energy configuration per composition bin (any other configuration near the same composition cannot be a ground state once a strictly lower one exists there) before testing candidate facets exactly — exact with respect to that reduced set, and bounded rather than exhaustive over very large ensembles.
+:::
+
 % TODO screenshot: the Convex Hull results tab after a cluster-expansion batch, with filled hull vertices, tie-lines and hollow above-hull points
 ```{figure} /_static/img/sim_cluster_expansion_hull.png
 :alt: Formation energy versus concentration with the lower convex hull drawn

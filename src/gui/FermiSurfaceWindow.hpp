@@ -54,9 +54,6 @@ private:
     /// Grid points per band: nx·ny·nz. The length every band's energy array
     /// must have, and the row count of the CSV export.
     std::size_t pointCount() const;
-    /// Half-spaces bounding the first Brillouin zone: a point k is inside when
-    /// k·n̂ ≤ d for every entry (n̂x, n̂y, n̂z, d).
-    std::vector<std::array<double, 4>> zoneHalfSpaces() const;
     void rebuild();
     void populateBandList();
     void exportImage();

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gui/CellRelaxationControls.hpp"
+#include "gui/ForceConvergenceControl.hpp"
 #include "gui/GpawElectronicWizard.hpp"
 
 #include <memory>
@@ -71,7 +72,7 @@ private:
     QLabel* constraintSummary_ = nullptr;
 
     QComboBox* optimizerCombo_;
-    QDoubleSpinBox* fmaxSpin_;
+    ForceConvergenceControl fmax_;
     QSpinBox* maxStepsSpin_;
     /// Variable-cell relaxation (relax cell, filter, stress mask, Voigt ticks).
     /// Shared with the Cluster Expansion batch, which relaxes cells with the

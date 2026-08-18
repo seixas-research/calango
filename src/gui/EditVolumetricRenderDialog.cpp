@@ -1,5 +1,6 @@
 #include "gui/EditVolumetricRenderDialog.hpp"
 
+#include "gui/IsovalueHistogramWidget.hpp"
 #include "gui/SettingsManager.hpp"
 #include "render/ShaderProfile.hpp"
 
@@ -72,6 +73,7 @@ EditVolumetricRenderDialog::EditVolumetricRenderDialog(
     stack_->addWidget(buildDirectVolumePage()); // index 2 = DirectVolume
     stack_->setCurrentIndex(static_cast<int>(mode));
     layout->addWidget(stack_, 1);
+    updateRangeLabels();
 
     connect(modeCombo_, &QComboBox::currentIndexChanged, this, [this](int i) {
         stack_->setCurrentIndex(i);
@@ -99,18 +101,46 @@ QWidget* EditVolumetricRenderDialog::buildIsosurfacePage()
     auto* page = new QWidget(this);
     auto* form = new QFormLayout(page);
 
-    // Isovalue slider + numeric input.
+    // Isovalue histogram + slider + numeric input. The histogram and the
+    // slider share a dedicated column (sliderColumn) so they come out
+    // exactly the same width — the spin box sits outside that column, same
+    // as before, so it does not narrow the histogram relative to the slider
+    // it has to line up with.
     auto* isoRow = new QWidget(page);
     auto* isoRowLayout = new QHBoxLayout(isoRow);
     isoRowLayout->setContentsMargins(0, 0, 0, 0);
-    isoSlider_ = new QSlider(Qt::Horizontal, isoRow);
+
+    auto* sliderColumn = new QWidget(isoRow);
+    auto* sliderColumnLayout = new QVBoxLayout(sliderColumn);
+    sliderColumnLayout->setContentsMargins(0, 0, 0, 0);
+    sliderColumnLayout->setSpacing(2);
+
+    isoHistogram_ = new IsovalueHistogramWidget(sliderColumn);
+    sliderColumnLayout->addWidget(isoHistogram_);
+
+    isoSlider_ = new QSlider(Qt::Horizontal, sliderColumn);
     isoSlider_->setRange(0, kSliderSteps);
+    sliderColumnLayout->addWidget(isoSlider_);
+    isoHistogram_->setReferenceSlider(isoSlider_);
+
     isoSpin_ = new QDoubleSpinBox(isoRow);
     isoSpin_->setDecimals(5);
     isoSpin_->setRange(fieldMin_, fieldMax_);
     isoSpin_->setValue(std::clamp(style_.isovalue, fieldMin_, fieldMax_));
-    isoRowLayout->addWidget(isoSlider_, 1);
+
+    isoLogScaleCheck_ = new QCheckBox(tr("Log"), isoRow);
+    isoLogScaleCheck_->setToolTip(
+        tr("Plot the histogram bar heights as log(1 + count) instead of the "
+           "raw count.\n\nMost volumetric fields are dominated by one "
+           "plateau (vacuum, an interstitial region) that would otherwise "
+           "flatten every other bin to an invisible sliver next to it."));
+    connect(isoLogScaleCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        isoHistogram_->setLogScale(on);
+    });
+
+    isoRowLayout->addWidget(sliderColumn, 1);
     isoRowLayout->addWidget(isoSpin_);
+    isoRowLayout->addWidget(isoLogScaleCheck_);
     form->addRow(tr("Isovalue:"), isoRow);
     syncIsoSlider();
     connect(isoSlider_, &QSlider::valueChanged, this, [this] {
@@ -119,15 +149,30 @@ QWidget* EditVolumetricRenderDialog::buildIsosurfacePage()
         style_.isovalue = isovalueFromSlider();
         const QSignalBlocker b(isoSpin_);
         isoSpin_->setValue(style_.isovalue);
+        isoHistogram_->setCurrentValue(style_.isovalue);
         emitChange();
     });
     connect(isoSpin_, &QDoubleSpinBox::valueChanged, this, [this](double v) {
         if (updating_)
             return;
         style_.isovalue = v;
-        syncIsoSlider();
+        syncIsoSlider(); // also updates the histogram marker
         emitChange();
     });
+    // Same direction as the slider: a click or drag on the histogram sets
+    // the isovalue, so it is wired through the identical spin-box path
+    // (clamp is the spin box's own range, not a slider tick, so this can
+    // land a touch finer than a slider drag would).
+    connect(isoHistogram_, &IsovalueHistogramWidget::valueEdited, this,
+            [this](double v) {
+                if (updating_)
+                    return;
+                style_.isovalue = v;
+                const QSignalBlocker b(isoSpin_);
+                isoSpin_->setValue(v);
+                syncIsoSlider();
+                emitChange();
+            });
 
     // -- Draw style ---------------------------------------------------------
     // Presentation of the same extracted mesh, not a different extraction.
@@ -786,6 +831,15 @@ QWidget* EditVolumetricRenderDialog::buildColorSlicePage()
     // compress everything else into one end of the ramp; pinning the window is
     // what makes the physically interesting range legible, and what lets two
     // slices be compared on the same scale.
+    sliceRangeLabel_ = new QLabel(page);
+    sliceRangeLabel_->setToolTip(
+        tr("The field's own minimum and maximum — what \"Custom color range\" "
+           "off below falls back to.\n\nThis is the WHOLE VOLUME's range, not "
+           "just this slice's: the field is only sampled once, at load, so a "
+           "plane through a mostly-flat region does not shrink it, and moving "
+           "the slice does not change it."));
+    form->addRow(tr("Automatic Range:"), sliceRangeLabel_);
+
     sliceBoundsCheck_ = new QCheckBox(tr("Custom color range"), page);
     sliceBoundsCheck_->setChecked(style_.sliceUseBounds);
     sliceBoundsCheck_->setToolTip(
@@ -976,10 +1030,23 @@ void EditVolumetricRenderDialog::setStyle(const VolumetricStyle& style,
     updating_ = false;
 }
 
+void EditVolumetricRenderDialog::updateRangeLabels()
+{
+    // 'g', 4 significant figures: the convention WannierDialog's own
+    // "[min, max]" field-range label uses, which already covers extreme
+    // magnitudes (a charge density's core cusp, a near-zero tail) by
+    // switching to scientific notation on its own.
+    const QString text =
+        tr("[%1, %2]").arg(fieldMin_, 0, 'g', 4).arg(fieldMax_, 0, 'g', 4);
+    if (sliceRangeLabel_)
+        sliceRangeLabel_->setText(text);
+}
+
 void EditVolumetricRenderDialog::setFieldRange(double fieldMin, double fieldMax)
 {
     fieldMin_ = fieldMin;
     fieldMax_ = std::max(fieldMax, fieldMin + 1e-30);
+    updateRangeLabels();
     updating_ = true;
     style_.isovalue = std::clamp(style_.isovalue, fieldMin_, fieldMax_);
     isoSpin_->setRange(fieldMin_, fieldMax_);
@@ -1003,6 +1070,18 @@ void EditVolumetricRenderDialog::setFieldRange(double fieldMin, double fieldMax)
     updating_ = false;
 }
 
+void EditVolumetricRenderDialog::setFieldHistogram(
+    const std::vector<double>& values, double fieldMin, double fieldMax)
+{
+    isoHistogram_->setData(values, fieldMin, fieldMax);
+    // Reset to the suggested default for THIS volume rather than carrying
+    // over whatever the previous one's checkbox state was — the same reason
+    // isovalue itself is re-clamped to the new range in setFieldRange()
+    // rather than left at the outgoing field's number.
+    isoLogScaleCheck_->setChecked(isoHistogram_->logScaleSuggested());
+    isoHistogram_->setCurrentValue(style_.isovalue);
+}
+
 double EditVolumetricRenderDialog::isovalueFromSlider() const
 {
     const double t = static_cast<double>(isoSlider_->value()) / kSliderSteps;
@@ -1015,6 +1094,12 @@ void EditVolumetricRenderDialog::syncIsoSlider()
     const double t = span > 0.0 ? (style_.isovalue - fieldMin_) / span : 0.0;
     const QSignalBlocker b(isoSlider_);
     isoSlider_->setValue(static_cast<int>(std::clamp(t, 0.0, 1.0) * kSliderSteps));
+    // Every caller of this is a place style_.isovalue's own POSITION display
+    // moved without necessarily going through the histogram's own
+    // valueEdited path, so this is the one spot that keeps its marker in
+    // step regardless of which control the change came from.
+    if (isoHistogram_)
+        isoHistogram_->setCurrentValue(style_.isovalue);
 }
 
 void EditVolumetricRenderDialog::updateColorButton(QPushButton* button,

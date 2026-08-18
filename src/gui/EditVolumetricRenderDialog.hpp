@@ -6,16 +6,21 @@
 
 #include <QDialog>
 
+#include <vector>
+
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
 class QGroupBox;
+class QLabel;
 class QPushButton;
 class QSlider;
 class QSpinBox;
 class QStackedWidget;
 
 namespace calango::gui {
+
+class IsovalueHistogramWidget;
 
 /// "Edit Volumetric Render" — the styling window opened from the Volumetric
 /// Data panel's toolbar. A central "Render Mode" dropdown selects one of two
@@ -51,6 +56,13 @@ public:
     /// value range (no signal emitted).
     void setFieldRange(double fieldMin, double fieldMax);
 
+    /// Bin a newly selected field's own values into the isovalue histogram
+    /// and cache them (no signal emitted). Call once per loaded volume,
+    /// alongside setFieldRange() — never on every isovalue change, which is
+    /// exactly the recompute this caches against.
+    void setFieldHistogram(const std::vector<double>& values, double fieldMin,
+                           double fieldMax);
+
     /// Adopt `style` / `mode` wholesale, refreshing every control (no signal
     /// emitted — the caller already holds these values).
     ///
@@ -83,6 +95,8 @@ private:
     double isovalueFromSlider() const;
     void syncIsoSlider();
     void updateColorButton(QPushButton* button, const QColor& color);
+    /// Refresh every label that reports fieldMin_/fieldMax_ as text.
+    void updateRangeLabels();
 
     VolumetricStyle style_;
     double fieldMin_ = 0.0;
@@ -100,6 +114,10 @@ private:
     /// dialog because it decides whether the Shading row below still reaches
     /// the main viewport.
     QCheckBox* litSurfaceCheck_ = nullptr;
+    /// Voxel-count histogram, drawn directly above isoSlider_ and pinned to
+    /// its groove — see IsovalueHistogramWidget.
+    IsovalueHistogramWidget* isoHistogram_ = nullptr;
+    QCheckBox* isoLogScaleCheck_ = nullptr;
     QSlider* isoSlider_ = nullptr;
     QDoubleSpinBox* isoSpin_ = nullptr;
     QComboBox* drawStyleCombo_ = nullptr;  ///< solid / mesh / both / dots
@@ -128,6 +146,9 @@ private:
     QDoubleSpinBox* sliceOpacitySpin_ = nullptr;
     QComboBox* sliceExtentCombo_ = nullptr;
     QCheckBox* sliceBorderCheck_ = nullptr;
+    /// "Range: [min, max]" — the whole VOLUME's range (see updateRangeLabels()),
+    /// which is what "Custom color range" off falls back to.
+    QLabel* sliceRangeLabel_ = nullptr;
 
     // Direct volume rendering
     QSpinBox* volumeStepsSpin_ = nullptr;

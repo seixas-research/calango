@@ -9,22 +9,17 @@ namespace calango::core {
 namespace {
 
 struct Plane {
-    Vec3 g;   ///< generating reciprocal lattice vector (outward normal)
+    Vec3 g;   ///< generating lattice vector (outward normal)
     double d; ///< |g|²/2 — the bisector plane offset
 };
 
-} // namespace
-
-PolyhedronMesh wignerSeitzCell(const std::array<Vec3, 3>& basis)
+/// Bisector planes of the lattice points spanned by `basis` in the ±2
+/// shells — two shells is enough for any Niggli-reasonable cell. Shared by
+/// wignerSeitzCell() (which needs the planes to find the cell's vertices)
+/// and clipToWignerSeitzCell() (which needs them to clip triangles to it):
+/// one function so both agree on exactly which cell they mean.
+std::vector<Plane> bisectorPlanes(const std::array<Vec3, 3>& basis)
 {
-    const double volume = basis[0].dot(basis[1].cross(basis[2]));
-    if (!(std::abs(volume) > 1e-12))
-        throw std::invalid_argument(
-            "Wigner-Seitz cell requires a non-degenerate lattice basis");
-
-    PolyhedronMesh bz;
-
-    // Bisector planes of the lattice points in the ±2 shells.
     std::vector<Plane> planes;
     for (int n1 = -2; n1 <= 2; ++n1) {
         for (int n2 = -2; n2 <= 2; ++n2) {
@@ -37,6 +32,41 @@ PolyhedronMesh wignerSeitzCell(const std::array<Vec3, 3>& basis)
             }
         }
     }
+    return planes;
+}
+
+/// Clip a convex polygon against the half-space x·g ≤ d (Sutherland-Hodgman).
+/// A cut edge lands on the plane by linear interpolation, which for a facet
+/// of an isosurface keeps the new edge exactly on the surface.
+std::vector<Vec3> clipHalfSpace(const std::vector<Vec3>& polygon, const Plane& plane)
+{
+    std::vector<Vec3> out;
+    const auto n = polygon.size();
+    const auto side = [&plane](const Vec3& v) { return v.dot(plane.g) - plane.d; };
+    for (std::size_t i = 0; i < n; ++i) {
+        const Vec3& a = polygon[i];
+        const Vec3& b = polygon[(i + 1) % n];
+        const double da = side(a);
+        const double db = side(b);
+        if (da <= 0.0)
+            out.push_back(a);
+        if ((da < 0.0 && db > 0.0) || (da > 0.0 && db < 0.0))
+            out.push_back(a + (b - a) * (da / (da - db)));
+    }
+    return out;
+}
+
+} // namespace
+
+PolyhedronMesh wignerSeitzCell(const std::array<Vec3, 3>& basis)
+{
+    const double volume = basis[0].dot(basis[1].cross(basis[2]));
+    if (!(std::abs(volume) > 1e-12))
+        throw std::invalid_argument(
+            "Wigner-Seitz cell requires a non-degenerate lattice basis");
+
+    PolyhedronMesh bz;
+    const std::vector<Plane> planes = bisectorPlanes(basis);
 
     double scale = 0.0;
     for (const auto& b : basis)
@@ -137,6 +167,98 @@ PolyhedronMesh computeWignerSeitzCell(const UnitCell& cell)
     if (!cell.isDefined())
         return {};
     return wignerSeitzCell(cell.vectors());
+}
+
+IsoMesh clipToWignerSeitzCell(const IsoMesh& mesh, const std::array<Vec3, 3>& basis)
+{
+    IsoMesh out;
+    if (mesh.positions.size() < 3)
+        return out;
+
+    // Most restrictive (nearest) plane first: a fragment translated well away
+    // from the cell is then rejected on the first or second test instead of
+    // somewhere down a ~124-entry list — correctness is unaffected, only how
+    // fast a doomed candidate is discarded.
+    std::vector<Plane> sortedPlanes = bisectorPlanes(basis);
+    std::sort(sortedPlanes.begin(), sortedPlanes.end(),
+              [](const Plane& a, const Plane& b) { return a.d < b.d; });
+
+    // basis * f = v, solved by Cramer's rule, to read off which periodic
+    // image of the sampled box a Wigner-Seitz vertex belongs to.
+    const double det = basis[0].dot(basis[1].cross(basis[2]));
+    const auto fracOf = [&](const Vec3& v) {
+        return Vec3{basis[1].cross(basis[2]).dot(v) / det,
+                    basis[2].cross(basis[0]).dot(v) / det,
+                    basis[0].cross(basis[1]).dot(v) / det};
+    };
+
+    // wignerSeitzCell() throws for a degenerate basis before `det` (also
+    // ~0 there) is ever used by fracOf() below.
+    const PolyhedronMesh ws = wignerSeitzCell(basis);
+
+    // Flatten first, before any cutting: a cut fragment has no gradient
+    // normals of its own (its new vertices are interpolated along the cut,
+    // not sampled from the field), so every fragment of a source triangle
+    // just inherits that triangle's one already-flat normal.
+    const IsoMesh flat = flattenTriangleNormals(mesh);
+
+    // The integer shifts actually needed to reach every corner of the
+    // Wigner-Seitz cell from the box the field was sampled on — read off the
+    // cell's own vertices rather than assumed from a fixed neighbour-shell
+    // count, so this holds for any basis, not only cubic/BCC/FCC ones.
+    // Floor AND ceil per axis (not a single round): several vertices can sit
+    // exactly on a box face (fractional coordinate ±1/2 exactly, e.g. for any
+    // lattice with a mirror-symmetric primitive cell), where which neighbour
+    // "owns" that point is not decidable in floating point — trying both
+    // costs one harmless extra, empty-clipped pass rather than a missed
+    // corner.
+    std::vector<std::array<int, 3>> shifts{{0, 0, 0}};
+    const auto addShift = [&shifts](std::array<int, 3> s) {
+        if (std::find(shifts.begin(), shifts.end(), s) == shifts.end())
+            shifts.push_back(s);
+    };
+    for (const Vec3& v : ws.vertices) {
+        const Vec3 f = fracOf(v);
+        const std::array<int, 2> ix{static_cast<int>(std::floor(f.x)),
+                                    static_cast<int>(std::ceil(f.x))};
+        const std::array<int, 2> iy{static_cast<int>(std::floor(f.y)),
+                                    static_cast<int>(std::ceil(f.y))};
+        const std::array<int, 2> iz{static_cast<int>(std::floor(f.z)),
+                                    static_cast<int>(std::ceil(f.z))};
+        for (int i : ix)
+            for (int j : iy)
+                for (int k : iz)
+                    addShift({i, j, k});
+    }
+
+    out.positions.reserve(flat.positions.size());
+    out.normals.reserve(flat.normals.size());
+
+    for (std::size_t t = 0; t + 2 < flat.positions.size(); t += 3) {
+        const Vec3& normal = flat.normals[t]; // same on t, t+1, t+2
+
+        for (const std::array<int, 3>& shift : shifts) {
+            const Vec3 offset = basis[0] * shift[0] + basis[1] * shift[1]
+                + basis[2] * shift[2];
+            std::vector<Vec3> polygon{flat.positions[t] + offset,
+                                      flat.positions[t + 1] + offset,
+                                      flat.positions[t + 2] + offset};
+            for (const Plane& plane : sortedPlanes) {
+                polygon = clipHalfSpace(polygon, plane);
+                if (polygon.size() < 3)
+                    break;
+            }
+            for (std::size_t k = 1; k + 1 < polygon.size(); ++k) {
+                out.positions.push_back(polygon[0]);
+                out.positions.push_back(polygon[k]);
+                out.positions.push_back(polygon[k + 1]);
+                out.normals.push_back(normal);
+                out.normals.push_back(normal);
+                out.normals.push_back(normal);
+            }
+        }
+    }
+    return out;
 }
 
 } // namespace calango::core

@@ -106,7 +106,6 @@ private:
     QLineEdit* hostEdit_;
     QSpinBox* portSpin_;
     QLineEdit* userEdit_;
-    QComboBox* authCombo_;
     QLineEdit* keyPathEdit_;
     QPushButton* keyBrowseButton_;
     QLineEdit* passwordEdit_;

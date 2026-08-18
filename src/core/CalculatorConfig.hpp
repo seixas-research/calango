@@ -827,7 +827,11 @@ struct CalculatorConfig {
     /// (the Electronic Structure setup, which inherits its SCF) would
     /// otherwise silently switch from Fermi-Dirac to Gaussian.
     SmearingMethod smearing = SmearingMethod::FermiDirac;
-    double smearingWidthEv = 0.1;
+    /// Matches GpawElectronicRows's own spin-box default — the two are kept
+    /// in step for the same reason the smearing method above is: a wizard
+    /// that inherits its SCF rather than exposing them (Electronic Structure
+    /// setup) reads this default, not the widget's.
+    double smearingWidthEv = 0.050;
     /// Methfessel-Paxton expansion order N. 1 rather than GPAW's own 0
     /// default: order 0 IS Gaussian smearing, which has its own entry in the
     /// method list, so a user who explicitly picked Methfessel-Paxton means

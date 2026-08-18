@@ -57,9 +57,9 @@ hidden entirely.
     still shows its whole form.
   \item[\ui{Representation}] Appearance controls --- style, mode, color
     mapping, radii and bond widths (Chapter~\ref{ch:appearance}).
-  \item[\ui{Spatial References}] Three tabs: the cell wireframe, the
-    orientation triad, and the per-atom vector overlay. All three draw
-    something onto the scene that is not the atoms.
+  \item[\ui{Spatial References}] Four tabs: the cell wireframe, the ground
+    plane, the orientation triad, and the per-atom vector overlay. All four
+    draw something onto the scene that is not the atoms.
 
     Under \ui{Vectors}, \ui{Vector scale} and \ui{Vector width} set the
     arrows' length and thickness. Arrowheads are always drawn --- a plain
@@ -71,8 +71,16 @@ hidden entirely.
     exactly the periodic images that terminate a bond leaving the cell, so no
     bond ends in mid-air. Only those: duplicating every atom on a face filled
     the view with periodic repetition rather than information.
-  \item[\ui{Visual Effects}] Six tabs: \ui{Light}, \ui{Shadow}, \ui{Floor},
-    \ui{Fog}, \ui{Blur} and \ui{SSAO}.
+
+    Under \ui{Floor}, \ui{Height} raises or lowers the ground plane relative
+    to its automatic position with a linked slider and spin box --- the
+    slider's own range scales with the structure's size, and the box beside
+    it accepts anything further out than the slider currently reaches. It
+    moved here from \ui{Visual Effects}, where it sat as its own tab, because
+    the plane is a reference surface drawn in the scene, the role the cell
+    wireframe and the triad also play, not a post-process image filter.
+  \item[\ui{Visual Effects}] Five tabs: \ui{Light}, \ui{Shadow}, \ui{Fog},
+    \ui{Blur} and \ui{SSAO}.
 \end{description}
 
 \begin{caltip}

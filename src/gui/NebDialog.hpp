@@ -2,6 +2,7 @@
 
 #include "core/CalculatorConfig.hpp"
 #include "core/Structure.hpp"
+#include "gui/ForceConvergenceControl.hpp"
 #include "gui/GpawElectronicRows.hpp"
 
 #include <QComboBox>
@@ -95,7 +96,7 @@ private:
 
     QComboBox* variantCombo_;
     QDoubleSpinBox* springSpin_;
-    QDoubleSpinBox* fmaxSpin_;
+    ForceConvergenceControl fmax_;
     QSpinBox* maxStepsSpin_;
     QComboBox* optimizerCombo_;
 

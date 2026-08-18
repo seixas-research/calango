@@ -64,4 +64,19 @@ struct WeldedMesh {
 /// merging two genuinely distinct sheets that happen to pass nearby.
 WeldedMesh weldVertices(const IsoMesh& mesh, double tolerance = 1e-5);
 
+/// Replace each triangle's three (smooth, gradient-derived) vertex normals
+/// with a single flat one: their average, or the geometric
+/// (edge1 × edge2) normal when that average degenerates. Positions and
+/// colorValues pass through unchanged.
+///
+/// A sheet built of small, curved facets reads as faceted under smooth
+/// shading no differently than under flat — the facets are geometry, not a
+/// shading choice — but a facet that has been CUT (see
+/// BrillouinZone::clipToWignerSeitzCell) no longer has three well-defined
+/// gradient normals of its own, since new vertices were interpolated along a
+/// cut edge rather than sampled from the field. Flattening first, before any
+/// cutting, sidesteps the question: every fragment of a triangle inherits
+/// that triangle's one normal, cut or not.
+IsoMesh flattenTriangleNormals(const IsoMesh& mesh);
+
 } // namespace calango::core
