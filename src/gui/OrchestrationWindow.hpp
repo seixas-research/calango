@@ -22,7 +22,7 @@
 #include <optional>
 #include <vector>
 
-class QPushButton;
+class QAction;
 
 namespace calango::core {
 class Structure;
@@ -1091,15 +1091,17 @@ private:
 
     OrchestrationScene* scene_ = nullptr;
     QGraphicsView* view_ = nullptr;
-    /// The three controls the panel keeps a handle on. Run and Resume are
+    /// The three controls the panel keeps a handle on — icon QActions in the
+    /// bottom toolbar, not QPushButtons, since QToolBar populates from
+    /// actions (see the constructor's makeAction()). Run and Resume are
     /// disabled for the duration of a run (and Resume also whenever there is
     /// nothing to resume); Abort is enabled for exactly that duration and
     /// disabled otherwise — between them they are never both live, which is
-    /// the whole of the run-state UI. The rest are icon buttons wired and
+    /// the whole of the run-state UI. The rest are icon actions wired and
     /// forgotten.
-    QPushButton* runButton_ = nullptr;
-    QPushButton* resumeButton_ = nullptr;
-    QPushButton* abortButton_ = nullptr;
+    QAction* runAction_ = nullptr;
+    QAction* resumeAction_ = nullptr;
+    QAction* abortAction_ = nullptr;
 
     /// Set between pressing Abort and the job runner reporting the kill.
     ///

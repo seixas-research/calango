@@ -45,6 +45,19 @@ so each needs that many parent nodes linked to it:
 
 ## Building the graph
 
+Two icon toolbars frame the canvas. The **top bar** holds file and view
+operations — {guilabel}`Open Workflow…` and {guilabel}`Save Workflow`, a
+separator, then {guilabel}`Auto-Layout` and {guilabel}`Fit to Screen` —
+grouped that way because loading or saving the pipeline and looking at it are
+different kinds of action with nothing in common but sitting above the
+canvas. The **bottom bar** holds everything that edits or runs the graph
+itself: {guilabel}`Add Process…`, {guilabel}`Remove Selected` and
+{guilabel}`Clear Orchestration` build and prune it; a separator marks the
+switch from editing to executing; {guilabel}`Resume`, {guilabel}`Send to
+Processes` and {guilabel}`Abort` run it. Both bars collapse whatever does not
+fit into their own overflow chevron on a narrow dock, rather than clipping a
+button off the edge.
+
 - {guilabel}`Add Process…` — or a **double-click on empty canvas** — puts a
   new node where you clicked. The dialog is a categorised list of the three
   families, showing what each process takes as input and explaining the

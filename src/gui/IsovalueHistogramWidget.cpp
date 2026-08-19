@@ -167,11 +167,19 @@ void IsovalueHistogramWidget::paintEvent(QPaintEvent*)
         return plot.bottom() - plot.height() * scaleCount(c) / topScaled;
     };
 
-    // Neutral bars against the theme's own Base, so the accent colour below
-    // (the marker) is the one thing that stands out rather than competing
-    // with the data.
+    // Bars in the theme's own Text colour (near-black on Light, near-white
+    // on Dark) rather than Mid: Mid is a low-contrast border/disabled tone,
+    // and against Base it read as barely-there — the bug this fixes.
+    // Text is the correct paired foreground for a Base background (same
+    // pairing PlaceholderText/Base uses in the "No data" branch above), and
+    // a partial alpha keeps it a soft fill rather than solid blocks while
+    // staying far more visible than Mid ever was. The Highlight-coloured
+    // marker still reads as distinct by hue, not just by being the only
+    // thing with contrast.
+    QColor barColor = palette().color(QPalette::Text);
+    barColor.setAlpha(200);
     painter.setPen(Qt::NoPen);
-    painter.setBrush(palette().color(QPalette::Mid));
+    painter.setBrush(barColor);
     const double binWidth = plot.width() / static_cast<double>(counts_.size());
     for (std::size_t i = 0; i < counts_.size(); ++i) {
         if (counts_[i] <= 0.0)

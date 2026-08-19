@@ -4,14 +4,12 @@
 #include "gui/ViewportWidget.hpp"
 #include "render/StructureRenderer.hpp"
 
-#include <QColorDialog>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QVBoxLayout>
@@ -41,8 +39,70 @@ FloorPanel::FloorPanel(ViewportWidget* viewport, QWidget* parent)
            "clicks, and never appears in an exported POSCAR, CIF or XYZ."));
     auto* floorForm = new QFormLayout(floorGroup_);
 
-    // Height: a linked slider + spin box, like the Vectors tab's own scale
-    // and width controls. The slider's range is re-derived from the current
+    // --- Orientation ---------------------------------------------------
+    // First, ahead of Height: the plane's orientation has to be settled
+    // before "raise or lower it" means anything, since Height moves the
+    // plane ALONG this direction (see its own tooltip below) — orientation,
+    // then position along it, is also the logical reading order.
+    //
+    // The Plane preset dropdown (xy/xz/yz/Custom) that used to sit here was
+    // removed: it was always a READ-OUT of the normal below, never a second
+    // setting of its own — see the normal row's own tooltip — so this loses
+    // no expressiveness, only the one extra click a preset was worth. The
+    // stored value is unaffected: the project file has only ever carried the
+    // normal's three numbers, never a preset index, so there is nothing to
+    // migrate in a saved project either.
+    const auto makeNormalSpin = [&](float value) {
+        auto* spin = new QDoubleSpinBox(floorGroup_);
+        spin->setRange(-1000.0, 1000.0);
+        spin->setDecimals(3);
+        spin->setSingleStep(0.1);
+        spin->setValue(static_cast<double>(value));
+        spin->setMinimumWidth(70);
+        return spin;
+    };
+    auto* nxSpin = makeNormalSpin(style.floorNormal.x());
+    auto* nySpin = makeNormalSpin(style.floorNormal.y());
+    auto* nzSpin = makeNormalSpin(style.floorNormal.z());
+    auto* normalRow = new QWidget(floorGroup_);
+    auto* normalLayout = new QHBoxLayout(normalRow);
+    normalLayout->setContentsMargins(0, 0, 0, 0);
+    for (auto* spin : {nxSpin, nySpin, nzSpin})
+        normalLayout->addWidget(spin, 1);
+    normalRow->setToolTip(
+        tr("The plane's normal, in world coordinates — the ONLY thing that "
+           "orients the plane. Any direction will do; the length is "
+           "irrelevant, since it is normalized before use, so (0, 0, 2) and "
+           "(0, 0, 1) are the same plane.\n\n"
+           "(0, 0, 1) is the default and the horizontal case — the xy plane, "
+           "perpendicular to c, the axis Calango's default view has pointing "
+           "up. (0, 1, 0) and (1, 0, 0) are the other two axis-aligned "
+           "planes (xz and yz); anything else is an oblique plane.\n\n"
+           "The floor is placed on the NEGATIVE side of the structure along "
+           "this direction, and the height below moves it along the same "
+           "direction. Reversing the normal therefore puts the plane over the "
+           "structure rather than under it — a ceiling, which is a real "
+           "choice rather than an error, so it is left available."));
+    // Plainly "Normal:" — the fields beside it already show x, y, z, so a
+    // "(x, y, z)" repeating that in the label was a stray parenthetical
+    // with no matching close on the page it made sense on, left behind by
+    // an earlier edit. It said nothing the three boxes were not already
+    // saying.
+    floorForm->addRow(tr("Normal:"), normalRow);
+
+    // Inline validation, in the app's usual red. A zero vector spans no plane;
+    // rather than refuse the keystroke — which would make (0,0,1) → (0,0,0) →
+    // (1,0,0) impossible to type through — the previous normal is kept and the
+    // input is flagged until it means something again.
+    auto* normalWarning = new QLabel(floorGroup_);
+    normalWarning->setWordWrap(true);
+    normalWarning->setStyleSheet(QStringLiteral("color: #d9534f;"));
+    normalWarning->setVisible(false);
+    floorForm->addRow(QString(), normalWarning);
+
+    // --- Height, along that orientation ---------------------------------
+    // A linked slider + spin box, like the Vectors tab's own scale and
+    // width controls. The slider's range is re-derived from the current
     // structure's own scale (refreshHeightRange(), below) rather than fixed,
     // so a single atom and a slab each get a slider that actually resolves
     // to something — the spin box keeps its wide fixed range regardless, so
@@ -73,14 +133,27 @@ FloorPanel::FloorPanel(ViewportWidget* viewport, QWidget* parent)
     floorForm->addRow(tr("Height:"), heightRow);
     refreshHeightRange(); // also positions the slider from style.floorOffset
 
-    auto* colorButton = new QPushButton(floorGroup_);
-    setButtonColor(colorButton, style.floorColor);
-    colorButton->setToolTip(
+    // Color and Opacity share a row, in percent — the same composite widget
+    // the Unit Cell tab's two rows and the Vectors tab's own now use, so all
+    // four translucent surfaces in this dock express opacity identically.
+    auto* colorRow = new ColorOpacityRow(floorGroup_);
+    colorRow->setColor(style.floorColor);
+    colorRow->setOpacity(style.floorOpacity);
+    colorRow->setColorDialogTitle(tr("Floor Color"));
+    colorRow->colorButton()->setToolTip(
         tr("Plane colour. White by default: a figure's page is white, so a "
            "white floor disappears into it and leaves only what the plane was "
            "added for — the shadow. Shadows stay legible on it because the "
            "shadow term attenuates direct light only, never ambient."));
-    floorForm->addRow(tr("Color:"), colorButton);
+    colorRow->opacitySpin()->setToolTip(
+        tr("How solid the plane is. It always fades out toward its edges "
+           "whatever this says, so it reads as ground rather than as a tile "
+           "the structure is standing on.\n\n"
+           "The shadow the plane receives stays exactly as dark either way — "
+           "opacity blends the floor's OWN color into the background behind "
+           "it, not the shadow term, so a half-transparent floor still shows "
+           "a full-strength shadow rather than a faded one."));
+    floorForm->addRow(tr("Color:"), colorRow);
 
     auto* finishCombo = new QComboBox(floorGroup_);
     // Order matches render::SurfaceFinish, like the Representation panel's.
@@ -97,73 +170,6 @@ FloorPanel::FloorPanel(ViewportWidget* viewport, QWidget* parent)
            "panel offers — none of them mirrors the structure, which would "
            "need a reflection pass the viewport does not have."));
     floorForm->addRow(tr("Material:"), finishCombo);
-
-    auto* opacitySpin = new QDoubleSpinBox(floorGroup_);
-    opacitySpin->setRange(0.05, 1.0);
-    opacitySpin->setDecimals(2);
-    opacitySpin->setSingleStep(0.05);
-    opacitySpin->setValue(style.floorOpacity);
-    opacitySpin->setToolTip(
-        tr("How solid the plane is. It always fades out toward its edges "
-           "whatever this says, so it reads as ground rather than as a tile "
-           "the structure is standing on."));
-    floorForm->addRow(tr("Opacity:"), opacitySpin);
-
-    // --- Orientation -------------------------------------------------------
-    // Two views of ONE value. The plane is stored as a normal vector and
-    // nothing else; the dropdown is a read-out of that vector, not a second
-    // setting. That is what keeps them from disagreeing — there is no second
-    // state to fall out of step, and a project file carries three numbers
-    // rather than a preset that a later release might renumber.
-    auto* orientationCombo = new QComboBox(floorGroup_);
-    orientationCombo->addItems({tr("xy (normal z)"), tr("xz (normal y)"),
-                                tr("yz (normal x)"), tr("Custom")});
-    orientationCombo->setToolTip(
-        tr("Which plane the floor lies in. Each preset names the two axes the "
-           "plane is spanned by; its normal is the remaining one.\n\n"
-           "xy is the default and the horizontal case — the plane perpendicular "
-           "to c, which is the axis Calango's default view has pointing up.\n\n"
-           "Picking a preset fills the normal below. Typing a normal that is "
-           "not an axis selects Custom."));
-    floorForm->addRow(tr("Plane:"), orientationCombo);
-
-    const auto makeNormalSpin = [&](float value) {
-        auto* spin = new QDoubleSpinBox(floorGroup_);
-        spin->setRange(-1000.0, 1000.0);
-        spin->setDecimals(3);
-        spin->setSingleStep(0.1);
-        spin->setValue(static_cast<double>(value));
-        spin->setMinimumWidth(70);
-        return spin;
-    };
-    auto* nxSpin = makeNormalSpin(style.floorNormal.x());
-    auto* nySpin = makeNormalSpin(style.floorNormal.y());
-    auto* nzSpin = makeNormalSpin(style.floorNormal.z());
-    auto* normalRow = new QWidget(floorGroup_);
-    auto* normalLayout = new QHBoxLayout(normalRow);
-    normalLayout->setContentsMargins(0, 0, 0, 0);
-    for (auto* spin : {nxSpin, nySpin, nzSpin})
-        normalLayout->addWidget(spin, 1);
-    normalRow->setToolTip(
-        tr("The plane's normal, in world coordinates. Any direction will do — "
-           "the length is irrelevant, since it is normalized before use, so "
-           "(0, 0, 2) and (0, 0, 1) are the same plane.\n\n"
-           "The floor is placed on the NEGATIVE side of the structure along "
-           "this direction, and the height above moves it along the same "
-           "direction. Reversing the normal therefore puts the plane over the "
-           "structure rather than under it — a ceiling, which is a real "
-           "choice rather than an error, so it is left available."));
-    floorForm->addRow(tr("Normal (x, y, z):"), normalRow);
-
-    // Inline validation, in the app's usual red. A zero vector spans no plane;
-    // rather than refuse the keystroke — which would make (0,0,1) → (0,0,0) →
-    // (1,0,0) impossible to type through — the previous normal is kept and the
-    // input is flagged until it means something again.
-    auto* normalWarning = new QLabel(floorGroup_);
-    normalWarning->setWordWrap(true);
-    normalWarning->setStyleSheet(QStringLiteral("color: #d9534f;"));
-    normalWarning->setVisible(false);
-    floorForm->addRow(QString(), normalWarning);
 
     // One page, not several — everything else in the Spatial References dock
     // is a plain widget too, so this has to fit the dock's default height
@@ -199,75 +205,34 @@ FloorPanel::FloorPanel(ViewportWidget* viewport, QWidget* parent)
         viewport_->style().floorOffset = static_cast<float>(v);
         viewport_->styleChanged(false);
     });
-    connect(colorButton, &QPushButton::clicked, this, [this, colorButton] {
-        const QColor chosen =
-            QColorDialog::getColor(viewport_->style().floorColor, this,
-                                   tr("Floor Color"));
-        if (!chosen.isValid())
-            return;
-        viewport_->style().floorColor = chosen;
-        setButtonColor(colorButton, chosen);
+    connect(colorRow, &ColorOpacityRow::colorPicked, this, [this](const QColor& c) {
+        viewport_->style().floorColor = c;
         viewport_->styleChanged(false);
     });
     connect(finishCombo, &QComboBox::currentIndexChanged, this, [this](int i) {
         viewport_->style().floorFinish = static_cast<render::SurfaceFinish>(i);
         viewport_->styleChanged(false);
     });
-    connect(opacitySpin, &QDoubleSpinBox::valueChanged, this, [this](double v) {
-        viewport_->style().floorOpacity = static_cast<float>(v);
+    connect(colorRow, &ColorOpacityRow::opacityEdited, this, [this](float o) {
+        viewport_->style().floorOpacity = o;
         viewport_->styleChanged(false);
     });
 
     // --- Orientation: the two inputs, kept consistent -----------------------
     //
-    // Both directions run through the NORMAL, never through each other: the
-    // dropdown writes a normal and the spins write a normal, and each then
-    // re-derives the other's display from what the style now holds. Wiring
-    // them to each other instead is how a preset ends up disagreeing with the
-    // numbers under it.
-    // The combo's item order IS render::FloorPreset's enumerator order, so the
-    // index and the enum are the same number and no lookup table is needed.
-    // The rule itself lives with the renderer beside floorBasis(), where a
-    // test can reach it — a copy here would be a second answer to "is this
-    // normal an axis?" and the two would eventually differ.
-    using render::StructureRenderer;
-    constexpr int kCustomIndex =
-        static_cast<int>(StructureRenderer::FloorPreset::Custom);
-    const auto presetFor = [](const QVector3D& normal) {
-        return static_cast<int>(StructureRenderer::floorPreset(normal));
-    };
-    const auto showNormal = [nxSpin, nySpin, nzSpin, orientationCombo, presetFor](
-                                const QVector3D& normal) {
+    // The normal is the only orientation state there is now — no dropdown to
+    // keep in step with it, so showing it is just writing the three numbers.
+    const auto showNormal = [nxSpin, nySpin, nzSpin](const QVector3D& normal) {
         for (const auto& [spin, value] :
              {std::pair{nxSpin, normal.x()}, std::pair{nySpin, normal.y()},
               std::pair{nzSpin, normal.z()}}) {
             const QSignalBlocker blocker(spin);
             spin->setValue(static_cast<double>(value));
         }
-        const QSignalBlocker blocker(orientationCombo);
-        orientationCombo->setCurrentIndex(presetFor(normal));
     };
     showNormal(style.floorNormal);
 
-    connect(orientationCombo, &QComboBox::activated, this,
-            [this, showNormal, normalWarning](int index) {
-                // `activated`, not `currentIndexChanged`: this must fire only
-                // for a USER pick. Selecting Custom programmatically — which
-                // happens every time the spins are edited into a non-axis
-                // direction — would otherwise loop straight back and overwrite
-                // the numbers just typed.
-                if (index < 0 || index >= kCustomIndex)
-                    return; // "Custom" is a read-out, not a command
-                normalWarning->setVisible(false);
-                viewport_->style().floorNormal =
-                    StructureRenderer::floorPresetNormal(
-                        static_cast<StructureRenderer::FloorPreset>(index));
-                showNormal(viewport_->style().floorNormal);
-                viewport_->styleChanged(false);
-            });
-
-    const auto normalEdited = [this, nxSpin, nySpin, nzSpin, orientationCombo,
-                               normalWarning, presetFor] {
+    const auto normalEdited = [this, nxSpin, nySpin, nzSpin, normalWarning] {
         const QVector3D typed(static_cast<float>(nxSpin->value()),
                               static_cast<float>(nySpin->value()),
                               static_cast<float>(nzSpin->value()));
@@ -283,10 +248,6 @@ FloorPanel::FloorPanel(ViewportWidget* viewport, QWidget* parent)
         }
         normalWarning->setVisible(false);
         viewport_->style().floorNormal = typed;
-        // Only the dropdown is refreshed, not the spins: rewriting the numbers
-        // under the cursor mid-edit is the one thing this must not do.
-        const QSignalBlocker blocker(orientationCombo);
-        orientationCombo->setCurrentIndex(presetFor(typed));
         viewport_->styleChanged(false);
     };
     for (auto* spin : {nxSpin, nySpin, nzSpin})
@@ -301,8 +262,7 @@ FloorPanel::FloorPanel(ViewportWidget* viewport, QWidget* parent)
     // Each write is blocked, or the setValue() would fire the handlers above
     // and write the value straight back into the style it was just read from.
     connect(this, &FloorPanel::syncFromViewport, floorGroup_,
-            [this, colorButton, finishCombo, opacitySpin, showNormal,
-             normalWarning] {
+            [this, colorRow, finishCombo, showNormal, normalWarning] {
                 const auto& live = viewport_->style();
                 {
                     const QSignalBlocker blocker(floorGroup_);
@@ -322,13 +282,11 @@ FloorPanel::FloorPanel(ViewportWidget* viewport, QWidget* parent)
                     finishCombo->setCurrentIndex(
                         static_cast<int>(live.floorFinish));
                 }
-                {
-                    const QSignalBlocker blocker(opacitySpin);
-                    opacitySpin->setValue(live.floorOpacity);
-                }
+                // setColor()/setOpacity() do not emit — no blocker needed.
+                colorRow->setColor(live.floorColor);
+                colorRow->setOpacity(live.floorOpacity);
                 showNormal(live.floorNormal);
                 normalWarning->setVisible(false);
-                setButtonColor(colorButton, live.floorColor);
             });
 }
 

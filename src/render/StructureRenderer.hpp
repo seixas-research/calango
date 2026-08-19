@@ -334,6 +334,12 @@ public:
         /// True when any cast in use needs the blended pass — either the
         /// Glassy material or an opacity below 1. Both end up in the same
         /// second, depth-write-off draw.
+        ///
+        /// Also true for a translucent vector overlay: its shaft and head
+        /// share sphere_/cylinder_/cone_'s buffers and this same two-pass
+        /// split (see the vector-arrow build above and drawMeshes() below),
+        /// so a faded overlay with every cast otherwise opaque still needs
+        /// the second pass to actually draw anything.
         bool anyTranslucentCast() const
         {
             const auto translucent = [](SurfaceFinish finish, float alpha) {
@@ -344,6 +350,9 @@ public:
             for (const CastStyle& cast : castStyles)
                 if (translucent(cast.surfaceFinish, cast.opacity))
                     return true;
+            if (vectorOverlay != VectorOverlay::None
+                && vectorOverlayOpacity() < 0.999f)
+                return true;
             return false;
         }
 
@@ -474,6 +483,28 @@ public:
         /// Distinct from magmomColor on purpose: a guess and a result should
         /// not be the same colour when they can both be on screen.
         QColor initialMagmomColor{240, 160, 90};
+        /// One opacity per overlay, paired with the colour above it — matches
+        /// "each property remembers its own colour" for the same reason:
+        /// switching Force -> Velocity should restore Velocity's own fade,
+        /// not carry Force's over. Read only for whichever overlay
+        /// `vectorOverlay` currently selects (see vectorOverlayOpacity()).
+        float forceOpacity = 1.0f;
+        float velocityOpacity = 1.0f;
+        float magmomOpacity = 1.0f;
+        float initialMagmomOpacity = 1.0f;
+        /// The opacity field paired with `vectorOverlay`'s current colour, or
+        /// 1.0 when nothing is drawn (None has no arrows to fade).
+        float vectorOverlayOpacity() const
+        {
+            switch (vectorOverlay) {
+            case VectorOverlay::Velocity: return velocityOpacity;
+            case VectorOverlay::Force: return forceOpacity;
+            case VectorOverlay::MagneticMoment: return magmomOpacity;
+            case VectorOverlay::InitialMagneticMoment: return initialMagmomOpacity;
+            case VectorOverlay::None: break;
+            }
+            return 1.0f;
+        }
         bool showCell = true;
         /// "Show atoms of the neighboring unit cell": draw the periodic images
         /// that terminate the bonds leaving the cell — and only those.
@@ -517,6 +548,14 @@ public:
         /// contents of the cell, atoms, bonds and all.
         NeighborCellRange neighborCells;
         QColor cellColor{166, 166, 178};
+        /// Edge opacity, in [0, 1]. Opaque by default — unlike the fill
+        /// below, the wireframe is usually the primary depiction of the box
+        /// rather than a translucent aid, so 1.0 (rather than something low)
+        /// is the sensible starting point. A value below 1 pushes the edge
+        /// tubes into the same blended second pass Glassy already uses (see
+        /// the cell-tube draw call), which is what lets it fade independent
+        /// of `surfaceFinish`.
+        float cellEdgeAlpha = 1.0f;
         /// 1 = plain GL lines; > 1 renders the edges as thin lit tubes
         /// (core-profile GL clamps glLineWidth, so tubes are the portable
         /// way to get thick cell wireframes).

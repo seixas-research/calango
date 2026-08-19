@@ -40,6 +40,19 @@ struct DatasetOrigin {
     /// the same quantity computed the same way.
     bool hasCentre = false;
     core::Vec3 centre{};
+    /// Lists the row UNCHECKED (not auto-rendered), the same as `wannier`
+    /// does — WITHOUT the periodic-continuation/glossy-material behaviour
+    /// `wannier` also carries. A wannierization always produces several
+    /// orbitals nobody asked to see all at once; LDOS and Wavefunctions
+    /// datasets want that same "add it to the dock, let the user pick" default
+    /// but are not, in general, one Wannier-style localized function
+    /// centred at a point — an LDOS field integrated over a wide energy
+    /// window can span the whole cell, and forcing periodic continuation on
+    /// it would be meaningless. Set `wannier` INSTEAD of this (not both) for
+    /// a dataset that is ALSO periodicity-continuation-eligible, e.g. a
+    /// Wavefunctions cube from a periodic parent — `wannier` already implies
+    /// unchecked-on-arrival.
+    bool startUnchecked = false;
 };
 
 /// Zone 13 — the "Volumetric Data" dock: a single-view registry of 3D scalar

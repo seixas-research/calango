@@ -278,6 +278,188 @@ int main(int argc, char** argv)
         check(difference > 2.0, "0.50 opacity does visibly differ from opaque");
     }
 
+    std::printf("A translucent cell edge survives too (Style::cellEdgeAlpha):\n");
+    {
+        // The exact same discard-in-the-opaque-pass failure mode as "The unit
+        // cell survives translucency" above, but pinned against the OTHER way
+        // a cell tube instance can end up with vColor.a < 0.999 in mesh.frag:
+        // its own edge opacity (Unit Cell tab, "Cell color" row) rather than a
+        // cast's. The cell-tube draw call used to gate its second, blended
+        // pass on `surfaceFinish == Glassy` alone — cellEdgeAlpha below 1 with
+        // any other finish discarded every instance in the opaque pass and
+        // never reached a pass that would draw it, so the wireframe simply
+        // vanished exactly as it did for the cast-opacity bug.
+        const auto renderCellEdge = [gl](const core::Structure& s, float edgeAlpha) {
+            QOpenGLFramebufferObject fbo(
+                kSize, kSize, QOpenGLFramebufferObject::CombinedDepthStencil);
+            fbo.bind();
+            gl->glViewport(0, 0, kSize, kSize);
+            gl->glEnable(GL_DEPTH_TEST);
+            gl->glDepthFunc(GL_LESS);
+            gl->glClearColor(0.1f, 0.11f, 0.13f, 1.0f);
+            gl->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            render::StructureRenderer renderer;
+            renderer.initialize(gl);
+            renderer.style().showCell = true;
+            renderer.style().cellLineWidth = 3.0f; // > 1 -> the lit-tube path
+            renderer.style().cellEdgeAlpha = edgeAlpha;
+            // Standard finish, deliberately not Glassy: the bug is that a
+            // faded edge needed the SAME second pass Glassy already used,
+            // and testing with Glassy already selected would hide a
+            // regression that only reappears once it is not.
+            renderer.style().surfaceFinish = render::SurfaceFinish::Standard;
+            renderer.setStructure(&s);
+
+            render::OrbitCamera camera;
+            camera.frame(QVector3D(4.0f, 4.0f, 4.0f), 3.6f);
+            camera.rotate(30.0f, 20.0f);
+            renderer.render(camera.view(), camera.projection(1.0f));
+
+            gl->glFinish();
+            QImage image(kSize, kSize, QImage::Format_RGB888);
+            gl->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            gl->glReadPixels(0, 0, kSize, kSize, GL_RGB, GL_UNSIGNED_BYTE,
+                            image.bits());
+            fbo.release();
+            return image;
+        };
+
+        // A near-empty cell — one small atom, tucked in a corner rather than
+        // centred, so the wireframe dominates the frame rather than being
+        // diluted by a large or central sphere. A wholly EMPTY structure
+        // will not do: StructureRenderer's whole geometry build, cell
+        // wireframe included, is gated on `structure && !structure->empty()`
+        // (StructureRenderer.cpp), so zero atoms means no cell tubes either
+        // — not the bug this test is about.
+        core::Structure cellOnly;
+        cellOnly.setCell(core::UnitCell({8, 0, 0}, {0, 8, 0}, {0, 0, 8}));
+        {
+            core::Atom corner;
+            corner.atomicNumber = 1; // H: the smallest sphere radius
+            corner.position = {0.3, 0.3, 0.3};
+            cellOnly.addAtom(corner);
+        }
+        const QImage opaqueEdge = renderCellEdge(cellOnly, 1.0f);
+        const QImage fadedEdge = renderCellEdge(cellOnly, 0.4f);
+        const int opaqueEdgeDrawn = drawnPixels(opaqueEdge);
+        const int fadedEdgeDrawn = drawnPixels(fadedEdge);
+        std::printf("       drawn px: opaque edge %d, 0.40 alpha %d\n",
+                    opaqueEdgeDrawn, fadedEdgeDrawn);
+        check(opaqueEdgeDrawn > 200, "the opaque wireframe alone is a frame");
+        check(fadedEdgeDrawn > opaqueEdgeDrawn / 4,
+              "a 0.40-alpha edge still draws — not discarded into an empty "
+              "frame the way it was before the second pass covered it");
+
+        // The converse guard, same reasoning as "Translucency is still
+        // visible as translucency" above: presence alone would also pass if
+        // the fix had simply forced every cell edge back to opaque. Measured
+        // WHERE DRAWN, not over the whole frame — the wireframe alone covers
+        // only a few percent of it, which would dilute a whole-frame mean
+        // into looking like no change at all even though every edge pixel
+        // did change.
+        const double edgeDifference =
+            meanDifferenceWhereDrawn(opaqueEdge, fadedEdge, opaqueEdge);
+        std::printf("       mean |Δ| where drawn = %.2f / 255\n", edgeDifference);
+        check(edgeDifference > 2.0,
+              "and a 0.40-alpha edge visibly differs from the opaque one — "
+              "genuinely blended, not just present");
+    }
+
+    std::printf("A translucent vector arrow survives too (per-overlay opacity):\n");
+    {
+        // The identical mechanism once more, on a third style field: a
+        // vector overlay's shaft and head share sphere_/cylinder_/cone_ with
+        // the atoms and bonds (StructureRenderer.cpp's addArrows()), gated
+        // by the SAME anyTranslucentCast() this pass extended to also ask
+        // "is the active overlay's own opacity below 1?" — before that, a
+        // faded Force/Velocity/Magnetic-moment overlay with every cast
+        // otherwise opaque would have been discarded in the opaque pass with
+        // no blended pass running to draw it either.
+        core::Structure withForces = makeScene();
+        std::vector<core::Vec3> forces(4, core::Vec3{0.0, 0.0, 3.0});
+        withForces.setVectorField("forces", forces);
+
+        const auto renderForceOverlay = [gl](const core::Structure& s,
+                                             float overlayAlpha) {
+            QOpenGLFramebufferObject fbo(
+                kSize, kSize, QOpenGLFramebufferObject::CombinedDepthStencil);
+            fbo.bind();
+            gl->glViewport(0, 0, kSize, kSize);
+            gl->glEnable(GL_DEPTH_TEST);
+            gl->glDepthFunc(GL_LESS);
+            gl->glClearColor(0.1f, 0.11f, 0.13f, 1.0f);
+            gl->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            render::StructureRenderer renderer;
+            renderer.initialize(gl);
+            renderer.style().vectorOverlay = render::VectorOverlay::Force;
+            renderer.style().forceOpacity = overlayAlpha;
+            renderer.style().surfaceFinish = render::SurfaceFinish::Standard;
+            renderer.setStructure(&s);
+
+            render::OrbitCamera camera;
+            camera.frame(QVector3D(4.0f, 4.7f, 4.0f), 3.6f);
+            camera.rotate(30.0f, 0.0f);
+            renderer.render(camera.view(), camera.projection(1.0f));
+
+            gl->glFinish();
+            QImage image(kSize, kSize, QImage::Format_RGB888);
+            gl->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            gl->glReadPixels(0, 0, kSize, kSize, GL_RGB, GL_UNSIGNED_BYTE,
+                            image.bits());
+            fbo.release();
+            return image;
+        };
+
+        // Opacity 0.0 is the "no overlay" baseline: the arrow's own colour
+        // fully vanishes into whatever is behind it (SRC_ALPHA blending with
+        // alpha 0 is a no-op on the destination), leaving exactly the
+        // atoms/bonds beneath — reusing the same render path rather than a
+        // second one that sets vectorOverlay to None.
+        const QImage noOverlay = renderForceOverlay(withForces, 0.0f);
+        const QImage opaqueForce = renderForceOverlay(withForces, 1.0f);
+        const QImage fadedForce = renderForceOverlay(withForces, 0.4f);
+        const int opaqueForceDrawn = drawnPixels(opaqueForce);
+        const int fadedForceDrawn = drawnPixels(fadedForce);
+        std::printf("       drawn px: opaque overlay %d, 0.40 alpha %d\n",
+                    opaqueForceDrawn, fadedForceDrawn);
+        check(opaqueForceDrawn > 500, "the force overlay draws something");
+        check(fadedForceDrawn > opaqueForceDrawn / 4,
+              "and a 0.40-alpha overlay still draws — not discarded before "
+              "anyTranslucentCast() knew to run the blended pass for it");
+
+        // Measured over the ARROWS ALONE, not the whole frame: the atoms and
+        // bonds beneath them are identical in both renders (only the
+        // overlay's own opacity changed), and they cover far more of the
+        // frame than the arrows do — a whole-frame mean dilutes exactly the
+        // way the cell-edge check above would have without its own
+        // drawn-only mask.
+        double arrowDifference = 0.0;
+        int arrowPixels = 0;
+        for (int y = 0; y < opaqueForce.height(); ++y)
+            for (int x = 0; x < opaqueForce.width(); ++x) {
+                if (!isDrawn(opaqueForce, x, y) || !isDrawn(fadedForce, x, y))
+                    continue;
+                if (isDrawn(noOverlay, x, y))
+                    continue; // an atom/bond pixel, identical in both renders
+                const QColor lhs = opaqueForce.pixelColor(x, y);
+                const QColor rhs = fadedForce.pixelColor(x, y);
+                arrowDifference += std::abs(lhs.red() - rhs.red())
+                    + std::abs(lhs.green() - rhs.green())
+                    + std::abs(lhs.blue() - rhs.blue());
+                ++arrowPixels;
+            }
+        arrowDifference = arrowPixels > 0 ? arrowDifference / (3.0 * arrowPixels) : 0.0;
+        std::printf("       arrow-only px: %d, mean |Δ| = %.2f / 255\n",
+                    arrowPixels, arrowDifference);
+        check(arrowPixels > 50, "found arrow-only pixels to compare (not "
+                                "just the atoms/bonds beneath them)");
+        check(arrowDifference > 2.0,
+              "and the arrow pixels visibly differ from the opaque overlay "
+              "— genuinely blended, not just present");
+    }
+
     std::printf("The filled unit cell shades the box without hiding it:\n");
     {
         // Three properties, and the failure modes behind each one:

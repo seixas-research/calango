@@ -600,6 +600,59 @@ int main(int argc, char** argv)
         check(!turned.contains(QStringLiteral("nan"))
                   && !turned.contains(QStringLiteral("inf")),
               "with no nan/inf from the reoriented basis");
+
+        // Opacity: both backends used to hardcode the floor fully opaque
+        // regardless of Style::floorOpacity, silently diverging from the
+        // live/off-screen viewport (StructureRenderer::drawFloor()'s
+        // uFloorOpacity) the moment a figure asked for a translucent floor.
+        // Closed-form, not a snapshot: POV-Ray's "transmit" runs the OPPOSITE
+        // direction from opacity (0 = opaque), Tachyon's "Opacity" runs the
+        // SAME direction (1 = opaque) — each backend's own convention,
+        // checked against the exact value this floorOpacity implies.
+        floorInputs.style.floorOpacity = 0.4f;
+        const QString translucentTachyon = RayTraceExporter::tachyon(floorInputs);
+        const QString translucentPov = RayTraceExporter::povray(floorInputs);
+        check(translucentTachyon.contains(QStringLiteral("Opacity 0.400")),
+              "Tachyon's floor Opacity is the style's floorOpacity directly");
+        check(translucentPov.contains(QStringLiteral("transmit 0.6")),
+              "POV-Ray's floor transmit is 1 - floorOpacity");
+
+        floorInputs.style.floorOpacity = 1.0f;
+        const QString opaqueTachyon = RayTraceExporter::tachyon(floorInputs);
+        const QString opaquePov = RayTraceExporter::povray(floorInputs);
+        check(opaqueTachyon.contains(QStringLiteral("Opacity 1.000")),
+              "and a fully opaque floor round-trips to Opacity 1 in Tachyon");
+        check(opaquePov.contains(QStringLiteral("transmit 0")),
+              "and to transmit 0 in POV-Ray");
+    }
+
+    // Cell edge opacity: like the floor above, both backends used to have
+    // no notion of it at all — SceneCylinder carried no alpha field, so
+    // Style::cellEdgeAlpha (Unit Cell tab, "Cell color" row) had nowhere to
+    // go once geometry left collectGeometry(). The diatomic fixture's own
+    // bond is the negative control: it shares the SAME cylinders vector and
+    // must stay fully opaque regardless, since cast opacity is not wired
+    // into this exporter at all (a separate, larger gap — see FUTURE.md).
+    std::printf("Cell wireframe opacity:\n");
+    {
+        auto cellInputs = makeInputs(structure); // showCell already true
+        cellInputs.style.cellEdgeAlpha = 0.4f;
+        const QString cellTachyon = RayTraceExporter::tachyon(cellInputs);
+        const QString cellPov = RayTraceExporter::povray(cellInputs);
+        check(cellTachyon.contains(QStringLiteral("Opacity 0.400")),
+              "a translucent cell edge carries its own Opacity in Tachyon");
+        check(cellPov.contains(QStringLiteral("transmit 0.6")),
+              "and its own transmit (1 - cellEdgeAlpha) in POV-Ray");
+        check(cellTachyon.contains(QStringLiteral("Opacity 1.000")),
+              "while the bond cylinder is untouched, still fully opaque");
+
+        cellInputs.style.cellEdgeAlpha = 1.0f;
+        const QString cellOpaqueTachyon = RayTraceExporter::tachyon(cellInputs);
+        const QString cellOpaquePov = RayTraceExporter::povray(cellInputs);
+        check(!cellOpaqueTachyon.contains(QStringLiteral("Opacity 0.400")),
+              "and a fully opaque cell edge leaves no reduced Opacity behind");
+        check(cellOpaquePov.contains(QStringLiteral("transmit 0")),
+              "round-tripping to transmit 0 in POV-Ray");
     }
 
     std::printf(failures == 0 ? "\nAll scene checks passed.\n"

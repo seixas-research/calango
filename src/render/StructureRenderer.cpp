@@ -2401,17 +2401,21 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                         static_cast<float>(std::min(0.30 * length, 0.45));
                     const auto shaftLength =
                         static_cast<float>(length) - headLength;
+                    // Opacity is the overlay's OWN, paired with its colour —
+                    // Force and Velocity fade independently, exactly as they
+                    // colour independently.
+                    const float opacity = style_.vectorOverlayOpacity();
                     appendInstance(bondInstances,
                                    bondTransform(origin, dir, shaftLength,
                                                  shaftRadius),
-                                   color, style_.surfaceFinish);
+                                   color, style_.surfaceFinish, opacity);
                     // Arrowhead cone: unit radius scales laterally via
                     // bondTransform's radius parameter.
                     appendInstance(coneInstances,
                                    bondTransform(origin + dir * shaftLength,
                                                  dir, headLength,
                                                  shaftRadius * 2.6f),
-                                   color, style_.surfaceFinish);
+                                   color, style_.surfaceFinish, opacity);
                 }
             };
             switch (style_.vectorOverlay) {
@@ -2548,7 +2552,8 @@ void StructureRenderer::setStructure(const core::Structure* structure,
                     appendInstance(cellTubeInstances,
                                    bondTransform(a, dir, markLength,
                                                  tubeRadius),
-                                   style_.cellColor, style_.surfaceFinish);
+                                   style_.cellColor, style_.surfaceFinish,
+                                   style_.cellEdgeAlpha);
                 }
             }
 
@@ -3177,13 +3182,18 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
         // above leave it at 1 whenever anything in the scene is translucent,
         // and mesh.frag discards every opaque instance in that pass — which is
         // why dialling a cast's opacity down to 0.95 used to make the whole
-        // unit cell disappear. The cell is scene furniture and carries no cast
-        // opacity, so it belongs in the opaque pass.
+        // unit cell disappear. The cell carries no CAST opacity, so an opaque
+        // edge belongs in the opaque pass.
         meshProgram_.setUniformValue("uFinishPass", 0);
         drawCellTubes();
-        // ...unless the shared surface finish is Glassy, which IS translucent
-        // and would be discarded by the opaque pass instead.
-        if (style_.surfaceFinish == SurfaceFinish::Glassy) {
+        // ...unless the shared surface finish is Glassy, or the edge's own
+        // opacity (Unit Cell tab, "Cell color" row) is below 1 — either one
+        // makes mesh.frag class every cell-tube instance as translucent (see
+        // its `vColor.a < 0.999` check), so the opaque pass above discarded
+        // every one of them and only this second, blended pass actually
+        // draws anything.
+        if (style_.surfaceFinish == SurfaceFinish::Glassy
+            || style_.cellEdgeAlpha < 0.999f) {
             meshProgram_.setUniformValue("uFinishPass", 1);
             gl_->glEnable(GL_BLEND);
             gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

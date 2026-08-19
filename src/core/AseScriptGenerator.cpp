@@ -2495,18 +2495,7 @@ std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,
         // Mixer(beta, nmaxold, weight) — GPAW's positional signature.
         << indent << "mixer=" << toString(c.gpawMixer) << "(" << c.gpawMixerBeta
         << ", " << c.gpawMixerNmaxold << ", " << c.gpawMixerWeight << "),\n"
-        << indent << "convergence={\n"
-        << indent << "    \"energy\": " << c.scfEnergyTolEv
-        << ",       # eV/electron\n"
-        << indent << "    \"eigenstates\": " << c.gpawConvEigenstates
-        << ",  # eV^2/electron\n"
-        << indent << "    \"density\": " << c.gpawConvDensity
-        << ",      # electrons/valence electron\n";
-    if (c.gpawConvergeBands != 0)
-        out << indent << "    \"bands\": " << c.gpawConvergeBands
-            << ",  # converge EMPTY states too (negative counts from the top)\n";
-    out << indent << "},\n"
-        << indent << "maxiter=" << c.scfMaxSteps << ",\n";
+        << gpawConvergenceArguments(c, indent);
     // DFT+U as GPAW's `setups` dictionary. The leading colon keeps the default
     // PAW dataset and appends the correction to it — without it GPAW would look
     // for a differently named dataset instead of correcting the standard one.
@@ -2525,6 +2514,33 @@ std::string AseScriptGenerator::gpawKeywordArguments(const CalculatorConfig& c,
         }
         out << "},  # DFT+U (element: :shell,U[,scale])\n";
     }
+    out << gpawSpinOccupationsArguments(c, indent);
+    return out.str();
+}
+
+std::string AseScriptGenerator::gpawConvergenceArguments(
+    const CalculatorConfig& c, const std::string& indent)
+{
+    std::ostringstream out;
+    out << indent << "convergence={\n"
+        << indent << "    \"energy\": " << c.scfEnergyTolEv
+        << ",       # eV/electron\n"
+        << indent << "    \"eigenstates\": " << c.gpawConvEigenstates
+        << ",  # eV^2/electron\n"
+        << indent << "    \"density\": " << c.gpawConvDensity
+        << ",      # electrons/valence electron\n";
+    if (c.gpawConvergeBands != 0)
+        out << indent << "    \"bands\": " << c.gpawConvergeBands
+            << ",  # converge EMPTY states too (negative counts from the top)\n";
+    out << indent << "},\n"
+        << indent << "maxiter=" << c.scfMaxSteps << ",\n";
+    return out.str();
+}
+
+std::string AseScriptGenerator::gpawSpinOccupationsArguments(
+    const CalculatorConfig& c, const std::string& indent)
+{
+    std::ostringstream out;
     // Spin: collinear sets spinpol=True; non-collinear is driven by the vector
     // initial moments seeded in the preamble, so no spinpol keyword is written
     // (GPAW infers the spinor treatment from the (N,3) magmoms). `spinPolarized`
@@ -2666,6 +2682,69 @@ std::string AseScriptGenerator::densityCubeScript(const std::string& gpwDir,
         << "print('CALANGO_RESULT density_cube=" << densityFiles::kDensity
         << " " << (allElectron ? "all_electron" : "pseudo") << "', flush=True)\n";
     return out.str();
+}
+
+std::string AseScriptGenerator::gpawRestartFromBaselineScript(
+    const std::string& baselineDir, const std::string& featureName,
+    const std::string& whatIsNeeded)
+{
+    std::ostringstream out;
+    out << "_base = r\"" << baselineDir << "\"\n"
+        << "try:\n"
+           "    with open(os.path.join(_base, 'calculator.json')) as _cf:\n"
+           "        _prov = json.load(_cf)\n"
+           "    _engine = _prov.get('engine', '')\n"
+           "    if _engine and _engine.upper() != 'GPAW':\n"
+           "        raise RuntimeError(\n"
+        << "            '" << featureName
+        << " cannot be driven from a ' + _engine + ' '\n"
+           "            'baseline: only GPAW exposes the wavefunctions this "
+           "needs.')\n"
+           "except (OSError, ValueError):\n"
+           "    pass\n"
+           "_gpw = sorted(glob.glob(os.path.join(_base, '*.gpw')))\n"
+           "if not _gpw:\n"
+           "    raise RuntimeError('No GPAW wavefunction (.gpw) found in '\n"
+           "                       + _base + '. "
+        << whatIsNeeded
+        << "')\n"
+           // Matches densityCubeScript()'s own restart: every generated
+           // script but XAS runs under the new engine, and this restarts
+           // whatever the baseline wrote (old or new) under it.
+           "os.environ.setdefault('GPAW_NEW', '1')\n"
+           "from gpaw import GPAW\n"
+           "_gpw_path = os.path.abspath(_gpw[0])\n"
+           "calc = GPAW(_gpw_path, txt='gpaw_restart.txt')\n"
+           "atoms = calc.get_atoms()\n";
+    return out.str();
+}
+
+std::string AseScriptGenerator::gpawWaveFunctionHelperScript()
+{
+    return
+        "def _calango_wave_function(calc, band, kpt, spin, all_electron=False,\n"
+        "                           grid_spacing=0.05):\n"
+        "    \"\"\"Real-space array for one Kohn-Sham state (band, kpt, spin),\n"
+        "    gathered to rank 0 — None on a rank that does not hold it.\n"
+        "\n"
+        "    Pseudo-wavefunctions work under either GPAW engine. The PAW\n"
+        "    all-electron reconstruction reaches into the new engine's own\n"
+        "    internal state (calc.dft.ibzwfs) and has no legacy-engine\n"
+        "    equivalent, so that branch raises a clear RuntimeError instead\n"
+        "    of the AttributeError calc.dft would fail with several frames\n"
+        "    down under a legacy restart.\n"
+        "    \"\"\"\n"
+        "    if all_electron:\n"
+        "        if not hasattr(calc, 'dft'):\n"
+        "            raise RuntimeError(\n"
+        "                'All-electron wavefunction reconstruction needs the '\n"
+        "                'new GPAW engine (GPAW_NEW=1, the default); this run '\n"
+        "                'restarted under the legacy engine.')\n"
+        "        _ae = calc.dft.ibzwfs.get_all_electron_wave_function(\n"
+        "            band, kpt=kpt, spin=spin, grid_spacing=grid_spacing)\n"
+        "        return None if _ae is None else _ae.data\n"
+        "    return calc.get_pseudo_wave_function(band=band, kpt=kpt, spin=spin,\n"
+        "                                         periodic=True)\n";
 }
 
 std::string AseScriptGenerator::generate(const CalculatorConfig& config,

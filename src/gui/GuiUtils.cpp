@@ -9,6 +9,7 @@
 #include <cmath>
 
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
@@ -29,6 +30,8 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QSignalBlocker>
+#include <QSpinBox>
 #include <QTextStream>
 #include <QWidget>
 
@@ -463,6 +466,70 @@ QValidator::State CompactDoubleSpinBox::validate(QString& input, int& pos) const
     }
     return parsed < minimum() || parsed > maximum() ? QValidator::Intermediate
                                                     : QValidator::Acceptable;
+}
+
+// ---------------------------------------------------------------------------
+// ColorOpacityRow
+// ---------------------------------------------------------------------------
+
+ColorOpacityRow::ColorOpacityRow(QWidget* parent)
+    : QWidget(parent)
+    , colorButton_(new QPushButton(this))
+    , opacitySpin_(new QSpinBox(this))
+    , colorDialogTitle_(tr("Choose Color"))
+{
+    colorButton_->setFixedHeight(22);
+    setButtonColor(colorButton_, currentColor_);
+
+    opacitySpin_->setRange(0, 100);
+    opacitySpin_->setSuffix(tr(" %"));
+    opacitySpin_->setValue(100);
+
+    auto* layout = new QHBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(colorButton_, 1);
+    layout->addWidget(opacitySpin_);
+
+    connect(colorButton_, &QPushButton::clicked, this, [this] {
+        const QColor chosen =
+            QColorDialog::getColor(currentColor_, this, colorDialogTitle_);
+        if (!chosen.isValid())
+            return;
+        currentColor_ = chosen;
+        setButtonColor(colorButton_, chosen);
+        Q_EMIT colorPicked(chosen);
+    });
+    connect(opacitySpin_, &QSpinBox::valueChanged, this, [this](int percent) {
+        Q_EMIT opacityEdited(static_cast<float>(percent) / 100.0f);
+    });
+}
+
+QColor ColorOpacityRow::color() const
+{
+    return currentColor_;
+}
+
+void ColorOpacityRow::setColor(const QColor& color)
+{
+    currentColor_ = color;
+    setButtonColor(colorButton_, color);
+}
+
+float ColorOpacityRow::opacity() const
+{
+    return static_cast<float>(opacitySpin_->value()) / 100.0f;
+}
+
+void ColorOpacityRow::setOpacity(float opacity)
+{
+    const QSignalBlocker blocker(opacitySpin_);
+    opacitySpin_->setValue(
+        static_cast<int>(std::lround(std::clamp(opacity, 0.0f, 1.0f) * 100.0f)));
+}
+
+void ColorOpacityRow::setColorDialogTitle(const QString& title)
+{
+    colorDialogTitle_ = title;
 }
 
 bool mlwfWavefunctionsAvailable(const QString& jobDir, QString* reason)

@@ -180,7 +180,17 @@ std::string XasScriptGenerator::generate(const XasRunConfig& c,
         << "    kpts=(" << c.calculator.kpts[0] << ", " << c.calculator.kpts[1]
         << ", " << c.calculator.kpts[2]
         << "),\n"
-           "    txt='xas_gs.txt',\n"
+        // SCF tolerance, spin polarization and occupation smearing — the
+        // same three the wizard's "Calculator & Convergence Settings" page
+        // collects for every other GPAW run, wired through here via the
+        // shared helpers rather than left on the CalculatorConfig unread:
+        // this GPAW(...) call used to build with none of them, so changing
+        // the convergence tolerance, turning on spin polarization, or
+        // picking a smearing method on that page silently had no effect on
+        // the generated script.
+        << AseScriptGenerator::gpawConvergenceArguments(c.calculator, "    ")
+        << AseScriptGenerator::gpawSpinOccupationsArguments(c.calculator, "    ")
+        << "    txt='xas_gs.txt',\n"
            ")\n"
            "atoms.calc = calc\n"
            "_calango_progress(1, 3)\n"
@@ -281,6 +291,18 @@ std::string XasScriptGenerator::generate(const XasRunConfig& c,
            "    'dks_energy_eV': float(dks_energy),\n"
         << "    'fwhm_eV': " << c.fwhm
         << ",\n"
+        // The ramp itself, not just whether it was on — so a results viewer
+        // re-folding the raw sticks at a different width can say plainly
+        // that a UNIFORM re-broadening no longer matches what this run
+        // actually computed, rather than silently disagreeing with it.
+        << "    'linear_broadening': " << (c.linearBroadening ? "True" : "False")
+        << ",\n"
+        << "    'linear_broadening_fwhm2_eV': " << c.linearBroadeningStart
+        << ",\n"
+        << "    'linear_broadening_start_eV': " << c.linearBroadeningEnergyStart
+        << ",\n"
+        << "    'linear_broadening_stop_eV': " << c.linearBroadeningEnergyStop
+        << ",\n"
            "    'energy_eV': energies.tolist(),\n"
            "    'isotropic': isotropic.tolist(),\n"
            "    'polarization_x': intensities[0].tolist(),\n"
@@ -288,6 +310,14 @@ std::string XasScriptGenerator::generate(const XasRunConfig& c,
            "    'polarization_z': intensities[2].tolist(),\n"
            "    'stick_energy_eV': stick_energies.tolist(),\n"
            "    'stick_isotropic': stick_intensities.mean(axis=0).tolist(),\n"
+           // The per-polarization sticks, not just their isotropic average:
+           // a results viewer that wants to re-broaden a DISPLAYED curve at
+           // a wider FWHM than this run computed at needs the same raw
+           // transitions get_spectra() itself folds — for x/y/z, not only
+           // for the isotropic curve which the mean above already carries.
+           "    'stick_polarization_x': stick_intensities[0].tolist(),\n"
+           "    'stick_polarization_y': stick_intensities[1].tolist(),\n"
+           "    'stick_polarization_z': stick_intensities[2].tolist(),\n"
            "    'ground_state_energy_eV': float(energy),\n"
            "}\n"
            "with open(results_path, 'w') as _fh:\n"

@@ -29,8 +29,12 @@
 #include "gui/OverlayEditDialog.hpp"
 #include "gui/CddWizard.hpp"
 #include "gui/XasResultsWindow.hpp"
+#include "gui/EnergyDiagramViewer.hpp"
+#include "gui/WavefunctionsWizard.hpp"
+#include "gui/WavefunctionsResultsViewer.hpp"
 #include "gui/XasWizard.hpp"
 #include "gui/EditVolumetricRenderDialog.hpp"
+#include "gui/IsovalueHistogramWidget.hpp"
 #include "gui/GuiUtils.hpp"
 #include "gui/CutoffConvergenceWizard.hpp"
 #include "gui/FermiSurfaceDialog.hpp"
@@ -1284,6 +1288,29 @@ int main(int argc, char** argv)
         }
         check(wizard.script().contains(QStringLiteral("from gpaw.xas import XAS")),
               "the generated script is an XAS run");
+
+        // Task 2's investigation: a core-hole calculation needs a PAW
+        // dataset that no ordinary ground state ever used, so it cannot
+        // restart from one — the wizard takes the raw structure directly
+        // (like Single Point / Geometry Optimization) rather than inheriting
+        // a baseline .gpw (like Optics / GW / Wannier). Pinned two ways: the
+        // script itself reads the staged structure file directly and stages
+        // no baseline, and its OWN ground state is genuinely converged with
+        // the settings the wizard's Calculator & Convergence page collected
+        // rather than a baseline's.
+        const QString script = wizard.script();
+        check(script.contains(QStringLiteral("atoms = read(")),
+              "the script reads the staged structure directly, not a "
+              "baseline");
+        check(!script.contains(QStringLiteral("baseline_1"))
+                  && !script.contains(QStringLiteral("GPAW(restart="))
+                  && !script.contains(QStringLiteral(".gpw', mode='all')\n"
+                                                     "atoms = ")),
+              "and stages no parent .gpw to restart from");
+        check(script.contains(QStringLiteral("convergence={"))
+                  && script.contains(QStringLiteral("occupations={")),
+              "its own ground state is converged with the wizard's own SCF "
+              "and smearing settings, not left on GPAW's silent defaults");
     }
 
     std::printf("XAS results window:\n");
@@ -1312,6 +1339,46 @@ int main(int argc, char** argv)
         check(warns, "a relative energy scale is called out, not implied");
         check(!window.loadResults(QStringLiteral("/nonexistent/xas.json")),
               "a missing file is reported rather than shown empty");
+
+        // Task 1: brought up to the Optics viewer's own standard — the same
+        // "Customize Appearance…" dialog, and Export CSV…/Export Image…
+        // buttons in the same place and words Optics uses for them.
+        const auto buttons = window.findChildren<QPushButton*>();
+        const auto hasButton = [&buttons](const QString& text) {
+            return std::any_of(buttons.begin(), buttons.end(),
+                               [&text](const QPushButton* b) {
+                                   return b->text() == text;
+                               });
+        };
+        check(hasButton(QStringLiteral("Customize Appearance…")),
+              "offers the same appearance dialog Optics does");
+        check(hasButton(QStringLiteral("Export CSV…")),
+              "offers Export CSV…, worded exactly like Optics's own button");
+        check(hasButton(QStringLiteral("Export Image…")),
+              "and Export Image…, likewise");
+
+        // The energy window, mirroring Optics's Range: row.
+        const auto spins = window.findChildren<QDoubleSpinBox*>();
+        check(std::any_of(spins.begin(), spins.end(),
+                          [](const QDoubleSpinBox* s) {
+                              return s->specialValueText()
+                                  == QStringLiteral("auto");
+                          }),
+              "the energy window defaults to \"auto\" like Optics's Range:");
+
+        // Live broadening: enabled here because the staged file above
+        // carries stick_energy_eV/stick_isotropic; opens at the run's own
+        // fwhm_eV (0.5) exactly like Optics's η control opens at its own
+        // eta_eV.
+        auto* broadeningSpin =
+            window.findChild<QDoubleSpinBox*>(QStringLiteral("xasBroadening"));
+        check(broadeningSpin != nullptr, "the broadening control is present");
+        if (broadeningSpin) {
+            check(broadeningSpin->isEnabled(),
+                  "enabled: this run recorded its own transitions");
+            check(std::abs(broadeningSpin->value() - 0.5) < 1e-9,
+                  "and opens at the run's own fwhm_eV");
+        }
     }
 
     // The overlay editor swaps its property page on every type change, and
@@ -1426,6 +1493,59 @@ int main(int argc, char** argv)
             (*extent)->setCurrentIndex((*extent)->count() - 1);
             check(dialog.style().sliceReplicas > 1,
                   "and picking a replicated extent reaches the style");
+        }
+
+        // REGRESSION: the isovalue histogram bars were QPalette::Mid — a
+        // low-contrast border/disabled tone that read as barely-there
+        // against QPalette::Base. Bars are now QPalette::Text at partial
+        // alpha; this pins the actual rendered contrast rather than which
+        // QPalette role the code happens to name, so a future edit back
+        // toward a washed-out fill is caught even if it still compiles.
+        auto* histogram = dialog.findChild<IsovalueHistogramWidget*>();
+        check(histogram != nullptr, "the isosurface page has a histogram");
+        if (histogram) {
+            // A deterministic triangular spread, not random data — occupies
+            // most of the range so bars are guaranteed at several bins
+            // without depending on an RNG's seed.
+            std::vector<double> values;
+            for (int i = 1; i <= 300; ++i)
+                for (int j = 0; j < i; ++j)
+                    values.push_back(static_cast<double>(i) / 300.0);
+            dialog.setFieldHistogram(values, 0.0, 1.0);
+            histogram->setCurrentValue(0.02); // marker off in a low-density
+                                              // corner, away from the bars
+                                              // sampled below
+
+            histogram->resize(400, 56);
+            QImage image(400, 56, QImage::Format_ARGB32_Premultiplied);
+            image.fill(Qt::white);
+            {
+                QPainter painter(&image);
+                histogram->render(&painter, QPoint(0, 0));
+            }
+            const QColor background = image.pixelColor(2, 2);
+
+            // Grayish pixels only, so the blue marker (a distinct hue) can't
+            // masquerade as bar contrast — isolates exactly what the bug
+            // report was about.
+            int maxDelta = 0;
+            for (int y = 0; y < image.height(); ++y) {
+                for (int x = 0; x < image.width(); ++x) {
+                    const QColor c = image.pixelColor(x, y);
+                    if (std::abs(c.red() - c.green()) >= 20
+                        || std::abs(c.green() - c.blue()) >= 20
+                        || std::abs(c.red() - c.blue()) >= 20)
+                        continue; // not grayish -> the marker, skip it
+                    const int delta = std::abs(c.red() - background.red())
+                        + std::abs(c.green() - background.green())
+                        + std::abs(c.blue() - background.blue());
+                    maxDelta = std::max(maxDelta, delta);
+                }
+            }
+            check(maxDelta > 300,
+                  "the histogram bars render with real contrast against the "
+                  "background (max grayish-pixel delta " + std::to_string(maxDelta)
+                      + "/765) — QPalette::Mid measured well under this");
         }
 
         exerciseControls(&dialog);
@@ -4519,6 +4639,260 @@ int main(int argc, char** argv)
                                    + QStringLiteral("/calango_ti_plot.png"),
                                2.0),
               "and the plot exports through the same render()");
+    }
+
+    std::printf("Wavefunctions results viewer:\n");
+    {
+        // Mirrors XasResultsWindow's own staged-fixture pattern: a minimal
+        // but schema-complete wavefunctions.json, matching exactly what
+        // WavefunctionScriptGenerator writes.
+        const QString path =
+            QDir::temp().filePath(QStringLiteral("calango_wavefunctions.json"));
+        QFile file(path);
+        check(file.open(QIODevice::WriteOnly), "a results file can be staged");
+        file.write(R"({"baseline_dir":"/jobs/proc_1",
+                       "gpw":"/jobs/proc_1/single_point.gpw",
+                       "quantity":"density","all_electron":false,
+                       "periodic":true,
+                       "states":[
+                         {"spin":0,"kpt":0,"band":4,"energy_eV":-0.72,
+                          "occupation":2.0,"quantity":"density",
+                          "all_electron":false,"periodic":true,
+                          "complex_valued":false,
+                          "cube":"psi_n4_k0_spin-up_density.cube"},
+                         {"spin":1,"kpt":1,"band":5,"energy_eV":1.02,
+                          "occupation":0.0,"quantity":"density",
+                          "all_electron":true,"periodic":true,
+                          "complex_valued":true,
+                          "cube":"psi_n5_k1_spin-down_density.cube"}
+                       ]})");
+        file.close();
+
+        WavefunctionsResultsViewer viewer;
+        check(viewer.loadResults(path), "and loaded");
+        check(viewer.hasData(), "with data present");
+        check(qobject_cast<QDialog*>(&viewer) != nullptr,
+              "it is a QDialog, like every other results viewer");
+
+        const auto tables = viewer.findChildren<QTableWidget*>();
+        check(!tables.empty(), "the summary table exists");
+        if (!tables.empty()) {
+            QTableWidget* table = tables.front();
+            check(table->rowCount() == 2,
+                  "one row per state — both from this run, not just one");
+        }
+        check(!viewer.loadResults(QStringLiteral("/nonexistent/wf.json")),
+              "a missing file is reported rather than shown empty");
+    }
+
+    std::printf("Wavefunctions wizard — zero-selection warning:\n");
+    {
+        // REGRESSION: the warning label's own itemChanged connection used
+        // Qt::UniqueConnection with a lambda target, which Qt logs as
+        // invalid at runtime ("unique connections require a pointer to
+        // member function") and then — on this Qt version — makes NO
+        // connection at all rather than falling back to a plain one. The
+        // label was permanently stuck showing whatever its first update
+        // computed, never reacting to a checkbox click again. Verified
+        // directly on the table rather than through a real baseline peek
+        // (which needs GPAW) — the connection this guards is between the
+        // table and the label, independent of where the rows came from.
+        // SimulationWizardBase reads the embedded interpreter while
+        // building its Calculator Settings stage, and PythonEngine::
+        // instance() asserts rather than lazily constructing one.
+        calango::pybridge::PythonEngine python;
+        auto structure = std::make_shared<calango::core::Structure>();
+        WavefunctionsWizard wizard(structure);
+
+        auto* table = wizard.findChild<QTableWidget*>();
+        check(table != nullptr, "the state table exists");
+        QLabel* warning = nullptr;
+        for (QLabel* label : wizard.findChildren<QLabel*>())
+            if (label->text().contains(QStringLiteral("No states are ticked")))
+                warning = label;
+        check(warning != nullptr,
+              "the zero-selection warning label exists and is populated "
+              "before any baseline is even selected (an empty table is "
+              "zero states too)");
+        // isHidden() reflects the label's OWN explicit setVisible() call;
+        // isVisible() would additionally require the whole wizard to be
+        // shown, which it deliberately is not here.
+        check(warning && !warning->isHidden(),
+              "and starts visible — nothing is selected yet");
+
+        if (table) {
+            table->setRowCount(1);
+            auto* check_item = new QTableWidgetItem();
+            check_item->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
+            check_item->setCheckState(Qt::Unchecked);
+            table->setItem(0, 0, check_item);
+
+            check_item->setCheckState(Qt::Checked);
+            check(warning && warning->isHidden(),
+                  "ticking a row hides the warning — the itemChanged "
+                  "connection actually fires");
+
+            check_item->setCheckState(Qt::Unchecked);
+            check(warning && !warning->isHidden(),
+                  "and unticking it again brings the warning back — this "
+                  "is the same connection firing a second time, not a "
+                  "one-shot Qt::UniqueConnection accident");
+        }
+    }
+
+    std::printf("Energy Diagram viewer window type:\n");
+    {
+        // REGRESSION: EnergyDiagramViewer was a plain QWidget. Shown via
+        // show() with a parent (MainWindow::openEnergyDiagramResults() does
+        // exactly that — new EnergyDiagramViewer(this)), a plain QWidget
+        // with a parent renders as a frameless CHILD embedded inside that
+        // parent's own client area rather than an independent top-level
+        // window — no title bar, no close button, not movable, and its
+        // content bleeds into whatever the parent draws underneath it
+        // (this is what the user actually saw: a garbled overlap with
+        // MainWindow's own tab bar, not a level-diagram problem). Every
+        // other results viewer in this codebase (XasResultsWindow,
+        // BandPdosWindow, MlwfViewer, OpticsResultsWindow,
+        // GwResultsWindow, ...) is a QDialog, which is a real top-level
+        // window even when constructed with a parent — EnergyDiagramViewer
+        // must be one too, and this checks BOTH the class itself and the
+        // actual runtime behavior with a parent, since a *parentless*
+        // widget can look like a window regardless of its base class and
+        // would have hidden this exact bug (verified against a real
+        // offscreen render during the fix: the parentless case reported
+        // isWindow()==true even on the OLD, buggy QWidget-based class).
+        check(qobject_cast<QDialog*>(static_cast<QWidget*>(nullptr)) == nullptr,
+              "sanity: qobject_cast on null is null (guards the real check "
+              "below against a false pass)");
+
+        QWidget standInMainWindow;
+        auto* viewer = new EnergyDiagramViewer(&standInMainWindow);
+        check(qobject_cast<QDialog*>(viewer) != nullptr,
+              "EnergyDiagramViewer is a QDialog, like every other results "
+              "viewer in this app — not a plain QWidget");
+        check(viewer->isWindow(),
+              "and behaves as an independent top-level window even when "
+              "constructed with a parent (closeable, movable) rather than "
+              "an embedded child of it");
+        check(viewer->parentWidget() == &standInMainWindow,
+              "while still recording the parent MainWindow passed in, for "
+              "ownership/stacking — being a real window does not mean "
+              "losing the parent relationship");
+        delete viewer;
+    }
+
+    std::printf("Energy Diagram appearance (white/blue/red) and export "
+               "buttons:\n");
+    {
+        // REGRESSION: the level diagram used to follow the THEMED palette
+        // (QPalette::Base/Text/Mid), so in Dark theme it drew a dark canvas
+        // with low-contrast level bars — the user asked for a fixed white/
+        // blue/red scheme, like every other data plot in the app
+        // (PlotPalette), independent of the active Qt theme.
+        const EnergyDiagramStyle defaults;
+        check(defaults.canvasBackground == QColor(255, 255, 255),
+              "default canvas is pure white, not a themed base color");
+        check(defaults.occupiedColor == QColor(0x1f, 0x77, 0xb4),
+              "default occupied-level color is PlotPalette's tab10 blue");
+        check(defaults.unoccupiedColor == QColor(0xd6, 0x27, 0x28),
+              "default unoccupied-level color is PlotPalette's tab10 red");
+
+        EnergyLevelDiagramWidget widget;
+        widget.resize(300, 300);
+
+        const auto countNear = [](const QImage& image, const QColor& target) {
+            int n = 0;
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < image.width(); ++x) {
+                    const QColor c = image.pixelColor(x, y);
+                    if (std::abs(c.red() - target.red()) <= 12
+                        && std::abs(c.green() - target.green()) <= 12
+                        && std::abs(c.blue() - target.blue()) <= 12)
+                        ++n;
+                }
+            return n;
+        };
+
+        QImage emptyImage(300, 300, QImage::Format_ARGB32_Premultiplied);
+        {
+            QPainter painter(&emptyImage);
+            widget.renderTo(painter, QSize(300, 300));
+        }
+        const int emptyOccupied = countNear(emptyImage, defaults.occupiedColor);
+        const int emptyUnoccupied =
+            countNear(emptyImage, defaults.unoccupiedColor);
+        check(countNear(emptyImage, defaults.canvasBackground) > 300 * 300 / 2,
+              "with no levels set, the canvas itself renders white (not the "
+              "themed QPalette::Base)");
+
+        std::vector<EnergyLevelDiagramEntry> levels;
+        EnergyLevelDiagramEntry occ;
+        occ.spin = 0;
+        occ.bands = {0};
+        occ.energyEv = -5.0;
+        occ.occupation = 2.0; // occupied() is occupation > 0.5
+        levels.push_back(occ);
+        EnergyLevelDiagramEntry virt;
+        virt.spin = 0;
+        virt.bands = {1};
+        virt.energyEv = 2.0;
+        virt.occupation = 0.0; // unoccupied
+        levels.push_back(virt);
+        widget.setLevels(levels, 1);
+
+        QImage drawnImage(300, 300, QImage::Format_ARGB32_Premultiplied);
+        {
+            QPainter painter(&drawnImage);
+            widget.renderTo(painter, QSize(300, 300));
+        }
+        const int drawnOccupied = countNear(drawnImage, defaults.occupiedColor);
+        const int drawnUnoccupied =
+            countNear(drawnImage, defaults.unoccupiedColor);
+        check(drawnOccupied > emptyOccupied,
+              "the occupied level draws in blue (" + std::to_string(drawnOccupied)
+                  + " vs " + std::to_string(emptyOccupied)
+                  + " matching pixels with nothing drawn)");
+        check(drawnUnoccupied > emptyUnoccupied,
+              "the unoccupied level draws in red ("
+                  + std::to_string(drawnUnoccupied) + " vs "
+                  + std::to_string(emptyUnoccupied)
+                  + " matching pixels with nothing drawn)");
+
+        // setStyle() actually reaches renderTo() — pick colors nothing else
+        // on the canvas would produce (default text/placeholder/gap colors
+        // are all far from pure green), so a false pass from some unrelated
+        // element is not possible.
+        EnergyDiagramStyle custom;
+        custom.occupiedColor = QColor(0, 255, 0);
+        widget.setStyle(custom);
+        QImage restyled(300, 300, QImage::Format_ARGB32_Premultiplied);
+        {
+            QPainter painter(&restyled);
+            widget.renderTo(painter, QSize(300, 300));
+        }
+        check(countNear(restyled, QColor(0, 255, 0)) > 0,
+              "setStyle() changes what renderTo() actually draws, not just "
+              "a stored struct nothing reads");
+
+        QWidget standInMainWindow2;
+        auto* viewer2 = new EnergyDiagramViewer(&standInMainWindow2);
+        auto hasButtonLabelled = [&](const QString& text) {
+            for (QPushButton* b : viewer2->findChildren<QPushButton*>())
+                if (b->text() == text)
+                    return true;
+            return false;
+        };
+        check(hasButtonLabelled(QObject::tr("Customize Appearance…")),
+              "the viewer offers a Customize Appearance… button");
+        check(hasButtonLabelled(QObject::tr("Export Image…")),
+              "and an Export Image… button");
+        check(hasButtonLabelled(QObject::tr("Export Levels…")),
+              "and an Export Levels… CSV button, distinct from the existing "
+              "Export Transitions… one — the diagram and the table show "
+              "different data");
+        check(hasButtonLabelled(QObject::tr("Export Transitions…")),
+              "the pre-existing transitions CSV export is still there");
+        delete viewer2;
     }
 
     std::printf(failures == 0 ? "\nAll dialog construction checks passed.\n"

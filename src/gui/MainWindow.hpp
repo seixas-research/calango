@@ -226,6 +226,35 @@ private Q_SLOTS:
     void showBandStructure();
     /// Open the band/PDOS viewer for a finished job directory.
     void openBandResults(const QString& directory);
+    /// Electronics -> "Local Density of States (LDOS)…": sum |psi(r)|^2 over
+    /// stored Kohn-Sham states in an energy window, on top of a completed
+    /// GPAW single-point.
+    void showLdos();
+    /// Register a finished LDOS job's cube into the Volumetric Data dock —
+    /// UNCHECKED, per the Wannier precedent (DatasetOrigin::startUnchecked).
+    void openLdosResults(const QString& directory);
+    /// Electronics -> "Energy Diagrams…": discrete Kohn-Sham levels (and,
+    /// optionally, transition dipoles) for a non-periodic or Gamma-only
+    /// GPAW baseline — the molecular analogue of Electronic Structure.
+    void showEnergyDiagrams();
+    /// Open the level-diagram + transitions viewer for a finished job dir.
+    void openEnergyDiagramResults(const QString& directory);
+    /// Electronics -> "Wavefunctions…": real-space Kohn-Sham orbitals
+    /// (pseudo or all-electron) as volumetric data, one cube per selected
+    /// state.
+    void showWavefunctions();
+    /// Register every cube from a finished Wavefunctions job's
+    /// wavefunctions.json into the Volumetric Data dock — UNCHECKED, like
+    /// LDOS, and periodic-continuation-eligible when the parent is
+    /// periodic (DatasetOrigin::wannier — same downstream behaviour the
+    /// Wannier orbitals use, reused here since a periodic Bloch orbital is
+    /// exactly the kind of localized-but-crosses-cell-boundaries field that
+    /// mechanism was built for; a molecular orbital's own cube already sits
+    /// entirely inside the vacuum-padded cell, so continuation would be
+    /// meaningless there and is left off). Also raises the dock (registering
+    /// alone is not the same as being seen) and opens the dedicated
+    /// WavefunctionsResultsViewer summary table.
+    void openWavefunctionsResults(const QString& directory);
     /// Open the phonon band structure + PhDOS viewer for a finished job dir.
     /// Analyse a finished electron-phonon run and report lambda/tau.
     ///

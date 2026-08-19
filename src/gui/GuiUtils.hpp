@@ -7,6 +7,7 @@
 #include <QList>
 #include <QPair>
 #include <QString>
+#include <QWidget>
 
 #include <vector>
 
@@ -22,7 +23,7 @@ class QPainter;
 class QPushButton;
 class QRectF;
 class QSize;
-class QWidget;
+class QSpinBox;
 
 namespace calango::core {
 class Structure;
@@ -228,6 +229,63 @@ protected:
     /// Accept exponential input, which the base class's fixed-notation
     /// validator rejects outright.
     QValidator::State validate(QString& input, int& pos) const override;
+};
+
+/// A colour-picker swatch paired with a percent-opacity spin box in one row —
+/// "what a translucent surface looks like," which the Unit Cell tab's fill
+/// AND edge, the Vectors tab's active overlay, and the Floor tab each needed
+/// separately until this factored the repeated pair into one widget.
+///
+/// The spin box is purely a UI convention (0-100, integer, "%" suffix);
+/// callers keep whatever [0, 1] float the render style itself stores and
+/// convert at the boundary via opacity()/setOpacity(), so a project file
+/// saved under the old per-tab representation still loads to the same
+/// effective opacity.
+///
+/// Clicking the swatch opens a QColorDialog itself (title set via
+/// setColorDialogTitle()) rather than leaving that to the caller — every
+/// prior copy of this row did the identical "open dialog, bail if
+/// cancelled, repaint the swatch" dance, which is what this removes.
+class ColorOpacityRow : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit ColorOpacityRow(QWidget* parent = nullptr);
+
+    QColor color() const;
+    /// Repaints the swatch; does not emit colorPicked() — for programmatic
+    /// sync (e.g. restoring a project, or switching which vector overlay is
+    /// being edited).
+    void setColor(const QColor& color);
+
+    /// [0, 1].
+    float opacity() const;
+    /// Does not emit opacityEdited() — same programmatic-sync reasoning as
+    /// setColor().
+    void setOpacity(float opacity);
+
+    /// Title of the QColorDialog the swatch opens. Defaults to a generic
+    /// "Choose Color".
+    void setColorDialogTitle(const QString& title);
+
+    /// For a caller that wants to set its own tool tip on one half only
+    /// (e.g. the Vectors tab's "select an overlay above" fallback on the
+    /// swatch when nothing is selected).
+    QPushButton* colorButton() const { return colorButton_; }
+    QSpinBox* opacitySpin() const { return opacitySpin_; }
+
+Q_SIGNALS:
+    /// Fired only when the user picks a color from the dialog (not on
+    /// setColor()).
+    void colorPicked(const QColor& color);
+    /// Fired only when the user edits the spin box (not on setOpacity()).
+    void opacityEdited(float opacity);
+
+private:
+    QPushButton* colorButton_;
+    QSpinBox* opacitySpin_;
+    QColor currentColor_{Qt::white};
+    QString colorDialogTitle_;
 };
 
 /// JSON number array -> std::vector<double>. Non-numeric entries become 0.0,

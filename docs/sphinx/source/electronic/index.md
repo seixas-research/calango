@@ -52,6 +52,9 @@ state. {doc}`/electronic/nonlinear_optics` explains why.
 | {doc}`/electronic/bands` | {menuselection}`Electronics --> Electronic Structure…` | GPAW baseline (DFT route) |
 | {doc}`/electronic/twod_bands` | {menuselection}`Modules --> 2D Materials --> 2D Bands…` | GPAW baseline `.gpw` |
 | {doc}`/electronic/unfolding` | {menuselection}`Electronics --> Effective Bands (Unfolding)…` | supercell + primitive cell |
+| {doc}`/electronic/ldos` | {menuselection}`Electronics --> Local Density of States (LDOS)…` | GPAW baseline `.gpw` (mode='all') |
+| {doc}`/electronic/wavefunctions` | {menuselection}`Electronics --> Wavefunctions…` | GPAW baseline `.gpw` (mode='all') |
+| {doc}`/electronic/energy_diagrams` | {menuselection}`Electronics --> Energy Diagrams…` | GPAW baseline `.gpw`, non-periodic or Gamma-only |
 | {doc}`/electronic/optics` | {menuselection}`Electronics --> Optics…` | GPAW baseline `.gpw` |
 | {doc}`/electronic/workfunction` | {menuselection}`Modules --> 2D Materials --> 2D Workfunction…` | GPAW baseline `.gpw` |
 | {doc}`/electronic/nonlinear_optics` | {menuselection}`Electronics --> Nonlinear Optics…` | converges its own ground state |
@@ -82,6 +85,9 @@ process manager.
 bands
 twod_bands
 unfolding
+ldos
+wavefunctions
+energy_diagrams
 optics
 workfunction
 nonlinear_optics

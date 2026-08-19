@@ -321,6 +321,19 @@ dataset is written into the job directory and found through
 \texttt{setup\_paths}, so nothing is installed into your GPAW distribution and
 the run reproduces elsewhere.
 
+\begin{calnote}
+\textbf{No prior Single-Point Calculation is needed --- or usable.} XAS is
+launched directly on a structure, exactly like Single Point or Geometry
+Optimization, not chained after a completed run the way Optics, GW, Wannier
+Functions or Electronic Bands are: the setup wizard shows the full
+Calculator \& Convergence Settings page itself, with no baseline-run
+selector, because a core-hole ground state uses a PAW dataset an ordinary
+ground state never used --- restarting from one would restart from the
+wrong basis on the one atom the calculation is about. GPAW is also the
+\emph{only} calculator XAS supports, so there is no per-engine difference
+to reconcile.
+\end{calnote}
+
 \subsection{Absorbing site}
 
 Pick the \ui{Element} and then the \ui{Absorbing atom} --- one atom, not all
@@ -388,6 +401,24 @@ The header states which energy scale the axis is on, because a relative spectrum
 plotted as though it were absolute is wrong by hundreds of eV and nothing about
 the curve reveals it.
 
+Brought up to the same standard as the Optics viewer (Section~\ref{sec:optics}) ---
+the two windows draw through the identical plot widget, so styling and export
+work the same way in both. \ui{Range:} sets the energy window (both boxes at
+\emph{auto}, the default, fit the data). \ui{Customize Appearance\dots} opens
+the same dialog Optics uses --- background, curve colour, line width/style,
+axis font and colour, grid --- applied live. \ui{Broadening (FWHM)}
+re-derives every displayed curve from the run's own discrete transitions at a
+chosen width, GPAW's own way of folding them; unlike the Optics viewer's
+Lorentzian $\eta$, which can only be \emph{raised}, a transition is a delta
+function with no width to deconvolve, so this control moves narrower just as
+freely as wider. It opens at the run's own FWHM and is disabled for a job
+directory recorded before individual transitions were saved; if the run used
+\ui{Broaden more at higher energy}, a note says the uniform re-fold will not
+exactly reproduce the stored ramped curve. \ui{Export CSV\dots} offers a
+choice between the broadened spectrum \emph{as computed} and the raw
+unbroadened transitions; \ui{Export Image\dots} renders the plot to a
+high-resolution PNG or JPEG.
+
 \section{Unfolding a relaxed supercell}
 \label{sec:unfoldrelaxed}
 
@@ -423,3 +454,111 @@ $M = 2\mathbf{I}$ is right, but its residual is 0.015 --- rejected outright by
 a pristine-cell tolerance, accepted by the default one. Forcing rebuilds the
 primitive at 4.1088\,\AA{} and the residual falls to $5\times10^{-17}$.
 \end{calnote}
+
+\section{Local Density of States (LDOS)}
+\label{sec:ldos}
+
+\menu{Electronics}\menusep\menu{Local Density of States (LDOS)\dots} sums
+$\mathrm{LDOS}(\mathbf{r}) = \sum_{n\mathbf{k}s \in [E_{\min},E_{\max}]}
+w_{\mathbf{k}} \, |\psi_{n\mathbf{k}s}(\mathbf{r})|^2$ over every stored
+Kohn-Sham state whose eigenvalue falls in a chosen window, weighted by
+k-point --- \textbf{not} by occupation, so an ``unoccupied near $E_F$''
+window is a real, nonzero field. The result is a real-space grid through the
+ordinary volumetric pipeline (Section~\ref{sec:volumetric}).
+
+\begin{calwarn}
+GPAW only, and a baseline is \textbf{mandatory} --- LDOS is a post-process
+on an already-completed \file{single\_point.gpw} (written with
+\texttt{mode=`all'}), with no fresh-SCF fallback.
+\end{calwarn}
+
+Selecting a baseline reads back its eigenvalue spectrum with a real,
+SCF-free GPAW restart, and shows it as a draggable dual-handle histogram: drag
+either edge of the shaded band to set the window, or type it directly into
+\ui{Min}/\ui{Max}. \ui{Relative to Fermi level} keeps the two bounds as
+offsets from $E_F$ (correct even if the baseline is re-run with a slightly
+different Fermi level); \ui{Occupied near E\_F}/\ui{Unoccupied near E\_F}
+are one-click presets of \ui{Preset width}. \ui{Spin channel} selects
+\ui{Sum}, \ui{Spin up} or \ui{Spin down}.
+
+Unlike Wannierization, LDOS carries \textbf{no ``Symmetry: off'' pre-condition}
+--- it sums over whatever k-points the baseline stored, weighted by GPAW's
+own (already symmetry-aware) k-point weights. The job writes
+\file{ldos.cube} and \file{ldos.json}, registered in the Volumetric Data
+dock \textbf{unchecked}, the same ``add it, let the user pick'' default
+Wannier orbitals use.
+
+\section{Wavefunctions}
+\label{sec:wavefunctions}
+
+\menu{Electronics}\menusep\menu{Wavefunctions\dots} computes individual
+Kohn-Sham orbitals on a real-space grid --- pseudo, or the all-electron PAW
+reconstruction --- as volumetric data. It shares its restart and
+wavefunction-access layer with LDOS: one implementation of ``restart a GPAW
+baseline and read back a state,'' not two.
+
+Selecting a baseline fills a table of every stored state (band, k-point,
+spin, energy, occupation); tick as many rows as needed and each becomes one
+cube in a single job. \ui{Quantity} offers $|\psi|^2$ (density), the real
+part, or the imaginary part --- there is no separate ``signed'' option,
+since the real part of a real orbital already carries both signs and the
+volumetric pipeline already gives any field with negative values the
+positive/negative dual-isosurface treatment. \ui{All-electron (PAW
+reconstruction)} switches from the smooth pseudo-wavefunction to the true,
+cusped orbital near each nucleus; it needs the \emph{new} GPAW engine and
+runs on its own \ui{grid spacing}, independent of the SCF's native grid.
+
+\begin{calnote}
+By construction the PAW correction is exactly zero outside each atom's
+augmentation sphere: pseudo and all-electron agree away from every nucleus
+and differ only close to one. On water's HOMO this is verified directly
+(\texttt{wavefunctions\_h2o}): the density difference between the two
+reconstructions, integrated near the nuclei, comes out more than $10\times$
+the same quantity integrated away from every atom.
+\end{calnote}
+
+Cubes are named \texttt{psi\_n<band>\_k<kpt>\_spin-<up|down>\_<quantity>.cube}
+and registered unchecked, like LDOS. A periodic parent's Bloch orbital gets
+the same periodic-continuation treatment as a Wannier orbital (its
+isosurface continues across the cell boundary rather than being cut at the
+faces); a molecular parent's orbital already sits entirely inside its
+vacuum padding, where that would be meaningless, and is left off.
+
+\section{Energy Diagrams}
+\label{sec:energydiagrams}
+
+\menu{Electronics}\menusep\menu{Energy Diagrams\dots} is the band-structure
+readout at the top of this chapter, for a system with no $k$-path to
+disperse along: discrete Kohn-Sham levels for a molecule, plus, optionally,
+the electric-dipole transition moments between them.
+
+\begin{calwarn}
+\textbf{Non-periodic (or Gamma-only) only.} A baseline that stored more than
+one k-point is refused --- in the wizard once its spectrum is read back, and
+unconditionally by the generated script itself.
+\end{calwarn}
+
+\begin{calwarn}
+These are \textbf{Kohn-Sham eigenvalue-difference transitions} --- $E_j -
+E_i$ from a single ground-state SCF --- \textbf{not TDDFT or BSE excitation
+energies}. There is no excited-state density relaxation and no
+electron-hole binding.
+\end{calwarn}
+
+The level diagram draws one bar per state, solid when occupied and
+dashed when virtual; degenerate levels (within a tolerance, since a
+real-space grid does not exactly respect a molecule's point-group
+rotations) are drawn as several parallel bars with a ``$\times N$'' count
+rather than one bar picked arbitrarily. HOMO and LUMO are labelled with the
+gap annotated; spin-polarized baselines get two columns.
+
+Transition dipole moments come from GPAW's own
+\texttt{gpaw.utilities.dipole.dipole\_matrix\_elements\_from\_calc}, and the
+oscillator strength follows the standard atomic-units form $f_{ij} =
+\frac{2}{3}\Delta E_{ij}|\langle\psi_i|\mathbf{r}|\psi_j\rangle|^2$. A
+transition is \ui{allowed} when $f_{ij}$ exceeds a threshold and
+\ui{forbidden} otherwise --- a numeric verdict on the computed matrix
+element, \textbf{not} a symmetry label: point-group irrep labeling and
+symmetry-derived selection rules were investigated and deliberately
+deferred (see \texttt{FUTURE.md} \S8 in the source repository for why).
+\ui{Export Transitions\dots} writes a CSV, one row per transition.

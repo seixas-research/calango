@@ -21,6 +21,10 @@ struct SceneCylinder {
     QVector3D to;
     float radius;
     QColor color;
+    /// 1.0 for every bond (cast opacity is not wired into this exporter at
+    /// all — see FUTURE.md); the cell-edge tubes are the one user of a
+    /// value below that, carrying Style::cellEdgeAlpha.
+    float alpha = 1.0f;
 };
 
 /// The ground plane's four corners, in the winding both backends want, or an
@@ -127,10 +131,12 @@ void collectGeometry(const RayTraceExporter::SceneInputs& in,
     if (in.style.showCell && in.structure->cell().isDefined()) {
         const auto corners = in.structure->cell().corners();
         const float radius = 0.015f * std::max(1.0f, in.style.cellLineWidth);
+        const float edgeAlpha =
+            std::clamp(in.style.cellEdgeAlpha, 0.0f, 1.0f);
         for (const auto& [i, j] : core::UnitCell::edges())
             cylinders.push_back({toQt(corners[static_cast<std::size_t>(i)]),
                                  toQt(corners[static_cast<std::size_t>(j)]), radius,
-                                 in.style.cellColor});
+                                 in.style.cellColor, edgeAlpha});
     }
 }
 
@@ -244,6 +250,12 @@ QString RayTraceExporter::povray(const SceneInputs& in)
     // has to reproduce the shadow itself.
     if (const std::vector<QVector3D> quad = floorQuad(in); !quad.empty()) {
         const QColor color = in.style.floorColor;
+        // `transmit`, not `filter`: transmit passes light through unchanged
+        // (true alpha-like transparency), where filter tints it by the
+        // pigment colour on the way through — the viewport's own alpha
+        // blend does not tint either, so transmit is the matching term.
+        const double transmit =
+            1.0 - std::clamp(static_cast<double>(in.style.floorOpacity), 0.0, 1.0);
         // Matte, whatever the on-screen material says: a specular highlight
         // stretched across a plane this large is the classic ray-traced
         // artefact, and this file is going into a figure.
@@ -251,10 +263,10 @@ QString RayTraceExporter::povray(const SceneInputs& in)
              "specular 0 };\n"
           << "triangle { <" << vec(quad[0]) << ">, <" << vec(quad[1])
           << ">, <" << vec(quad[2]) << "> pigment { rgb <" << rgb(color)
-          << "> } finish { FloorFinish } }\n"
+          << "> transmit " << transmit << " } finish { FloorFinish } }\n"
           << "triangle { <" << vec(quad[0]) << ">, <" << vec(quad[2])
           << ">, <" << vec(quad[3]) << "> pigment { rgb <" << rgb(color)
-          << "> } finish { FloorFinish } }\n";
+          << "> transmit " << transmit << " } finish { FloorFinish } }\n";
     }
 
     for (const auto& sphere : spheres) {
@@ -264,9 +276,10 @@ QString RayTraceExporter::povray(const SceneInputs& in)
     for (const auto& cylinder : cylinders) {
         if (cylinder.from.distanceToPoint(cylinder.to) < 1e-5f)
             continue;
+        const double transmitC = 1.0 - static_cast<double>(cylinder.alpha);
         s << "cylinder { <" << vec(cylinder.from) << ">, <" << vec(cylinder.to) << ">, "
           << cylinder.radius << " pigment { rgb <" << rgb(cylinder.color)
-          << "> } finish { AtomFinish } }\n";
+          << "> transmit " << transmitC << " } finish { AtomFinish } }\n";
     }
     return out;
 }
@@ -365,24 +378,35 @@ QString RayTraceExporter::tachyon(const SceneInputs& in)
         }
     }
 
-    const auto texture = [ambient, diffuse](const QColor& color) {
+    // `opacity` defaults to fully opaque for the spheres, which never carry
+    // one (cast opacity is not wired into this exporter at all — see
+    // FUTURE.md); the cell-edge cylinders are the one caller that passes
+    // something below 1.
+    const auto texture = [ambient, diffuse](const QColor& color,
+                                            double opacity = 1.0) {
         return QStringLiteral(
-                   "  Texture Ambient %1 Diffuse %2 Specular 0.2 Opacity 1\n"
+                   "  Texture Ambient %1 Diffuse %2 Specular 0.2 Opacity %4\n"
                    "  Phong Plastic 0.4 Phong_size 45 Color %3 TexFunc 0\n")
             .arg(ambient, 0, 'f', 3)
             .arg(diffuse, 0, 'f', 3)
-            .arg(rgbTriple(color));
+            .arg(rgbTriple(color))
+            .arg(opacity, 0, 'f', 3);
     };
     // Ground plane. Tachyon's Full shader mode traces the directional lights'
     // shadows onto it, matching the viewport without any special handling.
     if (const std::vector<QVector3D> quad = floorQuad(in); !quad.empty()) {
+        // Tachyon's Opacity runs the same direction as our own (0 transparent,
+        // 1 opaque), unlike POV-Ray's inverted "transmit" — no flip needed.
+        const double opacity =
+            std::clamp(static_cast<double>(in.style.floorOpacity), 0.0, 1.0);
         const QString floorTexture =
             QStringLiteral("  Texture Ambient %1 Diffuse %2 Specular 0 "
-                           "Opacity 1\n"
+                           "Opacity %4\n"
                            "  Phong Plastic 0 Phong_size 1 Color %3 TexFunc 0\n")
                 .arg(ambient, 0, 'f', 3)
                 .arg(diffuse, 0, 'f', 3)
-                .arg(rgbTriple(in.style.floorColor));
+                .arg(rgbTriple(in.style.floorColor))
+                .arg(opacity, 0, 'f', 3);
         for (const auto& tri : {std::array<int, 3>{0, 1, 2},
                                 std::array<int, 3>{0, 2, 3}}) {
             s << "TRI\n"
@@ -409,7 +433,7 @@ QString RayTraceExporter::tachyon(const SceneInputs& in)
         s << "FCylinder Base " << xyz(cylinder.from) << " Apex "
           << xyz(cylinder.to) << " Rad "
           << QString::number(static_cast<double>(cylinder.radius), 'f', 6) << "\n"
-          << texture(cylinder.color);
+          << texture(cylinder.color, static_cast<double>(cylinder.alpha));
     }
     s << "End_Scene\n";
     return out;

@@ -80,6 +80,23 @@ public:
     static std::string gpawKeywordArguments(const CalculatorConfig& config,
                                             const std::string& indent);
 
+    /// The `convergence={...}` dict and `maxiter=`, factored out of
+    /// gpawKeywordArguments() so a generator with its own mode/kpts/nbands
+    /// handling (XasScriptGenerator's core-hole `setups=`/negative `nbands=`
+    /// convention does not fit the shared one) can still emit the SAME SCF
+    /// tolerance the wizard's Calculator & Convergence page collected,
+    /// instead of silently building a calculator that ignores it.
+    static std::string gpawConvergenceArguments(const CalculatorConfig& config,
+                                                const std::string& indent);
+    /// `spinpol=`/the non-collinear comment, then `occupations={...}` —
+    /// factored out for the same reason as gpawConvergenceArguments(), and
+    /// called separately from it (not merged into one function) because
+    /// gpawKeywordArguments() itself emits the DFT+U `setups=` dict between
+    /// the two, and this split keeps that call site's emitted order and
+    /// content byte-for-byte unchanged.
+    static std::string gpawSpinOccupationsArguments(const CalculatorConfig& config,
+                                                     const std::string& indent);
+
     /// Standalone script that restarts GPAW from the `*.gpw` in `gpwDir` and
     /// writes the charge density to `density.cube` (all-electron when
     /// `allElectron`, else the pseudo density). Used by the Single-Point
@@ -88,6 +105,51 @@ public:
     /// an absolute path so the script can run from a fresh job directory.
     static std::string densityCubeScript(const std::string& gpwDir,
                                          bool allElectron);
+
+    /// Restarts GPAW from a completed baseline's saved wavefunctions,
+    /// generalizing the glob-and-check block WannierScriptGenerator's
+    /// `groundState()` introduced (that one keeps its own inline copy, with
+    /// "MLWF localization" baked into its message, rather than being
+    /// retrofitted onto this). Leaves `calc` (restarted GPAW calculator) and
+    /// `atoms` defined; `_gpw_path` holds the absolute `.gpw` path actually
+    /// used. Checks `calculator.json`'s recorded engine first — a clear
+    /// refusal in milliseconds, before the `*.gpw` glob even runs — then
+    /// raises a `RuntimeError` naming exactly what is missing if no `.gpw`
+    /// is found.
+    ///
+    /// `featureName` names the calling module in the engine-mismatch message
+    /// ("Local Density of States", "Wavefunctions"); `whatIsNeeded` is
+    /// appended to the "no .gpw found" message to say how to fix it.
+    ///
+    /// Shared by the LDOS and Wavefunctions generators — the ONE
+    /// implementation of "get a restarted GPAW calculator from a baseline
+    /// directory" both are built on, per the project's baseline-inheriting
+    /// wizard convention (see docs/sphinx/source/simulations/orchestration.md,
+    /// "Inherited runs").
+    static std::string gpawRestartFromBaselineScript(
+        const std::string& baselineDir, const std::string& featureName,
+        const std::string& whatIsNeeded);
+
+    /// The wavefunction-access helper shared by LDOS and Wavefunctions:
+    /// defines a Python function
+    /// `_calango_wave_function(calc, band, kpt, spin, all_electron=False,
+    /// grid_spacing=0.05)` returning the real-space array for one
+    /// Kohn-Sham state (or `None` on an MPI rank that does not hold it —
+    /// dead code today, since generated scripts never launch under MPI, but
+    /// matching the underlying GPAW APIs' own contract rather than
+    /// asserting something about them that is not true).
+    ///
+    /// Pseudo-wavefunctions (`all_electron=False`) go through
+    /// `calc.get_pseudo_wave_function(periodic=True)` — the same call
+    /// BandSymmetryScriptGenerator already uses — and work on any GPAW
+    /// build. The PAW all-electron reconstruction
+    /// (`calc.dft.ibzwfs.get_all_electron_wave_function(...)`) is new-GPAW
+    /// internal state with no legacy-engine equivalent, so that branch
+    /// raises a specific `RuntimeError` rather than the `AttributeError`
+    /// `calc.dft` would otherwise fail with several frames down, on a
+    /// restart under the legacy engine (`GPAW_NEW=0`, which nothing but
+    /// XAS ever sets).
+    static std::string gpawWaveFunctionHelperScript();
 };
 
 } // namespace calango::core

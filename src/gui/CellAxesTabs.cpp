@@ -8,7 +8,6 @@
 #include "gui/ViewportWidget.hpp"
 
 #include <QCheckBox>
-#include <QColorDialog>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -155,17 +154,32 @@ UnitCellPanel::UnitCellPanel(ViewportWidget* viewport, QWidget* parent)
         neighborCellsDialog_->activateWindow();
     });
 
-    auto* cellColorButton = new QPushButton(this);
-    cellColorButton->setFixedHeight(22);
-    setButtonColor(cellColorButton, viewport_->style().cellColor);
-    form->addRow(tr("Cell color:"), cellColorButton);
-    connect(cellColorButton, &QPushButton::clicked, this, [this, cellColorButton] {
-        const QColor chosen = QColorDialog::getColor(
-            viewport_->style().cellColor, this, tr("Unit Cell Wireframe Color"));
-        if (!chosen.isValid())
-            return;
-        setButtonColor(cellColorButton, chosen);
-        viewport_->style().cellColor = chosen;
+    // Edge color and its own opacity share a row — the same "what does this
+    // surface look like" pairing the fill gets below, and the Vectors and
+    // Floor tabs each get once for their own translucent surface.
+    auto* edgeRow = new ColorOpacityRow(this);
+    edgeRow->setColor(viewport_->style().cellColor);
+    edgeRow->setOpacity(viewport_->style().cellEdgeAlpha);
+    edgeRow->setColorDialogTitle(tr("Unit Cell Wireframe Color"));
+    edgeRow->colorButton()->setToolTip(
+        tr("Colour of the cell edges (or the Voronoi cell's, when that is "
+           "shown instead)."));
+    edgeRow->opacitySpin()->setToolTip(
+        tr("Opacity of the cell edges. Opaque by default: unlike the fill "
+           "below, the wireframe is usually the box's primary depiction "
+           "rather than a translucent aid.\n\n"
+           "The shadow the edges cast is unaffected either way — this only "
+           "blends the tubes' own lit colour into what is behind them."));
+    form->addRow(tr("Cell color:"), edgeRow);
+    connect(edgeRow, &ColorOpacityRow::colorPicked, this, [this](const QColor& c) {
+        viewport_->style().cellColor = c;
+        viewport_->styleChanged(true);
+    });
+    connect(edgeRow, &ColorOpacityRow::opacityEdited, this, [this](float o) {
+        viewport_->style().cellEdgeAlpha = o;
+        // Baked into the tube instances' own colour alpha alongside
+        // cellColor (appendInstance(), StructureRenderer.cpp), the same as
+        // the edge colour above — so this is a rebuild, not a repaint.
         viewport_->styleChanged(true);
     });
 
@@ -210,80 +224,47 @@ UnitCellPanel::UnitCellPanel(ViewportWidget* viewport, QWidget* parent)
     //
     // Below the two line settings, because the order on the page is the order
     // of the box's parts: how its edges are stroked, then how its interior is
-    // shaded. Both rows follow the fill toggle above and are greyed out with
-    // it — a colour nothing is drawn in is a control with no effect.
-    auto* fillColorButton = new QPushButton(this);
-    fillColorButton->setFixedHeight(22);
-    setButtonColor(fillColorButton, viewport_->style().cellFillColor);
-    fillColorButton->setToolTip(
+    // shaded. Follows the fill toggle above and is greyed out with it — a
+    // colour nothing is drawn in is a control with no effect.
+    //
+    // Color and its own opacity share one row, like the edge row above —
+    // the "Cell fill opacity:" row this used to be a separate line for is
+    // gone; the control's position beside the colour picker, plus its own
+    // tool tip, carries that meaning now.
+    auto* fillRow = new ColorOpacityRow(this);
+    fillRow->setColor(viewport_->style().cellFillColor);
+    fillRow->setOpacity(viewport_->style().cellFillAlpha);
+    fillRow->setColorDialogTitle(tr("Unit Cell Fill Color"));
+    fillRow->colorButton()->setToolTip(
         tr("Tint of the filled faces. Kept separate from \"Cell color\" on "
            "purpose: the edge colour is chosen to READ against the atoms, "
            "while the fill is chosen to stay behind them, and one value "
            "cannot do both."));
-    auto* fillColorLabel = new QLabel(tr("Cell fill color:"), this);
-    form->addRow(fillColorLabel, fillColorButton);
-    connect(fillColorButton, &QPushButton::clicked, this, [this, fillColorButton] {
-        const QColor chosen = QColorDialog::getColor(
-            viewport_->style().cellFillColor, this, tr("Unit Cell Fill Color"));
-        if (!chosen.isValid())
-            return;
-        setButtonColor(fillColorButton, chosen);
-        viewport_->style().cellFillColor = chosen;
+    fillRow->opacitySpin()->setToolTip(
+        tr("Opacity of the filled faces. Low values are the useful range: "
+           "the fill exists to say where the box is, and much above ~30% it "
+           "starts washing out the structure it is drawn around.\n\n"
+           "The fill never occludes the atoms whatever this is set to — it "
+           "blends without writing depth."));
+    auto* fillRowLabel = new QLabel(tr("Cell fill color:"), this);
+    form->addRow(fillRowLabel, fillRow);
+    connect(fillRow, &ColorOpacityRow::colorPicked, this, [this](const QColor& c) {
+        viewport_->style().cellFillColor = c;
         // The tint is baked into the face vertices, so this is a rebuild.
         viewport_->styleChanged(true);
     });
-
-    // Slider (coarse) + spin box (exact), bidirectionally synced — the same
-    // pairing the Vectors tab uses for its continuous quantities.
-    auto* alphaRow = new QWidget(this);
-    auto* alphaLayout = new QHBoxLayout(alphaRow);
-    alphaLayout->setContentsMargins(0, 0, 0, 0);
-    auto* alphaSlider = new QSlider(Qt::Horizontal, alphaRow);
-    alphaSlider->setRange(0, 100); // percent
-    auto* alphaSpin = new QSpinBox(alphaRow);
-    alphaSpin->setRange(0, 100);
-    alphaSpin->setSuffix(tr(" %"));
-    const int alphaPercent =
-        static_cast<int>(std::lround(viewport_->style().cellFillAlpha * 100.0f));
-    alphaSlider->setValue(alphaPercent);
-    alphaSpin->setValue(alphaPercent);
-    alphaRow->setToolTip(
-        tr("Opacity of the filled faces. Low values are the useful range: the "
-           "fill exists to say where the box is, and much above ~30% it starts "
-           "washing out the structure it is drawn around.\n\n"
-           "The fill never occludes the atoms whatever this is set to — it "
-           "blends without writing depth."));
-    alphaLayout->addWidget(alphaSlider, 1);
-    alphaLayout->addWidget(alphaSpin);
-    auto* alphaLabel = new QLabel(tr("Cell fill opacity:"), this);
-    form->addRow(alphaLabel, alphaRow);
-    // Opacity is a shader uniform rather than baked geometry, so it repaints
-    // instead of rebuilding — which is what keeps dragging the slider smooth.
-    connect(alphaSlider, &QSlider::valueChanged, this, [this, alphaSpin](int percent) {
-        {
-            const QSignalBlocker blocker(alphaSpin);
-            alphaSpin->setValue(percent);
-        }
-        viewport_->style().cellFillAlpha = static_cast<float>(percent) / 100.0f;
-        viewport_->styleChanged(false);
-    });
-    connect(alphaSpin, &QSpinBox::valueChanged, this, [this, alphaSlider](int percent) {
-        {
-            const QSignalBlocker blocker(alphaSlider);
-            alphaSlider->setValue(percent);
-        }
-        viewport_->style().cellFillAlpha = static_cast<float>(percent) / 100.0f;
+    connect(fillRow, &ColorOpacityRow::opacityEdited, this, [this](float o) {
+        viewport_->style().cellFillAlpha = o;
+        // A shader uniform (uAlpha, set at draw time), not baked geometry —
+        // repaints rather than rebuilding.
         viewport_->styleChanged(false);
     });
 
     // The faces are always in the vertex buffer; the toggle only decides
     // whether the draw happens, so it repaints rather than rebuilding.
-    const auto syncFillControls = [fillColorLabel, fillColorButton, alphaLabel,
-                                   alphaRow](bool on) {
-        for (QWidget* widget : {static_cast<QWidget*>(fillColorLabel),
-                                static_cast<QWidget*>(fillColorButton),
-                                static_cast<QWidget*>(alphaLabel), alphaRow})
-            widget->setEnabled(on);
+    const auto syncFillControls = [fillRowLabel, fillRow](bool on) {
+        fillRowLabel->setEnabled(on);
+        fillRow->setEnabled(on);
     };
     syncFillControls(fillButton->isChecked());
     connect(fillButton, &QPushButton::toggled, this,
@@ -471,22 +452,34 @@ VectorsPanel::VectorsPanel(ViewportWidget* viewport, QWidget* parent)
         viewport_->styleChanged(true);
     });
 
-    colorButton_ = new QPushButton(this);
-    colorButton_->setToolTip(
-        tr("Arrow color for the selected overlay. Each property (velocity, "
-           "force, magnetic moment) remembers its own."));
-    form->addRow(tr("Vector color:"), colorButton_);
-    connect(colorButton_, &QPushButton::clicked, this, [this] {
+    // Color and its own opacity share a row, like the Unit Cell tab's two
+    // rows and the Floor tab's own — the opacity paired here is PER
+    // OVERLAY, same as the colour beside it: Force and Velocity fade
+    // independently, exactly as they colour independently.
+    colorRow_ = new ColorOpacityRow(this);
+    colorRow_->setColorDialogTitle(tr("Vector Overlay Color"));
+    // The color button's own tool tip is (re-)set by syncColorButton(),
+    // called at the end of this constructor and on every overlay switch —
+    // it differs depending on whether an overlay is currently selected.
+    colorRow_->opacitySpin()->setToolTip(
+        tr("Arrow opacity for the selected overlay. Each property "
+           "remembers its own, the same as its colour."));
+    form->addRow(tr("Vector color:"), colorRow_);
+    connect(colorRow_, &ColorOpacityRow::colorPicked, this, [this](const QColor& c) {
         QColor* target = overlayColor();
         if (!target)
             return;
-        const QColor chosen =
-            QColorDialog::getColor(*target, this, tr("Vector Overlay Color"));
-        if (!chosen.isValid())
-            return;
-        *target = chosen;
-        setButtonColor(colorButton_, chosen);
+        *target = c;
         viewport_->styleChanged(true); // arrow colours live in the instance buffer
+    });
+    connect(colorRow_, &ColorOpacityRow::opacityEdited, this, [this](float o) {
+        float* target = overlayOpacity();
+        if (!target)
+            return;
+        *target = o;
+        // Also baked into the instance buffer's colour alpha alongside the
+        // colour above, so this is a rebuild too, not a repaint.
+        viewport_->styleChanged(true);
     });
 
 
@@ -525,14 +518,32 @@ QColor* VectorsPanel::overlayColor()
     return nullptr; // nothing is drawn, so there is no colour to edit
 }
 
+float* VectorsPanel::overlayOpacity()
+{
+    auto& style = viewport_->style();
+    switch (style.vectorOverlay) {
+    case render::VectorOverlay::Velocity: return &style.velocityOpacity;
+    case render::VectorOverlay::Force: return &style.forceOpacity;
+    case render::VectorOverlay::MagneticMoment: return &style.magmomOpacity;
+    case render::VectorOverlay::InitialMagneticMoment:
+        return &style.initialMagmomOpacity;
+    case render::VectorOverlay::None: break;
+    }
+    return nullptr;
+}
+
 void VectorsPanel::syncColorButton()
 {
     const QColor* color = overlayColor();
-    colorButton_->setEnabled(color != nullptr);
-    setButtonColor(colorButton_, color ? *color : palette().color(QPalette::Button));
-    if (!color)
-        colorButton_->setToolTip(
-            tr("Select a vector overlay above to choose its arrow color."));
+    const float* opacity = overlayOpacity();
+    colorRow_->setEnabled(color != nullptr);
+    colorRow_->setColor(color ? *color : palette().color(QPalette::Button));
+    colorRow_->setOpacity(opacity ? *opacity : 1.0f);
+    colorRow_->colorButton()->setToolTip(
+        color ? tr("Arrow color for the selected overlay. Each property "
+                   "(velocity, force, magnetic moment) remembers its own.")
+              : tr("Select a vector overlay above to choose its arrow "
+                   "color."));
 }
 
 void VectorsPanel::refreshAvailability()

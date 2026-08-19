@@ -48,6 +48,11 @@ register their grids here automatically with friendly labels:
 - **Charge Density Difference** writes `cdd.cube` and loads it here
   ({doc}`/electronic/charges`).
 - **Wannier Functions** runs register their orbital cubes ψ(r).
+- **Local Density of States (LDOS)** runs register the summed |ψ(r)|² over
+  the selected energy window ({doc}`/electronic/ldos`).
+- **Wavefunctions** runs register one cube per selected Kohn-Sham state —
+  |ψ(r)|², Re(ψ(r)), or Im(ψ(r)), pseudo or all-electron
+  ({doc}`/electronic/wavefunctions`).
 - VASP outputs (`CHGCAR`, `LOCPOT`, `AECCAR*`, `ELFCAR`) open as external
   files from the job directory.
 

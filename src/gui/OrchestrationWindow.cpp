@@ -19,6 +19,7 @@
 #include "ui/IconManager.hpp"
 
 #include <QAbstractItemView>
+#include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -53,6 +54,7 @@
 #include <QSettings>
 #include <QSpinBox>
 #include <QTableWidget>
+#include <QToolBar>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -3501,6 +3503,66 @@ OrchestrationWindow::OrchestrationWindow(
     layout->setContentsMargins(4, 4, 4, 4);
     layout->setSpacing(4);
 
+    // Icon-only toolbars, built exactly like the Processes panel's icon
+    // buttons and MainWindow's own frameToolbar: same IconManager binding (so
+    // the glyphs re-tint on a theme switch), same 20 px icons, same
+    // "Label — what it does" tool tips carrying the text the actions don't
+    // show. Real QToolBars rather than QPushButtons in a QHBoxLayout — the
+    // one thing a plain button row cannot do is overflow sanely: a QToolBar
+    // collapses whatever does not fit into its own chevron/extension button
+    // when the dock is narrow, where a row of buttons would just clip.
+    const auto makeAction = [](QToolBar* bar, const QString& iconName,
+                               const QString& tip) {
+        QAction* action = bar->addAction(tip);
+        ui::IconManager::bind(action, iconName);
+        return action;
+    };
+    const auto makeToolBar = [this] {
+        auto* bar = new QToolBar(this);
+        bar->setIconSize(QSize(20, 20));
+        bar->setMovable(false);
+        bar->setFloatable(false);
+        bar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        return bar;
+    };
+
+    // Top bar: file operations, then view operations — the two pairs a
+    // separator apart, since loading/saving the pipeline and looking at it
+    // are different kinds of action with nothing in common but living above
+    // the canvas.
+    auto* topBar = makeToolBar();
+    topBar->setObjectName(QStringLiteral("orchestrationTopBar"));
+    auto* openAction = makeAction(
+        topBar, QStringLiteral("folder-open-line"),
+        tr("Open Workflow… — load a pipeline from a JSON file, replacing "
+           "what is on the canvas.\n\n"
+           "Asks first when there is something to replace. Reads what Save "
+           "Workflow writes, including the workflow.json saved beside every "
+           "run's results."));
+    auto* saveAction = makeAction(
+        topBar, QStringLiteral("save-line"),
+        tr("Save Workflow — write the whole pipeline to a JSON file.\n\n"
+           "Structures travel inside the file, so it is self-contained: copy "
+           "it to a cluster and run it there with calango-cli, headlessly.\n\n"
+           "Asks where the first time; after that, saves back to the same "
+           "file without asking. Open a different workflow (or Clear) to "
+           "save somewhere else."));
+    topBar->addSeparator();
+    auto* layoutAction = makeAction(
+        topBar, QStringLiteral("node-tree"),
+        tr("Auto-Layout — rearrange every node into columns in execution "
+           "order, untangling the links.\n\n"
+           "Each node lands one column right of its last-finishing parent, and "
+           "the rows within a column are ordered to keep links from crossing. "
+           "Moves nodes only; the pipeline itself is untouched."));
+    auto* fitAction = makeAction(
+        topBar, QStringLiteral("fullscreen-line"),
+        tr("Fit to Screen — zoom and pan so the whole pipeline is visible, "
+           "with a margin around it.\n\n"
+           "The canvas is 4000 units across and a pipeline built by "
+           "double-clicking wanders; this is how you find it again."));
+    layout->addWidget(topBar);
+
     // No instructional line above the canvas. It was a standing caption
     // explaining a gesture the user needs told once, charged against a dock
     // that is ~250 px tall — and every pixel it took came out of the canvas,
@@ -3525,71 +3587,30 @@ OrchestrationWindow::OrchestrationWindow(
            "middle-drag pans."));
     layout->addWidget(view_, 1);
 
-    // Icon-only action bar, built exactly like the Processes panel's: same
-    // IconManager binding (so the glyphs re-tint on a theme switch), same
-    // 20 px icons, same "Label — what it does" tool tips carrying the text
-    // the buttons no longer show. The two panels sit side by side in the
-    // bottom row, and matching them makes the row read as one strip of tools
-    // rather than two unrelated widgets.
-    auto* controls = new QHBoxLayout;
-    const auto makeButton = [this, controls](const QString& iconName,
-                                             const QString& tip) {
-        auto* button = new QPushButton(this);
-        ui::IconManager::bind(button, iconName);
-        button->setIconSize(QSize(20, 20));
-        button->setToolTip(tip);
-        button->setFocusPolicy(Qt::NoFocus);
-        controls->addWidget(button);
-        return button;
-    };
-
-    auto* addButton = makeButton(
-        QStringLiteral("add-circle-fill"),
+    // Bottom bar: everything else, in its former relative order — build the
+    // graph (Add, Remove, Clear), then a separator, then run it (Resume, Run,
+    // Abort). That split already existed before this reorganization (a
+    // QHBoxLayout stretch stood in for it); a real QToolBar separator is
+    // just that same distinction in the bar's own idiom, not a new grouping.
+    auto* bottomBar = makeToolBar();
+    bottomBar->setObjectName(QStringLiteral("orchestrationBottomBar"));
+    auto* addAction = makeAction(
+        bottomBar, QStringLiteral("add-circle-fill"),
         tr("Add Process… — put a new simulation node on the canvas.\n\n"
            "Double-clicking empty canvas does the same and drops the node "
            "where you clicked."));
-    auto* removeButton = makeButton(
-        QStringLiteral("delete-bin-line"),
+    auto* removeAction = makeAction(
+        bottomBar, QStringLiteral("delete-bin-line"),
         tr("Remove Selected — delete the selected nodes and every link "
            "that touched them."));
-    auto* clearButton = makeButton(
-        QStringLiteral("eraser-line"),
+    auto* clearAction = makeAction(
+        bottomBar, QStringLiteral("eraser-line"),
         tr("Clear Orchestration — delete every node and link on the "
            "canvas.\n\nAsks for confirmation first: the canvas is not in the "
            "undo stack."));
-    auto* openButton = makeButton(
-        QStringLiteral("folder-open-line"),
-        tr("Open Workflow… — load a pipeline from a JSON file, replacing "
-           "what is on the canvas.\n\n"
-           "Asks first when there is something to replace. Reads what Save "
-           "Workflow writes, including the workflow.json saved beside every "
-           "run's results."));
-    auto* saveButton = makeButton(
-        QStringLiteral("save-line"),
-        tr("Save Workflow — write the whole pipeline to a JSON file.\n\n"
-           "Structures travel inside the file, so it is self-contained: copy "
-           "it to a cluster and run it there with calango-cli, headlessly.\n\n"
-           "Asks where the first time; after that, saves back to the same "
-           "file without asking. Open a different workflow (or Clear) to "
-           "save somewhere else."));
-    auto* layoutButton = makeButton(
-        QStringLiteral("node-tree"),
-        tr("Auto-Layout — rearrange every node into columns in execution "
-           "order, untangling the links.\n\n"
-           "Each node lands one column right of its last-finishing parent, and "
-           "the rows within a column are ordered to keep links from crossing. "
-           "Moves nodes only; the pipeline itself is untouched."));
-    auto* fitButton = makeButton(
-        QStringLiteral("fullscreen-line"),
-        tr("Fit to Screen — zoom and pan so the whole pipeline is visible, "
-           "with a margin around it.\n\n"
-           "The canvas is 4000 units across and a pipeline built by "
-           "double-clicking wanders; this is how you find it again."));
-    controls->addStretch(1);
-    // Trailing and set apart by the stretch: these are the buttons that
-    // COMMIT — everything to their left edits the pipeline, these two run it.
-    resumeButton_ = makeButton(
-        QStringLiteral("restart-line"),
+    bottomBar->addSeparator();
+    resumeAction_ = makeAction(
+        bottomBar, QStringLiteral("restart-line"),
         tr("Resume — re-run only what has not succeeded, in the same "
            "orchestration folder.\n\n"
            "Every node that finished keeps its status, its directory and its "
@@ -3597,8 +3618,8 @@ OrchestrationWindow::OrchestrationWindow(
            "queued again. Fix the failed node's parameters first "
            "(double-click it) and this picks up from exactly there instead of "
            "recomputing the pipeline from the start."));
-    runButton_ = makeButton(
-        QStringLiteral("play-circle-fill"),
+    runAction_ = makeAction(
+        bottomBar, QStringLiteral("play-circle-fill"),
         tr("Send to Processes — queue every node (they show as \"waiting\") "
            "and execute the pipeline in dependency order, one process at a "
            "time.\n\n"
@@ -3607,8 +3628,8 @@ OrchestrationWindow::OrchestrationWindow(
            "Each node appears in the Processes panel as it is dispatched, and "
            "its metrics stream into Results. This RESTARTS everything — use "
            "Resume to continue an interrupted run."));
-    abortButton_ = makeButton(
-        QStringLiteral("stop-circle-fill"),
+    abortAction_ = makeAction(
+        bottomBar, QStringLiteral("stop-circle-fill"),
         tr("Abort — stop the running orchestration.\n\n"
            "The node in flight is killed and marked failed; the nodes still "
            "queued are left unrun. Everything that already finished KEEPS its "
@@ -3629,34 +3650,30 @@ OrchestrationWindow::OrchestrationWindow(
     // Results. What it alone used to carry was the two REFUSAL messages, and
     // those are now message boxes: a pipeline that would not start is not
     // something to whisper in a corner of the toolbar.
-    layout->addLayout(controls);
+    layout->addWidget(bottomBar);
 
-    connect(addButton, &QPushButton::clicked, this, &OrchestrationWindow::addNode);
-    connect(removeButton, &QPushButton::clicked, this,
+    connect(addAction, &QAction::triggered, this, &OrchestrationWindow::addNode);
+    connect(removeAction, &QAction::triggered, this,
             &OrchestrationWindow::removeSelected);
-    connect(clearButton, &QPushButton::clicked, this,
+    connect(clearAction, &QAction::triggered, this,
             &OrchestrationWindow::clearOrchestration);
     // qOverload<>: openWorkflow(QString) is the programmatic form, and the
     // overload set is ambiguous without it.
-    connect(openButton, &QPushButton::clicked, this,
+    connect(openAction, &QAction::triggered, this,
             qOverload<>(&OrchestrationWindow::openWorkflow));
-    connect(saveButton, &QPushButton::clicked, this,
+    connect(saveAction, &QAction::triggered, this,
             &OrchestrationWindow::saveWorkflow);
-    connect(layoutButton, &QPushButton::clicked, this,
+    connect(layoutAction, &QAction::triggered, this,
             &OrchestrationWindow::autoLayout);
-    connect(fitButton, &QPushButton::clicked, this,
+    connect(fitAction, &QAction::triggered, this,
             &OrchestrationWindow::fitToScreen);
-    connect(resumeButton_, &QPushButton::clicked, this,
+    connect(resumeAction_, &QAction::triggered, this,
             &OrchestrationWindow::resumeFromFailure);
-    connect(runButton_, &QPushButton::clicked, this,
+    connect(runAction_, &QAction::triggered, this,
             &OrchestrationWindow::sendToProcesses);
-    connect(abortButton_, &QPushButton::clicked, this,
+    connect(abortAction_, &QAction::triggered, this,
             &OrchestrationWindow::abortOrchestration);
     updateRunControls();
-    for (QPushButton* button : findChildren<QPushButton*>()) {
-        button->setAutoDefault(false);
-        button->setDefault(false);
-    }
 
     jobRunner_ = new jobs::JobRunner(this);
     connect(jobRunner_, &jobs::JobRunner::finished, this,
@@ -4827,12 +4844,12 @@ bool OrchestrationWindow::canResume() const
 
 void OrchestrationWindow::updateRunControls()
 {
-    if (runButton_)
-        runButton_->setEnabled(runningNode_ == nullptr);
-    if (resumeButton_)
-        resumeButton_->setEnabled(canResume());
-    if (abortButton_)
-        abortButton_->setEnabled(runningNode_ != nullptr);
+    if (runAction_)
+        runAction_->setEnabled(runningNode_ == nullptr);
+    if (resumeAction_)
+        resumeAction_->setEnabled(canResume());
+    if (abortAction_)
+        abortAction_->setEnabled(runningNode_ != nullptr);
 }
 
 namespace {

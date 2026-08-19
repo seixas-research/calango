@@ -30,6 +30,7 @@
 #include "gui/RdfDialog.hpp"
 #include "gui/BondEditorDialog.hpp"
 #include "gui/CellAxesTabs.hpp"
+#include "gui/CitationsPanel.hpp"
 #include "gui/EnvFile.hpp"
 #include "gui/FloorPanel.hpp"
 #include "gui/VisualEffectsPanel.hpp"
@@ -107,6 +108,11 @@
 #include "gui/TwoDBandsWizard.hpp"
 #include "gui/VolumetricPanel.hpp"
 #include "gui/WannierWizard.hpp"
+#include "gui/LdosWizard.hpp"
+#include "gui/EnergyDiagramWizard.hpp"
+#include "gui/EnergyDiagramViewer.hpp"
+#include "gui/WavefunctionsWizard.hpp"
+#include "gui/WavefunctionsResultsViewer.hpp"
 #include "gui/WorkfunctionWindow.hpp"
 #include "gui/WorkfunctionWizard.hpp"
 #include "gui/XasResultsWindow.hpp"
@@ -1279,6 +1285,30 @@ void MainWindow::createMenusAndDocks()
     // sits immediately after the run it re-reads.
     electronicsMenu->addAction(tr("&Effective Bands (Unfolding)…"),
                                this, &MainWindow::effectiveBandsCalculation);
+    // LDOS is a spatially-resolved DOS built from the same stored Kohn-Sham
+    // states as the band structure / PDOS above it — a ground-state readout,
+    // not a correction or a spectrum, so it stays in this first group.
+    electronicsMenu->addAction(tr("&Local Density of States (LDOS)…"), this,
+                               &MainWindow::showLdos)
+        ->setToolTip(tr("Sum |psi(r)|^2 over stored Kohn-Sham states in a "
+                        "chosen energy window, weighted by k-point, as "
+                        "volumetric data (GPAW only)"));
+    // Individual orbitals rather than an energy-window sum — the other half
+    // of the shared wavefunction-access layer LDOS is built on, so it sits
+    // immediately beside it.
+    electronicsMenu->addAction(tr("&Wavefunctions…"), this,
+                               &MainWindow::showWavefunctions)
+        ->setToolTip(tr("Real-space Kohn-Sham orbitals (pseudo or all-"
+                        "electron) as volumetric data, one cube per "
+                        "selected state (GPAW only)"));
+    // The molecular analogue of Electronic Structure above: discrete levels
+    // rather than a k-path, since a non-periodic system has none to
+    // disperse along.
+    electronicsMenu->addAction(tr("Energy &Diagrams…"), this,
+                               &MainWindow::showEnergyDiagrams)
+        ->setToolTip(tr("Discrete Kohn-Sham levels and (optionally) "
+                        "electric-dipole transitions for a non-periodic or "
+                        "Gamma-only GPAW baseline"));
 
     electronicsMenu->addSeparator();
     // -- Corrections and derived parameters ---------------------------------
@@ -2053,14 +2083,17 @@ void MainWindow::createMenusAndDocks()
     overlayTabs->setElideMode(Qt::ElideNone);
     overlayTabs->tabBar()->setExpanding(false);
     overlayTabs->addTab(new UnitCellPanel(viewport_, overlayTabs), tr("Unit cell"));
-    // Floor sits right after Unit cell: the two share a ground/footprint
-    // relationship — the plane's automatic placement is derived from the
-    // cell's own corners among everything else drawn — that neither has with
-    // Axes triad or Vectors.
-    floorPanel_ = new FloorPanel(viewport_, overlayTabs);
-    overlayTabs->addTab(floorPanel_, tr("Floor"));
     overlayTabs->addTab(new AxesTriadPanel(viewport_, overlayTabs), tr("Axes triad"));
     overlayTabs->addTab(new VectorsPanel(viewport_, overlayTabs), tr("Vectors"));
+    // Floor last: it shares a ground/footprint relationship with Unit cell
+    // (the plane's automatic placement is derived from the cell's own
+    // corners among everything else drawn) that it doesn't have with Axes
+    // triad or Vectors, but it is also the one tab here that draws a whole
+    // extra object into the scene rather than an overlay ON the structure —
+    // last is where a "plus one more thing" tab reads as an addition rather
+    // than a peer of the first three.
+    floorPanel_ = new FloorPanel(viewport_, overlayTabs);
+    overlayTabs->addTab(floorPanel_, tr("Floor"));
     overlayTabs->setMinimumWidth(overlayTabs->tabBar()->sizeHint().width() + 24);
     overlaysDock->setWidget(overlayTabs);
     // The right column, top → bottom: Representation, Spatial References,
@@ -4768,6 +4801,246 @@ void MainWindow::openBandResults(const QString& directory)
 
 
 
+void MainWindow::showLdos()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Local Density of States (LDOS)"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    // LDOS is a pure post-process on an ALREADY-SAVED wavefunction set —
+    // unlike Wannier it has no fresh-SCF fallback, so a candidate list is
+    // mandatory the same way Electronic Structure's is. gpawBaselines()
+    // (job DIRECTORY, not a literal .gpw path) is the same helper Wannier
+    // uses: LdosScriptGenerator globs the directory for *.gpw at run time,
+    // the same restart shape.
+    const QList<QPair<QString, QString>> baselines = gpawBaselines();
+    if (baselines.isEmpty()) {
+        QMessageBox::critical(
+            this, tr("Local Density of States (LDOS)"),
+            tr("Error: LDOS sums the wavefunctions a completed calculation "
+               "already saved — there is no baseline to sum. Run a GPAW "
+               "Single-Point Calculation first, with wavefunctions saved "
+               "(calc.write('single_point.gpw', mode='all'))."));
+        return;
+    }
+
+    LdosWizard wizard(doc->structure, this);
+    wizard.setDensityBaselines(baselines);
+    runSimulationWizard(wizard, tr("Local Density of States"),
+                        /*expectFrames=*/false);
+}
+
+void MainWindow::openLdosResults(const QString& directory)
+{
+    if (!volumetricPanel_)
+        return;
+    QFile resultFile(directory + QStringLiteral("/ldos.json"));
+    if (!resultFile.open(QIODevice::ReadOnly))
+        return;
+    const QJsonObject root =
+        QJsonDocument::fromJson(resultFile.readAll()).object();
+    resultFile.close();
+
+    const QString cube = root.value(QStringLiteral("cube")).toString();
+    if (cube.isEmpty())
+        return;
+    const QString path = QDir(directory).filePath(cube);
+    if (!QFile::exists(path))
+        return;
+
+    const double eMin = root.value(QStringLiteral("energy_min_eV")).toDouble();
+    const double eMax = root.value(QStringLiteral("energy_max_eV")).toDouble();
+    Document* doc = currentDocument();
+    const QString structLabel = (doc && doc->structure)
+        ? QString::fromStdString(doc->structure->chemicalFormula())
+        : QString();
+
+    DatasetOrigin origin;
+    origin.startUnchecked = true; // per the Wannier precedent — the user picks
+    volumetricPanel_->registerResultFile(
+        path,
+        tr("LDOS [%1, %2] eV")
+            .arg(eMin, 0, 'f', 2)
+            .arg(eMax, 0, 'f', 2),
+        structLabel, /*workspaceId=*/-1, origin);
+
+    statusBar()->showMessage(
+        tr("LDOS added to the Volumetric Data dock — select it to render."),
+        6000);
+    // Registering the entry is not the same as the user SEEING it — the
+    // dock may be hidden or buried behind another one, and the status-bar
+    // message alone reads as "nothing happened" if nobody notices it.
+    // Matches registerWannierOrbitals()'s own show()+raise() exactly.
+    if (volumetricDock_) {
+        volumetricDock_->show();
+        volumetricDock_->raise();
+    }
+}
+
+void MainWindow::showWavefunctions()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Wavefunctions"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    const QList<QPair<QString, QString>> baselines = gpawBaselines();
+    if (baselines.isEmpty()) {
+        QMessageBox::critical(
+            this, tr("Wavefunctions"),
+            tr("Error: Wavefunctions reads the states a completed "
+               "calculation already saved — there is no baseline to read. "
+               "Run a GPAW Single-Point Calculation first, with "
+               "wavefunctions saved "
+               "(calc.write('single_point.gpw', mode='all'))."));
+        return;
+    }
+
+    WavefunctionsWizard wizard(doc->structure, this);
+    wizard.setDensityBaselines(baselines);
+    runSimulationWizard(wizard, tr("Wavefunctions"), /*expectFrames=*/false);
+}
+
+void MainWindow::openWavefunctionsResults(const QString& directory)
+{
+    if (!volumetricPanel_)
+        return;
+    QFile resultFile(directory + QStringLiteral("/wavefunctions.json"));
+    if (!resultFile.open(QIODevice::ReadOnly))
+        return;
+    const QJsonObject root =
+        QJsonDocument::fromJson(resultFile.readAll()).object();
+    resultFile.close();
+
+    const bool periodic = root.value(QStringLiteral("periodic")).toBool(false);
+    Document* doc = currentDocument();
+    const QString structLabel = (doc && doc->structure)
+        ? QString::fromStdString(doc->structure->chemicalFormula())
+        : QString();
+
+    int registered = 0;
+    for (const QJsonValue& v : root.value(QStringLiteral("states")).toArray()) {
+        const QJsonObject state = v.toObject();
+        const QString cube = state.value(QStringLiteral("cube")).toString();
+        if (cube.isEmpty())
+            continue;
+        const QString path = QDir(directory).filePath(cube);
+        if (!QFile::exists(path))
+            continue;
+
+        const int band = state.value(QStringLiteral("band")).toInt();
+        const int kpt = state.value(QStringLiteral("kpt")).toInt();
+        const int spin = state.value(QStringLiteral("spin")).toInt();
+        const QString quantity =
+            state.value(QStringLiteral("quantity")).toString();
+
+        DatasetOrigin origin;
+        origin.startUnchecked = true;
+        // A periodic Bloch state's cube crosses the cell boundary the same
+        // way a Wannier orbital's does; a molecular one already sits
+        // entirely inside its vacuum padding, where continuation would be
+        // meaningless (see the header doc comment on this function).
+        origin.wannier = periodic;
+        volumetricPanel_->registerResultFile(
+            path,
+            tr("psi n%1 k%2 spin-%3 (%4)")
+                .arg(band)
+                .arg(kpt)
+                .arg(spin == 0 ? tr("up") : tr("down"))
+                .arg(quantity),
+            structLabel, /*workspaceId=*/-1, origin);
+        ++registered;
+    }
+
+    if (registered > 0) {
+        statusBar()->showMessage(
+            tr("%n wavefunction(s) added to the Volumetric Data dock — "
+               "select the ones to render.",
+               nullptr, registered),
+            6000);
+        // Same reasoning as openLdosResults(): registering is not the same
+        // as being seen, so surface the dock rather than leaving it to a
+        // status-bar message alone.
+        if (volumetricDock_) {
+            volumetricDock_->show();
+            volumetricDock_->raise();
+        }
+    }
+
+    // The dedicated summary read-out: what this job actually wrote, with
+    // the physics that named each row (energy, occupation, quantity) —
+    // the Volumetric Data dock is where the RENDERING happens, this is
+    // "what happened" at a glance, the same division MlwfViewer draws for
+    // a Wannier run's centres/spreads table.
+    auto* viewer = new WavefunctionsResultsViewer(this);
+    if (viewer->loadResults(directory
+                            + QStringLiteral("/wavefunctions.json"))) {
+        viewer->setAttribute(Qt::WA_DeleteOnClose);
+        viewer->show();
+    } else {
+        delete viewer;
+    }
+}
+
+void MainWindow::showEnergyDiagrams()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Energy Diagrams"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    if (!ensureAseAvailable())
+        return;
+
+    // Same mandatory-baseline shape as LDOS. Periodicity (more than one
+    // stored k-point) is NOT filtered out of this list — it is checked
+    // in-wizard once a baseline is picked (EnergyDiagramWizard::
+    // onBaselineChanged, via the same peekGpawEigenvalues() LDOS uses), the
+    // same advisory-UI / script-re-verifies split every baseline-inheriting
+    // wizard here follows.
+    const QList<QPair<QString, QString>> baselines = gpawBaselines();
+    if (baselines.isEmpty()) {
+        QMessageBox::critical(
+            this, tr("Energy Diagrams"),
+            tr("Error: Energy Diagrams reads the wavefunctions a completed "
+               "calculation already saved — there is no baseline to read. "
+               "Run a GPAW Single-Point Calculation first, with "
+               "wavefunctions saved "
+               "(calc.write('single_point.gpw', mode='all'))."));
+        return;
+    }
+
+    EnergyDiagramWizard wizard(doc->structure, this);
+    wizard.setDensityBaselines(baselines);
+    runSimulationWizard(wizard, tr("Energy Diagrams"), /*expectFrames=*/false);
+}
+
+void MainWindow::openEnergyDiagramResults(const QString& directory)
+{
+    auto* viewer = new EnergyDiagramViewer(this);
+    if (!viewer->loadResults(directory
+                             + QStringLiteral("/energy_diagram.json"))) {
+        delete viewer;
+        QMessageBox::information(
+            this, tr("Energy Diagram Viewer"),
+            tr("No energy_diagram.json found in %1").arg(directory));
+        return;
+    }
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    viewer->resize(900, 560);
+    viewer->show();
+}
+
 void MainWindow::openMolecularDynamicsResults(const QString& directory)
 {
     auto* viewer = new MolecularDynamicsViewer(this);
@@ -5765,6 +6038,12 @@ std::vector<MainWindow::ViewerEntry> MainWindow::viewersFor(
         {"nlopt.json", tr("Nonlinear Optics Viewer"),
          &MainWindow::openNonlinearOpticsResults},
         {"wannier.json", tr("Wannier Functions Viewer"), &MainWindow::openMlwfResults},
+        {"ldos.json", tr("Local Density of States (LDOS)"),
+         &MainWindow::openLdosResults},
+        {"energy_diagram.json", tr("Energy Diagram Viewer"),
+         &MainWindow::openEnergyDiagramResults},
+        {"wavefunctions.json", tr("Wavefunctions"),
+         &MainWindow::openWavefunctionsResults},
         {"bands_2d.json", tr("2D Band Surfaces Viewer"),
          &MainWindow::open2DBandsResults},
         {"workfunction.json", tr("2D Workfunction Viewer"),
@@ -6385,6 +6664,18 @@ void MainWindow::onProcessResultRequested(const QString& directory)
     }
     if (QFile::exists(directory + QStringLiteral("/wannier.json"))) {
         openMlwfResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/ldos.json"))) {
+        openLdosResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/energy_diagram.json"))) {
+        openEnergyDiagramResults(directory);
+        return;
+    }
+    if (QFile::exists(directory + QStringLiteral("/wavefunctions.json"))) {
+        openWavefunctionsResults(directory);
         return;
     }
     if (QFile::exists(directory + QStringLiteral("/bands_2d.json"))) {
@@ -9873,6 +10164,21 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         openMlwfResults(lastJobDir_);
         return;
     }
+    // LDOS: register the cube into the Volumetric Data dock, unchecked.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/ldos.json"))) {
+        openLdosResults(lastJobDir_);
+        return;
+    }
+    // Energy Diagrams: open the level-diagram + transitions viewer.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/energy_diagram.json"))) {
+        openEnergyDiagramResults(lastJobDir_);
+        return;
+    }
+    // Wavefunctions: register every cube into the Volumetric Data dock.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/wavefunctions.json"))) {
+        openWavefunctionsResults(lastJobDir_);
+        return;
+    }
     // 2D Bands: open the surface viewer.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/bands_2d.json"))) {
         open2DBandsResults(lastJobDir_);
@@ -10199,13 +10505,14 @@ void MainWindow::about()
     diagnosticsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(diagnosticsLabel);
 
-    // Two tabs, because they answer two different questions and one of them is
-    // a legal document. "What may I do with Calango itself?" is the licence on
-    // the left; "what is Calango built out of, and under what terms?" is the
-    // inventory on the right. They used to run together in one scrolling
-    // column, where the project's own terms were a heading among a dozen
-    // others — which is precisely the item a reader is most likely to want on
-    // its own.
+    // Four tabs, because they answer four different questions and the first
+    // is a legal document. "What may I do with Calango itself?" is the
+    // licence; "what is Calango built out of, and under what terms?" is the
+    // dependency inventory; "how should I cite it, and what it used?" is
+    // Citations; "who funded it?" is the acknowledgement. The first two used
+    // to run together in one scrolling column, where the project's own terms
+    // were a heading among a dozen others — which is precisely the item a
+    // reader is most likely to want on its own.
     auto* tabs = new QTabWidget(&dialog);
 
     // --- Tab 1: Calango's own licence, and nothing else -------------------
@@ -10254,7 +10561,14 @@ void MainWindow::about()
     dependencyScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     tabs->addTab(dependencyScroll, tr("Third-Party Licenses"));
 
-    // --- Tab 3: funding acknowledgements ----------------------------------
+    // --- Tab 3: what to cite -------------------------------------------
+    // Right after Third-Party Licenses, which names the same dependencies
+    // by license — this tab answers the next question, how to cite the
+    // ones actually used in a result. See gui/CitationCatalog.hpp for the
+    // data and gui/CitationsPanel.hpp for the tab itself.
+    tabs->addTab(new CitationsPanel(&dialog), tr("Citations"));
+
+    // --- Tab 4: funding acknowledgements ----------------------------------
     // A tab of its own rather than a line in the header: a funding agency's
     // acknowledgement has to be discoverable by name, and the header is
     // already the densest block of the dialog.

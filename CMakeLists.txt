@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.29
+    VERSION 26.8.30
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -288,6 +288,12 @@ qt_add_executable(calango
     src/core/WorkfunctionScriptGenerator.hpp
     src/core/WorkfunctionScriptGenerator.cpp
     src/core/WannierScriptGenerator.cpp
+    src/core/LdosScriptGenerator.hpp
+    src/core/LdosScriptGenerator.cpp
+    src/core/EnergyDiagramScriptGenerator.hpp
+    src/core/EnergyDiagramScriptGenerator.cpp
+    src/core/WavefunctionScriptGenerator.hpp
+    src/core/WavefunctionScriptGenerator.cpp
     src/core/AdsorptionSites.hpp
     src/core/AdsorptionSites.cpp
     src/core/ClusterExpansion.hpp
@@ -424,6 +430,12 @@ qt_add_executable(calango
     src/gui/ScriptStaging.cpp
     src/gui/GuiUtils.hpp
     src/gui/GuiUtils.cpp
+    src/gui/CitationCatalog.hpp
+    src/gui/CitationCatalog.cpp
+    src/gui/BibtexViewerDialog.hpp
+    src/gui/BibtexViewerDialog.cpp
+    src/gui/CitationsPanel.hpp
+    src/gui/CitationsPanel.cpp
     src/gui/RepresentationPanel.hpp
     src/gui/RepresentationPanel.cpp
     src/gui/CellAxesTabs.hpp
@@ -581,6 +593,10 @@ qt_add_executable(calango
     src/gui/MaceTrainerDialog.cpp
     src/gui/PythonPackagePreflight.hpp
     src/gui/PythonPackagePreflight.cpp
+    src/gui/GpawEigenvaluePeek.hpp
+    src/gui/GpawEigenvaluePeek.cpp
+    src/gui/EnergyWindowWidget.hpp
+    src/gui/EnergyWindowWidget.cpp
     src/gui/BandPdosView.hpp
     src/gui/BandPdosView.cpp
     src/gui/BandPdosWindow.hpp
@@ -689,6 +705,18 @@ qt_add_executable(calango
     src/gui/GwWizard.cpp
     src/gui/WannierWizard.hpp
     src/gui/WannierWizard.cpp
+    src/gui/LdosWizard.hpp
+    src/gui/LdosWizard.cpp
+    src/gui/EnergyDiagramWizard.hpp
+    src/gui/EnergyDiagramWizard.cpp
+    src/gui/EnergyDiagramStyleDialog.hpp
+    src/gui/EnergyDiagramStyleDialog.cpp
+    src/gui/EnergyDiagramViewer.hpp
+    src/gui/EnergyDiagramViewer.cpp
+    src/gui/WavefunctionsWizard.hpp
+    src/gui/WavefunctionsWizard.cpp
+    src/gui/WavefunctionsResultsViewer.hpp
+    src/gui/WavefunctionsResultsViewer.cpp
     src/gui/OpticsResultsWindow.hpp
     src/gui/OpticsResultsWindow.cpp
     src/gui/NonlinearOpticsResultsWindow.hpp
@@ -1899,6 +1927,26 @@ if(CALANGO_BUILD_TESTS)
         # time on someone else's cluster, hours in, so they are pinned here.
         src/gui/MaceTrainerDialog.cpp
         src/gui/PythonPackagePreflight.cpp
+        # LDOS: the baseline-eigenvalue peek (a real, synchronous GPAW
+        # restart under python -c, same shape as the preflight check above)
+        # and the draggable dual-handle energy-window widget it feeds.
+        src/gui/GpawEigenvaluePeek.cpp
+        src/gui/EnergyWindowWidget.cpp
+        src/gui/LdosWizard.cpp
+        src/core/LdosScriptGenerator.cpp
+        # Energy Diagrams: the level-diagram + transitions viewer, its
+        # appearance dialog, and the wizard's own pre-flight (non-periodic /
+        # Gamma-only baseline).
+        src/gui/EnergyDiagramViewer.cpp
+        src/gui/EnergyDiagramStyleDialog.cpp
+        src/gui/EnergyDiagramWizard.cpp
+        src/core/EnergyDiagramScriptGenerator.cpp
+        # Wavefunctions: the shared wavefunction-access layer (above, in
+        # AseScriptGenerator) feeding both LDOS and this; the state-picker
+        # wizard and its own script generator.
+        src/gui/WavefunctionsWizard.cpp
+        src/gui/WavefunctionsResultsViewer.cpp
+        src/core/WavefunctionScriptGenerator.cpp
         # The Magnetic Space Group dialog: it determines the group inside its
         # own constructor and writes the answer back into widgets that
         # constructor created, which is precisely the hazard this test exists
@@ -2853,6 +2901,9 @@ if(CALANGO_BUILD_TESTS)
         src/core/TwoDBandsScriptGenerator.cpp
         src/core/WorkfunctionScriptGenerator.cpp
         src/core/WannierScriptGenerator.cpp
+        src/core/LdosScriptGenerator.cpp
+        src/core/EnergyDiagramScriptGenerator.cpp
+        src/core/WavefunctionScriptGenerator.cpp
         src/core/DefectScriptGenerator.cpp
         src/core/Defect2dScriptGenerator.cpp
         src/core/FermiSurfaceScriptGenerator.cpp
@@ -3122,6 +3173,34 @@ if(CALANGO_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/elf_silicon_benchmark.py)
 
+    # LDOS end-to-end on H2O: runs the GENERATED script (calango_script_test
+    # --dump-ldos) against a real baseline .gpw, twice — once with a window
+    # spanning every occupied state (checked against the valence electron
+    # count, up to the known spin-degeneracy factor of 2) and once bracketing
+    # only the HOMO (checked, by water's exact C2v symmetry, to be negligible
+    # on both hydrogens and concentrated on oxygen). Self-skips without GPAW.
+    add_test(NAME ldos_h2o
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/ldos_h2o_benchmark.py
+                $<TARGET_FILE:calango_script_test>)
+
+    # Energy Diagrams end-to-end: H2O for HOMO/LUMO identification and
+    # transition-dipole discrimination, NH3 (C3v) for degeneracy detection
+    # on its doubly-degenerate 'e' valence level. Self-skips without GPAW.
+    add_test(NAME energy_diagram_benchmark
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/energy_diagram_benchmark.py
+                $<TARGET_FILE:calango_script_test>)
+
+    # Wavefunctions end-to-end on H2O: the HOMO is nonzero, correctly
+    # located (same C2v symmetry argument as LDOS), normalized to ~1, and
+    # the pseudo/all-electron reconstructions genuinely differ near the
+    # nuclei while agreeing away from them. Self-skips without GPAW.
+    add_test(NAME wavefunctions_h2o
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/wavefunctions_h2o_benchmark.py
+                $<TARGET_FILE:calango_script_test>)
+
     # GPAW G0W0 end-to-end: runs the GENERATED script against a real
     # baseline .gpw and checks the gw.json. Catches what neither review nor
     # py_compile can — e.g. the response code asking for more bands than the
@@ -3205,6 +3284,31 @@ if(CALANGO_BUILD_TESTS)
         PRIVATE Qt6::Widgets Qt6::Svg)
     add_test(NAME optics_broadening
         COMMAND calango_optics_broadening_test)
+
+    # Live XAS broadening in the viewer — XasResultsWindow::foldSticks()
+    # against the closed form of a single Gaussian (peak height, FWHM, total
+    # area) and against linear superposition for several transitions at once.
+    # The XAS analogue of optics_broadening above, but simpler to verify: a
+    # stick is a delta function with no stored width to deconvolve, so
+    # foldSticks() is a fresh forward computation at any FWHM rather than a
+    # convolution constrained to only widen.
+    qt_add_executable(calango_xas_broadening_test
+        tests/XasBroadeningTest.cpp
+        src/gui/XasResultsWindow.cpp
+        src/gui/OpticsPlotStyleDialog.cpp
+        src/gui/SpectrumPlotWidget.cpp
+        src/gui/GuiUtils.cpp
+        src/core/Element.cpp
+        src/core/UnitCell.cpp
+    )
+    target_include_directories(calango_xas_broadening_test PRIVATE src
+        "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_compile_definitions(calango_xas_broadening_test PRIVATE
+        QT_NO_KEYWORDS)
+    target_link_libraries(calango_xas_broadening_test
+        PRIVATE Qt6::Widgets Qt6::Svg)
+    add_test(NAME xas_broadening
+        COMMAND calango_xas_broadening_test)
 
     # Double groups for spin-orbit-coupled bands. Everything downstream of the
     # wave functions is pure group theory with exact expected answers — the Oh
@@ -3494,9 +3598,10 @@ if(CALANGO_BUILD_TESTS)
         elph_analysis elph_io extxyz_attributes frame_streaming
         generated_ase_scripts generated_script_lint graphene_band_symmetry
         graphene_oxide graphene_oxide_sites graphene_tetrahedron
+        energy_diagram_benchmark
         gw_qp_parser gw_silicon hubbard_linear_response hydrogen_bonds
         hydrogen_completion ice_builder kpath_table lammps_environment
-        lammps_scripts mace_trainer_preflight magnetic_space_group materials_project_mp1434
+        lammps_scripts ldos_h2o mace_trainer_preflight magnetic_space_group materials_project_mp1434
         monte_carlo_swap native_dft_si_mvp nlopt_parser noise_ramp
         optics_2d_observables optics_broadening
         optics_silicon orchestration_batch orchestration_handoff
@@ -3511,7 +3616,8 @@ if(CALANGO_BUILD_TESTS)
         symmetry_si_diamond tdb_database tetrahedron_bz
         thermodynamic_integration vibrational_modes volumetric_parse
         wannier_interpolation_silicon wannier_preflight wannier_silicon
-        workflow_report xtb_integration)
+        wavefunctions_h2o
+        workflow_report xas_broadening xtb_integration)
 
     set(_calango_unlabelled)
     foreach(_test IN LISTS _calango_all_tests)

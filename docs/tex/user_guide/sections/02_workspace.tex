@@ -57,28 +57,44 @@ hidden entirely.
     still shows its whole form.
   \item[\ui{Representation}] Appearance controls --- style, mode, color
     mapping, radii and bond widths (Chapter~\ref{ch:appearance}).
-  \item[\ui{Spatial References}] Four tabs: the cell wireframe, the ground
-    plane, the orientation triad, and the per-atom vector overlay. All four
-    draw something onto the scene that is not the atoms.
+  \item[\ui{Spatial References}] Four tabs: the cell wireframe, the
+    orientation triad, the per-atom vector overlay, and (last, since it draws
+    a whole extra object into the scene rather than an overlay on the
+    structure the way the other three do) the ground plane. All four draw
+    something onto the scene that is not the atoms.
 
     Under \ui{Vectors}, \ui{Vector scale} and \ui{Vector width} set the
     arrows' length and thickness. Arrowheads are always drawn --- a plain
     shaft does not say which way a vector points, which is the one thing the
     overlay exists to state; thinning the arrows is what relieves the clutter
-    on a dense magnetic structure.
+    on a dense magnetic structure. \ui{Vector color} carries an
+    \ui{Opacity} spin box on the same row, in percent; like the color, it is
+    remembered PER OVERLAY, so switching from Force to Velocity restores
+    that property's own fade rather than carrying one over.
 
     Under \ui{Unit cell}, \ui{Show atoms of the neighboring unit cell} draws
     exactly the periodic images that terminate a bond leaving the cell, so no
     bond ends in mid-air. Only those: duplicating every atom on a face filled
-    the view with periodic repetition rather than information.
+    the view with periodic repetition rather than information. Both
+    \ui{Cell color} (the wireframe) and \ui{Cell fill color} carry their own
+    percent \ui{Opacity} spin box on the same row as the color picker ---
+    the same composite control the Vectors and Floor tabs use, so all four
+    translucent surfaces in this dock express opacity identically.
 
-    Under \ui{Floor}, \ui{Height} raises or lowers the ground plane relative
-    to its automatic position with a linked slider and spin box --- the
-    slider's own range scales with the structure's size, and the box beside
-    it accepts anything further out than the slider currently reaches. It
-    moved here from \ui{Visual Effects}, where it sat as its own tab, because
-    the plane is a reference surface drawn in the scene, the role the cell
-    wireframe and the triad also play, not a post-process image filter.
+    Under \ui{Floor}, \ui{Normal} comes first --- orientation, then position
+    along it, which is also the order \ui{Height} depends on, since Height
+    moves the plane along whatever direction Normal names. \ui{Height}
+    raises or lowers the ground plane relative to its automatic position
+    with a linked slider and spin box --- the slider's own range scales with
+    the structure's size, and the box beside it accepts anything further out
+    than the slider currently reaches. It moved here from \ui{Visual
+    Effects}, where it sat as its own tab, because the plane is a reference
+    surface drawn in the scene, the role the cell wireframe and the triad
+    also play, not a post-process image filter. \ui{Opacity}, now also a
+    percent spin box, sits beside \ui{Color} on the same row; the
+    orientation is set by \ui{Normal} alone --- an earlier \ui{Plane} preset
+    dropdown beside it was removed as a pure read-out of the same value,
+    never a second setting of its own.
   \item[\ui{Visual Effects}] Five tabs: \ui{Light}, \ui{Shadow}, \ui{Fog},
     \ui{Blur} and \ui{SSAO}.
 \end{description}

@@ -37,6 +37,9 @@
 #include "core/TwoDBandsScriptGenerator.hpp"
 #include "core/WannierScriptGenerator.hpp"
 #include "core/WorkfunctionScriptGenerator.hpp"
+#include "core/LdosScriptGenerator.hpp"
+#include "core/EnergyDiagramScriptGenerator.hpp"
+#include "core/WavefunctionScriptGenerator.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -266,6 +269,35 @@ int main(int argc, char** argv)
             slice.hysteresis = true; // must be withdrawn: this job owns a slice
             dumpText("ti_window_slice.py",
                      ThermodynamicIntegrationScriptGenerator::generate(slice));
+        }
+
+        // LDOS: a placeholder baseline DIRECTORY (like Wannier's, not a
+        // literal .gpw file) — the runtime benchmark substitutes a real one
+        // and executes the result end to end.
+        {
+            LdosConfig ldos;
+            ldos.baselineDir = "/jobs/proc_1";
+            ldos.energyMin = -0.5;
+            ldos.energyMax = 0.5;
+            ldos.relativeToFermi = true;
+            dumpText("ldos_gpaw.py", generateLdosScript(ldos));
+        }
+
+        // Energy Diagrams: a placeholder baseline DIRECTORY, same shape.
+        {
+            EnergyDiagramConfig ediag;
+            ediag.baselineDir = "/jobs/proc_1";
+            dumpText("energy_diagram_gpaw.py",
+                     generateEnergyDiagramScript(ediag));
+        }
+
+        // Wavefunctions: two states, density quantity, pseudo — the shape a
+        // real multi-select run would take.
+        {
+            WavefunctionsConfig wf;
+            wf.baselineDir = "/jobs/proc_1";
+            wf.states = {{0, 0, 3}, {0, 0, 4}};
+            dumpText("wavefunctions_gpaw.py", generateWavefunctionsScript(wf));
         }
 
         dump("mace_single_point.py", mace);
@@ -1002,6 +1034,62 @@ int main(int argc, char** argv)
         }
 
         std::printf("scripts written to %s\n", dir.c_str());
+        return EXIT_SUCCESS;
+    }
+
+    // --dump-ldos <dir> <baselineDir> <eMin_eV> <eMax_eV>: writes ldos.py
+    // with an ABSOLUTE (not Fermi-relative) window against a REAL baseline
+    // directory, so the LDOS runtime benchmark can pick the window from
+    // eigenvalues it just computed (e.g. bracketing a specific known MO)
+    // rather than guessing one ahead of time.
+    if (argc >= 6 && std::string(argv[1]) == "--dump-ldos") {
+        LdosConfig cfg;
+        cfg.baselineDir = argv[3];
+        cfg.energyMin = std::stod(argv[4]);
+        cfg.energyMax = std::stod(argv[5]);
+        cfg.relativeToFermi = false;
+        std::ofstream out(std::string(argv[2]) + "/ldos.py");
+        out << generateLdosScript(cfg);
+        return EXIT_SUCCESS;
+    }
+
+    // --dump-energy-diagram <dir> <baselineDir>: writes energy_diagram.py
+    // against a real baseline directory, transitions included, defaults
+    // otherwise — the runtime benchmark needs no per-run parameters this
+    // module doesn't already default sensibly.
+    if (argc >= 4 && std::string(argv[1]) == "--dump-energy-diagram") {
+        EnergyDiagramConfig cfg;
+        cfg.baselineDir = argv[3];
+        // Optional 5th arg: degeneracy tolerance in eV — real-space grids
+        // (FD or PW) do not exactly respect a molecule's point-group
+        // rotations, so a genuinely degenerate level can split by a real,
+        // grid-dependent amount the benchmark needs to tune against.
+        if (argc >= 5)
+            cfg.degeneracyToleranceEv = std::stod(argv[4]);
+        std::ofstream out(std::string(argv[2]) + "/energy_diagram.py");
+        out << generateEnergyDiagramScript(cfg);
+        return EXIT_SUCCESS;
+    }
+
+    // --dump-wavefunctions <dir> <baselineDir> <band> [kpt] [spin]
+    // [all_electron:0/1]: one state, for the runtime benchmark — which
+    // picks the band index itself once it knows the real HOMO from a live
+    // peek, the same reason --dump-ldos takes an absolute window instead of
+    // a baked-in one.
+    if (argc >= 5 && std::string(argv[1]) == "--dump-wavefunctions") {
+        WavefunctionsConfig cfg;
+        cfg.baselineDir = argv[3];
+        WavefunctionState state;
+        state.band = std::stoi(argv[4]);
+        if (argc >= 6)
+            state.kpt = std::stoi(argv[5]);
+        if (argc >= 7)
+            state.spin = std::stoi(argv[6]);
+        cfg.states = {state};
+        if (argc >= 8)
+            cfg.allElectron = std::stoi(argv[7]) != 0;
+        std::ofstream out(std::string(argv[2]) + "/wavefunctions.py");
+        out << generateWavefunctionsScript(cfg);
         return EXIT_SUCCESS;
     }
 
@@ -2396,6 +2484,43 @@ int main(int argc, char** argv)
         // The absorbing atom has to BE the element the setup was made for.
         checkContains(script, "is {_actual}, not {element}",
                       "a mismatched atom and element is caught in the script");
+
+        // The bug this pins: the ground-state GPAW(...) call used to build
+        // with NONE of the wizard's "Calculator & Convergence Settings"
+        // page read at all — the SCF tolerance, spin mode and smearing
+        // method the user configured had no effect whatsoever on the
+        // generated script. Fixed by routing the same shared helpers every
+        // other GPAW-using generator already goes through
+        // (AseScriptGenerator::gpawConvergenceArguments /
+        // gpawSpinOccupationsArguments) into this one too.
+        checkContains(script, "convergence={",
+                      "the SCF convergence dict is emitted");
+        checkContains(script, "\"energy\": 0.0001",
+                      "at the wizard's own tolerance, not a hardcoded one");
+        checkContains(script, "maxiter=500",
+                      "and the step cap is emitted too");
+        checkContains(script, "occupations={\"name\": \"fermi-dirac\"",
+                      "the default smearing method reaches the script");
+        check(!contains(script, "spinpol=True"),
+              "unpolarized by default: no spinpol keyword");
+
+        XasRunConfig polarized = xas;
+        polarized.calculator.spinPolarized = true;
+        checkContains(XasScriptGenerator::generate(polarized, "s.extxyz"),
+                      "spinpol=True",
+                      "turning spin polarization on in the wizard reaches "
+                      "the core-hole ground state too");
+
+        XasRunConfig customTol = xas;
+        customTol.calculator.scfEnergyTolEv = 1e-6;
+        customTol.calculator.smearing = SmearingMethod::None;
+        const std::string customScript =
+            XasScriptGenerator::generate(customTol, "s.extxyz");
+        checkContains(customScript, "\"energy\": 1e-06",
+                      "a tightened SCF tolerance is honored");
+        checkContains(customScript, "\"width\": 0.0",
+                      "and turning smearing off reaches GPAW's own way of "
+                      "saying so");
     }
 
     std::printf("VASP relaxation driver:\n");
@@ -2867,6 +2992,277 @@ int main(int argc, char** argv)
         checkContains(plain, "ASE needs at least as",
                       "the run explains a negative extra-degrees-of-freedom "
                       "count instead of failing opaquely");
+    }
+
+    // -- Local Density of States (LDOS) ---------------------------------------
+    // A plain sum over stored pseudo-wavefunctions in an energy window, shared
+    // with Wavefunctions via AseScriptGenerator::gpawRestartFromBaselineScript
+    // and ::gpawWaveFunctionHelperScript — so the assertions below double as
+    // coverage for that shared layer.
+    std::printf("LDOS:\n");
+    {
+        LdosConfig cfg;
+        cfg.baselineDir = "/jobs/proc_1";
+        cfg.energyMin = -0.5;
+        cfg.energyMax = 0.5;
+        cfg.relativeToFermi = true;
+        cfg.spin = LdosSpinChannel::Sum;
+        const std::string script = generateLdosScript(cfg);
+
+        checkContains(script, "_gpw = sorted(glob.glob(os.path.join(_base, "
+                              "'*.gpw')))",
+                      "restarts from the baseline directory, not a literal "
+                      ".gpw path");
+        checkContains(script, "def _calango_wave_function(",
+                      "the shared wavefunction helper is embedded");
+        checkContains(script, "_e_min = -0.5 + _efermi",
+                      "a Fermi-relative window is offset by E_F");
+        checkContains(script, "_e_max = 0.5 + _efermi",
+                      "on both ends");
+        checkContains(script, "_spins = [0] if _nspins == 1 else [0, 1]",
+                      "'sum' covers both channels on a spin-polarized "
+                      "baseline, and the only one otherwise");
+        checkContains(script, "all_electron=False",
+                      "LDOS always sums the PSEUDO wavefunction — no "
+                      "all-electron mode");
+        checkContains(script, "write_cube(_fh, atoms, data=_ldos)",
+                      "the summed field is written as a cube");
+        checkContains(script, "'relative_to_fermi': True",
+                      "ldos.json records whether the window was Fermi-"
+                      "relative");
+        checkContains(script, "CALANGO_RESULT ldos=ldos.json",
+                      "the marker JobRunner watches for");
+        checkNotContains(script, "get_occupation_numbers",
+                          "LDOS selects by EIGENVALUE only — weighting by "
+                          "occupation would zero out an 'unoccupied near "
+                          "E_F' window by construction");
+
+        LdosConfig absolute = cfg;
+        absolute.relativeToFermi = false;
+        const std::string abs = generateLdosScript(absolute);
+        checkContains(abs, "_e_min = -0.5\n",
+                      "an absolute window is NOT offset by E_F");
+        checkContains(abs, "'relative_to_fermi': False", "and says so");
+
+        LdosConfig up = cfg;
+        up.spin = LdosSpinChannel::Up;
+        checkContains(generateLdosScript(up),
+                      "_spins = [0] if _nspins == 1 else [0]",
+                      "'up' is channel 0 regardless of polarization");
+        LdosConfig down = cfg;
+        down.spin = LdosSpinChannel::Down;
+        checkContains(generateLdosScript(down),
+                      "_spins = [0] if _nspins == 1 else [1]",
+                      "'down' collapses to the only channel on an "
+                      "unpolarized/molecular baseline — there is no second "
+                      "one to select");
+
+        // Engine mismatch: caught from calculator.json before the .gpw glob
+        // even runs, same shape as WannierScriptGenerator's own check.
+        checkContains(script, "Local Density of States cannot be driven "
+                              "from a ' + _engine",
+                      "a non-GPAW baseline is refused by name");
+    }
+
+    // -- Energy Diagrams --------------------------------------------------
+    // Levels + degeneracy grouping + (optionally) transition dipoles,
+    // sharing the same restart layer as LDOS.
+    std::printf("Energy Diagrams:\n");
+    {
+        EnergyDiagramConfig cfg;
+        cfg.baselineDir = "/jobs/proc_1";
+        const std::string script = generateEnergyDiagramScript(cfg);
+
+        checkContains(script, "_gpw = sorted(glob.glob(os.path.join(_base, "
+                              "'*.gpw')))",
+                      "restarts from the baseline directory, like LDOS");
+        checkContains(script, "if len(_weights) != 1:",
+                      "refuses a periodic (more-than-Gamma) baseline");
+        checkContains(script, "Energy Diagrams needs a non-periodic or "
+                              "Gamma-only baseline",
+                      "and names why");
+        checkContains(script, "KOHN-SHAM EIGENVALUE-DIFFERENCE transitions, "
+                              "NOT TDDFT or",
+                      "the header states the Kohn-Sham-vs-TDDFT caveat "
+                      "honestly");
+        checkContains(script, "dipole_matrix_elements_from_calc",
+                      "transition dipoles go through GPAW's own helper, "
+                      "not a hand-rolled integral");
+        checkContains(script, "_f = (2.0 / 3.0) * (_dE / Hartree) * ",
+                      "the standard atomic-units oscillator-strength "
+                      "formula");
+        checkContains(script, "'allowed': bool(_f > _threshold)",
+                      "allowed/forbidden is a numeric threshold on the "
+                      "COMPUTED oscillator strength, not a symmetry label "
+                      "— irrep-based selection rules were deferred, see "
+                      "FUTURE.md");
+        checkContains(script, "_g['degeneracy'] = len(_g['bands'])",
+                      "degenerate levels are grouped with a count");
+        checkContains(script, "CALANGO_RESULT energy_diagram="
+                              "energy_diagram.json",
+                      "the marker JobRunner watches for");
+
+        EnergyDiagramConfig noTransitions = cfg;
+        noTransitions.computeTransitions = false;
+        checkNotContains(generateEnergyDiagramScript(noTransitions),
+                         "dipole_matrix_elements_from_calc",
+                         "transitions are skippable — level diagram only");
+
+        // REGRESSION (level-diagram display bug): the level diagram used to
+        // draw EVERY stored band, unbounded — a completed SCF routinely
+        // converges far more empty bands than are chemically interesting
+        // (GPAW's own nbands default, or an explicit request), and those
+        // extra high-lying "box states" dominated the widget's shared
+        // linear energy axis, squeezing the frontier levels near the gap
+        // into an unreadable cluster (confirmed by rendering the real
+        // widget against a real 22-band H2O baseline: LUMO..LUMO+4 were
+        // legible only after this fix). The level diagram must be bounded
+        // by the SAME occupiedBandsBelowHomo/virtualBandsAboveLumo window
+        // the transitions table already respects — computed ONCE, reused
+        // by both, and computed UNCONDITIONALLY (not only when transitions
+        // are requested, so turning transitions off must not un-bound the
+        // diagram).
+        checkContains(script,
+                      "_levels = [lv for lv in _all_levels\n"
+                      "          if _n1 <= lv['band'] < _n2]",
+                      "the level diagram is bounded to the frontier window, "
+                      "not every stored band");
+        checkContains(script, "_homo_indices = [h for h in "
+                              "_spin_homo.values() if h >= 0]",
+                      "the window is computed from the true (unwindowed) "
+                      "HOMO/LUMO");
+        {
+            // The window computation must NOT live inside the
+            // `if cfg.computeTransitions` branch — that was the shape of
+            // the bug (the level diagram inherited whatever the
+            // transitions block happened to compute, or nothing at all
+            // when transitions were off, which is why the fix moves it out
+            // unconditionally). Assert directly on the config that turned
+            // transitions off: the window-building line must still be
+            // present.
+            const std::string levelOnly = generateEnergyDiagramScript(noTransitions);
+            checkContains(levelOnly,
+                          "_levels = [lv for lv in _all_levels\n"
+                          "          if _n1 <= lv['band'] < _n2]",
+                          "the frontier window still bounds the level "
+                          "diagram with transitions turned off");
+        }
+        checkContains(script, "'levels_total': len(_all_levels)",
+                      "the JSON records how many bands were actually "
+                      "stored, so a wide SCF band count is visible rather "
+                      "than silently vanishing");
+        // HOMO/LUMO/gap must be computed from the UNWINDOWED set — the
+        // window's own width must never be able to move the answer.
+        checkContains(script,
+                      "_occupied = [lv for lv in _all_levels if "
+                      "lv['occupation'] > 0.5]",
+                      "HOMO is found from every stored band, before "
+                      "windowing");
+        checkContains(script,
+                      "_virtual = [lv for lv in _all_levels if "
+                      "lv['occupation'] <= 0.5]",
+                      "and so is LUMO");
+    }
+
+    // -- Wavefunctions -----------------------------------------------------
+    // Real-space Kohn-Sham orbitals, sharing the restart + wavefunction-
+    // access layer with LDOS.
+    std::printf("Wavefunctions:\n");
+    {
+        WavefunctionsConfig cfg;
+        cfg.baselineDir = "/jobs/proc_1";
+        cfg.states = {{0, 0, 5}, {1, 2, 7}};
+        cfg.quantity = WavefunctionQuantity::Density;
+        const std::string script = generateWavefunctionsScript(cfg);
+
+        checkContains(script, "_gpw = sorted(glob.glob(os.path.join(_base, "
+                              "'*.gpw')))",
+                      "restarts from the baseline directory, like LDOS");
+        checkContains(script, "def _calango_wave_function(",
+                      "the SAME shared wavefunction helper LDOS embeds");
+        checkContains(script,
+                      "_psi = _calango_wave_function(calc, 5, 0, 0,",
+                      "the first requested state (n=5, k=0, spin=0)");
+        checkContains(script,
+                      "_psi = _calango_wave_function(calc, 7, 2, 1,",
+                      "and the second (n=7, k=2, spin=1)");
+        checkContains(script, "all_electron=False", "pseudo by default");
+        checkContains(script, "psi_n5_k0_spin-up_density.cube",
+                      "the informative per-state cube name — band, k-point, "
+                      "spin, quantity");
+        checkContains(script, "psi_n7_k2_spin-down_density.cube",
+                      "and the second one's, with the DOWN channel spelled "
+                      "out");
+        checkContains(script, "_field = np.ascontiguousarray(np.abs(_psi) "
+                              "** 2, dtype=float)",
+                      "density is |psi|^2");
+        checkContains(script, "_periodic = bool(any(atoms.pbc))",
+                      "periodicity is recorded per run — the GUI's "
+                      "periodic-continuation eligibility flag reads this");
+        checkContains(script, "CALANGO_RESULT wavefunctions="
+                              "wavefunctions.json",
+                      "the marker JobRunner watches for");
+
+        WavefunctionsConfig real = cfg;
+        real.states = {{0, 0, 5}};
+        real.quantity = WavefunctionQuantity::Real;
+        checkContains(generateWavefunctionsScript(real),
+                      "_field = np.ascontiguousarray(np.real(_psi), "
+                      "dtype=float)",
+                      "the real part IS the signed, two-lobe orbital — no "
+                      "separate 'signed' quantity exists");
+
+        WavefunctionsConfig imag = cfg;
+        imag.states = {{0, 0, 5}};
+        imag.quantity = WavefunctionQuantity::Imaginary;
+        checkContains(generateWavefunctionsScript(imag),
+                      "_field = np.ascontiguousarray(np.imag(_psi), "
+                      "dtype=float)",
+                      "the imaginary part, offered for completeness");
+
+        WavefunctionsConfig ae = cfg;
+        ae.states = {{0, 0, 5}};
+        ae.allElectron = true;
+        ae.allElectronGridSpacing = 0.08;
+        const std::string aeScript = generateWavefunctionsScript(ae);
+        checkContains(aeScript, "all_electron=True",
+                      "the all-electron toggle reaches the shared helper");
+        checkContains(aeScript, "grid_spacing=0.08",
+                      "and its grid spacing");
+        checkContains(aeScript, "calc.dft.ibzwfs.get_all_electron_wave_"
+                                "function",
+                      "the PAW reconstruction call itself, inside the "
+                      "shared helper");
+        checkContains(aeScript, "needs the '\n"
+                                "                'new GPAW engine",
+                      "a legacy restart is refused by name rather than "
+                      "failing on a missing calc.dft attribute");
+
+        checkContains(script, "Wavefunctions cannot be driven from a ' + "
+                              "_engine",
+                      "a non-GPAW baseline is refused by name, like LDOS");
+
+        // REGRESSION: the wizard's state table starts with every row
+        // unchecked, and nothing stopped Run with none ticked — the job
+        // exited 0 having registered nothing, with no visible sign
+        // anywhere of why the Volumetric Data dock stayed empty (confirmed
+        // against the real generated script and a real restart). Zero
+        // states must now refuse immediately, before even attempting the
+        // baseline restart.
+        WavefunctionsConfig empty;
+        empty.baselineDir = cfg.baselineDir;
+        const std::string emptyScript = generateWavefunctionsScript(empty);
+        checkContains(emptyScript, "raise RuntimeError(\n"
+                                   "    'Wavefunctions: no states were "
+                                   "selected.",
+                      "zero selected states refuses immediately with a "
+                      "clear message");
+        checkNotContains(emptyScript,
+                         "_gpw = sorted(glob.glob(os.path.join(_base, "
+                         "'*.gpw')))",
+                         "and fails BEFORE the baseline restart — no point "
+                         "paying for a GPAW restart that will produce "
+                         "nothing");
     }
 
     // -- VASP Wannierization: routed through VASP's OWN native Wannier90

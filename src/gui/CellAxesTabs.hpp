@@ -5,13 +5,13 @@
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
-class QPushButton;
 class QSlider;
 
 namespace calango::gui {
 
 class ViewportWidget;
 class NeighborCellsDialog;
+class ColorOpacityRow;
 
 /// The two tabs that formerly made up the standalone "Unit Cell & Axes" dock,
 /// plus the per-atom vector overlay controls, gathered into the
@@ -51,12 +51,12 @@ private:
 };
 
 /// "Vectors" tab: the per-atom arrow overlay — which vector field is drawn, its
-/// length scale, arrow style and colour, and the magnitude filter.
+/// length scale, arrow style, colour and opacity, and the magnitude filter.
 ///
 /// One overlay is shown at a time rather than several: the arrows share a
 /// single length scale and would overlap illegibly if two properties were drawn
-/// at once. Each property remembers its OWN colour, so switching Force →
-/// Velocity restores that property's colour instead of carrying one over.
+/// at once. Each property remembers its OWN colour AND opacity, so switching
+/// Force → Velocity restores that property's fade instead of carrying one over.
 class VectorsPanel : public QWidget {
     Q_OBJECT
 
@@ -67,7 +67,11 @@ private:
     /// Style field holding the arrow colour of the active overlay, or null
     /// when the overlay is None.
     QColor* overlayColor();
-    /// Refresh the swatch + enablement after the overlay selection changes.
+    /// Style field holding the arrow opacity of the active overlay, paired
+    /// 1:1 with overlayColor() above; null under the same condition.
+    float* overlayOpacity();
+    /// Refresh the swatch + spin box + enablement after the overlay
+    /// selection changes.
     void syncColorButton();
     /// Grey out overlays the current frame carries no data for.
     void refreshAvailability();
@@ -78,7 +82,7 @@ private:
     QDoubleSpinBox* scaleSpin_ = nullptr;
     QSlider* widthSlider_ = nullptr;
     QDoubleSpinBox* widthSpin_ = nullptr;
-    QPushButton* colorButton_ = nullptr;
+    ColorOpacityRow* colorRow_ = nullptr;
 };
 
 } // namespace calango::gui

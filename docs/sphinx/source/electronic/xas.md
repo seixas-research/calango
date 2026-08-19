@@ -27,6 +27,27 @@ chosen hole, so it is generated per run rather than assumed to exist, and
 keeping it in the job directory means the whole calculation — dataset, ground
 state, spectrum — can be reproduced from that one folder on another machine.
 
+:::{admonition} No prior Single-Point Calculation is needed — or usable
+:class: important
+
+**XAS is launched directly on a structure, exactly like Single Point or
+Geometry Optimization**, not chained after a completed run the way Optics,
+GW, Wannier Functions or Electronic Bands are. The setup wizard shows the
+full Calculator & Convergence Settings page itself, with no baseline-run
+selector, because there is no baseline it could use: stage 1 builds a PAW
+dataset with a hole in the absorbing atom's core level, and stage 2's ground
+state is converged *with that dataset*. An ordinary ground state — GPAW's or
+any other calculator's — never used it, so restarting from one is not merely
+unnecessary, it is physically the wrong object to restart from: the basis
+itself differs on the one atom the whole calculation is about.
+
+**GPAW is the only engine XAS supports** ({guilabel}`Calculator` is fixed to
+it in the wizard), so there is no per-engine difference to reconcile here —
+`gpaw.xas` is the implementation, and nothing else in Calango's calculator
+list can build a core-hole dataset or evaluate the dipole matrix elements the
+spectrum needs.
+:::
+
 ---
 
 ## Settings at a glance
@@ -119,6 +140,43 @@ two peaks the broadening merged.
 **The header states which energy scale the axis is on**, because a relative
 spectrum plotted as though it were absolute is wrong by hundreds of eV and
 nothing about the curve reveals it.
+
+Brought up to the same standard as {doc}`/electronic/optics`'s own viewer —
+the two windows draw through the identical `SpectrumPlotWidget`, factored out
+of the Optics viewer specifically so styling and export work the same way in
+both:
+
+{guilabel}`Range:` — the energy window, in eV; both boxes at {guilabel}`auto`
+(the default) fit the data.
+
+{guilabel}`Customize Appearance…` — the same dialog Optics uses: canvas and
+plot background, curve colour (per curve, or one colour for all of them),
+line width and style, axis font family/size/colour, and the grid on/off with
+its own colour and opacity. Applies live, so a change is judged against the
+real plot rather than a preview.
+
+{guilabel}`Broadening (FWHM)` — re-derives every displayed curve from the
+run's own **discrete transitions** at a chosen width, the way GPAW itself
+would fold them (`gpaw.xas.XAS.get_spectra`'s Gaussian sum over sticks).
+Unlike the Optics viewer's Lorentzian η, which can only be *raised* because
+it convolves an already-broadened curve, a transition is a delta function
+with no width to deconvolve — so this slider can be moved narrower as freely
+as wider. It opens at the run's own {guilabel}`Broadening (FWHM)` setting and
+is disabled for a job directory written before individual transitions were
+recorded. If the run used {guilabel}`Broaden more at higher energy`, the note
+under the slider says so: this control re-folds at a **uniform** width, so it
+will not exactly reproduce the stored curve's energy-dependent ramp even at
+the stored FWHM — only the "at rest" curve (the one shown before the slider
+is touched) is the byte-for-byte GPAW result.
+
+{guilabel}`Export CSV…` writes energy plus every currently-displayed curve to
+one CSV, with a header row naming the columns and their units. A choice
+dialog offers **as computed** (the broadened curve GPAW itself wrote) or the
+**raw transitions** (unbroadened — one row per discrete line, not per energy
+sample); the second is only offered when the job recorded them.
+
+{guilabel}`Export Image…` renders the current plot to a high-resolution PNG
+or JPEG, through the same render path the on-screen plot uses.
 
 % TODO screenshot: XAS viewer with isotropic spectrum, per-polarization curves and transition sticks
 ```{figure} /_static/img/elec_xas.png

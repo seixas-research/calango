@@ -218,14 +218,16 @@ void VolumetricPanel::addEntry(
         centre = origin.hasCentre ? origin.centre
                                   : core::periodicCentroid(*field);
     const int index = static_cast<int>(entries_.size());
-    // Wannier functions land UNCHECKED: a wannierization typically produces
-    // several orbitals, and rendering every isosurface at once the moment
-    // the calculation finishes is a wall of overlapping lobes nobody asked
-    // for — the user picks which ones to look at. Every other origin keeps
-    // the previous "visible on arrival" default (a single density cube, or
-    // a file loaded by hand, is exactly the one thing you want to see).
+    // Wannier functions (and, via startUnchecked, LDOS/Wavefunctions
+    // datasets) land UNCHECKED: a wannierization typically produces several
+    // orbitals, and rendering every isosurface at once the moment the
+    // calculation finishes is a wall of overlapping lobes nobody asked for
+    // — the user picks which ones to look at. Every other origin keeps the
+    // previous "visible on arrival" default (a single density cube, or a
+    // file loaded by hand, is exactly the one thing you want to see).
+    const bool startsUnchecked = origin.wannier || origin.startUnchecked;
     entries_.push_back({field, label, path, structureLabel, workspaceId,
-                        /*visible=*/!origin.wannier, origin.wannier, centre});
+                        /*visible=*/!startsUnchecked, origin.wannier, centre});
 
     // A Wannier function arriving in a tab promotes that tab's material to
     // Glossy — ONCE, and never over a choice the user has made.
@@ -254,7 +256,7 @@ void VolumetricPanel::addEntry(
         item->setToolTip(0, path);
         item->setData(0, Qt::UserRole, index);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(0, origin.wannier ? Qt::Unchecked : Qt::Checked);
+        item->setCheckState(0, startsUnchecked ? Qt::Unchecked : Qt::Checked);
     }
     // A record registered while another tab is on screen stays hidden until
     // its own tab comes forward.

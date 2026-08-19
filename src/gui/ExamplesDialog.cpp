@@ -115,7 +115,20 @@ ExamplesDialog::ExamplesDialog(QWidget* parent)
     tabs->addTab(createBulkTab(), tr("Bulk"));
     tabs->addTab(createMaterialsProjectTab(), tr("Materials Project"));
     tabs->addTab(createPubChemTab(), tr("PubChem"));
-    tabs->addTab(createC2dbTab(), tr("C2DB (2D Materials)"));
+    const int c2dbIndex = tabs->addTab(createC2dbTab(), tr("C2DB (2D Materials)"));
+    // The tab used to carry a standing "Citation & license" box, the only one
+    // of the four with any such chrome — its citation half now lives in the
+    // About dialog's Citations tab (About Calango -> Citations), alongside
+    // every other database and calculator Calango touches, so the tab's
+    // layout matches its three siblings'. The license half — C2DB's data is
+    // CC BY-NC 4.0, non-commercial, unlike the others here — is not
+    // something to drop silently just to match that layout, so it survives
+    // as the tab's own tool tip instead of a visible box.
+    tabs->setTabToolTip(
+        c2dbIndex,
+        tr("%1\n\n%2")
+            .arg(QString::fromStdString(pybridge::C2db::citationText()),
+                 QString::fromStdString(pybridge::C2db::licenseText())));
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -1264,22 +1277,11 @@ QWidget* ExamplesDialog::createC2dbTab()
     c2dbStatus_->setWordWrap(true);
     c2dbLayout->addWidget(c2dbStatus_);
 
-    // Attribution: C2DB's own site asks that both papers be cited, and its
-    // data are CC BY-NC 4.0 (non-commercial) — shown every time this tab is
-    // used, not just documented in a header comment.
-    auto* attributionGroup = new QGroupBox(tr("Citation & license"), c2dbPage);
-    auto* attributionLayout = new QVBoxLayout(attributionGroup);
-    auto* citationLabel = new QLabel(
-        QString::fromStdString(pybridge::C2db::citationText()), attributionGroup);
-    citationLabel->setWordWrap(true);
-    citationLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    auto* licenseLabel = new QLabel(
-        QString::fromStdString(pybridge::C2db::licenseText()), attributionGroup);
-    licenseLabel->setWordWrap(true);
-    licenseLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    attributionLayout->addWidget(citationLabel);
-    attributionLayout->addWidget(licenseLabel);
-    c2dbLayout->addWidget(attributionGroup);
+    // The standing "Citation & license" box that used to sit here is gone —
+    // see the constructor, which moved the citation half to the About
+    // dialog and folded the CC BY-NC 4.0 license notice into this tab's own
+    // tool tip instead, so the Bulk/Materials Project/PubChem tabs and this
+    // one now share the same layout.
 
     connect(c2dbModeCombo_, &QComboBox::currentIndexChanged, this,
             &ExamplesDialog::updateC2dbModeVisibility);
