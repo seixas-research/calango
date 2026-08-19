@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.30
+    VERSION 26.8.31
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -1863,6 +1863,10 @@ if(CALANGO_BUILD_TESTS)
         # missing its symmetry line.
         src/gui/NonlinearOpticsWizard.cpp
         src/core/NonlinearOpticsScriptGenerator.cpp
+        # Its results window, brought up to Optics's own appearance/Export
+        # Image… standard — reuses OpticsPlotStyleDialog and SpectrumPlotWidget
+        # wholesale rather than a parallel styling struct.
+        src/gui/NonlinearOpticsResultsWindow.cpp
         # The Optics wizard, exercised in both its 3D and 2D modes.
         src/gui/OpticsWizard.cpp
         # The Wannier setup wizard: its baseline summary states a

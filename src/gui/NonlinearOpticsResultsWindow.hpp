@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gui/OpticsPlotStyleDialog.hpp"
+
 #include <QDialog>
 #include <QJsonObject>
 #include <QString>
@@ -22,6 +24,12 @@ class SpectrumPlotWidget;
 /// second-order susceptibility the two carry different physics (Im χ⁽²⁾ is the
 /// absorptive part that a measurement of the generated intensity is blind to),
 /// and |χ⁽²⁾| alone hides where the sign changes.
+///
+/// Appearance and image export reuse OpticsResultsWindow's own
+/// OpticsPlotStyle/OpticsPlotStyleDialog and GuiUtils::savePlotImage wholesale
+/// rather than inventing a parallel set: `plot_` is the same SpectrumPlotWidget
+/// class both windows use, styled the same way, so there is nothing here that
+/// needs its own struct.
 class NonlinearOpticsResultsWindow : public QDialog {
     Q_OBJECT
 
@@ -37,6 +45,11 @@ private Q_SLOTS:
     void showSelectedSpectrum();
     void copyToClipboard();
     void exportCsv();
+    /// "Customize Appearance…": open the styling dialog, applying live —
+    /// same wiring as OpticsResultsWindow::customizeAppearance().
+    void customizeAppearance();
+    /// Render the current plot to a high-resolution PNG / JPEG.
+    void exportImage();
 
 private:
     /// Fill the selector with one entry per available spectrum, each carrying
@@ -52,6 +65,7 @@ private:
     QComboBox* spectrumCombo_ = nullptr;
     QLabel* summaryLabel_ = nullptr;
     SpectrumPlotWidget* plot_ = nullptr;
+    OpticsPlotStyle style_;
 };
 
 } // namespace calango::gui

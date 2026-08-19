@@ -12,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QLabel>
+#include <QPainter>
 #include <QPushButton>
 #include <QTextStream>
 #include <QVBoxLayout>
@@ -105,8 +106,12 @@ NonlinearOpticsResultsWindow::NonlinearOpticsResultsWindow(QWidget* parent)
     auto* buttonRow = new QHBoxLayout;
     auto* copyButton = new QPushButton(tr("Copy"), this);
     auto* csvButton = new QPushButton(tr("Export CSV…"), this);
+    auto* appearanceButton = new QPushButton(tr("Customize Appearance…"), this);
+    auto* imageButton = new QPushButton(tr("Export Image…"), this);
     buttonRow->addWidget(copyButton);
     buttonRow->addWidget(csvButton);
+    buttonRow->addWidget(appearanceButton);
+    buttonRow->addWidget(imageButton);
     buttonRow->addStretch(1);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     buttonRow->addWidget(buttons);
@@ -116,6 +121,10 @@ NonlinearOpticsResultsWindow::NonlinearOpticsResultsWindow(QWidget* parent)
             &NonlinearOpticsResultsWindow::copyToClipboard);
     connect(csvButton, &QPushButton::clicked, this,
             &NonlinearOpticsResultsWindow::exportCsv);
+    connect(appearanceButton, &QPushButton::clicked, this,
+            &NonlinearOpticsResultsWindow::customizeAppearance);
+    connect(imageButton, &QPushButton::clicked, this,
+            &NonlinearOpticsResultsWindow::exportImage);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 }
 
@@ -218,6 +227,7 @@ void NonlinearOpticsResultsWindow::showSelectedSpectrum()
             series.push_back({tr("ε₂ %1").arg(QLatin1String(axis)),
                               toDoubles(spectrum.value(key).toArray())});
         }
+        plot_->setStyle(style_);
         plot_->setSeries(x, series, tr("Photon energy (eV)"),
                          tr("ε₂ = Im χ⁽¹⁾"));
         return;
@@ -225,6 +235,7 @@ void NonlinearOpticsResultsWindow::showSelectedSpectrum()
 
     for (const auto& [key, label] : seriesFor(spectrum))
         series.push_back({label, toDoubles(spectrum.value(key).toArray())});
+    plot_->setStyle(style_);
     plot_->setSeries(x, series, tr("Photon energy (eV)"),
                      axisLabelFor(spectrum));
 }
@@ -282,6 +293,36 @@ void NonlinearOpticsResultsWindow::exportCsv()
     if (path.isEmpty())
         return;
     writeTextFile(this, path, currentAsCsv());
+}
+
+void NonlinearOpticsResultsWindow::customizeAppearance()
+{
+    auto* dialog = new OpticsPlotStyleDialog(style_, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    // Live, not on-accept: the point of a styling dialog is to judge the
+    // result against the real plot — same wiring as OpticsResultsWindow's.
+    connect(dialog, &OpticsPlotStyleDialog::styleChanged, this,
+            [this](const OpticsPlotStyle& style) {
+                style_ = style;
+                plot_->setStyle(style_);
+            });
+    dialog->show();
+}
+
+void NonlinearOpticsResultsWindow::exportImage()
+{
+    if (!plot_)
+        return;
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export Image"), QStringLiteral("nlopt.png"),
+        tr("PNG image (*.png);;JPEG image (*.jpg *.jpeg)"));
+    if (path.isEmpty())
+        return;
+
+    savePlotImage(this, path, plot_->size(),
+                 [this](QPainter& painter, const QSize& logical) {
+                     plot_->renderTo(painter, logical);
+                 });
 }
 
 } // namespace calango::gui

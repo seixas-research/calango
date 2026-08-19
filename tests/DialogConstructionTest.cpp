@@ -29,6 +29,7 @@
 #include "gui/OverlayEditDialog.hpp"
 #include "gui/CddWizard.hpp"
 #include "gui/XasResultsWindow.hpp"
+#include "gui/NonlinearOpticsResultsWindow.hpp"
 #include "gui/EnergyDiagramViewer.hpp"
 #include "gui/WavefunctionsWizard.hpp"
 #include "gui/WavefunctionsResultsViewer.hpp"
@@ -1379,6 +1380,68 @@ int main(int argc, char** argv)
             check(std::abs(broadeningSpin->value() - 0.5) < 1e-9,
                   "and opens at the run's own fwhm_eV");
         }
+    }
+
+    std::printf("Nonlinear Optics results window:\n");
+    {
+        // Task: brought up to Optics's own standard — the same
+        // "Customize Appearance…" dialog and Export Image… button, worded
+        // exactly like Optics/XAS use them, on top of the CSV export this
+        // window already had.
+        const QString dir =
+            QDir::temp().filePath(QStringLiteral("calango_nlopt_appearance"));
+        QDir().mkpath(dir);
+        QFile file(dir + QStringLiteral("/nlopt.json"));
+        check(file.open(QIODevice::WriteOnly), "a results file can be staged");
+        file.write(R"({"formula":"GaAs","eta_eV":0.05,"gauge":"lg",
+                       "eshift_eV":0.0,"centrosymmetric":false,
+                       "energy_eV":[0.0,1.0,2.0],
+                       "shg":{"xyz":{"energy_eV":[0.0,1.0,2.0],
+                                     "chi2_re_pm_V":[0.0,1.0,2.0],
+                                     "chi2_im_pm_V":[0.0,0.5,1.0]}}})");
+        file.close();
+
+        NonlinearOpticsResultsWindow window;
+        check(window.loadResults(dir), "parses a well-formed nlopt.json");
+
+        const auto buttons = window.findChildren<QPushButton*>();
+        const auto hasButton = [&buttons](const QString& text) {
+            return std::any_of(buttons.begin(), buttons.end(),
+                               [&text](const QPushButton* b) {
+                                   return b->text() == text;
+                               });
+        };
+        check(hasButton(QStringLiteral("Customize Appearance…")),
+              "offers the same appearance dialog Optics does");
+        check(hasButton(QStringLiteral("Export Image…")),
+              "and Export Image…, worded exactly like Optics/XAS");
+        check(hasButton(QStringLiteral("Export CSV…")),
+              "still offers the CSV export this window already had");
+
+        // Clicking Customize Appearance… must open a real
+        // OpticsPlotStyleDialog — the same reused struct/dialog, not a
+        // stand-in — and it must not crash on a window whose plot has no
+        // reference-slider quirks to trip over (unlike the isovalue
+        // histogram, this is a plain SpectrumPlotWidget).
+        QPushButton* appearanceButton = nullptr;
+        for (QPushButton* b : buttons)
+            if (b->text() == QStringLiteral("Customize Appearance…"))
+                appearanceButton = b;
+        check(appearanceButton != nullptr,
+              "the appearance button was found for the click below");
+        if (appearanceButton) {
+            appearanceButton->click();
+            auto* dialog = window.findChild<OpticsPlotStyleDialog*>();
+            check(dialog != nullptr,
+                  "clicking it opens an OpticsPlotStyleDialog — the same "
+                  "styling code Optics and XAS already use, not a parallel "
+                  "one built for this window");
+            if (dialog)
+                dialog->close();
+        }
+
+        check(!window.loadResults(QStringLiteral("/nonexistent/nlopt.json")),
+              "a missing file is reported rather than shown empty");
     }
 
     // The overlay editor swaps its property page on every type change, and
