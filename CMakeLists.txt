@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.32
+    VERSION 26.8.33
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -2074,6 +2074,11 @@ if(CALANGO_BUILD_TESTS)
         src/gui/EgqcaPlotWidget.cpp
         src/core/Dsim.cpp
         src/core/DsimScriptGenerator.cpp
+        # DSIM's Geometry Optimization Settings stage reuses these two
+        # shared controls (Geometry Optimization's own), first pulled into
+        # this target here.
+        src/gui/CellRelaxationControls.cpp
+        src/gui/ForceConvergenceControl.cpp
     )
     target_include_directories(calango_dialog_test PRIVATE src
         "${CMAKE_CURRENT_BINARY_DIR}/generated")

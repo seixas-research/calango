@@ -42,6 +42,7 @@
 #include "core/EnergyDiagramScriptGenerator.hpp"
 #include "core/WavefunctionScriptGenerator.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cctype>
@@ -1134,6 +1135,136 @@ int main(int argc, char** argv)
             auInPt.atoms()[0].atomicNumber = 79; // Au diluted in Pt
             auPt.impurity = {{Structure{}, auInPt}, {ptInAu, Structure{}}};
             dumpText("dsim_au_pt.py", generateDsimScript(auPt));
+
+            // Multi-phase DSIM (Fe(bcc)-Co(hcp)): a tiny 2-atom-per-branch
+            // fixture, same "lint needs no physically real size" reasoning
+            // as the Cu-Pd fixture above — the physically real Fe-Co case
+            // is exercised by tests/dsim_fe_co_mace_benchmark.py instead.
+            // Each phase branch is an ordinary two-species template
+            // (makeTwoAtom-shaped) with one atom of the host relabeled to
+            // the solute, exactly the shape DsimWizard's multi-phase path
+            // builds: pristineB on phaseA's template is species B's
+            // atomic number substituted into phaseA's OWN geometry (not
+            // species B's own structure) — the "relabel one phase's
+            // template onto the other species" construction the
+            // lattice-stability correction depends on.
+            auto makeBranch = [&](const std::string& phase, int zA, int zB) {
+                DsimPhaseBranchConfig branch;
+                branch.phaseLabel = phase;
+                branch.pristineA = makeTwoAtom(zA);
+                branch.pristineB = makeTwoAtom(zA); // A's own template...
+                branch.pristineB.atoms()[0].atomicNumber = zB; // ...relabeled to B
+                branch.pristineB.atoms()[1].atomicNumber = zB;
+                branch.impurityBInA = branch.pristineA;
+                branch.impurityBInA.atoms()[0].atomicNumber = zB; // B diluted in A
+                branch.impurityAInB = branch.pristineB;
+                branch.impurityAInB.atoms()[0].atomicNumber = zA; // A diluted in (B-on-this-phase)
+                return branch;
+            };
+            DsimMultiPhaseConfig feCo;
+            feCo.calculator.calculator = CalculatorKind::EMT;
+            feCo.calculator.task = TaskKind::GeometryOptimization;
+            feCo.calculator.relaxCell = true;
+            feCo.calculator.optimizer = Optimizer::FIRE;
+            feCo.calculator.fmax = 0.02;
+            feCo.calculator.maxSteps = 200;
+            feCo.speciesA = "Fe";
+            feCo.speciesB = "Co";
+            feCo.phaseA = makeBranch("bcc", 26, 27);
+            feCo.phaseB = makeBranch("hcp", 26, 27);
+            dumpText("dsim_multiphase.py", generateDsimMultiPhaseScript(feCo));
+
+            // A real Fe(bcc)-Co(hcp) case, MACE calculator: the physically
+            // meaningful fixture actually RUN (via mace_env's interpreter,
+            // since neither element is in ASE's EMT parameter set) to
+            // validate the multi-phase feature end to end — mirrors the
+            // Au-Pt fixture above. Both cells are the 2-atom CONVENTIONAL
+            // ones (not bcc's 1-atom primitive rhombohedral cell), so
+            // pristineA_onA and pristineB_onB end up the SAME atom count
+            // at a shared 3x3x3 repeat (54 each) — DsimWizard's own
+            // multi-phase build refuses otherwise (see Dsim.hpp's
+            // DsimPhaseBranchEnergies doc comment).
+            const double feA = 2.8665; // bcc Fe, Angstrom
+            const double coA = 2.5071, coC = 4.0695; // hcp Co, Angstrom
+            const calango::core::UnitCell bccConventional({feA, 0.0, 0.0}, {0.0, feA, 0.0},
+                                                           {0.0, 0.0, feA});
+            const calango::core::UnitCell hcpConventional(
+                {coA, 0.0, 0.0}, {-coA / 2.0, coA * std::sqrt(3.0) / 2.0, 0.0}, {0.0, 0.0, coC});
+            auto makeBccSupercell = [&](int z) {
+                Structure s;
+                s.setCell(UnitCell(bccConventional.vectors()[0] * 3.0,
+                                   bccConventional.vectors()[1] * 3.0,
+                                   bccConventional.vectors()[2] * 3.0));
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j)
+                        for (int k = 0; k < 3; ++k) {
+                            const calango::core::Vec3 origin =
+                                bccConventional.vectors()[0] * static_cast<double>(i)
+                                + bccConventional.vectors()[1] * static_cast<double>(j)
+                                + bccConventional.vectors()[2] * static_cast<double>(k);
+                            s.addAtom(Atom{z, origin});
+                            s.addAtom(Atom{z, origin + calango::core::Vec3{feA / 2.0, feA / 2.0, feA / 2.0}});
+                        }
+                return s;
+            };
+            auto makeHcpSupercell = [&](int z) {
+                Structure s;
+                s.setCell(UnitCell(hcpConventional.vectors()[0] * 3.0,
+                                   hcpConventional.vectors()[1] * 3.0,
+                                   hcpConventional.vectors()[2] * 3.0));
+                const calango::core::Vec3 basis2{0.0, coA / std::sqrt(3.0), coC / 2.0};
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j)
+                        for (int k = 0; k < 3; ++k) {
+                            const calango::core::Vec3 origin =
+                                hcpConventional.vectors()[0] * static_cast<double>(i)
+                                + hcpConventional.vectors()[1] * static_cast<double>(j)
+                                + hcpConventional.vectors()[2] * static_cast<double>(k);
+                            s.addAtom(Atom{z, origin});
+                            s.addAtom(Atom{z, origin + basis2});
+                        }
+                return s;
+            };
+            auto relabelAllTest = [](Structure s, int z) {
+                for (auto& atom : s.atoms())
+                    atom.atomicNumber = z;
+                return s;
+            };
+            auto substituteOneTest = [](Structure s, int z) {
+                if (!s.atoms().empty())
+                    s.atoms()[0].atomicNumber = z;
+                return s;
+            };
+
+            DsimMultiPhaseConfig feCoMace;
+            feCoMace.calculator.calculator = CalculatorKind::Mace;
+            feCoMace.calculator.maceSource = MaceModelSource::CustomFile;
+            feCoMace.calculator.maceModelPath =
+                std::string(std::getenv("HOME") ? std::getenv("HOME") : "")
+                + "/.local/mace/MACE-matpes-pbe-omat-ft.model";
+            feCoMace.calculator.maceDevice = "cpu";
+            feCoMace.calculator.macePrecision = MacePrecision::Float32;
+            feCoMace.calculator.task = TaskKind::GeometryOptimization;
+            feCoMace.calculator.relaxCell = true;
+            feCoMace.calculator.optimizer = Optimizer::FIRE;
+            feCoMace.calculator.fmax = 0.02;
+            feCoMace.calculator.maxSteps = 300;
+            feCoMace.speciesA = "Fe";
+            feCoMace.speciesB = "Co";
+
+            const Structure feBcc = makeBccSupercell(26);
+            const Structure coHcp = makeHcpSupercell(27);
+            feCoMace.phaseA.phaseLabel = "bcc";
+            feCoMace.phaseA.pristineA = feBcc;
+            feCoMace.phaseA.pristineB = relabelAllTest(feBcc, 27);
+            feCoMace.phaseA.impurityBInA = substituteOneTest(feBcc, 27);
+            feCoMace.phaseA.impurityAInB = substituteOneTest(feCoMace.phaseA.pristineB, 26);
+            feCoMace.phaseB.phaseLabel = "hcp";
+            feCoMace.phaseB.pristineA = relabelAllTest(coHcp, 26);
+            feCoMace.phaseB.pristineB = coHcp;
+            feCoMace.phaseB.impurityBInA = substituteOneTest(feCoMace.phaseB.pristineA, 27);
+            feCoMace.phaseB.impurityAInB = substituteOneTest(coHcp, 26);
+            dumpText("dsim_fe_co_mace.py", generateDsimMultiPhaseScript(feCoMace));
         }
 
         std::printf("scripts written to %s\n", dir.c_str());

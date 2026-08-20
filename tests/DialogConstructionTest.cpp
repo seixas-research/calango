@@ -21,6 +21,7 @@
 #include "gui/DsimResultsWindow.hpp"
 #include "gui/DsimTernaryPlotWidget.hpp"
 #include "gui/DsimWizard.hpp"
+#include "gui/EgqcaPlotWidget.hpp"
 #include "gui/FilmTimelineWidget.hpp"
 #include "gui/DatabaseImportDialog.hpp"
 #include "gui/GeometryConstraintsDialog.hpp"
@@ -5036,6 +5037,75 @@ int main(int argc, char** argv)
         wizard.addStructures({{QStringLiteral("Cu again (file)"), makeSingleSpecies(29)}});
         check(wizard.validStructures().size() == 2,
               "a duplicate species does not count as a third component either");
+
+        // Geometry Optimization Settings: its own stage, not silently
+        // hardcoded — the paper's fmax default (0.02 eV/A) has to be the
+        // spin box's actual value, not just a comment.
+        auto* fmaxSpin = wizard.findChild<QDoubleSpinBox*>();
+        check(fmaxSpin != nullptr && std::abs(fmaxSpin->value() - 0.02) < 1e-9,
+              "the force-convergence stage exists and defaults to the paper's own fmax (0.02 eV/A)");
+        auto* optimizerCombo = wizard.findChild<QComboBox*>();
+        check(optimizerCombo != nullptr && optimizerCombo->count() == 5,
+              "and an optimizer combo (5 entries, matching core::Optimizer) is offered");
+        check(optimizerCombo != nullptr && optimizerCombo->currentIndex() == 2,
+              "defaulting to FIRE (index 2), a robust default for a supercell relaxation");
+        bool sawMaxSteps300 = false;
+        for (QSpinBox* spin : wizard.findChildren<QSpinBox*>())
+            if (spin->maximum() > 6 && spin->value() == 300)
+                sawMaxSteps300 = true;
+        check(sawMaxSteps300, "and max steps defaults to 300 (distinct from the nx/ny/nz repeat spin boxes)");
+        bool relaxCellChecked = false;
+        for (QCheckBox* box : wizard.findChildren<QCheckBox*>())
+            if (box->text().contains(QStringLiteral("Relax the unit cell")))
+                relaxCellChecked = box->isChecked();
+        check(relaxCellChecked,
+              "and cell relaxation defaults to ON (unlike Geometry Optimization's own "
+              "default-off convention) — DSIM's protocol has no fixed-cell mode");
+
+        // Multi-phase alloys (Fe(bcc)-Co(hcp) and similar): eligible only
+        // for exactly 2 valid components — already true here (cu, pd) —
+        // and its hidden phase-label fields become visible once checked.
+        // goNext()'s own structure-building for this mode (relabeling one
+        // element onto the other's template, substituting the impurities,
+        // dispatching generateScript() to
+        // core::generateDsimMultiPhaseScript) needs a live embedded
+        // interpreter for AseBridge::makeSupercell and is exercised
+        // instead by the script-generator's own lint fixture
+        // (tests/ScriptGenerationTest.cpp's dsim_multiphase.py,
+        // byte-compiled by the generated_script_lint ctest) plus a real
+        // Fe-Co run — see docs/sphinx/source/simulations/dsim.md.
+        wizard.show(); // isVisibleTo() needs the page realized
+        QCheckBox* multiPhaseCheck = nullptr;
+        for (QCheckBox* box : wizard.findChildren<QCheckBox*>())
+            if (box->text().contains(QStringLiteral("Different crystal structures")))
+                multiPhaseCheck = box;
+        check(multiPhaseCheck != nullptr && multiPhaseCheck->isEnabled(),
+              "the multi-phase checkbox exists and is enabled for exactly 2 valid components");
+
+        QLineEdit* phaseAEdit = nullptr;
+        QLineEdit* phaseBEdit = nullptr;
+        for (QLineEdit* edit : wizard.findChildren<QLineEdit*>()) {
+            if (edit->placeholderText() == QStringLiteral("e.g. bcc"))
+                phaseAEdit = edit;
+            if (edit->placeholderText() == QStringLiteral("e.g. hcp"))
+                phaseBEdit = edit;
+        }
+        check(phaseAEdit != nullptr && phaseBEdit != nullptr, "and both phase-label fields exist");
+        check(phaseAEdit != nullptr && !phaseAEdit->isVisibleTo(&wizard),
+              "hidden while the checkbox is unchecked");
+
+        if (multiPhaseCheck)
+            multiPhaseCheck->setChecked(true);
+        check(phaseAEdit && phaseBEdit && phaseAEdit->isVisibleTo(&wizard)
+                  && phaseBEdit->isVisibleTo(&wizard),
+              "and shown once multi-phase mode is checked");
+
+        // A 3rd valid structure makes the mode ineligible again — the
+        // checkbox is disabled AND force-unchecked, not left checked for
+        // a run shape it can no longer build (N=2 only).
+        wizard.addStructures({{QStringLiteral("Ag (tab)"), makeSingleSpecies(47)}});
+        check(multiPhaseCheck && !multiPhaseCheck->isEnabled() && !multiPhaseCheck->isChecked(),
+              "adding a 3rd valid component disables and unchecks it again");
     }
     {
         QTemporaryDir dir;
@@ -5149,6 +5219,107 @@ int main(int argc, char** argv)
         check(ternaryTangentsCheck != nullptr && !ternaryTangentsCheck->isEnabled(),
               "the tangent-lines checkbox is disabled for a ternary result "
               "(no dilute-limit-pair concept for N=3)");
+
+        // Multi-phase (schema calango.dsim/3, Fe(bcc)-Co(hcp)): the same
+        // 8-supercell fixture DsimTest.cpp's solveDsimMultiPhase check
+        // uses (10-atom supercells, bccEnergies/hcpEnergies), with its
+        // CORRECTED curve values at x={0, 0.5, 1} filled in from that same
+        // closed-form derivation — so this test cross-checks the JSON
+        // PARSING/plotting path against physics already verified there,
+        // not a second, independent guess at the numbers.
+        const QString multiPhasePath = writeJson("dsim_multiphase.json", R"({
+            "schema": "calango.dsim/3", "species": ["Fe", "Co"],
+            "species_a": "Fe", "species_b": "Co",
+            "phase_a_label": "bcc", "phase_b_label": "hcp",
+            "supercell_atom_count": 10, "dilution": 0.1,
+            "records": {
+                "pristine_Fe_bcc": {"energy": -100.0, "energy_per_atom": -10.0,
+                                    "natoms": 10, "formula": "Fe10", "converged": true},
+                "pristine_Co_bcc": {"energy": -97.0, "energy_per_atom": -9.7,
+                                    "natoms": 10, "formula": "Co10", "converged": true},
+                "Co_in_Fe_bcc": {"energy": -100.5, "energy_per_atom": -10.05,
+                                "natoms": 10, "formula": "Fe9Co", "converged": true},
+                "Fe_in_Co_bcc": {"energy": -97.4, "energy_per_atom": -9.74,
+                                "natoms": 10, "formula": "Co9Fe", "converged": true},
+                "pristine_Fe_hcp": {"energy": -96.0, "energy_per_atom": -9.6,
+                                    "natoms": 10, "formula": "Fe10", "converged": true},
+                "pristine_Co_hcp": {"energy": -98.0, "energy_per_atom": -9.8,
+                                    "natoms": 10, "formula": "Co10", "converged": true},
+                "Co_in_Fe_hcp": {"energy": -96.3, "energy_per_atom": -9.63,
+                                "natoms": 10, "formula": "Fe9Co", "converged": true},
+                "Fe_in_Co_hcp": {"energy": -98.2, "energy_per_atom": -9.82,
+                                "natoms": 10, "formula": "Co9Fe", "converged": true}
+            },
+            "failures": {},
+            "multi_phase": {
+                "phase_a": {
+                    "label": "bcc",
+                    "energy_matrix": [[-100.0, -97.4], [-100.5, -97.0]],
+                    "m_matrix": [[0.0, -0.1], [-0.8, 0.0]],
+                    "raw": {"x_grid": [0.0, 0.5, 1.0],
+                            "enthalpy_eV_per_atom": [0.0, -0.1125, 0.0],
+                            "enthalpy_kJ_per_mol": [0.0, -10.85459985, 0.0],
+                            "dHdx_at_0_eV": -0.8, "dHdx_at_1_eV": 0.1},
+                    "shift_at_x0_eV": 0.0, "shift_at_x1_eV": 0.1,
+                    "corrected": {"x_grid": [0.0, 0.5, 1.0],
+                                  "enthalpy_eV_per_atom": [0.0, -0.0625, 0.1],
+                                  "enthalpy_kJ_per_mol": [0.0, -6.03033325, 9.6485332],
+                                  "dHdx_at_0_eV": -0.8, "dHdx_at_1_eV": 0.1}
+                },
+                "phase_b": {
+                    "label": "hcp",
+                    "energy_matrix": [[-96.0, -98.2], [-96.3, -98.0]],
+                    "m_matrix": [[0.0, -0.4], [-0.1, 0.0]],
+                    "raw": {"x_grid": [0.0, 0.5, 1.0],
+                            "enthalpy_eV_per_atom": [0.0, -0.0625, 0.0],
+                            "enthalpy_kJ_per_mol": [0.0, -6.03033325, 0.0],
+                            "dHdx_at_0_eV": -0.1, "dHdx_at_1_eV": 0.4},
+                    "shift_at_x0_eV": 0.4, "shift_at_x1_eV": 0.0,
+                    "corrected": {"x_grid": [0.0, 0.5, 1.0],
+                                  "enthalpy_eV_per_atom": [0.4, 0.1375, 0.0],
+                                  "enthalpy_kJ_per_mol": [38.5941328, 13.26673265, 0.0],
+                                  "dHdx_at_0_eV": -0.1, "dHdx_at_1_eV": 0.4}
+                }
+            }
+        })");
+        DsimResultsWindow multiPhaseWindow;
+        check(multiPhaseWindow.loadResults(multiPhasePath), "loads a well-formed schema calango.dsim/3 file");
+        auto* multiPhaseTable = multiPhaseWindow.findChild<QTableWidget*>();
+        check(multiPhaseTable != nullptr && multiPhaseTable->rowCount() == 8,
+              "and populates the eight-supercell table (2 phases x (2 pristine + 2 impurity))");
+        auto* multiPhaseTangentsCheck = multiPhaseWindow.findChild<QCheckBox*>();
+        check(multiPhaseTangentsCheck != nullptr && !multiPhaseTangentsCheck->isEnabled(),
+              "the tangent-lines checkbox is disabled for a multi-phase result "
+              "(two branches, not one dilute-limit pair)");
+
+        auto* multiPhasePlot = multiPhaseWindow.findChild<EgqcaPlotWidget*>();
+        check(multiPhasePlot != nullptr && multiPhasePlot->hasData(),
+              "the two-branch curve is plotted on the ordinary (non-ternary) plot widget");
+        // DsimPlotStyle defaults to kJ/mol (style_.useKilojoulesPerMole),
+        // so the plotted series carries the JSON's "enthalpy_kJ_per_mol"
+        // column, not the eV/atom one — 0.1/0.4 eV/atom * kEvToKjPerMol
+        // (96.485332) = 9.6485332/38.5941328 kJ/mol, the same fixture
+        // values above. Tolerance covers EgqcaPlotWidget::toCsv()'s own
+        // 6-significant-figure QTextStream rounding, not fixture error.
+        const QString csv = multiPhasePlot ? multiPhasePlot->toCsv() : QString();
+        const auto valueFor = [&csv](const QString& label, double x) {
+            for (const QString& line : csv.split(QLatin1Char('\n'))) {
+                const QStringList parts = line.split(QLatin1Char(','));
+                if (parts.size() == 3 && parts[0] == label
+                    && std::abs(parts[1].toDouble() - x) < 1e-9)
+                    return parts[2].toDouble();
+            }
+            return std::numeric_limits<double>::quiet_NaN();
+        };
+        check(std::abs(valueFor(QStringLiteral("bcc"), 0.0) - 0.0) < 1e-9,
+              "the bcc curve is plotted at exactly 0 at Fe (x=0)");
+        check(std::abs(valueFor(QStringLiteral("bcc"), 1.0) - 9.6485332) < 1e-3,
+              "and at Co's own bcc-hcp lattice stability (0.1 eV/atom = 9.65 kJ/mol) at "
+              "x=1 -- the CORRECTED curve, not the raw (zero-at-both-ends) one");
+        check(std::abs(valueFor(QStringLiteral("hcp"), 1.0) - 0.0) < 1e-9,
+              "the hcp curve is plotted at exactly 0 at Co (x=1)");
+        check(std::abs(valueFor(QStringLiteral("hcp"), 0.0) - 38.5941328) < 1e-3,
+              "and at Fe's own hcp-bcc lattice stability (0.4 eV/atom = 38.59 kJ/mol) at x=0");
     }
 
     std::printf(failures == 0 ? "\nAll dialog construction checks passed.\n"

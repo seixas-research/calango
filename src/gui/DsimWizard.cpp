@@ -5,6 +5,9 @@
 #include "core/Element.hpp"
 #include "python_bridge/AseBridge.hpp"
 
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -12,6 +15,7 @@
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
@@ -36,6 +40,21 @@ core::Structure substituteOne(const core::Structure& s, int atomicNumber)
     core::Structure out = s;
     if (!out.atoms().empty())
         out.atoms()[0].atomicNumber = atomicNumber;
+    return out;
+}
+
+/// EVERY atom relabeled — the "element X occupying element Y's crystal
+/// structure" template a multi-phase branch's foreign-element pristine
+/// reference needs (positions/cell kept as-is; the subsequent full ion+
+/// cell relaxation the wizard always requests is what moves it to that
+/// element's own equilibrium volume on this template). See
+/// core::solveDsimMultiPhase's doc comment for why this — not a second
+/// independent structure — is the right reference.
+core::Structure relabelAll(const core::Structure& s, int atomicNumber)
+{
+    core::Structure out = s;
+    for (core::Atom& atom : out.atoms())
+        atom.atomicNumber = atomicNumber;
     return out;
 }
 
@@ -130,6 +149,29 @@ QWidget* DsimWizard::buildSettingsPage()
 
     layout->addWidget(group);
 
+    auto* phaseGroup = new QGroupBox(tr("Multi-Phase Alloy"), page);
+    auto* phaseForm = new QFormLayout(phaseGroup);
+    multiPhaseCheck_ = new QCheckBox(
+        tr("Different crystal structures per element (e.g. Fe(bcc)-Co(hcp))"), phaseGroup);
+    multiPhaseCheck_->setToolTip(
+        tr("Solves two independent DSIM binary branches, one on each element's own "
+           "crystal structure (including the OTHER element relabeled onto it and "
+           "relaxed), then shifts both onto one common energy reference so the two "
+           "curves are directly comparable — the lower one at each composition is the "
+           "stable phase. Needs exactly 2 components; each keeps its own structure "
+           "from Stage 1 above, nothing else to add."));
+    phaseForm->addRow(multiPhaseCheck_);
+    phaseALabelEdit_ = new QLineEdit(phaseGroup);
+    phaseALabelEdit_->setPlaceholderText(tr("e.g. bcc"));
+    phaseBLabelEdit_ = new QLineEdit(phaseGroup);
+    phaseBLabelEdit_->setPlaceholderText(tr("e.g. hcp"));
+    phaseForm->addRow(tr("Phase label (1st component):"), phaseALabelEdit_);
+    phaseForm->addRow(tr("Phase label (2nd component):"), phaseBLabelEdit_);
+    connect(multiPhaseCheck_, &QCheckBox::toggled, this, &DsimWizard::updateMultiPhaseVisibility);
+    connect(phaseALabelEdit_, &QLineEdit::textChanged, this, &DsimWizard::updateSummary);
+    connect(phaseBLabelEdit_, &QLineEdit::textChanged, this, &DsimWizard::updateSummary);
+    layout->addWidget(phaseGroup);
+
     auto* superGroup = new QGroupBox(tr("Supercell"), page);
     auto* superForm = new QFormLayout(superGroup);
     auto* superRow = new QWidget(superGroup);
@@ -153,6 +195,77 @@ QWidget* DsimWizard::buildSettingsPage()
 
     refillList();
     updateSummary();
+    updateMultiPhaseVisibility();
+    return page;
+}
+
+QString DsimWizard::secondSettingsHeader() const
+{
+    return tr("Geometry Optimization Settings");
+}
+
+QWidget* DsimWizard::buildSecondSettingsPage()
+{
+    auto* page = new QWidget(this);
+    auto* layout = new QVBoxLayout(page);
+
+    auto* note = new QLabel(
+        tr("The paper's protocol: every supercell is relaxed — ions AND "
+           "cell, never single-point — to a force criterion of 0.02 eV/Å "
+           "by default. These settings apply to all of them alike."),
+        page);
+    note->setWordWrap(true);
+    layout->addWidget(note);
+
+    auto* relaxGroup = new QGroupBox(tr("Relaxation"), page);
+    auto* relaxForm = new QFormLayout(relaxGroup);
+
+    optimizerCombo_ = new QComboBox(relaxGroup);
+    // Order matches core::Optimizer.
+    optimizerCombo_->addItems({QStringLiteral("BFGS"), QStringLiteral("LBFGS"),
+                               QStringLiteral("FIRE"), QStringLiteral("GPMin"),
+                               QStringLiteral("MDMin")});
+    optimizerCombo_->setCurrentIndex(2); // FIRE: a robust default for a
+                                         // relaxation with no good initial
+                                         // Hessian guess (fresh geometry
+                                         // every one of the N + N(N-1) times)
+    relaxForm->addRow(tr("Optimizer:"), optimizerCombo_);
+    connect(optimizerCombo_, &QComboBox::currentIndexChanged, this, &DsimWizard::refreshPreview);
+
+    fmax_.build(relaxForm, relaxGroup, tr("Force convergence (fmax):"));
+    fmax_.setValue(0.02); // the paper's own criterion, not
+                          // ForceConvergenceControl's shared 0.05 default
+    connect(fmax_.spinBox(), &QDoubleSpinBox::valueChanged, this, &DsimWizard::refreshPreview);
+
+    maxStepsSpin_ = new QSpinBox(relaxGroup);
+    maxStepsSpin_->setRange(1, 100000);
+    maxStepsSpin_->setValue(300);
+    maxStepsSpin_->setToolTip(
+        tr("Cap per supercell. With N + N(N-1) supercells the worst case is "
+           "that many force evaluations times this many steps, so keep it "
+           "modest on DFT backends."));
+    relaxForm->addRow(tr("Max steps (each):"), maxStepsSpin_);
+    connect(maxStepsSpin_, &QSpinBox::valueChanged, this, &DsimWizard::refreshPreview);
+
+    // Variable-cell relaxation, built by the SAME helper Geometry
+    // Optimization and Cluster Expansion's batch relax use — identical
+    // filters, stress-mask presets and Voigt ticks.
+    cell_.build(relaxGroup, relaxForm, [this] { refreshPreview(); });
+    // CellRelaxationControls' own checkbox defaults to UNCHECKED (matching
+    // Geometry Optimization's own "ion relaxation is the default, cell
+    // relaxation is opt-in" convention) — wrong here: the paper's protocol
+    // relaxes the cell unconditionally, and a user who never noticed the
+    // box would silently get fixed-cell impurity energies, not comparable
+    // to the pristine references' own relaxed volumes. No public setter
+    // exists on the shared control for this (every other host's default IS
+    // unchecked), so the checkbox is found by its own label text instead
+    // of widening that shared class for one caller's different default.
+    for (QCheckBox* box : relaxGroup->findChildren<QCheckBox*>())
+        if (box->text().contains(QStringLiteral("Relax the unit cell")))
+            box->setChecked(true);
+
+    layout->addWidget(relaxGroup);
+    layout->addStretch(1);
     return page;
 }
 
@@ -280,6 +393,7 @@ void DsimWizard::refillList()
         listWidget_->addItem(text);
     }
     updateSummary();
+    updateMultiPhaseVisibility();
 }
 
 void DsimWizard::updateSummary()
@@ -315,6 +429,23 @@ void DsimWizard::updateSummary()
                                 .arg(counts.join(QStringLiteral("; "))));
 }
 
+void DsimWizard::updateMultiPhaseVisibility()
+{
+    if (!multiPhaseCheck_)
+        return;
+    const bool eligible = validEntries().size() == 2;
+    multiPhaseCheck_->setEnabled(eligible);
+    if (!eligible && multiPhaseCheck_->isChecked())
+        multiPhaseCheck_->setChecked(false); // e.g. a 3rd structure just got added — stay
+                                              // an ordinary N-component run, not silently
+                                              // still "multi-phase" for a mode that needs N=2
+    const bool showFields = eligible && multiPhaseCheck_->isChecked();
+    if (auto* group = qobject_cast<QGroupBox*>(phaseALabelEdit_ ? phaseALabelEdit_->parentWidget() : nullptr)) {
+        setFormRowVisible(group, phaseALabelEdit_, showFields);
+        setFormRowVisible(group, phaseBLabelEdit_, showFields);
+    }
+}
+
 void DsimWizard::goNext()
 {
     if (!structuresBuilt_) {
@@ -328,21 +459,84 @@ void DsimWizard::goNext()
         const int nx = nxSpin_->value();
         const int ny = nySpin_->value();
         const int nz = nzSpin_->value();
-        const std::size_t n = valid.size();
-        builtSpecies_.resize(n);
-        builtPristine_.resize(n);
-        for (std::size_t i = 0; i < n; ++i) {
-            builtSpecies_[i] = valid[i].species.toStdString();
-            builtPristine_[i] =
-                pybridge::AseBridge::makeSupercell(*valid[i].structure, nx, ny, nz);
-        }
-        builtImpurity_.assign(n, std::vector<core::Structure>(n));
-        for (std::size_t i = 0; i < n; ++i) {
-            const int soluteZ = core::Elements::atomicNumber(builtSpecies_[i]);
-            for (std::size_t j = 0; j < n; ++j) {
-                if (i == j)
-                    continue;
-                builtImpurity_[i][j] = substituteOne(builtPristine_[j], soluteZ);
+
+        const bool wantMultiPhase =
+            multiPhaseCheck_ && multiPhaseCheck_->isChecked() && valid.size() == 2;
+        if (wantMultiPhase) {
+            const QString labelA = phaseALabelEdit_ ? phaseALabelEdit_->text().trimmed() : QString();
+            const QString labelB = phaseBLabelEdit_ ? phaseBLabelEdit_->text().trimmed() : QString();
+            if (labelA.isEmpty() || labelB.isEmpty()) {
+                QMessageBox::information(
+                    this, tr("DSIM"),
+                    tr("Name both phases (e.g. \"bcc\", \"hcp\") before continuing."));
+                return;
+            }
+            const int zA = core::Elements::atomicNumber(valid[0].species.toStdString());
+            const int zB = core::Elements::atomicNumber(valid[1].species.toStdString());
+            // Each element's OWN supercell, on its OWN input structure —
+            // the normal DSIM pristine build — plus the OTHER element
+            // relabeled onto that same template (relaxed later, in the
+            // generated script, to its own equilibrium volume there).
+            const core::Structure pristineA_onA =
+                pybridge::AseBridge::makeSupercell(*valid[0].structure, nx, ny, nz);
+            const core::Structure pristineB_onB =
+                pybridge::AseBridge::makeSupercell(*valid[1].structure, nx, ny, nz);
+            // core::solveDsimMultiPhase shares ONE supercellAtomCount (and
+            // therefore one dilution) across both branches — needed for
+            // the lattice-stability shift's per-atom division to compare
+            // like with like (see its own doc comment). Different input
+            // cells with different atom counts (e.g. a 1-atom bcc
+            // primitive cell against a 2-atom hcp conventional cell) would
+            // silently break that, so it is refused here rather than
+            // producing a shift computed across mismatched N.
+            if (pristineA_onA.size() != pristineB_onB.size()) {
+                QMessageBox::information(
+                    this, tr("DSIM"),
+                    tr("The two input structures build supercells of different atom "
+                       "counts here (%1 vs %2 atoms, at this nx/ny/nz repeat) — "
+                       "multi-phase mode needs both phase branches on the same atom "
+                       "count. Pick input cells with matching atoms-per-cell (e.g. "
+                       "both primitive or both conventional), or adjust the repeat.")
+                        .arg(pristineA_onA.size())
+                        .arg(pristineB_onB.size()));
+                return;
+            }
+            const core::Structure pristineB_onA = relabelAll(pristineA_onA, zB);
+            const core::Structure pristineA_onB = relabelAll(pristineB_onB, zA);
+
+            builtSpeciesA_ = valid[0].species.toStdString();
+            builtSpeciesB_ = valid[1].species.toStdString();
+
+            builtPhaseA_.phaseLabel = labelA.toStdString();
+            builtPhaseA_.pristineA = pristineA_onA;
+            builtPhaseA_.pristineB = pristineB_onA;
+            builtPhaseA_.impurityBInA = substituteOne(pristineA_onA, zB); // B diluted in A
+            builtPhaseA_.impurityAInB = substituteOne(pristineB_onA, zA); // A diluted in (B-on-A's lattice)
+
+            builtPhaseB_.phaseLabel = labelB.toStdString();
+            builtPhaseB_.pristineA = pristineA_onB;
+            builtPhaseB_.pristineB = pristineB_onB;
+            builtPhaseB_.impurityBInA = substituteOne(pristineA_onB, zB); // B diluted in (A-on-B's lattice)
+            builtPhaseB_.impurityAInB = substituteOne(pristineB_onB, zA); // A diluted in B
+
+            multiPhaseMode_ = true;
+        } else {
+            const std::size_t n = valid.size();
+            builtSpecies_.resize(n);
+            builtPristine_.resize(n);
+            for (std::size_t i = 0; i < n; ++i) {
+                builtSpecies_[i] = valid[i].species.toStdString();
+                builtPristine_[i] =
+                    pybridge::AseBridge::makeSupercell(*valid[i].structure, nx, ny, nz);
+            }
+            builtImpurity_.assign(n, std::vector<core::Structure>(n));
+            for (std::size_t i = 0; i < n; ++i) {
+                const int soluteZ = core::Elements::atomicNumber(builtSpecies_[i]);
+                for (std::size_t j = 0; j < n; ++j) {
+                    if (i == j)
+                        continue;
+                    builtImpurity_[i][j] = substituteOne(builtPristine_[j], soluteZ);
+                }
             }
         }
         structuresBuilt_ = true;
@@ -350,15 +544,28 @@ void DsimWizard::goNext()
     SimulationWizardBase::goNext();
 }
 
+core::CalculatorConfig DsimWizard::builtCalculatorConfig() const
+{
+    core::CalculatorConfig calc = baseCalculatorConfig();
+    calc.task = core::TaskKind::GeometryOptimization;
+    // Stage 3's own controls, not silent hardcoding — see
+    // buildSecondSettingsPage(). optimizerCombo_/fmax_/maxStepsSpin_/cell_
+    // are null only if generateScript() is somehow called before buildUi()
+    // finishes building every stage, which does not happen in practice
+    // (the review stage that calls it is built last).
+    if (optimizerCombo_)
+        calc.optimizer = static_cast<core::Optimizer>(optimizerCombo_->currentIndex());
+    calc.fmax = fmax_.value();
+    if (maxStepsSpin_)
+        calc.maxSteps = maxStepsSpin_->value();
+    cell_.applyTo(calc);
+    return calc;
+}
+
 core::DsimConfig DsimWizard::config() const
 {
     core::DsimConfig cfg;
-    cfg.calculator = baseCalculatorConfig();
-    // The paper's protocol: full ion + cell relaxation for every one of
-    // the N + N(N-1) supercells, never single-point — see the module doc
-    // page's "Methods" note.
-    cfg.calculator.task = core::TaskKind::GeometryOptimization;
-    cfg.calculator.relaxCell = true;
+    cfg.calculator = builtCalculatorConfig();
     cfg.species = builtSpecies_;
     cfg.pristine = builtPristine_;
     cfg.impurity = builtImpurity_;
@@ -367,6 +574,15 @@ core::DsimConfig DsimWizard::config() const
 
 QString DsimWizard::generateScript() const
 {
+    if (multiPhaseMode_) {
+        core::DsimMultiPhaseConfig cfg;
+        cfg.calculator = builtCalculatorConfig();
+        cfg.speciesA = builtSpeciesA_;
+        cfg.speciesB = builtSpeciesB_;
+        cfg.phaseA = builtPhaseA_;
+        cfg.phaseB = builtPhaseB_;
+        return QString::fromStdString(core::generateDsimMultiPhaseScript(cfg));
+    }
     return QString::fromStdString(core::generateDsimScript(config()));
 }
 

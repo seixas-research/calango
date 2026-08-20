@@ -78,6 +78,14 @@ void DsimTernaryPlotWidget::setData(std::vector<GridPoint> grid, int resolution,
     update();
 }
 
+void DsimTernaryPlotWidget::setShowColorbar(bool show)
+{
+    if (showColorbar_ == show)
+        return;
+    showColorbar_ = show;
+    update();
+}
+
 void DsimTernaryPlotWidget::clear()
 {
     grid_.clear();
@@ -154,7 +162,13 @@ void DsimTernaryPlotWidget::render(QPainter& painter, const QRectF& bounds) cons
     painter.fillRect(bounds, PlotPalette::canvas);
 
     const double colorbarWidth = 26.0;
-    const double rightMargin = 70.0;
+    // Reserved only when the colorbar actually draws — otherwise the
+    // triangle gets the full width, and either way the colorbar itself is
+    // positioned off plotRect_'s own right edge below (not off `bounds`),
+    // so it sits right next to whatever the triangle actually rendered at
+    // rather than leaving a gap sized by how much of triangleArea the
+    // (height-constrained, typically) triangle did NOT fill.
+    const double rightMargin = showColorbar_ ? 70.0 : 0.0;
     const QRectF triangleArea(bounds.left(), bounds.top(), bounds.width() - rightMargin,
                               bounds.height());
     const double side = std::min(triangleArea.width() - 60.0, triangleArea.height() - 70.0);
@@ -259,43 +273,54 @@ void DsimTernaryPlotWidget::render(QPainter& painter, const QRectF& bounds) cons
         QPointF(left.x() - metrics.horizontalAdvance(c) / 2.0, left.y() + metrics.height() + 10.0), c);
 
     // -- Colorbar --------------------------------------------------------------
-    const QRectF colorbarRect(bounds.right() - rightMargin + 20.0, plotRect_.top(), colorbarWidth,
-                              plotRect_.height());
-    QLinearGradient gradient(colorbarRect.topLeft(), colorbarRect.bottomLeft());
-    const int steps = 32;
-    for (int i = 0; i <= steps; ++i) {
-        const double t = static_cast<double>(i) / steps;
-        gradient.setColorAt(t, spectral(1.0 - t));
-    }
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(gradient);
-    painter.drawRect(colorbarRect);
-    painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(PlotPalette::spine, 1.4));
-    painter.drawRect(colorbarRect);
+    // Anchored off plotRect_'s own right edge (the triangle's ACTUAL
+    // rendered boundary), not `bounds`, so it sits right next to the
+    // triangle regardless of how much of triangleArea the (typically
+    // height-constrained) triangle left unfilled.
+    if (showColorbar_) {
+        constexpr double kGapFromTriangle = 14.0;
+        const QRectF colorbarRect(plotRect_.right() + kGapFromTriangle, plotRect_.top(),
+                                  colorbarWidth, plotRect_.height());
+        QLinearGradient gradient(colorbarRect.topLeft(), colorbarRect.bottomLeft());
+        const int steps = 32;
+        for (int i = 0; i <= steps; ++i) {
+            const double t = static_cast<double>(i) / steps;
+            gradient.setColorAt(t, spectral(1.0 - t));
+        }
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(gradient);
+        painter.drawRect(colorbarRect);
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(PlotPalette::spine, 1.4));
+        painter.drawRect(colorbarRect);
 
-    painter.setPen(PlotPalette::tickText);
-    QFont tickFont = painter.font();
-    tickFont.setPointSizeF(std::max(7.0, tickFont.pointSizeF() - 1.0));
-    painter.setFont(tickFont);
-    const QFontMetricsF tickMetrics(tickFont);
-    const int colorbarTicks = 5;
-    const double span = maxEnthalpy_ - minEnthalpy_;
-    for (int i = 0; i <= colorbarTicks; ++i) {
-        const double t = static_cast<double>(i) / colorbarTicks;
-        const double value = minEnthalpy_ + (1.0 - t) * span;
-        const double y = colorbarRect.top() + t * colorbarRect.height();
-        painter.drawLine(QPointF(colorbarRect.right(), y), QPointF(colorbarRect.right() + 4.0, y));
-        painter.drawText(QPointF(colorbarRect.right() + 7.0, y + tickMetrics.height() / 3.0),
-                         QString::number(value, 'f', 2));
+        // Text colour, not the fainter tick colour: a colorbar's numbers
+        // ARE its axis, unlike the triangle's own edges (which carry no
+        // numeric labels at all, only the dashed gridlines + corner names).
+        painter.setPen(PlotPalette::text);
+        QFont tickFont = painter.font();
+        tickFont.setPointSizeF(std::max(7.0, tickFont.pointSizeF() - 1.0));
+        painter.setFont(tickFont);
+        const QFontMetricsF tickMetrics(tickFont);
+        const int colorbarTicks = 5;
+        const double span = maxEnthalpy_ - minEnthalpy_;
+        for (int i = 0; i <= colorbarTicks; ++i) {
+            const double t = static_cast<double>(i) / colorbarTicks;
+            const double value = minEnthalpy_ + (1.0 - t) * span;
+            const double y = colorbarRect.top() + t * colorbarRect.height();
+            painter.drawLine(QPointF(colorbarRect.right(), y), QPointF(colorbarRect.right() + 4.0, y));
+            painter.drawText(QPointF(colorbarRect.right() + 7.0, y + tickMetrics.height() / 3.0),
+                             QString::number(value, 'f', 2));
+        }
+        painter.save();
+        painter.translate(colorbarRect.left() - 30.0, colorbarRect.center().y());
+        painter.rotate(-90.0);
+        painter.setPen(PlotPalette::text);
+        // Real Delta, not the literal "DH_mix" this used to read.
+        drawWithSubscripts(painter, QRectF(-60.0, -12.0, 120.0, 24.0),
+                           tr("ΔH_{mix} (%1)").arg(unitLabel_));
+        painter.restore();
     }
-    painter.save();
-    painter.translate(colorbarRect.left() - 30.0, colorbarRect.center().y());
-    painter.rotate(-90.0);
-    painter.setPen(PlotPalette::text);
-    drawWithSubscripts(painter, QRectF(-60.0, -12.0, 120.0, 24.0),
-                       tr("DH_{mix} (%1)").arg(unitLabel_));
-    painter.restore();
 }
 
 } // namespace calango::gui

@@ -32,6 +32,8 @@ DsimPlotStyleDialog::DsimPlotStyleDialog(const DsimPlotStyle& style, QWidget* pa
     displayForm->addRow(showTangentsCheck_);
     kjPerMolCheck_ = new QCheckBox(tr("kJ/mol (unchecked: eV/atom)"), displayGroup);
     displayForm->addRow(tr("Units:"), kjPerMolCheck_);
+    showColorbarCheck_ = new QCheckBox(tr("Show colorbar (ternary plots only)"), displayGroup);
+    displayForm->addRow(showColorbarCheck_);
     layout->addWidget(displayGroup);
 
     auto* buttons = new QDialogButtonBox(
@@ -54,6 +56,10 @@ DsimPlotStyleDialog::DsimPlotStyleDialog(const DsimPlotStyle& style, QWidget* pa
     });
     connect(kjPerMolCheck_, &QCheckBox::toggled, this, [this](bool on) {
         style_.useKilojoulesPerMole = on;
+        emitStyle();
+    });
+    connect(showColorbarCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        style_.showColorbar = on;
         emitStyle();
     });
 }
@@ -82,6 +88,8 @@ void DsimPlotStyleDialog::syncToControls()
     showTangentsCheck_->setChecked(style_.showTangents);
     const QSignalBlocker blockUnits(kjPerMolCheck_);
     kjPerMolCheck_->setChecked(style_.useKilojoulesPerMole);
+    const QSignalBlocker blockColorbar(showColorbarCheck_);
+    showColorbarCheck_->setChecked(style_.showColorbar);
 }
 
 void DsimPlotStyleDialog::restoreDefaults()

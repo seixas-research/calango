@@ -3,6 +3,8 @@
 #include "core/CalculatorConfig.hpp"
 #include "core/DsimScriptGenerator.hpp"
 #include "core/Structure.hpp"
+#include "gui/CellRelaxationControls.hpp"
+#include "gui/ForceConvergenceControl.hpp"
 #include "gui/SimulationWizardBase.hpp"
 
 #include <QList>
@@ -11,7 +13,10 @@
 
 #include <memory>
 
+class QCheckBox;
+class QComboBox;
 class QLabel;
+class QLineEdit;
 class QListWidget;
 class QPushButton;
 class QSpinBox;
@@ -26,8 +31,12 @@ namespace calango::gui {
 /// Stage 1 is DSIM's own settings: a list of N >= 2 pristine reference
 /// structures — added from an open document or imported from a file, each
 /// its own element's own native geometry, not a shared template relabeled
-/// — plus the supercell repeat count. Stages 2-3 are the shared Calculator
-/// Settings and ASE Script Review, exactly as in ClusterExpansionWizard.
+/// — plus the supercell repeat count. Stage 2 is the shared Calculator
+/// Settings; Stage 3 is DSIM's own second page, Geometry Optimization
+/// Settings (optimizer, force convergence, max steps, cell-relaxation mode
+/// — see secondSettingsHeader()'s doc comment for why this is its own
+/// stage rather than folded into Stage 1); Stage 4 is the shared ASE
+/// Script Review.
 /// Unlike every existing multi-calculation alloy module (EGQCA, CVM, the
 /// Orchestration canvas's SqsGenerator/ClusterExpansionFit/CvmEntropy/
 /// KkrCpa/TdbGenerator, all of which run in-process against a batch a
@@ -77,6 +86,18 @@ protected:
     QString wizardTitle() const override;
     QString settingsHeader() const override;
     QWidget* buildSettingsPage() override;
+    /// Its own stage (Stage 3, after Calculator Settings) rather than a
+    /// group folded into Stage 1: the paper's protocol relaxes every
+    /// supercell (ions AND cell, force criterion < 0.02 eV/Å), and the
+    /// force convergence / optimizer / max-steps / cell-relaxation-mode
+    /// choices that govern HOW deserve the same visible, configurable
+    /// standing every other relaxation-capable wizard gives them —
+    /// reusing ForceConvergenceControl/CellRelaxationControls, the SAME
+    /// shared controls Geometry Optimization and Cluster Expansion's own
+    /// batch relax use, rather than silently hardcoding the paper's
+    /// defaults where nothing on screen said so.
+    QString secondSettingsHeader() const override;
+    QWidget* buildSecondSettingsPage() override;
     QString generateScript() const override;
     QString exportFileName() const override { return QStringLiteral("dsim.py"); }
     QStringList calculatorElements() const override;
@@ -96,6 +117,11 @@ private Q_SLOTS:
     void addFromFile();
     void removeSelected();
     void updateSummary();
+    /// Shows/hides the two phase-label fields and enables/disables the
+    /// checkbox itself — multi-phase mode is only meaningful for exactly
+    /// 2 valid components (see the checkbox's own tooltip / class doc
+    /// comment's "Multi-phase alloys" paragraph).
+    void updateMultiPhaseVisibility();
 
 private:
     /// One candidate input structure: its display name, the structure
@@ -116,6 +142,10 @@ private:
     /// entries validate, or any two share a species.
     std::vector<Entry> validEntries() const;
     core::DsimConfig config() const;
+    /// Stage 3's controls, read into a bare CalculatorConfig — the part
+    /// config() and the multi-phase branch of generateScript() both need,
+    /// factored out so multi-phase does not hand-copy it.
+    core::CalculatorConfig builtCalculatorConfig() const;
 
     MaterialList openDocuments_;
     std::vector<Entry> entries_;
@@ -129,11 +159,40 @@ private:
     QSpinBox* nzSpin_ = nullptr;
     QLabel* summaryLabel_ = nullptr;
 
+    // -- Multi-phase alloys (Fe(bcc)-Co(hcp) and similar) --------------------
+    // A 2-component-only mode: each of the two input structures keeps its
+    // OWN crystal structure (already true for every DSIM input — see the
+    // class doc comment), and this mode ALSO builds the other element
+    // relabeled onto each structure's template, producing two independent
+    // binary DSIM branches (one per phase) whose curves are then shifted
+    // onto a common energy reference — core::solveDsimMultiPhase's own doc
+    // comment / core/Dsim.hpp's "Multi-phase alloys" note. Enabled only
+    // when validEntries().size() == 2 (updateMultiPhaseVisibility()).
+    QCheckBox* multiPhaseCheck_ = nullptr;
+    QLineEdit* phaseALabelEdit_ = nullptr; ///< label for validEntries()[0]'s own structure (e.g. "bcc")
+    QLineEdit* phaseBLabelEdit_ = nullptr; ///< label for validEntries()[1]'s own structure (e.g. "hcp")
+
     /// Built once, in goNext(), the first time Stage 1 is left forward.
     bool structuresBuilt_ = false;
     std::vector<std::string> builtSpecies_;
     std::vector<core::Structure> builtPristine_;
     std::vector<std::vector<core::Structure>> builtImpurity_;
+
+    /// True when goNext() built the multi-phase (8-supercell) case instead
+    /// of the ordinary N-component one above — generateScript() dispatches
+    /// on this rather than on N, since N==2 is also the ordinary binary
+    /// case's own size.
+    bool multiPhaseMode_ = false;
+    std::string builtSpeciesA_;
+    std::string builtSpeciesB_;
+    core::DsimPhaseBranchConfig builtPhaseA_;
+    core::DsimPhaseBranchConfig builtPhaseB_;
+
+    // -- Stage 3: Geometry Optimization Settings -----------------------------
+    QComboBox* optimizerCombo_ = nullptr;
+    ForceConvergenceControl fmax_;
+    QSpinBox* maxStepsSpin_ = nullptr;
+    CellRelaxationControls cell_{this};
 };
 
 } // namespace calango::gui

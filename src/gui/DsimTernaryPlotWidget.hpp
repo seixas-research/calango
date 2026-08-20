@@ -48,6 +48,11 @@ public:
     void clear();
     bool hasData() const { return hasData_; }
 
+    /// Whether the colour scale legend is drawn at all — an appearance
+    /// option, same role as the binary plot's tangent-lines toggle.
+    void setShowColorbar(bool show);
+    bool showColorbar() const { return showColorbar_; }
+
     QString toCsv() const;
     bool exportImage(const QString& path, double scale = 3.0);
     void render(QPainter& painter, const QRectF& bounds) const;
@@ -67,6 +72,7 @@ private:
     QStringList species_;
     QString unitLabel_;
     bool hasData_ = false;
+    bool showColorbar_ = true;
     mutable QRectF plotRect_;
     double minEnthalpy_ = 0.0;
     double maxEnthalpy_ = 0.0;

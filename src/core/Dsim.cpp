@@ -210,4 +210,59 @@ DsimMulticomponentResult solveDsimMulticomponent(const std::vector<std::string>&
     return result;
 }
 
+DsimBinaryResult applyLatticeStabilityShift(const DsimBinaryResult& raw,
+                                            const DsimLatticeStabilityShift& shift)
+{
+    DsimBinaryResult out = raw;
+    for (DsimCurvePoint& point : out.curve) {
+        const double addEv = (1.0 - point.x) * shift.atX0Ev + point.x * shift.atX1Ev;
+        point.enthalpyEvPerAtom += addEv;
+        point.enthalpyKjPerMol += addEv * kEvToKjPerMol;
+    }
+    // dHdxAt0/dHdxAt1 are the tangent lines' SLOPES; a shift that is linear
+    // in x moves a curve's endpoint VALUES, not its derivative, so both
+    // are left exactly as solveDsimBinary computed them.
+    return out;
+}
+
+DsimMultiPhaseResult solveDsimMultiPhase(const std::string& speciesA, const std::string& phaseALabel,
+                                         const DsimPhaseBranchEnergies& phaseAEnergies,
+                                         const std::string& speciesB, const std::string& phaseBLabel,
+                                         const DsimPhaseBranchEnergies& phaseBEnergies,
+                                         int supercellAtomCount, int compositionPoints)
+{
+    DsimMultiPhaseResult result;
+    result.speciesA = speciesA;
+    result.speciesB = speciesB;
+
+    const double perAtom = supercellAtomCount > 0 ? 1.0 / static_cast<double>(supercellAtomCount) : 0.0;
+
+    result.phaseA.phaseLabel = phaseALabel;
+    result.phaseA.raw =
+        solveDsimBinary(speciesA, speciesB, supercellAtomCount, phaseAEnergies.pristineATotalEv,
+                        phaseAEnergies.pristineBTotalEv, phaseAEnergies.bInATotalEv,
+                        phaseAEnergies.aInBTotalEv, compositionPoints);
+    // Species B's own energy, on phase A's template vs. on its own (phase
+    // B) template, per atom — the lattice stability of B forced onto
+    // phase A, added at x=1 (see solveDsimMultiPhase's doc comment).
+    result.phaseA.shift.atX0Ev = 0.0;
+    result.phaseA.shift.atX1Ev =
+        (phaseAEnergies.pristineBTotalEv - phaseBEnergies.pristineBTotalEv) * perAtom;
+    result.phaseA.corrected = applyLatticeStabilityShift(result.phaseA.raw, result.phaseA.shift);
+
+    result.phaseB.phaseLabel = phaseBLabel;
+    result.phaseB.raw =
+        solveDsimBinary(speciesA, speciesB, supercellAtomCount, phaseBEnergies.pristineATotalEv,
+                        phaseBEnergies.pristineBTotalEv, phaseBEnergies.bInATotalEv,
+                        phaseBEnergies.aInBTotalEv, compositionPoints);
+    // Symmetrically: species A's own energy, on phase B's template vs. on
+    // phase A's, added at x=0.
+    result.phaseB.shift.atX0Ev =
+        (phaseBEnergies.pristineATotalEv - phaseAEnergies.pristineATotalEv) * perAtom;
+    result.phaseB.shift.atX1Ev = 0.0;
+    result.phaseB.corrected = applyLatticeStabilityShift(result.phaseB.raw, result.phaseB.shift);
+
+    return result;
+}
+
 } // namespace calango::core

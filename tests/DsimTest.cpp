@@ -343,6 +343,97 @@ int main()
               "(3-7 kJ/mol), not off by a factor of the supercell size");
     }
 
+    // -- Multi-phase alloys (Fe(bcc)-Co(hcp)) --------------------------------
+    // A synthetic, hand-derivable fixture (round supercell size, round
+    // energies) rather than a real relaxation, so every number below is
+    // checked against closed-form algebra, matching this file's own
+    // convention. Both branches' pristine energies are chosen so bcc is
+    // Fe's stable structure (pristineA_onA < pristineA_onB) and hcp is
+    // Co's (pristineB_onB < pristineB_onA), matching the constructor's own
+    // Fe(bcc)-Co(hcp) example.
+    {
+        const DsimPhaseBranchEnergies bccEnergies{
+            /*pristineA (Fe, bcc, stable)  */ -100.0, // -10.0 eV/atom
+            /*pristineB (Co, on bcc, meta) */ -97.0,  //  -9.7 eV/atom
+            /*bInA (Co-in-Fe-bcc)          */ -100.5,
+            /*aInB (Fe-in-Co-on-bcc)       */ -97.4,
+        };
+        const DsimPhaseBranchEnergies hcpEnergies{
+            /*pristineA (Fe, on hcp, meta) */ -96.0, //  -9.6 eV/atom
+            /*pristineB (Co, hcp, stable)  */ -98.0, //  -9.8 eV/atom
+            /*bInA (Co-in-Fe-on-hcp)       */ -96.3,
+            /*aInB (Fe-in-Co-hcp)          */ -98.2,
+        };
+        const DsimMultiPhaseResult mp = solveDsimMultiPhase(
+            "Fe", "bcc", bccEnergies, "Co", "hcp", hcpEnergies, /*supercellAtomCount*/ 10,
+            /*compositionPoints*/ 11);
+
+        check(mp.speciesA == "Fe" && mp.speciesB == "Co" && mp.phaseA.phaseLabel == "bcc"
+                  && mp.phaseB.phaseLabel == "hcp",
+              "labels/species pass through unchanged");
+
+        // Each branch is exactly the ordinary binary solve on its own four
+        // energies — no separate code path, just solveDsimBinary called
+        // twice.
+        const DsimBinaryResult bccOnly = solveDsimBinary("Fe", "Co", 10, bccEnergies.pristineATotalEv,
+                                                          bccEnergies.pristineBTotalEv,
+                                                          bccEnergies.bInATotalEv,
+                                                          bccEnergies.aInBTotalEv, 11);
+        check(close(mp.phaseA.raw.mBInA, bccOnly.mBInA, 1e-12)
+                  && close(mp.phaseA.raw.mAInB, bccOnly.mAInB, 1e-12),
+              "the bcc branch's raw M-values match solveDsimBinary called directly on the same four energies");
+
+        // Both raw branches are zero at BOTH ends by Eq. 7's own
+        // construction (the pristine supercells are each branch's own
+        // zero reference) -- true regardless of which structure is
+        // "really" stable.
+        check(close(mp.phaseA.raw.curve.front().enthalpyEvPerAtom, 0.0)
+                  && close(mp.phaseA.raw.curve.back().enthalpyEvPerAtom, 0.0),
+              "the raw bcc-branch curve is zero at both x=0 (Fe) and x=1 (Co-on-bcc)");
+        check(close(mp.phaseB.raw.curve.front().enthalpyEvPerAtom, 0.0)
+                  && close(mp.phaseB.raw.curve.back().enthalpyEvPerAtom, 0.0),
+              "the raw hcp-branch curve is zero at both x=0 (Fe-on-hcp) and x=1 (Co)");
+
+        // The bcc branch is native to Fe: unshifted at x=0, shifted at
+        // x=1 by EXACTLY Co's own bcc-vs-hcp energy difference per atom
+        // -- the user's own worked description of the feature.
+        const double coLatticeStabilityEvPerAtom =
+            bccEnergies.pristineBTotalEv / 10.0 - hcpEnergies.pristineBTotalEv / 10.0;
+        check(close(coLatticeStabilityEvPerAtom, 0.1, 1e-12),
+              "fixture sanity: Co is 0.1 eV/atom higher in bcc than in hcp");
+        check(close(mp.phaseA.shift.atX0Ev, 0.0),
+              "the bcc branch (native to Fe) has no shift at x=0");
+        check(close(mp.phaseA.shift.atX1Ev, coLatticeStabilityEvPerAtom, 1e-12),
+              "and its x=1 shift is exactly Co's bcc-hcp lattice stability, eV/atom");
+        check(close(mp.phaseA.corrected.curve.front().enthalpyEvPerAtom, 0.0),
+              "so the CORRECTED bcc-branch curve is still zero at Fe (x=0)");
+        check(close(mp.phaseA.corrected.curve.back().enthalpyEvPerAtom, coLatticeStabilityEvPerAtom,
+                    1e-12),
+              "but has a FINITE value at Co (x=1) equal to that lattice stability -- "
+              "exactly the behaviour requested for Fe(bcc)-Co(hcp)");
+
+        // Symmetrically, the hcp branch is native to Co.
+        const double feLatticeStabilityEvPerAtom =
+            hcpEnergies.pristineATotalEv / 10.0 - bccEnergies.pristineATotalEv / 10.0;
+        check(close(feLatticeStabilityEvPerAtom, 0.4, 1e-12),
+              "fixture sanity: Fe is 0.4 eV/atom higher in hcp than in bcc");
+        check(close(mp.phaseB.shift.atX1Ev, 0.0),
+              "the hcp branch (native to Co) has no shift at x=1");
+        check(close(mp.phaseB.shift.atX0Ev, feLatticeStabilityEvPerAtom, 1e-12),
+              "and its x=0 shift is exactly Fe's hcp-bcc lattice stability, eV/atom");
+        check(close(mp.phaseB.corrected.curve.back().enthalpyEvPerAtom, 0.0),
+              "so the CORRECTED hcp-branch curve is still zero at Co (x=1)");
+        check(close(mp.phaseB.corrected.curve.front().enthalpyEvPerAtom, feLatticeStabilityEvPerAtom,
+                    1e-12),
+              "but has a finite value at Fe (x=0) equal to Fe's own lattice stability");
+
+        // A linear-in-x shift moves endpoint VALUES, never the tangent
+        // SLOPES at either end.
+        check(close(mp.phaseA.raw.dHdxAt0, mp.phaseA.corrected.dHdxAt0, 1e-12)
+                  && close(mp.phaseA.raw.dHdxAt1, mp.phaseA.corrected.dHdxAt1, 1e-12),
+              "the shift changes curve values but not the dilute-limit tangent slopes");
+    }
+
     if (failures == 0) {
         std::printf("\nAll DSIM checks passed.\n");
         return EXIT_SUCCESS;

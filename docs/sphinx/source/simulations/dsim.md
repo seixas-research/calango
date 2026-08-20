@@ -129,12 +129,28 @@ true there too).
    {doc}`/simulations/scripts` already reads) — each its own element's own
    native geometry (not a shared template relabeled), refused if it is not
    single-species or duplicates an already-added element — plus the
-   supercell repeat count (default 3×3×3, the paper's own choice).
-2. Stages 2-3 are the shared Calculator Settings and ASE Script Review,
-   exactly as in every other `SimulationWizardBase` wizard — any ASE
-   calculator works (EMT, MACE, GPAW, VASP, …), not restricted to one
-   engine, the same stance as `ElasticConfig`.
-3. On leaving Stage 1, every pristine supercell is built once, synchronously,
+   supercell repeat count (default 3×3×3, the paper's own choice). A
+   "Multi-phase alloy" checkbox appears here too, enabled only for $N=2$ —
+   see "Multi-phase alloys" below.
+2. Stage 2 is the shared Calculator Settings, exactly as in every other
+   `SimulationWizardBase` wizard — any ASE calculator works (EMT, MACE,
+   GPAW, VASP, …), not restricted to one engine, the same stance as
+   `ElasticConfig`.
+3. **Geometry Optimization Settings (Stage 3)**: DSIM's own second settings
+   page — optimizer, force convergence (`ForceConvergenceControl`, default
+   0.02 eV/Å, the paper's own criterion, not the shared 0.05 default every
+   other wizard using that control starts from), max steps per supercell,
+   and cell-relaxation mode (`CellRelaxationControls`, the same widget
+   Geometry Optimization and Cluster Expansion's batch relax use — but
+   defaulting to **on** here, unlike those: the paper's protocol relaxes
+   the cell unconditionally, so there is no fixed-cell mode to opt out
+   into). Broken out as its own stage rather than folded into Stage 1's
+   settings so these choices get the same visible, configurable standing
+   every other relaxation-capable wizard gives them, instead of being
+   silently hardcoded to the paper's own defaults with nothing on screen
+   saying so.
+4. Stage 4 is the shared ASE Script Review.
+5. On leaving Stage 1, every pristine supercell is built once, synchronously,
    in C++ — `pybridge::AseBridge::makeSupercell()` on each of the $N$ input
    structures independently (each keeps its own native lattice; the model
    still assumes one crystal STRUCTURE type across all $N$, per the "Unit
@@ -144,7 +160,7 @@ true there too).
    script as literal `ase.Atoms(...)` geometry — the same "precompute in
    C++, bake into the script" idiom `ElasticScriptGenerator` uses for its
    strain matrices — so DSIM needs no staged trajectory file.
-4. The generated script relaxes every supercell (**ions and cell** — the
+6. The generated script relaxes every supercell (**ions and cell** — the
    paper's protocol: force criterion < 0.02 eV/Å including unit-cell
    relaxation, never single-point), computes the full $N \times N$
    differential-mixing-enthalpy matrix and — depending on $N$ — the
@@ -171,7 +187,13 @@ on demand from the Processes panel), showing:
   (mpltern-style) rasterized directly from the closed-form grid (no
   interpolation-from-scattered-points needed, since the grid already IS
   regular), reusing `TernaryClusterHullWidget`'s projection/gridline/
-  colourbar chrome.
+  colourbar chrome. The colourbar's tick labels render in `PlotPalette`'s
+  ordinary text colour (not a separate "tick text" token no other DSIM
+  plot has), its $\Delta H_\text{mix}$ label renders the real Δ glyph (a
+  literal "DH_mix" string, not the intended one, was the bug), it sits a
+  fixed 14px off the triangle's own right edge rather than a gap computed
+  from the plot bounds, and it can be hidden entirely — a
+  `showColorbar` toggle on `DsimPlotStyle`, next to the tangent-lines one.
 - **For $N \geq 4$**: the $N(N-1)/2$ pairwise binary sub-curves together on
   one `EgqcaPlotWidget` (species $i$ vs. $j$, every other species held at
   0) — no direct $N$-dimensional visualization exists, so this is the
@@ -289,6 +311,103 @@ $N \geq 4$ has no *direct* full-dimensional visualization (the paper's own
 answer for its quinary AgAuCuPdPt case is 1D composition-line slices
 through the higher-dimensional simplex, e.g. Fig. 6c-e) — the pairwise
 fallback is a deliberate, simpler substitute, not an attempt at one.
+
+## Multi-phase alloys
+
+The model above (and its "Validity" note) assumes both end members share
+**one** crystal structure — right for Au-Pt, wrong for a pair like Fe-Co,
+where the two elements are stable in *different* structures (bcc and hcp
+respectively). Checking "Multi-phase alloy" in Stage 1 (enabled only for
+$N=2$) switches to a different pipeline for exactly that case: two
+independent DSIM binary branches, one per element's own crystal structure,
+solved separately and then shifted onto **one common energy reference** so
+they are directly comparable — the lower curve at each composition is the
+stable phase, the same question a CALPHAD lattice-stability diagram
+answers.
+
+**The physics.** Each branch is an *ordinary* Eq. 7 binary solve (nothing
+new there) on its own crystal-structure template: the bcc branch's four
+supercells are bcc Fe (the real, stable element — Stage 1's own input
+structure), "Co" built by **relabeling** Fe's bcc template to Co and
+relaxing it there, Co diluted in bcc Fe, and Fe diluted in (Co-on-bcc); the
+hcp branch is the symmetric four built from Co's own hcp template. Eq. 7
+makes every such raw branch curve exactly zero at **both** its own
+endpoints by construction — right for an ordinary single-lattice alloy, but
+wrong here: the bcc branch's $x=1$ endpoint is "Co forced onto bcc", not
+real (hcp) Co, so it is not the reference the *other* branch (or the real
+world) uses for pure Co. `core::applyLatticeStabilityShift` corrects this:
+a constant, per-atom, **linear-in-$x$** offset that moves the bcc branch's
+$x=1$ value onto hcp Co's own (relaxed, stable) energy instead of bcc Co's,
+and symmetrically moves the hcp branch's $x=0$ value onto bcc Fe's. Each
+shift is exactly the *lattice stability* of that element in the other
+structure — $E(\text{element, wrong structure}) - E(\text{element, its own
+stable structure})$, eV/atom — computed directly from the two branches' own
+pristine energies, no extra calculation needed:
+
+$$
+\Delta H_\text{mix}^{\text{bcc, corrected}}(x) =
+\Delta H_\text{mix}^{\text{bcc, raw}}(x) + x \cdot \big[e_\text{Co}^\text{bcc} - e_\text{Co}^\text{hcp}\big],
+\qquad
+\Delta H_\text{mix}^{\text{hcp, corrected}}(x) =
+\Delta H_\text{mix}^{\text{hcp, raw}}(x) + (1-x) \cdot \big[e_\text{Fe}^\text{hcp} - e_\text{Fe}^\text{bcc}\big].
+$$
+
+So the bcc branch's corrected curve is zero at Fe ($x=0$, its own native
+element) but a **finite** value at Co ($x=1$) equal to Co's own bcc-hcp
+energy difference, per atom — and the hcp branch is the mirror image, zero
+at Co and finite at Fe. `core::solveDsimMultiPhase()` is the entry point
+(`DsimPhaseBranchEnergies` in, `DsimMultiPhaseResult` — both branches, raw
+*and* corrected — out); `tests/DsimTest.cpp` checks this against a
+hand-derivable, round-number Fe-Co-shaped fixture (10-atom supercells) to
+full closed-form precision, including that a linear shift moves a curve's
+endpoint *values* but never its dilute-limit tangent *slopes*.
+
+**Both branches need the same atom count.** The shift above divides an
+energy *difference between the two branches* by one shared
+`supercellAtomCount` — only a valid per-atom quantity when both branches'
+pristine supercells really hold the same number of atoms. `DsimWizard`
+enforces this: if the two input structures' own unit cells have different
+atom counts (e.g. bcc's 1-atom primitive rhombohedral cell against hcp's
+2-atom conventional cell), it refuses to build the multi-phase supercells
+and says so, rather than silently computing a shift across mismatched $N$
+— pick input cells with matching atoms-per-cell (both primitive, or both
+conventional) to avoid this.
+
+**Generation and output.** `core::generateDsimMultiPhaseScript()` relaxes
+all eight supercells (the same `relax()` routine and Stage 3 settings as
+the ordinary path), computes each branch's own $2\times 2$ energy/M
+matrix and raw curve, applies the shift above, and writes `dsim.json` with
+schema `calango.dsim/3` — a `multi_phase.phase_a`/`phase_b` pair, each
+carrying its own label, `raw`, and `corrected` curve (the same
+`x_grid`/`enthalpy_eV_per_atom`/`enthalpy_kJ_per_mol`/`dHdx_at_0_eV`/
+`dHdx_at_1_eV` shape the ordinary binary schema's `analysis.binary` block
+uses, reused rather than reinvented). `DsimResultsWindow` recognizes the
+schema and plots both branches' **corrected** curves together on one
+`EgqcaPlotWidget` — the same "several series, one plot" shape the $N \geq
+4$ pairwise view already uses, labelled by phase rather than species pair
+— with the tangent-lines toggle disabled (two branches, four slopes; the
+feature actually being compared is which curve sits lower at each $x$, not
+either one's own dilute-limit slope) and its own 8-supercell table
+(`pristine_A_phase`/`pristine_B_phase`/`B_in_A_phase`/`A_in_B_phase`, one
+group per branch).
+
+**Validated end to end for Fe(bcc)-Co(hcp)**, MACE (`MACE-matpes-pbe-omat-ft`,
+the same foundation model the Au-Pt cross-validation above uses — plain EMT
+has no Fe/Co parameters): all eight 54-atom supercells (bcc's and hcp's own
+2-atom conventional cells, 3×3×3, matching atom counts as the "same atom
+count" requirement above needs) relaxed and converged (16-36 steps each).
+MACE puts bcc Fe 0.171 eV/atom below hcp Fe and hcp Co 0.075 eV/atom below
+bcc Co — the CORRECT stable structure for each element, not just a
+plausible-looking number — which are exactly the two lattice-stability
+shifts applied: the bcc branch's corrected curve is 0 at Fe ($x=0$) and
+**0.075 eV/atom (7.25 kJ/mol) at Co** ($x=1$), the hcp branch's is
+**0.171 eV/atom (16.5 kJ/mol) at Fe** ($x=0$) and 0 at Co ($x=1$) — exactly
+the endpoint behaviour this feature was built for. The two curves cross
+near $x \approx 0.685$ (68.5% Co): MACE predicts the bcc-based solid
+solution is the lower-energy (stable) phase for Co content below that, hcp
+above it — qualitatively the shape of the real Fe-Co phase diagram, where
+the bcc α-phase extends across most of the Fe-rich-to-mid range and the hcp
+$\varepsilon$-phase dominates near pure Co.
 
 ## Orchestration
 

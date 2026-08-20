@@ -104,6 +104,11 @@ DsimResultsWindow::DsimResultsWindow(QWidget* parent)
     connect(dataButton, &QPushButton::clicked, this, &DsimResultsWindow::exportData);
 }
 
+bool DsimResultsWindow::isMultiPhase() const
+{
+    return root_.value(QStringLiteral("schema")).toString() == QStringLiteral("calango.dsim/3");
+}
+
 bool DsimResultsWindow::loadResults(const QString& path)
 {
     if (!QFile::exists(path))
@@ -119,6 +124,37 @@ bool DsimResultsWindow::loadResults(const QString& path)
     const double dilution = root_.value(QStringLiteral("dilution")).toDouble();
     const QJsonObject records = root_.value(QStringLiteral("records")).toObject();
     const QJsonObject failures = root_.value(QStringLiteral("failures")).toObject();
+
+    if (isMultiPhase()) {
+        // Schema calango.dsim/3: no top-level "analysis" object at all (a
+        // failed run's "multi_phase" key is null instead) — checked and
+        // reported separately from the ordinary N-component path below.
+        populateMultiPhaseTable(records);
+        const QString phaseA = root_.value(QStringLiteral("phase_a_label")).toString();
+        const QString phaseB = root_.value(QStringLiteral("phase_b_label")).toString();
+        if (!root_.value(QStringLiteral("multi_phase")).isObject()) {
+            summaryLabel_->setText(
+                tr("<b>%1(%2)-%3(%4)</b>: %5/8 supercell(s) failed to relax (%6) — "
+                   "DeltaH_mix is not available.")
+                    .arg(species_.value(0), phaseA, species_.value(1), phaseB)
+                    .arg(QString::number(failures.size()),
+                         QStringList(failures.keys()).join(QStringLiteral(", "))));
+            curvePlot_->clear();
+            ternaryPlot_->clear();
+            return true;
+        }
+        summaryLabel_->setText(
+            tr("<b>%1(%2)-%3(%4)</b> multi-phase alloy (%5-atom supercells, x0 = 1/%5 "
+               "= %6) &mdash; both branches shifted onto a common (lattice-stability-"
+               "corrected) energy reference so the lower curve at each composition is "
+               "the stable phase")
+                .arg(species_.value(0), phaseA, species_.value(1), phaseB)
+                .arg(natoms)
+                .arg(QString::number(dilution, 'g', 4)));
+        rebuildPlot();
+        return true;
+    }
+
     const QJsonValue analysisValue = root_.value(QStringLiteral("analysis"));
 
     populateTable(records);
@@ -167,6 +203,16 @@ bool DsimResultsWindow::loadResults(const QString& path)
 
 void DsimResultsWindow::rebuildPlot()
 {
+    if (isMultiPhase()) {
+        if (!root_.value(QStringLiteral("multi_phase")).isObject()) {
+            curvePlot_->clear();
+            ternaryPlot_->clear();
+            return;
+        }
+        rebuildMultiPhasePlot();
+        return;
+    }
+
     const QJsonObject analysis = root_.value(QStringLiteral("analysis")).toObject();
     if (analysis.isEmpty()) {
         curvePlot_->clear();
@@ -238,6 +284,7 @@ void DsimResultsWindow::rebuildPlot()
         for (std::size_t i = 0; i < xB.size() && i < xC.size() && i < h.size(); ++i)
             grid.push_back({xB[i], xC[i], h[i]});
         ternaryPlot_->setData(std::move(grid), resolution, species_, unitLabel);
+        ternaryPlot_->setShowColorbar(style_.showColorbar);
     } else {
         // -- N>=4: the pairwise binary sub-curves, together on one plot ------
         plotStack_->setCurrentWidget(curvePlot_);
@@ -262,6 +309,44 @@ void DsimResultsWindow::rebuildPlot()
         curvePlot_->setSeries(std::move(series), tr("x (fraction of species j)"),
                               tr("ΔH_{mix} (%1)").arg(unitLabel));
     }
+}
+
+void DsimResultsWindow::rebuildMultiPhasePlot()
+{
+    // Two series, one plot — the same shape the N>=4 pairwise view above
+    // uses, just with exactly two curves and phase labels instead of
+    // species-pair ones. No tangent-line concept here: each branch has
+    // its own dilute-limit pair, but the feature actually being compared
+    // is which curve sits LOWER at each x (the stable phase), not either
+    // one's own slope.
+    plotStack_->setCurrentWidget(curvePlot_);
+    if (tangentsCheck_)
+        tangentsCheck_->setEnabled(false);
+
+    const QString unitLabel = style_.useKilojoulesPerMole ? tr("kJ/mol") : tr("eV/atom");
+    const QString enthalpyKey = style_.useKilojoulesPerMole ? QStringLiteral("enthalpy_kJ_per_mol")
+                                                            : QStringLiteral("enthalpy_eV_per_atom");
+    const QJsonObject multiPhase = root_.value(QStringLiteral("multi_phase")).toObject();
+
+    std::vector<EgqcaPlotWidget::Series> series;
+    int index = 0;
+    for (const char* key : {"phase_a", "phase_b"}) {
+        const QJsonObject phase = multiPhase.value(QLatin1String(key)).toObject();
+        // The CORRECTED (lattice-stability-shifted) curve — the common-
+        // reference one the user actually compares the two phases by, not
+        // the raw, zero-at-both-ends-by-construction one (see
+        // core::DsimPhaseResult's doc comment).
+        const QJsonObject corrected = phase.value(QStringLiteral("corrected")).toObject();
+        EgqcaPlotWidget::Series curve;
+        curve.label = phase.value(QStringLiteral("label")).toString();
+        curve.color = pairwiseCurveColor(index++);
+        const std::vector<double> x = toDoubles(corrected.value(QStringLiteral("x_grid")).toArray());
+        const std::vector<double> h = toDoubles(corrected.value(enthalpyKey).toArray());
+        for (std::size_t i = 0; i < x.size() && i < h.size(); ++i)
+            curve.points.push_back({x[i], h[i]});
+        series.push_back(std::move(curve));
+    }
+    curvePlot_->setSeries(std::move(series), tr("x"), tr("ΔH_{mix} (%1)").arg(unitLabel));
 }
 
 void DsimResultsWindow::customizeAppearance()
@@ -311,6 +396,50 @@ void DsimResultsWindow::populateTable(const QJsonObject& records)
     }
 }
 
+void DsimResultsWindow::populateMultiPhaseTable(const QJsonObject& records)
+{
+    // Same LABELS order the multi-phase generator itself writes
+    // (generateDsimMultiPhaseScript: phase A's four supercells, then
+    // phase B's four) — see DsimScriptGenerator.cpp's phaseLabel()/
+    // pristineLabel()/impurityLabel() helpers, reimplemented here in
+    // miniature since the GUI never links the script generator's own
+    // anonymous-namespace helpers.
+    const QString spA = species_.value(0);
+    const QString spB = species_.value(1);
+    const QString phaseA = root_.value(QStringLiteral("phase_a_label")).toString();
+    const QString phaseB = root_.value(QStringLiteral("phase_b_label")).toString();
+
+    QStringList labels;
+    QStringList displayNames;
+    const auto addBranch = [&](const QString& phase) {
+        labels << QStringLiteral("pristine_") + spA + QStringLiteral("_") + phase;
+        displayNames << tr("pristine %1 (%2)").arg(spA, phase);
+        labels << QStringLiteral("pristine_") + spB + QStringLiteral("_") + phase;
+        displayNames << tr("pristine %1 (%2)").arg(spB, phase);
+        labels << spB + QStringLiteral("_in_") + spA + QStringLiteral("_") + phase;
+        displayNames << tr("%1 in %2 (%3)").arg(spB, spA, phase);
+        labels << spA + QStringLiteral("_in_") + spB + QStringLiteral("_") + phase;
+        displayNames << tr("%1 in %2 (%3)").arg(spA, spB, phase);
+    };
+    addBranch(phaseA);
+    addBranch(phaseB);
+
+    table_->setRowCount(labels.size());
+    for (int row = 0; row < labels.size(); ++row) {
+        const QJsonObject rec = records.value(labels[row]).toObject();
+        table_->setItem(row, 0, new QTableWidgetItem(displayNames[row]));
+        table_->setItem(row, 1, new QTableWidgetItem(rec.value(QStringLiteral("formula")).toString()));
+        table_->setItem(row, 2, numericItem(rec.value(QStringLiteral("natoms")).toInt(), 0));
+        table_->setItem(row, 3, numericItem(rec.value(QStringLiteral("energy")).toDouble()));
+        table_->setItem(row, 4, numericItem(rec.value(QStringLiteral("energy_per_atom")).toDouble()));
+        auto* convergedItem = new QTableWidgetItem(
+            rec.contains(QStringLiteral("converged"))
+                ? (rec.value(QStringLiteral("converged")).toBool() ? tr("yes") : tr("no"))
+                : tr("—"));
+        table_->setItem(row, 5, convergedItem);
+    }
+}
+
 void DsimResultsWindow::exportImage()
 {
     const QString path = QFileDialog::getSaveFileName(this, tr("Export DSIM Plot"),
@@ -337,7 +466,9 @@ void DsimResultsWindow::exportData()
         return;
 
     const QJsonObject analysis = root_.value(QStringLiteral("analysis")).toObject();
-    writeTextFile(this, path, [this, &analysis](QTextStream& out) {
+    const QJsonObject multiPhase = root_.value(QStringLiteral("multi_phase")).toObject();
+    const bool multiPhaseMode = isMultiPhase();
+    writeTextFile(this, path, [this, &analysis, &multiPhase, multiPhaseMode](QTextStream& out) {
         out << "# Calango DSIM (Dilute Solution Interpolation) results\n";
         out << "# supercell,formula,atoms,energy_eV,energy_per_atom_eV,converged\n";
         for (int row = 0; row < table_->rowCount(); ++row) {
@@ -346,6 +477,22 @@ void DsimResultsWindow::exportData()
             };
             out << cell(0) << ',' << cell(1) << ',' << cell(2) << ',' << cell(3) << ',' << cell(4)
                 << ',' << cell(5) << '\n';
+        }
+        if (multiPhaseMode) {
+            out << "#\n# phase,x,DeltaH_mix_kJ_per_mol (lattice-stability-CORRECTED, "
+                   "the common-reference curve)\n";
+            for (const char* key : {"phase_a", "phase_b"}) {
+                const QJsonObject phase = multiPhase.value(QLatin1String(key)).toObject();
+                const QString label = phase.value(QStringLiteral("label")).toString();
+                const QJsonObject corrected = phase.value(QStringLiteral("corrected")).toObject();
+                const std::vector<double> x =
+                    toDoubles(corrected.value(QStringLiteral("x_grid")).toArray());
+                const std::vector<double> h =
+                    toDoubles(corrected.value(QStringLiteral("enthalpy_kJ_per_mol")).toArray());
+                for (std::size_t i = 0; i < x.size() && i < h.size(); ++i)
+                    out << label << ',' << x[i] << ',' << h[i] << '\n';
+            }
+            return;
         }
         if (const QJsonValue binaryValue = analysis.value(QStringLiteral("binary"));
             binaryValue.isObject()) {

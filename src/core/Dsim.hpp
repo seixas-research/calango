@@ -271,4 +271,125 @@ DsimMulticomponentResult solveDsimMulticomponent(const std::vector<std::string>&
 /// implementation uses the more precise constant.
 inline constexpr double kEvToKjPerMol = 96.485332;
 
+/// ## Multi-phase alloys (Fe(bcc)-Co(hcp) and similar)
+///
+/// The model above assumes both end members share ONE crystal structure
+/// (the header doc comment's own "Validity" paragraph). A pair like Fe-Co,
+/// where the two elements are stable in DIFFERENT structures, needs one
+/// DSIM binary solved per candidate structure — a "bcc branch" and an "hcp
+/// branch" — so the two can be compared on one energy scale and the lower
+/// one at each composition read off as the stable phase, the same question
+/// a CALPHAD lattice-stability diagram answers.
+///
+/// Each branch is an ORDINARY binary DSIM problem (solveDsimBinary, exactly
+/// as above) solved on that phase's own crystal-structure template: the
+/// bcc branch's four supercells are bcc Fe, "Co" built by relabeling Fe's
+/// bcc template to Co and relaxing, Co-in-bcc-Fe, and Fe-in-(Co-on-bcc);
+/// the hcp branch is the symmetric four built from Co's hcp template. Eq. 7
+/// makes EVERY such raw branch curve zero at both x=0 and x=1 by
+/// construction (the pristine supercells are always its own zero
+/// reference) — which is right for a single-lattice alloy, but wrong here:
+/// the bcc branch's x=1 endpoint is "Co forced onto bcc", not real
+/// (hcp) Co, so it is not the thermodynamic reference the OTHER branch
+/// (and the real world) uses for pure Co.
+///
+/// `applyLatticeStabilityShift` corrects this: it adds a constant,
+/// per-atom, linear-in-x offset so the bcc branch's x=1 value lands on
+/// hcp Co's own (relaxed, stable) energy rather than bcc-Co's, and
+/// symmetrically for the hcp branch's x=0 value against bcc Fe. The shift
+/// at each endpoint is exactly the "lattice stability" of that element in
+/// the OTHER structure: E(element, wrong structure) - E(element, its own
+/// stable structure), eV/atom, always >= 0 when the labeled-stable
+/// structure really is lower in energy. `solveDsimMultiPhase` computes both
+/// shifts directly from the two branches' own pristine energies (no
+/// separate calculation needed — the four pristine supercells already
+/// pin down both elements in both structures) and returns both branches,
+/// raw and corrected, so the caller (DsimResultsWindow) can plot the
+/// corrected pair directly.
+
+/// The constant, linear-in-x correction one phase branch's raw DSIM curve
+/// needs to sit on a common (both-phases-comparable) energy reference —
+/// see the "Multi-phase alloys" note above. `atX0Ev` is added at x=0 (pure
+/// species A), `atX1Ev` at x=1 (pure species B); every intermediate x gets
+/// the linear interpolation (1-x)*atX0Ev + x*atX1Ev. A phase native to
+/// species A (its own x=0 pristine already IS that element's stable form)
+/// has atX0Ev == 0; a phase native to species B has atX1Ev == 0.
+struct DsimLatticeStabilityShift {
+    double atX0Ev = 0.0;
+    double atX1Ev = 0.0;
+};
+
+/// Returns `raw` with the lattice-stability shift folded into its curve
+/// (`enthalpyEvPerAtom`/`enthalpyKjPerMol` at every point) — a pure
+/// re-reference, not a re-fit: `dHdxAt0`/`dHdxAt1` (the tangent-line
+/// SLOPES) are unchanged, since adding a function that is linear in x only
+/// moves a curve's endpoint VALUES, not its derivative. Every other field
+/// (the raw energies, M-values, supercell count) is copied through
+/// unchanged — only the plotted curve differs from `raw`.
+DsimBinaryResult applyLatticeStabilityShift(const DsimBinaryResult& raw,
+                                            const DsimLatticeStabilityShift& shift);
+
+/// The four raw TOTAL supercell energies (eV) one phase branch needs — see
+/// solveDsimMultiPhase. All four supercells share the same atom count as
+/// the OTHER branch's four (a single `supercellAtomCount`/`dilution` is
+/// shared by the whole multi-phase result, matching solveDsimBinary's own
+/// fixed-supercell-size convention) — REQUIRED here for a second reason
+/// beyond Eq. 9-10's own: the lattice-stability shift divides an energy
+/// DIFFERENCE between the two branches by this one shared count (see
+/// solveDsimMultiPhase's doc comment), which is only a valid per-atom
+/// quantity when both branches' pristine supercells really do hold the
+/// same number of atoms. DsimWizard enforces this by refusing to build the
+/// two branches when the user's two input cells produce different atom
+/// counts at the chosen repeat.
+struct DsimPhaseBranchEnergies {
+    double pristineATotalEv = 0.0; ///< species A, built on this phase's own template
+    double pristineBTotalEv = 0.0; ///< species B, relabeled onto this phase's template + relaxed
+    double bInATotalEv = 0.0;      ///< B diluted in host A (this phase's lattice)
+    double aInBTotalEv = 0.0;      ///< A diluted in host B-on-this-phase
+};
+
+/// One phase branch of a multi-phase DSIM result: which crystal structure
+/// it was solved on, the ordinary (zero-at-both-ends) binary DSIM result on
+/// that structure, the lattice-stability shift applied, and the corrected
+/// (common-reference, directly comparable to the other branch) curve.
+struct DsimPhaseResult {
+    std::string phaseLabel;
+    DsimBinaryResult raw;
+    DsimLatticeStabilityShift shift;
+    DsimBinaryResult corrected;
+};
+
+/// Full multi-phase DSIM result (Fe(bcc)-Co(hcp) and similar): two phase
+/// branches of the same A-B pair, each an ordinary binary DSIM solve on its
+/// own crystal structure, both re-referenced onto one common energy scale
+/// by `applyLatticeStabilityShift` so they can be plotted together and
+/// compared directly — see the "Multi-phase alloys" note above.
+struct DsimMultiPhaseResult {
+    std::string speciesA;
+    std::string speciesB;
+    /// Native to species A: its own x=0 endpoint is already the stable
+    /// element, so phaseA.shift.atX0Ev == 0 (e.g. Fe's bcc).
+    DsimPhaseResult phaseA;
+    /// Native to species B: phaseB.shift.atX1Ev == 0 (e.g. Co's hcp).
+    DsimPhaseResult phaseB;
+};
+
+/// Runs the two-branch multi-phase DSIM pipeline: solves an ordinary binary
+/// DSIM problem on each phase's own template (solveDsimBinary, unchanged),
+/// then computes and applies the lattice-stability shift each needs from
+/// the two branches' own pristine energies:
+///   shift for phaseA (applied at x=1) = (phaseAEnergies.pristineBTotalEv
+///     - phaseBEnergies.pristineBTotalEv) / supercellAtomCount
+///   shift for phaseB (applied at x=0) = (phaseBEnergies.pristineATotalEv
+///     - phaseAEnergies.pristineATotalEv) / supercellAtomCount
+/// (both differences of the SAME element's energy in the two different
+/// structures, per atom — see the "Multi-phase alloys" note above). Always
+/// >= 0 when `phaseALabel`/`phaseBLabel` really do name each element's own
+/// stable structure, as the constructor's example assumes.
+DsimMultiPhaseResult solveDsimMultiPhase(const std::string& speciesA, const std::string& phaseALabel,
+                                         const DsimPhaseBranchEnergies& phaseAEnergies,
+                                         const std::string& speciesB, const std::string& phaseBLabel,
+                                         const DsimPhaseBranchEnergies& phaseBEnergies,
+                                         int supercellAtomCount, int compositionPoints = 101);
+
 } // namespace calango::core

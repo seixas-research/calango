@@ -60,4 +60,43 @@ struct DsimConfig {
 /// `CALANGO_RESULT dsim=dsim.json` marker the job controller watches for.
 std::string generateDsimScript(const DsimConfig& config);
 
+/// One phase branch's four supercells — see core/Dsim.hpp's "Multi-phase
+/// alloys" note. `pristineA`/`pristineB` are BOTH built on THIS phase's own
+/// crystal-structure template (pristineB is the DsimWizard-relabeled +
+/// to-be-relaxed structure when this phase is not species B's native one);
+/// `impurityBInA`/`impurityAInB` are the usual single-substitution
+/// impurities, also on this phase's lattice.
+struct DsimPhaseBranchConfig {
+    std::string phaseLabel;
+    Structure pristineA;
+    Structure pristineB;
+    Structure impurityBInA;
+    Structure impurityAInB;
+};
+
+/// Parameters for a two-phase multi-phase DSIM run (Fe(bcc)-Co(hcp) and
+/// similar): the same calculator/relaxation settings as DsimConfig, plus
+/// the eight supercells (two ordinary 4-supercell binary sets, one per
+/// phase) `generateDsimMultiPhaseScript` needs.
+struct DsimMultiPhaseConfig {
+    CalculatorConfig calculator;
+    std::string speciesA;
+    std::string speciesB;
+    /// Native to speciesA (e.g. Fe's own stable structure, "bcc").
+    DsimPhaseBranchConfig phaseA;
+    /// Native to speciesB (e.g. Co's own stable structure, "hcp").
+    DsimPhaseBranchConfig phaseB;
+};
+
+/// Turns a DsimMultiPhaseConfig into a standalone ASE script that relaxes
+/// all eight supercells, solves each phase branch as an ordinary binary
+/// DSIM problem (Eq. 7), then applies the lattice-stability shift each
+/// needs (core::applyLatticeStabilityShift, reimplemented in Python here
+/// per the project's "generated scripts never import Calango" convention)
+/// so the two corrected curves sit on one common, directly comparable
+/// energy scale. Writes `dsim.json` (schema `calango.dsim/3`, a superset
+/// shape of `calango.dsim/2`'s binary block reused per branch) with the
+/// `CALANGO_RESULT dsim=dsim.json` marker the job controller watches for.
+std::string generateDsimMultiPhaseScript(const DsimMultiPhaseConfig& config);
+
 } // namespace calango::core

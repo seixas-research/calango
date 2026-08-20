@@ -26,6 +26,11 @@ struct DsimPlotStyle {
     /// cross-check the plotted scale against a hand calculation without
     /// leaving the viewer.
     bool useKilojoulesPerMole = true;
+    /// The ternary plot's colour-scale legend (N=3 only; no effect on the
+    /// binary/pairwise views). On by default, but a full-width triangle
+    /// reads the composition triangle's own dashed gridlines and corner
+    /// labels more easily than one sharing its width with a colorbar.
+    bool showColorbar = true;
 };
 
 /// "Customize Appearance…" for the DSIM results viewer, same live-update
@@ -51,6 +56,7 @@ private:
     QPushButton* tangentButton_ = nullptr;
     QCheckBox* showTangentsCheck_ = nullptr;
     QCheckBox* kjPerMolCheck_ = nullptr;
+    QCheckBox* showColorbarCheck_ = nullptr;
 };
 
 } // namespace calango::gui
