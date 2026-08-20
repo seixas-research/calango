@@ -336,6 +336,8 @@ QString orchestrationTaskSlug(OrchestrationTask task)
         return QStringLiteral("dataset_manager");
     case OrchestrationTask::MaceTrainer:
         return QStringLiteral("mace_trainer");
+    case OrchestrationTask::Dsim:
+        return QStringLiteral("dsim");
     case OrchestrationTask::SinglePoint:
         break;
     }
@@ -373,6 +375,11 @@ OrchestrationFamily orchestrationTaskFamily(OrchestrationTask task)
     // mechanism, not an Analysis-style completed-run dependency.
     case OrchestrationTask::LiquidFreeEnergy:
     case OrchestrationTask::MaceTrainer:
+    // Launches a real job (N + N(N-1) supercell relaxations in one
+    // generated script) exactly like the other Simulation-family nodes
+    // above — see the enum's own doc comment for how it differs from them
+    // (no incoming structure link needed at all).
+    case OrchestrationTask::Dsim:
         return OrchestrationFamily::Simulation;
     case OrchestrationTask::Container:
     case OrchestrationTask::SingleAtomContainer:
@@ -476,6 +483,8 @@ QString orchestrationTaskDisplayName(OrchestrationTask task)
         return QObject::tr("Dataset Manager");
     case OrchestrationTask::MaceTrainer:
         return QObject::tr("MACE Trainer");
+    case OrchestrationTask::Dsim:
+        return QObject::tr("DSIM (Dilute Solution Interpolation)");
     case OrchestrationTask::SinglePoint:
         break;
     }
@@ -516,6 +525,7 @@ QString orchestrationTaskShortName(OrchestrationTask task)
     case OrchestrationTask::LiquidFreeEnergy:     return QObject::tr("TI");
     case OrchestrationTask::DatasetManager:       return QObject::tr("Dataset");
     case OrchestrationTask::MaceTrainer:          return QObject::tr("MACE");
+    case OrchestrationTask::Dsim:                 return QObject::tr("DSIM");
     }
     return QObject::tr("Node");
 }
@@ -541,6 +551,12 @@ QList<OrchestrationTask> orchestrationTasks()
             // the Simulation block, rather than beside its usual upstream
             // node.
             OrchestrationTask::MaceTrainer,
+            // Also Simulation family, and also listed at the end of the
+            // block for the same reason as MaceTrainer just above: it
+            // needs no incoming structure link at all (its whole input is
+            // the wizard's own Stage 1 structure list), so there is no
+            // natural "usual upstream node" to place it beside either.
+            OrchestrationTask::Dsim,
             // Transform. The alloy chain is listed in pipeline order — SQS,
             // then the two nodes that consume what the simulations made of it
             // — because the Add Process list is where a user discovers that
@@ -647,6 +663,12 @@ bool orchestrationTaskHasDefaults(OrchestrationTask task)
     // against.
     case OrchestrationTask::MaceTrainer:
         return false;
+    // A DSIM node with no structures added has nothing to relax — like
+    // Container (whose "source of its own structures" shape it shares),
+    // there is no default list this node could guess that would not be a
+    // claim about which alloy the user meant.
+    case OrchestrationTask::Dsim:
+        return false;
     default:
         return false;
     }
@@ -689,6 +711,13 @@ QList<OrchestrationInputSlot> orchestrationInputSlots(OrchestrationTask task)
     // parent lattice arrives through the ordinary geometry handoff and
     // decorated supercells leave. Nothing to stage under an agreed name.
     case OrchestrationTask::SqsGenerator:
+    // DSIM stages nothing either, but for a different reason than the
+    // Simulation-family tasks just above it (whose one structure arrives
+    // through the ordinary geometry hand-off): it takes NO structure
+    // through any link at all — every one of its N pristine references is
+    // built on its own Stage 1 (see the enum's own doc comment) — so there
+    // is neither a slot nor an ordinary hand-off to name here.
+    case OrchestrationTask::Dsim:
         return {};
 
     case OrchestrationTask::TdbGenerator:
@@ -1398,6 +1427,14 @@ void OrchestrationNodeItem::paint(QPainter* painter,
         primary = isConfigured() ? QObject::tr("Configured")
                                  : QObject::tr("Dataset: from input port");
         secondary = QObject::tr("Calculator: MACE");
+        break;
+    case OrchestrationTask::Dsim:
+        // Same reasoning as MaceTrainer just above: the default
+        // "Structure: from input port" would be wrong — DSIM's structures
+        // come from its own Stage 1 list, not any link.
+        primary = isConfigured() ? QObject::tr("Configured")
+                                 : QObject::tr("Structures: set on Stage 1");
+        secondary = QObject::tr("Calculator: %1").arg(EnginePresets::displayName(engine_));
         break;
     case OrchestrationTask::DefectGenerator:
         primary = defects_.isEmpty() ? QObject::tr("No operations")

@@ -184,14 +184,18 @@ void EgqcaPlotWidget::render(QPainter& painter, const QRectF& bounds) const
 
     painter.setPen(PlotPalette::text);
     QFontMetricsF metrics(painter.font());
-    painter.drawText(
-        QRectF(plot.left(), bounds.bottom() - 22, plot.width(), 18),
-        Qt::AlignCenter, xLabel_);
+    // "_x"/"_{mix}" in xLabel_/yLabel_ renders as a real typographic
+    // subscript here (drawWithSubscripts), not a literal underscore — the
+    // same convention the band/PDOS plot and effective-band heatmap use, so
+    // a caller can write "DeltaH_{mix} (kJ/mol)"-style labels and get
+    // "ΔH" with a properly subscripted "mix".
+    drawWithSubscripts(
+        painter, QRectF(plot.left(), bounds.bottom() - 22, plot.width(), 18), xLabel_);
     painter.save();
     painter.translate(14, plot.center().y());
     painter.rotate(-90.0);
-    painter.drawText(QRectF(-plot.height() / 2.0, -10, plot.height(), 18),
-                     Qt::AlignCenter, yLabel_);
+    drawWithSubscripts(painter, QRectF(-plot.height() / 2.0, -10, plot.height(), 18),
+                       yLabel_);
     painter.restore();
 
     if (showLegend) {
@@ -202,6 +206,9 @@ void EgqcaPlotWidget::render(QPainter& painter, const QRectF& bounds) const
             painter.drawLine(QPointF(plot.right() + 10, y + lineHeight / 2.0),
                              QPointF(plot.right() + 28, y + lineHeight / 2.0));
             painter.setPen(PlotPalette::text);
+            // Plain text, not drawWithSubscripts: that helper only centers,
+            // and a legend entry has to stay left-aligned next to its
+            // colour swatch line.
             painter.drawText(
                 QRectF(plot.right() + 32, y, legendWidth - 34, lineHeight),
                 Qt::AlignVCenter | Qt::AlignLeft, s.label);

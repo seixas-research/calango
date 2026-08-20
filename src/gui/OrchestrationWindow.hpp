@@ -192,6 +192,24 @@ enum class OrchestrationTask {
     /// SimulationWizardBase), reused as-is rather than duplicated: see
     /// openNodeWizard()'s special case for this task.
     MaceTrainer,
+    /// Dilute Solution Interpolation (mixing enthalpy of an N-component
+    /// alloy, N >= 2) — see docs/sphinx/source/simulations/dsim.md.
+    ///
+    /// A Simulation like Molecular Dynamics/Thermodynamic Integration
+    /// above: it launches a real job (N + N(N-1) supercell relaxations in
+    /// one generated script) through the ordinary JobRunner machinery, and
+    /// its setup IS an ordinary SimulationWizardBase (DsimWizard) — unlike
+    /// MaceTrainer, it needs no special case in openNodeWizard(), because
+    /// it does not need what MaceTrainer needed one for (a non-wizard
+    /// dialog). What makes it unlike every OTHER Simulation-family node is
+    /// where its structure comes from: not the ordinary one-parent
+    /// geometry hand-off (orchestrationInputSlots() gives it none, same as
+    /// GeometryOptimization/SinglePoint/... above), but a list the wizard
+    /// itself builds on its own Stage 1 (open documents or imported
+    /// files) — so a DSIM node needs no incoming link at all to be
+    /// runnable, the same "source of its own structures" shape Container
+    /// has, just reached through a wizard instead of a bespoke editor.
+    Dsim,
 };
 
 /// Which of the three groups a task belongs to. The Add Process list is

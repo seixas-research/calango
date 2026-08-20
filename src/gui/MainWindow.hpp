@@ -413,6 +413,15 @@ private Q_SLOTS:
     void showElasticProperties();
     /// Open the C_ij / Born-stability read-out for a completed Elastic run.
     void openElasticResults(const QString& directory);
+    /// Modules → Alloys → "Dilute Solution Interpolation (DSIM)…": stage
+    /// and launch the four-supercell dilute-limit mixing-enthalpy run
+    /// (pristine A, pristine B, B-in-A, A-in-B), following the same
+    /// one-wizard/one-generated-script/one-result-file shape as Elastic
+    /// Properties above rather than the Orchestration canvas — see
+    /// docs/sphinx/source/simulations/dsim.md for why.
+    void openDsim();
+    /// Open the DeltaH_mix(x) curve for a completed DSIM run.
+    void openDsimResults(const QString& directory);
     /// Electronics → "Raman and IR Spectroscopy…": stage and launch the
     /// vibrational-spectroscopy post-process, which consumes a completed Born
     /// Effective Charges run (and, for Raman, an Optics run's settings).

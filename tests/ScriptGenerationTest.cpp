@@ -17,6 +17,7 @@
 #include "core/PiezoelectricScriptGenerator.hpp"
 #include "core/ElasticScriptGenerator.hpp"
 #include "core/CalphadScriptGenerator.hpp"
+#include "core/DsimScriptGenerator.hpp"
 #include "core/CddScriptGenerator.hpp"
 #include "core/ClusterExpansionScriptGenerator.hpp"
 #include "core/UnfoldingScriptGenerator.hpp"
@@ -1031,6 +1032,108 @@ int main(int argc, char** argv)
             ternary.secondAxisElement = "MG";
             dumpText("calphad_ternary.py",
                      CalphadScriptGenerator::generate(ternary));
+        }
+
+        // DSIM: a tiny 2-atom-per-supercell fixture is enough for the lint
+        // check (byte-compile + every _name it reads is assigned) — the
+        // physically real 27-atom case is exercised end to end by
+        // calango_dsim_test / tests/dsim_oncapintada_test.py instead.
+        {
+            using calango::core::Atom;
+            using calango::core::Structure;
+            using calango::core::UnitCell;
+
+            const UnitCell cell({3.6, 0.0, 0.0}, {0.0, 3.6, 0.0}, {0.0, 0.0, 3.6});
+            auto makeTwoAtom = [&](int z) {
+                Structure s;
+                s.setCell(cell);
+                s.addAtom(Atom{z, {0.0, 0.0, 0.0}});
+                s.addAtom(Atom{z, {1.8, 1.8, 1.8}});
+                return s;
+            };
+            // Builds an N-component DsimConfig from N (species, atomic
+            // number) pairs sharing one 2-atom-per-species template — the
+            // shape generateDsimScript() actually consumes: N pristine
+            // structures plus the N(N-1) single-substitution impurities,
+            // built the same way DsimWizard::goNext() does (one atom of
+            // the pristine host relabeled to the solute).
+            auto makeConfig = [&](const std::vector<std::pair<std::string, int>>& elements) {
+                DsimConfig cfg;
+                cfg.calculator.calculator = CalculatorKind::EMT;
+                cfg.calculator.task = TaskKind::GeometryOptimization;
+                cfg.calculator.relaxCell = true;
+                cfg.calculator.optimizer = Optimizer::FIRE;
+                cfg.calculator.fmax = 0.02;
+                cfg.calculator.maxSteps = 200;
+                const std::size_t n = elements.size();
+                for (const auto& [symbol, z] : elements) {
+                    cfg.species.push_back(symbol);
+                    cfg.pristine.push_back(makeTwoAtom(z));
+                }
+                cfg.impurity.assign(n, std::vector<Structure>(n));
+                for (std::size_t i = 0; i < n; ++i)
+                    for (std::size_t j = 0; j < n; ++j) {
+                        if (i == j)
+                            continue;
+                        Structure imp = cfg.pristine[j];
+                        imp.atoms()[0].atomicNumber = elements[i].second;
+                        cfg.impurity[i][j] = imp;
+                    }
+                return cfg;
+            };
+
+            dumpText("dsim.py", generateDsimScript(makeConfig({{"Cu", 29}, {"Pd", 46}})));
+            dumpText("dsim_ternary.py",
+                    generateDsimScript(makeConfig({{"Ag", 47}, {"Au", 79}, {"Cu", 29}})));
+
+            // A real Au-Pt case, MACE calculator: the physically meaningful
+            // fixture tests/dsim_au_pt_mace_benchmark.py actually RUNS.
+            // 3x3x3 of the 1-atom fcc primitive cell (27 atoms, x0 = 1/27,
+            // the paper's own choice), built by hand here (plain lattice
+            // geometry — no embedded Python/AseBridge needed for a cubic
+            // fcc tiling) rather than through the GUI wizard's
+            // AseBridge::makeSupercell path, which needs a live interpreter
+            // this GUI-free test has none of.
+            const double auLatticeConstant = 4.0782; // Au fcc, Angstrom
+            const calango::core::Vec3 a1{0.0, auLatticeConstant / 2.0, auLatticeConstant / 2.0};
+            const calango::core::Vec3 a2{auLatticeConstant / 2.0, 0.0, auLatticeConstant / 2.0};
+            const calango::core::Vec3 a3{auLatticeConstant / 2.0, auLatticeConstant / 2.0, 0.0};
+            const UnitCell supercell(a1 * 3.0, a2 * 3.0, a3 * 3.0);
+            auto makeAuPtSupercell = [&](int hostZ) {
+                Structure s;
+                s.setCell(supercell);
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j)
+                        for (int k = 0; k < 3; ++k) {
+                            const calango::core::Vec3 pos =
+                                a1 * static_cast<double>(i) + a2 * static_cast<double>(j)
+                                + a3 * static_cast<double>(k);
+                            s.addAtom(Atom{hostZ, pos});
+                        }
+                return s;
+            };
+
+            DsimConfig auPt;
+            auPt.calculator.calculator = CalculatorKind::Mace;
+            auPt.calculator.maceSource = MaceModelSource::CustomFile;
+            auPt.calculator.maceModelPath =
+                std::string(std::getenv("HOME") ? std::getenv("HOME") : "")
+                + "/.local/mace/MACE-matpes-pbe-omat-ft.model";
+            auPt.calculator.maceDevice = "cpu";
+            auPt.calculator.macePrecision = MacePrecision::Float32;
+            auPt.calculator.task = TaskKind::GeometryOptimization;
+            auPt.calculator.relaxCell = true;
+            auPt.calculator.optimizer = Optimizer::FIRE;
+            auPt.calculator.fmax = 0.02;
+            auPt.calculator.maxSteps = 300;
+            auPt.species = {"Au", "Pt"};
+            auPt.pristine = {makeAuPtSupercell(79), makeAuPtSupercell(78)};
+            Structure ptInAu = auPt.pristine[0];
+            ptInAu.atoms()[0].atomicNumber = 78; // Pt diluted in Au
+            Structure auInPt = auPt.pristine[1];
+            auInPt.atoms()[0].atomicNumber = 79; // Au diluted in Pt
+            auPt.impurity = {{Structure{}, auInPt}, {ptInAu, Structure{}}};
+            dumpText("dsim_au_pt.py", generateDsimScript(auPt));
         }
 
         std::printf("scripts written to %s\n", dir.c_str());

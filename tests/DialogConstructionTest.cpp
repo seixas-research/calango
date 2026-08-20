@@ -18,6 +18,9 @@
 #include "core/CalculatorConfig.hpp"
 #include "core/Structure.hpp"
 #include "gui/CvmComparisonWindow.hpp"
+#include "gui/DsimResultsWindow.hpp"
+#include "gui/DsimTernaryPlotWidget.hpp"
+#include "gui/DsimWizard.hpp"
 #include "gui/FilmTimelineWidget.hpp"
 #include "gui/DatabaseImportDialog.hpp"
 #include "gui/GeometryConstraintsDialog.hpp"
@@ -4956,6 +4959,196 @@ int main(int argc, char** argv)
         check(hasButtonLabelled(QObject::tr("Export Transitions…")),
               "the pre-existing transitions CSV export is still there");
         delete viewer2;
+    }
+
+    std::printf("DsimWizard / DsimResultsWindow:\n");
+    {
+        // goNext() (not exercised by construction alone here) would call
+        // AseBridge::makeSupercell, which needs a live embedded interpreter
+        // — matching the CDD wizard test's own guard above.
+        calango::pybridge::PythonEngine python;
+
+        auto makeSingleSpecies = [](int z) {
+            auto structure = std::make_shared<calango::core::Structure>();
+            structure->setCell(calango::core::UnitCell({3.6, 0, 0}, {0, 3.6, 0},
+                                                        {0, 0, 3.6}));
+            calango::core::Atom atom;
+            atom.atomicNumber = z;
+            atom.position = {0.0, 0.0, 0.0};
+            structure->addAtom(atom);
+            return structure;
+        };
+        auto makeAlloy = [](int z1, int z2) {
+            auto structure = std::make_shared<calango::core::Structure>();
+            structure->setCell(calango::core::UnitCell({3.6, 0, 0}, {0, 3.6, 0},
+                                                        {0, 0, 3.6}));
+            calango::core::Atom a1;
+            a1.atomicNumber = z1;
+            a1.position = {0.0, 0.0, 0.0};
+            structure->addAtom(a1);
+            calango::core::Atom a2;
+            a2.atomicNumber = z2;
+            a2.position = {1.8, 1.8, 1.8};
+            structure->addAtom(a2);
+            return structure;
+        };
+        const auto cu = makeSingleSpecies(29);
+        const auto pd = makeSingleSpecies(46);
+
+        const auto hasLabelContaining = [](QWidget& w, const QString& needle) {
+            for (QLabel* label : w.findChildren<QLabel*>())
+                if (label->text().contains(needle))
+                    return true;
+            return false;
+        };
+
+        DsimWizard wizard(DsimWizard::MaterialList{});
+        check(hasLabelContaining(wizard, QStringLiteral("at least 2")),
+              "starts with fewer than 2 structures and says so");
+
+        wizard.addStructures({{QStringLiteral("Cu (tab)"), cu}});
+        check(hasLabelContaining(wizard, QStringLiteral("at least 2")),
+              "still refuses with only one valid structure");
+        check(wizard.validStructures().size() == 1, "one valid structure so far");
+
+        wizard.addStructures({{QStringLiteral("Pd (tab)"), pd}});
+        check(wizard.validStructures().size() == 2,
+              "two single-species structures are both accepted");
+        // Default 3x3x3 on a 1-atom cell: 27 atoms, matching the paper's
+        // own supercell.
+        check(hasLabelContaining(wizard, QStringLiteral("27 atoms")),
+              "the summary reports the per-species atom count/dilution");
+
+        // A multi-species entry (not single-species) is refused, not
+        // silently accepted as a third component.
+        wizard.addStructures({{QStringLiteral("CuPd (tab)"), makeAlloy(29, 46)}});
+        check(wizard.validStructures().size() == 2,
+              "a multi-species entry does not count as a valid component");
+        bool sawRefusalNote = false;
+        for (QListWidget* list : wizard.findChildren<QListWidget*>())
+            for (int row = 0; row < list->count(); ++row)
+                if (list->item(row)->text().contains(QStringLiteral("not single-species")))
+                    sawRefusalNote = true;
+        check(sawRefusalNote, "and the list shows why, not just a silently-dropped row");
+
+        // A DUPLICATE species (a second Cu entry) is refused too — DSIM
+        // needs N distinct components, not two references to the same one.
+        wizard.addStructures({{QStringLiteral("Cu again (file)"), makeSingleSpecies(29)}});
+        check(wizard.validStructures().size() == 2,
+              "a duplicate species does not count as a third component either");
+    }
+    {
+        QTemporaryDir dir;
+        const auto writeJson = [&dir](const char* name, const char* body) {
+            const QString path = dir.filePath(QString::fromLatin1(name));
+            QFile json(path);
+            json.open(QIODevice::WriteOnly);
+            json.write(body);
+            return path;
+        };
+
+        // N=2: the binary curve view.
+        const QString binaryPath = writeJson("dsim_binary.json", R"({
+            "schema": "calango.dsim/2", "species": ["Cu", "Pd"],
+            "supercell_atom_count": 27, "dilution": 0.037037037037037035,
+            "records": {
+                "pristine_Cu": {"energy": -0.19, "energy_per_atom": -0.007,
+                                "natoms": 27, "formula": "Cu27", "converged": true, "steps": 5},
+                "pristine_Pd": {"energy": -0.007, "energy_per_atom": -0.0003,
+                                "natoms": 27, "formula": "Pd27", "converged": true, "steps": 5},
+                "Pd_in_Cu": {"energy": -0.265, "energy_per_atom": -0.0098,
+                           "natoms": 27, "formula": "Cu26Pd", "converged": true, "steps": 6},
+                "Cu_in_Pd": {"energy": -0.080, "energy_per_atom": -0.0030,
+                           "natoms": 27, "formula": "CuPd26", "converged": true, "steps": 6}
+            },
+            "failures": {},
+            "analysis": {
+                "m_matrix": [[0.0, -0.002451], [-0.003043, 0.0]],
+                "binary": {
+                    "m_b_in_a_eV": -0.003043, "m_a_in_b_eV": -0.002451,
+                    "dHdx_at_0_eV": -0.003043, "dHdx_at_1_eV": 0.002451,
+                    "x_grid": [0.0, 0.5, 1.0],
+                    "enthalpy_eV_per_atom": [0.0, -0.000687, 0.0],
+                    "enthalpy_kJ_per_mol": [0.0, -0.0663, 0.0]
+                },
+                "ternary": null,
+                "pairwise": [{"species_i": "Cu", "species_j": "Pd",
+                             "x_grid": [0.0, 0.5, 1.0],
+                             "enthalpy_eV_per_atom": [0.0, -0.000687, 0.0],
+                             "enthalpy_kJ_per_mol": [0.0, -0.0663, 0.0]}]
+            }
+        })");
+
+        DsimResultsWindow window;
+        check(window.loadResults(binaryPath), "loads a well-formed N=2 dsim.json");
+        auto* table = window.findChild<QTableWidget*>();
+        check(table != nullptr && table->rowCount() == 4,
+              "and populates the four-supercell table (N=2: N + N(N-1) = 4)");
+        auto* tangentsCheck = window.findChild<QCheckBox*>();
+        check(tangentsCheck != nullptr && tangentsCheck->isEnabled(),
+              "the tangent-lines checkbox is enabled for a binary result");
+
+        DsimResultsWindow missing;
+        check(!missing.loadResults(dir.filePath(QStringLiteral("nope.json"))),
+              "a missing result file is reported, not silently accepted");
+
+        // N=3: the ternary composition-triangle view.
+        const QString ternaryPath = writeJson("dsim_ternary.json", R"({
+            "schema": "calango.dsim/2", "species": ["Ag", "Au", "Cu"],
+            "supercell_atom_count": 27, "dilution": 0.037037037037037035,
+            "records": {
+                "pristine_Ag": {"energy": -0.08, "energy_per_atom": -0.003,
+                                "natoms": 27, "formula": "Ag27", "converged": true},
+                "pristine_Au": {"energy": -0.07, "energy_per_atom": -0.0026,
+                                "natoms": 27, "formula": "Au27", "converged": true},
+                "pristine_Cu": {"energy": -0.05, "energy_per_atom": -0.0019,
+                                "natoms": 27, "formula": "Cu27", "converged": true},
+                "Ag_in_Au": {"energy": -0.033, "energy_per_atom": -0.0012,
+                            "natoms": 27, "formula": "Au26Ag", "converged": true},
+                "Ag_in_Cu": {"energy": -0.054, "energy_per_atom": -0.002,
+                            "natoms": 27, "formula": "Cu26Ag", "converged": true},
+                "Au_in_Ag": {"energy": -0.033, "energy_per_atom": -0.0012,
+                            "natoms": 27, "formula": "Ag26Au", "converged": true},
+                "Au_in_Cu": {"energy": -0.011, "energy_per_atom": -0.0004,
+                            "natoms": 27, "formula": "Cu26Au", "converged": true},
+                "Cu_in_Ag": {"energy": -0.054, "energy_per_atom": -0.002,
+                            "natoms": 27, "formula": "Ag26Cu", "converged": true},
+                "Cu_in_Au": {"energy": -0.011, "energy_per_atom": -0.0004,
+                            "natoms": 27, "formula": "Au26Cu", "converged": true}
+            },
+            "failures": {},
+            "analysis": {
+                "m_matrix": [[0.0, -0.04, -0.01], [-0.04, 0.0, -0.07], [-0.01, -0.07, 0.0]],
+                "binary": null,
+                "ternary": {
+                    "resolution": 2,
+                    "xB": [0.0, 0.5, 0.0, 1.0, 0.5, 0.0],
+                    "xC": [0.0, 0.0, 0.5, 0.0, 0.5, 1.0],
+                    "enthalpy_eV_per_atom": [0.0, -0.01, -0.0025, 0.0, -0.0175, 0.0],
+                    "enthalpy_kJ_per_mol": [0.0, -0.965, -0.241, 0.0, -1.688, 0.0]
+                },
+                "pairwise": [
+                    {"species_i": "Ag", "species_j": "Au", "x_grid": [0.0, 1.0],
+                     "enthalpy_eV_per_atom": [0.0, 0.0], "enthalpy_kJ_per_mol": [0.0, 0.0]},
+                    {"species_i": "Ag", "species_j": "Cu", "x_grid": [0.0, 1.0],
+                     "enthalpy_eV_per_atom": [0.0, 0.0], "enthalpy_kJ_per_mol": [0.0, 0.0]},
+                    {"species_i": "Au", "species_j": "Cu", "x_grid": [0.0, 1.0],
+                     "enthalpy_eV_per_atom": [0.0, 0.0], "enthalpy_kJ_per_mol": [0.0, 0.0]}
+                ]
+            }
+        })");
+        DsimResultsWindow ternaryWindow;
+        check(ternaryWindow.loadResults(ternaryPath), "loads a well-formed N=3 dsim.json");
+        auto* ternaryTable = ternaryWindow.findChild<QTableWidget*>();
+        check(ternaryTable != nullptr && ternaryTable->rowCount() == 9,
+              "and populates the nine-supercell table (N=3: N + N(N-1) = 9)");
+        auto* ternaryPlot = ternaryWindow.findChild<DsimTernaryPlotWidget*>();
+        check(ternaryPlot != nullptr && ternaryPlot->hasData(),
+              "and the ternary plot widget receives the composition-triangle grid");
+        auto* ternaryTangentsCheck = ternaryWindow.findChild<QCheckBox*>();
+        check(ternaryTangentsCheck != nullptr && !ternaryTangentsCheck->isEnabled(),
+              "the tangent-lines checkbox is disabled for a ternary result "
+              "(no dilute-limit-pair concept for N=3)");
     }
 
     std::printf(failures == 0 ? "\nAll dialog construction checks passed.\n"

@@ -46,6 +46,8 @@
 #include "gui/BornChargesWizard.hpp"
 #include "gui/PiezoelectricViewer.hpp"
 #include "gui/PiezoelectricWizard.hpp"
+#include "gui/DsimResultsWindow.hpp"
+#include "gui/DsimWizard.hpp"
 #include "gui/ElasticViewer.hpp"
 #include "gui/ElasticWizard.hpp"
 #include "gui/BandPdosWindow.hpp"
@@ -1671,6 +1673,15 @@ void MainWindow::createMenusAndDocks()
     // fits an effective model and extrapolates it to a large system.
     alloysMenu->addAction(tr("EGQ&CA (Alloy Thermodynamics)…"), this,
                           &MainWindow::openEgqca);
+    // A third route, alongside the two above: where ECI Fit -> CVM and EGQCA
+    // both start from a batch of cluster-expansion configurations, DSIM
+    // never needs one — it interpolates the mixing enthalpy of a BINARY
+    // alloy from just its two dilute-solution limits (pristine A, pristine
+    // B, one B-in-A impurity, one A-in-B impurity: four calculations, not a
+    // batch), so it belongs beside its two batch-based siblings rather than
+    // downstream of either.
+    alloysMenu->addAction(tr("&DSIM (Dilute Solution Interpolation)…"), this,
+                          &MainWindow::openDsim);
 
     alloysMenu->addSeparator();
     // Disorder handled directly, without going through a cluster expansion.
@@ -6033,6 +6044,8 @@ std::vector<MainWindow::ViewerEntry> MainWindow::viewersFor(
          &MainWindow::openPiezoelectricResults},
         {"elastic.json", tr("Elastic Properties Viewer"),
          &MainWindow::openElasticResults},
+        {"dsim.json", tr("DSIM Mixing Enthalpy Viewer"),
+         &MainWindow::openDsimResults},
         {"raman_ir.json", tr("Raman / IR Spectroscopy Viewer"),
          &MainWindow::openRamanIrResults},
         {"nlopt.json", tr("Nonlinear Optics Viewer"),
@@ -6750,6 +6763,10 @@ void MainWindow::onProcessResultRequested(const QString& directory)
         openElasticResults(directory);
         return;
     }
+    if (QFile::exists(directory + QStringLiteral("/dsim.json"))) {
+        openDsimResults(directory);
+        return;
+    }
     for (const auto* candidate :
          // md.extxyz first: it carries the per-atom forces and velocities
          // the Vector overlay needs, which the binary md.traj only exposes
@@ -7403,6 +7420,38 @@ void MainWindow::openElasticResults(const QString& directory)
         delete viewer;
         QMessageBox::information(this, tr("Elastic Properties"),
                                  tr("No elastic.json found in %1.").arg(directory));
+        return;
+    }
+    viewer->show();
+}
+
+void MainWindow::openDsim()
+{
+    // Unlike every other simulation wizard, DSIM does not need ONE active
+    // document — it picks N >= 2 pristine structures from whichever
+    // documents are open (plus file import), on its own Stage 1. So the
+    // usual prepareSimulation() "an active structure exists" gate does not
+    // apply here; only the ASE-availability half of it does.
+    if (!ensureAseAvailable())
+        return;
+
+    DsimWizard::MaterialList materials;
+    for (const auto& doc : documents_)
+        if (doc && doc->structure && !doc->structure->empty())
+            materials.append({doc->fileName, doc->structure});
+
+    DsimWizard wizard(materials, this);
+    runSimulationWizard(wizard, tr("DSIM"), /*expectFrames=*/false);
+}
+
+void MainWindow::openDsimResults(const QString& directory)
+{
+    auto* viewer = new DsimResultsWindow(this);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    if (!viewer->loadResults(directory + QStringLiteral("/dsim.json"))) {
+        delete viewer;
+        QMessageBox::information(this, tr("DSIM Mixing Enthalpy"),
+                                 tr("No dsim.json found in %1.").arg(directory));
         return;
     }
     viewer->show();
@@ -8650,7 +8699,7 @@ namespace {
 /// never executed still generates a script that will find its inputs. Nothing
 /// here may test them for existence.
 std::unique_ptr<SimulationWizardBase> makeOrchestrationWizard(
-    const OrchestrationWindow::WizardRequest& request)
+    const OrchestrationWindow::WizardRequest& request, const DsimWizard::MaterialList& materials)
 {
     // Several wizards take a mutable structure. The node holds a const
     // snapshot, so they get a copy rather than a const_cast: a wizard that
@@ -8761,6 +8810,14 @@ std::unique_ptr<SimulationWizardBase> makeOrchestrationWizard(
         return std::make_unique<ThermodynamicIntegrationWizard>(
             request.structure);
 
+    case OrchestrationTask::Dsim:
+        // Unlike every other case here, DsimWizard does not read
+        // request.structure at all — its Stage 1 builds its own N-structure
+        // list from `materials` (the canvas's own open-document snapshot),
+        // exactly as MainWindow::openDsim() does for the menu path. See the
+        // OrchestrationTask::Dsim enum entry's own doc comment for why.
+        return std::make_unique<DsimWizard>(materials);
+
     case OrchestrationTask::Container:
     case OrchestrationTask::SingleAtomContainer:
     case OrchestrationTask::Supercell:
@@ -8857,7 +8914,13 @@ OrchestrationWindow* MainWindow::createOrchestrationPanel(QWidget* parent)
         processPanel_, parent);
     window->setMaterialsProvider(materialsNow);
     window->setFramesProvider(framesFor);
-    window->setWizardFactory(&makeOrchestrationWizard);
+    // materialsNow() (not a captured snapshot): the DSIM case needs the
+    // documents open AT THE MOMENT double-click configures the node, not
+    // whichever ones existed when the panel itself was constructed — same
+    // reasoning as the panel's own materials-refresh contract just below.
+    window->setWizardFactory([materialsNow](const OrchestrationWindow::WizardRequest& request) {
+        return makeOrchestrationWizard(request, materialsNow());
+    });
     // Filling a Structure Container from the database. A dedicated picker,
     // not ExamplesDialog: that one exists to open documents in TABS, so its
     // actions are worded for that, and stacking its window-modal progress
@@ -10220,6 +10283,11 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     // Elastic properties: open the C_ij / Born-stability table.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/elastic.json"))) {
         openElasticResults(lastJobDir_);
+        return;
+    }
+    // DSIM: open the DeltaH_mix(x) curve.
+    if (QFile::exists(lastJobDir_ + QStringLiteral("/dsim.json"))) {
+        openDsimResults(lastJobDir_);
         return;
     }
     // Charge density difference: the cube is registered by the sweep below like

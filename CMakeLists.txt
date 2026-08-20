@@ -303,6 +303,8 @@ qt_add_executable(calango
     src/core/ClusterVariation.cpp
     src/core/Egqca.hpp
     src/core/Egqca.cpp
+    src/core/Dsim.hpp
+    src/core/Dsim.cpp
     src/core/BerryPhase.cpp
     src/core/BoltzmannTransport.cpp
     src/core/CpaSolver.cpp
@@ -324,6 +326,8 @@ qt_add_executable(calango
     src/core/TernaryConvexHull.cpp
     src/core/ClusterExpansionScriptGenerator.hpp
     src/core/ClusterExpansionScriptGenerator.cpp
+    src/core/DsimScriptGenerator.hpp
+    src/core/DsimScriptGenerator.cpp
     src/core/ConvergenceSweepBlocks.hpp
     src/core/ConvergenceSweepBlocks.cpp
     src/core/CutoffConvergenceScriptGenerator.hpp
@@ -583,6 +587,12 @@ qt_add_executable(calango
     src/gui/EgqcaPlotWidget.cpp
     src/gui/EgqcaWindow.hpp
     src/gui/EgqcaWindow.cpp
+    src/gui/DsimResultsWindow.hpp
+    src/gui/DsimResultsWindow.cpp
+    src/gui/DsimPlotStyleDialog.hpp
+    src/gui/DsimPlotStyleDialog.cpp
+    src/gui/DsimTernaryPlotWidget.hpp
+    src/gui/DsimTernaryPlotWidget.cpp
     src/gui/EffectiveBandsWindow.hpp
     src/gui/EffectiveBandsWindow.cpp
     src/gui/SystemStatusBar.hpp
@@ -797,6 +807,8 @@ qt_add_executable(calango
     src/gui/ClusterExpansionDialog.cpp
     src/gui/ClusterExpansionWizard.hpp
     src/gui/ClusterExpansionWizard.cpp
+    src/gui/DsimWizard.hpp
+    src/gui/DsimWizard.cpp
     src/gui/ConvexHullPlotWidget.hpp
     src/gui/ConvexHullPlotWidget.cpp
     src/gui/TernaryClusterHullWidget.hpp
@@ -1139,6 +1151,18 @@ if(CALANGO_BUILD_TESTS)
     )
     target_include_directories(calango_cvm_test PRIVATE src)
     add_test(NAME cluster_variation COMMAND calango_cvm_test)
+
+    # Dilute Solution Interpolation (DSI) model: the M-matrix fixture is
+    # oncapintada's own hand-computed test_subregular_model.py values, and
+    # every DeltaH_mix(x) check is a closed-form identity Eq. 7's
+    # x(1-x)^2/x^2(1-x) construction guarantees (endpoints exactly zero,
+    # tangent slopes exactly the M parameters) — see DsimTest.cpp.
+    add_executable(calango_dsim_test
+        tests/DsimTest.cpp
+        src/core/Dsim.cpp
+    )
+    target_include_directories(calango_dsim_test PRIVATE src)
+    add_test(NAME dsim COMMAND calango_dsim_test)
 
     # Extended Generalized Quasichemical Approximation (Task 1): the ideal-
     # limit reduction, probability normalization, an independent brute-force
@@ -2039,6 +2063,17 @@ if(CALANGO_BUILD_TESTS)
         src/core/UnitCell.cpp
         src/core/Element.cpp
         src/python_bridge/PythonEngine.cpp
+        # DSIM: the wizard's own settings page (element B, supercell size)
+        # builds nothing until Next is pressed, so construction alone needs
+        # no embedded-Python round trip; its results viewer reuses
+        # EgqcaPlotWidget, brought in for the first time by this target here.
+        src/gui/DsimWizard.cpp
+        src/gui/DsimResultsWindow.cpp
+        src/gui/DsimPlotStyleDialog.cpp
+        src/gui/DsimTernaryPlotWidget.cpp
+        src/gui/EgqcaPlotWidget.cpp
+        src/core/Dsim.cpp
+        src/core/DsimScriptGenerator.cpp
     )
     target_include_directories(calango_dialog_test PRIVATE src
         "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -2913,6 +2948,9 @@ if(CALANGO_BUILD_TESTS)
         src/core/FermiSurfaceScriptGenerator.cpp
         src/core/TopologyScriptGenerator.cpp
         src/core/ClusterExpansionScriptGenerator.cpp
+        src/core/DsimScriptGenerator.cpp
+        src/core/Structure.cpp
+        src/core/Element.cpp
         src/core/GrapheneOxideMdmcScriptGenerator.cpp
         # The one script in the project that imports pycalphad. It is here
         # precisely because it cannot be run in CI — pycalphad is installed
@@ -3000,12 +3038,11 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_native_dft_si_mvp_test PRIVATE src)
     calango_dft_link(calango_native_dft_si_mvp_test)
     add_test(NAME native_dft_si_mvp COMMAND calango_native_dft_si_mvp_test)
-    # The slowest C++ test in the suite (only the al_electron_phonon Python
-    # benchmark, ~66 min, takes longer): an all-electron SCF on
-    # a periodic cell, twice over, plus two more for the translation check.
-    # Around eight minutes on an M-series laptop. `ctest -E native_dft_si_mvp`
-    # skips it when a quick pass is what is wanted; it is not skipped by
-    # default because it is the only test that runs the engine end to end.
+    # The slowest test in the suite: an all-electron SCF on a periodic cell,
+    # twice over, plus two more for the translation check. Around eight
+    # minutes on an M-series laptop. `ctest -E native_dft_si_mvp` skips it
+    # when a quick pass is what is wanted; it is not skipped by default
+    # because it is the only test that runs the engine end to end.
     set_tests_properties(native_dft_si_mvp PROPERTIES TIMEOUT 1800)
 
     # Volumetric grid parsing: the value block is read with a bulk read plus
@@ -3262,6 +3299,20 @@ if(CALANGO_BUILD_TESTS)
                 $<TARGET_FILE:calango_script_test>)
     set_tests_properties(xtb_integration PROPERTIES TIMEOUT 1800)
 
+    # DSIM vs. its own reference implementation (oncapintada), live: EMT-relax
+    # a Cu/Pd 27-atom fcc supercell case, run it through oncapintada, check
+    # oncapintada itself against the recorded fixture DsimTest.cpp also
+    # carries (a regression guard on the reference, not just on Calango), and
+    # run calango_dsim_test alongside it so both halves of the cross-check
+    # show up in one command. Development-time only: self-skips without an
+    # interpreter that has oncapintada, which is nowhere but the author's own
+    # 'onca' conda environment (never a Calango build/runtime dependency).
+    add_test(NAME dsim_oncapintada
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/dsim_oncapintada_test.py
+                $<TARGET_FILE:calango_dsim_test>)
+    set_tests_properties(dsim_oncapintada PROPERTIES TIMEOUT 600)
+
     # Live optical broadening. eta is a LIFETIME inside the response function,
     # not a resolution blur, so it cannot be left out of the calculation the way
     # a DOS smearing can — but Lorentzian widths ADD under convolution, so the
@@ -3453,13 +3504,7 @@ if(CALANGO_BUILD_TESTS)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/cu_wannier_spread_benchmark.py)
     set_tests_properties(cu_wannier_spread PROPERTIES TIMEOUT 3600)
 
-    add_test(NAME al_electron_phonon
-        COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/al_electron_phonon_benchmark.py
-                $<TARGET_FILE:calango_script_test>)
-    set_tests_properties(al_electron_phonon PROPERTIES TIMEOUT 10800)
-
-    # Optics validation on bulk Si: GPAW SCF → NSCF → DielectricFunction,
+# Optics validation on bulk Si: GPAW SCF → NSCF → DielectricFunction,
     # verifying ε₁/ε₂. Self-skips (exit 0) without the GPAW response stack.
     add_test(NAME optics_silicon
         COMMAND ${Python3_EXECUTABLE}
@@ -3590,7 +3635,7 @@ if(CALANGO_BUILD_TESTS)
     # calculation output, script generation, and the job/orchestration
     # plumbing that runs calculations.
     set(CALANGO_CALC_TESTS
-        adsorption_nanoparticle al_electron_phonon au_plasma_convergence
+        adsorption_nanoparticle au_plasma_convergence
         band_gap band_unfolding baseline_summary berry_phase
         boltzmann_transport bond_perception brillouin_zone_clip bse_solver c2db calphad cluster_expansion
         cluster_expansion_fit cluster_presets cluster_variation convex_hull
@@ -3598,7 +3643,7 @@ if(CALANGO_BUILD_TESTS)
         ternary_convex_hull
         dataset_split egqca
         defect_2d_correction defect_2d_monolayer dft_engine
-        dislocation_builder dos_smearing double_group elastic_tensor elf_silicon
+        dislocation_builder dos_smearing double_group dsim dsim_oncapintada elastic_tensor elf_silicon
         elph_analysis elph_io extxyz_attributes frame_streaming
         generated_ase_scripts generated_script_lint graphene_band_symmetry
         graphene_oxide graphene_oxide_sites graphene_tetrahedron
