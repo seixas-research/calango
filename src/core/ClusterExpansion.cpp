@@ -333,6 +333,36 @@ ClusterExpansionResult generateClusterExpansion(
         result.configs.push_back(std::move(cfg));
     };
 
+    // Every site the same species — the K "pure element" decorations whose
+    // formation energy the endpoint-reference option (useEnsembleEndpoints in
+    // ClusterExpansionScriptGenerator) needs to be able to zero out EXACTLY.
+    auto isPureOcc = [M](const std::vector<int>& occ) {
+        return M > 0
+            && std::all_of(occ.begin(), occ.end(),
+                           [&](int v) { return v == occ.front(); });
+    };
+
+    // Guarantee the pure endpoints are in the ensemble regardless of how the
+    // rest of the occupation space is explored below. Without this, a
+    // supercell too large to enumerate exhaustively (the common case for a
+    // real alloy) almost never lands on x=0/x=1 by random sampling — the
+    // probability is K^(1-M), astronomically small once M is more than a
+    // handful of sites — so "reference the ensemble's own endpoints" would
+    // silently reference the PUREST configuration actually sampled, not the
+    // true pristine element, leaving a residual, nonzero mixing enthalpy at
+    // the extremes of the plotted composition range. Skipped under a fixed
+    // composition: that mode targets one specific mixed stoichiometry, and
+    // forcing the pure endpoints into it would violate the fixed count the
+    // caller asked for.
+    //
+    // Seeded before the general walk/sample below claims them, so each is
+    // counted with degeneracy exactly 1 (the general enumeration skips
+    // re-visiting a pure occupation once it is already seeded here — see
+    // isPureOcc() below).
+    if (!options.fixedComposition)
+        for (int s = 0; s < K; ++s)
+            consider(std::vector<int>(static_cast<std::size_t>(M), s));
+
     // Total size of the occupation space (K^M), guarding overflow.
     auto spaceExceedsCap = [&]() {
         double total = 1.0;
@@ -368,10 +398,14 @@ ClusterExpansionResult generateClusterExpansion(
             }
         } while (std::next_permutation(occ.begin(), occ.end()));
     } else if (!spaceExceedsCap()) {
-        // Exhaustive base-K enumeration.
+        // Exhaustive base-K enumeration. The K pure occupations were already
+        // seeded above with degeneracy 1 each; skip them here rather than
+        // re-submitting the identical occupation vector a second time, which
+        // would double-count that one real decoration.
         std::vector<int> occ(M, 0);
         while (true) {
-            consider(occ);
+            if (!isPureOcc(occ))
+                consider(occ);
             if (static_cast<int>(result.configs.size()) >= options.maxConfigs)
                 break;
             int pos = 0;
@@ -384,7 +418,9 @@ ClusterExpansionResult generateClusterExpansion(
                 break; // wrapped around — done
         }
     } else {
-        // Random sampling of the occupation space.
+        // Random sampling of the occupation space. Same skip as above: the
+        // pure occupations are already seeded, so a random draw that happens
+        // to land on one is not a fresh, independent hit.
         result.sampled = true;
         std::uniform_int_distribution<int> pick(0, K - 1);
         for (long long n = 0; n < options.maxEnumeration
@@ -393,7 +429,8 @@ ClusterExpansionResult generateClusterExpansion(
             std::vector<int> occ(M);
             for (int a = 0; a < M; ++a)
                 occ[a] = pick(rng);
-            consider(occ);
+            if (!isPureOcc(occ))
+                consider(occ);
         }
     }
 

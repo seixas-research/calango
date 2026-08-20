@@ -287,5 +287,68 @@ int main()
                     fit.eci[3 + 2], trueAC);
     }
 
+    // -- Guaranteed pure endpoints under random sampling ---------------------
+    //
+    // A real alloy's supercell is almost always too large to enumerate
+    // exhaustively, so generateClusterExpansion() falls back to random
+    // sampling of the occupation space (options.sampled == true below). Left
+    // to chance, a pure-species decoration (x=0 or x=1) has probability
+    // K^(1-M) of being drawn — for M=20 sites that is roughly one in a
+    // million — so without an explicit guarantee, formation energies
+    // referenced against "the ensemble's own endpoints"
+    // (ClusterExpansionScriptGenerator) would almost never be exactly zero at
+    // the pristine compositions. This is the case a real Au-Pd run actually
+    // hits.
+    {
+        core::Structure bigParent;
+        bigParent.addAtom({29, {0, 0, 0}});
+        bigParent.setCell(core::UnitCell({a, 0, 0}, {0, a, 0}, {0, 0, a},
+                                         {true, true, true}));
+
+        core::ClusterExpansionOptions opt5;
+        opt5.activeZ = 29;         // Cu
+        opt5.speciesZ = {29, 79};  // Cu, Au
+        opt5.supercell[0] = 5;
+        opt5.supercell[1] = 2;
+        opt5.supercell[2] = 2;     // 20 active sites: 2^20 >> maxEnumeration
+        opt5.pairCutoff = 3.5;
+        opt5.maxConfigs = 200;
+        opt5.maxEnumeration = 5000; // small on purpose: force random sampling
+
+        const core::ClusterExpansionResult res5 =
+            core::generateClusterExpansion(bigParent, opt5);
+        if (res5.activeSites != 20)
+            return fail("endpoint guarantee: expected 20 active sites");
+        if (!res5.sampled)
+            return fail("endpoint guarantee: expected the random-sampling "
+                        "branch to have been taken");
+
+        bool foundPureCu = false, foundPureAu = false;
+        for (const auto& cfg : res5.configs) {
+            if (cfg.speciesCounts[0] == 20 && cfg.speciesCounts[1] == 0) {
+                foundPureCu = true;
+                if (cfg.degeneracy != 1)
+                    return fail("endpoint guarantee: pure Cu should have "
+                                "degeneracy 1");
+            }
+            if (cfg.speciesCounts[1] == 20 && cfg.speciesCounts[0] == 0) {
+                foundPureAu = true;
+                if (cfg.degeneracy != 1)
+                    return fail("endpoint guarantee: pure Au should have "
+                                "degeneracy 1");
+            }
+        }
+        if (!foundPureCu || !foundPureAu)
+            return fail("endpoint guarantee: a randomly-sampled ensemble did "
+                        "not contain both pure single-species endpoints — "
+                        "the formation-energy reference used by "
+                        "ClusterExpansionScriptGenerator's \"reference the "
+                        "ensemble's own endpoints\" option would not be "
+                        "exactly zero at x=0/x=1");
+        std::printf("PASS: pure endpoints guaranteed present under random "
+                    "sampling (%zu configs, %lld decorations examined)\n",
+                    res5.configs.size(), res5.enumerated);
+    }
+
     return 0;
 }

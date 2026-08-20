@@ -84,6 +84,20 @@ struct ClusterExpansionResult {
 /// triplet and quadruplet cluster within the cutoff radii — and two
 /// decorations are treated as equivalent when their fingerprints match. The
 /// deduplicated set is the returned ensemble, ready for ML/DFT training.
+///
+/// UNLESS `fixedComposition` is set, the K pure single-species decorations —
+/// every active site the same species, one per entry of `speciesZ` — are
+/// always included, with degeneracy exactly 1 each, regardless of whether the
+/// rest of the space is enumerated exhaustively or randomly sampled. This is
+/// load-bearing for `ClusterExpansionScriptGenerator`'s "reference the
+/// ensemble's own endpoints" formation-energy option: without a guaranteed
+/// pristine configuration per species, that reference would silently fall
+/// back to whatever happened to be purest among the SAMPLED configurations —
+/// for any supercell too large to enumerate exhaustively, a true pure
+/// endpoint is astronomically unlikely to turn up by chance, leaving a
+/// residual, nonzero mixing enthalpy at the composition extremes instead of
+/// the exact zero a pristine material must have.
+///
 /// Column labels for the correlation fingerprint, one per entry of
 /// `ClusterExpansionConfig::correlation`.
 ///

@@ -67,7 +67,9 @@ wrap an optimizer that never runs.
 Formation energy and hull:
 
 - {guilabel}`Concentration axis` — the species whose site fraction $x$ is the horizontal axis; *Automatic* picks the alphabetically-second species, so repeated runs keep the same orientation.
-- {guilabel}`Reference the ensemble's own endpoints` (on, recommended) — the lowest-energy configurations at the extreme compositions define $\mu_A$ and $\mu_B$, so $E_\text{form}$ is exactly zero there and the calculator's absolute energy scale cancels. Off: supply elemental reference energies computed elsewhere — necessary when the ensemble does not contain both pure endpoints.
+- {guilabel}`Reference the ensemble's own endpoints` (on, recommended) — the lowest-energy configurations at the extreme compositions define $\mu_A$ and $\mu_B$, so $E_\text{form}$ is exactly zero there and the calculator's absolute energy scale cancels. Off: supply elemental reference energies computed elsewhere.
+
+The builder always seeds the pristine, single-species decoration for every substitution species into the ensemble — $x=0$ and $x=1$ for a binary, one pure-in-$s$ configuration per species for a ternary+ — regardless of whether the rest of the composition space is enumerated exhaustively, fixed to one stoichiometry, or randomly sampled. Without this, a supercell too large to enumerate exhaustively (the common case for a real alloy) essentially never lands on a pure endpoint by chance — the odds are $K^{1-M}$ for $M$ active sites — so "reference the ensemble's own endpoints" would silently reference the purest configuration actually *sampled* rather than the true pristine element, leaving a small residual, nonzero mixing enthalpy at the extremes of the plotted curve instead of the exact zero the pristine material must have. (Skipped when {guilabel}`Fix composition` targets one specific mixed stoichiometry, since that mode already asks for a fixed atom count that a pure endpoint would violate — use manual reference energies there instead.)
 
 $$
 E_\text{form} = \frac{E}{N} - \left[(1 - x)\,\mu_A + x\,\mu_B\right]

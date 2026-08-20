@@ -40,19 +40,19 @@ const std::vector<Citation>& citationCatalog()
          QStringLiteral("Larsen2017")},
         {QStringLiteral("Core"),
          QStringLiteral(
-             "Seixas Rocha, L. <i>Calango: a desktop application for "
+             "Seixas, L. <i>Calango: a desktop application for "
              "computational materials science</i> (2026). "
              "Available at https://github.com/seixas-research/calango."),
          QStringLiteral(
              "Recommended citation for Calango itself &mdash; no separate "
              "paper exists yet, so this software entry is it."),
-         QStringLiteral(R"(@software{SeixasRochaCalango,
-  author  = {Seixas Rocha, Leandro},
+         QStringLiteral(R"(@software{SeixasCalango,
+  author  = {Seixas, Leandro},
   title   = {Calango: a desktop application for computational materials science},
   year    = {2026},
   url     = {https://github.com/seixas-research/calango}
 })"),
-         QStringLiteral("SeixasRochaCalango")},
+         QStringLiteral("SeixasCalango")},
 
         // ---------------------------------------------------------------
         // Databases
