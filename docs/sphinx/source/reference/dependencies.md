@@ -34,9 +34,7 @@ binaries they need.
 :::{note}
 **GPAW on Apple Silicon**: conda-forge has no `osx-arm64` GPAW build, so on
 an arm64 macOS environment install it with `pip install gpaw` (the
-`gpaw-data` PAW datasets install from conda-forge on all platforms). The
-Calango conda package declares GPAW as a conda dependency only on x86_64
-for exactly this reason.
+`gpaw-data` PAW datasets install from conda-forge on all platforms).
 :::
 
 ---

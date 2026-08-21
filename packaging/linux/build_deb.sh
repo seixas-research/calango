@@ -12,27 +12,51 @@
 #     resolve it into a proper, portable Depends: line.
 #
 # Usage:
-#   packaging/linux/build_deb.sh [-p PYTHON] [-b BUILD_DIR] [-j JOBS]
+#   packaging/linux/build_deb.sh [-p PYTHON] [-b BUILD_DIR] [-j JOBS] [-q QT_PREFIX]
 #
 #   -p PYTHON      Python interpreter to embed/link (default: /usr/bin/python3)
 #   -b BUILD_DIR   build directory (default: build-deb)
 #   -j JOBS        parallel build jobs (default: nproc)
+#   -q QT_PREFIX   CMAKE_PREFIX_PATH entry for a non-system Qt6 (e.g. a
+#                  Qt maintenance-tool/aqtinstall tree such as
+#                  ~/Qt/6.8.3/gcc_64). Default: unset, so CMake resolves
+#                  Qt6 off the system's own search path (apt's qt6-base-dev).
+#                  Needed only when the distro's packaged Qt6 is older than
+#                  the source tree's actual minimum (CMakeLists.txt states
+#                  6.4, but the source may since have grown a call that
+#                  needs newer Qt — check the compiler error, not just the
+#                  find_package version, before reaching for this).
+#                  IMPORTANT: a QT_PREFIX outside a system package path
+#                  (anything dpkg does not own, e.g. under $HOME) breaks the
+#                  "portable Depends:" promise this script otherwise makes —
+#                  dpkg-shlibdeps cannot attribute those .so files to an
+#                  installable package, and the resulting .deb will not run
+#                  on a machine that lacks that same private Qt tree. Use
+#                  this to validate that the code builds against a newer
+#                  Qt, not to ship the resulting .deb to end users, unless
+#                  you also arrange to bundle/deploy the Qt libraries (not
+#                  done by this script).
 #
-# The resulting .deb and its .sha256 are left in BUILD_DIR and their paths
-# printed at the end. Install with:  sudo apt install ./<path>.deb
+# The resulting .deb and its .sha256 are moved to ./installers (created if
+# needed) and BUILD_DIR is deleted — only the package matters afterward
+# (e.g. for uploading to the site); the build tree is a disposable
+# intermediate. Their final paths are printed at the end.
+# Install with:  sudo apt install ./installers/<name>.deb
 
 set -euo pipefail
 
 PYTHON=/usr/bin/python3
 BUILD_DIR=build-deb
 JOBS=$(nproc 2>/dev/null || echo 4)
+QT_PREFIX=""
 
-while getopts ":p:b:j:h" opt; do
+while getopts ":p:b:j:q:h" opt; do
     case "$opt" in
         p) PYTHON=$OPTARG ;;
         b) BUILD_DIR=$OPTARG ;;
         j) JOBS=$OPTARG ;;
-        h) sed -n '2,25p' "$0"; exit 0 ;;
+        q) QT_PREFIX=$OPTARG ;;
+        h) sed -n '2,38p' "$0"; exit 0 ;;
         *) echo "Unknown option: -$OPTARG (use -h)" >&2; exit 2 ;;
     esac
 done
@@ -73,26 +97,58 @@ esac
 echo ">> Python interpreter : $PYTHON  (prefix: $PY_PREFIX)"
 echo ">> Build directory     : $BUILD_DIR  (recreated clean)"
 echo ">> Parallel jobs       : $JOBS"
+if [ -n "$QT_PREFIX" ]; then
+    echo ">> Qt prefix           : $QT_PREFIX  (non-default — see -q in -h)"
+fi
 
 # --- Configure (fresh) -----------------------------------------------------
 rm -rf "$BUILD_DIR"
-cmake -S . -B "$BUILD_DIR" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DPython3_EXECUTABLE="$PYTHON" \
+CMAKE_ARGS=(
+    -S . -B "$BUILD_DIR"
+    -DCMAKE_BUILD_TYPE=Release
+    -DPython3_EXECUTABLE="$PYTHON"
     -G Ninja
+)
+[ -n "$QT_PREFIX" ] && CMAKE_ARGS+=(-DCMAKE_PREFIX_PATH="$QT_PREFIX")
+cmake "${CMAKE_ARGS[@]}"
 
 # --- Build -----------------------------------------------------------------
 cmake --build "$BUILD_DIR" -j "$JOBS"
 
-# --- Sanity check: must link a SYSTEM libpython ----------------------------
-# A libpython path under $HOME means a Conda/Homebrew lib slipped in and the
-# package would be non-portable / break shlibdeps. Fail loudly before cpack.
+# --- Sanity check: the binary must not point into $HOME --------------------
+# ANY RUNPATH/RPATH entry under $HOME (Conda/Homebrew libpython, a private
+# aqtinstall Qt tree, anything else linked from a user prefix in the future)
+# means dpkg-shlibdeps cannot attribute that library to an installable
+# package and the resulting .deb will not run on a machine that lacks that
+# exact private tree — the opposite of what this script promises. Checked
+# generically (not "just python", not "just Qt") so a future dependency that
+# happens to resolve to a $HOME path is caught here too, not discovered by
+# whoever installs the package.
+#
+# -q QT_PREFIX is the one deliberate, opted-in exception: it exists
+# specifically to validate a build against a newer Qt than the system has,
+# and its own warning above already says the result isn't for distribution.
+# Without -q (the normal, "produce a shippable .deb" invocation) this is a
+# hard failure, not a warning — silently downgrading it here would recreate
+# by mistake the exact non-portable package -q exists to opt into on purpose.
 if command -v readelf >/dev/null 2>&1; then
-    if readelf -d "$BUILD_DIR/calango" 2>/dev/null \
-        | grep -iE 'RUNPATH|RPATH' | grep -q "$HOME"; then
-        echo "error: the binary carries an RUNPATH into \$HOME — a non-system" >&2
-        echo "       libpython was linked. Re-run with -p /usr/bin/python3." >&2
-        exit 1
+    HOME_RUNPATH=$(readelf -d "$BUILD_DIR/calango" 2>/dev/null \
+        | grep -iE 'RUNPATH|RPATH' | grep -F "$HOME" || true)
+    if [ -n "$HOME_RUNPATH" ]; then
+        if [ -n "$QT_PREFIX" ]; then
+            echo "warning: binary carries a \$HOME RUNPATH (expected: -q was" >&2
+            echo "         given). This .deb is NOT portable — see -h." >&2
+            echo "         $HOME_RUNPATH" >&2
+        else
+            echo "error: the binary carries a RUNPATH into \$HOME — a private," >&2
+            echo "       non-system library was linked (Conda/Homebrew python," >&2
+            echo "       or similar). The resulting .deb would not run on a" >&2
+            echo "       machine that lacks that same private path." >&2
+            echo "       $HOME_RUNPATH" >&2
+            echo "       Re-run with -p /usr/bin/python3, or if this is a" >&2
+            echo "       deliberate -q Qt build, pass -q again to acknowledge it." >&2
+            exit 1
+        fi
     fi
 fi
 
@@ -105,9 +161,22 @@ if [ -z "$DEB" ]; then
     exit 1
 fi
 
+# --- Publish: only the .deb (+ its checksum) is the deliverable -------------
+# Everything else in BUILD_DIR is a disposable intermediate — object files,
+# CMake cache, the unpacked staging tree cpack built the .deb from. The site
+# upload only ever wants the package, so move it out to a stable, version-
+# agnostic location and throw the rest away rather than leaving a stale
+# multi-GB build tree (on a Dropbox-synced repo, see CLAUDE.md) lying around
+# from every run.
+INSTALL_DIR="$REPO_ROOT/installers"
+mkdir -p "$INSTALL_DIR"
+mv "$DEB" "${DEB}.sha256" "$INSTALL_DIR/"
+DEB="$INSTALL_DIR/$(basename "$DEB")"
+rm -rf "$BUILD_DIR"
+
 echo
 echo ">> Package : $DEB"
 echo ">> Checksum: ${DEB}.sha256"
 echo
 echo "Install with:"
-echo "    sudo apt install ./$DEB"
+echo "    sudo apt install $DEB"

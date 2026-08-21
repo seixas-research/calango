@@ -75,6 +75,7 @@ build-macos-bundle/
 build-verify/
 build-warn/
 build2/
+installers/
 develop-eggs/
 dist/
 downloads/
@@ -271,9 +272,6 @@ capture.png
 # Version stamp written by docs/tex/Makefile from CMakeLists.txt.
 docs/tex/*/calango_version.tex
 
-# Symbolic link (./calango -> build/calango).
-calango
-
 # DMG
 packaging/macos/dmg
 
@@ -289,6 +287,7 @@ Testing/
 
 # TDB
 examples/tdb/
+
 # Agent working notes (local only, not part of the project)
 CLAUDE.md
 FUTURE.md

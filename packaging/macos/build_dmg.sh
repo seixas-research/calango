@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# create_dmg.sh — build and package Calango as a drag-and-install macOS .dmg,
-# saved as packaging/macos/dist/Calango-<version>-macOS.dmg.
+# build_dmg.sh — build and package Calango as a drag-and-install macOS .dmg,
+# saved as ./installers/calango_<version>_macOS.dmg (created if needed) —
+# the same destination packaging/linux/build_deb.sh moves its own .deb to.
 #
 # Pipeline:
 #   0. Provision a relocatable CPython (python-build-standalone) with ASE and
@@ -13,8 +14,9 @@
 #      /Applications symlink and the volume icon, and compresses the image.
 #   3. Fall back to a manual `cmake --install` + create-dmg/hdiutil assembly
 #      when cpack is unavailable or `--manual` is passed.
-#   4. Move the result to Calango-<version>-macOS.dmg, then mount it and prove
-#      the packaged app can import ASE before declaring success.
+#   4. Move the result to ./installers/calango_<version>_macOS.dmg, then
+#      mount it and prove the packaged app can import ASE before declaring
+#      success.
 #   5. Delete the scratch build tree under ~/Library/Caches/calango, which is
 #      several GB and reproducible. Only after every check above passed — a
 #      failed run keeps its tree so it can be diagnosed, and only inside that
@@ -35,8 +37,8 @@
 # bounded timeout instead of running (or hanging) with no visible sign of
 # whether they are working or stuck.
 #
-# Usage:  packaging/macos/create_dmg.sh [--manual] [--skip-build] [--no-python]
-#                                       [--keep-cache] [--no-brew]
+# Usage:  packaging/macos/build_dmg.sh [--manual] [--skip-build] [--no-python]
+#                                      [--keep-cache] [--no-brew]
 #
 # Overridable via environment:
 #   BUILD_DIR                 build/output directory (default build-macos-bundle)
@@ -51,7 +53,9 @@
 #                             it to ~/Library/Caches/calango/ and says so. Only
 #                             a BUILD_DIR you set yourself is refused rather
 #                             than overruled.
-#   DIST_DIR                  where the .dmg lands   (default: repo root)
+#   DIST_DIR                  where the .dmg lands   (default: ./installers,
+#                             created if needed — matches build_deb.sh's own
+#                             ./installers destination)
 #   CMAKE_PREFIX_PATH         Qt prefix          (default /opt/homebrew/opt/qt)
 #   PYTHON_BIN                interpreter the app links libpython against
 #                             (default: ./.venv/bin/python, else python3 on PATH)
@@ -106,7 +110,7 @@ done
 BUILD_DIR_EXPLICIT=0
 [[ -n "${BUILD_DIR:-}" ]] && BUILD_DIR_EXPLICIT=1
 BUILD_DIR="${BUILD_DIR:-build-macos-bundle}"
-DIST_DIR="${DIST_DIR:-$REPO_ROOT}"
+DIST_DIR="${DIST_DIR:-$REPO_ROOT/installers}"
 QT_PREFIX="${CMAKE_PREFIX_PATH:-/opt/homebrew/opt/qt}"
 EMBED_PY="${CALANGO_EMBEDDED_PYTHON_DIR:-}"
 # dftd4 / torch-dftd / phonopy ride along as dynamically linked Python
@@ -119,11 +123,11 @@ EMBED_PY="${CALANGO_EMBEDDED_PYTHON_DIR:-}"
 # compiles xtb 6.5.1 with meson, which needs a Fortran compiler and MKL and
 # fails on macOS arm64 — so putting it here does not add the calculator, it
 # breaks the build of the whole payload. conda-forge's `xtb-python` is the
-# only working route and it is a run dependency of the conda package
-# (packaging/conda/meta.yaml). A DMG user who wants xTB points the engine at a
-# Conda environment that has it, through Preferences -> Python & Environments;
-# the wizard reports whether the selected one does. See
-# packaging/dependencies.txt.
+# only working route, and Calango is no longer distributed as a conda
+# package itself (.dmg and .deb only) — a DMG user who wants xTB points the
+# engine at their OWN Conda environment that has it, through Preferences ->
+# Python & Environments; the wizard reports whether the selected one does.
+# See packaging/dependencies.txt.
 EMBED_PKGS="${CALANGO_EMBEDDED_PACKAGES:-ase numpy scipy spglib matplotlib imageio imageio-ffmpeg dftd4 torch-dftd phonopy}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 
@@ -518,13 +522,13 @@ if [[ -z "$DMG" ]]; then
     DMG="$(make_dmg_manual | tail -1)" || true
 fi
 
-# --- Finalize: place the artifact at dist/Calango-<version>-macOS.dmg -------
+# --- Finalize: move the artifact to ./installers/calango_<version>_macOS.dmg -
 if [[ -z "$DMG" || ! -f "$DMG" ]]; then
     echo "error: no .dmg was produced" >&2
     exit 1
 fi
 mkdir -p "$DIST_DIR"
-FINAL="$DIST_DIR/Calango-${VERSION}-macOS.dmg"
+FINAL="$DIST_DIR/calango_${VERSION}_macOS.dmg"
 mv -f "$DMG" "$FINAL"
 
 # --- Verify ----------------------------------------------------------------

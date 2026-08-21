@@ -118,6 +118,30 @@ int main(int argc, char* argv[])
         return python.aseAvailable() ? 0 : 1;
     }
 
+    // `calango --version` / `-v`: without this, the flag falls through to the
+    // argv-as-file-to-open loop below and QMessageBoxes a FileNotFoundError
+    // for a structure literally named "--version" — no window ever shows,
+    // so there is nowhere for the intended behavior to come from otherwise.
+    if (argc > 1 && (std::strcmp(argv[1], "--version") == 0 ||
+                     std::strcmp(argv[1], "-v") == 0)) {
+        std::printf("Calango %s\n", CALANGO_VERSION);
+        return 0;
+    }
+
+    // `calango --help` / `-h`: same reasoning as --version above.
+    if (argc > 1 && (std::strcmp(argv[1], "--help") == 0 ||
+                     std::strcmp(argv[1], "-h") == 0)) {
+        std::printf(
+            "Usage: calango [FILE...]\n"
+            "       calango --version | -v\n"
+            "       calango --help | -h\n"
+            "       calango --probe-python\n\n"
+            "With no options, opens each FILE (structure, trajectory, or\n"
+            "project) in its own tab, or shows the welcome screen if none\n"
+            "are given.\n");
+        return 0;
+    }
+
     QSurfaceFormat format;
     format.setVersion(3, 3);
     format.setProfile(QSurfaceFormat::CoreProfile);

@@ -86,10 +86,10 @@ VIRTUAL_ENV env -> build-time CALANGO_DEFAULT_PYTHON. Verify with:
                                              writer imports it directly.
 
   Core DFT / MLIP stack (required for the electronic-structure and MLIP
-  workflows). The conda package pulls these in as run deps: MACE via the
-  conda-forge `pymace` package (which pulls its whole backend), and GPAW as a
-  conda dep on x86_64 (linux-64 / osx-64). GPAW has no conda-forge osx-arm64
-  build yet, so on Apple Silicon add it with `pip install gpaw`.
+  workflows), not bundled by either installer — the user points a job at
+  their own environment that has them (Preferences -> Python &
+  Environments). GPAW has no conda-forge osx-arm64 build yet, so on Apple
+  Silicon add it with `pip install gpaw`.
 [runtime][required] MACE (conda: pymace) ... >= 0.3   (tested 0.3.16)  MLIP training / inference;
                                               pulls pytorch >=1.12, e3nn 0.4.4, cuequivariance-torch,
                                               torch-ema, torchmetrics

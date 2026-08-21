@@ -85,7 +85,7 @@ install_name_tool -change "$link" \
 # denies the removal with EPERM, so a staging tree inside a synced folder can
 # never be cleaned in place. The verify below is what actually enforces the
 # result; the fix when it fails is to stage outside the synced folder, which
-# is what BUILD_DIR is for (see create_dmg.sh).
+# is what BUILD_DIR is for (see build_dmg.sh).
 xattr -cr "$app" 2>/dev/null || true
 
 # Ad-hoc re-sign the whole bundle: install_name_tool invalidated the main
@@ -103,6 +103,6 @@ if ! codesign --verify --deep --strict "$app"; then
     echo "      similar detritus', the staging tree is inside a cloud-synced" >&2
     echo "      folder whose provider stamps xattrs that cannot be removed." >&2
     echo "      Re-run with BUILD_DIR outside it, e.g." >&2
-    echo "      BUILD_DIR=/tmp/calango-build packaging/macos/create_dmg.sh" >&2
+    echo "      BUILD_DIR=/tmp/calango-build packaging/macos/build_dmg.sh" >&2
     exit 1
 fi

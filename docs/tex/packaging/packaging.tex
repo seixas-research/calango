@@ -215,7 +215,7 @@ relocatable Python payload, builds, packages, and mounts the finished
 image to prove the shipped app can import ASE:
 
 \begin{lstlisting}
-packaging/macos/create_dmg.sh
+packaging/macos/build_dmg.sh
 \end{lstlisting}
 
 \noindent It also picks the build directory for you, which matters --- see
@@ -252,7 +252,7 @@ error: calango.app fails strict signature validation
 \end{lstlisting}
 
 \noindent The fix is to stage outside the synced folder, as above.
-\file{create\_dmg.sh} does this automatically: a \opt{BUILD\_DIR} you set
+\file{build\_dmg.sh} does this automatically: a \opt{BUILD\_DIR} you set
 yourself is refused with an explanation, and the default is relocated to
 \file{\textasciitilde/Library/Caches/calango/} with a notice. An already
 built tree does not need reconfiguring --- \opt{cpack -B} moves only the
@@ -280,13 +280,13 @@ MIT-licensed application.
 
 The scratch tree is several GB --- a Release build of the application,
 the CPack staging copy of the bundle, and the provisioned Python payload
---- and every byte of it is reproducible. \file{create\_dmg.sh} therefore
+--- and every byte of it is reproducible. \file{build\_dmg.sh} therefore
 deletes it as its last step, once the image has been built, mounted and
 probed:
 
 \begin{lstlisting}[basicstyle=\ttfamily\scriptsize]
 ==> SUCCESS
-    Artifact : /path/to/Calango-<version>-macOS.dmg
+    Artifact : /path/to/repo/installers/calango_<version>_macOS.dmg
     Size     : 65M
     Verified : valid macOS disk image (hdiutil imageinfo)
     Probe    : python: 3.14.6 ase: 3.29.0
@@ -497,65 +497,6 @@ end-to-end on Ubuntu (\file{dpkg-deb --info} shows the auto-computed
 libraries). Running it in CI on a clean Ubuntu 22.04/24.04 image remains
 worthwhile to catch host-specific assumptions.
 
-\section{Conda package}
-\label{sec:conda}
-
-The Conda recipe lives in \file{packaging/conda/} and differs from the two
-installers above in kind: it does not ship a bundled interpreter. Conda
-\emph{is} the environment, so Calango declares its Python stack as ordinary
-runtime dependencies and the solver provides them.
-
-\subsection{Commands}
-
-\begin{lstlisting}
-# From the repository root
-bash packaging/conda/create_conda_osx-arm64.sh
-
-# Result: packaging/conda/dist/calango-<version>-<build>.conda
-\end{lstlisting}
-
-The script finds whichever build tool is available --- \opt{conda-build},
-\opt{boa} (\opt{conda mambabuild}), or \opt{rattler-build} when a
-\file{recipe.yaml} is present --- validates the recipe, and emits the modern
-\file{.conda} format into \file{packaging/conda/dist/}. Useful overrides:
-
-\begin{center}
-\small
-\begin{tabular}{@{}lp{7.6cm}@{}}
-\toprule
-Variable & Effect \\
-\midrule
-\opt{CHANNELS}      & Extra channels; defaults to \opt{-c conda-forge}. \\
-\opt{OUTPUT\_DIR}   & Where the artifact lands; defaults to \file{dist/}. \\
-\opt{CONDA\_SOLVER} & Defaults to \opt{libmamba}. The classic solver fails
-                      this recipe on the platform virtual packages
-                      (\opt{\_\_osx}, \opt{\_\_unix}, \opt{\_\_archspec}). \\
-\opt{CALANGO\_VERSION} & Overrides the version in \file{meta.yaml}; keep it in
-                      step with \file{CMakeLists.txt}. \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\subsection{What the recipe pulls in}
-
-\opt{host} carries only what Calango compiles against --- \opt{qt6-main},
-\opt{pybind11} and \opt{python}. Everything the embedded interpreter imports at
-run time is in \opt{run}: \opt{ase}, \opt{numpy}, \opt{scipy}, \opt{spglib},
-\opt{pymatgen}, \opt{paramiko}, plus \opt{pymace} for machine-learning
-potentials.
-
-\textbf{Apple Silicon caveat.} \opt{gpaw} is gated on \opt{[x86\_64]}:
-conda-forge does not build GPAW for \opt{osx-arm64}, so on Apple Silicon it
-must be installed into the environment separately with
-\opt{pip install gpaw}. \opt{gpaw-data} (the PAW datasets) \emph{is} available
-on every platform and is always pulled in. Every DFT workflow in the user guide
-depends on this, so it is worth checking before concluding that a wizard is
-broken.
-
-The recipe's only test is \opt{calango -{}-probe-python}, which exits non-zero
-unless the interpreter it resolves can import ASE --- a cheap end-to-end check
-that the packaged binary and the packaged Python stack actually agree.
-
 \section{The embedded Python environment}
 \label{sec:python-embed}
 
@@ -586,7 +527,7 @@ recommended source. A plain project \file{.venv} is \emph{not}
 relocatable --- its \file{bin/python} and \file{pyvenv.cfg} refer back to
 the build machine's base interpreter.
 
-\file{create\_dmg.sh} does all of this for you when the variable is
+\file{build\_dmg.sh} does all of this for you when the variable is
 unset. It downloads a matching \texttt{python-build-standalone} tree,
 pip-installs
 \opt{CALANGO\_EMBEDDED\_PACKAGES} into it, and caches the result in the

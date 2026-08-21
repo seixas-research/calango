@@ -692,8 +692,14 @@ QWidget* PreferencesDialog::buildHotkeysTab()
         // These are all single-press actions (a mouse mode, undo, next tab,
         // ...) — capping the recorder at one key/chord keeps a stray second
         // keystroke from being silently folded into a two-chord sequence
-        // nothing here would ever match against.
+        // nothing here would ever match against. setMaximumSequenceLength
+        // is Qt 6.7+; CMakeLists.txt's stated minimum is 6.4 (what Ubuntu
+        // 24.04's own qt6-base-dev ships), so this is guarded rather than
+        // bumping the whole project's floor for one cosmetic cap — on
+        // older Qt the recorder just accepts multi-key sequences as before.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
         edit->setMaximumSequenceLength(1);
+#endif
         edit->setToolTip(action.category);
         hotkeyTable_->setCellWidget(row, 1, edit);
         hotkeyEdits_.push_back(edit);
