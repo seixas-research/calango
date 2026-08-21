@@ -139,12 +139,7 @@ void SimulationWizardBase::buildUi()
     connect(runLocalButton_, &QPushButton::clicked, this, [this] {
         if (!preflightVaspPotcar() || !preflightSecondary())
             return;
-        // Calango's own engine has no script to launch — it runs in this
-        // process. Distinguished here rather than at the host so a wizard
-        // whose host installed no runner still cannot silently stage a
-        // run.py against a calculator Python has never heard of.
-        action_ = usesNativeEngine() ? Action::RunNativeEngine
-                                     : Action::RunLocal;
+        action_ = Action::RunLocal;
         accept();
     });
     connect(runRemoteButton_, &QPushButton::clicked, this, [this] {
@@ -215,13 +210,10 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     // -- Ab initio / DFT ----------------------------------------------------
     // GPAW first, and therefore the default selection in every wizard that
     // allows it: a combo box opens on index 0, so whatever leads this list is
-    // what an unmodified run uses. That position previously belonged to the
-    // built-in engine because it needs no external code installed — which is
-    // true and was the wrong criterion. The built-in engine is a SCAFFOLD that
-    // produces no energy (see CalculatorKind::CalangoDft), so leading with it
-    // meant the out-of-the-box run of every module was the one that cannot
-    // return a number. It now sits at the very bottom of the list, past the
-    // classical potentials; see the end of this function.
+    // what an unmodified run uses. It needs no external code installed and
+    // is a real, working engine, which is the right pair of criteria for a
+    // default — unlike "needs nothing installed" on its own, which used to
+    // put a since-removed non-functional scaffold engine in this slot.
     addCalc(tr("GPAW (DFT)"), core::CalculatorKind::Gpaw);
     addCalc(tr("Quantum ESPRESSO (DFT)"), core::CalculatorKind::QuantumEspresso);
     addCalc(tr("VASP (DFT)"), core::CalculatorKind::Vasp);
@@ -243,14 +235,6 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     // potentials below, and priced accordingly.
     addCalc(tr("xTB (semi-empirical tight binding)"), core::CalculatorKind::Xtb);
     addCalc(tr("DFTB+ (tight binding DFT)"), core::CalculatorKind::DftbPlus);
-    // Calango's OWN Slater-Koster engine — unlike CalangoDft below, this is
-    // a real, working, tested implementation (see src/dftb/), not a
-    // scaffold, so it belongs in its natural family position rather than
-    // the "Experimental" section. Placed right after DFTB+: the two read
-    // the same .skf parameter format and share this page's Slater-Koster
-    // settings group (buildDftbGroup()).
-    addCalc(tr("Calango DFTB (native, tight binding)"),
-            core::CalculatorKind::CalangoDftb);
     separate();
 
     // -- Machine-learning interatomic potentials ----------------------------
@@ -273,17 +257,6 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     addCalc(tr("Lennard-Jones"), core::CalculatorKind::LennardJones);
     separate();
 
-    // -- Experimental -------------------------------------------------------
-    // Calango's own engine, last in the list and in its own section. It is the
-    // only entry that needs nothing installed, and the only one that cannot
-    // yet return an energy: its basis generation, integration grid, matrix
-    // assembly and eigensolver are unimplemented, so a run reports what is
-    // missing and produces no result. Bottom placement is therefore not a
-    // ranking of ambition but a statement about what happens if you pick it
-    // without reading — and the label carries the same warning, so the
-    // information does not depend on noticing which section it is in.
-    addCalc(tr("Calango Native DFT (experimental)"),
-            core::CalculatorKind::CalangoDft);
     engineForm->addRow(tr("Calculation engine:"), calcCombo_);
     layout->addWidget(engineWidget_);
     connect(calcCombo_, &QComboBox::currentIndexChanged, this,
@@ -1222,12 +1195,6 @@ void SimulationWizardBase::updateXtbRows()
 
 QWidget* SimulationWizardBase::buildDftbGroup(QWidget* parent)
 {
-    // Shared between DFTB+ (external `dftb+` binary, via ASE) and
-    // CalangoDftb (Calango's own native Slater-Koster engine, src/dftb) —
-    // both take exactly the same Slater-Koster directory + SCC/mixing/
-    // filling-temperature knobs, so the title and note below are worded to
-    // apply to either rather than duplicating this whole group for one
-    // engine that reads the same file format the same way.
     dftbGroup_ = new QGroupBox(tr("DFTB settings"), parent);
     auto* form = new QFormLayout(dftbGroup_);
 
@@ -1235,10 +1202,8 @@ QWidget* SimulationWizardBase::buildDftbGroup(QWidget* parent)
         tr("DFTB needs a <b>Slater-Koster parameter set</b> (mio, 3ob, … "
            "from dftb.org): the pairwise .skf tables are the "
            "parameterization, so element coverage is decided by the set, "
-           "not by the code — this applies equally to the external DFTB+ "
-           "binary and to Calango's own native engine (CalangoDftb), which "
-           "reads the same .skf files with its own parser. The k-point grid "
-           "comes from the shared Brillouin-zone controls above."),
+           "not by the code. The k-point grid comes from the shared "
+           "Brillouin-zone controls above."),
         dftbGroup_);
     note->setWordWrap(true);
     note->setTextFormat(Qt::RichText);
@@ -2517,12 +2482,7 @@ void SimulationWizardBase::updateCalculatorEnabled()
             updateXtbRows();
     }
     if (dftbGroup_) {
-        // Shared between DFTB+ (external binary) and CalangoDftb (native) —
-        // both read the same .skf Slater-Koster format and take the same
-        // SCC/mixing/filling-temperature controls, so one group serves
-        // both rather than duplicating it (see buildDftbGroup()'s own doc).
-        const bool isDftb = kind == core::CalculatorKind::DftbPlus
-            || kind == core::CalculatorKind::CalangoDftb;
+        const bool isDftb = kind == core::CalculatorKind::DftbPlus;
         dftbGroup_->setVisible(isDftb);
         if (isDftb)
             updateDftbRows();
@@ -2969,7 +2929,7 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
         c.xtbMaxIterations = xtbMaxIterSpin_->value();
     }
 
-    // -- DFTB+ / CalangoDftb (shared group — see buildDftbGroup()) ----------
+    // -- DFTB+ (see buildDftbGroup()) ----------------------------------------
     if (dftbSccCheck_) {
         c.dftbSlakoDir = dftbSlakoEdit_->text().trimmed().toStdString();
         c.dftbScc = dftbSccCheck_->isChecked();
@@ -2984,16 +2944,6 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
         c.dftbMaxSccIterations = dftbMaxSccSpin_->value();
         c.dftbFillingTemperatureK = dftbFillingTempSpin_->value();
     }
-    // The native calango-dftb-run binary ships beside whichever `calango`
-    // instance is currently running (see CMakeLists.txt's install() rules —
-    // same directory on every platform, Contents/MacOS on macOS). Resolved
-    // here rather than baked into the generator: this is Qt-free code and
-    // cannot call QCoreApplication itself (see CalculatorConfig.hpp's own
-    // doc on this field).
-    c.dftbNativeBinaryPath =
-        QDir(QCoreApplication::applicationDirPath())
-            .filePath(QStringLiteral("calango-dftb-run"))
-            .toStdString();
 
     // -- GROMACS ------------------------------------------------------------
     if (gromacsForceFieldCombo_) {
@@ -3085,11 +3035,7 @@ void SimulationWizardBase::updateStage()
     nextButton_->setVisible(!onReview);
     exportButton_->setVisible(onReview);
     runLocalButton_->setVisible(onReview);
-    // CalangoDftb ships as a binary beside this application, not on a
-    // remote cluster — offering "Run Remote" for it would fail the moment
-    // the generated wrapper tries to exec a path that only exists here.
-    runRemoteButton_->setVisible(
-        onReview && selectedCalculator() != core::CalculatorKind::CalangoDftb);
+    runRemoteButton_->setVisible(onReview);
     if (onReview)
         runLocalButton_->setDefault(true);
 }

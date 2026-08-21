@@ -486,13 +486,11 @@ const std::vector<Citation>& citationCatalog()
              "density-functional tight-binding method for simulations of "
              "complex materials properties. <i>Phys. Rev. B</i> "
              "<b>58</b>, 7260&ndash;7268 (1998)."),
-         QStringLiteral("The SCC-DFTB (DFTB2) method both DFTB+ and "
-                        "Calango's own native DFTB engine (CalangoDftb) "
-                        "implement — cite this regardless of which of the "
-                        "two ran the calculation. The Slater-Koster "
-                        "parameter set used (mio, 3ob, pbc, matsci, …) "
-                        "carries its own separate citation requirement, "
-                        "stated on its own download page at dftb.org."),
+         QStringLiteral("The SCC-DFTB (DFTB2) method DFTB+ implements. The "
+                        "Slater-Koster parameter set used (mio, 3ob, pbc, "
+                        "matsci, …) carries its own separate citation "
+                        "requirement, stated on its own download page at "
+                        "dftb.org."),
          QStringLiteral(R"(@article{Elstner1998sccdftb,
   author  = {Elstner, M. and Porezag, D. and Jungnickel, G. and Elsner, J. and
              Haugk, M. and Frauenheim, Th. and Suhai, S. and Seifert, G.},

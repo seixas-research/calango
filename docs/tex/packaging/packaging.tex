@@ -187,12 +187,151 @@ The supporting files are:
         \file{.app} independent of the build machine's Python
         (Section~\ref{sec:python-embed}).
   \item \file{packaging/linux/calango.desktop} --- application launcher entry.
-  \item \file{packaging/linux/calango-mime.xml} --- registers the
-        \texttt{application/x-calango-project} MIME type for
-        \file{.calproj} project files.
+  \item \file{packaging/linux/calango-mime.xml} --- registers
+        \texttt{application/x-calango-project} for \file{.calproj}
+        project files, plus MIME types for the 12 other structure /
+        trajectory / volumetric formats Calango reads (Section~\ref{sec:file-assoc}).
   \item \file{packaging/linux/postinst}, \file{postrm} --- refresh the
         desktop/MIME/icon caches on install and removal.
+  \item \file{packaging/linux/audit\_elf\_deps.py},
+        \file{packaging/macos/audit\_macho\_deps.py} --- fail the
+        packaging step if a shipped binary needs a library the
+        installer does not declare (Section~\ref{sec:blas-backend}).
 \end{itemize}
+
+\section{BLAS/LAPACK backend}
+\label{sec:blas-backend}
+
+\textbf{Status: there is no BLAS/LAPACK backend anymore.} The native DFT
+engine's generalised eigenproblem (\file{src/dft/LinearAlgebra.cpp}) and
+the native DFTB engine that shared it were LAPACK's only consumers in this
+codebase --- both were removed entirely (substantially implemented but
+narrowly exposed, with no downstream feature wiring; see git history). The
+packaged \file{calango} binary now links no BLAS/LAPACK implementation at
+all. This section is kept as history: it explains an incident that shaped
+the packaging pipeline's dependency audit (Section~\ref{sec:dep-audit}),
+which remains active and still matters for every OTHER shipped library.
+
+The fix at the time was a CMake option, \opt{CALANGO\_BLAS}, offering a
+choice of vendors (Accelerate, OpenBLAS, Generic, MKL, or the old
+unconstrained behaviour) and pinning \opt{BLA\_VENDOR} explicitly instead
+of letting \opt{find\_package(LAPACK)} guess. \textbf{That option no
+longer exists} --- removed along with its only two consumers.
+
+\subsection{The incident this exists to prevent}
+
+calango 26.8.36's shipped \file{.deb} needed
+\file{libmkl\_intel\_lp64.so.3}, \file{libmkl\_intel\_thread.so.3},
+\file{libmkl\_core.so.3} and \file{libiomp5.so} at runtime --- present on
+the build machine (an unconstrained \opt{find\_package(LAPACK)} picked up
+MKL there), completely absent from a clean
+\lstinline|apt install ./calango_*.deb|, and \textbf{not declared as a}
+\texttt{Depends:}: \file{dpkg-shlibdeps} could not attribute those
+\file{.so} files to any installed package, so it silently omitted them
+from the control file rather than failing the build. The package
+installed cleanly and crashed on first launch with a missing-library
+error, on any machine without that exact MKL install.
+
+The same build round's \file{.dmg} had the identical disease, through a
+different vendor. The DFTB helper binary linked directly against
+Homebrew's \file{libopenblas.0.dylib} under \file{/opt/homebrew},
+preferred over Apple's Accelerate framework simply because it was
+discoverable on that build machine's CMake search path. Nothing
+downstream rewrites its load commands the way \opt{macdeployqt} rewrites
+\file{calango} itself (Section~\ref{sec:install-step}), so it stayed
+absent on any Mac without \lstinline|brew install openblas|.
+
+Pinning \opt{BLA\_VENDOR} explicitly used to fix both: with a vendor set,
+\opt{find\_package(LAPACK)} only looks for that vendor's own library name
+patterns, so it could no longer silently substitute whatever else
+happened to sit on a build machine's search path. Removing the only two
+things that ever called \opt{find\_package(LAPACK)} is the more complete
+version of the same fix --- there is no vendor left to substitute.
+
+\subsection{The startup crash Accelerate alone didn't catch}
+
+A user's Mac never got past launch: a crash report (2026-08-21) showed a
+dyld ``Library not loaded'' error for \opt{@rpath/libgcc\_s.1.1.dylib},
+referenced from the bundled \file{libgfortran.5.dylib} --- same 26.8.36
+\file{.dmg}, a SECOND defect past what pinning \opt{BLA\_VENDOR} alone
+fixes.
+\file{calango}'s bundled \file{libopenblas.0.dylib} had its own
+dependencies correctly rewritten to be bundle-relative by
+\opt{macdeployqt}, but kept three of its original absolute Homebrew GCC
+rpaths on its LC\_RPATH list; on the build machine dyld's chained rpath
+search silently found \file{libgcc\_s.1.1.dylib} through one of them,
+while the file itself was never actually copied into
+\file{Contents/Frameworks}. A clean Mac without that exact Homebrew
+install misses every one of those paths and aborts before \opt{main()}
+runs. A bundle-relative load path is proof of \emph{form}, not of
+\emph{resolution} --- the first version of \file{audit\_macho\_deps.py}
+(path-form only) would have passed this bundle.
+
+Two fixes at the time: \opt{CALANGO\_BLAS} defaulting to
+\opt{Accelerate} removed the whole openblas/gfortran/gcc\_s chain outright
+(verified by rebuilding: a fresh \file{.dmg} linked \file{calango} and
+\file{calango-dftb-run} against \opt{Accelerate.framework} only) ---
+since superseded by removing the native DFT/DFTB engines entirely
+(Section~\ref{sec:blas-backend}), so there is now no BLAS chain to link
+on any platform; and \file{packaging/macos/strip\_leftover\_rpaths.sh},
+run after \opt{macdeployqt}'s two passes and before the final
+\opt{codesign}, deletes any non-relocatable LC\_RPATH entry from every
+bundled Mach-O --- the same \file{.dmg} carried this on three OTHER,
+unrelated libraries too (\file{libdbus-1.3.dylib}, \file{libjasper.7.dylib},
+\file{libjpeg.8.dylib}), so this one is \textbf{still active}: defense in
+depth for every future bundled library, not the BLAS vendor that is now
+gone. \file{audit\_macho\_deps.py} was extended to match: it now checks
+every LC\_RPATH entry for the same relocatability rule, and resolves
+every relative dependency against the bundle's own pooled rpath set
+rather than trusting the load-path string's shape alone.
+
+\subsection{Dependency audit}
+\label{sec:dep-audit}
+
+\file{packaging/linux/audit\_elf\_deps.py} and
+\file{packaging/macos/audit\_macho\_deps.py} run automatically at the end
+of \file{build\_deb.sh}/\file{build\_dmg.sh}, after \opt{cpack} produces
+the artifact and before it is published, and fail the packaging step ---
+not just warn --- if any shipped ELF/Mach-O needs a library that is not
+declared in the installer's own dependency metadata, bundled in the
+package itself, or part of the base OS. Intel MKL and the Intel OpenMP
+runtime (\file{libmkl\_*}, \file{libiomp5}, \file{libimf}, \file{libirc},
+\file{libsvml}, \file{libintlc}) are hard-banned in the Linux audit
+regardless of \texttt{Depends:} --- a packaged build must never need them.
+
+\begin{lstlisting}
+python3 packaging/linux/audit_elf_deps.py installers/calango_<ver>_<arch>.deb
+python3 packaging/macos/audit_macho_deps.py installers/calango_<ver>_macOS.dmg
+\end{lstlisting}
+
+The Linux script needs \opt{dpkg} for an authoritative
+package-ownership check (the real gate, run on the Linux packaging
+machine); without it, it falls back to a soname-family heuristic ---
+useful for exercising the script's own logic elsewhere, not a substitute
+for the real gate. The macOS script needs no such fallback: \opt{otool},
+always present, is enough to tell a relative/system load path from a
+build-machine one.
+
+\medskip
+\noindent\textbf{Known gap, not silently swept under the audit.}
+\file{build\_dmg.sh} passes the audit script two \opt{--exclude} flags
+that skip the embedded Python framework and its payload directory
+entirely --- not because that tree is clean. Auditing the 26.8.36
+\file{.dmg} found it has the \emph{same} disease: six stdlib extension
+modules (\file{\_ssl}, \file{\_hashlib}, \file{\_decimal}, \file{\_lzma},
+\file{\_sqlite3}, \file{\_zstd}) plus the framework's own Python
+binaries loaded Homebrew's OpenSSL, sqlite, zstd, mpdecimal and xz
+directly, meaning that particular artifact was built against a
+Homebrew-linked interpreter rather than the relocatable
+\opt{python-build-standalone} tree this pipeline is documented to
+download by default (Section~\ref{sec:python-embed}). That is a
+separate, pre-existing bug in Python provisioning, not the BLAS/MKL
+issue this audit was built for, and fixing it is out of scope here ---
+the existing \opt{--probe-python} launch check catches ``ASE won't
+import'' but not ``every dylib is relocatable''. Rebuild via the
+documented default flow and re-run the audit script with no
+\opt{--exclude} flags to confirm a given build is actually clean there
+before treating this as closed.
 
 \section{macOS: building the \file{.dmg}}
 
@@ -287,6 +426,7 @@ probed:
 \begin{lstlisting}[basicstyle=\ttfamily\scriptsize]
 ==> SUCCESS
     Artifact : /path/to/repo/installers/calango_<version>_macOS.dmg
+    Checksum : /path/to/repo/installers/calango_<version>_macOS.dmg.sha256
     Size     : 65M
     Verified : valid macOS disk image (hdiutil imageinfo)
     Probe    : python: 3.14.6 ase: 3.29.0
@@ -323,6 +463,7 @@ rm -rf ~/Library/Caches/calango/cpack-stage
 \end{lstlisting}
 
 \subsection{What the install step does}
+\label{sec:install-step}
 
 \opt{cpack} internally runs the CMake install rules into a staging
 directory (\file{\_CPack\_Packages/}) and then wraps the result in a
@@ -360,6 +501,95 @@ disk image. The install rules perform, in order:
         binaries.
 \end{enumerate}
 
+\subsection{File associations}
+\label{sec:file-assoc}
+
+\file{packaging/macos/Info.plist.in} declares document types for every
+format Calango reads that has a real, associable filename extension: a
+\opt{CFBundleDocumentTypes} entry and a matching
+\opt{UTExportedTypeDeclarations} entry each --- 13 pairs, split across two
+tiers:
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{0.56\textwidth}@{}}
+\toprule
+Tier & \opt{LSHandlerRank} & What \\
+\midrule
+Owner & \opt{Owner} & \file{.calproj} --- Calango's own project format \\
+Alternate & \opt{Default} / \opt{Alternate} &
+  \file{.extxyz} (\opt{Default}), \file{.xyz}, \file{.cif}, \file{.vasp},
+  \file{.traj}, \file{.pwi}, \file{.lammpstrj}, \file{.gjf}, \file{.res},
+  \file{.cube}, \file{.xsf}, \file{.h5}/\file{.hdf5} (all \opt{Alternate}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent \opt{Alternate} adds Calango to Finder's ``Open With'' menu for a
+format without taking over the user's existing default handler --- every one
+of these is a community/scientific format other applications (VESTA, OVITO,
+Avogadro, Mercury, \ldots) also read. \file{.calproj} is the only format
+Calango defines, so it alone claims \opt{Owner}.
+
+Two things are deliberately \emph{not} declared. \textbf{Extension-less
+filenames} --- Launch Services associates by extension or UTI, never by exact
+basename, so \file{POSCAR}/\file{CONTCAR} and the VASP volumetric family
+(\file{CHGCAR}/\file{LOCPOT}/\file{PARCHG}/\file{ELFCAR}) cannot be
+double-click-associated at all; \file{.vasp} and \file{.cube} cover the
+extension case of the same two formats, and these still open fine through
+the Open dialog, a CLI argument, or drag-and-drop. \textbf{Extensions too
+generic to claim system-wide} --- \file{.in}, \file{.out}, \file{.data},
+\file{.dump}, \file{.cell}, \file{.com}, \file{.json}, \file{.dat},
+\file{.top} --- even though \file{src/gui/FileOpenRouting.hpp} still maps
+several of them to an explicit ASE format hint when Calango opens them
+itself; declaring them in \opt{LSItemContentTypes} would put Calango in
+``Open With'' for large numbers of files that are not its concern.
+
+No established system or community UTI was found to \emph{import} for any of
+these formats (checked specifically for HDF5, since \file{.h5}/\file{.hdf5}
+are generic containers Calango does not own), so every UTI is Calango's own
+\texttt{org.seixasresearch.calango.*}, declared via
+\opt{UTExportedTypeDeclarations}. Four reuse a real chemical-MIME-type
+convention for \opt{public.mime-type} --- \texttt{chemical/x-xyz},
+\texttt{chemical/x-cif}, \texttt{chemical/x-gaussian-input} and
+\texttt{chemical/x-gaussian-cube}; the rest get an \texttt{application/x-*}
+string of Calango's own.
+
+Installing by dragging the \file{.app} out of the \file{.dmg} registers the
+bundle with Launch Services automatically, no separate step needed. Verified
+directly against exactly this ad-hoc-signed, unnotarized build:
+
+\begin{lstlisting}[basicstyle=\ttfamily\scriptsize]
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Versions/A/\
+  Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
+
+codesign --force --deep --sign - calango.app
+"$LSREGISTER" -f calango.app
+"$LSREGISTER" -dump | grep -A2 'claimed UTIs'
+\end{lstlisting}
+
+\noindent All 13 UTIs came back in \texttt{claimed UTIs:}, each with the
+right extension/MIME tag.
+\textbf{Caveat:} a freshly registered, unnotarized bundle carries a
+\texttt{launch-disabled} flag until Gatekeeper approves it --- the document
+\emph{associations} appear in ``Open With'' immediately, but Finder may still
+need the one-time right-click~$\to$~Open approval (or an ordinary first
+launch of the app) before it will actually run Calango for a double-clicked
+document.
+
+On the application side, \texttt{calango::CalangoApplication}
+(\file{src/CalangoApplication.hpp}) intercepts \opt{QFileOpenEvent} --- the
+Apple Event Qt surfaces for a double-click, ``Open With'', a Dock drop, or
+(one event per file) several files opened together --- and routes each path
+to \opt{MainWindow::loadFile}, exactly like a CLI argument, so each file
+opens in its own tab. An event arriving before \opt{MainWindow} exists (the
+normal case on a cold Finder launch) is queued (\file{src/FileOpenQueue.hpp})
+and replayed once the window is attached. \opt{loadFile} itself decides
+project vs.\ structure and picks the ASE format hint
+(\file{src/gui/FileOpenRouting.hpp}) --- the same routing used for the Open
+dialog, so format detection, error dialogs and recent-files behave
+identically regardless of how the file arrived.
+
 \subsection{Verification}
 
 \begin{lstlisting}
@@ -377,7 +607,9 @@ hdiutil attach -readonly -nobrowse calango-<version>-macos-arm64.dmg
 
 To rebuild the package from a clean state, clear the staging area first
 with \lstinline|cmake -E rm -rf _CPack_Packages| --- stale staging can
-mask deployment bugs.
+mask deployment bugs. \file{build\_dmg.sh} additionally runs
+\file{audit\_macho\_deps.py} over the finished image and fails the build
+on a build-machine load path (Section~\ref{sec:blas-backend}).
 
 \section{Linux: building the \file{.deb}}
 
@@ -454,8 +686,8 @@ Path in package & Purpose \\
 \file{/usr/bin/calango} & The application binary \\
 \file{/usr/share/applications/calango.desktop} & Launcher entry
 (\texttt{Exec=calango \%F}) \\
-\file{/usr/share/mime/packages/calango-mime.xml} & MIME type for
-\file{.calproj} \\
+\file{/usr/share/mime/packages/calango-mime.xml} & MIME types for
+\file{.calproj} and 12 other readable formats \\
 \file{/usr/share/pixmaps/calango.png} & Application icon (resolves the
 \file{.desktop} \texttt{Icon=calango} lookup) \\
 \file{/usr/lib/calango/python/} & Embedded Python (optional, see
@@ -464,14 +696,22 @@ Section~\ref{sec:python-embed}) \\
 \end{tabular}
 \end{center}
 
-The MIME registration means double-clicking a \file{.calproj} workspace
-in the file manager opens it in Calango; \file{MainWindow::loadFile}
-routes \file{.calproj} arguments to the project loader rather than the
-ASE structure reader. The \file{postinst}/\file{postrm} maintainer
-scripts refresh \file{update-mime-database},
-\file{update-desktop-database} and \file{gtk-update-icon-cache} so the
-association is live immediately after install (modern dpkg triggers
-usually do this anyway; the scripts make it robust on minimal systems).
+The MIME registration means double-clicking a \file{.calproj} workspace,
+or one of the 12 other associated formats (the same Alternate-tier list
+as the macOS \file{Info.plist}, Section~\ref{sec:file-assoc}), in the
+file manager opens it in Calango; \file{MainWindow::loadFile}
+routes \file{.calproj} arguments to the project loader and everything
+else through the ASE structure reader, picking a format hint
+(\file{src/gui/FileOpenRouting.hpp}) when the extension alone is
+ambiguous. The declarations in \file{calango-mime.xml} are
+self-contained rather than assuming the optional
+\texttt{chemical-mime-data} package is installed, so the association
+resolves even on a system that never installed it. The
+\file{postinst}/\file{postrm} maintainer scripts refresh
+\file{update-mime-database}, \file{update-desktop-database} and
+\file{gtk-update-icon-cache} so the association is live immediately
+after install (modern dpkg triggers usually do this anyway; the scripts
+make it robust on minimal systems).
 
 Unless an embedded Python is bundled, the package declares
 \texttt{Depends: python3 (>= 3.9)} and \texttt{Recommends: python3-ase}.
@@ -495,7 +735,12 @@ xdg-mime query default application/x-calango-project
 end-to-end on Ubuntu (\file{dpkg-deb --info} shows the auto-computed
 \texttt{Depends:}, including \opt{libpython3.12t64} and the Qt~6 runtime
 libraries). Running it in CI on a clean Ubuntu 22.04/24.04 image remains
-worthwhile to catch host-specific assumptions.
+worthwhile to catch host-specific assumptions. \file{build\_deb.sh}
+additionally runs \file{audit\_elf\_deps.py} over the finished
+\file{.deb} and fails the build if any shipped ELF needs a library the
+control file does not declare (Section~\ref{sec:blas-backend}) --- the
+check that would have caught calango 26.8.36's undeclared MKL link
+before it shipped.
 
 \section{The embedded Python environment}
 \label{sec:python-embed}

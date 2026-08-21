@@ -765,14 +765,6 @@ private:
     /// exactly at the seams, which is where the grains are.
     int applyGrainCasts();
 
-    /// Run a single point on Calango's own in-process DFT engine.
-    ///
-    /// Separate from the script path entirely: there is no run.py, no
-    /// interpreter and no Processes row, because nothing is dispatched. What
-    /// the engine reports — including that it cannot yet compute — is shown
-    /// directly.
-    void runNativeDftSinglePoint(const core::Structure& structure);
-
     /// Capture `doc`'s current state as one undo step (see Snapshot).
     static Snapshot snapshotOf(const Document& doc);
     /// Restore a snapshot into `doc`, replacing both the displayed structure

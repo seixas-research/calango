@@ -74,7 +74,6 @@
 #include "gui/OrchestrationWindow.hpp"
 #include "gui/WorkflowReportDialog.hpp"
 #include "gui/EnginePresets.hpp"
-#include "dft/CalangoDFTEngine.hpp"
 #include "gui/SinglePointWizard.hpp"
 #include "gui/MonteCarloWizard.hpp"
 #include "gui/CalphadDialog.hpp"
@@ -93,6 +92,7 @@
 #include "gui/GrapheneOxideMdmcWizard.hpp"
 #include "gui/GrapheneOxideWizard.hpp"
 #include "gui/GrainCasts.hpp"
+#include "gui/FileOpenRouting.hpp"
 #include "gui/GuiUtils.hpp"
 #include "gui/GwResultsWindow.hpp"
 #include "gui/OpticsResultsWindow.hpp"
@@ -2705,31 +2705,6 @@ void MainWindow::redo()
 // ---------------------------------------------------------------------------
 
 namespace {
-
-/// Explicit ASE format hints for extensions ase.io cannot infer reliably.
-QString formatHintFor(const QString& path)
-{
-    const QString suffix = QFileInfo(path).suffix().toLower();
-    if (suffix == QLatin1String("data"))
-        return QStringLiteral("lammps-data");
-    if (suffix == QLatin1String("dump") || suffix == QLatin1String("lammpstrj"))
-        return QStringLiteral("lammps-dump-text");
-    if (suffix == QLatin1String("pwi") || suffix == QLatin1String("in"))
-        return QStringLiteral("espresso-in");
-    if (suffix == QLatin1String("pwo"))
-        return QStringLiteral("espresso-out");
-    if (suffix == QLatin1String("gjf") || suffix == QLatin1String("com"))
-        return QStringLiteral("gaussian-in");
-    if (suffix == QLatin1String("cell"))
-        return QStringLiteral("castep-cell");
-    if (suffix == QLatin1String("res"))
-        return QStringLiteral("res");
-    return {}; // .out and others: let ASE sniff the contents
-}
-
-} // namespace
-
-namespace {
 const auto kRecentFilesKey = QStringLiteral("recent/files");
 constexpr int kMaxRecentFiles = 10;
 } // namespace
@@ -2790,7 +2765,7 @@ void MainWindow::loadFile(const QString& path)
     // Project workspaces (double-click / "Open with" via the installer's
     // MIME association, or a CLI argument) restore the whole session
     // instead of loading a structure through ASE.
-    if (path.endsWith(QStringLiteral(".calproj"), Qt::CaseInsensitive)) {
+    if (isCalangoProjectFile(path)) {
         if (readProject(path)) {
             projectPath_ = path;
             addRecentFile(path);
@@ -9231,55 +9206,7 @@ void MainWindow::singlePointCalculation()
     if (!prepareSimulation(tr("Single-point Calculation")))
         return;
     SinglePointWizard wizard(this);
-
-    // Calango's own engine is not a generated script — it runs here, in this
-    // process. The dispatch has to happen before runSimulationWizard(), which
-    // would otherwise stage a run.py and launch an interpreter against a
-    // calculator that does not exist in Python.
-    //
-    // Hooked to the wizard's own accept rather than duplicating its setup:
-    // exec() is called by runSimulationWizard, and this callback fires from
-    // inside it when the chosen engine is ours.
     runSimulationWizard(wizard, tr("Single-Point Calculation"), /*expectFrames=*/false);
-}
-
-void MainWindow::runNativeDftSinglePoint(const core::Structure& structure)
-{
-    dft::Parameters parameters;
-    dft::CalangoDFTEngine engine(parameters);
-    const dft::CalangoDFTEngine::Result result = engine.run(structure);
-
-    if (result.outcome.ok()) {
-        // Everything shown comes from the engine's own breakdown; nothing here
-        // is derived or rounded into looking better than it is. The integrated
-        // electron count is on the status line beside the energy on purpose —
-        // it is the one number that says whether the grid resolved what it was
-        // asked to integrate, and it costs nothing to show.
-        statusBar()->showMessage(
-            tr("Calango DFT — total %1 eV, %2 electrons on the grid, "
-               "%3 SCF iterations")
-                .arg(result.energy.total, 0, 'f', 6)
-                .arg(result.integratedElectrons, 0, 'f', 6)
-                .arg(result.scfIterations));
-        return;
-    }
-
-    // Reported as a message box, not a status line. The engine produced NO
-    // result, and a run that quietly leaves the status bar unchanged reads as
-    // a run that worked.
-    QString text = tr("The built-in Calango DFT engine did not produce a "
-                      "result.\n\n%1")
-                       .arg(QString::fromStdString(result.outcome.message));
-    if (!result.log.empty()) {
-        QStringList lines;
-        for (const std::string& line : result.log)
-            lines << QString::fromStdString(line);
-        text += tr("\n\nRun context:\n%1").arg(lines.join(QLatin1Char('\n')));
-    }
-    QMessageBox::information(this, tr("Calango DFT"), text);
-    statusBar()->showMessage(
-        tr("Calango DFT: %1")
-            .arg(QString::fromLatin1(dft::toString(result.outcome.status))));
 }
 
 void MainWindow::planeWaveCutoffConvergence()
@@ -9323,15 +9250,6 @@ void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
     // this completed run. stageJob() writes it as calculator.json and clears
     // the pending value.
     pendingCalculatorProvenance_ = wizard.calculatorProvenanceJson();
-
-    // Calango's own engine runs HERE, not as a staged script. Handled before
-    // every other action so nothing downstream has to know the difference.
-    if (wizard.action() == SimulationWizardBase::Action::RunNativeEngine) {
-        const Document* doc = currentDocument();
-        if (doc && doc->structure)
-            runNativeDftSinglePoint(*doc->structure);
-        return;
-    }
 
     if (wizard.action() == SimulationWizardBase::Action::RunRemote) {
         // Zone-11 HPC manager: stage the script and submit it.

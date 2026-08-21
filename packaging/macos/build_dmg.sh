@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # build_dmg.sh — build and package Calango as a drag-and-install macOS .dmg,
-# saved as ./installers/calango_<version>_macOS.dmg (created if needed) —
-# the same destination packaging/linux/build_deb.sh moves its own .deb to.
+# saved, with its .sha256 checksum, as ./installers/calango_<version>_macOS.dmg
+# (created if needed) — the same destination packaging/linux/build_deb.sh
+# moves its own .deb + .sha256 to.
 #
 # Pipeline:
 #   0. Provision a relocatable CPython (python-build-standalone) with ASE and
@@ -14,9 +15,9 @@
 #      /Applications symlink and the volume icon, and compresses the image.
 #   3. Fall back to a manual `cmake --install` + create-dmg/hdiutil assembly
 #      when cpack is unavailable or `--manual` is passed.
-#   4. Move the result to ./installers/calango_<version>_macOS.dmg, then
-#      mount it and prove the packaged app can import ASE before declaring
-#      success.
+#   4. Move the result to ./installers/calango_<version>_macOS.dmg, write its
+#      .sha256 alongside it, then mount the image and prove the packaged app
+#      can import ASE before declaring success.
 #   5. Delete the scratch build tree under ~/Library/Caches/calango, which is
 #      several GB and reproducible. Only after every check above passed — a
 #      failed run keeps its tree so it can be diagnosed, and only inside that
@@ -531,6 +532,17 @@ mkdir -p "$DIST_DIR"
 FINAL="$DIST_DIR/calango_${VERSION}_macOS.dmg"
 mv -f "$DMG" "$FINAL"
 
+# CPack's own CPACK_PACKAGE_CHECKSUM (CMakeLists.txt) already writes a
+# .sha256 next to whatever it names the raw artifact in $BUILD_DIR — but
+# that name is not $FINAL (cpack picks its own, and the manual/create-dmg
+# fallback above produces no checksum at all), so it is recomputed here,
+# fresh, against the file actually being shipped rather than tracked/
+# renamed from cpack's copy. Recorded by basename only (not the full path),
+# the same way `shasum -c` expects to be run from inside the directory that
+# holds both files — matching build_deb.sh's own ".deb + .sha256, moved
+# together" convention.
+( cd "$DIST_DIR" && shasum -a 256 "$(basename "$FINAL")" > "$(basename "$FINAL").sha256" )
+
 # --- Verify ----------------------------------------------------------------
 if ! hdiutil imageinfo "$FINAL" >/dev/null 2>&1; then
     echo "error: produced $FINAL but it is not a valid disk image" >&2
@@ -557,9 +569,51 @@ if hdiutil attach -nobrowse -quiet -readonly -mountpoint "$MNT" "$FINAL" 2>/dev/
 fi
 rm -rf "$MNT"; rm -f "$PROBE_LOG"
 
+# Every shipped Mach-O must load only relative (@executable_path/
+# @loader_path/@rpath) or system (/System, /usr/lib) paths — anything else
+# is a build-machine path (Homebrew, a conda prefix, $HOME, ...) that will
+# not exist on the machine installing this .dmg. Added after calango
+# 26.8.36's calango-dftb-run binary (the native DFTB engine's helper,
+# since removed along with the engine itself — see CMakeLists.txt) shipped
+# linked directly against /opt/homebrew/opt/openblas/lib/libopenblas.0.dylib
+# (an unconstrained find_package(LAPACK) preferred Homebrew's openblas
+# over Accelerate on that build machine, and nothing downstream of its
+# plain install(TARGETS) rewrote load commands the way macdeployqt
+# rewrites `calango` itself). The fix to that root cause was a since-
+# removed CALANGO_BLAS option, superseded by removing every consumer of
+# find_package(LAPACK) entirely — this audit is the backstop that now
+# catches the same class of leak on any OTHER bundled library.
+#
+# The embedded Python payload (Contents/Resources/python and the linked
+# Contents/Frameworks/Python.framework) is EXCLUDED here, not because it is
+# clean — auditing that same 26.8.36 .dmg found it is NOT: six stdlib
+# extension modules and the framework's own python3.14/Python binaries
+# loaded Homebrew OpenSSL/sqlite/zstd/mpdecimal/xz directly, meaning that
+# artifact was built against a Homebrew-linked interpreter rather than the
+# relocatable python-build-standalone tree this script normally downloads
+# (see PYTHON_BIN / CALANGO_EMBEDDED_PYTHON_DIR above). That is a separate,
+# pre-existing bug in the Python-provisioning path, already partly covered
+# by the --probe-python check just above (which catches "ASE won't import"
+# but not "every dylib is relocatable") — fixing it is tracked, not done
+# here; see packaging/README.md's "BLAS/LAPACK backend" section for the
+# full incident writeup. Re-run this script without the two
+# --exclude flags below once that is fixed, to turn this into a full gate.
+echo ""
+echo "==> Auditing shipped Mach-O binaries for build-machine paths"
+if ! python3 "$SCRIPT_DIR/audit_macho_deps.py" "$FINAL" \
+        --exclude 'Contents/Resources/python/*' \
+        --exclude 'Contents/Frameworks/Python.framework/*'; then
+    echo "error: audit_macho_deps.py found a build-machine path in the " >&2
+    echo "       packaged app outside the embedded Python payload — see " >&2
+    echo "       output above. This .dmg (or one of the binaries it" >&2
+    echo "       ships) would fail to launch on a clean Mac." >&2
+    exit 1
+fi
+
 echo ""
 echo "==> SUCCESS"
 echo "    Artifact : $FINAL"
+echo "    Checksum : $FINAL.sha256"
 echo "    Size     : $(du -h "$FINAL" | cut -f1)"
 echo "    Verified : valid macOS disk image (hdiutil imageinfo)"
 echo "    Probe    : $PROBE"

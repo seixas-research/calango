@@ -1,6 +1,5 @@
 #include "core/AseScriptGenerator.hpp"
 
-#include "core/DftbNativeScriptGenerator.hpp"
 #include "core/EngineCalculatorBlocks.hpp"
 #include "core/MdIntegratorBlocks.hpp"
 
@@ -14,8 +13,6 @@ namespace calango::core {
 std::string toString(CalculatorKind kind)
 {
     switch (kind) {
-    case CalculatorKind::CalangoDft: return "Calango DFT";
-    case CalculatorKind::CalangoDftb: return "Calango DFTB";
     case CalculatorKind::EMT: return "EMT";
     case CalculatorKind::LennardJones: return "Lennard-Jones";
     case CalculatorKind::QuantumEspresso: return "Quantum ESPRESSO";
@@ -1185,50 +1182,6 @@ void emitGromacs(std::ostringstream& out, const CalculatorConfig& c)
 void emitCalculator(std::ostringstream& out, const CalculatorConfig& c)
 {
     switch (c.calculator) {
-    case CalculatorKind::CalangoDft:
-        // There is no ASE calculator to build. Calango's own engine runs in
-        // process, so a run on it never reaches a generated script — the
-        // caller dispatches to calango::dft::CalangoDFTEngine instead. Emitting
-        // a comment rather than nothing so a script that somehow got here says
-        // why it cannot run, instead of producing an `atoms` with no
-        // calculator and failing at get_potential_energy().
-        out << "raise RuntimeError(\n"
-               "    \"The Calango DFT engine runs inside the application, \"\n"
-               "    \"not as a generated script. Reaching this line means a \"\n"
-               "    \"run was routed to the script generator instead of to \"\n"
-               "    \"the built-in engine.\")\n";
-        break;
-    case CalculatorKind::CalangoDftb: {
-        // Unlike CalangoDft above, this DOES run as a generated script —
-        // see DftbNativeScriptGenerator.hpp — but it builds no
-        // atoms.calc of its own (there is no ASE calculator; the native
-        // binary is not one), so the generic single-point tail right after
-        // this switch (get_potential_energy()/get_forces()) needs a
-        // SinglePointCalculator standing in for it, populated from the
-        // native engine's OWN single_point.json — the ONLY caller of this
-        // branch is SinglePointWizard (calculatorAllowed() restricts this
-        // engine to single points, since its forces are finite-difference —
-        // see DftbForces.hpp — and geometry optimisation/MD would each cost
-        // 6*N extra SCF solves per step), so "singlepoint" is the only task
-        // this call site ever needs.
-        emitDftbNativeWrapper(out, c, "singlepoint", {}, "single_point.json");
-        out << "\n"
-               "import json as _dftb_json\n"
-               "from ase.calculators.singlepoint import SinglePointCalculator\n"
-               "with open(\"single_point.json\") as _dftb_fh:\n"
-               "    _dftb_result = _dftb_json.load(_dftb_fh)\n"
-               "atoms.calc = SinglePointCalculator(\n"
-               "    atoms,\n"
-               "    energy=_dftb_result[\"energy_eV\"],\n"
-               "    forces=_dftb_result[\"forces_eV_per_A\"],\n"
-               "    # ASE's Calculator.get_fermi_level() reads exactly this\n"
-               "    # results key, so the generic single-point tail's own\n"
-               "    # 'try: atoms.calc.get_fermi_level()' picks this up\n"
-               "    # instead of silently falling back to None.\n"
-               "    fermi_energy=_dftb_result[\"fermi_eV\"],\n"
-               ")\n";
-        break;
-    }
     case CalculatorKind::EMT:
         out << "from ase.calculators.emt import EMT\n"
                "\n"

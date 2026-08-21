@@ -114,54 +114,31 @@ enum class CalculatorKind {
     /// is entirely in the prmtop topology file, which must be built beforehand
     /// (tleap / antechamber) — nothing here can type a structure.
     Amber,
-
-    /// Calango's OWN density-functional engine: all-electron, numerical
-    /// atomic orbitals, written in C++ and run IN PROCESS.
-    ///
-    /// The one entry in this list that is not reached through an ASE
-    /// calculator, and therefore the one that breaks the rule stated above.
-    /// It has to: there is no external binary and no Python calculator to
-    /// build, so a generated script would have nothing to put in `atoms.calc`.
-    /// The run is executed by calango::dft::CalangoDFTEngine directly.
-    ///
-    /// STATUS: a SCAFFOLD. Its self-contained numerics are implemented and
-    /// tested (radial mesh and quadrature, the radial Poisson solve, density
-    /// mixing); basis generation, the integration grid, matrix assembly and
-    /// the eigensolver are not, so a run reports what is missing and produces
-    /// no energy. It is exposed anyway so the wiring is exercised and visible
-    /// rather than landing all at once — but nothing in the application may
-    /// treat a result from it as a number until those pieces exist.
-    CalangoDft,
-
-    /// Calango's OWN Slater-Koster (SCC-)DFTB engine: parses the standard
-    /// .skf parameter format with its own parser (src/dftb), builds and
-    /// diagonalizes the tight-binding Hamiltonian natively in C++ — it does
-    /// not link or shell out to DFTB+ or any other tight-binding package
-    /// (see src/dftb/SlaterKosterFile.hpp for exactly what "native" means
-    /// here and the license note on parameter sets).
-    ///
-    /// UNLIKE CalangoDft above, this is NOT an in-process scaffold: it runs
-    /// out-of-process, launched the same way every scripted engine is (a
-    /// thin, self-contained Python wrapper — see
-    /// core::emitDftbNativeWrapper — writes the structure and a plain-text
-    /// task manifest, then execs the native `calango-dftb-run` binary and
-    /// relays its stdout), so it participates fully in job staging,
-    /// remote... actually LOCAL ONLY (see below), and the existing
-    /// three-place result-dispatch convention.
-    ///
-    /// STATUS: non-SCC (DFTB0) and SCC (DFTB2) both implemented; s and p
-    /// orbitals only (d parsed, not yet assembled — FUTURE.md); analytic
-    /// forces are NOT implemented — forces are by finite difference of the
-    /// total energy (see src/dftb/DftbForces.hpp for why, following
-    /// CalangoDFTEngine's own ForceCalculator precedent), which is fine for
-    /// a single point but is why this engine is offered for SinglePoint
-    /// only, not geometry optimization or MD (restricting task support
-    /// honestly rather than offering a run path that silently costs 6N
-    /// extra SCF solves per relaxation step). LOCAL EXECUTION ONLY: the
-    /// native binary ships beside the app, not on a remote cluster, so
-    /// wizards offering this engine should not present "Run Remote" for it.
-    CalangoDftb,
+    // -- Calango's own native DFT and DFTB engines were REMOVED here --------
+    // (CalculatorKind::CalangoDft, CalculatorKind::CalangoDftb — both were
+    // the last two entries in this enum, so removing them outright does not
+    // renumber/reinterpret any other stored CalculatorKind value; see the
+    // append-only rule on Lammps above). A saved project or orchestration
+    // file with a stored ordinal matching either of the old values now
+    // simply has no matching enumerator — see CalculatorKind's
+    // deserialization call sites for how that is handled gracefully.
 };
+
+/// True if `value` names one of the CURRENT CalculatorKind enumerators.
+/// Guards every raw-int deserialization site (orchestration workflow files'
+/// "engine_id", the calculator.json provenance sidecar) that stores this
+/// enum by ordinal value, per the append-only rule documented on Lammps and
+/// Amber above. An old file may hold an ordinal that named a calculator
+/// since removed (native DFT/DFTB, the last two entries before this
+/// project stopped shipping them) — static_cast-ing that value anyway
+/// silently produces an enumerator-less CalculatorKind that every
+/// exhaustive switch above quietly falls through rather than reporting the
+/// problem. Call this BEFORE the cast and show a clear "no longer
+/// available" message instead of guessing.
+constexpr bool isValidCalculatorKind(int value)
+{
+    return value >= 0 && value <= static_cast<int>(CalculatorKind::Amber);
+}
 
 /// How the LAMMPS calculator talks to LAMMPS. ASE ships two interfaces, and
 /// which one works depends on how LAMMPS was installed — so this is a real
@@ -225,10 +202,6 @@ constexpr CalculatorFamily calculatorFamily(CalculatorKind kind)
     case CalculatorKind::Abinit:
     case CalculatorKind::Cp2k:
     case CalculatorKind::FhiAims:
-    // Calango's own engine is a first-principles DFT code like the rest of
-    // this group; that it happens to run in process rather than as a job
-    // says nothing about the family it belongs to.
-    case CalculatorKind::CalangoDft:
     case CalculatorKind::Siesta:
     case CalculatorKind::OpenMx:
     case CalculatorKind::Fleur:
@@ -237,7 +210,6 @@ constexpr CalculatorFamily calculatorFamily(CalculatorKind kind)
         return CalculatorFamily::AbInitio;
     case CalculatorKind::Xtb:
     case CalculatorKind::DftbPlus:
-    case CalculatorKind::CalangoDftb:
         return CalculatorFamily::SemiEmpirical;
     case CalculatorKind::Mace:
     case CalculatorKind::DeepMd:
@@ -286,7 +258,6 @@ constexpr bool usesKpointGrid(CalculatorKind kind)
     case CalculatorKind::OpenMx:
     case CalculatorKind::Fleur:
     case CalculatorKind::DftbPlus:
-    case CalculatorKind::CalangoDftb:
         return true;
     default:
         break;
@@ -1238,21 +1209,6 @@ struct CalculatorConfig {
     /// converted to Hartree in the script because that is the unit DFTB+
     /// reads when no HSD modifier is given.
     double dftbFillingTemperatureK = 0.0;
-
-    // -- Calango's own native DFTB engine (CalculatorKind::CalangoDftb) -----
-    // Shares dftbSlakoDir/dftbScc/dftbSccTolerance/dftbMaxSccIterations/
-    // dftbFillingTemperatureK above — same physics, same "Slater-Koster
-    // directory" concept, one settings group in the wizard (see
-    // SimulationWizardBase::buildDftbGroup) rather than two near-identical
-    // ones. This field is the one thing genuinely specific to the NATIVE
-    // path: where the `calango-dftb-run` binary that ships beside this
-    // running instance of the app actually is. Resolved once by the GUI
-    // layer (QCoreApplication::applicationDirPath(), same directory the
-    // binary is installed into on every platform — see CMakeLists.txt's
-    // install() rules) and passed in as a plain string for the same reason
-    // vaspPotcarPath/espressoPseudoDir/siestaPseudoDir are: this is Qt-free
-    // code and cannot resolve it itself.
-    std::string dftbNativeBinaryPath;
 
     // -- GROMACS (classical biomolecular MM) --------------------------------
     //

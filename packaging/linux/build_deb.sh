@@ -161,6 +161,33 @@ if [ -z "$DEB" ]; then
     exit 1
 fi
 
+# --- Audit: every NEEDED library must be declared, bundled, or base-system -
+# dpkg-shlibdeps (CPACK_DEBIAN_PACKAGE_SHLIBDEPS, CMakeLists.txt) derives
+# Depends: from whatever the binary actually links — but a library it
+# cannot attribute to any installed package, it silently DROPS rather than
+# failing the build on. calango 26.8.36 shipped exactly that way: `calango`
+# and `calango-dftb-run` needed libmkl_intel_lp64.so.3,
+# libmkl_intel_thread.so.3, libmkl_core.so.3 and libiomp5.so — present on
+# that build machine (an unconstrained find_package(LAPACK) picked up MKL
+# there), completely absent from the control file, and therefore absent on
+# every clean `apt install` target. The fix to the root cause was pinning
+# BLA_VENDOR via a since-removed CALANGO_BLAS option -- superseded by
+# removing the native DFT/DFTB engines that were LAPACK's only consumers
+# entirely (see CMakeLists.txt). This is the backstop that catches the
+# NEXT such leak, on any other library, here, not on an end user's machine.
+echo ">> Auditing shipped ELF binaries for undeclared library dependencies"
+if ! python3 "$SCRIPT_DIR/audit_elf_deps.py" "$DEB"; then
+    echo "error: audit_elf_deps.py found a NEEDED library that is not" >&2
+    echo "       declared in the .deb's own Depends — see output above." >&2
+    echo "       This package would fail to run (not just fail to" >&2
+    echo "       install) on a clean machine. Fix whatever pulled the" >&2
+    echo "       library in (check find_package()/find_library() calls" >&2
+    echo "       and the build machine's library search path in" >&2
+    echo "       CMakeLists.txt) or, if it is a genuine new runtime" >&2
+    echo "       dependency, add it to CPACK_DEBIAN_PACKAGE_DEPENDS." >&2
+    exit 1
+fi
+
 # --- Publish: only the .deb (+ its checksum) is the deliverable -------------
 # Everything else in BUILD_DIR is a disposable intermediate — object files,
 # CMake cache, the unpacked staging tree cpack built the .deb from. The site

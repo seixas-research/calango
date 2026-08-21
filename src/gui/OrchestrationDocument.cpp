@@ -336,9 +336,26 @@ bool OrchestrationDocument::load(OrchestrationWindow& window,
                              .arg(entry.value(QStringLiteral("task")).toString());
             return false;
         }
-        const auto engine = static_cast<core::CalculatorKind>(
-            entry.value(QStringLiteral("engine_id"))
-                .toInt(static_cast<int>(core::CalculatorKind::EMT)));
+        const int engineId = entry.value(QStringLiteral("engine_id"))
+                                 .toInt(static_cast<int>(core::CalculatorKind::EMT));
+        // A workflow saved before a calculator was removed (native DFT/DFTB,
+        // both were the last two CalculatorKind entries — see
+        // CalculatorConfig.hpp) stores an ordinal that no longer names
+        // anything. Reject it explicitly with a clear message rather than
+        // static_cast-ing an out-of-range int into an enumerator-less
+        // CalculatorKind that every downstream switch would then silently
+        // mishandle.
+        if (!core::isValidCalculatorKind(engineId)) {
+            if (error)
+                *error = QObject::tr(
+                    "This workflow uses a calculator (id %1) that is no "
+                    "longer available in this version of Calango — it was "
+                    "likely built with an engine since removed. Re-create "
+                    "this node with a currently supported calculator.")
+                             .arg(engineId);
+            return false;
+        }
+        const auto engine = static_cast<core::CalculatorKind>(engineId);
         OrchestrationNodeItem* node = window.addProcessNode(*task, engine);
         if (!node)
             continue;

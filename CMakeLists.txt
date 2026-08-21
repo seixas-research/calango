@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.36
+    VERSION 26.8.37
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -37,86 +37,22 @@ set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
 find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets OpenGLWidgets Concurrent Svg)
 qt_standard_project_setup()   # enables AUTOMOC / AUTORCC / AUTOUIC
 
-# --- Native DFT engine ------------------------------------------------------
-# The all-electron numerical-atomic-orbital solver in src/dft. Listed once and
-# reused by the application and by both of its test binaries, so a new source
-# file cannot land in one and be missing from the other.
-set(CALANGO_DFT_SOURCES
-    src/dft/AtomicSolver.cpp
-    src/dft/CalangoDFTEngine.cpp
-    src/dft/ForceCalculator.cpp
-    src/dft/HamiltonianAssembler.cpp
-    src/dft/IntegrationGrid.cpp
-    src/dft/KPointGrid.cpp
-    src/dft/LinearAlgebra.cpp
-    src/dft/NAOBasisSet.cpp
-    src/dft/RadialGrid.cpp
-    src/dft/SCFSolver.cpp
-    src/dft/XcFunctional.cpp
-)
-
-# --- Native DFTB (Slater-Koster tight-binding) engine -----------------------
-# Self-consistent-charge density-functional tight binding, in src/dftb. Reads
-# the standard .skf Slater-Koster parameter format with its own parser (see
-# src/dftb/SlaterKosterFile.hpp for the format citation and the license note
-# on parameter sets); does not link or shell out to DFTB+ or any other
-# tight-binding package. Shares the dense generalized-eigenproblem solver
-# (src/dft/LinearAlgebra.cpp) and the Brillouin-zone k-mesh builder
-# (src/dft/KPointGrid.cpp) with the native all-electron engine rather than
-# duplicating either — neither is DFT-specific, both are just dense linear
-# algebra and periodic sampling code that this engine needs exactly as much
-# of. Listed once and reused by the application and its test binaries, same
-# rule as CALANGO_DFT_SOURCES above.
-# Grown incrementally as each piece lands (see git history / FUTURE.md for
-# the current build-out order): parser -> angular transform -> Hamiltonian
-# construction -> SCC -> forces -> unfolding/optics post-processing.
-#
-# NOTE: does not itself include src/core/Element.cpp — every target below
-# already lists it explicitly alongside Structure.cpp/UnitCell.cpp (the app
-# target compiles it as part of its own much larger source list), so it stays
-# out of here to avoid a duplicated source file in any of them.
-set(CALANGO_DFTB_SOURCES
-    src/dftb/SlaterKosterFile.cpp
-    src/dftb/SlaterKosterTable.cpp
-    src/dftb/SlaterKosterTransform.cpp
-    src/dftb/DftbBasis.cpp
-    src/dftb/DftbHamiltonian.cpp
-    src/dftb/DftbGamma.cpp
-    src/dftb/DftbMulliken.cpp
-    src/dftb/DftbScf.cpp
-    src/dftb/DftbForces.cpp
-    src/dftb/DftbTaskConfig.cpp
-    src/dftb/DftbStructureIo.cpp
-    src/dftb/DftbPdos.cpp
-    src/dftb/DftbUnfolding.cpp
-    src/core/BandUnfolding.cpp
-    src/dftb/DftbOptics.cpp
-    src/dftb/DftbEngine.cpp
-    src/dft/LinearAlgebra.cpp
-    src/dft/KPointGrid.cpp
-)
-
-# LAPACK for the generalised eigenproblem: Accelerate on macOS, the system
-# reference or OpenBLAS elsewhere. OPTIONAL by design. The module carries its
-# own Jacobi eigensolver, which is always compiled and is what runs when this
-# is not found, so a missing LAPACK costs speed on large matrices and nothing
-# else — no build failure, no new package in the .deb, no macdeployqt work.
-# `dft_linalg` runs the same problems through both paths and requires them to
-# agree, which is what keeps the fallback honest.
-find_package(LAPACK QUIET)
-if(LAPACK_FOUND)
-    message(STATUS "Native DFT: using LAPACK for the generalised eigenproblem")
-else()
-    message(STATUS "Native DFT: LAPACK not found, using the built-in Jacobi "
-                   "eigensolver")
-endif()
-
-function(calango_dft_link target)
-    if(LAPACK_FOUND)
-        target_link_libraries(${target} PRIVATE LAPACK::LAPACK)
-        target_compile_definitions(${target} PRIVATE CALANGO_DFT_HAVE_LAPACK)
-    endif()
-endfunction()
+# Calango's native all-electron DFT engine (src/dft) and native SCC-DFTB
+# engine (src/dftb) were REMOVED (both were substantially implemented but
+# narrowly exposed — one wizard, one task each — with no downstream feature
+# wiring; see git history for the removal). They were LAPACK's only
+# consumers in this codebase (CALANGO_BLAS/find_package(LAPACK)/
+# calango_dft_link() used to live here) — every other numerics-heavy module
+# (BSE, Wannier/Berry phase, Boltzmann transport, elastic/piezoelectric
+# tensors, DSIM/EGQCA, isosurfaces) is hand-rolled and always has been, by
+# design (see e.g. ElasticTensor.cpp's own comment on why). The packaged
+# `calango` binary now links no BLAS/LAPACK implementation at all — not
+# Accelerate, not OpenBLAS, not MKL — which structurally closes the whole
+# class of incident CALANGO_BLAS was added to fix (see
+# packaging/README.md's "BLAS/LAPACK backend" section for that history).
+# packaging/linux/audit_elf_deps.py and packaging/macos/audit_macho_deps.py
+# remain in the packaging pipeline regardless: they catch any future
+# build-machine-library leak, not just this one.
 
 # HDF5 for VolumetricData's saveHdf5()/loadHdf5()/convertToHdf5() — the
 # compressed charge-density container (see
@@ -193,6 +129,8 @@ endif()
 
 qt_add_executable(calango
     src/main.cpp
+    src/CalangoApplication.hpp
+    src/FileOpenQueue.hpp
 
     # core — pure C++ data model (no Qt / no OpenGL): the "Model" of MVC
     src/core/Vec3.hpp
@@ -215,7 +153,6 @@ qt_add_executable(calango
     src/core/CalculatorConfig.hpp
     src/core/AseScriptGenerator.hpp
     src/core/AseScriptGenerator.cpp
-    src/core/DftbNativeScriptGenerator.cpp
     src/core/EngineCalculatorBlocks.hpp
     src/core/EngineCalculatorBlocks.cpp
     src/core/BrillouinZone.hpp
@@ -476,6 +413,7 @@ qt_add_executable(calango
     src/gui/ProjectSerializer.cpp
     src/gui/ScriptStaging.hpp
     src/gui/ScriptStaging.cpp
+    src/gui/FileOpenRouting.hpp
     src/gui/GuiUtils.hpp
     src/gui/GuiUtils.cpp
     src/gui/CitationCatalog.hpp
@@ -736,7 +674,6 @@ qt_add_executable(calango
     src/gui/ConvergenceResultsWindow.cpp
     src/gui/OrchestrationWindow.hpp
     src/gui/OrchestrationWindow.cpp
-    ${CALANGO_DFT_SOURCES}
     src/gui/DatabaseImportDialog.cpp
     src/gui/OrchestrationDocument.cpp
     src/gui/OrchestrationTransforms.cpp
@@ -1088,7 +1025,6 @@ target_compile_definitions(calango PRIVATE
     CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}"
 )
 
-calango_dft_link(calango)
 calango_hdf5_link(calango)
 target_link_libraries(calango PRIVATE
     Qt6::Widgets
@@ -1140,31 +1076,13 @@ add_executable(calango-elph-analyze
 )
 target_include_directories(calango-elph-analyze PRIVATE src)
 
-# The native SCC-DFTB engine's own entry point (see tools/calango_dftb_run.cpp
-# and src/dftb/DftbTaskConfig.hpp). Unlike calango-elph-analyze this is NOT a
-# cluster-side post-processing tool run separately from the GUI — it is
-# launched locally, once per DFTB job, by the thin Python wrapper
-# EngineCalculatorBlocks.cpp emits for CalculatorKind::CalangoDftb, so it has
-# to ship WITH the app (see the install() rules below) rather than being
-# built and run by hand on a remote machine. Qt-free for the same reason
-# calango-elph-analyze is: CALANGO_DFTB_SOURCES is Qt-free by construction.
-add_executable(calango-dftb-run
-    tools/calango_dftb_run.cpp
-    ${CALANGO_DFTB_SOURCES}
-    src/core/Structure.cpp
-    src/core/UnitCell.cpp
-    src/core/Element.cpp
-)
-target_include_directories(calango-dftb-run PRIVATE src)
-calango_dft_link(calango-dftb-run)
-
 # The native counterpart to core::analyzeRingPercolationTrajectory() reachable
 # from outside the GUI: a test harness verifying a real MDMC trajectory
 # (tests/graphene_oxide_percolation_mdmc_test.py), or a user who already has a
 # trajectory file and wants the ring/percolation numbers for it without
 # opening the app — the same value proposition calango-elph-analyze has for
 # cluster-side post-processing. Reads via ase.io (any format ASE knows), so
-# unlike calango-dftb-run this embeds Python.
+# unlike calango-elph-analyze this embeds Python.
 add_executable(calango-ring-percolation-analyze
     tools/calango_ring_percolation_analyze.cpp
     src/core/GrapheneOxidePercolation.cpp
@@ -1388,7 +1306,6 @@ if(CALANGO_BUILD_TESTS)
         src/core/WannierScriptGenerator.cpp
         src/core/JobFailureReason.cpp
         src/core/AseScriptGenerator.cpp
-        src/core/DftbNativeScriptGenerator.cpp
         src/core/EngineCalculatorBlocks.cpp
     )
     # Isosurface mesh integrity: winding must agree with the gradient
@@ -2157,7 +2074,6 @@ if(CALANGO_BUILD_TESTS)
         src/gui/SettingsManager.cpp
         src/gui/CalculatorParameters.cpp
         src/core/AseScriptGenerator.cpp
-        src/core/DftbNativeScriptGenerator.cpp
         # The Vibrational Mode Analysis module. It repopulates two combo boxes
         # from inside its own constructor (it loads a phonon run there), which
         # is the construction-order shape this test exists for. It costs only
@@ -2325,7 +2241,6 @@ if(CALANGO_BUILD_TESTS)
         src/render/ShaderProfile.cpp
         src/core/VolumetricData.cpp
         src/core/AseScriptGenerator.cpp
-        src/core/DftbNativeScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
@@ -2412,7 +2327,6 @@ if(CALANGO_BUILD_TESTS)
         src/render/ShaderProfile.cpp
         src/core/VolumetricData.cpp
         src/core/AseScriptGenerator.cpp
-        src/core/DftbNativeScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
@@ -2498,7 +2412,6 @@ if(CALANGO_BUILD_TESTS)
         src/render/ShaderProfile.cpp
         src/core/VolumetricData.cpp
         src/core/AseScriptGenerator.cpp
-        src/core/DftbNativeScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
@@ -2591,7 +2504,6 @@ if(CALANGO_BUILD_TESTS)
         src/render/ShaderProfile.cpp
         src/core/VolumetricData.cpp
         src/core/AseScriptGenerator.cpp
-        src/core/DftbNativeScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
@@ -2852,6 +2764,22 @@ if(CALANGO_BUILD_TESTS)
         CALANGO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME icon_registry COMMAND calango_icon_registry_test)
 
+    # The macOS/Linux file-association plumbing: which ASE format hint a path
+    # gets and whether it is a project vs. a structure (FileOpenRouting.hpp),
+    # the pending-events queue a Finder launch can race
+    # (FileOpenQueue.hpp), and the real CalangoApplication driven with
+    # synthesized QFileOpenEvents -- the same delivery mechanism Finder uses.
+    # MainWindow (zero test coverage, ~9.5k lines) is deliberately not
+    # linked; these three headers were extracted from main.cpp/MainWindow.cpp
+    # specifically so this routing logic is testable on its own.
+    qt_add_executable(calango_file_association_test
+        tests/FileAssociationTest.cpp
+    )
+    target_include_directories(calango_file_association_test PRIVATE src)
+    target_compile_definitions(calango_file_association_test PRIVATE QT_NO_KEYWORDS)
+    target_link_libraries(calango_file_association_test PRIVATE Qt6::Widgets)
+    add_test(NAME file_association COMMAND calango_file_association_test)
+
     # Whole-structure transforms (centre / vacuum / wrap). They moved from the
     # Edit Structure dialog's throwaway working copy onto the Structure panel,
     # where they are committed document edits — a wrong result is no longer
@@ -2917,7 +2845,6 @@ if(CALANGO_BUILD_TESTS)
         tests/HubbardLinearResponseTest.cpp
         src/core/HubbardScriptGenerator.cpp
         src/core/AseScriptGenerator.cpp
-        src/core/DftbNativeScriptGenerator.cpp
         src/core/EngineCalculatorBlocks.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
@@ -3084,7 +3011,6 @@ if(CALANGO_BUILD_TESTS)
     add_executable(calango_script_test
         tests/ScriptGenerationTest.cpp
         src/core/AseScriptGenerator.cpp
-        src/core/DftbNativeScriptGenerator.cpp
         src/core/EngineCalculatorBlocks.cpp
         src/core/BornChargesScriptGenerator.cpp
         src/core/PolarizationScriptHelpers.cpp
@@ -3161,88 +3087,6 @@ if(CALANGO_BUILD_TESTS)
             -DPYTHON=${Python3_EXECUTABLE}
             -DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}/generated_scripts
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/RunScriptLint.cmake)
-
-    # Native DFT engine scaffold. The implemented numerics are checked against
-    # CLOSED-FORM answers (radial quadrature against exact integrals, the
-    # radial Poisson solve against the analytic hydrogen 1s Hartree potential,
-    # Pulay mixing against a linear fixed point), and every unimplemented step
-    # is checked to REFUSE and to leave its output untouched — a scaffold whose
-    # stubs return zeros is one that will eventually report an energy of zero
-    # as though it meant it.
-    add_executable(calango_dft_engine_test
-        tests/DftEngineTest.cpp
-        src/core/AseScriptGenerator.cpp
-        src/core/DftbNativeScriptGenerator.cpp
-        src/core/EngineCalculatorBlocks.cpp
-        ${CALANGO_DFT_SOURCES}
-        src/core/Structure.cpp
-        src/core/UnitCell.cpp
-        src/core/Element.cpp
-    )
-    target_include_directories(calango_dft_engine_test PRIVATE src)
-    # AseScriptGenerator stamps the version into every script it writes.
-    target_compile_definitions(calango_dft_engine_test PRIVATE
-        CALANGO_VERSION="${PROJECT_VERSION}")
-    calango_dft_link(calango_dft_engine_test)
-    add_test(NAME dft_engine COMMAND calango_dft_engine_test)
-
-    # The native DFT engine, end to end, on the system it was built for.
-    #
-    # Bulk silicon in the diamond structure: two atoms, all 28 electrons
-    # explicit, a minimal numerical-orbital basis generated on the spot from
-    # the confined free atom. The assertions are the ones that can be CHECKED
-    # rather than the ones that would be nice to see — the integrated electron
-    # count, self-consistency, the degeneracies symmetry demands, the absence
-    # of a spurious net charge on any atom, and the free atom's own energy
-    # reproduced by the three-dimensional machinery to the accuracy of the
-    # one-dimensional solver it is validated against.
-    add_executable(calango_native_dft_si_mvp_test
-        tests/test_native_dft_si_mvp.cpp
-        ${CALANGO_DFT_SOURCES}
-        src/core/Structure.cpp
-        src/core/UnitCell.cpp
-        src/core/Element.cpp
-    )
-    target_include_directories(calango_native_dft_si_mvp_test PRIVATE src)
-    calango_dft_link(calango_native_dft_si_mvp_test)
-    add_test(NAME native_dft_si_mvp COMMAND calango_native_dft_si_mvp_test)
-    # The slowest test in the suite: an all-electron SCF on a periodic cell,
-    # twice over, plus two more for the translation check. Around eight
-    # minutes on an M-series laptop. `ctest -E native_dft_si_mvp` skips it
-    # when a quick pass is what is wanted; it is not skipped by default
-    # because it is the only test that runs the engine end to end.
-    set_tests_properties(native_dft_si_mvp PROPERTIES TIMEOUT 1800)
-
-    # The native SCC-DFTB engine (src/dftb) — Slater-Koster parsing today,
-    # growing into the Hamiltonian/SCF/forces/unfolding/optics pieces as
-    # CALANGO_DFTB_SOURCES grows. Split from calango_native_dft_si_mvp_test
-    # (a different engine, a different source list) rather than folded in,
-    # for the same reason dft_engine and native_dft_si_mvp are already two
-    # separate binaries: unit-style checks (fast, every build) belong apart
-    # from a real end-to-end self-consistent run (slow, its own TIMEOUT).
-    add_executable(calango_dftb_test
-        tests/DftbTest.cpp
-        ${CALANGO_DFTB_SOURCES}
-        src/core/Structure.cpp
-        src/core/UnitCell.cpp
-        src/core/Element.cpp
-    )
-    target_include_directories(calango_dftb_test PRIVATE src)
-    calango_dft_link(calango_dftb_test)
-    add_test(NAME dftb_engine COMMAND calango_dftb_test)
-
-    # The native binary itself, end to end — manifest file, extxyz reader,
-    # subprocess CLI, real JSON on disk. Fast (a single small non-SCC bands
-    # run), so it stays in the default sweep alongside dftb_engine rather
-    # than needing the slow "dft" cost label.
-    add_test(NAME dftb_native_run
-        COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/dftb_native_run_test.py
-                $<TARGET_FILE:calango-dftb-run>)
-    add_test(NAME dftb_unfolding_run
-        COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/dftb_unfolding_run_test.py
-                $<TARGET_FILE:calango-dftb-run>)
 
     # Volumetric grid parsing: the value block is read with a bulk read plus
     # std::from_chars rather than through istream >> double (5x faster on a
@@ -3830,15 +3674,14 @@ if(CALANGO_BUILD_TESTS)
     # test are independent:
     #
     #   what does it cover?     visual | calc | docs
-    #   what does it cost?      core   | dft
+    #   what does it cost?      core (the only tier — see below)
     #
     # Every test carries exactly one label from each axis, so the sets compose:
     #
     #   ctest -L visual              rendering, viewport, meshing, UI panels
     #   ctest -L calc               physics, numerics, builders, parsers
     #   ctest -L docs               doc builds and doc/UI consistency
-    #   ctest -L core               everything except the native DFT engine
-    #   ctest -L dft                the native DFT engine only
+    #   ctest -L core               everything (the cost axis's only tier)
     #   ctest -L visual -L core     intersection: the fast display tests
     #   ctest                       all of it
     #
@@ -3867,6 +3710,7 @@ if(CALANGO_BUILD_TESTS)
         film_timeline           # shot timing, transitions, ping-pong order
         # Widgets, docks and dialogs.
         dialog_construction     # every dialog builds and survives being driven
+        file_association        # QFileOpenEvent routing/queueing, format hints
         results_viewers         # result-file viewers and their JSON schemas
         overlay_model           # "Additional overlays" tessellation + ranges
         visible_spectrum        # the optics viewer's spectrum gradient, by pixel
@@ -3895,8 +3739,7 @@ if(CALANGO_BUILD_TESTS)
         cpa_solver crpa_solver crpa_vasp_validation cu_wannier_spread
         ternary_convex_hull
         dataset_split egqca
-        defect_2d_correction defect_2d_monolayer dft_engine dftb_engine
-        dftb_native_run dftb_unfolding_run
+        defect_2d_correction defect_2d_monolayer
         dislocation_builder dos_smearing double_group dsim dsim_oncapintada elastic_tensor elf_silicon
         elph_analysis elph_io extxyz_attributes frame_streaming
         generated_ase_scripts generated_script_lint graphene_band_symmetry
@@ -3907,7 +3750,7 @@ if(CALANGO_BUILD_TESTS)
         gw_qp_parser gw_silicon hubbard_linear_response hydrogen_bonds
         hydrogen_completion ice_builder kpath_table lammps_environment
         lammps_scripts ldos_h2o mace_trainer_preflight magnetic_space_group materials_project_mp1434
-        monte_carlo_swap native_dft_si_mvp nlopt_parser noise_ramp
+        monte_carlo_swap nlopt_parser noise_ramp
         optics_2d_observables optics_broadening
         optics_silicon orchestration_batch orchestration_handoff
         orchestration_si_pipeline partial_charge_si periodic_image_range
@@ -3946,32 +3789,20 @@ if(CALANGO_BUILD_TESTS)
             "eventually consumes the result.")
     endif()
 
-    # --- The cost axis ------------------------------------------------------
+    # --- The cost axis --------------------------------------------------
     #
-    #   ctest -L core     everything except the native DFT engine  (~2 min)
-    #   ctest -L dft      the native DFT engine only               (~7 min)
-    #   ctest             both
+    #   ctest -L core     every test (~2 min)
     #
-    # The split exists because the two have completely different costs and
-    # completely different reasons to run. A `core` test is a parser, a
-    # generator, a dialog, a geometry routine — milliseconds each, and they are
-    # what almost every change to the application can break. The `dft` tests
-    # run REAL self-consistent all-electron calculations: atoms, a silicon
-    # crystal, finite-difference forces, a stress tensor and a geometry
-    # relaxation. Minutes each, unavoidably, because that is what the thing
-    # being tested does.
-    #
-    # Charging every unrelated change the price of a DFT run is what makes a
-    # suite stop being run at all, so the default for application work is
-    # `ctest -L core`. Anything touching src/dft must run `ctest -L dft`, and
-    # CI should run both.
-    set(CALANGO_DFT_TEST_NAMES dft_engine native_dft_si_mvp)
+    # Used to be two tiers: `core` (everything, milliseconds each) and `dft`
+    # (the native DFT engine's real self-consistent all-electron runs, real
+    # minutes each — the only thing in the suite expensive enough to need
+    # opting into separately). The native DFT and DFTB engines were removed
+    # entirely (see git history), taking the `dft` tier's only members with
+    # them, so every test is `core` now — the label still exists (rather
+    # than being removed) so a future genuinely slow test has an established
+    # place to reintroduce a second tier without inventing a new convention.
     foreach(_test IN LISTS _calango_all_tests)
-        if(_test IN_LIST CALANGO_DFT_TEST_NAMES)
-            set_property(TEST ${_test} APPEND PROPERTY LABELS "dft")
-        else()
-            set_property(TEST ${_test} APPEND PROPERTY LABELS "core")
-        endif()
+        set_property(TEST ${_test} APPEND PROPERTY LABELS "core")
     endforeach()
 endif()
 
@@ -4003,20 +3834,6 @@ set(CALANGO_USER_GUIDE_PDF
 
 if(APPLE AND CALANGO_MACOS_BUNDLE)
     install(TARGETS calango BUNDLE DESTINATION .)
-
-    # calango-dftb-run has to ship WITH the app (unlike calango-elph-analyze,
-    # a cluster-side tool never bundled on macOS at all — see its own
-    # install() below) — every DFTB job launches it locally, next to
-    # whichever `calango` binary started it, via
-    # QCoreApplication::applicationDirPath(). Installed alongside the main
-    # executable inside the bundle rather than via BUNDLE DESTINATION (which
-    # is for the MACOSX_BUNDLE target itself) so applicationDirPath() finds
-    # it with no special-casing. Qt-free and LAPACK/Accelerate-only, so
-    # macdeployqt's pass below has nothing of its own to rewrite here —
-    # unlike the standalone Python payload's documented case, ordering
-    # relative to macdeployqt does not matter for this target.
-    install(TARGETS calango-dftb-run
-        RUNTIME DESTINATION "calango.app/Contents/MacOS")
 
     install(FILES "${CALANGO_USER_GUIDE_PDF}"
             DESTINATION "calango.app/Contents/Resources/doc" OPTIONAL)
@@ -4061,6 +3878,32 @@ if(APPLE AND CALANGO_MACOS_BUNDLE)
                         "the packaged .app will not be self-contained")
     endif()
 
+    # macdeployqt rewrites a copied library's own LC_LOAD_DYLIB entries to
+    # @executable_path-relative but leaves its ORIGINAL build-machine
+    # LC_RPATH search-path entries in place. calango 26.8.36 shipped a
+    # bundled libopenblas.0.dylib carrying three absolute Homebrew GCC
+    # rpaths; on the build machine those happened to be how dyld's chained
+    # rpath search found libgcc_s.1.1.dylib (a dependency of the
+    # also-bundled libgfortran.5.dylib, itself never actually copied into
+    # the bundle) — on a clean Mac without that exact Homebrew install,
+    # every one of those paths misses and the app aborts at launch before
+    # main() runs (see packaging/README.md's "BLAS/LAPACK backend"
+    # section). The real fix for THAT specific chain is CALANGO_BLAS
+    # defaulting to Accelerate above (a system framework needing none of
+    # it); this strips the same class of leftover rpath from every OTHER
+    # bundled library too — auditing the same .dmg also found it on
+    # libdbus-1.3.dylib, libjasper.7.dylib and libjpeg.8.dylib, none of
+    # them BLAS-related. Must run before the final codesign below:
+    # install_name_tool invalidates a Mach-O's signature exactly like the
+    # comment there already says stripping Python-framework paths does.
+    install(CODE "
+        execute_process(
+            COMMAND bash
+                \"${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/strip_leftover_rpaths.sh\"
+                \"\${CMAKE_INSTALL_PREFIX}/calango.app\"
+            COMMAND_ERROR_IS_FATAL ANY)
+    ")
+
     # Embedded interpreter — PythonEngine looks this location up at runtime.
     # Staged after macdeployqt (see above) and before the script below, which
     # needs the payload in place to bridge it into the framework's sys.path.
@@ -4087,13 +3930,9 @@ elseif(UNIX AND NOT APPLE)
     # Shipped so a cluster job script can analyse its own run in place.
     install(TARGETS calango-elph-analyze
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
-    # NOT optional, unlike calango-elph-analyze above: every DFTB job needs
-    # this beside the app, not just an occasional cluster script.
-    install(TARGETS calango-dftb-run
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     # OPTIONAL and un-bundled on macOS, like calango-elph-analyze above: a
     # standalone analysis convenience, not something the GUI ever launches
-    # itself the way it does calango-dftb-run.
+    # itself.
     install(TARGETS calango-ring-percolation-analyze
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
 

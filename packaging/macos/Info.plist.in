@@ -4,10 +4,30 @@
 
      This replaces CMake's stock template for one reason: document types.
      CFBundleDocumentTypes + UTExportedTypeDeclarations are what make Finder
-     offer Calango for .calproj and .extxyz double-clicks; Launch Services
-     reads them from the installed bundle. The opened file reaches the app as
-     an Apple Event that Qt surfaces as a QFileOpenEvent (handled in
-     src/main.cpp), not as argv. -->
+     offer Calango for .calproj, .extxyz and every other format below on a
+     double-click; Launch Services reads them from the installed bundle. The
+     opened file reaches the app as an Apple Event that Qt surfaces as a
+     QFileOpenEvent (handled in src/main.cpp, via calango::CalangoApplication
+     in src/CalangoApplication.hpp), not as argv.
+
+     Tier policy (see packaging/README.md for the full rationale):
+       - .calproj is Calango's own format: LSHandlerRank Owner.
+       - Every other type here is a community/scientific format other
+         applications also read (VESTA, OVITO, Avogadro, Mercury, ...), so
+         each is LSHandlerRank Alternate (Extended XYZ is the one exception,
+         kept at Default from before this list grew — see its own comment
+         below) — Calango becomes an "Open With" option without stealing the
+         user's existing default handler.
+       - Only extensions specific enough to be worth claiming are declared.
+         Deliberately excluded: bare POSCAR/CONTCAR/CHGCAR/LOCPOT/PARCHG/
+         ELFCAR (no extension at all — Launch Services cannot associate by
+         filename, only by extension or UTI), and the generic extensions
+         Calango also reads by content-sniffing or an explicit format hint
+         but that collide too broadly with unrelated software to claim
+         system-wide: .in/.out/.data/.dump/.cell/.com/.json/.dat/.top. Those
+         files still open fine through Calango's own Open dialog, argv, or a
+         QFileOpenEvent — this list only controls what Finder's double-click
+         and "Open With" menus offer. -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
@@ -70,6 +90,178 @@
 			<key>LSHandlerRank</key>
 			<string>Default</string>
 		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>XYZ structure</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.seixasresearch.calango.xyz</string>
+			</array>
+			<!-- Alternate: plain .xyz is claimed by many chemistry and
+			     visualization apps already installed on a user's Mac; this
+			     only adds Calango to "Open With", never steals the default. -->
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>CIF / PDBx-mmCIF structure</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.seixasresearch.calango.cif</string>
+			</array>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>VASP structure</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.seixasresearch.calango.vasp</string>
+			</array>
+			<!-- Only the .vasp extension is associable; bare POSCAR/CONTCAR
+			     filenames carry no extension and cannot be claimed here. -->
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>ASE trajectory</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.seixasresearch.calango.traj</string>
+			</array>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Quantum ESPRESSO input</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.seixasresearch.calango.pwi</string>
+			</array>
+			<!-- .pwi only, not the generic .in Calango also reads: claiming a
+			     two-letter extension used by countless unrelated files would
+			     pollute "Open With" for files that are not QE input. -->
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>LAMMPS trajectory</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.seixasresearch.calango.lammpstrj</string>
+			</array>
+			<!-- .lammpstrj only, not the generic .data/.dump Calango also
+			     reads for LAMMPS: both extensions are shared with unrelated
+			     software (core dumps, arbitrary data files). -->
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Gaussian input</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.seixasresearch.calango.gjf</string>
+			</array>
+			<!-- .gjf only, not the .com Calango also reads: .com is a legacy
+			     MS-DOS executable extension elsewhere and too dangerous to
+			     claim system-wide. -->
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>SHELX structure</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.seixasresearch.calango.shelx</string>
+			</array>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Gaussian cube volumetric data</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.seixasresearch.calango.cube</string>
+			</array>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>XCrySDen structure</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.seixasresearch.calango.xsf</string>
+			</array>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Calango density container</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.seixasresearch.calango.h5</string>
+			</array>
+			<!-- Alternate: .h5/.hdf5 are generic HDF5 containers used far
+			     beyond Calango's own compressed density format (see
+			     src/core/VolumetricData.hpp), so this only offers Calango as
+			     one opener among others, never the default. -->
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
 	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
@@ -115,6 +307,238 @@
 				</array>
 			</dict>
 		</dict>
+			<dict>
+				<key>UTTypeIdentifier</key>
+				<string>org.seixasresearch.calango.xyz</string>
+				<key>UTTypeDescription</key>
+				<string>XYZ structure</string>
+				<key>UTTypeConformsTo</key>
+				<array>
+					<string>public.plain-text</string>
+				</array>
+				<key>UTTypeTagSpecification</key>
+				<dict>
+					<key>public.filename-extension</key>
+					<array>
+						<string>xyz</string>
+					</array>
+					<key>public.mime-type</key>
+					<array>
+						<string>chemical/x-xyz</string>
+					</array>
+				</dict>
+			</dict>
+			<dict>
+				<key>UTTypeIdentifier</key>
+				<string>org.seixasresearch.calango.cif</string>
+				<key>UTTypeDescription</key>
+				<string>CIF / PDBx-mmCIF structure</string>
+				<key>UTTypeConformsTo</key>
+				<array>
+					<string>public.plain-text</string>
+				</array>
+				<key>UTTypeTagSpecification</key>
+				<dict>
+					<key>public.filename-extension</key>
+					<array>
+						<string>cif</string>
+					</array>
+					<key>public.mime-type</key>
+					<array>
+						<string>chemical/x-cif</string>
+					</array>
+				</dict>
+			</dict>
+			<dict>
+				<key>UTTypeIdentifier</key>
+				<string>org.seixasresearch.calango.vasp</string>
+				<key>UTTypeDescription</key>
+				<string>VASP structure</string>
+				<key>UTTypeConformsTo</key>
+				<array>
+					<string>public.plain-text</string>
+				</array>
+				<key>UTTypeTagSpecification</key>
+				<dict>
+					<key>public.filename-extension</key>
+					<array>
+						<string>vasp</string>
+					</array>
+					<key>public.mime-type</key>
+					<array>
+						<string>application/x-vasp</string>
+					</array>
+				</dict>
+			</dict>
+			<dict>
+				<key>UTTypeIdentifier</key>
+				<string>org.seixasresearch.calango.traj</string>
+				<key>UTTypeDescription</key>
+				<string>ASE trajectory</string>
+				<key>UTTypeConformsTo</key>
+				<array>
+					<string>public.data</string>
+				</array>
+				<key>UTTypeTagSpecification</key>
+				<dict>
+					<key>public.filename-extension</key>
+					<array>
+						<string>traj</string>
+					</array>
+					<key>public.mime-type</key>
+					<array>
+						<string>application/x-ase-trajectory</string>
+					</array>
+				</dict>
+			</dict>
+			<dict>
+				<key>UTTypeIdentifier</key>
+				<string>org.seixasresearch.calango.pwi</string>
+				<key>UTTypeDescription</key>
+				<string>Quantum ESPRESSO input</string>
+				<key>UTTypeConformsTo</key>
+				<array>
+					<string>public.plain-text</string>
+				</array>
+				<key>UTTypeTagSpecification</key>
+				<dict>
+					<key>public.filename-extension</key>
+					<array>
+						<string>pwi</string>
+					</array>
+					<key>public.mime-type</key>
+					<array>
+						<string>application/x-quantum-espresso-input</string>
+					</array>
+				</dict>
+			</dict>
+			<dict>
+				<key>UTTypeIdentifier</key>
+				<string>org.seixasresearch.calango.lammpstrj</string>
+				<key>UTTypeDescription</key>
+				<string>LAMMPS trajectory</string>
+				<key>UTTypeConformsTo</key>
+				<array>
+					<string>public.plain-text</string>
+				</array>
+				<key>UTTypeTagSpecification</key>
+				<dict>
+					<key>public.filename-extension</key>
+					<array>
+						<string>lammpstrj</string>
+					</array>
+					<key>public.mime-type</key>
+					<array>
+						<string>application/x-lammps-trajectory</string>
+					</array>
+				</dict>
+			</dict>
+			<dict>
+				<key>UTTypeIdentifier</key>
+				<string>org.seixasresearch.calango.gjf</string>
+				<key>UTTypeDescription</key>
+				<string>Gaussian input</string>
+				<key>UTTypeConformsTo</key>
+				<array>
+					<string>public.plain-text</string>
+				</array>
+				<key>UTTypeTagSpecification</key>
+				<dict>
+					<key>public.filename-extension</key>
+					<array>
+						<string>gjf</string>
+					</array>
+					<key>public.mime-type</key>
+					<array>
+						<string>chemical/x-gaussian-input</string>
+					</array>
+				</dict>
+			</dict>
+			<dict>
+				<key>UTTypeIdentifier</key>
+				<string>org.seixasresearch.calango.shelx</string>
+				<key>UTTypeDescription</key>
+				<string>SHELX structure</string>
+				<key>UTTypeConformsTo</key>
+				<array>
+					<string>public.plain-text</string>
+				</array>
+				<key>UTTypeTagSpecification</key>
+				<dict>
+					<key>public.filename-extension</key>
+					<array>
+						<string>res</string>
+					</array>
+					<key>public.mime-type</key>
+					<array>
+						<string>chemical/x-shelx</string>
+					</array>
+				</dict>
+			</dict>
+			<dict>
+				<key>UTTypeIdentifier</key>
+				<string>org.seixasresearch.calango.cube</string>
+				<key>UTTypeDescription</key>
+				<string>Gaussian cube volumetric data</string>
+				<key>UTTypeConformsTo</key>
+				<array>
+					<string>public.plain-text</string>
+				</array>
+				<key>UTTypeTagSpecification</key>
+				<dict>
+					<key>public.filename-extension</key>
+					<array>
+						<string>cube</string>
+					</array>
+					<key>public.mime-type</key>
+					<array>
+						<string>chemical/x-gaussian-cube</string>
+					</array>
+				</dict>
+			</dict>
+			<dict>
+				<key>UTTypeIdentifier</key>
+				<string>org.seixasresearch.calango.xsf</string>
+				<key>UTTypeDescription</key>
+				<string>XCrySDen structure</string>
+				<key>UTTypeConformsTo</key>
+				<array>
+					<string>public.plain-text</string>
+				</array>
+				<key>UTTypeTagSpecification</key>
+				<dict>
+					<key>public.filename-extension</key>
+					<array>
+						<string>xsf</string>
+					</array>
+					<key>public.mime-type</key>
+					<array>
+						<string>application/x-xcrysden</string>
+					</array>
+				</dict>
+			</dict>
+			<dict>
+				<key>UTTypeIdentifier</key>
+				<string>org.seixasresearch.calango.h5</string>
+				<key>UTTypeDescription</key>
+				<string>Calango density container</string>
+				<key>UTTypeConformsTo</key>
+				<array>
+					<string>public.data</string>
+				</array>
+				<key>UTTypeTagSpecification</key>
+				<dict>
+					<key>public.filename-extension</key>
+					<array>
+						<string>h5</string>
+						<string>hdf5</string>
+					</array>
+					<key>public.mime-type</key>
+					<array>
+						<string>application/x-hdf5</string>
+					</array>
+				</dict>
+			</dict>
 	</array>
 </dict>
 </plist>

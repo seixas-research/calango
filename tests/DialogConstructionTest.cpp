@@ -731,10 +731,7 @@ int main(int argc, char** argv)
 
             // -- Engine ORDER, which is engine DEFAULT -----------------------
             // A combo opens on index 0, so whatever leads this list is what an
-            // unmodified run uses. Single-Point is the wizard that matters
-            // here: it is the only one that offers the built-in engine at all,
-            // and that engine used to lead — meaning the out-of-the-box run of
-            // the most-used module was the one that cannot return a number.
+            // unmodified run uses.
             check(engine->currentIndex() == 0,
                   "the engine combo opens on its first entry");
             check(engine->findData(static_cast<int>(
@@ -743,20 +740,6 @@ int main(int argc, char** argv)
             check(engine->itemData(engine->currentIndex()).toInt()
                       == static_cast<int>(calango::core::CalculatorKind::Gpaw),
                   "so an untouched wizard runs GPAW");
-
-            const int native = engine->findData(
-                static_cast<int>(calango::core::CalculatorKind::CalangoDft));
-            check(native > 0, "the built-in engine is offered, but not first");
-            if (native > 0) {
-                // Last, past the classical potentials. Not merely "not first":
-                // it produces no energy yet, so anywhere a user could land on
-                // it by scrolling past the DFT codes is too high.
-                check(native == count - 1,
-                      "the built-in engine is the LAST entry in the list");
-                check(engine->itemText(native)
-                          == QStringLiteral("Calango Native DFT (experimental)"),
-                      "and its label carries the experimental warning");
-            }
 
             // Walking every engine drives updateCalculatorEnabled() against
             // each one's group set. A group read before it is built crashes
@@ -789,15 +772,11 @@ int main(int argc, char** argv)
                 }
             }
 
-            // CalangoDftb (the native Slater-Koster engine): offered here
-            // specifically because SinglePointWizard's forces are the one
-            // task its finite-difference forces (DftbForces.hpp) are cheap
-            // enough for — see SinglePointWizard::calculatorAllowed()'s own
-            // doc. Shares the "DFTB settings" group with DFTB+ rather than
-            // getting its own (see SimulationWizardBase::buildDftbGroup()).
+            // DFTB+: its "DFTB settings" group must appear when it is
+            // selected (see SimulationWizardBase::buildDftbGroup()).
             const int dftb = engine->findData(static_cast<int>(
-                calango::core::CalculatorKind::CalangoDftb));
-            check(dftb >= 0, "CalangoDftb is offered as an engine");
+                calango::core::CalculatorKind::DftbPlus));
+            check(dftb >= 0, "DFTB+ is offered as an engine");
             if (dftb >= 0) {
                 engine->setCurrentIndex(dftb);
                 const auto boxes = wizard.findChildren<QGroupBox*>();
@@ -808,8 +787,7 @@ int main(int argc, char** argv)
                 check(named != boxes.end(), "a DFTB settings group exists");
                 if (named != boxes.end())
                     check((*named)->isVisibleTo(&wizard),
-                          "and is shown when CalangoDftb is the selected "
-                          "engine");
+                          "and is shown when DFTB+ is the selected engine");
             }
         }
     }

@@ -8,14 +8,84 @@
     <icon name="calango"/>
   </mime-type>
   <!-- Extended XYZ — Calango's default structure/trajectory format.
-       Subclassed under chemical/x-xyz (shared-mime-info's plain-XYZ type) so
-       generic XYZ handlers keep matching .extxyz files. XYZ has no reliable
-       magic bytes (the first line is a bare atom count), so the glob is the
-       whole rule. -->
+       Subclassed under chemical/x-xyz (declared below) so generic XYZ
+       handlers keep matching .extxyz files. XYZ has no reliable magic bytes
+       (the first line is a bare atom count), so the glob is the whole rule. -->
   <mime-type type="application/x-extxyz">
     <comment>Extended XYZ atomic structure</comment>
     <sub-class-of type="chemical/x-xyz"/>
     <glob pattern="*.extxyz"/>
+    <icon name="calango"/>
+  </mime-type>
+
+  <!-- Parity with packaging/macos/Info.plist.in's Alternate-tier document
+       types: every format there that has a real, associable extension gets
+       the same declaration here, so Linux offers Calango in "Open With" for
+       the same set macOS does. Extensions with no fixed suffix (POSCAR,
+       CONTCAR, CHGCAR, LOCPOT, PARCHG, ELFCAR) and extensions too generic to
+       claim system-wide (.in, .out, .data, .dump, .cell, .com, .json, .dat,
+       .top) are excluded for the same reasons documented there. -->
+  <!-- chemical/x-xyz is part of the (widely but not universally installed)
+       chemical-mime-data package; declaring it here too — rather than only
+       referencing it as extxyz's parent above — means plain .xyz resolves
+       even on a system that never installed that package. -->
+  <mime-type type="chemical/x-xyz">
+    <comment>XYZ structure</comment>
+    <glob pattern="*.xyz"/>
+    <icon name="calango"/>
+  </mime-type>
+  <mime-type type="chemical/x-cif">
+    <comment>CIF / PDBx-mmCIF structure</comment>
+    <glob pattern="*.cif"/>
+    <icon name="calango"/>
+  </mime-type>
+  <mime-type type="application/x-vasp">
+    <comment>VASP structure</comment>
+    <glob pattern="*.vasp"/>
+    <icon name="calango"/>
+  </mime-type>
+  <mime-type type="application/x-ase-trajectory">
+    <comment>ASE trajectory</comment>
+    <glob pattern="*.traj"/>
+    <icon name="calango"/>
+  </mime-type>
+  <mime-type type="application/x-quantum-espresso-input">
+    <comment>Quantum ESPRESSO input</comment>
+    <glob pattern="*.pwi"/>
+    <icon name="calango"/>
+  </mime-type>
+  <mime-type type="application/x-lammps-trajectory">
+    <comment>LAMMPS trajectory</comment>
+    <glob pattern="*.lammpstrj"/>
+    <icon name="calango"/>
+  </mime-type>
+  <mime-type type="chemical/x-gaussian-input">
+    <comment>Gaussian input</comment>
+    <glob pattern="*.gjf"/>
+    <icon name="calango"/>
+  </mime-type>
+  <mime-type type="chemical/x-shelx">
+    <comment>SHELX structure</comment>
+    <glob pattern="*.res"/>
+    <icon name="calango"/>
+  </mime-type>
+  <mime-type type="chemical/x-gaussian-cube">
+    <comment>Gaussian cube volumetric data</comment>
+    <glob pattern="*.cube"/>
+    <icon name="calango"/>
+  </mime-type>
+  <mime-type type="application/x-xcrysden">
+    <comment>XCrySDen structure</comment>
+    <glob pattern="*.xsf"/>
+    <icon name="calango"/>
+  </mime-type>
+  <!-- .h5/.hdf5: generic HDF5 containers, not exclusive to Calango's own
+       compressed density format (src/core/VolumetricData.hpp) — same
+       Alternate-tier reasoning as the macOS declaration. -->
+  <mime-type type="application/x-hdf5">
+    <comment>Calango density container</comment>
+    <glob pattern="*.h5"/>
+    <glob pattern="*.hdf5"/>
     <icon name="calango"/>
   </mime-type>
 </mime-info>

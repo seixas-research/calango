@@ -7,5 +7,5 @@ Exec=calango %F
 Icon=calango
 Terminal=false
 Categories=Science;Chemistry;Physics;Education;
-MimeType=application/x-calango-project;application/x-extxyz;
+MimeType=application/x-calango-project;application/x-extxyz;chemical/x-xyz;chemical/x-cif;application/x-vasp;application/x-ase-trajectory;application/x-quantum-espresso-input;application/x-lammps-trajectory;chemical/x-gaussian-input;chemical/x-shelx;chemical/x-gaussian-cube;application/x-xcrysden;application/x-hdf5;
 StartupWMClass=calango

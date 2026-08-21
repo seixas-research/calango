@@ -1,6 +1,5 @@
 #pragma once
 
-#include "core/CalculatorConfig.hpp"
 #include "core/ElasticScriptGenerator.hpp"
 #include "gui/SimulationWizardBase.hpp"
 
@@ -63,16 +62,6 @@ protected:
     QString exportFileName() const override
     {
         return QStringLiteral("elastic.py");
-    }
-    /// Stress and energy are available from every engine here — unlike the
-    /// Berry-phase-only Piezoelectric wizard, nothing is excluded — EXCEPT
-    /// Calango's own native DFTB (CalangoDftb): it has no stress tensor at
-    /// all and only finite-difference forces (see src/dftb/DftbForces.hpp),
-    /// so a finite-strain elastic-tensor sweep here would be both wrong
-    /// (no stress) and needlessly expensive if driven through forces alone.
-    bool calculatorAllowed(core::CalculatorKind kind) const override
-    {
-        return kind != core::CalculatorKind::CalangoDftb;
     }
     QStringList calculatorElements() const override;
     bool showsCalculatorStage() const override { return true; }

@@ -43,19 +43,10 @@ class SimulationWizardBase : public QDialog {
     Q_OBJECT
 
 public:
-    enum class Action { None, RunLocal, RunRemote, RunNativeEngine };
+    enum class Action { None, RunLocal, RunRemote };
 
     Action action() const { return action_; }
 
-    /// True when the chosen engine runs in process rather than as a script.
-    /// That engine has no generated script — it runs inside the application —
-    /// so a wizard on it cannot hand the host a run.py. Instead the review
-    /// stage's Run button sets Action::RunNativeEngine, and the host dispatches
-    /// on that.
-    bool usesNativeEngine() const
-    {
-        return selectedCalculator() == core::CalculatorKind::CalangoDft;
-    }
     QString script() const;            ///< the (possibly edited) preview text
     /// The engine the run uses — the host needs it to resolve the launch
     /// command template (Preferences → "Run").
@@ -172,24 +163,16 @@ protected:
 
     /// Whether a calculator kind should appear in the Stage-2 engine combo.
     ///
-    /// Default allows every kind EXCEPT Calango's own two native engines,
-    /// both opt-in per module:
-    ///   - CalangoDft runs in process rather than as a generated script, so
-    ///     every module that offers it needs a dispatch path of its own;
-    ///   - CalangoDftb DOES run as a generated script (a thin wrapper around
-    ///     the native calango-dftb-run binary — see
-    ///     core::emitDftbNativeWrapper) but its forces are finite-difference
-    ///     (see src/dftb/DftbForces.hpp), so it is offered only where that
-    ///     cost is acceptable — SinglePointWizard today.
-    /// Defaulting either ON would put it in front of users in wizards whose
-    /// run path would then not know what to do with it, or whose task
-    /// (geometry optimisation, MD) this engine's forces are too expensive
-    /// for. The Electronic Bands wizard overrides this the other way, to
-    /// expose only DFT-capable electronic-structure calculators.
-    virtual bool calculatorAllowed(core::CalculatorKind kind) const
+    /// Default allows every kind. Calango's own native DFT and DFTB engines
+    /// used to be the two exceptions here (opt-in per module, since one ran
+    /// in-process with its own dispatch path and the other's forces were too
+    /// expensive for anything but a single point) — both were removed; see
+    /// CalculatorConfig.hpp's CalculatorKind comment. The Electronic Bands
+    /// wizard overrides this the other way, to expose only DFT-capable
+    /// electronic-structure calculators.
+    virtual bool calculatorAllowed(core::CalculatorKind) const
     {
-        return kind != core::CalculatorKind::CalangoDft
-            && kind != core::CalculatorKind::CalangoDftb;
+        return true;
     }
 
     /// Where the subclass's own settings page sits in the flow. Most wizards
